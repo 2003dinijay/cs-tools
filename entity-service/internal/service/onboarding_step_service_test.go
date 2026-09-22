@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -51,7 +52,7 @@ func validStepReq() domain.UpsertOnboardingStepRequest {
 
 func TestOnboardingStepService_UpsertNormalizes(t *testing.T) {
 	repo := &recordingStepRepo{}
-	svc := NewOnboardingStepService(repo)
+	svc := NewOnboardingStepService(repo, alwaysUnrestrictedAccess{})
 	req := validStepReq()
 	stale := "boom"
 	req.LastError = &stale
@@ -81,10 +82,52 @@ func TestOnboardingStepService_UpsertNormalizes(t *testing.T) {
 	if got := repo.upserts[1]; got.LastError == nil || len(*got.LastError) != maxOnboardingStepErrorChars {
 		t.Errorf("lastError should be kept and truncated on FAILED: %v", got.LastError)
 	}
+
+	// Multi-byte text is cut on a rune boundary, never mid-character.
+	req = validStepReq()
+	req.Status = "FAILED"
+	wide := strings.Repeat("é", 1200)
+	req.LastError = &wide
+	if _, err := svc.Upsert(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := repo.upserts[2]; got.LastError == nil || !utf8.ValidString(*got.LastError) ||
+		utf8.RuneCountInString(*got.LastError) != maxOnboardingStepErrorChars {
+		t.Errorf("lastError must be truncated by runes: valid=%v runes=%d",
+			got.LastError != nil && utf8.ValidString(*got.LastError), utf8.RuneCountInString(derefString(got.LastError)))
+	}
+}
+
+// TestOnboardingStepService_RejectsExternalCallers pins that every method is
+// gated on an Unrestricted AccessScope: a portal user (project-scoped) gets
+// 403 before the repository is touched.
+func TestOnboardingStepService_RejectsExternalCallers(t *testing.T) {
+	repo := &recordingStepRepo{}
+	svc := NewOnboardingStepService(repo, stubAccess{scope: AccessScope{ProjectIDs: []string{"2f1e8d6a-3b4c-4d5e-8f90-123456789abc"}}})
+	ctx := context.Background()
+
+	_, upsertErr := svc.Upsert(ctx, validStepReq())
+	_, getErr := svc.GetByMembership(ctx, "a0e1")
+	_, searchErr := svc.Search(ctx, domain.SearchOnboardingStepsRequest{})
+	for name, err := range map[string]error{"Upsert": upsertErr, "GetByMembership": getErr, "Search": searchErr} {
+		var fe *apierror.ForbiddenError
+		if !errors.As(err, &fe) {
+			t.Errorf("%s: err = %v, want ForbiddenError", name, err)
+		}
+	}
+	if len(repo.upserts) != 0 || repo.searchReq.Pagination.Limit != 0 {
+		t.Error("repository must not be reached for an external caller")
+	}
+
+	// An AccessService failure is surfaced, not swallowed into a 403.
+	svc = NewOnboardingStepService(repo, stubAccess{err: errors.New("idp down")})
+	if _, err := svc.GetByMembership(ctx, "a0e1"); err == nil || err.Error() != "idp down" {
+		t.Errorf("err = %v, want the AccessService error", err)
+	}
 }
 
 func TestOnboardingStepService_UpsertValidation(t *testing.T) {
-	svc := NewOnboardingStepService(&recordingStepRepo{})
+	svc := NewOnboardingStepService(&recordingStepRepo{}, alwaysUnrestrictedAccess{})
 	cases := map[string]func(*domain.UpsertOnboardingStepRequest){
 		"missing membership": func(r *domain.UpsertOnboardingStepRequest) { r.MembershipSfID = "" },
 		"bad step":           func(r *domain.UpsertOnboardingStepRequest) { r.Step = "PAYMENT" },
@@ -110,7 +153,7 @@ func TestOnboardingStepService_UpsertValidation(t *testing.T) {
 
 func TestOnboardingStepService_GetByMembership(t *testing.T) {
 	repo := &recordingStepRepo{}
-	svc := NewOnboardingStepService(repo)
+	svc := NewOnboardingStepService(repo, alwaysUnrestrictedAccess{})
 	resp, err := svc.GetByMembership(context.Background(), "a0e1")
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +168,7 @@ func TestOnboardingStepService_GetByMembership(t *testing.T) {
 
 func TestOnboardingStepService_Search(t *testing.T) {
 	repo := &recordingStepRepo{}
-	svc := NewOnboardingStepService(repo)
+	svc := NewOnboardingStepService(repo, alwaysUnrestrictedAccess{})
 	resp, err := svc.Search(context.Background(), domain.SearchOnboardingStepsRequest{
 		Filters: domain.OnboardingStepFilters{
 			ProjectID:       sampleStr("2f1e8d6a-3b4c-4d5e-8f90-123456789abc"),

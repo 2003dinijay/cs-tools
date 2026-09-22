@@ -77,6 +77,14 @@ func (r *onboardingStepRepo) Upsert(ctx context.Context, req domain.UpsertOnboar
 
 // upsertOnboardingStep is shared with the membership upsert, which records the
 // DATABASE step inside its own transaction (q is then that transaction).
+//
+// Retries and out-of-order deliveries hit the same (membership_sf_id, step)
+// row, so the outcome columns (status, last_error, event_type,
+// event_modified_on) only move when the incoming event is at least as new as
+// the recorded one, or when the recorded row was stamped by a DELETED event
+// (an undelete keeps the Salesforce LastModifiedDate, and the row must be
+// allowed to leave that state). attempt_count and the audit columns advance
+// on every write so a stale retry is still visible.
 func upsertOnboardingStep(ctx context.Context, q querier, req domain.UpsertOnboardingStepRequest) (domain.OnboardingStep, error) {
 	row, err := scanOnboardingStep(q.QueryRow(ctx, `
 		INSERT INTO onboarding_step (
@@ -87,10 +95,10 @@ func upsertOnboardingStep(ctx context.Context, q querier, req domain.UpsertOnboa
 			$5, $6, $7::onboarding_step_enum, $8::onboarding_step_status_enum, $9, $10, $11
 		)
 		ON CONFLICT (membership_sf_id, step) DO UPDATE SET
-			status             = EXCLUDED.status,
-			last_error         = EXCLUDED.last_error,
-			event_type         = EXCLUDED.event_type,
-			event_modified_on  = EXCLUDED.event_modified_on,
+			status             = CASE WHEN EXCLUDED.event_modified_on >= onboarding_step.event_modified_on OR onboarding_step.event_type = 'DELETED' THEN EXCLUDED.status ELSE onboarding_step.status END,
+			last_error         = CASE WHEN EXCLUDED.event_modified_on >= onboarding_step.event_modified_on OR onboarding_step.event_type = 'DELETED' THEN EXCLUDED.last_error ELSE onboarding_step.last_error END,
+			event_type         = CASE WHEN EXCLUDED.event_modified_on >= onboarding_step.event_modified_on OR onboarding_step.event_type = 'DELETED' THEN EXCLUDED.event_type ELSE onboarding_step.event_type END,
+			event_modified_on  = GREATEST(EXCLUDED.event_modified_on, onboarding_step.event_modified_on),
 			contact_sf_id      = COALESCE(EXCLUDED.contact_sf_id, onboarding_step.contact_sf_id),
 			email              = EXCLUDED.email,
 			project_id         = COALESCE(EXCLUDED.project_id, onboarding_step.project_id),

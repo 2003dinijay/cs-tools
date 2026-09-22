@@ -290,13 +290,15 @@ write was based on.
   eventType, eventModifiedOn, email, contactSfId?, projectId?,
   projectContactId?}` → 200 with the row. `lastError` is dropped unless
   `status` is FAILED (a stale error must not outlive a success) and truncated
-  to 1000 characters. `created_by`/`updated_by` is `onboarding-step-api` —
+  to 1000 characters (runes). Every method requires an internal caller
+  (`AccessScope.Unrestricted`, i.e. `AUTH_INTERNAL_CLIENT_IDS`); anyone else
+  gets 403. `created_by`/`updated_by` is `onboarding-step-api` —
   callers are internal services, no identity is derived from the request.
 - `GET /onboarding-steps/{membershipSfId}` → `{steps: [...]}` in step order; an
   unknown membership is an empty list, not a 404.
 - `POST /onboarding-steps/search` — `{filters: {projectId?, membershipSfIds?,
   statuses?}, pagination}` → `{steps, total, limit, offset}`, newest first,
-  `normalizePagination` (limit 20, max 100).
+  `normalizePagination` (limit 20, max 50).
 
 Seven call sites publish today, all ServiceNow-data-source-only (`DATA_SOURCE=servicenow`;
 there is no Postgres-backed equivalent for any of them). There is also one

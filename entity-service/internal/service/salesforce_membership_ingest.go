@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -29,8 +30,18 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesentity"
 )
 
-// maxOnboardingStepErrorChars bounds onboarding_step.last_error.
+// maxOnboardingStepErrorChars bounds onboarding_step.last_error, counted in
+// characters (runes) so a cut never splits a multi-byte sequence.
 const maxOnboardingStepErrorChars = 1000
+
+// truncateOnboardingStepError shortens msg to maxOnboardingStepErrorChars
+// characters on a rune boundary.
+func truncateOnboardingStepError(msg string) string {
+	if utf8.RuneCountInString(msg) <= maxOnboardingStepErrorChars {
+		return msg
+	}
+	return string([]rune(msg)[:maxOnboardingStepErrorChars])
+}
 
 // publishInvitedTimeout bounds the Event Hub round trip so it cannot eat the
 // request's own timeout; the database write has already committed by then.
@@ -187,10 +198,7 @@ func (s *salesforceEventService) ingestMembership(ctx context.Context, membershi
 // onboarding dashboard can see the membership is stuck; the original error
 // is what HandleEvent returns regardless of whether this write succeeds.
 func (s *salesforceEventService) recordDatabaseStepFailed(ctx context.Context, step domain.UpsertOnboardingStepRequest, cause error) {
-	msg := cause.Error()
-	if len(msg) > maxOnboardingStepErrorChars {
-		msg = msg[:maxOnboardingStepErrorChars]
-	}
+	msg := truncateOnboardingStepError(cause.Error())
 	step.Status = domain.OnboardingStepFailed
 	step.LastError = &msg
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)

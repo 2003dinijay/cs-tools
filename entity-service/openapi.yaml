@@ -12920,7 +12920,12 @@ components:
         entity:
           type: string
           pattern: '.*\S.*'
-          description: Salesforce sObject name. Non-Account values are ignored with 204.
+          description: >-
+            Salesforce sObject name. Account is always processed.
+            Project_Contact__c (also accepted as Project_Contact) and Contact
+            are processed only when SALESFORCE_MEMBERSHIP_INGEST_ENABLED is
+            true; otherwise, like every other value, they are acknowledged
+            with 204 and ignored.
         referenceId:
           type: string
           pattern: '.*\S.*'

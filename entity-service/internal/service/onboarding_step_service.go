@@ -27,9 +27,9 @@ import (
 )
 
 // onboardingStepDefaultActor is written to created_by/updated_by when the
-// caller supplies no identity of its own. Every caller today is another
-// internal service (csm-notification-service, the customer portal backend),
-// so this is a label, not an authorisation decision.
+// caller supplies no identity of its own. Every caller is another internal
+// service (csm-notification-service, the customer portal backend), which
+// requireInternalCaller enforces; the label itself carries no identity.
 const onboardingStepDefaultActor = "onboarding-step-api"
 
 var validOnboardingStepName = map[domain.OnboardingStepName]bool{
@@ -46,16 +46,36 @@ var validOnboardingStepStatus = map[domain.OnboardingStepStatus]bool{
 }
 
 type onboardingStepService struct {
-	repo repository.OnboardingStepRepository
+	repo   repository.OnboardingStepRepository
+	access AccessService
 }
 
-// NewOnboardingStepService constructs an OnboardingStepService.
-func NewOnboardingStepService(repo repository.OnboardingStepRepository) OnboardingStepService {
-	return &onboardingStepService{repo: repo}
+// NewOnboardingStepService constructs an OnboardingStepService. access gates
+// every method to internal callers (AUTH_INTERNAL_CLIENT_IDS): onboarding
+// steps carry other people's e-mail addresses and Salesforce Ids, and an
+// external portal user has no business reading or writing them.
+func NewOnboardingStepService(repo repository.OnboardingStepRepository, access AccessService) OnboardingStepService {
+	return &onboardingStepService{repo: repo, access: access}
+}
+
+// requireInternalCaller rejects anyone whose AccessScope is not Unrestricted,
+// i.e. every caller that is not an allow-listed internal service.
+func (s *onboardingStepService) requireInternalCaller(ctx context.Context) error {
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return err
+	}
+	if !scope.Unrestricted {
+		return &apierror.ForbiddenError{Msg: "onboarding steps are only available to internal services"}
+	}
+	return nil
 }
 
 // Upsert implements OnboardingStepService.
 func (s *onboardingStepService) Upsert(ctx context.Context, req domain.UpsertOnboardingStepRequest) (domain.OnboardingStep, error) {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return domain.OnboardingStep{}, err
+	}
 	req.MembershipSfID = strings.TrimSpace(req.MembershipSfID)
 	if req.MembershipSfID == "" {
 		return domain.OnboardingStep{}, &apierror.ValidationError{Msg: "membershipSfId is required"}
@@ -82,8 +102,8 @@ func (s *onboardingStepService) Upsert(ctx context.Context, req domain.UpsertOnb
 	if req.Status != domain.OnboardingStepFailed {
 		// A stale error message must not survive a later success.
 		req.LastError = nil
-	} else if req.LastError != nil && len(*req.LastError) > maxOnboardingStepErrorChars {
-		trimmed := (*req.LastError)[:maxOnboardingStepErrorChars]
+	} else if req.LastError != nil {
+		trimmed := truncateOnboardingStepError(*req.LastError)
 		req.LastError = &trimmed
 	}
 	req.ContactSfID = optionalPtr(req.ContactSfID)
@@ -107,6 +127,9 @@ func (s *onboardingStepService) Upsert(ctx context.Context, req domain.UpsertOnb
 
 // GetByMembership implements OnboardingStepService.
 func (s *onboardingStepService) GetByMembership(ctx context.Context, membershipSfID string) (domain.GetOnboardingStepsResponse, error) {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return domain.GetOnboardingStepsResponse{}, err
+	}
 	membershipSfID = strings.TrimSpace(membershipSfID)
 	if membershipSfID == "" {
 		return domain.GetOnboardingStepsResponse{}, &apierror.ValidationError{Msg: "membershipSfId is required"}
@@ -123,6 +146,9 @@ func (s *onboardingStepService) GetByMembership(ctx context.Context, membershipS
 
 // Search implements OnboardingStepService.
 func (s *onboardingStepService) Search(ctx context.Context, req domain.SearchOnboardingStepsRequest) (domain.SearchOnboardingStepsResponse, error) {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return domain.SearchOnboardingStepsResponse{}, err
+	}
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchOnboardingStepsResponse{}, err
 	}

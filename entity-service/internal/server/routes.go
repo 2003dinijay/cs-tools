@@ -219,7 +219,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// scheduled_task_run above.
 	var onboardingStepHandler *handler.OnboardingStepHandler
 	if db != nil {
-		onboardingStepHandler = handler.NewOnboardingStepHandler(service.NewOnboardingStepService(repository.NewOnboardingStepRepository(db)))
+		onboardingStepHandler = handler.NewOnboardingStepHandler(service.NewOnboardingStepService(repository.NewOnboardingStepRepository(db), accessSvc))
 	}
 
 	// Also constructed for DataSourcePostgresPrimarySNFallback: that mode's
