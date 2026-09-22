@@ -1206,7 +1206,7 @@ column by column (a local database built from every migration here vs staging,
 68 shared tables) when checked:
 
 - **Tables only in `migrations/`, absent from staging:** `alert_incident_mapping`
-  (000014), `case_attachment` (000043/000044), `announcement_requests` (000040),
+  (000014), `case_attachment` (000043/000044), `announcement_requests` (000077),
   `onboarding_step` (000075). Queries on them fail in staging with "relation does
   not exist"; none of it is a naming problem, the tables were simply never created.
 - **Columns renamed in staging** (the code used the old names and failed with
@@ -1217,14 +1217,48 @@ column by column (a local database built from every migration here vs staging,
   `payload_created_on/payload_updated_on`, `daily_usage_summary.deployment_ref` ->
   `deployment_number`. The `deployment_*` rename is a change of meaning, not just
   of spelling: the value is a deployment **number** (`DEP000002442`), never a UUID.
-- **Columns only in staging:** `sf_id` on `user`, `account_contact` and
-  `project_contact`; `case.github_issue_number`; `project.number`, `license_secrets`,
-  `primary_secret_key`, `secondary_secret_key`.
 - **Constraints:** the `work_item_wso2_id_required_by_type` CHECK exists in the
   migrations but not in staging.
 
 Check the live schema, not just the migrations, before assuming a table, column or
-constraint exists.
+constraint exists. `sf_id` on `user`/`account_contact`/`project_contact` and
+`project.number`/`license_secrets`/`primary_secret_key`/`secondary_secret_key`
+used to be on the "only in staging" list above; migrations 000075-000077 added
+them here too (schema only -- see the next section for why no Go code changed).
+
+## project.number, the three sf_id columns, and project's secret fields have no Go code yet, deliberately
+
+Migrations 000075-000077 add `project.primary_secret_key`/`secondary_secret_key`/
+`license_secrets`, `sf_id` on `account_contact`/`project_contact`/`"user"`, and
+`project.number` -- schema only, no repository/service/handler/route wiring, and
+that gap was checked deliberately rather than left as an oversight:
+
+- **`project.number` mirrors `account.number`'s own precedent, including the
+  "never read back" part.** `account.number` is written by `UpsertFromSalesforce`
+  (`account_repo.go`) but not selected by any query, not on `AccountRow`, and not
+  on `AccountView`/`AccountDetail` -- it exists purely so the Salesforce upsert has
+  somewhere to put the value. `project.number`'s own migration comment says it
+  follows that exact precedent, so it stays unexposed the same way until something
+  needs it.
+- **No code in this repo writes `project`, `account_contact`, `project_contact` or
+  `"user"` rows at all** (confirmed: no `INSERT`/`UPDATE` against any of the four
+  outside `UpsertFromSalesforce`, which only touches `account`). The real-time
+  Salesforce sync only handles `Customer`/`account` events
+  (`salesforce_event_service.go`, `internal/salesentity`) -- there is no
+  project/contact/user event handler to extend, so the three new `sf_id` columns
+  have no producer yet. The migration's own comment says as much for `"user"`: "has
+  no mapping populating it yet."
+- **`AccountContact`/`ProjectContact` expose no row-level identifier at all today**
+  (`ProjectContact.ID` is the linked *user's* id, not `project_contact.id`) --
+  contacts are always nested search results, never fetched by their own id, so
+  there is no existing shape to add `sfId` to without inventing one.
+- **The three secret columns hold credential material.** Nothing in this API
+  exposes a secret today, and adding one without being asked would be a real
+  security decision, not a schema follow-up -- left alone entirely.
+- **The `work_item_activity.updated_on`/`updated_by` columns these migrations also
+  drop are not selected anywhere** (`case_repo.go`/`incident_repo.go` only read
+  `id`/`created_on`/`user_email`/`field_name`/`old_value`/`new_value`), so removing
+  them needed no code change either.
 
 ## GetCaseByID's CloseNotes was silently swapped with ResolutionNotes
 
