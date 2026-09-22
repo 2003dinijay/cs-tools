@@ -334,6 +334,40 @@ describe("CsmAnnouncementsPage — Pending tab", () => {
     expect(screen.getByText(/no pending approval requests/i)).toBeInTheDocument();
   });
 
+  // Regression coverage: a published request used to have no click-path to
+  // AnnouncementRequestDialog at all (the Announcements tab's own row link
+  // only opens the underlying case, never this dialog) — see
+  // PENDING_STATE_OPTIONS' own doc comment for the full story.
+  it("can filter to Published and still open the request dialog", () => {
+    mockResult({ data: { announcements: [], total: 0, limit: 20, offset: 0, hasMore: false } });
+    const publishedRequest: AnnouncementRequest = {
+      ...PENDING_REQUEST,
+      id: "req-published-1",
+      state: "published",
+      subject: "Already sent maintenance notice",
+      publishedCaseIds: ["case-1", "case-2"],
+    };
+    mockedUseSearchRequests.mockReturnValue({
+      data: { requests: [publishedRequest], total: 1, limit: 10, offset: 0, hasMore: false },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useSearchAnnouncementRequests>);
+    render(<CsmAnnouncementsPage />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Pending" }));
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: /state/i }));
+    fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: "Published" }));
+
+    const lastCall = mockedUseSearchRequests.mock.calls.at(-1)!;
+    expect(lastCall[0]).toBe("published");
+    expect(screen.getByText("Already sent maintenance notice")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Already sent maintenance notice"));
+    expect(screen.getByText(`request dialog: ${publishedRequest.id}`)).toBeInTheDocument();
+  });
+
   it("lands directly on the Pending tab when opened with ?tab=pending", () => {
     mockResult({ data: { announcements: [ROW], total: 1, limit: 20, offset: 0, hasMore: false } });
     mockedUseSearchRequests.mockReturnValue({

@@ -125,19 +125,27 @@ const STATE_OPTIONS: { value: CaseState; label: string }[] = (
 type RegistryTabId = "announcements" | "pending";
 
 /**
- * The "Pending" tab's own state sub-filter. `published` is deliberately
- * excluded — a published request already shows as a real case in the
- * "Announcements" tab, so listing it here too would just be a duplicate.
- * The backend's search only accepts one `state` at a time (no `in` list —
- * see `SearchAnnouncementRequestsPayload`), so this is a single-select
- * rather than the multi-select the Announcements tab's own state filter
- * uses; there's no single call that can show all three pending states
- * merged into one paginated list.
+ * The "Pending" tab's own state sub-filter. `published` was originally
+ * excluded here on the reasoning that a published request already shows as
+ * a real case in the "Announcements" tab, so listing it here too would just
+ * be a duplicate — but that tab's own row link only ever opens the case
+ * itself (`/announcements/:caseId`), not `AnnouncementRequestDialog`, so a
+ * published request had no click-path at all to its own "Post an
+ * update"/"Past updates" panel (which only requires `state === "published"`
+ * and only ever renders inside this dialog). Kept, not dropped: `published`
+ * is now included so that request-level view stays reachable, alongside the
+ * case view the Announcements tab already provides. The backend's search
+ * only accepts one `state` at a time (no `in` list — see
+ * `SearchAnnouncementRequestsPayload`), so this is a single-select rather
+ * than the multi-select the Announcements tab's own state filter uses;
+ * there's no single call that can show every state merged into one
+ * paginated list.
  */
 const PENDING_STATE_OPTIONS: { value: AnnouncementRequestState; label: string }[] = [
   { value: "draft", label: "Draft" },
   { value: "pending_approval", label: "Pending approval" },
   { value: "approved", label: "Approved" },
+  { value: "published", label: "Published" },
 ];
 
 const PENDING_ROWS_PER_PAGE = 10;
