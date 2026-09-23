@@ -255,6 +255,34 @@ func (h *AnnouncementRegistryHandler) fetchAllPublishedRequests(ctx context.Cont
 	return nil, fmt.Errorf("too many published announcement requests to build the registry safely (exceeded %d pages of %d)", maxRegistryPages, registryPageLimit)
 }
 
+// registryCaseLookup returns a caseId -> case map covering every case a
+// batch row might need to list as a member, regardless of req's own
+// search/states/projectIds filters. When req carries none of those filters,
+// filtered is already the full matching set and is reused directly — no
+// second fetch. When it does, filtered may be missing some of a matched
+// batch's own member cases (they just didn't happen to satisfy the filter
+// themselves), so this re-fetches with every filter cleared (type=announcement
+// only, same as fetchAllMatchingCases' own hardcoded filter) to guarantee
+// every member is resolvable.
+func (h *AnnouncementRegistryHandler) registryCaseLookup(ctx context.Context, req registrySearchRequest, filtered []registryCaseView) (map[string]registryCaseView, error) {
+	if req.Search == "" && len(req.States) == 0 && len(req.ProjectIDs) == 0 {
+		lookup := make(map[string]registryCaseView, len(filtered))
+		for _, c := range filtered {
+			lookup[c.ID] = c
+		}
+		return lookup, nil
+	}
+	all, err := h.fetchAllMatchingCases(ctx, registrySearchRequest{})
+	if err != nil {
+		return nil, err
+	}
+	lookup := make(map[string]registryCaseView, len(all))
+	for _, c := range all {
+		lookup[c.ID] = c
+	}
+	return lookup, nil
+}
+
 // SearchAnnouncementRegistry handles POST /announcements/registry/search —
 // the Announcements tab's own list, grouped by announcement instead of
 // repeating the same subject once per project (Phase 3's "registry groups
@@ -311,6 +339,20 @@ func (h *AnnouncementRegistryHandler) SearchAnnouncementRegistry(w http.Response
 		mapUpstreamErrorGeneric(w, err, "Failed to search announcements.")
 		return
 	}
+	// A batch's member list must be resolved independently of req's own
+	// search/states/projectIds filters: those filters correctly decide which
+	// rows appear at all (a batch shows up if just one of its cases matches),
+	// but every member case still needs to be listed once it does — using
+	// the *filtered* case set here would silently drop the members that
+	// didn't happen to match, understating "Delivered to N projects" and
+	// omitting their CS numbers entirely. When no filter narrows the case
+	// fetch, it's already the full set and this reuses it for free.
+	caseLookup, err := h.registryCaseLookup(r.Context(), req, cases)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "fetch unfiltered cases for registry batch members failed", "userID", user.UserID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to search announcements.")
+		return
+	}
 
 	caseToRequest := make(map[string]*registryAnnouncementRequestView, len(requests))
 	for i := range requests {
@@ -323,23 +365,29 @@ func (h *AnnouncementRegistryHandler) SearchAnnouncementRegistry(w http.Response
 	rowIndexByRequestID := make(map[string]int, len(requests))
 	for _, c := range cases {
 		if reqView, ok := caseToRequest[c.ID]; ok {
-			projectName := ""
-			if c.Project != nil {
-				projectName = c.Project.Name
-			}
-			member := registryCaseMember{
-				CaseID:      c.ID,
-				CaseNumber:  c.Number,
-				WSO2CaseID:  c.InternalID,
-				ProjectName: projectName,
-			}
-			if idx, ok := rowIndexByRequestID[reqView.ID]; ok {
-				rows[idx].Cases = append(rows[idx].Cases, member)
+			if _, ok := rowIndexByRequestID[reqView.ID]; ok {
 				continue
 			}
 			projectCount := len(reqView.PublishedCaseIDs)
 			if reqView.ResolvedProjectCount != nil {
 				projectCount = *reqView.ResolvedProjectCount
+			}
+			members := make([]registryCaseMember, 0, len(reqView.PublishedCaseIDs))
+			for _, cid := range reqView.PublishedCaseIDs {
+				cv, ok := caseLookup[cid]
+				if !ok {
+					continue
+				}
+				projectName := ""
+				if cv.Project != nil {
+					projectName = cv.Project.Name
+				}
+				members = append(members, registryCaseMember{
+					CaseID:      cv.ID,
+					CaseNumber:  cv.Number,
+					WSO2CaseID:  cv.InternalID,
+					ProjectName: projectName,
+				})
 			}
 			rowIndexByRequestID[reqView.ID] = len(rows)
 			rows = append(rows, registryRow{
@@ -350,7 +398,7 @@ func (h *AnnouncementRegistryHandler) SearchAnnouncementRegistry(w http.Response
 				UpdatedOn:             reqView.UpdatedAt,
 				AnnouncementRequestID: reqView.ID,
 				ProjectCount:          projectCount,
-				Cases:                 []registryCaseMember{member},
+				Cases:                 members,
 			})
 			continue
 		}

@@ -199,6 +199,58 @@ func TestSearchAnnouncementRegistry_BatchRowListsEveryMemberCaseNotJustTheFirst(
 	}
 }
 
+// A projectIds filter that matches only one of a batch's own cases must
+// still list every member on the row — filters decide whether the batch is
+// included at all (yes, since one of its cases matches), never which
+// members get resolved once it is. Reported live: with the earlier
+// filtered-only implementation, "Delivered to 3 projects" would have listed
+// just the 1 matching case and silently dropped the other 2 CS numbers.
+func TestSearchAnnouncementRegistry_BatchMembersResolvedIndependentlyOfCaseFilters(t *testing.T) {
+	const oneMatchingCase = `[{"id":"case-1","number":"CS001","subject":"Maintenance","updatedOn":"2026-07-03T00:00:00Z","createdOn":"2026-07-01T00:00:00Z","project":{"id":"p-1","name":"Acme"}}]`
+	const allThreeCases = `[
+		{"id":"case-1","number":"CS001","subject":"Maintenance","updatedOn":"2026-07-03T00:00:00Z","createdOn":"2026-07-01T00:00:00Z","project":{"id":"p-1","name":"Acme"}},
+		{"id":"case-2","number":"CS002","subject":"Maintenance","updatedOn":"2026-07-02T00:00:00Z","createdOn":"2026-07-01T00:00:00Z","project":{"id":"p-2","name":"Bolt"}},
+		{"id":"case-3","number":"CS003","subject":"Maintenance","updatedOn":"2026-07-01T00:00:00Z","createdOn":"2026-07-01T00:00:00Z","project":{"id":"p-3","name":"Cinder"}}
+	]`
+	client := &mockEntityAnnouncementRegistryClient{
+		searchCasesFn: func(_ context.Context, body []byte) ([]byte, error) {
+			var decoded struct {
+				Filters struct {
+					Filters []map[string]any `json:"filters"`
+				} `json:"filters"`
+			}
+			_ = json.Unmarshal(body, &decoded)
+			// The handler's own fieldFilters always starts with the
+			// hardcoded type=announcement entry; a real projectIds filter
+			// appends a second one. The internal unfiltered re-fetch (for
+			// batch-member resolution) never adds that second entry.
+			if len(decoded.Filters.Filters) > 1 {
+				return []byte(`{"cases":` + oneMatchingCase + `,"total":1,"offset":0,"limit":50}`), nil
+			}
+			return []byte(`{"cases":` + allThreeCases + `,"total":3,"offset":0,"limit":50}`), nil
+		},
+		searchAnnouncementRequestsFn: singlePageRequests(`[
+			{"id":"req-1","subject":"Maintenance","createdBy":"jane@example.com","createdAt":"2026-07-01T00:00:00Z","updatedAt":"2026-07-03T00:00:00Z","publishedCaseIds":["case-1","case-2","case-3"]}
+		]`, 1),
+	}
+	h := NewAnnouncementRegistryHandler(client)
+	r := withUser(httptest.NewRequest(http.MethodPost, "/announcements/registry/search", strings.NewReader(`{"projectIds":["p-1"],"pagination":{"limit":20}}`)))
+	w := httptest.NewRecorder()
+	h.SearchAnnouncementRegistry(w, r)
+	assertStatus(t, w, http.StatusOK)
+
+	var got registrySearchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got.Rows) != 1 || got.Rows[0].ProjectCount != 3 {
+		t.Fatalf("expected the batch row still included (matched via case-1) with projectCount 3, got %+v", got.Rows)
+	}
+	if len(got.Rows[0].Cases) != 3 {
+		t.Fatalf("expected all 3 member cases resolved despite the projectIds filter matching only one, got %+v", got.Rows[0].Cases)
+	}
+}
+
 func TestSearchAnnouncementRegistry_ShowsACaseWithNoKnownRequestAsItsOwnRow(t *testing.T) {
 	client := &mockEntityAnnouncementRegistryClient{
 		searchCasesFn: singlePageCases(`[

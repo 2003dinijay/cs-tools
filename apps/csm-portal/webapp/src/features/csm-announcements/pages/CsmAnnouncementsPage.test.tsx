@@ -373,7 +373,9 @@ describe("CsmAnnouncementsPage — Pending tab", () => {
   });
 
   it("opens the request dialog with the clicked row's id", () => {
-    mockResult({ data: { rows: [], total: 0, limit: 20, offset: 0, hasMore: false } });
+    mockResult({
+      data: { rows: [BATCH_ROW], total: 1, limit: 20, offset: 0, hasMore: false },
+    });
     mockedUseSearchRequests.mockReturnValue({
       data: { requests: [PENDING_REQUEST], total: 1, limit: 10, offset: 0, hasMore: false },
       isLoading: false,
@@ -383,12 +385,18 @@ describe("CsmAnnouncementsPage — Pending tab", () => {
     } as unknown as ReturnType<typeof useSearchAnnouncementRequests>);
     render(<CsmAnnouncementsPage />);
 
+    // Select a batch row first (which carries real case members) and close
+    // it, so the assertion below actually proves openPendingRow clears that
+    // prior selection rather than merely starting from an already-empty one.
+    fireEvent.click(screen.getByText("Upcoming maintenance window"));
+    fireEvent.click(screen.getByText("close dialog"));
+
     fireEvent.click(screen.getByRole("tab", { name: "Pending" }));
     fireEvent.click(screen.getByText("Upcoming maintenance"));
 
     expect(screen.getByText(`request dialog: ${PENDING_REQUEST.id}`)).toBeInTheDocument();
     // The Pending tab's own rows carry no case-member data at all — must not
-    // leak a previous Announcements-tab batch-row selection's members in.
+    // leak the batch row's own members selected just above.
     expect(screen.getByText("case members:")).toBeInTheDocument();
     fireEvent.click(screen.getByText("close dialog"));
     expect(screen.queryByTestId("request-dialog")).not.toBeInTheDocument();
