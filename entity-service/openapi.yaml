@@ -10152,6 +10152,9 @@ components:
         eulaVersionDecimal:
           type: string
           nullable: true
+        stage:
+          type: string
+          nullable: true
 
     SearchOpportunitiesResponse:
       type: object
@@ -13870,6 +13873,7 @@ components:
             - madeSla
             - productName
             - assignedUserId
+            - incidentStateKeys
         op:
           type: string
           enum: [in, gte, lte, eq]
@@ -13909,6 +13913,14 @@ components:
           narrows rather than guarantees full coverage.
         - **assignedUserId** (in): assignee UUIDs to filter the incident's
           assigned user by.
+        - **incidentStateKeys** (in): one or more raw ServiceNow
+          `incident_state` numeric keys, passed through unmapped (unlike
+          state above, which translates the domain IncidentState enum to
+          SN's raw `state` numeric key). Deliberately separate from state:
+          `incident_state` is a distinct field that exists independently on
+          the same incident row. Kept only for exact parity with SN's native
+          incident dashboards; prefer state for general-purpose state
+          filtering.
 
     SearchIncidentsRequest:
       type: object
@@ -15147,7 +15159,7 @@ components:
               type: array
               items:
                 type: string
-                enum: [ACTIVE, RESOLVED, CONVERTED, ABANDONED, CLOSED]
+                enum: [OPEN, ACTIVE, RESOLVED, CONVERTED, ABANDONED, CLOSED]
             searchQuery:
               type: string
             number:
@@ -15213,7 +15225,7 @@ components:
         state:
           type: string
           nullable: true
-          enum: [ACTIVE, RESOLVED, CONVERTED, ABANDONED, CLOSED]
+          enum: [OPEN, ACTIVE, RESOLVED, CONVERTED, ABANDONED, CLOSED]
         createdOn:
           type: string
         createdBy:
@@ -15920,8 +15932,17 @@ components:
     ConversationState:
       type: string
       description: >
-        Only ACTIVE and RESOLVED are accepted by the conversation search filter; all five
-        values are accepted transitions for PATCH /conversations/{id}.
+        The state of a conversation as read (e.g. via GET or search). All six values
+        are accepted by the conversation search filter. Writes are narrower — see
+        ConversationUpdateState.
+      enum: [OPEN, ACTIVE, RESOLVED, CONVERTED, ABANDONED, CLOSED]
+
+    ConversationUpdateState:
+      type: string
+      description: >
+        The states PATCH /conversations/{id} accepts as a transition target. OPEN is
+        excluded: a conversation starts there and is never PATCHed back to it, so it
+        is readable (ConversationState) but not writable.
       enum: [ACTIVE, RESOLVED, CONVERTED, ABANDONED, CLOSED]
 
     ConversationDetails:
@@ -16274,7 +16295,7 @@ components:
       required: [state]
       properties:
         state:
-          $ref: '#/components/schemas/ConversationState'
+          $ref: '#/components/schemas/ConversationUpdateState'
 
     UpdatedConversation:
       type: object
