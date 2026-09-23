@@ -73,10 +73,11 @@ func validCreateChangeRequestRequest() domain.CreateChangeRequestRequest {
 }
 
 // TestChangeRequestService_CreateChangeRequest_SNFailureLeavesPostgresUntouched
-// is the pilot's core regression guard for change request CREATE, mirroring
-// TestIncidentService_CreateIncident_SNFailureLeavesPostgresUntouched exactly:
-// if ServiceNow never accepts the change request (even after the retry), the
-// Postgres repository must never be called at all -- no row, no orphan.
+// is the pilot's core regression guard for change request CREATE: a single SN
+// failure returns an error immediately (no internal retry -- retrying risks
+// creating a duplicate ServiceNow record if the create actually succeeded but
+// the response was lost) and the Postgres repository must never be called at
+// all -- no row, no orphan.
 func TestChangeRequestService_CreateChangeRequest_SNFailureLeavesPostgresUntouched(t *testing.T) {
 	var mu sync.Mutex
 	attempts := 0
@@ -101,8 +102,8 @@ func TestChangeRequestService_CreateChangeRequest_SNFailureLeavesPostgresUntouch
 
 	mu.Lock()
 	defer mu.Unlock()
-	if attempts != snChangeRequestCreateAttempts {
-		t.Errorf("expected %d SN attempts (bounded retry, both transient), got %d", snChangeRequestCreateAttempts, attempts)
+	if attempts != 1 {
+		t.Errorf("expected exactly 1 SN attempt (no internal retry), got %d", attempts)
 	}
 }
 
@@ -161,60 +162,10 @@ func TestChangeRequestService_CreateChangeRequest_SNSuccessCreatesPostgresRowWit
 	}
 }
 
-// TestChangeRequestService_CreateChangeRequest_RetriesTransientSNFailureThenSucceeds
-// covers the retry itself, mirroring
-// TestIncidentService_CreateIncident_RetriesTransientSNFailureThenSucceeds: a
-// first attempt that fails transiently must not surface as an error if the
-// second attempt succeeds.
-func TestChangeRequestService_CreateChangeRequest_RetriesTransientSNFailureThenSucceeds(t *testing.T) {
-	var mu sync.Mutex
-	attempts := 0
-	mirror := &stubMirrorChangeRequestService{
-		createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
-			mu.Lock()
-			attempts++
-			n := attempts
-			mu.Unlock()
-			if n == 1 {
-				return domain.CreateChangeRequestResponse{}, errors.New("sn downstream: timeout")
-			}
-			resp := domain.CreateChangeRequestResponse{}
-			resp.ChangeRequest.ID = testDeploymentUUID
-			resp.ChangeRequest.Number = "CHG0001"
-			resp.ChangeRequest.CreatedBy = "jane.doe@example.com"
-			return resp, nil
-		},
-	}
-	repo := &stubChangeRequestRepo{
-		createChangeRequestFromServiceNow: func(_ context.Context, req domain.CreateChangeRequestRequest, id, number, createdBy string) (domain.CreateChangeRequestResponse, error) {
-			resp := domain.CreateChangeRequestResponse{}
-			resp.ChangeRequest.ID = id
-			resp.ChangeRequest.Number = number
-			resp.ChangeRequest.CreatedBy = createdBy
-			return resp, nil
-		},
-	}
-	svc := NewChangeRequestServiceWithSNMirror(repo, mirror)
-
-	resp, err := svc.CreateChangeRequest(context.Background(), validCreateChangeRequestRequest())
-	if err != nil {
-		t.Fatalf("expected the retried attempt to succeed, got error: %v", err)
-	}
-	if resp.ChangeRequest.ID != testDeploymentUUID {
-		t.Errorf("CreateChangeRequest response ID = %q, want %q", resp.ChangeRequest.ID, testDeploymentUUID)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if attempts != 2 {
-		t.Errorf("expected exactly 2 SN attempts (1 transient failure + 1 success), got %d", attempts)
-	}
-}
-
 // TestChangeRequestService_CreateChangeRequest_DoesNotRetryValidationError
-// guards against wasted latency on a deterministic client error, mirroring
-// TestIncidentService_CreateIncident_DoesNotRetryValidationError: retrying
-// the exact same invalid input can't produce a different outcome.
+// covers the ValidationError path specifically: it must surface directly,
+// with no Postgres write attempted, same as any other single-attempt SN
+// failure.
 func TestChangeRequestService_CreateChangeRequest_DoesNotRetryValidationError(t *testing.T) {
 	var mu sync.Mutex
 	attempts := 0

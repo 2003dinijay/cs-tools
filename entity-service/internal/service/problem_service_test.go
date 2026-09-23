@@ -68,10 +68,11 @@ func validCreateProblemRequest() domain.CreateProblemRequest {
 }
 
 // TestProblemService_CreateProblem_SNFailureLeavesPostgresUntouched is the
-// pilot's core regression guard for problem CREATE, mirroring
-// TestIncidentService_CreateIncident_SNFailureLeavesPostgresUntouched
-// exactly: if ServiceNow never accepts the problem (even after the retry),
-// the Postgres repository must never be called at all -- no row, no orphan.
+// pilot's core regression guard for problem CREATE: a single SN failure
+// returns an error immediately (no internal retry -- retrying risks creating
+// a duplicate ServiceNow record if the create actually succeeded but the
+// response was lost) and the Postgres repository must never be called at
+// all -- no row, no orphan.
 func TestProblemService_CreateProblem_SNFailureLeavesPostgresUntouched(t *testing.T) {
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
@@ -98,8 +99,8 @@ func TestProblemService_CreateProblem_SNFailureLeavesPostgresUntouched(t *testin
 
 	mu.Lock()
 	defer mu.Unlock()
-	if attempts != snProblemCreateAttempts {
-		t.Errorf("expected %d SN attempts (bounded retry, both transient), got %d", snProblemCreateAttempts, attempts)
+	if attempts != 1 {
+		t.Errorf("expected exactly 1 SN attempt (no internal retry), got %d", attempts)
 	}
 }
 
@@ -163,56 +164,9 @@ func TestProblemService_CreateProblem_SNSuccessCreatesPostgresRowWithMatchingIde
 	}
 }
 
-// TestProblemService_CreateProblem_RetriesTransientSNFailureThenSucceeds
-// covers the retry itself, mirroring
-// TestIncidentService_CreateIncident_RetriesTransientSNFailureThenSucceeds: a
-// first attempt that fails transiently must not surface as an error if the
-// second attempt succeeds.
-func TestProblemService_CreateProblem_RetriesTransientSNFailureThenSucceeds(t *testing.T) {
-	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
-
-	var mu sync.Mutex
-	attempts := 0
-	mirror := &stubMirrorProblemService{
-		createProblem: func(context.Context, domain.CreateProblemRequest) (domain.ProblemDetail, error) {
-			mu.Lock()
-			attempts++
-			n := attempts
-			mu.Unlock()
-			if n == 1 {
-				return domain.ProblemDetail{}, errors.New("sn downstream: timeout")
-			}
-			id := testDeploymentUUID
-			number := "PRB0001"
-			return domain.ProblemDetail{ID: &id, Number: &number}, nil
-		},
-	}
-	repo := &stubProblemRepo{
-		createProblemFromServiceNow: func(_ context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string) (domain.ProblemDetail, error) {
-			return domain.ProblemDetail{ID: &id, Number: &number}, nil
-		},
-	}
-	svc := NewProblemServiceWithSNMirror(repo, mirror)
-
-	resp, err := svc.CreateProblem(ctx, validCreateProblemRequest())
-	if err != nil {
-		t.Fatalf("expected the retried attempt to succeed, got error: %v", err)
-	}
-	if resp.ID == nil || *resp.ID != testDeploymentUUID {
-		t.Errorf("CreateProblem response ID = %v, want %q", resp.ID, testDeploymentUUID)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if attempts != 2 {
-		t.Errorf("expected exactly 2 SN attempts (1 transient failure + 1 success), got %d", attempts)
-	}
-}
-
-// TestProblemService_CreateProblem_DoesNotRetryValidationError guards
-// against wasted latency on a deterministic client error, mirroring
-// TestIncidentService_CreateIncident_DoesNotRetryValidationError: retrying
-// the exact same invalid input can't produce a different outcome.
+// TestProblemService_CreateProblem_DoesNotRetryValidationError covers the
+// ValidationError path specifically: it must surface directly, with no
+// Postgres write attempted, same as any other single-attempt SN failure.
 func TestProblemService_CreateProblem_DoesNotRetryValidationError(t *testing.T) {
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 

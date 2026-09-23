@@ -233,14 +233,6 @@ func (s *changeRequestService) CreateChangeRequest(ctx context.Context, req doma
 	return domain.CreateChangeRequestResponse{}, &apierror.ServiceUnavailableError{Msg: "creating change requests is not yet supported on the Postgres data source (no number-generation sequence)"}
 }
 
-// snChangeRequestCreateAttempts/snChangeRequestCreateRetryDelay bound
-// createChangeRequestSNFirst's retry -- same bound as
-// incidentService's snIncidentCreateAttempts/snIncidentCreateRetryDelay.
-const (
-	snChangeRequestCreateAttempts   = 2
-	snChangeRequestCreateRetryDelay = 300 * time.Millisecond
-)
-
 // createChangeRequestSNFirst implements CreateChangeRequest's
 // DATA_SOURCE=postgres-servicenow-dual-write path: ServiceNow-FIRST and
 // SYNCHRONOUS, exactly mirroring incidentService.createIncidentSNFirst's
@@ -250,9 +242,12 @@ const (
 // the real backing store this platform proxies most writes onto), while an
 // async-after-commit UPDATE has no equivalent failure mode.
 //
-// req is not retried against a mutated/regenerated payload between attempts
-// -- a plain repeat of the same call. A *apierror.ValidationError is never
-// retried at all: the same invalid input fails the same way every time.
+// The ServiceNow call is made exactly once, with no internal retry: retrying
+// here risks creating a second, duplicate ServiceNow record if ServiceNow's
+// create actually succeeded but the HTTP response back to entity-service was
+// lost (timeout/network blip) -- entity-service has no way to distinguish
+// that from a real failure, and retry policy for that case belongs to the
+// caller, not this layer.
 //
 // On success, id/number/createdBy come from ServiceNow's own response and
 // are used AS-IS for the Postgres insert
@@ -260,25 +255,7 @@ const (
 // generated -- see that method's own doc comment for why there is no wso2ID
 // parameter here, unlike case's equivalent.
 func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, req domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
-	var snResp domain.CreateChangeRequestResponse
-	var err error
-	for attempt := 1; attempt <= snChangeRequestCreateAttempts; attempt++ {
-		snResp, err = s.snMirror.CreateChangeRequest(ctx, req)
-		if err == nil {
-			break
-		}
-		if _, ok := err.(*apierror.ValidationError); ok {
-			break
-		}
-		if attempt < snChangeRequestCreateAttempts {
-			slog.WarnContext(ctx, "sn create change request: attempt failed, retrying", "attempt", attempt, "error", err)
-			select {
-			case <-time.After(snChangeRequestCreateRetryDelay):
-			case <-ctx.Done():
-				return domain.CreateChangeRequestResponse{}, ctx.Err()
-			}
-		}
-	}
+	snResp, err := s.snMirror.CreateChangeRequest(ctx, req)
 	if err != nil {
 		// ServiceNow never accepted the change request -- nothing is
 		// written to Postgres at all, by construction

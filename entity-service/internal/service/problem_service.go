@@ -19,7 +19,6 @@ package service
 import (
 	"context"
 	"log/slog"
-	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -167,23 +166,18 @@ func (s *problemService) CreateProblem(ctx context.Context, req domain.CreatePro
 	}
 }
 
-// snProblemCreateAttempts/snProblemCreateRetryDelay bound
-// createProblemSNFirst's retry -- same bound as incidentService's
-// snIncidentCreateAttempts/snIncidentCreateRetryDelay.
-const (
-	snProblemCreateAttempts   = 2
-	snProblemCreateRetryDelay = 300 * time.Millisecond
-)
-
 // createProblemSNFirst implements CreateProblem's
 // DATA_SOURCE=postgres-servicenow-dual-write path: ServiceNow-FIRST and
 // SYNCHRONOUS, exactly mirroring incidentService.createIncidentSNFirst's
 // reasoning -- see that method's own doc comment for why CREATE must be
 // ServiceNow-first rather than Postgres-first-and-async.
 //
-// req is not retried against a mutated/regenerated payload between attempts
-// -- a plain repeat of the same call. A *apierror.ValidationError is never
-// retried at all: the same invalid input fails the same way every time.
+// The ServiceNow call is made exactly once, with no internal retry: retrying
+// here risks creating a second, duplicate ServiceNow record if ServiceNow's
+// create actually succeeded but the HTTP response back to entity-service was
+// lost (timeout/network blip) -- entity-service has no way to distinguish
+// that from a real failure, and retry policy for that case belongs to the
+// caller, not this layer.
 //
 // On success, id/number come from ServiceNow's own response and are used
 // AS-IS for the Postgres insert
@@ -209,24 +203,7 @@ func (s *problemService) createProblemSNFirst(ctx context.Context, req domain.Cr
 		return domain.ProblemDetail{}, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
 	}
 
-	var snResp domain.ProblemDetail
-	for attempt := 1; attempt <= snProblemCreateAttempts; attempt++ {
-		snResp, err = s.snMirror.CreateProblem(ctx, req)
-		if err == nil {
-			break
-		}
-		if _, ok := err.(*apierror.ValidationError); ok {
-			break
-		}
-		if attempt < snProblemCreateAttempts {
-			slog.WarnContext(ctx, "sn create problem: attempt failed, retrying", "attempt", attempt, "error", err)
-			select {
-			case <-time.After(snProblemCreateRetryDelay):
-			case <-ctx.Done():
-				return domain.ProblemDetail{}, ctx.Err()
-			}
-		}
-	}
+	snResp, err := s.snMirror.CreateProblem(ctx, req)
 	if err != nil {
 		// ServiceNow never accepted the problem -- nothing is written to
 		// Postgres at all, by construction
