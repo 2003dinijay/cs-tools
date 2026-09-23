@@ -295,27 +295,39 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// ReferenceDataRepository's own doc comment.
 	referenceDataRepo := repository.NewReferenceDataRepository(db)
 
-	var projectStatsHandler *handler.ProjectStatsHandler
-	var snProjectStatsSvc service.ProjectStatsService
+	// Every project-stats route is available on both data sources. In
+	// ServiceNow mode one client-backed value satisfies all three interfaces
+	// structurally, so it is built once and shared; in Postgres mode the
+	// narrower metadata and case-stats services are built first and composed
+	// into the full ProjectStatsService, which delegates those two methods to
+	// them rather than reimplementing either.
+	//
+	// ProjectMetadataService and ProjectCaseStatsService remain separate
+	// interfaces, and keep their own handlers, because each was portable to
+	// Postgres before the rest of the bundle was.
+	var (
+		projectMetadataSvc  service.ProjectMetadataService
+		projectCaseStatsSvc service.ProjectCaseStatsService
+		projectStatsSvc     service.ProjectStatsService
+	)
 	if cfg.DataSource == config.DataSourceServiceNow {
-		snProjectStatsSvc = service.NewServiceNowProjectStatsService(serviceNowIntegrationServiceClient)
-		projectStatsHandler = handler.NewProjectStatsHandler(snProjectStatsSvc)
-	}
-
-	// GET /projects/{id}/metadata is wired independently of projectStatsHandler
-	// above: it's the one ProjectStatsService method with a Postgres-backed
-	// implementation, so it's available regardless of cfg.DataSource, while
-	// the remaining project-stats routes stay ServiceNow-only. In ServiceNow
-	// mode, snProjectStatsSvc already satisfies ProjectMetadataService
-	// structurally, so the same client-backed value is reused rather than
-	// built twice.
-	var projectMetadataSvc service.ProjectMetadataService
-	if cfg.DataSource == config.DataSourceServiceNow {
-		projectMetadataSvc = snProjectStatsSvc
+		snProjectStatsSvc := service.NewServiceNowProjectStatsService(serviceNowIntegrationServiceClient)
+		projectMetadataSvc, projectCaseStatsSvc, projectStatsSvc = snProjectStatsSvc, snProjectStatsSvc, snProjectStatsSvc
 	} else {
 		projectMetadataSvc = service.NewProjectMetadataService(referenceDataRepo)
+		// accessSvc is passed in so a by-id stats read is scoped to what the
+		// caller may see. Unlike the scoped list endpoints, which fold the
+		// scope into their WHERE clause, the project id here comes from the
+		// path and needs an explicit check.
+		projectCaseStatsSvc = service.NewProjectCaseStatsService(
+			repository.NewProjectCaseStatsRepository(db), referenceDataRepo, accessSvc)
+		projectStatsSvc = service.NewProjectStatsService(
+			repository.NewProjectStatsRepository(db), referenceDataRepo, accessSvc,
+			projectMetadataSvc, projectCaseStatsSvc)
 	}
 	projectMetadataHandler := handler.NewProjectMetadataHandler(projectMetadataSvc)
+	projectCaseStatsHandler := handler.NewProjectCaseStatsHandler(projectCaseStatsSvc)
+	projectStatsHandler := handler.NewProjectStatsHandler(projectStatsSvc)
 
 	productRepo := repository.NewProductRepository(db)
 	productSvc := service.NewProductService(productRepo)
@@ -805,14 +817,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		mux.HandleFunc("PATCH /projects/{id}", projectUpdateHandler.UpdateProject)
 	}
 	mux.HandleFunc("GET /projects/{id}/metadata", projectMetadataHandler.GetProjectMetadata)
-	if projectStatsHandler != nil {
-		mux.HandleFunc("GET /projects/{id}/stats", projectStatsHandler.GetProjectStats)
-		mux.HandleFunc("GET /projects/{id}/cases/stats", projectStatsHandler.GetProjectCaseStats)
-		mux.HandleFunc("GET /projects/{id}/conversations/stats", projectStatsHandler.GetProjectConversationStats)
-		mux.HandleFunc("GET /projects/{id}/deployments/stats", projectStatsHandler.GetProjectDeploymentStats)
-		mux.HandleFunc("GET /projects/{id}/time-cards/stats", projectStatsHandler.GetProjectTimeCardStats)
-		mux.HandleFunc("GET /projects/{id}/change-requests/stats", projectStatsHandler.GetProjectChangeRequestStats)
-	}
+	mux.HandleFunc("GET /projects/{id}/cases/stats", projectCaseStatsHandler.GetProjectCaseStats)
+	mux.HandleFunc("GET /projects/{id}/stats", projectStatsHandler.GetProjectStats)
+	mux.HandleFunc("GET /projects/{id}/conversations/stats", projectStatsHandler.GetProjectConversationStats)
+	mux.HandleFunc("GET /projects/{id}/deployments/stats", projectStatsHandler.GetProjectDeploymentStats)
+	mux.HandleFunc("GET /projects/{id}/time-cards/stats", projectStatsHandler.GetProjectTimeCardStats)
+	mux.HandleFunc("GET /projects/{id}/change-requests/stats", projectStatsHandler.GetProjectChangeRequestStats)
 	if snProductHandler != nil {
 		mux.HandleFunc("POST /products/search", snProductHandler.SearchProducts)
 	} else {

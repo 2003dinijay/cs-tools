@@ -340,10 +340,31 @@ type ProjectMetadataService interface {
 	GetProjectMetadata(ctx context.Context, projectID string) (domain.ProjectMetadataResponse, error)
 }
 
+// ProjectCaseStatsService is the GetProjectCaseStats slice of
+// ProjectStatsService, split out for the same reason ProjectMetadataService
+// is: it has a Postgres-backed implementation (projectCaseStatsService) as
+// well as the ServiceNow one, so it is wired and registered independently of
+// the remaining stats methods, which stay ServiceNow-only. In ServiceNow mode
+// snProjectStatsService satisfies this interface structurally, so the same
+// concrete value backs both. See ProjectCaseStatsHandler.
+type ProjectCaseStatsService interface {
+	// GetProjectCaseStats returns the case statistics for a project,
+	// optionally narrowed by case type and creator. A ValidationError is
+	// returned for a malformed UUID or an unrecognised case type; a
+	// NotFoundError if no project matches.
+	GetProjectCaseStats(ctx context.Context, projectID string, req domain.ProjectCaseStatsRequest) (domain.ProjectCaseStatsResponse, error)
+}
+
 // ProjectStatsService defines the project-scoped metadata and statistics
-// operations. GetProjectMetadata also has a Postgres-backed implementation --
-// see ProjectMetadataService. The remaining stats methods require the
-// ServiceNow data source; there is no Postgres fallback for them yet.
+// operations. Every method has both a ServiceNow implementation
+// (snProjectStatsService) and a Postgres one (projectStatsService), so all of
+// these routes are registered regardless of the data source.
+//
+// GetProjectMetadata and GetProjectCaseStats additionally have their own
+// narrower interfaces (ProjectMetadataService, ProjectCaseStatsService):
+// each was portable to Postgres before the rest of the bundle was, and the
+// Postgres projectStatsService composes them rather than reimplementing
+// either.
 type ProjectStatsService interface {
 	// GetProjectMetadata returns the reference data (choice lists, feature
 	// flags) needed to build the project's UI.
