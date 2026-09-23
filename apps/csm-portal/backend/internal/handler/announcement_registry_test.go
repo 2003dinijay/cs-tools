@@ -251,6 +251,96 @@ func TestSearchAnnouncementRegistry_BatchMembersResolvedIndependentlyOfCaseFilte
 	}
 }
 
+// countingCaseSearch serves casesJSON as one page for every call and counts
+// the ones whose filter list holds only the handler's hardcoded
+// type=announcement entry — i.e. the internal unfiltered re-fetch, as
+// opposed to a caller-filtered fetch, which always appends at least one
+// more entry.
+func countingCaseSearch(casesJSON string, total int, unfiltered *int) func(context.Context, []byte) ([]byte, error) {
+	page := singlePageCases(casesJSON, total)
+	return func(ctx context.Context, body []byte) ([]byte, error) {
+		var decoded struct {
+			Filters struct {
+				Filters []map[string]any `json:"filters"`
+			} `json:"filters"`
+		}
+		_ = json.Unmarshal(body, &decoded)
+		if len(decoded.Filters.Filters) == 1 {
+			*unfiltered++
+		}
+		return page(ctx, body)
+	}
+}
+
+func TestSearchAnnouncementRegistry_SkipsTheUnfilteredRefetchWhenTheFilterKeptEveryMember(t *testing.T) {
+	const allThreeCases = `[
+		{"id":"case-1","number":"CS001","subject":"Maintenance","state":"Open","updatedOn":"2026-07-03T00:00:00Z","createdOn":"2026-07-01T00:00:00Z","project":{"id":"p-1","name":"Acme"}},
+		{"id":"case-2","number":"CS002","subject":"Maintenance","state":"Open","updatedOn":"2026-07-02T00:00:00Z","createdOn":"2026-07-01T00:00:00Z","project":{"id":"p-2","name":"Bolt"}},
+		{"id":"case-3","number":"CS003","subject":"Maintenance","state":"Open","updatedOn":"2026-07-01T00:00:00Z","createdOn":"2026-07-01T00:00:00Z","project":{"id":"p-3","name":"Cinder"}}
+	]`
+	unfiltered := 0
+	client := &mockEntityAnnouncementRegistryClient{
+		searchCasesFn: countingCaseSearch(allThreeCases, 3, &unfiltered),
+		searchAnnouncementRequestsFn: singlePageRequests(`[
+			{"id":"req-1","subject":"Maintenance","createdBy":"jane@example.com","createdAt":"2026-07-01T00:00:00Z","updatedAt":"2026-07-03T00:00:00Z","publishedCaseIds":["case-1","case-2","case-3"]}
+		]`, 1),
+	}
+	h := NewAnnouncementRegistryHandler(client)
+	r := withUser(httptest.NewRequest(http.MethodPost, "/announcements/registry/search", strings.NewReader(`{"states":["Open"],"pagination":{"limit":20}}`)))
+	w := httptest.NewRecorder()
+	h.SearchAnnouncementRegistry(w, r)
+	assertStatus(t, w, http.StatusOK)
+
+	var got registrySearchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got.Rows) != 1 || len(got.Rows[0].Cases) != 3 {
+		t.Fatalf("expected one batch row listing all 3 members, got %+v", got.Rows)
+	}
+	if unfiltered != 0 {
+		t.Fatalf("expected no unfiltered re-fetch when the filter kept every member of the displayed batch, got %d", unfiltered)
+	}
+}
+
+func TestSearchAnnouncementRegistry_ResolvesMembersOnlyForTheRequestedPage(t *testing.T) {
+	// case-1b belongs to req-1 but is hidden by the caller's filter, so
+	// req-1's row is the one that would force an unfiltered re-fetch. It
+	// sorts second, so a limit of 1 never returns it — and the page that is
+	// returned must not pay for it.
+	const filteredCases = `[
+		{"id":"case-2a","number":"CS020","subject":"Upgrade","updatedOn":"2026-07-09T00:00:00Z","createdOn":"2026-07-01T00:00:00Z","project":{"id":"p-9","name":"Zenith"}},
+		{"id":"case-1","number":"CS001","subject":"Maintenance","updatedOn":"2026-07-03T00:00:00Z","createdOn":"2026-07-01T00:00:00Z","project":{"id":"p-1","name":"Acme"}}
+	]`
+	unfiltered := 0
+	client := &mockEntityAnnouncementRegistryClient{
+		searchCasesFn: countingCaseSearch(filteredCases, 2, &unfiltered),
+		searchAnnouncementRequestsFn: singlePageRequests(`[
+			{"id":"req-1","subject":"Maintenance","createdBy":"jane@example.com","createdAt":"2026-07-01T00:00:00Z","updatedAt":"2026-07-03T00:00:00Z","publishedCaseIds":["case-1","case-1b"]},
+			{"id":"req-2","subject":"Upgrade","createdBy":"jane@example.com","createdAt":"2026-07-01T00:00:00Z","updatedAt":"2026-07-09T00:00:00Z","publishedCaseIds":["case-2a"]}
+		]`, 2),
+	}
+	h := NewAnnouncementRegistryHandler(client)
+	r := withUser(httptest.NewRequest(http.MethodPost, "/announcements/registry/search", strings.NewReader(`{"projectIds":["p-9","p-1"],"pagination":{"limit":1}}`)))
+	w := httptest.NewRecorder()
+	h.SearchAnnouncementRegistry(w, r)
+	assertStatus(t, w, http.StatusOK)
+
+	var got registrySearchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Total != 2 || len(got.Rows) != 1 || got.Rows[0].AnnouncementRequestID != "req-2" {
+		t.Fatalf("expected page 1 to hold req-2's row only, out of 2 total, got total=%d rows=%+v", got.Total, got.Rows)
+	}
+	if len(got.Rows[0].Cases) != 1 || got.Rows[0].Cases[0].CaseNumber != "CS020" {
+		t.Fatalf("expected the returned row's own member resolved, got %+v", got.Rows[0].Cases)
+	}
+	if unfiltered != 0 {
+		t.Fatalf("expected no unfiltered re-fetch for a member belonging to a row off the requested page, got %d", unfiltered)
+	}
+}
+
 func TestSearchAnnouncementRegistry_ShowsACaseWithNoKnownRequestAsItsOwnRow(t *testing.T) {
 	client := &mockEntityAnnouncementRegistryClient{
 		searchCasesFn: singlePageCases(`[
