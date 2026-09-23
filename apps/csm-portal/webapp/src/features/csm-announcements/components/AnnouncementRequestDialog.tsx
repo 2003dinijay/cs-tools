@@ -600,13 +600,18 @@ export default function AnnouncementRequestDialog({
                     color="primary"
                     size="small"
                     onClick={() =>
-                      !hasUnsavedChanges && claimsReady && isRequestCreator && setConfirmPublishOpen(true)
+                      !hasUnsavedChanges &&
+                      claimsReady &&
+                      isRequestCreator &&
+                      publish.readyToPublish &&
+                      setConfirmPublishOpen(true)
                     }
                     disabled={
                       publish.publishing ||
                       hasUnsavedChanges ||
                       !claimsReady ||
                       !isRequestCreator ||
+                      !publish.readyToPublish ||
                       !canWrite
                     }
                   >
@@ -632,6 +637,27 @@ export default function AnnouncementRequestDialog({
                     Save your changes first — Publish sends whatever's currently saved, not what's still
                     unsaved here.
                   </Typography>
+                )}
+                {claimsReady && isRequestCreator && !hasUnsavedChanges && publish.hydratingDeliveries && (
+                  <Typography variant="caption" color="text.secondary">
+                    Loading previous progress…
+                  </Typography>
+                )}
+                {claimsReady && isRequestCreator && !hasUnsavedChanges && publish.hydrationFailed && (
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                    <Typography variant="caption" color="error">
+                      Couldn't load previous progress for this request — Publish is blocked until this
+                      loads, so an already-sent project isn't sent a duplicate case.
+                    </Typography>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<RefreshCw size={14} />}
+                      onClick={publish.retryHydration}
+                    >
+                      Retry
+                    </Button>
+                  </Box>
                 )}
                 {(publish.publishing || priorSucceededCount > 0 || publish.failedProjectIds.length > 0) && (
                   <AnnouncementSendProgress progress={sendProgress} />

@@ -191,6 +191,10 @@ beforeEach(() => {
     failedProjectIds: [],
     failedTagProjectIds: [],
     published: null,
+    readyToPublish: true,
+    hydratingDeliveries: false,
+    hydrationFailed: false,
+    retryHydration: vi.fn(),
     handlePublish: vi.fn(),
   });
   mockedCreateUpdate.mockReturnValue(noopMutation() as ReturnType<typeof useCreateAnnouncementRequestUpdate>);
@@ -428,6 +432,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: [],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish,
     });
 
@@ -453,6 +461,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: [],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -474,6 +486,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: [],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -492,6 +508,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: ["p-2"],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -510,6 +530,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: ["p-2"],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -545,6 +569,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: [],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish,
     });
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
@@ -571,6 +599,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: [],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish,
     });
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
@@ -599,6 +631,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: [],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish,
     });
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);

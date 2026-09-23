@@ -317,6 +317,9 @@ func (s *announcementRequestService) RecordDeliveries(ctx context.Context, id, a
 			(d.CaseID == nil || strings.TrimSpace(*d.CaseID) == "") {
 			return domain.SearchAnnouncementRequestDeliveriesResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("deliveries[%d].caseId is required for status %q", i, d.Status)}
 		}
+		if d.Status == domain.AnnouncementRequestDeliveryStatusFailed && d.CaseID != nil {
+			return domain.SearchAnnouncementRequestDeliveriesResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("deliveries[%d].caseId must be omitted for status %q — a failed delivery never has a real case", i, d.Status)}
+		}
 	}
 
 	saved, err := s.repo.UpsertDeliveries(ctx, id, deliveries)

@@ -60,6 +60,20 @@ export interface UsePublishAnnouncementRequestResult {
   /** Set once every resolved project has a case and the backend has marked the request published. */
   published: AnnouncementRequest | null;
   handlePublish: () => Promise<void>;
+  /**
+   * False while `request` is `approved` and the delivery ledger hasn't been
+   * loaded (and folded into local state) yet for this request id —
+   * `handlePublish` refuses to run in that window, since `succeededProjectIds`
+   * would still be empty and every already-succeeded project would be sent a
+   * duplicate case. True for any other state (nothing to gate) or once
+   * hydration has completed.
+   */
+  readyToPublish: boolean;
+  /** True while ledger hydration is still loading for the current request. */
+  hydratingDeliveries: boolean;
+  /** True once ledger hydration has failed for the current request — call `retryHydration` to try again. */
+  hydrationFailed: boolean;
+  retryHydration: () => void;
 }
 
 /**
@@ -129,12 +143,18 @@ export function usePublishAnnouncementRequest(
 
   // Seeds local state from the persisted ledger exactly once per request id
   // — see this hook's own doc comment for why a later background refetch
-  // must not re-run this.
+  // must not re-run this. Gated on `isSuccess`, not just `data` being
+  // truthy: an errored fetch must never be treated as "hydrated" (that
+  // would leave succeededProjectIds empty and let handlePublish resend a
+  // case to every project, including ones that already succeeded in an
+  // earlier session).
+  const [hydratedRequestId, setHydratedRequestId] = useState<string | null>(null);
   const hydratedRequestIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!request?.id || !deliveriesQuery.data) return;
+    if (!request?.id || !deliveriesQuery.isSuccess) return;
     if (hydratedRequestIdRef.current === request.id) return;
     hydratedRequestIdRef.current = request.id;
+    setHydratedRequestId(request.id);
 
     const succeeded: string[] = [];
     const caseIds: Record<string, string> = {};
@@ -142,7 +162,7 @@ export function usePublishAnnouncementRequest(
     const failedTags: string[] = [];
     const failedTagCases: Record<string, string> = {};
 
-    for (const d of deliveriesQuery.data.deliveries) {
+    for (const d of deliveriesQuery.data?.deliveries ?? []) {
       if (d.status === "succeeded") {
         succeeded.push(d.projectId);
         if (d.caseId) caseIds[d.projectId] = d.caseId;
@@ -169,7 +189,15 @@ export function usePublishAnnouncementRequest(
       setFailedTagProjectIds(failedTags);
       setFailedTagCaseIds(failedTagCases);
     }
-  }, [request?.id, deliveriesQuery.data]);
+  }, [request?.id, deliveriesQuery.data, deliveriesQuery.isSuccess]);
+
+  const readyToPublish =
+    !request || request.state !== "approved" || hydratedRequestId === request.id;
+  const hydratingDeliveries = !readyToPublish && !deliveriesQuery.isError;
+  const hydrationFailed = !readyToPublish && deliveriesQuery.isError;
+  const retryHydration = (): void => {
+    void deliveriesQuery.refetch();
+  };
 
   /**
    * Upserts this pass's outcomes to the durable ledger. Best-effort: a
@@ -192,6 +220,7 @@ export function usePublishAnnouncementRequest(
 
   const handlePublish = async (): Promise<void> => {
     if (!request || request.state !== "approved" || publishing) return;
+    if (!readyToPublish) return;
 
     const allProjectIds = request.resolvedProjectIds ?? [];
     if (allProjectIds.length === 0) {
@@ -371,5 +400,9 @@ export function usePublishAnnouncementRequest(
     failedTagProjectIds,
     published,
     handlePublish,
+    readyToPublish,
+    hydratingDeliveries,
+    hydrationFailed,
+    retryHydration,
   };
 }

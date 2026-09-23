@@ -789,6 +789,27 @@ func TestAnnouncementRequestService_RecordDeliveries(t *testing.T) {
 		}
 	})
 
+	// A failed delivery never has a real case — accepting a caseId here would
+	// let a row claim both "the create failed" and "a case exists for it" at
+	// once, which every reader of this ledger (including
+	// usePublishAnnouncementRequest's own hydration) assumes can't happen.
+	t.Run("rejects failed with a caseId", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
+			State:              domain.AnnouncementRequestStateApproved,
+			CreatedBy:          "user-3",
+			ResolvedProjectIDs: []string{"proj-1"},
+		}}
+		svc := NewAnnouncementRequestService(repo)
+		caseID := "case-1"
+		_, err := svc.RecordDeliveries(context.Background(), "req-1", "user-3", []domain.RecordAnnouncementRequestDeliveryInput{
+			{ProjectID: "proj-1", CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusFailed},
+		})
+		var ve *apierror.ValidationError
+		if !isValidationError(err, &ve) {
+			t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+		}
+	})
+
 	t.Run("rejects a non-creator actor", func(t *testing.T) {
 		repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
 			State:              domain.AnnouncementRequestStateApproved,

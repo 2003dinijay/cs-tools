@@ -83,7 +83,10 @@ beforeEach(() => {
   listDeliveriesMock.mockReset();
   // No persisted deliveries by default — every existing test below starts
   // from a blank ledger, the same as before this hook read one at all.
-  listDeliveriesMock.mockReturnValue({ data: null, isLoading: false, isError: false });
+  // isSuccess: true since a genuinely empty ledger is still a *successful*
+  // fetch — hydration must complete (and unblock handlePublish) for it,
+  // not stay stuck treating "no rows yet" as still loading.
+  listDeliveriesMock.mockReturnValue({ data: null, isLoading: false, isError: false, isSuccess: true });
 });
 
 describe("usePublishAnnouncementRequest — guards", () => {
@@ -372,6 +375,7 @@ describe("usePublishAnnouncementRequest — delivery ledger", () => {
       },
       isLoading: false,
       isError: false,
+      isSuccess: true,
     });
     postCaseMutateAsyncMock.mockResolvedValue({ id: "case-p-2", internalId: "X-1", number: "N-1" });
     postMock.mockResolvedValue({ ...APPROVED_REQUEST, state: "published" });
@@ -404,6 +408,7 @@ describe("usePublishAnnouncementRequest — delivery ledger", () => {
       },
       isLoading: false,
       isError: false,
+      isSuccess: true,
     });
 
     const { result } = renderHook(
@@ -431,5 +436,59 @@ describe("usePublishAnnouncementRequest — delivery ledger", () => {
     expect(postCaseMutateAsyncMock).not.toHaveBeenCalled();
     expect(addTagMutateAsyncMock).toHaveBeenCalledWith({ caseId: "case-1", label: "Security Announcement" });
     expect(result.current.published?.state).toBe("published");
+  });
+});
+
+describe("usePublishAnnouncementRequest — readyToPublish gates handlePublish until the ledger hydrates", () => {
+  // Without this gate, clicking Publish in the narrow window before the
+  // ledger GET resolves would compute pendingProjectIds from an empty
+  // succeededProjectIds — resending a real, duplicate case to every project
+  // that already succeeded in an earlier session.
+  it("refuses to run while the ledger is still loading, and reports readyToPublish false", async () => {
+    listDeliveriesMock.mockReturnValue({ data: undefined, isLoading: true, isError: false, isSuccess: false });
+
+    const { result } = renderHook(() => usePublishAnnouncementRequest(APPROVED_REQUEST), { wrapper });
+
+    expect(result.current.readyToPublish).toBe(false);
+    expect(result.current.hydratingDeliveries).toBe(true);
+    expect(result.current.hydrationFailed).toBe(false);
+
+    await act(async () => {
+      await result.current.handlePublish();
+    });
+    expect(postCaseMutateAsyncMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to run when the ledger failed to load, and exposes a retry", async () => {
+    const refetch = vi.fn();
+    listDeliveriesMock.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      isSuccess: false,
+      refetch,
+    });
+
+    const { result } = renderHook(() => usePublishAnnouncementRequest(APPROVED_REQUEST), { wrapper });
+
+    expect(result.current.readyToPublish).toBe(false);
+    expect(result.current.hydrationFailed).toBe(true);
+    expect(result.current.hydratingDeliveries).toBe(false);
+
+    await act(async () => {
+      await result.current.handlePublish();
+    });
+    expect(postCaseMutateAsyncMock).not.toHaveBeenCalled();
+
+    result.current.retryHydration();
+    expect(refetch).toHaveBeenCalled();
+  });
+
+  it("is always ready when the request isn't approved — nothing to gate", () => {
+    const { result } = renderHook(
+      () => usePublishAnnouncementRequest({ ...APPROVED_REQUEST, state: "draft" }),
+      { wrapper },
+    );
+    expect(result.current.readyToPublish).toBe(true);
   });
 });

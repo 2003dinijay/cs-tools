@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS announcement_request_deliveries (
   project_id              UUID NOT NULL,
   case_id                 TEXT,
   status                  TEXT NOT NULL CHECK (status IN ('succeeded', 'tag_failed', 'failed')),
+  -- Mirrors the service-layer check in RecordDeliveries: succeeded/tag_failed
+  -- always have a real case, failed never does.
+  CHECK (
+    (status IN ('succeeded', 'tag_failed') AND case_id IS NOT NULL)
+    OR (status = 'failed' AND case_id IS NULL)
+  ),
   error_message           TEXT,
   created_on              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_on              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
