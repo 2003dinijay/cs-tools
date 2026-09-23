@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -53,6 +54,11 @@ type AnnouncementRequestRepository interface {
 	Submit(ctx context.Context, id string, req domain.SubmitAnnouncementRequestRequest) (domain.AnnouncementRequest, error)
 	// Approve moves state to approved and sets approved_by/approved_on.
 	Approve(ctx context.Context, id, actorID, actorEmail string) (domain.AnnouncementRequest, error)
+	// SetSchedule sets or clears scheduled_on (nil clears it) — only
+	// callable while the row is approved. The service layer has already
+	// validated the current state, the actor, and (if non-nil) that
+	// scheduledFor is in the future.
+	SetSchedule(ctx context.Context, id string, scheduledFor *time.Time) (domain.AnnouncementRequest, error)
 	// RevertToDraft moves state back to draft, clearing
 	// resolved_project_ids/resolved_project_count/dry_run_case_id/
 	// dry_run_on/dry_run_by/submitted_by/submitted_on, and — in the same
@@ -97,7 +103,7 @@ const announcementRequestColumns = `
 	submitted_by, submitted_by_email, submitted_on,
 	approved_by, approved_by_email, approved_on,
 	published_by, published_by_email, published_on,
-	published_case_ids`
+	published_case_ids, due_on, scheduled_on`
 
 func scanAnnouncementRequest(row pgx.Row) (domain.AnnouncementRequest, error) {
 	var r domain.AnnouncementRequest
@@ -110,7 +116,7 @@ func scanAnnouncementRequest(row pgx.Row) (domain.AnnouncementRequest, error) {
 		&r.SubmittedBy, &r.SubmittedByEmail, &r.SubmittedAt,
 		&r.ApprovedBy, &r.ApprovedByEmail, &r.ApprovedAt,
 		&r.PublishedBy, &r.PublishedByEmail, &r.PublishedAt,
-		&publishedCaseIDsRaw,
+		&publishedCaseIDsRaw, &r.DueOn, &r.ScheduledFor,
 	); err != nil {
 		return domain.AnnouncementRequest{}, err
 	}
@@ -169,12 +175,20 @@ func (r *announcementRequestRepo) Get(ctx context.Context, id string) (domain.An
 func (r *announcementRequestRepo) Search(ctx context.Context, req domain.SearchAnnouncementRequestsRequest) ([]domain.AnnouncementRequest, int, error) {
 	// state and created_by are both optional filters; NULL::text on the
 	// unused side of each OR makes an unset filter match every row without
-	// needing to build the WHERE clause dynamically.
-	const where = `WHERE ($1::text IS NULL OR state = $1) AND ($2::text IS NULL OR created_by = $2)`
+	// needing to build the WHERE clause dynamically. readyForScheduledPublish
+	// works the same way via NOT $3::boolean: when false the whole OR branch
+	// is unconditionally true (no extra restriction), when true it requires
+	// state = 'approved' and a scheduled_on that has already arrived — the
+	// one query operations/csm-scheduled-tasks' publish_scheduled_announcements
+	// sub-cron needs (the service layer validates this is never combined
+	// with an explicit State).
+	const where = `WHERE ($1::text IS NULL OR state = $1)
+		AND ($2::text IS NULL OR created_by = $2)
+		AND (NOT $3::boolean OR (state = 'approved' AND scheduled_on IS NOT NULL AND scheduled_on <= NOW()))`
 	countQuery := `SELECT COUNT(*) FROM announcement_requests ` + where
 	dataQuery := `SELECT ` + announcementRequestColumns + ` FROM announcement_requests ` + where + `
 		ORDER BY created_on DESC, id
-		LIMIT $3 OFFSET $4`
+		LIMIT $4 OFFSET $5`
 
 	var state *string
 	if req.State != nil {
@@ -186,10 +200,10 @@ func (r *announcementRequestRepo) Search(ctx context.Context, req domain.SearchA
 	var requests []domain.AnnouncementRequest
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.Go(func() error {
-		return r.db.QueryRow(egCtx, countQuery, state, req.CreatedBy).Scan(&total)
+		return r.db.QueryRow(egCtx, countQuery, state, req.CreatedBy, req.ReadyForScheduledPublish).Scan(&total)
 	})
 	eg.Go(func() error {
-		rows, err := r.db.Query(egCtx, dataQuery, state, req.CreatedBy, req.Pagination.Limit, req.Pagination.Offset)
+		rows, err := r.db.Query(egCtx, dataQuery, state, req.CreatedBy, req.ReadyForScheduledPublish, req.Pagination.Limit, req.Pagination.Offset)
 		if err != nil {
 			return err
 		}
@@ -304,6 +318,7 @@ func (r *announcementRequestRepo) Submit(ctx context.Context, id string, req dom
 			resolved_project_ids = $2,
 			resolved_project_count = $3,
 			submitted_by = $4, submitted_by_email = NULLIF($5, ''), submitted_on = NOW(),
+			due_on = NOW() + INTERVAL '1 month',
 			updated_on = NOW()
 		WHERE id = $1 AND state = 'draft' AND dry_run_case_id IS NOT NULL
 		RETURNING ` + announcementRequestColumns
@@ -332,6 +347,27 @@ func (r *announcementRequestRepo) Approve(ctx context.Context, id, actorID, acto
 			return domain.AnnouncementRequest{}, r.onConflictOrNotFound(ctx, id, "approve")
 		}
 		return domain.AnnouncementRequest{}, fmt.Errorf("approve announcement_request: %w", err)
+	}
+	return ar, nil
+}
+
+// SetSchedule implements AnnouncementRequestRepository. Only callable from
+// approved — the state condition below matches Approve's own race-closing
+// shape (a concurrent Publish racing this call can't leave a published row
+// with a stale schedule silently reapplied).
+func (r *announcementRequestRepo) SetSchedule(ctx context.Context, id string, scheduledFor *time.Time) (domain.AnnouncementRequest, error) {
+	query := `
+		UPDATE announcement_requests SET
+			scheduled_on = $2, updated_on = NOW()
+		WHERE id = $1 AND state = 'approved'
+		RETURNING ` + announcementRequestColumns
+
+	ar, err := scanAnnouncementRequest(r.db.QueryRow(ctx, query, id, scheduledFor))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.AnnouncementRequest{}, r.onConflictOrNotFound(ctx, id, "schedule")
+		}
+		return domain.AnnouncementRequest{}, fmt.Errorf("schedule announcement_request: %w", err)
 	}
 	return ar, nil
 }

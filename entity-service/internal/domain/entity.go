@@ -6752,6 +6752,18 @@ type AnnouncementRequest struct {
 	// (see AnnouncementRequestUpdate) target the exact cases this
 	// announcement actually created, instead of re-deriving them.
 	PublishedCaseIDs []string `json:"publishedCaseIds,omitempty"`
+	// DueOn is set once, automatically, by Submit (now + one month) — purely
+	// informational display in this slice, never enforced or acted on by
+	// this service. Nil for any row that hasn't been submitted yet.
+	DueOn *time.Time `json:"dueOn,omitempty"`
+	// ScheduledFor is set/cleared only via Schedule, never by Update — when
+	// non-nil and this row is approved, operations/csm-scheduled-tasks'
+	// "publish_scheduled_announcements" sub-cron publishes it automatically
+	// once this time arrives, exactly as if a human had clicked Publish.
+	// Left as-is after MarkPublished (a harmless historical value — the
+	// ReadyForScheduledPublish search filter already excludes anything not
+	// approved).
+	ScheduledFor *time.Time `json:"scheduledFor,omitempty"`
 }
 
 // CreateAnnouncementRequestRequest creates a new announcement_requests row
@@ -6792,6 +6804,19 @@ type UpdateAnnouncementRequestRequest struct {
 	// pending_approval -> draft revert (see Update's doc comment) has a
 	// consistent actor-required shape with every other transition below.
 	ActorID string `json:"actorId"`
+}
+
+// ScheduleAnnouncementRequestRequest sets or clears an approved request's
+// automatic-publish time — a dedicated action endpoint, not folded into the
+// generic Update, so it never interacts with that method's own
+// state-branching logic (see AnnouncementRequestService.Update's doc
+// comment). ScheduledFor nil unambiguously means "clear the schedule" here,
+// since setting/clearing that one field is this endpoint's entire job —
+// unlike Update, where nil already means "leave unchanged" for every field.
+type ScheduleAnnouncementRequestRequest struct {
+	ScheduledFor *time.Time `json:"scheduledFor"`
+	ActorID      string     `json:"actorId"`
+	ActorEmail   string     `json:"actorEmail,omitempty"`
 }
 
 // RecordAnnouncementDryRunRequest records that a dry run has been completed
@@ -6900,9 +6925,15 @@ type SearchAnnouncementRequestUpdatesResponse struct {
 // (the registry page's "Pending" tab) needs to choose its own filter
 // explicitly rather than inherit an implicit one.
 type SearchAnnouncementRequestsRequest struct {
-	State      *AnnouncementRequestState `json:"state,omitempty"`
-	CreatedBy  *string                   `json:"createdBy,omitempty"`
-	Pagination Pagination                `json:"pagination"`
+	State     *AnnouncementRequestState `json:"state,omitempty"`
+	CreatedBy *string                   `json:"createdBy,omitempty"`
+	// ReadyForScheduledPublish, when true, ignores State and instead matches
+	// every approved row whose ScheduledFor is set and has already arrived
+	// (scheduled_for <= now()) — the one query
+	// operations/csm-scheduled-tasks' "publish_scheduled_announcements"
+	// sub-cron needs. Mutually exclusive with State (ambiguous otherwise).
+	ReadyForScheduledPublish bool       `json:"readyForScheduledPublish,omitempty"`
+	Pagination               Pagination `json:"pagination"`
 }
 
 type SearchAnnouncementRequestsResponse struct {

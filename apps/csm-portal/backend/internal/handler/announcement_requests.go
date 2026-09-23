@@ -41,6 +41,7 @@ type entityAnnouncementRequestClient interface {
 	RecordAnnouncementRequestDryRun(ctx context.Context, id string, body []byte) ([]byte, error)
 	SubmitAnnouncementRequest(ctx context.Context, id string, body []byte) ([]byte, error)
 	ApproveAnnouncementRequest(ctx context.Context, id string, body []byte) ([]byte, error)
+	ScheduleAnnouncementRequest(ctx context.Context, id string, body []byte) ([]byte, error)
 	PublishAnnouncementRequest(ctx context.Context, id string, body []byte) ([]byte, error)
 	CreateAnnouncementRequestUpdate(ctx context.Context, id string, body []byte) ([]byte, error)
 	ListAnnouncementRequestUpdates(ctx context.Context, id string) ([]byte, error)
@@ -333,6 +334,59 @@ func (h *AnnouncementRequestHandler) RecordAnnouncementRequestDryRun(w http.Resp
 // platform entirely.
 func (h *AnnouncementRequestHandler) ApproveAnnouncementRequest(w http.ResponseWriter, r *http.Request) {
 	h.actorOnlyTransition(w, r, "approve", h.entity.ApproveAnnouncementRequest, "Failed to approve the announcement request.")
+}
+
+// ScheduleAnnouncementRequest handles
+// POST /announcement-requests/{id}/schedule. Sets or clears (a null/omitted
+// scheduledFor clears it) an approved request's automatic-publish time —
+// once set, operations/csm-scheduled-tasks' publish_scheduled_announcements
+// sub-cron publishes it automatically once that time arrives, the same way
+// the manual Publish button does today. actorId is always the authenticated
+// caller, never read from the request body — same restriction as Publish
+// (scheduling is choosing when Publish happens).
+func (h *AnnouncementRequestHandler) ScheduleAnnouncementRequest(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" || !uuidRe.MatchString(id) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	body, ok := readJSONBody(w, r)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		ScheduledFor *string `json:"scheduledFor"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	upstreamBody, err := json.Marshal(struct {
+		ActorID      string  `json:"actorId"`
+		ScheduledFor *string `json:"scheduledFor"`
+		ActorEmail   string  `json:"actorEmail,omitempty"`
+	}{ActorID: user.UserID, ScheduledFor: req.ScheduledFor, ActorEmail: user.Email})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+
+	result, err := h.entity.ScheduleAnnouncementRequest(r.Context(), id, upstreamBody)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity ScheduleAnnouncementRequest failed", "userID", user.UserID, "id", id, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to schedule the announcement request.")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // PublishAnnouncementRequest handles

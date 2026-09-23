@@ -40,6 +40,7 @@ type mockEntityAnnouncementRequestClient struct {
 	recordDryRunFn            func(ctx context.Context, id string, body []byte) ([]byte, error)
 	submitFn                  func(ctx context.Context, id string, body []byte) ([]byte, error)
 	approveFn                 func(ctx context.Context, id string, body []byte) ([]byte, error)
+	scheduleFn                func(ctx context.Context, id string, body []byte) ([]byte, error)
 	publishFn                 func(ctx context.Context, id string, body []byte) ([]byte, error)
 	createUpdateFn            func(ctx context.Context, id string, body []byte) ([]byte, error)
 	listUpdatesFn             func(ctx context.Context, id string) ([]byte, error)
@@ -47,6 +48,7 @@ type mockEntityAnnouncementRequestClient struct {
 	listDeliveriesFn          func(ctx context.Context, id string) ([]byte, error)
 
 	gotApproveBody               []byte
+	gotScheduleBody              []byte
 	gotPublishBody               []byte
 	gotSubmitBody                []byte
 	gotCreateUpdateBody          []byte
@@ -118,6 +120,14 @@ func (m *mockEntityAnnouncementRequestClient) ApproveAnnouncementRequest(ctx con
 	m.gotApproveBody = body
 	if m.approveFn != nil {
 		return m.approveFn(ctx, id, body)
+	}
+	return body, nil
+}
+
+func (m *mockEntityAnnouncementRequestClient) ScheduleAnnouncementRequest(ctx context.Context, id string, body []byte) ([]byte, error) {
+	m.gotScheduleBody = body
+	if m.scheduleFn != nil {
+		return m.scheduleFn(ctx, id, body)
 	}
 	return body, nil
 }
@@ -460,6 +470,64 @@ func TestPublishAnnouncementRequest_RejectsEmptyCaseIDs(t *testing.T) {
 				t.Fatal("expected the entity client never to be called for an empty caseIds")
 			}
 		})
+	}
+}
+
+// ----- ScheduleAnnouncementRequest -----
+
+// TestScheduleAnnouncementRequest_ForwardsScheduledForAndForcesActorID locks
+// in that scheduledFor is forwarded verbatim while actorId is always the
+// authenticated caller, never client-supplied — same restriction as Publish.
+func TestScheduleAnnouncementRequest_ForwardsScheduledForAndForcesActorID(t *testing.T) {
+	client := &mockEntityAnnouncementRequestClient{}
+	h := NewAnnouncementRequestHandler(client, nil)
+	r := withUser(httptest.NewRequest(http.MethodPost, "/announcement-requests/"+testAnnouncementRequestID+"/schedule",
+		strings.NewReader(`{"scheduledFor":"2026-08-01T00:00:00Z","actorId":"someone-else"}`)))
+	r.SetPathValue("id", testAnnouncementRequestID)
+	w := httptest.NewRecorder()
+	h.ScheduleAnnouncementRequest(w, r)
+	assertStatus(t, w, http.StatusOK)
+
+	var got struct {
+		ActorID      string  `json:"actorId"`
+		ActorEmail   string  `json:"actorEmail"`
+		ScheduledFor *string `json:"scheduledFor"`
+	}
+	if err := json.Unmarshal(client.gotScheduleBody, &got); err != nil {
+		t.Fatalf("decode forwarded body: %v", err)
+	}
+	if got.ActorID != testUser.UserID {
+		t.Fatalf("actorId = %q, want the authenticated caller %q, not the client-supplied value", got.ActorID, testUser.UserID)
+	}
+	if got.ActorEmail != testUser.Email {
+		t.Fatalf("actorEmail = %q, want the authenticated caller's email %q", got.ActorEmail, testUser.Email)
+	}
+	if got.ScheduledFor == nil || *got.ScheduledFor != "2026-08-01T00:00:00Z" {
+		t.Fatalf("expected scheduledFor forwarded, got %v", got.ScheduledFor)
+	}
+}
+
+// TestScheduleAnnouncementRequest_ForwardsNilScheduledForToClear locks in
+// that an omitted/null scheduledFor forwards as nil (clearing the schedule),
+// not an empty string or a dropped field.
+func TestScheduleAnnouncementRequest_ForwardsNilScheduledForToClear(t *testing.T) {
+	client := &mockEntityAnnouncementRequestClient{}
+	h := NewAnnouncementRequestHandler(client, nil)
+	r := withUser(httptest.NewRequest(http.MethodPost, "/announcement-requests/"+testAnnouncementRequestID+"/schedule",
+		strings.NewReader(`{"scheduledFor":null}`)))
+	r.SetPathValue("id", testAnnouncementRequestID)
+	w := httptest.NewRecorder()
+	h.ScheduleAnnouncementRequest(w, r)
+	assertStatus(t, w, http.StatusOK)
+
+	var got struct {
+		ScheduledFor *string `json:"scheduledFor"`
+	}
+	if err := json.Unmarshal(client.gotScheduleBody, &got); err != nil {
+		t.Fatalf("decode forwarded body: %v", err)
+	}
+	if got.ScheduledFor != nil {
+		t.Fatalf("expected scheduledFor forwarded as nil, got %v", *got.ScheduledFor)
 	}
 }
 

@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -59,6 +60,10 @@ type fakeAnnouncementRequestRepo struct {
 	gotPublishActorID    string
 	gotPublishActorEmail string
 	gotPublishCaseIDs    []string
+
+	gotScheduleID           string
+	gotScheduleScheduledFor *time.Time
+	scheduleCalled          bool
 
 	gotCreateUpdateReqID          string
 	gotCreateUpdateContent        string
@@ -131,6 +136,13 @@ func (f *fakeAnnouncementRequestRepo) MarkPublished(_ context.Context, id, actor
 	f.gotPublishActorEmail = actorEmail
 	f.gotPublishCaseIDs = caseIDs
 	return domain.AnnouncementRequest{ID: id, State: domain.AnnouncementRequestStatePublished, PublishedCaseIDs: caseIDs}, nil
+}
+
+func (f *fakeAnnouncementRequestRepo) SetSchedule(_ context.Context, id string, scheduledFor *time.Time) (domain.AnnouncementRequest, error) {
+	f.gotScheduleID = id
+	f.gotScheduleScheduledFor = scheduledFor
+	f.scheduleCalled = true
+	return domain.AnnouncementRequest{ID: id, State: domain.AnnouncementRequestStateApproved, ScheduledFor: scheduledFor}, nil
 }
 
 func (f *fakeAnnouncementRequestRepo) CreateUpdate(_ context.Context, announcementRequestID, content, createdBy, createdByEmail string) (domain.AnnouncementRequestUpdate, error) {
@@ -401,6 +413,92 @@ func TestAnnouncementRequestService_MarkPublished(t *testing.T) {
 				svc := NewAnnouncementRequestService(repo)
 				if _, err := svc.MarkPublished(context.Background(), "req-1", "user-3", "user-3@example.com", []string{"case-1"}); err == nil {
 					t.Fatalf("expected a conflict error publishing from state %q, got nil", state)
+				}
+			})
+		}
+	})
+}
+
+func TestAnnouncementRequestService_Schedule(t *testing.T) {
+	future := time.Now().Add(24 * time.Hour)
+
+	t.Run("accepts from approved when the actor is the creator, forwarding scheduledFor", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
+			State:     domain.AnnouncementRequestStateApproved,
+			CreatedBy: "user-3",
+		}}
+		svc := NewAnnouncementRequestService(repo)
+		got, err := svc.Schedule(context.Background(), "req-1", "user-3", "user-3@example.com", &future)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !repo.scheduleCalled || repo.gotScheduleID != "req-1" {
+			t.Fatalf("expected SetSchedule called for req-1, got %+v", repo)
+		}
+		if repo.gotScheduleScheduledFor == nil || !repo.gotScheduleScheduledFor.Equal(future) {
+			t.Fatalf("expected scheduledFor forwarded, got %v", repo.gotScheduleScheduledFor)
+		}
+		if got.ScheduledFor == nil {
+			t.Fatalf("expected ScheduledFor on the result, got %+v", got)
+		}
+	})
+
+	t.Run("accepts a nil scheduledFor to clear the schedule", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
+			State:     domain.AnnouncementRequestStateApproved,
+			CreatedBy: "user-3",
+		}}
+		svc := NewAnnouncementRequestService(repo)
+		if _, err := svc.Schedule(context.Background(), "req-1", "user-3", "user-3@example.com", nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if repo.gotScheduleScheduledFor != nil {
+			t.Fatalf("expected nil scheduledFor forwarded (clearing), got %v", repo.gotScheduleScheduledFor)
+		}
+	})
+
+	t.Run("rejects a scheduledFor that isn't strictly in the future", func(t *testing.T) {
+		now := time.Now()
+		past := now.Add(-time.Hour)
+		for name, ts := range map[string]time.Time{"in the past": past, "right now": now} {
+			t.Run(name, func(t *testing.T) {
+				repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
+					State:     domain.AnnouncementRequestStateApproved,
+					CreatedBy: "user-3",
+				}}
+				svc := NewAnnouncementRequestService(repo)
+				_, err := svc.Schedule(context.Background(), "req-1", "user-3", "user-3@example.com", &ts)
+				var ve *apierror.ValidationError
+				if !isValidationError(err, &ve) {
+					t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+				}
+			})
+		}
+	})
+
+	t.Run("rejects a non-creator actor", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{
+			State:     domain.AnnouncementRequestStateApproved,
+			CreatedBy: "user-1",
+		}}
+		svc := NewAnnouncementRequestService(repo)
+		_, err := svc.Schedule(context.Background(), "req-1", "user-3", "user-3@example.com", &future)
+		if _, ok := err.(*apierror.ForbiddenError); !ok {
+			t.Fatalf("expected *apierror.ForbiddenError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("rejects from any state other than approved", func(t *testing.T) {
+		for _, state := range []domain.AnnouncementRequestState{
+			domain.AnnouncementRequestStateDraft,
+			domain.AnnouncementRequestStatePendingApproval,
+			domain.AnnouncementRequestStatePublished,
+		} {
+			t.Run(string(state), func(t *testing.T) {
+				repo := &fakeAnnouncementRequestRepo{getResult: domain.AnnouncementRequest{State: state, CreatedBy: "user-3"}}
+				svc := NewAnnouncementRequestService(repo)
+				if _, err := svc.Schedule(context.Background(), "req-1", "user-3", "user-3@example.com", &future); err == nil {
+					t.Fatalf("expected a conflict error scheduling from state %q, got nil", state)
 				}
 			})
 		}
@@ -688,6 +786,34 @@ func TestAnnouncementRequestService_Search(t *testing.T) {
 		}
 		if resp.Total != 5 {
 			t.Fatalf("expected total forwarded unchanged, got %d", resp.Total)
+		}
+	})
+
+	t.Run("accepts readyForScheduledPublish alone, forwarding it to the repo", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{}
+		svc := NewAnnouncementRequestService(repo)
+		_, err := svc.Search(context.Background(), domain.SearchAnnouncementRequestsRequest{
+			ReadyForScheduledPublish: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !repo.gotSearchReq.ReadyForScheduledPublish {
+			t.Fatal("expected readyForScheduledPublish forwarded to the repo")
+		}
+	})
+
+	t.Run("rejects readyForScheduledPublish combined with an explicit state", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{}
+		svc := NewAnnouncementRequestService(repo)
+		approved := domain.AnnouncementRequestStateApproved
+		_, err := svc.Search(context.Background(), domain.SearchAnnouncementRequestsRequest{
+			ReadyForScheduledPublish: true,
+			State:                    &approved,
+		})
+		var ve *apierror.ValidationError
+		if !isValidationError(err, &ve) {
+			t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
 		}
 	})
 }

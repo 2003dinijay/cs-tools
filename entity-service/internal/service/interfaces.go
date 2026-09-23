@@ -251,6 +251,15 @@ type AnnouncementRequestService interface {
 	// request's own CreatedBy -- an approver's job is only to approve, not
 	// to also trigger the real send to customers.
 	MarkPublished(ctx context.Context, id, actorID, actorEmail string, caseIDs []string) (domain.AnnouncementRequest, error)
+	// Schedule sets or clears (nil) scheduledFor for an approved request —
+	// once set, operations/csm-scheduled-tasks' publish_scheduled_announcements
+	// sub-cron publishes it automatically once that time arrives. A
+	// ConflictError is returned unless the current state is approved; a
+	// ForbiddenError unless actorID matches the request's own CreatedBy
+	// (same creator-only restriction as MarkPublished — scheduling is
+	// choosing when Publish happens); a ValidationError if scheduledFor is
+	// non-nil and not strictly in the future.
+	Schedule(ctx context.Context, id, actorID, actorEmail string, scheduledFor *time.Time) (domain.AnnouncementRequest, error)
 	// AddUpdate posts a new AnnouncementRequestUpdate for a published
 	// request. Does not itself apply Content as a comment anywhere -- the
 	// caller's own fan-out does that, separately, after this call succeeds

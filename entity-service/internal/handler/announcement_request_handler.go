@@ -140,6 +140,21 @@ func (h *AnnouncementRequestHandler) ApproveAnnouncementRequest(w http.ResponseW
 	writeAnnouncementRequestJSON(w, http.StatusOK, resp)
 }
 
+// ScheduleAnnouncementRequest handles
+// POST /announcement-requests/{id}/schedule.
+func (h *AnnouncementRequestHandler) ScheduleAnnouncementRequest(w http.ResponseWriter, r *http.Request) {
+	var req domain.ScheduleAnnouncementRequestRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.Schedule(r.Context(), r.PathValue("id"), req.ActorID, req.ActorEmail, req.ScheduledFor)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeAnnouncementRequestJSON(w, http.StatusOK, resp)
+}
+
 // PublishAnnouncementRequest handles
 // POST /announcement-requests/{id}/publish.
 func (h *AnnouncementRequestHandler) PublishAnnouncementRequest(w http.ResponseWriter, r *http.Request) {

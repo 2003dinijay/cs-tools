@@ -2454,6 +2454,75 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /announcement-requests/{id}/schedule:
+    post:
+      summary: Set or clear an approved request's automatic-publish time.
+      description: >-
+        Does not itself publish anything — once scheduledFor is set,
+        operations/csm-scheduled-tasks' publish_scheduled_announcements
+        sub-cron publishes it automatically once that time arrives, the same
+        way the manual publish call does. A null scheduledFor clears the
+        schedule. actorId is always the authenticated caller, never read
+        from the body. Restricted to the request's own creator, same rule as
+        publish — scheduling is choosing when publish happens.
+      operationId: scheduleAnnouncementRequest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleAnnouncementRequestPayload'
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementRequest'
+        "400":
+          description: BadRequest — invalid id format, or a scheduledFor that isn't strictly in the future.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden — the caller did not create this request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: Conflict — the request is not approved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /announcement-requests/{id}/publish:
     post:
       summary: Mark an approved request published (Phase 2 draft/approval workflow).
@@ -13100,6 +13169,18 @@ components:
             type: string
           nullable: true
           description: The real case id created for each project in resolvedProjectIds. Null until published.
+        dueOn:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set once, automatically, on submit (now + one month) — display only. Null until submitted.
+        scheduledFor:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Set/cleared only via POST .../schedule. When set on an approved
+            request, it's automatically published once this time arrives.
 
     CreateAnnouncementRequestPayload:
       type: object
@@ -13139,6 +13220,16 @@ components:
       properties:
         caseId:
           type: string
+
+    ScheduleAnnouncementRequestPayload:
+      type: object
+      additionalProperties: false
+      properties:
+        scheduledFor:
+          type: string
+          format: date-time
+          nullable: true
+          description: A null (or omitted) value clears the schedule. Non-null must be strictly in the future.
 
     PublishAnnouncementRequestPayload:
       type: object

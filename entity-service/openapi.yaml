@@ -734,6 +734,69 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /announcement-requests/{id}/schedule:
+    post:
+      summary: >-
+        Set or clear an approved request's automatic-publish time. Restricted
+        to the request's own creator, same rule as publish — scheduling is
+        choosing when publish happens. Does not itself publish anything; once
+        set, operations/csm-scheduled-tasks' publish_scheduled_announcements
+        sub-cron publishes it automatically once scheduledFor arrives, the
+        same way the manual publish call does.
+      operationId: scheduleAnnouncementRequest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleAnnouncementRequestRequest'
+      responses:
+        "200":
+          description: Schedule set or cleared.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementRequest'
+        "400":
+          description: >-
+            Bad request (e.g. missing actorId, or a scheduledFor that isn't
+            strictly in the future).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller did not create this request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The request is not approved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /announcement-requests/{id}/publish:
     post:
       summary: >-
@@ -17411,6 +17474,22 @@ components:
             The real case id created for each project in resolvedProjectIds,
             self-reported by the same creator-only caller MarkPublished
             restricts this transition to. Null until then.
+        dueOn:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Set once, automatically, by submit (now + one month) — display
+            only, never enforced or acted on. Null until submitted.
+        scheduledFor:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Set/cleared only via the schedule action, never by the generic
+            update. When set on an approved request,
+            operations/csm-scheduled-tasks' publish_scheduled_announcements
+            sub-cron publishes it automatically once this time arrives.
 
     CreateAnnouncementRequestRequest:
       type: object
@@ -17485,6 +17564,24 @@ components:
       properties:
         actorId:
           type: string
+        actorEmail:
+          type: string
+          description: Optional display-only companion to actorId — see AnnouncementRequest.createdByEmail.
+
+    ScheduleAnnouncementRequestRequest:
+      type: object
+      required: [actorId, scheduledFor]
+      additionalProperties: false
+      properties:
+        actorId:
+          type: string
+        scheduledFor:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            null explicitly clears the schedule. Non-null must be strictly
+            in the future.
         actorEmail:
           type: string
           description: Optional display-only companion to actorId — see AnnouncementRequest.createdByEmail.
@@ -17633,6 +17730,13 @@ components:
           enum: [draft, pending_approval, approved, published]
         createdBy:
           type: string
+        readyForScheduledPublish:
+          type: boolean
+          description: >-
+            When true, ignores state and instead matches every approved
+            request whose scheduledFor has already arrived — the query
+            operations/csm-scheduled-tasks' publish_scheduled_announcements
+            sub-cron uses. Rejected if combined with state.
         pagination:
           $ref: '#/components/schemas/Pagination'
 

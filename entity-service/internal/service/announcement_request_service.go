@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -62,6 +63,9 @@ func (s *announcementRequestService) Search(ctx context.Context, req domain.Sear
 	}
 	if req.State != nil && !isValidAnnouncementRequestState(*req.State) {
 		return domain.SearchAnnouncementRequestsResponse{}, &apierror.ValidationError{Msg: "state must be one of: draft, pending_approval, approved, published"}
+	}
+	if req.ReadyForScheduledPublish && req.State != nil {
+		return domain.SearchAnnouncementRequestsResponse{}, &apierror.ValidationError{Msg: "readyForScheduledPublish cannot be combined with state"}
 	}
 
 	requests, total, err := s.repo.Search(ctx, req)
@@ -222,6 +226,33 @@ func (s *announcementRequestService) MarkPublished(ctx context.Context, id, acto
 		return domain.AnnouncementRequest{}, &apierror.ForbiddenError{Msg: "only the request's creator can publish it"}
 	}
 	return s.repo.MarkPublished(ctx, id, actorID, actorEmail, caseIDs)
+}
+
+// Schedule implements AnnouncementRequestService. Sets or clears (nil)
+// scheduledFor for an approved request -- creator-only, same rule and same
+// reasoning as MarkPublished's own check: scheduling *is* choosing when
+// Publish happens, so it needs the identical restriction. A non-nil
+// scheduledFor must be strictly in the future; scheduling "now" or the past
+// makes no sense here -- use Publish directly instead.
+func (s *announcementRequestService) Schedule(ctx context.Context, id, actorID, actorEmail string, scheduledFor *time.Time) (domain.AnnouncementRequest, error) {
+	if strings.TrimSpace(actorID) == "" {
+		return domain.AnnouncementRequest{}, &apierror.ValidationError{Msg: "actorId is required"}
+	}
+	if scheduledFor != nil && !scheduledFor.After(time.Now()) {
+		return domain.AnnouncementRequest{}, &apierror.ValidationError{Msg: "scheduledFor must be in the future"}
+	}
+
+	current, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return domain.AnnouncementRequest{}, err
+	}
+	if current.State != domain.AnnouncementRequestStateApproved {
+		return domain.AnnouncementRequest{}, &apierror.ConflictError{Msg: "only an approved request can be scheduled, not " + string(current.State)}
+	}
+	if current.CreatedBy != actorID {
+		return domain.AnnouncementRequest{}, &apierror.ForbiddenError{Msg: "only the request's creator can schedule it"}
+	}
+	return s.repo.SetSchedule(ctx, id, scheduledFor)
 }
 
 // AddUpdate implements AnnouncementRequestService. Rejects unless the
