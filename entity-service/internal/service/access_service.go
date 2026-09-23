@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -79,6 +80,15 @@ func (s *accessService) ResolveScope(ctx context.Context) (AccessScope, error) {
 	}
 
 	if id.UserEmail == "" {
+		// Temporary diagnostic: an internal caller (e.g. csm-scheduled-tasks)
+		// hitting this 401 despite AUTH_INTERNAL_CLIENT_IDS supposedly
+		// including its client id needs to know what this process actually
+		// received/loaded to tell a value mismatch apart from a wrong-
+		// environment deploy -- neither is a secret (a client id is public,
+		// same as azp/aud elsewhere in this codebase's own logging).
+		// Remove once that's root-caused.
+		slog.WarnContext(ctx, "access: rejected — no user token and no recognized internal client id",
+			"receivedClientID", id.ClientID, "configuredInternalClientIDCount", len(s.internalClientIDs))
 		return AccessScope{}, &apierror.UnauthorizedError{Msg: "a user token (x-user-id-token) or an authorized internal client credential is required"}
 	}
 	return s.scopeForUser(ctx, id.UserEmail)
