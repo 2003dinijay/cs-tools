@@ -178,7 +178,7 @@ func (r *commentRepo) SearchComments(ctx context.Context, referenceID string, re
 		FROM (
 			SELECT DISTINCT ON (c.id)
 				c.id, c.work_item_id, c.content, c.type, c.created_by, c.created_on,
-				COALESCE(u.name, NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS resolved_name
+				COALESCE(NULLIF(TRIM(u.name), ''), NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS resolved_name
 			%s
 			LEFT JOIN "user" u ON LOWER(u.email) = LOWER(c.created_by)
 			%s
