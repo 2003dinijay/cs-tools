@@ -522,9 +522,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 
 	changeRequestRepo := repository.NewChangeRequestRepository(db)
 	var activeChangeRequestSvc service.ChangeRequestService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeChangeRequestSvc = service.NewServiceNowChangeRequestService(serviceNowIntegrationServiceClient)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		// Pilot extension: change request CREATE only, same ServiceNow-first,
+		// synchronous shape as the case/incident pilots above -- see
+		// changeRequestService.createChangeRequestSNFirst's own doc comment.
+		// Reads stay on Postgres in this mode; snChangeRequestMirrorSvc's
+		// CreateChangeRequest is the only method of it this mode ever calls.
+		snChangeRequestMirrorSvc := service.NewServiceNowChangeRequestService(serviceNowIntegrationServiceClient)
+		activeChangeRequestSvc = service.NewChangeRequestServiceWithSNMirror(changeRequestRepo, snChangeRequestMirrorSvc)
+	default:
 		activeChangeRequestSvc = service.NewChangeRequestService(changeRequestRepo)
 	}
 	changeRequestHandler := handler.NewChangeRequestHandler(activeChangeRequestSvc)
@@ -571,18 +580,50 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// needing work_item.number generation or undiscoverable business rules).
 	incidentRepo := repository.NewIncidentRepository(db)
 	var activeIncidentSvc service.IncidentService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeIncidentSvc = service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, eventPublisher)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		// Pilot extension: incident CREATE only, same ServiceNow-first,
+		// synchronous shape as the case pilot above -- see
+		// incidentService.createIncidentSNFirst's own doc comment. Reads
+		// stay on Postgres in this mode; snIncidentMirrorSvc's CreateIncident
+		// is the only method of it this mode ever calls.
+		//
+		// eventPublisher is passed through here (unlike snCaseMirrorSvc's nil
+		// publisher/access args above, which are inert for case because
+		// caseService's own CreateCase response building doesn't need them).
+		// The mirror is built with publisher=nil deliberately (unlike a
+		// plain DataSourceServiceNow instance) -- its own automatic publish
+		// fires right after the ServiceNow POST returns, before the
+		// Postgres insert this mode's reads depend on has even been
+		// attempted, which is exactly the premature-event bug CodeRabbit
+		// flagged on PR #1922. incident.created is instead published by
+		// createIncidentSNFirst itself, after that Postgres insert
+		// succeeds -- see NewIncidentServiceWithSNMirror's own doc comment
+		// and publishIncidentCreatedEvent's.
+		snIncidentMirrorSvc := service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, nil)
+		activeIncidentSvc = service.NewIncidentServiceWithSNMirror(incidentRepo, snIncidentMirrorSvc, eventPublisher)
+	default:
 		activeIncidentSvc = service.NewIncidentService(incidentRepo)
 	}
 	incidentHandler := handler.NewIncidentHandler(activeIncidentSvc)
 
 	problemRepo := repository.NewProblemRepository(db)
 	var activeProblemSvc service.ProblemService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeProblemSvc = service.NewServiceNowProblemService(serviceNowIntegrationServiceClient)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		// Pilot extension: problem CREATE only, same ServiceNow-first,
+		// synchronous shape as the case/incident/change-request pilots
+		// above -- see problemService.createProblemSNFirst's own doc
+		// comment. Reads stay on Postgres in this mode;
+		// snProblemMirrorSvc's CreateProblem is the only method of it this
+		// mode ever calls.
+		snProblemMirrorSvc := service.NewServiceNowProblemService(serviceNowIntegrationServiceClient)
+		activeProblemSvc = service.NewProblemServiceWithSNMirror(problemRepo, snProblemMirrorSvc)
+	default:
 		activeProblemSvc = service.NewProblemService(problemRepo)
 	}
 	problemHandler := handler.NewProblemHandler(activeProblemSvc)
