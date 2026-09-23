@@ -2458,6 +2458,27 @@ in. Implementing this would be a genuinely new feature (a migration + a real
 class of gap as `GlobalService.GlobalSearch`'s own "no Postgres
 implementation" note elsewhere in this file.
 
+## Case feedback silently 404'd on the Postgres data source instead of a documented 503
+
+Reported live: a case's Activity timeline always showed "Could not load Case
+Feedback" — on every case, every time. Unlike tasks (previous section) and
+every other ServiceNow-only entity in this codebase, `routes.go` only
+constructed `feedbackHandler` when `cfg.DataSource ==
+config.DataSourceServiceNow`, leaving it `nil` (and, with the surrounding
+`if feedbackHandler != nil` guard, both `POST /cases/feedback/search` and
+`/aggregate` entirely **unregistered**) on Postgres — a silent 404, even
+though `openapi.yaml` already documents a `503` `ErrorResponse` for both
+paths. No feedback table exists anywhere in `migrations/` either, so this is
+genuinely ServiceNow-only, same as tasks — the bug was purely in *how* that
+was expressed. Fixed by adding `unavailableFeedbackService`
+(`feedback_service.go`), an exact mirror of `unavailableTaskService`: every
+method returns the documented `*apierror.ServiceUnavailableError`. `routes.go`
+now always constructs `feedbackHandler` (Postgres gets the unavailable
+stand-in, same `if cfg.DataSource == ... else ...` shape as `activeTaskSvc`
+above) and always registers both routes unconditionally — a real, documented
+503 instead of an undocumented 404 callers can't distinguish from a
+genuinely missing resource.
+
 ## Adding a new entity
 
 Follow these steps in order:
