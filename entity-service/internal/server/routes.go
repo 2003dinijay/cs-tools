@@ -224,12 +224,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		onboardingStepHandler = handler.NewOnboardingStepHandler(service.NewOnboardingStepService(repository.NewOnboardingStepRepository(db), accessSvc))
 	}
 
-	// Also constructed for DataSourcePostgresPrimarySNFallback: that mode's
+	// Also constructed for DataSourcePostgresServiceNowDualWrite: that mode's
 	// active services stay Postgres-backed (see the case wiring below), but
 	// its best-effort ServiceNow mirror writes still need this client.
 	// config.Validate requires the same four credentials for both modes.
 	var serviceNowIntegrationServiceClient *integrationservice.Client
-	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresPrimarySNFallback {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
 		serviceNowIntegrationServiceClient = integrationservice.New(cfg.ServiceNowIntegrationServiceBaseURL, integrationservice.ClientCredentialsConfig{
 			TokenURL:     cfg.ServiceNowIntegrationServiceTokenURL,
 			ClientID:     cfg.ServiceNowIntegrationServiceClientID,
@@ -367,11 +367,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	// NewServiceNowCaseService can also take it — see that constructor's
 	// own doc comment for what it uses it for (a direct, in-process role
 	// lookup backing applyResponseSLAOnComment, not routed through HTTP).
-	// Also constructed for DataSourcePostgresPrimarySNFallback, for the same
+	// Also constructed for DataSourcePostgresServiceNowDualWrite, for the same
 	// reason serviceNowIntegrationServiceClient above is: the case pilot's
 	// SN-mirror snCaseService instance below needs it too.
 	var snUserService service.SNUserService
-	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresPrimarySNFallback {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
 		snUserService = service.NewServiceNowUserService(serviceNowIntegrationServiceClient)
 	}
 
@@ -379,7 +379,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	var activeCaseSvc service.CaseService
 	// caseAttachmentOverrideSvc, when non-nil, is the CaseService case
 	// attachment routes (registered further below) use INSTEAD of
-	// activeCaseSvc -- see its assignment in the DataSourcePostgresPrimarySNFallback
+	// activeCaseSvc -- see its assignment in the DataSourcePostgresServiceNowDualWrite
 	// case for why. nil in every other mode: attachments follow activeCaseSvc
 	// exactly as before this override existed.
 	var caseAttachmentOverrideSvc service.CaseService
@@ -387,7 +387,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	case config.DataSourceServiceNow:
 		pgCaseFallbackSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
 		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseFallbackSvc, eventPublisher, snUserService, cfg.CustomerRoles)
-	case config.DataSourcePostgresPrimarySNFallback:
+	case config.DataSourcePostgresServiceNowDualWrite:
 		// Pilot: case CREATE, and UPDATE's WorkState field only.
 		//
 		// CREATE is ServiceNow-first and synchronous — see
@@ -406,20 +406,34 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		// deliberately non-functional — this only unblocks the fallback
 		// mode's own path.
 		//
-		// UPDATE mirrors WorkState only, asynchronously, after Postgres —
-		// see caseService.UpdateCase's own doc comment for exactly what
-		// this mirrors and why (State/Severity mirroring needs
-		// snCaseService.UpdateCase refactored into a read-free PATCH-only
-		// helper first; deferred as separate, reviewed work against that
-		// live ServiceNow-mode-serving code).
+		// UPDATE mirrors State/Severity/WorkState, asynchronously, after
+		// Postgres — see caseService.UpdateCase's own doc comment for
+		// exactly what this mirrors and why. State/Severity joined the
+		// mirror later than WorkState did, once patchCaseFields
+		// (sn_case_service.go) existed: a bare PATCH with none of
+		// snCaseService.UpdateCase's own read-before-write behavior (that
+		// method still does a live GetCaseByID before PATCHing State/
+		// Severity, which this mode must never do — patchCaseFields is a
+		// separate, additional method precisely so UpdateCase itself stays
+		// unchanged for live DataSource=servicenow traffic).
+		//
+		// CreateCaseComment mirrors the comment's content, asynchronously,
+		// after Postgres — see that method's own doc comment. It uses
+		// CreateBareCaseComment (sn_case_service.go), not the full
+		// CreateCaseComment, for the same reason patchCaseFields exists:
+		// Postgres already decided the real outcome, so ServiceNow's own
+		// state-transition/event side effects must not re-run.
 		//
 		// snCaseMirrorSvc is a full snCaseService, exactly as constructed
 		// for DataSourceServiceNow above, but it is never made the active
 		// CaseService — reads always stay on Postgres in this mode. It
-		// serves three purposes: CreateCase calls its CreateCase directly and
-		// synchronously; UpdateCase dispatches to its UpdateCase via
-		// caseWriteback, asynchronously; and it is caseAttachmentOverrideSvc
-		// below, for case attachments specifically.
+		// serves four purposes: CreateCase calls its CreateCase directly and
+		// synchronously; UpdateCase dispatches to its patchCaseFields (via
+		// the snFieldPatcher interface) through caseWriteback, asynchronously;
+		// CreateCaseComment dispatches to its CreateBareCaseComment (via the
+		// snCommentMirror interface) through caseWriteback, asynchronously;
+		// and it is caseAttachmentOverrideSvc below, for case attachments
+		// specifically.
 		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles)
 		caseWriteback := service.NewSNWritebackDispatcher(repository.NewSNWritebackFailureRepository(db))
 		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, caseWriteback, snCaseMirrorSvc)

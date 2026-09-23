@@ -6553,8 +6553,8 @@ type SearchEventPublishFailuresResponse struct {
 }
 
 // SNWritebackFailure is the durable record of one failed best-effort
-// ServiceNow mirror write under DATA_SOURCE=postgres-primary-sn-fallback
-// (see config.DataSourcePostgresPrimarySNFallback and
+// ServiceNow mirror write under DATA_SOURCE=postgres-servicenow-dual-write
+// (see config.DataSourcePostgresServiceNowDualWrite and
 // service.SNWritebackDispatcher). Postgres has already committed by the
 // time this is written — this table exists purely so an operator can see,
 // and manually replay, exactly what ServiceNow is missing before treating
@@ -6722,14 +6722,29 @@ type AnnouncementRequest struct {
 	DryRunAt             *time.Time `json:"dryRunAt,omitempty"`
 	DryRunBy             *string    `json:"dryRunBy,omitempty"`
 	CreatedBy            string     `json:"createdBy"`
-	CreatedAt            time.Time  `json:"createdAt"`
-	UpdatedAt            time.Time  `json:"updatedAt"`
-	SubmittedBy          *string    `json:"submittedBy,omitempty"`
-	SubmittedAt          *time.Time `json:"submittedAt,omitempty"`
-	ApprovedBy           *string    `json:"approvedBy,omitempty"`
-	ApprovedAt           *time.Time `json:"approvedAt,omitempty"`
-	PublishedBy          *string    `json:"publishedBy,omitempty"`
-	PublishedAt          *time.Time `json:"publishedAt,omitempty"`
+	// CreatedByEmail/SubmittedByEmail/ApprovedByEmail/PublishedByEmail are
+	// display-only companions to their own *By id field (the IdP's stable
+	// per-account "userid", opaque and not human-readable — see
+	// csm-portal-backend's middleware.UserInfo.UserID) — captured from that
+	// same actor's resolved email at the moment of each action, purely so
+	// the portal can show something readable instead of that raw id. The
+	// *By field itself remains the actual identity used for every
+	// creator-only check (Publish/AddUpdate) and must never be replaced by
+	// email — an address can change ownership or get reused in a way a
+	// stable account id can't. Nil for any row written before this field
+	// existed, or if the caller didn't supply one.
+	CreatedByEmail   *string    `json:"createdByEmail,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
+	SubmittedBy      *string    `json:"submittedBy,omitempty"`
+	SubmittedByEmail *string    `json:"submittedByEmail,omitempty"`
+	SubmittedAt      *time.Time `json:"submittedAt,omitempty"`
+	ApprovedBy       *string    `json:"approvedBy,omitempty"`
+	ApprovedByEmail  *string    `json:"approvedByEmail,omitempty"`
+	ApprovedAt       *time.Time `json:"approvedAt,omitempty"`
+	PublishedBy      *string    `json:"publishedBy,omitempty"`
+	PublishedByEmail *string    `json:"publishedByEmail,omitempty"`
+	PublishedAt      *time.Time `json:"publishedAt,omitempty"`
 	// PublishedCaseIDs is nil/unset until MarkPublished — the real case id
 	// created for each project in ResolvedProjectIDs, self-reported by the
 	// same creator-only caller MarkPublished restricts this transition to
@@ -6754,6 +6769,11 @@ type CreateAnnouncementRequestRequest struct {
 	IsSecurityAnnouncement bool                    `json:"isSecurityAnnouncement"`
 	AudienceDefinition     json.RawMessage         `json:"audienceDefinition"`
 	CreatedBy              string                  `json:"createdBy"`
+	// CreatedByEmail is optional — see AnnouncementRequest.CreatedByEmail's
+	// own doc comment for what it's for. A caller that can't resolve one
+	// (or an older caller not yet updated for this field) simply leaves it
+	// empty; CreatedBy remains the real, required identity.
+	CreatedByEmail string `json:"createdByEmail,omitempty"`
 }
 
 // UpdateAnnouncementRequestRequest edits an announcement_requests row's own
@@ -6794,6 +6814,9 @@ type RecordAnnouncementDryRunRequest struct {
 type SubmitAnnouncementRequestRequest struct {
 	ResolvedProjectIDs []string `json:"resolvedProjectIds"`
 	ActorID            string   `json:"actorId"`
+	// ActorEmail is optional — see AnnouncementRequest.CreatedByEmail's own
+	// doc comment for what it's for.
+	ActorEmail string `json:"actorEmail,omitempty"`
 }
 
 // AnnouncementRequestActorRequest is the minimal request shape for a
@@ -6802,6 +6825,9 @@ type SubmitAnnouncementRequestRequest struct {
 // it needs the created case ids too.
 type AnnouncementRequestActorRequest struct {
 	ActorID string `json:"actorId"`
+	// ActorEmail is optional — see AnnouncementRequest.CreatedByEmail's own
+	// doc comment for what it's for.
+	ActorEmail string `json:"actorEmail,omitempty"`
 }
 
 // PublishAnnouncementRequestRequest moves approved -> published.
@@ -6814,6 +6840,9 @@ type AnnouncementRequestActorRequest struct {
 type PublishAnnouncementRequestRequest struct {
 	ActorID string   `json:"actorId"`
 	CaseIDs []string `json:"caseIds"`
+	// ActorEmail is optional — see AnnouncementRequest.CreatedByEmail's own
+	// doc comment for what it's for.
+	ActorEmail string `json:"actorEmail,omitempty"`
 }
 
 // AnnouncementRequestUpdate is one dated follow-up comment applied, after
@@ -6830,6 +6859,9 @@ type AnnouncementRequestUpdate struct {
 	AnnouncementRequestID string `json:"announcementRequestId"`
 	Content               string `json:"content"`
 	CreatedBy             string `json:"createdBy"`
+	// CreatedByEmail is optional — see AnnouncementRequest.CreatedByEmail's
+	// own doc comment for what it's for.
+	CreatedByEmail *string `json:"createdByEmail,omitempty"`
 	// CreatedOn (not CreatedAt) -- this is a new type, added after this
 	// codebase's timestamp fields were standardized on the "On" suffix for
 	// both the DB column and the JSON wire field (see CLAUDE.md's "Domain
@@ -6848,6 +6880,9 @@ type AnnouncementRequestUpdate struct {
 type CreateAnnouncementRequestUpdateRequest struct {
 	Content string `json:"content"`
 	ActorID string `json:"actorId"`
+	// ActorEmail is optional — see AnnouncementRequest.CreatedByEmail's own
+	// doc comment for what it's for.
+	ActorEmail string `json:"actorEmail,omitempty"`
 }
 
 // SearchAnnouncementRequestUpdatesResponse lists every update posted for one

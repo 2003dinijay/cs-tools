@@ -17300,6 +17300,16 @@ components:
           nullable: true
         createdBy:
           type: string
+        createdByEmail:
+          type: string
+          nullable: true
+          description: >-
+            Display-only companion to createdBy (the IdP's stable, opaque
+            account id) — the actor's resolved email at creation time, for
+            showing something readable instead of that id. Never used for
+            the creator-only authorization checks (Publish/AddUpdate), which
+            always compare against createdBy. Null for any row written
+            before this field existed, or if the caller didn't supply one.
         createdAt:
           type: string
           format: date-time
@@ -17309,6 +17319,9 @@ components:
         submittedBy:
           type: string
           nullable: true
+        submittedByEmail:
+          type: string
+          nullable: true
         submittedAt:
           type: string
           format: date-time
@@ -17316,11 +17329,17 @@ components:
         approvedBy:
           type: string
           nullable: true
+        approvedByEmail:
+          type: string
+          nullable: true
         approvedAt:
           type: string
           format: date-time
           nullable: true
         publishedBy:
+          type: string
+          nullable: true
+        publishedByEmail:
           type: string
           nullable: true
         publishedAt:
@@ -17356,6 +17375,9 @@ components:
         createdBy:
           type: string
           description: The caller-resolved actor id — this service is called server-to-server and does not resolve one itself.
+        createdByEmail:
+          type: string
+          description: Optional display-only companion to createdBy — see AnnouncementRequest.createdByEmail.
 
     UpdateAnnouncementRequestRequest:
       type: object
@@ -17396,6 +17418,9 @@ components:
           minItems: 1
         actorId:
           type: string
+        actorEmail:
+          type: string
+          description: Optional display-only companion to actorId — see AnnouncementRequest.createdByEmail.
 
     AnnouncementRequestActorRequest:
       type: object
@@ -17404,6 +17429,9 @@ components:
       properties:
         actorId:
           type: string
+        actorEmail:
+          type: string
+          description: Optional display-only companion to actorId — see AnnouncementRequest.createdByEmail.
 
     PublishAnnouncementRequestRequest:
       type: object
@@ -17418,6 +17446,9 @@ components:
             type: string
           minItems: 1
           description: The real case id created for each project in the request's own resolvedProjectIds, from the caller's own fan-out.
+        actorEmail:
+          type: string
+          description: Optional display-only companion to actorId — see AnnouncementRequest.createdByEmail.
 
     CreateAnnouncementRequestUpdateRequest:
       type: object
@@ -17428,6 +17459,9 @@ components:
           type: string
         actorId:
           type: string
+        actorEmail:
+          type: string
+          description: Optional display-only companion to actorId — see AnnouncementRequest.createdByEmail.
 
     AnnouncementRequestUpdate:
       description: >
@@ -17446,6 +17480,10 @@ components:
           type: string
         createdBy:
           type: string
+        createdByEmail:
+          type: string
+          nullable: true
+          description: Optional display-only companion to createdBy — see AnnouncementRequest.createdByEmail.
         createdOn:
           type: string
           format: date-time

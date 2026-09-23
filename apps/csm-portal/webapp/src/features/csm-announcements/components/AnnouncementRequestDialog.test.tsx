@@ -72,6 +72,20 @@ vi.mock("@features/csm-announcements/api/useAnnouncementDryRun", () => ({
 vi.mock("@hooks/useIdTokenClaims", () => ({
   useIdTokenClaims: vi.fn(),
 }));
+// Every existing test below was written to exercise the dialog's actual
+// mutation-triggering behavior (approve/edit/submit/publish/post-update),
+// which requires canWrite — the real usePortalAccess would derive false
+// here since there's no CurrentUserProvider in this test's render tree.
+vi.mock("@context/current-user/usePortalAccess", () => ({
+  usePortalAccess: () => ({
+    hasAnyRole: true,
+    canEscalate: true,
+    canDownloadAttachment: true,
+    canUseOperations: true,
+    canUseTimeCardsAndUpdates: true,
+    canWrite: true,
+  }),
+}));
 // PublishConfirmationDialog's useResolvedAudiencePreview needs both of
 // these — see DirectoryMembersList.test.tsx for the same pattern.
 vi.mock("@config/apiConfig", () => ({
@@ -210,6 +224,44 @@ describe("AnnouncementRequestDialog — loading/error", () => {
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: /retry/i }));
     expect(refetch).toHaveBeenCalled();
+  });
+});
+
+describe("AnnouncementRequestDialog — actor email display", () => {
+  // createdByEmail (and its submitted/approved/published siblings) are
+  // display-only companions to their own *By id field — never used for the
+  // creator-only checks, which always compare claims.userid against the raw
+  // *By id. Regression coverage for a real bug this could reintroduce: this
+  // dialog used to render the raw, human-unreadable *By id directly.
+  it("prefers createdByEmail over the raw createdBy id when both are present", () => {
+    mockGet({ createdBy: "e441e951-a2f5-4813-b308-817f128f4660", createdByEmail: "jane@example.com" });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+    expect(screen.getByText(/jane@example.com/)).toBeInTheDocument();
+    expect(screen.queryByText(/e441e951-a2f5-4813-b308-817f128f4660/)).not.toBeInTheDocument();
+  });
+
+  it("falls back to the raw createdBy id when createdByEmail is absent (a row written before this field existed)", () => {
+    mockGet({ createdBy: "e441e951-a2f5-4813-b308-817f128f4660", createdByEmail: undefined });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+    expect(screen.getByText(/e441e951-a2f5-4813-b308-817f128f4660/)).toBeInTheDocument();
+  });
+
+  it("still enforces creator-only actions against the id, not the display email", () => {
+    // The signed-in user's own claims.userid never matches an email — this
+    // confirms the ownership check the "Only <email> can publish" caption
+    // above sits next to is still comparing the real ids, unaffected by
+    // preferring the email purely for display.
+    mockGet({
+      state: "approved",
+      createdBy: "e441e951-a2f5-4813-b308-817f128f4660",
+      createdByEmail: "jane@example.com",
+      resolvedProjectIds: ["p-1"],
+      resolvedProjectCount: 1,
+    });
+    mockedIdTokenClaims.mockReturnValue({ userid: "e441e951-a2f5-4813-b308-817f128f4660" });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+    expect(screen.queryByText(/only jane@example.com can publish this request/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^publish$/i })).not.toBeDisabled();
   });
 });
 

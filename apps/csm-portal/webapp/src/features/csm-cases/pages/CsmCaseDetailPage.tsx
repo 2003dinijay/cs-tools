@@ -2217,21 +2217,23 @@ export default function CsmCaseDetailPage(): JSX.Element {
         >
           Back
         </Button>
-        <ExportPdfButton
-          onExport={handleExportCasePdf}
-          disabled={
-            isCommentsLoading ||
-            isActivityLoading ||
-            isAttachmentsLoading ||
-            isFeedbackLoading ||
-            isChatLoading ||
-            isCommentsError ||
-            isActivityError ||
-            isAttachmentsError ||
-            isFeedbackError ||
-            isChatError
-          }
-        />
+        {canWrite && (
+          <ExportPdfButton
+            onExport={handleExportCasePdf}
+            disabled={
+              isCommentsLoading ||
+              isActivityLoading ||
+              isAttachmentsLoading ||
+              isFeedbackLoading ||
+              isChatLoading ||
+              isCommentsError ||
+              isActivityError ||
+              isAttachmentsError ||
+              isFeedbackError ||
+              isChatError
+            }
+          />
+        )}
       </Box>
 
       <Box
@@ -2826,7 +2828,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   variant="outlined"
                   startIcon={<LinkIcon size={14} />}
                   onClick={() => setLinkCaseOpen(true)}
-                  disabled={isClosed}
+                  disabled={isClosed || !canWrite}
                 >
                   Link to another case
                 </Button>
@@ -2870,7 +2872,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             <LinkedServiceRequestsWidget
               caseId={c.id}
               linkedServiceRequests={c.linkedServiceRequests}
-              createDisabled={isClosed}
+              createDisabled={isClosed || !canWrite}
               onCreateServiceRequest={() => {
                 const navState: CreateServiceRequestFromCaseNavState = {
                   projectId: c.projectId,
@@ -2896,7 +2898,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           <WatchersWidget
             entityKind="case"
             watchers={c.watchers}
-            onReplace={onReplaceWatchers}
+            onReplace={canWrite ? onReplaceWatchers : undefined}
             isSaving={patchCase.isPending}
             onRefresh={() => void refetchCaseDetail()}
             isRefreshing={isFetchingCaseDetail}

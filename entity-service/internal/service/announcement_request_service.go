@@ -173,7 +173,7 @@ func (s *announcementRequestService) Submit(ctx context.Context, id string, req 
 // here — the real approval decision already happened over email, outside
 // this service; this call only records that whoever is working the
 // request says it's been approved.
-func (s *announcementRequestService) Approve(ctx context.Context, id, actorID string) (domain.AnnouncementRequest, error) {
+func (s *announcementRequestService) Approve(ctx context.Context, id, actorID, actorEmail string) (domain.AnnouncementRequest, error) {
 	if strings.TrimSpace(actorID) == "" {
 		return domain.AnnouncementRequest{}, &apierror.ValidationError{Msg: "actorId is required"}
 	}
@@ -185,7 +185,7 @@ func (s *announcementRequestService) Approve(ctx context.Context, id, actorID st
 	if current.State != domain.AnnouncementRequestStatePendingApproval {
 		return domain.AnnouncementRequest{}, &apierror.ConflictError{Msg: "only a request pending approval can be approved, not " + string(current.State)}
 	}
-	return s.repo.Approve(ctx, id, actorID)
+	return s.repo.Approve(ctx, id, actorID, actorEmail)
 }
 
 // MarkPublished implements AnnouncementRequestService. Rejects unless the
@@ -193,7 +193,7 @@ func (s *announcementRequestService) Approve(ctx context.Context, id, actorID st
 // itself — the caller (the webapp's own publish flow) does that fan-out
 // exactly as it already does today; this call only records that it
 // happened, by whom, when, and which case ids resulted.
-func (s *announcementRequestService) MarkPublished(ctx context.Context, id, actorID string, caseIDs []string) (domain.AnnouncementRequest, error) {
+func (s *announcementRequestService) MarkPublished(ctx context.Context, id, actorID, actorEmail string, caseIDs []string) (domain.AnnouncementRequest, error) {
 	if strings.TrimSpace(actorID) == "" {
 		return domain.AnnouncementRequest{}, &apierror.ValidationError{Msg: "actorId is required"}
 	}
@@ -220,7 +220,7 @@ func (s *announcementRequestService) MarkPublished(ctx context.Context, id, acto
 	if current.CreatedBy != actorID {
 		return domain.AnnouncementRequest{}, &apierror.ForbiddenError{Msg: "only the request's creator can publish it"}
 	}
-	return s.repo.MarkPublished(ctx, id, actorID, caseIDs)
+	return s.repo.MarkPublished(ctx, id, actorID, actorEmail, caseIDs)
 }
 
 // AddUpdate implements AnnouncementRequestService. Rejects unless the
@@ -228,7 +228,7 @@ func (s *announcementRequestService) MarkPublished(ctx context.Context, id, acto
 // CreatedBy -- same creator-only restriction as MarkPublished, and for the
 // same reason: this is what gates who can post a follow-up that will be
 // applied as a real comment on every one of PublishedCaseIDs.
-func (s *announcementRequestService) AddUpdate(ctx context.Context, id, actorID, content string) (domain.AnnouncementRequestUpdate, error) {
+func (s *announcementRequestService) AddUpdate(ctx context.Context, id, actorID, actorEmail, content string) (domain.AnnouncementRequestUpdate, error) {
 	if strings.TrimSpace(actorID) == "" {
 		return domain.AnnouncementRequestUpdate{}, &apierror.ValidationError{Msg: "actorId is required"}
 	}
@@ -246,7 +246,7 @@ func (s *announcementRequestService) AddUpdate(ctx context.Context, id, actorID,
 	if current.CreatedBy != actorID {
 		return domain.AnnouncementRequestUpdate{}, &apierror.ForbiddenError{Msg: "only the request's creator can post an update"}
 	}
-	return s.repo.CreateUpdate(ctx, id, content, actorID)
+	return s.repo.CreateUpdate(ctx, id, content, actorID, actorEmail)
 }
 
 // ListUpdates implements AnnouncementRequestService.

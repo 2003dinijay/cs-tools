@@ -33,6 +33,7 @@ import {
 import { RefreshCw, X } from "@wso2/oxygen-ui-icons-react";
 import { Link } from "react-router";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import EditorWithSourceToggle from "@components/rich-text-editor/EditorWithSourceToggle";
 import { formatAbsoluteForUser } from "@utils/dateTime";
 import { sanitizeRichTextHtml } from "@utils/sanitizeHtml";
@@ -118,6 +119,7 @@ export default function AnnouncementRequestDialog({
   requestId,
   onClose,
 }: AnnouncementRequestDialogProps): JSX.Element {
+  const { canWrite } = usePortalAccess();
   const { data: request, isLoading, isError, refetch } = useGetAnnouncementRequest(requestId);
   const update = useUpdateAnnouncementRequest();
   const recordDryRun = useRecordAnnouncementRequestDryRun();
@@ -427,7 +429,12 @@ export default function AnnouncementRequestDialog({
                     variant="outlined"
                     size="small"
                     onClick={handleSaveContent}
-                    disabled={update.isPending || subject.trim().length === 0 || contentLockedForRetry}
+                    disabled={
+                      update.isPending ||
+                      subject.trim().length === 0 ||
+                      contentLockedForRetry ||
+                      !canWrite
+                    }
                   >
                     {update.isPending ? "Saving…" : "Save changes"}
                   </Button>
@@ -473,21 +480,29 @@ export default function AnnouncementRequestDialog({
                 </Typography>
               </DetailField>
               <DetailField label="Created">
-                <Typography variant="body2">{whoWhen(request.createdBy, request.createdAt)}</Typography>
+                <Typography variant="body2">
+                  {whoWhen(request.createdByEmail ?? request.createdBy, request.createdAt)}
+                </Typography>
               </DetailField>
               {request.submittedAt && (
                 <DetailField label="Submitted">
-                  <Typography variant="body2">{whoWhen(request.submittedBy, request.submittedAt)}</Typography>
+                  <Typography variant="body2">
+                    {whoWhen(request.submittedByEmail ?? request.submittedBy, request.submittedAt)}
+                  </Typography>
                 </DetailField>
               )}
               {request.approvedAt && (
                 <DetailField label="Approved">
-                  <Typography variant="body2">{whoWhen(request.approvedBy, request.approvedAt)}</Typography>
+                  <Typography variant="body2">
+                    {whoWhen(request.approvedByEmail ?? request.approvedBy, request.approvedAt)}
+                  </Typography>
                 </DetailField>
               )}
               {request.publishedAt && (
                 <DetailField label="Published">
-                  <Typography variant="body2">{whoWhen(request.publishedBy, request.publishedAt)}</Typography>
+                  <Typography variant="body2">
+                    {whoWhen(request.publishedByEmail ?? request.publishedBy, request.publishedAt)}
+                  </Typography>
                 </DetailField>
               )}
             </Box>
@@ -519,11 +534,16 @@ export default function AnnouncementRequestDialog({
                   variant="contained"
                   size="small"
                   onClick={() => approve.mutate({ id: request.id })}
-                  disabled={approve.isPending}
+                  disabled={approve.isPending || !canWrite}
                 >
                   {approve.isPending ? "Approving…" : "Mark as approved"}
                 </Button>
-                <Button variant="text" size="small" onClick={() => setConfirmEditOpen(true)}>
+                <Button
+                  variant="text"
+                  size="small"
+                  onClick={() => setConfirmEditOpen(true)}
+                  disabled={!canWrite}
+                >
                   Edit
                 </Button>
                 {approve.isError && (
@@ -545,7 +565,8 @@ export default function AnnouncementRequestDialog({
                     submittingForApproval ||
                     hasUnsavedChanges ||
                     subject.trim().length === 0 ||
-                    isEmptyHtml(description)
+                    isEmptyHtml(description) ||
+                    !canWrite
                   }
                 >
                   {dryRun.runningDryRun
@@ -581,7 +602,13 @@ export default function AnnouncementRequestDialog({
                     onClick={() =>
                       !hasUnsavedChanges && claimsReady && isRequestCreator && setConfirmPublishOpen(true)
                     }
-                    disabled={publish.publishing || hasUnsavedChanges || !claimsReady || !isRequestCreator}
+                    disabled={
+                      publish.publishing ||
+                      hasUnsavedChanges ||
+                      !claimsReady ||
+                      !isRequestCreator ||
+                      !canWrite
+                    }
                   >
                     {!claimsReady
                       ? "Publish"
@@ -596,7 +623,8 @@ export default function AnnouncementRequestDialog({
                 </Box>
                 {claimsReady && !isRequestCreator && (
                   <Typography variant="caption" color="text.secondary">
-                    Only {request.createdBy} can publish this request — approving it doesn't grant that.
+                    Only {request.createdByEmail ?? request.createdBy} can publish this request — approving it
+                    doesn't grant that.
                   </Typography>
                 )}
                 {claimsReady && isRequestCreator && hasUnsavedChanges && (
@@ -628,7 +656,7 @@ export default function AnnouncementRequestDialog({
 
                 {claimsReady && !isRequestCreator && (
                   <Typography variant="caption" color="text.secondary">
-                    Only {request.createdBy} can post an update to this request.
+                    Only {request.createdByEmail ?? request.createdBy} can post an update to this request.
                   </Typography>
                 )}
                 {claimsReady && isRequestCreator && (request.publishedCaseIds ?? []).length === 0 && (
@@ -651,7 +679,8 @@ export default function AnnouncementRequestDialog({
                           updateContent.trim().length === 0 ||
                           createUpdate.isPending ||
                           postUpdateComments.posting ||
-                          (request.publishedCaseIds ?? []).length === 0
+                          (request.publishedCaseIds ?? []).length === 0 ||
+                          !canWrite
                         }
                         onClick={() => setConfirmUpdateOpen(true)}
                       >
@@ -679,7 +708,7 @@ export default function AnnouncementRequestDialog({
                     {updatesQuery.data.updates.map((u) => (
                       <Box key={u.id} sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.5 }}>
                         <Typography variant="caption" color="text.secondary">
-                          {whoWhen(u.createdBy, u.createdOn)}
+                          {whoWhen(u.createdByEmail ?? u.createdBy, u.createdOn)}
                         </Typography>
                         <Box
                           sx={{ fontSize: "0.875rem", lineHeight: 1.5, wordBreak: "break-word", mt: 0.5 }}

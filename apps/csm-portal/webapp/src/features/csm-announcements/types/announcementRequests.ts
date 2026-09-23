@@ -70,13 +70,24 @@ export interface AnnouncementRequest {
   dryRunAt?: string | null;
   dryRunBy?: string | null;
   createdBy: string;
+  /**
+   * Display-only companion to createdBy (an opaque IdP account id, not
+   * human-readable) — the actor's resolved email at the moment of the
+   * action, for showing something readable instead of that id. Never used
+   * for any creator/ownership check — those must always compare against
+   * the *By id field. Null for a row written before this field existed.
+   */
+  createdByEmail?: string | null;
   createdAt: string;
   updatedAt: string;
   submittedBy?: string | null;
+  submittedByEmail?: string | null;
   submittedAt?: string | null;
   approvedBy?: string | null;
+  approvedByEmail?: string | null;
   approvedAt?: string | null;
   publishedBy?: string | null;
+  publishedByEmail?: string | null;
   publishedAt?: string | null;
   /** The real case id created for each project in resolvedProjectIds. Null until published. */
   publishedCaseIds?: string[] | null;
@@ -122,6 +133,8 @@ export interface AnnouncementRequestUpdate {
   announcementRequestId: string;
   content: string;
   createdBy: string;
+  /** Display-only companion to createdBy — see AnnouncementRequest.createdByEmail. */
+  createdByEmail?: string | null;
   createdOn: string;
 }
 
