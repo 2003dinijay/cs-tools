@@ -356,6 +356,18 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 		return s.createCaseSNFirst(ctx, req)
 	}
 
+	// Only the pure-Postgres path below (no ServiceNow mirror at all) is
+	// genuinely limited to type "case" — it writes directly into the
+	// work_item+"case" tables, which have no equivalent extension table for
+	// engagement/service_request/security_report_analysis/announcement yet
+	// (see CaseRepository's own doc comment). This check used to run before
+	// the snMirror branch above, unconditionally rejecting "announcement"
+	// even when ServiceNow (which does support it — snCaseTypeMap has a real
+	// entry) was about to handle the actual create.
+	if req.Type != "case" {
+		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "only type \"case\" is supported for the Postgres data source"}
+	}
+
 	if req.CreatedBy == "" {
 		token := middleware.UserIDTokenFromContext(ctx)
 		if token == "" {

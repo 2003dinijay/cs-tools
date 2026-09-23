@@ -6752,6 +6752,18 @@ type AnnouncementRequest struct {
 	// (see AnnouncementRequestUpdate) target the exact cases this
 	// announcement actually created, instead of re-deriving them.
 	PublishedCaseIDs []string `json:"publishedCaseIds,omitempty"`
+	// DueOn is set once, automatically, by Submit (now + one month) — purely
+	// informational display in this slice, never enforced or acted on by
+	// this service. Nil for any row that hasn't been submitted yet.
+	DueOn *time.Time `json:"dueOn,omitempty"`
+	// ScheduledFor is set/cleared only via Schedule, never by Update — when
+	// non-nil and this row is approved, operations/csm-scheduled-tasks'
+	// "publish_scheduled_announcements" sub-cron publishes it automatically
+	// once this time arrives, exactly as if a human had clicked Publish.
+	// Left as-is after MarkPublished (a harmless historical value — the
+	// ReadyForScheduledPublish search filter already excludes anything not
+	// approved).
+	ScheduledFor *time.Time `json:"scheduledFor,omitempty"`
 }
 
 // CreateAnnouncementRequestRequest creates a new announcement_requests row
@@ -6792,6 +6804,19 @@ type UpdateAnnouncementRequestRequest struct {
 	// pending_approval -> draft revert (see Update's doc comment) has a
 	// consistent actor-required shape with every other transition below.
 	ActorID string `json:"actorId"`
+}
+
+// ScheduleAnnouncementRequestRequest sets or clears an approved request's
+// automatic-publish time — a dedicated action endpoint, not folded into the
+// generic Update, so it never interacts with that method's own
+// state-branching logic (see AnnouncementRequestService.Update's doc
+// comment). ScheduledFor nil unambiguously means "clear the schedule" here,
+// since setting/clearing that one field is this endpoint's entire job —
+// unlike Update, where nil already means "leave unchanged" for every field.
+type ScheduleAnnouncementRequestRequest struct {
+	ScheduledFor *time.Time `json:"scheduledFor"`
+	ActorID      string     `json:"actorId"`
+	ActorEmail   string     `json:"actorEmail,omitempty"`
 }
 
 // RecordAnnouncementDryRunRequest records that a dry run has been completed
@@ -6900,9 +6925,15 @@ type SearchAnnouncementRequestUpdatesResponse struct {
 // (the registry page's "Pending" tab) needs to choose its own filter
 // explicitly rather than inherit an implicit one.
 type SearchAnnouncementRequestsRequest struct {
-	State      *AnnouncementRequestState `json:"state,omitempty"`
-	CreatedBy  *string                   `json:"createdBy,omitempty"`
-	Pagination Pagination                `json:"pagination"`
+	State     *AnnouncementRequestState `json:"state,omitempty"`
+	CreatedBy *string                   `json:"createdBy,omitempty"`
+	// ReadyForScheduledPublish, when true, ignores State and instead matches
+	// every approved row whose ScheduledFor is set and has already arrived
+	// (scheduled_for <= now()) — the one query
+	// operations/csm-scheduled-tasks' "publish_scheduled_announcements"
+	// sub-cron needs. Mutually exclusive with State (ambiguous otherwise).
+	ReadyForScheduledPublish bool       `json:"readyForScheduledPublish,omitempty"`
+	Pagination               Pagination `json:"pagination"`
 }
 
 type SearchAnnouncementRequestsResponse struct {
@@ -6911,6 +6942,74 @@ type SearchAnnouncementRequestsResponse struct {
 	Limit    int                   `json:"limit"`
 	Offset   int                   `json:"offset"`
 	HasMore  bool                  `json:"hasMore"`
+}
+
+// AnnouncementRequestDeliveryStatus is the outcome of one project's attempt
+// within an announcement request's Publish fan-out. There is no "pending"
+// value — a project with no recorded delivery yet simply has no row (see
+// AnnouncementRequestDelivery's own doc comment).
+type AnnouncementRequestDeliveryStatus string
+
+const (
+	// AnnouncementRequestDeliveryStatusSucceeded means the case was created
+	// and (for a security announcement) its mandatory tag attached.
+	AnnouncementRequestDeliveryStatusSucceeded AnnouncementRequestDeliveryStatus = "succeeded"
+	// AnnouncementRequestDeliveryStatusTagFailed means the case was created
+	// but attaching the mandatory security-announcement tag failed — the
+	// case is real (CaseID is set), but a retry must reattach the tag
+	// directly rather than creating a second case for the same project.
+	AnnouncementRequestDeliveryStatusTagFailed AnnouncementRequestDeliveryStatus = "tag_failed"
+	// AnnouncementRequestDeliveryStatusFailed means the case itself was
+	// never created — a retry must attempt case creation again.
+	AnnouncementRequestDeliveryStatusFailed AnnouncementRequestDeliveryStatus = "failed"
+)
+
+// AnnouncementRequestDelivery is the durable record of one project's outcome
+// within an announcement request's own Publish fan-out — see this table's
+// own migration (000081) doc comment for the full "why" (replacing purely
+// in-memory retry tracking that was lost if the dialog closed mid-retry).
+// No ServiceNow equivalent — always backed by Postgres.
+type AnnouncementRequestDelivery struct {
+	ID                    string `json:"id"`
+	AnnouncementRequestID string `json:"announcementRequestId"`
+	ProjectID             string `json:"projectId"`
+	// CaseID is set for Succeeded and TagFailed (the case is real either
+	// way), nil for Failed.
+	CaseID       *string                           `json:"caseId,omitempty"`
+	Status       AnnouncementRequestDeliveryStatus `json:"status"`
+	ErrorMessage *string                           `json:"errorMessage,omitempty"`
+	CreatedOn    time.Time                         `json:"createdOn"`
+	UpdatedOn    time.Time                         `json:"updatedOn"`
+}
+
+// RecordAnnouncementRequestDeliveryInput is one project's outcome within a
+// RecordAnnouncementRequestDeliveriesRequest batch.
+type RecordAnnouncementRequestDeliveryInput struct {
+	ProjectID    string                            `json:"projectId"`
+	CaseID       *string                           `json:"caseId,omitempty"`
+	Status       AnnouncementRequestDeliveryStatus `json:"status"`
+	ErrorMessage *string                           `json:"errorMessage,omitempty"`
+}
+
+// RecordAnnouncementRequestDeliveriesRequest records (upserts) the outcome
+// of one Publish fan-out pass — one input per project attempted in that
+// pass, not the full resolved audience (a pass that only retried failures
+// need not resend every already-succeeded project's own unchanged row).
+// Batched into one call per pass (not one call per project) because the
+// scenario this exists to fix is the dialog closing *between* passes, not a
+// mid-pass browser crash — see the hook using this for the full reasoning.
+type RecordAnnouncementRequestDeliveriesRequest struct {
+	ActorID    string                                   `json:"actorId"`
+	Deliveries []RecordAnnouncementRequestDeliveryInput `json:"deliveries"`
+}
+
+// SearchAnnouncementRequestDeliveriesResponse lists every delivery recorded
+// for one announcement request — at most one row per resolved project, no
+// particular order guaranteed beyond what the repository returns. No
+// pagination: a request's own resolved audience is already bounded by
+// whatever practical limit an announcement's project count has.
+type SearchAnnouncementRequestDeliveriesResponse struct {
+	Deliveries []AnnouncementRequestDelivery `json:"deliveries"`
 }
 
 // ScheduledTaskRun is the durable record of one attempted period of a
