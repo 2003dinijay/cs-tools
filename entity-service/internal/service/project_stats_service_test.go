@@ -17,8 +17,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,7 +166,8 @@ func TestGetProjectStats_MapsOutstandingCountsAndHours(t *testing.T) {
 
 // deployment_node uses the live schema's column names, which a
 // migrations-built database lacks, so the count degrades to zero instead of
-// failing the whole dashboard.
+// failing the whole dashboard -- but the failure is logged, because a
+// silently-zero count is indistinguishable from a project with no instances.
 func TestGetProjectStats_InstanceCountDegradesToZero(t *testing.T) {
 	repo := &fakeProjectStatsRepo{
 		instances: 99, instanceErr: errors.New("column dn.project_key does not exist"),
@@ -171,6 +175,9 @@ func TestGetProjectStats_InstanceCountDegradesToZero(t *testing.T) {
 			HasDeployedProduct: true, HasActiveEndDate: true, HasCustomerAdminContact: true,
 		},
 	}
+
+	logs := captureSlog(t)
+
 	resp, err := newStatsService(repo).GetProjectStats(context.Background(), testUUID)
 	if err != nil {
 		t.Fatalf("GetProjectStats must not fail on an instance-count error: %v", err)
@@ -181,6 +188,34 @@ func TestGetProjectStats_InstanceCountDegradesToZero(t *testing.T) {
 	if resp.DeployedProductCount != repo.deployedProducts {
 		t.Errorf("the rest of the response must still be populated")
 	}
+	if out := logs.String(); !strings.Contains(out, "instance count degraded to zero") ||
+		!strings.Contains(out, "dn.project_key") {
+		t.Errorf("expected a warning naming the underlying error, got: %s", out)
+	}
+}
+
+// A healthy instance count must not log anything -- the warning is a signal
+// that something is wrong, so it has to stay quiet on the happy path.
+func TestGetProjectStats_InstanceCountSuccessIsSilent(t *testing.T) {
+	repo := &fakeProjectStatsRepo{instances: 7}
+	logs := captureSlog(t)
+
+	if _, err := newStatsService(repo).GetProjectStats(context.Background(), testUUID); err != nil {
+		t.Fatalf("GetProjectStats: %v", err)
+	}
+	if out := logs.String(); strings.Contains(out, "instance count degraded") {
+		t.Errorf("expected no warning on success, got: %s", out)
+	}
+}
+
+// captureSlog redirects the default logger for one test and restores it after.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
 }
 
 func TestGetProjectConversationStats_ActiveStates(t *testing.T) {

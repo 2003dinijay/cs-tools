@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -162,8 +163,18 @@ func (s *projectStatsService) GetProjectStats(ctx context.Context, projectID str
 		// whole dashboard, so the count degrades to zero and the error is
 		// deliberately NOT returned -- returning it would cancel gctx and
 		// fail every sibling query too.
+		//
+		// It is still logged, because a silently-zero count is
+		// indistinguishable from a project that genuinely has no instances.
+		// Not when gctx is already cancelled: that means a sibling query
+		// failed first and this error is just the fallout, so logging it
+		// would bury the real cause under noise.
 		n, err := s.repo.InstanceCount(gctx, projectID)
 		if err != nil {
+			if gctx.Err() == nil {
+				slog.WarnContext(ctx, "project stats: instance count degraded to zero",
+					"projectID", projectID, "error", err)
+			}
 			return nil
 		}
 		instances = n
