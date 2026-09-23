@@ -559,9 +559,16 @@ describe("AnnouncementRequestDialog — approved", () => {
     });
 
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+    // Resolved to its real short key ("P-2", per this file's own
+    // useAuthApiClient mock returning key: id.toUpperCase()), not the raw
+    // frozen project id — both in the send-progress card's own chip and the
+    // confirmation dialog's list of what's about to be permanently skipped.
+    await vi.waitFor(() => expect(screen.getByText("P-2")).toBeInTheDocument());
+
     fireEvent.click(screen.getByRole("button", { name: /publish anyway/i }));
     expect(screen.getByText(/publish without the failed projects/i)).toBeInTheDocument();
-    expect(screen.getAllByText("p-2").length).toBeGreaterThan(0);
+    await vi.waitFor(() => expect(screen.getAllByText("P-2").length).toBeGreaterThan(1));
+    expect(screen.queryByText("p-2")).not.toBeInTheDocument();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^publish anyway$/i }));

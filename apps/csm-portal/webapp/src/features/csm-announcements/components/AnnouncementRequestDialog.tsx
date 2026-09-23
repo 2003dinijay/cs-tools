@@ -62,6 +62,7 @@ import AnnouncementSendProgress, {
   type AnnouncementSendProgressState,
 } from "@features/csm-announcements/components/AnnouncementSendProgress";
 import PublishConfirmationDialog from "@features/csm-announcements/components/PublishConfirmationDialog";
+import { useResolvedAudiencePreview } from "@features/csm-announcements/api/useResolvedAudiencePreview";
 import AddUpdateConfirmationDialog from "@features/csm-announcements/components/AddUpdateConfirmationDialog";
 import { useCreateAnnouncementRequestUpdate } from "@features/csm-announcements/api/useCreateAnnouncementRequestUpdate";
 import { useListAnnouncementRequestUpdates } from "@features/csm-announcements/api/useListAnnouncementRequestUpdates";
@@ -169,6 +170,22 @@ export default function AnnouncementRequestDialog({
   const [confirmPublishOpen, setConfirmPublishOpen] = useState(false);
   const [confirmGiveUpOpen, setConfirmGiveUpOpen] = useState(false);
   const [givingUp, setGivingUp] = useState(false);
+
+  // Resolves failedProjectIds to their real short keys (e.g. "CUPPTSUB") for
+  // the send-progress card's chips below — those ids come straight off the
+  // frozen resolvedProjectIds snapshot, which carries no key/name data of
+  // its own. Re-resolves whenever the failed set actually changes (a retry
+  // narrowing it, a fresh failure widening it), not on every render.
+  const failedProjectsPreview = useResolvedAudiencePreview();
+  const failedProjectIdsKey = publish.failedProjectIds.join(",");
+  useEffect(() => {
+    if (publish.failedProjectIds.length > 0) {
+      void failedProjectsPreview.resolve(publish.failedProjectIds);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [failedProjectIdsKey]);
+  const failedProjectLabel = (projectId: string): string =>
+    failedProjectsPreview.projects.find((p) => p.id === projectId)?.key ?? projectId;
 
   // Schedule: an alternative to clicking Publish immediately — pick a
   // future date/time and operations/csm-scheduled-tasks' own sub-cron
@@ -725,6 +742,7 @@ export default function AnnouncementRequestDialog({
                     // successful send (no failures at all) still shows the
                     // reassuring full tally.
                     hideSucceededTally={publish.failedProjectIds.length > 0}
+                    projectLabel={failedProjectLabel}
                   />
                 )}
                 {publish.failedTagProjectIds.length > 0 && (
@@ -1011,7 +1029,7 @@ export default function AnnouncementRequestDialog({
               skipped — there's no way to send this announcement to {publish.failedProjectIds.length === 1 ? "it" : "them"} afterward:
             </Typography>
             <Typography variant="body2" fontWeight={600} color="error.main">
-              {publish.failedProjectIds.join(", ")}
+              {publish.failedProjectIds.map(failedProjectLabel).join(", ")}
             </Typography>
             <Typography variant="body2" color="text.secondary">
               Only use this once you've confirmed the retry genuinely can't succeed — a project that's just
