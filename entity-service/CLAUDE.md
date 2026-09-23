@@ -798,7 +798,25 @@ already use — no route path, request, or response shape changed.
   string, which can be a non-user integration account) — the Postgres path
   writes the caller's resolved email into it, the same identity mechanism
   `caseService.CreateCaseComment` uses (`x-user-id-token` → `emailFromJWT` →
-  `UserRepository.GetUserByEmail`).
+  `UserRepository.GetUserByEmail`). **`SearchComments` now also resolves a
+  display name for that email**, via the same `LEFT JOIN "user" ON
+  LOWER(email) = LOWER(created_by)` (wrapped in its own `DISTINCT ON`
+  subquery — email has no unique constraint) that `SearchCaseActivities`'s
+  own comment branch already used — found live as a real, visible bug: a
+  case's comment bubbles showed the commenter's raw email while that same
+  case's Lifecycle/Attachment entries, on the sibling `/activities/search`
+  endpoint, already showed a resolved name for the identical author, because
+  only that second endpoint ever did the join. `CommentRow.CreatedByName`
+  (`comment_repo.go`) is `""` for an address with no matching `"user"` row
+  (an integration/automation account like `github_pipeline` — a real,
+  legitimate case, not an error) — `commentRowToDomain` passes it through as
+  the `UserReference.Name`, and the webapp's own `authorDisplayName` already
+  falls back to the email whenever `Name` is empty, so this needed no
+  webapp change at all, only entity-service. `CreateComment`'s own
+  echoed-back response (`CaseCommentDetail.CreatedBy`) is a plain email
+  string with no name field on its wire contract at all — deliberately left
+  as-is; the webapp only reads a comment's display name from `SearchComments`
+  once the list is (re)fetched, never from the create response.
 - **Product vulnerabilities**: `SearchProductVulnerabilities`/
   `GetProductVulnerability`/`GetVulnerabilityMeta` are read-only queries
   against `product_vulnerability`, which mirrors ServiceNow's own
@@ -2413,6 +2431,32 @@ profile's team block) and, for customers only (`user_type` EXTERNAL, emitted as
 - Enrichment failures are errors, not silently partial profiles (the ServiceNow adapter
   degrades to empty blocks; a database error here is a real fault).
 - Like the other user routes this does no per-caller scoping; the BFF gates it.
+
+## SearchDeployments crashed on any page containing a NULL deployment.type
+
+Reported live: `POST /deployments/search` failing with `cannot scan NULL into
+*string`. `deployment.type` (migration 000013) has no `NOT NULL` constraint —
+38 of 2859 rows are NULL on staging, checked live — but `DeploymentView.Type`
+is a required (non-pointer) `DeploymentType` field on the wire, and
+`deployment_repo.go`'s `SearchDeployments` scanned the column straight into
+it. Fixed the same way as `CaseView.InternalID` (see that section above):
+the wire contract stays a required string (every consumer already expects
+that), only the scan side changes — `d.type::TEXT` now scans into a `*string`
+local, and `stringOrEmpty(...)` (already used elsewhere in this file for the
+identical class of fix) converts a NULL to `""` instead of crashing the whole
+page. Verified directly against a real project with a NULL-type deployment on
+staging: the search now returns all of that project's deployments, the
+NULL-type ones as `"type": ""`.
+
+**`/cases/{id}/tasks/search` (and every other `TaskService` method) is not a
+bug — it's `unavailableTaskService`'s documented, deliberate 503** ("tasks
+are only supported for the ServiceNow data source"). Checked directly
+against staging: **no table matching `%task%` exists anywhere in the public
+schema** — there is no Postgres-backed task storage at all to have a data bug
+in. Implementing this would be a genuinely new feature (a migration + a real
+`task_repo.go`), not a fix to something already wired up incorrectly — same
+class of gap as `GlobalService.GlobalSearch`'s own "no Postgres
+implementation" note elsewhere in this file.
 
 ## Adding a new entity
 
