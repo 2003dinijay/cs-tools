@@ -203,6 +203,7 @@ beforeEach(() => {
     hydratingDeliveries: false,
     hydrationFailed: false,
     retryHydration: vi.fn(),
+    publishGivingUpOnFailed: vi.fn(),
     handlePublish: vi.fn(),
   });
   mockedCreateUpdate.mockReturnValue(noopMutation() as ReturnType<typeof useCreateAnnouncementRequestUpdate>);
@@ -444,6 +445,7 @@ describe("AnnouncementRequestDialog — approved", () => {
       hydratingDeliveries: false,
       hydrationFailed: false,
       retryHydration: vi.fn(),
+      publishGivingUpOnFailed: vi.fn(),
       handlePublish,
     });
 
@@ -473,6 +475,7 @@ describe("AnnouncementRequestDialog — approved", () => {
       hydratingDeliveries: false,
       hydrationFailed: false,
       retryHydration: vi.fn(),
+      publishGivingUpOnFailed: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -498,6 +501,7 @@ describe("AnnouncementRequestDialog — approved", () => {
       hydratingDeliveries: false,
       hydrationFailed: false,
       retryHydration: vi.fn(),
+      publishGivingUpOnFailed: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -520,6 +524,7 @@ describe("AnnouncementRequestDialog — approved", () => {
       hydratingDeliveries: false,
       hydrationFailed: false,
       retryHydration: vi.fn(),
+      publishGivingUpOnFailed: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -535,6 +540,61 @@ describe("AnnouncementRequestDialog — approved", () => {
     expect(screen.queryByText("1/2")).not.toBeInTheDocument();
   });
 
+  it("offers Publish anyway for a partial failure, and confirming calls publishGivingUpOnFailed", async () => {
+    mockGet({ state: "approved", resolvedProjectIds: ["p-1", "p-2"], resolvedProjectCount: 2 });
+    const publishGivingUpOnFailed = vi.fn();
+    mockedPublish.mockReturnValue({
+      publishing: false,
+      progress: null,
+      succeededProjectIds: ["p-1"],
+      failedProjectIds: ["p-2"],
+      failedTagProjectIds: [],
+      published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
+      publishGivingUpOnFailed,
+      handlePublish: vi.fn(),
+    });
+
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /publish anyway/i }));
+    expect(screen.getByText(/publish without the failed projects/i)).toBeInTheDocument();
+    expect(screen.getAllByText("p-2").length).toBeGreaterThan(0);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^publish anyway$/i }));
+    });
+    expect(publishGivingUpOnFailed).toHaveBeenCalled();
+  });
+
+  it("does not offer Publish anyway while a security-tag attach is still failing", () => {
+    mockGet({
+      state: "approved",
+      resolvedProjectIds: ["p-1", "p-2"],
+      resolvedProjectCount: 2,
+      isSecurityAnnouncement: true,
+    });
+    mockedPublish.mockReturnValue({
+      publishing: false,
+      progress: null,
+      succeededProjectIds: ["p-1", "p-2"],
+      failedProjectIds: [],
+      failedTagProjectIds: ["p-2"],
+      published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
+      publishGivingUpOnFailed: vi.fn(),
+      handlePublish: vi.fn(),
+    });
+
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /publish anyway/i })).not.toBeInTheDocument();
+  });
+
   it("still shows the full succeeded tally once every project has been delivered", () => {
     mockGet({ state: "approved", resolvedProjectIds: ["p-1", "p-2"], resolvedProjectCount: 2 });
     mockedPublish.mockReturnValue({
@@ -548,6 +608,7 @@ describe("AnnouncementRequestDialog — approved", () => {
       hydratingDeliveries: false,
       hydrationFailed: false,
       retryHydration: vi.fn(),
+      publishGivingUpOnFailed: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -570,6 +631,7 @@ describe("AnnouncementRequestDialog — approved", () => {
       hydratingDeliveries: false,
       hydrationFailed: false,
       retryHydration: vi.fn(),
+      publishGivingUpOnFailed: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -609,6 +671,7 @@ describe("AnnouncementRequestDialog — approved", () => {
       hydratingDeliveries: false,
       hydrationFailed: false,
       retryHydration: vi.fn(),
+      publishGivingUpOnFailed: vi.fn(),
       handlePublish,
     });
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
@@ -639,6 +702,7 @@ describe("AnnouncementRequestDialog — approved", () => {
       hydratingDeliveries: false,
       hydrationFailed: false,
       retryHydration: vi.fn(),
+      publishGivingUpOnFailed: vi.fn(),
       handlePublish,
     });
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
@@ -671,6 +735,7 @@ describe("AnnouncementRequestDialog — approved", () => {
       hydratingDeliveries: false,
       hydrationFailed: false,
       retryHydration: vi.fn(),
+      publishGivingUpOnFailed: vi.fn(),
       handlePublish,
     });
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);

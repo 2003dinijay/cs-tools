@@ -167,6 +167,8 @@ export default function AnnouncementRequestDialog({
   const claimsReady = claims !== undefined;
   const isRequestCreator = !!request && !!claims?.userid && claims.userid === request.createdBy;
   const [confirmPublishOpen, setConfirmPublishOpen] = useState(false);
+  const [confirmGiveUpOpen, setConfirmGiveUpOpen] = useState(false);
+  const [givingUp, setGivingUp] = useState(false);
 
   // Schedule: an alternative to clicking Publish immediately — pick a
   // future date/time and operations/csm-scheduled-tasks' own sub-cron
@@ -661,6 +663,23 @@ export default function AnnouncementRequestDialog({
                             ? "Retry security label"
                             : "Publish"}
                   </Button>
+                  {claimsReady &&
+                    isRequestCreator &&
+                    publish.readyToPublish &&
+                    !publish.publishing &&
+                    publish.failedProjectIds.length > 0 &&
+                    publish.failedTagProjectIds.length === 0 &&
+                    publish.succeededProjectIds.length > 0 && (
+                      <Button
+                        variant="outlined"
+                        color="warning"
+                        size="small"
+                        disabled={hasUnsavedChanges || !canWrite}
+                        onClick={() => setConfirmGiveUpOpen(true)}
+                      >
+                        Publish anyway
+                      </Button>
+                    )}
                 </Box>
                 {claimsReady && !isRequestCreator && (
                   <Typography variant="caption" color="text.secondary">
@@ -979,6 +998,48 @@ export default function AnnouncementRequestDialog({
             void publish.handlePublish();
           }}
         />
+      )}
+
+      {request && (
+        <Dialog open={confirmGiveUpOpen} onClose={givingUp ? undefined : () => setConfirmGiveUpOpen(false)} maxWidth="sm" fullWidth>
+          <DialogTitle>Publish without the failed projects?</DialogTitle>
+          <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+            <Typography variant="body2">
+              This marks the request published using only the {publish.succeededProjectIds.length} project
+              {publish.succeededProjectIds.length === 1 ? "" : "s"} that already received a case. The
+              following {publish.failedProjectIds.length === 1 ? "project" : "projects"} will be permanently
+              skipped — there's no way to send this announcement to {publish.failedProjectIds.length === 1 ? "it" : "them"} afterward:
+            </Typography>
+            <Typography variant="body2" fontWeight={600} color="error.main">
+              {publish.failedProjectIds.join(", ")}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Only use this once you've confirmed the retry genuinely can't succeed — a project that's just
+              slow or transiently failing should be retried instead.
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setConfirmGiveUpOpen(false)} disabled={givingUp}>
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              color="warning"
+              disabled={givingUp}
+              onClick={async () => {
+                setGivingUp(true);
+                try {
+                  await publish.publishGivingUpOnFailed();
+                } finally {
+                  setGivingUp(false);
+                  setConfirmGiveUpOpen(false);
+                }
+              }}
+            >
+              {givingUp ? "Publishing…" : "Publish anyway"}
+            </Button>
+          </DialogActions>
+        </Dialog>
       )}
 
       {request && (
