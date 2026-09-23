@@ -25,6 +25,7 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 )
 
 // TestIncidentStateToEnum locks in the one deliberate mismatch between
@@ -137,7 +138,7 @@ func TestIncidentService_CreateIncident_SNFailureLeavesPostgresUntouched(t *test
 	// it's ever called, which is exactly the assertion: Postgres must stay
 	// untouched.
 	repo := &stubIncidentRepo{}
-	svc := NewIncidentServiceWithSNMirror(repo, mirror)
+	svc := NewIncidentServiceWithSNMirror(repo, mirror, nil)
 
 	_, err := svc.CreateIncident(context.Background(), validCreateIncidentRequest())
 	if err == nil {
@@ -190,7 +191,7 @@ func TestIncidentService_CreateIncident_SNSuccessCreatesPostgresRowWithMatchingI
 			return resp, nil
 		},
 	}
-	svc := NewIncidentServiceWithSNMirror(repo, mirror)
+	svc := NewIncidentServiceWithSNMirror(repo, mirror, nil)
 
 	resp, err := svc.CreateIncident(context.Background(), validCreateIncidentRequest())
 	if err != nil {
@@ -241,7 +242,7 @@ func TestIncidentService_CreateIncident_RetriesTransientSNFailureThenSucceeds(t 
 			return resp, nil
 		},
 	}
-	svc := NewIncidentServiceWithSNMirror(repo, mirror)
+	svc := NewIncidentServiceWithSNMirror(repo, mirror, nil)
 
 	resp, err := svc.CreateIncident(context.Background(), validCreateIncidentRequest())
 	if err != nil {
@@ -274,7 +275,7 @@ func TestIncidentService_CreateIncident_DoesNotRetryValidationError(t *testing.T
 		},
 	}
 	repo := &stubIncidentRepo{}
-	svc := NewIncidentServiceWithSNMirror(repo, mirror)
+	svc := NewIncidentServiceWithSNMirror(repo, mirror, nil)
 
 	_, err := svc.CreateIncident(context.Background(), validCreateIncidentRequest())
 	var ve *apierror.ValidationError
@@ -286,5 +287,79 @@ func TestIncidentService_CreateIncident_DoesNotRetryValidationError(t *testing.T
 	defer mu.Unlock()
 	if attempts != 1 {
 		t.Errorf("expected exactly 1 SN attempt (validation errors are not retried), got %d", attempts)
+	}
+}
+
+// TestIncidentService_CreateIncident_PublishesOnlyAfterPostgresSucceeds is
+// the regression guard for CodeRabbit's finding on PR #1922: the mirror's
+// own automatic publish must be suppressed (constructed with publisher=nil
+// in routes.go) so incident.created only ever fires from here, after
+// CreateIncidentFromServiceNow has actually confirmed the Postgres row --
+// never right after the ServiceNow POST, which a consumer could observe
+// before the Postgres-backed read API (the only one live in this mode) can
+// return anything for it.
+func TestIncidentService_CreateIncident_PublishesOnlyAfterPostgresSucceeds(t *testing.T) {
+	mirror := &stubMirrorIncidentService{
+		createIncident: func(context.Context, domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
+			resp := domain.CreateIncidentResponse{Message: "Incident created successfully."}
+			resp.Incident.ID = "55555555-5555-5555-5555-555555555555"
+			resp.Incident.Number = "INC0023002"
+			resp.Incident.CreatedBy = "jane.doe@example.com"
+			return resp, nil
+		},
+	}
+	repo := &stubIncidentRepo{
+		createIncidentFromServiceNow: func(_ context.Context, _ domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error) {
+			resp := domain.CreateIncidentResponse{Message: "Incident created successfully."}
+			resp.Incident.ID = id
+			resp.Incident.Number = number
+			resp.Incident.CreatedBy = createdBy
+			return resp, nil
+		},
+	}
+	publisher := &mockEventPublisher{}
+	svc := NewIncidentServiceWithSNMirror(repo, mirror, publisher)
+
+	if _, err := svc.CreateIncident(context.Background(), validCreateIncidentRequest()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(publisher.calls) != 1 {
+		t.Fatalf("expected exactly 1 publish call after Postgres success, got %d", len(publisher.calls))
+	}
+	if publisher.calls[0].eventType != events.TypeIncidentCreated || publisher.calls[0].entityID != "55555555-5555-5555-5555-555555555555" {
+		t.Errorf("unexpected publish call: %+v", publisher.calls[0])
+	}
+}
+
+// TestIncidentService_CreateIncident_DoesNotPublishWhenPostgresFails proves
+// the other half: if ServiceNow already has the incident but the Postgres
+// insert fails (real drift, logged separately), no event fires -- a
+// consumer must never see incident.created for an incident the
+// Postgres-backed read API cannot return.
+func TestIncidentService_CreateIncident_DoesNotPublishWhenPostgresFails(t *testing.T) {
+	mirror := &stubMirrorIncidentService{
+		createIncident: func(context.Context, domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
+			resp := domain.CreateIncidentResponse{Message: "Incident created successfully."}
+			resp.Incident.ID = "66666666-6666-6666-6666-666666666666"
+			resp.Incident.Number = "INC0023003"
+			resp.Incident.CreatedBy = "jane.doe@example.com"
+			return resp, nil
+		},
+	}
+	repo := &stubIncidentRepo{
+		createIncidentFromServiceNow: func(context.Context, domain.CreateIncidentRequest, string, string, string) (domain.CreateIncidentResponse, error) {
+			return domain.CreateIncidentResponse{}, errors.New("postgres insert failed")
+		},
+	}
+	publisher := &mockEventPublisher{}
+	svc := NewIncidentServiceWithSNMirror(repo, mirror, publisher)
+
+	if _, err := svc.CreateIncident(context.Background(), validCreateIncidentRequest()); err == nil {
+		t.Fatal("expected an error when the Postgres insert fails")
+	}
+
+	if len(publisher.calls) != 0 {
+		t.Errorf("expected 0 publish calls when Postgres fails after a ServiceNow success, got %d: %+v", len(publisher.calls), publisher.calls)
 	}
 }

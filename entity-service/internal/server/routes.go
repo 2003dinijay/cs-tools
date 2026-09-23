@@ -567,14 +567,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		//
 		// eventPublisher is passed through here (unlike snCaseMirrorSvc's nil
 		// publisher/access args above, which are inert for case because
-		// caseService's own CreateCase response building doesn't need them)
-		// because snIncidentService.CreateIncident's real side effects
-		// include publishIncidentCreated -- the same event a plain
-		// DataSourceServiceNow incident creation publishes. Suppressing it
-		// here would silently drop incident.created notifications for every
-		// incident created in this mode.
-		snIncidentMirrorSvc := service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, eventPublisher)
-		activeIncidentSvc = service.NewIncidentServiceWithSNMirror(incidentRepo, snIncidentMirrorSvc)
+		// caseService's own CreateCase response building doesn't need them).
+		// The mirror is built with publisher=nil deliberately (unlike a
+		// plain DataSourceServiceNow instance) -- its own automatic publish
+		// fires right after the ServiceNow POST returns, before the
+		// Postgres insert this mode's reads depend on has even been
+		// attempted, which is exactly the premature-event bug CodeRabbit
+		// flagged on PR #1922. incident.created is instead published by
+		// createIncidentSNFirst itself, after that Postgres insert
+		// succeeds -- see NewIncidentServiceWithSNMirror's own doc comment
+		// and publishIncidentCreatedEvent's.
+		snIncidentMirrorSvc := service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, nil)
+		activeIncidentSvc = service.NewIncidentServiceWithSNMirror(incidentRepo, snIncidentMirrorSvc, eventPublisher)
 	default:
 		activeIncidentSvc = service.NewIncidentService(incidentRepo)
 	}

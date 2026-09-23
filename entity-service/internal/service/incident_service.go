@@ -194,6 +194,15 @@ type incidentService struct {
 	// ServiceUnavailableError below, mirroring caseService's identical
 	// snMirror-gated branch for CreateCase.
 	snMirror IncidentService
+	// eventPublisher is nil in every mode except
+	// DATA_SOURCE=postgres-servicenow-dual-write. createIncidentSNFirst
+	// publishes incident.created itself, after CreateIncidentFromServiceNow
+	// succeeds -- the mirror IncidentService above is always constructed
+	// with its own publisher=nil in this mode, specifically so it never
+	// publishes prematurely (before the Postgres insert this mode's reads
+	// actually depend on has even been attempted). See
+	// publishIncidentCreatedEvent's doc comment for the full reasoning.
+	eventPublisher EventPublisherService
 }
 
 // NewIncidentService constructs an IncidentService backed by Postgres.
@@ -216,8 +225,8 @@ func NewIncidentService(repo repository.IncidentRepository) IncidentService {
 // ServiceNow POST, including its own side effects (publishIncidentCreated).
 // It is never made the active IncidentService here -- reads always stay on
 // Postgres in this mode.
-func NewIncidentServiceWithSNMirror(repo repository.IncidentRepository, mirror IncidentService) IncidentService {
-	return &incidentService{repo: repo, snMirror: mirror}
+func NewIncidentServiceWithSNMirror(repo repository.IncidentRepository, mirror IncidentService, eventPublisher EventPublisherService) IncidentService {
+	return &incidentService{repo: repo, snMirror: mirror, eventPublisher: eventPublisher}
 }
 
 // SearchIncidents implements IncidentService.
@@ -376,6 +385,12 @@ func (s *incidentService) createIncidentSNFirst(ctx context.Context, req domain.
 			"incidentId", snResp.Incident.ID, "snNumber", snResp.Incident.Number, "error", err)
 		return domain.CreateIncidentResponse{}, err
 	}
+	// Only now -- Postgres has confirmed the row this mode's reads actually
+	// depend on -- is it safe to publish. See publishIncidentCreatedEvent's
+	// doc comment for why this can't just be snIncidentService's own
+	// automatic publish (that fires right after the ServiceNow POST, before
+	// this Postgres insert was even attempted).
+	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID)
 	return resp, nil
 }
 
