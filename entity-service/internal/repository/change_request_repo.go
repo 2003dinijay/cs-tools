@@ -214,6 +214,15 @@ var changeRequestTypeToChangeModel = func() map[domain.ChangeRequestType]string 
 	return m
 }()
 
+// ChangeRequestTypeSupported reports whether t has a change_model label,
+// i.e. whether CreateChangeRequestFromServiceNow can persist it. Exported so
+// the service layer can reject an unsupported type before, not after, the
+// ServiceNow-first create -- see createChangeRequestSNFirst's own comment.
+func ChangeRequestTypeSupported(t domain.ChangeRequestType) bool {
+	_, ok := changeRequestTypeToChangeModel[t]
+	return ok
+}
+
 // scanChangeRequestView scans changeRequestSelectColumns into a
 // SearchChangeRequestView. Duration is never set here -- see this file's
 // own package doc comment for why (no confirmed rendering format).

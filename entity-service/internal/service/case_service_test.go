@@ -56,9 +56,13 @@ type stubCaseRepo struct {
 	updateCase               func(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error)
 	createCaseFromServiceNow func(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error)
 	createCaseComment        func(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error)
+	createCase               func(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
 }
 
-func (s *stubCaseRepo) CreateCase(context.Context, domain.CreateCaseRequest) (domain.Case, error) {
+func (s *stubCaseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
+	if s.createCase != nil {
+		return s.createCase(ctx, req)
+	}
 	panic("not implemented")
 }
 func (s *stubCaseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
@@ -904,6 +908,39 @@ func TestCaseService_CreateCase_RejectsUnsupportedTypesOnPostgres(t *testing.T) 
 			var ve *apierror.ValidationError
 			if !asValidationError(err, &ve) {
 				t.Fatalf("expected *apierror.ValidationError for type %q, got %T: %v", typ, err, err)
+			}
+		})
+	}
+}
+
+// TestCaseService_CreateCase_RejectsSNOnlyTypesWithoutMirror is the
+// regression guard for a CodeRabbit finding on PR #1930: announcement/
+// service_request/engagement/security_report_analysis only exist on the
+// SN-first path. On a pure-Postgres data source (s.snMirror == nil,
+// NewCaseService rather than NewCaseServiceWithSNWriteback), reaching
+// caseRepo's direct-Postgres insert with one of these four types would
+// surface as an opaque 500 (announcement's empty deployment id cast as
+// ::uuid) or 503 (no work_item.number generator for the other three)
+// instead of a clean validation error -- the type guard must reject them up
+// front instead.
+func TestCaseService_CreateCase_RejectsSNOnlyTypesWithoutMirror(t *testing.T) {
+	repo := &stubCaseRepo{
+		createCase: func(context.Context, domain.CreateCaseRequest) (domain.Case, error) {
+			t.Fatal("repo.CreateCase should not be reached for an SN-only type without a mirror")
+			return domain.Case{}, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{})
+
+	for _, req := range []domain.CreateCaseRequest{
+		{Type: "announcement", ProjectID: testDeploymentUUID, Subject: "x", Description: "y"},
+		validServiceRequestCreateCaseRequest(),
+	} {
+		t.Run(req.Type, func(t *testing.T) {
+			_, err := svc.CreateCase(context.Background(), req)
+			var ve *apierror.ValidationError
+			if !asValidationError(err, &ve) {
+				t.Fatalf("expected *apierror.ValidationError for type %q without an SN mirror, got %T: %v", req.Type, err, err)
 			}
 		})
 	}

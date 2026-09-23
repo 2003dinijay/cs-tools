@@ -317,12 +317,20 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	if err := validateCreateCaseRequest(&req); err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
-	// announcement/service_request/engagement/security_report_analysis join
-	// case as the second through fifth types supported here (all five go
-	// through the SN-first path below when s.snMirror != nil).
+	// announcement/service_request/engagement/security_report_analysis only
+	// exist on the SN-first path (s.snMirror != nil): case_repo's direct
+	// Postgres insert only knows how to write a "CASE" work_item row, so on
+	// a pure-Postgres data source (s.snMirror == nil) these four would either
+	// hit an untyped uuid cast error (announcement's empty deployment id) or
+	// a missing work_item.number generator, both surfacing as an opaque
+	// 500/503 instead of a clean validation error.
 	switch req.Type {
-	case "case", "announcement", "service_request", "engagement", "security_report_analysis":
-		// supported
+	case "case":
+		// supported unconditionally
+	case "announcement", "service_request", "engagement", "security_report_analysis":
+		if s.snMirror == nil {
+			return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "type \"" + req.Type + "\" is supported only for DATA_SOURCE=postgres-servicenow-dual-write"}
+		}
 	default:
 		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "only type \"case\", \"announcement\", \"service_request\", \"engagement\", or \"security_report_analysis\" is supported for the Postgres data source"}
 	}

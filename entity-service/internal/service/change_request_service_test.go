@@ -107,6 +107,35 @@ func TestChangeRequestService_CreateChangeRequest_SNFailureLeavesPostgresUntouch
 	}
 }
 
+// TestChangeRequestService_CreateChangeRequest_RejectsUnsupportedTypeBeforeSN
+// is the regression guard for a CodeRabbit finding on PR #1930: a type with
+// no changeRequestTypeToChangeModel entry (e.g. the pre-000055
+// site_reliability_ops value) must be rejected before the ServiceNow call,
+// not after. Rejecting it only in CreateChangeRequestFromServiceNow (after
+// ServiceNow already accepted the create) would leave ServiceNow holding an
+// orphan record with no Postgres row, and would duplicate it if the caller
+// retried.
+func TestChangeRequestService_CreateChangeRequest_RejectsUnsupportedTypeBeforeSN(t *testing.T) {
+	mirror := &stubMirrorChangeRequestService{
+		createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
+			t.Fatal("ServiceNow must never be called for an unsupported type")
+			return domain.CreateChangeRequestResponse{}, nil
+		},
+	}
+	repo := &stubChangeRequestRepo{}
+	svc := NewChangeRequestServiceWithSNMirror(repo, mirror)
+
+	req := validCreateChangeRequestRequest()
+	unsupported := domain.ChangeRequestTypeSiteReliabilityOps
+	req.Type = &unsupported
+
+	_, err := svc.CreateChangeRequest(context.Background(), req)
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) {
+		t.Fatalf("expected *apierror.ValidationError for unsupported type, got %T: %v", err, err)
+	}
+}
+
 // TestChangeRequestService_CreateChangeRequest_SNSuccessCreatesPostgresRowWithMatchingIdentity
 // covers the other half, mirroring
 // TestIncidentService_CreateIncident_SNSuccessCreatesPostgresRowWithMatchingIdentity:

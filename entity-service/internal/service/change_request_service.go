@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -255,6 +256,14 @@ func (s *changeRequestService) CreateChangeRequest(ctx context.Context, req doma
 // generated -- see that method's own doc comment for why there is no wso2ID
 // parameter here, unlike case's equivalent.
 func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, req domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
+	// Reject an unsupported type before ServiceNow ever sees the request --
+	// this check is deterministic and needs no I/O, so there's no reason to
+	// defer it to CreateChangeRequestFromServiceNow's own check (which runs
+	// only after ServiceNow already accepted the create, at which point
+	// ServiceNow would keep an orphan with no Postgres row).
+	if req.Type != nil && !repository.ChangeRequestTypeSupported(*req.Type) {
+		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
+	}
 	snResp, err := s.snMirror.CreateChangeRequest(ctx, req)
 	if err != nil {
 		// ServiceNow never accepted the change request -- nothing is
