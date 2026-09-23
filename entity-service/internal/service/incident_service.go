@@ -308,6 +308,22 @@ func (s *incidentService) SearchIncidentActivities(ctx context.Context, req doma
 // ServiceUnavailableError below -- see that method's own doc comment.
 func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
 	if s.snMirror != nil {
+		// ConfigurationItemID/AssignmentGroupID have no backing column on
+		// this data source at all (unlike Subcategory/AssignedEngineerID/
+		// WatchList/AdditionalComments/WorkNotes, which are accepted but
+		// silently not persisted -- a separate, tracked follow-up per
+		// CodeRabbit's finding on PR #1922). Rejecting these two explicitly
+		// is strictly better than the alternative: ServiceNow would already
+		// have accepted and stored them by the time Postgres is ever
+		// touched, so silently dropping them here would mean the caller's
+		// request appears to succeed while quietly losing data they
+		// explicitly asked to set.
+		if req.ConfigurationItemID != nil {
+			return domain.CreateIncidentResponse{}, &apierror.ValidationError{Msg: "configurationItemId is not supported for this data source"}
+		}
+		if req.AssignmentGroupID != nil {
+			return domain.CreateIncidentResponse{}, &apierror.ValidationError{Msg: "assignmentGroupId is not supported for this data source"}
+		}
 		return s.createIncidentSNFirst(ctx, req)
 	}
 	// CreateIncident is not supported for the plain PostgreSQL data source:

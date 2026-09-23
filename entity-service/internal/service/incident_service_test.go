@@ -290,6 +290,37 @@ func TestIncidentService_CreateIncident_DoesNotRetryValidationError(t *testing.T
 	}
 }
 
+// TestIncidentService_CreateIncident_RejectsUnsupportedFields guards the
+// two fields with no backing column at all on this data source
+// (ConfigurationItemID, AssignmentGroupID): rejecting them explicitly is
+// strictly better than silently accepting and dropping them, since
+// ServiceNow would already have stored them by the time Postgres is ever
+// touched.
+func TestIncidentService_CreateIncident_RejectsUnsupportedFields(t *testing.T) {
+	mirror := &stubMirrorIncidentService{
+		createIncident: func(context.Context, domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
+			t.Fatal("ServiceNow must never be called when an unsupported field is rejected up front")
+			return domain.CreateIncidentResponse{}, nil
+		},
+	}
+	repo := &stubIncidentRepo{}
+	svc := NewIncidentServiceWithSNMirror(repo, mirror, nil)
+
+	configItemID := "77777777-7777-7777-7777-777777777777"
+	req := validCreateIncidentRequest()
+	req.ConfigurationItemID = &configItemID
+	if _, err := svc.CreateIncident(context.Background(), req); !asValidationError(err, new(*apierror.ValidationError)) {
+		t.Errorf("expected *apierror.ValidationError for configurationItemId, got %T: %v", err, err)
+	}
+
+	assignmentGroupID := "88888888-8888-8888-8888-888888888888"
+	req2 := validCreateIncidentRequest()
+	req2.AssignmentGroupID = &assignmentGroupID
+	if _, err := svc.CreateIncident(context.Background(), req2); !asValidationError(err, new(*apierror.ValidationError)) {
+		t.Errorf("expected *apierror.ValidationError for assignmentGroupId, got %T: %v", err, err)
+	}
+}
+
 // TestIncidentService_CreateIncident_PublishesOnlyAfterPostgresSucceeds is
 // the regression guard for CodeRabbit's finding on PR #1922: the mirror's
 // own automatic publish must be suppressed (constructed with publisher=nil
