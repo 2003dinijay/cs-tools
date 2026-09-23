@@ -491,6 +491,57 @@ func TestProcessProject_NotifyFailureBlocksStateWrite(t *testing.T) {
 	}
 }
 
+// TestProcessProject_InvoiceCascadeErrorDoesNotBlockSubscriptionCascade is
+// the regression test for a real gap (CodeRabbit, PR #1933): an error
+// building the invoice cascade (e.g. a transient SearchProjectOpportunityLinks
+// failure) used to make processProject return immediately, before the
+// already-built subscription cascade ever got to act — so a single bad
+// invoice-side API call could block a project's day-0 subscription suspend
+// entirely, every sweep, until the invoice-side issue was fixed. The
+// invoice error must still surface (so Run still counts this project as
+// failed), but only after the subscription cascade has had its turn.
+func TestProcessProject_InvoiceCascadeErrorDoesNotBlockSubscriptionCascade(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	endDate := now.AddDate(0, 0, -1) // overdue -> subscription fires (day-0, terminal)
+	reader := &mockEntityReader{
+		searchProjectOpportunityLinksFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			return nil, errors.New("links search unavailable")
+		},
+	}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{sendFn: func(ctx context.Context, n notify.Notice) (bool, error) { return true, nil }}
+
+	proj := project{
+		ID:      "p1",
+		Name:    "Test Project",
+		Account: &projectAccountRef{ID: "a1"},
+		EndDate: &endDate,
+	}
+
+	err := processProject(context.Background(), reader, updater, ntf, now, proj)
+	if err == nil {
+		t.Fatal("processProject() error = nil, want non-nil — the invoice cascade's build error must still surface so Run counts this project as failed")
+	}
+
+	if len(ntf.sent) == 0 {
+		t.Error("ntf.sent is empty, want the subscription cascade's notice to have been sent despite the invoice cascade's build error")
+	}
+
+	sawEndDateSuspend := false
+	for _, c := range updater.calls {
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(c.body, &body); err != nil {
+			continue
+		}
+		if _, ok := body["endDateClosureState"]; ok {
+			sawEndDateSuspend = true
+		}
+	}
+	if !sawEndDateSuspend {
+		t.Error("no update call wrote endDateClosureState — the subscription cascade should have run to completion, suspend included")
+	}
+}
+
 // TestProcessProject_Day0SuccessfulNotifyThenSuspend verifies the day-0
 // ordering: when the final notice email succeeds, suspend is attempted
 // afterward — two separate UpdateProject calls, notice-state first.

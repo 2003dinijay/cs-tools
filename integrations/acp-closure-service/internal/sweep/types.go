@@ -277,6 +277,24 @@ type searchProjectsRequest struct {
 	SortOrder     string     `json:"sortOrder"`
 }
 
+// searchProjectOpportunityLinksRequest mirrors the fields of
+// csm-integration-service's SearchProjectOpportunityLinksRequest this
+// component uses — used by fetchAllProjectOpportunityLinks to page through
+// every link for a project rather than reading only the first page.
+type searchProjectOpportunityLinksRequest struct {
+	Pagination pagination `json:"pagination"`
+	ProjectID  string     `json:"projectId"`
+}
+
+// searchInvoicesRequest mirrors the fields of csm-integration-service's
+// SearchInvoicesRequest this component uses — used by
+// fetchAllInvoicesForOpportunity to page through every invoice for an
+// opportunity rather than reading only the first page.
+type searchInvoicesRequest struct {
+	Pagination    pagination `json:"pagination"`
+	OpportunityID string     `json:"opportunityId"`
+}
+
 // Result summarizes one full Run: how many projects were evaluated, how
 // many were skipped via EXCLUDED_PROJECT_IDS, and any per-project failures
 // encountered along the way. A non-empty Failures list is a "soft"

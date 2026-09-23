@@ -84,6 +84,88 @@ func TestResolveDueInvoice_HappyPathPicksTheOnlyEligibleInvoice(t *testing.T) {
 	}
 }
 
+// TestResolveDueInvoice_PaginatesProjectOpportunityLinks is the regression
+// test for a real gap (CodeRabbit, PR #1933): resolveDueInvoice read only
+// the first page of SearchProjectOpportunityLinks and never checked
+// hasMore, silently missing any link on a later page. Opportunity 1 (page
+// 1) is deliberately ineligible (EULA "Customer contract"), so the only way
+// this test can resolve an invoice at all is if page 2's link was actually
+// fetched.
+func TestResolveDueInvoice_PaginatesProjectOpportunityLinks(t *testing.T) {
+	proj := project{ID: "p1"}
+
+	linksCalls := 0
+	reader := &mockEntityReader{
+		searchProjectOpportunityLinksFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			linksCalls++
+			if linksCalls == 1 {
+				return []byte(`{"links":[{"id":"link1","opportunity":{"id":"opp-page1"}}],"hasMore":true}`), nil
+			}
+			return []byte(`{"links":[{"id":"link2","opportunity":{"id":"opp-page2"}}],"hasMore":false}`), nil
+		},
+		getOpportunityFn: func(ctx context.Context, id string) ([]byte, error) {
+			if id == "opp-page2" {
+				return []byte(`{"id":"opp-page2","name":"Opp Page 2","eulaVersion":"EULA 3.4","eulaVersionDecimal":"3.4"}`), nil
+			}
+			return []byte(`{"id":"opp-page1","name":"Opp Page 1","eulaVersion":"Customer contract"}`), nil
+		},
+		searchInvoicesFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			return []byte(`{"invoices":[{
+				"id":"inv-from-page2","invoiceDate":"2026-01-01","invoicedDueDate":"2026-05-01",
+				"opportunity":{"id":"opp-page2","name":"Opp Page 2"}
+			}]}`), nil
+		},
+	}
+
+	got, err := resolveDueInvoice(context.Background(), reader, proj)
+	if err != nil {
+		t.Fatalf("resolveDueInvoice() error = %v, want nil", err)
+	}
+	if linksCalls < 2 {
+		t.Fatalf("SearchProjectOpportunityLinks called %d times, want at least 2 — pagination (hasMore) not followed", linksCalls)
+	}
+	if got == nil || got.ID != "inv-from-page2" {
+		t.Errorf("got = %+v, want the invoice reachable only via page 2's link", got)
+	}
+}
+
+// TestResolveDueInvoice_PaginatesInvoicesForOpportunity is the regression
+// test for the SearchInvoices half of the same gap: the earlier-due,
+// eligible invoice sits on the second page. If pagination isn't followed,
+// resolveDueInvoice would return the later-due invoice from page 1 instead
+// (or, before this fix, silently miss the earlier one entirely).
+func TestResolveDueInvoice_PaginatesInvoicesForOpportunity(t *testing.T) {
+	proj := project{ID: "p1"}
+
+	invoiceCalls := 0
+	reader := &mockEntityReader{
+		searchProjectOpportunityLinksFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			return oppLinksResponse("p1", "opp1"), nil
+		},
+		getOpportunityFn: func(ctx context.Context, id string) ([]byte, error) {
+			return []byte(`{"id":"opp1","name":"Opp One","eulaVersion":"EULA 3.4","eulaVersionDecimal":"3.4"}`), nil
+		},
+		searchInvoicesFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			invoiceCalls++
+			if invoiceCalls == 1 {
+				return []byte(`{"invoices":[{"id":"inv-page1-later","invoiceDate":"2026-01-01","invoicedDueDate":"2026-08-01"}],"hasMore":true}`), nil
+			}
+			return []byte(`{"invoices":[{"id":"inv-page2-earlier","invoiceDate":"2026-01-01","invoicedDueDate":"2026-03-01"}],"hasMore":false}`), nil
+		},
+	}
+
+	got, err := resolveDueInvoice(context.Background(), reader, proj)
+	if err != nil {
+		t.Fatalf("resolveDueInvoice() error = %v, want nil", err)
+	}
+	if invoiceCalls < 2 {
+		t.Fatalf("SearchInvoices called %d times, want at least 2 — pagination (hasMore) not followed", invoiceCalls)
+	}
+	if got == nil || got.ID != "inv-page2-earlier" {
+		t.Errorf("got = %+v, want the earlier-due invoice from page 2 to win, not page 1's later one", got)
+	}
+}
+
 func TestResolveDueInvoice_PicksTheEarliestDueDateAcrossOpportunities(t *testing.T) {
 	proj := project{ID: "p1"}
 

@@ -53,18 +53,14 @@ var excludedInvoiceClassifications = map[string]bool{"PP": true, "CO": true, "TA
 // until that field exists). Returns (nil, nil) when the project has no
 // eligible due invoice — a legitimate, common state, not an error.
 func resolveDueInvoice(ctx context.Context, reader entityReader, proj project) (*resolvedInvoice, error) {
-	linksRaw, err := reader.SearchProjectOpportunityLinks(ctx, []byte(`{"projectId":"`+proj.ID+`"}`))
+	links, err := fetchAllProjectOpportunityLinks(ctx, reader, proj.ID)
 	if err != nil {
-		return nil, fmt.Errorf("search project-opportunity links: %w", err)
-	}
-	var linksResp searchProjectOpportunityLinksResponse
-	if err := json.Unmarshal(linksRaw, &linksResp); err != nil {
-		return nil, fmt.Errorf("parse project-opportunity links: %w", err)
+		return nil, err
 	}
 
 	var best *resolvedInvoice
 
-	for _, link := range linksResp.Links {
+	for _, link := range links {
 		if link.Opportunity == nil || link.Opportunity.ID == "" {
 			continue
 		}
@@ -85,13 +81,9 @@ func resolveDueInvoice(ctx context.Context, reader entityReader, proj project) (
 			return nil, fmt.Errorf("parse eulaVersionDecimal for opportunity %s: %w", link.Opportunity.ID, err)
 		}
 
-		invoicesRaw, err := reader.SearchInvoices(ctx, []byte(`{"opportunityId":"`+link.Opportunity.ID+`"}`))
+		invoices, err := fetchAllInvoicesForOpportunity(ctx, reader, link.Opportunity.ID)
 		if err != nil {
-			return nil, fmt.Errorf("search invoices for opportunity %s: %w", link.Opportunity.ID, err)
-		}
-		var invResp searchInvoicesResponse
-		if err := json.Unmarshal(invoicesRaw, &invResp); err != nil {
-			return nil, fmt.Errorf("parse invoices for opportunity %s: %w", link.Opportunity.ID, err)
+			return nil, err
 		}
 
 		oppName := ""
@@ -99,7 +91,7 @@ func resolveDueInvoice(ctx context.Context, reader entityReader, proj project) (
 			oppName = *opp.Name
 		}
 
-		for _, inv := range invResp.Invoices {
+		for _, inv := range invoices {
 			if !eligibleInvoice(inv, proj.StartDate) {
 				continue
 			}
@@ -129,6 +121,72 @@ func resolveDueInvoice(ctx context.Context, reader entityReader, proj project) (
 	}
 
 	return best, nil
+}
+
+// fetchAllProjectOpportunityLinks pages through /project-opportunity-links/search
+// for one project until every link is collected, following the same
+// pagination pattern Run uses for /projects/search. Neither this nor
+// fetchAllInvoicesForOpportunity specified a page limit before this fix
+// (CodeRabbit, PR #1933) — a project or opportunity with more rows than a
+// single page would silently have the rest ignored, possibly missing a
+// more-overdue eligible invoice on a later page.
+func fetchAllProjectOpportunityLinks(ctx context.Context, reader entityReader, projectID string) ([]projectOpportunityLinkDTO, error) {
+	var all []projectOpportunityLinkDTO
+	offset := 0
+	for {
+		reqBody, err := json.Marshal(searchProjectOpportunityLinksRequest{
+			Pagination: pagination{Limit: pageSize, Offset: offset},
+			ProjectID:  projectID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("build project-opportunity-links search request: %w", err)
+		}
+		raw, err := reader.SearchProjectOpportunityLinks(ctx, reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("search project-opportunity links at offset %d: %w", offset, err)
+		}
+		var page searchProjectOpportunityLinksResponse
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return nil, fmt.Errorf("parse project-opportunity links at offset %d: %w", offset, err)
+		}
+		all = append(all, page.Links...)
+		if len(page.Links) == 0 || !page.HasMore {
+			break
+		}
+		offset += pageSize
+	}
+	return all, nil
+}
+
+// fetchAllInvoicesForOpportunity pages through /invoices/search for one
+// opportunity until every invoice is collected — see
+// fetchAllProjectOpportunityLinks's doc comment for why this matters.
+func fetchAllInvoicesForOpportunity(ctx context.Context, reader entityReader, opportunityID string) ([]invoiceDTO, error) {
+	var all []invoiceDTO
+	offset := 0
+	for {
+		reqBody, err := json.Marshal(searchInvoicesRequest{
+			Pagination:    pagination{Limit: pageSize, Offset: offset},
+			OpportunityID: opportunityID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("build invoices search request: %w", err)
+		}
+		raw, err := reader.SearchInvoices(ctx, reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("search invoices for opportunity %s at offset %d: %w", opportunityID, offset, err)
+		}
+		var page searchInvoicesResponse
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return nil, fmt.Errorf("parse invoices for opportunity %s at offset %d: %w", opportunityID, offset, err)
+		}
+		all = append(all, page.Invoices...)
+		if len(page.Invoices) == 0 || !page.HasMore {
+			break
+		}
+		offset += pageSize
+	}
+	return all, nil
 }
 
 // eligibleOpportunity mirrors the legacy fetchDueInvoicesByProject

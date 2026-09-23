@@ -157,6 +157,42 @@ you're tempted to reintroduce an early `isPartner` check for efficiency
 is no way to know the cascade is actually disabled without `hasPrimaryPartner`,
 which requires the same `GetAccount` call regardless.
 
+## Invoice-side searches must paginate
+
+`fetchAllProjectOpportunityLinks`/`fetchAllInvoicesForOpportunity`
+(`invoice_resolve.go`) page through `/project-opportunity-links/search` and
+`/invoices/search` exactly like `Run` already does for `/projects/search` —
+`pagination.limit`/`offset` on the request, looping until `hasMore` is false
+or a page comes back empty. `resolveDueInvoice` originally sent neither
+search with a `pagination` field at all and never checked the response's
+`hasMore` (CodeRabbit, PR #1933) — a project or opportunity with more rows
+than a single page would silently have the rest ignored, up to and including
+a genuinely more-overdue eligible invoice sitting on a page 2 that was never
+fetched. Both response schemas carry `total`/`limit`/`offset`/`hasMore`
+identically to `ProjectSearchResponse`, so there was no API-shape reason for
+the gap — just an oversight when this file was first written.
+
+## An invoice-cascade build failure doesn't block the subscription cascade
+
+`processProject`'s two build steps are treated differently on error
+(CodeRabbit, PR #1933). A `buildSubscriptionCascade` error still aborts the
+whole call immediately — its only failure mode is a corrupt
+`suspensionProcessState` (pure parsing, no I/O), which is genuinely unsafe
+to decide *anything* from, including whether the invoice cascade's own
+section of that same JSON blob can be trusted. A `buildInvoiceCascade`
+error — far more likely to be a transient upstream failure
+(`SearchProjectOpportunityLinks`/`SearchInvoices`/`GetOpportunity`) or one
+malformed ServiceNow-synced row (bad date, bad EULA-version string) rather
+than a genuinely corrupt project — is logged and does **not** stop the
+already-built subscription cascade from executing, since it doesn't depend
+on invoice data at all. The invoice error is still returned once the
+execution loop finishes (deferred, not swallowed), so `Run` still counts the
+project as failed — but only after the subscription cascade got its fair
+shot at a real, time-sensitive day-0 suspend that has nothing to do with
+invoices. Before this fix, a single bad invoice row could silently block a
+project's subscription-based suspend on every sweep until the invoice-side
+issue was fixed.
+
 ## Dry-run is an injection choice, not a branch
 
 `DRY_RUN` never appears as an `if` inside `processProject` or `Run`. Both

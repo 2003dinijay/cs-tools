@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -75,10 +76,24 @@ type cascadeDecision struct {
 // certainty, since decision.ShouldSuspend is computed locally, not read
 // back from the API — sidesteps that entirely.
 //
-// A failure building or acting on one cascade returns immediately without
-// attempting the other — matching how a failure partway through one
-// cascade's own notify/suspend sequence already behaves, rather than
-// silently swallowing it to try the remaining cascade anyway.
+// A failure *acting* on one cascade (in the execution loop below) returns
+// immediately without attempting the next — matching how a failure partway
+// through one cascade's own notify/suspend sequence already behaves, rather
+// than silently swallowing it to try the remaining cascade anyway.
+//
+// Building the invoice cascade is treated differently (CodeRabbit, PR
+// #1933): a failure there — a transient SearchProjectOpportunityLinks/
+// SearchInvoices/GetOpportunity error, a malformed date or EULA-version
+// field on one ServiceNow-synced row — is logged and does not stop the
+// subscription cascade, which was already built successfully and doesn't
+// depend on invoice data at all, from being executed. The invoice error is
+// still returned once the loop finishes, so Run still counts this project
+// as failed — it's deferred, not swallowed. Building the subscription
+// cascade doesn't get this same treatment: its only possible failure is a
+// corrupt suspensionProcessState (pure parsing, no I/O), which is a
+// genuinely unsafe state to decide *anything* from — including whether the
+// invoice cascade's own section of that same JSON blob can be trusted — so
+// that one still aborts immediately.
 func processProject(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, now time.Time, proj project) error {
 	var cascades []cascadeDecision
 
@@ -90,11 +105,11 @@ func processProject(ctx context.Context, reader entityReader, updater projectUpd
 		cascades = append(cascades, *subCascade)
 	}
 
-	invoiceCascade, err := buildInvoiceCascade(ctx, reader, updater, ntf, proj, now)
-	if err != nil {
-		return err
-	}
-	if invoiceCascade != nil {
+	invoiceCascade, invoiceErr := buildInvoiceCascade(ctx, reader, updater, ntf, proj, now)
+	if invoiceErr != nil {
+		slog.ErrorContext(ctx, "invoice cascade evaluation failed; still running the subscription cascade",
+			"projectID", proj.ID, "err", invoiceErr)
+	} else if invoiceCascade != nil {
 		cascades = append(cascades, *invoiceCascade)
 	}
 
@@ -117,7 +132,7 @@ func processProject(ctx context.Context, reader entityReader, updater projectUpd
 		}
 	}
 
-	return nil
+	return invoiceErr
 }
 
 // buildSubscriptionCascade evaluates the subscription end-date closure
