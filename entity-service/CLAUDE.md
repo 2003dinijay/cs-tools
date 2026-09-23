@@ -2432,6 +2432,32 @@ profile's team block) and, for customers only (`user_type` EXTERNAL, emitted as
   degrades to empty blocks; a database error here is a real fault).
 - Like the other user routes this does no per-caller scoping; the BFF gates it.
 
+## SearchDeployments crashed on any page containing a NULL deployment.type
+
+Reported live: `POST /deployments/search` failing with `cannot scan NULL into
+*string`. `deployment.type` (migration 000013) has no `NOT NULL` constraint —
+38 of 2859 rows are NULL on staging, checked live — but `DeploymentView.Type`
+is a required (non-pointer) `DeploymentType` field on the wire, and
+`deployment_repo.go`'s `SearchDeployments` scanned the column straight into
+it. Fixed the same way as `CaseView.InternalID` (see that section above):
+the wire contract stays a required string (every consumer already expects
+that), only the scan side changes — `d.type::TEXT` now scans into a `*string`
+local, and `stringOrEmpty(...)` (already used elsewhere in this file for the
+identical class of fix) converts a NULL to `""` instead of crashing the whole
+page. Verified directly against a real project with a NULL-type deployment on
+staging: the search now returns all of that project's deployments, the
+NULL-type ones as `"type": ""`.
+
+**`/cases/{id}/tasks/search` (and every other `TaskService` method) is not a
+bug — it's `unavailableTaskService`'s documented, deliberate 503** ("tasks
+are only supported for the ServiceNow data source"). Checked directly
+against staging: **no table matching `%task%` exists anywhere in the public
+schema** — there is no Postgres-backed task storage at all to have a data bug
+in. Implementing this would be a genuinely new feature (a migration + a real
+`task_repo.go`), not a fix to something already wired up incorrectly — same
+class of gap as `GlobalService.GlobalSearch`'s own "no Postgres
+implementation" note elsewhere in this file.
+
 ## Adding a new entity
 
 Follow these steps in order:
