@@ -506,9 +506,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 
 	changeRequestRepo := repository.NewChangeRequestRepository(db)
 	var activeChangeRequestSvc service.ChangeRequestService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeChangeRequestSvc = service.NewServiceNowChangeRequestService(serviceNowIntegrationServiceClient)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		// Pilot extension: change request CREATE only, same ServiceNow-first,
+		// synchronous shape as the case/incident pilots above -- see
+		// changeRequestService.createChangeRequestSNFirst's own doc comment.
+		// Reads stay on Postgres in this mode; snChangeRequestMirrorSvc's
+		// CreateChangeRequest is the only method of it this mode ever calls.
+		snChangeRequestMirrorSvc := service.NewServiceNowChangeRequestService(serviceNowIntegrationServiceClient)
+		activeChangeRequestSvc = service.NewChangeRequestServiceWithSNMirror(changeRequestRepo, snChangeRequestMirrorSvc)
+	default:
 		activeChangeRequestSvc = service.NewChangeRequestService(changeRequestRepo)
 	}
 	changeRequestHandler := handler.NewChangeRequestHandler(activeChangeRequestSvc)
