@@ -4391,6 +4391,35 @@ func snCaseStateLabelToEnum(state *snCaseState) (domain.CaseState, error) {
 	return "", fmt.Errorf("unknown case state %q from ServiceNow", state.Label)
 }
 
+// snAnnouncementStateMap maps ServiceNow's raw state label (as returned on
+// its create-case response for an announcement-typed case -- see
+// TestSNCaseService_CreateCase_Announcement's fixture, which returns
+// {"label": "Open"} for a fresh announcement, the same label case uses)
+// to announcement_state_enum's own literal values. Deliberately its own map
+// rather than reusing snCaseStateMap: announcement_state_enum only has two
+// values (OPEN/CLOSE, migration 000019) and spells the closed one CLOSE, not
+// CLOSED -- the same kind of label/enum spelling mismatch already handled
+// for case (CANCELLED->CANCELED) and incident (SITE_247->SITE_24_7), so this
+// is resolved by an explicit table instead of assumed to line up.
+var snAnnouncementStateMap = map[string]string{
+	"open":   "OPEN",
+	"closed": "CLOSE",
+}
+
+// snAnnouncementStateToEnum converts ServiceNow's raw create-response state
+// label for a newly created announcement into announcement_state_enum's
+// literal value, for CreateCaseFromServiceNow's announcement branch. Returns
+// an error rather than defaulting to "OPEN" for anything unrecognized: a
+// fresh announcement landing in neither OPEN nor CLOSE means ServiceNow
+// returned a label this integration doesn't understand yet, which should
+// fail loudly rather than silently mis-record the state.
+func snAnnouncementStateToEnum(label string) (string, error) {
+	if v, ok := snAnnouncementStateMap[strings.ToLower(label)]; ok {
+		return v, nil
+	}
+	return "", fmt.Errorf("unknown announcement state %q from ServiceNow", label)
+}
+
 // snSeverityLabel extracts the priority word from SN severity labels like
 // "Low (P4)", "2 - High", "3 - Moderate" → "low", "high", "medium".
 var snSeverityLabelMap = map[string]domain.CaseSeverity{

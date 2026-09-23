@@ -317,17 +317,27 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	if err := validateCreateCaseRequest(&req); err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
-	if req.Type != "case" {
-		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "only type \"case\" is supported for the Postgres data source"}
+	// Announcement joins case as the second type supported here (both go
+	// through the SN-first path below when s.snMirror != nil) -- service_request/
+	// engagement/security_report_analysis remain out of scope and still
+	// rejected here.
+	if req.Type != "case" && req.Type != "announcement" {
+		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "only type \"case\" or \"announcement\" is supported for the Postgres data source"}
 	}
 	if err := validateUUIDs("projectId", []string{req.ProjectID}); err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
-	if err := validateUUIDs("deploymentId", []string{req.DeploymentID}); err != nil {
-		return domain.CreateCaseResponse{}, err
-	}
-	if err := validateUUIDs("deployedProductId", []string{req.DeployedProductID}); err != nil {
-		return domain.CreateCaseResponse{}, err
+	// Announcements have no deployment/deployed-product concept (same
+	// reasoning as validateCreateCaseRequest's own conditional) -- req.DeploymentID/
+	// req.DeployedProductID are "" for an announcement, which validateUUIDs
+	// would otherwise reject as an invalid UUID.
+	if req.Type != "announcement" {
+		if err := validateUUIDs("deploymentId", []string{req.DeploymentID}); err != nil {
+			return domain.CreateCaseResponse{}, err
+		}
+		if err := validateUUIDs("deployedProductId", []string{req.DeployedProductID}); err != nil {
+			return domain.CreateCaseResponse{}, err
+		}
 	}
 
 	if s.snMirror != nil {
@@ -439,7 +449,26 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 		return domain.CreateCaseResponse{}, err
 	}
 
-	c, err := s.repo.CreateCaseFromServiceNow(ctx, req, snResp.Case.ID, snResp.Case.Number, snResp.Case.InternalID, snResp.Case.CreatedBy)
+	// announcementState resolves ServiceNow's raw create-response state label
+	// (snResp.Case.State, e.g. "Open") to announcement_state_enum's literal
+	// value for req.Type == "announcement" -- see
+	// createAnnouncementFromServiceNowQuery's own doc comment for why this
+	// can't just hardcode 'OPEN' the way the "case" insert does. Left "" for
+	// req.Type == "case", where the repository ignores it entirely.
+	var announcementState string
+	if req.Type == "announcement" {
+		announcementState, err = snAnnouncementStateToEnum(snResp.Case.State)
+		if err != nil {
+			// ServiceNow already has the announcement at this point (same
+			// drift concern CreateCaseFromServiceNow's own error path below
+			// documents) -- logged loudly since nothing else records it.
+			slog.ErrorContext(ctx, "sn create case: announcement created but its ServiceNow state could not be mapped",
+				"caseId", snResp.Case.ID, "snNumber", snResp.Case.Number, "snState", snResp.Case.State, "error", err)
+			return domain.CreateCaseResponse{}, err
+		}
+	}
+
+	c, err := s.repo.CreateCaseFromServiceNow(ctx, req, snResp.Case.ID, snResp.Case.Number, snResp.Case.InternalID, snResp.Case.CreatedBy, announcementState)
 	if err != nil {
 		// ServiceNow already has the case at this point — this is now real
 		// drift (ServiceNow has it, Postgres doesn't) needing operator
