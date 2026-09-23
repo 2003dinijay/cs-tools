@@ -798,7 +798,25 @@ already use — no route path, request, or response shape changed.
   string, which can be a non-user integration account) — the Postgres path
   writes the caller's resolved email into it, the same identity mechanism
   `caseService.CreateCaseComment` uses (`x-user-id-token` → `emailFromJWT` →
-  `UserRepository.GetUserByEmail`).
+  `UserRepository.GetUserByEmail`). **`SearchComments` now also resolves a
+  display name for that email**, via the same `LEFT JOIN "user" ON
+  LOWER(email) = LOWER(created_by)` (wrapped in its own `DISTINCT ON`
+  subquery — email has no unique constraint) that `SearchCaseActivities`'s
+  own comment branch already used — found live as a real, visible bug: a
+  case's comment bubbles showed the commenter's raw email while that same
+  case's Lifecycle/Attachment entries, on the sibling `/activities/search`
+  endpoint, already showed a resolved name for the identical author, because
+  only that second endpoint ever did the join. `CommentRow.CreatedByName`
+  (`comment_repo.go`) is `""` for an address with no matching `"user"` row
+  (an integration/automation account like `github_pipeline` — a real,
+  legitimate case, not an error) — `commentRowToDomain` passes it through as
+  the `UserReference.Name`, and the webapp's own `authorDisplayName` already
+  falls back to the email whenever `Name` is empty, so this needed no
+  webapp change at all, only entity-service. `CreateComment`'s own
+  echoed-back response (`CaseCommentDetail.CreatedBy`) is a plain email
+  string with no name field on its wire contract at all — deliberately left
+  as-is; the webapp only reads a comment's display name from `SearchComments`
+  once the list is (re)fetched, never from the create response.
 - **Product vulnerabilities**: `SearchProductVulnerabilities`/
   `GetProductVulnerability`/`GetVulnerabilityMeta` are read-only queries
   against `product_vulnerability`, which mirrors ServiceNow's own
