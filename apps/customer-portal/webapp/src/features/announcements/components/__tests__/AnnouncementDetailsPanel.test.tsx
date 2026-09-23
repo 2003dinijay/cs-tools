@@ -62,7 +62,7 @@ describe("AnnouncementDetailsPanel", () => {
     // table tags and their contents -- silently dropping things like an EOL
     // announcement's product-version table. See AnnouncementDetailsPanel's
     // own sanitize call for the fix.
-    render(
+    const { container } = render(
       <AnnouncementDetailsPanel
         data={{
           title: "EOL notice",
@@ -79,8 +79,13 @@ describe("AnnouncementDetailsPanel", () => {
         onBack={() => {}}
       />,
     );
-    expect(screen.getByText("API Manager")).toBeInTheDocument();
-    expect(screen.getByText("4.2.0")).toBeInTheDocument();
+    // Assert the table structure itself survived, not just its text -- a
+    // sanitizer config that unwraps <table>/<tr>/<td> but keeps their text
+    // content would still pass a text-only assertion here.
+    const table = container.querySelector("table");
+    expect(table).not.toBeNull();
+    expect(table).toHaveTextContent("API Manager");
+    expect(table).toHaveTextContent("4.2.0");
   });
 
   it("renders back button while loading", () => {
