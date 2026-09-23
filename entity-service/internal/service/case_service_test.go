@@ -749,8 +749,11 @@ func validAnnouncementCreateCaseRequest() domain.CreateCaseRequest {
 
 // TestCaseService_CreateCase_SNFailureLeavesPostgresUntouched is the pilot's
 // core regression guard for the orphan bug this whole design change exists
-// to fix: if ServiceNow never accepts the case (even after the retry), the
-// Postgres repository must never be called at all — no row, no orphan.
+// to fix: if ServiceNow never accepts the case, the Postgres repository must
+// never be called at all — no row, no orphan. Also guards createCaseSNFirst's
+// single-attempt behavior: the SN mirror must be called exactly once, with
+// no internal retry (see that function's own doc comment for why an internal
+// retry was removed).
 func TestCaseService_CreateCase_SNFailureLeavesPostgresUntouched(t *testing.T) {
 	var mu sync.Mutex
 	attempts := 0
@@ -776,8 +779,8 @@ func TestCaseService_CreateCase_SNFailureLeavesPostgresUntouched(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if attempts != snCaseCreateAttempts {
-		t.Errorf("expected %d SN attempts (bounded retry, both transient), got %d", snCaseCreateAttempts, attempts)
+	if attempts != 1 {
+		t.Errorf("expected exactly 1 SN attempt (no internal retry), got %d", attempts)
 	}
 }
 
@@ -839,52 +842,11 @@ func TestCaseService_CreateCase_SNSuccessCreatesPostgresRowWithMatchingIdentity(
 	}
 }
 
-// TestCaseService_CreateCase_RetriesTransientSNFailureThenSucceeds covers the
-// retry itself: a first attempt that fails transiently must not surface as
-// an error if the second attempt succeeds.
-func TestCaseService_CreateCase_RetriesTransientSNFailureThenSucceeds(t *testing.T) {
-	var mu sync.Mutex
-	attempts := 0
-	mirror := &stubMirrorCaseService{
-		createCase: func(context.Context, domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
-			mu.Lock()
-			attempts++
-			n := attempts
-			mu.Unlock()
-			if n == 1 {
-				return domain.CreateCaseResponse{}, errors.New("sn downstream: timeout")
-			}
-			return domain.CreateCaseResponse{
-				Case: domain.CreateCaseDetails{ID: testDeploymentUUID, Number: "CS0001", InternalID: "WSO2-1", CreatedBy: "jane.doe@example.com"},
-			}, nil
-		},
-	}
-	repo := &stubCaseRepo{
-		createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
-			return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy}, nil
-		},
-	}
-	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
-	svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
-
-	resp, err := svc.CreateCase(context.Background(), validCreateCaseRequest())
-	if err != nil {
-		t.Fatalf("expected the retried attempt to succeed, got error: %v", err)
-	}
-	if resp.Case.ID != testDeploymentUUID {
-		t.Errorf("CreateCase response ID = %q, want %q", resp.Case.ID, testDeploymentUUID)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if attempts != 2 {
-		t.Errorf("expected exactly 2 SN attempts (1 transient failure + 1 success), got %d", attempts)
-	}
-}
-
-// TestCaseService_CreateCase_DoesNotRetryValidationError guards against
-// wasted latency on a deterministic client error: retrying the exact same
-// invalid input can't produce a different outcome.
+// TestCaseService_CreateCase_DoesNotRetryValidationError guards against a
+// second SN attempt on a deterministic client error -- createCaseSNFirst
+// makes exactly one attempt (see its own doc comment: the internal retry was
+// removed, since retryable transport failures are handled at the gateway/
+// caller level, not duplicated here).
 func TestCaseService_CreateCase_DoesNotRetryValidationError(t *testing.T) {
 	var mu sync.Mutex
 	attempts := 0
@@ -1133,55 +1095,6 @@ func TestCaseService_CreateCase_CaseFamily_SNFailureLeavesPostgresUntouched(t *t
 			_, err := svc.CreateCase(context.Background(), tc.reqFunc())
 			if err == nil {
 				t.Fatal("expected an error when ServiceNow never accepts the record")
-			}
-		})
-	}
-}
-
-// TestCaseService_CreateCase_CaseFamily_RetriesTransientSNFailureThenSucceeds
-// covers createCaseSNFirst's retry for each of the three new types -- proving
-// the retry/error-handling logic in createCaseSNFirst applies identically
-// regardless of type, same as case's own
-// TestCaseService_CreateCase_RetriesTransientSNFailureThenSucceeds.
-func TestCaseService_CreateCase_CaseFamily_RetriesTransientSNFailureThenSucceeds(t *testing.T) {
-	for _, tc := range caseFamilyCreateCaseTestCases {
-		t.Run(tc.name, func(t *testing.T) {
-			var mu sync.Mutex
-			attempts := 0
-			mirror := &stubMirrorCaseService{
-				createCase: func(context.Context, domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
-					mu.Lock()
-					attempts++
-					n := attempts
-					mu.Unlock()
-					if n == 1 {
-						return domain.CreateCaseResponse{}, errors.New("sn downstream: timeout")
-					}
-					return domain.CreateCaseResponse{
-						Case: domain.CreateCaseDetails{ID: testDeploymentUUID, Number: "WI0001", InternalID: "WSO2-WI-1", CreatedBy: "jane.doe@example.com", State: "Open"},
-					}, nil
-				},
-			}
-			repo := &stubCaseRepo{
-				createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
-					return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy}, nil
-				},
-			}
-			dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
-			svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
-
-			resp, err := svc.CreateCase(context.Background(), tc.reqFunc())
-			if err != nil {
-				t.Fatalf("expected the retried attempt to succeed, got error: %v", err)
-			}
-			if resp.Case.ID != testDeploymentUUID {
-				t.Errorf("CreateCase response ID = %q, want %q", resp.Case.ID, testDeploymentUUID)
-			}
-
-			mu.Lock()
-			defer mu.Unlock()
-			if attempts != 2 {
-				t.Errorf("expected exactly 2 SN attempts (1 transient failure + 1 success), got %d", attempts)
 			}
 		})
 	}

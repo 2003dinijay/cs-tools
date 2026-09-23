@@ -384,15 +384,6 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	}, nil
 }
 
-// snCaseCreateAttempts/snCaseCreateRetryDelay bound createCaseSNFirst's
-// retry: 2 attempts total, a few hundred ms apart, enough to absorb a
-// transient ServiceNow blip without turning a routine case creation into a
-// slow request.
-const (
-	snCaseCreateAttempts   = 2
-	snCaseCreateRetryDelay = 300 * time.Millisecond
-)
-
 // createCaseSNFirst implements CreateCase's DATA_SOURCE=postgres-servicenow-dual-write
 // path: ServiceNow-FIRST and SYNCHRONOUS — the opposite order from
 // UpdateCase's WorkState mirror (Postgres-first, ServiceNow best-effort and
@@ -408,12 +399,14 @@ const (
 // systems either way, so a failed async mirror write just leaves one field
 // stale until retried, not orphaned.
 //
-// req is not retried against a mutated/regenerated payload between attempts
-// — a plain repeat of the same call, since the only failures worth
-// retrying here are transient (timeout, connection reset, a 5xx), where the
-// original request was never the problem. A ValidationError is never
-// retried at all: the same invalid input fails the same way every time, so
-// retrying only adds latency without any chance of a different outcome.
+// This call is made exactly once, with no internal retry: retrying here
+// risked a worse failure than the one it absorbed. If ServiceNow's create
+// actually succeeds server-side but the HTTP response back to
+// entity-service is lost (timeout/network blip), a retry sends a second
+// CREATE, producing a duplicate case in ServiceNow with Postgres only ever
+// learning about whichever attempt's response happened to come back — an
+// orphan duplicate in ServiceNow. Retry policy belongs to the caller, which
+// knows whether its own request was already reattempted upstream.
 //
 // On success, id/number/wso2ID/createdBy come from ServiceNow's own
 // response and are used AS-IS for the Postgres insert
@@ -427,25 +420,7 @@ const (
 // which is exactly why this pilot could not have unblocked CreateCase any
 // other way.
 func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
-	var snResp domain.CreateCaseResponse
-	var err error
-	for attempt := 1; attempt <= snCaseCreateAttempts; attempt++ {
-		snResp, err = s.snMirror.CreateCase(ctx, req)
-		if err == nil {
-			break
-		}
-		if _, ok := err.(*apierror.ValidationError); ok {
-			break
-		}
-		if attempt < snCaseCreateAttempts {
-			slog.WarnContext(ctx, "sn create case: attempt failed, retrying", "attempt", attempt, "error", err)
-			select {
-			case <-time.After(snCaseCreateRetryDelay):
-			case <-ctx.Done():
-				return domain.CreateCaseResponse{}, ctx.Err()
-			}
-		}
-	}
+	snResp, err := s.snMirror.CreateCase(ctx, req)
 	if err != nil {
 		// ServiceNow never accepted the case — nothing is written to
 		// Postgres at all, by construction (s.repo.CreateCaseFromServiceNow
