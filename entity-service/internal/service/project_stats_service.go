@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -122,36 +124,63 @@ func (s *projectStatsService) GetProjectStats(ctx context.Context, projectID str
 		return domain.ProjectStatsResponse{}, err
 	}
 
-	billableMinutes, nonBillableMinutes, err := s.repo.TimeLoggedMinutes(ctx, projectID, "", "")
-	if err != nil {
-		return domain.ProjectStatsResponse{}, err
-	}
+	// The six aggregations below share only the project id, so they run
+	// concurrently rather than as six serial round trips -- the same
+	// errgroup pattern SearchCases and SearchCaseComments already use for
+	// their COUNT/SELECT pair. Each goroutine writes its own variable, and
+	// the response is assembled afterwards, so the result is identical to
+	// running them in order.
+	var (
+		billableMinutes, nonBillableMinutes int
+		deployments, deployedProducts       int
+		instances                           int
+		outstanding                         map[string]int
+		slaInputs                           repository.ProjectSLAStatusInputs
+	)
 
-	deployments, err := s.repo.DeploymentCount(ctx, projectID)
-	if err != nil {
-		return domain.ProjectStatsResponse{}, err
-	}
-	deployedProducts, err := s.repo.DeployedProductCount(ctx, projectID)
-	if err != nil {
-		return domain.ProjectStatsResponse{}, err
-	}
+	g, gctx := errgroup.WithContext(ctx)
 
-	// deployment_node is spelled with the live schema's column names, which a
-	// migrations-built database does not have (see the repository's own
-	// note). A failure here must not take down the whole dashboard, so the
-	// count degrades to zero -- every other figure is still correct.
-	instances, err := s.repo.InstanceCount(ctx, projectID)
-	if err != nil {
-		instances = 0
-	}
+	g.Go(func() error {
+		var err error
+		billableMinutes, nonBillableMinutes, err = s.repo.TimeLoggedMinutes(gctx, projectID, "", "")
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		deployments, err = s.repo.DeploymentCount(gctx, projectID)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		deployedProducts, err = s.repo.DeployedProductCount(gctx, projectID)
+		return err
+	})
+	g.Go(func() error {
+		// deployment_node is spelled with the live schema's column names,
+		// which a migrations-built database does not have (see the
+		// repository's own note). A failure here must not take down the
+		// whole dashboard, so the count degrades to zero and the error is
+		// deliberately NOT returned -- returning it would cancel gctx and
+		// fail every sibling query too.
+		n, err := s.repo.InstanceCount(gctx, projectID)
+		if err != nil {
+			return nil
+		}
+		instances = n
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		outstanding, err = s.repo.OutstandingCounts(gctx, projectID, caseStatsOutstandingStates, crOutstandingStates)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		slaInputs, err = s.repo.SLAStatusInputs(gctx, projectID)
+		return err
+	})
 
-	outstanding, err := s.repo.OutstandingCounts(ctx, projectID, caseStatsOutstandingStates, crOutstandingStates)
-	if err != nil {
-		return domain.ProjectStatsResponse{}, err
-	}
-
-	slaInputs, err := s.repo.SLAStatusInputs(ctx, projectID)
-	if err != nil {
+	if err := g.Wait(); err != nil {
 		return domain.ProjectStatsResponse{}, err
 	}
 

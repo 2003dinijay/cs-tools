@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"math"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -119,11 +121,70 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 		CreatedBy: createdBy,
 	}
 
-	labels, err := s.refRepo.EnumLabels(ctx, []string{
-		caseStateEnumType, caseSeverityEnumType, engagementTypeEnumType,
+	// The enum lookup and the six aggregations below share only the filter,
+	// so they run concurrently rather than as seven serial round trips --
+	// the same errgroup pattern SearchCases and SearchCaseComments already
+	// use for their COUNT/SELECT pair. Each goroutine writes its own
+	// variable; the response is assembled afterwards, in a fixed order, so
+	// the result is identical to running them in sequence.
+	var (
+		labels          map[string][]string
+		stateSeverity   []repository.StateSeverityCount
+		engagementTypes []repository.StateEngagementTypeCount
+		currentMonth    int
+		pastThirtyDays  int
+		current         int
+		previous        int
+		avgSeconds      float64
+		slaCount        int
+		caseTypeCounts  map[string]int
+	)
+
+	g, gctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		var err error
+		labels, err = s.refRepo.EnumLabels(gctx, []string{
+			caseStateEnumType, caseSeverityEnumType, engagementTypeEnumType,
+		})
+		if err != nil {
+			return fmt.Errorf("project case stats: %w", err)
+		}
+		return nil
 	})
-	if err != nil {
-		return domain.ProjectCaseStatsResponse{}, fmt.Errorf("project case stats: %w", err)
+	g.Go(func() error {
+		var err error
+		stateSeverity, err = s.repo.StateSeverityCounts(gctx, filter)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		engagementTypes, err = s.repo.StateEngagementTypeCounts(gctx, filter)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		currentMonth, pastThirtyDays, err = s.repo.ResolvedBuckets(gctx, filter, caseStatsResolvedStates)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		current, previous, err = s.repo.ClosedByCreatedWindow(gctx, filter, caseStateClosed)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		avgSeconds, slaCount, err = s.repo.AverageResponseSeconds(gctx, projectID)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		caseTypeCounts, err = s.repo.CaseTypeCounts(gctx, filter)
+		return err
+	})
+
+	if err := g.Wait(); err != nil {
+		return domain.ProjectCaseStatsResponse{}, err
 	}
 
 	// Every bucket is seeded from the enum's full label set at zero, so a
@@ -140,10 +201,6 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 		CasesTrend:                     deprecatedCasesTrend(),
 	}
 
-	stateSeverity, err := s.repo.StateSeverityCounts(ctx, filter)
-	if err != nil {
-		return domain.ProjectCaseStatsResponse{}, err
-	}
 	for _, row := range stateSeverity {
 		resp.TotalCount += row.Count
 		incrementCount(resp.StateCount, row.State, row.Count)
@@ -166,10 +223,6 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 		}
 	}
 
-	engagementTypes, err := s.repo.StateEngagementTypeCounts(ctx, filter)
-	if err != nil {
-		return domain.ProjectCaseStatsResponse{}, err
-	}
 	for _, row := range engagementTypes {
 		incrementCount(resp.EngagementTypeCount, row.EngagementType, row.Count)
 		if row.State != caseStateClosed {
@@ -177,23 +230,11 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 		}
 	}
 
-	currentMonth, pastThirtyDays, err := s.repo.ResolvedBuckets(ctx, filter, caseStatsResolvedStates)
-	if err != nil {
-		return domain.ProjectCaseStatsResponse{}, err
-	}
 	resp.ResolvedCount.CurrentMonth = currentMonth
 	resp.ResolvedCount.PastThirtyDays = pastThirtyDays
 
-	current, previous, err := s.repo.ClosedByCreatedWindow(ctx, filter, caseStateClosed)
-	if err != nil {
-		return domain.ProjectCaseStatsResponse{}, err
-	}
 	resp.ChangeRate.ResolvedEngagements = percentChange(current, previous)
 
-	avgSeconds, slaCount, err := s.repo.AverageResponseSeconds(ctx, projectID)
-	if err != nil {
-		return domain.ProjectCaseStatsResponse{}, err
-	}
 	if slaCount > 0 {
 		// ServiceNow floors the per-SLA mean to whole seconds before
 		// converting, so the same input yields the same hours figure here.
@@ -203,10 +244,6 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 	// SLA computation is commented out at the source, so it reports 0 for
 	// every project. See the type's doc comment.
 
-	caseTypeCounts, err := s.repo.CaseTypeCounts(ctx, filter)
-	if err != nil {
-		return domain.ProjectCaseStatsResponse{}, err
-	}
 	for _, ref := range repository.CaseTypeRefs {
 		count := caseTypeCounts[ref.ID]
 		item := ref
