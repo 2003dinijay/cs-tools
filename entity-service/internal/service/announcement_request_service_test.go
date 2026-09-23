@@ -82,6 +82,14 @@ type fakeAnnouncementRequestRepo struct {
 
 	gotListDeliveriesID  string
 	listDeliveriesResult []domain.AnnouncementRequestDelivery
+
+	gotClaimID    string
+	claimCalled   bool
+	claimResult   domain.AnnouncementRequest
+	claimErr      error
+	gotReleaseID  string
+	releaseCalled int
+	releaseErr    error
 }
 
 func (f *fakeAnnouncementRequestRepo) Create(_ context.Context, req domain.CreateAnnouncementRequestRequest) (domain.AnnouncementRequest, error) {
@@ -146,6 +154,24 @@ func (f *fakeAnnouncementRequestRepo) SetSchedule(_ context.Context, id string, 
 	return domain.AnnouncementRequest{ID: id, State: domain.AnnouncementRequestStateApproved, ScheduledFor: scheduledFor}, nil
 }
 
+func (f *fakeAnnouncementRequestRepo) ClaimForAutoPublish(_ context.Context, id string, _ time.Duration) (domain.AnnouncementRequest, error) {
+	f.gotClaimID = id
+	f.claimCalled = true
+	if f.claimErr != nil {
+		return domain.AnnouncementRequest{}, f.claimErr
+	}
+	if f.claimResult.State != "" {
+		return f.claimResult, nil
+	}
+	return f.getResult, nil
+}
+
+func (f *fakeAnnouncementRequestRepo) ReleaseAutoPublishClaim(_ context.Context, id string) error {
+	f.gotReleaseID = id
+	f.releaseCalled++
+	return f.releaseErr
+}
+
 func (f *fakeAnnouncementRequestRepo) CreateUpdate(_ context.Context, announcementRequestID, content, createdBy, createdByEmail string) (domain.AnnouncementRequestUpdate, error) {
 	f.gotCreateUpdateReqID = announcementRequestID
 	f.gotCreateUpdateContent = content
@@ -164,7 +190,10 @@ func (f *fakeAnnouncementRequestRepo) ListUpdates(_ context.Context, announcemen
 
 func (f *fakeAnnouncementRequestRepo) UpsertDeliveries(_ context.Context, announcementRequestID string, deliveries []domain.RecordAnnouncementRequestDeliveryInput) ([]domain.AnnouncementRequestDelivery, error) {
 	f.gotUpsertDeliveriesID = announcementRequestID
-	f.gotUpsertDeliveriesReq = deliveries
+	// AutoPublish now records one project's outcome per call (see its own
+	// doc comment for why), so this accumulates across every call within a
+	// test rather than keeping only the most recent one.
+	f.gotUpsertDeliveriesReq = append(f.gotUpsertDeliveriesReq, deliveries...)
 	if f.upsertDeliveriesErr != nil {
 		return nil, f.upsertDeliveriesErr
 	}
@@ -699,6 +728,110 @@ func TestAnnouncementRequestService_AutoPublish(t *testing.T) {
 		}
 		if len(cases.taggedCases) != 1 || cases.taggedCases[0] != "case-existing" {
 			t.Fatalf("expected only the tag_failed project's existing case retagged, got %v", cases.taggedCases)
+		}
+	})
+
+	t.Run("returns a conflict without touching cases when the claim is already held (overlapping attempt)", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{
+			getResult: dueApproved(),
+			claimErr:  &apierror.ConflictError{Msg: "already claimed"},
+		}
+		cases := &fakeCaseFanOutClient{}
+		svc := NewAnnouncementRequestService(repo, cases, internal)
+
+		_, err := svc.AutoPublish(context.Background(), "req-1")
+		if _, ok := err.(*apierror.ConflictError); !ok {
+			t.Fatalf("expected *apierror.ConflictError, got %T: %v", err, err)
+		}
+		if len(cases.createdCases) != 0 {
+			t.Fatalf("expected no case creation attempted when the claim itself failed, got %+v", cases.createdCases)
+		}
+		if repo.releaseCalled != 0 {
+			t.Fatalf("expected no release when the claim was never actually taken, got %d", repo.releaseCalled)
+		}
+	})
+
+	t.Run("releases the claim on both full success and partial failure", func(t *testing.T) {
+		t.Run("success", func(t *testing.T) {
+			repo := &fakeAnnouncementRequestRepo{getResult: dueApproved()}
+			svc := NewAnnouncementRequestService(repo, &fakeCaseFanOutClient{}, internal)
+			if _, err := svc.AutoPublish(context.Background(), "req-1"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if repo.releaseCalled != 1 {
+				t.Fatalf("expected the claim released exactly once, got %d", repo.releaseCalled)
+			}
+		})
+
+		t.Run("partial failure", func(t *testing.T) {
+			repo := &fakeAnnouncementRequestRepo{getResult: dueApproved()}
+			cases := &fakeCaseFanOutClient{
+				createCaseFn: func(_ context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+					if req.ProjectID == "proj-2" {
+						return domain.CreateCaseResponse{}, fmt.Errorf("boom")
+					}
+					return domain.CreateCaseResponse{Case: domain.CreateCaseDetails{ID: "case-1"}}, nil
+				},
+			}
+			svc := NewAnnouncementRequestService(repo, cases, internal)
+			if _, err := svc.AutoPublish(context.Background(), "req-1"); err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if repo.releaseCalled != 1 {
+				t.Fatalf("expected the claim released exactly once even on failure, got %d", repo.releaseCalled)
+			}
+		})
+	})
+
+	t.Run("a security tag failure on a newly created case blocks publish, same as a retried tag failure", func(t *testing.T) {
+		req := dueApproved()
+		req.IsSecurityAnnouncement = true
+		repo := &fakeAnnouncementRequestRepo{getResult: req}
+		cases := &fakeCaseFanOutClient{
+			addTagFn: func(_ context.Context, caseID, _ string) (domain.Tag, error) {
+				if caseID == "case-proj-2" {
+					return domain.Tag{}, fmt.Errorf("tag service unavailable")
+				}
+				return domain.Tag{}, nil
+			},
+			createCaseFn: func(_ context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+				return domain.CreateCaseResponse{Case: domain.CreateCaseDetails{ID: "case-" + req.ProjectID}}, nil
+			},
+		}
+		svc := NewAnnouncementRequestService(repo, cases, internal)
+
+		_, err := svc.AutoPublish(context.Background(), "req-1")
+		if _, ok := err.(*apierror.ConflictError); !ok {
+			t.Fatalf("expected a conflict (not yet fully delivered) when a new case's tag attach fails, got %T: %v", err, err)
+		}
+		if repo.gotPublishID != "" {
+			t.Fatalf("expected MarkPublished never called while a security tag is still missing, got id=%q", repo.gotPublishID)
+		}
+	})
+
+	t.Run("records each project's outcome as it happens, not batched at the end", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{getResult: dueApproved()}
+		var recordedAfterEachCreate int
+		cases := &fakeCaseFanOutClient{
+			createCaseFn: func(_ context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+				// Whatever was recorded so far reflects only *earlier*
+				// projects in this loop, never the one about to be created
+				// — proving deliveries are persisted incrementally rather
+				// than accumulated and flushed once at the very end.
+				recordedAfterEachCreate = len(repo.gotUpsertDeliveriesReq)
+				return domain.CreateCaseResponse{Case: domain.CreateCaseDetails{ID: "case-" + req.ProjectID}}, nil
+			},
+		}
+		svc := NewAnnouncementRequestService(repo, cases, internal)
+
+		if _, err := svc.AutoPublish(context.Background(), "req-1"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if recordedAfterEachCreate >= 2 {
+			t.Fatalf("expected the first project's case creation to see fewer than 2 already-recorded deliveries, got %d", recordedAfterEachCreate)
+		}
+		if len(repo.gotUpsertDeliveriesReq) != 2 {
+			t.Fatalf("expected both projects recorded by the end, got %+v", repo.gotUpsertDeliveriesReq)
 		}
 	})
 

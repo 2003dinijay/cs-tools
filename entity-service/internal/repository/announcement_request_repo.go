@@ -59,6 +59,20 @@ type AnnouncementRequestRepository interface {
 	// validated the current state, the actor, and (if non-nil) that
 	// scheduledFor is in the future.
 	SetSchedule(ctx context.Context, id string, scheduledFor *time.Time) (domain.AnnouncementRequest, error)
+	// ClaimForAutoPublish atomically marks a due, approved row as "being
+	// auto-published right now" (publish_claimed_on = NOW()), so a second,
+	// overlapping AutoPublish attempt for the same row can't also start
+	// fanning out to the same projects. Only succeeds when the row is
+	// approved, due (scheduled_on <= NOW()), and not already claimed within
+	// staleAfter -- an older claim is assumed abandoned (the process that
+	// held it crashed or was killed) and can be reclaimed. Callers must
+	// release the claim (ReleaseAutoPublishClaim) once their attempt ends,
+	// success or failure.
+	ClaimForAutoPublish(ctx context.Context, id string, staleAfter time.Duration) (domain.AnnouncementRequest, error)
+	// ReleaseAutoPublishClaim clears publish_claimed_on unconditionally --
+	// safe to call even if the row has since moved to published, or was
+	// never claimed at all.
+	ReleaseAutoPublishClaim(ctx context.Context, id string) error
 	// RevertToDraft moves state back to draft, clearing
 	// resolved_project_ids/resolved_project_count/dry_run_case_id/
 	// dry_run_on/dry_run_by/submitted_by/submitted_on, and — in the same
@@ -370,6 +384,34 @@ func (r *announcementRequestRepo) SetSchedule(ctx context.Context, id string, sc
 		return domain.AnnouncementRequest{}, fmt.Errorf("schedule announcement_request: %w", err)
 	}
 	return ar, nil
+}
+
+// ClaimForAutoPublish implements AnnouncementRequestRepository.
+func (r *announcementRequestRepo) ClaimForAutoPublish(ctx context.Context, id string, staleAfter time.Duration) (domain.AnnouncementRequest, error) {
+	query := `
+		UPDATE announcement_requests SET
+			publish_claimed_on = NOW()
+		WHERE id = $1 AND state = 'approved'
+			AND scheduled_on IS NOT NULL AND scheduled_on <= NOW()
+			AND (publish_claimed_on IS NULL OR publish_claimed_on <= NOW() - ($2 * INTERVAL '1 second'))
+		RETURNING ` + announcementRequestColumns
+
+	ar, err := scanAnnouncementRequest(r.db.QueryRow(ctx, query, id, staleAfter.Seconds()))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.AnnouncementRequest{}, r.onConflictOrNotFound(ctx, id, "claim for auto-publish")
+		}
+		return domain.AnnouncementRequest{}, fmt.Errorf("claim announcement_request for auto-publish: %w", err)
+	}
+	return ar, nil
+}
+
+// ReleaseAutoPublishClaim implements AnnouncementRequestRepository.
+func (r *announcementRequestRepo) ReleaseAutoPublishClaim(ctx context.Context, id string) error {
+	if _, err := r.db.Exec(ctx, `UPDATE announcement_requests SET publish_claimed_on = NULL WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("release announcement_request auto-publish claim: %w", err)
+	}
+	return nil
 }
 
 // RevertToDraft implements AnnouncementRequestRepository. Only callable from

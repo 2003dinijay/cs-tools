@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -26,6 +27,14 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
+
+// autoPublishClaimStaleAfter bounds how long AutoPublish's own claim on a
+// row (ClaimForAutoPublish) is honored once taken. The claim is always
+// released (ReleaseAutoPublishClaim) when an attempt ends, success or
+// failure — this staleness window only matters if the process holding it is
+// killed outright (e.g. the scheduled task's own process is terminated
+// mid-tick) and never gets to run that release at all.
+const autoPublishClaimStaleAfter = 5 * time.Minute
 
 // autoPublishSecurityTagLabel must match the webapp's own
 // SECURITY_ANNOUNCEMENT_TAG_LABEL constant
@@ -320,6 +329,30 @@ func (s *announcementRequestService) Schedule(ctx context.Context, id, actorID, 
 // concurrency purely for a human's browser-side responsiveness) — this runs
 // as a background job with no one waiting on it, so the simplicity of one
 // project at a time outweighs any benefit from parallelizing here.
+//
+// Every project's outcome is recorded to the delivery ledger the moment
+// it's known, not batched into one call at the end of the whole fan-out —
+// this request runs under entity-service's own 30s per-request timeout
+// (internal/middleware.Timeout), same as every other route, and a batch
+// large enough to exceed that would otherwise have every already-created
+// case for that pass silently lost from the ledger the instant the context
+// is cancelled, causing the next tick to recreate them. Each per-item
+// ledger write uses context.WithoutCancel(ctx) for the same reason: the
+// call it's recording already happened for real (a case now exists, or a
+// tag attach already failed) regardless of whether this request's own
+// deadline has since passed, so recording it must not be aborted by that
+// same cancellation.
+//
+// Guarded by ClaimForAutoPublish/ReleaseAutoPublishClaim so two overlapping
+// AutoPublish attempts for the same row (e.g. a tick that's still running
+// when the next one starts) can't both fan out to the same projects at
+// once. This does NOT close the narrower race against a manual, browser-
+// driven Publish click landing in the same window — that flow has no
+// notion of this claim at all, and closing that would mean changing the
+// manual Publish flow itself, which is explicitly out of scope (Publish now
+// stays untouched). Accepted as a known, narrow residual risk: it needs a
+// human to click Publish at almost the exact moment a tick is mid-fan-out
+// for that same request.
 func (s *announcementRequestService) AutoPublish(ctx context.Context, id string) (domain.AnnouncementRequest, error) {
 	if err := s.requireInternalCaller(ctx); err != nil {
 		return domain.AnnouncementRequest{}, err
@@ -338,6 +371,16 @@ func (s *announcementRequestService) AutoPublish(ctx context.Context, id string)
 	if len(current.ResolvedProjectIDs) == 0 {
 		return domain.AnnouncementRequest{}, &apierror.ConflictError{Msg: "this request has no resolved audience to publish to"}
 	}
+
+	current, err = s.repo.ClaimForAutoPublish(ctx, id, autoPublishClaimStaleAfter)
+	if err != nil {
+		return domain.AnnouncementRequest{}, err
+	}
+	defer func() {
+		if releaseErr := s.repo.ReleaseAutoPublishClaim(context.WithoutCancel(ctx), id); releaseErr != nil {
+			slog.ErrorContext(ctx, "auto-publish: failed to release claim", "announcementRequestID", id, "error", releaseErr)
+		}
+	}()
 
 	deliveries, err := s.repo.ListDeliveries(ctx, id)
 	if err != nil {
@@ -367,7 +410,14 @@ func (s *announcementRequestService) AutoPublish(ctx context.Context, id string)
 		// loop below, same as a project with no delivery row at all.
 	}
 
-	var passEntries []domain.RecordAnnouncementRequestDeliveryInput
+	// recordNow persists one project's outcome immediately — see this
+	// method's own doc comment for why this can't wait until the end of
+	// the whole fan-out.
+	recordNow := func(entry domain.RecordAnnouncementRequestDeliveryInput) error {
+		_, err := s.RecordDeliveries(context.WithoutCancel(ctx), id, current.CreatedBy, []domain.RecordAnnouncementRequestDeliveryInput{entry})
+		return err
+	}
+
 	var stillFailingTags []string
 
 	// Retry any earlier tag failures first, reusing the case that already
@@ -376,10 +426,14 @@ func (s *announcementRequestService) AutoPublish(ctx context.Context, id string)
 		caseID := caseID
 		if _, err := s.cases.AddCaseTag(ctx, caseID, autoPublishSecurityTagLabel); err != nil {
 			stillFailingTags = append(stillFailingTags, projectID)
-			passEntries = append(passEntries, domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusTagFailed})
+			if err := recordNow(domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusTagFailed}); err != nil {
+				return domain.AnnouncementRequest{}, err
+			}
 			continue
 		}
-		passEntries = append(passEntries, domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusSucceeded})
+		if err := recordNow(domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusSucceeded}); err != nil {
+			return domain.AnnouncementRequest{}, err
+		}
 	}
 
 	// Fan out to every resolved project with no successful delivery yet.
@@ -397,25 +451,32 @@ func (s *announcementRequestService) AutoPublish(ctx context.Context, id string)
 		})
 		if err != nil {
 			stillFailingCases = append(stillFailingCases, projectID)
-			passEntries = append(passEntries, domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, Status: domain.AnnouncementRequestDeliveryStatusFailed})
+			if err := recordNow(domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, Status: domain.AnnouncementRequestDeliveryStatusFailed}); err != nil {
+				return domain.AnnouncementRequest{}, err
+			}
 			continue
 		}
 		caseID := created.Case.ID
 		caseIDByProject[projectID] = caseID
 		if current.IsSecurityAnnouncement {
 			if _, err := s.cases.AddCaseTag(ctx, caseID, autoPublishSecurityTagLabel); err != nil {
-				passEntries = append(passEntries, domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusTagFailed})
+				// The case is real — this project must not be treated as
+				// delivered until the tag actually attaches (see the type
+				// doc comment on AnnouncementRequestDeliveryStatus), so it
+				// has to block MarkPublished below exactly like a retried
+				// tag failure does.
+				stillFailingTags = append(stillFailingTags, projectID)
+				if err := recordNow(domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusTagFailed}); err != nil {
+					return domain.AnnouncementRequest{}, err
+				}
 				continue
 			}
 		}
-		passEntries = append(passEntries, domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusSucceeded})
-	}
-
-	if len(passEntries) > 0 {
-		if _, err := s.RecordDeliveries(ctx, id, current.CreatedBy, passEntries); err != nil {
+		if err := recordNow(domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusSucceeded}); err != nil {
 			return domain.AnnouncementRequest{}, err
 		}
 	}
+
 	if len(stillFailingCases) > 0 || len(stillFailingTags) > 0 {
 		return domain.AnnouncementRequest{}, &apierror.ConflictError{Msg: fmt.Sprintf(
 			"not yet fully delivered — %d project(s) failed case creation, %d project(s) failed the security tag; will retry next tick",
@@ -431,7 +492,7 @@ func (s *announcementRequestService) AutoPublish(ctx context.Context, id string)
 	if current.CreatedByEmail != nil {
 		actorEmail = *current.CreatedByEmail
 	}
-	return s.MarkPublished(ctx, id, current.CreatedBy, actorEmail, caseIDs)
+	return s.MarkPublished(context.WithoutCancel(ctx), id, current.CreatedBy, actorEmail, caseIDs)
 }
 
 // AddUpdate implements AnnouncementRequestService. Rejects unless the
