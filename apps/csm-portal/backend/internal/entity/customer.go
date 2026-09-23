@@ -124,6 +124,31 @@ func (c *CustomerEntityClient) PatchUserMe(ctx context.Context, body []byte) ([]
 	return c.do(ctx, http.MethodPatch, "/users/me", body)
 }
 
+// ListSavedFilterViews calls GET /users/me/saved-filter-views on the entity service.
+func (c *CustomerEntityClient) ListSavedFilterViews(ctx context.Context, listKey string) ([]byte, error) {
+	q := url.Values{}
+	q.Set("listKey", listKey)
+	return c.do(ctx, http.MethodGet, "/users/me/saved-filter-views?"+q.Encode(), nil)
+}
+
+// SaveSavedFilterView calls PATCH /users/me/saved-filter-views on the entity service.
+func (c *CustomerEntityClient) SaveSavedFilterView(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPatch, "/users/me/saved-filter-views", body)
+}
+
+// DeleteSavedFilterView calls DELETE /users/me/saved-filter-views on the entity service.
+func (c *CustomerEntityClient) DeleteSavedFilterView(ctx context.Context, listKey, name string) ([]byte, error) {
+	q := url.Values{}
+	q.Set("listKey", listKey)
+	q.Set("name", name)
+	return c.do(ctx, http.MethodDelete, "/users/me/saved-filter-views?"+q.Encode(), nil)
+}
+
+// ReorderSavedFilterView calls POST /users/me/saved-filter-views/reorder on the entity service.
+func (c *CustomerEntityClient) ReorderSavedFilterView(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/users/me/saved-filter-views/reorder", body)
+}
+
 // SearchUsers calls POST /users/search on the entity service.
 // Response is returned as raw JSON; field filtering to the portal shape is deferred.
 func (c *CustomerEntityClient) SearchUsers(ctx context.Context, body []byte) ([]byte, error) {
