@@ -25,6 +25,7 @@ import { useUpdateAnnouncementRequest } from "@features/csm-announcements/api/us
 import { useRecordAnnouncementRequestDryRun } from "@features/csm-announcements/api/useRecordAnnouncementRequestDryRun";
 import { useSubmitAnnouncementRequest } from "@features/csm-announcements/api/useSubmitAnnouncementRequest";
 import { useApproveAnnouncementRequest } from "@features/csm-announcements/api/useApproveAnnouncementRequest";
+import { useScheduleAnnouncementRequest } from "@features/csm-announcements/api/useScheduleAnnouncementRequest";
 import { usePublishAnnouncementRequest } from "@features/csm-announcements/api/usePublishAnnouncementRequest";
 import { useCreateAnnouncementRequestUpdate } from "@features/csm-announcements/api/useCreateAnnouncementRequestUpdate";
 import { useListAnnouncementRequestUpdates } from "@features/csm-announcements/api/useListAnnouncementRequestUpdates";
@@ -52,6 +53,10 @@ vi.mock("@features/csm-announcements/api/useSubmitAnnouncementRequest", () => ({
 }));
 vi.mock("@features/csm-announcements/api/useApproveAnnouncementRequest", () => ({
   useApproveAnnouncementRequest: vi.fn(),
+}));
+
+vi.mock("@features/csm-announcements/api/useScheduleAnnouncementRequest", () => ({
+  useScheduleAnnouncementRequest: vi.fn(),
 }));
 vi.mock("@features/csm-announcements/api/usePublishAnnouncementRequest", () => ({
   usePublishAnnouncementRequest: vi.fn(),
@@ -118,6 +123,7 @@ const mockedUpdate = vi.mocked(useUpdateAnnouncementRequest);
 const mockedRecordDryRun = vi.mocked(useRecordAnnouncementRequestDryRun);
 const mockedSubmit = vi.mocked(useSubmitAnnouncementRequest);
 const mockedApprove = vi.mocked(useApproveAnnouncementRequest);
+const mockedSchedule = vi.mocked(useScheduleAnnouncementRequest);
 const mockedPublish = vi.mocked(usePublishAnnouncementRequest);
 const mockedCreateUpdate = vi.mocked(useCreateAnnouncementRequestUpdate);
 const mockedListUpdates = vi.mocked(useListAnnouncementRequestUpdates);
@@ -162,6 +168,7 @@ beforeEach(() => {
   mockedRecordDryRun.mockReset();
   mockedSubmit.mockReset();
   mockedApprove.mockReset();
+  mockedSchedule.mockReset();
   mockedPublish.mockReset();
   mockedCreateUpdate.mockReset();
   mockedListUpdates.mockReset();
@@ -178,6 +185,7 @@ beforeEach(() => {
   mockedRecordDryRun.mockReturnValue(noopMutation() as ReturnType<typeof useRecordAnnouncementRequestDryRun>);
   mockedSubmit.mockReturnValue(noopMutation() as ReturnType<typeof useSubmitAnnouncementRequest>);
   mockedApprove.mockReturnValue(noopMutation() as ReturnType<typeof useApproveAnnouncementRequest>);
+  mockedSchedule.mockReturnValue(noopMutation() as ReturnType<typeof useScheduleAnnouncementRequest>);
   mockedDryRun.mockReturnValue({
     runningDryRun: false,
     dryRunResult: null,
@@ -191,6 +199,10 @@ beforeEach(() => {
     failedProjectIds: [],
     failedTagProjectIds: [],
     published: null,
+    readyToPublish: true,
+    hydratingDeliveries: false,
+    hydrationFailed: false,
+    retryHydration: vi.fn(),
     handlePublish: vi.fn(),
   });
   mockedCreateUpdate.mockReturnValue(noopMutation() as ReturnType<typeof useCreateAnnouncementRequestUpdate>);
@@ -428,6 +440,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: [],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish,
     });
 
@@ -453,6 +469,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: [],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -474,6 +494,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: [],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -492,6 +516,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: ["p-2"],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -510,6 +538,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: ["p-2"],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish: vi.fn(),
     });
 
@@ -545,6 +577,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: [],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish,
     });
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
@@ -571,6 +607,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: [],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish,
     });
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
@@ -599,6 +639,10 @@ describe("AnnouncementRequestDialog — approved", () => {
       failedProjectIds: [],
       failedTagProjectIds: [],
       published: null,
+      readyToPublish: true,
+      hydratingDeliveries: false,
+      hydrationFailed: false,
+      retryHydration: vi.fn(),
       handlePublish,
     });
     render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
@@ -609,6 +653,65 @@ describe("AnnouncementRequestDialog — approved", () => {
 
     fireEvent.click(publishBtn);
     expect(handlePublish).not.toHaveBeenCalled();
+  });
+
+  it("shows the due date when set", () => {
+    mockGet({
+      state: "approved",
+      resolvedProjectIds: ["p-1"],
+      resolvedProjectCount: 1,
+      dueOn: "2026-08-01T00:00:00Z",
+    });
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+    expect(screen.getByText(/^Due /)).toBeInTheDocument();
+  });
+
+  it("shows the scheduled time with a Cancel schedule action when scheduledFor is set", () => {
+    mockGet({
+      state: "approved",
+      resolvedProjectIds: ["p-1"],
+      resolvedProjectCount: 1,
+      scheduledFor: "2026-08-01T00:00:00Z",
+    });
+    const mutate = vi.fn();
+    mockedSchedule.mockReturnValue({
+      mutate,
+      mutateAsync: vi.fn(),
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useScheduleAnnouncementRequest>);
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    expect(screen.getByText(/^Scheduled to publish on /)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Schedule for later…" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel schedule" }));
+    expect(mutate).toHaveBeenCalledWith({ id: "req-1", scheduledFor: null });
+  });
+
+  it("offers a Schedule for later control when no schedule is set, opening a picker with Confirm disabled until a time is entered", () => {
+    mockGet({ state: "approved", resolvedProjectIds: ["p-1"], resolvedProjectCount: 1 });
+    const mutate = vi.fn();
+    mockedSchedule.mockReturnValue({
+      mutate,
+      mutateAsync: vi.fn(),
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useScheduleAnnouncementRequest>);
+    render(<AnnouncementRequestDialog requestId="req-1" onClose={vi.fn()} />);
+
+    expect(screen.queryByText(/^Scheduled to publish on /)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Schedule for later…" }));
+
+    expect(screen.getAllByLabelText(/Publish at/)[0]).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /confirm schedule/i })).toBeDisabled();
+    expect(mutate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("button", { name: /confirm schedule/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Schedule for later…" })).toBeInTheDocument();
   });
 });
 

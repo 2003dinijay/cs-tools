@@ -825,6 +825,48 @@ func TestCaseService_CreateCase_SNSuccessCreatesPostgresRowWithMatchingIdentity(
 	}
 }
 
+// TestCaseService_CreateCase_AnnouncementTypeReachesServiceNowMirror is the
+// regression guard for a real bug: CreateCase used to reject req.Type !=
+// "case" unconditionally, before ever checking whether an SN mirror was even
+// configured — so an "announcement" case (which snCaseTypeMap/
+// snCaseService.CreateCase both explicitly support) was rejected outright on
+// the SN-first path too, even though ServiceNow itself was about to handle
+// the create just fine. The type restriction is only actually true for the
+// pure-Postgres fallback below (no equivalent extension table for
+// engagement/service_request/security_report_analysis/announcement yet); it
+// must never block a request this same call is about to dispatch to
+// ServiceNow instead.
+func TestCaseService_CreateCase_AnnouncementTypeReachesServiceNowMirror(t *testing.T) {
+	var gotType string
+	mirror := &stubMirrorCaseService{
+		createCase: func(_ context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+			gotType = req.Type
+			return domain.CreateCaseResponse{Case: domain.CreateCaseDetails{ID: "case-1", Number: "CS001", CreatedBy: "user-1"}}, nil
+		},
+	}
+	repo := &stubCaseRepo{
+		createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy string) (domain.Case, error) {
+			return domain.Case{ID: id, Number: number, CreatedBy: createdBy}, nil
+		},
+	}
+	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+	svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
+
+	req := domain.CreateCaseRequest{
+		CreatedBy:   "user-1",
+		Type:        "announcement",
+		ProjectID:   testDeploymentUUID,
+		Subject:     "Scheduled maintenance",
+		Description: "Details",
+	}
+	if _, err := svc.CreateCase(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error creating an announcement-type case: %v", err)
+	}
+	if gotType != "announcement" {
+		t.Fatalf("expected the SN mirror to receive type=announcement, got %q", gotType)
+	}
+}
+
 // TestCaseService_CreateCase_RetriesTransientSNFailureThenSucceeds covers the
 // retry itself: a first attempt that fails transiently must not surface as
 // an error if the second attempt succeeds.
