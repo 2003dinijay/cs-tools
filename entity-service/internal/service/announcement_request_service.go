@@ -27,14 +27,54 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
+// autoPublishSecurityTagLabel must match the webapp's own
+// SECURITY_ANNOUNCEMENT_TAG_LABEL constant
+// (CreateCustomerAnnouncementForm.tsx) exactly — AutoPublish attaches the
+// identical tag a manual, browser-driven Publish would, just from a
+// different (server-side) caller.
+const autoPublishSecurityTagLabel = "Security Announcement"
+
+// caseFanOutClient is the narrow subset of CaseService AutoPublish needs to
+// create real cases and attach the mandatory security tag, in-process. This
+// can't go through the public HTTP case-creation endpoints at all — both
+// CaseService.CreateCase and AddCaseTag hard-require a real browser user's
+// x-user-id-token to resolve who's acting (see case_service.go), which
+// neither this service nor a scheduled job ever has. Calling the same
+// CaseService methods directly, in-process, sidesteps that entirely: the
+// actor (CreatedBy) is already known from the announcement_request row
+// itself, so there's nothing to resolve from a token at all.
+type caseFanOutClient interface {
+	CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error)
+	AddCaseTag(ctx context.Context, caseID, label string) (domain.Tag, error)
+}
+
 type announcementRequestService struct {
-	repo repository.AnnouncementRequestRepository
+	repo   repository.AnnouncementRequestRepository
+	cases  caseFanOutClient
+	access AccessService
 }
 
 // NewAnnouncementRequestService constructs an AnnouncementRequestService
-// backed by the given repository.
-func NewAnnouncementRequestService(repo repository.AnnouncementRequestRepository) AnnouncementRequestService {
-	return &announcementRequestService{repo: repo}
+// backed by the given repository. cases/access back AutoPublish only (see
+// its own doc comment) — every other method here ignores both.
+func NewAnnouncementRequestService(repo repository.AnnouncementRequestRepository, cases caseFanOutClient, access AccessService) AnnouncementRequestService {
+	return &announcementRequestService{repo: repo, cases: cases, access: access}
+}
+
+// requireInternalCaller rejects anyone whose AccessScope is not Unrestricted
+// — mirrors onboarding_step_service.go's/sla_status_service.go's own helper
+// of the same name and same reasoning: AutoPublish has no per-caller scope
+// short of "internal service" that would be safe to hand this out under, the
+// same rationale sla_status_service.go's own copy documents.
+func (s *announcementRequestService) requireInternalCaller(ctx context.Context) error {
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return err
+	}
+	if !scope.Unrestricted {
+		return &apierror.ForbiddenError{Msg: "auto-publish is only available to internal services"}
+	}
+	return nil
 }
 
 // CreateDraft implements AnnouncementRequestService.
@@ -253,6 +293,145 @@ func (s *announcementRequestService) Schedule(ctx context.Context, id, actorID, 
 		return domain.AnnouncementRequest{}, &apierror.ForbiddenError{Msg: "only the request's creator can schedule it"}
 	}
 	return s.repo.SetSchedule(ctx, id, scheduledFor)
+}
+
+// AutoPublish implements AnnouncementRequestService. Internal-caller-only
+// (see requireInternalCaller) — the automatic-publish path
+// operations/csm-scheduled-tasks' publish_scheduled_announcements sub-cron
+// calls once ScheduledFor has arrived. Runs the identical fan-out a manual,
+// browser-driven Publish does (create a case per unresolved project, attach
+// the mandatory security tag, record the outcome to the delivery ledger,
+// mark published once every project has succeeded) but in-process, using
+// the row's own CreatedBy/CreatedByEmail for case attribution — there is no
+// browser session to authenticate this call with at all, unlike the
+// webapp's own usePublishAnnouncementRequest hook, which remains completely
+// unchanged and still drives the manual path itself.
+//
+// Resumable exactly like the manual flow's own hydration: it reads
+// ListDeliveries first and only attempts whatever's still outstanding, so
+// calling this repeatedly for the same request (as the sub-cron does, once
+// per tick, until it succeeds) never re-creates an already-succeeded
+// project's case. A pass that still has outstanding failures or tag
+// failures returns a ConflictError and leaves the row approved — the next
+// tick retries just what's left, identical to the manual "Retry failed
+// projects" button.
+//
+// Sequential, not concurrent, unlike the webapp's own fan-out (which limits
+// concurrency purely for a human's browser-side responsiveness) — this runs
+// as a background job with no one waiting on it, so the simplicity of one
+// project at a time outweighs any benefit from parallelizing here.
+func (s *announcementRequestService) AutoPublish(ctx context.Context, id string) (domain.AnnouncementRequest, error) {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return domain.AnnouncementRequest{}, err
+	}
+
+	current, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return domain.AnnouncementRequest{}, err
+	}
+	if current.State != domain.AnnouncementRequestStateApproved {
+		return domain.AnnouncementRequest{}, &apierror.ConflictError{Msg: "only an approved request can be auto-published, not " + string(current.State)}
+	}
+	if current.ScheduledFor == nil || current.ScheduledFor.After(time.Now()) {
+		return domain.AnnouncementRequest{}, &apierror.ConflictError{Msg: "this request's scheduled time has not arrived"}
+	}
+	if len(current.ResolvedProjectIDs) == 0 {
+		return domain.AnnouncementRequest{}, &apierror.ConflictError{Msg: "this request has no resolved audience to publish to"}
+	}
+
+	deliveries, err := s.repo.ListDeliveries(ctx, id)
+	if err != nil {
+		return domain.AnnouncementRequest{}, err
+	}
+
+	succeeded := make(map[string]bool, len(deliveries))
+	caseIDByProject := make(map[string]string, len(deliveries))
+	failedTagCaseByProject := make(map[string]string)
+	for _, d := range deliveries {
+		switch d.Status {
+		case domain.AnnouncementRequestDeliveryStatusSucceeded:
+			succeeded[d.ProjectID] = true
+			if d.CaseID != nil {
+				caseIDByProject[d.ProjectID] = *d.CaseID
+			}
+		case domain.AnnouncementRequestDeliveryStatusTagFailed:
+			// The case is real either way — must not be re-created, only
+			// its tag retried below.
+			succeeded[d.ProjectID] = true
+			if d.CaseID != nil {
+				caseIDByProject[d.ProjectID] = *d.CaseID
+				failedTagCaseByProject[d.ProjectID] = *d.CaseID
+			}
+		}
+		// failed: nothing to seed — case creation is retried in the pending
+		// loop below, same as a project with no delivery row at all.
+	}
+
+	var passEntries []domain.RecordAnnouncementRequestDeliveryInput
+	var stillFailingTags []string
+
+	// Retry any earlier tag failures first, reusing the case that already
+	// exists rather than creating a second one for the same project.
+	for projectID, caseID := range failedTagCaseByProject {
+		caseID := caseID
+		if _, err := s.cases.AddCaseTag(ctx, caseID, autoPublishSecurityTagLabel); err != nil {
+			stillFailingTags = append(stillFailingTags, projectID)
+			passEntries = append(passEntries, domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusTagFailed})
+			continue
+		}
+		passEntries = append(passEntries, domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusSucceeded})
+	}
+
+	// Fan out to every resolved project with no successful delivery yet.
+	var stillFailingCases []string
+	for _, projectID := range current.ResolvedProjectIDs {
+		if succeeded[projectID] {
+			continue
+		}
+		created, err := s.cases.CreateCase(ctx, domain.CreateCaseRequest{
+			CreatedBy:   current.CreatedBy,
+			Type:        "announcement",
+			ProjectID:   projectID,
+			Subject:     current.Subject,
+			Description: current.Description,
+		})
+		if err != nil {
+			stillFailingCases = append(stillFailingCases, projectID)
+			passEntries = append(passEntries, domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, Status: domain.AnnouncementRequestDeliveryStatusFailed})
+			continue
+		}
+		caseID := created.Case.ID
+		caseIDByProject[projectID] = caseID
+		if current.IsSecurityAnnouncement {
+			if _, err := s.cases.AddCaseTag(ctx, caseID, autoPublishSecurityTagLabel); err != nil {
+				passEntries = append(passEntries, domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusTagFailed})
+				continue
+			}
+		}
+		passEntries = append(passEntries, domain.RecordAnnouncementRequestDeliveryInput{ProjectID: projectID, CaseID: &caseID, Status: domain.AnnouncementRequestDeliveryStatusSucceeded})
+	}
+
+	if len(passEntries) > 0 {
+		if _, err := s.RecordDeliveries(ctx, id, current.CreatedBy, passEntries); err != nil {
+			return domain.AnnouncementRequest{}, err
+		}
+	}
+	if len(stillFailingCases) > 0 || len(stillFailingTags) > 0 {
+		return domain.AnnouncementRequest{}, &apierror.ConflictError{Msg: fmt.Sprintf(
+			"not yet fully delivered — %d project(s) failed case creation, %d project(s) failed the security tag; will retry next tick",
+			len(stillFailingCases), len(stillFailingTags),
+		)}
+	}
+
+	caseIDs := make([]string, 0, len(caseIDByProject))
+	for _, caseID := range caseIDByProject {
+		caseIDs = append(caseIDs, caseID)
+	}
+	actorEmail := ""
+	if current.CreatedByEmail != nil {
+		actorEmail = *current.CreatedByEmail
+	}
+	return s.MarkPublished(ctx, id, current.CreatedBy, actorEmail, caseIDs)
 }
 
 // AddUpdate implements AnnouncementRequestService. Rejects unless the

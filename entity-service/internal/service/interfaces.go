@@ -260,6 +260,16 @@ type AnnouncementRequestService interface {
 	// choosing when Publish happens); a ValidationError if scheduledFor is
 	// non-nil and not strictly in the future.
 	Schedule(ctx context.Context, id, actorID, actorEmail string, scheduledFor *time.Time) (domain.AnnouncementRequest, error)
+	// AutoPublish runs the entire Publish fan-out in-process (create a case
+	// per unresolved project, attach the security tag, record deliveries,
+	// mark published) for one already-due scheduled request — the automatic
+	// counterpart to the webapp's own manual Publish flow, callable only by
+	// an internal service (a ForbiddenError otherwise). A ConflictError is
+	// returned if the request isn't approved, its scheduled time hasn't
+	// arrived yet, it has no resolved audience, or a pass still has
+	// outstanding case-creation/tag failures (safe to call again — it
+	// resumes from the delivery ledger exactly like a manual retry would).
+	AutoPublish(ctx context.Context, id string) (domain.AnnouncementRequest, error)
 	// AddUpdate posts a new AnnouncementRequestUpdate for a published
 	// request. Does not itself apply Content as a comment anywhere -- the
 	// caller's own fan-out does that, separately, after this call succeeds

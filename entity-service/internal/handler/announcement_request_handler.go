@@ -155,6 +155,20 @@ func (h *AnnouncementRequestHandler) ScheduleAnnouncementRequest(w http.Response
 	writeAnnouncementRequestJSON(w, http.StatusOK, resp)
 }
 
+// AutoPublishAnnouncementRequest handles
+// POST /announcement-requests/{id}/auto-publish. Internal-caller-only (see
+// AnnouncementRequestService.AutoPublish's own doc comment) — takes no
+// body at all, unlike every other action here: there is no actor to
+// authenticate, since this is never called by a browser.
+func (h *AnnouncementRequestHandler) AutoPublishAnnouncementRequest(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.AutoPublish(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeAnnouncementRequestJSON(w, http.StatusOK, resp)
+}
+
 // PublishAnnouncementRequest handles
 // POST /announcement-requests/{id}/publish.
 func (h *AnnouncementRequestHandler) PublishAnnouncementRequest(w http.ResponseWriter, r *http.Request) {

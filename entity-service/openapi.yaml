@@ -797,6 +797,69 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /announcement-requests/{id}/auto-publish:
+    post:
+      summary: >-
+        Internal-caller-only. Runs the entire Publish fan-out in-process for
+        one already-due scheduled request — the automatic counterpart to the
+        manual publish call above, invoked only by
+        operations/csm-scheduled-tasks' publish_scheduled_announcements
+        sub-cron. Takes no request body — there is no actor to authenticate,
+        since this is never called by a browser; case attribution uses the
+        request's own createdBy. Safe to call repeatedly for the same
+        request: it resumes from the delivery ledger exactly like a manual
+        retry would, so a retry after a partial failure never recreates an
+        already-succeeded project's case.
+      operationId: autoPublishAnnouncementRequest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Every resolved project delivered; request marked published.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementRequest'
+        "400":
+          description: BadRequest — invalid id format.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Forbidden — the caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >-
+            Conflict — the request is not approved, its scheduled time
+            hasn't arrived, it has no resolved audience, or this pass still
+            has outstanding case-creation/tag failures (retry-safe; the
+            sub-cron's next tick resumes automatically).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /announcement-requests/{id}/publish:
     post:
       summary: >-
