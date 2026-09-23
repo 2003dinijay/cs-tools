@@ -334,14 +334,6 @@ func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateI
 	}
 }
 
-// snIncidentCreateAttempts/snIncidentCreateRetryDelay bound
-// createIncidentSNFirst's retry -- same bound as caseService's
-// snCaseCreateAttempts/snCaseCreateRetryDelay.
-const (
-	snIncidentCreateAttempts   = 2
-	snIncidentCreateRetryDelay = 300 * time.Millisecond
-)
-
 // createIncidentSNFirst implements CreateIncident's
 // DATA_SOURCE=postgres-servicenow-dual-write path: ServiceNow-FIRST and
 // SYNCHRONOUS, exactly mirroring caseService.createCaseSNFirst's reasoning
@@ -351,9 +343,11 @@ const (
 // the real backing store this platform proxies most writes onto), while an
 // async-after-commit UPDATE has no equivalent failure mode.
 //
-// req is not retried against a mutated/regenerated payload between attempts
-// -- a plain repeat of the same call. A *apierror.ValidationError is never
-// retried at all: the same invalid input fails the same way every time.
+// This call is made exactly once: no internal retry. If ServiceNow's HTTP
+// response is lost after it actually created the record server-side, an
+// internal retry here would create a second, duplicate ServiceNow record --
+// worse than a request that surfaces the error and lets the caller decide
+// whether to retry. Retry policy is the caller's responsibility.
 //
 // On success, id/number/createdBy come from ServiceNow's own response and
 // are used AS-IS for the Postgres insert
@@ -364,25 +358,7 @@ const (
 // pilot did: IncidentRepository's own doc comment explains why plain
 // CreateIncident can't generate work_item.number itself.
 func (s *incidentService) createIncidentSNFirst(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
-	var snResp domain.CreateIncidentResponse
-	var err error
-	for attempt := 1; attempt <= snIncidentCreateAttempts; attempt++ {
-		snResp, err = s.snMirror.CreateIncident(ctx, req)
-		if err == nil {
-			break
-		}
-		if _, ok := err.(*apierror.ValidationError); ok {
-			break
-		}
-		if attempt < snIncidentCreateAttempts {
-			slog.WarnContext(ctx, "sn create incident: attempt failed, retrying", "attempt", attempt, "error", err)
-			select {
-			case <-time.After(snIncidentCreateRetryDelay):
-			case <-ctx.Done():
-				return domain.CreateIncidentResponse{}, ctx.Err()
-			}
-		}
-	}
+	snResp, err := s.snMirror.CreateIncident(ctx, req)
 	if err != nil {
 		// ServiceNow never accepted the incident -- nothing is written to
 		// Postgres at all, by construction (s.repo.CreateIncidentFromServiceNow

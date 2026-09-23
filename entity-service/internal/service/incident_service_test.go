@@ -120,9 +120,10 @@ func (s *stubMirrorIncidentService) CreateIncident(ctx context.Context, req doma
 
 // TestIncidentService_CreateIncident_SNFailureLeavesPostgresUntouched is the
 // pilot's core regression guard for incident CREATE, mirroring
-// TestCaseService_CreateCase_SNFailureLeavesPostgresUntouched exactly: if
-// ServiceNow never accepts the incident (even after the retry), the
-// Postgres repository must never be called at all -- no row, no orphan.
+// TestCaseService_CreateCase_SNFailureLeavesPostgresUntouched exactly: a
+// single ServiceNow failure must return an error immediately -- no internal
+// retry -- and the Postgres repository must never be called at all -- no
+// row, no orphan.
 func TestIncidentService_CreateIncident_SNFailureLeavesPostgresUntouched(t *testing.T) {
 	var mu sync.Mutex
 	attempts := 0
@@ -147,8 +148,8 @@ func TestIncidentService_CreateIncident_SNFailureLeavesPostgresUntouched(t *test
 
 	mu.Lock()
 	defer mu.Unlock()
-	if attempts != snIncidentCreateAttempts {
-		t.Errorf("expected %d SN attempts (bounded retry, both transient), got %d", snIncidentCreateAttempts, attempts)
+	if attempts != 1 {
+		t.Errorf("expected exactly 1 SN attempt (no internal retry), got %d", attempts)
 	}
 }
 
@@ -209,60 +210,11 @@ func TestIncidentService_CreateIncident_SNSuccessCreatesPostgresRowWithMatchingI
 	}
 }
 
-// TestIncidentService_CreateIncident_RetriesTransientSNFailureThenSucceeds
-// covers the retry itself, mirroring
-// TestCaseService_CreateCase_RetriesTransientSNFailureThenSucceeds: a first
-// attempt that fails transiently must not surface as an error if the second
-// attempt succeeds.
-func TestIncidentService_CreateIncident_RetriesTransientSNFailureThenSucceeds(t *testing.T) {
-	var mu sync.Mutex
-	attempts := 0
-	mirror := &stubMirrorIncidentService{
-		createIncident: func(context.Context, domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
-			mu.Lock()
-			attempts++
-			n := attempts
-			mu.Unlock()
-			if n == 1 {
-				return domain.CreateIncidentResponse{}, errors.New("sn downstream: timeout")
-			}
-			resp := domain.CreateIncidentResponse{}
-			resp.Incident.ID = testDeploymentUUID
-			resp.Incident.Number = "INC0001"
-			resp.Incident.CreatedBy = "jane.doe@example.com"
-			return resp, nil
-		},
-	}
-	repo := &stubIncidentRepo{
-		createIncidentFromServiceNow: func(_ context.Context, req domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error) {
-			resp := domain.CreateIncidentResponse{}
-			resp.Incident.ID = id
-			resp.Incident.Number = number
-			resp.Incident.CreatedBy = createdBy
-			return resp, nil
-		},
-	}
-	svc := NewIncidentServiceWithSNMirror(repo, mirror, nil)
-
-	resp, err := svc.CreateIncident(context.Background(), validCreateIncidentRequest())
-	if err != nil {
-		t.Fatalf("expected the retried attempt to succeed, got error: %v", err)
-	}
-	if resp.Incident.ID != testDeploymentUUID {
-		t.Errorf("CreateIncident response ID = %q, want %q", resp.Incident.ID, testDeploymentUUID)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if attempts != 2 {
-		t.Errorf("expected exactly 2 SN attempts (1 transient failure + 1 success), got %d", attempts)
-	}
-}
-
 // TestIncidentService_CreateIncident_DoesNotRetryValidationError guards
 // against wasted latency on a deterministic client error, mirroring
-// TestCaseService_CreateCase_DoesNotRetryValidationError: retrying the exact
-// same invalid input can't produce a different outcome.
+// TestCaseService_CreateCase_DoesNotRetryValidationError: there is no
+// internal retry at all now, so a validation error (like any other SN
+// error) must surface after exactly one attempt.
 func TestIncidentService_CreateIncident_DoesNotRetryValidationError(t *testing.T) {
 	var mu sync.Mutex
 	attempts := 0
