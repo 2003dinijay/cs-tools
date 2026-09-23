@@ -53,16 +53,16 @@ type stubCaseRepo struct {
 	confirmCaseAttachment    func(ctx context.Context, id string) (domain.Attachment, error)
 	searchCaseComments       func(ctx context.Context, req domain.SearchCaseCommentsRequest) ([]domain.CaseComment, int, error)
 	updateCase               func(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error)
-	createCaseFromServiceNow func(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy string) (domain.Case, error)
+	createCaseFromServiceNow func(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error)
 	createCaseComment        func(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error)
 }
 
 func (s *stubCaseRepo) CreateCase(context.Context, domain.CreateCaseRequest) (domain.Case, error) {
 	panic("not implemented")
 }
-func (s *stubCaseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy string) (domain.Case, error) {
+func (s *stubCaseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
 	if s.createCaseFromServiceNow != nil {
-		return s.createCaseFromServiceNow(ctx, req, id, number, wso2ID, createdBy)
+		return s.createCaseFromServiceNow(ctx, req, id, number, wso2ID, createdBy, state)
 	}
 	panic("not implemented")
 }
@@ -795,14 +795,14 @@ func TestCaseService_CreateCase_SNSuccessCreatesPostgresRowWithMatchingIdentity(
 	var mu sync.Mutex
 	var gotID, gotNumber, gotWso2ID, gotCreatedBy string
 	repo := &stubCaseRepo{
-		createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy string) (domain.Case, error) {
+		createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
 			mu.Lock()
 			gotID, gotNumber, gotWso2ID, gotCreatedBy = id, number, wso2ID, createdBy
 			mu.Unlock()
-			state := domain.CaseStateOpen
+			respState := domain.CaseStateOpen
 			return domain.Case{
 				ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy,
-				CreatedOn: createdOn, State: &state,
+				CreatedOn: createdOn, State: &respState,
 			}, nil
 		},
 	}
@@ -846,7 +846,7 @@ func TestCaseService_CreateCase_RetriesTransientSNFailureThenSucceeds(t *testing
 		},
 	}
 	repo := &stubCaseRepo{
-		createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy string) (domain.Case, error) {
+		createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
 			return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy}, nil
 		},
 	}
@@ -896,6 +896,317 @@ func TestCaseService_CreateCase_DoesNotRetryValidationError(t *testing.T) {
 	defer mu.Unlock()
 	if attempts != 1 {
 		t.Errorf("expected exactly 1 SN attempt (validation errors are not retried), got %d", attempts)
+	}
+}
+
+// TestCaseService_CreateCase_RejectsUnsupportedTypesOnPostgres is the control
+// half of the type-guard widening: proves "announcement" (a separate,
+// still-unmerged change -- see CreateCase's own doc comment on the type
+// switch) and a made-up bogus type are both still rejected outright, never
+// reaching snMirror or the repository, even though "case"/"service_request"/
+// "engagement"/"security_report_analysis" are now all accepted -- guards
+// against the guard having been widened too far.
+func TestCaseService_CreateCase_RejectsUnsupportedTypesOnPostgres(t *testing.T) {
+	mirror := &stubMirrorCaseService{
+		createCase: func(context.Context, domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+			t.Fatal("snMirror.CreateCase should not be reached for an unsupported type")
+			return domain.CreateCaseResponse{}, nil
+		},
+	}
+	repo := &stubCaseRepo{}
+	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+	svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
+
+	for _, typ := range []string{"announcement", "bogus_type"} {
+		t.Run(typ, func(t *testing.T) {
+			req := domain.CreateCaseRequest{
+				Type:        typ,
+				ProjectID:   testDeploymentUUID,
+				Subject:     "x",
+				Description: "y",
+			}
+			_, err := svc.CreateCase(context.Background(), req)
+			var ve *apierror.ValidationError
+			if !asValidationError(err, &ve) {
+				t.Fatalf("expected *apierror.ValidationError for type %q, got %T: %v", typ, err, err)
+			}
+		})
+	}
+}
+
+// validServiceRequestCreateCaseRequest returns a minimally valid,
+// type="service_request" CreateCase request -- deployment/deployedProduct
+// ARE required for this type (unlike announcement), per
+// validateCreateCaseRequest's own conditional.
+func validServiceRequestCreateCaseRequest() domain.CreateCaseRequest {
+	return domain.CreateCaseRequest{
+		Type:              "service_request",
+		ProjectID:         testDeploymentUUID,
+		DeploymentID:      testDeploymentUUID,
+		DeployedProductID: testDeploymentUUID,
+		CatalogID:         testDeploymentUUID,
+		CatalogItemID:     testDeploymentUUID,
+		Variables:         []domain.Variable{{ID: testDeploymentUUID, Value: "v"}},
+	}
+}
+
+// validEngagementCreateCaseRequest returns a minimally valid,
+// type="engagement" CreateCase request.
+func validEngagementCreateCaseRequest() domain.CreateCaseRequest {
+	return domain.CreateCaseRequest{
+		Type:                  "engagement",
+		ProjectID:             testDeploymentUUID,
+		DeploymentID:          testDeploymentUUID,
+		DeployedProductID:     testDeploymentUUID,
+		Subject:               "Migration engagement",
+		Description:           "Engagement details go here",
+		EngagementType:        domain.EngagementTypeMigration,
+		EngagementPaymentType: domain.EngagementPaymentTypePaid,
+	}
+}
+
+// validSecurityReportAnalysisCreateCaseRequest returns a minimally valid,
+// type="security_report_analysis" CreateCase request.
+func validSecurityReportAnalysisCreateCaseRequest() domain.CreateCaseRequest {
+	return domain.CreateCaseRequest{
+		Type:              "security_report_analysis",
+		ProjectID:         testDeploymentUUID,
+		DeploymentID:      testDeploymentUUID,
+		DeployedProductID: testDeploymentUUID,
+		Subject:           "Suspicious activity report",
+		Description:       "Report details go here",
+	}
+}
+
+// caseFamilyCreateCaseTestCase table-drives the three new types' shared
+// CREATE regression guards (success/state-mapping, unknown-SN-state,
+// SN-failure-orphan-guard) below -- each type's own workItemType/stateEnum
+// values differ, but the three-way behavior being proven is identical.
+type caseFamilyCreateCaseTestCase struct {
+	name    string
+	reqFunc func() domain.CreateCaseRequest
+}
+
+var caseFamilyCreateCaseTestCases = []caseFamilyCreateCaseTestCase{
+	{name: "service_request", reqFunc: validServiceRequestCreateCaseRequest},
+	{name: "engagement", reqFunc: validEngagementCreateCaseRequest},
+	{name: "security_report_analysis", reqFunc: validSecurityReportAnalysisCreateCaseRequest},
+}
+
+// TestCaseService_CreateCase_CaseFamily_SNSuccessStoresTypeAndMappedState
+// covers the SN-first path end to end for each of the three new types: the
+// Postgres insert must receive req.Type unchanged and the state ServiceNow's
+// create response actually returned, mapped through that type's own
+// sn<Type>StateToEnum -- not just "no error".
+func TestCaseService_CreateCase_CaseFamily_SNSuccessStoresTypeAndMappedState(t *testing.T) {
+	for _, tc := range caseFamilyCreateCaseTestCases {
+		t.Run(tc.name, func(t *testing.T) {
+			const (
+				snID         = "55555555-5555-5555-5555-555555555555"
+				snNumber     = "WI0001001"
+				snInternalID = "WSO2-WI-1"
+				snCreatedBy  = "jane.doe@example.com"
+			)
+			wantType := tc.name
+			mirror := &stubMirrorCaseService{
+				createCase: func(_ context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+					if req.Type != wantType {
+						t.Fatalf("snMirror.CreateCase got type %q, want %q", req.Type, wantType)
+					}
+					return domain.CreateCaseResponse{
+						Message: "Case created successfully.",
+						Case: domain.CreateCaseDetails{
+							ID: snID, InternalID: snInternalID, Number: snNumber,
+							CreatedBy: snCreatedBy, CreatedOn: time.Now(), State: "Work In Progress",
+						},
+					}, nil
+				},
+			}
+
+			var mu sync.Mutex
+			var gotType, gotState string
+			var gotEngagementType domain.EngagementType
+			var gotEngagementPaymentType domain.EngagementPaymentType
+			repo := &stubCaseRepo{
+				createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
+					mu.Lock()
+					gotType, gotState = req.Type, state
+					gotEngagementType, gotEngagementPaymentType = req.EngagementType, req.EngagementPaymentType
+					mu.Unlock()
+					st := domain.CaseState("work_in_progress")
+					return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy, State: &st}, nil
+				},
+			}
+			dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+			svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
+
+			resp, err := svc.CreateCase(context.Background(), tc.reqFunc())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if gotType != wantType {
+				t.Errorf("CreateCaseFromServiceNow got req.Type %q, want %q", gotType, wantType)
+			}
+			if gotState != "WORK_IN_PROGRESS" {
+				t.Errorf("CreateCaseFromServiceNow got state %q, want \"WORK_IN_PROGRESS\" (mapped from ServiceNow's \"Work In Progress\" label)", gotState)
+			}
+			if resp.Case.State != "work_in_progress" {
+				t.Errorf("CreateCase response state = %q, want \"work_in_progress\"", resp.Case.State)
+			}
+			if wantType == "engagement" {
+				if gotEngagementType != domain.EngagementTypeMigration {
+					t.Errorf("req.EngagementType did not reach CreateCaseFromServiceNow: got %q, want %q", gotEngagementType, domain.EngagementTypeMigration)
+				}
+				if gotEngagementPaymentType != domain.EngagementPaymentTypePaid {
+					t.Errorf("req.EngagementPaymentType did not reach CreateCaseFromServiceNow: got %q, want %q", gotEngagementPaymentType, domain.EngagementPaymentTypePaid)
+				}
+			}
+		})
+	}
+}
+
+// TestCaseService_CreateCase_CaseFamily_UnknownSNStateFailsClosed proves an
+// unrecognized ServiceNow state label on a create response is a hard error
+// for each of the three new types -- not silently defaulted to OPEN -- and
+// that the Postgres repository is never reached in that case (ServiceNow
+// already has the record at that point, which is real drift needing operator
+// attention, but the caller must still see an error rather than a fabricated
+// success).
+func TestCaseService_CreateCase_CaseFamily_UnknownSNStateFailsClosed(t *testing.T) {
+	for _, tc := range caseFamilyCreateCaseTestCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mirror := &stubMirrorCaseService{
+				createCase: func(context.Context, domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+					return domain.CreateCaseResponse{
+						Case: domain.CreateCaseDetails{ID: testDeploymentUUID, Number: "WI0002", InternalID: "WSO2-WI-2", CreatedBy: "jane.doe@example.com", State: "Pending Review"},
+					}, nil
+				},
+			}
+			// No createCaseFromServiceNow override -- stubCaseRepo panics if
+			// it's ever called, proving Postgres is never reached for an
+			// unmappable state.
+			repo := &stubCaseRepo{}
+			dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+			svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
+
+			_, err := svc.CreateCase(context.Background(), tc.reqFunc())
+			if err == nil {
+				t.Fatal("expected an error for an unrecognized ServiceNow state")
+			}
+		})
+	}
+}
+
+// TestCaseService_CreateCase_CaseFamily_SNFailureLeavesPostgresUntouched
+// mirrors the case-flavored orphan guard
+// (TestCaseService_CreateCase_SNFailureLeavesPostgresUntouched) for each of
+// the three new types: if ServiceNow never accepts the record, Postgres must
+// never be touched.
+func TestCaseService_CreateCase_CaseFamily_SNFailureLeavesPostgresUntouched(t *testing.T) {
+	for _, tc := range caseFamilyCreateCaseTestCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mirror := &stubMirrorCaseService{
+				createCase: func(context.Context, domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+					return domain.CreateCaseResponse{}, errors.New("sn downstream unreachable")
+				},
+			}
+			repo := &stubCaseRepo{}
+			dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+			svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
+
+			_, err := svc.CreateCase(context.Background(), tc.reqFunc())
+			if err == nil {
+				t.Fatal("expected an error when ServiceNow never accepts the record")
+			}
+		})
+	}
+}
+
+// TestCaseService_CreateCase_CaseFamily_RetriesTransientSNFailureThenSucceeds
+// covers createCaseSNFirst's retry for each of the three new types -- proving
+// the retry/error-handling logic in createCaseSNFirst applies identically
+// regardless of type, same as case's own
+// TestCaseService_CreateCase_RetriesTransientSNFailureThenSucceeds.
+func TestCaseService_CreateCase_CaseFamily_RetriesTransientSNFailureThenSucceeds(t *testing.T) {
+	for _, tc := range caseFamilyCreateCaseTestCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			attempts := 0
+			mirror := &stubMirrorCaseService{
+				createCase: func(context.Context, domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+					mu.Lock()
+					attempts++
+					n := attempts
+					mu.Unlock()
+					if n == 1 {
+						return domain.CreateCaseResponse{}, errors.New("sn downstream: timeout")
+					}
+					return domain.CreateCaseResponse{
+						Case: domain.CreateCaseDetails{ID: testDeploymentUUID, Number: "WI0001", InternalID: "WSO2-WI-1", CreatedBy: "jane.doe@example.com", State: "Open"},
+					}, nil
+				},
+			}
+			repo := &stubCaseRepo{
+				createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
+					return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy}, nil
+				},
+			}
+			dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+			svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
+
+			resp, err := svc.CreateCase(context.Background(), tc.reqFunc())
+			if err != nil {
+				t.Fatalf("expected the retried attempt to succeed, got error: %v", err)
+			}
+			if resp.Case.ID != testDeploymentUUID {
+				t.Errorf("CreateCase response ID = %q, want %q", resp.Case.ID, testDeploymentUUID)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if attempts != 2 {
+				t.Errorf("expected exactly 2 SN attempts (1 transient failure + 1 success), got %d", attempts)
+			}
+		})
+	}
+}
+
+// TestCaseService_CreateCase_CaseFamily_DoesNotRetryValidationError guards
+// against wasted latency on a deterministic client error for each of the
+// three new types, same as case's own
+// TestCaseService_CreateCase_DoesNotRetryValidationError.
+func TestCaseService_CreateCase_CaseFamily_DoesNotRetryValidationError(t *testing.T) {
+	for _, tc := range caseFamilyCreateCaseTestCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			attempts := 0
+			mirror := &stubMirrorCaseService{
+				createCase: func(context.Context, domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+					mu.Lock()
+					attempts++
+					mu.Unlock()
+					return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "some field contains invalid value"}
+				},
+			}
+			repo := &stubCaseRepo{}
+			dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+			svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, dispatcher, mirror)
+
+			_, err := svc.CreateCase(context.Background(), tc.reqFunc())
+			var ve *apierror.ValidationError
+			if !asValidationError(err, &ve) {
+				t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if attempts != 1 {
+				t.Errorf("expected exactly 1 SN attempt (validation errors are not retried), got %d", attempts)
+			}
+		})
 	}
 }
 

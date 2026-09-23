@@ -317,12 +317,27 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	if err := validateCreateCaseRequest(&req); err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
-	if req.Type != "case" {
-		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "only type \"case\" is supported for the Postgres data source"}
+	// service_request/engagement/security_report_analysis join case as the
+	// second/third/fourth types supported here (all four go through the
+	// SN-first path below when s.snMirror != nil). "announcement" is
+	// deliberately NOT in this set yet -- it is a separate, still-unmerged
+	// change (see createCaseSNFirst's own doc comment for the full set this
+	// data source ultimately needs to support); adding it here without that
+	// change would silently accept requests createCaseSNFirst/CreateCaseFromServiceNow
+	// have no state-resolution/insert path for.
+	switch req.Type {
+	case "case", "service_request", "engagement", "security_report_analysis":
+		// supported
+	default:
+		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "only type \"case\", \"service_request\", \"engagement\", or \"security_report_analysis\" is supported for the Postgres data source"}
 	}
 	if err := validateUUIDs("projectId", []string{req.ProjectID}); err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
+	// None of the four types supported here omit deployment/deployed-product
+	// (unlike "announcement" -- see validateCreateCaseRequest's own
+	// conditional -- which is why that unconditional check isn't guarded by
+	// req.Type the way validateCreateCaseRequest's is).
 	if err := validateUUIDs("deploymentId", []string{req.DeploymentID}); err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
@@ -439,7 +454,33 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 		return domain.CreateCaseResponse{}, err
 	}
 
-	c, err := s.repo.CreateCaseFromServiceNow(ctx, req, snResp.Case.ID, snResp.Case.Number, snResp.Case.InternalID, snResp.Case.CreatedBy)
+	// state resolves ServiceNow's raw create-response state label
+	// (snResp.Case.State, e.g. "Open") to the target extension table's own
+	// state enum literal, for every type on this path other than "case" --
+	// see snServiceRequestStateToEnum/snEngagementStateToEnum/
+	// snSecurityReportAnalysisStateToEnum's own doc comments for why this
+	// can't just hardcode 'OPEN' the way the "case" insert does. Left "" for
+	// req.Type == "case", where the repository ignores it entirely (hardcodes
+	// OPEN itself, same as before this change).
+	var state string
+	switch req.Type {
+	case "service_request":
+		state, err = snServiceRequestStateToEnum(snResp.Case.State)
+	case "engagement":
+		state, err = snEngagementStateToEnum(snResp.Case.State)
+	case "security_report_analysis":
+		state, err = snSecurityReportAnalysisStateToEnum(snResp.Case.State)
+	}
+	if err != nil {
+		// ServiceNow already has the record at this point (same drift
+		// concern CreateCaseFromServiceNow's own error path below
+		// documents) -- logged loudly since nothing else records it.
+		slog.ErrorContext(ctx, "sn create case: record created but its ServiceNow state could not be mapped",
+			"caseId", snResp.Case.ID, "snNumber", snResp.Case.Number, "type", req.Type, "snState", snResp.Case.State, "error", err)
+		return domain.CreateCaseResponse{}, err
+	}
+
+	c, err := s.repo.CreateCaseFromServiceNow(ctx, req, snResp.Case.ID, snResp.Case.Number, snResp.Case.InternalID, snResp.Case.CreatedBy, state)
 	if err != nil {
 		// ServiceNow already has the case at this point — this is now real
 		// drift (ServiceNow has it, Postgres doesn't) needing operator
@@ -455,9 +496,9 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 		return domain.CreateCaseResponse{}, err
 	}
 
-	state := ""
+	responseState := ""
 	if c.State != nil {
-		state = string(*c.State)
+		responseState = string(*c.State)
 	}
 	return domain.CreateCaseResponse{
 		Message: "Case created successfully.",
@@ -467,7 +508,7 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 			Number:     c.Number,
 			CreatedBy:  c.CreatedBy,
 			CreatedOn:  c.CreatedOn,
-			State:      state,
+			State:      responseState,
 		},
 	}, nil
 }
