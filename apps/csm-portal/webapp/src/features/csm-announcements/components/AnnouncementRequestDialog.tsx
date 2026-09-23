@@ -16,9 +16,11 @@
 
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from "react";
 import {
+  AdapterDateFns,
   Box,
   Button,
   Checkbox,
+  DatePickers,
   Dialog,
   DialogActions,
   DialogContent,
@@ -35,7 +37,14 @@ import { Link } from "react-router";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import EditorWithSourceToggle from "@components/rich-text-editor/EditorWithSourceToggle";
-import { formatAbsoluteForUser } from "@utils/dateTime";
+import {
+  formatAbsoluteForUser,
+  formatDateTimeLocal,
+  isPastDateTime,
+  parseDateTimeLocal,
+  resolveDisplayTimeZone,
+  zonedInputToUtcIso,
+} from "@utils/dateTime";
 import { sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 import {
   DRY_RUN_TAG_LABEL,
@@ -46,6 +55,7 @@ import { useUpdateAnnouncementRequest } from "@features/csm-announcements/api/us
 import { useRecordAnnouncementRequestDryRun } from "@features/csm-announcements/api/useRecordAnnouncementRequestDryRun";
 import { useSubmitAnnouncementRequest } from "@features/csm-announcements/api/useSubmitAnnouncementRequest";
 import { useApproveAnnouncementRequest } from "@features/csm-announcements/api/useApproveAnnouncementRequest";
+import { useScheduleAnnouncementRequest } from "@features/csm-announcements/api/useScheduleAnnouncementRequest";
 import { usePublishAnnouncementRequest } from "@features/csm-announcements/api/usePublishAnnouncementRequest";
 import { SECURITY_ANNOUNCEMENT_TAG_LABEL } from "@features/csm-announcements/components/CreateCustomerAnnouncementForm";
 import AnnouncementSendProgress, {
@@ -56,6 +66,8 @@ import AddUpdateConfirmationDialog from "@features/csm-announcements/components/
 import { useCreateAnnouncementRequestUpdate } from "@features/csm-announcements/api/useCreateAnnouncementRequestUpdate";
 import { useListAnnouncementRequestUpdates } from "@features/csm-announcements/api/useListAnnouncementRequestUpdates";
 import { usePostAnnouncementUpdateComments } from "@features/csm-announcements/api/usePostAnnouncementUpdateComments";
+
+const { DateTimePicker, LocalizationProvider } = DatePickers;
 
 interface AnnouncementRequestDialogProps {
   requestId: string;
@@ -143,6 +155,18 @@ export default function AnnouncementRequestDialog({
   const claimsReady = claims !== undefined;
   const isRequestCreator = !!request && !!claims?.userid && claims.userid === request.createdBy;
   const [confirmPublishOpen, setConfirmPublishOpen] = useState(false);
+
+  // Schedule: an alternative to clicking Publish immediately — pick a
+  // future date/time and operations/csm-scheduled-tasks' own sub-cron
+  // publishes automatically once it arrives. Purely additive: Publish
+  // itself (above) keeps every one of its own guards unchanged and still
+  // works at any time, schedule pending or not, as an explicit override.
+  const schedule = useScheduleAnnouncementRequest();
+  const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
+  const [scheduleInput, setScheduleInput] = useState("");
+  const scheduleTimeZone = resolveDisplayTimeZone();
+  const scheduleInputDate = parseDateTimeLocal(scheduleInput);
+  const scheduleInputIsPast = isPastDateTime(scheduleInputDate);
 
   // Add-update: composing and posting a follow-up comment to every case a
   // published request created. Restricted to the creator, same as Publish
@@ -667,6 +691,97 @@ export default function AnnouncementRequestDialog({
                     Security label couldn't be attached for: {publish.failedTagProjectIds.join(", ")} —
                     retry before this can be published.
                   </Typography>
+                )}
+
+                <Divider />
+
+                {request.dueOn && (
+                  <Typography variant="caption" color="text.secondary">
+                    Due {formatAbsoluteForUser(request.dueOn)}
+                  </Typography>
+                )}
+
+                {request.scheduledFor ? (
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                    <Typography variant="body2">
+                      Scheduled to publish on {formatAbsoluteForUser(request.scheduledFor)}
+                    </Typography>
+                    <Button
+                      size="small"
+                      variant="text"
+                      color="error"
+                      disabled={schedule.isPending || !canWrite || !isRequestCreator}
+                      onClick={() => schedule.mutate({ id: request.id, scheduledFor: null })}
+                    >
+                      Cancel schedule
+                    </Button>
+                  </Box>
+                ) : (
+                  isRequestCreator &&
+                  canWrite &&
+                  (schedulePickerOpen ? (
+                    <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                      <LocalizationProvider dateAdapter={AdapterDateFns}>
+                        <DateTimePicker
+                          label={`Publish at (${scheduleTimeZone})`}
+                          value={scheduleInputDate}
+                          onChange={(next) =>
+                            setScheduleInput(next instanceof Date && !Number.isNaN(next.getTime()) ? formatDateTimeLocal(next) : "")
+                          }
+                          disabled={schedule.isPending}
+                          slotProps={{
+                            textField: {
+                              fullWidth: true,
+                              size: "small",
+                              error: !!scheduleInput && scheduleInputIsPast,
+                              helperText: scheduleInputIsPast
+                                ? "Must be in the future."
+                                : `Entered in your timezone (${scheduleTimeZone}); stored as UTC.`,
+                            },
+                          }}
+                        />
+                      </LocalizationProvider>
+                      <Box sx={{ display: "flex", gap: 1 }}>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          disabled={!scheduleInput || scheduleInputIsPast || schedule.isPending}
+                          onClick={() => {
+                            const iso = zonedInputToUtcIso(scheduleInput, scheduleTimeZone);
+                            if (!iso) return;
+                            schedule.mutate(
+                              { id: request.id, scheduledFor: iso },
+                              { onSuccess: () => setSchedulePickerOpen(false) },
+                            );
+                          }}
+                        >
+                          {schedule.isPending ? "Scheduling…" : "Confirm schedule"}
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="text"
+                          disabled={schedule.isPending}
+                          onClick={() => {
+                            setSchedulePickerOpen(false);
+                            setScheduleInput("");
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                      </Box>
+                      {schedule.isError && (
+                        <Typography variant="caption" color="error">
+                          {schedule.error instanceof Error ? schedule.error.message : "Could not set the schedule."}
+                        </Typography>
+                      )}
+                    </Box>
+                  ) : (
+                    <Box>
+                      <Button size="small" variant="outlined" onClick={() => setSchedulePickerOpen(true)}>
+                        Schedule for later…
+                      </Button>
+                    </Box>
+                  ))
                 )}
               </Box>
             )}

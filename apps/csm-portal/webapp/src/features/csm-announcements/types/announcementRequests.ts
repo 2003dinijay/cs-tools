@@ -91,6 +91,15 @@ export interface AnnouncementRequest {
   publishedAt?: string | null;
   /** The real case id created for each project in resolvedProjectIds. Null until published. */
   publishedCaseIds?: string[] | null;
+  /** Set once, automatically, on submit (now + one month) — display only. Null until submitted. */
+  dueOn?: string | null;
+  /**
+   * Set/cleared only via useScheduleAnnouncementRequest, never by the
+   * generic update. When set on an approved request, it's automatically
+   * published once this time arrives (see operations/csm-scheduled-tasks'
+   * publish_scheduled_announcements sub-cron).
+   */
+  scheduledFor?: string | null;
 }
 
 export interface CreateAnnouncementRequestPayload {
@@ -111,6 +120,11 @@ export interface UpdateAnnouncementRequestPayload {
 
 export interface RecordAnnouncementRequestDryRunPayload {
   caseId: string;
+}
+
+/** null explicitly clears the schedule. Non-null must be strictly in the future. */
+export interface ScheduleAnnouncementRequestPayload {
+  scheduledFor: string | null;
 }
 
 export interface SearchAnnouncementRequestsPayload {
