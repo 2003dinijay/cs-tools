@@ -696,7 +696,17 @@ export default function AnnouncementRequestDialog({
                   </Box>
                 )}
                 {(publish.publishing || priorSucceededCount > 0 || publish.failedProjectIds.length > 0) && (
-                  <AnnouncementSendProgress progress={sendProgress} />
+                  <AnnouncementSendProgress
+                    progress={sendProgress}
+                    // Once there's an outstanding failure, the succeeded
+                    // count is either stale history (reopening a request
+                    // with prior progress) or already visible via the
+                    // "Retry failed projects" flow itself — only the
+                    // currently-failing projects need attention. A fully
+                    // successful send (no failures at all) still shows the
+                    // reassuring full tally.
+                    hideSucceededTally={publish.failedProjectIds.length > 0}
+                  />
                 )}
                 {publish.failedTagProjectIds.length > 0 && (
                   <Typography variant="caption" color="warning.main">
