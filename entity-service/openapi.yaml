@@ -215,6 +215,67 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /github/service-requests:
+    post:
+      summary: >-
+        Raise a service request from a GitHub issue. The same work the webhook
+        does for an `issues` event, reachable directly -- for a repository that
+        would rather call than wait for a delivery.
+      operationId: createServiceRequestFromGithubIssue
+      description: >-
+        Requires an authorized internal client credential: the caller is a
+        workflow or operator tool, not an end user, and the account is resolved
+        from the repository mapping rather than from the caller.
+      security:
+        - internalClientCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateServiceRequestFromIssueRequest'
+      responses:
+        "201":
+          description: The service request was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateServiceRequestFromIssueResponse'
+        "200":
+          description: >-
+            A service request already existed for this issue; nothing was
+            created. Returned rather than a conflict so a caller retrying after
+            a timeout is not left guessing whether it succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateServiceRequestFromIssueResponse'
+        "401":
+          description: >-
+            The request carried no authorized internal client credential.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "400":
+          description: Missing fields, or an issue that is not a service request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The repository is not mapped to an account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /webhooks/github:
     post:
       summary: >-
@@ -7401,7 +7462,70 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
 components:
+  securitySchemes:
+    internalClientCredential:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        A client-credentials token whose client id appears in
+        AUTH_INTERNAL_CLIENT_IDS. Declared on the operations that verify it
+        themselves; most endpoints in this service scope by caller instead and
+        do not carry this requirement.
+
   schemas:
+    CreateServiceRequestFromIssueRequest:
+      type: object
+      required: [owner, repository, issueNumber, title]
+      properties:
+        owner:
+          type: string
+          description: The repository owner, which resolves the account.
+        repository:
+          type: string
+        issueNumber:
+          type: integer
+        title:
+          type: string
+          description: >-
+            A "[CR]:" or "[ECR]:" prefix makes this a change-style request;
+            otherwise a Type/ServiceRequest label is required.
+        body:
+          type: string
+          description: >-
+            The issue body. Its "### Field" sections are captured onto the
+            service request.
+        labels:
+          type: array
+          items:
+            type: string
+        author:
+          type: string
+          description: The GitHub login that raised the issue.
+
+    CreateServiceRequestFromIssueResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        id:
+          type: string
+        number:
+          type: string
+          description: >-
+            The new record's number. Absent when the issue already had a
+            service request, which is looked up by issue number and does
+            not read it.
+        created:
+          type: boolean
+          description: >-
+            True when this call created the record; false when one already
+            existed for the issue.
+      required:
+        - message
+        - id
+        - created
+
     GithubWebhookPayload:
       type: object
       description: >-
