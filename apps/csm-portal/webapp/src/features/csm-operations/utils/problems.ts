@@ -50,6 +50,19 @@ export function problemStateLabel(state?: string | null): string {
   return STATE_LABEL[state as BeProblemState] ?? humanize(state);
 }
 
+/**
+ * Router state carried from an incident's own "Create problem…" action
+ * (`CsmIncidentDetailPage`) to `/operations/problems/new`, mirroring
+ * `CreateChangeRequestFromIncidentNavState` — pre-selects that incident as
+ * the problem's `primaryIncidentId` so the picker starts populated rather
+ * than blank; the field stays editable on the form.
+ */
+export interface CreateProblemFromIncidentNavState {
+  incidentId: string;
+  incidentNumber?: string;
+  incidentSubject?: string;
+}
+
 export function problemStateColor(state?: string | null): ChipColor {
   return STATE_COLOR[state as BeProblemState] ?? "default";
 }

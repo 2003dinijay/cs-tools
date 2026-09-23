@@ -38,6 +38,7 @@ import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import type { CreateIncidentFromCaseNavState } from "@features/csm-cases/types/csmCases";
 import { usePostIncident } from "@features/csm-operations/api/usePostIncident";
+import type { CreateIncidentFromIncidentNavState } from "@features/csm-operations/utils/incidents";
 import { useGetUsersMe } from "@features/settings/api/useGetUsersMe";
 import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchItServices } from "@api/useSearchItServices";
@@ -103,6 +104,14 @@ export default function CreateIncidentPage(): JSX.Element {
     | CreateIncidentFromCaseNavState
     | undefined;
 
+  // Set when opened from an incident's own "Create child incident" action,
+  // which navigates here with router state so the source incident's id
+  // carries over as the new incident's parent without a query-string round
+  // trip or a full page load. See CsmIncidentDetailPage.tsx's Create menu.
+  const originIncidentState = location.state as
+    | CreateIncidentFromIncidentNavState
+    | undefined;
+
   // Set when opened from a list/detail page's own "Create incident" action
   // with `state: { from: ... }` (same convention as the case-type create
   // pages), so Back/Cancel return there instead of the hardcoded incidents
@@ -114,7 +123,9 @@ export default function CreateIncidentPage(): JSX.Element {
   const [shortDescription, setShortDescription] = useState(
     originCaseState?.subject
       ? `Incident from case ${originCaseState.caseNumber ?? originCaseState.caseId}: ${originCaseState.subject}`
-      : "",
+      : originIncidentState?.subject
+        ? `Child incident of ${originIncidentState.incidentNumber ?? originIncidentState.incidentId}: ${originIncidentState.subject}`
+        : "",
   );
   const [description, setDescription] = useState(originCaseState?.description ?? "");
   const [category, setCategory] = useState<BeIncidentCategory | "">(UNSET);
@@ -131,6 +142,9 @@ export default function CreateIncidentPage(): JSX.Element {
   const [watchList, setWatchList] = useState<string[]>([]);
   const [workNotes, setWorkNotes] = useState("");
   const [parentId, setParentId] = useState(originCaseState?.caseId ?? "");
+  const [parentIncidentId, setParentIncidentId] = useState(
+    originIncidentState?.incidentId ?? "",
+  );
   const [changeRequestId, setChangeRequestId] = useState("");
   const [problemId, setProblemId] = useState("");
   const [causedById, setCausedById] = useState("");
@@ -229,6 +243,7 @@ export default function CreateIncidentPage(): JSX.Element {
     if (watchList.length > 0) payload.watchList = watchList;
     if (workNotes.trim()) payload.workNotes = workNotes.trim();
     if (parentId.trim()) payload.parentId = parentId.trim();
+    if (parentIncidentId.trim()) payload.parentIncidentId = parentIncidentId.trim();
     if (changeRequestId.trim()) payload.changeRequestId = changeRequestId.trim();
     if (problemId.trim()) payload.problemId = problemId.trim();
     if (causedById.trim()) payload.causedById = causedById.trim();
@@ -306,13 +321,22 @@ export default function CreateIncidentPage(): JSX.Element {
       >
         Back
       </Button>
-      <Typography variant="h5" sx={{ mb: originCaseState ? 0.5 : 2 }}>
+      <Typography
+        variant="h5"
+        sx={{ mb: originCaseState || originIncidentState ? 0.5 : 2 }}
+      >
         New incident
       </Typography>
       {originCaseState && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Linked to case {originCaseState.caseNumber ?? originCaseState.caseId} — its id is
           carried through automatically as this incident's parent.
+        </Typography>
+      )}
+      {originIncidentState && (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Linked to incident {originIncidentState.incidentNumber ?? originIncidentState.incidentId}
+          {" "}— its id is carried through automatically as this incident's parent incident.
         </Typography>
       )}
 
@@ -579,7 +603,7 @@ export default function CreateIncidentPage(): JSX.Element {
               </Typography>
               <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
                 <TextField
-                  label="Parent ID (case / incident / CR / problem)"
+                  label="Parent ID (case / CR / problem)"
                   size="small"
                   value={parentId}
                   onChange={(e) => setParentId(e.target.value)}
@@ -588,6 +612,19 @@ export default function CreateIncidentPage(): JSX.Element {
                     originCaseState
                       ? `Carried through from case ${originCaseState.caseNumber ?? originCaseState.caseId}.`
                       : undefined
+                  }
+                  sx={{ flex: "1 1 220px" }}
+                />
+                <TextField
+                  label="Parent incident ID"
+                  size="small"
+                  value={parentIncidentId}
+                  onChange={(e) => setParentIncidentId(e.target.value)}
+                  disabled={postIncident.isPending}
+                  helperText={
+                    originIncidentState
+                      ? `Carried through from incident ${originIncidentState.incidentNumber ?? originIncidentState.incidentId}.`
+                      : "The major incident this is linked to."
                   }
                   sx={{ flex: "1 1 220px" }}
                 />
