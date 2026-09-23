@@ -116,15 +116,17 @@ func TestProcessProject_InvoiceCascade_FiresNotifyAndSuspendOnDueDate(t *testing
 	}
 }
 
-func TestProcessProject_InvoiceCascade_IsPartnerSkipsEntirely(t *testing.T) {
+// TestProcessProject_InvoiceCascade_IsPartnerWithoutPrimaryPartnerDisablesCascade
+// covers legacy's actual precedence (ACPMainProcess.js's
+// calculateEventTypeFromDate): hasPrimaryPartner is checked first,
+// unconditionally; isPartner only disables the cascade when
+// hasPrimaryPartner is false. So isPartner=true alone must NOT skip
+// fetching invoice/account data up front — legacy fetches due invoices
+// unconditionally too — it only means the cascade doesn't fire once both
+// facts are known.
+func TestProcessProject_InvoiceCascade_IsPartnerWithoutPrimaryPartnerDisablesCascade(t *testing.T) {
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	linksSearchCalled := false
-	reader := &mockEntityReader{
-		searchProjectOpportunityLinksFn: func(ctx context.Context, body []byte) ([]byte, error) {
-			linksSearchCalled = true
-			return oppLinksResponse("p1", "opp1"), nil
-		},
-	}
+	reader := invoiceLinkedReader(t, now) // getAccountFn defaults to hasPrimaryPartner:false
 	updater := &mockProjectUpdater{}
 	ntf := &mockNotifier{}
 
@@ -139,14 +141,44 @@ func TestProcessProject_InvoiceCascade_IsPartnerSkipsEntirely(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processProject() error = %v, want nil", err)
 	}
-	if linksSearchCalled {
-		t.Error("SearchProjectOpportunityLinks should not be called when isPartner is true — the cascade must be skipped entirely, per precondition")
-	}
 	if len(ntf.sent) != 0 {
-		t.Errorf("ntf.sent = %d, want 0", len(ntf.sent))
+		t.Errorf("ntf.sent = %d, want 0 — isPartner=true with hasPrimaryPartner=false must not fire", len(ntf.sent))
 	}
 	if len(updater.calls) != 0 {
 		t.Errorf("updater.calls = %d, want 0", len(updater.calls))
+	}
+}
+
+// TestProcessProject_InvoiceCascade_HasPrimaryPartnerOverridesIsPartner is
+// the regression test for a real bug: a prior version of buildInvoiceCascade
+// gated on isPartner alone, before hasPrimaryPartner was ever fetched — so a
+// project whose account had BOTH isPartner=true and hasPrimaryPartner=true
+// (a real, legal combination per legacy) had its invoice cascade disabled
+// entirely, when legacy's calculateEventTypeFromDate would still fire it via
+// the grace-period (parterLed) path. hasPrimaryPartner must be checked
+// first, unconditionally, before isPartner is ever consulted.
+func TestProcessProject_InvoiceCascade_HasPrimaryPartnerOverridesIsPartner(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	reader := invoiceLinkedReader(t, now)
+	reader.getAccountFn = func(ctx context.Context, id string) ([]byte, error) {
+		return []byte(`{"hasPrimaryPartner":true}`), nil
+	}
+	updater := &mockProjectUpdater{}
+	ntf := &mockNotifier{sendFn: func(ctx context.Context, n notify.Notice) (bool, error) { return true, nil }}
+
+	isPartner := true
+	proj := project{
+		ID:      "p1",
+		Name:    "Test Project",
+		Account: &projectAccountRef{ID: "a1", IsPartner: &isPartner},
+	}
+
+	err := processProject(context.Background(), reader, updater, ntf, now, proj)
+	if err != nil {
+		t.Fatalf("processProject() error = %v, want nil", err)
+	}
+	if len(ntf.sent) == 0 {
+		t.Fatal("ntf.sent is empty, want the invoice cascade to fire — hasPrimaryPartner=true must override isPartner=true")
 	}
 }
 

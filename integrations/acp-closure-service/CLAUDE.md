@@ -131,6 +131,32 @@ genuinely independent per-reason dimensions, so one cascade's suspend can
 never be mistaken for the other's. Only the shared, rolled-up notify gate
 needed the same-run tracking.
 
+## isPartner does not gate the invoice cascade on its own
+
+`buildInvoiceCascade` (`invoice_orchestrate.go`) does **not** check
+`isPartner` before fetching invoice/account data, and does not disable the
+cascade on `isPartner` alone. Legacy's `calculateEventTypeFromDate`
+(`ACPMainProcess.js`) checks `hasPrimaryPartner` **first, unconditionally**
+— a project whose account has *both* `isPartner=true` and
+`hasPrimaryPartner=true` still fires, via the grace-period (`parterLed`)
+path — and only disables the cascade via `isPartner` once `hasPrimaryPartner`
+is confirmed false. Legacy also fetches due invoices unconditionally
+regardless of `isPartner` at all (`ACPInvoiceUtils.fetchDueInvoicesByProject`
+takes no `isPartner` parameter). The gate actually applied is
+`isPartner && !hasPrimaryPartner`, checked only after both facts are known —
+not `isPartner` alone, checked first.
+
+A prior version of this function got this wrong: it gated on `isPartner`
+alone as an early return, before `hasPrimaryPartner` was ever fetched. That
+silently disabled the `isPartner=true`/`hasPrimaryPartner=true` combination
+entirely — a real behavioral gap versus legacy, not a documented
+simplification, caught by `/code-review`'s Spec axis rather than by any live
+test (this combination didn't show up in the projects tested against). If
+you're tempted to reintroduce an early `isPartner` check for efficiency
+(skip fetching invoice data for obviously-disabled accounts), don't — there
+is no way to know the cascade is actually disabled without `hasPrimaryPartner`,
+which requires the same `GetAccount` call regardless.
+
 ## Dry-run is an injection choice, not a branch
 
 `DRY_RUN` never appears as an `if` inside `processProject` or `Run`. Both

@@ -27,17 +27,24 @@ import "time"
 // based_on_due_invoices state), entirely separate from the subscription
 // end-date cascade's.
 //
-// The caller is responsible for two preconditions this function has no way
-// to represent, and so must never be called without them already having
-// been checked: that this project actually has a due invoice to evaluate,
-// and that isPartner isn't true — either one means this cascade doesn't
-// apply to this project at all. isPartner is confirmed (via the real API,
-// not the legacy code's naming) to be an account-level flag, not a
-// project-level one — despite the legacy JS reading it off projectDetails,
-// which most likely just carried a denormalized copy of the account's own
-// flag rather than a genuinely independent per-project fact. This mirrors
-// how Decide itself assumes the caller already confirmed a real endDate
-// exists rather than handling "no end date" internally.
+// The caller is responsible for a precondition this function has no way to
+// represent, and so must never be called without it already having been
+// checked: that this project actually has a due invoice to evaluate. This
+// mirrors how Decide itself assumes the caller already confirmed a real
+// endDate exists rather than handling "no end date" internally.
+//
+// isPartner is NOT a precondition of this function — hasPrimaryPartner
+// already carries everything DecideInvoice needs to know about partner
+// status (see usesGracePeriod). Whether isPartner should additionally
+// disable the cascade entirely is the caller's decision, and per legacy's
+// calculateEventTypeFromDate (ACPMainProcess.js), that only happens when
+// isPartner is true AND hasPrimaryPartner is false — hasPrimaryPartner is
+// checked first, unconditionally, and overrides isPartner when true. isPartner
+// itself is confirmed (via the real API, not the legacy code's naming) to be
+// an account-level flag, not a project-level one — despite the legacy JS
+// reading it off projectDetails, which most likely just carried a
+// denormalized copy of the account's own flag rather than a genuinely
+// independent per-project fact.
 func DecideInvoice(
 	now, invoiceDate, invoiceDueDate time.Time,
 	eulaVersion float64,

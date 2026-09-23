@@ -32,20 +32,24 @@ import (
 // dimension) — and, if it fires, returns a cascadeDecision ready to be
 // ordered against the subscription cascade (see processProject).
 //
-// Two preconditions gate this cascade before any invoice data is even
-// fetched, per DecideInvoice's own documented contract:
-//   - isPartner (confirmed account-level via the real API — see
-//     closure.DecideInvoice's doc comment) disables the cascade entirely.
-//   - No eligible due invoice (resolveDueInvoice returns nil) — a
-//     legitimate, common state, not an error.
+// Returns (nil, nil) when there's no eligible due invoice (resolveDueInvoice
+// returns nil — a legitimate, common state, not an error), when isPartner
+// disables the cascade (see below), or when the decision simply doesn't
+// fire yet — mirroring buildSubscriptionCascade's own no-op shape.
 //
-// Returns (nil, nil) in either of those cases, or when the decision simply
-// doesn't fire yet — mirroring buildSubscriptionCascade's own no-op shape.
+// isPartner does NOT gate this cascade on its own, and deliberately isn't
+// checked before fetching invoice/account data. Legacy's
+// calculateEventTypeFromDate (ACPMainProcess.js) checks hasPrimaryPartner
+// FIRST, unconditionally — a project whose account has both isPartner=true
+// and hasPrimaryPartner=true still fires, via the grace-period path — and
+// only disables the cascade via isPartner once hasPrimaryPartner is known
+// to be false. legacy also fetches due invoices unconditionally regardless
+// of isPartner (ACPInvoiceUtils.fetchDueInvoicesByProject takes no
+// isPartner parameter at all). A prior version of this function gated on
+// isPartner alone before hasPrimaryPartner was ever fetched, which silently
+// disabled that isPartner=true/hasPrimaryPartner=true combination entirely
+// — a real behavioral gap versus legacy, not a documented simplification.
 func buildInvoiceCascade(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, proj project, now time.Time) (*cascadeDecision, error) {
-	if proj.Account != nil && proj.Account.IsPartner != nil && *proj.Account.IsPartner {
-		return nil, nil
-	}
-
 	invoice, err := resolveDueInvoice(ctx, reader, proj)
 	if err != nil {
 		return nil, fmt.Errorf("resolve due invoice for project %s: %w", proj.ID, err)
@@ -57,6 +61,11 @@ func buildInvoiceCascade(ctx context.Context, reader entityReader, updater proje
 	hasPrimaryPartner, err := resolveHasPrimaryPartner(ctx, reader, proj.accountID())
 	if err != nil {
 		return nil, fmt.Errorf("resolve hasPrimaryPartner for project %s: %w", proj.ID, err)
+	}
+
+	isPartner := proj.Account != nil && proj.Account.IsPartner != nil && *proj.Account.IsPartner
+	if isPartner && !hasPrimaryPartner {
+		return nil, nil
 	}
 
 	lastWindow, err := suspensionstate.LastNoticeWindowForInvoices(proj.SuspensionProcessState)
