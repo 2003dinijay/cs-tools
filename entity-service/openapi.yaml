@@ -11901,6 +11901,9 @@ components:
             - business_service
             - technology_management_service
             - application_service
+        supportGroup:
+          $ref: '#/components/schemas/EntityRef'
+          nullable: true
 
     SearchITServicesResponse:
       type: object

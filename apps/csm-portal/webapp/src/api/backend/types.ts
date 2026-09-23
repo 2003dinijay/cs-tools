@@ -2784,6 +2784,7 @@ export interface BeItService {
   class?: string | null;
   businessCriticality?: string | null;
   serviceClassification?: string | null;
+  supportGroup?: BeEntityRef | null;
 }
 
 export interface BeItServiceSearchPayload {
