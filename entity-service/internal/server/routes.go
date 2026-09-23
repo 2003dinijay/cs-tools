@@ -558,7 +558,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
 		activeIncidentSvc = service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, eventPublisher)
-	case config.DataSourcePostgresPrimarySNFallback:
+	case config.DataSourcePostgresServiceNowDualWrite:
 		// Pilot extension: incident CREATE only, same ServiceNow-first,
 		// synchronous shape as the case pilot above -- see
 		// incidentService.createIncidentSNFirst's own doc comment. Reads

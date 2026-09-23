@@ -187,8 +187,8 @@ func parseIncidentFieldFiltersPostgres(f domain.SearchIncidentsFilters, now time
 
 type incidentService struct {
 	repo repository.IncidentRepository
-	// snMirror is nil in every mode except DATA_SOURCE=postgres-primary-sn-fallback
-	// (config.DataSourcePostgresPrimarySNFallback) -- see
+	// snMirror is nil in every mode except DATA_SOURCE=postgres-servicenow-dual-write
+	// (config.DataSourcePostgresServiceNowDualWrite) -- see
 	// NewIncidentServiceWithSNMirror's own doc comment. When set, CreateIncident
 	// delegates to createIncidentSNFirst instead of the plain Postgres path's
 	// ServiceUnavailableError below, mirroring caseService's identical
@@ -211,7 +211,7 @@ func NewIncidentService(repo repository.IncidentRepository) IncidentService {
 }
 
 // NewIncidentServiceWithSNMirror is NewIncidentService plus the wiring
-// DATA_SOURCE=postgres-primary-sn-fallback needs for incident CREATE: a
+// DATA_SOURCE=postgres-servicenow-dual-write needs for incident CREATE: a
 // synchronous, ServiceNow-first creation path -- see createIncidentSNFirst's
 // own doc comment for the full reasoning (identical to
 // caseService.createCaseSNFirst's: a Postgres-first async create could leave
@@ -303,7 +303,7 @@ func (s *incidentService) SearchIncidentActivities(ctx context.Context, req doma
 
 // CreateIncident implements IncidentService.
 //
-// Under DATA_SOURCE=postgres-primary-sn-fallback (snMirror != nil), this
+// Under DATA_SOURCE=postgres-servicenow-dual-write (snMirror != nil), this
 // delegates to createIncidentSNFirst instead of the plain Postgres path's
 // ServiceUnavailableError below -- see that method's own doc comment.
 func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
@@ -343,7 +343,7 @@ const (
 )
 
 // createIncidentSNFirst implements CreateIncident's
-// DATA_SOURCE=postgres-primary-sn-fallback path: ServiceNow-FIRST and
+// DATA_SOURCE=postgres-servicenow-dual-write path: ServiceNow-FIRST and
 // SYNCHRONOUS, exactly mirroring caseService.createCaseSNFirst's reasoning
 // -- see that method's own doc comment for why CREATE must be ServiceNow
 // -first rather than Postgres-first-and-async: a Postgres row with no

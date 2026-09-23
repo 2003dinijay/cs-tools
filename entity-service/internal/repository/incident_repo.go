@@ -66,7 +66,7 @@ import (
 //
 // CreateIncidentFromServiceNow (below) is the exception, same as
 // CaseRepository.CreateCaseFromServiceNow: it backs
-// DATA_SOURCE=postgres-primary-sn-fallback's SN-first incident creation,
+// DATA_SOURCE=postgres-servicenow-dual-write's SN-first incident creation,
 // where identity comes from ServiceNow rather than being generated here.
 type IncidentRepository interface {
 	// SearchIncidents returns a filtered, sorted, paginated slice of
@@ -87,7 +87,7 @@ type IncidentRepository interface {
 	// incident (comments + field changes), newest first.
 	SearchIncidentActivities(ctx context.Context, req domain.SearchIncidentActivitiesRequest) ([]domain.CaseActivity, int, error)
 	// CreateIncidentFromServiceNow inserts a new incident row (both work_item
-	// and "incident"), for DATA_SOURCE=postgres-primary-sn-fallback's SN-first
+	// and "incident"), for DATA_SOURCE=postgres-servicenow-dual-write's SN-first
 	// incident creation (see incidentService.createIncidentSNFirst's own doc
 	// comment). Unlike CaseRepository.CreateCaseFromServiceNow, no wso2ID
 	// parameter exists here: work_item.wso2_id is only required (by the
