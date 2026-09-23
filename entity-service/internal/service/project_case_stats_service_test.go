@@ -104,7 +104,7 @@ func TestGetProjectCaseStats_StateClassification(t *testing.T) {
 		{State: "CLOSED", Severity: "S3", Count: 10},
 	}}
 
-	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums()).
+	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{}).
 		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
 	if err != nil {
 		t.Fatalf("GetProjectCaseStats: %v", err)
@@ -151,7 +151,7 @@ func TestGetProjectCaseStats_RowsWithoutSeverityStillCount(t *testing.T) {
 		{State: "OPEN", Severity: "", Count: 5},
 	}}
 
-	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums()).
+	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{}).
 		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
 	if err != nil {
 		t.Fatalf("GetProjectCaseStats: %v", err)
@@ -172,7 +172,7 @@ func TestGetProjectCaseStats_RowsWithoutSeverityStillCount(t *testing.T) {
 func TestGetProjectCaseStats_AverageResponseTimeInHours(t *testing.T) {
 	repo := &fakeCaseStatsRepo{avgSeconds: 5432.9, slaCount: 3}
 
-	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums()).
+	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{}).
 		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
 	if err != nil {
 		t.Fatalf("GetProjectCaseStats: %v", err)
@@ -192,7 +192,7 @@ func TestGetProjectCaseStats_AverageResponseTimeInHours(t *testing.T) {
 func TestGetProjectCaseStats_AverageResponseTimeZeroWithoutSLAs(t *testing.T) {
 	repo := &fakeCaseStatsRepo{avgSeconds: 900, slaCount: 0}
 
-	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums()).
+	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{}).
 		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
 	if err != nil {
 		t.Fatalf("GetProjectCaseStats: %v", err)
@@ -231,7 +231,7 @@ func TestGetProjectCaseStats_FilterPropagationMatchesServiceNow(t *testing.T) {
 	repo := &fakeCaseStatsRepo{}
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "caller@wso2.com"))
 
-	_, err := NewProjectCaseStatsService(repo, caseStatsEnums()).
+	_, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{}).
 		GetProjectCaseStats(ctx, testUUID, domain.ProjectCaseStatsRequest{
 			CaseTypes: []string{"engagement"},
 			CreatedBy: createdBySelf,
@@ -263,7 +263,7 @@ func TestGetProjectCaseStats_FilterPropagationMatchesServiceNow(t *testing.T) {
 func TestGetProjectCaseStats_CreatedByOnlyAcceptsMe(t *testing.T) {
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "caller@wso2.com"))
 
-	_, err := NewProjectCaseStatsService(&fakeCaseStatsRepo{}, caseStatsEnums()).
+	_, err := NewProjectCaseStatsService(&fakeCaseStatsRepo{}, caseStatsEnums(), alwaysUnrestrictedAccess{}).
 		GetProjectCaseStats(ctx, testUUID, domain.ProjectCaseStatsRequest{CreatedBy: "someone@wso2.com"})
 
 	var validationErr *apierror.ValidationError
@@ -276,7 +276,7 @@ func TestGetProjectCaseStats_CreatedByOnlyAcceptsMe(t *testing.T) {
 func TestGetProjectCaseStats_NoCreatedByNeedsNoCaller(t *testing.T) {
 	repo := &fakeCaseStatsRepo{}
 
-	if _, err := NewProjectCaseStatsService(repo, caseStatsEnums()).
+	if _, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{}).
 		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{}); err != nil {
 		t.Fatalf("GetProjectCaseStats without createdBy: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestGetProjectCaseStats_NoCreatedByNeedsNoCaller(t *testing.T) {
 func TestGetProjectCaseStats_NormalizesDefaultCaseAlias(t *testing.T) {
 	repo := &fakeCaseStatsRepo{}
 
-	_, err := NewProjectCaseStatsService(repo, caseStatsEnums()).
+	_, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{}).
 		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{
 			CaseTypes: []string{"default_case"},
 		})
@@ -303,7 +303,7 @@ func TestGetProjectCaseStats_NormalizesDefaultCaseAlias(t *testing.T) {
 }
 
 func TestGetProjectCaseStats_RejectsUnknownCaseType(t *testing.T) {
-	_, err := NewProjectCaseStatsService(&fakeCaseStatsRepo{}, caseStatsEnums()).
+	_, err := NewProjectCaseStatsService(&fakeCaseStatsRepo{}, caseStatsEnums(), alwaysUnrestrictedAccess{}).
 		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{
 			CaseTypes: []string{"not_a_case_type"},
 		})
@@ -319,7 +319,7 @@ func TestGetProjectCaseStats_RejectsUnknownCaseType(t *testing.T) {
 func TestGetProjectCaseStats_CaseTypeCountCoversWholeVocabulary(t *testing.T) {
 	repo := &fakeCaseStatsRepo{caseTypes: map[string]int{"case": 12, "engagement": 4}}
 
-	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums()).
+	resp, err := NewProjectCaseStatsService(repo, caseStatsEnums(), alwaysUnrestrictedAccess{}).
 		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
 	if err != nil {
 		t.Fatalf("GetProjectCaseStats: %v", err)
@@ -344,12 +344,63 @@ func TestGetProjectCaseStats_CaseTypeCountCoversWholeVocabulary(t *testing.T) {
 // code), so this data source must emit the same stub rather than a richer
 // series the other one would never produce.
 func TestGetProjectCaseStats_CasesTrendIsPlaceholder(t *testing.T) {
-	resp, err := NewProjectCaseStatsService(&fakeCaseStatsRepo{}, caseStatsEnums()).
+	resp, err := NewProjectCaseStatsService(&fakeCaseStatsRepo{}, caseStatsEnums(), alwaysUnrestrictedAccess{}).
 		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
 	if err != nil {
 		t.Fatalf("GetProjectCaseStats: %v", err)
 	}
 	if len(resp.CasesTrend) != 1 || resp.CasesTrend[0].Period != "" || len(resp.CasesTrend[0].Severities) != 1 {
 		t.Errorf("casesTrend = %+v, want the single-entry placeholder", resp.CasesTrend)
+	}
+}
+
+// The project id comes from the path, so a caller could otherwise read any
+// project's statistics by id. An out-of-scope project must be reported as
+// NotFound -- the same answer a genuinely missing one gets, so existence is
+// never revealed -- and no aggregation may run.
+func TestGetProjectCaseStats_OutOfScopeProjectIsNotFound(t *testing.T) {
+	repo := &fakeCaseStatsRepo{}
+	access := stubAccess{scope: AccessScope{ProjectIDs: []string{"99999999-9999-9999-9999-999999999999"}}}
+
+	_, err := NewProjectCaseStatsService(repo, caseStatsEnums(), access).
+		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
+
+	var notFound *apierror.NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("error = %v, want NotFoundError for a project outside the caller's scope", err)
+	}
+	if repo.stateSeverityFilter.ProjectID != "" {
+		t.Errorf("repository was queried for an unauthorized project (%q) -- the check must run first",
+			repo.stateSeverityFilter.ProjectID)
+	}
+}
+
+func TestGetProjectCaseStats_InScopeProjectIsAllowed(t *testing.T) {
+	repo := &fakeCaseStatsRepo{}
+	access := stubAccess{scope: AccessScope{ProjectIDs: []string{testUUID}}}
+
+	if _, err := NewProjectCaseStatsService(repo, caseStatsEnums(), access).
+		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{}); err != nil {
+		t.Fatalf("a project inside the caller's scope must be allowed: %v", err)
+	}
+	if repo.stateSeverityFilter.ProjectID != testUUID {
+		t.Errorf("aggregation did not run for the authorized project")
+	}
+}
+
+// A failure to resolve scope must propagate, never fall through to an
+// unscoped read.
+func TestGetProjectCaseStats_ScopeErrorPropagates(t *testing.T) {
+	repo := &fakeCaseStatsRepo{}
+	sentinel := errors.New("scope resolution failed")
+
+	_, err := NewProjectCaseStatsService(repo, caseStatsEnums(), stubAccess{err: sentinel}).
+		GetProjectCaseStats(context.Background(), testUUID, domain.ProjectCaseStatsRequest{})
+
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("error = %v, want the resolver's own error", err)
+	}
+	if repo.stateSeverityFilter.ProjectID != "" {
+		t.Errorf("repository was queried despite scope resolution failing")
 	}
 }

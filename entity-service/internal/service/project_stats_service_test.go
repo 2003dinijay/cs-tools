@@ -90,8 +90,8 @@ func statsEnums() *fakeReferenceDataRepo {
 
 func newStatsService(repo *fakeProjectStatsRepo) ProjectStatsService {
 	ref := statsEnums()
-	return NewProjectStatsService(repo, ref, NewProjectMetadataService(ref),
-		NewProjectCaseStatsService(&fakeCaseStatsRepo{}, ref))
+	return NewProjectStatsService(repo, ref, alwaysUnrestrictedAccess{}, NewProjectMetadataService(ref),
+		NewProjectCaseStatsService(&fakeCaseStatsRepo{}, ref, alwaysUnrestrictedAccess{}))
 }
 
 // All four conditions must hold for "All Good"; any single failure -- and an
@@ -366,5 +366,40 @@ func TestGetProjectTimeCardStats_RejectsMalformedDates(t *testing.T) {
 	// Both bounds absent is valid -- the range filter is optional.
 	if _, err := svc.GetProjectTimeCardStats(context.Background(), testUUID, "", ""); err != nil {
 		t.Errorf("no date bounds: %v", err)
+	}
+}
+
+// Same IDOR guard as the case-stats service: every method on this service
+// goes through requireProject, so one out-of-scope check covers all five.
+func TestProjectStats_OutOfScopeProjectIsNotFound(t *testing.T) {
+	access := stubAccess{scope: AccessScope{ProjectIDs: []string{"99999999-9999-9999-9999-999999999999"}}}
+	ref := statsEnums()
+	svc := NewProjectStatsService(&fakeProjectStatsRepo{}, ref, access,
+		NewProjectMetadataService(ref), NewProjectCaseStatsService(&fakeCaseStatsRepo{}, ref, access))
+
+	ctx := context.Background()
+	calls := map[string]error{}
+	_, calls["GetProjectStats"] = svc.GetProjectStats(ctx, testUUID)
+	_, calls["GetProjectConversationStats"] = svc.GetProjectConversationStats(ctx, testUUID, "")
+	_, calls["GetProjectDeploymentStats"] = svc.GetProjectDeploymentStats(ctx, testUUID)
+	_, calls["GetProjectTimeCardStats"] = svc.GetProjectTimeCardStats(ctx, testUUID, "", "")
+	_, calls["GetProjectChangeRequestStats"] = svc.GetProjectChangeRequestStats(ctx, testUUID)
+
+	for name, err := range calls {
+		var notFound *apierror.NotFoundError
+		if !errors.As(err, &notFound) {
+			t.Errorf("%s: error = %v, want NotFoundError for an out-of-scope project", name, err)
+		}
+	}
+}
+
+func TestProjectStats_UnrestrictedCallerIsAllowed(t *testing.T) {
+	repo := &fakeProjectStatsRepo{deployments: 4}
+	resp, err := newStatsService(repo).GetProjectDeploymentStats(context.Background(), testUUID)
+	if err != nil {
+		t.Fatalf("an unrestricted caller must be allowed: %v", err)
+	}
+	if resp.TotalCount != 4 {
+		t.Errorf("totalCount = %d, want 4", resp.TotalCount)
 	}
 }

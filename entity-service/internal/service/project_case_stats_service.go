@@ -71,14 +71,16 @@ var caseStatsResolvedStates = []string{caseStateClosed, caseStateSolutionPropose
 type projectCaseStatsService struct {
 	repo    repository.ProjectCaseStatsRepository
 	refRepo repository.ReferenceDataRepository
+	access  AccessService
 }
 
 // NewProjectCaseStatsService constructs a Postgres-backed ProjectCaseStatsService.
 func NewProjectCaseStatsService(
 	repo repository.ProjectCaseStatsRepository,
 	refRepo repository.ReferenceDataRepository,
+	access AccessService,
 ) ProjectCaseStatsService {
-	return &projectCaseStatsService{repo: repo, refRepo: refRepo}
+	return &projectCaseStatsService{repo: repo, refRepo: refRepo, access: access}
 }
 
 // GetProjectCaseStats implements ProjectCaseStatsService.
@@ -100,6 +102,12 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 		if !validCaseType[types[i]] {
 			return domain.ProjectCaseStatsResponse{}, &apierror.ValidationError{Msg: "caseTypes contains invalid value: " + t}
 		}
+	}
+
+	// Scope before existence: the id is caller-controlled, so a project the
+	// caller may not see must be indistinguishable from one that is not there.
+	if err := authorizeProject(ctx, s.access, projectID); err != nil {
+		return domain.ProjectCaseStatsResponse{}, err
 	}
 
 	found, _, err := s.refRepo.GetProjectByID(ctx, projectID)

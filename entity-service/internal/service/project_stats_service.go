@@ -78,6 +78,7 @@ var conversationActiveStates = []string{"OPEN", "ACTIVE"}
 type projectStatsService struct {
 	repo      repository.ProjectStatsRepository
 	refRepo   repository.ReferenceDataRepository
+	access    AccessService
 	metadata  ProjectMetadataService
 	caseStats ProjectCaseStatsService
 }
@@ -86,10 +87,11 @@ type projectStatsService struct {
 func NewProjectStatsService(
 	repo repository.ProjectStatsRepository,
 	refRepo repository.ReferenceDataRepository,
+	access AccessService,
 	metadata ProjectMetadataService,
 	caseStats ProjectCaseStatsService,
 ) ProjectStatsService {
-	return &projectStatsService{repo: repo, refRepo: refRepo, metadata: metadata, caseStats: caseStats}
+	return &projectStatsService{repo: repo, refRepo: refRepo, access: access, metadata: metadata, caseStats: caseStats}
 }
 
 // GetProjectMetadata implements ProjectStatsService by delegation.
@@ -102,10 +104,14 @@ func (s *projectStatsService) GetProjectCaseStats(ctx context.Context, projectID
 	return s.caseStats.GetProjectCaseStats(ctx, projectID, req)
 }
 
-// requireProject validates the id and confirms the project exists, so every
-// method below reports a missing project as a 404 rather than empty stats.
+// requireProject validates the id, confirms the caller may see the project,
+// and confirms it exists -- in that order, so every method below reports a
+// project the caller has no access to exactly as it reports a missing one.
 func (s *projectStatsService) requireProject(ctx context.Context, projectID string) error {
 	if err := validateUUIDs("id", []string{projectID}); err != nil {
+		return err
+	}
+	if err := authorizeProject(ctx, s.access, projectID); err != nil {
 		return err
 	}
 	found, _, err := s.refRepo.GetProjectByID(ctx, projectID)

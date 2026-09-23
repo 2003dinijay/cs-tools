@@ -316,10 +316,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		projectMetadataSvc, projectCaseStatsSvc, projectStatsSvc = snProjectStatsSvc, snProjectStatsSvc, snProjectStatsSvc
 	} else {
 		projectMetadataSvc = service.NewProjectMetadataService(referenceDataRepo)
+		// accessSvc is passed in so a by-id stats read is scoped to what the
+		// caller may see. Unlike the scoped list endpoints, which fold the
+		// scope into their WHERE clause, the project id here comes from the
+		// path and needs an explicit check.
 		projectCaseStatsSvc = service.NewProjectCaseStatsService(
-			repository.NewProjectCaseStatsRepository(db), referenceDataRepo)
+			repository.NewProjectCaseStatsRepository(db), referenceDataRepo, accessSvc)
 		projectStatsSvc = service.NewProjectStatsService(
-			repository.NewProjectStatsRepository(db), referenceDataRepo,
+			repository.NewProjectStatsRepository(db), referenceDataRepo, accessSvc,
 			projectMetadataSvc, projectCaseStatsSvc)
 	}
 	projectMetadataHandler := handler.NewProjectMetadataHandler(projectMetadataSvc)
