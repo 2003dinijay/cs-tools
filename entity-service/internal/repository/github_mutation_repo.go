@@ -68,6 +68,13 @@ type NewChangeRequestFromIssue struct {
 	// mapping knows one. Empty leaves it null.
 	ProjectID string
 	CreatedBy string
+	// Catalog, SRType and Fields carry the service-request side of an issue.
+	// They are only read when the record turns out to be a service request --
+	// see UpdateFromIssue, which decides that from whether a change_request row
+	// exists rather than from the caller having to know.
+	Catalog string
+	SRType  string
+	Fields  map[string]string
 }
 
 // ErrChangeRequestExists means the issue already has one.
@@ -186,15 +193,49 @@ func (r *githubMutationRepository) UpdateFromIssue(ctx context.Context, id strin
 		return fmt.Errorf("github: update work item: %w", err)
 	}
 
-	const updateCR = `
+	// WHICH EXTENSION TABLE THIS RECORD LIVES IN DECIDES WHAT ELSE UPDATES.
+	// An issue creates a service request, not a change request, so this used to
+	// run an UPDATE against change_request that matched no row -- reporting
+	// success while service_request.json_data kept whatever the issue said when
+	// it was first seen. Editing the issue moved the subject and description and
+	// silently left every captured field stale.
+	ct, err := tx.Exec(ctx, `
 		UPDATE change_request
 		SET impact              = COALESCE($2::change_request_impact_enum, impact),
 		    likelihood          = COALESCE($3::change_request_likelihood_enum, likelihood),
 		    change_request_type = COALESCE($4::change_request_type_enum, change_request_type)
-		WHERE id = $1::uuid`
-	if _, err := tx.Exec(ctx, updateCR, id,
-		nullable(in.Impact), nullable(in.Likelihood), nullable(in.Type)); err != nil {
+		WHERE id = $1::uuid`, id,
+		nullable(in.Impact), nullable(in.Likelihood), nullable(in.Type))
+	if err != nil {
 		return fmt.Errorf("github: update change request: %w", err)
+	}
+
+	if ct.RowsAffected() == 0 {
+		// Re-extract from the issue body rather than patching key by key: the
+		// body is the source of truth, and a field removed from the template
+		// should stop being reported. The two derived keys are not in the body
+		// and are re-applied so they survive the rewrite.
+		fields := in.Fields
+		if fields == nil {
+			fields = map[string]string{}
+		}
+		if in.SRType != "" {
+			fields["u_sr_type"] = in.SRType
+		}
+		if in.GitReference != "" {
+			fields["u_github_issue_url"] = in.GitReference
+		}
+		payload, err := json.Marshal(fields)
+		if err != nil {
+			return fmt.Errorf("github: encode service request fields: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE service_request
+			SET category  = COALESCE(NULLIF($2, ''), category),
+			    json_data = $3::jsonb
+			WHERE id = $1::uuid`, id, in.Catalog, payload); err != nil {
+			return fmt.Errorf("github: update service request: %w", err)
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -325,10 +366,13 @@ func (r *githubMutationRepository) CreateServiceRequestFromIssue(ctx context.Con
 	// link has to be there by then or the first event is lost.
 	const insertWorkItem = `
 		INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by,
-		                       number, subject, type, description, account_id,
-		                       github_issue_number)
+		                       number, wso2_id, subject, type, description,
+		                       account_id, github_issue_number)
 		VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1,
-		        next_github_service_request_number(), $2, 'SERVICE_REQUEST', $3,
+		        next_github_service_request_number(),
+		        -- Required for SERVICE_REQUEST by work_item_wso2_id_required_by_type.
+		        next_github_service_request_wso2_id(),
+		        $2, 'SERVICE_REQUEST', $3,
 		        NULLIF($4, '')::uuid, $5)
 		RETURNING id::text, number`
 

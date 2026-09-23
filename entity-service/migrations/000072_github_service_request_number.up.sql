@@ -34,3 +34,21 @@ BEGIN
     RETURN 'SR-GH-' || LPAD(nextval('github_service_request_number_seq')::TEXT, 6, '0');
 END;
 $$ LANGUAGE plpgsql;
+
+-- work_item.wso2_id is required for SERVICE_REQUEST by
+-- work_item_wso2_id_required_by_type (000016), and like number it has no
+-- default: generating one is an undecided product choice for records raised in
+-- the portal. A record raised from a GitHub issue cannot wait for that
+-- decision -- the insert simply fails without a value -- and it already draws
+-- its number from a sequence here, so it draws this the same way.
+--
+-- Separate sequence rather than reusing the number's: the two are distinct
+-- identifiers and nothing should imply they stay in step.
+CREATE SEQUENCE IF NOT EXISTS github_service_request_wso2_id_seq START 1;
+
+CREATE OR REPLACE FUNCTION next_github_service_request_wso2_id()
+RETURNS TEXT AS $$
+BEGIN
+    RETURN 'WSO2-GH-' || LPAD(nextval('github_service_request_wso2_id_seq')::TEXT, 6, '0');
+END;
+$$ LANGUAGE plpgsql;

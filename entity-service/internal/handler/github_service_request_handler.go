@@ -21,6 +21,7 @@ import (
 	"net/http"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
@@ -33,15 +34,40 @@ import (
 // want to depend on delivery.
 type GithubServiceRequestHandler struct {
 	svc service.GithubSyncService
+	// internalClientIDs is config.Config.AuthInternalClientIDs. Only these may
+	// call this endpoint -- see Create.
+	internalClientIDs map[string]bool
 }
 
-// NewGithubServiceRequestHandler constructs the endpoint.
-func NewGithubServiceRequestHandler(svc service.GithubSyncService) *GithubServiceRequestHandler {
-	return &GithubServiceRequestHandler{svc: svc}
+// NewGithubServiceRequestHandler constructs the endpoint. internalClientIDs is
+// config.Config.AuthInternalClientIDs.
+func NewGithubServiceRequestHandler(svc service.GithubSyncService, internalClientIDs map[string]bool) *GithubServiceRequestHandler {
+	return &GithubServiceRequestHandler{svc: svc, internalClientIDs: internalClientIDs}
 }
 
 // Create handles POST /github/service-requests.
 func (h *GithubServiceRequestHandler) Create(w http.ResponseWriter, r *http.Request) {
+	// AUTHORIZED INTERNAL CLIENTS ONLY.
+	//
+	// auth.Middleware lets a request carrying no tokens through -- its own
+	// comment says whether that is acceptable is decided per endpoint -- so
+	// without this check anyone who can reach the service could create a
+	// service request against any mapped repository. That matters more than
+	// usual here: reaching the inbound half from GitHub means exposing this
+	// service publicly.
+	//
+	// The caller is a machine (a workflow or an operator tool), never an end
+	// user, so this requires a client credential rather than scoping by user
+	// account. The account is not the caller's to choose in any case: it is
+	// resolved from the repository mapping, so there is no per-user scope to
+	// apply.
+	id := auth.IdentityFromContext(r.Context())
+	if !id.Validated || id.ClientID == "" || !h.internalClientIDs[id.ClientID] {
+		apierror.WriteJSON(w, http.StatusUnauthorized,
+			"an authorized internal client credential is required")
+		return
+	}
+
 	var req domain.CreateServiceRequestFromIssueRequest
 	if !decodeRequest(w, r, &req) {
 		return
@@ -64,5 +90,3 @@ func (h *GithubServiceRequestHandler) Create(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(resp)
 }
-
-var _ = apierror.WriteJSON

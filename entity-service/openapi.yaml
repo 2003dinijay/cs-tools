@@ -222,6 +222,12 @@ paths:
         does for an `issues` event, reachable directly -- for a repository that
         would rather call than wait for a delivery.
       operationId: createServiceRequestFromGithubIssue
+      description: >-
+        Requires an authorized internal client credential: the caller is a
+        workflow or operator tool, not an end user, and the account is resolved
+        from the repository mapping rather than from the caller.
+      security:
+        - internalClientCredential: []
       requestBody:
         required: true
         content:
@@ -244,6 +250,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CreateServiceRequestFromIssueResponse'
+        "401":
+          description: >-
+            The request carried no authorized internal client credential.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "400":
           description: Missing fields, or an issue that is not a service request.
           content:
@@ -7201,6 +7214,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
 components:
+  securitySchemes:
+    internalClientCredential:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        A client-credentials token whose client id appears in
+        AUTH_INTERNAL_CLIENT_IDS. Declared on the operations that verify it
+        themselves; most endpoints in this service scope by caller instead and
+        do not carry this requirement.
+
   schemas:
     CreateServiceRequestFromIssueRequest:
       type: object
@@ -7249,6 +7273,10 @@ components:
           description: >-
             True when this call created the record; false when one already
             existed for the issue.
+      required:
+        - message
+        - id
+        - created
 
     GithubWebhookPayload:
       type: object

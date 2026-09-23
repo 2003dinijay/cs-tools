@@ -14,6 +14,5 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-DROP TRIGGER IF EXISTS change_request_created_github_notice ON change_request;
 DROP TRIGGER IF EXISTS service_request_created_github_notice ON service_request;
 DROP FUNCTION IF EXISTS trg_github_record_created();

@@ -57,7 +57,14 @@ BEGIN
         catalog_name := NEW.category::TEXT;
         priority_val := NEW.json_data ->> 'u_priority';
         environment  := NEW.json_data ->> 'u_environment_details';
-        field_count  := (SELECT COUNT(*) FROM jsonb_object_keys(COALESCE(NEW.json_data, '{}'::jsonb)));
+        -- Only the keys the issue template supplied. u_sr_type and
+        -- u_github_issue_url are derived by the writer, not extracted, so
+        -- counting them would overstate what the announcement claims was
+        -- captured -- by one for a plain service request, two for a change
+        -- class request.
+        field_count  := (SELECT COUNT(*)
+                           FROM jsonb_object_keys(COALESCE(NEW.json_data, '{}'::jsonb)) k
+                          WHERE k NOT IN ('u_sr_type', 'u_github_issue_url'));
     END IF;
 
     -- Field names match what the case-update workflow already parses
@@ -82,10 +89,15 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- NO EQUIVALENT TRIGGER ON change_request. An earlier version of this
+-- migration added one, and it was wrong twice over: it resolved NEW.id against
+-- work_item, but a change request carries no issue number of its own -- the
+-- parent does -- so it never found a repository and never enqueued anything.
+-- Had it worked it would have duplicated an announcement that already exists:
+-- change_request_github_outbound (000069) fires AFTER INSERT and enqueues
+-- 'cr_created', which sn_cr_notifier.yml turns into the issue comment.
+
 CREATE TRIGGER service_request_created_github_notice
     AFTER INSERT ON service_request
     FOR EACH ROW EXECUTE FUNCTION trg_github_record_created();
 
-CREATE TRIGGER change_request_created_github_notice
-    AFTER INSERT ON change_request
-    FOR EACH ROW EXECUTE FUNCTION trg_github_record_created();

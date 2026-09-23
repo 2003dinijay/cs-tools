@@ -115,12 +115,44 @@ func NewGithubLabels(o GithubLabelOverrides) (GithubLabels, error) {
 	}
 	if v := strings.TrimSpace(o.Class); v != "" {
 		m, err := parseLabelMap(v, "GITHUB_LABELS_CLASS")
+		if err == nil {
+			err = validateClassValues(m)
+		}
 		if err != nil {
 			return GithubLabels{}, err
 		}
 		l.ClassByLabel = m
 	}
 	return l, nil
+}
+
+
+// canonicalClassValues are the only values a class label may map to. A class
+// value becomes the service request's sr_type and is written to u_sr_type, so
+// an arbitrary replacement is not merely unusual -- it puts a value downstream
+// consumers have never seen into the record.
+//
+// The labels themselves stay free-form, because a repository may well name them
+// differently; what they resolve TO is fixed vocabulary. Checked at startup so
+// a typo fails the deployment rather than silently classifying every change
+// request as unrecognised and skipping it.
+var canonicalClassValues = map[string]bool{
+	"Normal Change":    true,
+	"Standard Change":  true,
+	"Emergency Change": true,
+}
+
+// validateClassValues rejects a GITHUB_LABELS_CLASS override that maps a label
+// to something outside the canonical set.
+func validateClassValues(m map[string]string) error {
+	for label, value := range m {
+		if !canonicalClassValues[value] {
+			return fmt.Errorf(
+				"GITHUB_LABELS_CLASS: %q maps to %q, which is not one of "+
+					"\"Normal Change\", \"Standard Change\" or \"Emergency Change\"", label, value)
+		}
+	}
+	return nil
 }
 
 // parseLabelMap reads "label:value,label:value". Values may contain spaces

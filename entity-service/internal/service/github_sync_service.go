@@ -342,6 +342,9 @@ func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, map
 			Subject:      p.Issue.Title,
 			Description:  p.Issue.Body,
 			GitReference: p.Issue.HTMLURL,
+			Catalog:      catalog,
+			SRType:       srType,
+			Fields:       ExtractTemplateFields(p.Issue.Body),
 		}); err != nil {
 			return Outcome{}, err
 		}
@@ -412,7 +415,12 @@ func (s *githubSyncService) classify(p IssuePayload) (catalog, srType string, ok
 
 // handleComment mirrors a GitHub comment onto the change request.
 func (s *githubSyncService) handleComment(ctx context.Context, p IssuePayload, mapping *repository.RepoMapping, caseID string) (Outcome, error) {
-	if p.Action != "created" && p.Action != "edited" {
+	// CREATED ONLY. AddComment always inserts, and nothing links a CSM comment
+	// back to the GitHub comment it came from, so treating an edit as new
+	// content appends a second copy to the case every time someone fixes a
+	// typo. Relaying the first version and ignoring later edits loses less
+	// than duplicating the thread does.
+	if p.Action != "created" {
 		return skip("comment action " + p.Action + " is not handled")
 	}
 	// Comment is a pointer: an issue_comment delivery that carries no comment

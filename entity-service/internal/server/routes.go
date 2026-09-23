@@ -162,7 +162,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 				githubLabels,
 			)
 			githubWebhookHandler = handler.NewGithubWebhookHandler(githubSyncSvc, cfg.GithubWebhookSecret)
-			githubServiceRequestHandler = handler.NewGithubServiceRequestHandler(githubSyncSvc)
+			githubServiceRequestHandler = handler.NewGithubServiceRequestHandler(githubSyncSvc, cfg.AuthInternalClientIDs)
 		}
 	}
 

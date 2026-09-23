@@ -16,3 +16,6 @@
 
 DROP FUNCTION IF EXISTS next_github_service_request_number();
 DROP SEQUENCE IF EXISTS github_service_request_number_seq;
+
+DROP FUNCTION IF EXISTS next_github_service_request_wso2_id();
+DROP SEQUENCE IF EXISTS github_service_request_wso2_id_seq;
