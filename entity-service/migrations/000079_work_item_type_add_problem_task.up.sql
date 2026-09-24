@@ -14,13 +14,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Children before the dimension they reference; the enum last, once the only
--- column using it is gone. Indexes go with their tables.
-DROP TABLE IF EXISTS product_usage_map;
-DROP TABLE IF EXISTS monthly_usage_summary;
-DROP TABLE IF EXISTS daily_usage_summary;
-DROP TABLE IF EXISTS hourly_usage_summary;
-DROP TABLE IF EXISTS deployment_information;
-DROP TABLE IF EXISTS deployment_node;
-
-DROP TYPE IF EXISTS usage_data_source_enum;
+-- Kept in its own transaction: ALTER TYPE ... ADD VALUE can't run in the same
+-- transaction as a statement that uses the new value.
+ALTER TYPE work_item_type_enum ADD VALUE IF NOT EXISTS 'PROBLEM_TASK';

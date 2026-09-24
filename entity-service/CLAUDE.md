@@ -1763,13 +1763,16 @@ space-separated-title-case convention `taskSlaStageDisplay` already uses
 for a raw enum label) -- there's no field-name-to-display-label mapping
 anywhere else in this schema to defer to instead.
 
-## Instances and usage tracking (deployment_node, usage_count, daily_usage_summary, deployment_information)
+## Instances and usage tracking (deployment_node, hourly_usage_summary, daily_usage_summary, deployment_information)
 
-Migration 000054 added a 7-table cluster mirroring ServiceNow's product usage
-tracking (`deployment_node`, `deployment_information`, `usage_count`,
-`daily_usage_summary`, `monthly_usage_count`, `project_daily_summary`,
+Migration 000054 added a 6-table cluster mirroring ServiceNow's product usage
+tracking (`deployment_node`, `deployment_information`, `hourly_usage_summary`,
+`daily_usage_summary`, `monthly_usage_summary`,
 `product_usage_map`) -- see that migration's own doc comment for the full
-shape. This finally gives the previously ServiceNow-only "instance" concept
+shape. `project_daily_summary` was dropped from this cluster (it never had a
+consuming endpoint -- see the "not wired up" note below) to match the
+identically-named table's removal from `operations/csm-sync-service`'s own
+copy of this schema. This finally gives the previously ServiceNow-only "instance" concept
 (`InstanceService`, `POST /instances/*`) and the two
 `/deployed-products/{id}/metrics*` endpoints something to read on Postgres.
 `instance_repo.go`/`instance_service.go` are new; `deployed_product_repo.go`/
@@ -1828,12 +1831,12 @@ because only one of them carries what each endpoint needs:**
   `DeploymentMetadata`) reads `deployment_information` -- the only table
   with JDK version or the raw deployment-info JSON at all.
 - `SearchInstanceUsage`/`InstanceSummary` (an open `map[string]int` of count
-  types per day) reads `usage_count` -- per-node, per-day, per-count-type
+  types per day) reads `hourly_usage_summary` -- per-node, per-day, per-count-type
   facts (`count_type` in practice holds `CORES`/`TPS`/`MTX`/`MAU`, but
   nothing enforces that set; it stays a free string, same reasoning as the
   migration's own comment on that column).
 - `SearchInstanceUsageStats` reads `daily_usage_summary` instead of
-  `usage_count`, specifically because `daily_usage_summary` is the only one
+  `hourly_usage_summary`, specifically because `daily_usage_summary` is the only one
   of the two with a `data_source` column (`usage_data_source_enum`:
   `API_CALL`/`FILE_UPLOAD`) -- `InstanceStatsFilters.DataSource` (an int, 1
   or 2) only has something to filter against there.
@@ -1860,12 +1863,11 @@ possible upstream), `SearchInstances`' metadata lookup could attach the same
 latest snapshot to both. Not fixable within this schema: `deployment_information`
 has no other way to identify which specific node row it belongs to.
 
-**`monthly_usage_count` and `project_daily_summary` are not wired up.** No
-existing endpoint's response shape has a monthly-granularity or
-project-level rollup concept to serve from them; `product_usage_map` (a
-product-code -> display-unit lookup) has no consuming field either. Left
-unused rather than exposed speculatively, same as other tables with no
-current caller elsewhere in this file.
+**`monthly_usage_summary` is not wired up.** No existing endpoint's response
+shape has a monthly-granularity rollup concept to serve from it;
+`product_usage_map` (a product-code -> display-unit lookup) has no consuming
+field either. Left unused rather than exposed speculatively, same as other
+tables with no current caller elsewhere in this file.
 
 ## Service offerings and task SLAs
 
