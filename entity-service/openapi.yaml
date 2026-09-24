@@ -6643,7 +6643,7 @@ paths:
         On the Postgres data source, every request's tokens are validated (Asgardeo), and
         results are scoped to the caller (the same rule GET /projects/{id}, POST
         /projects/search, GET /cases/{id}, and POST /cases/search also apply): if the
-        request's `Authorization: Bearer` client-credentials token names a client id in
+        request's `x-jwt-assertion` client-credentials token names a client id in
         AUTH_INTERNAL_CLIENT_IDS, the caller sees every project and case unconditionally --
         regardless of any `x-user-id-token` the same request also carries (that token, if
         present, is never used to scope an internal caller). Any other caller is resolved
