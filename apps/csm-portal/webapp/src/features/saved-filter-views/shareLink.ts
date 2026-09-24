@@ -43,7 +43,7 @@ export function shareUrl(listKey: SavedFilterListKey, qs: string, origin?: strin
  * allowed: that view shows every record). A bare `key=value` string is kept
  * as-is. Anything else is rejected.
  */
-export function qsFromPastedFilter(text: string): ParsedFilterLink {
+export function qsFromPastedFilter(text: string, listKey: SavedFilterListKey): ParsedFilterLink {
   const trimmed = text.trim();
   if (!trimmed) {
     return { ok: false, error: "Paste a filter link." };
@@ -51,6 +51,9 @@ export function qsFromPastedFilter(text: string): ParsedFilterLink {
   if (/^https?:\/\//i.test(trimmed)) {
     try {
       const url = new URL(trimmed);
+      if (url.pathname.replace(/\/$/, "") !== LIST_PATHS[listKey]) {
+        return { ok: false, error: "That link is for a different list." };
+      }
       return { ok: true, qs: url.search.replace(/^\?/, "") };
     } catch {
       return { ok: false, error: "That link doesn't contain a filter." };

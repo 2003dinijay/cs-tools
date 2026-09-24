@@ -231,7 +231,7 @@ describe("SavedViewsMenu", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /save current view/i }));
     fireEvent.change(screen.getByLabelText(/view name/i), { target: { value: "Shared" } });
     fireEvent.change(screen.getByLabelText(/filter link/i), {
-      target: { value: "http://localhost:3001/cases?state=open&severity=S1" },
+      target: { value: "http://localhost:3001/operations/incidents?state=open&severity=S1" },
     });
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() =>

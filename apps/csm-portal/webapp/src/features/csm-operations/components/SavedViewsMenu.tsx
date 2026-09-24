@@ -105,6 +105,7 @@ export default function SavedViewsMenu({
   const [pastedLink, setPastedLink] = useState("");
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [copiedName, setCopiedName] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const [draggedName, setDraggedName] = useState<string | null>(null);
   const [dragOverName, setDragOverName] = useState<string | null>(null);
 
@@ -124,7 +125,7 @@ export default function SavedViewsMenu({
     const pasted = pastedLink.trim();
     let qs = currentQs;
     if (pasted) {
-      const parsed = qsFromPastedFilter(pasted);
+      const parsed = qsFromPastedFilter(pasted, listKey);
       if (!parsed.ok) {
         setPasteError(parsed.error);
         return;
@@ -147,7 +148,21 @@ export default function SavedViewsMenu({
 
   const copyLink = (name: string, qs: string): void => {
     const url = shareUrl(listKey, qs);
-    void navigator.clipboard.writeText(url).then(() => setCopiedName(name));
+    if (!navigator.clipboard?.writeText) {
+      setCopiedName(null);
+      setCopyError(name);
+      return;
+    }
+    navigator.clipboard.writeText(url).then(
+      () => {
+        setCopyError(null);
+        setCopiedName(name);
+      },
+      () => {
+        setCopiedName(null);
+        setCopyError(name);
+      },
+    );
   };
 
   const handleDragStart = (e: DragEvent<HTMLElement>, name: string): void => {
@@ -180,9 +195,11 @@ export default function SavedViewsMenu({
   const handleHandleKeyDown = (e: KeyboardEvent<HTMLElement>, name: string, index: number): void => {
     if (e.key === "ArrowUp") {
       e.preventDefault();
+      e.stopPropagation();
       if (index > 0) void moveFilterView(name, "up");
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
+      e.stopPropagation();
       if (index < savedViews.length - 1) void moveFilterView(name, "down");
     }
   };
@@ -251,14 +268,24 @@ export default function SavedViewsMenu({
             >
               <ListItemIcon>{isActiveView(v.qs) ? <Check size={16} /> : null}</ListItemIcon>
               <ListItemText primary={v.name} />
-              <Tooltip title={copiedName === v.name ? "Copied!" : "Copy filter link"}>
+              <Tooltip
+                title={
+                  copyError === v.name
+                    ? "Couldn't copy link"
+                    : copiedName === v.name
+                      ? "Copied!"
+                      : "Copy filter link"
+                }
+              >
                 <IconButton
                   size="small"
                   edge="end"
                   aria-label={
-                    copiedName === v.name
-                      ? `Copied filter link for ${v.name}`
-                      : `Copy filter link for ${v.name}`
+                    copyError === v.name
+                      ? `Couldn't copy filter link for ${v.name}`
+                      : copiedName === v.name
+                        ? `Copied filter link for ${v.name}`
+                        : `Copy filter link for ${v.name}`
                   }
                   onClick={(e) => {
                     e.stopPropagation();

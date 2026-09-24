@@ -40,24 +40,30 @@ describe("shareUrl", () => {
 
 describe("qsFromPastedFilter", () => {
   it("reads the query string from a page URL and from a bare query string", () => {
-    expect(qsFromPastedFilter("http://localhost:3001/cases?state=open&severity=S1")).toEqual({
+    expect(qsFromPastedFilter("http://localhost:3001/cases?state=open&severity=S1", "cases")).toEqual({
       ok: true,
       qs: "state=open&severity=S1",
     });
-    expect(qsFromPastedFilter("state=open&severity=S1")).toEqual({
+    expect(qsFromPastedFilter("state=open&severity=S1", "cases")).toEqual({
       ok: true,
       qs: "state=open&severity=S1",
     });
-    expect(qsFromPastedFilter("?state=open")).toEqual({ ok: true, qs: "state=open" });
+    expect(qsFromPastedFilter("?state=open", "cases")).toEqual({ ok: true, qs: "state=open" });
   });
 
   it("accepts a list URL with no query as an empty filter", () => {
-    expect(qsFromPastedFilter("http://localhost:3001/cases")).toEqual({ ok: true, qs: "" });
+    expect(qsFromPastedFilter("http://localhost:3001/cases", "cases")).toEqual({ ok: true, qs: "" });
+  });
+
+  it("rejects a link for a different list", () => {
+    expect(
+      qsFromPastedFilter("http://localhost:3001/operations/incidents?q=1", "cases"),
+    ).toEqual({ ok: false, error: "That link is for a different list." });
   });
 
   it("rejects empty text and text that is not a filter", () => {
-    expect(qsFromPastedFilter("   ")).toEqual({ ok: false, error: "Paste a filter link." });
-    expect(qsFromPastedFilter("hello")).toEqual({
+    expect(qsFromPastedFilter("   ", "cases")).toEqual({ ok: false, error: "Paste a filter link." });
+    expect(qsFromPastedFilter("hello", "cases")).toEqual({
       ok: false,
       error: "That link doesn't contain a filter.",
     });
