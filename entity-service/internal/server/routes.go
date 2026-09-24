@@ -556,10 +556,19 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	}
 	catalogHandler := handler.NewCatalogHandler(activeCatalogSvc)
 
-	var feedbackHandler *handler.FeedbackHandler
+	// Case feedback (CSAT submissions) is a ServiceNow-only entity -- no
+	// feedback table exists anywhere in migrations/ -- but the routes are
+	// registered for both data sources, same as tasks above: with no handler
+	// the mux answers a silent, undocumented 404, while the OpenAPI spec
+	// documents a 503 ErrorResponse for these paths. The Postgres stand-in
+	// supplies that 503.
+	var activeFeedbackSvc service.FeedbackService
 	if cfg.DataSource == config.DataSourceServiceNow {
-		feedbackHandler = handler.NewFeedbackHandler(service.NewServiceNowFeedbackService(serviceNowIntegrationServiceClient))
+		activeFeedbackSvc = service.NewServiceNowFeedbackService(serviceNowIntegrationServiceClient)
+	} else {
+		activeFeedbackSvc = service.NewUnavailableFeedbackService()
 	}
+	feedbackHandler := handler.NewFeedbackHandler(activeFeedbackSvc)
 
 	productVulnerabilityRepo := repository.NewProductVulnerabilityRepository(db)
 	var activeProductVulnerabilitySvc service.ProductVulnerabilityService
@@ -885,10 +894,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 	mux.HandleFunc("POST /cases", caseHandler.CreateCase)
 	mux.HandleFunc("POST /cases/search", caseHandler.SearchCases)
 	mux.HandleFunc("POST /cases/aggregate", caseHandler.AggregateCases)
-	if feedbackHandler != nil {
-		mux.HandleFunc("POST /cases/feedback/search", feedbackHandler.SearchFeedback)
-		mux.HandleFunc("POST /cases/feedback/aggregate", feedbackHandler.AggregateFeedback)
-	}
+	mux.HandleFunc("POST /cases/feedback/search", feedbackHandler.SearchFeedback)
+	mux.HandleFunc("POST /cases/feedback/aggregate", feedbackHandler.AggregateFeedback)
 	mux.HandleFunc("POST /cases/{id}/comments", caseHandler.CreateCaseComment)
 	mux.HandleFunc("POST /cases/{id}/comments/search", caseHandler.SearchCaseComments)
 	mux.HandleFunc("POST /cases/{id}/activities/search", caseHandler.SearchCaseActivities)
