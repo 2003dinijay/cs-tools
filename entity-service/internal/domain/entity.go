@@ -987,6 +987,9 @@ type Opportunity struct {
 	Account            *EntityRef `json:"account"`
 	EulaVersion        *string    `json:"eulaVersion"`
 	EulaVersionDecimal *string    `json:"eulaVersionDecimal"`
+	// Stage is the opportunity's sales stage (e.g. "50 - Closed Won"), nil when absent
+	// (ServiceNow data source only).
+	Stage *string `json:"stage"`
 }
 
 // SearchOpportunitiesRequest is the input for searching opportunities (ServiceNow data
@@ -4726,6 +4729,14 @@ type SearchIncidentsFilters struct {
 	//     unless dashboard parity is the explicit goal.
 	//   - "productName" (op in): one or more product names, matched as a
 	//     union against the incident's backing business_service name.
+	//   - "incidentStateKeys" (op in): one or more raw ServiceNow
+	//     `incident_state` numeric keys, passed through unmapped (unlike
+	//     "state" above, which translates the domain IncidentState enum to
+	//     SN's raw `state` numeric key). Deliberately separate from "state":
+	//     `incident_state` is a distinct field that exists independently on
+	//     the same incident row. Kept only for exact parity with SN's native
+	//     incident dashboards; prefer "state" for general-purpose state
+	//     filtering.
 	// See service.ParseIncidentFieldFilters.
 	Filters []IncidentFieldFilter `json:"filters,omitempty"`
 }
@@ -5371,15 +5382,19 @@ type IncidentTaskDetail struct {
 	ClosedOn        *string        `json:"closedOn"`
 }
 
-// ConversationState represents the state of a conversation. Only ACTIVE and
-// RESOLVED are accepted as SearchConversationsFilters.States values (the
-// search endpoint's own filter allow-list); all five values are accepted as
-// UpdateConversationRequest.State (the transition allow-list PATCH
-// /conversations/{id} enforces), matching the Ballerina reference's SN state
-// keys 2-6 respectively.
+// ConversationState represents the state of a conversation. All six values are
+// accepted as SearchConversationsFilters.States values — every state the SN
+// choice list offers must be filterable, or a state present in the dropdown
+// silently returns an unfiltered search. Writes are narrower: the five
+// transition states (excluding OPEN) are accepted as
+// UpdateConversationRequest.State, the allow-list PATCH /conversations/{id}
+// enforces, matching the Ballerina reference's SN state keys 2-6 respectively.
+// OPEN (SN state key 1) is a read-only state a conversation starts in and is
+// never PATCHed back to.
 type ConversationState string
 
 const (
+	ConversationStateOpen      ConversationState = "OPEN"
 	ConversationStateActive    ConversationState = "ACTIVE"
 	ConversationStateResolved  ConversationState = "RESOLVED"
 	ConversationStateConverted ConversationState = "CONVERTED"
