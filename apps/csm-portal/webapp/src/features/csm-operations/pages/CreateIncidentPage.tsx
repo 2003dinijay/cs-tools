@@ -31,7 +31,7 @@ import {
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
-import { ArrowLeft, ChevronDown } from "@wso2/oxygen-ui-icons-react";
+import { ArrowLeft, ChevronDown, Lock } from "@wso2/oxygen-ui-icons-react";
 import { useRef, useState, type JSX } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { BackendApiError } from "@api/backend/client";
@@ -39,7 +39,6 @@ import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import type { CreateIncidentFromCaseNavState } from "@features/csm-cases/types/csmCases";
 import { usePostIncident } from "@features/csm-operations/api/usePostIncident";
 import { useGetUsersMe } from "@features/settings/api/useGetUsersMe";
-import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchItServices } from "@api/useSearchItServices";
 import { useSearchServiceOfferings } from "@api/useSearchServiceOfferings";
 import { useSearchConfigurationItems } from "@api/useSearchConfigurationItems";
@@ -65,7 +64,7 @@ import type {
   BeIncidentUrgency,
   BeCreateIncidentPayload,
   BeConfigurationItem,
-  BeGroup,
+  BeEntityRef,
   BeItService,
   BeServiceOffering,
   BeUser,
@@ -126,7 +125,14 @@ export default function CreateIncidentPage(): JSX.Element {
   const [serviceId, setServiceId] = useState("");
   const [serviceOfferingId, setServiceOfferingId] = useState("");
   const [configurationItemId, setConfigurationItemId] = useState("");
+  // Derived from the selected Service's ServiceNow `support_group` — not
+  // independently pickable. `assignmentGroupId` is what's actually submitted
+  // (unchanged shape); `derivedAssignmentGroup` only carries the name for
+  // display in the read-only field below.
   const [assignmentGroupId, setAssignmentGroupId] = useState("");
+  const [derivedAssignmentGroup, setDerivedAssignmentGroup] = useState<BeEntityRef | null>(
+    null,
+  );
   const [assignedEngineerId, setAssignedEngineerId] = useState("");
   const [watchList, setWatchList] = useState<string[]>([]);
   const [workNotes, setWorkNotes] = useState("");
@@ -464,18 +470,42 @@ export default function CreateIncidentPage(): JSX.Element {
                 label="Service"
                 placeholder="Search services…"
                 value={serviceId}
-                onChange={(next) => {
+                onChange={(next, service) => {
                   setServiceId(next);
                   markTouched("serviceId");
                   // A service offering only makes sense under its own
                   // service — drop it rather than leave a stale pairing.
                   setServiceOfferingId("");
+                  // Assignment group is derived from the service, not
+                  // independently pickable — see the read-only field below.
+                  setAssignmentGroupId(service?.supportGroup?.id ?? "");
+                  setDerivedAssignmentGroup(service?.supportGroup ?? null);
                 }}
                 disabled={postIncident.isPending}
                 useSearch={useSearchItServices}
                 getId={(s) => s.id}
                 getLabel={itServiceLabel}
                 helperText={touched.serviceId && !isServiceValid ? REQUIRED_HELPER : undefined}
+              />
+            </Box>
+            <Box sx={{ flex: "1 1 260px" }}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Assignment group"
+                value={derivedAssignmentGroup?.name ?? ""}
+                slotProps={{
+                  input: {
+                    readOnly: true,
+                    endAdornment: <Lock size={16} aria-hidden style={{ opacity: 0.6 }} />,
+                  },
+                  htmlInput: { "aria-readonly": true },
+                }}
+                helperText={
+                  serviceId && !derivedAssignmentGroup
+                    ? "No support group set for this service in ServiceNow."
+                    : "Derived from the selected Service."
+                }
               />
             </Box>
           </Box>
@@ -522,19 +552,6 @@ export default function CreateIncidentPage(): JSX.Element {
               </Box>
 
               <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
-                <Box sx={{ flex: "1 1 220px" }}>
-                  <AsyncEntitySelect<BeGroup>
-                    id="incident-assignment-group"
-                    label="Assignment group"
-                    placeholder="Search groups…"
-                    value={assignmentGroupId}
-                    onChange={setAssignmentGroupId}
-                    disabled={postIncident.isPending}
-                    useSearch={useSearchGroups}
-                    getId={(g) => g.id}
-                    getLabel={(g) => g.name}
-                  />
-                </Box>
                 <Box sx={{ flex: "1 1 220px" }}>
                   <AsyncEntitySelect<BeUser>
                     id="incident-assigned-engineer"
