@@ -667,6 +667,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
                     onSelect: () =>
                       navigate("/operations/problems/new", {
                         state: {
+                          from: `/operations/incidents/${incident.id}`,
                           incidentId: incident.id as string,
                           incidentNumber: incident.number ?? undefined,
                           incidentSubject: incident.subject ?? undefined,
@@ -683,6 +684,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
                     onSelect: () =>
                       navigate("/operations/incidents/new", {
                         state: {
+                          from: `/operations/incidents/${incident.id}`,
                           incidentId: incident.id as string,
                           incidentNumber: incident.number ?? undefined,
                           subject: incident.subject ?? undefined,

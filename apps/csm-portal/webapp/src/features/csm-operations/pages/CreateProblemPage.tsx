@@ -120,10 +120,19 @@ export default function CreateProblemPage(): JSX.Element {
   // Set when opened from an incident's own "Create problem" action, which
   // navigates here with router state so the incident's id carries over as
   // the new problem's `primaryIncidentId` without a query-string round trip.
-  // See CsmIncidentDetailPage.tsx's Create menu.
-  const originIncidentState = location.state as
+  // See CsmIncidentDetailPage.tsx's Create menu. Discriminated by `incidentId`
+  // rather than trusting the cast shape alone — a plain `{ from: ... }`
+  // navigation (opened from the Problems list, not an incident) is still a
+  // truthy object, so an unchecked cast would render the "Opened from an
+  // incident…" notice/prefill even when there's no incident at all.
+  const rawIncidentState = location.state as
     | CreateProblemFromIncidentNavState
+    | { from?: string }
     | undefined;
+  const originIncidentState =
+    rawIncidentState && "incidentId" in rawIncidentState
+      ? rawIncidentState
+      : undefined;
 
   const [subject, setSubject] = useState(
     originIncidentState?.incidentSubject

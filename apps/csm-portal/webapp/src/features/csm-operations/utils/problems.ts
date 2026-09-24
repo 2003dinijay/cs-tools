@@ -61,6 +61,11 @@ export interface CreateProblemFromIncidentNavState {
   incidentId: string;
   incidentNumber?: string;
   incidentSubject?: string;
+  /** Same `{ from }` convention as every other create page (see this app's
+   * "Page conventions: Back navigation" doc) — the source incident's own
+   * path, so Back/Cancel and the newly created problem's own Back button
+   * return there instead of falling back to the generic problems list. */
+  from?: string;
 }
 
 export function problemStateColor(state?: string | null): ChipColor {

@@ -140,6 +140,11 @@ export interface CreateIncidentFromIncidentNavState {
   incidentId: string;
   incidentNumber?: string;
   subject?: string;
+  /** Same `{ from }` convention as every other create page (see this app's
+   * "Page conventions: Back navigation" doc) — the source incident's own
+   * path, so Back/Cancel and the newly created incident's own Back button
+   * return there instead of falling back to the generic incidents list. */
+  from?: string;
 }
 
 /**

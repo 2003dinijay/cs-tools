@@ -43,6 +43,8 @@ interface IncidentCreateMenuProps {
  * "Change state" control — there's no dedicated oxygen-ui split-button
  * component to reuse instead.
  */
+const CREATE_MENU_ID = "incident-create-menu";
+
 export default function IncidentCreateMenu({
   items,
 }: IncidentCreateMenuProps): JSX.Element {
@@ -55,11 +57,20 @@ export default function IncidentCreateMenu({
         size="small"
         startIcon={<Plus size={14} />}
         endIcon={<ChevronDown size={14} />}
+        aria-haspopup="menu"
+        aria-expanded={!!anchor}
+        aria-controls={anchor ? CREATE_MENU_ID : undefined}
         onClick={(e) => setAnchor(e.currentTarget)}
       >
         Create
       </Button>
-      <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
+      <Menu
+        id={CREATE_MENU_ID}
+        anchorEl={anchor}
+        open={!!anchor}
+        onClose={() => setAnchor(null)}
+        MenuListProps={{ "aria-label": "Create" }}
+      >
         {items.map((item) => (
           <MenuItem
             key={item.key}

@@ -100,17 +100,29 @@ export default function CreateIncidentPage(): JSX.Element {
   // trip or a full page load. See CsmCaseDetailPage.tsx's `create_incident`
   // handler.
   const location = useLocation();
-  const originCaseState = location.state as
+  const locationState = location.state as
     | CreateIncidentFromCaseNavState
+    | CreateIncidentFromIncidentNavState
+    | { from?: string }
     | undefined;
+  // Discriminate by `caseId`/`incidentId` rather than trusting the cast
+  // shape alone — `location.state` is one plain object shared by every
+  // caller of this page (a case's "Create incident from case…" action, an
+  // incident's own "Create child incident" action, or a plain `{ from }`
+  // navigation), so an unchecked cast to either nav-state type would read as
+  // truthy regardless of which one actually populated it, misapplying the
+  // wrong prefill/notice (e.g. the case-origin notice rendering "Incident
+  // from case undefined: …" for a child-incident navigation, whose state has
+  // no `caseId` at all).
+  const originCaseState =
+    locationState && "caseId" in locationState ? locationState : undefined;
 
   // Set when opened from an incident's own "Create child incident" action,
   // which navigates here with router state so the source incident's id
   // carries over as the new incident's parent without a query-string round
   // trip or a full page load. See CsmIncidentDetailPage.tsx's Create menu.
-  const originIncidentState = location.state as
-    | CreateIncidentFromIncidentNavState
-    | undefined;
+  const originIncidentState =
+    locationState && "incidentId" in locationState ? locationState : undefined;
 
   // Set when opened from a list/detail page's own "Create incident" action
   // with `state: { from: ... }` (same convention as the case-type create
