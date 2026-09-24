@@ -273,6 +273,19 @@ describe("SavedViewsMenu", () => {
     expect(screen.getByText(/will show all records/i)).toBeInTheDocument();
   });
 
+  it("does not describe the filters on screen once a link is pasted", () => {
+    renderMenu({ activeCount: 0, hasSearch: false });
+
+    fireEvent.click(screen.getByRole("button", { name: /saved views/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /save current view/i }));
+    fireEvent.change(screen.getByLabelText(/filter link/i), {
+      target: { value: "state=open" },
+    });
+
+    expect(screen.queryByText(/will show all records/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/saves the filter from the pasted link/i)).toBeInTheDocument();
+  });
+
   it("deletes a saved view via its delete icon button", async () => {
     views = [{ name: "Temp view", qs: "q=temp" }];
     renderMenu();

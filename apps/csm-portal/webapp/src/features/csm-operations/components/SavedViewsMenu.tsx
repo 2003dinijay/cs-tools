@@ -363,11 +363,13 @@ export default function SavedViewsMenu({
               }
             }}
             helperText={
-              activeCount === 0 && !hasSearch
-                ? "Tip: no filters are active — this view will show all records."
-                : `Captures the ${activeCount} active filter${activeCount === 1 ? "" : "s"}${
-                    hasSearch ? " and the current search" : ""
-                  }.`
+              pastedLink.trim()
+                ? "Saves the filter from the pasted link, not the filters on screen."
+                : activeCount === 0 && !hasSearch
+                  ? "Tip: no filters are active — this view will show all records."
+                  : `Captures the ${activeCount} active filter${activeCount === 1 ? "" : "s"}${
+                      hasSearch ? " and the current search" : ""
+                    }.`
             }
           />
           <TextField
