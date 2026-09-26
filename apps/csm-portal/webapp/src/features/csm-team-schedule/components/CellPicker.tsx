@@ -37,6 +37,8 @@ export interface CellPickerTarget {
   shiftCode?: string;
   /** The leave or allocation covering that day, if any, marked the same way. */
   absenceKindCode?: string;
+  /** The zone column this was opened from, on a day split across them. */
+  zoneCode?: string;
   /** Where on screen the cell is, so the picker can sit against it. */
   anchor: { top: number; left: number; bottom: number; right: number };
   /** The standing window this engineer sits in on an ordinary weekday, so

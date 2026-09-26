@@ -82,6 +82,11 @@ interface MonthRosterProps {
     rotaDate: string;
     shiftCode?: string;
     absenceKindCode?: string;
+    /** Which zone column was clicked, on an SRE day split across them. The
+     *  picker narrows to that zone's own windows: offering TZ1's windows
+     *  from the TZ2 column is a mis-click waiting to happen. Absent on a CRE
+     *  day, and on leave, which belongs to the whole day rather than a zone. */
+    zoneCode?: string;
     anchor: { top: number; left: number; bottom: number; right: number };
   }) => void;
 }
@@ -329,6 +334,30 @@ export default function MonthRoster({
       editing && Boolean(onEditCell) && own.has(team.toLowerCase());
   }, [leadTeams, onEditCell, editing]);
 
+  /** Turn a click on any roster cell into the slot the page should open the
+   *  picker on. Shared by the plain grid and by SRE's zone-split one, which
+   *  has three ways into the same edit -- a zone column, and a day-wide cell
+   *  when leave covers the whole day -- and had none of them before. */
+  const openCell = (
+    e: { currentTarget: HTMLElement },
+    row: { userId: string; name: string; teamKey: string },
+    iso: string,
+    cell: Cell | undefined,
+    zoneCode?: string,
+  ): void => {
+    const r = e.currentTarget.getBoundingClientRect();
+    onEditCell?.({
+      userId: row.userId,
+      name: row.name,
+      teamKey: row.teamKey,
+      rotaDate: iso,
+      shiftCode: cell?.shiftCode,
+      absenceKindCode: cell?.absenceKindCode,
+      zoneCode,
+      anchor: { top: r.top, left: r.left, bottom: r.bottom, right: r.right },
+    });
+  };
+
   const meRow = useRef<HTMLTableRowElement | null>(null);
   const scrolled = useRef(false);
   useEffect(() => {
@@ -561,27 +590,7 @@ export default function MonthRoster({
                               ? `${row.name} · ${cell.title}`
                               : undefined
                         }
-                        onClick={
-                          editable
-                            ? (e) => {
-                                const r = e.currentTarget.getBoundingClientRect();
-                                onEditCell?.({
-                                  userId: row.userId,
-                                  name: row.name,
-                                  teamKey: row.teamKey,
-                                  rotaDate: iso,
-                                  shiftCode: cell?.shiftCode,
-                                  absenceKindCode: cell?.absenceKindCode,
-                                  anchor: {
-                                    top: r.top,
-                                    left: r.left,
-                                    bottom: r.bottom,
-                                    right: r.right,
-                                  },
-                                });
-                              }
-                            : undefined
-                        }
+                        onClick={editable ? (e) => openCell(e, row, iso, cell) : undefined}
                       >
                         {cell ? (
                           <span className={`chip sm ${cell.token}`}>{cell.code}</span>
@@ -598,18 +607,27 @@ export default function MonthRoster({
                   // away from all of them, so it spans rather than picking one
                   // arbitrarily.
                   if (cell) {
+                    const editable = canEdit(row.teamKey);
                     return (
                       <td
                         key={iso}
                         colSpan={zones.length}
-                        className={`c zwhole ${marks} ${faded(cell)}`}
-                        title={`${row.name} · ${cell.title}`}
+                        className={`c zwhole ${marks} ${faded(cell)}${
+                          editable ? " editable" : ""
+                        }`}
+                        title={
+                          editable
+                            ? `${row.name} · ${cell.title} — click to change`
+                            : `${row.name} · ${cell.title}`
+                        }
+                        onClick={editable ? (e) => openCell(e, row, iso, cell) : undefined}
                       >
                         <span className={`chip sm ${cell.token}`}>{cell.code}</span>
                       </td>
                     );
                   }
 
+                  const editable = canEdit(row.teamKey);
                   return zones.map((z, i) => {
                     const zc = row.zoned.get(`${iso}|${z}`);
                     return (
@@ -623,8 +641,15 @@ export default function MonthRoster({
                         // of the day as heavily as its boundary.
                         className={`c z ${i === 0 ? "zfirst" : ""} ${
                           zoneMarks(marks, i, zones.length)
-                        } ${faded(zc)}`}
-                        title={zc ? `${row.name} · ${z} · ${zc.title}` : undefined}
+                        } ${faded(zc)}${editable ? " editable" : ""}`}
+                        title={
+                          editable
+                            ? `${row.name} · ${z} · ${zc ? zc.title : "nothing rostered"} — click to change`
+                            : zc
+                              ? `${row.name} · ${z} · ${zc.title}`
+                              : undefined
+                        }
+                        onClick={editable ? (e) => openCell(e, row, iso, zc, z) : undefined}
                       >
                         {zc ? (
                           <span className={`chip sm ${zc.token}`}>{zc.code}</span>

@@ -382,10 +382,22 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     [catalogue.data?.absenceKinds],
   );
 
-  const pickerShifts = useMemo(
-    () => [...shifts.values()].filter((sh) => sh.family === family),
-    [shifts, family],
-  );
+  /** The windows the picker offers for the cell that is open.
+   *
+   *  Always the group's own, and on an SRE day split across zone columns also
+   *  only that zone's: the column a lead clicked is the zone they mean, and
+   *  offering TZ1's windows from the TZ2 column invites a mis-click that is
+   *  invisible afterwards -- the cell fills in, just in the wrong lane.
+   *
+   *  Windows belonging to no zone stay on offer either way. SRE regular hours
+   *  is not a zone's to own, and a lead putting somebody back on ordinary
+   *  hours should not have to leave the column to do it. */
+  const pickerShifts = useMemo(() => {
+    const zone = picker?.zoneCode;
+    return [...shifts.values()].filter(
+      (sh) => sh.family === family && (!zone || !sh.zoneCode || sh.zoneCode === zone),
+    );
+  }, [shifts, family, picker?.zoneCode]);
 
   const applyToCell = (shiftCode: string, from: string, to: string): void => {
     if (!picker) return;
@@ -739,7 +751,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         <CellPicker
           // Keyed on the cell, so picking another one starts a fresh range
           // rather than inheriting the last cell's end date.
-          key={`${picker.userId}|${picker.rotaDate}`}
+          key={`${picker.userId}|${picker.rotaDate}|${picker.zoneCode ?? ""}`}
           target={picker}
           shifts={pickerShifts}
           busy={applyRange.isPending || applyAbsence.isPending}
