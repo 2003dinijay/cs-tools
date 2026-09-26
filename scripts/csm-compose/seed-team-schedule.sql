@@ -286,7 +286,10 @@ CROSS JOIN LATERAL _seed_span(d.d, 'CRE_AMERICAS') sp
 WHERE NOT d.is_weekend
 ON CONFLICT DO NOTHING;
 
--- the weekend Americas rota: one engineer, rotating through the team
+-- the weekend Americas rota: one engineer, rotating through the team, on the
+-- weekend night window -- the Americas weekend rota -- rather than the weekday
+-- Americas cover. An ABT engineer backs them up as the Americas weekend
+-- on-call; that half comes from the imported ABT roster, not from here.
 CREATE TEMP TABLE _ame (id UUID, rn INT, total INT) ON COMMIT DROP;
 INSERT INTO _ame
 SELECT e.id,
@@ -300,7 +303,7 @@ SELECT a.id, md5('seed-team-americas')::uuid, 'americas', sp.shift_id, sp.zone_i
        d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
 FROM _day d
 JOIN _ame a ON a.rn = (d.n % a.total) + 1
-CROSS JOIN LATERAL _seed_span(d.d, 'CRE_AMERICAS') sp
+CROSS JOIN LATERAL _seed_span(d.d, 'CRE_WEEKEND_NIGHT') sp
 WHERE d.is_weekend
 ON CONFLICT DO NOTHING;
 
