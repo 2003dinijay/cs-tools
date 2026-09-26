@@ -61,6 +61,14 @@ SELECT md5('seed-team-'||key)::uuid, now(), now(), 'seed', 'seed', display, fami
 FROM _team
 ON CONFLICT (id) DO NOTHING;
 
+-- An ABT whose real rota has been imported (import-abt-roster.py) is not
+-- generated as well: the roster would be half real engineers, half stand-ins.
+-- The team row itself stays, above; only its generated people and rota go.
+DELETE FROM _team t
+ WHERE t.family = 'cre-abt'
+   AND EXISTS (SELECT 1 FROM schedule_assignment a
+                WHERE a.team_key = t.key AND a.created_by = 'import:abt-roster');
+
 -- ── engineers ─────────────────────────────────────────────────────────────
 CREATE TEMP TABLE _eng (id UUID, team_key TEXT, family TEXT, seq INT, is_lead BOOLEAN) ON COMMIT DROP;
 INSERT INTO _eng
@@ -165,8 +173,10 @@ JOIN schedule_absence_kind k
                     WHEN 6 THEN 'CUSTOMER_ONSITE'
                     ELSE 'CUSTOMER_OFFSITE' END
        ELSE
+         -- CUSTOMER (unspecified) was retired by 000096: customer time is
+         -- on site or off site, nothing in between.
          CASE e.seq WHEN 5 THEN 'RND'
-                    WHEN 6 THEN 'CUSTOMER'
+                    WHEN 6 THEN 'CUSTOMER_OFFSITE'
                     ELSE 'MIGRATION' END
      END
 WHERE e.seq IN (5, 6, 7);
