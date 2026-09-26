@@ -21,7 +21,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
@@ -32,6 +34,25 @@ type ScheduleRepository interface {
 	SearchAssignments(ctx context.Context, req domain.SearchScheduleAssignmentsRequest) ([]domain.ScheduleAssignment, error)
 	SearchAbsences(ctx context.Context, req domain.SearchScheduleAbsencesRequest) ([]domain.ScheduleAbsence, error)
 	OnDutyAt(ctx context.Context, at time.Time) ([]domain.ScheduleAssignment, error)
+
+	// AssignmentByID is what the service checks before it lets a lead touch a
+	// row: which team the slot belongs to, so the lead's own team can be
+	// compared against it.
+	AssignmentByID(ctx context.Context, id string) (domain.ScheduleAssignment, error)
+
+	// LeadsTeam reports whether this user leads this team. The whole of the
+	// edit permission rests on it.
+	LeadsTeam(ctx context.Context, userEmail, teamKey string) (bool, error)
+
+	// The three writes. Each records its own activity row inside the same
+	// transaction as the change -- an activity row without its change, or a
+	// change without its row, is worse than either alone.
+	CreateAssignment(ctx context.Context, req domain.CreateScheduleAssignmentRequest, actorEmail string) (domain.ScheduleAssignment, error)
+	UpdateAssignment(ctx context.Context, id string, req domain.UpdateScheduleAssignmentRequest, actorEmail string) (domain.ScheduleAssignment, error)
+	DeleteAssignment(ctx context.Context, id, actorEmail string, note *string) error
+
+	// ActivityForTeam is "what changed on my team this week".
+	ActivityForTeam(ctx context.Context, teamKey, from, to string) ([]domain.ScheduleAssignmentActivity, error)
 }
 
 type scheduleRepository struct{ db *pgxpool.Pool }
@@ -299,4 +320,263 @@ func (r *scheduleRepository) SearchAbsences(ctx context.Context, req domain.Sear
 		return nil, fmt.Errorf("iterate schedule absences: %w", err)
 	}
 	return out, nil
+}
+
+// ── lead edit ───────────────────────────────────────────────────────────────
+
+// AssignmentByID returns one assignment, or a NotFoundError.
+func (r *scheduleRepository) AssignmentByID(ctx context.Context, id string) (domain.ScheduleAssignment, error) {
+	rows, err := r.db.Query(ctx, `SELECT `+assignmentColumns+assignmentFrom+`
+		WHERE a.id = $1::uuid`, id)
+	if err != nil {
+		return domain.ScheduleAssignment{}, fmt.Errorf("query assignment by id: %w", err)
+	}
+	defer rows.Close()
+	out, err := scanAssignments(rows)
+	if err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+	if len(out) == 0 {
+		return domain.ScheduleAssignment{}, &apierror.NotFoundError{Msg: "no such assignment"}
+	}
+	return out[0], nil
+}
+
+// LeadsTeam reports whether the caller leads the given team.
+//
+// Matched on email rather than id because that is what a verified identity
+// carries, and lowercased on both sides: an identity provider is free to return
+// a different case from the one stored, and an exact compare would silently
+// deny a real lead.
+func (r *scheduleRepository) LeadsTeam(ctx context.Context, userEmail, teamKey string) (bool, error) {
+	var ok bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS (
+		  SELECT 1
+		    FROM team_member tm
+		    JOIN "user" u ON u.id = tm.user_id
+		    JOIN team t    ON t.id = tm.team_id
+		   WHERE lower(u.email) = lower($1)
+		     AND tm.role = 'lead'
+		     AND lower(t.name) = lower($2)
+		)`, userEmail, teamKey).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check team lead: %w", err)
+	}
+	return ok, nil
+}
+
+// recordActivity writes one row of history. Always called on the same tx as the
+// change it describes.
+func recordActivity(ctx context.Context, tx pgx.Tx, a domain.ScheduleAssignment,
+	action, actorEmail string, field, oldV, newV, note *string) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO schedule_assignment_activity
+		  (id, created_on, created_by, assignment_id, user_id, team_key, rota_date,
+		   shift_code, action, field_name, old_value, new_value, actor_email, note)
+		VALUES (gen_random_uuid(), now(), $1, $2::uuid, $3::uuid, $4, $5::date, $6, $7, $8, $9, $10, $1, $11)`,
+		actorEmail, a.ID, a.Engineer.UserID, a.TeamKey, a.RotaDate, a.ShiftCode,
+		action, field, oldV, newV, note)
+	if err != nil {
+		return fmt.Errorf("record schedule activity: %w", err)
+	}
+	return nil
+}
+
+// CreateAssignment puts somebody on a window.
+//
+// The instants come from the shift, never from the caller: a hand-placed cover
+// that claimed its own start and end could drift from the window it is supposed
+// to be, and nothing downstream would notice.
+func (r *scheduleRepository) CreateAssignment(ctx context.Context, req domain.CreateScheduleAssignmentRequest, actorEmail string) (domain.ScheduleAssignment, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return domain.ScheduleAssignment{}, fmt.Errorf("begin create assignment: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var id string
+	err = tx.QueryRow(ctx, `
+		INSERT INTO schedule_assignment
+		  (id, created_on, updated_on, created_by, updated_by, user_id, team_id, team_key,
+		   shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, note)
+		SELECT gen_random_uuid(), now(), now(), $1, $1, $2::uuid,
+		       (SELECT t.id FROM team t WHERE lower(t.name) = lower($3)), $3,
+		       s.id, s.zone_id, $4::schedule_tier_enum, $5::date,
+		       ($5::date::timestamp + make_interval(mins => s.start_minute)) AT TIME ZONE s.authoring_time_zone,
+		       ($5::date::timestamp + make_interval(mins => s.end_minute))   AT TIME ZONE s.authoring_time_zone,
+		       COALESCE($6, s.is_on_call), 'MANUAL', $7
+		  FROM schedule_shift s
+		 WHERE s.code = $8
+		RETURNING id`,
+		actorEmail, req.UserID, req.TeamKey, req.Tier, req.RotaDate, req.IsOnCall, req.Note, req.ShiftCode).Scan(&id)
+	if err != nil {
+		return domain.ScheduleAssignment{}, fmt.Errorf("insert assignment: %w", err)
+	}
+
+	created, err := assignmentByIDTx(ctx, tx, id)
+	if err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+	if err := recordActivity(ctx, tx, created, "CREATED", actorEmail, nil, nil, nil, req.Note); err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.ScheduleAssignment{}, fmt.Errorf("commit create assignment: %w", err)
+	}
+	return created, nil
+}
+
+// assignmentByIDTx is AssignmentByID against an open transaction, so a write can
+// read back what it just wrote without leaving the transaction.
+func assignmentByIDTx(ctx context.Context, tx pgx.Tx, id string) (domain.ScheduleAssignment, error) {
+	rows, err := tx.Query(ctx, `SELECT `+assignmentColumns+assignmentFrom+`
+		WHERE a.id = $1::uuid`, id)
+	if err != nil {
+		return domain.ScheduleAssignment{}, fmt.Errorf("query assignment in tx: %w", err)
+	}
+	defer rows.Close()
+	out, err := scanAssignments(rows)
+	if err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+	if len(out) == 0 {
+		return domain.ScheduleAssignment{}, &apierror.NotFoundError{Msg: "no such assignment"}
+	}
+	return out[0], nil
+}
+
+// UpdateAssignment changes who holds a slot, or its detail.
+//
+// One activity row per field changed, rather than one per call: "moved from
+// Alice to Bob" and "marked on-call" are two different things to have done, and
+// a reader of the history wants them separately.
+func (r *scheduleRepository) UpdateAssignment(ctx context.Context, id string, req domain.UpdateScheduleAssignmentRequest, actorEmail string) (domain.ScheduleAssignment, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return domain.ScheduleAssignment{}, fmt.Errorf("begin update assignment: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	before, err := assignmentByIDTx(ctx, tx, id)
+	if err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+
+	// SWAP rather than MANUAL when the person changed: that is what the enum
+	// distinguishes, and it is the case anyone auditing the rota looks for.
+	source := "MANUAL"
+	if req.UserID != nil && *req.UserID != before.Engineer.UserID {
+		source = "SWAP"
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE schedule_assignment
+		   SET user_id    = COALESCE($2::uuid, user_id),
+		       tier       = COALESCE($3::schedule_tier_enum, tier),
+		       is_on_call = COALESCE($4, is_on_call),
+		       note       = COALESCE($5, note),
+		       source     = $6::schedule_source_enum,
+		       updated_on = now(),
+		       updated_by = $7
+		 WHERE id = $1::uuid`,
+		id, req.UserID, req.Tier, req.IsOnCall, req.Note, source, actorEmail)
+	if err != nil {
+		return domain.ScheduleAssignment{}, fmt.Errorf("update assignment: %w", err)
+	}
+
+	after, err := assignmentByIDTx(ctx, tx, id)
+	if err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+
+	for _, ch := range []struct{ field, old, new string }{
+		{"user", before.Engineer.Name, after.Engineer.Name},
+		{"tier", deref(before.Tier), deref(after.Tier)},
+		{"isOnCall", boolText(before.IsOnCall), boolText(after.IsOnCall)},
+		{"note", deref(before.Note), deref(after.Note)},
+	} {
+		if ch.old == ch.new {
+			continue
+		}
+		f, o, n := ch.field, ch.old, ch.new
+		if err := recordActivity(ctx, tx, after, "UPDATED", actorEmail, &f, &o, &n, nil); err != nil {
+			return domain.ScheduleAssignment{}, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.ScheduleAssignment{}, fmt.Errorf("commit update assignment: %w", err)
+	}
+	return after, nil
+}
+
+// DeleteAssignment takes somebody off a slot.
+//
+// The activity row is written first, while the assignment still exists to be
+// described. That is also why schedule_assignment_activity has no foreign key
+// to it: a cascade would erase exactly this record.
+func (r *scheduleRepository) DeleteAssignment(ctx context.Context, id, actorEmail string, note *string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delete assignment: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	before, err := assignmentByIDTx(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if err := recordActivity(ctx, tx, before, "DELETED", actorEmail, nil, nil, nil, note); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM schedule_assignment WHERE id = $1::uuid`, id); err != nil {
+		return fmt.Errorf("delete assignment: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delete assignment: %w", err)
+	}
+	return nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func boolText(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// ActivityForTeam is "what changed on my team this week", newest first.
+func (r *scheduleRepository) ActivityForTeam(ctx context.Context, teamKey, from, to string) ([]domain.ScheduleAssignmentActivity, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, assignment_id, user_id, team_key, rota_date, shift_code,
+		       action, field_name, old_value, new_value, actor_email, note, created_on
+		  FROM schedule_assignment_activity
+		 WHERE team_key = $1
+		   AND rota_date BETWEEN $2::date AND $3::date
+		 ORDER BY created_on DESC`, teamKey, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("query schedule activity: %w", err)
+	}
+	defer rows.Close()
+
+	out := []domain.ScheduleAssignmentActivity{}
+	for rows.Next() {
+		var a domain.ScheduleAssignmentActivity
+		var rota time.Time
+		if err := rows.Scan(&a.ID, &a.AssignmentID, &a.UserID, &a.TeamKey, &rota, &a.ShiftCode,
+			&a.Action, &a.FieldName, &a.OldValue, &a.NewValue, &a.ActorEmail, &a.Note, &a.CreatedOn); err != nil {
+			return nil, fmt.Errorf("scan schedule activity: %w", err)
+		}
+		a.RotaDate = rota.Format("2006-01-02")
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }

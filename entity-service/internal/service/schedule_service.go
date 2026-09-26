@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
@@ -40,6 +41,13 @@ type ScheduleService interface {
 	SearchAssignments(ctx context.Context, req domain.SearchScheduleAssignmentsRequest) (domain.ScheduleAssignmentsResponse, error)
 	SearchAbsences(ctx context.Context, req domain.SearchScheduleAbsencesRequest) (domain.ScheduleAbsencesResponse, error)
 	OnDuty(ctx context.Context, at *time.Time) (domain.ScheduleAssignmentsResponse, error)
+
+	// The lead edit path. Each checks that the caller leads the team the slot
+	// belongs to before it touches anything.
+	CreateAssignment(ctx context.Context, req domain.CreateScheduleAssignmentRequest) (domain.ScheduleAssignment, error)
+	UpdateAssignment(ctx context.Context, id string, req domain.UpdateScheduleAssignmentRequest) (domain.ScheduleAssignment, error)
+	DeleteAssignment(ctx context.Context, id string, note *string) error
+	TeamActivity(ctx context.Context, teamKey, from, to string) ([]domain.ScheduleAssignmentActivity, error)
 }
 
 type scheduleService struct {
@@ -164,4 +172,108 @@ func (s *scheduleService) OnDuty(ctx context.Context, at *time.Time) (domain.Sch
 		return domain.ScheduleAssignmentsResponse{}, err
 	}
 	return domain.ScheduleAssignmentsResponse{Assignments: rows, Count: len(rows)}, nil
+}
+
+// ── lead edit ───────────────────────────────────────────────────────────────
+
+// requireTeamLead is the whole of the edit permission: internal, and a lead of
+// the team the slot belongs to.
+//
+// Own team only, by decision. A lead editing another ABT's rota is not a
+// capability anyone asked for, and the blast radius of getting it wrong -- one
+// team silently rewriting another's cover -- is worse than the inconvenience of
+// not having it.
+//
+// The internal check comes first so a customer never learns whether a team key
+// exists by being told they do not lead it.
+func (s *scheduleService) requireTeamLead(ctx context.Context, teamKey string) error {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return err
+	}
+	id := auth.IdentityFromContext(ctx)
+	if id.UserEmail == "" {
+		return &apierror.ForbiddenError{Msg: "editing the rota needs a user token, not a service credential"}
+	}
+	ok, err := s.repo.LeadsTeam(ctx, id.UserEmail, teamKey)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return &apierror.ForbiddenError{Msg: fmt.Sprintf("only a lead of %s can change its rota", teamKey)}
+	}
+	return nil
+}
+
+// CreateAssignment implements ScheduleService.
+func (s *scheduleService) CreateAssignment(ctx context.Context, req domain.CreateScheduleAssignmentRequest) (domain.ScheduleAssignment, error) {
+	if err := validateUserID(req.UserID); err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+	if req.TeamKey == "" || req.ShiftCode == "" || req.RotaDate == "" {
+		return domain.ScheduleAssignment{}, &apierror.ValidationError{Msg: "teamKey, shiftCode and rotaDate are required"}
+	}
+	if _, err := time.Parse("2006-01-02", req.RotaDate); err != nil {
+		return domain.ScheduleAssignment{}, &apierror.ValidationError{Msg: "rotaDate must be YYYY-MM-DD"}
+	}
+	if err := s.requireTeamLead(ctx, req.TeamKey); err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+	return s.repo.CreateAssignment(ctx, req, auth.IdentityFromContext(ctx).UserEmail)
+}
+
+// UpdateAssignment implements ScheduleService.
+//
+// The team is read from the row rather than taken from the caller: otherwise a
+// lead could name their own team and edit anyone's slot.
+func (s *scheduleService) UpdateAssignment(ctx context.Context, id string, req domain.UpdateScheduleAssignmentRequest) (domain.ScheduleAssignment, error) {
+	if req.UserID != nil {
+		if err := validateUserID(*req.UserID); err != nil {
+			return domain.ScheduleAssignment{}, err
+		}
+	}
+	existing, err := s.assignmentForEdit(ctx, id)
+	if err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+	return s.repo.UpdateAssignment(ctx, existing.ID, req, auth.IdentityFromContext(ctx).UserEmail)
+}
+
+// DeleteAssignment implements ScheduleService.
+func (s *scheduleService) DeleteAssignment(ctx context.Context, id string, note *string) error {
+	existing, err := s.assignmentForEdit(ctx, id)
+	if err != nil {
+		return err
+	}
+	return s.repo.DeleteAssignment(ctx, existing.ID, auth.IdentityFromContext(ctx).UserEmail, note)
+}
+
+// assignmentForEdit loads a slot and confirms the caller leads its team.
+func (s *scheduleService) assignmentForEdit(ctx context.Context, id string) (domain.ScheduleAssignment, error) {
+	if err := validateUserID(id); err != nil {
+		return domain.ScheduleAssignment{}, &apierror.ValidationError{Msg: fmt.Sprintf("assignment id %q is not a UUID", id)}
+	}
+	// Internal first: an outside caller should not be able to probe which
+	// assignment ids exist by the difference between 403 and 404.
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+	existing, err := s.repo.AssignmentByID(ctx, id)
+	if err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+	if err := s.requireTeamLead(ctx, existing.TeamKey); err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+	return existing, nil
+}
+
+// TeamActivity implements ScheduleService.
+func (s *scheduleService) TeamActivity(ctx context.Context, teamKey, from, to string) ([]domain.ScheduleAssignmentActivity, error) {
+	if _, _, err := parseWindow(from, to); err != nil {
+		return nil, err
+	}
+	if err := s.requireTeamLead(ctx, teamKey); err != nil {
+		return nil, err
+	}
+	return s.repo.ActivityForTeam(ctx, teamKey, from, to)
 }

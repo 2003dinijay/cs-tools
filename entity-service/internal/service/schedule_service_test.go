@@ -40,6 +40,47 @@ type fakeScheduleRepo struct {
 	absences    []domain.ScheduleAbsence
 	catalogue   domain.ScheduleCatalogue
 	err         error
+
+	// lead edit
+	leadsTeam   bool
+	byID        domain.ScheduleAssignment
+	created     domain.CreateScheduleAssignmentRequest
+	updated     domain.UpdateScheduleAssignmentRequest
+	deletedID   string
+	gotActorEml string
+}
+
+func (f *fakeScheduleRepo) AssignmentByID(context.Context, string) (domain.ScheduleAssignment, error) {
+	if f.err != nil {
+		return domain.ScheduleAssignment{}, f.err
+	}
+	return f.byID, nil
+}
+
+func (f *fakeScheduleRepo) LeadsTeam(context.Context, string, string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.leadsTeam, nil
+}
+
+func (f *fakeScheduleRepo) CreateAssignment(_ context.Context, req domain.CreateScheduleAssignmentRequest, actor string) (domain.ScheduleAssignment, error) {
+	f.called, f.created, f.gotActorEml = true, req, actor
+	return f.byID, f.err
+}
+
+func (f *fakeScheduleRepo) UpdateAssignment(_ context.Context, _ string, req domain.UpdateScheduleAssignmentRequest, actor string) (domain.ScheduleAssignment, error) {
+	f.called, f.updated, f.gotActorEml = true, req, actor
+	return f.byID, f.err
+}
+
+func (f *fakeScheduleRepo) DeleteAssignment(_ context.Context, id, actor string, _ *string) error {
+	f.called, f.deletedID, f.gotActorEml = true, id, actor
+	return f.err
+}
+
+func (f *fakeScheduleRepo) ActivityForTeam(context.Context, string, string, string) ([]domain.ScheduleAssignmentActivity, error) {
+	return nil, f.err
 }
 
 func (f *fakeScheduleRepo) Catalogue(context.Context) (domain.ScheduleCatalogue, error) {

@@ -5425,6 +5425,230 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/assignments:
+    post:
+      summary: Put somebody on a window for a day.
+      description: >
+        Lead edit. The caller must lead the team named in the request. `startsAt`
+        and `endsAt` are not accepted — they are resolved from the shift's own
+        window and authoring timezone, so a hand-placed cover cannot drift from
+        the window it claims to be.
+      operationId: createScheduleAssignment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateScheduleAssignmentRequest'
+      responses:
+        "201":
+          description: The assignment as stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleAssignment'
+        "400":
+          description: Bad request — missing or malformed fields.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/assignments/{id}:
+    patch:
+      summary: Change who holds a slot, or its detail.
+      description: >
+        Lead edit. The team is read from the row being changed, not from the
+        request, so naming your own team does not grant access to another's slot.
+        Changing the person records the assignment as a `SWAP`.
+      operationId: updateScheduleAssignment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateScheduleAssignmentRequest'
+      responses:
+        "200":
+          description: The assignment after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleAssignment'
+        "400":
+          description: Bad request — malformed id or body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this slot's team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such assignment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Take somebody off a slot.
+      description: >
+        Lead edit. The change is recorded before the row is removed, so the
+        deletion survives in the activity trail.
+      operationId: deleteScheduleAssignment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: note
+          in: query
+          required: false
+          description: Why the person was taken off, kept on the activity row.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Bad request — malformed id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this slot's team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such assignment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/activity:
+    get:
+      summary: What changed on a team's rota, newest first.
+      operationId: getScheduleActivity
+      parameters:
+        - name: teamKey
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: The changes in the window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleActivityResponse'
+        "400":
+          description: Bad request — missing or too wide a window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /team-schedule/on-duty:
     get:
       summary: Who is responsible at this instant.
@@ -15715,6 +15939,98 @@ components:
         name: { type: string }
         email: { type: string }
         isLead: { type: boolean }
+    CreateScheduleAssignmentRequest:
+      type: object
+      required: [userId, teamKey, shiftCode, rotaDate]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        teamKey:
+          type: string
+        shiftCode:
+          type: string
+        rotaDate:
+          type: string
+          format: date
+        tier:
+          type: string
+          enum: [L1, L2, L3]
+          nullable: true
+        isOnCall:
+          type: boolean
+          nullable: true
+          description: Defaults to the shift's own setting when omitted.
+        note:
+          type: string
+          nullable: true
+
+    UpdateScheduleAssignmentRequest:
+      type: object
+      description: Every field optional; an omitted field is left as it was.
+      properties:
+        userId:
+          type: string
+          format: uuid
+        tier:
+          type: string
+          enum: [L1, L2, L3]
+        isOnCall:
+          type: boolean
+        note:
+          type: string
+
+    ScheduleAssignmentActivity:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        assignmentId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        teamKey:
+          type: string
+        rotaDate:
+          type: string
+          format: date
+        shiftCode:
+          type: string
+        action:
+          type: string
+          enum: [CREATED, UPDATED, DELETED]
+        fieldName:
+          type: string
+          nullable: true
+        oldValue:
+          type: string
+          nullable: true
+        newValue:
+          type: string
+          nullable: true
+        actorEmail:
+          type: string
+          description: Who made the change, not who the row is about.
+        note:
+          type: string
+          nullable: true
+        createdOn:
+          type: string
+          format: date-time
+
+    ScheduleActivityResponse:
+      type: object
+      properties:
+        activity:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduleAssignmentActivity'
+        count:
+          type: integer
+
     ScheduleAssignment:
       type: object
       description: One engineer, one rota day, one window.

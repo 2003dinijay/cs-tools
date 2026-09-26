@@ -100,3 +100,58 @@ func (h *ScheduleHandler) GetScheduleOnDuty(w http.ResponseWriter, r *http.Reque
 	}
 	writeScheduleJSON(w, http.StatusOK, resp)
 }
+
+// CreateScheduleAssignment handles POST /team-schedule/assignments.
+func (h *ScheduleHandler) CreateScheduleAssignment(w http.ResponseWriter, r *http.Request) {
+	var req domain.CreateScheduleAssignmentRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	created, err := h.svc.CreateAssignment(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeScheduleJSON(w, http.StatusCreated, created)
+}
+
+// UpdateScheduleAssignment handles PATCH /team-schedule/assignments/{id}.
+func (h *ScheduleHandler) UpdateScheduleAssignment(w http.ResponseWriter, r *http.Request) {
+	var req domain.UpdateScheduleAssignmentRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	updated, err := h.svc.UpdateAssignment(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeScheduleJSON(w, http.StatusOK, updated)
+}
+
+// DeleteScheduleAssignment handles DELETE /team-schedule/assignments/{id}.
+//
+// A note is accepted but not required: taking somebody off a slot is worth
+// explaining, and the activity row has somewhere to put it.
+func (h *ScheduleHandler) DeleteScheduleAssignment(w http.ResponseWriter, r *http.Request) {
+	var note *string
+	if v := r.URL.Query().Get("note"); v != "" {
+		note = &v
+	}
+	if err := h.svc.DeleteAssignment(r.Context(), r.PathValue("id"), note); err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// GetScheduleActivity handles GET /team-schedule/activity.
+func (h *ScheduleHandler) GetScheduleActivity(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	rows, err := h.svc.TeamActivity(r.Context(), q.Get("teamKey"), q.Get("from"), q.Get("to"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeScheduleJSON(w, http.StatusOK, map[string]any{"activity": rows, "count": len(rows)})
+}

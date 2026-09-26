@@ -54,10 +54,14 @@ type ScheduleShift struct {
 	IsEscalation      bool    `json:"isEscalation"`
 	// IsRotation is false for a window that is simply when a team works --
 	// regular hours, or the Americas night -- rather than a turn on the rota.
-	IsRotation      bool   `json:"isRotation"`
-	CrossesMidnight bool   `json:"crossesMidnight"`
-	ColourToken     string `json:"colourToken"`
-	SortOrder       int    `json:"sortOrder"`
+	IsRotation bool `json:"isRotation"`
+	// RequiredHeadcount is the target for this window. Nil means no target is
+	// defined, which is not the same as zero -- a view has to render it as
+	// "cannot say" rather than "nobody needed".
+	RequiredHeadcount *int16 `json:"requiredHeadcount,omitempty"`
+	CrossesMidnight   bool   `json:"crossesMidnight"`
+	ColourToken       string `json:"colourToken"`
+	SortOrder         int    `json:"sortOrder"`
 }
 
 // ScheduleAbsenceKind is a reason someone is out of the rota. A table rather
@@ -98,6 +102,47 @@ type ScheduleEngineer struct {
 // though six of its hours fall on Tuesday. StartsAt/EndsAt are the resolved
 // absolute instants, so a point-in-time lookup needs nothing else and stays
 // correct across DST.
+// CreateScheduleAssignmentRequest puts somebody on a window for a day.
+//
+// StartsAt and EndsAt are deliberately not accepted from the caller. They are
+// resolved from the shift's own window and authoring zone, so a hand-placed
+// cover cannot drift from the window it claims to be.
+type CreateScheduleAssignmentRequest struct {
+	UserID    string  `json:"userId"`
+	TeamKey   string  `json:"teamKey"`
+	ShiftCode string  `json:"shiftCode"`
+	RotaDate  string  `json:"rotaDate"`
+	Tier      *string `json:"tier,omitempty"`
+	IsOnCall  *bool   `json:"isOnCall,omitempty"`
+	Note      *string `json:"note,omitempty"`
+}
+
+// UpdateScheduleAssignmentRequest changes who holds a slot, or its detail.
+// Every field is optional; a nil field is left as it was.
+type UpdateScheduleAssignmentRequest struct {
+	UserID   *string `json:"userId,omitempty"`
+	Tier     *string `json:"tier,omitempty"`
+	IsOnCall *bool   `json:"isOnCall,omitempty"`
+	Note     *string `json:"note,omitempty"`
+}
+
+// ScheduleAssignmentActivity is one recorded change to the rota.
+type ScheduleAssignmentActivity struct {
+	ID           string    `json:"id"`
+	AssignmentID string    `json:"assignmentId"`
+	UserID       string    `json:"userId"`
+	TeamKey      string    `json:"teamKey"`
+	RotaDate     string    `json:"rotaDate"`
+	ShiftCode    string    `json:"shiftCode"`
+	Action       string    `json:"action"`
+	FieldName    *string   `json:"fieldName,omitempty"`
+	OldValue     *string   `json:"oldValue,omitempty"`
+	NewValue     *string   `json:"newValue,omitempty"`
+	ActorEmail   string    `json:"actorEmail"`
+	Note         *string   `json:"note,omitempty"`
+	CreatedOn    time.Time `json:"createdOn"`
+}
+
 type ScheduleAssignment struct {
 	ID        string           `json:"id"`
 	Engineer  ScheduleEngineer `json:"engineer"`
