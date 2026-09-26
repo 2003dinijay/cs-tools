@@ -41,6 +41,7 @@ type entityScheduleClient interface {
 	DeleteScheduleAssignment(ctx context.Context, id, note string) ([]byte, error)
 	GetScheduleActivity(ctx context.Context, teamKey, from, to string) ([]byte, error)
 	GetMyLeadTeams(ctx context.Context) ([]byte, error)
+	ApplyScheduleRange(ctx context.Context, body []byte) ([]byte, error)
 }
 
 // ScheduleHandler handles the Team Schedule reads: who is working, when, and
@@ -242,6 +243,23 @@ func (h *ScheduleHandler) GetMyLeadTeams(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity GetMyLeadTeams failed", "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to check your team permissions.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// ApplyScheduleRange handles POST /team-schedule/assignments/apply.
+func (h *ScheduleHandler) ApplyScheduleRange(w http.ResponseWriter, r *http.Request) {
+	body, userID, ok := readScheduleBody(w, r)
+	if !ok {
+		return
+	}
+
+	result, err := h.entity.ApplyScheduleRange(r.Context(), body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity ApplyScheduleRange failed", "userID", userID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to change the rota.")
 		return
 	}
 

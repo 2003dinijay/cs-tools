@@ -877,3 +877,9 @@ func (c *CustomerEntityClient) GetScheduleActivity(ctx context.Context, teamKey,
 func (c *CustomerEntityClient) GetMyLeadTeams(ctx context.Context) ([]byte, error) {
 	return c.do(ctx, http.MethodGet, "/team-schedule/my-lead-teams", nil)
 }
+
+// ApplyScheduleRange calls POST /team-schedule/assignments/apply on the entity
+// service -- how the roster's picker edits a span of days in one call.
+func (c *CustomerEntityClient) ApplyScheduleRange(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/team-schedule/assignments/apply", body)
+}
