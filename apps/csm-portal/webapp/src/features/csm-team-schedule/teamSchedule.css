@@ -1021,3 +1021,56 @@
   text-transform: uppercase;
   color: var(--accent-ink);
 }
+
+/* ── The week the reader is in ────────────────────────────────────────────
+   Today's column says where you are now; the week says what you are in the
+   middle of, which is what a rota is usually opened to find. Across ninety
+   columns today alone is one 44px stripe that scrolls past easily.
+
+   Drawn on an overlay of its own rather than with the cell's background,
+   border or box-shadow, because all three are already spoken for on this
+   grid and the band would have to win or lose against them by declaration
+   order. `background` is the weekend, today, the hovered row and the
+   editable cell; `border-left` is the zone divider and the month rule;
+   `box-shadow` is the selected column's edging. The first attempt used
+   box-shadow and silently ate that edging on whichever day was both -- and
+   today is the selected day by default, so it was always both.
+
+   A layer above the cell composes with all of them instead: the weekend
+   still reads darker inside the band, today keeps its circled date, the
+   selected column keeps its edges, and the band tints the lot. */
+.csm-ts .tw.roster tbody td.cw {
+  /* The header is already sticky, which makes a containing block of its
+     own; a body cell may not be, and only `.c` cells set this already. */
+  position: relative;
+}
+.csm-ts .tw.roster thead th.day.cw::after,
+.csm-ts .tw.roster tbody td.cw::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* The cells underneath stay clickable -- in edit mode this whole band is
+     the part of the grid a lead is most likely to be changing. */
+  pointer-events: none;
+  /* Faint enough to read as a region rather than as a highlight, since it
+     lies over the chips as well as the cell. */
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+/* The band's two ends, so seven columns read as one block. On the overlay,
+   so they never widen a column or shift the grid as the week moves. */
+.csm-ts .tw.roster thead th.day.cwa::after,
+.csm-ts .tw.roster tbody td.cwa::after {
+  border-left: 2px solid var(--accent);
+}
+.csm-ts .tw.roster thead th.day.cwz::after,
+.csm-ts .tw.roster tbody td.cwz::after {
+  border-right: 2px solid var(--accent);
+}
+/* The date row carries the band a little more strongly, so a reader scrolled
+   into the middle of three months can tell this week from any other marked
+   column. Not on the selected day, whose own edging says something different
+   and should stay the louder of the two. */
+.csm-ts .tw.roster thead th.day.cw:not(.sel)::after {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border-bottom: 3px solid var(--accent-soft);
+}

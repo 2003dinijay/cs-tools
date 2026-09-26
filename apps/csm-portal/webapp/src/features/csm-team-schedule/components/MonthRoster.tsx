@@ -23,7 +23,7 @@ import type {
   ScheduleAssignment,
   ScheduleShift,
 } from "../types";
-import { initialsOf, isRotationShift, toIsoDate } from "../utils/rota";
+import { initialsOf, isRotationShift, mondayOf, toIsoDate } from "../utils/rota";
 import { teamColour } from "../utils/rotaHues";
 
 interface MonthRosterProps {
@@ -252,9 +252,12 @@ export default function MonthRoster({
         if (iso >= ab.startsOn && iso <= end) {
           row.days.set(iso, {
             absenceKindCode: ab.kindCode,
-            code: kind?.shortCode ?? ab.kindCode,
+            // An allocation names who it is for, where it knows: a lead
+            // scanning the month wants "TFL", not six identical "CUS-OFF"s.
+            // Clipped to what a day column holds; the title has it in full.
+            code: ab.allocatedTo ? ab.allocatedTo.slice(0, 6) : (kind?.shortCode ?? ab.kindCode),
             token: kind?.colourToken ?? "",
-            title: kind?.label ?? ab.kindCode,
+            title: [kind?.label ?? ab.kindCode, ab.allocatedTo].filter(Boolean).join(" · "),
             isRotation: false,
           });
         }
@@ -284,6 +287,37 @@ export default function MonthRoster({
     : grid;
 
   const todayIso = toIsoDate(new Date());
+
+  /** The week the reader is actually in, Monday to Sunday.
+   *
+   *  Today's column answers "where am I now"; the week answers "what am I in
+   *  the middle of", which is the question a rota is usually opened with --
+   *  and across three months of columns today alone is a single 44px stripe
+   *  that is easy to scroll straight past.
+   *
+   *  Marked as a band with its two edges ruled rather than as a fill, so it
+   *  composes with the marks already on the grid instead of competing with
+   *  them: today stays the circled date inside it, and the reader's own row
+   *  stays the filled row crossing it. */
+  const weekFrom = toIsoDate(mondayOf(new Date()));
+  const weekTo = toIsoDate(
+    new Date(mondayOf(new Date()).getTime() + 6 * 86_400_000),
+  );
+  const inThisWeek = (iso: string): boolean => iso >= weekFrom && iso <= weekTo;
+
+  /** The same marks for one zone sub-column of a split day: only the first
+   *  carries an opening edge, only the last a closing one. */
+  const zoneMarks = (marks: string, i: number, total: number): string => {
+    let out = marks;
+    if (i !== 0) out = out.replace(" mstart", "").replace(" cwa", "");
+    if (i !== total - 1) out = out.replace(" cwz", "");
+    return out;
+  };
+  /** The band's own edges, so it reads as one block seven columns wide. */
+  const weekMarks = (iso: string): string =>
+    inThisWeek(iso)
+      ? ` cw${iso === weekFrom ? " cwa" : ""}${iso === weekTo ? " cwz" : ""}`
+      : "";
   const me = meEmail?.trim().toLowerCase() ?? "";
 
   /** Which rows this reader may change. A lead edits their own ABT only, so
@@ -439,7 +473,7 @@ export default function MonthRoster({
                     colSpan={split ? zonesOn(weekend).length : undefined}
                     className={`day ${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""} ${
                       iso === selectedIso ? "sel" : ""
-                    } ${d.getDay() === 1 ? "wkstart" : ""}${opensMonth(d) ? " mstart" : ""}`}
+                    } ${d.getDay() === 1 ? "wkstart" : ""}${opensMonth(d) ? " mstart" : ""}${weekMarks(iso)}`}
                     aria-current={iso === selectedIso ? "date" : undefined}
                     title={d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}
                   >
@@ -510,7 +544,7 @@ export default function MonthRoster({
                   const weekend = d.getDay() === 0 || d.getDay() === 6;
                   const marks = `${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""} ${
                     iso === selectedIso ? "sel" : ""
-                  } ${d.getDay() === 1 ? "wkstart" : ""}${opensMonth(d) ? " mstart" : ""}`;
+                  } ${d.getDay() === 1 ? "wkstart" : ""}${opensMonth(d) ? " mstart" : ""}${weekMarks(iso)}`;
                   const faded = (c: Cell | undefined) =>
                     rotationsOnly && c && !c.isRotation ? "muted" : "";
 
@@ -581,8 +615,14 @@ export default function MonthRoster({
                     return (
                       <td
                         key={`${iso}|${z}`}
+                        // A day split across zone columns still has one left
+                        // edge and one right edge. The month rule and the
+                        // week band's opening edge belong to the first
+                        // sub-column and its closing edge to the last;
+                        // repeating them on each zone would rule the inside
+                        // of the day as heavily as its boundary.
                         className={`c z ${i === 0 ? "zfirst" : ""} ${
-                          i === 0 ? marks : marks.replace(" mstart", "")
+                          zoneMarks(marks, i, zones.length)
                         } ${faded(zc)}`}
                         title={zc ? `${row.name} · ${z} · ${zc.title}` : undefined}
                       >
