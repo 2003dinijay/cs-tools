@@ -500,7 +500,7 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 		caseRef := displayCaseRef(p.CaseNumber, p.CaseID)
 		subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, p.CaseTitle)
 		var emailErr error
-		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) string {
+		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
 			return notifications.RenderCaseCreatedEmail(notifications.CaseCreatedEmailData{
 				ReporterName:              p.ReporterName,
 				ProjectName:               p.ProjectName,
@@ -603,7 +603,7 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 	}
 	baseKey := recordBaseKey(record)
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, p.CaseTitle)
-	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) string {
+	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
 		if p.IsInternalNote {
 			// See events.CommentAddedPayload.IsInternalNote's own doc
 			// comment: a distinct layout, and WSO2CaseID (not CaseNumber)
@@ -642,8 +642,8 @@ func (d *Dispatcher) handleStatusChanged(ctx context.Context, record eventbus.Re
 		title = "Status changed to " + p.NewStatus
 	}
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, title)
-	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) string {
-		return notifications.RenderStatusChangedEmail(caseRef, p.NewStatus, caseLink, commentLinkFor(caseLink, ""))
+	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
+		return notifications.RenderStatusChangedEmail(caseRef, p.NewStatus, caseLink, commentLinkFor(caseLink, "")), nil
 	})
 	if record.NoMoreRetries {
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
@@ -761,8 +761,8 @@ func (d *Dispatcher) handleCaseAssigned(ctx context.Context, record eventbus.Rec
 		title = "Case assigned"
 	}
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, title)
-	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) string {
-		return notifications.RenderCaseAssignedEmail(p.AssigneeName, p.AssigneeEmail, caseRef, caseLink, commentLinkFor(caseLink, ""))
+	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
+		return notifications.RenderCaseAssignedEmail(p.AssigneeName, p.AssigneeEmail, caseRef, caseLink, commentLinkFor(caseLink, "")), nil
 	})
 	if record.NoMoreRetries {
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
@@ -874,8 +874,8 @@ func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.
 		}
 		subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, title)
 		var emailErr error
-		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) string {
-			return notifications.RenderSeverityChangedEmail(caseRef, emailOldLabel, emailNewLabel, caseLink, commentLinkFor(caseLink, ""))
+		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
+			return notifications.RenderSeverityChangedEmail(caseRef, emailOldLabel, emailNewLabel, caseLink, commentLinkFor(caseLink, "")), nil
 		})
 		if emailErr != nil {
 			errs = append(errs, emailErr)
@@ -1129,7 +1129,45 @@ func maskPhone(phone string) string {
 // true but emailDebugRecipients is empty — sending to zero recipients would
 // either be rejected by the email provider or silently do nothing, neither
 // of which is better than not calling it at all.
-func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, groupUserIDs map[string][]string, subject string, render func(caseLink string) string) ([]string, error) {
+// inlineImageExtensions maps an InlineImage's ContentType to the file
+// extension its EmailAttachment.ContentName is given — email-service
+// requires a contentName on every attachment, but an inline image's name is
+// otherwise never shown to the recipient (Content-Disposition: inline, not
+// attachment), so any reasonably-shaped name satisfies that requirement.
+// Falls back to no extension for a content type outside this small,
+// deliberately narrow list — sanitizeRichText's own safeImageDataURI regex
+// only ever admits an "image/*" type, so this covers every real case; an
+// unrecognized one would only happen if that regex is ever widened without
+// updating this too.
+var inlineImageExtensions = map[string]string{
+	"image/png":  ".png",
+	"image/jpeg": ".jpg",
+	"image/gif":  ".gif",
+	"image/webp": ".webp",
+}
+
+// inlineAttachments converts sanitizeRichText's own extracted images into
+// the EmailAttachment shape EmailClient.SendEmail expects, each marked
+// Inline with its matching ContentID — the exact pairing the returned HTML
+// body's own cid:<contentId> references depend on.
+func inlineAttachments(images []notifications.InlineImage) []notifications.EmailAttachment {
+	if len(images) == 0 {
+		return nil
+	}
+	attachments := make([]notifications.EmailAttachment, len(images))
+	for i, img := range images {
+		attachments[i] = notifications.EmailAttachment{
+			ContentName: img.ContentID + inlineImageExtensions[img.ContentType],
+			ContentType: img.ContentType,
+			Attachment:  img.Data,
+			Inline:      true,
+			ContentID:   img.ContentID,
+		}
+	}
+	return attachments
+}
+
+func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, groupUserIDs map[string][]string, subject string, render func(caseLink string) (string, []notifications.InlineImage)) ([]string, error) {
 	var errs []error
 	var owned []string
 	for _, caseLink := range slices.Sorted(maps.Keys(groups)) {
@@ -1154,7 +1192,8 @@ func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, g
 				"subject", subject, "realRecipientCount", len(to), "debugRecipientCount", len(d.emailDebugRecipients))
 			to = d.emailDebugRecipients
 		}
-		if err := d.email.SendEmail(ctx, to, nil, nil, nil, subject, render(caseLink), nil); err != nil {
+		htmlBody, images := render(caseLink)
+		if err := d.email.SendEmail(ctx, to, nil, nil, nil, subject, htmlBody, inlineAttachments(images)); err != nil {
 			errs = append(errs, err)
 			d.forget(key)
 			continue
@@ -1371,7 +1410,7 @@ func (d *Dispatcher) handleCRPlanDateNotice(ctx context.Context, record eventbus
 		recipients = d.emailDebugRecipients
 	}
 
-	body := notifications.RenderCRPlanDateNoticeEmail(notifications.CRPlanDateEmailData{
+	body, images := notifications.RenderCRPlanDateNoticeEmail(notifications.CRPlanDateEmailData{
 		Kind:             p.Kind,
 		Number:           p.Number,
 		ActorName:        p.ActorName,
@@ -1388,7 +1427,7 @@ func (d *Dispatcher) handleCRPlanDateNotice(ctx context.Context, record eventbus
 	if p.Audience == crAudienceCustomer {
 		to, bcc = []string{d.email.FromAddress()}, recipients
 	}
-	if err := d.email.SendEmail(ctx, to, nil, bcc, nil, p.Subject, body, nil); err != nil {
+	if err := d.email.SendEmail(ctx, to, nil, bcc, nil, p.Subject, body, inlineAttachments(images)); err != nil {
 		return fmt.Errorf("dispatch: send plan date notice for %s: %w", p.ChangeRequestID, err)
 	}
 	slog.InfoContext(ctx, "dispatch: plan date notice sent",
