@@ -184,6 +184,15 @@ type InlineImage struct {
 	Data []byte
 }
 
+// inlineImageContentIDDomain is the domain component nextInlineImageContentID
+// appends to every Content-ID it generates — not a real, resolvable
+// hostname, just a fixed placeholder identifying this service as the
+// minting system. email-service's own handler requires an inline
+// attachment's contentId to be shaped like RFC 2392's addr-spec
+// (local-part@domain) and rejects a bare token outright, so this can't be
+// left off.
+const inlineImageContentIDDomain = "csm-notification-service.internal"
+
 // inlineImageSeq is a process-wide counter backing nextInlineImageContentID
 // — atomic since sanitizeRichText can run concurrently across dispatch's
 // own concurrent Handle calls (see dispatch.go's own concurrency notes).
@@ -194,9 +203,14 @@ type InlineImage struct {
 var inlineImageSeq int64
 
 // nextInlineImageContentID returns a new, process-wide-unique Content-ID
-// for one extracted InlineImage.
+// for one extracted InlineImage, already shaped as RFC 2392's addr-spec —
+// see inlineImageContentIDDomain's own doc comment for why. This exact
+// string is used both as the value written into the returned HTML's own
+// cid: reference and as the EmailAttachment.ContentID eventually sent to
+// email-service — the two must always match verbatim, so this is the one
+// and only place a Content-ID is minted.
 func nextInlineImageContentID() string {
-	return fmt.Sprintf("inline-image-%d", atomic.AddInt64(&inlineImageSeq, 1))
+	return fmt.Sprintf("inline-image-%d@%s", atomic.AddInt64(&inlineImageSeq, 1), inlineImageContentIDDomain)
 }
 
 // isSafeLinkHref reports whether href is safe to render as a clickable
