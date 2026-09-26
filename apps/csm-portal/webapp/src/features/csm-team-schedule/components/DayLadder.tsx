@@ -607,7 +607,9 @@ function OffRotaStack({
           <div key={kind.code} className={`offcard ${kind.colourToken}`}>
             <div className="offh">
               <span className={`chip sm ${kind.colourToken}`}>{kind.shortCode}</span>
-              <span className="offl">{kind.label}</span>
+              <span className="offl" title={kind.label}>
+                {kind.label}
+              </span>
               <b>{rows.length}</b>
             </div>
             {byTeam ? (

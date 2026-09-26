@@ -81,7 +81,14 @@ export default function MyWeekStrip({
   const openRows = openDay
     ? everyone.filter((a) => a.rotaDate === openDay && isPeerRotation(shifts.get(a.shiftCode)))
     : [];
-  const onRotaCount = days.filter((d) => (mineByDay.get(toIsoDate(d)) ?? []).length > 0).length;
+  // Two different counts. "Rostered" is any day with something on it, regular
+  // hours included; "on rotation" is only a turn on the rota. Counting the first
+  // under the second's name told an engineer on plain regular hours all week
+  // that they were on rotation five days out of seven.
+  const rosteredCount = days.filter((d) => (mineByDay.get(toIsoDate(d)) ?? []).length > 0).length;
+  const onRotaCount = days.filter((d) =>
+    (mineByDay.get(toIsoDate(d)) ?? []).some((a) => isPeerRotation(shifts.get(a.shiftCode))),
+  ).length;
 
   return (
     <>
@@ -178,7 +185,7 @@ export default function MyWeekStrip({
 
       <div className="wkstat">
         <span className="kv">
-          <b>{onRotaCount}</b> of 7 days on rotation this week
+          <b>{rosteredCount}</b> of 7 days rostered this week · <b>{onRotaCount}</b> on rotation
         </span>
         {openDay ? (
           <span className="grp hint">Click the open day again, or ×, to close it</span>
