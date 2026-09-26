@@ -42,6 +42,7 @@ type entityScheduleClient interface {
 	GetScheduleActivity(ctx context.Context, teamKey, from, to string) ([]byte, error)
 	GetMyLeadTeams(ctx context.Context) ([]byte, error)
 	ApplyScheduleRange(ctx context.Context, body []byte) ([]byte, error)
+	ApplyScheduleAbsence(ctx context.Context, body []byte) ([]byte, error)
 }
 
 // ScheduleHandler handles the Team Schedule reads: who is working, when, and
@@ -260,6 +261,23 @@ func (h *ScheduleHandler) ApplyScheduleRange(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity ApplyScheduleRange failed", "userID", userID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to change the rota.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// ApplyScheduleAbsence handles POST /team-schedule/absences/apply.
+func (h *ScheduleHandler) ApplyScheduleAbsence(w http.ResponseWriter, r *http.Request) {
+	body, userID, ok := readScheduleBody(w, r)
+	if !ok {
+		return
+	}
+
+	result, err := h.entity.ApplyScheduleAbsence(r.Context(), body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity ApplyScheduleAbsence failed", "userID", userID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to change who is away.")
 		return
 	}
 

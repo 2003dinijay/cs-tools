@@ -883,3 +883,9 @@ func (c *CustomerEntityClient) GetMyLeadTeams(ctx context.Context) ([]byte, erro
 func (c *CustomerEntityClient) ApplyScheduleRange(ctx context.Context, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, "/team-schedule/assignments/apply", body)
 }
+
+// ApplyScheduleAbsence calls POST /team-schedule/absences/apply on the entity
+// service -- the picker marking somebody away, or bringing them back.
+func (c *CustomerEntityClient) ApplyScheduleAbsence(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/team-schedule/absences/apply", body)
+}

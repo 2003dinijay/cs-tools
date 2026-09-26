@@ -39,6 +39,14 @@ type mockEntityScheduleClient struct {
 	activityFn func(ctx context.Context, teamKey, from, to string) ([]byte, error)
 	leadFn     func(ctx context.Context) ([]byte, error)
 	applyFn    func(ctx context.Context, body []byte) ([]byte, error)
+	absenceFn  func(ctx context.Context, body []byte) ([]byte, error)
+}
+
+func (m *mockEntityScheduleClient) ApplyScheduleAbsence(ctx context.Context, body []byte) ([]byte, error) {
+	if m.absenceFn == nil {
+		return nil, nil
+	}
+	return m.absenceFn(ctx, body)
 }
 
 func (m *mockEntityScheduleClient) ApplyScheduleRange(ctx context.Context, body []byte) ([]byte, error) {

@@ -333,6 +333,7 @@ func main() {
 	route("GET /team-schedule/activity", handler.PermView, scheduleHandler.GetScheduleActivity)
 	route("GET /team-schedule/my-lead-teams", handler.PermView, scheduleHandler.GetMyLeadTeams)
 	route("POST /team-schedule/assignments/apply", handler.PermWrite, scheduleHandler.ApplyScheduleRange)
+	route("POST /team-schedule/absences/apply", handler.PermWrite, scheduleHandler.ApplyScheduleAbsence)
 	route("POST /configuration-items/search", handler.PermView, configurationItemHandler.SearchConfigurationItems)
 	route("POST /time-cards/search", handler.PermTimeCardsAndUpdates, timeCardHandler.SearchTimeCards)
 	route("POST /time-cards", handler.PermTimeCardsAndUpdates, timeCardHandler.CreateTimeCard)
