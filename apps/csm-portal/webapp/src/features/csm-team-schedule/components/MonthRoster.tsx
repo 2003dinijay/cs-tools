@@ -639,7 +639,7 @@ export default function MonthRoster({
                         // sub-column and its closing edge to the last;
                         // repeating them on each zone would rule the inside
                         // of the day as heavily as its boundary.
-                        className={`c z ${i === 0 ? "zfirst" : ""} ${
+                        className={`c z ${i === 0 ? "zfirst" : ""}${i === zones.length - 1 ? " zlast" : ""} ${
                           zoneMarks(marks, i, zones.length)
                         } ${faded(zc)}${editable ? " editable" : ""}`}
                         title={

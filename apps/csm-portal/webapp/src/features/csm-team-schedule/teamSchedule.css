@@ -1084,3 +1084,40 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ── The SRE roster's split days, marked as days ──────────────────────────
+   A day split into zone sub-columns is still one day, with one left edge and
+   one right edge. Two marks forgot that:
+
+   The selected day drew its edges on every sub-column, so TZ1, TZ2 and TZ3
+   each got a pair of rules and the day read as three narrow columns. Its left
+   edge now belongs to the first sub-column and its right to the last, the
+   way today's column is already drawn.
+
+   The month rule lost to the rule between days: `td.c.zfirst` is the more
+   specific selector, so on every row with zone cells the 1st of the month
+   drew as an ordinary day boundary and the month line ran only through the
+   whole-day rows (leave, allocations) -- a broken line down the grid. */
+.csm-ts .tw.roster.split tbody td.c.z.sel {
+  box-shadow: none;
+}
+.csm-ts .tw.roster.split tbody td.c.z.sel.zfirst {
+  box-shadow: inset 1px 0 0 var(--accent);
+}
+.csm-ts .tw.roster.split tbody td.c.z.sel.zlast {
+  box-shadow: inset -1px 0 0 var(--accent);
+}
+.csm-ts .tw.roster.split tbody tr:last-child td.c.z.sel.zfirst {
+  box-shadow: inset 1px -1px 0 var(--accent);
+}
+.csm-ts .tw.roster.split tbody tr:last-child td.c.z.sel.zlast {
+  box-shadow: inset -1px -1px 0 var(--accent);
+}
+.csm-ts .tw.roster.split tbody tr:last-child td.c.z.sel:not(.zfirst):not(.zlast) {
+  box-shadow: inset 0 -1px 0 var(--accent);
+}
+.csm-ts .tw.roster.split td.c.zfirst.mstart,
+.csm-ts .tw.roster.split thead tr.zrow th.zc.zfirst.mstart,
+.csm-ts .tw.roster.split thead tr:first-child th.day.mstart {
+  border-left: 2px solid var(--ink-2);
+}
