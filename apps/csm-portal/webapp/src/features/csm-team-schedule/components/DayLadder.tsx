@@ -190,7 +190,66 @@ export default function DayLadder({
           });
         }
       }
-      return out.sort((a, b) => a.startMin - b.startMin);
+      return mergeSameHours(out).sort((a, b) => a.startMin - b.startMin);
+    };
+
+    /**
+     * One card for windows that cover exactly the same hours.
+     *
+     * Cards are placed by time alone, so two windows with the same hours --
+     * the weekend on-call and the Americas cover, both 21:00-06:00; the
+     * morning and its on-call, both 06:00-09:00 -- were drawn on top of each
+     * other, titles and names printed through one another. Held in one card
+     * with a row per window instead, the way the escalation card holds a row
+     * per tier: the hours are said once and each window names its own people.
+     *
+     * Not when a window is crowded: a card that big shows its teams rather
+     * than its names, and folding a second window into it would lose that.
+     * Those, and hours that overlap without matching, are set side by side
+     * by packIntoColumns below.
+     */
+    const mergeSameHours = (cards: Block[]): Block[] => {
+      const out: Block[] = [];
+      for (const group of groupBy(cards, (c) => `${c.startMin}-${c.endMin}`).values()) {
+        const crowded = group.some((c) => c.rows.length > NAME_LIMIT);
+        if (group.length < 2 || crowded) {
+          out.push(...group);
+          continue;
+        }
+        // The first window leads -- its colour and chip -- and an on-call
+        // variant follows the window it is on call for.
+        const ordered = [...group].sort(
+          (a, b) => Number(a.shift?.isOnCall ?? false) - Number(b.shift?.isOnCall ?? false),
+        );
+        const lead = ordered[0];
+        out.push({
+          ...lead,
+          key: ordered.map((c) => c.key).join("+"),
+          title: ordered.map((c) => c.shift?.label ?? c.rows[0].shiftCode).join(" · "),
+          rows: ordered.flatMap((c) => c.rows),
+          sections: ordered.map((c) => ({
+            label: c.shift?.label ?? c.rows[0].shiftCode,
+            list: c.rows,
+          })),
+        });
+      }
+      return out;
+    };
+
+    /**
+     * Cards whose hours overlap without matching go side by side rather than
+     * on top of each other: each takes the first column it fits in, the way a
+     * calendar lays out a double-booked afternoon. One column when nothing
+     * overlaps, which is the common case.
+     */
+    const packIntoColumns = (cards: Block[]): Block[][] => {
+      const columns: Block[][] = [];
+      for (const card of [...cards].sort((a, b) => a.startMin - b.startMin)) {
+        const free = columns.find((col) => col[col.length - 1].endMin <= card.startMin);
+        if (free) free.push(card);
+        else columns.push([card]);
+      }
+      return columns.length > 0 ? columns : [[]];
     };
 
     /**
@@ -238,7 +297,7 @@ export default function DayLadder({
 
     return lanes.map((lane) => {
       if (lane.layout !== "zone") {
-        return { ...lane, columns: [cardsPerWindow(lane.name, lane.assignments)] };
+        return { ...lane, columns: packIntoColumns(cardsPerWindow(lane.name, lane.assignments)) };
       }
       const tiered = lane.assignments.filter((a) => a.tier);
       const ordinary = lane.assignments.filter((a) => !a.tier);
@@ -457,7 +516,9 @@ function LadderBlock({ block, tz }: { block: Block; tz: string }): JSX.Element {
         <span className={`chip sm ${token}`}>
           {timeOf(first.startsAt, tz)} – {timeOf(first.endsAt, tz)}
         </span>
-        <b>{block.title ?? block.shift?.label ?? first.shiftCode}</b>
+        <b className="zbt" title={block.title ?? block.shift?.label ?? first.shiftCode}>
+          {block.title ?? block.shift?.label ?? first.shiftCode}
+        </b>
         <span className="zbn">{block.rows.length}</span>
       </div>
       {block.note ? <div className="zbw">{block.note}</div> : null}

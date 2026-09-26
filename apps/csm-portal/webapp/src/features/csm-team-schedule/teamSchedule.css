@@ -1074,3 +1074,13 @@
   background: color-mix(in srgb, var(--accent) 9%, transparent);
   border-bottom: 3px solid var(--accent-soft);
 }
+
+/* A card's title gives way before its hours or its count do. A card that holds
+   two windows names both ("Weekend on-call · Americas cover"), which can be
+   wider than the card; the title attribute has it in full. */
+.csm-ts .ladder .zbh > b.zbt {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
