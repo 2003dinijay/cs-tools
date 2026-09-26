@@ -953,3 +953,49 @@
 /* At phone width seven cards leave ~40px each: the label cannot fit and would
    run into its neighbours, so the cue keeps only its icon there. */
 @media (max-width:640px){.csm-ts .dayc .daysee{padding:1px 4px;gap:0}.csm-ts .dayc .daysee .dslabel{display:none}}
+
+/* ── Sticky cells stay opaque when they are highlighted ──────────────────
+   The roster's pinned cells -- the engineer column and the date row -- were
+   made opaque with --surface-solid, but every highlight laid on them (your
+   row, a hovered row, today's date, a hovered date) is a translucent palette
+   tint, and it replaced that solid colour instead of sitting on top of it. So
+   the moment you scrolled, chips slid visibly through your own name and up
+   through the date row. Each highlight is now painted over the solid surface:
+   the same colour on screen, but nothing shows through it. */
+.csm-ts .tw.roster tbody tr.me > th.lab {
+  background: linear-gradient(var(--accent-soft-2), var(--accent-soft-2)), var(--surface-solid);
+}
+.csm-ts .tw.roster tbody tr:hover > th.lab {
+  background: linear-gradient(var(--surface-2), var(--surface-2)), var(--surface-solid);
+}
+.csm-ts .tw.roster tbody tr.me:hover > th.lab {
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--surface-solid);
+}
+.csm-ts .tw.roster thead th.today {
+  background: linear-gradient(color-mix(in srgb, var(--today) 7%, transparent),
+      color-mix(in srgb, var(--today) 7%, transparent)), var(--surface-solid);
+}
+.csm-ts .tw.roster thead th.day:hover {
+  background: linear-gradient(var(--accent-soft-2), var(--accent-soft-2)), var(--surface-solid);
+}
+
+/* The SRE rotations had no chip colour of their own: TZ1, TZ2 and TZ3 drew as
+   bare text in My week while every CRE rotation sat in a coloured chip. They
+   take their zone's colour -- the one the day ladder's lanes already use -- so
+   a zone reads the same wherever it appears, in either mode. */
+.csm-ts .chip.TZ1 { background: color-mix(in srgb, #e8962a 22%, var(--surface-solid)); color: color-mix(in srgb, #e8962a 55%, var(--ink)); }
+.csm-ts .chip.TZ2 { background: color-mix(in srgb, #4a7fe0 22%, var(--surface-solid)); color: color-mix(in srgb, #4a7fe0 55%, var(--ink)); }
+.csm-ts .chip.TZ3 { background: color-mix(in srgb, #8a63d2 22%, var(--surface-solid)); color: color-mix(in srgb, #8a63d2 55%, var(--ink)); }
+
+/* Off-rota card heads: the code chip was allowed to shrink, so "CUS-OFF" was
+   cut to "CUS-OF" against the card edge. The chip keeps its width; the label
+   beside it is what gives way, and it already ellipsizes. */
+.csm-ts .ladder .offh .chip { flex: none; }
+.csm-ts .ladder .offh .offl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* This week: a name that does not fit was meant to wrap onto a second line
+   (see the .weekwrap rule above), but as a flex item it jumped whole onto the
+   next line instead, leaving its avatar alone above it. Letting it shrink keeps
+   it beside the avatar and wraps the text itself; the team line still takes its
+   own row. */
+.csm-ts .weekwrap .tw .nm .who { flex: 1 1 0; min-width: 0; }
