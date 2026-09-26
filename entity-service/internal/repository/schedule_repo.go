@@ -301,7 +301,7 @@ func (r *scheduleRepository) SearchAbsences(ctx context.Context, req domain.Sear
 
 	rows, err := r.db.Query(ctx, `
 		SELECT ab.id, u.id, COALESCE(u.name, ''), COALESCE(u.email, ''), FALSE,
-		       ab.team_key, k.code, ab.starts_on, ab.ends_on, ab.note
+		       ab.team_key, k.code, ab.starts_on, ab.ends_on, ab.note, ab.allocated_to
 		FROM schedule_absence ab
 		JOIN "user" u ON u.id = ab.user_id
 		JOIN schedule_absence_kind k ON k.id = ab.kind_id
@@ -317,7 +317,7 @@ func (r *scheduleRepository) SearchAbsences(ctx context.Context, req domain.Sear
 		var startsOn time.Time
 		var endsOn *time.Time
 		if err := rows.Scan(&ab.ID, &ab.Engineer.UserID, &ab.Engineer.Name, &ab.Engineer.Email,
-			&ab.Engineer.IsLead, &ab.TeamKey, &ab.KindCode, &startsOn, &endsOn, &ab.Note); err != nil {
+			&ab.Engineer.IsLead, &ab.TeamKey, &ab.KindCode, &startsOn, &endsOn, &ab.Note, &ab.AllocatedTo); err != nil {
 			return nil, fmt.Errorf("scan schedule absence: %w", err)
 		}
 		ab.StartsOn = startsOn.Format("2006-01-02")

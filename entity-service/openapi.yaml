@@ -16298,6 +16298,11 @@ components:
           format: date
           description: Absent for a standing allocation that runs until further notice.
         note: { type: string }
+        allocatedTo:
+          type: string
+          description: >
+            Who an allocation is for -- the customer for a customer allocation,
+            the product team for RnD. Absent when not known, and for leave.
     SearchScheduleAssignmentsRequest:
       type: object
       required: [from, to]

@@ -225,6 +225,10 @@ type ScheduleAbsence struct {
 	StartsOn string           `json:"startsOn"`
 	EndsOn   *string          `json:"endsOn,omitempty"`
 	Note     *string          `json:"note,omitempty"`
+	// AllocatedTo is who an allocation is for: the customer, for a customer
+	// allocation; the product team, for RnD. The kind says what sort of time it
+	// is, this says for whom -- so a new customer is a value, not a new kind.
+	AllocatedTo *string `json:"allocatedTo,omitempty"`
 }
 
 // SearchScheduleAssignmentsRequest bounds a rota read by date and, optionally,
