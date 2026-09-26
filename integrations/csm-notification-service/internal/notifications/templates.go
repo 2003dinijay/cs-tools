@@ -123,7 +123,35 @@ var safeLinkSchemes = map[string]bool{
 // the first place (apps/customer-portal/webapp's richTextEditor.tsx), so
 // this loses no real functionality. A matching image is never re-embedded
 // as a data: URI in the output HTML, though — see InlineImage below.
-var safeImageDataURI = regexp.MustCompile(`(?i)^data:(image/[a-z0-9.+-]+);base64,([a-z0-9+/]+=*)$`)
+//
+// The media-type component is a fixed allow-list of raster formats
+// (png/jpeg/jpg/gif/webp), deliberately not a general "image/*" wildcard —
+// image/svg+xml is XML, not a raster format, and can carry a <script> tag
+// or an onload= event handler that some mail clients execute when they
+// render an inline image; a wildcard would have let a comment's own author
+// smuggle active content in as an "image." inlineImageExtensions
+// (dispatch.go) mirrors this exact list for its own reason (a file
+// extension for the resulting EmailAttachment's ContentName) — keep both
+// lists in sync if this one ever changes.
+var safeImageDataURI = regexp.MustCompile(`(?i)^data:(image/(?:png|jpe?g|gif|webp));base64,([a-z0-9+/]+=*)$`)
+
+// maxInlineImageBytes bounds one inline image's decoded size — without a
+// cap, a single comment could embed an image large enough to bloat the
+// outgoing email past email-service's own request-body limit (10MB
+// default, README.md there) or meaningfully inflate this process's memory
+// use while rendering. 5MB comfortably covers a real pasted screenshot
+// (typically well under 1MB) with headroom to spare.
+const maxInlineImageBytes = 5 * 1024 * 1024
+
+// maxInlineImagesPerComment bounds how many images one sanitizeRichText
+// call will extract — a real comment realistically embeds one or two
+// pasted screenshots, not dozens; this caps the worst case (a comment
+// crafted to embed many images) rather than trusting input size alone.
+// Once reached, every further <img> is dropped exactly like an unsafe one
+// (logged nowhere, same as any other rejected tag) — silently, not an
+// error, since a truncated comment still rendering is better than the
+// whole email failing to send over one over-decorated comment.
+const maxInlineImagesPerComment = 10
 
 // InlineImage is one image sanitizeRichText extracted out of a data: URI
 // <img> tag. The caller (dispatch, via notifications.Render*) is
@@ -308,17 +336,21 @@ func sanitizeRichText(s string) (string, []InlineImage) {
 						alt = string(val)
 					}
 				}
-				if m := safeImageDataURI.FindStringSubmatch(src); m != nil {
-					if data, err := base64.StdEncoding.DecodeString(m[2]); err == nil {
+				// len(images) < maxInlineImagesPerComment: once the cap is
+				// reached, every further <img> is dropped the same as an
+				// unsafe one — see that const's own doc comment.
+				if m := safeImageDataURI.FindStringSubmatch(src); m != nil && len(images) < maxInlineImagesPerComment {
+					// A base64 payload that fails to decode, or decodes
+					// past maxInlineImageBytes, is dropped silently, same
+					// as any other rejected <img> — the regex already
+					// rejected anything not shaped like valid base64, so a
+					// decode failure here only ever catches an edge case
+					// (e.g. non-canonical padding) the regex alone can't.
+					if data, err := base64.StdEncoding.DecodeString(m[2]); err == nil && len(data) <= maxInlineImageBytes {
 						contentID := nextInlineImageContentID()
 						images = append(images, InlineImage{ContentID: contentID, ContentType: m[1], Data: data})
 						b.WriteString(`<img src="cid:` + contentID + `" alt="` + escapeHTML(alt) + `" style="max-width:100%;height:auto;">`)
 					}
-					// A base64 payload that fails to decode is dropped
-					// silently, same as any other rejected <img> — the
-					// regex already rejected anything not shaped like valid
-					// base64, so this only ever catches a decode-level edge
-					// case (e.g. non-canonical padding) regex alone can't.
 				}
 				continue
 			}

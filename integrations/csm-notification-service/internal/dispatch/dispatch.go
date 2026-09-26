@@ -1136,11 +1136,13 @@ func maskPhone(phone string) string {
 // attachment), so any reasonably-shaped name satisfies that requirement.
 // Falls back to no extension for a content type outside this small,
 // deliberately narrow list — sanitizeRichText's own safeImageDataURI regex
-// only ever admits an "image/*" type, so this covers every real case; an
-// unrecognized one would only happen if that regex is ever widened without
-// updating this too.
+// only ever admits one of these exact raster subtypes (never a wildcard
+// "image/*", which would also let through image/svg+xml — XML, not a
+// raster format, and capable of carrying active content), so this covers
+// every real case; keep the two lists in sync if either ever changes.
 var inlineImageExtensions = map[string]string{
 	"image/png":  ".png",
+	"image/jpg":  ".jpg",
 	"image/jpeg": ".jpg",
 	"image/gif":  ".gif",
 	"image/webp": ".webp",

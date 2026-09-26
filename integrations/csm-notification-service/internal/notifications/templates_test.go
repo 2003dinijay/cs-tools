@@ -17,6 +17,7 @@
 package notifications
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -191,6 +192,46 @@ func TestSanitizeRichText_Images(t *testing.T) {
 		}
 		if images[0].ContentID == images[1].ContentID {
 			t.Errorf("both images share ContentID %q, want distinct ids", images[0].ContentID)
+		}
+	})
+
+	// image/svg+xml is XML, not a raster format, and can carry a <script>
+	// tag or an onload= handler some mail clients execute when rendering an
+	// inline image — safeImageDataURI's allow-list must reject it even
+	// though it's syntactically a well-formed data: URI.
+	t.Run("an svg+xml data URI is rejected, not extracted", func(t *testing.T) {
+		html, images := sanitizeRichText(`<img src="data:image/svg+xml;base64,aGVsbG8=">`)
+		if html != "" {
+			t.Errorf("html = %q, want empty", html)
+		}
+		if len(images) != 0 {
+			t.Errorf("got %d images, want 0 — image/svg+xml must never be extracted", len(images))
+		}
+	})
+
+	// An image past maxInlineImageBytes is dropped, not truncated or sent
+	// oversized — see that const's own doc comment for why.
+	t.Run("an oversized image is dropped, not truncated", func(t *testing.T) {
+		big := base64.StdEncoding.EncodeToString(make([]byte, maxInlineImageBytes+1))
+		html, images := sanitizeRichText(`<img src="data:image/png;base64,` + big + `">`)
+		if html != "" {
+			t.Errorf("html = %q, want empty", html)
+		}
+		if len(images) != 0 {
+			t.Errorf("got %d images, want 0 — an oversized image must be dropped", len(images))
+		}
+	})
+
+	// A comment embedding more images than maxInlineImagesPerComment must
+	// only ever extract up to that cap, dropping the rest silently.
+	t.Run("images past maxInlineImagesPerComment are dropped", func(t *testing.T) {
+		var sb strings.Builder
+		for i := 0; i < maxInlineImagesPerComment+3; i++ {
+			sb.WriteString(`<img src="` + dataURI + `">`)
+		}
+		_, images := sanitizeRichText(sb.String())
+		if len(images) != maxInlineImagesPerComment {
+			t.Errorf("got %d images, want exactly %d (the cap)", len(images), maxInlineImagesPerComment)
 		}
 	})
 }
