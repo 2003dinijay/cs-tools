@@ -265,3 +265,30 @@ export function isRotationShift(shift: ScheduleShift | undefined): boolean {
 export function isPeerRotation(shift: ScheduleShift | undefined): boolean {
   return isRotationShift(shift);
 }
+
+/**
+ * The key two windows share when they are the same working day and differ
+ * only in which team works it.
+ *
+ * Regular hours and the India region shift are both 09:00-18:00, authored in
+ * the same zone, worked on the same days -- the code says which team, not a
+ * different set of hours. Anywhere the rota is shown grouped by team, listing
+ * them apart says nothing the team names do not already say, and costs the
+ * reader a second card to cross-reference.
+ *
+ * Only standing windows fold. A rotation is a turn somebody takes rather than
+ * when their team works, and being on call or on an escalation tier is not a
+ * fact about which team you are on -- a team list cannot carry either, so
+ * those keep their own identity however their hours line up.
+ */
+export function standingWindowKey(shift: ScheduleShift | undefined, fallback: string): string {
+  if (!shift || shift.isRotation || shift.isOnCall || shift.isEscalation) return fallback;
+  return [
+    "window",
+    shift.family,
+    shift.startMinute,
+    shift.endMinute,
+    shift.authoringTimeZone,
+    shift.dayScope,
+  ].join(":");
+}

@@ -18,7 +18,14 @@
 
 import { useMemo, useState, type JSX } from "react";
 import type { ScheduleAssignment, ScheduleShift } from "../types";
-import { addDays, groupBy, initialsOf, shortDayName, toIsoDate } from "../utils/rota";
+import {
+  addDays,
+  groupBy,
+  initialsOf,
+  shortDayName,
+  standingWindowKey,
+  toIsoDate,
+} from "../utils/rota";
 import { teamColour } from "../utils/rotaHues";
 
 interface WeekTableProps {
@@ -158,9 +165,21 @@ export default function WeekTable({
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
 
   const rows = useMemo(() => {
-    const byShift = groupBy(assignments, (a) => a.shiftCode);
-    return [...byShift.entries()]
-      .map(([code, list]) => ({ code, shift: shifts.get(code), list }))
+    // Windows that are the same working day under different team names share a
+    // row -- see standingWindowKey. This table already lists regular hours by
+    // team, so the India region shift arrives as one more team rather than as
+    // a row of its own saying the same nine-to-five over again.
+    const byWindow = groupBy(assignments, (a) =>
+      standingWindowKey(shifts.get(a.shiftCode), a.shiftCode),
+    );
+    return [...byWindow.entries()]
+      .map(([, list]) => {
+        // The window most of these people are on names the row, so it keeps
+        // the label and colour a reader already knows it by.
+        const counts = groupBy(list, (a) => a.shiftCode);
+        const lead = [...counts.entries()].sort((a, b) => b[1].length - a[1].length)[0][0];
+        return { code: lead, shift: shifts.get(lead), list };
+      })
       .sort((a, b) => (a.shift?.sortOrder ?? 999) - (b.shift?.sortOrder ?? 999));
   }, [assignments, shifts]);
 

@@ -26,6 +26,7 @@ import {
   mondayOf,
   partsInZone,
   placeOnDay,
+  standingWindowKey,
   timeOf,
   toIsoDate,
 } from "./rota";
@@ -194,3 +195,43 @@ describe("isPeerRotation", () => {
   });
 });
 
+describe("standingWindowKey", () => {
+  /** Regular hours and the India region shift, as the catalogue actually has
+   *  them: the same nine-to-five in the same zone on the same days. */
+  const regular = { ...shift("CRE_REGULAR", false), startMinute: 540, endMinute: 1080 };
+  const india = { ...shift("CRE_REGULAR_IND", false), startMinute: 540, endMinute: 1080 };
+
+  it("folds two standing windows that are the same working day", () => {
+    expect(standingWindowKey(regular, regular.code)).toBe(standingWindowKey(india, india.code));
+  });
+
+  it("keeps a window with different hours apart", () => {
+    const americas = { ...shift("CRE_AMERICAS", false), startMinute: 1260, endMinute: 1800 };
+    expect(standingWindowKey(americas, americas.code)).not.toBe(
+      standingWindowKey(regular, regular.code),
+    );
+  });
+
+  it("keeps the same hours apart across CRE and SRE", () => {
+    const sre = { ...regular, code: "SRE_REGULAR", family: "SRE" as const };
+    expect(standingWindowKey(sre, sre.code)).not.toBe(standingWindowKey(regular, regular.code));
+  });
+
+  it("never folds a rotation, however its hours line up", () => {
+    const rota = { ...shift("CRE_EVENING"), startMinute: 540, endMinute: 1080 };
+    expect(standingWindowKey(rota, rota.code)).toBe(rota.code);
+  });
+
+  it("never folds an on-call or escalation window", () => {
+    // Being on call is not a fact about which team you are on, so a card that
+    // lists teams cannot carry it and the window has to keep its own row.
+    const oc = { ...regular, code: "CRE_REGULAR_OC", isOnCall: true };
+    const esc = { ...regular, code: "SRE_TZ1", isEscalation: true };
+    expect(standingWindowKey(oc, oc.code)).toBe(oc.code);
+    expect(standingWindowKey(esc, esc.code)).toBe(esc.code);
+  });
+
+  it("falls back to the code when the catalogue has no such shift", () => {
+    expect(standingWindowKey(undefined, "MYSTERY")).toBe("MYSTERY");
+  });
+});

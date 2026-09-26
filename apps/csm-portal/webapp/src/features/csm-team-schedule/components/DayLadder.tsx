@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from "react";
 import type { ScheduleAbsence, ScheduleAbsenceKind, ScheduleAssignment, ScheduleShift, ScheduleZone } from "../types";
 import {
   dayLabel,
@@ -211,9 +211,36 @@ export default function DayLadder({
     const mergeSameHours = (cards: Block[]): Block[] => {
       const out: Block[] = [];
       for (const group of groupBy(cards, (c) => `${c.startMin}-${c.endMin}`).values()) {
-        const crowded = group.some((c) => c.rows.length > NAME_LIMIT);
-        if (group.length < 2 || crowded) {
+        if (group.length < 2) {
           out.push(...group);
+          continue;
+        }
+        const crowded = group.some((c) => c.rows.length > NAME_LIMIT);
+        if (crowded) {
+          // A card this size lists its teams rather than its names, and for
+          // windows that differ only in which team works them that team list
+          // is already the whole distinction -- regular hours and the India
+          // region shift are the same nine-to-five in the same zone, and the
+          // second card said nothing the first one's Phoenix row would not.
+          // So they fold together and the teams do the telling.
+          //
+          // On-call and escalation windows never fold in, whatever the hours:
+          // being on call is not a fact about which team you are on, and a
+          // team list cannot say it. Those stay their own card.
+          const plain = group.filter((c) => !c.shift?.isOnCall && !c.shift?.isEscalation);
+          if (plain.length < 2) {
+            out.push(...group);
+            continue;
+          }
+          // The biggest window leads, so the card keeps the name and colour a
+          // reader already knows it by.
+          const ordered = [...plain].sort((a, b) => b.rows.length - a.rows.length);
+          out.push({
+            ...ordered[0],
+            key: ordered.map((c) => c.key).join("+"),
+            rows: ordered.flatMap((c) => c.rows),
+          });
+          out.push(...group.filter((c) => !plain.includes(c)));
           continue;
         }
         // The first window leads -- its colour and chip -- and an on-call
@@ -503,14 +530,51 @@ function LadderBlock({ block, tz }: { block: Block; tz: string }): JSX.Element {
   // own people when the cursor rests on it.
   const crowded = block.rows.length > NAME_LIMIT;
 
+  // A card is as tall as its hours, and some hours are short: the Americas
+  // weekend night shows only 21:00-24:00 on the Sunday it starts, three hours
+  // that held one name and now hold two roles. What did not fit was clipped
+  // with nothing to say it was there. So a card measures itself, says when it
+  // is holding more than it shows, and opens to its full height on hover,
+  // focus or a tap.
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [clipped, setClipped] = useState(false);
+  const [open, setOpen] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = (): void => {
+      if (!el.classList.contains("open")) setClipped(el.scrollHeight > el.clientHeight + 2);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [block]);
+  // Late in the day there is no room below -- the ladder ends at midnight -- so
+  // a card there opens upward from its own end instead.
+  const opensUp = block.startMin >= 18 * 60;
+  const isOpen = clipped && open;
+
   return (
     <div
-      className={`zblk ${token.toLowerCase()}`}
+      ref={ref}
+      className={`zblk ${token.toLowerCase()}${clipped ? " canopen" : ""}${isOpen ? " open" : ""}`}
       style={{
-        top: px(block.startMin),
-        height: px(block.endMin - block.startMin),
+        ...(isOpen && opensUp
+          ? { bottom: `calc(100% - ${px(block.endMin)}px)`, top: "auto" }
+          : { top: px(block.startMin) }),
+        ...(isOpen
+          ? { height: "auto", minHeight: px(block.endMin - block.startMin) }
+          : { height: px(block.endMin - block.startMin) }),
         ["--zc" as string]: `var(--${token.toLowerCase()}-fg, var(--faint))`,
       }}
+      tabIndex={clipped ? 0 : undefined}
+      aria-expanded={clipped ? isOpen : undefined}
+      onMouseEnter={clipped ? () => setOpen(true) : undefined}
+      onMouseLeave={clipped ? () => setOpen(false) : undefined}
+      onFocus={clipped ? () => setOpen(true) : undefined}
+      onBlur={clipped ? () => setOpen(false) : undefined}
+      onClick={clipped ? () => setOpen((o) => !o) : undefined}
     >
       <div className="zbh">
         <span className={`chip sm ${token}`}>
@@ -552,6 +616,11 @@ function LadderBlock({ block, tz }: { block: Block; tz: string }): JSX.Element {
           </>
         )}
       </div>
+      {clipped && !isOpen ? (
+        <span className="zbmore" aria-hidden="true">
+          Show all {block.rows.length}
+        </span>
+      ) : null}
     </div>
   );
 }
