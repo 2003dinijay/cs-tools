@@ -18,7 +18,12 @@
 
 import { useMemo, useRef, useState, type JSX } from "react";
 import { Users } from "@wso2/oxygen-ui-icons-react";
-import type { ScheduleAssignment, ScheduleShift } from "../types";
+import type {
+  ScheduleAbsence,
+  ScheduleAbsenceKind,
+  ScheduleAssignment,
+  ScheduleShift,
+} from "../types";
 import { addDays, groupBy, initialsOf, shortDayName, timeOf, toIsoDate , isPeerRotation } from "../utils/rota";
 import { teamColour } from "../utils/rotaHues";
 
@@ -30,6 +35,11 @@ interface MyWeekStripProps {
   everyone: ScheduleAssignment[];
   shifts: Map<string, ScheduleShift>;
   tz: string;
+  /** The engineer's own leave and allocations over the week. Without them a
+   *  day on leave, or lent to a customer, read "—" -- the same as a day with
+   *  nothing on it, which is the one thing it is not. */
+  myAbsences?: ScheduleAbsence[];
+  absenceKinds?: ScheduleAbsenceKind[];
 }
 
 /** How long the cursor must rest on a day before it opens, so sweeping across
@@ -55,6 +65,8 @@ export default function MyWeekStrip({
   everyone,
   shifts,
   tz,
+  myAbsences = [],
+  absenceKinds = [],
 }: MyWeekStripProps): JSX.Element {
   const [openDay, setOpenDay] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
@@ -64,6 +76,11 @@ export default function MyWeekStrip({
     [weekStart],
   );
   const mineByDay = useMemo(() => groupBy(mine, (a) => a.rotaDate), [mine]);
+  const kindByCode = useMemo(() => new Map(absenceKinds.map((k) => [k.code, k])), [absenceKinds]);
+  /** The absence covering a day, if any. An open-ended one (no end date) is a
+   *  standing allocation and covers every day from its start. */
+  const absenceOn = (iso: string): ScheduleAbsence | undefined =>
+    myAbsences.find((ab) => ab.startsOn <= iso && (!ab.endsOn || iso <= ab.endsOn));
   const todayIso = toIsoDate(new Date());
 
   const hoverOpen = (iso: string): void => {
@@ -100,6 +117,12 @@ export default function MyWeekStrip({
           const shift = first ? shifts.get(first.shiftCode) : undefined;
           const past = iso < todayIso;
           const weekend = d.getDay() === 0 || d.getDay() === 6;
+          // An allocation is one span across the weekend -- Friday and Monday
+          // are the same engagement -- but nobody works it on a Saturday, so
+          // a weekend inside one reads as off. Leave never spans a weekend.
+          const found = absenceOn(iso);
+          const absence =
+            found && weekend && kindByCode.get(found.kindCode)?.bucket !== "LEAVE" ? undefined : found;
 
           return (
             <div
@@ -138,7 +161,22 @@ export default function MyWeekStrip({
               </span>
               <span className="dw">{shortDayName(d)}</span>
               <span className="dn tn">{d.getDate()}</span>
-              {first && shift ? (
+              {absence ? (
+                // Leave or an allocation wins the day, as it does on the
+                // roster: someone away is not on the rota, whatever a
+                // generated row says.
+                <>
+                  <span
+                    className={`chip ${kindByCode.get(absence.kindCode)?.colourToken ?? ""}`}
+                    title={[kindByCode.get(absence.kindCode)?.label, absence.allocatedTo].filter(Boolean).join(" · ")}
+                  >
+                    {kindByCode.get(absence.kindCode)?.shortCode ?? absence.kindCode}
+                  </span>
+                  <span className="tm">
+                    {absence.allocatedTo ?? kindByCode.get(absence.kindCode)?.label ?? ""}
+                  </span>
+                </>
+              ) : first && shift ? (
                 <>
                   <span className={`chip ${shift.colourToken}`}>{shift.shortCode}</span>
                   <span className="tm">

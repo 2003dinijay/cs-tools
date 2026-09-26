@@ -286,6 +286,13 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     view === "mine" && Boolean(user?.email),
   );
 
+  // Their own leave and allocations over the same week, so My week can say
+  // "on leave" or "at a customer" rather than showing an empty day.
+  const mineAbsences = useScheduleAbsences(
+    { from: toIsoDate(weekStart), to: toIsoDate(addDays(weekStart, 6)), userEmail: user?.email ?? "" },
+    view === "mine" && Boolean(user?.email),
+  );
+
   // When this engineer is next on a rotation. Its own query, deliberately:
   // it looks forward from today rather than at whatever week the reader has
   // navigated to, so the answer does not change as they page around.
@@ -719,6 +726,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               everyone={rows}
               shifts={shifts}
               tz={tz}
+              myAbsences={mineAbsences.data?.absences ?? []}
+              absenceKinds={catalogue.data?.absenceKinds ?? []}
             />
           )}
         </div>

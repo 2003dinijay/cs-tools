@@ -111,6 +111,9 @@ export interface ScheduleAbsence {
   startsOn: string;
   endsOn?: string;
   note?: string;
+  /** Who an allocation is for -- the customer, or the product team for RnD.
+   *  The kind says what sort of time it is; this says for whom. */
+  allocatedTo?: string;
 }
 
 export interface SearchScheduleAssignmentsPayload {

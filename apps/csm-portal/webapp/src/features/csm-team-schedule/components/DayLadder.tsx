@@ -634,12 +634,18 @@ function OffRotaStack({
             ) : (
               <div className="offp">
                 {rows.map((r) => (
-                  <span className="lnm" key={r.id} title={`${r.engineer.name} · ${r.teamKey}`}>
+                  <span
+                    className="lnm"
+                    key={r.id}
+                    title={[r.engineer.name, r.teamKey, r.allocatedTo].filter(Boolean).join(" · ")}
+                  >
                     <span className="av" style={{ background: teamColour(r.teamKey) }}>
                       {initialsOf(r.engineer.name)}
                     </span>
                     <span className="who">{r.engineer.name}</span>
-                    <i className="tier-t">{r.teamKey}</i>
+                    {/* Who the time is for, where it is known -- the answer to
+                        "can I reach them" more often than their team is. */}
+                    <i className="tier-t">{r.allocatedTo ?? r.teamKey}</i>
                   </span>
                 ))}
               </div>
