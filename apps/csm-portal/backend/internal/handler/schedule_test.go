@@ -32,6 +32,39 @@ type mockEntityScheduleClient struct {
 	assignmentsFn func(ctx context.Context, body []byte) ([]byte, error)
 	absencesFn    func(ctx context.Context, body []byte) ([]byte, error)
 	onDutyFn      func(ctx context.Context, at string) ([]byte, error)
+
+	createFn   func(ctx context.Context, body []byte) ([]byte, error)
+	updateFn   func(ctx context.Context, id string, body []byte) ([]byte, error)
+	deleteFn   func(ctx context.Context, id, note string) ([]byte, error)
+	activityFn func(ctx context.Context, teamKey, from, to string) ([]byte, error)
+}
+
+func (m *mockEntityScheduleClient) CreateScheduleAssignment(ctx context.Context, body []byte) ([]byte, error) {
+	if m.createFn == nil {
+		return nil, nil
+	}
+	return m.createFn(ctx, body)
+}
+
+func (m *mockEntityScheduleClient) UpdateScheduleAssignment(ctx context.Context, id string, body []byte) ([]byte, error) {
+	if m.updateFn == nil {
+		return nil, nil
+	}
+	return m.updateFn(ctx, id, body)
+}
+
+func (m *mockEntityScheduleClient) DeleteScheduleAssignment(ctx context.Context, id, note string) ([]byte, error) {
+	if m.deleteFn == nil {
+		return nil, nil
+	}
+	return m.deleteFn(ctx, id, note)
+}
+
+func (m *mockEntityScheduleClient) GetScheduleActivity(ctx context.Context, teamKey, from, to string) ([]byte, error) {
+	if m.activityFn == nil {
+		return nil, nil
+	}
+	return m.activityFn(ctx, teamKey, from, to)
 }
 
 func (m *mockEntityScheduleClient) GetScheduleCatalogue(ctx context.Context) ([]byte, error) {

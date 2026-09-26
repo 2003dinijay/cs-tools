@@ -842,3 +842,33 @@ func (c *CustomerEntityClient) RecordAnnouncementRequestDeliveries(ctx context.C
 func (c *CustomerEntityClient) ListAnnouncementRequestDeliveries(ctx context.Context, id string) ([]byte, error) {
 	return c.do(ctx, http.MethodGet, fmt.Sprintf("/announcement-requests/%s/deliveries", url.PathEscape(id)), nil)
 }
+
+// CreateScheduleAssignment calls POST /team-schedule/assignments on the entity
+// service. Lead edit; the entity service enforces that the caller leads the team.
+func (c *CustomerEntityClient) CreateScheduleAssignment(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/team-schedule/assignments", body)
+}
+
+// UpdateScheduleAssignment calls PATCH /team-schedule/assignments/{id}.
+func (c *CustomerEntityClient) UpdateScheduleAssignment(ctx context.Context, id string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPatch, "/team-schedule/assignments/"+url.PathEscape(id), body)
+}
+
+// DeleteScheduleAssignment calls DELETE /team-schedule/assignments/{id}, passing
+// the optional note through unchanged.
+func (c *CustomerEntityClient) DeleteScheduleAssignment(ctx context.Context, id, note string) ([]byte, error) {
+	path := "/team-schedule/assignments/" + url.PathEscape(id)
+	if note != "" {
+		path += "?note=" + url.QueryEscape(note)
+	}
+	return c.do(ctx, http.MethodDelete, path, nil)
+}
+
+// GetScheduleActivity calls GET /team-schedule/activity for one team and window.
+func (c *CustomerEntityClient) GetScheduleActivity(ctx context.Context, teamKey, from, to string) ([]byte, error) {
+	q := url.Values{}
+	q.Set("teamKey", teamKey)
+	q.Set("from", from)
+	q.Set("to", to)
+	return c.do(ctx, http.MethodGet, "/team-schedule/activity?"+q.Encode(), nil)
+}

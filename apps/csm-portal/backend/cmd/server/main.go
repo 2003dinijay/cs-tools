@@ -323,6 +323,14 @@ func main() {
 	route("POST /team-schedule/assignments/search", handler.PermView, scheduleHandler.SearchScheduleAssignments)
 	route("POST /team-schedule/absences/search", handler.PermView, scheduleHandler.SearchScheduleAbsences)
 	route("GET /team-schedule/on-duty", handler.PermView, scheduleHandler.GetScheduleOnDuty)
+
+	// Lead edit. PermWrite keeps the control away from a caller who could not
+	// use it at all; whether this particular person leads this particular team
+	// is decided by entity-service, which has the membership to decide it.
+	route("POST /team-schedule/assignments", handler.PermWrite, scheduleHandler.CreateScheduleAssignment)
+	route("PATCH /team-schedule/assignments/{id}", handler.PermWrite, scheduleHandler.UpdateScheduleAssignment)
+	route("DELETE /team-schedule/assignments/{id}", handler.PermWrite, scheduleHandler.DeleteScheduleAssignment)
+	route("GET /team-schedule/activity", handler.PermView, scheduleHandler.GetScheduleActivity)
 	route("POST /configuration-items/search", handler.PermView, configurationItemHandler.SearchConfigurationItems)
 	route("POST /time-cards/search", handler.PermTimeCardsAndUpdates, timeCardHandler.SearchTimeCards)
 	route("POST /time-cards", handler.PermTimeCardsAndUpdates, timeCardHandler.CreateTimeCard)

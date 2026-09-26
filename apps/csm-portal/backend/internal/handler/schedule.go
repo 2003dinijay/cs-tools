@@ -33,6 +33,13 @@ type entityScheduleClient interface {
 	SearchScheduleAssignments(ctx context.Context, body []byte) ([]byte, error)
 	SearchScheduleAbsences(ctx context.Context, body []byte) ([]byte, error)
 	GetScheduleOnDuty(ctx context.Context, at string) ([]byte, error)
+
+	// Lead edit. The portal proxies these unchanged -- entity-service is where
+	// "may this person edit this team's rota" is decided.
+	CreateScheduleAssignment(ctx context.Context, body []byte) ([]byte, error)
+	UpdateScheduleAssignment(ctx context.Context, id string, body []byte) ([]byte, error)
+	DeleteScheduleAssignment(ctx context.Context, id, note string) ([]byte, error)
+	GetScheduleActivity(ctx context.Context, teamKey, from, to string) ([]byte, error)
 }
 
 // ScheduleHandler handles the Team Schedule reads: who is working, when, and
@@ -141,6 +148,81 @@ func (h *ScheduleHandler) GetScheduleOnDuty(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity GetScheduleOnDuty failed", "userID", user.UserID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to load who is on duty.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// CreateScheduleAssignment handles POST /team-schedule/assignments.
+//
+// The portal does not decide who may edit: entity-service checks that the
+// caller leads the team the slot belongs to, and the body is passed through
+// unchanged. PermWrite here only keeps the control out of the hands of someone
+// who could not use it at all.
+func (h *ScheduleHandler) CreateScheduleAssignment(w http.ResponseWriter, r *http.Request) {
+	body, userID, ok := readScheduleBody(w, r)
+	if !ok {
+		return
+	}
+
+	result, err := h.entity.CreateScheduleAssignment(r.Context(), body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity CreateScheduleAssignment failed", "userID", userID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to add the assignment.")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// UpdateScheduleAssignment handles PATCH /team-schedule/assignments/{id}.
+func (h *ScheduleHandler) UpdateScheduleAssignment(w http.ResponseWriter, r *http.Request) {
+	body, userID, ok := readScheduleBody(w, r)
+	if !ok {
+		return
+	}
+
+	result, err := h.entity.UpdateScheduleAssignment(r.Context(), r.PathValue("id"), body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity UpdateScheduleAssignment failed", "userID", userID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to change the assignment.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// DeleteScheduleAssignment handles DELETE /team-schedule/assignments/{id}.
+func (h *ScheduleHandler) DeleteScheduleAssignment(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	if _, err := h.entity.DeleteScheduleAssignment(r.Context(), r.PathValue("id"), r.URL.Query().Get("note")); err != nil {
+		slog.ErrorContext(r.Context(), "entity DeleteScheduleAssignment failed", "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to remove the assignment.")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// GetScheduleActivity handles GET /team-schedule/activity.
+func (h *ScheduleHandler) GetScheduleActivity(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	q := r.URL.Query()
+	result, err := h.entity.GetScheduleActivity(r.Context(), q.Get("teamKey"), q.Get("from"), q.Get("to"))
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity GetScheduleActivity failed", "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to load the schedule history.")
 		return
 	}
 
