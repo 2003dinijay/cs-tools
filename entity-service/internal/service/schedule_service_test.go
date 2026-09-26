@@ -89,6 +89,11 @@ func (f *fakeScheduleRepo) ApplyRange(_ context.Context, req domain.ApplySchedul
 	return domain.ApplyScheduleRangeResponse{Applied: 1, SkippedDates: []string{}}, f.err
 }
 
+func (f *fakeScheduleRepo) ApplyAbsence(_ context.Context, req domain.ApplyScheduleAbsenceRequest, actor string) (domain.ApplyScheduleAbsenceResponse, error) {
+	f.called, f.gotActorEml = true, actor
+	return domain.ApplyScheduleAbsenceResponse{Created: 1}, f.err
+}
+
 func (f *fakeScheduleRepo) LeadTeamsFor(context.Context, string) ([]string, error) {
 	if f.leadsTeam {
 		return []string{"castor"}, f.err
@@ -423,5 +428,69 @@ func TestEditsNeedAUserNotAServiceCredential(t *testing.T) {
 	var forbidden *apierror.ForbiddenError
 	if !errors.As(err, &forbidden) {
 		t.Fatalf("want ForbiddenError for a service credential, got %v", err)
+	}
+}
+
+// Marking somebody away is an edit to the rota like any other, so it is behind
+// the same gate. Worth its own test because it reaches a different table and
+// could easily have been wired up without one.
+func TestMarkingLeaveIsLimitedToTheCallersOwnTeam(t *testing.T) {
+	repo := &leadOf{team: "castor"}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	ctx := leadCtx("castor.01@example.com")
+
+	req := domain.ApplyScheduleAbsenceRequest{
+		UserID:   "22222222-2222-2222-2222-222222222222",
+		TeamKey:  "draco", // a team this caller does not lead
+		KindCode: "ANNUAL_LEAVE",
+		From:     "2026-09-23",
+		To:       "2026-09-25",
+	}
+	if _, err := svc.ApplyAbsence(ctx, req); err == nil {
+		t.Fatal("a Castor lead was allowed to book leave on a Draco engineer")
+	} else {
+		var forbidden *apierror.ForbiddenError
+		if !errors.As(err, &forbidden) {
+			t.Fatalf("want ForbiddenError, got %v", err)
+		}
+	}
+	if repo.called {
+		t.Fatal("the repository was written to despite the caller not leading the team")
+	}
+
+	req.TeamKey = "castor"
+	if _, err := svc.ApplyAbsence(ctx, req); err != nil {
+		t.Fatalf("a Castor lead was refused their own team: %v", err)
+	}
+	if !repo.called {
+		t.Fatal("the write never reached the repository")
+	}
+}
+
+// An empty kindCode is how the picker clears a span, so it must stay valid --
+// while the fields that say who and when must not be droppable with it.
+func TestClearingLeaveStillNeedsWhoAndWhen(t *testing.T) {
+	repo := &leadOf{team: "castor"}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	ctx := leadCtx("castor.01@example.com")
+
+	clear := domain.ApplyScheduleAbsenceRequest{
+		UserID:  "22222222-2222-2222-2222-222222222222",
+		TeamKey: "castor",
+		From:    "2026-09-23",
+		To:      "2026-09-25",
+	}
+	if _, err := svc.ApplyAbsence(ctx, clear); err != nil {
+		t.Fatalf("clearing a span was refused: %v", err)
+	}
+
+	repo.called = false
+	noDates := clear
+	noDates.From = ""
+	if _, err := svc.ApplyAbsence(ctx, noDates); err == nil {
+		t.Fatal("a span with no start was accepted")
+	}
+	if repo.called {
+		t.Fatal("the repository was written to on an invalid request")
 	}
 }

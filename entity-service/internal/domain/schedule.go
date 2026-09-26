@@ -153,6 +153,36 @@ type ApplyScheduleRangeResponse struct {
 	SkippedDates []string `json:"skippedDates"`
 }
 
+// ApplyScheduleAbsenceRequest marks one engineer away across a span, or --
+// with an empty KindCode -- brings them back over it.
+//
+// Unlike a rota window, this is not resolved day by day. An absence is a span
+// in the model and stays one here: somebody away from Wednesday to the
+// following Tuesday is one fact, and storing it as five weekday rows would
+// lose the weekend in the middle that they are also away for.
+type ApplyScheduleAbsenceRequest struct {
+	UserID  string `json:"userId"`
+	TeamKey string `json:"teamKey"`
+	// KindCode empty clears the span instead of marking it.
+	KindCode string  `json:"kindCode"`
+	From     string  `json:"from"`
+	To       string  `json:"to"`
+	Note     *string `json:"note,omitempty"`
+}
+
+// ApplyScheduleAbsenceResponse says what the span did to what was already
+// there, which is rarely just "one row added".
+type ApplyScheduleAbsenceResponse struct {
+	// Created is 1 when a span was marked, 0 when it was cleared.
+	Created int `json:"created"`
+	// Removed is absences that fell entirely inside the span and went.
+	Removed int `json:"removed"`
+	// Trimmed is absences that overlapped one end and were shortened rather
+	// than deleted -- a fortnight of leave with three days cleared out of the
+	// middle is still a fortnight of leave either side.
+	Trimmed int `json:"trimmed"`
+}
+
 // ScheduleAssignmentActivity is one recorded change to the rota.
 type ScheduleAssignmentActivity struct {
 	ID           string    `json:"id"`

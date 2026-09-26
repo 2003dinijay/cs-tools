@@ -179,3 +179,17 @@ func (h *ScheduleHandler) ApplyScheduleRange(w http.ResponseWriter, r *http.Requ
 	}
 	writeScheduleJSON(w, http.StatusOK, res)
 }
+
+// ApplyScheduleAbsence handles POST /team-schedule/absences/apply.
+func (h *ScheduleHandler) ApplyScheduleAbsence(w http.ResponseWriter, r *http.Request) {
+	var req domain.ApplyScheduleAbsenceRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	res, err := h.svc.ApplyAbsence(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeScheduleJSON(w, http.StatusOK, res)
+}

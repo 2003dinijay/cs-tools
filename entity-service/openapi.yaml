@@ -5532,6 +5532,66 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /team-schedule/absences/apply:
+    post:
+      summary: Mark one engineer away across a span, or bring them back over it.
+      description: >
+        The other half of the month roster's cell picker. Unlike a rota window
+        this is not resolved day by day — an absence is a span in the model and
+        stays one, so a weekend inside the range is covered too. An empty
+        `kindCode` clears the span instead of marking it.
+
+
+        Absences already there are reconciled rather than replaced: one that
+        falls entirely inside the span is removed, one overlapping either end is
+        shortened, and one straddling both is split in two. Clearing three days
+        out of a fortnight of leave leaves the fortnight either side standing.
+        The whole thing is one transaction.
+      operationId: applyScheduleAbsence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyScheduleAbsenceRequest'
+      responses:
+        "200":
+          description: What was created, removed and shortened.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyScheduleAbsenceResponse'
+        "400":
+          description: Bad request — missing fields, malformed dates, or a range over a year.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /team-schedule/assignments/{id}:
     patch:
       summary: Change who holds a slot, or its detail.
@@ -16038,6 +16098,41 @@ components:
         name: { type: string }
         email: { type: string }
         isLead: { type: boolean }
+    ApplyScheduleAbsenceRequest:
+      type: object
+      required: [userId, teamKey, from, to]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        teamKey:
+          type: string
+        kindCode:
+          type: string
+          description: >-
+            A schedule_absence_kind code, e.g. ANNUAL_LEAVE. Empty, or omitted,
+            brings them back over the span instead.
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        note:
+          type: string
+    ApplyScheduleAbsenceResponse:
+      type: object
+      required: [created, removed, trimmed]
+      properties:
+        created:
+          type: integer
+          description: 1 when a span was marked, 0 when it was cleared.
+        removed:
+          type: integer
+          description: Absences that fell entirely inside the span and went.
+        trimmed:
+          type: integer
+          description: Absences shortened or split rather than deleted.
     ApplyScheduleRangeRequest:
       type: object
       required: [userId, teamKey, from, to]

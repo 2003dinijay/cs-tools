@@ -62,6 +62,8 @@ type ScheduleRepository interface {
 	// ApplyRange sets one engineer to one window across a span of days, which
 	// is how the roster's picker edits.
 	ApplyRange(ctx context.Context, req domain.ApplyScheduleRangeRequest, actorEmail string) (domain.ApplyScheduleRangeResponse, error)
+	// ApplyAbsence marks one engineer away across a span, or clears it.
+	ApplyAbsence(ctx context.Context, req domain.ApplyScheduleAbsenceRequest, actorEmail string) (domain.ApplyScheduleAbsenceResponse, error)
 }
 
 type scheduleRepository struct{ db *pgxpool.Pool }
@@ -742,6 +744,216 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 
 	if err := tx.Commit(ctx); err != nil {
 		return out, fmt.Errorf("commit apply range: %w", err)
+	}
+	return out, nil
+}
+
+// recordAbsenceActivity writes one row of absence history inside the caller's
+// transaction, for the reason 000095 gives.
+func recordAbsenceActivity(ctx context.Context, tx pgx.Tx,
+	id, userID, teamKey, kindCode, startsOn string, endsOn *string,
+	action, actorEmail string, field, oldV, newV, note *string) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO schedule_absence_activity
+		  (id, created_on, created_by, absence_id, user_id, team_key, kind_code,
+		   starts_on, ends_on, action, field_name, old_value, new_value, actor_email, note)
+		VALUES (gen_random_uuid(), now(), $1, $2::uuid, $3::uuid, $4, $5, $6::date, $7::date,
+		        $8, $9, $10, $11, $1, $12)`,
+		actorEmail, id, userID, teamKey, kindCode, startsOn, endsOn,
+		action, field, oldV, newV, note)
+	if err != nil {
+		return fmt.Errorf("record absence activity: %w", err)
+	}
+	return nil
+}
+
+// overlappingAbsence is one existing absence the span runs into, read before
+// anything is changed so the history can say what it was.
+type overlappingAbsence struct {
+	id       string
+	kindCode string
+	startsOn time.Time
+	endsOn   *time.Time
+}
+
+// ApplyAbsence implements ScheduleRepository.
+//
+// The hard part is not the insert, it is what the span does to the absences
+// already there. A lead clearing three days out of a fortnight of leave means
+// exactly that -- not that the fortnight is cancelled -- so an absence that
+// overlaps one end of the span is shortened, one that straddles both ends is
+// split in two, and only one that falls entirely inside it is removed.
+func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyScheduleAbsenceRequest, actorEmail string) (domain.ApplyScheduleAbsenceResponse, error) {
+	out := domain.ApplyScheduleAbsenceResponse{}
+
+	const iso = "2006-01-02"
+	from, err := time.Parse(iso, req.From)
+	if err != nil {
+		return out, &apierror.ValidationError{Msg: "from must be YYYY-MM-DD"}
+	}
+	to, err := time.Parse(iso, req.To)
+	if err != nil {
+		return out, &apierror.ValidationError{Msg: "to must be YYYY-MM-DD"}
+	}
+	if to.Before(from) {
+		from, to = to, from
+	}
+	if to.Sub(from) > 366*24*time.Hour {
+		return out, &apierror.ValidationError{Msg: "a range longer than a year is almost certainly a mistake"}
+	}
+	dayBefore := from.AddDate(0, 0, -1).Format(iso)
+	dayAfter := to.AddDate(0, 0, 1).Format(iso)
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return out, fmt.Errorf("begin apply absence: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var kindID string
+	if req.KindCode != "" {
+		if err := tx.QueryRow(ctx,
+			`SELECT id::text FROM schedule_absence_kind WHERE code = $1`, req.KindCode).Scan(&kindID); err != nil {
+			return out, &apierror.ValidationError{Msg: fmt.Sprintf("no such absence kind %q", req.KindCode)}
+		}
+	}
+
+	// Everything of this engineer's that the span touches. An open-ended
+	// absence (ends_on null) runs forever, so it overlaps anything at or after
+	// its start -- which daterange's own unbounded upper end already means.
+	rows, err := tx.Query(ctx, `
+		SELECT a.id::text, k.code, a.starts_on, a.ends_on
+		  FROM schedule_absence a
+		  JOIN schedule_absence_kind k ON k.id = a.kind_id
+		 WHERE a.user_id = $1::uuid
+		   AND daterange(a.starts_on, a.ends_on, '[]') && daterange($2::date, $3::date, '[]')`,
+		req.UserID, from.Format(iso), to.Format(iso))
+	if err != nil {
+		return out, fmt.Errorf("read overlapping absences: %w", err)
+	}
+	var hits []overlappingAbsence
+	for rows.Next() {
+		var h overlappingAbsence
+		if err := rows.Scan(&h.id, &h.kindCode, &h.startsOn, &h.endsOn); err != nil {
+			rows.Close()
+			return out, fmt.Errorf("scan overlapping absence: %w", err)
+		}
+		hits = append(hits, h)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("read overlapping absences: %w", err)
+	}
+
+	for _, h := range hits {
+		startsBefore := h.startsOn.Before(from)
+		endsAfter := h.endsOn == nil || h.endsOn.After(to)
+
+		switch {
+		case startsBefore && endsAfter:
+			// The span is a hole in the middle. Shorten this one to the part
+			// before it and add a second row for the part after, so the two
+			// stretches that still stand are both kept.
+			if _, err := tx.Exec(ctx,
+				`UPDATE schedule_absence SET ends_on = $2::date, updated_on = now(), updated_by = $3 WHERE id = $1::uuid`,
+				h.id, dayBefore, actorEmail); err != nil {
+				return out, fmt.Errorf("trim absence: %w", err)
+			}
+			var tailEnds *string
+			if h.endsOn != nil {
+				e := h.endsOn.Format(iso)
+				tailEnds = &e
+			}
+			var tailID string
+			if err := tx.QueryRow(ctx, `
+				INSERT INTO schedule_absence
+				  (id, created_on, updated_on, created_by, updated_by, user_id, team_key,
+				   kind_id, starts_on, ends_on, note)
+				SELECT gen_random_uuid(), now(), now(), $1, $1, a.user_id, a.team_key,
+				       a.kind_id, $2::date, $3::date, a.note
+				  FROM schedule_absence a WHERE a.id = $4::uuid
+				RETURNING id::text`,
+				actorEmail, dayAfter, tailEnds, h.id).Scan(&tailID); err != nil {
+				return out, fmt.Errorf("split absence: %w", err)
+			}
+			if err := recordAbsenceActivity(ctx, tx, h.id, req.UserID, req.TeamKey, h.kindCode,
+				h.startsOn.Format(iso), &dayBefore, "TRIMMED", actorEmail, nil, nil, nil, req.Note); err != nil {
+				return out, err
+			}
+			if err := recordAbsenceActivity(ctx, tx, tailID, req.UserID, req.TeamKey, h.kindCode,
+				dayAfter, tailEnds, "CREATED", actorEmail, nil, nil, nil, req.Note); err != nil {
+				return out, err
+			}
+			out.Trimmed++
+
+		case startsBefore:
+			if _, err := tx.Exec(ctx,
+				`UPDATE schedule_absence SET ends_on = $2::date, updated_on = now(), updated_by = $3 WHERE id = $1::uuid`,
+				h.id, dayBefore, actorEmail); err != nil {
+				return out, fmt.Errorf("trim absence: %w", err)
+			}
+			if err := recordAbsenceActivity(ctx, tx, h.id, req.UserID, req.TeamKey, h.kindCode,
+				h.startsOn.Format(iso), &dayBefore, "TRIMMED", actorEmail, nil, nil, nil, req.Note); err != nil {
+				return out, err
+			}
+			out.Trimmed++
+
+		case endsAfter:
+			if _, err := tx.Exec(ctx,
+				`UPDATE schedule_absence SET starts_on = $2::date, updated_on = now(), updated_by = $3 WHERE id = $1::uuid`,
+				h.id, dayAfter, actorEmail); err != nil {
+				return out, fmt.Errorf("trim absence: %w", err)
+			}
+			var ends *string
+			if h.endsOn != nil {
+				e := h.endsOn.Format(iso)
+				ends = &e
+			}
+			if err := recordAbsenceActivity(ctx, tx, h.id, req.UserID, req.TeamKey, h.kindCode,
+				dayAfter, ends, "TRIMMED", actorEmail, nil, nil, nil, req.Note); err != nil {
+				return out, err
+			}
+			out.Trimmed++
+
+		default:
+			// Entirely inside the span, so there is nothing of it left to keep.
+			var ends *string
+			if h.endsOn != nil {
+				e := h.endsOn.Format(iso)
+				ends = &e
+			}
+			if err := recordAbsenceActivity(ctx, tx, h.id, req.UserID, req.TeamKey, h.kindCode,
+				h.startsOn.Format(iso), ends, "DELETED", actorEmail, nil, nil, nil, req.Note); err != nil {
+				return out, err
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM schedule_absence WHERE id = $1::uuid`, h.id); err != nil {
+				return out, fmt.Errorf("remove absence: %w", err)
+			}
+			out.Removed++
+		}
+	}
+
+	if req.KindCode != "" {
+		var id string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO schedule_absence
+			  (id, created_on, updated_on, created_by, updated_by, user_id, team_key,
+			   kind_id, starts_on, ends_on, note)
+			VALUES (gen_random_uuid(), now(), now(), $1, $1, $2::uuid, $3, $4::uuid, $5::date, $6::date, $7)
+			RETURNING id::text`,
+			actorEmail, req.UserID, req.TeamKey, kindID, from.Format(iso), to.Format(iso), req.Note).Scan(&id); err != nil {
+			return out, fmt.Errorf("insert absence: %w", err)
+		}
+		toIso := to.Format(iso)
+		if err := recordAbsenceActivity(ctx, tx, id, req.UserID, req.TeamKey, req.KindCode,
+			from.Format(iso), &toIso, "CREATED", actorEmail, nil, nil, nil, req.Note); err != nil {
+			return out, err
+		}
+		out.Created = 1
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return out, fmt.Errorf("commit apply absence: %w", err)
 	}
 	return out, nil
 }
