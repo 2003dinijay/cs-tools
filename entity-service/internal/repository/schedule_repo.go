@@ -58,6 +58,10 @@ type ScheduleRepository interface {
 	// which rows to offer an edit control on; without it the page would have
 	// to show the control to everyone and let the 403 explain.
 	LeadTeamsFor(ctx context.Context, userEmail string) ([]string, error)
+
+	// ApplyRange sets one engineer to one window across a span of days, which
+	// is how the roster's picker edits.
+	ApplyRange(ctx context.Context, req domain.ApplyScheduleRangeRequest, actorEmail string) (domain.ApplyScheduleRangeResponse, error)
 }
 
 type scheduleRepository struct{ db *pgxpool.Pool }
@@ -614,4 +618,130 @@ func (r *scheduleRepository) LeadTeamsFor(ctx context.Context, userEmail string)
 		out = append(out, k)
 	}
 	return out, rows.Err()
+}
+
+// ApplyRange sets one engineer to one window across a span of days.
+//
+// One transaction for the whole span: a picker that says "Mon to Fri" and
+// leaves Wednesday half-done because the fourth insert failed is worse than
+// one that fails outright.
+//
+// A day the window is not worked on is skipped, not refused. Picking a weekday
+// rotation across a week containing a Saturday should set the five weekdays --
+// day_scope already knows which days each window runs, so this asks it rather
+// than deciding again here.
+//
+// Each day replaces whatever that engineer held: the roster is one slot per
+// person per day, and "put them on the evening shift" means instead of, not as
+// well as, their regular hours.
+func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplyScheduleRangeRequest, actorEmail string) (domain.ApplyScheduleRangeResponse, error) {
+	out := domain.ApplyScheduleRangeResponse{SkippedDates: []string{}}
+
+	from, err := time.Parse("2006-01-02", req.From)
+	if err != nil {
+		return out, &apierror.ValidationError{Msg: "from must be YYYY-MM-DD"}
+	}
+	to, err := time.Parse("2006-01-02", req.To)
+	if err != nil {
+		return out, &apierror.ValidationError{Msg: "to must be YYYY-MM-DD"}
+	}
+	if to.Before(from) {
+		from, to = to, from
+	}
+	if to.Sub(from) > 366*24*time.Hour {
+		return out, &apierror.ValidationError{Msg: "a range longer than a year is almost certainly a mistake"}
+	}
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return out, fmt.Errorf("begin apply range: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// No shift code means "take them off over this span" -- the picker's own
+	// clear option. There is no window to check a day against, so no day is
+	// skipped: every day in the range is cleared.
+	clearing := req.ShiftCode == ""
+
+	// The window's own day scope decides which days it can be worked.
+	var scope string
+	if !clearing {
+		if err := tx.QueryRow(ctx,
+			`SELECT day_scope::text FROM schedule_shift WHERE code = $1`, req.ShiftCode).Scan(&scope); err != nil {
+			return out, &apierror.ValidationError{Msg: fmt.Sprintf("no such shift %q", req.ShiftCode)}
+		}
+	}
+
+	for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {
+		weekend := d.Weekday() == time.Saturday || d.Weekday() == time.Sunday
+		if (scope == "WEEKDAY" && weekend) || (scope == "WEEKEND" && !weekend) {
+			out.Skipped++
+			out.SkippedDates = append(out.SkippedDates, d.Format("2006-01-02"))
+			continue
+		}
+		iso := d.Format("2006-01-02")
+
+		// Record what is being displaced before it goes, so the history is not
+		// a row appearing from nowhere.
+		rows, err := tx.Query(ctx, `SELECT `+assignmentColumns+assignmentFrom+`
+			WHERE a.user_id = $1::uuid AND a.rota_date = $2::date`, req.UserID, iso)
+		if err != nil {
+			return out, fmt.Errorf("read displaced assignments: %w", err)
+		}
+		displaced, err := scanAssignments(rows)
+		rows.Close()
+		if err != nil {
+			return out, err
+		}
+		for _, old := range displaced {
+			if err := recordActivity(ctx, tx, old, "DELETED", actorEmail, nil, nil, nil, req.Note); err != nil {
+				return out, err
+			}
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM schedule_assignment WHERE user_id = $1::uuid AND rota_date = $2::date`,
+			req.UserID, iso); err != nil {
+			return out, fmt.Errorf("clear the day: %w", err)
+		}
+
+		if clearing {
+			// A day that held nothing is not a day that was changed, so it
+			// does not count towards what the caller is told was applied.
+			out.Applied += len(displaced)
+			continue
+		}
+
+		var id string
+		err = tx.QueryRow(ctx, `
+			INSERT INTO schedule_assignment
+			  (id, created_on, updated_on, created_by, updated_by, user_id, team_id, team_key,
+			   shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, note)
+			SELECT gen_random_uuid(), now(), now(), $1, $1, $2::uuid,
+			       (SELECT t.id FROM team t WHERE lower(t.name) = lower($3)), $3,
+			       s.id, s.zone_id, s.tier, $4::date,
+			       ($4::date::timestamp + make_interval(mins => s.start_minute)) AT TIME ZONE s.authoring_time_zone,
+			       ($4::date::timestamp + make_interval(mins => s.end_minute))   AT TIME ZONE s.authoring_time_zone,
+			       s.is_on_call, 'MANUAL', $5
+			  FROM schedule_shift s
+			 WHERE s.code = $6
+			RETURNING id`,
+			actorEmail, req.UserID, req.TeamKey, iso, req.Note, req.ShiftCode).Scan(&id)
+		if err != nil {
+			return out, fmt.Errorf("insert assignment for %s: %w", iso, err)
+		}
+
+		created, err := assignmentByIDTx(ctx, tx, id)
+		if err != nil {
+			return out, err
+		}
+		if err := recordActivity(ctx, tx, created, "CREATED", actorEmail, nil, nil, nil, req.Note); err != nil {
+			return out, err
+		}
+		out.Applied++
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return out, fmt.Errorf("commit apply range: %w", err)
+	}
+	return out, nil
 }

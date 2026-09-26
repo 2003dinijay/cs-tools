@@ -84,6 +84,11 @@ func (f *fakeScheduleRepo) ActivityForTeam(context.Context, string, string, stri
 	return nil, f.err
 }
 
+func (f *fakeScheduleRepo) ApplyRange(_ context.Context, req domain.ApplyScheduleRangeRequest, actor string) (domain.ApplyScheduleRangeResponse, error) {
+	f.called, f.gotActorEml = true, actor
+	return domain.ApplyScheduleRangeResponse{Applied: 1, SkippedDates: []string{}}, f.err
+}
+
 func (f *fakeScheduleRepo) LeadTeamsFor(context.Context, string) ([]string, error) {
 	if f.leadsTeam {
 		return []string{"castor"}, f.err

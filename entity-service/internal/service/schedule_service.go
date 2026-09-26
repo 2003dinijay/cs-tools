@@ -51,6 +51,10 @@ type ScheduleService interface {
 
 	// MyLeadTeams is which teams this caller may edit.
 	MyLeadTeams(ctx context.Context) ([]string, error)
+
+	// ApplyRange is how the roster's picker edits: one engineer, one window,
+	// across a span of days.
+	ApplyRange(ctx context.Context, req domain.ApplyScheduleRangeRequest) (domain.ApplyScheduleRangeResponse, error)
 }
 
 type scheduleService struct {
@@ -295,4 +299,22 @@ func (s *scheduleService) MyLeadTeams(ctx context.Context) ([]string, error) {
 		return []string{}, nil
 	}
 	return s.repo.LeadTeamsFor(ctx, email)
+}
+
+// ApplyRange implements ScheduleService.
+func (s *scheduleService) ApplyRange(ctx context.Context, req domain.ApplyScheduleRangeRequest) (domain.ApplyScheduleRangeResponse, error) {
+	if err := validateUserID(req.UserID); err != nil {
+		return domain.ApplyScheduleRangeResponse{}, err
+	}
+	// shiftCode is the one optional field: empty means take them off the rota
+	// over the span rather than put them on a window.
+	if req.UserID == "" || req.TeamKey == "" || req.From == "" || req.To == "" {
+		return domain.ApplyScheduleRangeResponse{}, &apierror.ValidationError{
+			Msg: "userId, teamKey, from and to are all required",
+		}
+	}
+	if err := s.requireTeamLead(ctx, req.TeamKey); err != nil {
+		return domain.ApplyScheduleRangeResponse{}, err
+	}
+	return s.repo.ApplyRange(ctx, req, auth.IdentityFromContext(ctx).UserEmail)
 }

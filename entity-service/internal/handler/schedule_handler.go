@@ -165,3 +165,17 @@ func (h *ScheduleHandler) GetMyLeadTeams(w http.ResponseWriter, r *http.Request)
 	}
 	writeScheduleJSON(w, http.StatusOK, map[string]any{"teamKeys": teams})
 }
+
+// ApplyScheduleRange handles POST /team-schedule/assignments/apply.
+func (h *ScheduleHandler) ApplyScheduleRange(w http.ResponseWriter, r *http.Request) {
+	var req domain.ApplyScheduleRangeRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	res, err := h.svc.ApplyRange(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeScheduleJSON(w, http.StatusOK, res)
+}

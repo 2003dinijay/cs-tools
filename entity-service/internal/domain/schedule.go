@@ -126,6 +126,33 @@ type UpdateScheduleAssignmentRequest struct {
 	Note     *string `json:"note,omitempty"`
 }
 
+// ApplyScheduleRangeRequest sets one engineer to one window across a span of
+// days -- the shape the roster's cell picker works in.
+//
+// A day the shift is not valid on is skipped rather than refused: picking a
+// weekday rotation across a week that contains a Saturday should set the five
+// weekdays, not fail because of the Saturday.
+type ApplyScheduleRangeRequest struct {
+	UserID  string `json:"userId"`
+	TeamKey string `json:"teamKey"`
+	// ShiftCode empty means take them off the rota over the span -- the
+	// picker's own clear option.
+	ShiftCode string  `json:"shiftCode"`
+	From      string  `json:"from"`
+	To        string  `json:"to"`
+	Note      *string `json:"note,omitempty"`
+}
+
+// ApplyScheduleRangeResponse says what actually happened, because it is
+// routinely less than what was asked for.
+type ApplyScheduleRangeResponse struct {
+	Applied int `json:"applied"`
+	Skipped int `json:"skipped"`
+	// SkippedDates are the days the window is not worked on, so the caller can
+	// say which rather than only how many.
+	SkippedDates []string `json:"skippedDates"`
+}
+
 // ScheduleAssignmentActivity is one recorded change to the rota.
 type ScheduleAssignmentActivity struct {
 	ID           string    `json:"id"`
