@@ -53,6 +53,11 @@ type ScheduleRepository interface {
 
 	// ActivityForTeam is "what changed on my team this week".
 	ActivityForTeam(ctx context.Context, teamKey, from, to string) ([]domain.ScheduleAssignmentActivity, error)
+
+	// LeadTeamsFor is every team this caller leads. The UI needs it to know
+	// which rows to offer an edit control on; without it the page would have
+	// to show the control to everyone and let the 403 explain.
+	LeadTeamsFor(ctx context.Context, userEmail string) ([]string, error)
 }
 
 type scheduleRepository struct{ db *pgxpool.Pool }
@@ -577,6 +582,36 @@ func (r *scheduleRepository) ActivityForTeam(ctx context.Context, teamKey, from,
 		}
 		a.RotaDate = rota.Format("2006-01-02")
 		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// LeadTeamsFor returns the registry keys of every team this caller leads.
+//
+// team.name is the display name the registry maps a key onto, so it is
+// lowercased here to give the frontend the same key it filters by everywhere
+// else.
+func (r *scheduleRepository) LeadTeamsFor(ctx context.Context, userEmail string) ([]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT lower(t.name)
+		  FROM team_member tm
+		  JOIN "user" u ON u.id = tm.user_id
+		  JOIN team t    ON t.id = tm.team_id
+		 WHERE lower(u.email) = lower($1)
+		   AND tm.role = 'lead'
+		 ORDER BY 1`, userEmail)
+	if err != nil {
+		return nil, fmt.Errorf("query lead teams: %w", err)
+	}
+	defer rows.Close()
+
+	out := []string{}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("scan lead team: %w", err)
+		}
+		out = append(out, k)
 	}
 	return out, rows.Err()
 }

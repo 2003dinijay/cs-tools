@@ -57,6 +57,12 @@ interface MonthRosterProps {
   /** The signed-in reader, so their own row can be marked and brought into
    *  view. A month of a hundred-odd engineers is a haystack otherwise. */
   meEmail?: string;
+  /** The teams this reader leads, and may therefore edit. Empty for everyone
+   *  else, which is most people. */
+  leadTeams?: readonly string[];
+  /** Called when a lead picks a cell to change. The roster does not own the
+   *  edit dialog -- it only reports which slot was chosen. */
+  onEditCell?: (edit: { userId: string; name: string; teamKey: string; rotaDate: string }) => void;
 }
 
 interface Cell {
@@ -90,6 +96,8 @@ export default function MonthRoster({
   teams,
   families,
   meEmail,
+  leadTeams,
+  onEditCell,
 }: MonthRosterProps): JSX.Element {
   const [query, setQuery] = useState("");
   /** Fade everything that is not a turn on the rota.
@@ -237,6 +245,14 @@ export default function MonthRoster({
 
   const todayIso = toIsoDate(new Date());
   const me = meEmail?.trim().toLowerCase() ?? "";
+
+  /** Which rows this reader may change. A lead edits their own ABT only, so
+   *  most rows in a 122-engineer grid are not theirs to touch -- and an edit
+   *  control on every one of them would say otherwise. */
+  const canEdit = useMemo(() => {
+    const own = new Set((leadTeams ?? []).map((t) => t.toLowerCase()));
+    return (team: string) => Boolean(onEditCell) && own.has(team.toLowerCase());
+  }, [leadTeams, onEditCell]);
 
   const meRow = useRef<HTMLTableRowElement | null>(null);
   const scrolled = useRef(false);
@@ -452,11 +468,29 @@ export default function MonthRoster({
                     rotationsOnly && c && !c.isRotation ? "muted" : "";
 
                   if (!split) {
+                    const editable = canEdit(row.teamKey);
                     return (
                       <td
                         key={iso}
-                        className={`${marks} ${faded(cell)}`}
-                        title={cell ? `${row.name} · ${cell.title}` : undefined}
+                        className={`${marks} ${faded(cell)}${editable ? " c editable" : ""}`}
+                        title={
+                          editable
+                            ? `${row.name} · ${cell ? cell.title : "nothing rostered"} — click to change`
+                            : cell
+                              ? `${row.name} · ${cell.title}`
+                              : undefined
+                        }
+                        onClick={
+                          editable
+                            ? () =>
+                                onEditCell?.({
+                                  userId: row.userId,
+                                  name: row.name,
+                                  teamKey: row.teamKey,
+                                  rotaDate: iso,
+                                })
+                            : undefined
+                        }
                       >
                         {cell ? (
                           <span className={`chip sm ${cell.token}`}>{cell.code}</span>

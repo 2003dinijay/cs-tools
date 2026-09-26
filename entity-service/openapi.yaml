@@ -5589,6 +5589,51 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /team-schedule/my-lead-teams:
+    get:
+      summary: Which teams the caller may edit.
+      description: >
+        The registry keys of every team this caller leads. An empty list is a
+        valid answer for somebody who leads nothing; the portal uses it to decide
+        which rows to offer an edit control on.
+      operationId: getMyLeadTeams
+      responses:
+        "200":
+          description: The caller's lead teams.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teamKeys:
+                    type: array
+                    items:
+                      type: string
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /team-schedule/activity:
     get:
       summary: What changed on a team's rota, newest first.

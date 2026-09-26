@@ -83,6 +83,13 @@ func (f *fakeScheduleRepo) ActivityForTeam(context.Context, string, string, stri
 	return nil, f.err
 }
 
+func (f *fakeScheduleRepo) LeadTeamsFor(context.Context, string) ([]string, error) {
+	if f.leadsTeam {
+		return []string{"castor"}, f.err
+	}
+	return []string{}, f.err
+}
+
 func (f *fakeScheduleRepo) Catalogue(context.Context) (domain.ScheduleCatalogue, error) {
 	f.called = true
 	return f.catalogue, f.err

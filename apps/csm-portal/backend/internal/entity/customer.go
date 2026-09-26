@@ -872,3 +872,8 @@ func (c *CustomerEntityClient) GetScheduleActivity(ctx context.Context, teamKey,
 	q.Set("to", to)
 	return c.do(ctx, http.MethodGet, "/team-schedule/activity?"+q.Encode(), nil)
 }
+
+// GetMyLeadTeams calls GET /team-schedule/my-lead-teams on the entity service.
+func (c *CustomerEntityClient) GetMyLeadTeams(ctx context.Context) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, "/team-schedule/my-lead-teams", nil)
+}

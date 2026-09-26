@@ -16,10 +16,18 @@
  * under the License.
  */
 
-import { keepPreviousData, useQuery, type UseQueryResult } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseMutationResult,
+  type UseQueryResult,
+} from "@tanstack/react-query";
 import { useBackendApi } from "@api/backend/client";
 import type {
   ScheduleAbsencesResponse,
+  ScheduleAssignment,
   ScheduleAssignmentsResponse,
   ScheduleCatalogue,
   SearchScheduleAbsencesPayload,
@@ -41,6 +49,7 @@ const QK = {
   assignments: (p: SearchScheduleAssignmentsPayload) =>
     ["team-schedule", "assignments", p] as const,
   absences: (p: SearchScheduleAbsencesPayload) => ["team-schedule", "absences", p] as const,
+  leadTeams: ["team-schedule", "my-lead-teams"] as const,
 };
 
 /**
@@ -95,5 +104,101 @@ export function useScheduleAbsences(
     enabled,
     placeholderData: keepPreviousData,
     staleTime: ROTA_STALE_MS,
+  });
+}
+
+/**
+ * Which teams this reader may edit.
+ *
+ * Asked once and cached: it changes when somebody is made a lead, not while
+ * they are looking at a rota. The page uses it to decide whether to offer an
+ * edit control at all -- entity-service refuses the write either way, but a
+ * control that always fails is worse than no control.
+ */
+export function useMyLeadTeams(): UseQueryResult<string[], Error> {
+  const api = useBackendApi();
+  return useQuery<string[], Error>({
+    queryKey: QK.leadTeams,
+    queryFn: async () => {
+      const r = await api.get<{ teamKeys?: string[] }>("/team-schedule/my-lead-teams");
+      return r?.teamKeys ?? [];
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+/** Everything a write touches, so the views redraw from the server rather than
+ *  from an optimistic guess about what the server did. */
+function invalidateRota(qc: ReturnType<typeof useQueryClient>): void {
+  void qc.invalidateQueries({ queryKey: ["team-schedule", "assignments"] });
+  void qc.invalidateQueries({ queryKey: ["team-schedule", "absences"] });
+}
+
+export interface CreateAssignmentPayload {
+  userId: string;
+  teamKey: string;
+  shiftCode: string;
+  rotaDate: string;
+  tier?: string | null;
+  isOnCall?: boolean | null;
+  note?: string | null;
+}
+
+/** Put somebody on a window. Lead only; the server decides. */
+export function useCreateAssignment(): UseMutationResult<
+  ScheduleAssignment,
+  Error,
+  CreateAssignmentPayload
+> {
+  const api = useBackendApi();
+  const qc = useQueryClient();
+  return useMutation<ScheduleAssignment, Error, CreateAssignmentPayload>({
+    mutationFn: (payload) =>
+      api.post<CreateAssignmentPayload, ScheduleAssignment>("/team-schedule/assignments", payload),
+    onSuccess: () => invalidateRota(qc),
+  });
+}
+
+export interface UpdateAssignmentPayload {
+  id: string;
+  userId?: string;
+  tier?: string;
+  isOnCall?: boolean;
+  note?: string;
+}
+
+/** Change who holds a slot. */
+export function useUpdateAssignment(): UseMutationResult<
+  ScheduleAssignment,
+  Error,
+  UpdateAssignmentPayload
+> {
+  const api = useBackendApi();
+  const qc = useQueryClient();
+  return useMutation<ScheduleAssignment, Error, UpdateAssignmentPayload>({
+    mutationFn: ({ id, ...body }) =>
+      api.patch<Omit<UpdateAssignmentPayload, "id">, ScheduleAssignment>(
+        `/team-schedule/assignments/${encodeURIComponent(id)}`,
+        body,
+      ),
+    onSuccess: () => invalidateRota(qc),
+  });
+}
+
+/** Take somebody off a slot. */
+export function useDeleteAssignment(): UseMutationResult<
+  unknown,
+  Error,
+  { id: string; note?: string }
+> {
+  const api = useBackendApi();
+  const qc = useQueryClient();
+  return useMutation<unknown, Error, { id: string; note?: string }>({
+    mutationFn: ({ id, note }) =>
+      api.del(
+        `/team-schedule/assignments/${encodeURIComponent(id)}` +
+          (note ? `?note=${encodeURIComponent(note)}` : ""),
+      ),
+    onSuccess: () => invalidateRota(qc),
   });
 }

@@ -40,6 +40,7 @@ type entityScheduleClient interface {
 	UpdateScheduleAssignment(ctx context.Context, id string, body []byte) ([]byte, error)
 	DeleteScheduleAssignment(ctx context.Context, id, note string) ([]byte, error)
 	GetScheduleActivity(ctx context.Context, teamKey, from, to string) ([]byte, error)
+	GetMyLeadTeams(ctx context.Context) ([]byte, error)
 }
 
 // ScheduleHandler handles the Team Schedule reads: who is working, when, and
@@ -223,6 +224,24 @@ func (h *ScheduleHandler) GetScheduleActivity(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity GetScheduleActivity failed", "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to load the schedule history.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// GetMyLeadTeams handles GET /team-schedule/my-lead-teams.
+func (h *ScheduleHandler) GetMyLeadTeams(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	result, err := h.entity.GetMyLeadTeams(r.Context())
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity GetMyLeadTeams failed", "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to check your team permissions.")
 		return
 	}
 

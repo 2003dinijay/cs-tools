@@ -48,6 +48,9 @@ type ScheduleService interface {
 	UpdateAssignment(ctx context.Context, id string, req domain.UpdateScheduleAssignmentRequest) (domain.ScheduleAssignment, error)
 	DeleteAssignment(ctx context.Context, id string, note *string) error
 	TeamActivity(ctx context.Context, teamKey, from, to string) ([]domain.ScheduleAssignmentActivity, error)
+
+	// MyLeadTeams is which teams this caller may edit.
+	MyLeadTeams(ctx context.Context) ([]string, error)
 }
 
 type scheduleService struct {
@@ -276,4 +279,20 @@ func (s *scheduleService) TeamActivity(ctx context.Context, teamKey, from, to st
 		return nil, err
 	}
 	return s.repo.ActivityForTeam(ctx, teamKey, from, to)
+}
+
+// MyLeadTeams implements ScheduleService.
+//
+// No team argument and nothing to authorize beyond being internal: the answer
+// is about the caller, and an empty list is a perfectly good answer for
+// somebody who leads nothing.
+func (s *scheduleService) MyLeadTeams(ctx context.Context) ([]string, error) {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return nil, err
+	}
+	email := auth.IdentityFromContext(ctx).UserEmail
+	if email == "" {
+		return []string{}, nil
+	}
+	return s.repo.LeadTeamsFor(ctx, email)
 }

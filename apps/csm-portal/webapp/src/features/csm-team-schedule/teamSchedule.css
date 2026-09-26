@@ -939,3 +939,17 @@
 .csm-ts .tw.roster thead th.wkstart {
   border-left: 1px solid var(--line-2);
 }
+
+/* My week: the "Who's on" cue is shown at rest, not only on hover -- it is the
+   only sign a card opens, and a touch screen never hovers. Hover and the open
+   day only strengthen it. */
+.csm-ts .dayc .daysee{display:inline-flex;align-items:center;gap:4px;opacity:.75;transform:translate(-50%,0);color:var(--accent-ink);font-size:10px;font-weight:600}
+.csm-ts .dayc:hover .daysee,.csm-ts .dayc:focus-visible .daysee,.csm-ts .dayc.picked .daysee{opacity:1;background:var(--accent-soft)}
+.csm-ts .dayc.past .daysee{opacity:.9}
+/* Until a day is opened, the space its list will fill says what to do. */
+.csm-ts .peekhint{display:flex;align-items:center;gap:10px;margin:0 18px;padding:12px 14px;border:1px dashed var(--line-2);border-radius:10px;font-size:12.5px;color:var(--muted);background:transparent}
+.csm-ts .peekhint b{color:var(--ink);font-weight:600}
+.csm-ts .peekhint svg{flex:none;color:var(--accent-ink)}
+/* At phone width seven cards leave ~40px each: the label cannot fit and would
+   run into its neighbours, so the cue keeps only its icon there. */
+@media (max-width:640px){.csm-ts .dayc .daysee{padding:1px 4px;gap:0}.csm-ts .dayc .daysee .dslabel{display:none}}

@@ -17,6 +17,7 @@
  */
 
 import { useMemo, useRef, useState, type JSX } from "react";
+import { Users } from "@wso2/oxygen-ui-icons-react";
 import type { ScheduleAssignment, ScheduleShift } from "../types";
 import { addDays, groupBy, initialsOf, shortDayName, timeOf, toIsoDate , isPeerRotation } from "../utils/rota";
 import { teamColour } from "../utils/rotaHues";
@@ -42,6 +43,11 @@ const HOVER_DELAY_MS = 110;
  * It opens on hover and does not close on the way out -- a reader who just
  * opened a day is almost always heading down to read it, and closing it under
  * them would snatch it away mid-move. Clicking the open day closes it.
+ *
+ * That a card opens at all has to be visible before anyone hovers: a cue that
+ * only appears on hover teaches nothing, and on a touch screen there is no
+ * hover. So every card carries a "Who's on" cue at rest, and until a day is
+ * opened the space the list will fill says what to do.
  */
 export default function MyWeekStrip({
   weekStart,
@@ -79,10 +85,6 @@ export default function MyWeekStrip({
 
   return (
     <>
-      <div className="striphd">
-        <span className="tapcue">Hover any day to see everyone on rotation</span>
-      </div>
-
       <div className="strip">
         {days.map((d) => {
           const iso = toIsoDate(d);
@@ -108,7 +110,9 @@ export default function MyWeekStrip({
               style={{ ["--rc" as string]: `var(--${(shift?.colourToken ?? "lk").toLowerCase()}-fg, var(--faint))` }}
               role="button"
               tabIndex={0}
-              title={`${d.toDateString()} — hover to see everyone on rotation`}
+              aria-expanded={openDay === iso}
+              aria-controls="mywk-peek"
+              aria-label={`${d.toDateString()}: show everyone on rotation`}
               onMouseEnter={() => hoverOpen(iso)}
               onMouseLeave={cancelHover}
               onFocus={() => setOpenDay(iso)}
@@ -121,7 +125,10 @@ export default function MyWeekStrip({
               }}
             >
               {iso === todayIso ? <span className="daytag">Today</span> : null}
-              <span className="daysee">{openDay === iso ? "close" : "who else?"}</span>
+              <span className="daysee" aria-hidden="true">
+                <Users size={11} />
+                <span className="dslabel">{openDay === iso ? "Hide" : "Who's on"}</span>
+              </span>
               <span className="dw">{shortDayName(d)}</span>
               <span className="dn tn">{d.getDate()}</span>
               {first && shift ? (
@@ -140,7 +147,7 @@ export default function MyWeekStrip({
       </div>
 
       {openDay ? (
-        <div className="peek">
+        <div className="peek" id="mywk-peek">
           <div className="ph">
             <b>
               {new Date(`${openDay}T00:00:00`).toLocaleDateString(undefined, {
@@ -159,15 +166,23 @@ export default function MyWeekStrip({
           </div>
           <PeekRows rows={openRows} shifts={shifts} />
         </div>
-      ) : null}
+      ) : (
+        <div className="peek peekhint" id="mywk-peek">
+          <Users size={16} />
+          <span>
+            <b>See who's on rotation with you.</b> Hover over a day above, or tap it, to list
+            everyone rostered that day.
+          </span>
+        </div>
+      )}
 
       <div className="wkstat">
         <span className="kv">
           <b>{onRotaCount}</b> of 7 days on rotation this week
         </span>
-        <span className="grp hint">
-          {openDay ? "Click the open day to close it" : "Hover a day for everyone on rotation"}
-        </span>
+        {openDay ? (
+          <span className="grp hint">Click the open day again, or ×, to close it</span>
+        ) : null}
       </div>
     </>
   );

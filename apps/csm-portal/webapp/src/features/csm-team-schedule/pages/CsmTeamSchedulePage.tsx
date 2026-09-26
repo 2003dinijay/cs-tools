@@ -20,6 +20,8 @@ import { useMemo, useState, type JSX } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import {
+  useDeleteAssignment,
+  useMyLeadTeams,
   useScheduleAbsences,
   useScheduleAssignments,
   useScheduleCatalogue,
@@ -31,7 +33,14 @@ import NextRotation from "../components/NextRotation";
 import WeekTable from "../components/WeekTable";
 import type { ScheduleAssignment } from "../types";
 import { resolveDisplayTimeZone } from "@utils/dateTime";
-import { addDays, mondayOf, shiftsByCode, toIsoDate, zoneAbbreviation } from "../utils/rota";
+import {
+  addDays,
+  isRotationShift,
+  mondayOf,
+  shiftsByCode,
+  toIsoDate,
+  zoneAbbreviation,
+} from "../utils/rota";
 import { zoneColour } from "../utils/rotaHues";
 import { SCHEDULE_THEME_VARS } from "../utils/useScheduleTheme";
 import "../teamSchedule.css";
@@ -79,7 +88,9 @@ const fmtShort = (d: Date): string =>
  * escalation tier.
  */
 export default function CsmTeamSchedulePage(): JSX.Element {
-  const [tab, setTab] = useState<ViewTab>("today");
+  /** null until the reader picks a tab, so the default can follow who they
+   *  are -- see `tab` below. */
+  const [tabChoice, setTab] = useState<ViewTab | null>(null);
   /** null until the reader picks one, so their own group can be the default
    *  once the profile arrives. Derived rather than corrected in an effect: an
    *  SRE engineer must never render a frame on CRE, because the tab gating
@@ -98,6 +109,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // over a call have no way of knowing whose clock they are each reading.
   const tz = resolveDisplayTimeZone(user?.timeZone);
   const catalogue = useScheduleCatalogue();
+
+  // Which teams this reader may edit. Asked once: it changes when somebody is
+  // made a lead, not while they are looking at a rota.
+  const leadTeams = useMyLeadTeams();
+  const removeAssignment = useDeleteAssignment();
+
 
   /** The reader's own group, from their CSM profile. Absent for anyone who
    *  belongs to no team -- a manager -- which is why it is optional rather
@@ -119,6 +136,13 @@ export default function CsmTeamSchedulePage(): JSX.Element {
 
   /** Nobody's group: a manager, who belongs to no team at all. */
   const isManager = myFamily === undefined;
+
+  /** The tab the page opens on. An engineer's first question is their own
+   *  rota, so they land on My week; a manager holds none, and comes here to see
+   *  who is covering, so they land on Today. Derived rather than set in an
+   *  effect, like `family` above: /users/me has settled before this page
+   *  mounts, so the first frame is already the right one. */
+  const tab: ViewTab = tabChoice ?? (isManager ? "today" : "mine");
 
   /** Whether the group on screen is the reader's own. */
   const ownGroup = !isManager && myFamily === family;
@@ -243,8 +267,35 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   );
 
   const shifts = useMemo(() => shiftsByCode(catalogue.data?.shifts ?? []), [catalogue.data?.shifts]);
-  const zones = catalogue.data?.zones ?? [];
-  const rows = assignments.data?.assignments ?? [];
+  // Memoised rather than written inline: `?? []` builds a fresh array on every
+  // render, so every memo downstream that depends on it recomputes every time
+  // -- and the React Compiler refuses to optimise a component whose manual
+  // memoization it cannot preserve. Flagged as a warning since this page was
+  // written; adding another consumer turned it into an error.
+  const zones = useMemo(() => catalogue.data?.zones ?? [], [catalogue.data?.zones]);
+  const rows = useMemo(
+    () => assignments.data?.assignments ?? [],
+    [assignments.data?.assignments],
+  );
+
+  /** A lead picked a cell on the roster.
+   *
+   *  Only removal is offered for now. Putting somebody *on* a slot needs an
+   *  engineer picker and a shift picker -- a real dialog, not a confirm -- and
+   *  shipping half of it as a prompt would be worse than not shipping it. The
+   *  roster reports the slot; what to do with it is decided here. */
+  const editCell = (edit: { userId: string; name: string; teamKey: string; rotaDate: string }): void => {
+    const held = rows.find(
+      (a) => a.engineer.userId === edit.userId && a.rotaDate === edit.rotaDate,
+    );
+    if (!held) return;
+    const shift = shifts.get(held.shiftCode);
+    if (!isRotationShift(shift)) return; // regular hours is not a rota turn to remove
+    if (!window.confirm(`Take ${edit.name} off ${shift?.label ?? held.shiftCode} on ${edit.rotaDate}?`)) {
+      return;
+    }
+    removeAssignment.mutate({ id: held.id, note: "removed from the month roster" });
+  };
 
   // SRE works in time zones, so its day is a lane per zone. CRE runs on one
   // clock, so it gets one lane.
@@ -442,14 +493,18 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         </div>
 
         {/* Above the card, not in it: this answers a question about the reader,
-            so the answer must not change when they click to another view. */}
-        <NextRotation
-          mine={upcoming.data?.assignments ?? []}
-          shifts={shifts}
-          tz={tz}
-          horizonDays={NEXT_ROTATION_HORIZON_DAYS}
-          isLoading={upcoming.isLoading}
-        />
+            so the answer must not change when they click to another view. Not
+            for a manager: they hold no rota, so it could only ever say
+            "nothing rostered". */}
+        {isManager ? null : (
+          <NextRotation
+            mine={upcoming.data?.assignments ?? []}
+            shifts={shifts}
+            tz={tz}
+            horizonDays={NEXT_ROTATION_HORIZON_DAYS}
+            isLoading={upcoming.isLoading}
+          />
+        )}
 
         <div className="card" id="ts-panel" role="tabpanel" aria-labelledby={`ts-tab-${view}`}>
           {assignments.isError ? (
@@ -474,6 +529,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
             <MonthRoster
               selectedIso={toIsoDate(anchor)}
               meEmail={user?.email}
+              leadTeams={leadTeams.data ?? []}
+              onEditCell={editCell}
               month={monthStart}
               assignments={rows}
               absences={absences.data?.absences ?? []}

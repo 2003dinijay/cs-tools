@@ -155,3 +155,13 @@ func (h *ScheduleHandler) GetScheduleActivity(w http.ResponseWriter, r *http.Req
 	}
 	writeScheduleJSON(w, http.StatusOK, map[string]any{"activity": rows, "count": len(rows)})
 }
+
+// GetMyLeadTeams handles GET /team-schedule/my-lead-teams.
+func (h *ScheduleHandler) GetMyLeadTeams(w http.ResponseWriter, r *http.Request) {
+	teams, err := h.svc.MyLeadTeams(r.Context())
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeScheduleJSON(w, http.StatusOK, map[string]any{"teamKeys": teams})
+}
