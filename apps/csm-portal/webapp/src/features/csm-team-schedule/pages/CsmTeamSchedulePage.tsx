@@ -20,12 +20,13 @@ import { useMemo, useState, type JSX } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import {
-  useDeleteAssignment,
+  useApplyRange,
   useMyLeadTeams,
   useScheduleAbsences,
   useScheduleAssignments,
   useScheduleCatalogue,
 } from "../api/useTeamSchedule";
+import CellPicker, { type CellPickerTarget } from "../components/CellPicker";
 import DayLadder, { type LadderLane } from "../components/DayLadder";
 import MonthRoster from "../components/MonthRoster";
 import MyWeekStrip from "../components/MyWeekStrip";
@@ -113,7 +114,20 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // Which teams this reader may edit. Asked once: it changes when somebody is
   // made a lead, not while they are looking at a rota.
   const leadTeams = useMyLeadTeams();
-  const removeAssignment = useDeleteAssignment();
+  const applyRange = useApplyRange();
+
+  /** Edit mode, and the cell it has open.
+   *
+   *  A mode rather than always-on, and owned here rather than by the roster,
+   *  because the toggle belongs with the other page controls that change what
+   *  a click does. Turning editing off closes whatever is open with it. */
+  const [editing, setEditing] = useState(false);
+  const [picker, setPicker] = useState<CellPickerTarget | null>(null);
+
+  /** Whether this reader leads anything, which is what decides whether the
+   *  toggle is offered. Whether a given row is theirs is a separate question
+   *  the roster answers per team, and the server answers again on the write. */
+  const canEditRota = (leadTeams.data ?? []).length > 0;
 
 
   /** The reader's own group, from their CSM profile. Absent for anyone who
@@ -278,23 +292,62 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     [assignments.data?.assignments],
   );
 
-  /** A lead picked a cell on the roster.
+  /** A lead picked a cell on the roster. The roster says which slot and
+   *  where on screen; the picker does the rest. */
+  const editCell = (edit: {
+    userId: string;
+    name: string;
+    teamKey: string;
+    rotaDate: string;
+    shiftCode?: string;
+    anchor: { top: number; left: number; bottom: number; right: number };
+  }): void => {
+    setPicker({ ...edit, baseShiftCode: baseShiftFor(edit.userId) });
+  };
+
+  /** The standing window this engineer sits in on an ordinary weekday, read
+   *  off what they already hold rather than assumed.
    *
-   *  Only removal is offered for now. Putting somebody *on* a slot needs an
-   *  engineer picker and a shift picker -- a real dialog, not a confirm -- and
-   *  shipping half of it as a prompt would be worse than not shipping it. The
-   *  roster reports the slot; what to do with it is decided here. */
-  const editCell = (edit: { userId: string; name: string; teamKey: string; rotaDate: string }): void => {
-    const held = rows.find(
-      (a) => a.engineer.userId === edit.userId && a.rotaDate === edit.rotaDate,
-    );
-    if (!held) return;
-    const shift = shifts.get(held.shiftCode);
-    if (!isRotationShift(shift)) return; // regular hours is not a rota turn to remove
-    if (!window.confirm(`Take ${edit.name} off ${shift?.label ?? held.shiftCode} on ${edit.rotaDate}?`)) {
-      return;
+   *  CRE runs two of them -- Lanka and India hours -- so which one somebody
+   *  goes back to when a rotation is cleared is a fact about that engineer,
+   *  not about their group, and guessing it would quietly move people onto
+   *  the wrong clock. */
+  const baseShiftFor = (userId: string): string | undefined => {
+    const seen = new Map<string, number>();
+    for (const a of rows) {
+      if (a.engineer.userId !== userId) continue;
+      if (isRotationShift(shifts.get(a.shiftCode))) continue;
+      seen.set(a.shiftCode, (seen.get(a.shiftCode) ?? 0) + 1);
     }
-    removeAssignment.mutate({ id: held.id, note: "removed from the month roster" });
+    let best: string | undefined;
+    let most = 0;
+    for (const [code, n] of seen) {
+      if (n > most) [best, most] = [code, n];
+    }
+    return best;
+  };
+
+  /** The windows this group runs, which is what the picker offers. Filtered
+   *  by family and nothing narrower: the catalogue's own codes are already
+   *  CRE or SRE, so there is no second rule to keep in step with. */
+  const pickerShifts = useMemo(
+    () => [...shifts.values()].filter((sh) => sh.family === family),
+    [shifts, family],
+  );
+
+  const applyToCell = (shiftCode: string, from: string, to: string): void => {
+    if (!picker) return;
+    applyRange.mutate(
+      {
+        userId: picker.userId,
+        teamKey: picker.teamKey,
+        shiftCode,
+        from,
+        to,
+        note: "set from the month roster",
+      },
+      { onSettled: () => setPicker(null) },
+    );
   };
 
   // SRE works in time zones, so its day is a lane per zone. CRE runs on one
@@ -489,8 +542,51 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                 Today
               </button>
             </div>
+
+            {canEditRota ? (
+              <button
+                className={`btn sm${editing ? " primary" : ""}`}
+                aria-pressed={editing}
+                onClick={() => {
+                  setEditing((v) => !v);
+                  setPicker(null);
+                }}
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  aria-hidden="true"
+                >
+                  <path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16v4z" />
+                </svg>
+                <span>{editing ? "Done editing" : "Edit rota"}</span>
+              </button>
+            ) : null}
           </div>
         </div>
+
+        {/* Only on the roster: it is the only view a cell can be clicked in,
+            and a bar saying "click a cell" above a view with none to click
+            reads as something broken. Names the teams because the grid shows
+            every team and only the reader's own rows are live. */}
+        {canEditRota && editing && view === "roster" ? (
+          <div className="editbar">
+            <span className="pill">Editing</span>
+            <span>
+              {(leadTeams.data ?? [])
+                .map((t) => t.charAt(0).toUpperCase() + t.slice(1))
+                .join(", ")}
+            </span>
+            <span className="hintx">
+              click a cell in your own team&rsquo;s rows to change that day
+              &middot; changes save as you make them
+            </span>
+          </div>
+        ) : null}
 
         {/* Above the card, not in it: this answers a question about the reader,
             so the answer must not change when they click to another view. Not
@@ -530,6 +626,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               selectedIso={toIsoDate(anchor)}
               meEmail={user?.email}
               leadTeams={leadTeams.data ?? []}
+              editing={editing}
               onEditCell={editCell}
               month={monthStart}
               assignments={rows}
@@ -549,6 +646,22 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           )}
         </div>
       </div>
+
+      {/* Outside the card on purpose: the card is the page's one scroller, and
+          anything positioned inside it is clipped at its edge. */}
+      {picker ? (
+        <CellPicker
+          // Keyed on the cell, so picking another one starts a fresh range
+          // rather than inheriting the last cell's end date.
+          key={`${picker.userId}|${picker.rotaDate}`}
+          target={picker}
+          shifts={pickerShifts}
+          busy={applyRange.isPending}
+          onApply={applyToCell}
+          onClear={applyToCell}
+          onClose={() => setPicker(null)}
+        />
+      ) : null}
     </div>
   );
 }

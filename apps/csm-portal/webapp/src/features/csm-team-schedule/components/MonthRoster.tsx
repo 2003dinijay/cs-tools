@@ -60,9 +60,24 @@ interface MonthRosterProps {
   /** The teams this reader leads, and may therefore edit. Empty for everyone
    *  else, which is most people. */
   leadTeams?: readonly string[];
+  /** Whether the page is in edit mode. A lead reads this grid far more often
+   *  than they change it, so cells are inert until editing is switched on --
+   *  a rota that writes on a single stray click is worse than one that needs
+   *  two. The toggle lives in the page toolbar, beside the other controls
+   *  that change what a click does. */
+  editing?: boolean;
   /** Called when a lead picks a cell to change. The roster does not own the
-   *  edit dialog -- it only reports which slot was chosen. */
-  onEditCell?: (edit: { userId: string; name: string; teamKey: string; rotaDate: string }) => void;
+   *  picker -- it only reports which slot was chosen, what is on it, and
+   *  where on screen it is, so the picker can open against the cell rather
+   *  than in the middle of the grid it is about. */
+  onEditCell?: (edit: {
+    userId: string;
+    name: string;
+    teamKey: string;
+    rotaDate: string;
+    shiftCode?: string;
+    anchor: { top: number; left: number; bottom: number; right: number };
+  }) => void;
 }
 
 interface Cell {
@@ -72,6 +87,9 @@ interface Cell {
   /** A turn on the rota, as opposed to leave, an allocation, or the standing
    *  regular-hours window that most of the team sits in on a normal day. */
   isRotation: boolean;
+  /** The window this cell came from, where it came from a rota row at all.
+   *  Absent for leave and allocations, which are not a window. */
+  shiftCode?: string;
 }
 
 /**
@@ -97,6 +115,7 @@ export default function MonthRoster({
   families,
   meEmail,
   leadTeams,
+  editing = false,
   onEditCell,
 }: MonthRosterProps): JSX.Element {
   const [query, setQuery] = useState("");
@@ -188,7 +207,13 @@ export default function MonthRoster({
       // shift we still hold that code on the assignment, so fall back to it
       // rather than calling a real rota turn something else.
       const isRotation = shift ? isRotationShift(shift) : !a.shiftCode.includes("REGULAR");
-      const made: Cell = { code, token, title: shift?.label ?? a.shiftCode, isRotation };
+      const made: Cell = {
+        code,
+        token,
+        title: shift?.label ?? a.shiftCode,
+        isRotation,
+        shiftCode: a.shiftCode,
+      };
 
       // A zoned window lands in its own sub-column; anything else is a fact
       // about the whole day and spans them.
@@ -251,8 +276,9 @@ export default function MonthRoster({
    *  control on every one of them would say otherwise. */
   const canEdit = useMemo(() => {
     const own = new Set((leadTeams ?? []).map((t) => t.toLowerCase()));
-    return (team: string) => Boolean(onEditCell) && own.has(team.toLowerCase());
-  }, [leadTeams, onEditCell]);
+    return (team: string) =>
+      editing && Boolean(onEditCell) && own.has(team.toLowerCase());
+  }, [leadTeams, onEditCell, editing]);
 
   const meRow = useRef<HTMLTableRowElement | null>(null);
   const scrolled = useRef(false);
@@ -482,13 +508,22 @@ export default function MonthRoster({
                         }
                         onClick={
                           editable
-                            ? () =>
+                            ? (e) => {
+                                const r = e.currentTarget.getBoundingClientRect();
                                 onEditCell?.({
                                   userId: row.userId,
                                   name: row.name,
                                   teamKey: row.teamKey,
                                   rotaDate: iso,
-                                })
+                                  shiftCode: cell?.shiftCode,
+                                  anchor: {
+                                    top: r.top,
+                                    left: r.left,
+                                    bottom: r.bottom,
+                                    right: r.right,
+                                  },
+                                });
+                              }
                             : undefined
                         }
                       >

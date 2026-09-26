@@ -202,3 +202,36 @@ export function useDeleteAssignment(): UseMutationResult<
     onSuccess: () => invalidateRota(qc),
   });
 }
+
+export interface ApplyRangePayload {
+  userId: string;
+  teamKey: string;
+  shiftCode: string;
+  from: string;
+  to: string;
+  note?: string;
+}
+
+export interface ApplyRangeResult {
+  applied: number;
+  skipped: number;
+  skippedDates: string[];
+}
+
+/**
+ * Set one engineer to one window across a span of days.
+ *
+ * One call for the whole span rather than one per day: the server does it in a
+ * transaction, so a range cannot end up half applied, and the answer says how
+ * many days were actually set -- which is routinely fewer than were asked for,
+ * because a weekday rotation skips the weekend inside the range.
+ */
+export function useApplyRange(): UseMutationResult<ApplyRangeResult, Error, ApplyRangePayload> {
+  const api = useBackendApi();
+  const qc = useQueryClient();
+  return useMutation<ApplyRangeResult, Error, ApplyRangePayload>({
+    mutationFn: (payload) =>
+      api.post<ApplyRangePayload, ApplyRangeResult>("/team-schedule/assignments/apply", payload),
+    onSuccess: () => invalidateRota(qc),
+  });
+}
