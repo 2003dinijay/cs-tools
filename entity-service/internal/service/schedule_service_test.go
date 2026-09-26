@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
@@ -324,5 +325,98 @@ func TestScheduleSearchesRejectMalformedUserID(t *testing.T) {
 		From: "2026-09-21", To: "2026-09-27", UserID: "3f2b8c1e-9d4a-4e7b-a1c2-5d6e7f8a9b0c",
 	}); err != nil {
 		t.Fatalf("a well-formed userId was refused: %v", err)
+	}
+}
+
+// leadOf answers "is this the team you lead", so a test can hand the service a
+// repository that knows one lead relationship and nothing else.
+type leadOf struct {
+	fakeScheduleRepo
+	team string
+}
+
+func (l *leadOf) LeadsTeam(_ context.Context, _, teamKey string) (bool, error) {
+	return teamKey == l.team, nil
+}
+
+func leadCtx(email string) context.Context {
+	return auth.WithIdentity(context.Background(), auth.Identity{Validated: true, UserEmail: email})
+}
+
+// A lead may change their own team's rota and nobody else's. This is the whole
+// of the edit permission, so it is worth testing from both sides rather than
+// only the happy one.
+func TestEditsAreLimitedToTheCallersOwnTeam(t *testing.T) {
+	repo := &leadOf{team: "castor"}
+	repo.byID = domain.ScheduleAssignment{
+		ID:       "11111111-1111-1111-1111-111111111111",
+		TeamKey:  "draco", // a team this caller does not lead
+		Engineer: domain.ScheduleEngineer{UserID: "22222222-2222-2222-2222-222222222222"},
+	}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	ctx := leadCtx("castor.01@example.com")
+
+	newUser := "33333333-3333-3333-3333-333333333333"
+	if _, err := svc.UpdateAssignment(ctx, repo.byID.ID, domain.UpdateScheduleAssignmentRequest{UserID: &newUser}); err == nil {
+		t.Fatal("a Castor lead was allowed to edit a Draco slot")
+	} else {
+		var forbidden *apierror.ForbiddenError
+		if !errors.As(err, &forbidden) {
+			t.Fatalf("want ForbiddenError, got %v", err)
+		}
+	}
+	if repo.called {
+		t.Fatal("the repository was written to despite the caller not leading the team")
+	}
+
+	// The same lead, on their own team, is allowed through.
+	repo.byID.TeamKey = "castor"
+	if _, err := svc.UpdateAssignment(ctx, repo.byID.ID, domain.UpdateScheduleAssignmentRequest{UserID: &newUser}); err != nil {
+		t.Fatalf("a Castor lead was refused their own team: %v", err)
+	}
+	if !repo.called {
+		t.Fatal("the write never reached the repository")
+	}
+}
+
+// The team is read from the row, not from the request. Otherwise a lead could
+// name their own team and edit anybody's slot: the check would pass and the
+// write would land somewhere else entirely.
+func TestCreateChecksTheTeamItWasGiven(t *testing.T) {
+	repo := &leadOf{team: "castor"}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+
+	_, err := svc.CreateAssignment(leadCtx("castor.01@example.com"), domain.CreateScheduleAssignmentRequest{
+		UserID:    "22222222-2222-2222-2222-222222222222",
+		TeamKey:   "draco",
+		ShiftCode: "CRE_EVENING",
+		RotaDate:  "2026-10-01",
+	})
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("want ForbiddenError creating into another team, got %v", err)
+	}
+	if repo.called {
+		t.Fatal("the repository was written to for a team the caller does not lead")
+	}
+}
+
+// A service credential has no user to be a lead of. Editing is a person's
+// action, and a machine presenting a client credential is not one.
+func TestEditsNeedAUserNotAServiceCredential(t *testing.T) {
+	repo := &leadOf{team: "castor"}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+
+	// Validated, unrestricted, but carrying no user email.
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{Validated: true, ClientID: "some-internal-service"})
+	_, err := svc.CreateAssignment(ctx, domain.CreateScheduleAssignmentRequest{
+		UserID:    "22222222-2222-2222-2222-222222222222",
+		TeamKey:   "castor",
+		ShiftCode: "CRE_EVENING",
+		RotaDate:  "2026-10-01",
+	})
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("want ForbiddenError for a service credential, got %v", err)
 	}
 }
