@@ -999,3 +999,25 @@
    it beside the avatar and wraps the text itself; the team line still takes its
    own row. */
 .csm-ts .weekwrap .tw .nm .who { flex: 1 1 0; min-width: 0; }
+
+/* ── Several months on one roster ─────────────────────────────────────────
+   Ninety columns only read as three months if the months are marked: a rule
+   where each one starts, heavier than the Monday gridline, and the month's
+   name beside the 1st so a reader scrolled to the middle still knows where
+   they are. */
+.csm-ts .tw.roster tbody td.mstart,
+.csm-ts .tw.roster thead th.mstart {
+  border-left: 2px solid var(--ink-2);
+}
+/* On the same line as the date: the date row has a fixed height, and the SRE
+   zone row is pinned directly beneath it at that height. */
+.csm-ts .tw.roster thead th.day .mo {
+  display: inline;
+  margin-left: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+}

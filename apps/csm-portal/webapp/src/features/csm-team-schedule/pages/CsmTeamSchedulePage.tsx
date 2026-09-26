@@ -20,11 +20,16 @@ import { useMemo, useState, type JSX } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import {
+  useApplyAbsence,
   useApplyRange,
   useMyLeadTeams,
   useScheduleAbsences,
+  useScheduleAbsencesByMonth,
   useScheduleAssignments,
+  useScheduleAssignmentsByMonth,
   useScheduleCatalogue,
+  type MonthWindow,
+  type RotaRead,
 } from "../api/useTeamSchedule";
 import CellPicker, { type CellPickerTarget } from "../components/CellPicker";
 import DayLadder, { type LadderLane } from "../components/DayLadder";
@@ -32,7 +37,11 @@ import MonthRoster from "../components/MonthRoster";
 import MyWeekStrip from "../components/MyWeekStrip";
 import NextRotation from "../components/NextRotation";
 import WeekTable from "../components/WeekTable";
-import type { ScheduleAssignment } from "../types";
+import type {
+  ScheduleAbsencesResponse,
+  ScheduleAssignment,
+  ScheduleAssignmentsResponse,
+} from "../types";
 import { resolveDisplayTimeZone } from "@utils/dateTime";
 import {
   addDays,
@@ -64,6 +73,18 @@ const TITLE: Record<ViewTab, string> = {
   today: "Who is working today",
   week: "Who is working this week",
   roster: "Month roster",
+};
+
+/** How many months the roster shows either side of the selected one. One:
+ *  last month, this month and next -- the history a lead checks a swap
+ *  against, and the month they are planning, without paging. */
+const ROSTER_MONTHS_EITHER_SIDE = 1;
+
+const fmtMonthRange = (first: Date, last: Date): string => {
+  const sameYear = first.getFullYear() === last.getFullYear();
+  const a = first.toLocaleDateString(undefined, sameYear ? { month: "short" } : { month: "short", year: "numeric" });
+  const b = last.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  return `${a} – ${b}`;
 };
 
 const fmtLong = (d: Date): string =>
@@ -115,6 +136,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // made a lead, not while they are looking at a rota.
   const leadTeams = useMyLeadTeams();
   const applyRange = useApplyRange();
+  const applyAbsence = useApplyAbsence();
 
   /** Edit mode, and the cell it has open.
    *
@@ -219,35 +241,43 @@ export default function CsmTeamSchedulePage(): JSX.Element {
 
   const dayView = view === "today";
   const rosterView = view === "roster";
-  const monthStart = useMemo(
-    () => new Date(anchor.getFullYear(), anchor.getMonth(), 1),
-    [anchor],
+  /** The roster's window: the selected month with one either side, as the
+   *  calendar months it is fetched in. Keyed on the month rather than the
+   *  anchor, so stepping a day inside a month does not rebuild it. */
+  const anchorMonthKey = `${anchor.getFullYear()}-${anchor.getMonth()}`;
+  const rosterMonths: MonthWindow[] = useMemo(() => {
+    const [y, m] = anchorMonthKey.split("-").map(Number);
+    const out: MonthWindow[] = [];
+    for (let o = -ROSTER_MONTHS_EITHER_SIDE; o <= ROSTER_MONTHS_EITHER_SIDE; o++) {
+      out.push({ from: toIsoDate(new Date(y, m + o, 1)), to: toIsoDate(new Date(y, m + o + 1, 0)) });
+    }
+    return out;
+  }, [anchorMonthKey]);
+  const rosterStart = useMemo(() => new Date(`${rosterMonths[0].from}T00:00:00`), [rosterMonths]);
+  const rosterEnd = useMemo(
+    () => new Date(`${rosterMonths[rosterMonths.length - 1].to}T00:00:00`),
+    [rosterMonths],
   );
-  const monthEnd = useMemo(
-    () => new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0),
-    [anchor],
-  );
-  const from = rosterView
-    ? toIsoDate(monthStart)
-    : dayView
-      ? toIsoDate(anchor)
-      : toIsoDate(weekStart);
-  const to = rosterView
-    ? toIsoDate(monthEnd)
-    : dayView
-      ? toIsoDate(anchor)
-      : toIsoDate(addDays(weekStart, 6));
+  const from = dayView ? toIsoDate(anchor) : toIsoDate(weekStart);
+  const to = dayView ? toIsoDate(anchor) : toIsoDate(addDays(weekStart, 6));
   const teamKeys = teamKey ? [teamKey] : undefined;
 
-  const assignments = useScheduleAssignments({
-    from,
-    to,
-    family,
-    teamKeys,
-    // Only the day view needs the crew that started last night and is still
-    // working this morning; the week groups by rota date, so it does not.
-    includeOvernight: dayView,
-  });
+  const singleRead = useScheduleAssignments(
+    {
+      from,
+      to,
+      family,
+      teamKeys,
+      // Only the day view needs the crew that started last night and is still
+      // working this morning; the week groups by rota date, so it does not.
+      includeOvernight: dayView,
+    },
+    !rosterView,
+  );
+  // The roster spans three months, which is more than one read may ask for,
+  // so it is read a month at a time and merged.
+  const rosterRead = useScheduleAssignmentsByMonth({ family, teamKeys }, rosterMonths, rosterView);
+  const assignments: RotaRead<ScheduleAssignmentsResponse> = rosterView ? rosterRead : singleRead;
 
   // My week is the signed-in engineer's own rota, found by the email the
   // portal knows them by.
@@ -275,10 +305,13 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // The search filters by team, so an unfiltered view passes the family's own
   // teams rather than nothing.
   const absenceTeamKeys = teamKeys ?? TEAMS[family];
-  const absences = useScheduleAbsences(
-    { from, to, teamKeys: absenceTeamKeys },
-    dayView || rosterView,
+  const dayAbsences = useScheduleAbsences({ from, to, teamKeys: absenceTeamKeys }, dayView);
+  const rosterAbsences = useScheduleAbsencesByMonth(
+    { teamKeys: absenceTeamKeys },
+    rosterMonths,
+    rosterView,
   );
+  const absences: RotaRead<ScheduleAbsencesResponse> = rosterView ? rosterAbsences : dayAbsences;
 
   const shifts = useMemo(() => shiftsByCode(catalogue.data?.shifts ?? []), [catalogue.data?.shifts]);
   // Memoised rather than written inline: `?? []` builds a fresh array on every
@@ -330,6 +363,18 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   /** The windows this group runs, which is what the picker offers. Filtered
    *  by family and nothing narrower: the catalogue's own codes are already
    *  CRE or SRE, so there is no second rule to keep in step with. */
+  /** What a lead may mark somebody away for: leave, and only leave.
+   *
+   *  An allocation -- a customer engagement, an onboarding -- is not the ABT
+   *  lead's call to make from a rota grid, so those kinds stay read-only here
+   *  even though the grid shows them. Read off the catalogue's own bucket
+   *  rather than a list of codes, so a leave kind added later appears without
+   *  a change here. */
+  const leaveKinds = useMemo(
+    () => (catalogue.data?.absenceKinds ?? []).filter((k) => k.bucket === "LEAVE"),
+    [catalogue.data?.absenceKinds],
+  );
+
   const pickerShifts = useMemo(
     () => [...shifts.values()].filter((sh) => sh.family === family),
     [shifts, family],
@@ -348,6 +393,37 @@ export default function CsmTeamSchedulePage(): JSX.Element {
       },
       { onSettled: () => setPicker(null) },
     );
+  };
+
+  const markAway = (kindCode: string, from: string, to: string): void => {
+    if (!picker) return;
+    applyAbsence.mutate(
+      {
+        userId: picker.userId,
+        teamKey: picker.teamKey,
+        kindCode,
+        from,
+        to,
+        note: "marked from the month roster",
+      },
+      { onSettled: () => setPicker(null) },
+    );
+  };
+
+  /** Clearing a cell means two different writes depending on what is on it.
+   *
+   *  Somebody marked away comes back by removing the absence, and the rota
+   *  underneath -- which was never deleted, only covered -- shows through
+   *  again. Rewriting the assignment as well would churn the history with a
+   *  change that did not happen. Anything else is a rota slot, so it goes
+   *  back to the standing window the way it always did. */
+  const clearCell = (shiftCode: string, from: string, to: string): void => {
+    if (!picker) return;
+    if (picker.absenceKindCode) {
+      markAway("", from, to);
+      return;
+    }
+    applyToCell(shiftCode, from, to);
   };
 
   // SRE works in time zones, so its day is a lane per zone. CRE runs on one
@@ -436,7 +512,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                   {t === "today"
                     ? fmtShort(anchor)
                     : t === "roster"
-                      ? anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" })
+                      ? fmtMonthRange(rosterStart, rosterEnd)
                       : `${fmtShort(weekStart)} – ${fmtShort(addDays(weekStart, 6))}`}
                 </span>
               </button>
@@ -482,7 +558,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                     {dayView
                       ? fmtLong(anchor)
                       : rosterView
-                        ? anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" })
+                        ? fmtMonthRange(rosterStart, rosterEnd)
                         : `${fmtShort(weekStart)} – ${fmtShort(addDays(weekStart, 6))}`}
                   </b>
                   {/* The day the single chevrons are moving. Without it, a day
@@ -628,7 +704,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               leadTeams={leadTeams.data ?? []}
               editing={editing}
               onEditCell={editCell}
-              month={monthStart}
+              month={rosterStart}
+              monthCount={rosterMonths.length}
               assignments={rows}
               absences={absences.data?.absences ?? []}
               shifts={shifts}
@@ -656,9 +733,11 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           key={`${picker.userId}|${picker.rotaDate}`}
           target={picker}
           shifts={pickerShifts}
-          busy={applyRange.isPending}
+          busy={applyRange.isPending || applyAbsence.isPending}
+          leaveKinds={leaveKinds}
           onApply={applyToCell}
-          onClear={applyToCell}
+          onMarkAway={markAway}
+          onClear={clearCell}
           onClose={() => setPicker(null)}
         />
       ) : null}

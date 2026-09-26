@@ -25,7 +25,7 @@ import {
   useState,
   type JSX,
 } from "react";
-import type { ScheduleShift } from "../types";
+import type { ScheduleAbsenceKind, ScheduleShift } from "../types";
 
 
 export interface CellPickerTarget {
@@ -35,6 +35,8 @@ export interface CellPickerTarget {
   rotaDate: string;
   /** What they currently hold that day, for marking the live code. */
   shiftCode?: string;
+  /** The leave or allocation covering that day, if any, marked the same way. */
+  absenceKindCode?: string;
   /** Where on screen the cell is, so the picker can sit against it. */
   anchor: { top: number; left: number; bottom: number; right: number };
   /** The standing window this engineer sits in on an ordinary weekday, so
@@ -47,9 +49,16 @@ interface CellPickerProps {
   target: CellPickerTarget;
   /** The windows this group can be put on, already filtered to CRE or SRE. */
   shifts: ScheduleShift[];
+  /** The reasons a lead may mark somebody away -- annual and lieu leave.
+   *  Allocations are deliberately not here: who is on a customer engagement is
+   *  not the ABT lead's call to make from a rota grid. */
+  leaveKinds: ScheduleAbsenceKind[];
   onApply: (shiftCode: string, from: string, to: string) => void;
-  /** Put them back on the standing window over the same span, or -- with no
-   *  code, which is what a weekend clear sends -- take them off entirely. */
+  /** Mark them away over the span, for a leave kind rather than a window. */
+  onMarkAway: (kindCode: string, from: string, to: string) => void;
+  /** Clear the span: bring them back if they are marked away, otherwise put
+   *  them back on the standing window -- or, with no code, which is what a
+   *  weekend clear sends, take them off entirely. */
   onClear: (shiftCode: string, from: string, to: string) => void;
   onClose: () => void;
   busy?: boolean;
@@ -93,7 +102,9 @@ function dayCount(from: string, to: string): number {
 export default function CellPicker({
   target,
   shifts,
+  leaveKinds,
   onApply,
+  onMarkAway,
   onClear,
   onClose,
   busy,
@@ -255,15 +266,45 @@ export default function CellPicker({
           </Fragment>
         ))}
 
+        {leaveKinds.length > 0 ? (
+          <>
+            <div className="pk-sec">Away</div>
+            {leaveKinds.map((kind) => (
+              <button
+                key={kind.code}
+                type="button"
+                className={`pk-c ${kind.code === target.absenceKindCode ? "on" : ""}`}
+                disabled={busy}
+                // No weekday rule here, unlike a rotation. Leave is stored as a
+                // span rather than a day at a time, so a weekend inside it is
+                // covered too -- somebody away Friday to Monday is away for the
+                // weekend, and skipping it would say they were back for two
+                // days in the middle of their own leave.
+                title={`${kind.label} — the whole span, weekends included`}
+                onClick={() => onMarkAway(kind.code, target.rotaDate, lastDay)}
+              >
+                <span className={`chip sm ${kind.colourToken}`}>{kind.shortCode}</span>
+                <span className="pk-l">{kind.label}</span>
+              </button>
+            ))}
+          </>
+        ) : null}
+
         <button
           type="button"
           className="pk-c clear"
           disabled={busy}
           onClick={() => onClear(backTo, target.rotaDate, lastDay)}
         >
-          {backTo
-            ? `Clear — back to ${shifts.find((s) => s.code === backTo)?.label ?? "regular hours"}`
-            : "Clear — nothing rostered"}
+          {/* Says what clearing will actually do here, which is not the same
+              thing in the three cases. Somebody marked away comes back onto
+              whatever the rota already had for them; a weekend has no standing
+              window to fall back to at all. */}
+          {target.absenceKindCode
+            ? "Clear — back on the rota"
+            : backTo
+              ? `Clear — back to ${shifts.find((s) => s.code === backTo)?.label ?? "regular hours"}`
+              : "Clear — nothing rostered"}
         </button>
       </div>
 

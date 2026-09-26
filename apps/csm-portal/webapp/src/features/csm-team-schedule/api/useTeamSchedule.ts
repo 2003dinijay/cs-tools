@@ -19,6 +19,7 @@
 import {
   keepPreviousData,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
   type UseMutationResult,
@@ -85,6 +86,108 @@ export function useScheduleAssignments(
     enabled,
     placeholderData: keepPreviousData,
     staleTime: ROTA_STALE_MS,
+  });
+}
+
+/** A calendar month as the from/to pair a rota search takes. */
+export interface MonthWindow {
+  from: string;
+  to: string;
+}
+
+/** The parts of a query result the page reads -- all a merged read can offer. */
+export interface RotaRead<T> {
+  data: T | undefined;
+  isLoading: boolean;
+  isError: boolean;
+  error: Error | null;
+}
+
+/**
+ * The rota over several calendar months, read one month per request.
+ *
+ * One request per month, not one for the whole span: entity-service caps a
+ * single read at 70 days, and three months is ninety-odd. It is also the
+ * cheaper shape to page through -- each month is cached under the same key a
+ * one-month read would use, so stepping the window forward refetches only the
+ * month that came into view, not the two already on screen.
+ */
+export function useScheduleAssignmentsByMonth(
+  payload: Omit<SearchScheduleAssignmentsPayload, "from" | "to">,
+  months: readonly MonthWindow[],
+  enabled = true,
+): RotaRead<ScheduleAssignmentsResponse> {
+  const api = useBackendApi();
+  return useQueries({
+    queries: months.map((m) => {
+      const p: SearchScheduleAssignmentsPayload = { ...payload, from: m.from, to: m.to };
+      return {
+        queryKey: QK.assignments(p),
+        queryFn: () =>
+          api.post<SearchScheduleAssignmentsPayload, ScheduleAssignmentsResponse>(
+            "/team-schedule/assignments/search",
+            p,
+          ),
+        enabled,
+        placeholderData: keepPreviousData,
+        staleTime: ROTA_STALE_MS,
+      };
+    }),
+    combine: (results): RotaRead<ScheduleAssignmentsResponse> => {
+      const failed = results.find((r) => r.isError);
+      const assignments = results.flatMap((r) => r.data?.assignments ?? []);
+      return {
+        data: results.some((r) => r.data)
+          ? { assignments, count: assignments.length }
+          : undefined,
+        isLoading: results.some((r) => r.isLoading),
+        isError: Boolean(failed),
+        error: failed?.error ?? null,
+      };
+    },
+  });
+}
+
+/**
+ * Absences over several calendar months, one request per month.
+ *
+ * An absence spanning a month boundary comes back from both months it
+ * touches, so the merge keeps one copy per id -- otherwise it would draw
+ * twice on the roster.
+ */
+export function useScheduleAbsencesByMonth(
+  payload: Omit<SearchScheduleAbsencesPayload, "from" | "to">,
+  months: readonly MonthWindow[],
+  enabled = true,
+): RotaRead<ScheduleAbsencesResponse> {
+  const api = useBackendApi();
+  return useQueries({
+    queries: months.map((m) => {
+      const p: SearchScheduleAbsencesPayload = { ...payload, from: m.from, to: m.to };
+      return {
+        queryKey: QK.absences(p),
+        queryFn: () =>
+          api.post<SearchScheduleAbsencesPayload, ScheduleAbsencesResponse>(
+            "/team-schedule/absences/search",
+            p,
+          ),
+        enabled,
+        placeholderData: keepPreviousData,
+        staleTime: ROTA_STALE_MS,
+      };
+    }),
+    combine: (results): RotaRead<ScheduleAbsencesResponse> => {
+      const failed = results.find((r) => r.isError);
+      const byId = new Map<string, ScheduleAbsencesResponse["absences"][number]>();
+      for (const r of results) for (const a of r.data?.absences ?? []) byId.set(a.id, a);
+      const absences = [...byId.values()];
+      return {
+        data: results.some((r) => r.data) ? { absences, count: absences.length } : undefined,
+        isLoading: results.some((r) => r.isLoading),
+        isError: Boolean(failed),
+        error: failed?.error ?? null,
+      };
+    },
   });
 }
 
@@ -232,6 +335,41 @@ export function useApplyRange(): UseMutationResult<ApplyRangeResult, Error, Appl
   return useMutation<ApplyRangeResult, Error, ApplyRangePayload>({
     mutationFn: (payload) =>
       api.post<ApplyRangePayload, ApplyRangeResult>("/team-schedule/assignments/apply", payload),
+    onSuccess: () => invalidateRota(qc),
+  });
+}
+
+export interface ApplyAbsencePayload {
+  userId: string;
+  teamKey: string;
+  /** Empty brings them back over the span instead of marking it. */
+  kindCode: string;
+  from: string;
+  to: string;
+  note?: string;
+}
+
+export interface ApplyAbsenceResult {
+  created: number;
+  removed: number;
+  trimmed: number;
+}
+
+/**
+ * Mark one engineer away across a span, or bring them back over it.
+ *
+ * Separate from `useApplyRange` because leave is a separate table, not a rota
+ * window: it is stored as a span rather than resolved day by day, so a weekend
+ * inside the range is covered too. The server reconciles whatever is already
+ * there -- shortening a stretch of leave the span clips rather than cancelling
+ * it -- so the caller does not have to read the absences first.
+ */
+export function useApplyAbsence(): UseMutationResult<ApplyAbsenceResult, Error, ApplyAbsencePayload> {
+  const api = useBackendApi();
+  const qc = useQueryClient();
+  return useMutation<ApplyAbsenceResult, Error, ApplyAbsencePayload>({
+    mutationFn: (payload) =>
+      api.post<ApplyAbsencePayload, ApplyAbsenceResult>("/team-schedule/absences/apply", payload),
     onSuccess: () => invalidateRota(qc),
   });
 }

@@ -27,7 +27,12 @@ import { initialsOf, isRotationShift, toIsoDate } from "../utils/rota";
 import { teamColour } from "../utils/rotaHues";
 
 interface MonthRosterProps {
+  /** The first month on the grid. */
   month: Date;
+  /** How many calendar months run across it, starting at `month`. The rota
+   *  sheet this replaces showed a whole year; one month was too little to
+   *  check a swap against last month or plan the next. */
+  monthCount?: number;
   assignments: ScheduleAssignment[];
   absences: ScheduleAbsence[];
   shifts: Map<string, ScheduleShift>;
@@ -76,6 +81,7 @@ interface MonthRosterProps {
     teamKey: string;
     rotaDate: string;
     shiftCode?: string;
+    absenceKindCode?: string;
     anchor: { top: number; left: number; bottom: number; right: number };
   }) => void;
 }
@@ -90,6 +96,9 @@ interface Cell {
   /** The window this cell came from, where it came from a rota row at all.
    *  Absent for leave and allocations, which are not a window. */
   shiftCode?: string;
+  /** The absence kind covering this day, where one does. The picker marks it
+   *  as what is held so leave reads the same as a rotation does. */
+  absenceKindCode?: string;
 }
 
 /**
@@ -102,6 +111,7 @@ interface Cell {
  */
 export default function MonthRoster({
   month,
+  monthCount = 1,
   assignments,
   absences,
   shifts,
@@ -135,9 +145,13 @@ export default function MonthRoster({
 
   const days = useMemo(() => {
     const first = new Date(month.getFullYear(), month.getMonth(), 1);
-    const count = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+    const last = new Date(month.getFullYear(), month.getMonth() + monthCount, 0);
+    const count = Math.round((last.getTime() - first.getTime()) / 86_400_000) + 1;
     return Array.from({ length: count }, (_, i) => new Date(first.getFullYear(), first.getMonth(), i + 1));
-  }, [month]);
+  }, [month, monthCount]);
+  /** The 1st of each month after the first: where the grid draws a month rule
+   *  and names the month, so ninety columns still read as three months. */
+  const opensMonth = (d: Date): boolean => d.getDate() === 1 && d.getTime() !== days[0].getTime();
 
   /** The zones SRE actually staffs, per kind of day.
    *
@@ -237,6 +251,7 @@ export default function MonthRoster({
         const iso = toIsoDate(d);
         if (iso >= ab.startsOn && iso <= end) {
           row.days.set(iso, {
+            absenceKindCode: ab.kindCode,
             code: kind?.shortCode ?? ab.kindCode,
             token: kind?.colourToken ?? "",
             title: kind?.label ?? ab.kindCode,
@@ -424,10 +439,14 @@ export default function MonthRoster({
                     colSpan={split ? zonesOn(weekend).length : undefined}
                     className={`day ${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""} ${
                       iso === selectedIso ? "sel" : ""
-                    } ${d.getDay() === 1 ? "wkstart" : ""}`}
+                    } ${d.getDay() === 1 ? "wkstart" : ""}${opensMonth(d) ? " mstart" : ""}`}
                     aria-current={iso === selectedIso ? "date" : undefined}
+                    title={d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}
                   >
                     <span className="d">{d.getDate()}</span>
+                    {d.getDate() === 1 ? (
+                      <span className="mo">{d.toLocaleDateString(undefined, { month: "short" })}</span>
+                    ) : null}
                   </th>
                 );
               })}
@@ -445,7 +464,9 @@ export default function MonthRoster({
                   return zonesOn(weekend).map((z, i) => (
                     <th
                       key={`${iso}|${z}`}
-                      className={`zc ${i === 0 ? "zfirst" : ""} ${weekend ? "wknd" : ""}`}
+                      className={`zc ${i === 0 ? "zfirst" : ""} ${weekend ? "wknd" : ""}${
+                        i === 0 && opensMonth(d) ? " mstart" : ""
+                      }`}
                       scope="col"
                     >
                       {z}
@@ -489,7 +510,7 @@ export default function MonthRoster({
                   const weekend = d.getDay() === 0 || d.getDay() === 6;
                   const marks = `${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""} ${
                     iso === selectedIso ? "sel" : ""
-                  } ${d.getDay() === 1 ? "wkstart" : ""}`;
+                  } ${d.getDay() === 1 ? "wkstart" : ""}${opensMonth(d) ? " mstart" : ""}`;
                   const faded = (c: Cell | undefined) =>
                     rotationsOnly && c && !c.isRotation ? "muted" : "";
 
@@ -516,6 +537,7 @@ export default function MonthRoster({
                                   teamKey: row.teamKey,
                                   rotaDate: iso,
                                   shiftCode: cell?.shiftCode,
+                                  absenceKindCode: cell?.absenceKindCode,
                                   anchor: {
                                     top: r.top,
                                     left: r.left,
@@ -559,7 +581,9 @@ export default function MonthRoster({
                     return (
                       <td
                         key={`${iso}|${z}`}
-                        className={`c z ${i === 0 ? "zfirst" : ""} ${marks} ${faded(zc)}`}
+                        className={`c z ${i === 0 ? "zfirst" : ""} ${
+                          i === 0 ? marks : marks.replace(" mstart", "")
+                        } ${faded(zc)}`}
                         title={zc ? `${row.name} · ${z} · ${zc.title}` : undefined}
                       >
                         {zc ? (
@@ -580,7 +604,13 @@ export default function MonthRoster({
 
       {rows.length === 0 ? (
         <div className="offnone">
-          {q ? <>No engineer matches “{query}”.</> : "Nobody is on the rota this month."}
+          {q ? (
+            <>No engineer matches “{query}”.</>
+          ) : monthCount > 1 ? (
+            "Nobody is on the rota in these months."
+          ) : (
+            "Nobody is on the rota this month."
+          )}
         </div>
       ) : null}
     </>
