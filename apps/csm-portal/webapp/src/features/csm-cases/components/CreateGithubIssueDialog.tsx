@@ -73,9 +73,17 @@ function matchProductRepo(
 ) {
   const name = productName?.trim().toLowerCase();
   if (!name || name === "—" || name === "-") return undefined;
+  const namesOf = (o: (typeof options)[number]) => ({
+    label: o.displayLabel.trim().toLowerCase(),
+    gitLabel: (o.githubLabel ?? "").trim().toLowerCase(),
+  });
+  const exact = options.find((o) => {
+    const { label, gitLabel } = namesOf(o);
+    return label === name || gitLabel === name;
+  });
+  if (exact) return exact;
   return options.find((o) => {
-    const label = o.displayLabel.toLowerCase();
-    const gitLabel = (o.githubLabel ?? "").toLowerCase();
+    const { label, gitLabel } = namesOf(o);
     return (
       containsTerm(name, label) ||
       containsTerm(label, name) ||
@@ -117,6 +125,8 @@ export interface CreateGithubIssueDialogProps {
   productName?: string;
   /** True when the case's project onboarding status is In-Progress. */
   onboardingInProgress?: boolean;
+  /** True while a linked project's status is still loading. Projectless cases leave this unset. */
+  projectStatusPending?: boolean;
   onClose: () => void;
   /** Body for `POST /cases/{id}/github-issues` (caseId is added by the caller). */
   onSubmit: (payload: BeCreateCaseGithubIssuePayload) => void;
@@ -156,6 +166,7 @@ export function CreateGithubIssueDialog({
   showRepoField,
   productName,
   onboardingInProgress,
+  projectStatusPending,
   onClose,
   onSubmit,
   onOpenConfirm,
@@ -231,7 +242,8 @@ export function CreateGithubIssueDialog({
     (!requireUpdateLevel || updateLevel.trim().length > 0) &&
     (!requirePublicIssueUrl || publicIssueUrl.trim().length > 0) &&
     !repoOptionsUnavailable &&
-    !!selectedRepoOption;
+    !!selectedRepoOption &&
+    !projectStatusPending;
 
   const handleSubmit = () => {
     if (!canSubmit || !selectedRepoOption) return;
@@ -403,12 +415,14 @@ export function CreateGithubIssueDialog({
             label="Regression"
           />
 
-          <Typography variant="body2" color={selectedRepoOption ? "text.secondary" : "error"}>
-            {repoOptionsLoading
-              ? "Looking up the GitHub repository for this product…"
-              : selectedRepoOption
-                ? `Repository: ${selectedRepoOption.owner}/${selectedRepoOption.repo} (${selectedRepoOption.displayLabel})`
-                : "No GitHub repository is mapped for this product."}
+          <Typography variant="body2" color={selectedRepoOption && !projectStatusPending ? "text.secondary" : "error"}>
+            {projectStatusPending
+              ? "Waiting for this case's project status…"
+              : repoOptionsLoading
+                ? "Looking up the GitHub repository for this product…"
+                : selectedRepoOption
+                  ? `Repository: ${selectedRepoOption.owner}/${selectedRepoOption.repo} (${selectedRepoOption.displayLabel})`
+                  : "No GitHub repository is mapped for this product."}
           </Typography>
         </Box>
       </DialogContent>
