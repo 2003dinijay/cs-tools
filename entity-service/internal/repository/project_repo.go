@@ -37,15 +37,17 @@ import (
 // 000026/000027) -- the same ServiceNow project "type" reference field
 // sn_project_service.go's own snTypeNameToSubscriptionType converts, mirrored
 // here as projectTypeNameToSubscriptionType for this data source (see that
-// function's own doc comment). ClosureStatus and domain.ProjectAccountRef.Tier
-// still have no corresponding column anywhere in the migrations (ClosureStatus
-// is ServiceNow vocabulary -- e.g. "read_only" -- that doesn't match any of
-// project's several different closure-state columns; account has no
-// tier-like column at all), so they are left as their zero value rather than
+// function's own doc comment). ClosureStatus still has no corresponding
+// column anywhere in the migrations (it is ServiceNow vocabulary -- e.g.
+// "read_only" -- that doesn't match any of project's several different
+// closure-state columns), so it is left as its zero value rather than
 // guessed at. AgentEnabled/KbReferencesEnabled DO have a clear real-column
 // match (account.ai_gen_response_enabled/
 // smart_knowledge_base_suggestions_enabled) despite the name difference and
-// are populated from them.
+// are populated from them. domain.ProjectAccountRef.Tier is populated from
+// account.support_tier (migration 000092) -- see GetProjectByID's own
+// comment for the ServiceNow field-name mismatch that column's sync is
+// built on.
 //
 // GetProjectByID also now populates ClosureState/OnboardingStatus (from
 // project.wso2_closure_state/onboarding_status, cast ::TEXT the same way
@@ -275,6 +277,11 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	// so they tolerate NULL (whether from a real account or a LEFT JOIN
 	// producing no row at all) without a separate local var.
 	var aID, aName *string
+	// account.support_tier (migration 000092) is a nullable VARCHAR, but
+	// ProjectAccountRef.Tier is a plain (non-pointer) string -- scan into a
+	// *string local and default to "" via stringOrEmpty, same pattern as
+	// agentEnabled/kbReferencesEnabled above.
+	var supportTier *string
 	// project_type is a LEFT JOIN for the same reason account is: a project
 	// with no project_type_id set (or one pointing at a deleted row) must
 	// still resolve, just with SubscriptionType left at its zero value below.
@@ -291,6 +298,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		        p.start_date, p.end_date, p.created_on, p.updated_on,
 		        a.id, a.name, a.activation_date, a.region,
 		        a.ai_gen_response_enabled, a.smart_knowledge_base_suggestions_enabled,
+		        a.support_tier,
 		        pt.name,
 		        p.wso2_closure_state::TEXT, p.onboarding_status::TEXT,
 		        p.onboarding_go_live_plan_date, p.onboarding_go_live_date, p.onboarding_expiry_date,
@@ -331,6 +339,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		&v.StartDate, &v.EndDate, &v.CreatedOn, &v.UpdatedOn,
 		&aID, &aName, &v.Account.ActivationDate, &v.Account.Region,
 		&agentEnabled, &kbReferencesEnabled,
+		&supportTier,
 		&projectTypeName,
 		&v.ClosureState, &v.OnboardingStatus,
 		&v.GoLivePlanDate, &v.GoLiveDate, &v.OnboardingExpiryDate,
@@ -339,8 +348,10 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		&v.TotalOnboardingHours, &v.ConsumedOnboardingHours, &v.RemainingOnboardingHours,
 		&v.Account.TechnicalOwnerEmail, &v.Account.OwnerEmail,
 	)
-	// v.Account.Tier still has no real column -- see this repository's own
-	// doc comment; left at its zero value.
+	// v.Account.Tier is sourced from account.support_tier (migration 000092),
+	// itself synced from ServiceNow's u_support_timezone -- not u_support_tier
+	// -- due to a historical relabeling bug on the production tenant. See
+	// migration 000092's own comment.
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProjectDetailsView{}, &apierror.NotFoundError{Msg: "project not found"}
 	}
@@ -355,6 +366,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	}
 	v.Account.AgentEnabled = agentEnabled != nil && *agentEnabled
 	v.Account.KbReferencesEnabled = kbReferencesEnabled != nil && *kbReferencesEnabled
+	v.Account.Tier = stringOrEmpty(supportTier)
 	if projectTypeName != nil {
 		v.SubscriptionType = projectTypeNameToSubscriptionType(*projectTypeName)
 	}
