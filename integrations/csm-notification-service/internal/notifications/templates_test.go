@@ -17,6 +17,7 @@
 package notifications
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -87,8 +88,10 @@ func TestSanitizeRichText_StructureAndFormatting(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := sanitizeRichText(tt.input); got != tt.want {
+			if got, images := sanitizeRichText(tt.input, &inlineImageBudget{}); got != tt.want {
 				t.Errorf("sanitizeRichText(%q) = %q, want %q", tt.input, got, tt.want)
+			} else if len(images) != 0 {
+				t.Errorf("sanitizeRichText(%q) returned %d images, want 0", tt.input, len(images))
 			}
 		})
 	}
@@ -128,43 +131,156 @@ func TestSanitizeRichText_Links(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := sanitizeRichText(tt.input); got != tt.want {
+			if got, images := sanitizeRichText(tt.input, &inlineImageBudget{}); got != tt.want {
 				t.Errorf("sanitizeRichText(%q) = %q, want %q", tt.input, got, tt.want)
+			} else if len(images) != 0 {
+				t.Errorf("sanitizeRichText(%q) returned %d images, want 0", tt.input, len(images))
 			}
 		})
 	}
 }
 
-// TestSanitizeRichText_Images verifies an inline image survives only as a
-// self-contained base64 data URI — never an http(s) source, which would
-// have the recipient's mail client fetch an external URL the moment the
-// email is opened (a tracking-pixel/read-receipt leak — see
-// safeImageDataURI's own doc comment).
+// TestSanitizeRichText_Images verifies an inline image extracted from a
+// self-contained base64 data URI is never re-embedded as a data: URI in the
+// returned HTML — Gmail (and most major webmail clients) strip that on
+// render regardless of encoding — but instead comes back as a short
+// cid:<contentId> reference, with the decoded image bytes/content type
+// returned separately as an InlineImage the caller must attach. An http(s)
+// source is dropped entirely (see safeImageDataURI's own doc comment for
+// why: it would let the recipient's mail client silently phone home to an
+// external server the moment the email is opened).
 func TestSanitizeRichText_Images(t *testing.T) {
-	const dataURI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{
-			name:  "a data:image src is preserved",
-			input: `<img src="` + dataURI + `" alt="screenshot">`,
-			want:  `<img src="` + dataURI + `" alt="screenshot" style="max-width:100%;height:auto;">`,
-		},
-		{
-			name:  "an http(s) src is dropped entirely",
-			input: `<img src="https://evil.example.com/tracker.png">`,
-			want:  "",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := sanitizeRichText(tt.input); got != tt.want {
-				t.Errorf("sanitizeRichText(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
+	const dataURI = "data:image/png;base64,aGVsbG8="
+	t.Run("a data:image src becomes a cid: reference, with the image extracted", func(t *testing.T) {
+		html, images := sanitizeRichText(`<img src="`+dataURI+`" alt="screenshot">`, &inlineImageBudget{})
+		if len(images) != 1 {
+			t.Fatalf("got %d images, want 1", len(images))
+		}
+		img := images[0]
+		if img.ContentType != "image/png" {
+			t.Errorf("ContentType = %q, want image/png", img.ContentType)
+		}
+		if string(img.Data) != "hello" {
+			t.Errorf("Data = %q, want decoded %q", img.Data, "hello")
+		}
+		if img.ContentID == "" {
+			t.Error("ContentID must not be empty")
+		}
+		want := `<img src="cid:` + img.ContentID + `" alt="screenshot" style="max-width:100%;height:auto;">`
+		if html != want {
+			t.Errorf("html = %q, want %q", html, want)
+		}
+		if strings.Contains(html, "data:image") {
+			t.Error("returned HTML must never contain the original data: URI")
+		}
+	})
+
+	t.Run("an http(s) src is dropped entirely, no image extracted", func(t *testing.T) {
+		html, images := sanitizeRichText(`<img src="https://evil.example.com/tracker.png">`, &inlineImageBudget{})
+		if html != "" {
+			t.Errorf("html = %q, want empty", html)
+		}
+		if len(images) != 0 {
+			t.Errorf("got %d images, want 0", len(images))
+		}
+	})
+
+	t.Run("two images in one comment each get their own distinct Content-ID", func(t *testing.T) {
+		_, images := sanitizeRichText(`<img src="`+dataURI+`"><img src="`+dataURI+`">`, &inlineImageBudget{})
+		if len(images) != 2 {
+			t.Fatalf("got %d images, want 2", len(images))
+		}
+		if images[0].ContentID == images[1].ContentID {
+			t.Errorf("both images share ContentID %q, want distinct ids", images[0].ContentID)
+		}
+	})
+
+	// image/svg+xml is XML, not a raster format, and can carry a <script>
+	// tag or an onload= handler some mail clients execute when rendering an
+	// inline image — safeImageDataURI's allow-list must reject it even
+	// though it's syntactically a well-formed data: URI.
+	t.Run("an svg+xml data URI is rejected, not extracted", func(t *testing.T) {
+		html, images := sanitizeRichText(`<img src="data:image/svg+xml;base64,aGVsbG8=">`, &inlineImageBudget{})
+		if html != "" {
+			t.Errorf("html = %q, want empty", html)
+		}
+		if len(images) != 0 {
+			t.Errorf("got %d images, want 0 — image/svg+xml must never be extracted", len(images))
+		}
+	})
+
+	// An image past maxInlineImageBytes is dropped, not truncated or sent
+	// oversized — see that const's own doc comment for why.
+	t.Run("an oversized image is dropped, not truncated", func(t *testing.T) {
+		big := base64.StdEncoding.EncodeToString(make([]byte, maxInlineImageBytes+1))
+		html, images := sanitizeRichText(`<img src="data:image/png;base64,`+big+`">`, &inlineImageBudget{})
+		if html != "" {
+			t.Errorf("html = %q, want empty", html)
+		}
+		if len(images) != 0 {
+			t.Errorf("got %d images, want 0 — an oversized image must be dropped", len(images))
+		}
+	})
+
+	// A comment embedding more images than maxInlineImagesPerComment must
+	// only ever extract up to that cap, dropping the rest silently.
+	t.Run("images past maxInlineImagesPerComment are dropped", func(t *testing.T) {
+		var sb strings.Builder
+		for i := 0; i < maxInlineImagesPerComment+3; i++ {
+			sb.WriteString(`<img src="` + dataURI + `">`)
+		}
+		_, images := sanitizeRichText(sb.String(), &inlineImageBudget{})
+		if len(images) != maxInlineImagesPerComment {
+			t.Errorf("got %d images, want exactly %d (the cap)", len(images), maxInlineImagesPerComment)
+		}
+	})
+
+	// maxInlineImageBytes alone doesn't stop several individually-small-enough
+	// images from summing past email-service's own request-body limit once
+	// base64-re-encoded — maxTotalInlineImageBytes bounds the running total
+	// across one comment, not just each image on its own.
+	t.Run("a second image that would push the running total past maxTotalInlineImageBytes is dropped", func(t *testing.T) {
+		// firstSize is at maxInlineImageBytes itself (allowed on its own);
+		// secondSize alone is also within maxInlineImageBytes, but the two
+		// combined exceed maxTotalInlineImageBytes, so only the second must
+		// be rejected — isolating the total-budget check from the
+		// per-image one.
+		const firstSize = maxInlineImageBytes
+		const secondSize = maxTotalInlineImageBytes - maxInlineImageBytes + 1
+		first := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, firstSize))
+		second := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, secondSize))
+		_, images := sanitizeRichText(`<img src="`+first+`"><img src="`+second+`">`, &inlineImageBudget{})
+		if len(images) != 1 {
+			t.Fatalf("got %d images, want exactly 1 (the second must be dropped for exceeding the total budget)", len(images))
+		}
+		if len(images[0].Data) != firstSize {
+			t.Errorf("first image size = %d, want %d (must survive unchanged)", len(images[0].Data), firstSize)
+		}
+	})
+
+	// A caller rendering more than one rich-text field into the same email
+	// (RenderCaseCreatedEmail: Description + IncidentImpactDescription;
+	// RenderCRPlanDateNoticeEmail: ShortDescription + Description) must
+	// share one *inlineImageBudget across both sanitizeRichText calls, or
+	// each field could independently max out the same limits, and both
+	// fields' attachments still land on the same outgoing email/request.
+	t.Run("a shared budget is enforced across two separate sanitizeRichText calls", func(t *testing.T) {
+		const firstSize = maxInlineImageBytes
+		const secondSize = maxTotalInlineImageBytes - maxInlineImageBytes + 1
+		first := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, firstSize))
+		second := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, secondSize))
+
+		budget := &inlineImageBudget{}
+		_, firstImages := sanitizeRichText(`<img src="`+first+`">`, budget)
+		_, secondImages := sanitizeRichText(`<img src="`+second+`">`, budget)
+
+		if len(firstImages) != 1 {
+			t.Fatalf("first call: got %d images, want 1", len(firstImages))
+		}
+		if len(secondImages) != 0 {
+			t.Errorf("second call: got %d images, want 0 — it must be rejected against the SHARED budget the first call already spent", len(secondImages))
+		}
+	})
 }
 
 // TestSanitizeRichText_ScriptContentNeverExecutes verifies a <script> tag's
@@ -173,7 +289,7 @@ func TestSanitizeRichText_Images(t *testing.T) {
 // HTML-escapes like any other text, so it can only ever render as inert,
 // visible text, never as executable markup.
 func TestSanitizeRichText_ScriptContentNeverExecutes(t *testing.T) {
-	got := sanitizeRichText(`<p>before</p><script>alert(1)</script><p>after</p>`)
+	got, _ := sanitizeRichText(`<p>before</p><script>alert(1)</script><p>after</p>`, &inlineImageBudget{})
 	if strings.Contains(got, "<script>") {
 		t.Errorf("sanitizeRichText(...) = %q, <script> tag survived", got)
 	}
@@ -212,7 +328,7 @@ func TestEscapeHTML_EncodesNonASCIIAsNumericEntity(t *testing.T) {
 // caught: the line used to substitute a raw UUID (project id) there
 // instead.
 func TestRenderCommentAddedEmail_UsesCaseNumberNotRawID(t *testing.T) {
-	out := RenderCommentAddedEmail("Jane Doe", "CS0023001", "Something broke", "Working on it", "https://x/comment", "https://x/case")
+	out, _ := RenderCommentAddedEmail("Jane Doe", "CS0023001", "Something broke", "Working on it", "https://x/comment", "https://x/case")
 	if !strings.Contains(out, "CS0023001") {
 		t.Error("rendered email doesn't contain the case number")
 	}
@@ -225,7 +341,7 @@ func TestRenderCommentAddedEmail_UsesCaseNumberNotRawID(t *testing.T) {
 // "commented on case" — matching an existing internal WSO2-support email
 // format recipients (always wso2.com staff) are already used to.
 func TestRenderInternalNoteEmail_NoReplyStrapAndUsesWorkNoteWording(t *testing.T) {
-	out := RenderInternalNoteEmail("Jane Doe", "WSO2-1000", "Something broke", "Internal only", "https://x/comment", "https://x/case")
+	out, _ := RenderInternalNoteEmail("Jane Doe", "WSO2-1000", "Something broke", "Internal only", "https://x/comment", "https://x/case")
 	if !strings.Contains(out, "added work note") {
 		t.Error("rendered email doesn't use the internal-note wording")
 	}
