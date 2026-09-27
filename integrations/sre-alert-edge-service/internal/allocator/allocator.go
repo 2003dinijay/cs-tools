@@ -37,6 +37,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,6 +67,8 @@ type Store interface {
 	CompareAndSet(ctx context.Context, from, to int64) (applied bool, current int64, err error)
 	Insert(ctx context.Context, id, vendor, alert string) error
 	Exists(ctx context.Context, id string) (bool, error)
+	// InsertFiller writes the filler only if id has no row; otherwise existing is that row's alert.
+	InsertFiller(ctx context.Context, id, vendor, filler string) (applied bool, existing string, err error)
 }
 
 // StoreFailure describes an alert that couldn't be written after every attempt.
@@ -467,14 +470,27 @@ func (a *Allocator) insertAndConfirm(ctx context.Context, id, vendor, body strin
 	return nil
 }
 
-// fail writes the filler row, reports the failure, and returns false for writeOne's ok.
+// fail writes the filler row, reports the failure, and returns writeOne's ok. The filler never
+// overwrites a row: if the alert did land (a timed-out insert, or a read-back Cosmos missed),
+// it is kept and counted as stored.
 func (a *Allocator) fail(job alertJob, id string, alert model.Alert, cause error) bool {
 	filler := fillerPrefix + cause.Error()
-	fillerErr := a.retry(func() error { return a.store.Insert(context.Background(), id, job.sub.vendor, filler) },
-		func(attempt int, err error) {
-			a.logger.Warn("filler row failed, retrying", "request_id", job.sub.requestID,
-				"vendor", job.sub.vendor, "alt_id", id, "attempt", attempt, "error", err)
-		})
+	var existing string
+	fillerErr := a.retry(func() error {
+		applied, prev, err := a.store.InsertFiller(context.Background(), id, job.sub.vendor, filler)
+		if err == nil && !applied {
+			existing = prev
+		}
+		return err
+	}, func(attempt int, err error) {
+		a.logger.Warn("filler row failed, retrying", "request_id", job.sub.requestID,
+			"vendor", job.sub.vendor, "alt_id", id, "attempt", attempt, "error", err)
+	})
+	if existing != "" && !strings.HasPrefix(existing, fillerPrefix) {
+		a.logger.Warn("alert stored although its write reported a failure; filler not written",
+			"request_id", job.sub.requestID, "vendor", job.sub.vendor, "alt_id", id, "error", cause)
+		return true
+	}
 	if fillerErr != nil {
 		// Cassandra is likely down: alerts-core will wait gap_timeout on this id.
 		a.logger.Error("alert NOT stored and filler row failed; alerts-core will stall on this id until gap_timeout",

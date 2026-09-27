@@ -134,6 +134,24 @@ func TestIntegration_SeedCompareAndSetInsertReadBack(t *testing.T) {
 	}
 }
 
+func TestIntegration_InsertFillerNeverOverwrites(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	stored := cassandra.FormatID(1)
+	if err := s.Insert(ctx, stored, "aws", `{"service":"svc"}`); err != nil {
+		t.Fatal(err)
+	}
+	applied, existing, err := s.InsertFiller(ctx, stored, "aws", "VOID: test")
+	if err != nil || applied || existing != `{"service":"svc"}` {
+		t.Fatalf("filler over a stored alert = %v, %q, %v; want not applied, alert kept", applied, existing, err)
+	}
+	applied, _, err = s.InsertFiller(ctx, cassandra.FormatID(2), "aws", "VOID: test")
+	if err != nil || !applied {
+		t.Fatalf("filler on an empty id = %v, %v; want applied", applied, err)
+	}
+}
+
 func TestIntegration_AllocatorWritesConsecutiveReadableRows(t *testing.T) {
 	s := testStore(t)
 	if err := s.SeedSeq(context.Background()); err != nil {

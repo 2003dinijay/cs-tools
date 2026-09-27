@@ -62,6 +62,8 @@ type fakeStore struct {
 	insertGate chan struct{}
 	// hideOnce makes the first read-back of an id miss, as Cosmos DB sometimes does.
 	hideOnce map[string]bool
+	// neverVisible makes every read-back miss.
+	neverVisible bool
 
 	// readGate, if set, blocks ReadSeq until closed; readEntered is signalled on entry.
 	readGate    chan struct{}
@@ -125,9 +127,25 @@ func (f *fakeStore) Insert(_ context.Context, id, vendor, alert string) error {
 	return nil
 }
 
+func (f *fakeStore) InsertFiller(ctx context.Context, id, vendor, filler string) (bool, string, error) {
+	f.mu.Lock()
+	row, ok := f.rows[id]
+	f.mu.Unlock()
+	if ok {
+		f.mu.Lock()
+		f.inserts[id]++
+		f.mu.Unlock()
+		return false, row.alert, nil
+	}
+	return true, "", f.Insert(ctx, id, vendor, filler)
+}
+
 func (f *fakeStore) Exists(_ context.Context, id string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.neverVisible {
+		return false, nil
+	}
 	if f.hideOnce[id] {
 		delete(f.hideOnce, id)
 		return false, nil
@@ -584,4 +602,22 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.w.Write(p)
+}
+
+func TestReadBackAlwaysMisses_KeepsStoredAlert(t *testing.T) {
+	store := newFakeStore()
+	store.neverVisible = true
+	notifier := &recordingNotifier{}
+	a := newTestAllocator(t, store, notifier, nil, testConfig())
+
+	ids, err := a.Submit(context.Background(), "aws", "req", []model.Alert{alert("svc", "u")})
+	if err != nil {
+		t.Fatalf("err = %v, want success: the alert did land", err)
+	}
+	if row := store.rows[ids[0]]; !strings.Contains(row.alert, `"service":"svc"`) {
+		t.Errorf("row = %q, want the real alert, not a filler", row.alert)
+	}
+	if len(notifier.failures) != 0 {
+		t.Errorf("failures = %+v, want none", notifier.failures)
+	}
 }

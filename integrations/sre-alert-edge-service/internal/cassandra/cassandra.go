@@ -172,6 +172,23 @@ func (s *Store) Insert(ctx context.Context, id, vendor, alert string) error {
 	return nil
 }
 
+// InsertFiller writes a filler row with IF NOT EXISTS, so it never overwrites an alert that
+// did land. When not applied, existing is the row's alert column.
+func (s *Store) InsertFiller(ctx context.Context, id, vendor, filler string) (applied bool, existing string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, s.claimTimeout)
+	defer cancel()
+	prev := map[string]any{}
+	applied, err = s.session.Query(
+		`INSERT INTO alerts (id, vendor, alert, created_at) VALUES (?, ?, ?, ?) IF NOT EXISTS`,
+		id, vendor, filler, time.Now().UTC(),
+	).WithContext(ctx).MapScanCAS(prev)
+	if err != nil {
+		return false, "", fmt.Errorf("insert filler %s: %w", id, err)
+	}
+	existing, _ = prev["alert"].(string)
+	return applied, existing, nil
+}
+
 // Exists reports whether the alerts row for id is readable. Cosmos DB can briefly hide a
 // fresh write from a read, so a row isn't reported stored until this sees it.
 func (s *Store) Exists(ctx context.Context, id string) (bool, error) {
