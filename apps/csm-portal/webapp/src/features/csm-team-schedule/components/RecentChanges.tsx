@@ -108,15 +108,37 @@ export default function RecentChanges({
         out.push({ ...base(a), days: fmtSpan(a.rotaDate, a.endsOn), what });
         continue;
       }
-      // Pair a create with the delete it replaced, for the same person and day.
+      // An edit in place is its own thing, not half of a replacement: it
+      // says which field moved and what it moved between. Reading it as a
+      // delete told the panel a slot had been removed when it had only been
+      // changed.
+      if (a.action === "UPDATED") {
+        const field = a.fieldName ?? "";
+        const moved =
+          a.oldValue && a.newValue ? `${a.oldValue} → ${a.newValue}` : (a.newValue ?? "");
+        out.push({
+          ...base(a),
+          days: fmtDay(a.rotaDate),
+          what: moved
+            ? `${shiftLabel(a.shiftCode)}: ${field ? `${field} ` : ""}${moved}`
+            : `changed ${shiftLabel(a.shiftCode)}`,
+        });
+        continue;
+      }
+
+      // Pair a create with the delete it replaced, for the same person and
+      // day. Only those two pair: letting any differing action match meant an
+      // edit in place could swallow an unrelated create, and that create then
+      // vanished from the panel entirely.
       const t = new Date(a.createdOn).getTime();
+      const wanted = a.action === "CREATED" ? "DELETED" : "CREATED";
       const partner = activity.find(
         (b) =>
           !used.has(b.id) &&
           b.subject === "rota" &&
           b.userId === a.userId &&
           b.rotaDate === a.rotaDate &&
-          b.action !== a.action &&
+          b.action === wanted &&
           Math.abs(new Date(b.createdOn).getTime() - t) <= SAME_EDIT_MS,
       );
       if (partner) used.add(partner.id);

@@ -66,11 +66,19 @@ ON CONFLICT (id) DO NOTHING;
 -- An ABT whose real rota has been imported (import-abt-roster.py) is not
 -- generated as well: the roster would be half real engineers, half stand-ins.
 -- The team row itself stays, above; only its generated people and rota go.
+-- Absences count as evidence of an import too, not just assignments: a team
+-- whose sheet holds only leave and allocations for the period -- a month of
+-- migration work, say -- would otherwise look un-imported, and the seed would
+-- add its stand-in engineers alongside the real people already there.
 DELETE FROM _team t
  WHERE t.family IN ('cre-abt', 'sre-abt')
    -- import-abt-roster.py (CRE) or import-sre-rotation.py (SRE)
-   AND EXISTS (SELECT 1 FROM team_schedule_assignment a
-                WHERE a.team_key = t.key AND a.created_by IN ('import:abt-roster', 'import:sre-rotation'));
+   AND (EXISTS (SELECT 1 FROM team_schedule_assignment a
+                 WHERE a.team_key = t.key
+                   AND a.created_by IN ('import:abt-roster', 'import:sre-rotation'))
+     OR EXISTS (SELECT 1 FROM team_schedule_absence ab
+                 WHERE ab.team_key = t.key
+                   AND ab.created_by IN ('import:abt-roster', 'import:sre-rotation')));
 
 -- ── engineers ─────────────────────────────────────────────────────────────
 CREATE TEMP TABLE _eng (id UUID, team_key TEXT, family TEXT, seq INT, is_lead BOOLEAN) ON COMMIT DROP;
@@ -362,19 +370,24 @@ WHERE e.seq IN (4, 9);
 INSERT INTO team_schedule_assignment
   (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, created_by, updated_by)
 SELECT e.id, md5('seed-team-'||e.team_key)::uuid, e.team_key, sp.shift_id,
-       -- SRE regular hours carry a zone of their own: the window has none (every
-       -- zone keeps the same 09:00-18:00), but the engineer still belongs to one
-       -- that day, and that is what the "others in TZ" card groups by
+       -- An SRE engineer belongs to a zone whether or not they hold a tier,
+       -- and that is what the "others in TZ" card groups by.
        CASE WHEN e.family = 'sre-abt' THEN z.id ELSE sp.zone_id END, NULL,
        d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
 FROM _day d
 JOIN _on_rota e ON TRUE
-CROSS JOIN LATERAL _seed_span(d.d, CASE WHEN e.family = 'sre-abt' THEN 'SRE_REGULAR' ELSE 'CRE_REGULAR' END) sp
+-- The zone is chosen before the window, not after, because regular hours now
+-- differ by zone -- TZ1 06:00-15:00, TZ2 12:00-21:00, TZ3 the night -- so the
+-- zone is what picks the shift code rather than merely labelling the row.
 LEFT JOIN LATERAL (
-    SELECT id FROM team_schedule_zone
+    SELECT id, code FROM team_schedule_zone
     WHERE e.family = 'sre-abt'
     ORDER BY sort_order OFFSET ((e.seq + d.n) % 3) LIMIT 1
 ) z ON TRUE
+CROSS JOIN LATERAL _seed_span(
+    d.d,
+    CASE WHEN e.family = 'sre-abt' THEN 'SRE_' || z.code || '_REGULAR' ELSE 'CRE_REGULAR' END
+) sp
 WHERE NOT d.is_weekend
   AND e.team_key <> 'americas'
   AND NOT EXISTS (SELECT 1 FROM team_schedule_assignment a

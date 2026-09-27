@@ -21,6 +21,34 @@ ALTER TABLE team ADD CONSTRAINT team_key_unique UNIQUE (key);
 -- Lets the composite foreign key below reference (id, key) as a pair.
 ALTER TABLE team ADD CONSTRAINT team_id_key_unique UNIQUE (id, key);
 
+-- ── Every team the rota refers to must be a row ────────────────────────
+--
+-- 000088 kept team_key and team_id side by side and said the registry has no
+-- foreign key to offer, so a team could live in CSM_TEAM_REGISTRY with no team
+-- row at all. That is what this supersedes: a key with no row was exactly the
+-- silent empty rota review raised, and the catalogue endpoint builds the team
+-- list from this table now, so a team without a row is invisible to the page
+-- whether or not a constraint says so.
+--
+-- Checked first, and loudly. The ALTER below would refuse on its own, but with
+-- a message naming a constraint rather than the keys that are wrong.
+DO $$
+DECLARE missing TEXT;
+BEGIN
+    SELECT string_agg(DISTINCT k, ', ') INTO missing FROM (
+        SELECT team_key AS k FROM schedule_assignment
+        UNION
+        SELECT team_key FROM schedule_absence
+    ) used
+    WHERE NOT EXISTS (SELECT 1 FROM team t WHERE t.key = used.k);
+
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION
+            'the rota refers to teams with no team row: %. Add them to the team table (name and key) before applying this migration -- the schedule catalogue is built from that table now, so a team without a row cannot be shown or rostered.',
+            missing;
+    END IF;
+END $$;
+
 -- ── The fact tables now point at a real row ───────────────────────────────
 ALTER TABLE schedule_assignment
     ADD CONSTRAINT schedule_assignment_team_key_fkey
@@ -47,6 +75,14 @@ ALTER TABLE schedule_assignment
 -- key alone -- no query joins an absence to a team row -- and a second way to
 -- say the same thing is a second thing to keep in step. The key is now
 -- constrained, which is what the id was providing here.
+COMMENT ON COLUMN schedule_assignment.team_key IS
+    'The team this assignment belongs to, by catalogue key, and a real row '
+    'in team. This supersedes the note in 000088 that the registry has no '
+    'foreign key to offer: the schedule catalogue is served from the team '
+    'table now, so a key with no row could not be displayed or rostered even '
+    'without the constraint. team_id is kept alongside it, and the pair is '
+    'constrained to agree.';
+
 COMMENT ON COLUMN schedule_absence.team_key IS
     'The team this absence belongs to, by catalogue key. No team_id column on '
     'purpose: nothing joins an absence to a team row, and the foreign key on '

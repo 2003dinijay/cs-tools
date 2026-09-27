@@ -37,6 +37,10 @@ interface MonthRosterProps {
   absences: ScheduleAbsence[];
   shifts: Map<string, ScheduleShift>;
   absenceKinds: ScheduleAbsenceKind[];
+  /** Counts presses of Today. The day alone cannot express "take me back
+   *  there" once the reader has scrolled away without changing it, so the
+   *  press is what the grid listens to. */
+  focusRequest?: number;
   /** The day the date picker is sitting on, as YYYY-MM-DD.
    *
    *  Distinct from today: today is a fact, this is a choice. The roster is a
@@ -131,6 +135,7 @@ export default function MonthRoster({
   shifts,
   absenceKinds,
   selectedIso,
+  focusRequest,
   family,
   onFamilyChange,
   teamKey,
@@ -153,9 +158,11 @@ export default function MonthRoster({
    *  on next Tuesday" is a hard question to read off the grid. This does not
    *  filter -- the cells stay where they are, so the shape of the month does
    *  not change under the reader; they simply stop competing. */
-  //  On by default: the grid is opened to find the rota in the routine, so it
-  //  should answer that question before anything is clicked.
-  const [rotationsOnly, setRotationsOnly] = useState(true);
+  //  Off by default: the roster's first job is to show the month as it
+  //  stands -- leave and allocations included -- and hiding most of that
+  //  before the reader has asked is a view they did not choose. Fading is
+  //  one click away when they want it.
+  const [rotationsOnly, setRotationsOnly] = useState(false);
 
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const touched = useRef(false);
@@ -439,7 +446,7 @@ export default function MonthRoster({
     // have not been laid out yet and every offset reads zero.
     const t = window.setTimeout(go, 120);
     return () => window.clearTimeout(t);
-  }, [monthIso, selectedIso]);
+  }, [monthIso, selectedIso, focusRequest]);
 
   return (
     <>

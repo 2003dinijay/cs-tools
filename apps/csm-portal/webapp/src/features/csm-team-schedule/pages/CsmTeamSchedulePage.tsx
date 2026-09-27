@@ -144,6 +144,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const [familyChoice, setFamilyChoice] = useState<Family | null>(null);
   const [teamKey, setTeamKey] = useState<string>("");
   const [anchor, setAnchor] = useState<Date>(() => new Date());
+  /** Bumped by Today; a view listens to it to re-centre on the current day. */
+  const [focusRequest, setFocusRequest] = useState(0);
 
   const { user } = useCurrentUser();
   // The clock this reader is on, and the only source of it: their CSM profile
@@ -742,7 +744,16 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                   />
                 </label>
               </div>
-              <button className="btn" onClick={() => setAnchor(new Date())}>
+              <button
+                className="btn"
+                onClick={() => {
+                  setAnchor(new Date());
+                  // Pressing Today when today is already the anchor changes no state,
+                  // so a view that scrolled away would sit where it is. The press is
+                  // the request, not the date, so it is counted rather than compared.
+                  setFocusRequest((n) => n + 1);
+                }}
+              >
                 Today
               </button>
             </div>
@@ -878,6 +889,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           ) : view === "roster" ? (
             <MonthRoster
               selectedIso={toIsoDate(anchor)}
+              focusRequest={focusRequest}
               meEmail={user?.email}
               leadTeams={leadTeams.data ?? []}
               editedCells={editedCells}

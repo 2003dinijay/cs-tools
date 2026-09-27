@@ -174,6 +174,12 @@ export interface ScheduleActivity {
   action: "CREATED" | "UPDATED" | "DELETED" | "TRIMMED";
   actorEmail: string;
   note?: string;
+  /** For an UPDATED row, which field moved and what it moved between. The
+   *  service has always sent these; the panel needs them to say what an edit
+   *  actually was rather than guessing. */
+  fieldName?: string;
+  oldValue?: string;
+  newValue?: string;
   createdOn: string;
 }
 

@@ -67,3 +67,37 @@ ALTER TABLE team_schedule_shift RENAME CONSTRAINT team_schedule_shift_zone_id_fk
 ALTER TABLE team_schedule_zone RENAME CONSTRAINT team_schedule_zone_code_key TO schedule_zone_code_key;
 ALTER TABLE team_schedule_zone RENAME CONSTRAINT team_schedule_zone_pkey TO schedule_zone_pkey;
 ALTER TABLE team_schedule_zone RENAME CONSTRAINT team_schedule_zone_weekend_zone_id_fkey TO schedule_zone_weekend_zone_id_fkey;
+
+-- Renaming the function does not rewrite its body: plpgsql resolves names when
+-- it runs, so after the renames above it would still be looking for
+-- team_schedule_tier_enum and team_schedule_shift, neither of which exists any
+-- more. Every insert or update of shift_id, zone_id or tier would fail. So the
+-- body is restored to what 000100 created, exactly as the up migration
+-- replaced it going the other way.
+CREATE OR REPLACE FUNCTION schedule_assignment_matches_shift()
+RETURNS TRIGGER AS $$
+DECLARE
+    shift_zone UUID;
+    shift_tier schedule_tier_enum;
+    shift_code TEXT;
+BEGIN
+    SELECT s.zone_id, s.tier, s.code INTO shift_zone, shift_tier, shift_code
+      FROM schedule_shift s WHERE s.id = NEW.shift_id;
+
+    IF shift_zone IS NOT NULL AND NEW.zone_id IS DISTINCT FROM shift_zone THEN
+        RAISE EXCEPTION
+            'assignment zone does not match shift % (shift fixes zone %, assignment says %)',
+            shift_code, shift_zone, NEW.zone_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF shift_tier IS NOT NULL AND NEW.tier IS DISTINCT FROM shift_tier THEN
+        RAISE EXCEPTION
+            'assignment tier does not match shift % (shift fixes tier %, assignment says %)',
+            shift_code, shift_tier, NEW.tier
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;

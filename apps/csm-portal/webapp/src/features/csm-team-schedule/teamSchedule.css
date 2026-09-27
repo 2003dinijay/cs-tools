@@ -1416,3 +1416,67 @@
   opacity: 0.75;
   pointer-events: none;
 }
+
+/* The current-week band, in dark.
+   The band is an accent tint laid over the cell, and in dark the cell beneath
+   is very nearly black: 6% of the accent over it composites to rgb(15,7,4),
+   which is the same black as far as a reader is concerned. The percentage is
+   not a style choice that carries between schemes -- it buys contrast against
+   whatever it sits on, and white and black are not equally forgiving. Light
+   needs a whisper; dark needs about three times as much to say the same
+   thing. Both stay tints: the week is a region, not a selection. */
+:root[data-color-scheme="dark"] .csm-ts .tw.roster tbody td.cw::after {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+:root[data-color-scheme="dark"] .csm-ts .tw.roster thead th.day.cw:not(.sel)::after {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* The rest of the tints, in dark — the same correction as the week band above.
+   Every one of these was written as a single percentage for both schemes, and
+   a percentage does not carry: it buys contrast against what it sits on, and
+   these all sit on a surface that is near enough black. A saturated colour at
+   7% over black lands around rgb(17,8,5), which is the same black to a
+   reader, while 7% over white is a clear wash. Each is raised to roughly the
+   point where the step is as legible in dark as the original is in light, and
+   each stays a tint rather than becoming a fill. */
+
+/* Now: the row a reader looks for first, and the one most worth finding. */
+:root[data-color-scheme="dark"] .csm-ts .cvrow.now,
+:root[data-color-scheme="dark"] .csm-ts .tw tr.nowband > th.lab,
+:root[data-color-scheme="dark"] .csm-ts .tw tr.nowband > td {
+  background: color-mix(in srgb, var(--now) 18%, transparent);
+}
+
+/* Today's column in the roster date row. */
+:root[data-color-scheme="dark"] .csm-ts .tw.roster thead th.today {
+  background: color-mix(in srgb, var(--today) 18%, transparent);
+}
+
+/* A zone card's own fill. This one carries the zone's identity as well as its
+   bounds, so losing it in dark loses which column you are reading. */
+:root[data-color-scheme="dark"] .csm-ts .ladder .zblk,
+:root[data-color-scheme="dark"] .csm-ts .ladder .zblk.l1 {
+  background: color-mix(in srgb, var(--zc) 22%, transparent);
+}
+:root[data-color-scheme="dark"] .csm-ts .ladder .zblk .teamsplit .tl:hover,
+:root[data-color-scheme="dark"] .csm-ts .ladder .zblk .teamsplit .tl.on {
+  background: color-mix(in srgb, var(--zc) 30%, transparent);
+}
+
+/* The off-rota stack, which is grey on grey before it is anything else. */
+:root[data-color-scheme="dark"] .csm-ts .ladder .offstack {
+  background: color-mix(in srgb, var(--muted) 22%, transparent);
+}
+
+/* Weekend columns. --we-bg is already a dim olive in dark, so 22% of it over
+   black is nearly nothing; it needs the larger share of the two. */
+:root[data-color-scheme="dark"] .csm-ts .wcol.wknd {
+  background: color-mix(in srgb, var(--we-bg) 42%, transparent);
+}
+
+/* A tab's hover. White over black is the kindest of these, so it needs the
+   least — but 4% is still under the threshold where a hover reads as one. */
+:root[data-color-scheme="dark"] .csm-ts .tab:hover:not(.on) {
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+}

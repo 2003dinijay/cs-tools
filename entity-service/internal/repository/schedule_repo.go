@@ -160,15 +160,22 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 
 	// The teams the rota is run for. type carries the family the registry
 	// spells CRE-ABT / SRE-ABT / CRE, so the leading word is the group and an
-	// ABT is a team within it. Ordered by name, which is what makes the
-	// position stable enough for a client to colour by.
+	// ABT is a team within it.
+	//
+	// The ABTs come first, then the teams that hold no ABT rotation. Ordering
+	// by name alone put Americas above Atlas and Migration in among the ABTs,
+	// which is backwards for a reader scanning the roster for their own team:
+	// the ABTs are the rota, and the others are the exceptions to it. Name
+	// still orders within each group, so the position stays stable enough for
+	// a client to colour by -- the same window function and ORDER BY, so a
+	// team's sortOrder always matches where it actually appears.
 	teamRows, err := r.db.Query(ctx, `
 		SELECT t.key, t.name,
 		       CASE WHEN lower(t.type) LIKE 'sre%' THEN 'SRE' ELSE 'CRE' END,
-		       (row_number() OVER (ORDER BY t.name))::int
+		       (row_number() OVER (ORDER BY (lower(t.type) LIKE '%abt') DESC, t.name))::int
 		  FROM team t
 		 WHERE t.type IS NOT NULL AND lower(t.type) LIKE ANY (ARRAY['cre%', 'sre%'])
-		 ORDER BY t.name`)
+		 ORDER BY (lower(t.type) LIKE '%abt') DESC, t.name`)
 	if err != nil {
 		return cat, fmt.Errorf("query schedule teams: %w", err)
 	}
@@ -423,7 +430,7 @@ func (r *scheduleRepository) LeadsTeam(ctx context.Context, userEmail, teamKey s
 		    JOIN team t    ON t.id = tm.team_id
 		   WHERE lower(u.email) = lower($1)
 		     AND tm.role = 'lead'
-		     AND lower(t.name) = lower($2)
+		     AND t.key = lower($2)
 		)`, userEmail, teamKey).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("check team lead: %w", err)
@@ -440,7 +447,7 @@ func (r *scheduleRepository) UserInTeam(ctx context.Context, userID, teamKey str
 			  FROM team_member tm
 			  JOIN team t ON t.id = tm.team_id
 			 WHERE tm.user_id = $1::uuid
-			   AND lower(t.name) = lower($2))`, userID, teamKey).Scan(&ok)
+			   AND t.key = lower($2))`, userID, teamKey).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("check team membership: %w", err)
 	}
@@ -486,7 +493,7 @@ func (r *scheduleRepository) CreateAssignment(ctx context.Context, req domain.Cr
 		  (id, created_on, updated_on, created_by, updated_by, user_id, team_id, team_key,
 		   shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, note)
 		SELECT gen_random_uuid(), now(), now(), $1, $1, $2::uuid,
-		       (SELECT t.id FROM team t WHERE lower(t.name) = lower($3)), $3,
+		       (SELECT t.id FROM team t WHERE t.key = lower($3)), $3,
 		       s.id, s.zone_id, $4::team_schedule_tier_enum, $5::date,
 		       ($5::date::timestamp + make_interval(mins => s.start_minute)) AT TIME ZONE s.authoring_time_zone,
 		       ($5::date::timestamp + make_interval(mins => s.end_minute))   AT TIME ZONE s.authoring_time_zone,
@@ -713,7 +720,7 @@ func (r *scheduleRepository) ActivityForTeam(ctx context.Context, teamKey, from,
 // else.
 func (r *scheduleRepository) LeadTeamsFor(ctx context.Context, userEmail string) ([]string, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT DISTINCT lower(t.name)
+		SELECT DISTINCT t.key
 		  FROM team_member tm
 		  JOIN "user" u ON u.id = tm.user_id
 		  JOIN team t    ON t.id = tm.team_id
@@ -844,7 +851,7 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 			  (id, created_on, updated_on, created_by, updated_by, user_id, team_id, team_key,
 			   shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, note)
 			SELECT gen_random_uuid(), now(), now(), $1, $1, $2::uuid,
-			       (SELECT t.id FROM team t WHERE lower(t.name) = lower($3)), $3,
+			       (SELECT t.id FROM team t WHERE t.key = lower($3)), $3,
 			       s.id, s.zone_id, s.tier, $4::date,
 			       ($4::date::timestamp + make_interval(mins => s.start_minute)) AT TIME ZONE s.authoring_time_zone,
 			       ($4::date::timestamp + make_interval(mins => s.end_minute))   AT TIME ZONE s.authoring_time_zone,

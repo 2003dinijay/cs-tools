@@ -288,6 +288,10 @@ function invalidateRota(qc: ReturnType<typeof useQueryClient>): void {
   void qc.invalidateQueries({ queryKey: ["team-schedule", "assignments"] });
   void qc.invalidateQueries({ queryKey: ["team-schedule", "absences"] });
   void qc.invalidateQueries({ queryKey: ["team-schedule", "activity"] });
+  // The marks on the roster come from here. Without this they keep the last
+  // answer for a minute, so a lead who has just changed a cell and left edit
+  // mode sees a grid saying nobody has touched it.
+  void qc.invalidateQueries({ queryKey: ["team-schedule", "edit-markers"] });
 }
 
 export interface CreateAssignmentPayload {
