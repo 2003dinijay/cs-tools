@@ -39,7 +39,7 @@ claim_max_attempts = 20
 [store]
 # Insert attempts on the same id before writing a filler row.
 insert_attempts = 3
-# Delay before the second attempt; doubles each time (100ms, 200ms, 400ms).
+# Delay before the second attempt; doubles each time (100ms, then 200ms).
 insert_base_delay = "100ms"
 # Per-query timeout for every Cassandra call on the write path.
 query_timeout = "1.5s"
