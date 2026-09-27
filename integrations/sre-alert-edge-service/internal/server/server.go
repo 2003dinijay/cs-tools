@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"sre-alert-edge-service/internal/auth"
+	"sre-alert-edge-service/internal/textutil"
 )
 
 // VendorRoutePrefix is the path every vendor webhook lives under.
@@ -251,12 +252,9 @@ func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 func (s *Server) reject(r *http.Request, vendor string, status int, msg string, body []byte, size int64) {
 	counter, _ := s.rejectCounts.LoadOrStore(vendor, new(atomic.Int64))
 	total := counter.(*atomic.Int64).Add(1)
-	preview := body
-	if len(preview) > logPreviewChars {
-		preview = preview[:logPreviewChars]
-	}
+	preview, _ := textutil.Truncate(string(body), logPreviewChars)
 	s.logger.Warn("webhook rejected", "request_id", RequestID(r.Context()), "vendor", vendor,
-		"status", status, "error", msg, "body_size", size, "body_preview", string(preview),
+		"status", status, "error", msg, "body_size", size, "body_preview", preview,
 		"vendor_rejections_total", total)
 	if s.rejects != nil {
 		s.rejects.Rejected(Rejection{

@@ -33,10 +33,10 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"sre-alert-edge-service/internal/allocator"
 	"sre-alert-edge-service/internal/server"
+	"sre-alert-edge-service/internal/textutil"
 )
 
 // Settings tunes the cards; see config.toml.example.
@@ -304,7 +304,7 @@ func rejectedCard(r server.Rejection, now time.Time, replica string, previewChar
 	if c.other > 0 {
 		details += line("Other rejections", fmt.Sprintf("+%d more since %s", c.other, c.otherSince.Format(timeLayout)))
 	}
-	preview, truncated := truncate(string(r.Body), previewChars)
+	preview, truncated := textutil.Truncate(string(r.Body), previewChars)
 	if truncated {
 		preview += " …"
 	}
@@ -325,7 +325,7 @@ func dbFailureCard(f allocator.StoreFailure, now time.Time, replica string) map[
 		filler = "NOT written; alerts-core will wait gap_timeout on this id"
 	}
 	a := f.Alert
-	description, _ := truncate(a.Description, 500)
+	description, _ := textutil.Truncate(a.Description, 500)
 	return cardsV2("db-failure-"+f.AltID,
 		"<font color='#f70707'><b>DB failure: alert NOT stored</b></font>",
 		html.EscapeString(f.Vendor)+" | "+f.AltID,
@@ -385,15 +385,6 @@ func cardsV2(id, title, subtitle string, sections ...map[string]any) map[string]
 			},
 		}},
 	}
-}
-
-// truncate cuts s to n characters without splitting a multi-byte one.
-func truncate(s string, n int) (string, bool) {
-	if utf8.RuneCountInString(s) <= n {
-		return s, false
-	}
-	r := []rune(s)
-	return string(r[:n]), true
 }
 
 func errString(err error) string {
