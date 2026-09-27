@@ -21,8 +21,7 @@ import (
 	"time"
 )
 
-// newTestLease builds a Lease with no live Cassandra session, for exercising
-// the purely local leader/validUntil bookkeeping IsLeader relies on.
+// newTestLease builds a Lease with no live Cassandra session, for local leader/validUntil bookkeeping.
 func newTestLease(ttl time.Duration) *Lease {
 	return &Lease{owner: "test-owner", ttl: ttl}
 }
@@ -45,11 +44,6 @@ func TestIsLeaderTrueWithinValidUntil(t *testing.T) {
 	}
 }
 
-// TestIsLeaderFalseAfterHungRenew is the scenario cs-tools#2016's review flagged: leader stays
-// true from a cached flag alone, even though this replica's own locally-computed deadline (based
-// on when the renew that set it *started*, not a fresh read) has already passed -- e.g. a renew
-// call that hangs close to query_timeout against a much shorter ttl. IsLeader must reflect that,
-// not just the sticky flag.
 func TestIsLeaderFalseAfterHungRenew(t *testing.T) {
 	l := newTestLease(15 * time.Second)
 	renewStart := time.Now().Add(-20 * time.Second) // a renew that started long enough ago that validUntil has elapsed

@@ -10,7 +10,7 @@ notifications independently until they're actually delivered.
 ## How it works
 
 - A poller discovers new alerts by comparing the `alert_seq` counter against
-  its own persisted `alert_cursor` — no CDC needed. `alert-ingestion` posts to
+  its own persisted `alert_cursor` since no CDC is needed. `alert-ingestion` posts to
   `POST /alert` to wake it early; a fixed interval is the backstop.
 - Each alert is normalized, deduplicated by fingerprint, and folded into an
   incident. New incidents get a placeholder `incident_number` until CSM
@@ -29,7 +29,7 @@ and acts as the active processor at any moment; the rest stand by. If the
 active replica dies or is redeployed, a standby steals the lease once it
 expires and resumes from the same durable cursor. Leadership and progress
 both live in Cassandra rather than in-memory, so replicas can be added,
-removed, or restarted freely -- but note that duplicate or dropped alerts are
+removed, or restarted freely, but note that duplicate or dropped alerts are
 not fully impossible: lease handoff, CSM's own dedup-by-tag lookup (used
 before every incident create), and the shutdown drain sequence all narrow
 those windows significantly, they don't eliminate them under every failure
@@ -45,12 +45,12 @@ go build ./... && go vet ./... && go test ./...
 
 Configuration lives in `config.toml` (poll cadence, retry/backoff, lease TTL)
 and environment variables (`CASSANDRA_*`, `CSM_INTEGRATION_*`, `CSM_CALLER_ID`,
-`CSM_UNKNOWN_SERVICE_ID`, `FALLBACK_CHAT_WEBHOOK_URLS`) — see `.env.example`.
+`CSM_UNKNOWN_SERVICE_ID`, `FALLBACK_CHAT_WEBHOOK_URLS`); see `.env.example`.
 
 `config.toml` itself is gitignored (see root `.gitignore`), since it's treated
 as deployment config rather than source. Copy `config.toml.example` to
 `config.toml` and customize as needed. Every field is required and validated
-at startup (`internal/config.Config.validate`) -- there are no built-in
+at startup (`internal/config.Config.validate`) because there are no built-in
 fallback defaults if the file is missing a value or unparsable, so
 `config.toml.example`'s values are a starting point to copy and edit, not
 defaults this service falls back to on its own.
@@ -61,7 +61,7 @@ cp config.toml.example config.toml
 
 ## Choreo Deployment
 
-`config.toml` is not baked into the image — it's supplied at runtime via
+`config.toml` is not baked into the image because it's supplied at runtime via
 Choreo's **Manage > Configs and Secrets > File Mount**:
 
 1. In the component's Choreo console, go to **Manage Configs and Secrets >
@@ -71,5 +71,5 @@ Choreo's **Manage > Configs and Secrets > File Mount**:
 3. Mount it at the path the service reads from: the working directory root
    (so it resolves as `config.toml`), or any path if you also set the
    `CONFIG_PATH` environment variable to that path.
-4. Redeploy — the poller, lease, Cassandra, notify, and server tunables all
+4. Redeploy. The poller, lease, Cassandra, notify, and server tunables all
    load from this mounted file on startup.
