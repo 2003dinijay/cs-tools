@@ -263,7 +263,7 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 			"level0Included", t.Routing.HasNotificationLevel())
 	}
 
-	plan, err := BuildPlan(ctx, t, e.policies, e.resolver)
+	plan, err := BuildPlan(ctx, t, e.policies, e.resolver, e.cfg.Channel)
 	if err != nil {
 		return fmt.Errorf("escalation: build plan for %s: %w", t.IncidentID, err)
 	}

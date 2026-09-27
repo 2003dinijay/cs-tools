@@ -178,7 +178,7 @@ func run(cfg config) error {
 		return fmt.Errorf("no escalation policy for priority %q", trigger.Priority)
 	}
 
-	plan, err := escalation.BuildPlan(context.Background(), trigger, escalation.DefaultPolicy, harnessResolver(cfg.to))
+	plan, err := escalation.BuildPlan(context.Background(), trigger, escalation.DefaultPolicy, harnessResolver(cfg.to), escalation.ChannelCall)
 	if err != nil {
 		return err
 	}

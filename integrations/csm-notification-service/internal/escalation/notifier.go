@@ -111,6 +111,14 @@ func (v voiceNotifier) Channel() Channel { return ChannelCall }
 
 func (v voiceNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) (Delivery, error) {
 	t := plan.Trigger
+	if call.Recipient.Phone == "" {
+		// Only reachable on ChannelBoth: a call-only plan drops these before
+		// scheduling, and a chat-only plan never builds this notifier. Here
+		// the chat half of the rung still has somewhere to go, so record the
+		// miss and let it. Dialling "" would be a provider error about a
+		// malformed number, which says nothing true about what happened.
+		return Delivery{Channel: ChannelCall, Status: "no number for this recipient"}, nil
+	}
 	var placed notifications.Call
 	var err error
 	if v.useSSML {
@@ -194,6 +202,15 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 		// stable, unique, and already the identity every other part of the
 		// ladder is filed under.
 		ThreadKey: "incident-escalation-" + t.IncidentID,
+		Team:      t.Team,
+		// Both stamps in IST, because every shift boundary this ladder routes
+		// by is expressed in it. Rendering either in the reader's own zone
+		// would put a time outside those hours beside a card naming the
+		// window it falls in.
+		ReportedAt: istStamp(t.At),
+		Firing:     istStamp(call.At),
+		Rotation:   rotationOf(plan),
+		OnCall:     onCallName(plan),
 	}
 	if err := n.chat.SendEscalationAlert(ctx, alert); err != nil {
 		return Delivery{Channel: ChannelChat}, err
@@ -212,4 +229,39 @@ func elapsedSince(trigger, at time.Time) string {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
 	return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// istStamp renders an instant in the zone the shift boundaries are written in.
+func istStamp(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.In(IST).Format("2006-01-02 15:04 IST")
+}
+
+// rotationOf is the rota window the first rung was resolved from.
+//
+// It comes off a recipient rather than off the trigger because the trigger
+// only knows the shift the boundaries put it in - LK_EVENING - and not which
+// scheduled window that was. Only the resolver that read the rota knows that,
+// so this is empty when the rungs came from configuration instead.
+func rotationOf(plan Plan) string {
+	for _, c := range plan.Calls {
+		if c.Level == Level0 && c.Recipient.ShiftCode != "" {
+			return c.Recipient.ShiftCode
+		}
+	}
+	return ""
+}
+
+// onCallName is who the first rung reached, carried on every later card: by
+// LEVEL_3 the question is not only who is being called now, but who was
+// supposed to have this an hour ago.
+func onCallName(plan Plan) string {
+	for _, c := range plan.Calls {
+		if c.Level == Level0 && c.Recipient.Name != "" {
+			return c.Recipient.Name
+		}
+	}
+	return ""
 }

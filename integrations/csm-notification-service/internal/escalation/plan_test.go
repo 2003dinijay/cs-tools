@@ -58,7 +58,7 @@ func fullResolver() StaticResolver {
 
 // The whole P1 ladder, end to end, in milliseconds rather than 44 minutes.
 func TestBuildPlan_P1FullLadderDuringRotation(t *testing.T) {
-	plan, err := BuildPlan(context.Background(), testTrigger("P1", ShiftLKMorning), DefaultPolicy, fullResolver())
+	plan, err := BuildPlan(context.Background(), testTrigger("P1", ShiftLKMorning), DefaultPolicy, fullResolver(), ChannelCall)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestBuildPlan_P1FullLadderDuringRotation(t *testing.T) {
 
 // Acknowledgement cancels every call still due, and only those.
 func TestPlan_AcknowledgementCancelsRemainingCalls(t *testing.T) {
-	plan, _ := BuildPlan(context.Background(), testTrigger("P1", ShiftLKMorning), DefaultPolicy, fullResolver())
+	plan, _ := BuildPlan(context.Background(), testTrigger("P1", ShiftLKMorning), DefaultPolicy, fullResolver(), ChannelCall)
 
 	// The sub team lead picks it up 12 minutes in — after LEVEL_1's first two
 	// calls, before its third.
@@ -131,7 +131,7 @@ func TestBuildPlan_MissingPhoneIsSkippedNotFatal(t *testing.T) {
 		Level1: {rec("no.number@wso2.com", ""), rec("has.number@wso2.com", "+94770000001")},
 		Level2: {rec("team.lead@wso2.com", "+94770000002")},
 	}}
-	plan, err := BuildPlan(context.Background(), testTrigger("P0", ShiftLK), DefaultPolicy, r)
+	plan, err := BuildPlan(context.Background(), testTrigger("P0", ShiftLK), DefaultPolicy, r, ChannelCall)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestBuildPlan_EmptyLevelDoesNotStopTheLadder(t *testing.T) {
 	r := StaticResolver{ByLevel: map[Level][]Recipient{
 		Level3: {rec("bu.head@wso2.com", "+94770000003")},
 	}}
-	plan, _ := BuildPlan(context.Background(), testTrigger("P2", ShiftLK), DefaultPolicy, r)
+	plan, _ := BuildPlan(context.Background(), testTrigger("P2", ShiftLK), DefaultPolicy, r, ChannelCall)
 
 	if len(plan.Calls) == 0 {
 		t.Fatal("expected LEVEL_3 to still be called")
@@ -194,7 +194,7 @@ func TestBuildPlan_EmptyLevelDoesNotStopTheLadder(t *testing.T) {
 
 // Outside a rotation there is no notification level at all.
 func TestBuildPlan_NoLevel0OutsideRotation(t *testing.T) {
-	plan, _ := BuildPlan(context.Background(), testTrigger("P1", ShiftLK), DefaultPolicy, fullResolver())
+	plan, _ := BuildPlan(context.Background(), testTrigger("P1", ShiftLK), DefaultPolicy, fullResolver(), ChannelCall)
 	for _, c := range plan.Calls {
 		if c.Level == Level0 {
 			t.Fatal("LEVEL_0 must not be called outside a rotation")
@@ -206,7 +206,7 @@ func TestBuildPlan_NoLevel0OutsideRotation(t *testing.T) {
 }
 
 func TestBuildPlan_UnknownPriorityIsAnError(t *testing.T) {
-	if _, err := BuildPlan(context.Background(), testTrigger("P9", ShiftLK), DefaultPolicy, fullResolver()); err == nil {
+	if _, err := BuildPlan(context.Background(), testTrigger("P9", ShiftLK), DefaultPolicy, fullResolver(), ChannelCall); err == nil {
 		t.Fatal("expected an error for an unknown priority")
 	}
 }
@@ -274,7 +274,7 @@ func spokenText(s notifications.Speech) string {
 
 // The execution summary must read like the specification's own work note.
 func TestExecutionSummary_MatchesDocumentedFormat(t *testing.T) {
-	plan, _ := BuildPlan(context.Background(), testTrigger("P1", ShiftLKMorning), DefaultPolicy, fullResolver())
+	plan, _ := BuildPlan(context.Background(), testTrigger("P1", ShiftLKMorning), DefaultPolicy, fullResolver(), ChannelCall)
 	ack := triggerAt.Add(12 * time.Minute)
 	lines := plan.ExecutionSummary(nil, nil, &ack, "")
 
@@ -327,7 +327,7 @@ func TestBuildPlan_ResolvesOncePerLevelNotPerAttempt(t *testing.T) {
 			Level1: {rec("someone.else@wso2.com", "+94779999999")},
 		},
 	}
-	plan, err := BuildPlan(context.Background(), testTrigger("P1", ShiftLKMorning), DefaultPolicy, r)
+	plan, err := BuildPlan(context.Background(), testTrigger("P1", ShiftLKMorning), DefaultPolicy, r, ChannelCall)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestExecutionSummary_ReportsLevelWithNoCalls(t *testing.T) {
 		Level1: {rec("no.number@wso2.com", ""), rec("also.none@wso2.com", "")},
 		Level2: {rec("team.lead@wso2.com", "+94770000002")},
 	}}
-	plan, err := BuildPlan(context.Background(), testTrigger("P0", ShiftLK), DefaultPolicy, r)
+	plan, err := BuildPlan(context.Background(), testTrigger("P0", ShiftLK), DefaultPolicy, r, ChannelCall)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -459,5 +459,49 @@ func TestInstruction_NamesWhatToDo(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A chat rung posts into a space, not to a handset. Requiring a number before
+// the channel was even considered meant a chat-only deployment scheduled
+// nothing at all -- and "user" has no phone column, so every recipient the
+// Team Schedule resolves arrives without one.
+func TestBuildPlan_ChatDoesNotNeedAPhoneNumber(t *testing.T) {
+	emailOnly := StaticResolver{ByLevel: map[Level][]Recipient{
+		Level0: {{Email: "on.call@example.com", Name: "On Call"}},
+		Level1: {{Email: "sub.lead@example.com", Name: "Sub Lead"}},
+		Level2: {{Email: "abt.lead@example.com", Name: "ABT Lead"}},
+		Level3: {{Email: "cre.head@example.com", Name: "CRE Head"}},
+		Level4: {{Email: "cs.head@example.com", Name: "CS Head"}},
+	}}
+
+	for _, channel := range []Channel{ChannelChat, ChannelBoth} {
+		t.Run(string(channel), func(t *testing.T) {
+			plan, err := BuildPlan(context.Background(), testTrigger("P0", ShiftLK), DefaultPolicy, emailOnly, channel)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(plan.Calls) == 0 {
+				t.Fatal("nothing scheduled; a chat rung needs no phone number")
+			}
+			for _, issue := range plan.Issues {
+				if issue.Reason == "NO_NUMBER" {
+					t.Errorf("raised NO_NUMBER on a %s plan: %+v", channel, issue)
+				}
+			}
+		})
+	}
+
+	// Call-only is unchanged: with no number there is genuinely no way to
+	// reach anybody, and the summary must still say so.
+	plan, err := BuildPlan(context.Background(), testTrigger("P0", ShiftLK), DefaultPolicy, emailOnly, ChannelCall)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(plan.Calls) != 0 {
+		t.Error("scheduled a call to a recipient with no number")
+	}
+	if len(plan.Issues) == 0 {
+		t.Error("dropped every recipient without recording why")
 	}
 }

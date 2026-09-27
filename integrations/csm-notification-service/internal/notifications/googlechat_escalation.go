@@ -103,6 +103,24 @@ type EscalationAlert struct {
 	//
 	// Empty leaves the section off entirely.
 	VoiceScript string
+
+	// Team is who the incident is assigned to.
+	Team string
+	// ReportedAt is when the incident was raised, and Firing is when this
+	// rung went off. Both absolute and both in one zone, because "unattended
+	// 12m" answers how long but never when, and a reader piecing an
+	// escalation together afterwards needs when.
+	ReportedAt string
+	Firing     string
+	// Rotation is the rota window covering the incident, as the schedule
+	// names it: CRE_EVENING, CRE_AMERICAS. Empty when the ladder did not
+	// resolve anyone from the rota, which is every rung but the first and
+	// every deployment still reading a configured roster.
+	Rotation string
+	// OnCall is who the first rung reached, carried on every later card.
+	// By LEVEL_3 the question a reader has is not only "who is being called
+	// now" but "who was supposed to have this an hour ago".
+	OnCall string
 }
 
 // SendEscalationAlert posts one rung of the ladder to the product's space.
@@ -149,6 +167,12 @@ func buildEscalationCard(a EscalationAlert) chatCardMessage {
 	}
 	body.WriteString("<br>")
 	body.WriteString(caseAlertLine(`<font color="#5F6368">Priority %s</font>`, a.Priority))
+	if a.Team != "" {
+		body.WriteString(caseAlertLine(`<font color="#5F6368"> - team %s</font>`, a.Team))
+	}
+	if a.Rotation != "" {
+		body.WriteString(caseAlertLine(`<font color="#5F6368"> - rotation %s</font>`, a.Rotation))
+	}
 	body.WriteString(caseAlertLine(`<font color="#5F6368"> - unattended %s</font>`, elapsedOrNew(a.Elapsed)))
 	if a.Rule != "" {
 		body.WriteString(caseAlertLine(`<font color="#5F6368"> - path %s</font>`, a.Rule))
@@ -160,6 +184,18 @@ func buildEscalationCard(a EscalationAlert) chatCardMessage {
 	} else if a.NextRung == "" {
 		body.WriteString("<br>")
 		body.WriteString(`<font color="#B3261E">This is the final rung. Nothing escalates past it.</font>`)
+	}
+	if a.ReportedAt != "" || a.Firing != "" || a.OnCall != "" {
+		body.WriteString("<br>")
+	}
+	if a.ReportedAt != "" {
+		body.WriteString(caseAlertLine(`<br><font color="#5F6368">Reported %s</font>`, a.ReportedAt))
+	}
+	if a.Firing != "" {
+		body.WriteString(caseAlertLine(`<br><font color="#5F6368">This rung %s</font>`, a.Firing))
+	}
+	if a.OnCall != "" {
+		body.WriteString(caseAlertLine(`<br><font color="#5F6368">On call was %s</font>`, a.OnCall))
 	}
 	if a.Instruction != "" {
 		body.WriteString("<br><br>")

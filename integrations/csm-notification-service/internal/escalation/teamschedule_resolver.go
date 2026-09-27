@@ -143,7 +143,9 @@ func (r TeamScheduleResolver) onCallSubLead(ctx context.Context, at time.Time) (
 			continue
 		}
 		seenUser[id] = true
-		out = append(out, Recipient{Email: a.Engineer.Email, Name: a.Engineer.Name})
+		out = append(out, Recipient{
+			Email: a.Engineer.Email, Name: a.Engineer.Name, ShiftCode: a.ShiftCode,
+		})
 	}
 	return out, nil
 }

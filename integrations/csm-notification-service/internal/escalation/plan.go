@@ -110,9 +110,11 @@ type Plan struct {
 // level must not stop the ladder reaching the next one.
 //
 // A recipient with no phone number yields a NO_NUMBER issue and no call,
-// matching the execution summary's own
-// [LEVEL_n][ERROR][NO_NUMBER][email] line.
-func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolicy, r Resolver) (Plan, error) {
+// matching the execution summary's own [LEVEL_n][ERROR][NO_NUMBER][email]
+// line -- but only when the channel actually needs a number. A chat rung
+// reaches a space, not a handset, so on chat the same recipient is scheduled
+// and the issue is not raised.
+func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolicy, r Resolver, channel Channel) (Plan, error) {
 	policy, ok := Lookup(policies, t.Priority)
 	if !ok {
 		return Plan{}, fmt.Errorf("escalation: no policy for priority %q", t.Priority)
@@ -145,9 +147,15 @@ func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolic
 			continue
 		}
 
+		// A number is only required when a number is the only way to reach
+		// anybody. On a chat rung the card goes to a space, and a recipient
+		// the rota knows by e-mail alone is perfectly reachable -- "user" has
+		// no phone column at all, so requiring one here scheduled nothing
+		// whatsoever for a chat-only deployment.
+		needsPhone := !channel.Uses(ChannelChat)
 		reachable := make([]Recipient, 0, len(recipients))
 		for _, rec := range recipients {
-			if rec.Phone == "" {
+			if needsPhone && rec.Phone == "" {
 				plan.Issues = append(plan.Issues, PlanIssue{
 					Level: level, At: opensAt, Reason: "NO_NUMBER", Detail: rec.Email,
 				})

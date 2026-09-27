@@ -91,7 +91,7 @@ func TestCoverage_EveryHourOfTheWeekGetsALadder(t *testing.T) {
 			tr := testTrigger("P1", shift)
 			tr.At = at
 			tr.Routing = rc
-			plan, err := BuildPlan(context.Background(), tr, DefaultPolicy, fullResolver())
+			plan, err := BuildPlan(context.Background(), tr, DefaultPolicy, fullResolver(), ChannelCall)
 			if err != nil {
 				t.Errorf("%s %02d:00 IST (%s): no ladder: %v", at.Weekday(), hour, shift, err)
 				continue
@@ -194,7 +194,7 @@ func TestCoverage_WindowsProduceTheLaddersTheyShould(t *testing.T) {
 			tr := testTrigger("P1", rc.Shift)
 			tr.At = tc.at
 			tr.Routing = rc
-			plan, err := BuildPlan(context.Background(), tr, DefaultPolicy, fullResolver())
+			plan, err := BuildPlan(context.Background(), tr, DefaultPolicy, fullResolver(), ChannelCall)
 			if err != nil {
 				t.Fatal(err)
 			}

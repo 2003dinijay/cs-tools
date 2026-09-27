@@ -246,6 +246,14 @@ type Recipient struct {
 	// [LEVEL_n][ERROR][NO_NUMBER][email] and carries on — a missing number
 	// must never abort a level.
 	Phone string
+	// ShiftCode is the rota window that put this person on the hook, as the
+	// schedule names it: CRE_EVENING, CRE_AMERICAS, CRE_WEEKEND_NIGHT.
+	//
+	// Only the rung resolved from the rota has one. A lead reached because of
+	// the team on the incident is not on a shift, so this is empty for every
+	// other rung, and empty for every resolver that answers from
+	// configuration rather than from the schedule.
+	ShiftCode string
 }
 
 // Resolver turns a level plus routing context into the people to contact.

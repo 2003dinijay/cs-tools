@@ -260,3 +260,36 @@ func TestBuildEscalationCard_VoiceScriptIsEscaped(t *testing.T) {
 		t.Errorf("voice section = %q, want the ampersand escaped", got)
 	}
 }
+
+// Reading an escalation back afterwards needs more than "unattended 12m":
+// which team, which rota window, when it was raised, when this rung went off,
+// and who was supposed to have it first.
+func TestBuildEscalationCard_CarriesTheContextAReaderNeeds(t *testing.T) {
+	body := buildEscalationCard(EscalationAlert{
+		Rung: "LEVEL_1", Priority: "P0", IncidentRef: "WSO2-1042",
+		Team: "Vega", Rotation: "CRE_EVENING",
+		ReportedAt: "2026-09-28 19:42 IST", Firing: "2026-09-28 19:43 IST",
+		OnCall: "Ashens",
+	}).CardsV2[0].Card.Sections[0].Widgets[0].TextParagraph.Text
+
+	for _, want := range []string{"Vega", "CRE_EVENING", "2026-09-28 19:42 IST", "2026-09-28 19:43 IST", "Ashens"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("card body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// Every one of them is absent on some rung or some deployment: a configured
+// roster resolves no rota window, and only the first rung has an on-call
+// name. A card must not carry an empty label for any of them.
+func TestBuildEscalationCard_OmitsContextItDoesNotHave(t *testing.T) {
+	body := buildEscalationCard(EscalationAlert{
+		Rung: "LEVEL_2", Priority: "P0", IncidentRef: "WSO2-1042",
+	}).CardsV2[0].Card.Sections[0].Widgets[0].TextParagraph.Text
+
+	for _, absent := range []string{"team ", "rotation ", "Reported ", "This rung ", "On call was"} {
+		if strings.Contains(body, absent) {
+			t.Errorf("card body has an empty %q label:\n%s", absent, body)
+		}
+	}
+}

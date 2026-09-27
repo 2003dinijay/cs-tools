@@ -89,7 +89,7 @@ func TestMatrix_EveryRuleTimesEveryPriority(t *testing.T) {
 				if !ok {
 					t.Fatalf("no policy for %s", priority)
 				}
-				plan, err := BuildPlan(context.Background(), tr, DefaultPolicy, fullResolver())
+				plan, err := BuildPlan(context.Background(), tr, DefaultPolicy, fullResolver(), ChannelCall)
 				if err != nil {
 					t.Fatal(err)
 				}

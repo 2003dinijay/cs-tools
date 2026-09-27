@@ -61,7 +61,7 @@ func TestHasNotificationLevel_MatchesTheRuleTable(t *testing.T) {
 func TestBuildPlan_ABTEligibleUSAWeekendStartsAtLevel1(t *testing.T) {
 	tr := testTrigger("P2", ShiftUSAWeekend)
 	tr.Routing.ABTEligible = abtYes()
-	plan, err := BuildPlan(context.Background(), tr, DefaultPolicy, fullResolver())
+	plan, err := BuildPlan(context.Background(), tr, DefaultPolicy, fullResolver(), ChannelCall)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestBuildPlan_ABTEligibleUSAWeekendStartsAtLevel1(t *testing.T) {
 	}
 
 	tr.Routing.ABTEligible = abtNo()
-	plan, err = BuildPlan(context.Background(), tr, DefaultPolicy, fullResolver())
+	plan, err = BuildPlan(context.Background(), tr, DefaultPolicy, fullResolver(), ChannelCall)
 	if err != nil {
 		t.Fatal(err)
 	}

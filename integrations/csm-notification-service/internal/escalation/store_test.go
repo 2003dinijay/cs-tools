@@ -73,7 +73,7 @@ func testStore(t *testing.T) (*Store, func()) {
 // planFor builds a small stored ladder for these tests.
 func planFor(t *testing.T) Plan {
 	t.Helper()
-	plan, err := BuildPlan(context.Background(), testTrigger("P1", ShiftLK), DefaultPolicy, fullResolver())
+	plan, err := BuildPlan(context.Background(), testTrigger("P1", ShiftLK), DefaultPolicy, fullResolver(), ChannelCall)
 	if err != nil {
 		t.Fatal(err)
 	}
