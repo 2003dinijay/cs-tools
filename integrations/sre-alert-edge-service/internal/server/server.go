@@ -39,6 +39,10 @@ import (
 // VendorRoutePrefix is the path every vendor webhook lives under.
 const VendorRoutePrefix = "/api/wso2/v1/sre_alert_api/"
 
+// idleTimeout closes keep-alive connections nobody is using, so idle vendor connections
+// can't pile up on a replica.
+const idleTimeout = 60 * time.Second
+
 // retryAfterSeconds is sent with every 503 so vendors back off before retrying.
 const retryAfterSeconds = 60
 
@@ -153,6 +157,7 @@ func (s *Server) HTTPServer(addr string) *http.Server {
 		ReadTimeout:       s.readTimeout,
 		ReadHeaderTimeout: s.readTimeout,
 		WriteTimeout:      s.writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 }
 

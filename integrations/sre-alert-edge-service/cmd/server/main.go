@@ -159,20 +159,9 @@ func main() {
 		logger.Info("shutdown signal received, draining")
 		// Restores default signal handling so a second Ctrl-C force-kills.
 		stop()
-		srv.StartDraining()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.Duration())
 		defer cancel()
-		// Stop accepting first, so nothing new is queued, then let the allocator claim and
-		// write everything already queued within the same grace window.
-		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-			logger.Error("http shutdown incomplete", "error", err)
-		}
-		if err := alloc.Close(shutdownCtx); err != nil {
-			logger.Error("allocator did not drain within shutdown_grace; claimed ids may be left without rows", "error", err)
-		}
-		// Last, so the final batches' wake-up and any DB-failure cards still go out.
-		waker.Wait(shutdownCtx)
-		cards.Close(shutdownCtx)
+		shutdown(shutdownCtx, logger, srv, httpSrv, alloc, waker.Wait, cards.Close)
 	}
 }
 
