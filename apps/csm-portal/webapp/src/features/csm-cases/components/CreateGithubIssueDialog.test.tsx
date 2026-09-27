@@ -373,6 +373,58 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
       screen.getByText(/wso2-enterprise\/wso2-apim-internal \(Bijira\)/),
     ).toBeInTheDocument();
   });
+
+  it("prefers an exact product label over a longer name that merely contains it", () => {
+    mockUseGetGithubIssueRepoOptions.mockReturnValue({
+      data: [
+        {
+          value: "choreo-connect",
+          displayLabel: "Choreo-Connect",
+          owner: "wso2-enterprise",
+          repo: "choreo",
+          githubLabel: "Choreo-Connect",
+        },
+        {
+          value: "choreo",
+          displayLabel: "Choreo",
+          owner: "wso2-enterprise",
+          repo: "choreo",
+          githubLabel: "Choreo",
+        },
+      ],
+      isLoading: false,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    render(
+      <CreateGithubIssueDialog
+        open
+        productName="Choreo"
+        submitting={false}
+        error={null}
+        onClose={() => {}}
+        onSubmit={() => {}}
+      />,
+    );
+    expect(screen.getByText(/\(Choreo\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/\(Choreo-Connect\)/)).not.toBeInTheDocument();
+  });
+
+  it("keeps Create issue disabled while a linked project's status is still loading", () => {
+    render(
+      <CreateGithubIssueDialog
+        open
+        productName="Asgardeo"
+        projectStatusPending
+        submitting={false}
+        error={null}
+        onClose={() => {}}
+        onSubmit={() => {}}
+      />,
+    );
+    fillRequiredFields();
+    expect(screen.getByText(/waiting for this case's project status/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create issue/i })).toBeDisabled();
+  });
 });
 
 describe("CreateGithubIssueDialog — confirm step before filing a real issue", () => {
