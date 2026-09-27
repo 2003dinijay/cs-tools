@@ -3290,6 +3290,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
           defaultTitle={c.subject}
           defaultDescription={c.description}
           showRepoField={isCloudSupportSubscription(caseProject?.subscriptionType)}
+          productName={c.product}
+          onboardingInProgress={caseProject?.onboardingStatus === "In-Progress"}
           onClose={() => {
             setGithubIssueOpen(false);
             setGithubIssueError(null);
@@ -3309,6 +3311,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   // done reading the confirmation.
                   setActiveTab("activities");
                   setGithubIssueResult(res);
+                  addTag.mutate("s_dp");
+                  if (payload.regression) addTag.mutate("s_rg");
+                  if (payload.reason === "migration") addTag.mutate("migration");
                 },
                 onError: (err) => {
                   // Surface the backend's own message on 4xx (invalid state,
