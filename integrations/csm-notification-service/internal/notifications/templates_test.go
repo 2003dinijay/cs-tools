@@ -88,7 +88,7 @@ func TestSanitizeRichText_StructureAndFormatting(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got, images := sanitizeRichText(tt.input); got != tt.want {
+			if got, images := sanitizeRichText(tt.input, &inlineImageBudget{}); got != tt.want {
 				t.Errorf("sanitizeRichText(%q) = %q, want %q", tt.input, got, tt.want)
 			} else if len(images) != 0 {
 				t.Errorf("sanitizeRichText(%q) returned %d images, want 0", tt.input, len(images))
@@ -131,7 +131,7 @@ func TestSanitizeRichText_Links(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got, images := sanitizeRichText(tt.input); got != tt.want {
+			if got, images := sanitizeRichText(tt.input, &inlineImageBudget{}); got != tt.want {
 				t.Errorf("sanitizeRichText(%q) = %q, want %q", tt.input, got, tt.want)
 			} else if len(images) != 0 {
 				t.Errorf("sanitizeRichText(%q) returned %d images, want 0", tt.input, len(images))
@@ -152,7 +152,7 @@ func TestSanitizeRichText_Links(t *testing.T) {
 func TestSanitizeRichText_Images(t *testing.T) {
 	const dataURI = "data:image/png;base64,aGVsbG8="
 	t.Run("a data:image src becomes a cid: reference, with the image extracted", func(t *testing.T) {
-		html, images := sanitizeRichText(`<img src="` + dataURI + `" alt="screenshot">`)
+		html, images := sanitizeRichText(`<img src="`+dataURI+`" alt="screenshot">`, &inlineImageBudget{})
 		if len(images) != 1 {
 			t.Fatalf("got %d images, want 1", len(images))
 		}
@@ -176,7 +176,7 @@ func TestSanitizeRichText_Images(t *testing.T) {
 	})
 
 	t.Run("an http(s) src is dropped entirely, no image extracted", func(t *testing.T) {
-		html, images := sanitizeRichText(`<img src="https://evil.example.com/tracker.png">`)
+		html, images := sanitizeRichText(`<img src="https://evil.example.com/tracker.png">`, &inlineImageBudget{})
 		if html != "" {
 			t.Errorf("html = %q, want empty", html)
 		}
@@ -186,7 +186,7 @@ func TestSanitizeRichText_Images(t *testing.T) {
 	})
 
 	t.Run("two images in one comment each get their own distinct Content-ID", func(t *testing.T) {
-		_, images := sanitizeRichText(`<img src="` + dataURI + `"><img src="` + dataURI + `">`)
+		_, images := sanitizeRichText(`<img src="`+dataURI+`"><img src="`+dataURI+`">`, &inlineImageBudget{})
 		if len(images) != 2 {
 			t.Fatalf("got %d images, want 2", len(images))
 		}
@@ -200,7 +200,7 @@ func TestSanitizeRichText_Images(t *testing.T) {
 	// inline image — safeImageDataURI's allow-list must reject it even
 	// though it's syntactically a well-formed data: URI.
 	t.Run("an svg+xml data URI is rejected, not extracted", func(t *testing.T) {
-		html, images := sanitizeRichText(`<img src="data:image/svg+xml;base64,aGVsbG8=">`)
+		html, images := sanitizeRichText(`<img src="data:image/svg+xml;base64,aGVsbG8=">`, &inlineImageBudget{})
 		if html != "" {
 			t.Errorf("html = %q, want empty", html)
 		}
@@ -213,7 +213,7 @@ func TestSanitizeRichText_Images(t *testing.T) {
 	// oversized — see that const's own doc comment for why.
 	t.Run("an oversized image is dropped, not truncated", func(t *testing.T) {
 		big := base64.StdEncoding.EncodeToString(make([]byte, maxInlineImageBytes+1))
-		html, images := sanitizeRichText(`<img src="data:image/png;base64,` + big + `">`)
+		html, images := sanitizeRichText(`<img src="data:image/png;base64,`+big+`">`, &inlineImageBudget{})
 		if html != "" {
 			t.Errorf("html = %q, want empty", html)
 		}
@@ -229,7 +229,7 @@ func TestSanitizeRichText_Images(t *testing.T) {
 		for i := 0; i < maxInlineImagesPerComment+3; i++ {
 			sb.WriteString(`<img src="` + dataURI + `">`)
 		}
-		_, images := sanitizeRichText(sb.String())
+		_, images := sanitizeRichText(sb.String(), &inlineImageBudget{})
 		if len(images) != maxInlineImagesPerComment {
 			t.Errorf("got %d images, want exactly %d (the cap)", len(images), maxInlineImagesPerComment)
 		}
@@ -249,12 +249,36 @@ func TestSanitizeRichText_Images(t *testing.T) {
 		const secondSize = maxTotalInlineImageBytes - maxInlineImageBytes + 1
 		first := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, firstSize))
 		second := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, secondSize))
-		_, images := sanitizeRichText(`<img src="` + first + `"><img src="` + second + `">`)
+		_, images := sanitizeRichText(`<img src="`+first+`"><img src="`+second+`">`, &inlineImageBudget{})
 		if len(images) != 1 {
 			t.Fatalf("got %d images, want exactly 1 (the second must be dropped for exceeding the total budget)", len(images))
 		}
 		if len(images[0].Data) != firstSize {
 			t.Errorf("first image size = %d, want %d (must survive unchanged)", len(images[0].Data), firstSize)
+		}
+	})
+
+	// A caller rendering more than one rich-text field into the same email
+	// (RenderCaseCreatedEmail: Description + IncidentImpactDescription;
+	// RenderCRPlanDateNoticeEmail: ShortDescription + Description) must
+	// share one *inlineImageBudget across both sanitizeRichText calls, or
+	// each field could independently max out the same limits, and both
+	// fields' attachments still land on the same outgoing email/request.
+	t.Run("a shared budget is enforced across two separate sanitizeRichText calls", func(t *testing.T) {
+		const firstSize = maxInlineImageBytes
+		const secondSize = maxTotalInlineImageBytes - maxInlineImageBytes + 1
+		first := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, firstSize))
+		second := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, secondSize))
+
+		budget := &inlineImageBudget{}
+		_, firstImages := sanitizeRichText(`<img src="`+first+`">`, budget)
+		_, secondImages := sanitizeRichText(`<img src="`+second+`">`, budget)
+
+		if len(firstImages) != 1 {
+			t.Fatalf("first call: got %d images, want 1", len(firstImages))
+		}
+		if len(secondImages) != 0 {
+			t.Errorf("second call: got %d images, want 0 — it must be rejected against the SHARED budget the first call already spent", len(secondImages))
 		}
 	})
 }
@@ -265,7 +289,7 @@ func TestSanitizeRichText_Images(t *testing.T) {
 // HTML-escapes like any other text, so it can only ever render as inert,
 // visible text, never as executable markup.
 func TestSanitizeRichText_ScriptContentNeverExecutes(t *testing.T) {
-	got, _ := sanitizeRichText(`<p>before</p><script>alert(1)</script><p>after</p>`)
+	got, _ := sanitizeRichText(`<p>before</p><script>alert(1)</script><p>after</p>`, &inlineImageBudget{})
 	if strings.Contains(got, "<script>") {
 		t.Errorf("sanitizeRichText(...) = %q, <script> tag survived", got)
 	}

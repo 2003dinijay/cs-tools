@@ -144,7 +144,9 @@ var safeImageDataURI = regexp.MustCompile(`(?i)^data:(image/(?:png|jpe?g|gif|web
 const maxInlineImageBytes = 5 * 1024 * 1024
 
 // maxTotalInlineImageBytes bounds the combined decoded size of every image
-// one sanitizeRichText call extracts. maxInlineImageBytes alone doesn't
+// extracted toward ONE rendered email — see inlineImageBudget, which is
+// what actually enforces this across however many sanitizeRichText calls
+// that email's Render* function makes. maxInlineImageBytes alone doesn't
 // prevent several images that are each individually within budget from
 // still summing past email-service's own 10MB request-body limit once
 // base64-re-encoded for the JSON attachments array (base64 inflates size
@@ -154,15 +156,45 @@ const maxInlineImageBytes = 5 * 1024 * 1024
 // overhead.
 const maxTotalInlineImageBytes = 6 * 1024 * 1024
 
-// maxInlineImagesPerComment bounds how many images one sanitizeRichText
-// call will extract — a real comment realistically embeds one or two
-// pasted screenshots, not dozens; this caps the worst case (a comment
-// crafted to embed many images) rather than trusting input size alone.
-// Once reached, every further <img> is dropped exactly like an unsafe one
-// (logged nowhere, same as any other rejected tag) — silently, not an
-// error, since a truncated comment still rendering is better than the
-// whole email failing to send over one over-decorated comment.
+// maxInlineImagesPerComment bounds how many images toward ONE rendered
+// email inlineImageBudget will allow across however many sanitizeRichText
+// calls that email's Render* function makes — a real comment realistically
+// embeds one or two pasted screenshots, not dozens; this caps the worst
+// case (a comment crafted to embed many images) rather than trusting input
+// size alone. Once reached, every further <img> is dropped exactly like an
+// unsafe one (logged nowhere, same as any other rejected tag) — silently,
+// not an error, since a truncated comment still rendering is better than
+// the whole email failing to send over one over-decorated comment.
 const maxInlineImagesPerComment = 10
+
+// inlineImageBudget tracks how much of maxTotalInlineImageBytes/
+// maxInlineImagesPerComment has already been spent toward ONE rendered
+// email. A caller that renders more than one rich-text field into the same
+// email (RenderCaseCreatedEmail: Description + IncidentImpactDescription;
+// RenderCRPlanDateNoticeEmail: ShortDescription + Description) must share a
+// single *inlineImageBudget across both sanitizeRichText calls — a fresh
+// budget per call would let each field independently max out, and the two
+// fields' attachments still land on the same outgoing email/request. A
+// caller with only one rich-text field just constructs one and uses it
+// once.
+type inlineImageBudget struct {
+	totalBytes int
+	count      int
+}
+
+// allow reports whether one more image of size decoded bytes still fits
+// within this budget, and — only if so — reserves the space by updating
+// the running totals. Checking and reserving in one call keeps this
+// correct even though sanitizeRichText's own <img> branch calls it once
+// per candidate image with no other synchronization.
+func (b *inlineImageBudget) allow(size int) bool {
+	if b.count >= maxInlineImagesPerComment || size > maxInlineImageBytes || b.totalBytes+size > maxTotalInlineImageBytes {
+		return false
+	}
+	b.count++
+	b.totalBytes += size
+	return true
+}
 
 // InlineImage is one image sanitizeRichText extracted out of a data: URI
 // <img> tag. The caller (dispatch, via notifications.Render*) is
@@ -263,7 +295,13 @@ func drainAttrs(z *xhtml.Tokenizer, hasAttr bool) {
 // way — the caller (a Render* function, ultimately dispatch) is
 // responsible for sending each one back to EmailClient.SendEmail as an
 // inline EmailAttachment, since the returned HTML only ever contains a
-// short cid: reference, never the original data: URI.
+// short cid: reference, never the original data: URI. budget tracks how
+// much of maxTotalInlineImageBytes/maxInlineImagesPerComment remains for
+// the email this call's result will end up part of — see
+// inlineImageBudget's own doc comment for why a caller rendering more than
+// one rich-text field into the same email must share a single budget
+// across every sanitizeRichText call it makes, rather than passing a fresh
+// one each time.
 //
 // Uses a real HTML tokenizer (golang.org/x/net/html), not a regex — a
 // hand-rolled regex sanitizer can't reliably reject malformed/adversarial
@@ -322,12 +360,11 @@ func trimBoundaryBreaks(s string) string {
 	return s
 }
 
-func sanitizeRichText(s string) (string, []InlineImage) {
+func sanitizeRichText(s string, budget *inlineImageBudget) (string, []InlineImage) {
 	z := xhtml.NewTokenizer(strings.NewReader(s))
 	var b strings.Builder
 	var stack []openTag
 	var images []InlineImage
-	var totalImageBytes int
 
 	for {
 		switch z.Next() {
@@ -362,22 +399,17 @@ func sanitizeRichText(s string) (string, []InlineImage) {
 						alt = string(val)
 					}
 				}
-				// len(images) < maxInlineImagesPerComment: once the cap is
-				// reached, every further <img> is dropped the same as an
-				// unsafe one — see that const's own doc comment.
-				if m := safeImageDataURI.FindStringSubmatch(src); m != nil && len(images) < maxInlineImagesPerComment {
-					// A base64 payload that fails to decode, decodes past
-					// maxInlineImageBytes, or would push the running total
-					// past maxTotalInlineImageBytes, is dropped silently,
-					// same as any other rejected <img> — the regex already
-					// rejected anything not shaped like valid base64, so a
-					// decode failure here only ever catches an edge case
-					// (e.g. non-canonical padding) the regex alone can't.
-					if data, err := base64.StdEncoding.DecodeString(m[2]); err == nil &&
-						len(data) <= maxInlineImageBytes && totalImageBytes+len(data) <= maxTotalInlineImageBytes {
+				// A base64 payload that fails to decode, or one budget.allow
+				// rejects (too big on its own, or would push this email's
+				// shared running total/count past its caps), is dropped
+				// silently, same as any other rejected <img> — the regex
+				// already rejected anything not shaped like valid base64,
+				// so a decode failure here only ever catches an edge case
+				// (e.g. non-canonical padding) the regex alone can't.
+				if m := safeImageDataURI.FindStringSubmatch(src); m != nil {
+					if data, err := base64.StdEncoding.DecodeString(m[2]); err == nil && budget.allow(len(data)) {
 						contentID := nextInlineImageContentID()
 						images = append(images, InlineImage{ContentID: contentID, ContentType: m[1], Data: data})
-						totalImageBytes += len(data)
 						b.WriteString(`<img src="cid:` + contentID + `" alt="` + escapeHTML(alt) + `" style="max-width:100%;height:auto;">`)
 					}
 				}
@@ -491,7 +523,7 @@ func applyOptionalBlock(tmpl, name, value string) string {
 // distinct from the caseLink URL, which already carries whatever id the
 // portal needs.
 func RenderCommentAddedEmail(name, caseNumber, caseTitle, caseComment, commentLink, caseLink string) (string, []InlineImage) {
-	comment, images := sanitizeRichText(caseComment)
+	comment, images := sanitizeRichText(caseComment, &inlineImageBudget{})
 	replacer := strings.NewReplacer(
 		"<!-- [NAME] -->", escapeHTML(name),
 		"<!-- [CASE_NUMBER] -->", escapeHTML(caseNumber),
@@ -514,7 +546,7 @@ func RenderCommentAddedEmail(name, caseNumber, caseTitle, caseComment, commentLi
 // the ServiceNow CaseNumber every other template uses — the internal case
 // reference is the one this audience actually recognizes.
 func RenderInternalNoteEmail(name, caseNumber, caseTitle, caseComment, commentLink, caseLink string) (string, []InlineImage) {
-	comment, images := sanitizeRichText(caseComment)
+	comment, images := sanitizeRichText(caseComment, &inlineImageBudget{})
 	replacer := strings.NewReplacer(
 		"<!-- [NAME] -->", escapeHTML(name),
 		"<!-- [CASE_NUMBER] -->", escapeHTML(caseNumber),
@@ -602,8 +634,13 @@ type CaseCreatedEmailData struct {
 // RenderCaseCreatedEmail fills in the "case created" HTML email template.
 func RenderCaseCreatedEmail(data CaseCreatedEmailData) (string, []InlineImage) {
 	tmpl := applyOptionalBlock(caseCreatedTemplate, "IMPACT", data.IncidentImpactDescription)
-	description, descImages := sanitizeRichText(data.Description)
-	impact, impactImages := sanitizeRichText(data.IncidentImpactDescription)
+	// Description and IncidentImpactDescription both end up as attachments
+	// on this same outgoing email, so they must share one budget — see
+	// inlineImageBudget's own doc comment for why a fresh one per call
+	// would let each field independently max out.
+	budget := &inlineImageBudget{}
+	description, descImages := sanitizeRichText(data.Description, budget)
+	impact, impactImages := sanitizeRichText(data.IncidentImpactDescription, budget)
 	replacer := strings.NewReplacer(
 		"<!-- [REPORTER_NAME] -->", escapeHTML(data.ReporterName),
 		"<!-- [PROJECT_NAME] -->", escapeHTML(data.ProjectName),
@@ -748,8 +785,12 @@ func RenderCRPlanDateNoticeEmail(d CRPlanDateEmailData) (string, []InlineImage) 
 		projectAndNumber = escapeHTML(d.ProjectName) + " / " + escapeHTML(d.Number)
 	}
 
-	shortDescription, shortDescImages := sanitizeRichText(d.ShortDescription)
-	description, descImages := sanitizeRichText(d.Description)
+	// ShortDescription and Description both end up as attachments on this
+	// same outgoing email — see inlineImageBudget's own doc comment for
+	// why they must share one budget rather than each getting a fresh one.
+	budget := &inlineImageBudget{}
+	shortDescription, shortDescImages := sanitizeRichText(d.ShortDescription, budget)
+	description, descImages := sanitizeRichText(d.Description, budget)
 	replacer := strings.NewReplacer(
 		"<!-- [CR_NUMBER] -->", escapeHTML(d.Number),
 		"<!-- [HEADLINE] -->", headline,
