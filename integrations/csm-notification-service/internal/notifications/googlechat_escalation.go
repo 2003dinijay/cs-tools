@@ -19,6 +19,7 @@ package notifications
 import (
 	"context"
 	"fmt"
+	"html"
 	"strings"
 )
 
@@ -90,6 +91,18 @@ type EscalationAlert struct {
 	// conversation, so the space shows an escalation unfolding in one place
 	// instead of scattering it through everything else being posted.
 	ThreadKey string
+	// VoiceScript is what the call would say, word for word.
+	//
+	// The card carries it because the call often cannot be placed: a
+	// deployment with no telephony account, or a recipient the rota knows by
+	// e-mail and has no number for, still needs somebody to be able to read
+	// what the alert would have said. It is the spoken text verbatim, so the
+	// case number appears spelled out character by character - that is not a
+	// rendering mistake, it is what the recipient hears, and seeing it is the
+	// point.
+	//
+	// Empty leaves the section off entirely.
+	VoiceScript string
 }
 
 // SendEscalationAlert posts one rung of the ladder to the product's space.
@@ -157,17 +170,33 @@ func buildEscalationCard(a EscalationAlert) chatCardMessage {
 		body.WriteString(fmt.Sprintf(`<a href="%s">View incident</a>`, a.PortalURL))
 	}
 
+	sections := []chatCardSection{{
+		Widgets: []chatCardWidget{
+			{TextParagraph: &chatTextParagraph{Text: body.String()}},
+		},
+	}}
+	if a.VoiceScript != "" {
+		// Its own section, not another line in the body: this is a quotation
+		// of something said elsewhere, and running it into the card's own
+		// prose invites reading it as more instructions from the card.
+		sections = append(sections, chatCardSection{
+			Header: "What the call says",
+			Widgets: []chatCardWidget{
+				{TextParagraph: &chatTextParagraph{
+					Text: fmt.Sprintf(`<i><font color="#5F6368">%s</font></i>`,
+						html.EscapeString(a.VoiceScript)),
+				}},
+			},
+		})
+	}
+
 	msg := chatCardMessage{
 		Thread: threadFor(a.ThreadKey),
 		CardsV2: []chatCardWrapper{{
 			CardID: "incident-escalation",
 			Card: chatCard{
-				Header: &chatCardHeader{Title: header, Subtitle: subtitle},
-				Sections: []chatCardSection{{
-					Widgets: []chatCardWidget{
-						{TextParagraph: &chatTextParagraph{Text: body.String()}},
-					},
-				}},
+				Header:   &chatCardHeader{Title: header, Subtitle: subtitle},
+				Sections: sections,
 			},
 		}},
 	}

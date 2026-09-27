@@ -180,11 +180,14 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 		Title:         t.Title,
 		RecipientName: call.Recipient.Name,
 		Instruction:   t.instruction(false),
-		Rule:          t.Routing.Rule(),
-		PortalURL:     portal,
-		Elapsed:       elapsedSince(t.At, call.At),
-		NextRung:      nextRung,
-		NextIn:        nextIn,
+		// What the recipient would hear, on the card, because on a chat-only
+		// deployment nobody ever hears it.
+		VoiceScript: t.VoiceMessagePlain(),
+		Rule:        t.Routing.Rule(),
+		PortalURL:   portal,
+		Elapsed:     elapsedSince(t.At, call.At),
+		NextRung:    nextRung,
+		NextIn:      nextIn,
 		// One thread per incident, so a space shows an escalation unfolding
 		// in one conversation instead of scattering its rungs through
 		// everything else being posted. The incident id is the natural key:

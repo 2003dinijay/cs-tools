@@ -216,3 +216,47 @@ func TestSendEscalationAlert_PostsToTheSpace(t *testing.T) {
 		t.Errorf("the posted message is not a card: %v", got)
 	}
 }
+
+// The call cannot always be placed - no telephony account, or a recipient the
+// rota knows only by e-mail - so the card carries what it would have said.
+func TestBuildEscalationCard_CarriesTheVoiceScript(t *testing.T) {
+	script := "WSO2 Support Alert. Priority, P0."
+	msg := buildEscalationCard(EscalationAlert{
+		Rung: "LEVEL_1", Priority: "P0", IncidentRef: "INC-1", VoiceScript: script,
+	})
+
+	sections := msg.CardsV2[0].Card.Sections
+	if len(sections) != 2 {
+		t.Fatalf("sections = %d, want the body and the voice script", len(sections))
+	}
+	if sections[1].Header == "" {
+		t.Error("the voice section has no header; it reads as more of the card's own prose")
+	}
+	if got := sections[1].Widgets[0].TextParagraph.Text; !strings.Contains(got, script) {
+		t.Errorf("voice section = %q, want it to contain %q", got, script)
+	}
+}
+
+// Without one, the section is absent rather than empty: an empty labelled
+// block reads as "the call says nothing".
+func TestBuildEscalationCard_NoVoiceScriptNoSection(t *testing.T) {
+	msg := buildEscalationCard(EscalationAlert{Rung: "LEVEL_1", Priority: "P0", IncidentRef: "INC-1"})
+	if got := len(msg.CardsV2[0].Card.Sections); got != 1 {
+		t.Errorf("sections = %d, want only the body", got)
+	}
+}
+
+// The script is quoted text from elsewhere. Markup inside it must render as
+// characters, not as card formatting.
+func TestBuildEscalationCard_VoiceScriptIsEscaped(t *testing.T) {
+	msg := buildEscalationCard(EscalationAlert{
+		Rung: "LEVEL_1", IncidentRef: "INC-1", VoiceScript: `Account, <b>Acme</b> & Co.`,
+	})
+	got := msg.CardsV2[0].Card.Sections[1].Widgets[0].TextParagraph.Text
+	if strings.Contains(got, "<b>Acme</b>") {
+		t.Errorf("voice section = %q, want the markup escaped", got)
+	}
+	if !strings.Contains(got, "&amp;") {
+		t.Errorf("voice section = %q, want the ampersand escaped", got)
+	}
+}
