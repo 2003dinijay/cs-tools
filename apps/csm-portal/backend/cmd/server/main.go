@@ -215,28 +215,25 @@ func main() {
 			os.Exit(1)
 		}
 
-		// SPL cases/comments now read from entity-service (Postgres) instead
-		// of ServiceNow directly — the ServiceNow-removal transition plan's
-		// "Layer 1", first slice. Attachments still route to snClient inside
-		// this wrapper — see postgresSplCaseClient's own doc comment for why.
-		// Reuses customerEntityClient, the same client every other CS Portal
-		// handler already calls: SPL's data is the same entity-service, not
-		// a separate one.
-		splPostgresCases := handler.NewPostgresSplCaseClient(customerEntityClient, snClient)
+		// Accounts/projects/cases/team-members read/search/comment paths used
+		// to have their own Postgres translation layer here, wrapping
+		// customerEntityClient into a ServiceNow-shaped response for SPL's
+		// frontend. All four merged onto CS Portal's own /accounts,
+		// /projects, /cases, and /teams/{id}/members routes below instead,
+		// now that SPL's data source for them is the exact same
+		// entity-service data those routes already serve raw, with no
+		// ServiceNow-shape translation left to justify a second, parallel
+		// /spl/* contract. Only attachments (no entity-service storage path)
+		// and account escalations (CreateEscalation is an explicit stub on
+		// this data source) remain ServiceNow-backed and SPL-specific.
 		splPostgresLookups := handler.NewPostgresSplLookupsClient(customerEntityClient, snClient)
-		splPostgresAccounts := handler.NewPostgresSplAccountClient(customerEntityClient, customerEntityClient, snClient)
-		splPostgresProjects := handler.NewPostgresSplProjectClient(customerEntityClient, customerEntityClient)
-		splPostgresAbtTeamMembers := handler.NewPostgresSplAbtTeamMembersClient(customerEntityClient)
 		splPostgresReports := handler.NewPostgresSplReportsClient(customerEntityClient, snClient)
 		splPostgresUsageMetrics := handler.NewPostgresSplUsageMetricsClient(customerEntityClient)
 
 		splHandlers = &splHandlerSet{
-			accounts:       handler.NewSplAccountHandler(splPostgresAccounts, splCfg.allowedGroups, splCfg.addEscalationGroups),
-			projects:       handler.NewSplProjectHandler(splPostgresProjects, splCfg.allowedGroups),
-			cases:          handler.NewSplCaseHandler(splPostgresCases, splCfg.allowedGroups),
+			cases:          handler.NewSplCaseHandler(snClient, splCfg.allowedGroups),
 			reports:        handler.NewSplReportsHandler(splPostgresReports, splCfg.allowedGroups),
 			schedule:       handler.NewSplScheduleHandler(snClient, splCfg.allowedGroups, splCfg.teamScheduleURL),
-			worknotes:      handler.NewSplWorknotesHandler(splPostgresCases, splCfg.allowedGroups, splCfg.addWorknoteGroups),
 			attachments:    handler.NewSplAttachmentsHandler(snClient, splCfg.allowedGroups, splCfg.downloadAttachmentGroups),
 			lookups:        handler.NewSplLookupsHandler(splPostgresLookups, splCfg.allowedGroups),
 			usageMetrics:   handler.NewUsageMetricsHandler(splPostgresUsageMetrics, splCfg.allowedGroups, splCfg.usageMetricsGroups),
@@ -244,7 +241,8 @@ func main() {
 			customerHealth: handler.NewCustomerHealthHandler(riskClient, snClient, splCfg.allowedGroups),
 			userInfo:       handler.NewSplUserInfoHandler(employeeInfoClient, splCfg.allowedGroups),
 			userScan:       handler.NewSplUserScanHandler(salesEntityClient, csEntityClient, splCfg.allowedGroups),
-			abtTeamMembers: handler.NewSplABTTeamMembersHandler(splPostgresAbtTeamMembers, employeeInfoClient, splCfg.allowedGroups),
+			accountEsc:     handler.NewSplAccountHandler(snClient, splCfg.allowedGroups, splCfg.addEscalationGroups),
+			teamMembers:    handler.NewTeamHandler(customerEntityClient, employeeInfoClient),
 		}
 		slog.Info("SPL_ENABLED is on: SupportPortalLite's /spl/* endpoints are active")
 	}
@@ -551,25 +549,24 @@ func main() {
 	// at all. Most of these routes are unprefixed: SPL and csm-portal are
 	// the same backend now, so a route only needs the /spl/ prefix where
 	// it would otherwise collide with a route csm-portal's own,
-	// differently-shaped case-management domain already owns — the
-	// accounts/projects/cases list/search/detail routes below still do,
-	// until they're consolidated the same way /accounts, /projects, and
-	// /cases search/detail already were.
+	// differently-shaped case-management domain already owns. Accounts,
+	// projects, and cases (read/search/comment) used to live under this
+	// prefix too — all three now go through the shared routes above
+	// (/accounts, /projects, /cases) instead, gated by PermView like every
+	// other caller of those routes now that sales_solutions holds it (see
+	// AccessConfig.SalesSolutions's own doc comment) rather than SPL's
+	// separate group-based check. Account escalations keep their own
+	// group-based gate here, unmerged: CreateEscalation is an explicit stub
+	// on this data source (no entity-service equivalent at all, so nothing
+	// to merge onto), and the account-scoped read has no shared route
+	// either (CS Portal's own /cases/{id}/escalations is per-case, not
+	// per-account). Case attachments are unmerged for the same
+	// no-entity-service-equivalent reason.
 	if splHandlers != nil {
-		mux.HandleFunc("GET /spl/accounts", splHandlers.accounts.GetAccounts)
-		mux.HandleFunc("GET /spl/accounts/{accountId}", splHandlers.accounts.GetAccountByID)
-		mux.HandleFunc("GET /spl/accounts/{accountId}/projects", splHandlers.accounts.GetAccountProjects)
-		mux.HandleFunc("GET /accounts/{accountId}/escalations", splHandlers.accounts.GetAccountEscalations)
-		mux.HandleFunc("POST /accounts/{accountId}/cases/{caseId}/escalate", splHandlers.accounts.EscalateCase)
-		mux.HandleFunc("GET /spl/projects", splHandlers.projects.GetProjects)
-		mux.HandleFunc("GET /spl/projects/{projectId}", splHandlers.projects.GetProjectByID)
-		mux.HandleFunc("GET /spl/projects/{projectId}/contacts", splHandlers.projects.GetProjectContacts)
-		mux.HandleFunc("GET /spl/projects/{projectId}/cases", splHandlers.projects.GetProjectCases)
-		mux.HandleFunc("GET /spl/cases", splHandlers.cases.GetCases)
-		mux.HandleFunc("GET /spl/cases/{caseId}", splHandlers.cases.GetCaseByNumber)
-		mux.HandleFunc("GET /spl/cases/{caseId}/comments-and-worknotes", splHandlers.cases.GetCommentsAndWorknotes)
+		route("GET /teams/{id}/members", handler.PermView, splHandlers.teamMembers.GetTeamMembers)
+		mux.HandleFunc("GET /accounts/{accountId}/escalations", splHandlers.accountEsc.GetAccountEscalations)
+		mux.HandleFunc("POST /accounts/{accountId}/cases/{caseId}/escalate", splHandlers.accountEsc.EscalateCase)
 		mux.HandleFunc("GET /cases/{caseId}/attachments-info", splHandlers.cases.GetAttachmentsInfo)
-		mux.HandleFunc("POST /spl/cases/{caseId}/worknote", splHandlers.worknotes.PostWorkNote)
 		mux.HandleFunc("GET /attachments/{attachmentId}/download", splHandlers.attachments.DownloadAttachment)
 		mux.HandleFunc("GET /products", splHandlers.lookups.GetProducts)
 		mux.HandleFunc("GET /abt-teams", splHandlers.lookups.GetABTTeams)
@@ -577,7 +574,6 @@ func main() {
 		mux.HandleFunc("GET /report-details", splHandlers.reports.GetReportDetails)
 		mux.HandleFunc("GET /generate-timelogs-breakdown-report", splHandlers.reports.GenerateTimelogsBreakdownReport)
 		mux.HandleFunc("GET /abt-team-schedule", splHandlers.schedule.GetABTTeamSchedule)
-		mux.HandleFunc("GET /spl/abt-team-members", splHandlers.abtTeamMembers.GetABTTeamMembers)
 		mux.HandleFunc("GET /user-info", splHandlers.userInfo.GetUserInfo)
 		mux.HandleFunc("POST /scan-user", splHandlers.userScan.ScanUser)
 		mux.HandleFunc("GET /files", splHandlers.files.ListFiles)
@@ -1261,12 +1257,9 @@ func splitComma(s string) []string {
 // only when SPL_ENABLED is on. See loadSPLConfig for the environment
 // variables backing each field.
 type splHandlerSet struct {
-	accounts       *handler.SplAccountHandler
-	projects       *handler.SplProjectHandler
 	cases          *handler.SplCaseHandler
 	reports        *handler.SplReportsHandler
 	schedule       *handler.SplScheduleHandler
-	worknotes      *handler.SplWorknotesHandler
 	attachments    *handler.SplAttachmentsHandler
 	lookups        *handler.SplLookupsHandler
 	usageMetrics   *handler.UsageMetricsHandler
@@ -1274,7 +1267,8 @@ type splHandlerSet struct {
 	customerHealth *handler.CustomerHealthHandler
 	userInfo       *handler.SplUserInfoHandler
 	userScan       *handler.SplUserScanHandler
-	abtTeamMembers *handler.SplABTTeamMembersHandler
+	accountEsc     *handler.SplAccountHandler
+	teamMembers    *handler.TeamHandler
 }
 
 // splConfig holds every environment value SupportPortalLite's /spl/*

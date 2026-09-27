@@ -77,7 +77,7 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 		{"usage metrics viewer can view only", []string{"test-usage-metrics-viewer"}, []Permission{PermView}},
 		{"timecard approver can view, use time cards and updates, and approve", []string{"test-timecard-approver"}, []Permission{PermView, PermTimeCardsAndUpdates, PermApproveTimeCard}},
 		{"dashboard designer can view only", []string{"test-dashboard-designer"}, []Permission{PermView}},
-		{"sales solutions role alone grants no route permission at all, not even view", []string{"test-sales-solutions"}, nil},
+		{"sales solutions role alone grants view only", []string{"test-sales-solutions"}, []Permission{PermView}},
 		{"roles combine", []string{"test-viewer", "test-escalator", "test-attachment-downloader"}, []Permission{PermView, PermEscalate, PermDownloadAttachment}},
 		{"unrelated roles grant nothing", []string{"wso2-everyone", "admin", "agent", "customer"}, nil},
 		{"no roles", nil, nil},

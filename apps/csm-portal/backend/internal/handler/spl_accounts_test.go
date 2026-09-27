@@ -31,95 +31,15 @@ import (
 var splAllowedGroups = []string{"csm-agents"}
 
 type mockSplAccountClient struct {
-	getAccountsFn             func(ctx context.Context, email, userType, phrase *string, offset, limit int, active bool) ([]servicenow.AccountDetails, error)
-	getAccountByIDFn          func(ctx context.Context, accountNumber string) (servicenow.AccountDetails, error)
-	getProjectsByAccountFn    func(ctx context.Context, accountNumber string, offset, limit int) ([]servicenow.ProjectDetails, error)
 	getEscalationsByAccountFn func(ctx context.Context, accountNumber string, offset, limit int) ([]servicenow.EscalationDetail, error)
 	escalateCaseFn            func(ctx context.Context, accountNumber, caseNumber string, request servicenow.EscalationRequest, submittedByEmail string) (servicenow.EscalationResponse, error)
 }
 
-func (m *mockSplAccountClient) GetAccounts(ctx context.Context, email, userType, phrase *string, offset, limit int, active bool) ([]servicenow.AccountDetails, error) {
-	return m.getAccountsFn(ctx, email, userType, phrase, offset, limit, active)
-}
-func (m *mockSplAccountClient) GetAccountByID(ctx context.Context, accountNumber string) (servicenow.AccountDetails, error) {
-	return m.getAccountByIDFn(ctx, accountNumber)
-}
-func (m *mockSplAccountClient) GetProjectsByAccount(ctx context.Context, accountNumber string, offset, limit int) ([]servicenow.ProjectDetails, error) {
-	return m.getProjectsByAccountFn(ctx, accountNumber, offset, limit)
-}
 func (m *mockSplAccountClient) GetEscalationsByAccount(ctx context.Context, accountNumber string, offset, limit int) ([]servicenow.EscalationDetail, error) {
 	return m.getEscalationsByAccountFn(ctx, accountNumber, offset, limit)
 }
 func (m *mockSplAccountClient) EscalateCase(ctx context.Context, accountNumber, caseNumber string, request servicenow.EscalationRequest, submittedByEmail string) (servicenow.EscalationResponse, error) {
 	return m.escalateCaseFn(ctx, accountNumber, caseNumber, request, submittedByEmail)
-}
-
-func TestSplGetAccounts_RequiresGroupMembership(t *testing.T) {
-	h := NewSplAccountHandler(&mockSplAccountClient{}, []string{"sales-team"}, nil)
-
-	t.Run("unauthenticated", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodGet, "/spl/accounts?offset=0&limit=10", nil)
-		w := httptest.NewRecorder()
-		h.GetAccounts(w, r)
-		assertStatus(t, w, http.StatusUnauthorized)
-	})
-
-	t.Run("authenticated but not in allowed group", func(t *testing.T) {
-		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/accounts?offset=0&limit=10", nil))
-		w := httptest.NewRecorder()
-		h.GetAccounts(w, r)
-		assertStatus(t, w, http.StatusForbidden)
-	})
-}
-
-func TestSplGetAccounts_ValidatesPagination(t *testing.T) {
-	h := NewSplAccountHandler(&mockSplAccountClient{}, splAllowedGroups, nil)
-
-	tests := []string{"/spl/accounts", "/spl/accounts?offset=-1&limit=10", "/spl/accounts?offset=0&limit=0", "/spl/accounts?offset=abc&limit=10"}
-	for _, target := range tests {
-		r := withUser(httptest.NewRequest(http.MethodGet, target, nil))
-		w := httptest.NewRecorder()
-		h.GetAccounts(w, r)
-		assertStatus(t, w, http.StatusBadRequest)
-	}
-}
-
-func TestSplGetAccounts_ReturnsUpstreamResult(t *testing.T) {
-	client := &mockSplAccountClient{
-		getAccountsFn: func(_ context.Context, email, userType, phrase *string, offset, limit int, active bool) ([]servicenow.AccountDetails, error) {
-			if offset != 5 || limit != 20 {
-				t.Errorf("offset/limit = %d/%d, want 5/20", offset, limit)
-			}
-			return []servicenow.AccountDetails{{Number: "ACC1", Name: "Acme"}}, nil
-		},
-	}
-	h := NewSplAccountHandler(client, splAllowedGroups, nil)
-
-	r := withUser(httptest.NewRequest(http.MethodGet, "/spl/accounts?offset=5&limit=20", nil))
-	w := httptest.NewRecorder()
-	h.GetAccounts(w, r)
-
-	assertStatus(t, w, http.StatusOK)
-	result := decodeJSON[[]servicenow.AccountDetails](t, w)
-	if len(result) != 1 || result[0].Number != "ACC1" {
-		t.Errorf("unexpected result: %+v", result)
-	}
-}
-
-func TestSplGetAccountByID_NotFound(t *testing.T) {
-	client := &mockSplAccountClient{
-		getAccountByIDFn: func(_ context.Context, _ string) (servicenow.AccountDetails, error) {
-			return servicenow.AccountDetails{}, servicenow.ErrAccountNotFound
-		},
-	}
-	h := NewSplAccountHandler(client, splAllowedGroups, nil)
-
-	r := withUser(httptest.NewRequest(http.MethodGet, "/spl/accounts/ACC404", nil))
-	r.SetPathValue("accountId", "ACC404")
-	w := httptest.NewRecorder()
-	h.GetAccountByID(w, r)
-	assertStatus(t, w, http.StatusNotFound)
-	assertErrorMessage(t, w, ErrMsgNotFound)
 }
 
 func TestSplEscalateCase_RequiresEscalationGroup(t *testing.T) {

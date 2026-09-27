@@ -25,17 +25,25 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
-// splCaseClient abstracts the ServiceNow operations used by
-// SplCaseHandler.
+// splCaseClient abstracts the ServiceNow operations used by SplCaseHandler.
+// GetCases/GetCaseByNumber/GetCommentsAndWorknotes used to live here too,
+// backed first by ServiceNow and later by a Postgres translation layer --
+// both removed in favor of calling CS Portal's own POST /cases/search,
+// GET /cases/{id}, and POST /cases/{id}/comments/search directly (worknote
+// creation similarly merged onto POST /cases/{id}/comments, using the same
+// entity-service CommentType distinction CS Portal's own comment handler
+// already exposes -- see splWorknotesHandler's removal). Attachments have no
+// entity-service equivalent at all yet (no Postgres storage/backfill path),
+// so that one stays here, ServiceNow-backed, unmerged.
 type splCaseClient interface {
-	GetCases(ctx context.Context, searchString, stateFilter *string, offset, limit int) (servicenow.CaseDetailsWithCount, error)
-	GetCaseByNumber(ctx context.Context, caseNumber string) (servicenow.CaseDetails, error)
-	GetCommentsAndWorknotes(ctx context.Context, caseNumber string, offset, limit int) (servicenow.CommentsResponse, error)
 	GetAttachmentsInfo(ctx context.Context, caseNumber string, offset, limit int) ([]servicenow.AttachmentInfo, error)
 }
 
-// SplCaseHandler handles HTTP requests for SupportPortalLite's
-// ServiceNow-backed case endpoints.
+// SplCaseHandler handles HTTP requests for SupportPortalLite's case-
+// attachments endpoint -- the one piece of the case domain with no
+// Postgres/entity-service equivalent to merge onto (see splCaseClient's own
+// doc comment). Reading, searching, and commenting on cases now goes
+// through CS Portal's own /cases routes directly.
 type SplCaseHandler struct {
 	sn            splCaseClient
 	allowedGroups []string
@@ -44,92 +52,6 @@ type SplCaseHandler struct {
 // NewSplCaseHandler creates a SplCaseHandler.
 func NewSplCaseHandler(sn splCaseClient, allowedGroups []string) *SplCaseHandler {
 	return &SplCaseHandler{sn: sn, allowedGroups: allowedGroups}
-}
-
-// GetCases handles GET /spl/cases.
-func (h *SplCaseHandler) GetCases(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
-	if !ok {
-		return
-	}
-	offset, limit, ok := parsePaginationParams(w, r)
-	if !ok {
-		return
-	}
-
-	result, err := h.sn.GetCases(r.Context(), optionalQueryParam(r, "phrase"), optionalQueryParam(r, "stateFilter"), offset, limit)
-	if err != nil {
-		if isUnsafeQueryValue(err) {
-			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-			return
-		}
-		slog.ErrorContext(r.Context(), "servicenow GetCases failed", "userID", user.UserID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to search cases.")
-		return
-	}
-	writeJSONValue(w, http.StatusOK, result)
-}
-
-// GetCaseByNumber handles GET /spl/cases/{caseId}.
-func (h *SplCaseHandler) GetCaseByNumber(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
-	if !ok {
-		return
-	}
-	caseID := r.PathValue("caseId")
-	if caseID == "" {
-		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-		return
-	}
-
-	result, err := h.sn.GetCaseByNumber(r.Context(), caseID)
-	if err != nil {
-		if errors.Is(err, servicenow.ErrCaseNotFound) {
-			writeError(w, http.StatusNotFound, ErrMsgNotFound)
-			return
-		}
-		if isUnsafeQueryValue(err) {
-			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-			return
-		}
-		slog.ErrorContext(r.Context(), "servicenow GetCaseByNumber failed", "userID", user.UserID, "caseID", caseID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to retrieve case.")
-		return
-	}
-	writeJSONValue(w, http.StatusOK, result)
-}
-
-// GetCommentsAndWorknotes handles GET /spl/cases/{caseId}/comments-and-worknotes.
-func (h *SplCaseHandler) GetCommentsAndWorknotes(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
-	if !ok {
-		return
-	}
-	caseID := r.PathValue("caseId")
-	if caseID == "" {
-		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-		return
-	}
-	offset, limit, ok := parsePaginationParams(w, r)
-	if !ok {
-		return
-	}
-
-	result, err := h.sn.GetCommentsAndWorknotes(r.Context(), caseID, offset, limit)
-	if err != nil {
-		if errors.Is(err, servicenow.ErrCaseNotFound) {
-			writeError(w, http.StatusNotFound, ErrMsgNotFound)
-			return
-		}
-		if isUnsafeQueryValue(err) {
-			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-			return
-		}
-		slog.ErrorContext(r.Context(), "servicenow GetCommentsAndWorknotes failed", "userID", user.UserID, "caseID", caseID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to retrieve comments and work notes.")
-		return
-	}
-	writeJSONValue(w, http.StatusOK, result)
 }
 
 // GetAttachmentsInfo handles GET /spl/cases/{caseId}/attachments-info.

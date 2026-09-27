@@ -105,15 +105,18 @@ type AccessConfig struct {
 	Admin             []string
 	TimecardApprover  []string
 	DashboardDesigner []string
-	// SalesSolutions is a marker role, not a capability: it grants no
-	// permission below (a holder still needs one of the roles above to do
-	// anything in CS Portal itself) and gates no route here. It exists so
-	// GET /users/me can report "sales_solutions" in its roles list, which
+	// SalesSolutions is primarily a marker role, not a capability: it exists
+	// so GET /users/me can report "sales_solutions" in its roles list, which
 	// the webapp's usePortalView reads to pick the Sales/Solutions-
 	// Architecture (SPL) nav over CS Portal's own — see that hook's doc
-	// comment. The actual /spl/* routes still enforce their own, separate,
-	// group-based check (internal/splauth) — unmigrated on purpose, a
-	// follow-up of its own, not folded into this same change.
+	// comment. It grants exactly one real permission, PermView (see
+	// NewAccessGuard's own comment on that grant for why), and nothing
+	// else — a holder still needs one of the roles above to write,
+	// escalate, or administer anything in CS Portal. The handful of /spl/*
+	// routes with no entity-service equivalent to merge onto (account
+	// escalations, case attachments — see main.go's SPL route registration
+	// comment) still enforce their own, separate, group-based check
+	// (internal/splauth), unrelated to this role.
 	SalesSolutions []string
 }
 
@@ -152,8 +155,9 @@ type portalRole struct {
 // it acts on. PermViewSecurityCenter is the one further exception to "every
 // role implies View covers it": plain viewer/escalator/attachment_downloader/
 // usage_metrics_viewer/timecard_approver/dashboard_designer all hold PermView
-// but not this. sales_solutions is a separate exception: it implies nothing
-// and gates nothing here at all — see AccessConfig.SalesSolutions's own doc
+// but not this. sales_solutions is a separate exception: it implies View
+// (only) rather than being implied BY it — see AccessConfig.SalesSolutions's
+// own doc
 // comment.
 func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	build := func(lists ...[]string) map[string]struct{} {
@@ -178,8 +182,21 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			{"sales_solutions", build(cfg.SalesSolutions)},
 		},
 		allowed: map[Permission]map[string]struct{}{
+			// SalesSolutions is included here (only here) now that /accounts,
+			// /projects, /cases, and /teams/{id}/members read/search/comment
+			// requests come from Sales/SA callers too -- see main.go's SPL
+			// route registration comment for what merged onto these routes
+			// and why. This is not a new data exposure: SPL's own now-removed
+			// /spl/* routes already read this same entity-service data for
+			// exactly these callers, just through a second, parallel
+			// ServiceNow-shaped contract. sales_solutions grants nothing else
+			// here (see AccessConfig.SalesSolutions's own doc comment) --
+			// PermWrite/PermEscalate/PermAdmin etc. still require one of CS
+			// Portal's own roles, so a Sales/SA-only caller can read this
+			// data but cannot write, escalate, or administer through it.
 			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
-				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner),
+				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner,
+				cfg.SalesSolutions),
 			PermViewOperations:      build(cfg.CsEngineer, cfg.Admin),
 			PermTimeCardsAndUpdates: build(cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover),
 			PermEscalate:            build(cfg.Escalator, cfg.Admin),
