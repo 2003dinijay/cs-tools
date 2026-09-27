@@ -29,7 +29,7 @@ import (
 
 // InstanceRepository defines the persistence operations for the "instance"
 // concept -- a single running deployment node, backed by deployment_node
-// (migration 000054) and its satellite facts tables (deployment_information,
+// (migration 0054) and its satellite facts tables (deployment_information,
 // hourly_usage_summary, daily_usage_summary). See instanceRefJoins' own doc comment
 // for the caveats around resolving an instance's project/deployment/
 // deployed-product references.
@@ -541,7 +541,7 @@ func (r *instanceRepo) SearchInstanceUsageStats(ctx context.Context, filters dom
 
 	query := fmt.Sprintf(
 		// daily_usage_summary.usage_type was renamed to count_type after
-		// this was first written (migration 000054 was edited in place
+		// this was first written (migration 0054 was edited in place
 		// post-merge) -- matching hourly_usage_summary.count_type's own column name
 		// for the same open-ended count-type concept.
 		`SELECT dus.summary_date, dn.id, dus.count_type, SUM(dus.value)

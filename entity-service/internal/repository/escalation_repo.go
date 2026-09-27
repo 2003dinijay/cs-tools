@@ -29,7 +29,7 @@ import (
 )
 
 // EscalationRepository defines the read operations for case_escalation and
-// case_escalation_notification_list (migration 000053). Only reads:
+// case_escalation_notification_list (migration 0054). Only reads:
 // CreateEscalation has no defined level-transition rule (does ESCALATE
 // always mean "current level + 1", capped at EL5? is there a per-case-type
 // override?) or notification-recipient rule (watchers? the assigned

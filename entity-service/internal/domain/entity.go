@@ -128,7 +128,7 @@ type UserSortBy struct {
 // Postgres data source. userType is never accepted here -- it is derived by
 // a database trigger from is_system_user and role membership (migration
 // 000007), never set directly by a caller. roles is optional; each name is
-// resolved against the role table (migration 000004) and rejected with a
+// resolved against the role table (migration 0008) and rejected with a
 // ServiceUnavailableError if any is not seeded there -- the same posture
 // syncGlobalRoles uses for the Salesforce membership ingest.
 type CreateUserRequest struct {
@@ -412,7 +412,7 @@ type AccountView struct {
 	// 000074) on the Postgres data source. Mirrors AccountRef.CreTeam.
 	CreTeam *EntityRef `json:"creTeam"`
 	// SreTeam is the account's SRE team, resolved to a named group reference
-	// -- account.sre_team_id (migration 000074) on the Postgres data
+	// -- account.sre_team_id (migration 0075) on the Postgres data
 	// source. Mirrors AccountRef.SreTeam.
 	SreTeam          *EntityRef `json:"sreTeam"`
 	ActivationDate   *string    `json:"activationDate"`
@@ -469,7 +469,7 @@ type AccountDetail struct {
 	// 000074) on the Postgres data source. Mirrors AccountRef.CreTeam.
 	CreTeam *EntityRef `json:"creTeam"`
 	// SreTeam is the account's SRE team, resolved to a named group reference
-	// -- account.sre_team_id (migration 000074) on the Postgres data
+	// -- account.sre_team_id (migration 0075) on the Postgres data
 	// source. Mirrors AccountRef.SreTeam.
 	SreTeam          *EntityRef `json:"sreTeam"`
 	ActivationDate   *string    `json:"activationDate"`
@@ -534,7 +534,7 @@ const (
 	// ledger for what it is.
 	PortalMembershipWriteEventType = "PORTAL_WRITE"
 	// SLAEngineActor is created_by/updated_by for every "sla" row the
-	// CSM-native SLA engine writes (source='CSM', migration 000088) --
+	// CSM-native SLA engine writes (source='CSM', migration 0134) --
 	// distinguishes its own rows in the audit columns from the ServiceNow
 	// sync's, which share the same table but never carry this value. See
 	// internal/service/sla_policy_resolver.go.
@@ -788,7 +788,7 @@ const (
 )
 
 // OnboardingStep is one row of onboarding_step — see migration
-// 000075_onboarding_step_table for the column semantics.
+// 0116_onboarding_step_table for the column semantics.
 type OnboardingStep struct {
 	ID               string               `json:"id"`
 	MembershipSfID   string               `json:"membershipSfId"`
@@ -882,7 +882,7 @@ const (
 // internal repository<->service handoff type for SearchProjects, never
 // serialized directly to a caller (ProjectView is). AccountID/StartDate/
 // EndDate are pointers because project.account_id/start_date/end_date
-// (migration 000009) are all nullable columns and genuinely NULL on live
+// (migration 0014) are all nullable columns and genuinely NULL on live
 // data (confirmed: 14/1956, 13/1956, 14/1956 rows respectively) -- matching
 // ProjectDetailsView's own StartDate/EndDate, which document the same
 // "may legitimately be unset" reality.
@@ -934,7 +934,7 @@ type ProjectAccountRef struct {
 // unaffected.
 type ProjectClosureFields struct {
 	// ClosureState is the project's closure/access state (project.wso2_closure_state,
-	// migration 000009 -- populated on both data sources).
+	// migration 0014 -- populated on both data sources).
 	ClosureState *string `json:"closureState"`
 	// EndDateClosureState reflects the closure state driven by the project's end date
 	// (ServiceNow data source only).
@@ -1785,7 +1785,7 @@ type SearchDeployedProductsResponse struct {
 // than a product/version. Needed for EOL/product-version-targeted
 // announcements: there is no existing query path from "product X, version Y"
 // back to the projects running it. Supported on both data sources: Postgres
-// resolves it directly via deployed_product.project_id (migration 000014's
+// resolves it directly via deployed_product.project_id (migration 0019's
 // FK straight to project), ServiceNow via a platform-wide deployment scan
 // (see that data source's own implementation).
 //
@@ -2115,7 +2115,7 @@ type AccountRef struct {
 	// 000074) on the Postgres data source, see CaseRepository.GetCaseByID.
 	CreTeam *EntityRef `json:"creTeam,omitempty"`
 	// SreTeam is the account's SRE team, resolved to a named group reference
-	// -- account.sre_team_id (migration 000074) on the Postgres data
+	// -- account.sre_team_id (migration 0075) on the Postgres data
 	// source, see CaseRepository.GetCaseByID.
 	SreTeam *EntityRef `json:"sreTeam,omitempty"`
 }
@@ -2279,7 +2279,7 @@ type CaseView struct {
 	Cause           *CaseCause          `json:"cause"`
 	ResolutionNotes *string             `json:"resolutionNotes"`
 	// WatchList is the set of users watching the case. For the Postgres data
-	// source this is backed by work_item_watcher (migration 000040).
+	// source this is backed by work_item_watcher (migration 0042).
 	WatchList []WatchListUser `json:"watchList,omitempty"`
 	// AutoclosureStep indicates where the case sits in ServiceNow's staged auto-closure
 	// sequence: DEFAULT -> FIRST_COMMENT -> ON_HOLD -> SECOND_COMMENT. Read-only —
@@ -3531,7 +3531,7 @@ const (
 	ChangeRequestTypeSiteReliabilityOps ChangeRequestType = "site_reliability_ops"
 	ChangeRequestTypeAzure              ChangeRequestType = "azure"
 	// The following four have no ServiceNow-data-source equivalent today --
-	// added for change_request.change_model (migration 000055), whose real
+	// added for change_request.change_model (migration 0056), whose real
 	// enum values only partially overlap this type's existing ones (see
 	// changeRequestChangeModelToType in change_request_repo.go).
 	ChangeRequestTypeChangeRegistration  ChangeRequestType = "change_registration"
@@ -3878,7 +3878,7 @@ type SearchContactsFilters struct {
 }
 
 // ProjectContact is a contact associated with a project. For the Postgres
-// data source, backed by the project_contact table (migration 000022).
+// data source, backed by the project_contact table (migration 0027).
 type ProjectContact struct {
 	// ID is the contact's user id, for linking a row to that user's profile. Nil when
 	// the row has no contact record linked, or when the backing instance predates the
@@ -3941,7 +3941,7 @@ type SearchProjectContactsResponse struct {
 }
 
 // AccountContact is a contact associated with an account. For the Postgres
-// data source, backed by the account_contact table (migration 000020).
+// data source, backed by the account_contact table (migration 0026).
 type AccountContact struct {
 	Name      string `json:"name"`
 	Email     string `json:"email"`

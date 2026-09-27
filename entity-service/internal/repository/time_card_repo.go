@@ -32,7 +32,7 @@ import (
 )
 
 // TimeCardRepository defines the persistence operations for the time_card
-// and time_card_approver tables (migration 000039).
+// and time_card_approver tables (migration 0041).
 type TimeCardRepository interface {
 	// SearchTimeCards returns a filtered, sorted, paginated slice of time
 	// cards together with the total count of matching rows before
@@ -95,7 +95,7 @@ type TimeCardRepository interface {
 	// or was never theirs to delete.
 	DeleteTimeCard(ctx context.Context, id, submitterID string) error
 	// SetTimeCardSNSysID best-effort persists ServiceNow's own sys_id for the
-	// time card identified by id (migration 000088) -- called from
+	// time card identified by id (migration 0135) -- called from
 	// CreateTimeCard's async ServiceNow mirror success path, never from the
 	// synchronous request path. A no-op (returns nil) if id does not exist.
 	SetTimeCardSNSysID(ctx context.Context, id, snSysID string) error
@@ -134,7 +134,7 @@ const timeCardSelectColumns = `
 	wi.id, wi.number, wi.subject`
 
 // timeCardFromJoins joins work_item directly (not "case"): time_card.case_id
-// now references work_item(id) generically (migration 000039's most recent
+// now references work_item(id) generically (migration 0041's most recent
 // revision), not "case"(id) specifically -- a time card can be logged
 // against any case-like work_item type, not just CASE. Only wi.number/
 // wi.subject are ever read for the case reference, so no "case"-specific
@@ -170,7 +170,7 @@ func scanTimeCardView(row interface{ Scan(...any) error }) (domain.TimeCardView,
 		return domain.TimeCardView{}, err
 	}
 	// time_card_state_enum/time_card_issue_complexity_enum are UPPER_SNAKE_CASE
-	// (migration 000039's most recent revision); domain.TimeCardState's own
+	// (migration 0041's most recent revision); domain.TimeCardState's own
 	// values, and every caller-supplied issueComplexity string, are lowercase.
 	if state != nil {
 		lower := strings.ToLower(*state)
@@ -521,7 +521,7 @@ func (r *timeCardRepo) CreateTimeCard(ctx context.Context, req domain.CreateTime
 	defer tx.Rollback(ctx)
 
 	// The case's own project is work_item.project_id -- case_id now
-	// references work_item(id) generically (migration 000039's most recent
+	// references work_item(id) generically (migration 0041's most recent
 	// revision), not "case"(id) specifically, so this looks up work_item
 	// directly rather than joining through "case".
 	// time_card.customer_project_id is a separate, independently-settable
@@ -550,7 +550,7 @@ func (r *timeCardRepo) CreateTimeCard(ctx context.Context, req domain.CreateTime
 
 	// 'SUBMITTED' (not 'submitted') and issue_complexity's ::text::enum cast:
 	// time_card_state_enum/time_card_issue_complexity_enum are UPPER_SNAKE_CASE
-	// (migration 000039's most recent revision). The ::text::enum cast on
+	// (migration 0041's most recent revision). The ::text::enum cast on
 	// issue_complexity -- not a direct ::enum cast -- avoids the same pgx v5
 	// codec issue this file's date fields already work around: once the
 	// server infers a parameter's OID as a custom enum type, pgx has no
