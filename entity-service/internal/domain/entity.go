@@ -1743,8 +1743,9 @@ type DeployedProductView struct {
 type ProductRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	// Abbreviation is absent on the Postgres data source, whose products table
-	// has no equivalent column — it is populated only from ServiceNow.
+	// Abbreviation is product.code on the Postgres data source (e.g. "wso2am"
+	// for "WSO2 API Manager") -- the exact vocabulary this field's own doc
+	// comment above describes the product-updates catalogue keying on.
 	Abbreviation *string `json:"abbreviation,omitempty"`
 }
 

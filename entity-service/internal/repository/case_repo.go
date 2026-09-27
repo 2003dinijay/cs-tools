@@ -974,11 +974,24 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		rc := caseResolutionCodeFromEnum[*resolutionCode]
 		cv.ResolutionCode = &rc
 	}
+	// A freshly created case has NULL current_escalation_level/is_escalated
+	// (case creation sets neither), but ServiceNow's own case response always
+	// carries a real value for both from the moment a case exists -- level
+	// "0"/EL0, isEscalated false -- confirmed live: GET /cases/{id} silently
+	// omitted both keys entirely for such a case instead. Default NULL to
+	// that same "never escalated" state here, matching the semantic
+	// SearchCases' own escalation filter already gives NULL (this file's
+	// "escalation (isEmpty / isNotEmpty)" comment: "A row with no ... has no
+	// escalation, so it satisfies isEmpty").
 	if escalationLevel != nil {
 		el := caseEscalationLevelFromEnum(*escalationLevel)
 		cv.EscalationLevel = &el
+	} else {
+		el := caseEscalationLevelFromEnum("EL0")
+		cv.EscalationLevel = &el
 	}
-	cv.IsEscalated = isEscalated
+	isEscalatedOrFalse := isEscalated != nil && *isEscalated
+	cv.IsEscalated = &isEscalatedOrFalse
 	cv.ResolvedOn = resolvedOn
 	if caseType != nil {
 		lower := strings.ToLower(*caseType)

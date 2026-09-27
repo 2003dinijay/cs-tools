@@ -1970,6 +1970,31 @@ product, account, deployment, deployed_product, split across
     conflict loop — either way, the exact prefix/padding/format needs a
     real answer, not an invented one.
 
+## A freshly created case silently omitted escalationLevel/isEscalated entirely
+
+Found the same way as the project-fields gaps above (HAR diff, this time against case-creation
+traffic): `GET /cases/{id}` genuinely has real Postgres backing and working code for both fields
+(`GetCaseByID` already selects `current_escalation_level`/`is_escalated` and `SearchCases`'
+own escalation filter already treats a NULL row as "not escalated" -- see this file's own
+"escalation (isEmpty / isNotEmpty)" note), but a brand-new case has NULL for both columns
+(case creation sets neither), and the read path passed that NULL straight through as `nil` --
+which `omitempty` then drops from the response entirely, rather than rendering the same
+"never escalated" default ServiceNow's own case response always includes (`escalationLevel:
+{id: "0", label: "EL0"}`, `isEscalated: false`) from the moment a case exists. Fixed by
+defaulting NULL to that same state in `GetCaseByID`, matching the semantic the filter side
+already gives NULL rather than inventing a new one.
+
+## POST /deployments/{id}/products/search dropped product.abbreviation on Postgres
+
+`ProductRef.Abbreviation`'s own doc comment claimed "absent on the Postgres data source, whose
+products table has no equivalent column" -- checked directly against real data and this is
+wrong: `product.code` (migration 000010) holds exactly this value (`"wso2am"` for `"WSO2 API
+Manager"`, `"wso2is"` for `"WSO2 Identity Server"`), the same vocabulary this field's own doc
+comment already describes the product-updates catalogue keying on. `SearchDeployedProducts`
+simply never selected it. Fixed by adding `p.code` to the query and scanning it straight into
+`Product.Abbreviation` (already the correct `*string` type for a nullable column). Doc comment
+corrected to match.
+
 ## GET /projects/{id} and POST /projects/search were missing most of a project's own fields
 
 Found by diffing the Postgres and ServiceNow customer-portal responses field-for-field

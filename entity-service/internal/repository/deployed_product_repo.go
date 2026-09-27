@@ -411,7 +411,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 		`SELECT dp.id, dp.created_on, dp.updated_on,
 		        dp.core_count, dp.tps_count, dp.product_category::TEXT,
 		        d.id, d.name,
-		        p.id, p.name,
+		        p.id, p.name, p.code,
 		        pv.id, pv.version, pv.release_date, pv.support_eol_date
 		 FROM deployed_product dp
 		 JOIN deployment d ON dp.deployment_id = d.id
@@ -453,7 +453,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 				&dp.ID, &dp.CreatedOn, &dp.UpdatedOn,
 				&dp.Cores, &dp.TPS, &dp.Category,
 				&dp.Deployment.ID, &dp.Deployment.Name,
-				&dp.Product.ID, &dp.Product.Name,
+				&dp.Product.ID, &dp.Product.Name, &dp.Product.Abbreviation,
 				&pvID, &pvName, &pvReleaseDate, &pvEoLDate,
 			); err != nil {
 				return fmt.Errorf("scan deployed product: %w", err)
