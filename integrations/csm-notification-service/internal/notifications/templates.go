@@ -410,7 +410,14 @@ func sanitizeRichText(s string, budget *inlineImageBudget) (string, []InlineImag
 					if data, err := base64.StdEncoding.DecodeString(m[2]); err == nil && budget.allow(len(data)) {
 						contentID := nextInlineImageContentID()
 						images = append(images, InlineImage{ContentID: contentID, ContentType: m[1], Data: data})
-						b.WriteString(`<img src="cid:` + contentID + `" alt="` + escapeHTML(alt) + `" style="max-width:100%;height:auto;">`)
+						// The surrounding <br>s plus display:block take the image
+						// out of the inline line box it would otherwise share with
+						// adjacent text spans. Left inline, some renderers
+						// (confirmed: Outlook web/desktop) visually reorder a tall
+						// inline image ahead of the text it was inserted after,
+						// even though the underlying HTML keeps the original
+						// text-then-image source order — a real reported bug.
+						b.WriteString(`<br><img src="cid:` + contentID + `" alt="` + escapeHTML(alt) + `" style="display:block;max-width:100%;height:auto;margin:8px 0;"><br>`)
 					}
 				}
 				continue

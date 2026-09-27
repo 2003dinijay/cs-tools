@@ -166,12 +166,32 @@ func TestSanitizeRichText_Images(t *testing.T) {
 		if img.ContentID == "" {
 			t.Error("ContentID must not be empty")
 		}
-		want := `<img src="cid:` + img.ContentID + `" alt="screenshot" style="max-width:100%;height:auto;">`
+		// The surrounding <br>s trimBoundaryBreaks would otherwise leave in
+		// place are stripped here because the image is the only content in
+		// this input — see the next subtest for the case where they survive.
+		want := `<img src="cid:` + img.ContentID + `" alt="screenshot" style="display:block;max-width:100%;height:auto;margin:8px 0;">`
 		if html != want {
 			t.Errorf("html = %q, want %q", html, want)
 		}
 		if strings.Contains(html, "data:image") {
 			t.Error("returned HTML must never contain the original data: URI")
+		}
+	})
+
+	// Regression test for a real reported bug: an image inserted after some
+	// text rendered BEFORE that text in Outlook's web/desktop client, even
+	// though the source order (and every other client) had it correctly
+	// after. The image must sit inside its own <br>-bounded block so it can
+	// never share an inline line box with adjacent text — see the img
+	// branch's own comment in sanitizeRichText for the full reasoning.
+	t.Run("an image between two text runs is wrapped in its own line, not left inline", func(t *testing.T) {
+		html, images := sanitizeRichText(`<p>before<img src="`+dataURI+`">after</p>`, &inlineImageBudget{})
+		if len(images) != 1 {
+			t.Fatalf("got %d images, want 1", len(images))
+		}
+		want := `before<br><img src="cid:` + images[0].ContentID + `" alt="" style="display:block;max-width:100%;height:auto;margin:8px 0;"><br>after`
+		if html != want {
+			t.Errorf("html = %q, want %q", html, want)
 		}
 	})
 
