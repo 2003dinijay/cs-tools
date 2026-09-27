@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS alertintegration.incidents_processed (
   first_seen              timestamp,
   last_seen               timestamp,
   state_checked_at        timestamp,  -- last time syncIncidentState refreshed status from CSM, throttling that call during storms
-  notified                boolean,
+  fallback                boolean,    -- one-time Chat notification, sent only while CSM remains unconfirmed
   csm_confirmed           boolean,
   csm_attempts            int,        -- failed CreateIncident attempts against this incident
   csm_permanently_failed  boolean     -- true once csm_attempts hits notify.max_csm_attempts, or CSM returned a non-retryable 4xx

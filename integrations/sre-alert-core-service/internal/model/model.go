@@ -69,8 +69,10 @@ type Incident struct {
 	// StateCheckedAt throttles how often syncIncidentState calls CSM to refresh Status, so a flapping
 	// alert on a confirmed incident doesn't cost one CSM round trip per duplicate during a storm.
 	StateCheckedAt time.Time `json:"state_checked_at" db:"state_checked_at"`
-	// Notified and CSMConfirmed are independent obligations, each retried separately until true.
-	Notified     bool `json:"notified" db:"notified"`
+	// Fallback and CSMConfirmed are independent obligations, each retried separately until true.
+	// Fallback tracks the one-time Chat notification sent only while CSM remains unconfirmed --
+	// it's not a general "was this incident announced" flag.
+	Fallback     bool `json:"fallback" db:"fallback"`
 	CSMConfirmed bool `json:"csm_confirmed" db:"csm_confirmed"`
 	// CSMAttempts caps retries so permanently-rejected (4xx) payloads stop being rescanned; CSMPermanentlyFailed then excludes the row from ListPending.
 	CSMAttempts          int  `json:"csm_attempts" db:"csm_attempts"`

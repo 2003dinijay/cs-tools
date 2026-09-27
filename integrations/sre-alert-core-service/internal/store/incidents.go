@@ -31,7 +31,7 @@ import (
 var incidentColumns = []string{
 	"fingerprint", "incident_id", "incident_number", "status", "severity", "impact", "urgency", "service",
 	"metric_name", "description", "category", "environment", "source", "alert_ids", "alert_count", "work_notes",
-	"pending_notes", "first_seen", "last_seen", "state_checked_at", "notified", "csm_confirmed", "csm_attempts",
+	"pending_notes", "first_seen", "last_seen", "state_checked_at", "fallback", "csm_confirmed", "csm_attempts",
 	"csm_permanently_failed",
 }
 
@@ -207,14 +207,14 @@ func (r *IncidentRepo) Upsert(ctx context.Context, alertID string, a model.Alert
 		updated.Status = "new"
 		updated.IncidentID = ""
 		updated.IncidentNumber = pendingIncidentNumber(fp)
-		updated.Notified = false
+		updated.Fallback = false
 		updated.CSMConfirmed = false
 		updated.CSMAttempts = 0
 		updated.CSMPermanentlyFailed = false
 		updated.FirstSeen = updated.LastSeen
 		updated.PendingNotes = nil
 		updated.StateCheckedAt = time.Time{}
-		setCols = append(setCols, "status", "incident_id", "incident_number", "notified", "csm_confirmed", "csm_attempts",
+		setCols = append(setCols, "status", "incident_id", "incident_number", "fallback", "csm_confirmed", "csm_attempts",
 			"csm_permanently_failed", "first_seen", "pending_notes", "state_checked_at")
 	}
 
@@ -356,18 +356,18 @@ func (r *IncidentRepo) FindByFingerprint(ctx context.Context, fp string) (model.
 	return r.get(ctx, fp)
 }
 
-// MarkNotified flips notified to true once Chat has delivered to every configured target.
-func (r *IncidentRepo) MarkNotified(ctx context.Context, fingerprint string) error {
+// MarkFallbackNotified flips fallback to true once Chat has delivered to every configured target.
+func (r *IncidentRepo) MarkFallbackNotified(ctx context.Context, fingerprint string) error {
 	stmt, names := qb.Update("incidents_processed").
-		Set("notified").
+		Set("fallback").
 		Where(qb.Eq("fingerprint")).
 		ToCql()
 	err := r.session.Query(stmt, names).WithContext(ctx).BindMap(qb.M{
 		"fingerprint": fingerprint,
-		"notified":    true,
+		"fallback":    true,
 	}).ExecRelease()
 	if err != nil {
-		return fmt.Errorf("mark incident %s notified: %w", fingerprint, err)
+		return fmt.Errorf("mark incident %s fallback-notified: %w", fingerprint, err)
 	}
 	return nil
 }

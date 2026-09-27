@@ -45,7 +45,7 @@ type incidentStore interface {
 	RecordStateChecked(ctx context.Context, fingerprint string, checkedAt time.Time) error
 	AppendWorkNote(ctx context.Context, existing model.Incident, note string) error
 	ClearPendingNotes(ctx context.Context, fingerprint string, remaining []string) error
-	MarkNotified(ctx context.Context, fingerprint string) error
+	MarkFallbackNotified(ctx context.Context, fingerprint string) error
 	ListPending(ctx context.Context) ([]model.Incident, error)
 }
 
@@ -318,7 +318,7 @@ func (e *Engine) deliverAndPersist(ctx context.Context, fingerprint string) {
 		e.logger.Warn("delivery: incident vanished before delivery", "fingerprint", fingerprint)
 		return
 	}
-	if inc.CSMConfirmed && inc.Notified && len(inc.PendingNotes) == 0 {
+	if inc.CSMConfirmed && inc.Fallback && len(inc.PendingNotes) == 0 {
 		return // already delivered by a caller that beat us to this lock, and no notes still owed.
 	}
 
@@ -374,17 +374,17 @@ func (e *Engine) deliverAndPersist(ctx context.Context, fingerprint string) {
 		inc = e.flushPendingNotes(ctx, inc)
 	}
 
-	chatNotified := inc.Notified
+	chatNotified := inc.Fallback
 	if !csmSucceeded && !chatNotified {
 		// Fall back to chat so a human sees it, but only the first time to avoid spamming retries.
 		chatNotified = e.notifier.NotifyChat(ctx, inc)
 	}
-	if chatNotified && !inc.Notified {
+	if chatNotified && !inc.Fallback {
 		pctx, cancel := persistCtx(ctx)
-		err := e.incidents.MarkNotified(pctx, inc.Fingerprint)
+		err := e.incidents.MarkFallbackNotified(pctx, inc.Fingerprint)
 		cancel()
 		if err != nil {
-			e.logger.Error("failed to persist notified flag", "incident_number", inc.IncidentNumber, "error", err)
+			e.logger.Error("failed to persist fallback-notified flag", "incident_number", inc.IncidentNumber, "error", err)
 		}
 	}
 }

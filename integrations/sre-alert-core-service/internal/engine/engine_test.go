@@ -119,7 +119,7 @@ func (f *fakeIncidents) Upsert(_ context.Context, alertID string, a model.Alert,
 		existing.FirstSeen = existing.LastSeen
 		existing.IncidentID = ""
 		existing.IncidentNumber = "PENDING-" + fp[:8]
-		existing.Notified = false
+		existing.Fallback = false
 		existing.CSMConfirmed = false
 		existing.CSMAttempts = 0
 		existing.CSMPermanentlyFailed = false
@@ -215,11 +215,11 @@ func (f *fakeIncidents) ClearPendingNotes(_ context.Context, fingerprint string,
 	return nil
 }
 
-func (f *fakeIncidents) MarkNotified(_ context.Context, fingerprint string) error {
+func (f *fakeIncidents) MarkFallbackNotified(_ context.Context, fingerprint string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	inc := f.byFP[fingerprint]
-	inc.Notified = true
+	inc.Fallback = true
 	f.byFP[fingerprint] = inc
 	return nil
 }
