@@ -94,22 +94,23 @@ func Connect(cfg Config, connectTimeout, queryTimeout time.Duration) (*gocql.Ses
 	return session, nil
 }
 
-// Store implements the allocator's storage operations against one session. Every call is
-// bounded by queryTimeout on top of the caller's context.
+// Store implements the allocator's storage operations against one session. alert_seq calls
+// are bounded by claimTimeout, row calls by queryTimeout, on top of the caller's context.
 type Store struct {
 	session      *gocql.Session
 	queryTimeout time.Duration
+	claimTimeout time.Duration
 }
 
 // NewStore returns a Store over session.
-func NewStore(session *gocql.Session, queryTimeout time.Duration) *Store {
-	return &Store{session: session, queryTimeout: queryTimeout}
+func NewStore(session *gocql.Session, queryTimeout, claimTimeout time.Duration) *Store {
+	return &Store{session: session, queryTimeout: queryTimeout, claimTimeout: claimTimeout}
 }
 
 // SeedSeq creates the alert_seq row at 0 if it doesn't exist, with the same idempotent
 // statement alerts-core runs at startup, so either service can start first.
 func (s *Store) SeedSeq(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.claimTimeout)
 	defer cancel()
 	if _, err := s.session.Query(
 		fmt.Sprintf(`INSERT INTO %s (name, seq) VALUES (?, 0) IF NOT EXISTS`, SeqTable), SeqName,
@@ -121,7 +122,7 @@ func (s *Store) SeedSeq(ctx context.Context) error {
 
 // ReadSeq returns alert_seq's current value.
 func (s *Store) ReadSeq(ctx context.Context) (int64, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.claimTimeout)
 	defer cancel()
 	var seq int64
 	if err := s.session.Query(
@@ -139,7 +140,7 @@ var ErrSeqMissing = errors.New("alert_seq row missing")
 // the row actually holds, returned with the rejection so the caller can retry without
 // another read.
 func (s *Store) CompareAndSet(ctx context.Context, from, to int64) (applied bool, current int64, err error) {
-	ctx, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.claimTimeout)
 	defer cancel()
 	prev := map[string]any{}
 	applied, err = s.session.Query(

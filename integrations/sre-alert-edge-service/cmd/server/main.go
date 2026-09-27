@@ -87,14 +87,16 @@ func main() {
 		logger.Error("failed to read cassandra config", "error", err)
 		os.Exit(1)
 	}
-	session, err := connectWithRetry(logger, cassCfg, cfg.Cassandra, cfg.Store.QueryTimeout.Duration())
+	// The driver's own timeout must not cut the longer claim_timeout short.
+	session, err := connectWithRetry(logger, cassCfg, cfg.Cassandra,
+		max(cfg.Store.QueryTimeout.Duration(), cfg.Store.ClaimTimeout.Duration()))
 	if err != nil {
 		logger.Error("failed to connect to cassandra", "error", err)
 		os.Exit(1)
 	}
 	defer session.Close()
 
-	store := cassandra.NewStore(session, cfg.Store.QueryTimeout.Duration())
+	store := cassandra.NewStore(session, cfg.Store.QueryTimeout.Duration(), cfg.Store.ClaimTimeout.Duration())
 	if err := store.SeedSeq(context.Background()); err != nil {
 		logger.Error("failed to seed alert_seq", "error", err)
 		os.Exit(1)

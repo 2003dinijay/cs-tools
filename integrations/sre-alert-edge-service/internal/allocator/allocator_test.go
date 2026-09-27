@@ -55,6 +55,8 @@ type fakeStore struct {
 	// failRealInsert fails inserts of real alerts (not filler rows) for which it returns true.
 	failRealInsert func(alert string) bool
 	failAllInserts bool
+	// failFillers fails this many filler inserts before letting them through.
+	failFillers int
 	// hideOnce makes the first read-back of an id miss, as Cosmos DB sometimes does.
 	hideOnce map[string]bool
 
@@ -106,6 +108,10 @@ func (f *fakeStore) Insert(_ context.Context, id, vendor, alert string) error {
 	defer f.mu.Unlock()
 	f.inserts[id]++
 	isFiller := strings.HasPrefix(alert, fillerPrefix)
+	if isFiller && f.failFillers > 0 {
+		f.failFillers--
+		return errors.New("write timeout")
+	}
 	if f.failAllInserts || (!isFiller && f.failRealInsert != nil && f.failRealInsert(alert)) {
 		return errors.New("write timeout")
 	}
@@ -300,6 +306,28 @@ func TestInsertAndFillerBothFail_ReportsFillerMissing(t *testing.T) {
 	}
 	if len(notifier.failures) != 1 || notifier.failures[0].FillerWritten {
 		t.Errorf("failures = %+v, want one with FillerWritten=false", notifier.failures)
+	}
+	if n := store.inserts["ALT000000001"]; n != 6 {
+		t.Errorf("insert calls = %d, want 3 attempts + 3 filler attempts", n)
+	}
+}
+
+func TestFillerRetried_UntilWritten(t *testing.T) {
+	store := newFakeStore()
+	store.failRealInsert = func(string) bool { return true }
+	store.failFillers = 2
+	notifier := &recordingNotifier{}
+	a := newTestAllocator(t, store, notifier, nil, testConfig())
+
+	ids, err := a.Submit(context.Background(), "aws", "req", []model.Alert{alert("svc", "u")})
+	if !errors.Is(err, ErrStoreFailed) {
+		t.Fatalf("err = %v, want ErrStoreFailed", err)
+	}
+	if !strings.HasPrefix(store.rows[ids[0]].alert, fillerPrefix) {
+		t.Errorf("row = %+v, want the filler after its third attempt", store.rows[ids[0]])
+	}
+	if len(notifier.failures) != 1 || !notifier.failures[0].FillerWritten {
+		t.Errorf("failures = %+v, want FillerWritten=true", notifier.failures)
 	}
 }
 

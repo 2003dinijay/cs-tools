@@ -383,20 +383,32 @@ func (a *Allocator) writeOne(job alertJob) (id string, ok bool) {
 		return id, a.fail(job, id, alert, err)
 	}
 
-	var lastErr error
+	err = a.retry(func() error { return a.insertAndConfirm(ctx, id, job.sub.vendor, string(body)) },
+		func(attempt int, err error) {
+			a.logger.Warn("insert failed, retrying on the same id", "request_id", job.sub.requestID,
+				"vendor", job.sub.vendor, "alt_id", id, "attempt", attempt, "error", err)
+		})
+	if err == nil {
+		return id, true
+	}
+	return id, a.fail(job, id, alert, err)
+}
+
+// retry runs fn up to InsertAttempts times, doubling InsertBaseDelay between attempts.
+func (a *Allocator) retry(fn func() error, onErr func(attempt int, err error)) error {
+	var err error
 	delay := a.cfg.InsertBaseDelay
 	for attempt := 1; attempt <= a.cfg.InsertAttempts; attempt++ {
 		if attempt > 1 {
 			time.Sleep(delay)
 			delay *= 2
 		}
-		if lastErr = a.insertAndConfirm(ctx, id, job.sub.vendor, string(body)); lastErr == nil {
-			return id, true
+		if err = fn(); err == nil {
+			return nil
 		}
-		a.logger.Warn("insert failed, retrying on the same id", "request_id", job.sub.requestID,
-			"vendor", job.sub.vendor, "alt_id", id, "attempt", attempt, "error", lastErr)
+		onErr(attempt, err)
 	}
-	return id, a.fail(job, id, alert, lastErr)
+	return err
 }
 
 func (a *Allocator) insertAndConfirm(ctx context.Context, id, vendor, body string) error {
@@ -416,7 +428,11 @@ func (a *Allocator) insertAndConfirm(ctx context.Context, id, vendor, body strin
 // fail writes the filler row, reports the failure, and returns false for writeOne's ok.
 func (a *Allocator) fail(job alertJob, id string, alert model.Alert, cause error) bool {
 	filler := fillerPrefix + cause.Error()
-	fillerErr := a.store.Insert(context.Background(), id, job.sub.vendor, filler)
+	fillerErr := a.retry(func() error { return a.store.Insert(context.Background(), id, job.sub.vendor, filler) },
+		func(attempt int, err error) {
+			a.logger.Warn("filler row failed, retrying", "request_id", job.sub.requestID,
+				"vendor", job.sub.vendor, "alt_id", id, "attempt", attempt, "error", err)
+		})
 	if fillerErr != nil {
 		// Cassandra is likely down: alerts-core will wait gap_timeout on this id.
 		a.logger.Error("alert NOT stored and filler row failed; alerts-core will stall on this id until gap_timeout",

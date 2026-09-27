@@ -77,6 +77,7 @@ type StoreConfig struct {
 	InsertAttempts  int      `toml:"insert_attempts"`
 	InsertBaseDelay Duration `toml:"insert_base_delay"`
 	QueryTimeout    Duration `toml:"query_timeout"`
+	ClaimTimeout    Duration `toml:"claim_timeout"`
 }
 
 // CassandraConfig tunes startup connection retry, matching sre-alert-core-service.
@@ -145,6 +146,7 @@ func Defaults() Config {
 			InsertAttempts:  3,
 			InsertBaseDelay: Duration(100 * time.Millisecond),
 			QueryTimeout:    Duration(1500 * time.Millisecond),
+			ClaimTimeout:    Duration(5 * time.Second),
 		},
 		Cassandra: CassandraConfig{
 			ConnectMaxAttempts: 5,
@@ -216,6 +218,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("store.insert_base_delay must be positive")
 	case c.Store.QueryTimeout <= 0:
 		return fmt.Errorf("store.query_timeout must be positive")
+	case c.Store.ClaimTimeout <= 0:
+		return fmt.Errorf("store.claim_timeout must be positive")
 	case c.Cassandra.ConnectMaxAttempts <= 0:
 		return fmt.Errorf("cassandra.connect_max_attempts must be positive")
 	case c.Cassandra.ConnectBaseDelay <= 0:

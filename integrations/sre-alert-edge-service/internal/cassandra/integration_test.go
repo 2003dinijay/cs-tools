@@ -89,7 +89,7 @@ func testStore(t *testing.T) *cassandra.Store {
 			t.Fatal(err)
 		}
 	}
-	return cassandra.NewStore(session, 10*time.Second)
+	return cassandra.NewStore(session, 10*time.Second, 10*time.Second)
 }
 
 func envOr(name, def string) string {

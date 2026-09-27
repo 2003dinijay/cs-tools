@@ -21,7 +21,7 @@ vendor ──POST──▶ edge (transform → allocator: CAS-claim ids → inse
   transaction (compare-and-set), so ids never repeat across replicas. One claim covers everything
   queued at that moment (up to `allocator.max_batch`), so a burst costs a handful of transactions.
 - **Writes**: each alert is inserted, then read back. After `store.insert_attempts` failures a
-  `VOID: <reason>` filler row is written under the same id so alerts-core skips it immediately
+  `VOID: <reason>` filler row is written (with the same retries) under the same id so alerts-core skips it immediately
   instead of waiting its 10-minute gap timeout, and a DB-failure Chat card is posted.
 - **Response**: `201` only after every alert in the request has been written and read back.
 - **Wake-up**: one `POST /alert` to alerts-core per written batch. Calls are coalesced so at most
@@ -126,6 +126,7 @@ default and a comment. The main knobs:
 | `allocator.max_batch` | `200` | Most ids claimed in one compare-and-set |
 | `allocator.write_concurrency` | `64` | Parallel inserts per replica |
 | `store.insert_attempts` | `3` | Insert + read-back attempts before the filler row |
+| `store.claim_timeout` | `5s` | Timeout for the `alert_seq` read and compare-and-set (inserts use `store.query_timeout`, 1.5s) |
 | `reject.window` | `15m` | Rejected-webhook card rate limit per vendor + error |
 | `fallback.cards_per_minute` | `5` | DB-failure cards per minute before summarising |
 

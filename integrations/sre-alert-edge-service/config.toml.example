@@ -50,8 +50,11 @@ claim_max_attempts = 20
 insert_attempts = 3
 # Delay before the second attempt; doubles each time (100ms, then 200ms).
 insert_base_delay = "100ms"
-# Per-query timeout for every Cassandra call on the write path.
+# Per-query timeout for row inserts and read-backs.
 query_timeout = "1.5s"
+# Timeout for the alert_seq read and compare-and-set; longer, so a slow claim isn't mistaken
+# for a failure that may leave claimed ids without rows.
+claim_timeout = "5s"
 
 [cassandra]
 # Startup connection retry, so a transient blip doesn't crash-loop the pod.
