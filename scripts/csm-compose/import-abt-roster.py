@@ -78,7 +78,8 @@ ABSENCES = {
     "ll": ("LIEU_LEAVE", None),
     "l": ("LIEU_LEAVE", None),  # one cell in 2026; LL with the second L missing
     "sl": ("SICK_LEAVE", None),
-    "ml": ("SICK_LEAVE", None),  # the rota tracks sick leave, not medical leave apart
+    "ml": ("MATERNITY_LEAVE", None),
+    "pl": ("PATERNITY_LEAVE", None),
     "mig": ("MIGRATION", None),
     # Lent to the Migration team from their ABT: away from the ABT's rota
     # exactly as a migration allocation is.
@@ -92,6 +93,17 @@ ABSENCES = {
 
 # Anything else written Allo-<X> is time with customer X. The sheet does not
 # say on site or off, and off site is the common case.
+# The teams the seed creates, which are the only keys the rest of the stack
+# knows. A workbook heading that does not land on one of these is a heading
+# this importer has not been taught, not a new team: the seed's own clean-up
+# looks teams up by key, team_member rows are inserted by key, and an
+# assignment written under an unknown key gets team_id NULL and is invisible
+# to both. Better to stop and say which heading than to import silently.
+CANONICAL_TEAM_KEYS = {
+    "castor", "draco", "vega", "sirius", "atlas", "phoenix", "rigel",
+    "americas", "migration", "apollo", "artemis",
+}
+
 CUSTOMER_PREFIX = "allo-"
 CUSTOMER_KIND = "CUSTOMER_OFFSITE"
 
@@ -165,6 +177,12 @@ def main(xlsx, sheet, out_path):
     for i, (c0, head) in enumerate(heads):
         team, lead = re.match(r"^(\w+) \((.+)\)$", head).groups()
         key = team.lower()
+        if key not in CANONICAL_TEAM_KEYS:
+            raise SystemExit(
+                f"sheet heading {head!r} gives team key {key!r}, which is not one the "
+                f"stack knows ({', '.join(sorted(CANONICAL_TEAM_KEYS))}).\n"
+                "Add it to the seed and to CANONICAL_TEAM_KEYS, or fix the heading."
+            )
         leads[key] = lead.strip()
         c1 = heads[i + 1][0] if i + 1 < len(heads) else maxc + 1
         for c in range(c0, c1):
@@ -189,6 +207,10 @@ def main(xlsx, sheet, out_path):
     unknown = Counter()
     assignments = []           # (email, team_key, date, shift_code)
     days_by_person = defaultdict(dict)  # email -> date -> (team_key, [(kind, allocated_to)])
+    # The days each person is actually rostered, so an absence span cannot be
+    # bridged across one. Kept alongside rather than derived from
+    # `assignments`, which is a flat list and would need scanning per gap.
+    on_rota = defaultdict(set)  # email -> {date}
 
     for mail, cols in by_person.items():
         for r in day_rows:
@@ -214,12 +236,18 @@ def main(xlsx, sheet, out_path):
             for code in codes:
                 if code in SHIFTS:
                     assignments.append((mail, key, d, SHIFTS[code]))
+                    on_rota[mail].add(d)
                 elif code in ABSENCES:
                     kind, to = ABSENCES[code]
                     days_by_person[mail].setdefault(d, (key, []))[1].append((kind, to))
                 elif code.startswith(CUSTOMER_PREFIX):
-                    # From the original cell, so 'Allo-Acme' stays 'Acme'.
-                    m = re.search(r"allo-\s*([A-Za-z0-9]+)", v or "", re.I)
+                    # From the original cell, so 'Allo-Acme' keeps the casing
+                    # the sheet wrote -- but matched against THIS code, not the
+                    # first Allo- in the cell. 'Allo-IND / Allo-Acme' holds two,
+                    # and searching the whole cell gave the second one the
+                    # first one's customer.
+                    want = re.escape(code[len(CUSTOMER_PREFIX):])
+                    m = re.search(rf"allo-\s*({want})\b", v or "", re.I)
                     customer = m.group(1) if m else code[len(CUSTOMER_PREFIX):].upper()
                     days_by_person[mail].setdefault(d, (key, []))[1].append((CUSTOMER_KIND, customer))
                 else:
@@ -238,7 +266,14 @@ def main(xlsx, sheet, out_path):
                 span = open_spans.get(k)
                 if span:
                     gap = [span[2] + datetime.timedelta(days=i) for i in range(1, (d - span[2]).days)]
-                    bridged = kind in BRIDGES_WEEKENDS and all(x.weekday() >= 5 and x not in days for x in gap)
+                    # `days` holds this person's absence days only, so a
+                    # weekend they are rostered on looked empty and the span
+                    # swallowed it. OnDutyAt now hides anyone whose assignment
+                    # overlaps an absence, so bridging a worked Saturday takes
+                    # that engineer off the weekend entirely.
+                    bridged = kind in BRIDGES_WEEKENDS and all(
+                        x.weekday() >= 5 and x not in days and x not in on_rota[mail]
+                        for x in gap)
                     if (d - span[2]).days == 1 or bridged:
                         span[2] = d
                         continue
@@ -280,8 +315,13 @@ def write_sql(path, sheet, people, assignments, absences):
     w.append("-- Real staff data: do not commit this file.")
     w.append("BEGIN;")
     w.append("CREATE TEMP TABLE _imp_person (email TEXT, nick TEXT, team_key TEXT, is_lead BOOLEAN) ON COMMIT DROP;")
-    w.append("INSERT INTO _imp_person VALUES")
-    w.append(",\n".join(f"  ({sql(e)}, {sql(n)}, {sql(k)}, {'TRUE' if l else 'FALSE'})" for e, n, k, l in people) + ";")
+    # Written only when there are rows: `INSERT ... VALUES` with nothing after
+    # it is a syntax error, and it aborts the whole transaction -- taking the
+    # assignment import down with it.
+    if people:
+        w.append("INSERT INTO _imp_person VALUES")
+        w.append(",\n".join(
+            f"  ({sql(e)}, {sql(n)}, {sql(k)}, {'TRUE' if l else 'FALSE'})" for e, n, k, l in people) + ";")
 
     # People: reuse an existing account by email; create the rest as internal
     # staff, which is what lets entity-service's access check admit them.
@@ -355,8 +395,9 @@ ON CONFLICT DO NOTHING;
 """)
 
     w.append("CREATE TEMP TABLE _imp_abs (email TEXT, team_key TEXT, kind TEXT, allocated_to TEXT, s DATE, e DATE) ON COMMIT DROP;")
-    w.append("INSERT INTO _imp_abs VALUES\n" + ",\n".join(
-        f"  ({sql(m)},{sql(k)},{sql(kd)},{sql(to)},'{s}','{e}')" for m, k, kd, to, s, e in absences) + ";")
+    if absences:
+        w.append("INSERT INTO _imp_abs VALUES\n" + ",\n".join(
+            f"  ({sql(m)},{sql(k)},{sql(kd)},{sql(to)},'{s}','{e}')" for m, k, kd, to, s, e in absences) + ";")
     w.append(f"""
 DELETE FROM team_schedule_absence WHERE created_by = {t};
 INSERT INTO team_schedule_absence (user_id, team_key, kind_id, allocated_to, starts_on, ends_on, note, created_by, updated_by)
