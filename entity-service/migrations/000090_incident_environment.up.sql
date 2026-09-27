@@ -17,9 +17,9 @@
 -- Records the environment (e.g. "Staging", "Production") an incident's
 -- source alert fired against, from alert-core-service's own alert.environment
 -- field, so it's a structured column instead of living only in the incident
--- title/subject text. ServiceNow-side field mapping for this is not
--- confirmed yet -- see CreateIncidentRequest.Environment's doc comment --
--- this column is populated by postgres-servicenow-dual-write's
--- createIncidentSNFirst regardless, matching the same convention already
--- used for correlation_id.
-ALTER TABLE incident ADD COLUMN IF NOT EXISTS environment VARCHAR(255);
+-- title/subject text. Maps to ServiceNow's own custom incident.u_enviroment
+-- field (max_length 40, per its sys_dictionary entry -- name kept as-is,
+-- misspelling included, to match ServiceNow verbatim). This column is
+-- populated by postgres-servicenow-dual-write's createIncidentSNFirst,
+-- matching the same convention already used for correlation_id.
+ALTER TABLE incident ADD COLUMN IF NOT EXISTS environment VARCHAR(40);

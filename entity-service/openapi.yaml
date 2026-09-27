@@ -16539,9 +16539,11 @@ components:
         environment:
           type: string
           nullable: true
+          maxLength: 40
           description: Optional label (e.g. "Staging", "Production") identifying the
-            environment the source alert fired against. Persisted on this service's
-            own incident row; ServiceNow-side field mapping is not confirmed yet.
+            environment the source alert fired against. Maps to ServiceNow's own
+            custom incident.u_enviroment field (name kept as ServiceNow spells it,
+            misspelling included); also persisted on this service's own incident row.
 
     CreateIncidentResponse:
       type: object

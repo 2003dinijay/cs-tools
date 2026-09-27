@@ -680,6 +680,12 @@ type snCreateIncidentPayload struct {
 	// CorrelationID: see domain.CreateIncidentRequest.CorrelationID doc
 	// comment. Maps to ServiceNow's stock `correlation_id` field.
 	CorrelationID *string `json:"correlationId,omitempty"`
+	// Environment: see domain.CreateIncidentRequest.Environment doc comment.
+	// Maps to ServiceNow's own custom incident.u_enviroment field -- the
+	// JSON key here is that field's exact name (misspelling included), not
+	// a rewritten "environment", since this is what the Choreo connector's
+	// own contract exposes for a custom field.
+	Environment *string `json:"u_enviroment,omitempty"`
 }
 
 // snCreateIncidentResponse mirrors the Choreo POST /incidents response.
@@ -776,6 +782,7 @@ func (s *snIncidentService) CreateIncident(ctx context.Context, req domain.Creat
 		AdditionalComments: req.AdditionalComments,
 		WorkNotes:          req.WorkNotes,
 		CorrelationID:      req.CorrelationID,
+		Environment:        req.Environment,
 	}
 	if req.Subcategory != nil {
 		v := snIncidentSubcategoryKeyMap[*req.Subcategory]

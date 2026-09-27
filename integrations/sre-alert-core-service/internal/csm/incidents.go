@@ -39,8 +39,9 @@ type CreateIncidentRequest struct {
 	// WorkNotes.
 	CorrelationID *string `json:"correlationId,omitempty"`
 	// Environment is the source alert's environment label (e.g. "Staging",
-	// "Production"). entity-service persists it on its own incident row;
-	// ServiceNow-side field mapping is not confirmed yet.
+	// "Production"). entity-service persists it on its own incident row and
+	// forwards it to ServiceNow's custom incident.u_enviroment field
+	// (max length 40).
 	Environment *string `json:"environment,omitempty"`
 }
 
