@@ -894,10 +894,16 @@ type Project struct {
 	Key              string           `json:"key"`
 	SubscriptionType SubscriptionType `json:"subscriptionType"`
 	ClosureStatus    *ClosureStatus   `json:"closureStatus"`
-	StartDate        *time.Time       `json:"startDate"`
-	EndDate          *time.Time       `json:"endDate"`
-	CreatedOn        time.Time        `json:"createdOn"`
-	UpdatedOn        time.Time        `json:"updatedOn"`
+	// ClosureState mirrors ProjectDetailsView's own field of the same name
+	// (project.wso2_closure_state) -- a distinct concept from ClosureStatus
+	// above despite the similar name: this is the raw enum label
+	// (e.g. "Suspended") SearchProjects' own ProjectView.ClosureState
+	// (ProjectClosureFields, embedded there) is populated from.
+	ClosureState *string    `json:"closureState"`
+	StartDate    *time.Time `json:"startDate"`
+	EndDate      *time.Time `json:"endDate"`
+	CreatedOn    time.Time  `json:"createdOn"`
+	UpdatedOn    time.Time  `json:"updatedOn"`
 }
 
 // ProjectAccountRef is the embedded account summary returned in project detail responses.
@@ -927,7 +933,8 @@ type ProjectAccountRef struct {
 // promotes its fields to the parent's JSON object, so the wire shape is
 // unaffected.
 type ProjectClosureFields struct {
-	// ClosureState is the project's closure/access state (ServiceNow data source only).
+	// ClosureState is the project's closure/access state (project.wso2_closure_state,
+	// migration 000009 -- populated on both data sources).
 	ClosureState *string `json:"closureState"`
 	// EndDateClosureState reflects the closure state driven by the project's end date
 	// (ServiceNow data source only).

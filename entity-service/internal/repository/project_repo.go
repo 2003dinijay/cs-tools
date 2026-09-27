@@ -172,7 +172,8 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 
 	dataQuery := fmt.Sprintf(
 		`SELECT p.id, p.account_id, p.sf_id, p.name, p.key, pt.name,
-		        p.start_date, p.end_date, p.created_on, p.updated_on
+		        p.start_date, p.end_date, p.created_on, p.updated_on,
+		        INITCAP(REPLACE(p.wso2_closure_state::TEXT, '_', ' '))
 		 FROM project p
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
 		 %s
@@ -230,7 +231,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 			var sfID *string
 			if err := rows.Scan(
 				&p.ID, &p.AccountID, &sfID, &p.Name, &p.Key, &projectTypeName,
-				&p.StartDate, &p.EndDate, &p.CreatedOn, &p.UpdatedOn,
+				&p.StartDate, &p.EndDate, &p.CreatedOn, &p.UpdatedOn, &p.ClosureState,
 			); err != nil {
 				return fmt.Errorf("scan project: %w", err)
 			}
@@ -286,6 +287,11 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	// with no project_type_id set (or one pointing at a deleted row) must
 	// still resolve, just with SubscriptionType left at its zero value below.
 	var projectTypeName *string
+	// tou/amu: this view's Account.OwnerEmail/TechnicalOwnerEmail were
+	// previously left at their zero value unconditionally -- both are real
+	// columns' worth of data, just not this project's own; they're the
+	// linked account's own technical owner and account manager.
+	//
 	// Same "existence never revealed to a caller who can't see it" reasoning
 	// as CaseRepository.GetCaseByID.
 	scopeClause, scopeArgs := "", []any{id}
@@ -300,7 +306,16 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		        a.ai_gen_response_enabled, a.smart_knowledge_base_suggestions_enabled,
 		        a.support_tier,
 		        pt.name,
-		        p.wso2_closure_state::TEXT, p.onboarding_status::TEXT,
+		        -- wso2_closure_state/onboarding_status (migration 000009) are stored
+		        -- SCREAMING_SNAKE_CASE ('SUSPENDED', 'NOT_STARTED'), but the documented
+		        -- response vocabulary isn't -- and the two don't even share a separator:
+		        -- ClosureState is space-separated Title Case ("Suspended", "Read Only"),
+		        -- OnboardingStatus is hyphen-separated ("Not-Started", "In-Progress"),
+		        -- confirmed against a real ServiceNow payload and Postgres's own INITCAP
+		        -- behavior for both before picking these. A bare ::TEXT cast leaves both
+		        -- uppercase, matching neither.
+		        INITCAP(REPLACE(p.wso2_closure_state::TEXT, '_', ' ')),
+		        INITCAP(REPLACE(p.onboarding_status::TEXT, '_', '-')),
 		        p.onboarding_go_live_plan_date, p.onboarding_go_live_date, p.onboarding_expiry_date,
 		        EXTRACT(EPOCH FROM p.total_query_duration) / 3600,
 		        EXTRACT(EPOCH FROM p.remaining_query_duration) / 3600,
