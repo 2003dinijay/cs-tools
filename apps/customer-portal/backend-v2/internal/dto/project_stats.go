@@ -97,7 +97,7 @@ func MapProjectFilterOptions(m entity.ProjectMetadataResponse) ProjectFilterOpti
 		CaseStates:                  normalizeCaseStateChoices(mapChoiceListItems(m.CaseStates)),
 		Severities:                  normalizeCaseSeverityChoices(mapChoiceListItems(m.Severities)),
 		IssueTypes:                  normalizeCaseIssueTypeChoices(mapChoiceListItems(m.IssueTypes)),
-		DeploymentTypes:             mapChoiceListItems(m.DeploymentTypes),
+		DeploymentTypes:             normalizeDeploymentTypeChoices(mapChoiceListItems(m.DeploymentTypes)),
 		CallRequestStates:           mapChoiceListItems(m.CallRequestStates),
 		ChangeRequestStates:         changeRequestStates,
 		ChangeRequestImpacts:        mapChoiceListItems(m.ChangeRequestImpacts),

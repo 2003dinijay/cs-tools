@@ -354,7 +354,20 @@ func authorizeCommentActor(actorEmail string, isAdmin bool, comment repository.C
 	return &apierror.ForbiddenError{Msg: "only the comment's author or an admin may modify it"}
 }
 
-// UpdateComment implements CommentService.
+// UpdateComment implements CommentService. Deliberately NOT mirrored to
+// ServiceNow under DATA_SOURCE=postgres-servicenow-dual-write, unlike
+// CreateComment: ServiceNow's sys_journal_field is append-only, and
+// snCommentSearchService.UpdateComment (the would-be mirror target) already
+// unconditionally returns a ServiceUnavailableError documented as a
+// permanent platform limitation, not a gap -- "stock ServiceNow does not let
+// an agent edit or delete a journal entry either" (see
+// commentEditDeleteUnsupportedOnSNMsg's own doc comment). Dispatching a
+// mirror here would only ever record a guaranteed sn_writeback_failures row
+// on every single edit, forever, which is not useful signal -- there is
+// nothing an operator could ever fix on the ServiceNow side to make it
+// succeed. This is the comment analogue of Part A's conversation finding:
+// no real path exists, so no dead-end plumbing was built for it. Postgres
+// remains fully authoritative for comment edits regardless.
 func (s *commentService) UpdateComment(ctx context.Context, req domain.UpdateCommentRequest) (domain.UpdateCommentResponse, error) {
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
 		return domain.UpdateCommentResponse{}, err
@@ -387,7 +400,9 @@ func (s *commentService) UpdateComment(ctx context.Context, req domain.UpdateCom
 	}, nil
 }
 
-// DeleteComment implements CommentService.
+// DeleteComment implements CommentService. Deliberately NOT mirrored to
+// ServiceNow under DATA_SOURCE=postgres-servicenow-dual-write -- same
+// reasoning as UpdateComment's own doc comment above.
 func (s *commentService) DeleteComment(ctx context.Context, id string) error {
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return err

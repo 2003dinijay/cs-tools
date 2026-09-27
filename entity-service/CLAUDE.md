@@ -3018,14 +3018,29 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
 
 `caseRepo.SearchCases` implements `tag`, `projectOnboardingStatus` (in/notIn),
 `taskSLABusinessElapsedPercent` (gte/lte), `escalationLevel`, `escalation`
-(isEmpty/isNotEmpty), `parentId` (eq), and `anyOf`. The rest of the
-ServiceNow-shaped filters are
-still rejected with a 400 by `caseService.SearchCases` (`product`, `projectType`,
-`creTeam`/`sreTeam`, `slaBreached`, `accountEscalationActive`, ...) because
-dropping one would silently widen the result set. `creTeam`/`sreTeam` and
-call-request `assignmentTeamIds` are blocked on data, not schema: the group
-columns exist but staging's `group` table was empty (the sync has no job for the
-full group source) so every group FK is NULL.
+(isEmpty/isNotEmpty), `parentId` (eq), `product`, `creTeam`/`sreTeam` (in), and
+`anyOf`. The rest of the ServiceNow-shaped filters are still rejected with a 400
+by `caseService.SearchCases` (`projectType`, `slaBreached`,
+`accountEscalationActive`, ...) because dropping one would silently widen the
+result set.
+
+- **`product` (in)** was rejected outright even though `SearchCases`'s own
+  joins already carry `prod` (the deployed product's catalog row, used for
+  every result's `ProductName`) -- found alongside `creTeam`/`sreTeam` below
+  by proactively auditing `caseService.SearchCases`'s remaining rejections
+  for real backing columns rather than waiting for another live report.
+  Matches on `prod.name = ANY(...)`, an exact match against the same value
+  already selected into each row.
+- **`creTeam`/`sreTeam` (in)** were rejected the same way, but `SearchCases`
+  had no `account`/`"group"` join to filter on at all -- only `GetCaseByID`
+  had it (`account a` -> `"group" cre`/`"group" sre` via
+  `a.cre_team_id`/`a.sre_team_id`). Added the identical joins to
+  `SearchCases` and matched on `cre.id`/`sre.id = ANY(...)`. **Still blocked
+  on data, not schema, the same caveat as before this fix**: staging's
+  `group` table was empty as of the investigation that first found this (the
+  sync has no job for the full group source), so every group FK is NULL --
+  confirm `group` is actually populated in the target environment before
+  expecting this filter to return anything.
 
 - **`parentId eq`** was accepted by `ParseCaseFieldFilters` (the customer/CSM
   portals' "Linked Items" tab sends it to find a case's child cases) but
@@ -3207,6 +3222,22 @@ SearchUsers` now filters on them:
 `userService.SearchUsers` still validates `userIds`/`groupIds` as UUIDs
 (`validateUUIDs`) before they reach the repository — only the "unsupported on
 Postgres" rejection was removed, not the format check.
+
+## POST /users/search roleIds silently matched nothing for a namespaced role name
+
+Reported live: the Time Tracking tab's approver search
+(`{roleIds: ["timecard_approver"], active: true}`) came back empty (not a 400
+— the `active` fix above was already live) once the caller's list was scoped
+to that one role. `userRepo.SearchUsers`'s `roleIds` predicate did an exact
+`r.name = ANY(...)` match, but the synced `role.name` value carries a
+namespace prefix for at least some roles (`sn_customerservice.
+timecard_approver`, not the bare `timecard_approver` a caller sends — see the
+CSM webapp's own `ResponsiveRoleChips.tsx`'s `ROLE_CATALOGUE_ALIASES`, which
+exists purely to strip this same prefix back off for *display*; there was no
+equivalent normalization for *searching*). Fixed by also matching on the
+suffix after the last `.` (`regexp_replace(r.name, '^.*\.', '')`), so a filter
+value matches whether the stored name is bare or namespaced — purely
+additive: it can never match less than a plain `r.name = ANY(...)` did before.
 
 ## POST /users/search returns each user's roles (Postgres data source)
 

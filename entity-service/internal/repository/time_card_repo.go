@@ -94,6 +94,17 @@ type TimeCardRepository interface {
 	// resolved the card, so any mismatch here means it changed concurrently
 	// or was never theirs to delete.
 	DeleteTimeCard(ctx context.Context, id, submitterID string) error
+	// SetTimeCardSNSysID best-effort persists ServiceNow's own sys_id for the
+	// time card identified by id (migration 000088) -- called from
+	// CreateTimeCard's async ServiceNow mirror success path, never from the
+	// synchronous request path. A no-op (returns nil) if id does not exist.
+	SetTimeCardSNSysID(ctx context.Context, id, snSysID string) error
+	// GetTimeCardSNSysID returns the ServiceNow sys_id previously stored for
+	// id by SetTimeCardSNSysID, or nil if none is stored yet. Returns a
+	// NotFoundError if id does not exist -- callers that need this before a
+	// DELETE (which removes the row entirely, taking sn_sys_id with it) must
+	// call this first, synchronously, while the row still exists.
+	GetTimeCardSNSysID(ctx context.Context, id string) (*string, error)
 }
 
 type timeCardRepo struct {
@@ -767,4 +778,26 @@ func (r *timeCardRepo) DeleteTimeCard(ctx context.Context, id, submitterID strin
 		return &apierror.ConflictError{Msg: "time card cannot be deleted (it may not exist, may not belong to you, or is no longer in the submitted state)"}
 	}
 	return nil
+}
+
+// SetTimeCardSNSysID implements TimeCardRepository.
+func (r *timeCardRepo) SetTimeCardSNSysID(ctx context.Context, id, snSysID string) error {
+	_, err := r.db.Exec(ctx, `UPDATE time_card SET sn_sys_id = $1 WHERE id = $2`, snSysID, id)
+	if err != nil {
+		return fmt.Errorf("set time card sn sys id: %w", err)
+	}
+	return nil
+}
+
+// GetTimeCardSNSysID implements TimeCardRepository.
+func (r *timeCardRepo) GetTimeCardSNSysID(ctx context.Context, id string) (*string, error) {
+	var snSysID *string
+	err := r.db.QueryRow(ctx, `SELECT sn_sys_id FROM time_card WHERE id = $1`, id).Scan(&snSysID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, &apierror.NotFoundError{Msg: "time card not found"}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get time card sn sys id: %w", err)
+	}
+	return snSysID, nil
 }

@@ -41,7 +41,9 @@ user token to reach entity-service. **`POST /incidents`/`POST /incidents/search`
 are a documented exception to this** — see their own paragraph below — because
 their underlying ServiceNow operation has a separately-configured M2M
 credential fallback, so it doesn't strictly require a forwarded user token the
-way `UpdateProject` and `CreateCaseComment` do.
+way `UpdateProject` does. (`CreateCaseComment` used to be in the same
+unconditional bucket as `UpdateProject` too, but no longer is on
+`DATA_SOURCE=postgres` -- see its own paragraph below.)
 
 **`PATCH /projects/{id}` (`UpdateProject`) is kept despite this — deliberately, not
 by oversight.** It was added for the Account Closure Process (ACP) automation, but
@@ -131,12 +133,31 @@ Don't assume a 401 here means the endpoint is broken the way `UpdateProject`
 is, and don't assume a 400 here means bad input from the caller — check both
 which fields were sent and which data source entity-service is running.
 
-**`POST /cases/{id}/comments` (`CreateCaseComment`) has no such exception —
-it is unconditionally "always 401" like `UpdateProject`, on both data
-sources.** entity-service resolves the comment's author from the forwarded
-`x-user-id-token` even on its Postgres-backed path, so there is no field
-combination that succeeds through this M2M-only service today. Kept for the
-same API-shape-completeness reason as `UpdateProject`.
+**`POST /cases/{id}/comments` (`CreateCaseComment`) is now a partial
+exception to "always 401" too, mirroring `POST /cases/{id}/tags`'s M2M
+`actorEmail` path. Know the difference before assuming it's still stuck in
+the always-401 state described in earlier revisions of this doc.**
+
+- On `DATA_SOURCE=postgres`, this handler injects this service's own
+  configured `UMT_INTEGRATION_ACTOR_EMAIL` into the request body as
+  `actorEmail`, never taken from the caller, the same way `AddCaseTag`
+  injects it. entity-service checks it against its own
+  `M2M_TRUSTED_ACTOR_EMAILS` allowlist and, when it matches, creates the
+  comment with no forwarded token required. **Succeeds** today when
+  `UMT_INTEGRATION_ACTOR_EMAIL` is configured and allowlisted; **403** if
+  it's unset or not on the allowlist.
+- On `DATA_SOURCE=servicenow`, entity-service's `sn_case_service.go` never
+  hard-required a token locally to begin with, it just forwards whatever
+  `x-user-id-token` is on the request (possibly empty) straight to
+  ServiceNow, and a caller-supplied `actorEmail` is accepted but silently
+  ignored there (a plain passthrough, mirroring `AddCaseTagAs`'s own SN-mode
+  counterpart). Since this service never forwards a token, every call on
+  this data source still gets a mapped **401** from ServiceNow itself, same
+  as before this fix.
+
+`POST /cases/{id}/tags` (`AddCaseTag`, see `cases.go`) injects
+`UMT_INTEGRATION_ACTOR_EMAIL` the same way, for the same
+Postgres-succeeds/ServiceNow-still-401 split described above.
 
 ## `POST /alert-incident-mappings` and `POST /alert-incident-mappings/lookup` are functional today
 
@@ -180,7 +201,7 @@ handler so every `slog.*Context(r.Context(), …)` call automatically includes
 
 | Package | Upstream | Notes |
 |---------|----------|-------|
-| `entity` | Entity service | Account/Project + Contacts sub-resource, Case (patch + comment create), Opportunity/Invoice/ProjectOpportunityLink (read-only), incident creation/search/update, alert-incident mapping create/lookup; raw `[]byte` passthrough |
+| `entity` | Entity service | Account/Project + Contacts sub-resource, Case (search + patch + comment create + tag create), Opportunity/Invoice/ProjectOpportunityLink (read-only), incident creation/search/update, alert-incident mapping create/lookup; raw `[]byte` passthrough |
 
 A new upstream service would get its own package under `internal/`, following the
 same `Config`/`Client`/`NewClient`/`do()` pattern as `internal/entity`.

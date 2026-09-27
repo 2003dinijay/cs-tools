@@ -527,18 +527,37 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	deploymentRepo := repository.NewDeploymentRepository(db)
 	var activeDeploymentSvc service.DeploymentService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeDeploymentSvc = service.NewServiceNowDeploymentService(serviceNowIntegrationServiceClient)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		// CreateDeployment is ServiceNow-first and synchronous; UpdateDeployment
+		// is Postgres-first with an asynchronous ServiceNow mirror -- see
+		// deploymentService.createDeploymentSNFirst/UpdateDeployment's own doc
+		// comments for the full reasoning (the same CREATE-vs-UPDATE asymmetry
+		// as caseService).
+		snDeploymentMirrorSvc := service.NewServiceNowDeploymentService(serviceNowIntegrationServiceClient)
+		activeDeploymentSvc = service.NewDeploymentServiceWithSNWriteback(deploymentRepo, snWritebackDispatcher, snDeploymentMirrorSvc)
+	default:
 		activeDeploymentSvc = service.NewDeploymentService(deploymentRepo)
 	}
 	deploymentHandler := handler.NewDeploymentHandler(activeDeploymentSvc)
 
 	deployedProductRepo := repository.NewDeployedProductRepository(db)
 	var activeDeployedProductSvc service.DeployedProductService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeDeployedProductSvc = service.NewServiceNowDeployedProductService(serviceNowIntegrationServiceClient, activeDeploymentSvc, activeProjectSvc)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		// CreateDeployedProduct is ServiceNow-first and synchronous;
+		// UpdateDeployedProduct is Postgres-first with an asynchronous
+		// ServiceNow mirror -- see
+		// deployedProductService.createDeployedProductSNFirst/UpdateDeployedProduct's
+		// own doc comments for the full reasoning (the same CREATE-vs-UPDATE
+		// asymmetry as deploymentService/caseService).
+		snDeployedProductMirrorSvc := service.NewServiceNowDeployedProductService(serviceNowIntegrationServiceClient, activeDeploymentSvc, activeProjectSvc)
+		activeDeployedProductSvc = service.NewDeployedProductServiceWithSNWriteback(deployedProductRepo, snWritebackDispatcher, snDeployedProductMirrorSvc)
+	default:
 		activeDeployedProductSvc = service.NewDeployedProductService(deployedProductRepo)
 	}
 	deployedProductHandler := handler.NewDeployedProductHandler(activeDeployedProductSvc)
@@ -555,6 +574,19 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		snUserService = service.NewServiceNowUserService(serviceNowIntegrationServiceClient)
 	}
 
+	// The CSM-native SLA engine (internal/service/sla_engine_service.go)
+	// writes its own source='CSM' rows into the "sla"/"sla_policy" tables
+	// the ServiceNow sync also populates (migration 000088) -- gated on db
+	// the same way slaStatusHandler above is: nowhere to store a clock at
+	// all with no database configured. activeProjectSvc backs its
+	// plan-derivation heuristic (see sla_policy_resolver.go's
+	// resolveCasePlan doc comment) and is already constructed above,
+	// regardless of DataSource.
+	var slaEngineSvc service.SLAEngineService
+	if db != nil {
+		slaEngineSvc = service.NewSLAEngineService(repository.NewSLAEngineRepository(db), activeProjectSvc)
+	}
+
 	caseRepo := repository.NewCaseRepository(db)
 	var activeCaseSvc service.CaseService
 	// caseAttachmentOverrideSvc, when non-nil, is the CaseService case
@@ -566,7 +598,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
 		pgCaseFallbackSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
-		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseFallbackSvc, eventPublisher, snUserService, cfg.CustomerRoles)
+		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseFallbackSvc, eventPublisher, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, slaEngineSvc)
 	case config.DataSourcePostgresServiceNowDualWrite:
 		// Pilot: case CREATE, and UPDATE's WorkState field only.
 		//
@@ -609,12 +641,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// CaseService — reads always stay on Postgres in this mode. It
 		// serves four purposes: CreateCase calls its CreateCase directly and
 		// synchronously; UpdateCase dispatches to its patchCaseFields (via
-		// the snFieldPatcher interface) through caseWriteback, asynchronously;
+		// the snFieldPatcher interface) through snWritebackDispatcher, asynchronously;
 		// CreateCaseComment dispatches to its CreateBareCaseComment (via the
-		// snCommentMirror interface) through caseWriteback, asynchronously;
+		// snCommentMirror interface) through snWritebackDispatcher, asynchronously;
 		// and it is caseAttachmentOverrideSvc below, for case attachments
 		// specifically.
-		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles)
+		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, slaEngineSvc)
 		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, snWritebackDispatcher, snCaseMirrorSvc)
 		// Case ATTACHMENTS are ServiceNow-only in this mode, permanently —
 		// unlike case metadata (CREATE/UPDATE above), not a pilot scope
@@ -641,7 +673,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	default:
 		activeCaseSvc = service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
 	}
-	caseHandler := handler.NewCaseHandler(activeCaseSvc)
+	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MTrustedActorEmails)
 	if db != nil {
 		announcementRequestHandler = handler.NewAnnouncementRequestHandler(
 			service.NewAnnouncementRequestService(repository.NewAnnouncementRequestRepository(db), activeCaseSvc, accessSvc),
@@ -654,7 +686,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if caseAttachmentOverrideSvc != nil {
 		activeAttachmentSvc = caseAttachmentOverrideSvc
 	}
-	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc)
+	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc, cfg.M2MTrustedActorEmails)
 
 	// customer_call (migration 000072) backs call requests on the Postgres
 	// data source, so these routes are registered for both data sources.
@@ -807,8 +839,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// createIncidentSNFirst itself, after that Postgres insert
 		// succeeds -- see NewIncidentServiceWithSNMirror's own doc comment
 		// and publishIncidentCreatedEvent's.
+		//
+		// snWritebackDispatcher (the single shared instance constructed once
+		// above) is reused as-is for incident UPDATE's async ServiceNow
+		// mirror -- a *SNWritebackDispatcher is just a fixed background
+		// worker pool plus one sn_writeback_failures repository, nothing
+		// case-specific about it, so a second instance would only mean a
+		// second, redundant worker pool.
 		snIncidentMirrorSvc := service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, nil)
-		activeIncidentSvc = service.NewIncidentServiceWithSNMirror(incidentRepo, snIncidentMirrorSvc, eventPublisher)
+		activeIncidentSvc = service.NewIncidentServiceWithSNMirror(incidentRepo, userRepo, snIncidentMirrorSvc, eventPublisher, snWritebackDispatcher)
 	default:
 		activeIncidentSvc = service.NewIncidentService(incidentRepo)
 	}
@@ -820,14 +859,19 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	case config.DataSourceServiceNow:
 		activeProblemSvc = service.NewServiceNowProblemService(serviceNowIntegrationServiceClient)
 	case config.DataSourcePostgresServiceNowDualWrite:
-		// Pilot extension: problem CREATE only, same ServiceNow-first,
-		// synchronous shape as the case/incident/change-request pilots
-		// above -- see problemService.createProblemSNFirst's own doc
-		// comment. Reads stay on Postgres in this mode;
-		// snProblemMirrorSvc's CreateProblem is the only method of it this
-		// mode ever calls.
+		// Pilot extension: problem CREATE (ServiceNow-first, synchronous,
+		// same shape as the case/incident/change-request pilots above -- see
+		// problemService.createProblemSNFirst's own doc comment) plus problem
+		// UPDATE (Postgres-first, best-effort async ServiceNow mirror -- see
+		// problemService.UpdateProblem's own doc comment). Reads stay on
+		// Postgres in this mode; snProblemMirrorSvc's CreateProblem/
+		// UpdateProblem are the only methods of it this mode ever calls.
+		//
+		// snWritebackDispatcher (the single shared instance constructed once
+		// above) is reused as-is for problem UPDATE's async ServiceNow
+		// mirror, same as incident's own dual-write branch above.
 		snProblemMirrorSvc := service.NewServiceNowProblemService(serviceNowIntegrationServiceClient)
-		activeProblemSvc = service.NewProblemServiceWithSNMirror(problemRepo, snProblemMirrorSvc)
+		activeProblemSvc = service.NewProblemServiceWithSNMirror(problemRepo, snProblemMirrorSvc, snWritebackDispatcher)
 	default:
 		activeProblemSvc = service.NewProblemService(problemRepo)
 	}

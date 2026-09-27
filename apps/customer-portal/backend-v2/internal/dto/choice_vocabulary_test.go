@@ -205,3 +205,49 @@ func TestNormalizeCaseEngagementTypeChoices_PostgresEnumLabels(t *testing.T) {
 		}
 	}
 }
+
+// deployment_type_enum's Postgres labels have the same non-numeric-id problem
+// as issue type/engagement type. This one had a real, live downstream break:
+// EditDeploymentModal.tsx's Number(form.typeKey) on a raw label like
+// "DEVELOPMENT" is NaN, and NaN is never equal to itself in JS, so every save
+// (even ones that didn't touch type) sent typeKey: NaN -- JSON.stringify'd to
+// null -- tripping the handler's "provide detail fields or active, not both"
+// guard on completely unrelated edits (e.g. deactivating a deployment).
+func TestNormalizeDeploymentTypeChoices_PostgresEnumLabels(t *testing.T) {
+	in := []ReferenceItem{
+		{ID: "DEVELOPMENT", Label: "DEVELOPMENT"},
+		{ID: "QA", Label: "QA"},
+		{ID: "STAGING", Label: "STAGING"},
+		{ID: "STRESS", Label: "STRESS"},
+		{ID: "UAT", Label: "UAT"},
+		{ID: "PRIMARY_PRODUCTION", Label: "PRIMARY_PRODUCTION"},
+	}
+	want := []ReferenceItem{
+		{ID: "1", Label: "Development"},
+		{ID: "2", Label: "QA"},
+		{ID: "3", Label: "Staging"},
+		{ID: "4", Label: "Stress"},
+		{ID: "5", Label: "UAT"},
+		{ID: "6", Label: "Primary Production"},
+	}
+
+	got := normalizeDeploymentTypeChoices(in)
+	if len(got) != len(want) {
+		t.Fatalf("got %d items, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].ID != want[i].ID || got[i].Label != want[i].Label {
+			t.Errorf("[%d] = {%s, %s}, want {%s, %s}", i, got[i].ID, got[i].Label, want[i].ID, want[i].Label)
+		}
+	}
+}
+
+// ServiceNow-mode already returns numeric ids -- an id this table doesn't
+// recognise passes through untouched, same as severity/state/issue type.
+func TestNormalizeDeploymentTypeChoices_ServiceNowIDsPassThrough(t *testing.T) {
+	in := []ReferenceItem{{ID: "3", Label: "Staging"}}
+	got := normalizeDeploymentTypeChoices(in)
+	if got[0].ID != in[0].ID || got[0].Label != in[0].Label {
+		t.Errorf("got {%s, %s}, want it unchanged {%s, %s}", got[0].ID, got[0].Label, in[0].ID, in[0].Label)
+	}
+}

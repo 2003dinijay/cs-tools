@@ -4596,7 +4596,7 @@ paths:
 
   /deployed-products:
     post:
-      summary: Create a new deployed product (ServiceNow data source only).
+      summary: Create a new deployed product.
       operationId: createDeployedProduct
       requestBody:
         required: true
@@ -4632,7 +4632,7 @@ paths:
 
   /deployed-products/{id}:
     patch:
-      summary: Update a deployed product's cores, tps, description, or deactivate it (ServiceNow data source only).
+      summary: Update a deployed product's cores, tps, description, or deactivate it.
       operationId: patchDeployedProduct
       parameters:
         - name: id
@@ -21652,6 +21652,12 @@ components:
                 type: string
             search:
               type: string
+              description: >-
+                Matches a fragment of the engineer's name or email address,
+                case-insensitively — name, email, first_name, last_name, and
+                first+last together, since `name` is blank on some rows. The
+                caller's own % and _ are escaped, so they match themselves.
+                Blank applies no filter.
             active:
               type: boolean
               nullable: true
