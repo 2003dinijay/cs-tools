@@ -21,6 +21,6 @@
 -- postgres-servicenow-dual-write's createIncidentSNFirst, which writes both
 -- ServiceNow (correlation_id already native there) and this Postgres row for
 -- the same incident.
-ALTER TABLE incident ADD COLUMN IF NOT EXISTS correlation_id TEXT;
+ALTER TABLE incident ADD COLUMN IF NOT EXISTS correlation_id VARCHAR(255);
 
 CREATE INDEX IF NOT EXISTS idx_incident_correlation_id ON incident (correlation_id);
