@@ -67,7 +67,8 @@ connect_timeout = "10s"
 timeout = "2s"
 
 [reject]
-# One rejected-webhook Chat card per vendor + error per window; the rest are counted.
+# One rejected-webhook Chat card per vendor + error class per window, at most 10 overall;
+# the rest are counted and reported on the next card.
 window = "15m"
 # How much of a rejected body the card shows.
 body_preview_chars = 500

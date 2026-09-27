@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -137,6 +138,55 @@ func TestRejected_RateLimitedPerVendorAndError(t *testing.T) {
 	}
 	if !strings.Contains(cards[3], "+2 more since 2026-09-27 06:00:00 UTC") {
 		t.Errorf("next card should report the suppressed rejections:\n%s", cards[3])
+	}
+}
+
+func TestRejected_ParserErrorsShareOneCard(t *testing.T) {
+	chat := newFakeChat(t)
+	n, clock := newNotifier(t, []string{chat.srv.URL}, nil)
+
+	for _, detail := range []string{"invalid character 'x' looking for beginning of value",
+		"unexpected end of JSON input", "invalid character '}' after object key"} {
+		n.Rejected(rejection("datadog", "INVALID DATADOG ALERT PAYLOAD STRUCTURE: "+detail))
+	}
+	n.sends.Wait()
+	if got := len(chat.all()); got != 1 {
+		t.Fatalf("cards = %d, want 1 for one error class", got)
+	}
+
+	*clock = clock.Add(16 * time.Minute)
+	n.Rejected(rejection("datadog", "INVALID DATADOG ALERT PAYLOAD STRUCTURE: other"))
+	n.sends.Wait()
+	if cards := chat.all(); len(cards) != 2 || !strings.Contains(cards[1], "+2 more since") {
+		t.Errorf("next card should report the 2 held back:\n%s", strings.Join(cards, "\n"))
+	}
+}
+
+func TestRejected_GlobalCapPerWindow(t *testing.T) {
+	chat := newFakeChat(t)
+	n, clock := newNotifier(t, []string{chat.srv.URL}, nil)
+
+	for i := range maxRejectCards + 5 {
+		n.Rejected(rejection(fmt.Sprintf("vendor%d", i), "BAD"))
+	}
+	n.sends.Wait()
+	if got := len(chat.all()); got != maxRejectCards {
+		t.Fatalf("cards = %d, want the cap of %d", got, maxRejectCards)
+	}
+
+	*clock = clock.Add(16 * time.Minute)
+	n.Rejected(rejection("aws", "BAD"))
+	n.sends.Wait()
+	cards := chat.all()
+	if len(cards) != maxRejectCards+1 || !strings.Contains(cards[maxRejectCards], "Other rejections") ||
+		!strings.Contains(cards[maxRejectCards], "+5 more since") {
+		t.Errorf("next card should report the 5 held back by the cap:\n%s", cards[len(cards)-1])
+	}
+	n.mu.Lock()
+	entries := len(n.rejects)
+	n.mu.Unlock()
+	if entries != 1 {
+		t.Errorf("rate-limit entries = %d, want 1 (older ones dropped)", entries)
 	}
 }
 

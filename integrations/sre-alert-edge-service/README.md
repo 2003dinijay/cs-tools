@@ -27,7 +27,7 @@ vendor ──POST──▶ edge (transform → allocator: CAS-claim ids → inse
 - **Wake-up**: one `POST /alert` to alerts-core per written batch. Calls are coalesced so at most
   one is in flight. If it fails, alerts-core's own 10-second poll still picks the rows up.
 - **Chat cards** (Google Chat, cardsV2): a *rejected webhook* card (at most one per vendor + error
-  per `reject.window`) and a *DB failure* card (at most `fallback.cards_per_minute`, then one
+  class, and 10 overall, per `reject.window`) and a *DB failure* card (at most `fallback.cards_per_minute`, then one
   summary per minute). If Chat fails too, the full alert is logged at ERROR.
 
 ## Endpoints
@@ -127,7 +127,7 @@ default and a comment. The main knobs:
 | `allocator.write_concurrency` | `64` | Parallel inserts per replica |
 | `store.insert_attempts` | `3` | Insert + read-back attempts before the filler row |
 | `store.claim_timeout` | `5s` | Timeout for the `alert_seq` read and compare-and-set (inserts use `store.query_timeout`, 1.5s) |
-| `reject.window` | `15m` | Rejected-webhook card rate limit per vendor + error |
+| `reject.window` | `15m` | Rejected-webhook card window: one per vendor + error class, 10 overall |
 | `fallback.cards_per_minute` | `5` | DB-failure cards per minute before summarising |
 
 ## Example requests

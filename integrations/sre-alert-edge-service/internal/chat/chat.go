@@ -30,6 +30,7 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -40,8 +41,8 @@ import (
 
 // Settings tunes the cards; see config.toml.example.
 type Settings struct {
-	// RejectWindow: the first rejection per vendor+error in each window posts a card; later
-	// ones in the window are counted and reported on the next card.
+	// RejectWindow: the first rejection per vendor + error class in each window posts a card,
+	// up to maxRejectCards per window overall; the rest are counted and reported on the next card.
 	RejectWindow time.Duration
 	// BodyPreviewChars bounds how much of a rejected body the card shows.
 	BodyPreviewChars int
@@ -63,6 +64,7 @@ type Notifier struct {
 
 	mu      sync.Mutex
 	rejects map[string]*rejectState
+	global  globalRejects
 	db      dbState
 
 	sends sync.WaitGroup
@@ -74,6 +76,17 @@ type rejectState struct {
 	lastCard   time.Time
 	suppressed int
 }
+
+// globalRejects caps rejected cards across all vendors per RejectWindow.
+type globalRejects struct {
+	windowStart     time.Time
+	sent            int
+	suppressed      int
+	suppressedSince time.Time
+}
+
+// maxRejectCards is the most rejected-webhook cards posted per RejectWindow, all vendors together.
+const maxRejectCards = 10
 
 type dbState struct {
 	sent            int // cards posted in the current interval
@@ -102,28 +115,67 @@ func New(logger *slog.Logger, urls []string, replica string, s Settings) *Notifi
 	return n
 }
 
-// Rejected posts the rejected-webhook card, at most once per vendor+error per RejectWindow.
+// Rejected posts the rejected-webhook card, at most once per vendor + error class per
+// RejectWindow and maxRejectCards per RejectWindow overall.
 func (n *Notifier) Rejected(r server.Rejection) {
 	now := n.now().UTC()
-	key := r.Vendor + "|" + r.Error
+	window := n.settings.RejectWindow
+	key := r.Vendor + "|" + errorClass(r.Error)
 
 	n.mu.Lock()
+	n.pruneRejects(now, key)
+	if now.Sub(n.global.windowStart) >= window {
+		n.global.windowStart, n.global.sent = now, 0
+	}
 	st := n.rejects[key]
-	if st != nil && now.Sub(st.lastCard) < n.settings.RejectWindow {
+	if st != nil && now.Sub(st.lastCard) < window {
 		st.suppressed++
 		n.mu.Unlock()
 		return
 	}
-	var suppressed int
-	var since time.Time
-	if st != nil {
-		suppressed, since = st.suppressed, st.lastCard
+	if n.global.sent >= maxRejectCards {
+		n.countGlobal(1, now)
+		n.mu.Unlock()
+		return
 	}
+	var c rejectCounts
+	if st != nil {
+		c.same, c.sameSince = st.suppressed, st.lastCard
+	}
+	c.other, c.otherSince = n.global.suppressed, n.global.suppressedSince
+	n.global.suppressed = 0
+	n.global.sent++
 	n.rejects[key] = &rejectState{lastCard: now}
 	n.mu.Unlock()
 
-	n.post(rejectedCard(r, now, n.replica, n.settings.BodyPreviewChars, suppressed, since),
+	n.post(rejectedCard(r, now, n.replica, n.settings.BodyPreviewChars, c),
 		"rejected-webhook card not delivered", "vendor", r.Vendor, "request_id", r.RequestID, "error", r.Error)
+}
+
+// pruneRejects drops entries older than RejectWindow, except keep's; their uncounted
+// rejections move to the global count so the next card still reports them.
+func (n *Notifier) pruneRejects(now time.Time, keep string) {
+	for key, st := range n.rejects {
+		if key != keep && now.Sub(st.lastCard) >= n.settings.RejectWindow {
+			if st.suppressed > 0 {
+				n.countGlobal(st.suppressed, st.lastCard)
+			}
+			delete(n.rejects, key)
+		}
+	}
+}
+
+func (n *Notifier) countGlobal(count int, since time.Time) {
+	if n.global.suppressed == 0 || since.Before(n.global.suppressedSince) {
+		n.global.suppressedSince = since
+	}
+	n.global.suppressed += count
+}
+
+// errorClass is the error text before the first ":", so parser details don't split the limit.
+func errorClass(msg string) string {
+	class, _, _ := strings.Cut(msg, ":")
+	return strings.TrimSpace(class)
 }
 
 // StoreFailed posts the DB-failure card, up to CardsPerMinute per interval; the rest are
@@ -227,7 +279,16 @@ func (n *Notifier) send(url string, body []byte) error {
 
 const timeLayout = "2006-01-02 15:04:05 UTC"
 
-func rejectedCard(r server.Rejection, now time.Time, replica string, previewChars, suppressed int, since time.Time) map[string]any {
+// rejectCounts are the rejections a card reports on top of its own: for the same vendor +
+// error class, and any others held back by the overall cap.
+type rejectCounts struct {
+	same       int
+	sameSince  time.Time
+	other      int
+	otherSince time.Time
+}
+
+func rejectedCard(r server.Rejection, now time.Time, replica string, previewChars int, c rejectCounts) map[string]any {
 	details := line("HTTP status", fmt.Sprint(r.Status)) +
 		line("Error", r.Error) +
 		line("Route", r.Route) +
@@ -237,8 +298,11 @@ func rejectedCard(r server.Rejection, now time.Time, replica string, previewChar
 		line("Remote address", r.RemoteAddr) +
 		line("Content type", r.ContentType) +
 		line("Body size", fmt.Sprintf("%d bytes", r.BodySize))
-	if suppressed > 0 {
-		details += line("Also rejected", fmt.Sprintf("+%d more since %s", suppressed, since.Format(timeLayout)))
+	if c.same > 0 {
+		details += line("Also rejected", fmt.Sprintf("+%d more since %s", c.same, c.sameSince.Format(timeLayout)))
+	}
+	if c.other > 0 {
+		details += line("Other rejections", fmt.Sprintf("+%d more since %s", c.other, c.otherSince.Format(timeLayout)))
 	}
 	preview, truncated := truncate(string(r.Body), previewChars)
 	if truncated {
