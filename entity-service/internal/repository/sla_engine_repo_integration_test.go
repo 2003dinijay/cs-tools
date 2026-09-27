@@ -37,6 +37,11 @@ import (
 
 const slaEngineIntegrationWorkItemID = "47777777-0000-0000-0000-000000000001"
 
+// seedSLAEngineWorkItem inserts one minimal work_item row (all its FK
+// columns are nullable, so account/project/deployment/user need not exist)
+// for the test to register/revise "sla" rows against, and removes both it
+// and any "sla" rows created for it before and after the test so the
+// integration test stays re-runnable against a shared database.
 func seedSLAEngineWorkItem(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
