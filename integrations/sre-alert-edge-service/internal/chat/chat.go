@@ -42,7 +42,7 @@ import (
 // Settings tunes the cards; see config.toml.example.
 type Settings struct {
 	// RejectWindow: the first rejection per vendor + error class in each window posts a card,
-	// up to maxRejectCards per window overall; the rest are counted and reported on the next card.
+	// up to maxRejectCards per window on this replica; the rest are counted and reported on the next card.
 	RejectWindow time.Duration
 	// BodyPreviewChars bounds how much of a rejected body the card shows.
 	BodyPreviewChars int
@@ -85,7 +85,7 @@ type globalRejects struct {
 	suppressedSince time.Time
 }
 
-// maxRejectCards is the most rejected-webhook cards posted per RejectWindow, all vendors together.
+// maxRejectCards is the most rejected-webhook cards one replica posts per RejectWindow, all vendors together.
 const maxRejectCards = 10
 
 type dbState struct {
@@ -116,7 +116,7 @@ func New(logger *slog.Logger, urls []string, replica string, s Settings) *Notifi
 }
 
 // Rejected posts the rejected-webhook card, at most once per vendor + error class per
-// RejectWindow and maxRejectCards per RejectWindow overall.
+// RejectWindow and maxRejectCards per RejectWindow on this replica.
 func (n *Notifier) Rejected(r server.Rejection) {
 	now := n.now().UTC()
 	window := n.settings.RejectWindow
