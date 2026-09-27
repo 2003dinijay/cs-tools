@@ -115,9 +115,11 @@ import SplProjectDetailPage from "@features/spl/projects/pages/SplProjectDetailP
 import SplSlaReportPage from "@features/spl/reports/pages/SplSlaReportPage";
 import SplCsReportPage from "@features/spl/reports/pages/SplCsReportPage";
 import SplTimelogsReportPage from "@features/spl/reports/pages/SplTimelogsReportPage";
-// Cases, Team schedule, User scan, Customer health and Usage metrics land in
-// their own follow-up PRs (feat/spl-merge-2-cases, feat/spl-merge-3-*) --
-// see this PR's own description for why this port was split by domain.
+import SplCustomerHealthDashboardPage from "@features/spl/customer-health/pages/SplCustomerHealthDashboardPage";
+import SplCustomerHealthDetailPage from "@features/spl/customer-health/pages/SplCustomerHealthDetailPage";
+// Cases, Team schedule, User scan and Usage metrics land in their own
+// follow-up PRs (feat/spl-merge-2-cases, feat/spl-merge-3b-*) -- see this
+// PR's own description for why this port was split by domain.
 
 /**
  * Landing for `/`. Defers to AuthGuard's post-login deep-link restore when a
@@ -633,10 +635,10 @@ export default function App(): JSX.Element {
                       real enforcement point (an audience-gate 403, not just
                       a hidden nav entry) and also mounts
                       SplPermissionProvider for every screen below it.
-                      Cases, Team schedule, User scan, Customer health and
-                      Usage metrics land in their own follow-up PRs -- this
-                      port was split by domain to stay under CodeRabbit's
-                      100-file review limit. */}
+                      Cases, Team schedule, User scan and Usage metrics land
+                      in their own follow-up PRs -- this port was split by
+                      domain to stay under CodeRabbit's 100-file review
+                      limit. */}
                   <Route path="spl" element={<SplRouteGuard />}>
                     {/* SplAccountsPage reads the path leaf itself to decide
                         all-accounts vs my-accounts — same component, two
@@ -667,6 +669,15 @@ export default function App(): JSX.Element {
                     <Route
                       path="projects/:projectId/timelogs-report"
                       element={<SplTimelogsReportPage />}
+                    />
+
+                    <Route
+                      path="customer-health"
+                      element={<SplCustomerHealthDashboardPage />}
+                    />
+                    <Route
+                      path="customer-health/account/:accountId"
+                      element={<SplCustomerHealthDetailPage />}
                     />
                   </Route>
                 </Route>
