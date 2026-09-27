@@ -156,7 +156,11 @@ func scanUser(row interface{ Scan(...any) error }) (domain.User, error) {
 func (r *userRepo) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
 	u, err := scanUser(r.db.QueryRow(ctx, `SELECT `+userColumns+` FROM "user" WHERE email = $1`, email))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.User{}, &apierror.NotFoundError{Msg: "no user found with email: " + email}
+		// Msg never carries the email — writeServiceError (internal/handler/
+		// decode.go) logs every NotFoundError's Msg verbatim, so this is the
+		// one place that decides whether it leaks into logs for every caller
+		// of this method, not just GetMe.
+		return domain.User{}, &apierror.NotFoundError{Msg: "no user found with that email"}
 	}
 	if err != nil {
 		return domain.User{}, fmt.Errorf("get user by email: %w", err)
@@ -491,7 +495,12 @@ func (r *userRepo) CreateUser(ctx context.Context, req domain.CreateUserRequest,
 	).Scan(&u.ID, &u.UserName, &firstName, &lastName, &u.Email, &userType, &u.CreatedOn, &u.UpdatedOn)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return domain.User{}, &apierror.ConflictError{Msg: "a user with this email already exists: " + email}
+			// Msg never carries the email -- writeServiceError (internal/
+			// handler/decode.go) logs every ConflictError's Msg verbatim, and
+			// this endpoint lets any caller submit any req.Email, so echoing
+			// it back would both log and return a third party's address to
+			// whoever happened to guess/probe it.
+			return domain.User{}, &apierror.ConflictError{Msg: "a user with this email already exists"}
 		}
 		return domain.User{}, fmt.Errorf("create user: insert user: %w", err)
 	}

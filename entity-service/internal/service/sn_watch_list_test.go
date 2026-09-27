@@ -167,15 +167,21 @@ func TestWatchListEmails_ForwardsMoreThan50Emails(t *testing.T) {
 }
 
 // TestWatchListEmails_RejectsNeitherEmailNorUUID covers the 400 the portal
-// used to hit with emails, now reserved for values that are neither.
+// used to hit with emails, now reserved for values that are neither. The
+// invalid value itself is deliberately not echoed in the message -- a watch
+// list entry can be a third party's email address, and this message is both
+// logged and returned to the caller (writeServiceError).
 func TestWatchListEmails_RejectsNeitherEmailNorUUID(t *testing.T) {
 	_, err := watchListEmails(context.Background(), nil, "token", "watchList", []string{"not-an-email"})
 	verr, ok := err.(*apierror.ValidationError)
 	if !ok {
 		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
 	}
-	if !strings.Contains(verr.Msg, "invalid email") {
-		t.Fatalf("error %q does not name an invalid email", verr.Msg)
+	if !strings.Contains(verr.Msg, "watchList") {
+		t.Fatalf("error %q does not name the offending field", verr.Msg)
+	}
+	if strings.Contains(verr.Msg, "not-an-email") {
+		t.Fatalf("error %q must not echo the invalid entry itself", verr.Msg)
 	}
 }
 
