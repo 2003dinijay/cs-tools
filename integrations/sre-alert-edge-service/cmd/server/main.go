@@ -50,10 +50,6 @@ const chatTimeout = 10 * time.Second
 // dbFailureInterval is the window fallback.cards_per_minute applies to.
 const dbFailureInterval = time.Minute
 
-// writeMargin keeps a request's wait for its ids under the server's write timeout, so a slow
-// store answers 503 instead of the connection being cut.
-const writeMargin = time.Second
-
 func main() {
 	base := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("app", "sre-alert-edge-service")
 	logger := base.With("component", "main")
@@ -126,14 +122,10 @@ func main() {
 		ClaimJitter:      claimJitter,
 	})
 
-	waitTimeout := cfg.Server.RequestWait.Duration()
-	if limit := cfg.Server.WriteTimeout.Duration() - writeMargin; waitTimeout > limit {
-		waitTimeout = max(limit, time.Second)
-	}
 	srv := server.New(server.Options{
 		Logger:       base.With("component", "server"),
 		Auth:         authn,
-		Pipeline:     server.NewIngestor(registry, alloc, waitTimeout),
+		Pipeline:     server.NewIngestor(registry, alloc, cfg.Server.RequestWait.Duration()),
 		Rejects:      cards,
 		Vendors:      registry.Names(),
 		MaxBodyBytes: cfg.Server.MaxBodyBytes,

@@ -119,7 +119,7 @@ default and a comment. The main knobs:
 | `server.drain_delay` | `5s` | `/healthz` answers `503` this long before the listener closes |
 | `server.request_wait` | `8s` | A request waits this long for its ids, then gets `503`; also in-flight requests' time on shutdown |
 | `server.allocator_drain` | `7s` | The allocator's own time on shutdown to write everything already claimed |
-| `server.write_timeout` | `30s` | Connection write limit; `request_wait` is capped below it |
+| `server.write_timeout` | `30s` | Connection write limit; must be at least 1s above `request_wait` |
 | `server.idle_timeout` | `60s` | Idle keep-alive connections are closed after this |
 | `server.max_body_bytes` | `1048576` | Larger bodies get `413` |
 | `auth.mode` | `none` | Hook for vendor authentication; only `none` exists today |

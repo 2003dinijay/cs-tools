@@ -32,6 +32,10 @@ import (
 // DefaultPath is used when CONFIG_PATH is unset; expected at the working directory root.
 const DefaultPath = "config.toml"
 
+// WriteMargin keeps request_wait under write_timeout, so a slow store answers 503 instead of
+// the connection being cut.
+const WriteMargin = Duration(time.Second)
+
 // Config groups every deployment tunable by the subsystem it configures.
 type Config struct {
 	Server    ServerConfig    `toml:"server"`
@@ -198,6 +202,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("server.read_timeout must be positive")
 	case c.Server.WriteTimeout <= 0:
 		return fmt.Errorf("server.write_timeout must be positive")
+	case c.Server.RequestWait+WriteMargin > c.Server.WriteTimeout:
+		return fmt.Errorf("server.request_wait must be at least %v below write_timeout", WriteMargin.Duration())
 	case c.Server.IdleTimeout <= 0:
 		return fmt.Errorf("server.idle_timeout must be positive")
 	case c.Server.MaxBodyBytes <= 0:

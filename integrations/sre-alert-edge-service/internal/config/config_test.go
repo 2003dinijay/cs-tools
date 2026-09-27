@@ -73,6 +73,7 @@ func TestLoad_RejectsInvalidValues(t *testing.T) {
 		"zero drain delay":  "[server]\ndrain_delay = \"0s\"\n",
 		"budget over grace": "[server]\nshutdown_grace = \"10s\"\n",
 		"steps over grace":  "[server]\nrequest_wait = \"20s\"\n",
+		"wait near write":   "[server]\nwrite_timeout = \"8500ms\"\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
