@@ -151,9 +151,46 @@ func (c *postgresSplProjectClient) GetProjects(ctx context.Context, phrase *stri
 	return projects, nil
 }
 
+// resolveProjectNumberToID resolves SPL's projectId path param (ServiceNow's
+// project "number" -- the frontend always links to /spl/projects/{number},
+// mirroring servicenow.Client.GetProjectByID's own "number=" TableQuery, not
+// a sys_id/UUID) to entity-service's internal project UUID. Search-then-
+// exact-match, the same pattern resolveProjectByNumber uses in
+// spl_reports_postgres.go. Every method below that receives a bare
+// projectID from the handler must resolve it through here first --
+// entity-service's GET /projects/{id} and case-search projectId filter both
+// require the real UUID, not the number.
+func (c *postgresSplProjectClient) resolveProjectNumberToID(ctx context.Context, projectNumber string) (string, error) {
+	body, err := json.Marshal(entitySearchProjectsRequest{
+		Pagination:  entityPagination{Limit: 5, Offset: 0},
+		SearchQuery: projectNumber,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal entity-service projects request: %w", err)
+	}
+	raw, err := c.entity.SearchProjects(ctx, body)
+	if err != nil {
+		return "", err
+	}
+	var resp entitySearchProjectsResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("unmarshal entity-service projects response: %w", err)
+	}
+	for _, p := range resp.Projects {
+		if p.Key == projectNumber {
+			return p.ID, nil
+		}
+	}
+	return "", servicenow.ErrProjectByIDNotFound
+}
+
 // GetProjectByID implements splProjectClient.
 func (c *postgresSplProjectClient) GetProjectByID(ctx context.Context, projectID string) (servicenow.ProjectDetails, error) {
-	raw, err := c.entity.GetProject(ctx, projectID)
+	resolvedID, err := c.resolveProjectNumberToID(ctx, projectID)
+	if err != nil {
+		return servicenow.ProjectDetails{}, err
+	}
+	raw, err := c.entity.GetProject(ctx, resolvedID)
 	if err != nil {
 		return servicenow.ProjectDetails{}, err
 	}
@@ -178,13 +215,17 @@ func (c *postgresSplProjectClient) GetProjectByID(ctx context.Context, projectID
 
 // GetProjectContacts implements splProjectClient.
 func (c *postgresSplProjectClient) GetProjectContacts(ctx context.Context, projectID string, offset, limit int) ([]servicenow.Contact, error) {
+	resolvedID, err := c.resolveProjectNumberToID(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
 	body, err := json.Marshal(struct {
 		Pagination entityPagination `json:"pagination"`
 	}{Pagination: entityPagination{Limit: limit, Offset: offset}})
 	if err != nil {
 		return nil, fmt.Errorf("marshal entity-service project contacts request: %w", err)
 	}
-	raw, err := c.entity.SearchProjectContacts(ctx, projectID, body)
+	raw, err := c.entity.SearchProjectContacts(ctx, resolvedID, body)
 	if err != nil {
 		return nil, err
 	}
@@ -212,8 +253,12 @@ func (c *postgresSplProjectClient) GetProjectContacts(ctx context.Context, proje
 // at all (confirmed: rejected as unsupported), so silently ignoring rather
 // than erroring matches this session's established "known gap" pattern.
 func (c *postgresSplProjectClient) GetCasesByProject(ctx context.Context, projectID string, stateFilters, caseTypeFilters []string, offset, limit int) ([]servicenow.CaseDetails, error) {
+	resolvedID, err := c.resolveProjectNumberToID(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
 	req := entitySearchCasesRequest{
-		Filters:    entitySearchCasesFilters{Filters: []entityCaseFieldFilter{{Field: "projectId", Op: "in", Values: []string{projectID}}}},
+		Filters:    entitySearchCasesFilters{Filters: []entityCaseFieldFilter{{Field: "projectId", Op: "in", Values: []string{resolvedID}}}},
 		SortBy:     entityCaseSort{Field: "createdOn", Order: "desc"},
 		Pagination: entityPagination{Limit: limit, Offset: offset},
 	}
