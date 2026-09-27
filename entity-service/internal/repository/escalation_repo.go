@@ -66,8 +66,13 @@ type EscalationRepository interface {
 	//     members with u_team_member_role = 'HR Lead' on
 	//     u_integration_cs_team), which has no Postgres equivalent at all
 	//     ("group" has no per-member-role table, only one manager_id). This
-	//     is a deliberate, documented divergence, not a proven match.
-	//     Also: notifyCfg.EL1AmericasTLEmails, unconditionally (SN's own
+	//     is a deliberate, documented divergence, not a proven match. This
+	//     one piece is the only genuinely per-account/per-team lookup in the
+	//     whole rule below; every other recipient source is the same across
+	//     every case.
+	//     Also: every REAL member of notifyCfg.EL1AmericasTLGroupID (a
+	//     "group".id, resolved via team_member.group_id -- see
+	//     groupMemberResolver's own doc comment), unconditionally (SN's own
 	//     script comment: "Append Americas TL users -- ALWAYS", no region
 	//     gate), and account.technical_owner_id (confirmed 1:1 match with
 	//     SN's u_technical_owner).
@@ -78,24 +83,28 @@ type EscalationRepository interface {
 	//     recipient from a column that's effectively always NULL in
 	//     practice. Fixing it means fixing the Salesforce upsert mapping
 	//     elsewhere -- out of scope here.
-	//   - EL2 (level >= 2): notifyCfg.EL2AmericasTUEmails, unconditionally,
-	//     plus exactly one product-routed recipient picked from the case's
-	//     deployed product's product.category/business_unit: SERVICE ->
-	//     EL2ServiceProductEmail; SOFTWARE with business_unit IAM ->
-	//     EL2IdentityServerEmail; everything else -> EL2DefaultProductEmail.
-	//     A case with no deployed product/product info at all gets none of
-	//     the three, silently (not an error) -- same "absence is a valid
-	//     state" convention as caseProductName's own empty-string fallback.
-	//   - EL3 (level >= 3): notifyCfg.EL3CREHeadEmail, plus
-	//     account.customer_success_manager_id (confirmed 1:1 match).
-	//   - EL4 (level >= 4): notifyCfg.EL4CCOEmail, notifyCfg.EL4CROEmail.
-	//   - EL5 (level >= 5): notifyCfg.EL5CEOEmail.
+	//   - EL2 (level >= 2): every member of notifyCfg.EL2AmericasTUGroupID,
+	//     unconditionally, plus every member of exactly one product-routed
+	//     group picked from the case's deployed product's product.category/
+	//     business_unit: SERVICE -> EL2ServiceProductGroupID; SOFTWARE with
+	//     business_unit IAM -> EL2IdentityServerGroupID; everything else ->
+	//     EL2DefaultProductGroupID. A case with no deployed product/product
+	//     info at all gets none of the three, silently (not an error) --
+	//     same "absence is a valid state" convention as caseProductName's
+	//     own empty-string fallback.
+	//   - EL3 (level >= 3): every member of notifyCfg.EL3CREHeadGroupID,
+	//     plus account.customer_success_manager_id (confirmed 1:1 match).
+	//   - EL4 (level >= 4): every member of notifyCfg.EL4CCOGroupID and
+	//     notifyCfg.EL4CROGroupID.
+	//   - EL5 (level >= 5): every member of notifyCfg.EL5CEOGroupID.
 	//
-	// Every notifyCfg.* email is OPTIONAL -- empty/unset means no recipient
-	// from that slot, never a request failure. A configured fixed email with
-	// no matching "user" row is skipped (not fatal): this never invents a
-	// synthetic user row to satisfy the FK. The final list is deduped by
-	// user id before being written to case_escalation_notification_list.
+	// Every notifyCfg.*GroupID is OPTIONAL -- empty/unset means no
+	// recipients from that slot, never a request failure. A configured
+	// group id that doesn't exist, or currently has zero team_member rows,
+	// also yields zero recipients from that slot, not an error -- same
+	// "flag, don't fabricate" posture as the rest of this rule. The final
+	// list is deduped by user id before being written to
+	// case_escalation_notification_list.
 	//
 	// Authorization ("only someone on the case's current notified-users list
 	// may de-escalate") is deliberately NOT enforced here -- same reasoning
@@ -112,35 +121,84 @@ type EscalationRepository interface {
 }
 
 // EscalationNotificationConfig holds the fixed, deployment-specific
-// escalation notification recipients CreateEscalation layers on top of the
-// per-case-derived ones -- see that method's own doc comment for the full
-// EL1..EL5 cumulative rule these feed. Every field is optional: empty means
-// "no recipient from this slot," never a request failure.
+// escalation notification recipient GROUPS CreateEscalation layers on top of
+// the per-case-derived ones -- see that method's own doc comment for the full
+// EL1..EL5 cumulative rule these feed. Every field is a "group".id (migration
+// 000073), resolved to its REAL member list via team_member.group_id
+// (groupMemberResolver), not a single fixed address -- every configured tier
+// notifies however many people are actually in that group. Every field is
+// optional: empty means "no recipients from this slot," never a request
+// failure.
 type EscalationNotificationConfig struct {
-	EL1AmericasTLEmails    []string
-	EL2AmericasTUEmails    []string
-	EL2ServiceProductEmail string
-	EL2IdentityServerEmail string
-	EL2DefaultProductEmail string
-	EL3CREHeadEmail        string
-	EL4CCOEmail            string
-	EL4CROEmail            string
-	EL5CEOEmail            string
+	EL1AmericasTLGroupID     string
+	EL2AmericasTUGroupID     string
+	EL2ServiceProductGroupID string
+	EL2IdentityServerGroupID string
+	EL2DefaultProductGroupID string
+	EL3CREHeadGroupID        string
+	EL4CCOGroupID            string
+	EL4CROGroupID            string
+	EL5CEOGroupID            string
+}
+
+// groupMemberResolver resolves a "group".id to its real member user ids, via
+// team_member.group_id (migration 000074) -- that column was added
+// specifically for group membership but had no consumer until this one. An
+// interface, not a direct query call, so tests can substitute an in-memory
+// fixture instead of a real team_member table (see escalation_repo_test.go's
+// fakeGroupMemberResolver).
+type groupMemberResolver interface {
+	// GroupMemberUserIDs returns groupID's member "user".id values, empty
+	// (not an error) if the group doesn't exist or currently has zero
+	// team_member rows.
+	GroupMemberUserIDs(ctx context.Context, groupID string) ([]string, error)
+}
+
+// dbGroupMemberResolver is groupMemberResolver backed by a real connection pool.
+type dbGroupMemberResolver struct {
+	db *pgxpool.Pool
+}
+
+// GroupMemberUserIDs implements groupMemberResolver. Joined to "user" the
+// same way every other recipient resolution in this file is, even though
+// team_member.user_id's own FK already guarantees a matching row -- kept for
+// consistency with the rest of this file's style, not because it changes
+// the result.
+func (r *dbGroupMemberResolver) GroupMemberUserIDs(ctx context.Context, groupID string) ([]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT u.id
+		FROM team_member tm
+		JOIN "user" u ON u.id = tm.user_id
+		WHERE tm.group_id = $1::uuid`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("query group member user ids: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan group member user id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate group member user ids: %w", err)
+	}
+	return ids, nil
 }
 
 type escalationRepo struct {
 	db        *pgxpool.Pool
-	userRepo  UserRepository
 	notifyCfg EscalationNotificationConfig
+	groups    groupMemberResolver
 }
 
 // NewEscalationRepository constructs an EscalationRepository backed by the
-// given connection pool. userRepo resolves notifyCfg's fixed recipient
-// emails to "user" rows (GetUserByEmail), reusing the same lookup every
-// other email-to-user resolution in this codebase uses rather than a new
-// one written just for this.
-func NewEscalationRepository(db *pgxpool.Pool, userRepo UserRepository, notifyCfg EscalationNotificationConfig) EscalationRepository {
-	return &escalationRepo{db: db, userRepo: userRepo, notifyCfg: notifyCfg}
+// given connection pool.
+func NewEscalationRepository(db *pgxpool.Pool, notifyCfg EscalationNotificationConfig) EscalationRepository {
+	return &escalationRepo{db: db, notifyCfg: notifyCfg, groups: &dbGroupMemberResolver{db: db}}
 }
 
 // escalationLevelToEnum/escalationLevelFromEnum convert between
@@ -395,9 +453,9 @@ type escalationCaseContext struct {
 // resolveEscalationRecipients implements the cumulative EL1..EL5 rule
 // described on EscalationRepository.CreateEscalation's own doc comment,
 // returning a deduped set of "user".id values for whatever newLevel resulted
-// from this call. Fixed notifyCfg emails that don't resolve to a "user" row
-// are skipped, not fatal -- GetUserByEmail's own NotFoundError is treated as
-// "no recipient from this slot," identical to an unconfigured env var.
+// from this call. A configured notifyCfg group id that doesn't exist or has
+// no members resolves to an empty list, not an error -- identical to an
+// unconfigured (empty) group id slot.
 func (r *escalationRepo) resolveEscalationRecipients(ctx context.Context, newLevel int, cc escalationCaseContext) ([]string, error) {
 	seen := map[string]bool{}
 	add := func(id *string) {
@@ -405,52 +463,46 @@ func (r *escalationRepo) resolveEscalationRecipients(ctx context.Context, newLev
 			seen[*id] = true
 		}
 	}
-	addEmail := func(email string) error {
-		email = strings.TrimSpace(email)
-		if email == "" {
+	addGroup := func(groupID string) error {
+		groupID = strings.TrimSpace(groupID)
+		if groupID == "" {
 			return nil
 		}
-		u, err := r.userRepo.GetUserByEmail(ctx, email)
+		ids, err := r.groups.GroupMemberUserIDs(ctx, groupID)
 		if err != nil {
-			var notFound *apierror.NotFoundError
-			if errors.As(err, &notFound) {
-				return nil
-			}
-			return fmt.Errorf("resolve escalation recipient email: %w", err)
+			return fmt.Errorf("resolve escalation recipient group %s: %w", groupID, err)
 		}
-		seen[u.ID] = true
+		for _, id := range ids {
+			seen[id] = true
+		}
 		return nil
 	}
 
 	if newLevel >= 1 {
 		add(cc.creTeamManagerID)
-		for _, email := range r.notifyCfg.EL1AmericasTLEmails {
-			if err := addEmail(email); err != nil {
-				return nil, err
-			}
+		if err := addGroup(r.notifyCfg.EL1AmericasTLGroupID); err != nil {
+			return nil, err
 		}
 		add(cc.technicalOwnerID)
 		// account.account_manager_id (SN's u_owner) is deliberately never
 		// read -- see this repository's CreateEscalation doc comment for why.
 	}
 	if newLevel >= 2 {
-		for _, email := range r.notifyCfg.EL2AmericasTUEmails {
-			if err := addEmail(email); err != nil {
-				return nil, err
-			}
+		if err := addGroup(r.notifyCfg.EL2AmericasTUGroupID); err != nil {
+			return nil, err
 		}
 		if cc.productCategory != nil {
 			switch {
 			case *cc.productCategory == "SERVICE":
-				if err := addEmail(r.notifyCfg.EL2ServiceProductEmail); err != nil {
+				if err := addGroup(r.notifyCfg.EL2ServiceProductGroupID); err != nil {
 					return nil, err
 				}
 			case cc.productBusinessUnit != nil && *cc.productBusinessUnit == "IAM":
-				if err := addEmail(r.notifyCfg.EL2IdentityServerEmail); err != nil {
+				if err := addGroup(r.notifyCfg.EL2IdentityServerGroupID); err != nil {
 					return nil, err
 				}
 			default:
-				if err := addEmail(r.notifyCfg.EL2DefaultProductEmail); err != nil {
+				if err := addGroup(r.notifyCfg.EL2DefaultProductGroupID); err != nil {
 					return nil, err
 				}
 			}
@@ -459,21 +511,21 @@ func (r *escalationRepo) resolveEscalationRecipients(ctx context.Context, newLev
 		// all): no product-routed recipient, silently -- not an error.
 	}
 	if newLevel >= 3 {
-		if err := addEmail(r.notifyCfg.EL3CREHeadEmail); err != nil {
+		if err := addGroup(r.notifyCfg.EL3CREHeadGroupID); err != nil {
 			return nil, err
 		}
 		add(cc.csmID)
 	}
 	if newLevel >= 4 {
-		if err := addEmail(r.notifyCfg.EL4CCOEmail); err != nil {
+		if err := addGroup(r.notifyCfg.EL4CCOGroupID); err != nil {
 			return nil, err
 		}
-		if err := addEmail(r.notifyCfg.EL4CROEmail); err != nil {
+		if err := addGroup(r.notifyCfg.EL4CROGroupID); err != nil {
 			return nil, err
 		}
 	}
 	if newLevel >= 5 {
-		if err := addEmail(r.notifyCfg.EL5CEOEmail); err != nil {
+		if err := addGroup(r.notifyCfg.EL5CEOGroupID); err != nil {
 			return nil, err
 		}
 	}

@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -281,32 +282,38 @@ type Config struct {
 	M2MTrustedActorEmails []string
 
 	// Escalation* configure the fixed, deployment-specific notification
-	// recipients EscalationService.CreateEscalation (Postgres data source)
-	// layers on top of the per-case-derived ones (account technical owner,
-	// CRE team lead, product routing, CSM) -- see that method's own doc
-	// comment for the full EL1..EL5 cumulative rule these feed. Every one of
-	// these is OPTIONAL: an unset/empty value means "no recipient from this
-	// slot," never a startup failure or a request error -- not every
-	// deployment configures every tier on day one, same reasoning
-	// CustomerRoles/CSEngineerRole's own doc comments give for org-specific
-	// vocabulary that doesn't belong hardcoded in this repo. None of these
-	// are required by Validate for that reason.
-	EscalationEL1AmericasTLEmails []string
-	EscalationEL2AmericasTUEmails []string
-	// EscalationEL2ServiceProductEmail/EscalationEL2IdentityServerEmail/
-	// EscalationEL2DefaultProductEmail are the three product-routed EL2
+	// recipient GROUPS EscalationService.CreateEscalation (Postgres data
+	// source) layers on top of the per-case-derived ones (account technical
+	// owner, CRE team lead, product routing, CSM) -- see that method's own
+	// doc comment for the full EL1..EL5 cumulative rule these feed. Each one
+	// is a "group".id (migration 000073), resolved to its real member list
+	// via team_member.group_id, NOT a single fixed address -- every
+	// configured tier notifies however many people are actually in that
+	// group. Every one of these is OPTIONAL: an unset/empty value means "no
+	// recipients from this slot," never a startup failure or a request
+	// error -- not every deployment configures every tier on day one, same
+	// reasoning CustomerRoles/CSEngineerRole's own doc comments give for
+	// org-specific vocabulary that doesn't belong hardcoded in this repo.
+	// None of these are required by Validate for that reason, though a SET
+	// value is still checked there for being a well-formed UUID (a
+	// misconfigured group id would otherwise silently resolve zero
+	// recipients instead of surfacing the typo at startup).
+	EscalationEL1AmericasTLGroupID string
+	EscalationEL2AmericasTUGroupID string
+	// EscalationEL2ServiceProductGroupID/EscalationEL2IdentityServerGroupID/
+	// EscalationEL2DefaultProductGroupID are the three product-routed EL2
 	// buckets: the case's deployed product's category/business_unit picks
 	// exactly one (SERVICE -> service; SOFTWARE with business_unit IAM ->
 	// identity server; everything else, including no business_unit -> the
 	// software default). A case with no deployed product/product info at
 	// all gets none of the three, silently.
-	EscalationEL2ServiceProductEmail string
-	EscalationEL2IdentityServerEmail string
-	EscalationEL2DefaultProductEmail string
-	EscalationEL3CREHeadEmail        string
-	EscalationEL4CCOEmail            string
-	EscalationEL4CROEmail            string
-	EscalationEL5CEOEmail            string
+	EscalationEL2ServiceProductGroupID string
+	EscalationEL2IdentityServerGroupID string
+	EscalationEL2DefaultProductGroupID string
+	EscalationEL3CREHeadGroupID        string
+	EscalationEL4CCOGroupID            string
+	EscalationEL4CROGroupID            string
+	EscalationEL5CEOGroupID            string
 }
 
 // Load reads configuration from environment variables and returns a populated
@@ -370,15 +377,15 @@ func Load() *Config {
 		SalesEntityScopes:                             os.Getenv("SALES_ENTITY_SCOPES"),
 		CSMMigrationMembershipRegistrationEnabled:     os.Getenv("CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED") == "true",
 		M2MTrustedActorEmails:                         splitComma(os.Getenv("M2M_TRUSTED_ACTOR_EMAILS")),
-		EscalationEL1AmericasTLEmails:                 splitComma(os.Getenv("ESCALATION_EL1_AMERICAS_TL_EMAILS")),
-		EscalationEL2AmericasTUEmails:                 splitComma(os.Getenv("ESCALATION_EL2_AMERICAS_TU_EMAILS")),
-		EscalationEL2ServiceProductEmail:              os.Getenv("ESCALATION_EL2_SERVICE_PRODUCT_EMAIL"),
-		EscalationEL2IdentityServerEmail:              os.Getenv("ESCALATION_EL2_IDENTITY_SERVER_EMAIL"),
-		EscalationEL2DefaultProductEmail:              os.Getenv("ESCALATION_EL2_DEFAULT_PRODUCT_EMAIL"),
-		EscalationEL3CREHeadEmail:                     os.Getenv("ESCALATION_EL3_CRE_HEAD_EMAIL"),
-		EscalationEL4CCOEmail:                         os.Getenv("ESCALATION_EL4_CCO_EMAIL"),
-		EscalationEL4CROEmail:                         os.Getenv("ESCALATION_EL4_CRO_EMAIL"),
-		EscalationEL5CEOEmail:                         os.Getenv("ESCALATION_EL5_CEO_EMAIL"),
+		EscalationEL1AmericasTLGroupID:                os.Getenv("ESCALATION_EL1_AMERICAS_TL_GROUP_ID"),
+		EscalationEL2AmericasTUGroupID:                os.Getenv("ESCALATION_EL2_AMERICAS_TU_GROUP_ID"),
+		EscalationEL2ServiceProductGroupID:            os.Getenv("ESCALATION_EL2_SERVICE_PRODUCT_GROUP_ID"),
+		EscalationEL2IdentityServerGroupID:            os.Getenv("ESCALATION_EL2_IDENTITY_SERVER_GROUP_ID"),
+		EscalationEL2DefaultProductGroupID:            os.Getenv("ESCALATION_EL2_DEFAULT_PRODUCT_GROUP_ID"),
+		EscalationEL3CREHeadGroupID:                   os.Getenv("ESCALATION_EL3_CRE_HEAD_GROUP_ID"),
+		EscalationEL4CCOGroupID:                       os.Getenv("ESCALATION_EL4_CCO_GROUP_ID"),
+		EscalationEL4CROGroupID:                       os.Getenv("ESCALATION_EL4_CRO_GROUP_ID"),
+		EscalationEL5CEOGroupID:                       os.Getenv("ESCALATION_EL5_CEO_GROUP_ID"),
 	}
 	cfg.AuthInternalClientIDs = ParseInternalClientIDs(cfg.AuthInternalClientIDsRaw)
 	return cfg
@@ -580,8 +587,33 @@ func (c *Config) Validate() error {
 	if salesEntitySet && !c.SalesEntityConfigured() {
 		return fmt.Errorf("SALES_ENTITY_BASE_URL, SALES_ENTITY_TOKEN_URL, SALES_ENTITY_CLIENT_ID, and SALES_ENTITY_CLIENT_SECRET must be set together or not at all")
 	}
+	// Each Escalation*GroupID is optional (unset = no recipients from that
+	// slot, see the field's own doc comment) but, if SET, must be a
+	// well-formed "group".id -- otherwise a typo'd env var would silently
+	// resolve to zero recipients at request time instead of failing loudly
+	// at startup where it's actually actionable.
+	escalationGroupIDs := map[string]string{
+		"ESCALATION_EL1_AMERICAS_TL_GROUP_ID":     c.EscalationEL1AmericasTLGroupID,
+		"ESCALATION_EL2_AMERICAS_TU_GROUP_ID":     c.EscalationEL2AmericasTUGroupID,
+		"ESCALATION_EL2_SERVICE_PRODUCT_GROUP_ID": c.EscalationEL2ServiceProductGroupID,
+		"ESCALATION_EL2_IDENTITY_SERVER_GROUP_ID": c.EscalationEL2IdentityServerGroupID,
+		"ESCALATION_EL2_DEFAULT_PRODUCT_GROUP_ID": c.EscalationEL2DefaultProductGroupID,
+		"ESCALATION_EL3_CRE_HEAD_GROUP_ID":        c.EscalationEL3CREHeadGroupID,
+		"ESCALATION_EL4_CCO_GROUP_ID":             c.EscalationEL4CCOGroupID,
+		"ESCALATION_EL4_CRO_GROUP_ID":             c.EscalationEL4CROGroupID,
+		"ESCALATION_EL5_CEO_GROUP_ID":             c.EscalationEL5CEOGroupID,
+	}
+	for envVar, value := range escalationGroupIDs {
+		if value != "" && !uuidRE.MatchString(value) {
+			return fmt.Errorf("%s %q is not a valid UUID", envVar, value)
+		}
+	}
 	return nil
 }
+
+// uuidRE matches a well-formed UUID (any version/variant), the same shape
+// internal/service's own uuidRE validates request-body ids against.
+var uuidRE = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // HasPortalMembershipWrites reports whether the portal-driven membership
 // write endpoints may be registered: the flag is on, the data source is

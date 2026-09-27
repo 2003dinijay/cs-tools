@@ -27,42 +27,22 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
-// fakeEscalationUserRepo resolves a fixed set of emails to users, returning
-// NotFoundError for anything else -- exactly GetUserByEmail's own contract
-// (user_repo.go), just without a real database. Every other UserRepository
-// method panics if called: resolveEscalationRecipients only ever calls
-// GetUserByEmail.
-type fakeEscalationUserRepo struct {
-	byEmail map[string]domain.User
+// fakeGroupMemberResolver seeds a fixed set of "group" -> team_member rows in
+// memory, exactly matching groupMemberResolver's contract (empty/unknown
+// group id -> empty slice, not an error) without a real team_member table.
+type fakeGroupMemberResolver struct {
+	membersByGroup map[string][]string
 }
 
-func (f *fakeEscalationUserRepo) GetUserByEmail(_ context.Context, email string) (domain.User, error) {
-	if u, ok := f.byEmail[email]; ok {
-		return u, nil
-	}
-	return domain.User{}, &apierror.NotFoundError{Msg: "no user found with email: " + email}
+func (f *fakeGroupMemberResolver) GroupMemberUserIDs(_ context.Context, groupID string) ([]string, error) {
+	// A group id with no seeded team_member rows (unknown group, or a real
+	// group with zero members) resolves to nil, not an error -- the map's
+	// own zero value already gives this for free, mirroring
+	// dbGroupMemberResolver's real "zero rows back, no error" behavior.
+	return f.membersByGroup[groupID], nil
 }
 
-func (f *fakeEscalationUserRepo) SearchUsers(context.Context, domain.SearchUsersRequest) ([]domain.User, int, error) {
-	panic("not used by resolveEscalationRecipients")
-}
-func (f *fakeEscalationUserRepo) GetUserRoles(context.Context, string) ([]string, error) {
-	panic("not used by resolveEscalationRecipients")
-}
-func (f *fakeEscalationUserRepo) GetUserDetail(context.Context, string) (domain.UserDetail, error) {
-	panic("not used by resolveEscalationRecipients")
-}
-func (f *fakeEscalationUserRepo) GetUserProjectAccess(context.Context, string) ([]domain.UserContactAccess, error) {
-	panic("not used by resolveEscalationRecipients")
-}
-func (f *fakeEscalationUserRepo) GetUserGroups(context.Context, string) ([]domain.UserGroupRef, error) {
-	panic("not used by resolveEscalationRecipients")
-}
-func (f *fakeEscalationUserRepo) CreateUser(context.Context, domain.CreateUserRequest, string) (domain.User, error) {
-	panic("not used by resolveEscalationRecipients")
-}
-
-var _ UserRepository = (*fakeEscalationUserRepo)(nil)
+var _ groupMemberResolver = (*fakeGroupMemberResolver)(nil)
 
 // --- nextEscalationLevel: level-transition math ---
 
@@ -139,17 +119,20 @@ func sortedIDs(ids []string) []string {
 
 func TestResolveEscalationRecipients_CumulativeAcrossLevels(t *testing.T) {
 	ctx := context.Background()
-	fake := &fakeEscalationUserRepo{byEmail: map[string]domain.User{
-		"tl@example.com":  {ID: "user-el1-tl"},
-		"tu@example.com":  {ID: "user-el2-tu"},
-		"cre@example.com": {ID: "user-el3-cre"},
+	// Seeded "group" + team_member fixture: three groups, each with real
+	// (possibly multiple) members -- resolveEscalationRecipients must widen
+	// to every member of a configured group, not just one address.
+	groups := &fakeGroupMemberResolver{membersByGroup: map[string][]string{
+		"group-el1-tl":  {"user-el1-tl-a", "user-el1-tl-b"},
+		"group-el2-tu":  {"user-el2-tu"},
+		"group-el3-cre": {"user-el3-cre"},
 	}}
 	notifyCfg := EscalationNotificationConfig{
-		EL1AmericasTLEmails: []string{"tl@example.com"},
-		EL2AmericasTUEmails: []string{"tu@example.com"},
-		EL3CREHeadEmail:     "cre@example.com",
+		EL1AmericasTLGroupID: "group-el1-tl",
+		EL2AmericasTUGroupID: "group-el2-tu",
+		EL3CREHeadGroupID:    "group-el3-cre",
 	}
-	r := &escalationRepo{userRepo: fake, notifyCfg: notifyCfg}
+	r := &escalationRepo{groups: groups, notifyCfg: notifyCfg}
 
 	cc := escalationCaseContext{
 		technicalOwnerID: strPtr("user-tech-owner"),
@@ -157,12 +140,13 @@ func TestResolveEscalationRecipients_CumulativeAcrossLevels(t *testing.T) {
 		creTeamManagerID: strPtr("user-cre-manager"),
 	}
 
-	// Level 1: only the EL1 sources.
+	// Level 1: only the EL1 sources, but the whole group membership (both
+	// group-el1-tl members), not just one of them.
 	got1, err := r.resolveEscalationRecipients(ctx, 1, cc)
 	if err != nil {
 		t.Fatalf("level 1: unexpected error: %v", err)
 	}
-	want1 := []string{"user-el1-tl", "user-tech-owner", "user-cre-manager"}
+	want1 := []string{"user-el1-tl-a", "user-el1-tl-b", "user-tech-owner", "user-cre-manager"}
 	if !reflect.DeepEqual(sortedIDs(got1), sortedIDs(want1)) {
 		t.Errorf("level 1: got %v, want %v", sortedIDs(got1), sortedIDs(want1))
 	}
@@ -175,7 +159,7 @@ func TestResolveEscalationRecipients_CumulativeAcrossLevels(t *testing.T) {
 		t.Fatalf("level 3: unexpected error: %v", err)
 	}
 	want3 := []string{
-		"user-el1-tl", "user-tech-owner", "user-cre-manager", // EL1
+		"user-el1-tl-a", "user-el1-tl-b", "user-tech-owner", "user-cre-manager", // EL1
 		"user-el2-tu",              // EL2 (no product configured, so no product-routed recipient)
 		"user-el3-cre", "user-csm", // EL3
 	}
@@ -186,17 +170,17 @@ func TestResolveEscalationRecipients_CumulativeAcrossLevels(t *testing.T) {
 
 func TestResolveEscalationRecipients_ProductRouting(t *testing.T) {
 	ctx := context.Background()
-	fake := &fakeEscalationUserRepo{byEmail: map[string]domain.User{
-		"service@example.com": {ID: "user-service"},
-		"iam@example.com":     {ID: "user-iam"},
-		"default@example.com": {ID: "user-default"},
+	groups := &fakeGroupMemberResolver{membersByGroup: map[string][]string{
+		"group-service": {"user-service"},
+		"group-iam":     {"user-iam"},
+		"group-default": {"user-default"},
 	}}
 	notifyCfg := EscalationNotificationConfig{
-		EL2ServiceProductEmail: "service@example.com",
-		EL2IdentityServerEmail: "iam@example.com",
-		EL2DefaultProductEmail: "default@example.com",
+		EL2ServiceProductGroupID: "group-service",
+		EL2IdentityServerGroupID: "group-iam",
+		EL2DefaultProductGroupID: "group-default",
 	}
-	r := &escalationRepo{userRepo: fake, notifyCfg: notifyCfg}
+	r := &escalationRepo{groups: groups, notifyCfg: notifyCfg}
 
 	cases := []struct {
 		name    string
@@ -209,17 +193,17 @@ func TestResolveEscalationRecipients_ProductRouting(t *testing.T) {
 			wantIDs: nil,
 		},
 		{
-			name:    "category SERVICE routes to the service product email",
+			name:    "category SERVICE routes to the service product group",
 			cc:      escalationCaseContext{productCategory: strPtr("SERVICE")},
 			wantIDs: []string{"user-service"},
 		},
 		{
-			name:    "category SOFTWARE + business_unit IAM routes to the identity server email",
+			name:    "category SOFTWARE + business_unit IAM routes to the identity server group",
 			cc:      escalationCaseContext{productCategory: strPtr("SOFTWARE"), productBusinessUnit: strPtr("IAM")},
 			wantIDs: []string{"user-iam"},
 		},
 		{
-			name:    "category SOFTWARE + a non-IAM business_unit falls to the default product email",
+			name:    "category SOFTWARE + a non-IAM business_unit falls to the default product group",
 			cc:      escalationCaseContext{productCategory: strPtr("SOFTWARE"), productBusinessUnit: strPtr("INTEGRATION_SOFTWARE")},
 			wantIDs: []string{"user-default"},
 		},
@@ -244,10 +228,10 @@ func TestResolveEscalationRecipients_ProductRouting(t *testing.T) {
 
 func TestResolveEscalationRecipients_UnconfiguredEnvVarsDoNotError(t *testing.T) {
 	ctx := context.Background()
-	// Zero-value EscalationNotificationConfig: every fixed-email slot unset.
-	r := &escalationRepo{userRepo: &fakeEscalationUserRepo{byEmail: map[string]domain.User{}}, notifyCfg: EscalationNotificationConfig{}}
+	// Zero-value EscalationNotificationConfig: every group id slot unset.
+	r := &escalationRepo{groups: &fakeGroupMemberResolver{membersByGroup: map[string][]string{}}, notifyCfg: EscalationNotificationConfig{}}
 
-	// Level 5 exercises every tier's fixed-email slot at once.
+	// Level 5 exercises every tier's group id slot at once.
 	got, err := r.resolveEscalationRecipients(ctx, 5, escalationCaseContext{})
 	if err != nil {
 		t.Fatalf("unexpected error with every notifyCfg slot unset: %v", err)
@@ -257,20 +241,22 @@ func TestResolveEscalationRecipients_UnconfiguredEnvVarsDoNotError(t *testing.T)
 	}
 }
 
-func TestResolveEscalationRecipients_UnresolvableFixedEmailIsSkippedNotFatal(t *testing.T) {
+func TestResolveEscalationRecipients_UnknownOrEmptyGroupIsSkippedNotFatal(t *testing.T) {
 	ctx := context.Background()
-	// notifyCfg names an email that has no matching "user" row.
+	// notifyCfg names a group id that has no seeded team_member rows at all
+	// -- a group that doesn't exist, or currently has zero members. Either
+	// way: zero recipients from that slot, not an error.
 	r := &escalationRepo{
-		userRepo:  &fakeEscalationUserRepo{byEmail: map[string]domain.User{}},
-		notifyCfg: EscalationNotificationConfig{EL5CEOEmail: "ceo@example.com"},
+		groups:    &fakeGroupMemberResolver{membersByGroup: map[string][]string{}},
+		notifyCfg: EscalationNotificationConfig{EL5CEOGroupID: "group-ceo-empty"},
 	}
 
 	got, err := r.resolveEscalationRecipients(ctx, 5, escalationCaseContext{})
 	if err != nil {
-		t.Fatalf("an unresolvable fixed email must be skipped, not fatal: %v", err)
+		t.Fatalf("an unknown/empty group must be skipped, not fatal: %v", err)
 	}
 	if len(got) != 0 {
-		t.Errorf("got %v, want no recipients (the one configured email doesn't resolve)", got)
+		t.Errorf("got %v, want no recipients (the one configured group has no members)", got)
 	}
 }
 

@@ -718,17 +718,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// approximates. This supersedes an earlier unconditional
 	// unavailableCaseEscalationService stand-in that predated the schema.
 	escalationNotifyCfg := repository.EscalationNotificationConfig{
-		EL1AmericasTLEmails:    cfg.EscalationEL1AmericasTLEmails,
-		EL2AmericasTUEmails:    cfg.EscalationEL2AmericasTUEmails,
-		EL2ServiceProductEmail: cfg.EscalationEL2ServiceProductEmail,
-		EL2IdentityServerEmail: cfg.EscalationEL2IdentityServerEmail,
-		EL2DefaultProductEmail: cfg.EscalationEL2DefaultProductEmail,
-		EL3CREHeadEmail:        cfg.EscalationEL3CREHeadEmail,
-		EL4CCOEmail:            cfg.EscalationEL4CCOEmail,
-		EL4CROEmail:            cfg.EscalationEL4CROEmail,
-		EL5CEOEmail:            cfg.EscalationEL5CEOEmail,
+		EL1AmericasTLGroupID:     cfg.EscalationEL1AmericasTLGroupID,
+		EL2AmericasTUGroupID:     cfg.EscalationEL2AmericasTUGroupID,
+		EL2ServiceProductGroupID: cfg.EscalationEL2ServiceProductGroupID,
+		EL2IdentityServerGroupID: cfg.EscalationEL2IdentityServerGroupID,
+		EL2DefaultProductGroupID: cfg.EscalationEL2DefaultProductGroupID,
+		EL3CREHeadGroupID:        cfg.EscalationEL3CREHeadGroupID,
+		EL4CCOGroupID:            cfg.EscalationEL4CCOGroupID,
+		EL4CROGroupID:            cfg.EscalationEL4CROGroupID,
+		EL5CEOGroupID:            cfg.EscalationEL5CEOGroupID,
 	}
-	escalationRepo := repository.NewEscalationRepository(db, userRepo, escalationNotifyCfg)
+	escalationRepo := repository.NewEscalationRepository(db, escalationNotifyCfg)
 	var activeEscalationSvc service.EscalationService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeEscalationSvc = service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient)

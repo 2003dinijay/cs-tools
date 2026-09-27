@@ -528,3 +528,32 @@ func TestConfig_Validate_Auth(t *testing.T) {
 		}
 	}
 }
+
+// TestConfig_Validate_EscalationGroupIDsOptional confirms every
+// Escalation*GroupID stays optional -- a completely unset set must still
+// validate, since not every deployment configures every tier on day one.
+func TestConfig_Validate_EscalationGroupIDsOptional(t *testing.T) {
+	c := baseValidConfig()
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error with every Escalation*GroupID unset: %v", err)
+	}
+}
+
+// TestConfig_Validate_EscalationGroupIDsMustBeUUIDsIfSet confirms a SET
+// Escalation*GroupID is checked for being a well-formed UUID -- a typo'd
+// group id would otherwise silently resolve zero recipients at request time
+// instead of failing loudly at startup.
+func TestConfig_Validate_EscalationGroupIDsMustBeUUIDsIfSet(t *testing.T) {
+	validID := "11111111-1111-1111-1111-111111111111"
+	c := baseValidConfig()
+	c.EscalationEL1AmericasTLGroupID = validID
+	if err := c.Validate(); err != nil {
+		t.Fatalf("a well-formed group id must not be rejected: %v", err)
+	}
+
+	c = baseValidConfig()
+	c.EscalationEL5CEOGroupID = "not-a-uuid"
+	if err := c.Validate(); err == nil {
+		t.Fatal("want a startup error for a malformed group id")
+	}
+}
