@@ -28,7 +28,7 @@ function target(over: Partial<CellPickerTarget> = {}): CellPickerTarget {
   return {
     userId: "u1",
     name: "Asela",
-    teamKey: "castor",
+    teamKey: "alpha",
     rotaDate: "2026-09-23", // a Wednesday
     anchor: ANCHOR,
     ...over,

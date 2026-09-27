@@ -25,7 +25,8 @@ import type {
   ScheduleShift,
 } from "../types";
 import { addDays, groupBy, initialsOf, shortDayName, timeOf, toIsoDate , isPeerRotation } from "../utils/rota";
-import { accentOf, teamColour } from "../utils/rotaHues";
+import { accentOf } from "../utils/rotaHues";
+import { useTeamColour } from "../utils/teamColourContext";
 
 interface MyWeekStripProps {
   weekStart: Date;
@@ -239,6 +240,7 @@ function PeekRows({
   rows: ScheduleAssignment[];
   shifts: Map<string, ScheduleShift>;
 }): JSX.Element {
+  const teamColourOf = useTeamColour();
   const byShift = useMemo(() => {
     const groups = [...groupBy(rows, (r) => r.shiftCode).entries()];
     return groups.sort(
@@ -264,7 +266,7 @@ function PeekRows({
             </h5>
             {list.map((a) => (
               <div className="nm" key={a.id}>
-                <span className="av" style={{ background: teamColour(a.teamKey) }}>{initialsOf(a.engineer.name)}</span>
+                <span className="av" style={{ background: teamColourOf(a.teamKey) }}>{initialsOf(a.engineer.name)}</span>
                 <span className="who">{a.engineer.name}</span>
                 {a.engineer.isLead ? <span className="tag lead-t">Lead</span> : null}
                 <span className="team">{a.teamKey}</span>

@@ -155,6 +155,33 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 		Zones:        []domain.ScheduleZone{},
 		Shifts:       []domain.ScheduleShift{},
 		AbsenceKinds: []domain.ScheduleAbsenceKind{},
+		Teams:        []domain.ScheduleTeam{},
+	}
+
+	// The teams the rota is run for. type carries the family the registry
+	// spells CRE-ABT / SRE-ABT / CRE, so the leading word is the group and an
+	// ABT is a team within it. Ordered by name, which is what makes the
+	// position stable enough for a client to colour by.
+	teamRows, err := r.db.Query(ctx, `
+		SELECT t.key, t.name,
+		       CASE WHEN lower(t.type) LIKE 'sre%' THEN 'SRE' ELSE 'CRE' END,
+		       (row_number() OVER (ORDER BY t.name))::int
+		  FROM team t
+		 WHERE t.type IS NOT NULL AND lower(t.type) LIKE ANY (ARRAY['cre%', 'sre%'])
+		 ORDER BY t.name`)
+	if err != nil {
+		return cat, fmt.Errorf("query schedule teams: %w", err)
+	}
+	defer teamRows.Close()
+	for teamRows.Next() {
+		var t domain.ScheduleTeam
+		if err := teamRows.Scan(&t.Key, &t.Name, &t.Family, &t.SortOrder); err != nil {
+			return cat, fmt.Errorf("scan schedule team: %w", err)
+		}
+		cat.Teams = append(cat.Teams, t)
+	}
+	if err := teamRows.Err(); err != nil {
+		return cat, fmt.Errorf("query schedule teams: %w", err)
 	}
 
 	zoneRows, err := r.db.Query(ctx, `
@@ -776,8 +803,14 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 
 		// Record what is being displaced before it goes, so the history is not
 		// a row appearing from nowhere.
+		// Scoped to the team the caller leads, not just to the person. The
+		// service has already checked the engineer is on that team, but an
+		// engineer can be on two: without this, a lead of one could clear
+		// the row the other team put them on that day, which is not theirs
+		// to touch.
 		rows, err := tx.Query(ctx, `SELECT `+assignmentColumns+assignmentFrom+`
-			WHERE a.user_id = $1::uuid AND a.rota_date = $2::date`, req.UserID, iso)
+			WHERE a.user_id = $1::uuid AND a.rota_date = $2::date AND a.team_key = $3`,
+			req.UserID, iso, req.TeamKey)
 		if err != nil {
 			return out, fmt.Errorf("read displaced assignments: %w", err)
 		}
@@ -792,8 +825,9 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 			}
 		}
 		if _, err := tx.Exec(ctx,
-			`DELETE FROM team_schedule_assignment WHERE user_id = $1::uuid AND rota_date = $2::date`,
-			req.UserID, iso); err != nil {
+			`DELETE FROM team_schedule_assignment
+			  WHERE user_id = $1::uuid AND rota_date = $2::date AND team_key = $3`,
+			req.UserID, iso, req.TeamKey); err != nil {
 			return out, fmt.Errorf("clear the day: %w", err)
 		}
 

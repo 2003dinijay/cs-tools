@@ -157,7 +157,7 @@ export function assignment(over: {
       email: `${over.name.toLowerCase()}@example.test`,
       isLead: false,
     },
-    teamKey: over.teamKey ?? "castor",
+    teamKey: over.teamKey ?? "alpha",
     shiftCode: over.shiftCode,
     zoneCode: over.zoneCode,
     rotaDate: over.rotaDate,
@@ -213,7 +213,7 @@ export function absence(over: {
       email: `${over.name.toLowerCase()}@example.test`,
       isLead: false,
     },
-    teamKey: over.teamKey ?? "castor",
+    teamKey: over.teamKey ?? "alpha",
     kindCode: over.kindCode ?? "ANNUAL_LEAVE",
     startsOn: over.startsOn,
     endsOn: over.endsOn,
@@ -232,7 +232,7 @@ export function scopeControls() {
     onFamilyChange: () => {},
     teamKey: "",
     onTeamKeyChange: () => {},
-    teams: ["castor", "phoenix"],
+    teams: ["alpha", "bravo"],
     families: ["CRE", "SRE"] as const,
   };
 }

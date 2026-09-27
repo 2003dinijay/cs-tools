@@ -84,6 +84,22 @@ type ScheduleCatalogue struct {
 	Zones        []ScheduleZone        `json:"zones"`
 	Shifts       []ScheduleShift       `json:"shifts"`
 	AbsenceKinds []ScheduleAbsenceKind `json:"absenceKinds"`
+	Teams        []ScheduleTeam        `json:"teams"`
+}
+
+// ScheduleTeam is one team the rota is run for.
+//
+// Served so no client has to hold the list. Team names are organisation
+// vocabulary, and a frontend that hardcodes them is coupled to a deploy it
+// cannot see -- which is what CSM_TEAM_REGISTRY was built to avoid, and what
+// the page and its colour table were doing anyway. SortOrder is the order to
+// show them in, and is also what gives each team a stable colour without
+// naming any of them in committed source.
+type ScheduleTeam struct {
+	Key       string `json:"key"`
+	Name      string `json:"name"`
+	Family    string `json:"family"`
+	SortOrder int    `json:"sortOrder"`
 }
 
 // ScheduleEngineer is who is working, flattened onto the assignment so a day

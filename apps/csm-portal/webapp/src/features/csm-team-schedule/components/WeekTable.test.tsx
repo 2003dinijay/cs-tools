@@ -52,11 +52,11 @@ describe("WeekTable", () => {
   it("holds regular hours and the India region shift in one row", () => {
     // Both are 09:00-18:00 in the same zone on the same days: the code says
     // which team works it, not a different working day. The row lists teams,
-    // so the second row said nothing this one's phoenix entry does not.
+    // so the second row said nothing this one's second-team entry does not.
     renderWeek({
       assignments: [
-        assignment({ name: "Asela", rotaDate: "2026-09-21", shiftCode: REGULAR.code, teamKey: "castor" }),
-        assignment({ name: "Akhil", rotaDate: "2026-09-21", shiftCode: REGULAR_IND.code, teamKey: "phoenix" }),
+        assignment({ name: "Asela", rotaDate: "2026-09-21", shiftCode: REGULAR.code, teamKey: "alpha" }),
+        assignment({ name: "Akhil", rotaDate: "2026-09-21", shiftCode: REGULAR_IND.code, teamKey: "bravo" }),
       ],
     });
     expect(screen.getByText("Regular hours")).toBeInTheDocument();

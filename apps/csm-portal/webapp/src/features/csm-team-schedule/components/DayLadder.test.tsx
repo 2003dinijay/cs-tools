@@ -96,7 +96,7 @@ function renderLadder(assignments: LadderLane["assignments"], absences = [] as R
 }
 
 /** Nine to five on the day under test, in the fixture clock. */
-function nineToFive(name: string, shiftCode: string, teamKey = "castor") {
+function nineToFive(name: string, shiftCode: string, teamKey = "alpha") {
   return assignment({
     name,
     teamKey,
@@ -129,13 +129,13 @@ describe("DayLadder: cards that share their hours", () => {
   it("folds a window that differs only by team into the crowded card", () => {
     // Regular hours and the India region shift are the same nine-to-five. A
     // card this size lists teams, which is the whole distinction, so a second
-    // card said nothing the first one's phoenix row would not.
+    // card said nothing the first one's second-team row would not.
     const people = Array.from({ length: 14 }, (_, i) => nineToFive(`Reg${i}`, REGULAR.code));
-    renderLadder([...people, nineToFive("Akhil", REGULAR_IND.code, "phoenix")]);
+    renderLadder([...people, nineToFive("Akhil", REGULAR_IND.code, "bravo")]);
 
     expect(screen.getByText("Regular hours")).toBeInTheDocument();
     expect(screen.queryByText("India region shift")).not.toBeInTheDocument();
-    expect(screen.getByText(/phoenix/)).toBeInTheDocument();
+    expect(screen.getByText(/bravo/)).toBeInTheDocument();
   });
 
   it("never folds an on-call window into a crowded card", () => {

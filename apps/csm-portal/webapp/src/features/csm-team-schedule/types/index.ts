@@ -66,10 +66,20 @@ export interface ScheduleAbsenceKind {
   sortOrder: number;
 }
 
+/** One team the rota is run for, served so no client holds the list. */
+export interface ScheduleTeam {
+  key: string;
+  name: string;
+  family: "CRE" | "SRE";
+  /** Display order, and what gives a team a stable colour. */
+  sortOrder: number;
+}
+
 export interface ScheduleCatalogue {
   zones: ScheduleZone[];
   shifts: ScheduleShift[];
   absenceKinds: ScheduleAbsenceKind[];
+  teams: ScheduleTeam[];
 }
 
 export interface ScheduleEngineer {

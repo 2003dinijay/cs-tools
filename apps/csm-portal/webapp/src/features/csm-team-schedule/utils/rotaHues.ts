@@ -17,35 +17,34 @@
  */
 
 /**
- * Team colours.
+ * The palette teams are coloured from.
  *
- * These team keys are organisation vocabulary, and committing them here is the
- * coupling CSM_TEAM_REGISTRY exists to avoid -- raised in review and correct.
- * They are kept for now regardless, deliberately: `CsmTeamSchedulePage.tsx`
- * holds the same eleven keys to drive the team picker and the absence filter,
- * so removing them from this file alone does not fix the violation, it just
- * spreads it. It also costs real colour fidelity -- deriving a hue from the key
- * collapsed eleven teams onto eight colours, because no hash can guarantee
- * separation for a key set it has never seen.
+ * A list of colours, not a list of teams. The previous version mapped eleven
+ * organisation team keys to hexes in committed source, which is the coupling
+ * CSM_TEAM_REGISTRY exists to avoid -- raised in review, and correct.
  *
- * The fix worth making is to serve the team list from the API, which the
- * registry already knows, and colour by a team's position in it: no names
- * committed anywhere, and every team keeps a distinct colour. That is its own
- * change, not a side effect of this one.
+ * A team's colour is now its position in the list the catalogue serves, so
+ * every team keeps a distinct colour and no team is named here. Deriving a
+ * hue from the key instead was tried and rejected: it collapsed eleven teams
+ * onto eight colours, because no hash can promise separation for a key set it
+ * has never seen.
+ *
+ * Ordered so that neighbours in the list are far apart in hue, since teams
+ * next to each other in the roster are the ones most often compared.
  */
-export const TEAM_COLOURS: Record<string, string> = {
-  americas: "#3aa889",
-  castor: "#4a7fe0",
-  draco: "#e8962a",
-  vega: "#d95c5c",
-  sirius: "#2f9e8f",
-  atlas: "#8a63d2",
-  phoenix: "#c9a227",
-  rigel: "#c0559b",
-  migration: "#6b7280",
-  apollo: "#2f9e8f",
-  artemis: "#8a63d2",
-};
+export const TEAM_PALETTE: readonly string[] = [
+  "#4a7fe0",
+  "#e8962a",
+  "#2f9e8f",
+  "#c0559b",
+  "#8a63d2",
+  "#d95c5c",
+  "#3aa889",
+  "#c9a227",
+  "#5b8ff9",
+  "#a0562a",
+  "#6b7280",
+];
 
 /**
  * The SRE time zones, in the prototype's own hues.
@@ -67,9 +66,16 @@ export function zoneColour(code: string): string {
   return ZONE_COLOURS[code.toUpperCase()] ?? "#6b7280";
 }
 
-/** The colour for a team, falling back to a neutral for one not listed. */
-export function teamColour(teamKey: string): string {
-  return TEAM_COLOURS[teamKey.toLowerCase()] ?? "#6b7280";
+/**
+ * The colour for a team, by its position in the catalogue.
+ *
+ * `order` comes from the served team list. A team the caller has no position
+ * for -- one that has left the registry but still has rota history -- falls
+ * back to a neutral rather than borrowing somebody else's colour.
+ */
+export function teamColour(order: number | undefined): string {
+  if (order === undefined || order < 0) return "#6b7280";
+  return TEAM_PALETTE[order % TEAM_PALETTE.length];
 }
 
 /**

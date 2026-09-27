@@ -776,3 +776,59 @@ func TestScheduleIntegration_CreateUpdateDeleteLeaveATrail(t *testing.T) {
 		}
 	}
 }
+
+// An engineer can be on two teams. A lead of one may clear their day on that
+// team; the row the other team put them on is not theirs to touch.
+func TestScheduleIntegration_ApplyRangeOnlyClearsTheCallersOwnTeam(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	// Two windows that do not overlap: one person cannot hold the same shift
+	// twice on a day, nor two windows sharing hours, so the two teams have to
+	// have put them on genuinely different parts of the day.
+	morning, evening := "CRE_MORNING", "CRE_EVENING"
+
+	// A second team, and the same engineer rostered on it the same day.
+	otherTeamID := "5c8e0000-0000-4000-8000-000000000005"
+	mustExec(t, pool, `
+		INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, key, type)
+		VALUES ($1, NOW(), NOW(), 'fixture', 'fixture', $2, $2, 'cre-abt')
+		ON CONFLICT (id) DO NOTHING`, otherTeamID, schedOtherTeam)
+	t.Cleanup(func() {
+		mustExec(t, pool, `DELETE FROM team_schedule_assignment WHERE team_key = $1`, schedOtherTeam)
+	})
+
+	for _, seed := range []struct{ team, code string }{
+		{schedTeamKey, morning},
+		{schedOtherTeam, evening},
+	} {
+		if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+			UserID: schedMemberID, TeamKey: seed.team, ShiftCode: seed.code,
+			From: schedMonday, To: schedMonday,
+		}, schedLeadEmail); err != nil {
+			t.Fatalf("seed %s: %v", seed.team, err)
+		}
+	}
+	if n := countRows(t, pool,
+		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND rota_date = $2::date`,
+		schedMemberID, schedMonday); n != 2 {
+		t.Fatalf("%d rows on the day, want one per team", n)
+	}
+
+	// Clearing on one team leaves the other standing.
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: "",
+		From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if n := countRows(t, pool,
+		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND team_key = $2`,
+		schedMemberID, schedTeamKey); n != 0 {
+		t.Fatalf("%d rows left on the caller's own team, want 0", n)
+	}
+	if n := countRows(t, pool,
+		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND team_key = $2`,
+		schedMemberID, schedOtherTeam); n != 1 {
+		t.Fatalf("%d rows left on the other team, want the 1 it put there", n)
+	}
+}

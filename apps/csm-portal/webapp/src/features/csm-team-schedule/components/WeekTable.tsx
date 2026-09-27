@@ -26,7 +26,8 @@ import {
   standingWindowKey,
   toIsoDate,
 } from "../utils/rota";
-import { accentOf, teamColour } from "../utils/rotaHues";
+import { accentOf } from "../utils/rotaHues";
+import { useTeamColour } from "../utils/teamColourContext";
 
 interface WeekTableProps {
   weekStart: Date;
@@ -61,6 +62,7 @@ interface WeekTableProps {
  * cell, which is why `.tw td` is positioned.
  */
 function TeamCell({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
+  const teamColourOf = useTeamColour();
   const byTeam = useMemo(
     () => [...groupBy(rows, (r) => r.teamKey).entries()].sort((a, b) => a[0].localeCompare(b[0])),
     [rows],
@@ -83,7 +85,7 @@ function TeamCell({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
             onBlur={() => setOpen(null)}
             onClick={() => setOpen((t) => (t === team ? null : team))}
           >
-            <i style={{ background: teamColour(team) }} />
+            <i style={{ background: teamColourOf(team) }} />
             <span className="tn">{team}</span>
             <b>{teamRows.length}</b>
           </span>
@@ -93,13 +95,13 @@ function TeamCell({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
       {shown ? (
         <div className="tlpop" role="group" aria-label={`${shown[0]} engineers`}>
           <div className="tlph">
-            <i style={{ background: teamColour(shown[0]) }} />
+            <i style={{ background: teamColourOf(shown[0]) }} />
             {shown[0]}
             <b>{shown[1].length}</b>
           </div>
           {shown[1].map((a) => (
             <span className="nm" key={a.id}>
-              <span className="av" style={{ background: teamColour(a.teamKey) }}>
+              <span className="av" style={{ background: teamColourOf(a.teamKey) }}>
                 {initialsOf(a.engineer.name)}
               </span>
               <span className="who">{a.engineer.name}</span>
@@ -167,6 +169,7 @@ export default function WeekTable({
   absences = [],
   absenceKinds = [],
 }: WeekTableProps): JSX.Element {
+  const teamColourOf = useTeamColour();
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
 
   const rows = useMemo(() => {
@@ -350,7 +353,7 @@ export default function WeekTable({
                              The tier stays: L1/L2/L3 is the one thing here
                              that nothing else says. */
                           <div className="nm" key={a.id} title={`${a.engineer.name} · ${a.teamKey}`}>
-                            <span className="av" style={{ background: teamColour(a.teamKey) }}>
+                            <span className="av" style={{ background: teamColourOf(a.teamKey) }}>
                               {initialsOf(a.engineer.name)}
                             </span>
                             <span className="who">{a.engineer.name}</span>

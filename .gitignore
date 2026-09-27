@@ -58,3 +58,12 @@ docs/*
 *abt-roster*.csv
 *abt-roster*.sql
 *abt-roster*.xlsx
+# The importer's own output, whose documented name says nothing about the
+# roster -- `import-abt-roster.py <sheet.xlsx> <tab> out.sql` -- so the
+# patterns above miss it. It is full of real names and leave.
+out.sql
+scripts/csm-compose/out.sql
+# The SRE team's rotation workbook, and SQL generated from it.
+*ABT-Rotation*
+*sre-rotation*.sql
+*sre-rotation*.csv

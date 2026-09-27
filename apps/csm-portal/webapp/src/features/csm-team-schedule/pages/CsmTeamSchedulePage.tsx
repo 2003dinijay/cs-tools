@@ -47,6 +47,7 @@ import type {
   ScheduleAssignmentsResponse,
 } from "../types";
 import { resolveDisplayTimeZone } from "@utils/dateTime";
+import { TeamColourProvider } from "../utils/teamColour";
 import {
   addDays,
   isRotationShift,
@@ -62,11 +63,10 @@ import "../teamSchedule.css";
 type ViewTab = "mine" | "today" | "week" | "roster";
 type Family = "CRE" | "SRE";
 
-/** Teams per family, in rota order. Mirrors CSM_TEAM_REGISTRY. */
-const TEAMS: Record<Family, string[]> = {
-  CRE: ["castor", "draco", "vega", "sirius", "atlas", "phoenix", "rigel", "americas", "migration"],
-  SRE: ["apollo", "artemis"],
-};
+// The team list used to live here, mirroring CSM_TEAM_REGISTRY. Team names
+// are organisation vocabulary and committing them coupled this page to a
+// deploy it cannot see, which is the coupling that registry exists to avoid.
+// The catalogue serves them now.
 
 /** How far ahead to look for the reader's next rotation. Eight weeks covers
  *  every rotation in the cycle without asking the API for a year of rows. */
@@ -155,6 +155,15 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // over a call have no way of knowing whose clock they are each reading.
   const tz = resolveDisplayTimeZone(user?.timeZone);
   const catalogue = useScheduleCatalogue();
+
+  /** The teams of the group on screen, in the order the catalogue gives them.
+   *  Empty until it loads, which reads as "no teams yet" rather than as a
+   *  wrong list. */
+  const teamsOf = useMemo(() => {
+    const all = catalogue.data?.teams ?? [];
+    return (f: Family): string[] =>
+      all.filter((t) => t.family === f).map((t) => t.key);
+  }, [catalogue.data?.teams]);
 
   // Which teams this reader may edit. Asked once: it changes when somebody is
   // made a lead, not while they are looking at a rota.
@@ -280,7 +289,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     },
     teamKey,
     onTeamKeyChange: setTeamKey,
-    teams: TEAMS[family],
+    teams: teamsOf(family),
     families,
   };
 
@@ -356,7 +365,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // carried CRE's migration allocations -- people SRE has no relationship to.
   // The search filters by team, so an unfiltered view passes the family's own
   // teams rather than nothing.
-  const absenceTeamKeys = teamKeys ?? TEAMS[family];
+  const absenceTeamKeys = teamKeys ?? teamsOf(family);
   // The week view reads leave too, for its leave row; `from`/`to` are already
   // the week there.
   const dayAbsences = useScheduleAbsences({ from, to, teamKeys: absenceTeamKeys }, dayView || view === "week");
@@ -595,6 +604,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const busy = catalogue.isLoading || (view === "mine" ? mine.isLoading : assignments.isLoading);
 
   return (
+    <TeamColourProvider teams={catalogue.data?.teams ?? []}>
     <div className="csm-ts" style={SCHEDULE_THEME_VARS}>
       <div className="wrap">
         <h1>Team Schedule</h1>
@@ -914,6 +924,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         />
       ) : null}
     </div>
+    </TeamColourProvider>
   );
 }
 

@@ -24,7 +24,7 @@ import type {
   ScheduleShift,
 } from "../types";
 import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate } from "../utils/rota";
-import { teamColour } from "../utils/rotaHues";
+import { useTeamColour } from "../utils/teamColourContext";
 
 interface MonthRosterProps {
   /** The first month on the grid. */
@@ -144,6 +144,7 @@ export default function MonthRoster({
   changedCells,
   onEditCell,
 }: MonthRosterProps): JSX.Element {
+  const teamColourOf = useTeamColour();
   const [query, setQuery] = useState("");
   /** Fade everything that is not a turn on the rota.
    *
@@ -590,7 +591,7 @@ export default function MonthRoster({
               >
                 <th className="lab">
                   <span className="nm">
-                    <span className="av" style={{ background: teamColour(row.teamKey) }}>
+                    <span className="av" style={{ background: teamColourOf(row.teamKey) }}>
                       {initialsOf(row.name)}
                     </span>
                     <span className="who">{row.name}</span>

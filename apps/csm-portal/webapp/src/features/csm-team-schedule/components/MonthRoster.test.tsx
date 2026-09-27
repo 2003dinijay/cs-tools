@@ -62,7 +62,7 @@ describe("MonthRoster: who may edit", () => {
     // A lead reads this grid far more often than they change it, so a cell
     // that writes on one stray click is the thing being guarded against.
     const { container } = renderRoster({
-      leadTeams: ["castor"],
+      leadTeams: ["alpha"],
       editing: false,
       onEditCell: vi.fn(),
     });
@@ -72,29 +72,29 @@ describe("MonthRoster: who may edit", () => {
   it("makes only the reader's own team editable", () => {
     const { container } = renderRoster({
       assignments: [
-        assignment({ name: "Asela", rotaDate: "2026-09-21", shiftCode: EVENING.code, teamKey: "castor" }),
-        assignment({ name: "Nuwan", rotaDate: "2026-09-21", shiftCode: EVENING.code, teamKey: "draco" }),
+        assignment({ name: "Asela", rotaDate: "2026-09-21", shiftCode: EVENING.code, teamKey: "alpha" }),
+        assignment({ name: "Nuwan", rotaDate: "2026-09-21", shiftCode: EVENING.code, teamKey: "charlie" }),
       ],
-      leadTeams: ["castor"],
+      leadTeams: ["alpha"],
       editing: true,
       onEditCell: vi.fn(),
     });
     const rows = [...container.querySelectorAll("tbody tr")];
-    const castor = rows.find((r) => r.textContent?.includes("Asela"));
-    const draco = rows.find((r) => r.textContent?.includes("Nuwan"));
-    expect(castor?.querySelectorAll("td.editable").length).toBeGreaterThan(0);
-    expect(draco?.querySelectorAll("td.editable")).toHaveLength(0);
+    const own = rows.find((r) => r.textContent?.includes("Asela"));
+    const other = rows.find((r) => r.textContent?.includes("Nuwan"));
+    expect(own?.querySelectorAll("td.editable").length).toBeGreaterThan(0);
+    expect(other?.querySelectorAll("td.editable")).toHaveLength(0);
   });
 
   it("reports the slot, what is on it, and where it is", () => {
     const onEditCell = vi.fn();
-    const { container } = renderRoster({ leadTeams: ["castor"], editing: true, onEditCell });
+    const { container } = renderRoster({ leadTeams: ["alpha"], editing: true, onEditCell });
     const cell = container.querySelector("td.editable");
     fireEvent.click(cell!);
 
     expect(onEditCell).toHaveBeenCalledTimes(1);
     const edit = onEditCell.mock.calls[0][0];
-    expect(edit).toMatchObject({ name: "Asela", teamKey: "castor" });
+    expect(edit).toMatchObject({ name: "Asela", teamKey: "alpha" });
     // The picker opens against the cell, so it needs to know where that is.
     expect(edit.anchor).toEqual(
       expect.objectContaining({
@@ -110,7 +110,7 @@ describe("MonthRoster: who may edit", () => {
     const onEditCell = vi.fn();
     const { container } = renderRoster({
       absences: [absence({ name: "Asela", startsOn: "2026-09-21", endsOn: "2026-09-21" })],
-      leadTeams: ["castor"],
+      leadTeams: ["alpha"],
       editing: true,
       onEditCell,
     });
@@ -165,8 +165,8 @@ describe("MonthRoster: what the grid says", () => {
 describe("MonthRoster: the zone-split grid", () => {
   const sreProps = {
     assignments: [
-      assignment({ name: "Apollo01", rotaDate: "2026-09-21", shiftCode: TZ1.code, zoneCode: "TZ1", teamKey: "apollo" }),
-      assignment({ name: "Apollo01", rotaDate: "2026-09-21", shiftCode: TZ2.code, zoneCode: "TZ2", teamKey: "apollo" }),
+      assignment({ name: "Apollo01", rotaDate: "2026-09-21", shiftCode: TZ1.code, zoneCode: "TZ1", teamKey: "delta" }),
+      assignment({ name: "Apollo01", rotaDate: "2026-09-21", shiftCode: TZ2.code, zoneCode: "TZ2", teamKey: "delta" }),
     ],
     family: "SRE" as const,
   };
@@ -174,7 +174,7 @@ describe("MonthRoster: the zone-split grid", () => {
   it("gives a lead a cell per zone, not one for the day", () => {
     const { container } = renderRoster({
       ...sreProps,
-      leadTeams: ["apollo"],
+      leadTeams: ["delta"],
       editing: true,
       onEditCell: vi.fn(),
     });
@@ -185,7 +185,7 @@ describe("MonthRoster: the zone-split grid", () => {
     const onEditCell = vi.fn();
     const { container } = renderRoster({
       ...sreProps,
-      leadTeams: ["apollo"],
+      leadTeams: ["delta"],
       editing: true,
       onEditCell,
     });

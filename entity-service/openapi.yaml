@@ -16135,6 +16135,22 @@ components:
         crossesMidnight: { type: boolean }
         colourToken: { type: string }
         sortOrder: { type: integer }
+    ScheduleTeam:
+      type: object
+      required: [key, name, family, sortOrder]
+      description: >-
+        One team the rota is run for. Served so no client has to hold the list:
+        team names are organisation vocabulary, and a frontend that hardcodes
+        them is coupled to a deploy it cannot see.
+      properties:
+        key: { type: string, example: castor }
+        name: { type: string }
+        family: { type: string, enum: [CRE, SRE] }
+        sortOrder:
+          type: integer
+          description: >-
+            Display order, and what gives a team a stable colour without any
+            client naming it.
     ScheduleAbsenceKind:
       type: object
       description: Why someone is out of the rota.
@@ -16158,6 +16174,9 @@ components:
         absenceKinds:
           type: array
           items: { $ref: '#/components/schemas/ScheduleAbsenceKind' }
+        teams:
+          type: array
+          items: { $ref: '#/components/schemas/ScheduleTeam' }
     ScheduleEngineer:
       type: object
       properties:

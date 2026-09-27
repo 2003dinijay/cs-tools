@@ -70,6 +70,7 @@ export function useScheduleCatalogue(): UseQueryResult<ScheduleCatalogue, Error>
       zones: [],
       shifts: [],
       absenceKinds: [],
+      teams: [],
     },
     staleTime: CATALOGUE_STALE_MS,
   });

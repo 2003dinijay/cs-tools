@@ -27,7 +27,8 @@ import {
   timeOf,
   toIsoDate,
 } from "../utils/rota";
-import { accentOf, teamColour } from "../utils/rotaHues";
+import { accentOf } from "../utils/rotaHues";
+import { useTeamColour } from "../utils/teamColourContext";
 
 /** Pixels per hour, as the prototype draws it. */
 const HOUR_PX = 38;
@@ -649,6 +650,7 @@ function LadderBlock({ block, tz }: { block: Block; tz: string }): JSX.Element {
  * underneath the cursor.
  */
 function TeamSplit({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
+  const teamColourOf = useTeamColour();
   const byTeam = useMemo(() => [...groupBy(rows, (r) => r.teamKey).entries()], [rows]);
   const [active, setActive] = useState<string>(() => byTeam[0]?.[0] ?? "");
   const current = byTeam.find(([team]) => team === active) ?? byTeam[0];
@@ -665,7 +667,7 @@ function TeamSplit({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
             onFocus={() => setActive(team)}
             onClick={() => setActive(team)}
           >
-            <i style={{ background: teamColour(team) }} />
+            <i style={{ background: teamColourOf(team) }} />
             <span className="tn">{team}</span>
             <b>{teamRows.length}</b>
           </span>
@@ -675,7 +677,7 @@ function TeamSplit({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
         {current ? (
           <div className="tlp on">
             <div className="tlph">
-              <i style={{ background: teamColour(current[0]) }} />
+              <i style={{ background: teamColourOf(current[0]) }} />
               {current[0]}
               <b>{current[1].length}</b>
             </div>
@@ -701,6 +703,7 @@ function NameRow({
    *  every row would be noise. */
   hideTag?: boolean;
 }): JSX.Element {
+  const teamColourOf = useTeamColour();
   /* Only what the row does not already say. A tier ("L2") and on-call status
      are not readable anywhere else on the card; the team is -- it is the
      avatar's colour, and the row's own tooltip. Spelling it out a third time
@@ -709,7 +712,7 @@ function NameRow({
   const tag = assignment.tier ?? (assignment.isOnCall ? "OC" : null);
   return (
     <span className="lnm" title={`${assignment.engineer.name} · ${assignment.teamKey}`}>
-      <span className="av" style={{ background: teamColour(assignment.teamKey) }}>
+      <span className="av" style={{ background: teamColourOf(assignment.teamKey) }}>
         {initialsOf(assignment.engineer.name)}
       </span>
       <span className="who">{assignment.engineer.name}</span>
@@ -729,6 +732,7 @@ function OffRotaStack({
   absences: ScheduleAbsence[];
   kinds: ScheduleAbsenceKind[];
 }): JSX.Element {
+  const teamColourOf = useTeamColour();
   const byKind = groupBy(absences, (a) => a.kindCode);
 
   // Leave first, then allocations.
@@ -769,7 +773,7 @@ function OffRotaStack({
                   <div className="offp">
                     {teamRows.map((r) => (
                       <span className="lnm" key={r.id} title={r.engineer.name}>
-                        <span className="av" style={{ background: teamColour(r.teamKey) }}>
+                        <span className="av" style={{ background: teamColourOf(r.teamKey) }}>
                           {initialsOf(r.engineer.name)}
                         </span>
                         <span className="who">{r.engineer.name}</span>
@@ -786,7 +790,7 @@ function OffRotaStack({
                     key={r.id}
                     title={[r.engineer.name, r.teamKey, r.allocatedTo].filter(Boolean).join(" · ")}
                   >
-                    <span className="av" style={{ background: teamColour(r.teamKey) }}>
+                    <span className="av" style={{ background: teamColourOf(r.teamKey) }}>
                       {initialsOf(r.engineer.name)}
                     </span>
                     <span className="who">{r.engineer.name}</span>
