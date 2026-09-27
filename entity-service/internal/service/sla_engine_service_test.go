@@ -45,10 +45,19 @@ type recordingSLAEngineRepo struct {
 	// entries default to false (nothing to revise), matching a clock type
 	// that was never registered under the case's old severity.
 	reviseOK map[string]bool
+
+	everExistedErr error
+	// everExisted, keyed by "workItemID|target", simulates ClockEverExisted's
+	// answer for that pair -- absent entries default to false ("truly never
+	// existed", the newly-applicable-clock-type case), while a true entry
+	// simulates "a clock of this type was registered before but has since
+	// reached a terminal stage" (the resurrection bug this fix guards
+	// against).
+	everExisted map[string]bool
 }
 
 func newRecordingSLAEngineRepo() *recordingSLAEngineRepo {
-	return &recordingSLAEngineRepo{fakePolicyLookupRepo: *newFakePolicyLookupRepo(), registerOK: true, reviseOK: map[string]bool{}}
+	return &recordingSLAEngineRepo{fakePolicyLookupRepo: *newFakePolicyLookupRepo(), registerOK: true, reviseOK: map[string]bool{}, everExisted: map[string]bool{}}
 }
 
 func (r *recordingSLAEngineRepo) RegisterClock(_ context.Context, workItemID string, policy repository.SLAPolicyRef) (bool, error) {
@@ -65,6 +74,13 @@ func (r *recordingSLAEngineRepo) RevisePolicy(_ context.Context, workItemID stri
 	}
 	r.revised = append(r.revised, workItemID+"|"+policy.Target+"|"+policy.ID)
 	return r.reviseOK[workItemID+"|"+policy.Target], nil
+}
+
+func (r *recordingSLAEngineRepo) ClockEverExisted(_ context.Context, workItemID, target string) (bool, error) {
+	if r.everExistedErr != nil {
+		return false, r.everExistedErr
+	}
+	return r.everExisted[workItemID+"|"+target], nil
 }
 
 func (r *recordingSLAEngineRepo) CompleteClock(_ context.Context, workItemID, target string) (bool, error) {
@@ -277,6 +293,62 @@ func TestSLAEngineService_ReviseCaseClocks_FallsBackToRegisterForNewlyApplicable
 	for i, w := range wantRegistered {
 		if repo.registered[i] != w {
 			t.Errorf("registered[%d] = %q, want %q", i, repo.registered[i], w)
+		}
+	}
+}
+
+// TestSLAEngineService_ReviseCaseClocks_DoesNotResurrectTerminalClock is the
+// regression test for this fix: a case's response clock was already marked
+// terminal (e.g. ACHIEVED by CompleteResponseClock once the first reply went
+// out), so RevisePolicy correctly reports "nothing to revise" for RESPONSE
+// (no ACTIVE row exists any more) -- but that must NOT be read as "RESPONSE
+// was never applicable," which would incorrectly resurrect it via
+// RegisterClock. ClockEverExisted reporting true for RESPONSE is what tells
+// ReviseCaseClocks to leave it alone. Meanwhile a genuinely new clock type
+// for the same call (WORKAROUND/RESOLUTION, ClockEverExisted false -- truly
+// never existed) must still correctly fall back to RegisterClock, same as
+// TestSLAEngineService_ReviseCaseClocks_FallsBackToRegisterForNewlyApplicableType.
+func TestSLAEngineService_ReviseCaseClocks_DoesNotResurrectTerminalClock(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	// RESPONSE has no active row to revise (already terminal, not merely
+	// "never registered") -- reviseOK left at its default false, but
+	// everExisted true marks it as "existed before, now terminal."
+	repo.everExisted["case-11|RESPONSE"] = true
+	// WORKAROUND/RESOLUTION are truly new: reviseOK and everExisted both
+	// left at their default false.
+
+	svc := NewSLAEngineService(repo, nil)
+
+	sev := domain.CaseSeverityCatastrophic
+	svc.ReviseCaseClocks(context.Background(), "case-11", &sev, "")
+
+	// RevisePolicy is still attempted for every applicable clock type
+	// regardless of outcome, same as the sibling test above.
+	wantRevised := []string{"case-11|RESPONSE|p0-r-ms", "case-11|WORKAROUND|p0-w-ms", "case-11|RESOLUTION|p0-res-ms"}
+	if len(repo.revised) != len(wantRevised) {
+		t.Fatalf("revised = %v, want %v", repo.revised, wantRevised)
+	}
+	for i, w := range wantRevised {
+		if repo.revised[i] != w {
+			t.Errorf("revised[%d] = %q, want %q", i, repo.revised[i], w)
+		}
+	}
+
+	// RESPONSE must NOT be registered (it's terminal, not newly applicable);
+	// WORKAROUND/RESOLUTION must still register, exactly as the
+	// newly-applicable-clock-type path already does.
+	wantRegistered := []string{"case-11|p0-w-ms", "case-11|p0-res-ms"}
+	if len(repo.registered) != len(wantRegistered) {
+		t.Fatalf("registered = %v, want %v -- a terminal RESPONSE clock must not be resurrected", repo.registered, wantRegistered)
+	}
+	for i, w := range wantRegistered {
+		if repo.registered[i] != w {
+			t.Errorf("registered[%d] = %q, want %q", i, repo.registered[i], w)
+		}
+	}
+	for _, r := range repo.registered {
+		if r == "case-11|p0-r-ms" {
+			t.Fatalf("registered = %v, want no RESPONSE registration -- a completed/terminal clock was incorrectly resurrected", repo.registered)
 		}
 	}
 }

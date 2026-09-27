@@ -108,6 +108,25 @@ type SLAEngineRepository interface {
 	// change that makes a clock type applicable for the first time, which
 	// the caller then falls back to RegisterClock for.
 	RevisePolicy(ctx context.Context, workItemID string, policy SLAPolicyRef) (bool, error)
+
+	// ClockEverExisted reports whether ANY source='CSM' "sla" row has ever
+	// existed for (workItemID, target), regardless of stage -- deliberately
+	// the one query in this file with no slaEngineActiveStageFilter at all,
+	// since its entire purpose is to see past that filter.
+	//
+	// This exists for SLAEngineService.ReviseCaseClocks, which needs to tell
+	// apart two situations RevisePolicy's own "false" return can't
+	// distinguish on its own:
+	//   - this clock type was never applicable/registered for this case
+	//     before (a severity increase making it newly applicable) -- safe to
+	//     RegisterClock fresh.
+	//   - this clock type WAS registered before but has since reached a
+	//     terminal stage (e.g. CompleteResponseClock already marked the
+	//     "response" clock ACHIEVED once the first reply went out) -- must
+	//     NOT be resurrected by a later severity change, or a case whose
+	//     response was already given would incorrectly grow a brand new
+	//     running response clock.
+	ClockEverExisted(ctx context.Context, workItemID, target string) (bool, error)
 }
 
 type slaEngineRepo struct {
@@ -203,6 +222,24 @@ func (r *slaEngineRepo) RevisePolicy(ctx context.Context, workItemID string, pol
 		return false, fmt.Errorf("revise csm sla clock policy: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// ClockEverExisted implements SLAEngineRepository.
+func (r *slaEngineRepo) ClockEverExisted(ctx context.Context, workItemID, target string) (bool, error) {
+	const query = `
+		SELECT EXISTS (
+			SELECT 1 FROM sla s
+			JOIN sla_policy sp ON sp.id = s.sla_policy_id
+			WHERE s.work_item_id = $1::uuid
+			  AND s.source = 'CSM'
+			  AND sp.target::TEXT = $2
+		)`
+
+	var exists bool
+	if err := r.db.QueryRow(ctx, query, workItemID, target).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check csm sla clock ever existed: %w", err)
+	}
+	return exists, nil
 }
 
 // CompleteClock implements SLAEngineRepository.

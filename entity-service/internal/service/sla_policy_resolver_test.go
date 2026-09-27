@@ -61,6 +61,9 @@ func (f *fakePolicyLookupRepo) RecomputeActive(context.Context) (int, error) {
 func (f *fakePolicyLookupRepo) RevisePolicy(context.Context, string, repository.SLAPolicyRef) (bool, error) {
 	panic("not implemented")
 }
+func (f *fakePolicyLookupRepo) ClockEverExisted(context.Context, string, string) (bool, error) {
+	panic("not implemented")
+}
 
 func newFakePolicyLookupRepo() *fakePolicyLookupRepo {
 	return &fakePolicyLookupRepo{
