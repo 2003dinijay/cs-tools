@@ -132,6 +132,9 @@ func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident) (incidentI
 	if inc.Description != "" {
 		req.WorkNotes = &inc.Description
 	}
+	if inc.Environment != "" {
+		req.Environment = &inc.Environment
+	}
 
 	res, err := n.createIncidentWithRetry(ctx, tag, req)
 	if err != nil {

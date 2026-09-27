@@ -38,6 +38,10 @@ type CreateIncidentRequest struct {
 	// create by exact match, without needing the tag visible in Subject or
 	// WorkNotes.
 	CorrelationID *string `json:"correlationId,omitempty"`
+	// Environment is the source alert's environment label (e.g. "Staging",
+	// "Production"). entity-service persists it on its own incident row;
+	// ServiceNow-side field mapping is not confirmed yet.
+	Environment *string `json:"environment,omitempty"`
 }
 
 // createdIncident is the subset of the response's nested "incident" object this service actually reads.

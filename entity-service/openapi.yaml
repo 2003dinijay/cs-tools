@@ -16536,6 +16536,12 @@ components:
             correlation_id field. Look it up via SearchIncidentsFilters.correlationId
             to find an incident this caller already created, without depending on
             free-text search over subject or workNotes.
+        environment:
+          type: string
+          nullable: true
+          description: Optional label (e.g. "Staging", "Production") identifying the
+            environment the source alert fired against. Persisted on this service's
+            own incident row; ServiceNow-side field mapping is not confirmed yet.
 
     CreateIncidentResponse:
       type: object

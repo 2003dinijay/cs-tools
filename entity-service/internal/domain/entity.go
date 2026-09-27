@@ -5234,6 +5234,12 @@ type CreateIncidentRequest struct {
 	// WorkNotes, and without exposing an internal dedup tag in either of
 	// those human-visible fields.
 	CorrelationID *string `json:"correlationId,omitempty"`
+	// Environment is an optional caller-supplied label (e.g. "Staging",
+	// "Production") identifying the environment the source alert fired
+	// against. Not yet confirmed to map to any ServiceNow field -- see
+	// snCreateIncidentPayload.Environment's doc comment -- but is always
+	// persisted on this service's own Postgres incident row.
+	Environment *string `json:"environment,omitempty"`
 }
 
 // CreateIncidentResponse is the output for POST /incidents.
