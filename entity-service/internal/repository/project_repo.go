@@ -204,11 +204,25 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 			// reached this query -- same class of bug this guards against
 			// for pt.name too.
 			var projectTypeName *string
+			// sf_id is NOT NULL per migration 000009, but real data has since
+			// proven that constraint isn't actually enforced (the same gap
+			// GetCaseByID's own InternalID doc comment describes for
+			// wso2_id) -- a non-pointer scan here panicked "cannot scan NULL
+			// into *string" the moment such a row reached this query. Scanned
+			// into a nullable temp var and defaulted to "" below rather than
+			// widening domain.Project.SfID to *string, so this stays a
+			// narrow fix at the one place real data violates the schema's
+			// own declared constraint, not a wider contract change every
+			// other reader of Project.SfID would also have to handle.
+			var sfID *string
 			if err := rows.Scan(
-				&p.ID, &p.AccountID, &p.SfID, &p.Name, &p.Key, &projectTypeName,
+				&p.ID, &p.AccountID, &sfID, &p.Name, &p.Key, &projectTypeName,
 				&p.StartDate, &p.EndDate, &p.CreatedOn, &p.UpdatedOn,
 			); err != nil {
 				return fmt.Errorf("scan project: %w", err)
+			}
+			if sfID != nil {
+				p.SfID = *sfID
 			}
 			if projectTypeName != nil {
 				p.SubscriptionType = projectTypeNameToSubscriptionType(*projectTypeName)

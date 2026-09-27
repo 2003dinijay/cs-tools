@@ -3336,6 +3336,22 @@ in. Implementing this would be a genuinely new feature (a migration + a real
 class of gap as `GlobalService.GlobalSearch`'s own "no Postgres
 implementation" note elsewhere in this file.
 
+## SearchProjects crashed on any page containing a NULL project.sf_id
+
+Reported live: `POST /projects/search` failing with `cannot scan NULL into
+*string`. `project.sf_id` is declared `NOT NULL` (migration 000009), but that
+constraint turned out not to be actually enforced against real data — the
+same class of gap `CaseView.InternalID`'s own doc comment describes for
+`wso2_id`, and `SearchDeployments`'s for `deployment.type` (see that section
+above) — and `project_repo.go`'s `SearchProjects` scanned the column straight
+into `domain.Project.SfID` (a required, non-pointer field). Fixed the same
+way as those: the wire contract stays a required string, only the scan side
+changes — `p.sf_id` now scans into a `*string` local, defaulted to `""` when
+NULL, rather than widening `Project.SfID` to `*string` and touching every
+other reader of it. `GetProjectDetails`'s own `sf_id` scan (a separate query,
+a separate endpoint) was not touched -- not reported broken, so left alone
+rather than fixed speculatively.
+
 ## Case feedback silently 404'd on the Postgres data source instead of a documented 503
 
 Reported live: a case's Activity timeline always showed "Could not load Case
