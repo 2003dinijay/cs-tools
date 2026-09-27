@@ -151,7 +151,12 @@ func buildGitHubIssueLabels(option githubissue.RepoOption, req caseGitHubIssueRe
 		labels = append(labels, l)
 	}
 	add(originLabel)
-	add(req.UpdateLevel)
+	// The update level is free text from the case. It is a version label only
+	// when it is not one of the labels this function assigns itself, so a
+	// value such as Priority/Critical cannot land on a Patch issue.
+	if !reservedIssueLabel(req.UpdateLevel) {
+		add(req.UpdateLevel)
+	}
 	add(option.GithubLabel)
 	issueType := strings.TrimSpace(req.IssueTypeLabel)
 	switch issueType {
@@ -174,6 +179,27 @@ func buildGitHubIssueLabels(option githubissue.RepoOption, req caseGitHubIssueRe
 		add(onboardingLabel)
 	}
 	return labels
+}
+
+// reservedIssueLabel reports whether s is a label this builder assigns for a
+// reason other than the product version.
+func reservedIssueLabel(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case strings.ToLower(originLabel),
+		strings.ToLower(patchIssueTypeLabel),
+		strings.ToLower(patchExtraLabel),
+		strings.ToLower(discussionIssueTypeLabel),
+		strings.ToLower(hotfixLabel),
+		strings.ToLower(migrationLabel),
+		strings.ToLower(onboardingLabel),
+		strings.ToLower(regressionLabel),
+		"priority/critical",
+		"priority/high",
+		"priority/medium":
+		return true
+	default:
+		return false
+	}
 }
 
 // createGitHubIssueViaEngineering files the issue in the requested catalogue
