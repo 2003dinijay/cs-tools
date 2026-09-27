@@ -140,6 +140,14 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		}
 	})
 
+	t.Run("a priority string in the update level is not applied as a label", func(t *testing.T) {
+		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
+		post(t, newHandler(eng, &mockEntityCaseClient{}), "{"+base+`,"issueTypeLabel":"Type/Patch","updateLevel":"Priority/Critical"}`)
+		if want := []string{"Origin/CS", "Alpha", "Type/Patch", "patch"}; !slices.Equal(eng.calls[0].labels, want) {
+			t.Errorf("labels = %v, want %v", eng.calls[0].labels, want)
+		}
+	})
+
 	t.Run("rejects a bad request before touching any service", func(t *testing.T) {
 		tests := []struct {
 			name, body, wantMsg string
