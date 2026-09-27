@@ -118,8 +118,8 @@ func NewTimeCardRepository(db *pgxpool.Pool) TimeCardRepository {
 
 const timeCardSelectColumns = `
 	tc.id, tc.work_date, tc.is_billable, tc.state::TEXT, tc.issue_complexity::TEXT,
-	tc.analyzing_minutes, tc.setting_up_minutes, tc.reproducing_debugging_minutes,
-	tc.providing_solution_minutes, tc.patching_minutes, tc.work_log_comment, tc.lead_comment,
+	COALESCE(tc.analyzing_minutes,0), COALESCE(tc.setting_up_minutes,0), COALESCE(tc.reproducing_debugging_minutes,0),
+	COALESCE(tc.providing_solution_minutes,0), COALESCE(tc.patching_minutes,0), tc.work_log_comment, tc.lead_comment,
 	u.id, TRIM(COALESCE(u.name, CONCAT_WS(' ', u.first_name, u.last_name))),
 	ab.id, TRIM(COALESCE(ab.name, CONCAT_WS(' ', ab.first_name, ab.last_name))),
 	p.id, p.name,

@@ -427,12 +427,13 @@ func NewCaseRepository(db *pgxpool.Pool) CaseRepository {
 // A missing user yields no row, reported as a validation error rather than a
 // bare foreign-key failure.
 //
-// NOT DONE, DELIBERATELY: work_item.number (NOT NULL, unique) and wso2_id have
-// no default and no sequence, and generating them is an undecided product
-// choice (see CLAUDE.md, "CreateCase and case numbers"). Until that is settled
-// the insert reaches the database with valid tables and columns but is refused
-// for want of a number, which is reported as ServiceUnavailableError instead of
-// an opaque 500.
+// work_item.number/wso2_id (both NOT NULL) come from
+// next_portal_work_item_number()/next_portal_wso2_id() (migration 000085),
+// which resolves the product decision this method used to defer (see
+// CLAUDE.md, "CreateCase and case numbers"): a portal-created record gets a
+// visually distinct number/id rather than one drawn from the same series
+// ServiceNow's still-running sync allocates from, so the two can never
+// collide.
 func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -442,11 +443,12 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 
 	const insertWorkItem = `
 		INSERT INTO work_item (
-			id, created_on, updated_on, created_by, updated_by,
+			id, number, wso2_id, created_on, updated_on, created_by, updated_by,
 			type, project_id, deployment_id, deployed_product_id,
 			subject, description, opened_by_user_id, account_id
 		)
-		SELECT gen_random_uuid(), NOW(), NOW(), u.email, u.email,
+		SELECT gen_random_uuid(), next_portal_work_item_number(), next_portal_wso2_id($2::uuid),
+		       NOW(), NOW(), u.email, u.email,
 		       'CASE'::work_item_type_enum, $2::uuid, $3::uuid, $4::uuid,
 		       $5, $6, u.id, p.account_id
 		FROM "user" u
@@ -512,13 +514,9 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 func mapCreateCaseError(err error) error {
 	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 		switch pgErr.Code {
-		case "23502": // not_null_violation
-			if pgErr.ColumnName == "number" {
-				return &apierror.ServiceUnavailableError{Msg: "creating a case is not available on this data source yet: case numbers are not generated"}
-			}
 		case "23503": // foreign_key_violation -- one of the referenced IDs does not exist
 			return &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
-		case "P0001": // raise_exception from integrity triggers (deployment/project, deployed_product/deployment, catastrophic priority)
+		case "P0001": // raise_exception from integrity triggers (deployment/project, deployed_product/deployment, catastrophic priority) and from next_portal_wso2_id when project_id doesn't exist
 			return &apierror.ValidationError{Msg: pgErr.Message}
 		}
 	}
@@ -1748,6 +1746,25 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	if req.Parsed.ParentID != nil {
 		where += fmt.Sprintf(" AND wi.parent_id = $%d::uuid", argIdx)
 		filterArgs = append(filterArgs, *req.Parsed.ParentID)
+		argIdx++
+	}
+
+	// number/internalId: exact-match filters parsed by case_filters.go (see
+	// ParsedCaseFilters.Number/InternalID's own doc comments) but never
+	// actually applied here until now -- every by-number/by-internal-id
+	// lookup (SPL's postgresSplCaseClient.resolveCaseByNumber chief among
+	// them, since entity-service's GET /cases/{id} only accepts the internal
+	// UUID) silently ignored this filter and fell through to whatever the
+	// sort/limit happened to pick, ordinarily the single most-recently-
+	// created case overall regardless of the requested number.
+	if req.Parsed.Number != nil {
+		where += fmt.Sprintf(" AND wi.number = $%d", argIdx)
+		filterArgs = append(filterArgs, *req.Parsed.Number)
+		argIdx++
+	}
+	if req.Parsed.InternalID != nil {
+		where += fmt.Sprintf(" AND wi.wso2_id = $%d", argIdx)
+		filterArgs = append(filterArgs, *req.Parsed.InternalID)
 		argIdx++
 	}
 

@@ -155,6 +155,17 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		argIdx++
 	}
 
+	// AccountID was previously documented "ServiceNow data source only" even
+	// though project.account_id (migration 000009) is a plain FK already
+	// selected/returned by this same query below -- this is what actually
+	// applies it as a filter for the Postgres data source too. The service
+	// layer validates it's a UUID before this point (project_service.go).
+	if req.AccountID != "" {
+		where += fmt.Sprintf(" AND p.account_id = $%d::uuid", argIdx)
+		filterArgs = append(filterArgs, req.AccountID)
+		argIdx++
+	}
+
 	countQuery := "SELECT COUNT(*) FROM project p LEFT JOIN project_type pt ON pt.id = p.project_type_id " + where
 
 	dataQuery := fmt.Sprintf(
@@ -263,11 +274,22 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	// ActivationDate/Region are already pointer fields on ProjectAccountRef
 	// so they tolerate NULL (whether from a real account or a LEFT JOIN
 	// producing no row at all) without a separate local var.
-	var aID, aName *string
+	var aID, aName, aNumber *string
 	// project_type is a LEFT JOIN for the same reason account is: a project
 	// with no project_type_id set (or one pointing at a deleted row) must
 	// still resolve, just with SubscriptionType left at its zero value below.
 	var projectTypeName *string
+	// wso2_closure_state/total_query_duration/remaining_query_duration
+	// (migration 000009) were previously not selected here at all, despite
+	// ClosureState/TotalQueryHours/RemainingQueryHours being documented
+	// "ServiceNow data source only" -- same class of already-present-but-
+	// unselected gap as account.number (see account_repo.go's own comment).
+	// The two INTERVAL columns are cast to hours in SQL rather than scanned
+	// as pgtype.Interval, matching the plain numeric-string shape
+	// ServiceNow's own u_remaining_query_hours/u_total_query_hour already
+	// have.
+	var closureState *string
+	var totalQueryHours, remainingQueryHours *float64
 	// Same "existence never revealed to a caller who can't see it" reasoning
 	// as CaseRepository.GetCaseByID.
 	scopeClause, scopeArgs := "", []any{id}
@@ -278,9 +300,11 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	err := r.db.QueryRow(ctx,
 		`SELECT p.id, p.sf_id, p.name, p.key,
 		        p.start_date, p.end_date, p.created_on, p.updated_on,
-		        a.id, a.name, a.activation_date, a.region,
+		        a.id, a.name, a.number, a.activation_date, a.region,
 		        a.ai_gen_response_enabled, a.smart_knowledge_base_suggestions_enabled,
-		        pt.name
+		        pt.name, p.wso2_closure_state::text,
+		        (EXTRACT(EPOCH FROM p.total_query_duration) / 3600.0)::double precision,
+		        (EXTRACT(EPOCH FROM p.remaining_query_duration) / 3600.0)::double precision
 		 FROM project p
 		 LEFT JOIN account a ON p.account_id = a.id
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
@@ -288,9 +312,9 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	).Scan(
 		&v.ID, &v.SfID, &v.Name, &v.Key,
 		&v.StartDate, &v.EndDate, &v.CreatedOn, &v.UpdatedOn,
-		&aID, &aName, &v.Account.ActivationDate, &v.Account.Region,
+		&aID, &aName, &aNumber, &v.Account.ActivationDate, &v.Account.Region,
 		&agentEnabled, &kbReferencesEnabled,
-		&projectTypeName,
+		&projectTypeName, &closureState, &totalQueryHours, &remainingQueryHours,
 	)
 	// v.Account.Tier still has no real column -- see this repository's own
 	// doc comment; left at its zero value.
@@ -306,11 +330,17 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	if aName != nil {
 		v.Account.Name = *aName
 	}
+	if aNumber != nil {
+		v.Account.Number = *aNumber
+	}
 	v.Account.AgentEnabled = agentEnabled != nil && *agentEnabled
 	v.Account.KbReferencesEnabled = kbReferencesEnabled != nil && *kbReferencesEnabled
 	if projectTypeName != nil {
 		v.SubscriptionType = projectTypeNameToSubscriptionType(*projectTypeName)
 	}
+	v.ClosureState = closureState
+	v.TotalQueryHours = totalQueryHours
+	v.RemainingQueryHours = remainingQueryHours
 	return v, nil
 }
 
