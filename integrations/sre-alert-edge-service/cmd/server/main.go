@@ -14,7 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Command server serves the vendor webhook routes and health endpoints.
+// Command server wires Cassandra, the allocator and the vendor transforms, then serves the
+// vendor webhook routes and health endpoints.
 package main
 
 import (
@@ -25,12 +26,25 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/cenkalti/backoff/v4"
+	"github.com/gocql/gocql"
+
+	"sre-alert-edge-service/internal/allocator"
 	"sre-alert-edge-service/internal/auth"
+	"sre-alert-edge-service/internal/cassandra"
 	"sre-alert-edge-service/internal/config"
 	"sre-alert-edge-service/internal/server"
 	"sre-alert-edge-service/internal/vendors"
 )
+
+// claimJitter bounds the random pause before retrying a rejected compare-and-set.
+const claimJitter = 20 * time.Millisecond
+
+// waitMargin keeps a request's wait for its ids under the server's write timeout, so a slow
+// store answers 503 instead of the connection being cut.
+const waitMargin = 5 * time.Second
 
 func main() {
 	base := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("app", "sre-alert-edge-service")
@@ -60,9 +74,42 @@ func main() {
 		os.Exit(1)
 	}
 
+	cassCfg, err := cassandra.ConfigFromEnv()
+	if err != nil {
+		logger.Error("failed to read cassandra config", "error", err)
+		os.Exit(1)
+	}
+	session, err := connectWithRetry(logger, cassCfg, cfg.Cassandra, cfg.Store.QueryTimeout.Duration())
+	if err != nil {
+		logger.Error("failed to connect to cassandra", "error", err)
+		os.Exit(1)
+	}
+	defer session.Close()
+
+	store := cassandra.NewStore(session, cfg.Store.QueryTimeout.Duration())
+	if err := store.SeedSeq(context.Background()); err != nil {
+		logger.Error("failed to seed alert_seq", "error", err)
+		os.Exit(1)
+	}
+
+	alloc := allocator.New(base.With("component", "allocator"), store, nil, nil, allocator.Config{
+		QueueSize:        cfg.Allocator.QueueSize,
+		MaxBatch:         cfg.Allocator.MaxBatch,
+		WriteConcurrency: cfg.Allocator.WriteConcurrency,
+		ClaimMaxAttempts: cfg.Allocator.ClaimMaxAttempts,
+		InsertAttempts:   cfg.Store.InsertAttempts,
+		InsertBaseDelay:  cfg.Store.InsertBaseDelay.Duration(),
+		ClaimJitter:      claimJitter,
+	})
+
+	waitTimeout := cfg.Server.WriteTimeout.Duration() - waitMargin
+	if waitTimeout < time.Second {
+		waitTimeout = time.Second
+	}
 	srv := server.New(server.Options{
 		Logger:       base.With("component", "server"),
 		Auth:         authn,
+		Pipeline:     server.NewIngestor(registry, alloc, waitTimeout),
 		Vendors:      registry.Names(),
 		MaxBodyBytes: cfg.Server.MaxBodyBytes,
 		ReadTimeout:  cfg.Server.ReadTimeout.Duration(),
@@ -92,8 +139,36 @@ func main() {
 		srv.StartDraining()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.Duration())
 		defer cancel()
+		// Stop accepting first, so nothing new is queued, then let the allocator claim and
+		// write everything already queued within the same grace window.
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-			logger.Error("graceful shutdown failed", "error", err)
+			logger.Error("http shutdown incomplete", "error", err)
+		}
+		if err := alloc.Close(shutdownCtx); err != nil {
+			logger.Error("allocator did not drain within shutdown_grace; claimed ids may be left without rows", "error", err)
 		}
 	}
+}
+
+// connectWithRetry retries with exponential backoff so a transient startup outage doesn't
+// crash-loop the pod.
+func connectWithRetry(logger *slog.Logger, cfg cassandra.Config, ccfg config.CassandraConfig, queryTimeout time.Duration) (*gocql.Session, error) {
+	var session *gocql.Session
+	attempt := 0
+	operation := func() error {
+		attempt++
+		s, err := cassandra.Connect(cfg, ccfg.ConnectTimeout.Duration(), queryTimeout)
+		if err != nil {
+			logger.Warn("cassandra connection failed, retrying", "attempt", attempt, "max_attempts", ccfg.ConnectMaxAttempts, "error", err)
+			return err
+		}
+		session = s
+		return nil
+	}
+	eb := backoff.NewExponentialBackOff()
+	eb.InitialInterval = ccfg.ConnectBaseDelay.Duration()
+	if err := backoff.Retry(operation, backoff.WithMaxRetries(eb, uint64(ccfg.ConnectMaxAttempts-1))); err != nil {
+		return nil, err
+	}
+	return session, nil
 }
