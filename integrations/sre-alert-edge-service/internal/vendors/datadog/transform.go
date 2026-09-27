@@ -20,7 +20,6 @@
 package datadog
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +27,7 @@ import (
 	"strings"
 
 	"sre-alert-edge-service/internal/vendors/jsonnum"
+	"sre-alert-edge-service/internal/vendors/vendorutil"
 )
 
 // source identifies alerts produced by this adapter.
@@ -136,29 +136,29 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	// Field-name tolerance: monitor_id/monitor_name are the legacy webhook
 	// fields; event_id/event_name are the current ones. Either pair proves
 	// this is a genuine Datadog payload.
-	eventID := firstNonEmpty(str(payload, "monitor_id"), str(payload, "event_id"))
-	eventName := firstNonEmpty(str(payload, "monitor_name"), str(payload, "event_name"))
+	eventID := vendorutil.FirstNonEmpty(vendorutil.Str(payload, "monitor_id"), vendorutil.Str(payload, "event_id"))
+	eventName := vendorutil.FirstNonEmpty(vendorutil.Str(payload, "monitor_name"), vendorutil.Str(payload, "event_name"))
 	if eventID == "" && eventName == "" {
 		return Alert{}, ErrInvalidStructure
 	}
 
-	triggerName := str(payload, "trigger_name")
-	alertID := str(payload, "alert_id")
-	tags := parseTags(str(payload, "tags"))
+	triggerName := vendorutil.Str(payload, "trigger_name")
+	alertID := vendorutil.Str(payload, "alert_id")
+	tags := parseTags(vendorutil.Str(payload, "tags"))
 	state := resolveState(payload)
 
-	metricNameValue := firstNonEmpty(str(payload, "metric_name"), buildMetricName(eventName, triggerName))
-	uniqueIdentifier := firstNonEmpty(str(payload, "unique_identifier"), alertID)
+	metricNameValue := vendorutil.FirstNonEmpty(vendorutil.Str(payload, "metric_name"), buildMetricName(eventName, triggerName))
+	uniqueIdentifier := vendorutil.FirstNonEmpty(vendorutil.Str(payload, "unique_identifier"), alertID)
 
 	alert := Alert{
-		Service:          configValue(cfg, tags, "SERVICE", str(payload, "service")),
+		Service:          configValue(cfg, tags, "SERVICE", vendorutil.Str(payload, "service")),
 		MetricName:       configValue(cfg, tags, "METRIC_NAME", metricNameValue),
-		Severity:         resolveSeverity(state, configValue(cfg, tags, "SEVERITY", str(payload, "severity"))),
-		Category:         configValue(cfg, tags, "CATEGORY", str(payload, "category")),
-		Environment:      configValue(cfg, tags, "ENVIRONMENT", str(payload, "environment")),
+		Severity:         resolveSeverity(state, configValue(cfg, tags, "SEVERITY", vendorutil.Str(payload, "severity"))),
+		Category:         configValue(cfg, tags, "CATEGORY", vendorutil.Str(payload, "category")),
+		Environment:      configValue(cfg, tags, "ENVIRONMENT", vendorutil.Str(payload, "environment")),
 		Source:           source,
 		UniqueIdentifier: uniqueIdentifier,
-		Description:      compactJSON(raw),
+		Description:      vendorutil.CompactJSON(raw),
 	}
 	return alert, nil
 }
@@ -168,10 +168,10 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 // hardcoded-per-webhook approach); otherwise the state is derived from
 // $ALERT_TRANSITION via transitionStateMap, defaulting to ACTIVE.
 func resolveState(payload map[string]any) string {
-	if s := str(payload, "state"); s != "" {
+	if s := vendorutil.Str(payload, "state"); s != "" {
 		return s
 	}
-	transition := firstNonEmpty(str(payload, "transition"), str(payload, "alert_transition"))
+	transition := vendorutil.FirstNonEmpty(vendorutil.Str(payload, "transition"), vendorutil.Str(payload, "alert_transition"))
 	if state, ok := transitionStateMap[transition]; ok {
 		return state
 	}
@@ -250,37 +250,5 @@ func buildMetricName(eventName, triggerName string) string {
 // configValue applies the 4-tier resolution: payload value, then tag alias,
 // then operator config, then the hardcoded default for the field.
 func configValue(cfg Config, tags map[string]string, field, payloadValue string) string {
-	return firstNonEmpty(payloadValue, tagValue(tags, field), cfg[field], defaults[field])
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func str(payload map[string]any, key string) string {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	case json.Number:
-		return t.String()
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", t))
-	}
-}
-
-func compactJSON(raw []byte) string {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, raw); err != nil {
-		return string(raw)
-	}
-	return buf.String()
+	return vendorutil.FirstNonEmpty(payloadValue, tagValue(tags, field), cfg[field], defaults[field])
 }

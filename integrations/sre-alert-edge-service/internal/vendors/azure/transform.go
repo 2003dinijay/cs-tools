@@ -21,7 +21,6 @@
 package azure
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +28,7 @@ import (
 	"strings"
 
 	"sre-alert-edge-service/internal/vendors/jsonnum"
+	"sre-alert-edge-service/internal/vendors/vendorutil"
 )
 
 // source identifies alerts produced by this adapter.
@@ -116,8 +116,8 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	// empty object rather than treating the whole alert as malformed.
 	props, _ := data["customProperties"].(map[string]any)
 
-	rawSeverity := firstNonEmpty(str(essentials, "severity"), cfg["severity"], defaults["severity"])
-	monitorCondition := str(essentials, "monitorCondition")
+	rawSeverity := vendorutil.FirstNonEmpty(vendorutil.Str(essentials, "severity"), cfg["severity"], defaults["severity"])
+	monitorCondition := vendorutil.Str(essentials, "monitorCondition")
 
 	var mappedSeverity string
 	if monitorCondition == "Resolved" {
@@ -132,9 +132,9 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Severity:         mappedSeverity,
 		Category:         configValue(cfg, props, "category", ""),
 		Environment:      configValue(cfg, props, "environment", ""),
-		Source:           firstNonEmpty(cfg["source"], source),
-		UniqueIdentifier: str(essentials, "alertId"),
-		Description:      compactJSON(raw),
+		Source:           vendorutil.FirstNonEmpty(cfg["source"], source),
+		UniqueIdentifier: vendorutil.Str(essentials, "alertId"),
+		Description:      vendorutil.CompactJSON(raw),
 	}
 	return alert, nil
 }
@@ -143,13 +143,13 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 // a Cost Management alert has no useful alertRule, so the budget name is
 // used instead. Every other monitoring service falls back to essentials.alertRule.
 func resolveMetricName(essentials, alertContext map[string]any) string {
-	if str(essentials, "monitoringService") == "CostAlerts" {
+	if vendorutil.Str(essentials, "monitoringService") == "CostAlerts" {
 		alertData, _ := alertContext["AlertData"].(map[string]any)
-		if budgetName := str(alertData, "BudgetName"); budgetName != "" {
+		if budgetName := vendorutil.Str(alertData, "BudgetName"); budgetName != "" {
 			return "Cost Alert: " + budgetName
 		}
 	}
-	return str(essentials, "alertRule")
+	return vendorutil.Str(essentials, "alertRule")
 }
 
 // configValue applies the 3-tier resolution: a direct value (used only for
@@ -158,46 +158,7 @@ func resolveMetricName(essentials, alertContext map[string]any) string {
 func configValue(cfg Config, props map[string]any, field, directValue string) string {
 	payloadValue := directValue
 	if payloadValue == "" {
-		payloadValue = str(props, field)
+		payloadValue = vendorutil.Str(props, field)
 	}
-	return firstNonEmpty(payloadValue, cfg[field], defaults[field])
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-// str reads a field from a possibly-nil map as a trimmed string. Reading
-// from a nil map is safe in Go and returns the zero value, so a missing
-// "data"/"essentials"/"customProperties" object degrades gracefully instead
-// of panicking, matching the reference script's lack of structural checks.
-func str(m map[string]any, key string) string {
-	if m == nil {
-		return ""
-	}
-	v, ok := m[key]
-	if !ok || v == nil {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	case json.Number:
-		return t.String()
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", t))
-	}
-}
-
-func compactJSON(raw []byte) string {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, raw); err != nil {
-		return string(raw)
-	}
-	return buf.String()
+	return vendorutil.FirstNonEmpty(payloadValue, cfg[field], defaults[field])
 }

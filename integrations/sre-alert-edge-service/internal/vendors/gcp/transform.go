@@ -27,7 +27,6 @@
 package gcp
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +34,7 @@ import (
 	"strings"
 
 	"sre-alert-edge-service/internal/vendors/jsonnum"
+	"sre-alert-edge-service/internal/vendors/vendorutil"
 )
 
 // source identifies alerts produced by this adapter.
@@ -122,25 +122,25 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	labels, _ := resource["labels"].(map[string]any)
 	userLabels, _ := incident["policy_user_labels"].(map[string]any)
 
-	state := firstNonEmpty(str(incident, "state"), "open")
-	rawSeverity := firstNonEmpty(str(incident, "severity"), cfg["severity"], defaults["SEVERITY"])
+	state := vendorutil.FirstNonEmpty(vendorutil.Str(incident, "state"), "open")
+	rawSeverity := vendorutil.FirstNonEmpty(vendorutil.Str(incident, "severity"), cfg["severity"], defaults["SEVERITY"])
 
 	var severity string
 	if state == "closed" {
 		severity = "OK"
 	} else {
-		severity = firstNonEmpty(severityMap[strings.ToLower(rawSeverity)], rawSeverity)
+		severity = vendorutil.FirstNonEmpty(severityMap[strings.ToLower(rawSeverity)], rawSeverity)
 	}
 
 	alert := Alert{
-		Service:          configValue(cfg, "SERVICE", firstNonEmpty(str(labels, "service"), str(userLabels, "service"))),
-		MetricName:       firstNonEmpty(str(incident, "policy_name"), str(incident, "condition_name"), defaults["METRIC_NAME"]),
+		Service:          configValue(cfg, "SERVICE", vendorutil.FirstNonEmpty(vendorutil.Str(labels, "service"), vendorutil.Str(userLabels, "service"))),
+		MetricName:       vendorutil.FirstNonEmpty(vendorutil.Str(incident, "policy_name"), vendorutil.Str(incident, "condition_name"), defaults["METRIC_NAME"]),
 		Severity:         severity,
-		Category:         configValue(cfg, "CATEGORY", firstNonEmpty(str(labels, "category"), str(userLabels, "category"))),
-		Environment:      configValue(cfg, "ENVIRONMENT", firstNonEmpty(str(labels, "environment"), str(userLabels, "environment"))),
+		Category:         configValue(cfg, "CATEGORY", vendorutil.FirstNonEmpty(vendorutil.Str(labels, "category"), vendorutil.Str(userLabels, "category"))),
+		Environment:      configValue(cfg, "ENVIRONMENT", vendorutil.FirstNonEmpty(vendorutil.Str(labels, "environment"), vendorutil.Str(userLabels, "environment"))),
 		Source:           source,
-		UniqueIdentifier: str(incident, "incident_id"),
-		Description:      compactJSON(raw),
+		UniqueIdentifier: vendorutil.Str(incident, "incident_id"),
+		Description:      vendorutil.CompactJSON(raw),
 	}
 	return alert, nil
 }
@@ -148,40 +148,5 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 // configValue applies the 3-tier resolution: payload value, then operator
 // config, then the hardcoded default for the field.
 func configValue(cfg Config, field, payloadValue string) string {
-	return firstNonEmpty(payloadValue, cfg[field], defaults[field])
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func str(payload map[string]any, key string) string {
-	if payload == nil {
-		return ""
-	}
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	case json.Number:
-		return t.String()
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", t))
-	}
-}
-
-func compactJSON(raw []byte) string {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, raw); err != nil {
-		return string(raw)
-	}
-	return buf.String()
+	return vendorutil.FirstNonEmpty(payloadValue, cfg[field], defaults[field])
 }

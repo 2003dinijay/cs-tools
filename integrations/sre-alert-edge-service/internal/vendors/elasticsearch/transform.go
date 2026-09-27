@@ -20,7 +20,6 @@
 package elasticsearch
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +27,7 @@ import (
 	"strings"
 
 	"sre-alert-edge-service/internal/vendors/jsonnum"
+	"sre-alert-edge-service/internal/vendors/vendorutil"
 )
 
 // source identifies alerts produced by this adapter.
@@ -107,23 +107,23 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	}
 
 	// Validation: a genuine Elasticsearch alert carries a rule identity.
-	if str(payload, "rule_id") == "" && str(payload, "rule_name") == "" {
+	if vendorutil.Str(payload, "rule_id") == "" && vendorutil.Str(payload, "rule_name") == "" {
 		return Alert{}, ErrInvalidStructure
 	}
 
-	ruleName := str(payload, "rule_name")
-	triggerName := str(payload, "trigger_name")
-	state := str(payload, "state")
+	ruleName := vendorutil.Str(payload, "rule_name")
+	triggerName := vendorutil.Str(payload, "trigger_name")
+	state := vendorutil.Str(payload, "state")
 
 	alert := Alert{
-		Service:          configValue(cfg, "SERVICE", str(payload, "service")),
+		Service:          configValue(cfg, "SERVICE", vendorutil.Str(payload, "service")),
 		MetricName:       configValue(cfg, "METRIC_NAME", buildMetricName(ruleName, triggerName)),
-		Severity:         resolveSeverity(state, str(payload, "severity"), cfg),
-		Category:         configValue(cfg, "CATEGORY", str(payload, "category")),
+		Severity:         resolveSeverity(state, vendorutil.Str(payload, "severity"), cfg),
+		Category:         configValue(cfg, "CATEGORY", vendorutil.Str(payload, "category")),
 		Environment:      configValue(cfg, "ENVIRONMENT", ""), // never taken from payload
 		Source:           source,
-		UniqueIdentifier: str(payload, "alert_id"),
-		Description:      compactJSON(raw),
+		UniqueIdentifier: vendorutil.Str(payload, "alert_id"),
+		Description:      vendorutil.CompactJSON(raw),
 	}
 	return alert, nil
 }
@@ -140,7 +140,7 @@ func resolveSeverity(state, rawSeverity string, cfg Config) string {
 	}
 	if rawSeverity == "" {
 		// Mirror the reference default chain: config SEVERITY, then Tier-3.
-		rawSeverity = firstNonEmpty(cfg["SEVERITY"], defaults["SEVERITY"])
+		rawSeverity = vendorutil.FirstNonEmpty(cfg["SEVERITY"], defaults["SEVERITY"])
 	}
 	if mapped, ok := numericSeverityMap[rawSeverity]; ok {
 		return mapped
@@ -166,43 +166,5 @@ func buildMetricName(ruleName, triggerName string) string {
 // configValue applies the 3-tier resolution: payload value, then operator
 // config, then the hardcoded default for the field.
 func configValue(cfg Config, field, payloadValue string) string {
-	return firstNonEmpty(payloadValue, cfg[field], defaults[field])
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-// str reads a payload field as a trimmed string, coercing numbers/bools via
-// their natural formatting and treating missing/null as empty.
-func str(payload map[string]any, key string) string {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	case json.Number:
-		return t.String()
-	case float64:
-		return strings.TrimSpace(fmt.Sprintf("%v", t))
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", t))
-	}
-}
-
-// compactJSON normalises the raw payload to a single-line JSON string for the
-// description field, falling back to the raw text if it is not valid JSON.
-func compactJSON(raw []byte) string {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, raw); err != nil {
-		return string(raw)
-	}
-	return buf.String()
+	return vendorutil.FirstNonEmpty(payloadValue, cfg[field], defaults[field])
 }

@@ -20,7 +20,6 @@
 package opensearch
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +27,7 @@ import (
 	"strings"
 
 	"sre-alert-edge-service/internal/vendors/jsonnum"
+	"sre-alert-edge-service/internal/vendors/vendorutil"
 )
 
 // source identifies alerts produced by this adapter.
@@ -103,23 +103,23 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	}
 
 	// Validation: a genuine OpenSearch alert carries a monitor identity.
-	if str(payload, "monitor_id") == "" && str(payload, "monitor_name") == "" {
+	if vendorutil.Str(payload, "monitor_id") == "" && vendorutil.Str(payload, "monitor_name") == "" {
 		return Alert{}, ErrInvalidStructure
 	}
 
-	monitorName := str(payload, "monitor_name")
-	triggerName := str(payload, "trigger_name")
-	state := str(payload, "state")
+	monitorName := vendorutil.Str(payload, "monitor_name")
+	triggerName := vendorutil.Str(payload, "trigger_name")
+	state := vendorutil.Str(payload, "state")
 
 	alert := Alert{
-		Service:          configValue(cfg, "SERVICE", str(payload, "service")),
+		Service:          configValue(cfg, "SERVICE", vendorutil.Str(payload, "service")),
 		MetricName:       configValue(cfg, "METRIC_NAME", buildMetricName(monitorName, triggerName)),
-		Severity:         resolveSeverity(state, str(payload, "severity"), cfg),
-		Category:         configValue(cfg, "CATEGORY", str(payload, "category")),
+		Severity:         resolveSeverity(state, vendorutil.Str(payload, "severity"), cfg),
+		Category:         configValue(cfg, "CATEGORY", vendorutil.Str(payload, "category")),
 		Environment:      configValue(cfg, "ENVIRONMENT", ""), // never taken from payload
 		Source:           source,
-		UniqueIdentifier: str(payload, "alert_id"),
-		Description:      compactJSON(raw),
+		UniqueIdentifier: vendorutil.Str(payload, "alert_id"),
+		Description:      vendorutil.CompactJSON(raw),
 	}
 	return alert, nil
 }
@@ -136,7 +136,7 @@ func resolveSeverity(state, rawSeverity string, cfg Config) string {
 		return "Critical"
 	}
 	if rawSeverity == "" {
-		rawSeverity = firstNonEmpty(cfg["SEVERITY"], defaults["SEVERITY"])
+		rawSeverity = vendorutil.FirstNonEmpty(cfg["SEVERITY"], defaults["SEVERITY"])
 	}
 	if mapped, ok := numericSeverityMap[rawSeverity]; ok {
 		return mapped
@@ -163,37 +163,5 @@ func buildMetricName(monitorName, triggerName string) string {
 // configValue applies the 3-tier resolution: payload value, then operator
 // config, then the hardcoded default for the field.
 func configValue(cfg Config, field, payloadValue string) string {
-	return firstNonEmpty(payloadValue, cfg[field], defaults[field])
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func str(payload map[string]any, key string) string {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	case json.Number:
-		return t.String()
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", t))
-	}
-}
-
-func compactJSON(raw []byte) string {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, raw); err != nil {
-		return string(raw)
-	}
-	return buf.String()
+	return vendorutil.FirstNonEmpty(payloadValue, cfg[field], defaults[field])
 }

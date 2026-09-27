@@ -23,7 +23,6 @@
 package site24x7
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +30,7 @@ import (
 	"strings"
 
 	"sre-alert-edge-service/internal/vendors/jsonnum"
+	"sre-alert-edge-service/internal/vendors/vendorutil"
 )
 
 // source identifies alerts produced by this adapter. Unlike every other
@@ -112,7 +112,7 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		return Alert{}, fmt.Errorf("%w: %v", ErrMissingBody, err)
 	}
 
-	status := firstNonEmpty(str(payload, "STATUS"), cfg.Defaults["Severity"])
+	status := vendorutil.FirstNonEmpty(vendorutil.Str(payload, "STATUS"), cfg.Defaults["Severity"])
 	if status == "" {
 		return Alert{}, ErrMissingStatus
 	}
@@ -120,14 +120,14 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	extracted := extractTags(strSlice(payload, "TAGS"), cfg.TagList)
 
 	alert := Alert{
-		Service:          firstNonEmpty(extracted["Service"], cfg.Defaults["Service"]),
-		MetricName:       str(payload, "MONITORNAME"),
+		Service:          vendorutil.FirstNonEmpty(extracted["Service"], cfg.Defaults["Service"]),
+		MetricName:       vendorutil.Str(payload, "MONITORNAME"),
 		Severity:         mapSeverity(status, cfg.Defaults["Severity"]),
-		Category:         firstNonEmpty(extracted["Category"], cfg.Defaults["Category"]),
-		Environment:      firstNonEmpty(extracted["Environment"], cfg.Defaults["Environment"]),
+		Category:         vendorutil.FirstNonEmpty(extracted["Category"], cfg.Defaults["Category"]),
+		Environment:      vendorutil.FirstNonEmpty(extracted["Environment"], cfg.Defaults["Environment"]),
 		Source:           source,
-		UniqueIdentifier: str(payload, "MONITOR_ID"),
-		Description:      compactJSON(raw),
+		UniqueIdentifier: vendorutil.Str(payload, "MONITOR_ID"),
+		Description:      vendorutil.CompactJSON(raw),
 	}
 	return alert, nil
 }
@@ -162,31 +162,7 @@ func extractTags(tags []string, tagList map[string]string) map[string]string {
 // rather than passing the raw status value through, unlike most other
 // vendors.
 func mapSeverity(status, defaultSeverity string) string {
-	return firstNonEmpty(severityMap[status], defaultSeverity)
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func str(payload map[string]any, key string) string {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	case json.Number:
-		return t.String()
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", t))
-	}
+	return vendorutil.FirstNonEmpty(severityMap[status], defaultSeverity)
 }
 
 // strSlice reads a payload field expected to be a JSON array of strings.
@@ -202,12 +178,4 @@ func strSlice(payload map[string]any, key string) []string {
 		}
 	}
 	return out
-}
-
-func compactJSON(raw []byte) string {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, raw); err != nil {
-		return string(raw)
-	}
-	return buf.String()
 }

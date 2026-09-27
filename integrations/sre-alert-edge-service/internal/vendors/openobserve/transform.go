@@ -36,6 +36,7 @@ import (
 	"strings"
 
 	"sre-alert-edge-service/internal/vendors/jsonnum"
+	"sre-alert-edge-service/internal/vendors/vendorutil"
 )
 
 // source identifies alerts produced by this adapter.
@@ -117,17 +118,17 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 
 	// Validation: a genuine OpenObserve alert carries either its resolved
 	// short_description or a correlation_id.
-	if str(payload, "short_description") == "" && str(payload, "correlation_id") == "" {
+	if vendorutil.Str(payload, "short_description") == "" && vendorutil.Str(payload, "correlation_id") == "" {
 		return Alert{}, ErrInvalidStructure
 	}
 
-	shortDescription := str(payload, "short_description")
-	description := str(payload, "description")
-	correlationID := str(payload, "correlation_id")
+	shortDescription := vendorutil.Str(payload, "short_description")
+	description := vendorutil.Str(payload, "description")
+	correlationID := vendorutil.Str(payload, "correlation_id")
 
-	rawUrgency := configValue(cfg, "URGENCY", str(payload, "urgency"))
-	rawImpact := configValue(cfg, "IMPACT", str(payload, "impact"))
-	callerID := configValue(cfg, "CALLER_ID", str(payload, "caller_id"))
+	rawUrgency := configValue(cfg, "URGENCY", vendorutil.Str(payload, "urgency"))
+	rawImpact := configValue(cfg, "IMPACT", vendorutil.Str(payload, "impact"))
+	callerID := configValue(cfg, "CALLER_ID", vendorutil.Str(payload, "caller_id"))
 
 	// metric_name has no config/default fallback in the reference script --
 	// it's built directly from the payload, or left empty.
@@ -143,14 +144,14 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	}
 
 	alert := Alert{
-		Service:          configValue(cfg, "SERVICE", str(payload, "service")),
+		Service:          configValue(cfg, "SERVICE", vendorutil.Str(payload, "service")),
 		MetricName:       metricName,
 		Severity:         severity,
-		Category:         configValue(cfg, "CATEGORY", str(payload, "category")),
-		Environment:      configValue(cfg, "ENVIRONMENT", str(payload, "environment")),
+		Category:         configValue(cfg, "CATEGORY", vendorutil.Str(payload, "category")),
+		Environment:      configValue(cfg, "ENVIRONMENT", vendorutil.Str(payload, "environment")),
 		Source:           source,
 		UniqueIdentifier: correlationID,
-		ShortDescription: firstNonEmpty(shortDescription, metricName),
+		ShortDescription: vendorutil.FirstNonEmpty(shortDescription, metricName),
 		Description:      description,
 		Urgency:          rawUrgency,
 		Impact:           rawImpact,
@@ -184,29 +185,5 @@ func mapSeverity(rawValue string) string {
 // configValue applies the 3-tier resolution: payload value, then operator
 // config, then the hardcoded default for the field.
 func configValue(cfg Config, field, payloadValue string) string {
-	return firstNonEmpty(payloadValue, cfg[field], defaults[field])
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func str(payload map[string]any, key string) string {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	case json.Number:
-		return t.String()
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", t))
-	}
+	return vendorutil.FirstNonEmpty(payloadValue, cfg[field], defaults[field])
 }

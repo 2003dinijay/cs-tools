@@ -28,7 +28,6 @@
 package icinga
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +35,7 @@ import (
 	"strings"
 
 	"sre-alert-edge-service/internal/vendors/jsonnum"
+	"sre-alert-edge-service/internal/vendors/vendorutil"
 )
 
 // source identifies alerts produced by this adapter.
@@ -115,8 +115,8 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 
 	// Validation: a genuine Icinga notification carries its type and the
 	// host it's about.
-	notificationType := str(payload, "notification_type")
-	hostName := str(payload, "host_name")
+	notificationType := vendorutil.Str(payload, "notification_type")
+	hostName := vendorutil.Str(payload, "host_name")
 	if notificationType == "" || hostName == "" {
 		return Alert{}, ErrInvalidStructure
 	}
@@ -125,10 +125,10 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	// Icinga sends either a host check (no service_name -- the host
 	// itself is the check target) or a service check (service_name
 	// present).
-	hostDisplayName := firstNonEmpty(str(payload, "host_display_name"), hostName)
-	hostState := str(payload, "host_state")
-	serviceName := str(payload, "service_name")
-	serviceState := str(payload, "service_state")
+	hostDisplayName := vendorutil.FirstNonEmpty(vendorutil.Str(payload, "host_display_name"), hostName)
+	hostState := vendorutil.Str(payload, "host_state")
+	serviceName := vendorutil.Str(payload, "service_name")
+	serviceState := vendorutil.Str(payload, "service_state")
 
 	// Custom vars, passed from Icinga host/service vars.
 	vars, _ := payload["vars"].(map[string]any)
@@ -148,14 +148,14 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	}
 
 	alert := Alert{
-		Service:          configValue(cfg, "SERVICE", firstNonEmpty(str(vars, "service"), str(payload, "service"))),
+		Service:          configValue(cfg, "SERVICE", vendorutil.FirstNonEmpty(vendorutil.Str(vars, "service"), vendorutil.Str(payload, "service"))),
 		MetricName:       configValue(cfg, "METRIC_NAME", buildMetricName(hostDisplayName, serviceName)),
 		Severity:         severity,
-		Category:         configValue(cfg, "CATEGORY", firstNonEmpty(str(vars, "category"), str(payload, "category"))),
-		Environment:      configValue(cfg, "ENVIRONMENT", firstNonEmpty(str(vars, "environment"), str(payload, "environment"))),
+		Category:         configValue(cfg, "CATEGORY", vendorutil.FirstNonEmpty(vendorutil.Str(vars, "category"), vendorutil.Str(payload, "category"))),
+		Environment:      configValue(cfg, "ENVIRONMENT", vendorutil.FirstNonEmpty(vendorutil.Str(vars, "environment"), vendorutil.Str(payload, "environment"))),
 		Source:           source,
 		UniqueIdentifier: uniqueIdentifier,
-		Description:      compactJSON(raw),
+		Description:      vendorutil.CompactJSON(raw),
 	}
 	return alert, nil
 }
@@ -166,9 +166,9 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 // isn't recognized.
 func mapSeverity(serviceState, hostState, serviceName string) string {
 	if serviceName != "" {
-		return firstNonEmpty(serviceStateMap[strings.ToLower(serviceState)], serviceState)
+		return vendorutil.FirstNonEmpty(serviceStateMap[strings.ToLower(serviceState)], serviceState)
 	}
-	return firstNonEmpty(hostStateMap[strings.ToLower(hostState)], hostState)
+	return vendorutil.FirstNonEmpty(hostStateMap[strings.ToLower(hostState)], hostState)
 }
 
 // buildMetricName builds "Icinga Alert: <host> / <service>" for a service
@@ -190,40 +190,5 @@ func buildMetricName(hostDisplayName, serviceName string) string {
 // configValue applies the 3-tier resolution: payload value, then operator
 // config, then the hardcoded default for the field.
 func configValue(cfg Config, field, payloadValue string) string {
-	return firstNonEmpty(payloadValue, cfg[field], defaults[field])
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func str(payload map[string]any, key string) string {
-	if payload == nil {
-		return ""
-	}
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	case json.Number:
-		return t.String()
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", t))
-	}
-}
-
-func compactJSON(raw []byte) string {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, raw); err != nil {
-		return string(raw)
-	}
-	return buf.String()
+	return vendorutil.FirstNonEmpty(payloadValue, cfg[field], defaults[field])
 }

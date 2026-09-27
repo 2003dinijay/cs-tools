@@ -25,7 +25,6 @@
 package prometheus
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +32,7 @@ import (
 	"strings"
 
 	"sre-alert-edge-service/internal/vendors/jsonnum"
+	"sre-alert-edge-service/internal/vendors/vendorutil"
 )
 
 // source identifies alerts produced by this adapter when the sender isn't
@@ -127,14 +127,14 @@ func Transform(raw []byte, cfg Config) ([]Alert, error) {
 		return nil, ErrInvalidStructure
 	}
 
-	description := compactJSON(raw)
-	receiver := str(payload, "receiver")
+	description := vendorutil.CompactJSON(raw)
+	receiver := vendorutil.Str(payload, "receiver")
 	// The reference script's alert-level status lookup is "status.state",
 	// but Alertmanager's real per-alert "status" field is a plain string
 	// ("firing"/"resolved"), which has no .state property -- so that tier
 	// always misses in practice, and every alert in the batch falls
 	// through to this one, batch-wide status instead of its own.
-	batchStatus := str(payload, "status")
+	batchStatus := vendorutil.Str(payload, "status")
 
 	alerts := make([]Alert, 0, len(rawAlerts))
 	for _, rawAlert := range rawAlerts {
@@ -151,8 +151,8 @@ func transformOne(alert map[string]any, cfg Config, receiver, batchStatus, descr
 	labels, _ := alert["labels"].(map[string]any)
 	annotations, _ := alert["annotations"].(map[string]any)
 
-	isGrafana := str(labels, "grafana_folder") != "" || receiver == grafanaReceiver
-	alertSource := firstNonEmpty(cfg["source"], source)
+	isGrafana := vendorutil.Str(labels, "grafana_folder") != "" || receiver == grafanaReceiver
+	alertSource := vendorutil.FirstNonEmpty(cfg["source"], source)
 	if isGrafana {
 		alertSource = grafanaSource
 	}
@@ -161,11 +161,11 @@ func transformOne(alert map[string]any, cfg Config, receiver, batchStatus, descr
 	// ({}.state); see the batch-wide status note in Transform.
 	var alertStatusFromObject string
 	if statusObj, ok := alert["status"].(map[string]any); ok {
-		alertStatusFromObject = str(statusObj, "state")
+		alertStatusFromObject = vendorutil.Str(statusObj, "state")
 	}
-	alertStatus := firstNonEmpty(alertStatusFromObject, batchStatus)
+	alertStatus := vendorutil.FirstNonEmpty(alertStatusFromObject, batchStatus)
 
-	rawSeverity := firstNonEmpty(str(labels, "severity"), cfg["severity"], defaults["SEVERITY"])
+	rawSeverity := vendorutil.FirstNonEmpty(vendorutil.Str(labels, "severity"), cfg["severity"], defaults["SEVERITY"])
 
 	var severity string
 	if alertStatus == "resolved" {
@@ -178,13 +178,13 @@ func transformOne(alert map[string]any, cfg Config, receiver, batchStatus, descr
 	}
 
 	return Alert{
-		Service:          configValue(cfg, "SERVICE", firstNonEmpty(str(labels, "service"), str(labels, "component"), str(labels, "job"))),
+		Service:          configValue(cfg, "SERVICE", vendorutil.FirstNonEmpty(vendorutil.Str(labels, "service"), vendorutil.Str(labels, "component"), vendorutil.Str(labels, "job"))),
 		MetricName:       configValue(cfg, "METRIC_NAME", buildMetricName(isGrafana, labels, annotations)),
 		Severity:         severity,
-		Category:         configValue(cfg, "CATEGORY", str(labels, "category")),
-		Environment:      configValue(cfg, "ENVIRONMENT", firstNonEmpty(str(labels, "environment"), str(labels, "cluster"))),
+		Category:         configValue(cfg, "CATEGORY", vendorutil.Str(labels, "category")),
+		Environment:      configValue(cfg, "ENVIRONMENT", vendorutil.FirstNonEmpty(vendorutil.Str(labels, "environment"), vendorutil.Str(labels, "cluster"))),
 		Source:           alertSource,
-		UniqueIdentifier: str(alert, "fingerprint"),
+		UniqueIdentifier: vendorutil.Str(alert, "fingerprint"),
 		Description:      description,
 	}
 }
@@ -193,51 +193,16 @@ func transformOne(alert map[string]any, cfg Config, receiver, batchStatus, descr
 // via grafana_folder) with an annotations.title uses that, prefixed;
 // otherwise the metric name is the alert's labels.alertname.
 func buildMetricName(isGrafana bool, labels, annotations map[string]any) string {
-	if str(labels, "grafana_folder") != "" {
-		if title := str(annotations, "title"); title != "" {
+	if vendorutil.Str(labels, "grafana_folder") != "" {
+		if title := vendorutil.Str(annotations, "title"); title != "" {
 			return grafanaAlertPrefix + title
 		}
 	}
-	return str(labels, "alertname")
+	return vendorutil.Str(labels, "alertname")
 }
 
 // configValue applies the 3-tier resolution: payload value, then operator
 // config, then the hardcoded default for the field.
 func configValue(cfg Config, field, payloadValue string) string {
-	return firstNonEmpty(payloadValue, cfg[field], defaults[field])
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func str(m map[string]any, key string) string {
-	if m == nil {
-		return ""
-	}
-	v, ok := m[key]
-	if !ok || v == nil {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	case json.Number:
-		return t.String()
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", t))
-	}
-}
-
-func compactJSON(raw []byte) string {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, raw); err != nil {
-		return string(raw)
-	}
-	return buf.String()
+	return vendorutil.FirstNonEmpty(payloadValue, cfg[field], defaults[field])
 }

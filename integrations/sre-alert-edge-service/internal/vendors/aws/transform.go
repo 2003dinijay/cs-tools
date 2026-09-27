@@ -43,6 +43,7 @@ import (
 	"strings"
 
 	"sre-alert-edge-service/internal/vendors/jsonnum"
+	"sre-alert-edge-service/internal/vendors/vendorutil"
 )
 
 // Tier-2 hardcoded defaults, used when the operator config doesn't supply
@@ -123,7 +124,7 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Source:      configValue(cfg, "source"),
 	}
 
-	messageRaw := str(envelope, "Message")
+	messageRaw := vendorutil.Str(envelope, "Message")
 	var messageObj map[string]any
 	if err := jsonnum.Unmarshal([]byte(messageRaw), &messageObj); err != nil {
 		// SNS Message isn't valid JSON -- faithfully still produces a real
@@ -138,7 +139,7 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	// overrides. Invalid JSON there degrades to no overrides at all
 	// (warn-and-continue in the reference script), not an error.
 	alarmDesc := map[string]any{}
-	if adRaw := strings.TrimSpace(str(messageObj, "AlarmDescription")); adRaw != "" {
+	if adRaw := strings.TrimSpace(vendorutil.Str(messageObj, "AlarmDescription")); adRaw != "" {
 		var parsed map[string]any
 		if err := jsonnum.Unmarshal([]byte(adRaw), &parsed); err == nil {
 			alarmDesc = parsed
@@ -147,18 +148,18 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 
 	// A recovered alarm (NewStateValue "OK") always forces severity "ok",
 	// overriding whatever AlarmDescription's own severity override said.
-	if str(messageObj, "NewStateValue") == "OK" {
+	if vendorutil.Str(messageObj, "NewStateValue") == "OK" {
 		alarmDesc["severity"] = "ok"
 	}
 
 	alert := Alert{
-		Service:          firstNonEmpty(str(alarmDesc, "service"), base.Service),
-		MetricName:       firstNonEmpty(str(messageObj, "AlarmName"), base.MetricName),
-		Severity:         firstNonEmpty(str(alarmDesc, "severity"), base.Severity),
-		Category:         firstNonEmpty(str(alarmDesc, "category"), base.Category),
-		Environment:      firstNonEmpty(str(alarmDesc, "environment"), base.Environment),
+		Service:          vendorutil.FirstNonEmpty(vendorutil.Str(alarmDesc, "service"), base.Service),
+		MetricName:       vendorutil.FirstNonEmpty(vendorutil.Str(messageObj, "AlarmName"), base.MetricName),
+		Severity:         vendorutil.FirstNonEmpty(vendorutil.Str(alarmDesc, "severity"), base.Severity),
+		Category:         vendorutil.FirstNonEmpty(vendorutil.Str(alarmDesc, "category"), base.Category),
+		Environment:      vendorutil.FirstNonEmpty(vendorutil.Str(alarmDesc, "environment"), base.Environment),
 		Source:           base.Source,
-		UniqueIdentifier: str(messageObj, "AlarmArn"),
+		UniqueIdentifier: vendorutil.Str(messageObj, "AlarmArn"),
 		Description:      prettyJSON([]byte(messageRaw)),
 	}
 	return alert, nil
@@ -169,34 +170,7 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 // stage -- payload-level overrides come from the alarm description JSON,
 // resolved separately in Transform.
 func configValue(cfg Config, field string) string {
-	return firstNonEmpty(cfg[field], defaults[field])
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func str(m map[string]any, key string) string {
-	if m == nil {
-		return ""
-	}
-	v, ok := m[key]
-	if !ok || v == nil {
-		return ""
-	}
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	case json.Number:
-		return t.String()
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", t))
-	}
+	return vendorutil.FirstNonEmpty(cfg[field], defaults[field])
 }
 
 // prettyJSON re-indents raw JSON bytes with a 2-space indent, matching the
