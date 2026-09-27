@@ -132,7 +132,7 @@ func (r *IncidentRepo) Upsert(ctx context.Context, alertID string, a model.Alert
 			Urgency:        urgency,
 			Service:        a.Service,
 			MetricName:     a.MetricName,
-			Description:    model.BuildCreationNote(alertID, a.MetricName, a.Source),
+			Description:    model.BuildCreationNote(alertID, a),
 			Category:       a.Category,
 			Environment:    a.Environment,
 			Source:         a.Source,
@@ -192,7 +192,7 @@ func (r *IncidentRepo) Upsert(ctx context.Context, alertID string, a model.Alert
 	}
 	if updated.Description == "" {
 		// Self-heal: same as Category, so an incident created before its first descriptive alert still fills in.
-		updated.Description = model.BuildCreationNote(alertID, a.MetricName, a.Source)
+		updated.Description = model.BuildCreationNote(alertID, a)
 	}
 
 	setCols := []string{"alert_ids", "alert_count", "severity", "impact", "urgency", "category", "description", "last_seen"}
@@ -203,7 +203,7 @@ func (r *IncidentRepo) Upsert(ctx context.Context, alertID string, a model.Alert
 	if !existing.IsOpen(time.Now(), r.dedupWindow) {
 		// New generation: the old Description named the previous generation's alert id, so it must
 		// be rebuilt from this alert or NotifyCSM would push a stale creation note to the new CSM incident.
-		updated.Description = model.BuildCreationNote(alertID, a.MetricName, a.Source)
+		updated.Description = model.BuildCreationNote(alertID, a)
 		updated.Status = "new"
 		updated.IncidentID = ""
 		updated.IncidentNumber = pendingIncidentNumber(fp)

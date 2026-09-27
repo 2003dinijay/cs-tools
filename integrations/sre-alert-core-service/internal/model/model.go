@@ -22,7 +22,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -191,13 +193,86 @@ func BuildWorkNote(kind, alertID, metricName, source string) string {
 		kind, alertID, metricName, source)
 }
 
+// kv is one row of an HTML table rendered by jsonValueToHTML, kept as an ordered slice (rather than a
+// map) so field order is deterministic -- Go map iteration order is not, unlike the JS object literal
+// order this mirrors.
+type kv struct {
+	key string
+	val any
+}
+
+// jsonValueToHTML recursively renders v as an HTML fragment, porting the ServiceNow
+// JSONToHtmlAction flow action (nil -> italic placeholder, []any -> a bordered list of divs,
+// map[string]any -> a nested key/value table, everything else -> an escaped scalar) so alert-core-service
+// can produce the same structure directly instead of relying on ServiceNow to convert it after the fact.
+func jsonValueToHTML(v any) string {
+	switch val := v.(type) {
+	case nil:
+		return `<span style='color:#999; font-style:italic;'>(null)</span>`
+	case []any:
+		if len(val) == 0 {
+			return `<span style='color:#999; font-style:italic;'>(empty list)</span>`
+		}
+		var b strings.Builder
+		b.WriteString(`<div style='margin:5px 0; border-left:3px solid #0076a8; padding-left:10px;'>`)
+		for i, item := range val {
+			border := "border-bottom:1px dashed #e0e0e0;"
+			if i == len(val)-1 {
+				border = ""
+			}
+			fmt.Fprintf(&b, `<div style='padding:5px 0; %s'>%s</div>`, border, jsonValueToHTML(item))
+		}
+		b.WriteString(`</div>`)
+		return b.String()
+	case map[string]any:
+		if len(val) == 0 {
+			return `<span style='color:#999; font-style:italic;'>(empty object)</span>`
+		}
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys) // deterministic order; the map itself has none to preserve.
+		fields := make([]kv, len(keys))
+		for i, k := range keys {
+			fields[i] = kv{key: k, val: val[k]}
+		}
+		return fieldsToHTMLTable(fields)
+	default:
+		return html.EscapeString(fmt.Sprint(val))
+	}
+}
+
+// fieldsToHTMLTable renders fields as the same bordered key/value table JSONToHtmlAction builds for a
+// JSON object, one row per field, in the given order.
+func fieldsToHTMLTable(fields []kv) string {
+	var b strings.Builder
+	b.WriteString(`<table style='border:1px solid #dcdcdc; border-collapse:collapse; width:100%; font-family:Arial, sans-serif; font-size:13px;'>`)
+	for _, f := range fields {
+		fmt.Fprintf(&b, `<tr><td style='background:#f5f5f5; font-weight:bold; width:30%%; padding:8px; border:1px solid #dcdcdc;'>%s</td>`+
+			`<td style='padding:8px; border:1px solid #dcdcdc;'>%s</td></tr>`,
+			html.EscapeString(f.key), jsonValueToHTML(f.val))
+	}
+	b.WriteString(`</table>`)
+	return b.String()
+}
+
 // BuildCreationNote formats the note CSM receives when an incident is first auto-created from an
-// alert, referencing the alert by id rather than an instance URL link.
-func BuildCreationNote(alertID, metricName, source string) string {
-	metricName = firstNonEmpty(metricName, "N/A")
-	source = firstNonEmpty(source, "N/A")
-	return fmt.Sprintf("Incident auto-created from Alert.\nAlert: %s\nMetric: %s\nSource: %s",
-		alertID, metricName, source)
+// alert: a plain-text traceability line naming this service's own alert id, followed by the
+// triggering alert's own fields rendered as an HTML table (matching the ServiceNow JSONToHtmlAction
+// output this replaces, so the table looks the same whichever side produces it).
+func BuildCreationNote(alertID string, a Alert) string {
+	fields := []kv{
+		{"service", a.Service},
+		{"metric_name", a.MetricName},
+		{"severity", a.Severity},
+		{"category", a.Category},
+		{"environment", a.Environment},
+		{"source", a.Source},
+		{"unique_identifier", a.UniqueIdentifier},
+		{"description", a.Description},
+	}
+	return fmt.Sprintf("Incident auto-created from Alert: %s\n%s", alertID, fieldsToHTMLTable(fields))
 }
 
 // Fingerprint is the dedup key; a distinct unique identifier always starts a new incident.
