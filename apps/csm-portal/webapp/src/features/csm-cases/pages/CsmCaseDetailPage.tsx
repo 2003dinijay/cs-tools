@@ -3292,6 +3292,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
           showRepoField={isCloudSupportSubscription(caseProject?.subscriptionType)}
           productName={c.product}
           onboardingInProgress={caseProject?.onboardingStatus === "In-Progress"}
+          projectStatusPending={Boolean(c.projectId) && isCaseProjectLoading}
           onClose={() => {
             setGithubIssueOpen(false);
             setGithubIssueError(null);
