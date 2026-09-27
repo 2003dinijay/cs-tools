@@ -21,6 +21,7 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
@@ -46,6 +47,13 @@ func NewTeamService(repo repository.TeamRepository) TeamService {
 }
 
 func (s *teamService) GetTeamMembers(ctx context.Context, teamID string) (domain.GetTeamMembersResponse, error) {
+	// The roster includes member names and emails, so an anonymous caller must
+	// not reach it -- auth.Middleware itself lets a tokenless request through
+	// (per-endpoint decides), so this check is the only thing standing between
+	// the roster and an unauthenticated caller.
+	if middleware.UserIDTokenFromContext(ctx) == "" {
+		return domain.GetTeamMembersResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
 	if err := validateUUIDs("id", []string{teamID}); err != nil {
 		return domain.GetTeamMembersResponse{}, err
 	}

@@ -12463,7 +12463,11 @@ components:
           nullable: true
         role:
           type: string
-          nullable: true
+          enum: [member, lead]
+      required:
+        - id
+        - name
+        - role
 
     GetTeamMembersResponse:
       type: object

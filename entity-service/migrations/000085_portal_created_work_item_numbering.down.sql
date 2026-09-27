@@ -15,10 +15,16 @@
 -- under the License.
 
 DROP FUNCTION IF EXISTS next_portal_wso2_id(UUID);
-ALTER TABLE project DROP COLUMN IF EXISTS portal_wso2_id_counter;
+-- portal_wso2_id_counter is intentionally NOT dropped: it is each project's
+-- current allocation position, not derived state. If portal-created work
+-- items already exist, dropping it and letting the up migration recreate it
+-- at 0 would let the next create reuse a wso2_id an existing item already
+-- has -- Postgres has no way to recover a dropped counter's value, so the
+-- only safe rollback is to leave it exactly where it is.
 
 DROP FUNCTION IF EXISTS next_portal_work_item_number();
-DROP SEQUENCE IF EXISTS portal_work_item_number_seq;
+-- portal_work_item_number_seq is intentionally NOT dropped either -- same
+-- allocation-state-loss reasoning as portal_wso2_id_counter above.
 
 -- Restore the two vestigial sequences this migration's .up dropped, at the
 -- same value they were left at (63), so this migration reverses cleanly.

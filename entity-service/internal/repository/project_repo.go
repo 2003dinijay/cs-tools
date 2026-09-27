@@ -338,7 +338,10 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	if projectTypeName != nil {
 		v.SubscriptionType = projectTypeNameToSubscriptionType(*projectTypeName)
 	}
-	v.ClosureState = closureState
+	if closureState != nil {
+		display := pgClosureStateToDisplay(*closureState)
+		v.ClosureState = &display
+	}
 	v.TotalQueryHours = totalQueryHours
 	v.RemainingQueryHours = remainingQueryHours
 	return v, nil
@@ -468,4 +471,23 @@ func (r *projectRepo) UpdateProject(ctx context.Context, id string, req domain.P
 // failing.
 func projectTypeNameToSubscriptionType(name string) domain.SubscriptionType {
 	return domain.SubscriptionType(strings.ToLower(strings.ReplaceAll(name, " ", "_")))
+}
+
+// pgClosureStateToDisplay normalizes a Postgres wso2_closure_state_enum value
+// ('OPEN', 'READ_ONLY', 'CLOSED', 'RESTRICTED', 'SUSPENDED' -- see this file's
+// own ExcludeClosureStates comment) into the same title-cased, space-separated
+// vocabulary ServiceNow's own closureState already uses ("Open", "Suspended",
+// "Restricted", ...), so a caller reading ProjectDetailsView.ClosureState sees
+// one vocabulary regardless of which data source answered. Never fails: an
+// enum value added later still renders as title-cased words rather than raw
+// SCREAMING_CASE.
+func pgClosureStateToDisplay(raw string) string {
+	words := strings.Split(strings.ToLower(raw), "_")
+	for i, w := range words {
+		if w == "" {
+			continue
+		}
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
 }
