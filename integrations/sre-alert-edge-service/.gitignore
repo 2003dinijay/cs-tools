@@ -2,3 +2,6 @@
 config.toml
 .env
 /sre-alert-edge-service
+
+# Local notes on unresolved issues.
+OPEN_ISSUES.md
