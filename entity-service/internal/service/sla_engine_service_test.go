@@ -41,6 +41,14 @@ type recordingSLAEngineRepo struct {
 	registerOK  bool // if false, RegisterClock reports "already registered"
 	cancelErr   error
 	cancelCount int
+	// failReviseClocksTimes controls how ReviseClocks fails, if at all:
+	// 0 means never fail (ignores cancelErr); -1 means always fail with
+	// cancelErr; a positive N means fail with cancelErr for the next N
+	// calls (decrementing each time) then succeed -- used to test
+	// ReviseCaseClocks' bounded retry actually recovers from a transient
+	// failure, as opposed to the -1 "fails forever" case.
+	failReviseClocksTimes int
+	reviseClocksCalls     int
 }
 
 func newRecordingSLAEngineRepo() *recordingSLAEngineRepo {
@@ -60,7 +68,11 @@ func (r *recordingSLAEngineRepo) RegisterClock(_ context.Context, workItemID str
 // transaction -- neither the cancel nor any registration "took"), same as
 // the real ReviseClocks' all-or-nothing guarantee.
 func (r *recordingSLAEngineRepo) ReviseClocks(_ context.Context, workItemID string, policies []repository.SLAPolicyRef) (int, error) {
-	if r.cancelErr != nil {
+	r.reviseClocksCalls++
+	if r.failReviseClocksTimes != 0 {
+		if r.failReviseClocksTimes > 0 {
+			r.failReviseClocksTimes--
+		}
 		return 0, r.cancelErr
 	}
 	r.cancelled = append(r.cancelled, workItemID)
@@ -268,6 +280,7 @@ func TestSLAEngineService_ReviseCaseClocks_DowngradeStillCancelsEveryClockType(t
 func TestSLAEngineService_ReviseCaseClocks_NothingHappensIfRepoFails(t *testing.T) {
 	repo := newRecordingSLAEngineRepo()
 	repo.cancelErr = errors.New("db unavailable")
+	repo.failReviseClocksTimes = -1 // fail every call, including both retry attempts
 	svc := NewSLAEngineService(repo, nil)
 
 	sev := domain.CaseSeverityCatastrophic
@@ -278,6 +291,35 @@ func TestSLAEngineService_ReviseCaseClocks_NothingHappensIfRepoFails(t *testing.
 	}
 	if len(repo.registered) != 0 {
 		t.Errorf("registered = %v, want none recorded (ReviseClocks errored -- atomic, all-or-nothing)", repo.registered)
+	}
+	if repo.reviseClocksCalls != 2 {
+		t.Errorf("ReviseClocks calls = %d, want 2 (both retry attempts exhausted)", repo.reviseClocksCalls)
+	}
+}
+
+// TestSLAEngineService_ReviseCaseClocks_RetriesOnceAndRecovers confirms the
+// bounded retry actually recovers from a transient failure: ReviseClocks
+// fails on its first call and succeeds on the second, and the case ends up
+// with its clocks cancelled and re-registered exactly as if the first call
+// had never failed.
+func TestSLAEngineService_ReviseCaseClocks_RetriesOnceAndRecovers(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	repo.cancelErr = errors.New("db unavailable")
+	repo.failReviseClocksTimes = 1 // fail once, then succeed
+	svc := NewSLAEngineService(repo, nil)
+
+	sev := domain.CaseSeverityCatastrophic
+	svc.ReviseCaseClocks(context.Background(), "case-13", &sev, "")
+
+	if repo.reviseClocksCalls != 2 {
+		t.Fatalf("ReviseClocks calls = %d, want 2 (one failure, one successful retry)", repo.reviseClocksCalls)
+	}
+	if len(repo.cancelled) != 1 || repo.cancelled[0] != "case-13" {
+		t.Errorf("cancelled = %v, want [case-13] -- the retry should have succeeded", repo.cancelled)
+	}
+	want := []string{"case-13|p0-r-ms", "case-13|p0-w-ms", "case-13|p0-res-ms"}
+	if len(repo.registered) != len(want) {
+		t.Errorf("registered = %v, want %v -- the retry should have succeeded", repo.registered, want)
 	}
 }
 

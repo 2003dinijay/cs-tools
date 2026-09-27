@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -389,6 +390,73 @@ func TestSNCaseService_UpdateCase_RevisesSLAClocksOnSeverityChange(t *testing.T)
 	// CreateCase (see RegisterCaseClocks' own doc comment).
 	if len(slaEngine.registerCalls) != 0 {
 		t.Errorf("RegisterCaseClocks calls = %d, want 0 from UpdateCase", len(slaEngine.registerCalls))
+	}
+}
+
+// TestSNCaseService_UpdateCase_SeverityEnrichmentRetriesOnceAndRecovers
+// confirms the bounded retry around the pre-PATCH severity-change
+// enrichment fetch: the first GetCaseByID call fails (a transient blip),
+// the second succeeds, and ReviseCaseClocks still fires -- a case's SLA
+// clocks must not silently stay on the old severity just because one
+// attempt at detecting the change failed.
+func TestSNCaseService_UpdateCase_SeverityEnrichmentRetriesOnceAndRecovers(t *testing.T) {
+	caseSysid := sysid32('a')
+	projectSysid := sysid32('b')
+	caseID := sysidToUUID(caseSysid)
+
+	getCaseBody := `{
+		"id": "` + caseSysid + `",
+		"internalId": "WSO2-041",
+		"number": "CS0041001",
+		"title": "Severity enrichment retry test",
+		"description": "d",
+		"createdOn": "2026-01-02 10:00:00",
+		"createdBy": "jane.doe@example.com",
+		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"severity": {"id": 11, "label": "2 - High"},
+		"state": {"id": 1, "label": "Open"}
+	}`
+	updateCaseBody := `{
+		"message": "Case updated successfully",
+		"case": {"id": "` + caseSysid + `", "updatedOn": "2026-01-02 12:00:00", "updatedBy": "jane.doe", "severity": {"id": 9, "label": "0 - Catastrophic"}}
+	}`
+
+	var getCalls int
+	client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPatch:
+			_, _ = w.Write([]byte(updateCaseBody))
+		case strings.HasSuffix(r.URL.Path, "/tags"):
+			_, _ = w.Write([]byte(`{"tags":[]}`))
+		default:
+			getCalls++
+			if getCalls == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(getCaseBody))
+		}
+	})
+	slaEngine := &fakeSLAEngineService{}
+	svc := NewServiceNowCaseService(client, nil, nil, nil, nil, "", slaEngine)
+
+	newSeverity := domain.CaseSeverityCatastrophic
+	req := domain.UpdateCaseRequest{ID: caseID, Severity: &newSeverity}
+	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("UpdateCase() error = %v", err)
+	}
+
+	if getCalls < 2 {
+		t.Fatalf("GET calls = %d, want at least 2 (first fails, retry succeeds)", getCalls)
+	}
+	if len(slaEngine.reviseCalls) != 1 {
+		t.Fatalf("ReviseCaseClocks calls = %d, want 1 -- the retry should have let severity-change detection succeed", len(slaEngine.reviseCalls))
+	}
+	if slaEngine.reviseCalls[0].caseID != caseID {
+		t.Errorf("caseID = %q, want %q", slaEngine.reviseCalls[0].caseID, caseID)
 	}
 }
 

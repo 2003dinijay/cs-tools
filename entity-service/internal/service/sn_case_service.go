@@ -3086,12 +3086,32 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	var caseBeforeSeverity domain.CaseView
 	severityChanged := false
 	if req.Severity != nil && (s.publisher != nil || s.slaEngine != nil) {
-		enrichCtx, cancel := context.WithTimeout(ctx, publishSeverityChangedTimeout)
-		cv, err := s.GetCaseByID(enrichCtx, req.ID)
-		cancel()
+		// Bounded retry (2 attempts total, each on its own fresh timeout,
+		// with a short pause between): a single transient failure here
+		// (e.g. a DB blip) would otherwise silently skip reviseCaseSLAClocks
+		// below even though the PATCH itself goes on to succeed, leaving
+		// the case's SLA clocks on its old severity with nothing to
+		// reconcile them later. This narrows, but does not eliminate, that
+		// gap -- a sustained outage still falls through to the same
+		// accepted best-effort logging. Each attempt gets half of the
+		// original single-attempt budget so the worst case (both attempts
+		// failing) doesn't double the latency this blocking call already
+		// added to the PATCH response.
+		var cv domain.CaseView
+		var err error
+		for attempt := 1; attempt <= 2; attempt++ {
+			enrichCtx, cancel := context.WithTimeout(ctx, publishSeverityChangedTimeout/2)
+			cv, err = s.GetCaseByID(enrichCtx, req.ID)
+			cancel()
+			if err == nil || attempt == 2 {
+				break
+			}
+			slog.WarnContext(ctx, "sn update case: enrich case for case.severity_changed effects failed, retrying once", "caseId", req.ID, "err", err)
+			time.Sleep(200 * time.Millisecond)
+		}
 		switch {
 		case err != nil:
-			slog.ErrorContext(ctx, "sn update case: enrich case for case.severity_changed effects failed", "caseId", req.ID)
+			slog.ErrorContext(ctx, "sn update case: enrich case for case.severity_changed effects failed after retry", "caseId", req.ID)
 		case derefSeverity(cv.Severity) == *req.Severity:
 			slog.InfoContext(ctx, "sn update case: case.severity_changed effects skipped, severity is unchanged", "caseId", req.ID)
 		default:

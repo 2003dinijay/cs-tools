@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -201,14 +202,32 @@ func (s *slaEngineService) ReviseCaseClocks(ctx context.Context, caseID string, 
 		slog.ErrorContext(ctx, "sla engine: revise clocks skipped, a policy lookup failed", "caseId", caseID)
 		return
 	}
-	cancelled, err := s.repo.ReviseClocks(ctx, caseID, policies)
+	// Bounded retry (2 attempts, short pause between): ReviseClocks is one
+	// atomic transaction (see its own doc comment), so retrying it is safe
+	// -- a second attempt after a failed first one just repeats the same
+	// cancel-then-register-fresh transaction, it never duplicates rows.
+	// This narrows, but does not eliminate, the case-vs-clock-state
+	// mismatch a transient DB failure here would otherwise leave behind
+	// (the severity PATCH itself has already succeeded by the time this
+	// runs) -- a sustained outage still falls through to the same accepted
+	// best-effort logging below.
+	var cancelled int
+	var err error
+	for attempt := 1; attempt <= 2; attempt++ {
+		cancelled, err = s.repo.ReviseClocks(ctx, caseID, policies)
+		if err == nil || attempt == 2 {
+			break
+		}
+		slog.WarnContext(ctx, "sla engine: revise clocks failed, retrying once", "caseId", caseID, "err", err)
+		time.Sleep(200 * time.Millisecond)
+	}
 	if err != nil {
 		// Atomic: a failure here means NOTHING changed -- the case's prior
 		// clocks are exactly as they were (see SLAEngineRepository.
 		// ReviseClocks' own doc comment on why this is one transaction, not
 		// two independent calls). Never partially cancelled with no
 		// replacement.
-		slog.ErrorContext(ctx, "sla engine: revise clocks for severity change failed", "caseId", caseID, "err", err)
+		slog.ErrorContext(ctx, "sla engine: revise clocks for severity change failed after retry", "caseId", caseID, "err", err)
 		return
 	}
 	if cancelled > 0 {
