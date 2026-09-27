@@ -63,16 +63,22 @@ func (e *eventLog) all() []string {
 	return append([]string(nil), e.events...)
 }
 
-type fakeAlloc struct{ events *eventLog }
+type fakeAlloc struct {
+	events  *eventLog
+	onClose func(ctx context.Context)
+}
 
-func (a fakeAlloc) Close(context.Context) error {
+func (a fakeAlloc) Close(ctx context.Context) error {
 	a.events.add("allocator closed")
+	if a.onClose != nil {
+		a.onClose(ctx)
+	}
 	return nil
 }
 
-func TestShutdown_DrainsInFlightRequestBeforeClosingAllocator(t *testing.T) {
-	events := &eventLog{}
-	pipe := &blockingPipeline{entered: make(chan struct{}, 1), release: make(chan struct{}), events: events}
+// startInFlight serves srv and returns once one POST is blocked inside pipe.
+func startInFlight(t *testing.T, pipe *blockingPipeline) (*server.Server, *http.Server, chan int) {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := server.New(server.Options{
 		Logger: logger, Auth: auth.None{}, Pipeline: pipe, Vendors: []string{"aws"},
@@ -96,12 +102,21 @@ func TestShutdown_DrainsInFlightRequestBeforeClosingAllocator(t *testing.T) {
 		status <- resp.StatusCode
 	}()
 	<-pipe.entered
+	return srv, httpSrv, status
+}
+
+func TestShutdown_DrainsInFlightRequestBeforeClosingAllocator(t *testing.T) {
+	events := &eventLog{}
+	pipe := &blockingPipeline{entered: make(chan struct{}, 1), release: make(chan struct{}), events: events}
+	srv, httpSrv, status := startInFlight(t, pipe)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	done := make(chan struct{})
+	b := budget{DrainDelay: 10 * time.Millisecond, RequestWait: 2 * time.Second, AllocatorDrain: time.Second}
 	go func() {
-		shutdown(ctx, logger, srv, httpSrv, fakeAlloc{events}, func(context.Context) { events.add("after") })
+		shutdown(ctx, logger, srv, httpSrv, fakeAlloc{events: events}, b, func(context.Context) { events.add("after") })
 		close(done)
 	}()
 
@@ -132,5 +147,27 @@ func TestShutdown_DrainsInFlightRequestBeforeClosingAllocator(t *testing.T) {
 	want := []string{"request done", "allocator closed", "after"}
 	if got := events.all(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("shutdown order = %v, want %v", got, want)
+	}
+}
+
+func TestShutdown_StuckRequestKeepsAllocatorBudget(t *testing.T) {
+	events := &eventLog{}
+	pipe := &blockingPipeline{entered: make(chan struct{}, 1), release: make(chan struct{}), events: events}
+	srv, httpSrv, _ := startInFlight(t, pipe)
+	defer close(pipe.release)
+
+	var left time.Duration
+	var closeErr error
+	alloc := fakeAlloc{events: events, onClose: func(ctx context.Context) {
+		d, _ := ctx.Deadline()
+		left, closeErr = time.Until(d), ctx.Err()
+	}}
+	b := budget{DrainDelay: 10 * time.Millisecond, RequestWait: 100 * time.Millisecond, AllocatorDrain: 300 * time.Millisecond}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	shutdown(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), srv, httpSrv, alloc, b)
+
+	if closeErr != nil || left < 250*time.Millisecond {
+		t.Errorf("allocator got %v left (err %v), want its full %v", left, closeErr, b.AllocatorDrain)
 	}
 }

@@ -65,11 +65,14 @@ func TestLoad_PartialFileOverridesFieldByField(t *testing.T) {
 
 func TestLoad_RejectsInvalidValues(t *testing.T) {
 	cases := map[string]string{
-		"zero batch":       "[allocator]\nmax_batch = 0\n",
-		"negative timeout": "[store]\nquery_timeout = \"-1s\"\n",
-		"empty auth mode":  "[auth]\nmode = \"\"\n",
-		"bad duration":     "[wake]\ntimeout = \"soon\"\n",
-		"zero idle":        "[server]\nidle_timeout = \"0s\"\n",
+		"zero batch":        "[allocator]\nmax_batch = 0\n",
+		"negative timeout":  "[store]\nquery_timeout = \"-1s\"\n",
+		"empty auth mode":   "[auth]\nmode = \"\"\n",
+		"bad duration":      "[wake]\ntimeout = \"soon\"\n",
+		"zero idle":         "[server]\nidle_timeout = \"0s\"\n",
+		"zero drain delay":  "[server]\ndrain_delay = \"0s\"\n",
+		"budget over grace": "[server]\nshutdown_grace = \"10s\"\n",
+		"steps over grace":  "[server]\nrequest_wait = \"20s\"\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

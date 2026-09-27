@@ -20,6 +20,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 )
 
 // drainer is the part of the server shutdown needs; *server.Server implements it.
@@ -32,21 +33,38 @@ type closer interface {
 	Close(ctx context.Context) error
 }
 
+// budget splits server.shutdown_grace between the shutdown steps.
+type budget struct {
+	DrainDelay     time.Duration
+	RequestWait    time.Duration
+	AllocatorDrain time.Duration
+}
+
 // shutdown runs the SIGTERM sequence within ctx (server.shutdown_grace):
-//  1. /healthz answers 503 so the platform stops routing here;
-//  2. the HTTP server stops accepting and waits for in-flight requests, which are themselves
-//     waiting on the allocator, so their alerts are still claimed and written;
-//  3. the allocator closes its queue, claims whatever is left, and waits for the writers, so no
-//     claimed id is left without a row;
-//  4. after, in order: the last wake-up to alerts-core and any pending Chat cards.
-func shutdown(ctx context.Context, logger *slog.Logger, srv drainer, httpSrv *http.Server, alloc closer, after ...func(context.Context)) {
+//  1. /healthz answers 503, then drain_delay passes so the platform stops routing here;
+//  2. in-flight requests get until drain_delay + request_wait from the start;
+//  3. the allocator gets its own allocator_drain, even if step 2 overran, so claimed ids get rows;
+//  4. whatever remains goes to the last wake-up and any pending Chat cards.
+func shutdown(ctx context.Context, logger *slog.Logger, srv drainer, httpSrv *http.Server, alloc closer, b budget, after ...func(context.Context)) {
+	start := time.Now()
 	srv.StartDraining()
-	if err := httpSrv.Shutdown(ctx); err != nil {
+	select {
+	case <-time.After(b.DrainDelay):
+	case <-ctx.Done():
+	}
+
+	httpCtx, cancelHTTP := context.WithDeadline(ctx, start.Add(b.DrainDelay+b.RequestWait))
+	if err := httpSrv.Shutdown(httpCtx); err != nil {
 		logger.Error("http shutdown incomplete", "error", err)
 	}
-	if err := alloc.Close(ctx); err != nil {
-		logger.Error("allocator did not drain within shutdown_grace; claimed ids may be left without rows", "error", err)
+	cancelHTTP()
+
+	allocCtx, cancelAlloc := context.WithTimeout(context.Background(), b.AllocatorDrain)
+	if err := alloc.Close(allocCtx); err != nil {
+		logger.Error("allocator did not drain within allocator_drain; claimed ids may be left without rows", "error", err)
 	}
+	cancelAlloc()
+
 	for _, f := range after {
 		f(ctx)
 	}

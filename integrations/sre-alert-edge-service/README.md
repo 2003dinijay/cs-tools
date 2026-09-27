@@ -114,8 +114,11 @@ default and a comment. The main knobs:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `server.shutdown_grace` | `20s` | Time on SIGTERM to finish in-flight requests and writes |
-| `server.write_timeout` | `30s` | A request waits for its ids up to this minus 5s, then gets `503` |
+| `server.shutdown_grace` | `25s` | Total SIGTERM budget; must cover the three below |
+| `server.drain_delay` | `5s` | `/healthz` answers `503` this long before the listener closes |
+| `server.request_wait` | `8s` | A request waits this long for its ids, then gets `503`; also in-flight requests' time on shutdown |
+| `server.allocator_drain` | `7s` | The allocator's own time on shutdown to write everything already claimed |
+| `server.write_timeout` | `30s` | Connection write limit; `request_wait` is capped below it |
 | `server.idle_timeout` | `60s` | Idle keep-alive connections are closed after this |
 | `server.max_body_bytes` | `1048576` | Larger bodies get `413` |
 | `auth.mode` | `none` | Hook for vendor authentication; only `none` exists today |
@@ -186,9 +189,10 @@ curl -sS -X POST "$BASE/site24x7" -H 'Content-Type: application/json' -d '{"STAT
    `CASSANDRA_*` values: this service writes the `alerts` rows that alerts-core reads.
 6. **Replicas**: any number. Ids stay unique across replicas because every claim is a
    compare-and-set on `alert_seq`.
-7. **Shutdown**: on SIGTERM `/healthz` turns `503`, in-flight requests finish, and every claimed
-   id gets its row (or filler) before exit, all within `server.shutdown_grace` (20s by default).
-   Keep Choreo's termination grace period longer than that.
+7. **Shutdown**: on SIGTERM `/healthz` turns `503` for `drain_delay`, in-flight requests get
+   `request_wait`, then the allocator gets its own `allocator_drain` so every claimed id gets its
+   row (or filler), all within `server.shutdown_grace` (25s by default). **Set Choreo's
+   termination grace period to 30s or more.**
 
 ## Logs
 

@@ -47,11 +47,14 @@ type Config struct {
 // ServerConfig tunes the HTTP server: shutdown drain window, read/write timeouts, and the
 // request body limit beyond which a webhook is answered 413.
 type ServerConfig struct {
-	ShutdownGrace Duration `toml:"shutdown_grace"`
-	ReadTimeout   Duration `toml:"read_timeout"`
-	WriteTimeout  Duration `toml:"write_timeout"`
-	IdleTimeout   Duration `toml:"idle_timeout"`
-	MaxBodyBytes  int64    `toml:"max_body_bytes"`
+	ShutdownGrace  Duration `toml:"shutdown_grace"`
+	DrainDelay     Duration `toml:"drain_delay"`
+	RequestWait    Duration `toml:"request_wait"`
+	AllocatorDrain Duration `toml:"allocator_drain"`
+	ReadTimeout    Duration `toml:"read_timeout"`
+	WriteTimeout   Duration `toml:"write_timeout"`
+	IdleTimeout    Duration `toml:"idle_timeout"`
+	MaxBodyBytes   int64    `toml:"max_body_bytes"`
 }
 
 // AuthConfig selects the auth hook implementation. Only "none" exists today.
@@ -122,11 +125,14 @@ func (d Duration) Duration() time.Duration {
 func Defaults() Config {
 	return Config{
 		Server: ServerConfig{
-			ShutdownGrace: Duration(20 * time.Second),
-			ReadTimeout:   Duration(10 * time.Second),
-			WriteTimeout:  Duration(30 * time.Second),
-			IdleTimeout:   Duration(60 * time.Second),
-			MaxBodyBytes:  1 << 20,
+			ShutdownGrace:  Duration(25 * time.Second),
+			DrainDelay:     Duration(5 * time.Second),
+			RequestWait:    Duration(8 * time.Second),
+			AllocatorDrain: Duration(7 * time.Second),
+			ReadTimeout:    Duration(10 * time.Second),
+			WriteTimeout:   Duration(30 * time.Second),
+			IdleTimeout:    Duration(60 * time.Second),
+			MaxBodyBytes:   1 << 20,
 		},
 		Auth: AuthConfig{Mode: "none"},
 		Allocator: AllocatorConfig{
@@ -178,6 +184,14 @@ func (c Config) Validate() error {
 	switch {
 	case c.Server.ShutdownGrace <= 0:
 		return fmt.Errorf("server.shutdown_grace must be positive")
+	case c.Server.DrainDelay <= 0:
+		return fmt.Errorf("server.drain_delay must be positive")
+	case c.Server.RequestWait <= 0:
+		return fmt.Errorf("server.request_wait must be positive")
+	case c.Server.AllocatorDrain <= 0:
+		return fmt.Errorf("server.allocator_drain must be positive")
+	case c.Server.DrainDelay+c.Server.RequestWait+c.Server.AllocatorDrain > c.Server.ShutdownGrace:
+		return fmt.Errorf("server.drain_delay + request_wait + allocator_drain must not exceed shutdown_grace")
 	case c.Server.ReadTimeout <= 0:
 		return fmt.Errorf("server.read_timeout must be positive")
 	case c.Server.WriteTimeout <= 0:
