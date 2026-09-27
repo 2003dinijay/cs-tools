@@ -163,10 +163,38 @@ func TestScheduleIntegration_CatalogueServesAllThreeParts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Catalogue: %v", err)
 	}
-	// One payload because a client needs all three to draw a single day.
+	// One payload because a client needs all of it to draw a single day.
 	if len(cat.Zones) == 0 || len(cat.Shifts) == 0 || len(cat.AbsenceKinds) == 0 {
 		t.Fatalf("got %d zones, %d shifts, %d absence kinds; want all three populated",
 			len(cat.Zones), len(cat.Shifts), len(cat.AbsenceKinds))
+	}
+
+	// The teams too, since the frontend no longer holds that list: if this
+	// comes back empty the team picker renders empty and every team draws in
+	// the same fallback grey.
+	var fixture *domain.ScheduleTeam
+	for i := range cat.Teams {
+		if cat.Teams[i].Key == schedTeamKey {
+			fixture = &cat.Teams[i]
+		}
+	}
+	if fixture == nil {
+		t.Fatalf("the fixture team is missing from %d served teams", len(cat.Teams))
+	}
+	if fixture.Family != "CRE" {
+		t.Fatalf("fixture team family %q, want CRE from its type", fixture.Family)
+	}
+	// Positions are what colour a team, so they have to be 1-based and
+	// distinct -- a zero or a repeat puts two teams in one colour.
+	seen := map[int]string{}
+	for _, tm := range cat.Teams {
+		if tm.SortOrder < 1 {
+			t.Fatalf("team %s has sortOrder %d, want 1 or more", tm.Key, tm.SortOrder)
+		}
+		if other, dup := seen[tm.SortOrder]; dup {
+			t.Fatalf("teams %s and %s share sortOrder %d", other, tm.Key, tm.SortOrder)
+		}
+		seen[tm.SortOrder] = tm.Key
 	}
 }
 

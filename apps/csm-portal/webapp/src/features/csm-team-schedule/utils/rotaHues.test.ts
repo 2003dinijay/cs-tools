@@ -19,7 +19,7 @@
 
 import { describe, expect, it } from "vitest";
 import { initialsOf } from "./rota";
-import { accentOf } from "./rotaHues";
+import { TEAM_PALETTE, accentOf, teamColour } from "./rotaHues";
 
 describe("initialsOf", () => {
   it("takes the first and last word", () => {
@@ -42,5 +42,25 @@ describe("accentOf", () => {
   });
   it("falls back when there is no token", () => {
     expect(accentOf(undefined)).toBe("var(--faint)");
+  });
+});
+
+describe("teamColour", () => {
+  it("gives every position in the palette its own colour", () => {
+    const seen = TEAM_PALETTE.map((_, i) => teamColour(i));
+    expect(new Set(seen).size).toBe(TEAM_PALETTE.length);
+  });
+
+  it("never gives a real team the colour an unknown one falls back to", () => {
+    // The eleventh team landed on a grey identical to the fallback, so a real
+    // team was indistinguishable from one the catalogue had never heard of.
+    const unknown = teamColour(undefined);
+    for (let i = 0; i < TEAM_PALETTE.length; i += 1) {
+      expect(teamColour(i)).not.toBe(unknown);
+    }
+  });
+
+  it("falls back for a team with no position", () => {
+    expect(teamColour(undefined)).toBe(teamColour(-1));
   });
 });

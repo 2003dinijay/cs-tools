@@ -43,7 +43,11 @@ export const TEAM_PALETTE: readonly string[] = [
   "#c9a227",
   "#5b8ff9",
   "#a0562a",
-  "#6b7280",
+  // Not grey here: grey is what an unknown team falls back to, and a real
+  // team drawing in it is indistinguishable from one the catalogue has never
+  // heard of. The eleventh team hit exactly that.
+  "#7d8c21",
+  "#5a6acf",
 ];
 
 /**
