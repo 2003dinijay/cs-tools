@@ -35,10 +35,18 @@ import (
 type fakePolicyLookupRepo struct {
 	policies map[string]repository.SLAPolicyRef
 	calls    []string
+	// errOnName, if set, makes FindPolicyByName fail with a real (non-
+	// NotFoundError) error for that exact name -- used to simulate a
+	// transient lookup failure (as opposed to a genuinely absent policy)
+	// for one specific clock type, leaving every other name unaffected.
+	errOnName string
 }
 
 func (f *fakePolicyLookupRepo) FindPolicyByName(_ context.Context, name, target string) (repository.SLAPolicyRef, error) {
 	f.calls = append(f.calls, name+"|"+target)
+	if f.errOnName != "" && name == f.errOnName {
+		return repository.SLAPolicyRef{}, errors.New("db unavailable")
+	}
 	ref, ok := f.policies[name+"|"+target]
 	if !ok {
 		return repository.SLAPolicyRef{}, &apierror.NotFoundError{Msg: "no sla_policy found named " + name}
@@ -94,7 +102,10 @@ func TestSLAPolicyResolver_Resolve_MatchesRealPolicyNames(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newFakePolicyLookupRepo()
 			r := newSLAPolicyResolver(repo)
-			got, ok := r.resolve(context.Background(), tt.severity, tt.clockType, tt.plan)
+			got, ok, err := r.resolve(context.Background(), tt.severity, tt.clockType, tt.plan)
+			if err != nil {
+				t.Fatalf("resolve() error = %v, want nil", err)
+			}
 			if !ok {
 				t.Fatalf("resolve() ok = false, want true")
 			}
@@ -114,7 +125,10 @@ func TestSLAPolicyResolver_Resolve_P0FallsBackAcrossPlan(t *testing.T) {
 	repo := newFakePolicyLookupRepo()
 	r := newSLAPolicyResolver(repo)
 
-	got, ok := r.resolve(context.Background(), domain.CaseSeverityCatastrophic, slaClockTypeWorkaround, slaPlanOpenSource)
+	got, ok, err := r.resolve(context.Background(), domain.CaseSeverityCatastrophic, slaClockTypeWorkaround, slaPlanOpenSource)
+	if err != nil {
+		t.Fatalf("resolve() error = %v, want nil", err)
+	}
 	if !ok {
 		t.Fatalf("resolve() ok = false, want true (should have fallen back to Managed Services)")
 	}
@@ -135,7 +149,10 @@ func TestSLAPolicyResolver_Resolve_NoPolicyEitherPlan(t *testing.T) {
 	repo := newFakePolicyLookupRepo()
 	r := newSLAPolicyResolver(repo)
 
-	_, ok := r.resolve(context.Background(), domain.CaseSeverityLow, slaClockTypeWorkaround, slaPlanOpenSource)
+	_, ok, err := r.resolve(context.Background(), domain.CaseSeverityLow, slaClockTypeWorkaround, slaPlanOpenSource)
+	if err != nil {
+		t.Fatalf("resolve() error = %v, want nil -- a genuinely absent policy is not a lookup failure", err)
+	}
 	if ok {
 		t.Fatalf("resolve() ok = true, want false: no Query workaround policy is seeded/faked at all")
 	}
@@ -145,7 +162,10 @@ func TestSLAPolicyResolver_Resolve_UnknownClockType(t *testing.T) {
 	repo := newFakePolicyLookupRepo()
 	r := newSLAPolicyResolver(repo)
 
-	_, ok := r.resolve(context.Background(), domain.CaseSeverityCritical, "bogus", slaPlanOpenSource)
+	_, ok, err := r.resolve(context.Background(), domain.CaseSeverityCritical, "bogus", slaPlanOpenSource)
+	if err != nil {
+		t.Fatalf("resolve() error = %v, want nil", err)
+	}
 	if ok {
 		t.Fatalf("resolve() ok = true, want false for an unrecognized clock type")
 	}
@@ -160,11 +180,20 @@ func (f *erroringPolicyLookupRepo) FindPolicyByName(context.Context, string, str
 	return repository.SLAPolicyRef{}, errors.New("db unavailable")
 }
 
+// TestSLAPolicyResolver_Resolve_InfrastructureErrorDoesNotFallBack confirms
+// resolve() both refuses to fall back to the other plan on a real lookup
+// failure (a genuinely-absent policy and a failed lookup must not be
+// treated the same -- see resolve's own doc comment) AND propagates the
+// error rather than swallowing it, so callers like resolveApplicablePolicies
+// can tell "not configured" apart from "couldn't check right now."
 func TestSLAPolicyResolver_Resolve_InfrastructureErrorDoesNotFallBack(t *testing.T) {
 	repo := &erroringPolicyLookupRepo{}
 	r := newSLAPolicyResolver(repo)
 
-	_, ok := r.resolve(context.Background(), domain.CaseSeverityCritical, slaClockTypeResponse, slaPlanOpenSource)
+	_, ok, err := r.resolve(context.Background(), domain.CaseSeverityCritical, slaClockTypeResponse, slaPlanOpenSource)
+	if err == nil {
+		t.Fatalf("resolve() error = nil, want the repository's error propagated")
+	}
 	if ok {
 		t.Fatalf("resolve() ok = true, want false when the repository call itself fails")
 	}

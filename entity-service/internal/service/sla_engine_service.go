@@ -114,25 +114,43 @@ func NewSLAEngineService(repo repository.SLAEngineRepository, projectSvc Project
 }
 
 // resolveApplicablePolicies resolves the real sla_policy row for every clock
-// type severity applies to (slaApplicableClockTypes), skipping (with its own
-// logging, via slaPolicyResolver.resolve) any clock type with no matching
-// policy -- shared by RegisterCaseClocks and ReviseCaseClocks so both derive
-// the same "what should this case's clocks look like" answer the same way.
-// Returns nil (not an error) for a nil severity or one with no applicable
-// clock types, logged by the caller.
-func (s *slaEngineService) resolveApplicablePolicies(ctx context.Context, caseID string, severity *domain.CaseSeverity, projectID string) []repository.SLAPolicyRef {
+// type severity applies to (slaApplicableClockTypes) -- shared by
+// RegisterCaseClocks and ReviseCaseClocks so both derive the same "what
+// should this case's clocks look like" answer the same way. Returns nil,
+// false (not an error) for a nil severity or one with no applicable clock
+// types.
+//
+// The second return, lookupFailed, distinguishes two very different reasons
+// a clock type can be missing from the returned slice: slaPolicyResolver.
+// resolve's own doc comment explains why a genuinely-absent policy (no error)
+// and a failed lookup (an error, e.g. a database blip) both drop that clock
+// type from the slice the same way, but callers must NOT treat them the
+// same. RegisterCaseClocks (case creation) safely ignores lookupFailed --
+// nothing existing is at risk, and a missing clock type there is retried the
+// next time this case is touched. ReviseCaseClocks must check it: proceeding
+// to ReviseClocks with a policy list that's incomplete because of a lookup
+// failure (not because the policy is genuinely unconfigured) would cancel
+// the case's existing clocks and commit no replacement for the one that
+// failed to resolve.
+func (s *slaEngineService) resolveApplicablePolicies(ctx context.Context, caseID string, severity *domain.CaseSeverity, projectID string) (policies []repository.SLAPolicyRef, lookupFailed bool) {
 	if severity == nil {
-		return nil
+		return nil, false
 	}
 	clockTypes, ok := slaApplicableClockTypes[*severity]
 	if !ok || len(clockTypes) == 0 {
-		return nil
+		return nil, false
 	}
 
 	plan := resolveCasePlan(ctx, s.projectSvc, projectID)
-	policies := make([]repository.SLAPolicyRef, 0, len(clockTypes))
+	policies = make([]repository.SLAPolicyRef, 0, len(clockTypes))
 	for _, clockType := range clockTypes {
-		policy, ok := s.resolver.resolve(ctx, *severity, clockType, plan)
+		policy, ok, err := s.resolver.resolve(ctx, *severity, clockType, plan)
+		if err != nil {
+			// resolve already logged why -- this clock type's policy
+			// couldn't be determined right now, not that it doesn't exist.
+			lookupFailed = true
+			continue
+		}
 		if !ok {
 			// resolve already logged why -- skipping this clock type is the
 			// same "no fallback duration" behavior the old slaDurations
@@ -141,7 +159,7 @@ func (s *slaEngineService) resolveApplicablePolicies(ctx context.Context, caseID
 		}
 		policies = append(policies, policy)
 	}
-	return policies
+	return policies, lookupFailed
 }
 
 // RegisterCaseClocks implements SLAEngineService.
@@ -150,7 +168,11 @@ func (s *slaEngineService) RegisterCaseClocks(ctx context.Context, caseID string
 		slog.InfoContext(ctx, "sla engine: not registering clocks, case has no severity", "caseId", caseID)
 		return
 	}
-	policies := s.resolveApplicablePolicies(ctx, caseID, severity, projectID)
+	// lookupFailed deliberately ignored here -- see resolveApplicablePolicies'
+	// own doc comment: nothing existing is at risk at case-creation time, a
+	// missing clock type just means one clock type doesn't get registered
+	// this time.
+	policies, _ := s.resolveApplicablePolicies(ctx, caseID, severity, projectID)
 	if len(policies) == 0 {
 		slog.WarnContext(ctx, "sla engine: not registering clocks, no applicable policies for severity", "caseId", caseID, "severity", *severity)
 		return
@@ -169,7 +191,16 @@ func (s *slaEngineService) RegisterCaseClocks(ctx context.Context, caseID string
 
 // ReviseCaseClocks implements SLAEngineService.
 func (s *slaEngineService) ReviseCaseClocks(ctx context.Context, caseID string, severity *domain.CaseSeverity, projectID string) {
-	policies := s.resolveApplicablePolicies(ctx, caseID, severity, projectID)
+	policies, lookupFailed := s.resolveApplicablePolicies(ctx, caseID, severity, projectID)
+	if lookupFailed {
+		// Do NOT proceed to ReviseClocks with an incomplete policy list --
+		// see resolveApplicablePolicies' own doc comment. Leaving the case's
+		// existing clocks completely untouched (stale, but intact) is safer
+		// than cancelling them and committing no replacement for the clock
+		// type whose policy lookup failed.
+		slog.ErrorContext(ctx, "sla engine: revise clocks skipped, a policy lookup failed", "caseId", caseID)
+		return
+	}
 	cancelled, err := s.repo.ReviseClocks(ctx, caseID, policies)
 	if err != nil {
 		// Atomic: a failure here means NOTHING changed -- the case's prior

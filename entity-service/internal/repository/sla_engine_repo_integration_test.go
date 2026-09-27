@@ -124,23 +124,33 @@ func TestSLAEngineIntegration_ReviseClocksDoesNotResurrectTerminalClock(t *testi
 		t.Fatalf("ReviseClocks: %v", err)
 	}
 
+	// countRows fails the test outright on a query error, rather than
+	// letting a scan failure silently read back as a misleading "0 rows"
+	// assertion failure below.
+	countRows := func(t *testing.T, query string) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, query, slaEngineIntegrationWorkItemID).Scan(&n); err != nil {
+			t.Fatalf("count query failed: %v\nquery: %s", err, query)
+		}
+		return n
+	}
+
 	// RESPONSE: exactly one row, still ACHIEVED -- not resurrected.
-	var responseTotal, responseAchieved int
-	pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
-		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'RESPONSE'`, slaEngineIntegrationWorkItemID).Scan(&responseTotal)
-	pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
-		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'RESPONSE' AND s.stage = 'ACHIEVED'`, slaEngineIntegrationWorkItemID).Scan(&responseAchieved)
+	responseTotal := countRows(t, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'RESPONSE'`)
+	responseAchieved := countRows(t, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'RESPONSE' AND s.stage = 'ACHIEVED'`)
 	if responseTotal != 1 || responseAchieved != 1 {
 		t.Errorf("RESPONSE rows = %d (achieved = %d), want exactly 1 row still ACHIEVED -- a terminal clock must never be resurrected", responseTotal, responseAchieved)
 	}
 
 	// WORKAROUND: the original active row is now CANCELLED, and a fresh
 	// IN_PROGRESS row exists alongside it.
-	var workaroundCancelled, workaroundActive int
-	pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
-		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'WORKAROUND' AND s.stage = 'CANCELLED'`, slaEngineIntegrationWorkItemID).Scan(&workaroundCancelled)
-	pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
-		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'WORKAROUND' AND s.stage = 'IN_PROGRESS'`, slaEngineIntegrationWorkItemID).Scan(&workaroundActive)
+	workaroundCancelled := countRows(t, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'WORKAROUND' AND s.stage = 'CANCELLED'`)
+	workaroundActive := countRows(t, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'WORKAROUND' AND s.stage = 'IN_PROGRESS'`)
 	if workaroundCancelled != 1 || workaroundActive != 1 {
 		t.Errorf("WORKAROUND cancelled = %d, active = %d, want 1/1 -- the old active clock must be cancelled and a fresh one registered", workaroundCancelled, workaroundActive)
 	}
@@ -148,9 +158,8 @@ func TestSLAEngineIntegration_ReviseClocksDoesNotResurrectTerminalClock(t *testi
 	// RESOLUTION: was already CANCELLED before this call -- must now ALSO
 	// have a fresh IN_PROGRESS row (a cancelled clock does not block a
 	// fresh registration).
-	var resolutionActive int
-	pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
-		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'RESOLUTION' AND s.stage = 'IN_PROGRESS'`, slaEngineIntegrationWorkItemID).Scan(&resolutionActive)
+	resolutionActive := countRows(t, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'RESOLUTION' AND s.stage = 'IN_PROGRESS'`)
 	if resolutionActive != 1 {
 		t.Errorf("RESOLUTION active rows = %d, want 1 -- a previously-CANCELLED clock must still be replaced by a fresh registration", resolutionActive)
 	}

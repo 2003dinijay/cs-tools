@@ -299,6 +299,31 @@ func TestSLAEngineService_ReviseCaseClocks_NilSeverityStillCancels(t *testing.T)
 	}
 }
 
+// TestSLAEngineService_ReviseCaseClocks_AbortsOnPolicyLookupFailure is the
+// regression test for a real CodeRabbit finding: resolve() drops a clock
+// type from the resolved list both when its policy is genuinely absent AND
+// when the lookup itself fails (e.g. a database blip) -- resolveApplicablePolicies
+// surfaces the latter case as lookupFailed. ReviseCaseClocks must NOT call
+// ReviseClocks with an incomplete list in that case: doing so would cancel
+// the case's existing clocks and commit no replacement for the clock type
+// whose policy lookup failed. Confirms repo.ReviseClocks (and therefore
+// CancelActiveClocks) is never even called.
+func TestSLAEngineService_ReviseCaseClocks_AbortsOnPolicyLookupFailure(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	repo.errOnName = "P0 - Workaround (Managed Services)" // one of P0's three clock types
+
+	svc := NewSLAEngineService(repo, nil)
+	sev := domain.CaseSeverityCatastrophic
+	svc.ReviseCaseClocks(context.Background(), "case-12", &sev, "")
+
+	if len(repo.cancelled) != 0 {
+		t.Errorf("cancelled = %v, want none -- a policy lookup failure must abort before ReviseClocks is ever called", repo.cancelled)
+	}
+	if len(repo.registered) != 0 {
+		t.Errorf("registered = %v, want none -- a policy lookup failure must abort before ReviseClocks is ever called", repo.registered)
+	}
+}
+
 // TestSLAEngineService_RegisterCaseClocks_UsesResolvedPlan confirms
 // RegisterCaseClocks actually threads the project-derived plan through to
 // the resolver (rather than always defaulting) for a non-P0 severity,
