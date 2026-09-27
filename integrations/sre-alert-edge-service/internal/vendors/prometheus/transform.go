@@ -31,6 +31,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"sre-alert-edge-service/internal/vendors/jsonnum"
 )
 
 // source identifies alerts produced by this adapter when the sender isn't
@@ -116,7 +118,7 @@ func LoadConfig() (Config, error) {
 // Tier-2 overrides.
 func Transform(raw []byte, cfg Config) ([]Alert, error) {
 	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	if err := jsonnum.Unmarshal(raw, &payload); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidStructure, err)
 	}
 

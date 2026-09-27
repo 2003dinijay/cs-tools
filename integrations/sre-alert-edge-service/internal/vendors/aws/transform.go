@@ -41,6 +41,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"sre-alert-edge-service/internal/vendors/jsonnum"
 )
 
 // Tier-2 hardcoded defaults, used when the operator config doesn't supply
@@ -108,7 +110,7 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	}
 
 	var envelope map[string]any
-	if err := json.Unmarshal(raw, &envelope); err != nil {
+	if err := jsonnum.Unmarshal(raw, &envelope); err != nil {
 		return Alert{}, fmt.Errorf("%w: %v", ErrMissingBody, err)
 	}
 
@@ -123,7 +125,7 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 
 	messageRaw := str(envelope, "Message")
 	var messageObj map[string]any
-	if err := json.Unmarshal([]byte(messageRaw), &messageObj); err != nil {
+	if err := jsonnum.Unmarshal([]byte(messageRaw), &messageObj); err != nil {
 		// SNS Message isn't valid JSON -- faithfully still produces a real
 		// alert (not a rejected request), matching the reference script's
 		// own fallback exactly.
@@ -138,7 +140,7 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	alarmDesc := map[string]any{}
 	if adRaw := strings.TrimSpace(str(messageObj, "AlarmDescription")); adRaw != "" {
 		var parsed map[string]any
-		if err := json.Unmarshal([]byte(adRaw), &parsed); err == nil {
+		if err := jsonnum.Unmarshal([]byte(adRaw), &parsed); err == nil {
 			alarmDesc = parsed
 		}
 	}

@@ -27,6 +27,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"sre-alert-edge-service/internal/vendors/jsonnum"
 )
 
 // source identifies alerts produced by this adapter.
@@ -103,7 +105,7 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	}
 
 	var envelope map[string]any
-	if err := json.Unmarshal(raw, &envelope); err != nil {
+	if err := jsonnum.Unmarshal(raw, &envelope); err != nil {
 		return Alert{}, fmt.Errorf("%w: %v", ErrMissingBody, err)
 	}
 
