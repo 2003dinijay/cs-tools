@@ -1178,3 +1178,48 @@
 .csm-ts .ladder .lnm .tier-t {
   text-transform: capitalize;
 }
+
+/* A card holding several windows with the same hours -- the Americas weekend
+   and its on-call -- lays the roles out as columns. Stacked, the second role
+   fell below a three-hour card on the evening it starts; the lane has the
+   width to spare. Each column keeps its own heading and names. */
+.csm-ts .ladder .zbp.sides {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 2px 18px;
+  align-items: start;
+}
+.csm-ts .ladder .zbp.sides .zsec {
+  min-width: 0;
+}
+
+/* ── Roster chips: a little larger, and legible when faded ────────────────
+   "Rotations only" faded leave and allocations to 18% in greyscale -- the
+   right idea (the rota should lead) taken so far that AL, ONB and Mig could
+   not be read at all. They stay quieter than a rotation, but readable.
+   And the chips get slightly larger, with the day column a few pixels wider
+   to hold "6-9pm" -- the name the rota actually uses -- without clipping. */
+.csm-ts .roster td.muted .chip {
+  opacity: 0.5;
+  filter: grayscale(0.5);
+}
+.csm-ts .roster th.day {
+  min-width: 50px;
+  width: 50px;
+}
+.csm-ts .roster.split th.day {
+  min-width: 0;
+  width: auto;
+}
+.csm-ts .tw.roster tbody td .chip.sm {
+  height: 22px;
+  min-width: 38px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.csm-ts .tw.roster.split tbody td.c.z .chip.sm {
+  min-width: 0;
+  padding: 0;
+  font-size: 10px;
+}

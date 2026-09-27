@@ -117,12 +117,10 @@ export default function MyWeekStrip({
           const shift = first ? shifts.get(first.shiftCode) : undefined;
           const past = iso < todayIso;
           const weekend = d.getDay() === 0 || d.getDay() === 6;
-          // An allocation is one span across the weekend -- Friday and Monday
-          // are the same engagement -- but nobody works it on a Saturday, so
-          // a weekend inside one reads as off. Leave never spans a weekend.
-          const found = absenceOn(iso);
-          const absence =
-            found && weekend && kindByCode.get(found.kindCode)?.bucket !== "LEAVE" ? undefined : found;
+          // A weekend inside a span of leave or an allocation reads as off:
+          // leave is not taken on a weekend, and nobody works an engagement
+          // on a Saturday.
+          const absence = weekend ? undefined : absenceOn(iso);
 
           return (
             <div

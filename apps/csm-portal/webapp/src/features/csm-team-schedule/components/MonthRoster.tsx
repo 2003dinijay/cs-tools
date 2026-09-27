@@ -254,6 +254,11 @@ export default function MonthRoster({
       const end = ab.endsOn ?? toIsoDate(days[days.length - 1]);
       for (const d of days) {
         const iso = toIsoDate(d);
+        // Leave is not taken on a weekend -- nobody is rostered to be away
+        // from a Saturday -- so a span running across one leaves those days
+        // alone rather than painting them as leave.
+        const weekendDay = d.getDay() === 0 || d.getDay() === 6;
+        if (weekendDay && kind?.bucket === "LEAVE") continue;
         if (iso >= ab.startsOn && iso <= end) {
           row.days.set(iso, {
             absenceKindCode: ab.kindCode,

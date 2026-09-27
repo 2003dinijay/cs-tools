@@ -115,6 +115,9 @@ interface Block {
   /** Drop the trailing tag on each name, where the surrounding card already
    *  says what it would have said. */
   hideTags?: boolean;
+  /** Lay the sections out as columns rather than stacked -- for a card that
+   *  holds several windows with the same hours, in a lane wide enough for it. */
+  sideBySide?: boolean;
 }
 
 /** The escalation tiers, in the order the rota talks about them. */
@@ -254,6 +257,9 @@ export default function DayLadder({
           key: ordered.map((c) => c.key).join("+"),
           title: ordered.map((c) => c.shift?.label ?? c.rows[0].shiftCode).join(" · "),
           rows: ordered.flatMap((c) => c.rows),
+          // Side by side: the roles are peers, and a short evening card
+          // cannot stack two of them without clipping the second.
+          sideBySide: true,
           sections: ordered.map((c) => ({
             label: c.shift?.label ?? c.rows[0].shiftCode,
             list: c.rows,
@@ -510,7 +516,18 @@ export default function DayLadder({
             ))}
 
             <div className="lane offlane" style={{ ["--zc" as string]: "var(--muted)" }}>
-              <OffRotaStack absences={absences} kinds={absenceKinds} />
+              <OffRotaStack
+                // Leave is not taken on a weekend, so a span that runs across
+                // one does not list its holder as away on the Saturday.
+                absences={
+                  day.getDay() === 0 || day.getDay() === 6
+                    ? absences.filter(
+                        (a) => absenceKinds.find((k) => k.code === a.kindCode)?.bucket !== "LEAVE",
+                      )
+                    : absences
+                }
+                kinds={absenceKinds}
+              />
             </div>
         </div>
       </div>
@@ -586,7 +603,7 @@ function LadderBlock({ block, tz }: { block: Block; tz: string }): JSX.Element {
         <span className="zbn">{block.rows.length}</span>
       </div>
       {block.note ? <div className="zbw">{block.note}</div> : null}
-      <div className="zbp">
+      <div className={`zbp${block.sections && block.sideBySide ? " sides" : ""}`}>
         {block.sections ? (
           // A row per tier, each with its own heading: "who is L2 here" is a
           // question the reader should not have to answer by scanning.

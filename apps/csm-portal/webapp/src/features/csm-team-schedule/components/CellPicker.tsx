@@ -80,6 +80,11 @@ function notWorked(shift: ScheduleShift): string {
   return shift.dayScope === "WEEKEND" ? "weekends only" : "weekdays only";
 }
 
+function isWeekendIso(iso: string): boolean {
+  const d = new Date(`${iso}T00:00:00`);
+  return d.getDay() === 0 || d.getDay() === 6;
+}
+
 function dayCount(from: string, to: string): number {
   const a = new Date(`${from}T00:00:00`).getTime();
   const b = new Date(`${to}T00:00:00`).getTime();
@@ -149,6 +154,8 @@ export default function CellPicker({
       ? until
       : target.rotaDate;
   const span = dayCount(target.rotaDate, lastDay);
+  /** Leave is not marked on a weekend -- see the Away buttons below. */
+  const onWeekend = isWeekendIso(target.rotaDate);
 
   /** Rotations first under their own heading, then the standing windows,
    *  each marked with whether it is worked on the day the picker opened on. */
@@ -281,8 +288,13 @@ export default function CellPicker({
               <button
                 key={kind.code}
                 type="button"
-                className={`pk-c ${kind.code === target.absenceKindCode ? "on" : ""}`}
-                disabled={busy}
+                className={`pk-c ${kind.code === target.absenceKindCode ? "on" : ""}${
+                  onWeekend && kind.bucket === "LEAVE" ? " bad" : ""
+                }`}
+                // No leave on a weekend: nobody is rostered to be away from a
+                // Saturday. A span that starts on a weekday may still run
+                // across one; the grid simply leaves those days alone.
+                disabled={busy || (onWeekend && kind.bucket === "LEAVE")}
                 // No weekday rule here, unlike a rotation. Leave is stored as a
                 // span rather than a day at a time, so a weekend inside it is
                 // covered too -- somebody away Friday to Monday is away for the
