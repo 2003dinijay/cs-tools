@@ -914,10 +914,16 @@ type Project struct {
 	Key              string           `json:"key"`
 	SubscriptionType SubscriptionType `json:"subscriptionType"`
 	ClosureStatus    *ClosureStatus   `json:"closureStatus"`
-	StartDate        *time.Time       `json:"startDate"`
-	EndDate          *time.Time       `json:"endDate"`
-	CreatedOn        time.Time        `json:"createdOn"`
-	UpdatedOn        time.Time        `json:"updatedOn"`
+	// ClosureState mirrors ProjectDetailsView's own field of the same name
+	// (project.wso2_closure_state) -- a distinct concept from ClosureStatus
+	// above despite the similar name: this is the raw enum label
+	// (e.g. "Suspended") SearchProjects' own ProjectView.ClosureState
+	// (ProjectClosureFields, embedded there) is populated from.
+	ClosureState *string    `json:"closureState"`
+	StartDate    *time.Time `json:"startDate"`
+	EndDate      *time.Time `json:"endDate"`
+	CreatedOn    time.Time  `json:"createdOn"`
+	UpdatedOn    time.Time  `json:"updatedOn"`
 }
 
 // ProjectAccountRef is the embedded account summary returned in project detail responses.
@@ -951,7 +957,8 @@ type ProjectAccountRef struct {
 // promotes its fields to the parent's JSON object, so the wire shape is
 // unaffected.
 type ProjectClosureFields struct {
-	// ClosureState is the project's closure/access state (ServiceNow data source only).
+	// ClosureState is the project's closure/access state (project.wso2_closure_state,
+	// migration 000009 -- populated on both data sources).
 	ClosureState *string `json:"closureState"`
 	// EndDateClosureState reflects the closure state driven by the project's end date
 	// (ServiceNow data source only).
@@ -1762,8 +1769,9 @@ type DeployedProductView struct {
 type ProductRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	// Abbreviation is absent on the Postgres data source, whose products table
-	// has no equivalent column — it is populated only from ServiceNow.
+	// Abbreviation is product.code on the Postgres data source (e.g. "wso2am"
+	// for "WSO2 API Manager") -- the exact vocabulary this field's own doc
+	// comment above describes the product-updates catalogue keying on.
 	Abbreviation *string `json:"abbreviation,omitempty"`
 }
 
@@ -5260,6 +5268,12 @@ type CreateIncidentRequest struct {
 	// WorkNotes, and without exposing an internal dedup tag in either of
 	// those human-visible fields.
 	CorrelationID *string `json:"correlationId,omitempty"`
+	// Environment is an optional caller-supplied label (e.g. "Staging",
+	// "Production") identifying the environment the source alert fired
+	// against. Maps to ServiceNow's own custom incident.u_enviroment field
+	// (max length 40; name kept as ServiceNow spells it, misspelling
+	// included). Also persisted on this service's own Postgres incident row.
+	Environment *string `json:"environment,omitempty"`
 }
 
 // CreateIncidentResponse is the output for POST /incidents.

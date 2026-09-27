@@ -752,13 +752,13 @@ const createIncidentFromServiceNowQuery = `
 			id, caller_id, category, impact, urgency,
 			service_id, service_offering_id, contact_type,
 			change_request_id, caused_by_id, parent_incident_id, problem_id,
-			opened_on, correlation_id
+			opened_on, correlation_id, environment
 		)
 		VALUES (
 			$1, $6::uuid, $7::incident_category_enum, $8::incident_impact_enum, $9::incident_urgency_enum,
 			$10::uuid, $11::uuid, $12::incident_contact_type_enum,
 			$13::uuid, $14::uuid, $15::uuid, $16::uuid,
-			NOW(), $17
+			NOW(), $17, $18
 		)
 		RETURNING id
 	)
@@ -784,7 +784,7 @@ func (r *incidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req dom
 		req.CallerID, string(req.Category), string(req.Impact), string(req.Urgency),
 		req.ServiceID, req.ServiceOfferingID, contactType,
 		req.ChangeRequestID, req.CausedByID, req.ParentIncidentID, req.ProblemID,
-		req.CorrelationID,
+		req.CorrelationID, req.Environment,
 	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {

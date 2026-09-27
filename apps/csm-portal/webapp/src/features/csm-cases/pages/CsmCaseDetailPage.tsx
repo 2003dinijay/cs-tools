@@ -311,6 +311,9 @@ type CaseTabId =
   | "call-requests"
   | "tasks";
 
+// Paused product-wide pending an upstream Task data-model decision. Flip to
+// true to restore; nothing else needs to change.
+const TASKS_FEATURE_ENABLED = false;
 
 const TAB_DEFS: Array<{
   id: CaseTabId;
@@ -588,7 +591,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
     isFetching: isFetchingCallRequests,
   } = useGetCsmCaseCallRequests(isAnnouncement ? undefined : caseId);
   const { data: caseTasks } = useSearchCaseTasks(
-    isAnnouncement ? undefined : caseId,
+    TASKS_FEATURE_ENABLED && !isAnnouncement ? caseId : undefined,
   );
   // The backend only serves time cards to roles that can use them, so the query
   // is skipped (undefined id disables it) rather than left to 403.
@@ -2226,6 +2229,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // more than the real (server-side) gate is likely to. This is UI-only — the
   // entity-service enforces the authoritative close gate, and a rejection
   // still surfaces via showError even if this signal is stale or absent.
+  // While TASKS_FEATURE_ENABLED is false, `caseTasks` is always undefined, so
+  // this advisory never fires — the closure UI just falls silent on it,
+  // rather than misleadingly claiming "no open tasks".
   const hasOpenTask = (caseTasks?.tasks ?? []).some((t) => t.state === "OPEN");
   const closeBlockedReason = hasOpenTask
     ? "This case has an open task. Closing may be rejected until it's resolved or closed."
@@ -3027,7 +3033,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
         </Box>
       )}
 
-      {activeTab === "tasks" && caseId && (
+      {TASKS_FEATURE_ENABLED && activeTab === "tasks" && caseId && (
         <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: "1fr" }}>
           <TasksWidget caseId={caseId} />
         </Box>
@@ -3182,7 +3188,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
         />
       )}
 
-      {createTaskOpen && (
+      {TASKS_FEATURE_ENABLED && createTaskOpen && (
         <CreateTaskDialog
           isSaving={createTask.isPending}
           onClose={() => setCreateTaskOpen(false)}

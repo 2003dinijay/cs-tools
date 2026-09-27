@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -34,9 +35,20 @@ type recordingSLAEngineRepo struct {
 	registered []string // "workItemID|policyID"
 	completed  []string // "workItemID|target"
 	paused     []string // "workItemID|target|true" or "...|false"
+	cancelled  []string // "workItemID"
 
 	registerErr error
 	registerOK  bool // if false, RegisterClock reports "already registered"
+	cancelErr   error
+	cancelCount int
+	// failReviseClocksTimes controls how ReviseClocks fails, if at all:
+	// 0 means never fail (ignores cancelErr); -1 means always fail with
+	// cancelErr; a positive N means fail with cancelErr for the next N
+	// calls (decrementing each time) then succeed -- used to test
+	// ReviseCaseClocks' bounded retry actually recovers from a transient
+	// failure, as opposed to the -1 "fails forever" case.
+	failReviseClocksTimes int
+	reviseClocksCalls     int
 }
 
 func newRecordingSLAEngineRepo() *recordingSLAEngineRepo {
@@ -49,6 +61,25 @@ func (r *recordingSLAEngineRepo) RegisterClock(_ context.Context, workItemID str
 	}
 	r.registered = append(r.registered, workItemID+"|"+policy.ID)
 	return r.registerOK, nil
+}
+
+// ReviseClocks fakes the real repository's atomic cancel-then-register-many:
+// on cancelErr, nothing is recorded at all (mirroring a rolled-back
+// transaction -- neither the cancel nor any registration "took"), same as
+// the real ReviseClocks' all-or-nothing guarantee.
+func (r *recordingSLAEngineRepo) ReviseClocks(_ context.Context, workItemID string, policies []repository.SLAPolicyRef) (int, error) {
+	r.reviseClocksCalls++
+	if r.failReviseClocksTimes != 0 {
+		if r.failReviseClocksTimes > 0 {
+			r.failReviseClocksTimes--
+		}
+		return 0, r.cancelErr
+	}
+	r.cancelled = append(r.cancelled, workItemID)
+	for _, policy := range policies {
+		r.registered = append(r.registered, workItemID+"|"+policy.ID)
+	}
+	return r.cancelCount, nil
 }
 
 func (r *recordingSLAEngineRepo) CompleteClock(_ context.Context, workItemID, target string) (bool, error) {
@@ -188,6 +219,150 @@ func TestSLAEngineService_ApplyCaseStateEffects(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSLAEngineService_ReviseCaseClocks_CancelsThenRegistersFresh confirms
+// a severity change on an existing case cancels every one of its existing
+// clocks before registering entirely new ones for the new severity, in
+// that order -- so the new registration is never blocked by RegisterClock's
+// own NOT EXISTS guard seeing a still-active old-severity row, and the new
+// clocks carry no relation to the old ones (fresh start_on, zero elapsed).
+func TestSLAEngineService_ReviseCaseClocks_CancelsThenRegistersFresh(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	svc := NewSLAEngineService(repo, nil)
+
+	sev := domain.CaseSeverityCatastrophic // P0
+	svc.ReviseCaseClocks(context.Background(), "case-8", &sev, "")
+
+	if len(repo.cancelled) != 1 || repo.cancelled[0] != "case-8" {
+		t.Fatalf("cancelled = %v, want [case-8]", repo.cancelled)
+	}
+	want := []string{"case-8|p0-r-ms", "case-8|p0-w-ms", "case-8|p0-res-ms"}
+	if len(repo.registered) != len(want) {
+		t.Fatalf("registered = %v, want %v", repo.registered, want)
+	}
+	for i, w := range want {
+		if repo.registered[i] != w {
+			t.Errorf("registered[%d] = %q, want %q", i, repo.registered[i], w)
+		}
+	}
+}
+
+// TestSLAEngineService_ReviseCaseClocks_DowngradeStillCancelsEveryClockType
+// covers a severity DOWNGRADE: ReviseClocks cancels every active clock type
+// on the case regardless of what the new severity resolves to, so a clock
+// type no longer applicable after the downgrade (e.g. LOW dropping
+// "workaround"/"resolution") is cancelled too, not left running. This is
+// the one already-cancelled call recorded per case, independent of how
+// many (fewer, for a downgrade) clock types get freshly registered.
+func TestSLAEngineService_ReviseCaseClocks_DowngradeStillCancelsEveryClockType(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	svc := NewSLAEngineService(repo, nil)
+
+	sev := domain.CaseSeverityLow // Query -- response only
+	svc.ReviseCaseClocks(context.Background(), "case-9", &sev, "")
+
+	if len(repo.cancelled) != 1 || repo.cancelled[0] != "case-9" {
+		t.Fatalf("cancelled = %v, want [case-9]", repo.cancelled)
+	}
+	if len(repo.registered) != 1 || repo.registered[0] != "case-9|q-r-os" {
+		t.Errorf("registered = %v, want [case-9|q-r-os]", repo.registered)
+	}
+}
+
+// TestSLAEngineService_ReviseCaseClocks_NothingHappensIfRepoFails confirms
+// ReviseClocks' atomicity guarantee at the service layer: when the
+// repository call errors (simulating any failure inside its transaction --
+// the cancel, a registration, or the commit itself), NEITHER the cancel NOR
+// any registration is recorded, so the case's prior clocks are left exactly
+// as they were rather than cancelled with no replacement.
+func TestSLAEngineService_ReviseCaseClocks_NothingHappensIfRepoFails(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	repo.cancelErr = errors.New("db unavailable")
+	repo.failReviseClocksTimes = -1 // fail every call, including both retry attempts
+	svc := NewSLAEngineService(repo, nil)
+
+	sev := domain.CaseSeverityCatastrophic
+	svc.ReviseCaseClocks(context.Background(), "case-11", &sev, "")
+
+	if len(repo.cancelled) != 0 {
+		t.Errorf("cancelled = %v, want none recorded (ReviseClocks errored)", repo.cancelled)
+	}
+	if len(repo.registered) != 0 {
+		t.Errorf("registered = %v, want none recorded (ReviseClocks errored -- atomic, all-or-nothing)", repo.registered)
+	}
+	if repo.reviseClocksCalls != 2 {
+		t.Errorf("ReviseClocks calls = %d, want 2 (both retry attempts exhausted)", repo.reviseClocksCalls)
+	}
+}
+
+// TestSLAEngineService_ReviseCaseClocks_RetriesOnceAndRecovers confirms the
+// bounded retry actually recovers from a transient failure: ReviseClocks
+// fails on its first call and succeeds on the second, and the case ends up
+// with its clocks cancelled and re-registered exactly as if the first call
+// had never failed.
+func TestSLAEngineService_ReviseCaseClocks_RetriesOnceAndRecovers(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	repo.cancelErr = errors.New("db unavailable")
+	repo.failReviseClocksTimes = 1 // fail once, then succeed
+	svc := NewSLAEngineService(repo, nil)
+
+	sev := domain.CaseSeverityCatastrophic
+	svc.ReviseCaseClocks(context.Background(), "case-13", &sev, "")
+
+	if repo.reviseClocksCalls != 2 {
+		t.Fatalf("ReviseClocks calls = %d, want 2 (one failure, one successful retry)", repo.reviseClocksCalls)
+	}
+	if len(repo.cancelled) != 1 || repo.cancelled[0] != "case-13" {
+		t.Errorf("cancelled = %v, want [case-13] -- the retry should have succeeded", repo.cancelled)
+	}
+	want := []string{"case-13|p0-r-ms", "case-13|p0-w-ms", "case-13|p0-res-ms"}
+	if len(repo.registered) != len(want) {
+		t.Errorf("registered = %v, want %v -- the retry should have succeeded", repo.registered, want)
+	}
+}
+
+// TestSLAEngineService_ReviseCaseClocks_NilSeverityStillCancels confirms a
+// nil newSeverity (RegisterCaseClocks' own no-op case) still runs the
+// cancel step -- a case moving to an unrecognised/nil severity must not
+// keep its old clocks running just because the new one can't be resolved.
+func TestSLAEngineService_ReviseCaseClocks_NilSeverityStillCancels(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	svc := NewSLAEngineService(repo, nil)
+
+	svc.ReviseCaseClocks(context.Background(), "case-10", nil, "")
+
+	if len(repo.cancelled) != 1 || repo.cancelled[0] != "case-10" {
+		t.Fatalf("cancelled = %v, want [case-10]", repo.cancelled)
+	}
+	if len(repo.registered) != 0 {
+		t.Errorf("registered = %v, want none (nil severity)", repo.registered)
+	}
+}
+
+// TestSLAEngineService_ReviseCaseClocks_AbortsOnPolicyLookupFailure is the
+// regression test for a real CodeRabbit finding: resolve() drops a clock
+// type from the resolved list both when its policy is genuinely absent AND
+// when the lookup itself fails (e.g. a database blip) -- resolveApplicablePolicies
+// surfaces the latter case as lookupFailed. ReviseCaseClocks must NOT call
+// ReviseClocks with an incomplete list in that case: doing so would cancel
+// the case's existing clocks and commit no replacement for the clock type
+// whose policy lookup failed. Confirms repo.ReviseClocks (and therefore
+// CancelActiveClocks) is never even called.
+func TestSLAEngineService_ReviseCaseClocks_AbortsOnPolicyLookupFailure(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	repo.errOnName = "P0 - Workaround (Managed Services)" // one of P0's three clock types
+
+	svc := NewSLAEngineService(repo, nil)
+	sev := domain.CaseSeverityCatastrophic
+	svc.ReviseCaseClocks(context.Background(), "case-12", &sev, "")
+
+	if len(repo.cancelled) != 0 {
+		t.Errorf("cancelled = %v, want none -- a policy lookup failure must abort before ReviseClocks is ever called", repo.cancelled)
+	}
+	if len(repo.registered) != 0 {
+		t.Errorf("registered = %v, want none -- a policy lookup failure must abort before ReviseClocks is ever called", repo.registered)
 	}
 }
 

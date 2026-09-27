@@ -1970,6 +1970,88 @@ product, account, deployment, deployed_product, split across
     conflict loop — either way, the exact prefix/padding/format needs a
     real answer, not an invented one.
 
+## A freshly created case silently omitted escalationLevel/isEscalated entirely
+
+Found the same way as the project-fields gaps above (HAR diff, this time against case-creation
+traffic): `GET /cases/{id}` genuinely has real Postgres backing and working code for both fields
+(`GetCaseByID` already selects `current_escalation_level`/`is_escalated` and `SearchCases`'
+own escalation filter already treats a NULL row as "not escalated" -- see this file's own
+"escalation (isEmpty / isNotEmpty)" note), but a brand-new case has NULL for both columns
+(case creation sets neither), and the read path passed that NULL straight through as `nil` --
+which `omitempty` then drops from the response entirely, rather than rendering the same
+"never escalated" default ServiceNow's own case response always includes (`escalationLevel:
+{id: "0", label: "EL0"}`, `isEscalated: false`) from the moment a case exists. Fixed by
+defaulting NULL to that same state in `GetCaseByID`, matching the semantic the filter side
+already gives NULL rather than inventing a new one.
+
+## POST /deployments/{id}/products/search dropped product.abbreviation on Postgres
+
+`ProductRef.Abbreviation`'s own doc comment claimed "absent on the Postgres data source, whose
+products table has no equivalent column" -- checked directly against real data and this is
+wrong: `product.code` (migration 000010) holds exactly this value (`"wso2am"` for `"WSO2 API
+Manager"`, `"wso2is"` for `"WSO2 Identity Server"`), the same vocabulary this field's own doc
+comment already describes the product-updates catalogue keying on. `SearchDeployedProducts`
+simply never selected it. Fixed by adding `p.code` to the query and scanning it straight into
+`Product.Abbreviation` (already the correct `*string` type for a nullable column). Doc comment
+corrected to match.
+
+## GET /projects/{id} and POST /projects/search were missing most of a project's own fields
+
+Found by diffing the Postgres and ServiceNow customer-portal responses field-for-field
+(HAR capture comparison) against the real customer-portal-backend-v2 traffic: `GetProjectByID`
+never selected most of `ProjectDetailsView`'s own fields, even though every one of them has a
+real Postgres column (migration 000009) -- `account.ownerEmail`/`technicalOwnerEmail`,
+`closureState`, `onboardingStatus`, `goLivePlanDate`, `onboardingExpiryDate`, and all six
+query/onboarding-hours balances (`totalQueryHours`, `consumedQueryHours`, `remainingQueryHours`,
+`totalOnboardingHours`, `consumedOnboardingHours`, `remainingOnboardingHours`) all came back as
+their zero value regardless of what was actually stored. Fixed by extending `GetProjectByID`'s
+query and scan:
+- `mgr`/`tow` are two new `LEFT JOIN "user"` aliases resolving `account.account_manager_id`/
+  `technical_owner_id` to `.email` -- the same two FKs `account_repo.go`'s own
+  `accountSelectColumns` already resolves for `GET /accounts/{id}`, reused here under the same
+  alias names. `TechnicalOwnerEmail`'s mapping is exact (the column is literally named
+  `technical_owner_id`); `OwnerEmail` is inferred as `account_manager_id` -- the account's other
+  named "owner" role, and the one ServiceNow's own project payload pairs with
+  `technicalOwnerEmail` the same way. Revisit if that pairing turns out to be wrong.
+- `wso2_closure_state`/`onboarding_status`/`onboarding_go_live_date`/`onboarding_go_live_plan_date`/
+  `onboarding_expiry_date` scan straight into `ProjectDetailsView`'s already-pointer fields --
+  no local var needed, same NULL-tolerance as every other optional column here.
+- The six query/onboarding-hours balances are stored as `INTERVAL`, not a plain number;
+  `EXTRACT(EPOCH FROM ...) / 3600.0` converts to hours in SQL (matching
+  `project_case_stats_repo.go`'s existing `EXTRACT(EPOCH ...)` convention for a duration column)
+  and scans directly into the matching `*float64` field -- a NULL interval extracts to a NULL
+  numeric, preserving "not tracked" instead of becoming a fabricated `0`.
+
+`ProjectClosureFields.ClosureState`'s own doc comment used to say "(ServiceNow data source only)"
+-- stale even before this fix, since `project.wso2_closure_state` was always a real column; only
+the query never read it. Corrected to say it's populated on both data sources now.
+
+`POST /projects/search` had the same gap for `closureState` specifically, but through a second,
+independent bug on top of the first: `project_repo.go`'s `SearchProjects` query never selected
+`wso2_closure_state` at all (so `domain.Project` had nowhere to put it), **and**
+`project_service.go`'s `domain.Project` -> `domain.ProjectView` mapping didn't copy the field
+across even after it was added to the repo type -- the same shape of bug this file's own
+`StartDate` fix (see "SearchProjects crashed..." below) already hit once for a different field on
+this exact mapping. Both had to be fixed together: `domain.Project` gained a `ClosureState *string`
+field, the repo query now selects `p.wso2_closure_state::TEXT`, and the service layer's
+`ProjectView` construction now sets `ProjectClosureFields: domain.ProjectClosureFields{ClosureState: p.ClosureState}`.
+
+Two things intentionally left untouched by this same audit, not code bugs:
+- `GET /projects/{id}/features`' `acceptedSeverityValues`/`has*Access` flags being empty on some
+  environments is a **migration data-backfill gap, not a code bug** -- confirmed live: migration
+  000085's `ADD COLUMN`s exist, but its `UPDATE ... WHERE name = '<project type>'` backfill never
+  ran, because that environment's schema is owned by a separate sync tool (its own
+  `csm_migration_*` tracking tables, an entirely different numbering/naming scheme) that mirrors
+  column shape but has no way to replicate entity-service's own custom seed-data logic embedded in
+  a migration file. Redeploying entity-service will not fix this on its own; the backfill has to be
+  run directly against that environment.
+- `GET /projects/{id}/filters`' `severityBasedAllocationTime` has no real Postgres source and was
+  deliberately not derived from `sla_policy` (migration 000089 and its ServiceNow-synced rows) as a
+  substitute -- checked directly against real data, and none of that table's `RESPONSE`-target
+  durations match the actual per-severity minutes a real project's filters response returns, so
+  synthesizing a value from it would risk returning a plausible-looking but wrong number. This
+  stays an explicit TODO (see `project_metadata_service.go`'s own comment) rather than a fix.
+
 ## GetProjectByID 404'd on any project with no linked account
 
 Found in the same audit pass as the SearchProjects fix below, by explicitly

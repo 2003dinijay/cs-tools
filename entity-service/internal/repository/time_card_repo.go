@@ -116,6 +116,14 @@ func NewTimeCardRepository(db *pgxpool.Pool) TimeCardRepository {
 	return &timeCardRepo{db: db}
 }
 
+// The five per-activity minute columns are wrapped in COALESCE(...,0) --
+// same reasoning and same precedent as project_stats_repo.go's own
+// timeCardMinutesExpr: these columns are nullable, and scanTimeCardView
+// below scans them into plain (non-pointer) int locals, which errors
+// ("cannot scan NULL into *int") the moment any one of them is NULL on any
+// row this query returns. COALESCE at the SQL layer is the minimal,
+// root-cause fix -- no Go struct/scan-target change is needed once the SQL
+// itself guarantees non-NULL.
 const timeCardSelectColumns = `
 	tc.id, tc.work_date, tc.is_billable, tc.state::TEXT, tc.issue_complexity::TEXT,
 	COALESCE(tc.analyzing_minutes,0), COALESCE(tc.setting_up_minutes,0), COALESCE(tc.reproducing_debugging_minutes,0),

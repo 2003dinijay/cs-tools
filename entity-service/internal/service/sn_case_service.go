@@ -1483,6 +1483,22 @@ func (s *snCaseService) applyCaseStateSLAEffects(ctx context.Context, caseID str
 	s.slaEngine.ApplyCaseStateEffects(ctx, caseID, state)
 }
 
+// reviseCaseSLAClocks best-effort cancels the CSM-native SLA engine's
+// existing clocks and registers an entirely fresh set for an EXISTING
+// case's new severity (see SLAEngineService.ReviseCaseClocks' own doc
+// comment for the exact cancel-then-register-from-zero behavior this
+// triggers). A pure in-process DB operation, deliberately independent of
+// s.publisher --
+// see this method's own call site in UpdateCase for why. Skipped entirely
+// when s.slaEngine is nil (no database configured -- see
+// snCaseService.slaEngine's own doc comment); that guard lives at the call
+// site, not here, matching applyCaseStateSLAEffects.
+func (s *snCaseService) reviseCaseSLAClocks(ctx context.Context, caseID string, severity *domain.CaseSeverity, projectID string) {
+	ctx, cancel := context.WithTimeout(ctx, applyCaseStateSLATimeout)
+	defer cancel()
+	s.slaEngine.ReviseCaseClocks(ctx, caseID, severity, projectID)
+}
+
 // Same role-lookup mechanism as applyResponseSLAOnComment (this service has
 // no auth/identity layer of its own, so "is this comment's author a
 // customer" is answered by resolving the author and checking their
@@ -3052,23 +3068,55 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	// Same reasoning as the state-change block above, applied to severity
 	// instead: a caller re-PATCHing the case's current severity (a no-op as
 	// far as ServiceNow is concerned) must not send every watcher a false
-	// "severity changed" notification. req.State and req.Severity are
+	// "severity changed" notification, nor spuriously revise SLA clock
+	// policies that didn't actually change. req.State and req.Severity are
 	// mutually exclusive per request (see exclusiveCount above), so this and
 	// the block above never both fire for the same call.
+	//
+	// Gated on (s.publisher != nil || s.slaEngine != nil), NOT s.publisher
+	// alone: this same "did severity genuinely change" detection now also
+	// feeds reviseCaseSLAClocks below, and SLAEngineService's own doc
+	// comment is explicit that SLA tracking must never be gated on Event
+	// Hub/publisher being configured -- a deployment with s.slaEngine set
+	// but s.publisher nil (Event Hub simply not enabled -- see
+	// cfg.EventPublishingEnabled's own "safe by default kill switch" doc
+	// comment in routes.go) must still get its clocks revised. severityChanged
+	// itself carries no publisher-configured assumption; the actual publish
+	// call below still checks s.publisher != nil on its own.
 	var caseBeforeSeverity domain.CaseView
-	publishSeverityChange := false
-	if req.Severity != nil && s.publisher != nil {
-		enrichCtx, cancel := context.WithTimeout(ctx, publishSeverityChangedTimeout)
-		cv, err := s.GetCaseByID(enrichCtx, req.ID)
-		cancel()
+	severityChanged := false
+	if req.Severity != nil && (s.publisher != nil || s.slaEngine != nil) {
+		// Bounded retry (2 attempts total, each on its own fresh timeout,
+		// with a short pause between): a single transient failure here
+		// (e.g. a DB blip) would otherwise silently skip reviseCaseSLAClocks
+		// below even though the PATCH itself goes on to succeed, leaving
+		// the case's SLA clocks on its old severity with nothing to
+		// reconcile them later. This narrows, but does not eliminate, that
+		// gap -- a sustained outage still falls through to the same
+		// accepted best-effort logging. Each attempt gets half of the
+		// original single-attempt budget so the worst case (both attempts
+		// failing) doesn't double the latency this blocking call already
+		// added to the PATCH response.
+		var cv domain.CaseView
+		var err error
+		for attempt := 1; attempt <= 2; attempt++ {
+			enrichCtx, cancel := context.WithTimeout(ctx, publishSeverityChangedTimeout/2)
+			cv, err = s.GetCaseByID(enrichCtx, req.ID)
+			cancel()
+			if err == nil || attempt == 2 {
+				break
+			}
+			slog.WarnContext(ctx, "sn update case: enrich case for case.severity_changed effects failed, retrying once", "caseId", req.ID, "err", err)
+			time.Sleep(200 * time.Millisecond)
+		}
 		switch {
 		case err != nil:
-			slog.ErrorContext(ctx, "sn update case: enrich case for case.severity_changed publish failed", "caseId", req.ID)
+			slog.ErrorContext(ctx, "sn update case: enrich case for case.severity_changed effects failed after retry", "caseId", req.ID)
 		case derefSeverity(cv.Severity) == *req.Severity:
-			slog.InfoContext(ctx, "sn update case: case.severity_changed not published, severity is unchanged", "caseId", req.ID)
+			slog.InfoContext(ctx, "sn update case: case.severity_changed effects skipped, severity is unchanged", "caseId", req.ID)
 		default:
 			caseBeforeSeverity = cv
-			publishSeverityChange = true
+			severityChanged = true
 		}
 	}
 
@@ -3259,15 +3307,31 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		s.publishCaseAcknowledged(ctx, req.ID, resp.Case.AcknowledgedBy.Name)
 	}
 	// resp.Case.Severity != caseBeforeSeverity.Severity is a second guard on
-	// top of publishSeverityChange itself: that flag only confirms the
-	// PATCH *request* asked for a different severity than the pre-PATCH
+	// top of severityChanged itself: that flag only confirms the PATCH
+	// *request* asked for a different severity than the pre-PATCH
 	// GetCaseByID observed — it says nothing about what the PATCH response
 	// actually echoes back. If ServiceNow's response reports the
-	// pre-update severity (e.g. a stale echo), publishing anyway would
-	// send a false case.severity_changed event with identical old/new
+	// pre-update severity (e.g. a stale echo), acting on it anyway would
+	// fire a false case.severity_changed event, or revise SLA clocks to a
+	// policy the case was never actually moved to, with identical old/new
 	// values.
-	if publishSeverityChange && resp.Case.Severity != nil && derefSeverity(resp.Case.Severity) != derefSeverity(caseBeforeSeverity.Severity) {
+	severityGenuinelyChanged := severityChanged && resp.Case.Severity != nil && derefSeverity(resp.Case.Severity) != derefSeverity(caseBeforeSeverity.Severity)
+	if severityGenuinelyChanged && s.publisher != nil {
 		s.publishSeverityChanged(ctx, req.ID, string(derefSeverity(caseBeforeSeverity.Severity)), string(derefSeverity(resp.Case.Severity)), caseBeforeSeverity)
+	}
+	// Deliberately a separate guard from the publish above (s.slaEngine != nil,
+	// not s.publisher != nil) -- see severityChanged's own doc comment above
+	// for why revising SLA clocks must not depend on Event Hub being
+	// configured. projectID mirrors registerCaseSLAClocks' own
+	// cv.ProjectDetails-derived lookup, sourced from caseBeforeSeverity (the
+	// same pre-PATCH GetCaseByID this block already fetched) since UpdateCase
+	// has no other project id in scope for an existing case.
+	if severityGenuinelyChanged && s.slaEngine != nil {
+		projectID := ""
+		if caseBeforeSeverity.ProjectDetails != nil {
+			projectID = caseBeforeSeverity.ProjectDetails.ID
+		}
+		s.reviseCaseSLAClocks(ctx, req.ID, resp.Case.Severity, projectID)
 	}
 
 	return resp, nil
