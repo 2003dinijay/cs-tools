@@ -124,20 +124,26 @@ func newSLAPolicyResolver(repo repository.SLAEngineRepository) *slaPolicyResolve
 // project looks like Open Source must still resolve to the real P0 policy
 // rather than getting no clock at all.
 //
-// ok=false (with no error) means no policy exists under EITHER plan label
+// ok=false with a nil error means no policy exists under EITHER plan label
 // for this severity/clockType combination -- logged as a warning by the
 // caller, exactly like the old slaDurations map's "severity not in map"
-// case, never a fabricated fallback duration.
-func (r *slaPolicyResolver) resolve(ctx context.Context, severity domain.CaseSeverity, clockType, derivedPlan string) (repository.SLAPolicyRef, bool) {
+// case, never a fabricated fallback duration. A non-nil error means the
+// lookup itself failed (e.g. a database blip), NOT that the policy is
+// absent -- callers must treat these two cases differently: RegisterCaseClocks
+// safely skips either one (nothing existing is at risk), but ReviseCaseClocks
+// must NOT proceed to cancel a case's existing clocks on the strength of an
+// incomplete policy list caused by a transient lookup failure (see
+// resolveApplicablePolicies' own doc comment).
+func (r *slaPolicyResolver) resolve(ctx context.Context, severity domain.CaseSeverity, clockType, derivedPlan string) (repository.SLAPolicyRef, bool, error) {
 	prefix, ok := slaSeverityPolicyPrefix[severity]
 	if !ok {
 		slog.WarnContext(ctx, "sla engine: no policy name prefix for severity", "severity", severity)
-		return repository.SLAPolicyRef{}, false
+		return repository.SLAPolicyRef{}, false, nil
 	}
 	target, ok := slaClockTypeTarget[clockType]
 	if !ok {
 		slog.WarnContext(ctx, "sla engine: unknown clock type", "clockType", clockType)
-		return repository.SLAPolicyRef{}, false
+		return repository.SLAPolicyRef{}, false, nil
 	}
 	label := slaClockTypeNameLabel[clockType]
 
@@ -150,17 +156,17 @@ func (r *slaPolicyResolver) resolve(ctx context.Context, severity domain.CaseSev
 		name := prefix + " - " + label + " (" + plan + ")"
 		ref, err := r.repo.FindPolicyByName(ctx, name, target)
 		if err == nil {
-			return ref, true
+			return ref, true, nil
 		}
 		var notFound *apierror.NotFoundError
 		if !errors.As(err, &notFound) {
 			slog.ErrorContext(ctx, "sla engine: policy lookup failed", "name", name, "err", err)
-			return repository.SLAPolicyRef{}, false
+			return repository.SLAPolicyRef{}, false, err
 		}
 	}
 	slog.WarnContext(ctx, "sla engine: no sla_policy found for severity/clockType under either plan",
 		"severity", severity, "clockType", clockType, "triedPlans", []string{derivedPlan, altPlan})
-	return repository.SLAPolicyRef{}, false
+	return repository.SLAPolicyRef{}, false, nil
 }
 
 // resolveCasePlan is this engine's single biggest judgment call: nothing in

@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -32,6 +33,7 @@ import (
 // resolver/repository logic behind it.
 type fakeSLAEngineService struct {
 	registerCalls []fakeSLARegisterCall
+	reviseCalls   []fakeSLARegisterCall
 	completeCalls []string // caseID
 	stateCalls    []fakeSLAStateCall
 }
@@ -49,6 +51,10 @@ type fakeSLAStateCall struct {
 
 func (f *fakeSLAEngineService) RegisterCaseClocks(_ context.Context, caseID string, severity *domain.CaseSeverity, projectID string) {
 	f.registerCalls = append(f.registerCalls, fakeSLARegisterCall{caseID, severity, projectID})
+}
+
+func (f *fakeSLAEngineService) ReviseCaseClocks(_ context.Context, caseID string, severity *domain.CaseSeverity, projectID string) {
+	f.reviseCalls = append(f.reviseCalls, fakeSLARegisterCall{caseID, severity, projectID})
 }
 
 func (f *fakeSLAEngineService) CompleteResponseClock(_ context.Context, caseID string) {
@@ -318,6 +324,238 @@ func TestSNCaseService_UpdateCase_NilSLAEngineSkipsStateEffects(t *testing.T) {
 
 	newState := domain.CaseStateWorkInProgress
 	req := domain.UpdateCaseRequest{ID: caseID, State: &newState}
+	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("UpdateCase() error = %v", err)
+	}
+}
+
+// TestSNCaseService_UpdateCase_RevisesSLAClocksOnSeverityChange verifies a
+// Severity-only PATCH that genuinely changes the case's severity calls
+// SLAEngineService.ReviseCaseClocks with the case id, the NEW (post-PATCH)
+// severity, and the project id from the pre-PATCH GetCaseByID enrichment --
+// mirroring TestSNCaseService_UpdateCase_PublishesSeverityChanged's own
+// fixture shape (sn_case_severity_changed_test.go), but with s.publisher
+// deliberately nil: reviseCaseSLAClocks must fire independent of whether
+// Event Hub publishing is configured (see severityChanged's own doc comment
+// in UpdateCase for why).
+func TestSNCaseService_UpdateCase_RevisesSLAClocksOnSeverityChange(t *testing.T) {
+	caseSysid := sysid32('a')
+	projectSysid := sysid32('b')
+	caseID := sysidToUUID(caseSysid)
+
+	getCaseBody := `{
+		"id": "` + caseSysid + `",
+		"internalId": "WSO2-040",
+		"number": "CS0040001",
+		"title": "Severity change revises SLA clocks",
+		"description": "d",
+		"createdOn": "2026-01-02 10:00:00",
+		"createdBy": "jane.doe@example.com",
+		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"severity": {"id": 11, "label": "2 - High"},
+		"state": {"id": 1, "label": "Open"}
+	}`
+	updateCaseBody := `{
+		"message": "Case updated successfully",
+		"case": {"id": "` + caseSysid + `", "updatedOn": "2026-01-02 12:00:00", "updatedBy": "jane.doe", "severity": {"id": 9, "label": "0 - Catastrophic"}}
+	}`
+
+	client := newTestUpdateCaseClient(t, getCaseBody, updateCaseBody)
+	slaEngine := &fakeSLAEngineService{}
+	// s.publisher is deliberately nil -- this is the whole point of the test.
+	svc := NewServiceNowCaseService(client, nil, nil, nil, nil, "", slaEngine)
+
+	newSeverity := domain.CaseSeverityCatastrophic
+	req := domain.UpdateCaseRequest{ID: caseID, Severity: &newSeverity}
+	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("UpdateCase() error = %v", err)
+	}
+
+	if len(slaEngine.reviseCalls) != 1 {
+		t.Fatalf("ReviseCaseClocks calls = %d, want 1", len(slaEngine.reviseCalls))
+	}
+	call := slaEngine.reviseCalls[0]
+	if call.caseID != caseID {
+		t.Errorf("caseID = %q, want %q", call.caseID, caseID)
+	}
+	if call.severity == nil || *call.severity != domain.CaseSeverityCatastrophic {
+		t.Errorf("severity = %v, want %s", call.severity, domain.CaseSeverityCatastrophic)
+	}
+	if call.projectID != sysidToUUID(projectSysid) {
+		t.Errorf("projectID = %q, want %q", call.projectID, sysidToUUID(projectSysid))
+	}
+	// RegisterCaseClocks must never be called from UpdateCase -- only from
+	// CreateCase (see RegisterCaseClocks' own doc comment).
+	if len(slaEngine.registerCalls) != 0 {
+		t.Errorf("RegisterCaseClocks calls = %d, want 0 from UpdateCase", len(slaEngine.registerCalls))
+	}
+}
+
+// TestSNCaseService_UpdateCase_SeverityEnrichmentRetriesOnceAndRecovers
+// confirms the bounded retry around the pre-PATCH severity-change
+// enrichment fetch: the first GetCaseByID call fails (a transient blip),
+// the second succeeds, and ReviseCaseClocks still fires -- a case's SLA
+// clocks must not silently stay on the old severity just because one
+// attempt at detecting the change failed.
+func TestSNCaseService_UpdateCase_SeverityEnrichmentRetriesOnceAndRecovers(t *testing.T) {
+	caseSysid := sysid32('a')
+	projectSysid := sysid32('b')
+	caseID := sysidToUUID(caseSysid)
+
+	getCaseBody := `{
+		"id": "` + caseSysid + `",
+		"internalId": "WSO2-041",
+		"number": "CS0041001",
+		"title": "Severity enrichment retry test",
+		"description": "d",
+		"createdOn": "2026-01-02 10:00:00",
+		"createdBy": "jane.doe@example.com",
+		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"severity": {"id": 11, "label": "2 - High"},
+		"state": {"id": 1, "label": "Open"}
+	}`
+	updateCaseBody := `{
+		"message": "Case updated successfully",
+		"case": {"id": "` + caseSysid + `", "updatedOn": "2026-01-02 12:00:00", "updatedBy": "jane.doe", "severity": {"id": 9, "label": "0 - Catastrophic"}}
+	}`
+
+	var getCalls int
+	client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPatch:
+			_, _ = w.Write([]byte(updateCaseBody))
+		case strings.HasSuffix(r.URL.Path, "/tags"):
+			_, _ = w.Write([]byte(`{"tags":[]}`))
+		default:
+			getCalls++
+			if getCalls == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(getCaseBody))
+		}
+	})
+	slaEngine := &fakeSLAEngineService{}
+	svc := NewServiceNowCaseService(client, nil, nil, nil, nil, "", slaEngine)
+
+	newSeverity := domain.CaseSeverityCatastrophic
+	req := domain.UpdateCaseRequest{ID: caseID, Severity: &newSeverity}
+	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("UpdateCase() error = %v", err)
+	}
+
+	if getCalls < 2 {
+		t.Fatalf("GET calls = %d, want at least 2 (first fails, retry succeeds)", getCalls)
+	}
+	if len(slaEngine.reviseCalls) != 1 {
+		t.Fatalf("ReviseCaseClocks calls = %d, want 1 -- the retry should have let severity-change detection succeed", len(slaEngine.reviseCalls))
+	}
+	if slaEngine.reviseCalls[0].caseID != caseID {
+		t.Errorf("caseID = %q, want %q", slaEngine.reviseCalls[0].caseID, caseID)
+	}
+}
+
+// TestSNCaseService_UpdateCase_SkipsReviseSLAClocksWhenSeverityUnchanged
+// mirrors TestSNCaseService_UpdateCase_SkipsPublishSeverityChangedWhenUnchanged:
+// a caller re-PATCHing the case's own current severity (a no-op as far as
+// ServiceNow is concerned) must not revise SLA clocks that never actually
+// changed policy.
+func TestSNCaseService_UpdateCase_SkipsReviseSLAClocksWhenSeverityUnchanged(t *testing.T) {
+	caseSysid := sysid32('a')
+	projectSysid := sysid32('b')
+	caseID := sysidToUUID(caseSysid)
+
+	getCaseBody := `{
+		"id": "` + caseSysid + `",
+		"internalId": "WSO2-041",
+		"number": "CS0041001",
+		"title": "Same severity re-PATCH",
+		"description": "d",
+		"createdOn": "2026-01-02 10:00:00",
+		"createdBy": "jane.doe@example.com",
+		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"severity": {"id": 11, "label": "2 - High"},
+		"state": {"id": 1, "label": "Open"}
+	}`
+	updateCaseBody := `{
+		"message": "Case updated successfully",
+		"case": {"id": "` + caseSysid + `", "updatedOn": "2026-01-02 12:00:00", "updatedBy": "jane.doe", "severity": {"id": 11, "label": "2 - High"}}
+	}`
+
+	client := newTestUpdateCaseClient(t, getCaseBody, updateCaseBody)
+	slaEngine := &fakeSLAEngineService{}
+	svc := NewServiceNowCaseService(client, nil, nil, nil, nil, "", slaEngine)
+
+	sameSeverity := domain.CaseSeverityHigh
+	req := domain.UpdateCaseRequest{ID: caseID, Severity: &sameSeverity}
+	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("UpdateCase() error = %v", err)
+	}
+
+	if len(slaEngine.reviseCalls) != 0 {
+		t.Errorf("ReviseCaseClocks calls = %d, want 0 when severity didn't actually change", len(slaEngine.reviseCalls))
+	}
+}
+
+// TestSNCaseService_UpdateCase_SkipsReviseSLAClocksWhenSeverityAbsent
+// verifies a PATCH that doesn't touch severity at all (e.g. a State-only
+// PATCH) never calls ReviseCaseClocks.
+func TestSNCaseService_UpdateCase_SkipsReviseSLAClocksWhenSeverityAbsent(t *testing.T) {
+	caseSysid := sysid32('a')
+	caseID := sysidToUUID(caseSysid)
+
+	getCaseBody := `{"id": "` + caseSysid + `", "state": {"id": 1, "label": "Open"}}`
+	updateCaseBody := `{
+		"message": "Case updated successfully",
+		"case": {"id": "` + caseSysid + `", "updatedOn": "2026-01-02 12:00:00", "updatedBy": "jane.doe", "state": {"id": 10, "label": "Work In Progress"}}
+	}`
+
+	client := newTestUpdateCaseClient(t, getCaseBody, updateCaseBody)
+	slaEngine := &fakeSLAEngineService{}
+	svc := NewServiceNowCaseService(client, nil, nil, nil, nil, "", slaEngine)
+
+	newState := domain.CaseStateWorkInProgress
+	req := domain.UpdateCaseRequest{ID: caseID, State: &newState}
+	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("UpdateCase() error = %v", err)
+	}
+
+	if len(slaEngine.reviseCalls) != 0 {
+		t.Errorf("ReviseCaseClocks calls = %d, want 0 for a PATCH that never touches severity", len(slaEngine.reviseCalls))
+	}
+}
+
+// TestSNCaseService_UpdateCase_NilSLAEngineSkipsReviseSLAClocks verifies the
+// nil-slaEngine guard also covers the severity-revision call site (no
+// panic, no call) when no database is configured.
+func TestSNCaseService_UpdateCase_NilSLAEngineSkipsReviseSLAClocks(t *testing.T) {
+	caseSysid := sysid32('a')
+	projectSysid := sysid32('b')
+	caseID := sysidToUUID(caseSysid)
+
+	getCaseBody := `{
+		"id": "` + caseSysid + `",
+		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
+		"severity": {"id": 11, "label": "2 - High"},
+		"state": {"id": 1, "label": "Open"}
+	}`
+	updateCaseBody := `{
+		"message": "Case updated successfully",
+		"case": {"id": "` + caseSysid + `", "updatedOn": "2026-01-02 12:00:00", "updatedBy": "jane.doe", "severity": {"id": 13, "label": "4 - Low"}}
+	}`
+
+	client := newTestUpdateCaseClient(t, getCaseBody, updateCaseBody)
+	svc := NewServiceNowCaseService(client, nil, nil, nil, nil, "", nil)
+
+	newSeverity := domain.CaseSeverityLow
+	req := domain.UpdateCaseRequest{ID: caseID, Severity: &newSeverity}
 	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
 		t.Fatalf("UpdateCase() error = %v", err)
 	}
