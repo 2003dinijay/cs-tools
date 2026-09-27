@@ -61,11 +61,14 @@ SHIFTS = {
     "6-9am": "CRE_MORNING",
     "6-9am-oc": "CRE_MORNING_OC",
     "6-9pm": "CRE_EVENING",
-    "6-9pm-oc": "CRE_EVENING_OC",
+    # The sheet writes a few evening, weekend and non-LK cells as "-OC", but
+    # there is no second on-call role behind those windows: the person is
+    # simply on the window.
+    "6-9pm-oc": "CRE_EVENING",
     "nlk": "CRE_AMERICAS",
-    "nlk-oc": "CRE_AMERICAS_OC",
+    "nlk-oc": "CRE_AMERICAS",
     "we": "CRE_WEEKEND",
-    "we-oc": "CRE_WEEKEND_OC",
+    "we-oc": "CRE_WEEKEND",
     "nlk-we": "CRE_WEEKEND_NIGHT",
     "nlk-we-oc": "CRE_WEEKEND_NIGHT_OC",
 }
@@ -75,7 +78,7 @@ ABSENCES = {
     "ll": ("LIEU_LEAVE", None),
     "l": ("LIEU_LEAVE", None),  # one cell in 2026; LL with the second L missing
     "sl": ("SICK_LEAVE", None),
-    "ml": ("MEDICAL_LEAVE", None),
+    "ml": ("SICK_LEAVE", None),  # the rota tracks sick leave, not medical leave apart
     "mig": ("MIGRATION", None),
     # Lent to the Migration team from their ABT: away from the ABT's rota
     # exactly as a migration allocation is.
