@@ -700,6 +700,16 @@ type snCreateIncidentResponse struct {
 }
 
 func (s *snIncidentService) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
+	// Reject before the ServiceNow call, not after: createIncidentSNFirst
+	// creates the ServiceNow incident first and has no compensating delete,
+	// so a value too long for either ServiceNow's u_enviroment (max 40) or
+	// this service's own environment column (VARCHAR(40)) must fail fast
+	// here rather than leave an orphaned ServiceNow incident behind.
+	if req.Environment != nil && len([]rune(*req.Environment)) > 40 {
+		return domain.CreateIncidentResponse{}, &apierror.ValidationError{
+			Msg: "environment must not exceed 40 characters",
+		}
+	}
 	if req.Subject == "" {
 		return domain.CreateIncidentResponse{}, &apierror.ValidationError{Msg: "subject is required"}
 	}
