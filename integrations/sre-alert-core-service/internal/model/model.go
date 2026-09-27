@@ -188,12 +188,13 @@ func ImpactUrgency(severityNum int) (impact, urgency string) {
 	}
 }
 
-// BuildWorkNote formats a work note, referencing the alert by id rather than instance URL.
+// BuildWorkNote formats a work note as HTML, referencing the alert by id rather than instance URL.
+// The workNotes field is HTML-sourced, so plain "\n" newlines render as a single unbroken line.
 func BuildWorkNote(kind, alertID, metricName, source string) string {
 	metricName = firstNonEmpty(metricName, "N/A")
 	source = firstNonEmpty(source, "N/A")
-	return fmt.Sprintf("%s alert received.\nAlert: %s\nMetric: %s\nSource: %s",
-		kind, alertID, metricName, source)
+	return fmt.Sprintf("%s alert received.<br>Alert: %s<br>Metric: %s<br>Source: %s",
+		html.EscapeString(kind), html.EscapeString(alertID), html.EscapeString(metricName), html.EscapeString(source))
 }
 
 // kv preserves field order in HTML tables (Go map iteration is random).

@@ -156,32 +156,60 @@ func (c *Client) IncidentState(ctx context.Context, number string) (open bool, f
 
 // SearchIncidentByCorrelationID is the pre-create dedup check: a lost CreateIncident response must not
 // cause a duplicate on retry. Matches on ServiceNow's own correlation_id field (exact match) rather than
-// free-text search, so the dedup tag never needs to appear in Subject or WorkNotes.
+// free-text search, so the dedup tag never needs to appear in Subject or WorkNotes. Falls back to the
+// legacy free-text search when no correlationId hit is found, since incidents created before correlationId
+// was wired in only have the tag in Subject/WorkNotes.
 func (c *Client) SearchIncidentByCorrelationID(ctx context.Context, correlationID string) (id, number string, found bool, err error) {
+	hit, err := c.searchIncidents(ctx, searchIncidentsFilters{CorrelationID: correlationID})
+	if err != nil {
+		return "", "", false, err
+	}
+	if hit != nil {
+		return hit.ID, hit.Number, true, nil
+	}
+
+	hit, err = c.searchIncidents(ctx, searchIncidentsFilters{SearchQuery: correlationID})
+	if err != nil {
+		return "", "", false, err
+	}
+	if hit != nil {
+		return hit.ID, hit.Number, true, nil
+	}
+	return "", "", false, nil
+}
+
+// foundIncident is the id/number pair for a search hit that passed presence validation.
+type foundIncident struct {
+	ID     string
+	Number string
+}
+
+// searchIncidents runs one /incidents/search call and returns the first valid hit, or nil if none.
+func (c *Client) searchIncidents(ctx context.Context, filters searchIncidentsFilters) (*foundIncident, error) {
 	req := searchIncidentsRequest{
-		Filters:    searchIncidentsFilters{CorrelationID: correlationID},
+		Filters:    filters,
 		Pagination: pagination{Limit: 1, Offset: 0},
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
-		return "", "", false, fmt.Errorf("csm: marshal SearchIncidentsRequest: %w", err)
+		return nil, fmt.Errorf("csm: marshal SearchIncidentsRequest: %w", err)
 	}
 
 	respBody, err := c.do(ctx, http.MethodPost, "/incidents/search", body)
 	if err != nil {
-		return "", "", false, err
+		return nil, err
 	}
 
 	var resp searchIncidentsResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return "", "", false, fmt.Errorf("csm: decode incident search response: %w", err)
+		return nil, fmt.Errorf("csm: decode incident search response: %w", err)
 	}
 	if len(resp.Incidents) == 0 {
-		return "", "", false, nil
+		return nil, nil
 	}
 	hit := resp.Incidents[0]
 	if hit.ID == nil || *hit.ID == "" || hit.Number == nil || *hit.Number == "" {
-		return "", "", false, nil
+		return nil, nil
 	}
-	return *hit.ID, *hit.Number, true, nil
+	return &foundIncident{ID: *hit.ID, Number: *hit.Number}, nil
 }
