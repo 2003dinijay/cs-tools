@@ -34,13 +34,21 @@ import (
 	"sre-alert-edge-service/internal/allocator"
 	"sre-alert-edge-service/internal/auth"
 	"sre-alert-edge-service/internal/cassandra"
+	"sre-alert-edge-service/internal/chat"
 	"sre-alert-edge-service/internal/config"
+	"sre-alert-edge-service/internal/corewake"
 	"sre-alert-edge-service/internal/server"
 	"sre-alert-edge-service/internal/vendors"
 )
 
 // claimJitter bounds the random pause before retrying a rejected compare-and-set.
 const claimJitter = 20 * time.Millisecond
+
+// chatTimeout bounds each Google Chat post, matching sre-alert-core-service's http_timeout.
+const chatTimeout = 10 * time.Second
+
+// dbFailureInterval is the window fallback.cards_per_minute applies to.
+const dbFailureInterval = time.Minute
 
 // waitMargin keeps a request's wait for its ids under the server's write timeout, so a slow
 // store answers 503 instead of the connection being cut.
@@ -92,7 +100,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	alloc := allocator.New(base.With("component", "allocator"), store, nil, nil, allocator.Config{
+	// The replica name on cards and logs; in Choreo the hostname is the pod name.
+	replica, err := os.Hostname()
+	if err != nil {
+		replica = "unknown"
+	}
+	cards := chat.New(base.With("component", "chat"), envCfg.ChatWebhookURLs, replica, chat.Settings{
+		RejectWindow:     cfg.Reject.Window.Duration(),
+		BodyPreviewChars: cfg.Reject.BodyPreviewChars,
+		CardsPerMinute:   cfg.Fallback.CardsPerMinute,
+		SummaryInterval:  dbFailureInterval,
+		HTTPTimeout:      chatTimeout,
+	})
+	waker := corewake.New(base.With("component", "corewake"), envCfg.WakeURL, cfg.Wake.Timeout.Duration())
+
+	alloc := allocator.New(base.With("component", "allocator"), store, cards, waker, allocator.Config{
 		QueueSize:        cfg.Allocator.QueueSize,
 		MaxBatch:         cfg.Allocator.MaxBatch,
 		WriteConcurrency: cfg.Allocator.WriteConcurrency,
@@ -110,6 +132,7 @@ func main() {
 		Logger:       base.With("component", "server"),
 		Auth:         authn,
 		Pipeline:     server.NewIngestor(registry, alloc, waitTimeout),
+		Rejects:      cards,
 		Vendors:      registry.Names(),
 		MaxBodyBytes: cfg.Server.MaxBodyBytes,
 		ReadTimeout:  cfg.Server.ReadTimeout.Duration(),
@@ -147,6 +170,9 @@ func main() {
 		if err := alloc.Close(shutdownCtx); err != nil {
 			logger.Error("allocator did not drain within shutdown_grace; claimed ids may be left without rows", "error", err)
 		}
+		// Last, so the final batches' wake-up and any DB-failure cards still go out.
+		waker.Wait(shutdownCtx)
+		cards.Close(shutdownCtx)
 	}
 }
 
