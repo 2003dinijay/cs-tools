@@ -91,6 +91,23 @@ type SLAEngineRepository interface {
 	// and stage to BREACHED once elapsed time reaches the policy duration,
 	// and returns how many rows were touched.
 	RecomputeActive(ctx context.Context) (int, error)
+
+	// RevisePolicy updates the sla_policy_id and duration of the existing
+	// active (see slaEngineActiveStageFilter) source='CSM' clock for
+	// (workItemID, policy.Target) IN PLACE -- start_on, stage, and pause
+	// state are left untouched, only the policy id and target duration
+	// change. This exists for a case whose severity changes AFTER creation
+	// (see SLAEngineService.ReviseCaseClocks): the clock keeps running from
+	// its original start_on against the newly-resolved policy/duration, and
+	// business_elapsed_percentage/has_breached are deliberately NOT
+	// recomputed inline here -- RecomputeActive's own worker picks up the
+	// new percentage/breach status against the revised duration on its next
+	// tick, same as it does for every other IN_PROGRESS row. Returns
+	// whether an active row was found and updated -- false (not an error)
+	// when no active clock of this target exists yet, e.g. a severity
+	// change that makes a clock type applicable for the first time, which
+	// the caller then falls back to RegisterClock for.
+	RevisePolicy(ctx context.Context, workItemID string, policy SLAPolicyRef) (bool, error)
 }
 
 type slaEngineRepo struct {
@@ -165,6 +182,25 @@ func (r *slaEngineRepo) RegisterClock(ctx context.Context, workItemID string, po
 	tag, err := r.db.Exec(ctx, query, workItemID, policy.ID, sqlActorLiteral, formatIntervalLiteral(policy.Duration), policy.Target)
 	if err != nil {
 		return false, fmt.Errorf("register csm sla clock: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// RevisePolicy implements SLAEngineRepository.
+func (r *slaEngineRepo) RevisePolicy(ctx context.Context, workItemID string, policy SLAPolicyRef) (bool, error) {
+	const query = `
+		UPDATE sla s
+		SET sla_policy_id = $3, duration = $4::interval, updated_on = NOW(), updated_by = $5
+		FROM sla_policy sp
+		WHERE s.sla_policy_id = sp.id
+		  AND s.work_item_id = $1::uuid
+		  AND s.source = 'CSM'
+		  AND sp.target::TEXT = $2
+		  AND s.stage::TEXT ` + slaEngineActiveStageFilter
+
+	tag, err := r.db.Exec(ctx, query, workItemID, policy.Target, policy.ID, formatIntervalLiteral(policy.Duration), sqlActorLiteral)
+	if err != nil {
+		return false, fmt.Errorf("revise csm sla clock policy: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
 }

@@ -32,15 +32,23 @@ import (
 type recordingSLAEngineRepo struct {
 	fakePolicyLookupRepo
 	registered []string // "workItemID|policyID"
+	revised    []string // "workItemID|target|policyID"
 	completed  []string // "workItemID|target"
 	paused     []string // "workItemID|target|true" or "...|false"
 
 	registerErr error
 	registerOK  bool // if false, RegisterClock reports "already registered"
+
+	reviseErr error
+	// reviseOK, keyed by "workItemID|target", reports whether RevisePolicy
+	// found an existing active row to update for that pair -- absent
+	// entries default to false (nothing to revise), matching a clock type
+	// that was never registered under the case's old severity.
+	reviseOK map[string]bool
 }
 
 func newRecordingSLAEngineRepo() *recordingSLAEngineRepo {
-	return &recordingSLAEngineRepo{fakePolicyLookupRepo: *newFakePolicyLookupRepo(), registerOK: true}
+	return &recordingSLAEngineRepo{fakePolicyLookupRepo: *newFakePolicyLookupRepo(), registerOK: true, reviseOK: map[string]bool{}}
 }
 
 func (r *recordingSLAEngineRepo) RegisterClock(_ context.Context, workItemID string, policy repository.SLAPolicyRef) (bool, error) {
@@ -49,6 +57,14 @@ func (r *recordingSLAEngineRepo) RegisterClock(_ context.Context, workItemID str
 	}
 	r.registered = append(r.registered, workItemID+"|"+policy.ID)
 	return r.registerOK, nil
+}
+
+func (r *recordingSLAEngineRepo) RevisePolicy(_ context.Context, workItemID string, policy repository.SLAPolicyRef) (bool, error) {
+	if r.reviseErr != nil {
+		return false, r.reviseErr
+	}
+	r.revised = append(r.revised, workItemID+"|"+policy.Target+"|"+policy.ID)
+	return r.reviseOK[workItemID+"|"+policy.Target], nil
 }
 
 func (r *recordingSLAEngineRepo) CompleteClock(_ context.Context, workItemID, target string) (bool, error) {
@@ -188,6 +204,93 @@ func TestSLAEngineService_ApplyCaseStateEffects(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSLAEngineService_ReviseCaseClocks_RevisesExistingClockInPlace is this
+// fix's core regression test: a case already has a response clock
+// registered (simulating a case created at one severity), its severity then
+// changes, and ReviseCaseClocks must revise that existing clock's policy in
+// place -- not register a duplicate alongside it (RegisterClock is never
+// called at all here, since RevisePolicy reports a row was found for every
+// clock type CATASTROPHIC applies to).
+func TestSLAEngineService_ReviseCaseClocks_RevisesExistingClockInPlace(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	// Every P0 clock type already has an active row for this case (as if
+	// RegisterCaseClocks had run earlier under a different severity).
+	repo.reviseOK["case-8|RESPONSE"] = true
+	repo.reviseOK["case-8|WORKAROUND"] = true
+	repo.reviseOK["case-8|RESOLUTION"] = true
+	svc := NewSLAEngineService(repo, nil)
+
+	sev := domain.CaseSeverityCatastrophic
+	svc.ReviseCaseClocks(context.Background(), "case-8", &sev, "")
+
+	wantRevised := []string{"case-8|RESPONSE|p0-r-ms", "case-8|WORKAROUND|p0-w-ms", "case-8|RESOLUTION|p0-res-ms"}
+	if len(repo.revised) != len(wantRevised) {
+		t.Fatalf("revised = %v, want %v", repo.revised, wantRevised)
+	}
+	for i, w := range wantRevised {
+		if repo.revised[i] != w {
+			t.Errorf("revised[%d] = %q, want %q", i, repo.revised[i], w)
+		}
+	}
+	if len(repo.registered) != 0 {
+		t.Errorf("registered = %v, want none -- every clock type already had an active row to revise", repo.registered)
+	}
+}
+
+// TestSLAEngineService_ReviseCaseClocks_FallsBackToRegisterForNewlyApplicableType
+// covers a severity INCREASE: the case was created at LOW (response clock
+// only) and is revised up to CATASTROPHIC, which also applies "workaround"/
+// "resolution" -- clock types that were never registered before. RevisePolicy
+// reports no existing row for those two (reviseOK unset, defaults false), so
+// ReviseCaseClocks must fall back to RegisterClock for them, while still
+// revising the pre-existing response clock in place.
+func TestSLAEngineService_ReviseCaseClocks_FallsBackToRegisterForNewlyApplicableType(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	repo.reviseOK["case-9|RESPONSE"] = true // the only clock type LOW ever registered
+
+	svc := NewSLAEngineService(repo, nil)
+
+	sev := domain.CaseSeverityCatastrophic
+	svc.ReviseCaseClocks(context.Background(), "case-9", &sev, "")
+
+	// RevisePolicy is attempted for every applicable clock type regardless
+	// of outcome (that's how the fallback is even discovered) -- only
+	// RESPONSE actually finds an existing row to update; the other two
+	// attempts report "nothing to revise" and fall back to RegisterClock
+	// below.
+	wantRevised := []string{"case-9|RESPONSE|p0-r-ms", "case-9|WORKAROUND|p0-w-ms", "case-9|RESOLUTION|p0-res-ms"}
+	if len(repo.revised) != len(wantRevised) {
+		t.Fatalf("revised = %v, want %v", repo.revised, wantRevised)
+	}
+	for i, w := range wantRevised {
+		if repo.revised[i] != w {
+			t.Errorf("revised[%d] = %q, want %q", i, repo.revised[i], w)
+		}
+	}
+	wantRegistered := []string{"case-9|p0-w-ms", "case-9|p0-res-ms"}
+	if len(repo.registered) != len(wantRegistered) {
+		t.Fatalf("registered = %v, want %v", repo.registered, wantRegistered)
+	}
+	for i, w := range wantRegistered {
+		if repo.registered[i] != w {
+			t.Errorf("registered[%d] = %q, want %q", i, repo.registered[i], w)
+		}
+	}
+}
+
+// TestSLAEngineService_ReviseCaseClocks_NilSeverityRevisesNothing mirrors
+// RegisterCaseClocks' own nil-severity handling.
+func TestSLAEngineService_ReviseCaseClocks_NilSeverityRevisesNothing(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	svc := NewSLAEngineService(repo, nil)
+
+	svc.ReviseCaseClocks(context.Background(), "case-10", nil, "")
+
+	if len(repo.revised) != 0 || len(repo.registered) != 0 {
+		t.Errorf("revised = %v, registered = %v, want none for a case with no severity", repo.revised, repo.registered)
 	}
 }
 
