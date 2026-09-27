@@ -84,7 +84,7 @@ func NewScheduleRepository(db *pgxpool.Pool) ScheduleRepository {
 // the same struct is how scan bugs get in.
 const assignmentColumns = `
     a.id, u.id, COALESCE(u.name, ''), COALESCE(u.email, ''),
-    -- Lead-ness is looked up rather than joined, because schedule_assignment.team_id
+    -- Lead-ness is looked up rather than joined, because team_schedule_assignment.team_id
     -- is nullable and routinely absent for a registry-only team. A LEFT JOIN on it
     -- silently returned FALSE for a real lead -- no error, just a missing badge.
     -- With no team on the row, any lead membership the engineer holds counts;
@@ -96,10 +96,10 @@ const assignmentColumns = `
     a.starts_at, a.ends_at, a.is_on_call, a.source::text, a.note`
 
 const assignmentFrom = `
-  FROM schedule_assignment a
+  FROM team_schedule_assignment a
   JOIN "user" u          ON u.id = a.user_id
-  JOIN schedule_shift s  ON s.id = a.shift_id
-  LEFT JOIN schedule_zone z ON z.id = a.zone_id`
+  JOIN team_schedule_shift s  ON s.id = a.shift_id
+  LEFT JOIN team_schedule_zone z ON z.id = a.zone_id`
 
 func scanAssignments(rows interface {
 	Next() bool
@@ -138,8 +138,8 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 
 	zoneRows, err := r.db.Query(ctx, `
 		SELECT z.id, z.code, z.label, w.code, z.sort_order
-		FROM schedule_zone z
-		LEFT JOIN schedule_zone w ON w.id = z.weekend_zone_id
+		FROM team_schedule_zone z
+		LEFT JOIN team_schedule_zone w ON w.id = z.weekend_zone_id
 		WHERE z.is_active ORDER BY z.sort_order`)
 	if err != nil {
 		return cat, fmt.Errorf("query schedule zones: %w", err)
@@ -160,8 +160,8 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 		SELECT s.id, s.code, s.short_code, s.label, s.family::text, z.code, s.tier::text,
 		       s.day_scope::text, s.start_minute, s.end_minute, s.authoring_time_zone,
 		       s.is_on_call, s.is_escalation, s.is_rotation, s.crosses_midnight, s.colour_token, s.sort_order
-		FROM schedule_shift s
-		LEFT JOIN schedule_zone z ON z.id = s.zone_id
+		FROM team_schedule_shift s
+		LEFT JOIN team_schedule_zone z ON z.id = s.zone_id
 		WHERE s.is_active ORDER BY s.family, s.sort_order`)
 	if err != nil {
 		return cat, fmt.Errorf("query schedule shifts: %w", err)
@@ -182,7 +182,7 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 
 	kindRows, err := r.db.Query(ctx, `
 		SELECT id, code, short_code, label, bucket, colour_token, sort_order
-		FROM schedule_absence_kind WHERE is_active ORDER BY sort_order`)
+		FROM team_schedule_absence_kind WHERE is_active ORDER BY sort_order`)
 	if err != nil {
 		return cat, fmt.Errorf("query schedule absence kinds: %w", err)
 	}
@@ -229,7 +229,7 @@ func (r *scheduleRepository) SearchAssignments(ctx context.Context, req domain.S
 	}
 	if req.Family != "" {
 		args = append(args, req.Family)
-		where += fmt.Sprintf(" AND s.family = $%d::schedule_shift_family_enum", len(args))
+		where += fmt.Sprintf(" AND s.family = $%d::team_schedule_shift_family_enum", len(args))
 	}
 	if req.UserID != "" {
 		args = append(args, req.UserID)
@@ -274,7 +274,7 @@ func (r *scheduleRepository) OnDutyAt(ctx context.Context, at time.Time) ([]doma
 	rows, err := r.db.Query(ctx, `SELECT `+assignmentColumns+assignmentFrom+`
 		WHERE tstzrange(a.starts_at, a.ends_at, '[)') @> $1::timestamptz
 		  AND NOT EXISTS (
-		        SELECT 1 FROM schedule_absence ab
+		        SELECT 1 FROM team_schedule_absence ab
 		        WHERE ab.user_id = a.user_id
 		          AND daterange(ab.starts_on, ab.ends_on, '[]')
 		              @> ($1::timestamptz AT TIME ZONE s.authoring_time_zone)::date
@@ -308,9 +308,9 @@ func (r *scheduleRepository) SearchAbsences(ctx context.Context, req domain.Sear
 	rows, err := r.db.Query(ctx, `
 		SELECT ab.id, u.id, COALESCE(u.name, ''), COALESCE(u.email, ''), FALSE,
 		       ab.team_key, k.code, ab.starts_on, ab.ends_on, ab.note, ab.allocated_to
-		FROM schedule_absence ab
+		FROM team_schedule_absence ab
 		JOIN "user" u ON u.id = ab.user_id
-		JOIN schedule_absence_kind k ON k.id = ab.kind_id
+		JOIN team_schedule_absence_kind k ON k.id = ab.kind_id
 		`+where+` ORDER BY ab.starts_on, u.name`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query schedule absences: %w", err)
@@ -404,7 +404,7 @@ func (r *scheduleRepository) UserInTeam(ctx context.Context, userID, teamKey str
 func recordActivity(ctx context.Context, tx pgx.Tx, a domain.ScheduleAssignment,
 	action, actorEmail string, field, oldV, newV, note *string) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO schedule_assignment_activity
+		INSERT INTO team_schedule_assignment_activity
 		  (id, created_on, created_by, assignment_id, user_id, team_key, rota_date,
 		   shift_code, action, field_name, old_value, new_value, actor_email, note)
 		VALUES (gen_random_uuid(), now(), $1, $2::uuid, $3::uuid, $4, $5::date, $6, $7, $8, $9, $10, $1, $11)`,
@@ -430,21 +430,21 @@ func (r *scheduleRepository) CreateAssignment(ctx context.Context, req domain.Cr
 
 	var id string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO schedule_assignment
+		INSERT INTO team_schedule_assignment
 		  (id, created_on, updated_on, created_by, updated_by, user_id, team_id, team_key,
 		   shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, note)
 		SELECT gen_random_uuid(), now(), now(), $1, $1, $2::uuid,
 		       (SELECT t.id FROM team t WHERE lower(t.name) = lower($3)), $3,
-		       s.id, s.zone_id, $4::schedule_tier_enum, $5::date,
+		       s.id, s.zone_id, $4::team_schedule_tier_enum, $5::date,
 		       ($5::date::timestamp + make_interval(mins => s.start_minute)) AT TIME ZONE s.authoring_time_zone,
 		       ($5::date::timestamp + make_interval(mins => s.end_minute))   AT TIME ZONE s.authoring_time_zone,
 		       COALESCE($6, s.is_on_call), 'MANUAL', $7
-		  FROM schedule_shift s
+		  FROM team_schedule_shift s
 		 WHERE s.code = $8
 		RETURNING id`,
 		actorEmail, req.UserID, req.TeamKey, req.Tier, req.RotaDate, req.IsOnCall, req.Note, req.ShiftCode).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// The INSERT selects from schedule_shift, so a code that is not in the
+		// The INSERT selects from team_schedule_shift, so a code that is not in the
 		// catalogue returns no rows rather than failing. Reported as the bad
 		// request it is instead of a 500.
 		return domain.ScheduleAssignment{}, &apierror.ValidationError{
@@ -512,12 +512,12 @@ func (r *scheduleRepository) UpdateAssignment(ctx context.Context, id string, re
 	}
 
 	_, err = tx.Exec(ctx, `
-		UPDATE schedule_assignment
+		UPDATE team_schedule_assignment
 		   SET user_id    = COALESCE($2::uuid, user_id),
-		       tier       = COALESCE($3::schedule_tier_enum, tier),
+		       tier       = COALESCE($3::team_schedule_tier_enum, tier),
 		       is_on_call = COALESCE($4, is_on_call),
 		       note       = COALESCE($5, note),
-		       source     = $6::schedule_source_enum,
+		       source     = $6::team_schedule_source_enum,
 		       updated_on = now(),
 		       updated_by = $7
 		 WHERE id = $1::uuid`,
@@ -561,7 +561,7 @@ func (r *scheduleRepository) UpdateAssignment(ctx context.Context, id string, re
 // DeleteAssignment takes somebody off a slot.
 //
 // The activity row is written first, while the assignment still exists to be
-// described. That is also why schedule_assignment_activity has no foreign key
+// described. That is also why team_schedule_assignment_activity has no foreign key
 // to it: a cascade would erase exactly this record.
 func (r *scheduleRepository) DeleteAssignment(ctx context.Context, id, actorEmail string, note *string) error {
 	tx, err := r.db.Begin(ctx)
@@ -577,7 +577,7 @@ func (r *scheduleRepository) DeleteAssignment(ctx context.Context, id, actorEmai
 	if err := recordActivity(ctx, tx, before, "DELETED", actorEmail, nil, nil, nil, note); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM schedule_assignment WHERE id = $1::uuid`, id); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM team_schedule_assignment WHERE id = $1::uuid`, id); err != nil {
 		return fmt.Errorf("delete assignment: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -610,14 +610,14 @@ func (r *scheduleRepository) ActivityForTeam(ctx context.Context, teamKey, from,
 		SELECT id, assignment_id, user_id, team_key, rota_date, NULL::date AS ends_on,
 		       'rota' AS subject, shift_code,
 		       action, field_name, old_value, new_value, actor_email, note, created_on
-		  FROM schedule_assignment_activity
+		  FROM team_schedule_assignment_activity
 		 WHERE team_key = $1
 		   AND rota_date BETWEEN $2::date AND $3::date
 		UNION ALL
 		SELECT id, absence_id, user_id, team_key, starts_on, ends_on,
 		       'leave', kind_code,
 		       action, field_name, old_value, new_value, actor_email, note, created_on
-		  FROM schedule_absence_activity
+		  FROM team_schedule_absence_activity
 		 WHERE team_key = $1
 		   AND starts_on <= $3::date
 		   AND COALESCE(ends_on, 'infinity'::date) >= $2::date
@@ -723,7 +723,7 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 	var scope string
 	if !clearing {
 		if err := tx.QueryRow(ctx,
-			`SELECT day_scope::text FROM schedule_shift WHERE code = $1`, req.ShiftCode).Scan(&scope); err != nil {
+			`SELECT day_scope::text FROM team_schedule_shift WHERE code = $1`, req.ShiftCode).Scan(&scope); err != nil {
 			return out, &apierror.ValidationError{Msg: fmt.Sprintf("no such shift %q", req.ShiftCode)}
 		}
 	}
@@ -755,7 +755,7 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 			}
 		}
 		if _, err := tx.Exec(ctx,
-			`DELETE FROM schedule_assignment WHERE user_id = $1::uuid AND rota_date = $2::date`,
+			`DELETE FROM team_schedule_assignment WHERE user_id = $1::uuid AND rota_date = $2::date`,
 			req.UserID, iso); err != nil {
 			return out, fmt.Errorf("clear the day: %w", err)
 		}
@@ -769,7 +769,7 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 
 		var id string
 		err = tx.QueryRow(ctx, `
-			INSERT INTO schedule_assignment
+			INSERT INTO team_schedule_assignment
 			  (id, created_on, updated_on, created_by, updated_by, user_id, team_id, team_key,
 			   shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, note)
 			SELECT gen_random_uuid(), now(), now(), $1, $1, $2::uuid,
@@ -778,7 +778,7 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 			       ($4::date::timestamp + make_interval(mins => s.start_minute)) AT TIME ZONE s.authoring_time_zone,
 			       ($4::date::timestamp + make_interval(mins => s.end_minute))   AT TIME ZONE s.authoring_time_zone,
 			       s.is_on_call, 'MANUAL', $5
-			  FROM schedule_shift s
+			  FROM team_schedule_shift s
 			 WHERE s.code = $6
 			RETURNING id`,
 			actorEmail, req.UserID, req.TeamKey, iso, req.Note, req.ShiftCode).Scan(&id)
@@ -808,7 +808,7 @@ func recordAbsenceActivity(ctx context.Context, tx pgx.Tx,
 	id, userID, teamKey, kindCode, startsOn string, endsOn *string,
 	action, actorEmail string, field, oldV, newV, note *string) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO schedule_absence_activity
+		INSERT INTO team_schedule_absence_activity
 		  (id, created_on, created_by, absence_id, user_id, team_key, kind_code,
 		   starts_on, ends_on, action, field_name, old_value, new_value, actor_email, note)
 		VALUES (gen_random_uuid(), now(), $1, $2::uuid, $3::uuid, $4, $5, $6::date, $7::date,
@@ -867,7 +867,7 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 	var kindID string
 	if req.KindCode != "" {
 		if err := tx.QueryRow(ctx,
-			`SELECT id::text FROM schedule_absence_kind WHERE code = $1`, req.KindCode).Scan(&kindID); err != nil {
+			`SELECT id::text FROM team_schedule_absence_kind WHERE code = $1`, req.KindCode).Scan(&kindID); err != nil {
 			return out, &apierror.ValidationError{Msg: fmt.Sprintf("no such absence kind %q", req.KindCode)}
 		}
 	}
@@ -877,8 +877,8 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 	// its start -- which daterange's own unbounded upper end already means.
 	rows, err := tx.Query(ctx, `
 		SELECT a.id::text, k.code, a.starts_on, a.ends_on
-		  FROM schedule_absence a
-		  JOIN schedule_absence_kind k ON k.id = a.kind_id
+		  FROM team_schedule_absence a
+		  JOIN team_schedule_absence_kind k ON k.id = a.kind_id
 		 WHERE a.user_id = $1::uuid
 		   AND daterange(a.starts_on, a.ends_on, '[]') && daterange($2::date, $3::date, '[]')`,
 		req.UserID, from.Format(iso), to.Format(iso))
@@ -909,7 +909,7 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 			// before it and add a second row for the part after, so the two
 			// stretches that still stand are both kept.
 			if _, err := tx.Exec(ctx,
-				`UPDATE schedule_absence SET ends_on = $2::date, updated_on = now(), updated_by = $3 WHERE id = $1::uuid`,
+				`UPDATE team_schedule_absence SET ends_on = $2::date, updated_on = now(), updated_by = $3 WHERE id = $1::uuid`,
 				h.id, dayBefore, actorEmail); err != nil {
 				return out, fmt.Errorf("trim absence: %w", err)
 			}
@@ -920,12 +920,12 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 			}
 			var tailID string
 			if err := tx.QueryRow(ctx, `
-				INSERT INTO schedule_absence
+				INSERT INTO team_schedule_absence
 				  (id, created_on, updated_on, created_by, updated_by, user_id, team_key,
 				   kind_id, starts_on, ends_on, note, allocated_to)
 				SELECT gen_random_uuid(), now(), now(), $1, $1, a.user_id, a.team_key,
 				       a.kind_id, $2::date, $3::date, a.note, a.allocated_to
-				  FROM schedule_absence a WHERE a.id = $4::uuid
+				  FROM team_schedule_absence a WHERE a.id = $4::uuid
 				RETURNING id::text`,
 				actorEmail, dayAfter, tailEnds, h.id).Scan(&tailID); err != nil {
 				return out, fmt.Errorf("split absence: %w", err)
@@ -942,7 +942,7 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 
 		case startsBefore:
 			if _, err := tx.Exec(ctx,
-				`UPDATE schedule_absence SET ends_on = $2::date, updated_on = now(), updated_by = $3 WHERE id = $1::uuid`,
+				`UPDATE team_schedule_absence SET ends_on = $2::date, updated_on = now(), updated_by = $3 WHERE id = $1::uuid`,
 				h.id, dayBefore, actorEmail); err != nil {
 				return out, fmt.Errorf("trim absence: %w", err)
 			}
@@ -954,7 +954,7 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 
 		case endsAfter:
 			if _, err := tx.Exec(ctx,
-				`UPDATE schedule_absence SET starts_on = $2::date, updated_on = now(), updated_by = $3 WHERE id = $1::uuid`,
+				`UPDATE team_schedule_absence SET starts_on = $2::date, updated_on = now(), updated_by = $3 WHERE id = $1::uuid`,
 				h.id, dayAfter, actorEmail); err != nil {
 				return out, fmt.Errorf("trim absence: %w", err)
 			}
@@ -980,7 +980,7 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 				h.startsOn.Format(iso), ends, "DELETED", actorEmail, nil, nil, nil, req.Note); err != nil {
 				return out, err
 			}
-			if _, err := tx.Exec(ctx, `DELETE FROM schedule_absence WHERE id = $1::uuid`, h.id); err != nil {
+			if _, err := tx.Exec(ctx, `DELETE FROM team_schedule_absence WHERE id = $1::uuid`, h.id); err != nil {
 				return out, fmt.Errorf("remove absence: %w", err)
 			}
 			out.Removed++
@@ -990,7 +990,7 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 	if req.KindCode != "" {
 		var id string
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO schedule_absence
+			INSERT INTO team_schedule_absence
 			  (id, created_on, updated_on, created_by, updated_by, user_id, team_key,
 			   kind_id, starts_on, ends_on, note)
 			VALUES (gen_random_uuid(), now(), now(), $1, $1, $2::uuid, $3, $4::uuid, $5::date, $6::date, $7)

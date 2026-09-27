@@ -56,8 +56,10 @@ INSERT INTO _team VALUES
     ('apollo',   'Apollo',    'sre-abt', 18, 10),
     ('artemis',  'Artemis',   'sre-abt', 18, 11);
 
-INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, type)
-SELECT md5('seed-team-'||key)::uuid, now(), now(), 'seed', 'seed', display, family
+-- `key` is the catalogue key the rota's fact tables reference (000101), so a
+-- seeded team has to carry it or nothing can be rostered onto that team.
+INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, key, type)
+SELECT md5('seed-team-'||key)::uuid, now(), now(), 'seed', 'seed', display, key, family
 FROM _team
 ON CONFLICT (id) DO NOTHING;
 
@@ -65,9 +67,10 @@ ON CONFLICT (id) DO NOTHING;
 -- generated as well: the roster would be half real engineers, half stand-ins.
 -- The team row itself stays, above; only its generated people and rota go.
 DELETE FROM _team t
- WHERE t.family = 'cre-abt'
-   AND EXISTS (SELECT 1 FROM schedule_assignment a
-                WHERE a.team_key = t.key AND a.created_by = 'import:abt-roster');
+ WHERE t.family IN ('cre-abt', 'sre-abt')
+   -- import-abt-roster.py (CRE) or import-sre-rotation.py (SRE)
+   AND EXISTS (SELECT 1 FROM team_schedule_assignment a
+                WHERE a.team_key = t.key AND a.created_by IN ('import:abt-roster', 'import:sre-rotation'));
 
 -- ── engineers ─────────────────────────────────────────────────────────────
 CREATE TEMP TABLE _eng (id UUID, team_key TEXT, family TEXT, seq INT, is_lead BOOLEAN) ON COMMIT DROP;
@@ -153,8 +156,8 @@ FROM (SELECT LEAST(CURRENT_DATE - 21, date_trunc('month', CURRENT_DATE)::date) A
                       (date_trunc('month', CURRENT_DATE) + interval '1 month - 1 day')::date) AS hi) w,
      generate_series(w.lo, w.hi, interval '1 day') g;
 
-DELETE FROM schedule_assignment WHERE created_by = 'seed';
-DELETE FROM schedule_absence   WHERE created_by = 'seed';
+DELETE FROM team_schedule_assignment WHERE created_by = 'seed';
+DELETE FROM team_schedule_absence   WHERE created_by = 'seed';
 
 -- ── standing allocations, and who that leaves on the rota ────────────────
 -- Seeded ahead of the rotas, because they decide who the rotas draw from. The
@@ -163,10 +166,10 @@ DELETE FROM schedule_absence   WHERE created_by = 'seed';
 -- R&D or sitting with a customer, on site or off. Seeding migration against
 -- SRE would put a category in their off-rota column that does not exist for
 -- them.
-INSERT INTO schedule_absence (user_id, team_key, kind_id, starts_on, ends_on, note, created_by, updated_by)
+INSERT INTO team_schedule_absence (user_id, team_key, kind_id, starts_on, ends_on, note, created_by, updated_by)
 SELECT e.id, e.team_key, k.id, CURRENT_DATE - 60, NULL, 'standing allocation', 'seed', 'seed'
 FROM _eng e
-JOIN schedule_absence_kind k
+JOIN team_schedule_absence_kind k
   ON k.code = CASE
        WHEN e.family = 'sre-abt' THEN
          CASE e.seq WHEN 5 THEN 'RND'
@@ -188,8 +191,8 @@ WHERE e.seq IN (5, 6, 7);
 CREATE TEMP TABLE _on_rota ON COMMIT DROP AS
 SELECT e.* FROM _eng e
 WHERE NOT EXISTS (
-    SELECT 1 FROM schedule_absence ab
-    JOIN schedule_absence_kind k ON k.id = ab.kind_id
+    SELECT 1 FROM team_schedule_absence ab
+    JOIN team_schedule_absence_kind k ON k.id = ab.kind_id
     WHERE ab.user_id = e.id AND ab.created_by = 'seed' AND k.bucket = 'ALLOCATION');
 
 -- resolve a window on a date, in the clock it was authored in
@@ -199,7 +202,7 @@ LANGUAGE sql STABLE AS $$
   SELECT s.id, s.zone_id,
          (p_day::timestamp + make_interval(mins => s.start_minute)) AT TIME ZONE s.authoring_time_zone,
          (p_day::timestamp + make_interval(mins => s.end_minute))   AT TIME ZONE s.authoring_time_zone
-  FROM schedule_shift s WHERE s.code = p_code;
+  FROM team_schedule_shift s WHERE s.code = p_code;
 $$;
 
 -- ── CRE: the ABT rotations ────────────────────────────────────────────────
@@ -223,7 +226,7 @@ FROM _on_rota e JOIN _team t ON t.key = e.team_key
 WHERE e.family = 'cre-abt';
 
 -- Morning 6-9am and the morning on-call: one engineer each, from any ABT.
-INSERT INTO schedule_assignment
+INSERT INTO team_schedule_assignment
   (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, created_by, updated_by)
 SELECT a.id, md5('seed-team-'||a.team_key)::uuid, a.team_key, sp.shift_id, sp.zone_id, NULL,
        d.d, sp.starts_at, sp.ends_at, v.code = 'CRE_MORNING_OC', 'GENERATED', 'seed', 'seed'
@@ -238,7 +241,7 @@ ON CONFLICT DO NOTHING;
 -- each weekday. Rotating within the team rather than across the whole pool is
 -- what guarantees that -- a flat pool of 100 would happily draw two from
 -- Vega and none from Rigel.
-INSERT INTO schedule_assignment
+INSERT INTO team_schedule_assignment
   (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, created_by, updated_by)
 SELECT a.id, md5('seed-team-'||a.team_key)::uuid, a.team_key, sp.shift_id, sp.zone_id, NULL,
        d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
@@ -258,7 +261,7 @@ ON CONFLICT DO NOTHING;
 -- and stepping seven ranks a day -- a stride that shares no factor with the
 -- team sizes -- keeps the trio of teams itself changing from one weekend to
 -- the next rather than settling on the same three.
-INSERT INTO schedule_assignment
+INSERT INTO team_schedule_assignment
   (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, created_by, updated_by)
 SELECT a.id, md5('seed-team-'||a.team_key)::uuid, a.team_key, sp.shift_id, sp.zone_id, NULL,
        d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
@@ -276,7 +279,7 @@ ON CONFLICT DO NOTHING;
 -- Americas cover the night. On a weekday that is not a rota at all -- it is
 -- simply when the team works, so the whole team is on it. At the weekend it
 -- becomes a rota like the others, and one engineer takes it.
-INSERT INTO schedule_assignment
+INSERT INTO team_schedule_assignment
   (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, created_by, updated_by)
 SELECT e.id, md5('seed-team-americas')::uuid, 'americas', sp.shift_id, sp.zone_id, NULL,
        d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
@@ -297,7 +300,7 @@ SELECT e.id,
        (count(*) OVER ())::int
 FROM _on_rota e WHERE e.team_key = 'americas';
 
-INSERT INTO schedule_assignment
+INSERT INTO team_schedule_assignment
   (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, created_by, updated_by)
 SELECT a.id, md5('seed-team-americas')::uuid, 'americas', sp.shift_id, sp.zone_id, NULL,
        d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
@@ -315,10 +318,10 @@ SELECT e.id, e.team_key,
        (count(*) OVER (PARTITION BY e.team_key))::int
 FROM _on_rota e WHERE e.family = 'sre-abt';
 
-INSERT INTO schedule_assignment
+INSERT INTO team_schedule_assignment
   (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, created_by, updated_by)
 SELECT s.id, md5('seed-team-'||s.team_key)::uuid, s.team_key, sp.shift_id, sp.zone_id,
-       v.tier::schedule_tier_enum, d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
+       v.tier::team_schedule_tier_enum, d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
 FROM _day d
 CROSS JOIN (VALUES
       ('SRE_TZ1_L1','L1',0), ('SRE_TZ1','L2',1),
@@ -332,10 +335,10 @@ WHERE NOT d.is_weekend
 ON CONFLICT DO NOTHING;
 
 -- the weekend runs two zones, one crew each
-INSERT INTO schedule_assignment
+INSERT INTO team_schedule_assignment
   (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, created_by, updated_by)
 SELECT s.id, md5('seed-team-'||s.team_key)::uuid, s.team_key, sp.shift_id, sp.zone_id,
-       'L1'::schedule_tier_enum, d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
+       'L1'::team_schedule_tier_enum, d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
 FROM _day d
 CROSS JOIN (VALUES ('SRE_WE_TZ1',0),('SRE_WE_TZ2',1)) AS v(code, slot)
 CROSS JOIN (VALUES ('apollo'),('artemis')) AS tm(team_key)
@@ -346,17 +349,17 @@ ON CONFLICT DO NOTHING;
 
 -- ── leave ─────────────────────────────────────────────────────────────────
 -- a few ranges; standing allocations were seeded above, before the rotas
-INSERT INTO schedule_absence (user_id, team_key, kind_id, starts_on, ends_on, note, created_by, updated_by)
+INSERT INTO team_schedule_absence (user_id, team_key, kind_id, starts_on, ends_on, note, created_by, updated_by)
 SELECT e.id, e.team_key, k.id,
        CURRENT_DATE + ((e.seq % 11) - 4), CURRENT_DATE + ((e.seq % 11) - 4) + 3,
        'seeded leave', 'seed', 'seed'
 FROM _eng e
-JOIN schedule_absence_kind k ON k.code = CASE WHEN e.seq % 2 = 0 THEN 'ANNUAL_LEAVE' ELSE 'LIEU_LEAVE' END
+JOIN team_schedule_absence_kind k ON k.code = CASE WHEN e.seq % 2 = 0 THEN 'ANNUAL_LEAVE' ELSE 'LIEU_LEAVE' END
 WHERE e.seq IN (4, 9);
 
 -- ── everyone else works regular hours ─────────────────────────────────────
 -- stored, not derived: see the note at the top
-INSERT INTO schedule_assignment
+INSERT INTO team_schedule_assignment
   (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, created_by, updated_by)
 SELECT e.id, md5('seed-team-'||e.team_key)::uuid, e.team_key, sp.shift_id,
        -- SRE regular hours carry a zone of their own: the window has none (every
@@ -368,13 +371,13 @@ FROM _day d
 JOIN _on_rota e ON TRUE
 CROSS JOIN LATERAL _seed_span(d.d, CASE WHEN e.family = 'sre-abt' THEN 'SRE_REGULAR' ELSE 'CRE_REGULAR' END) sp
 LEFT JOIN LATERAL (
-    SELECT id FROM schedule_zone
+    SELECT id FROM team_schedule_zone
     WHERE e.family = 'sre-abt'
     ORDER BY sort_order OFFSET ((e.seq + d.n) % 3) LIMIT 1
 ) z ON TRUE
 WHERE NOT d.is_weekend
   AND e.team_key <> 'americas'
-  AND NOT EXISTS (SELECT 1 FROM schedule_assignment a
+  AND NOT EXISTS (SELECT 1 FROM team_schedule_assignment a
                    WHERE a.user_id = e.id AND a.rota_date = d.d AND a.created_by = 'seed')
 ON CONFLICT DO NOTHING;
 

@@ -38,20 +38,20 @@ touches nothing else: seeded data, and edits made in the portal, are left alone.
 """
 
 import datetime
+import os
 import re
 import sys
-import zipfile
-import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from xlsx_reader import Book  # noqa: E402  (a sibling module, not a package)
 
 IMPORT_TAG = "import:abt-roster"
 
-M = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
-R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
 # ── What each sheet code means ──────────────────────────────────────────────
-# A cell code maps to a rota window (schedule_shift.code) or to a whole-day
-# absence (schedule_absence_kind.code, plus who an allocation is for).
+# A cell code maps to a rota window (team_schedule_shift.code) or to a whole-day
+# absence (team_schedule_absence_kind.code, plus who an allocation is for).
 SHIFTS = {
     "lk": "CRE_REGULAR",
     "ind": "CRE_REGULAR_IND",
@@ -114,52 +114,6 @@ COLOUR_ONLY = {
 
 # Column headings that are not engineers.
 NOT_PEOPLE = {"rota lead"}
-
-
-# ── Reading the workbook ────────────────────────────────────────────────────
-class Book:
-    def __init__(self, path):
-        self.z = zipfile.ZipFile(path)
-        wb = ET.fromstring(self.z.read("xl/workbook.xml"))
-        rels = {r.get("Id"): r.get("Target") for r in ET.fromstring(self.z.read("xl/_rels/workbook.xml.rels"))}
-        self.sheets = {}
-        for s in wb.find(M + "sheets"):
-            t = rels[s.get(R + "id")].lstrip("/")
-            self.sheets[s.get("name")] = t if t.startswith("xl/") else "xl/" + t
-        self.shared = []
-        if "xl/sharedStrings.xml" in self.z.namelist():
-            for si in ET.fromstring(self.z.read("xl/sharedStrings.xml")):
-                self.shared.append("".join(t.text or "" for t in si.iter(M + "t")))
-        st = ET.fromstring(self.z.read("xl/styles.xml"))
-        fills = []
-        for f in st.find(M + "fills"):
-            pf = f.find(M + "patternFill")
-            fg = pf.find(M + "fgColor") if pf is not None else None
-            fills.append(fg.get("rgb") if fg is not None else None)
-        self.xf_fill = [fills[int(x.get("fillId", 0))] for x in st.find(M + "cellXfs")]
-
-    def grid(self, name):
-        """{(row, col): (value, fill)}, 1-based."""
-        root = ET.fromstring(self.z.read(self.sheets[name]))
-        out = {}
-        for c in root.iter(M + "c"):
-            m = re.match(r"([A-Z]+)(\d+)", c.get("r"))
-            col = 0
-            for ch in m.group(1):
-                col = col * 26 + ord(ch) - 64
-            t, v = c.get("t"), c.find(M + "v")
-            val = None
-            if t == "s" and v is not None:
-                val = self.shared[int(v.text)]
-            elif t == "inlineStr":
-                val = "".join(x.text or "" for x in c.iter(M + "t"))
-            elif v is not None:
-                val = v.text
-            fill = self.xf_fill[int(c.get("s"))] if c.get("s") else None
-            val = val.strip() if isinstance(val, str) else val
-            if val or fill:
-                out[(int(m.group(2)), col)] = (val or None, fill)
-        return out
 
 
 def as_date(v):
@@ -347,8 +301,8 @@ SELECT p.email,
 
 -- The imported teams are the real ones now: the seed's stand-in engineers in
 -- them are taken off, so the roster is not half real people and half fakes.
-DELETE FROM schedule_assignment WHERE created_by = 'seed' AND team_key IN (SELECT DISTINCT team_key FROM _imp_person);
-DELETE FROM schedule_absence    WHERE created_by = 'seed' AND team_key IN (SELECT DISTINCT team_key FROM _imp_person);
+DELETE FROM team_schedule_assignment WHERE created_by = 'seed' AND team_key IN (SELECT DISTINCT team_key FROM _imp_person);
+DELETE FROM team_schedule_absence    WHERE created_by = 'seed' AND team_key IN (SELECT DISTINCT team_key FROM _imp_person);
 DELETE FROM team_member m USING team t
  WHERE m.team_id = t.id AND m.created_by = 'seed' AND lower(t.name) IN (SELECT DISTINCT team_key FROM _imp_person);
 
@@ -383,10 +337,10 @@ ON CONFLICT (id) DO NOTHING;
         chunk = assignments[i:i + 1000]
         w.append("INSERT INTO _imp_asg VALUES\n" + ",\n".join(f"  ({sql(e)},{sql(k)},'{d}',{sql(s)})" for e, k, d, s in chunk) + ";")
     w.append(f"""
-DELETE FROM schedule_assignment WHERE created_by = {t};
+DELETE FROM team_schedule_assignment WHERE created_by = {t};
 -- Instants resolved in the clock each window was written in, and stored, the
 -- same as every other writer of this table.
-INSERT INTO schedule_assignment
+INSERT INTO team_schedule_assignment
   (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at,
    is_on_call, source, created_by, updated_by)
 SELECT u.user_id, tm.id, a.team_key, s.id, s.zone_id, s.tier, a.d,
@@ -395,7 +349,7 @@ SELECT u.user_id, tm.id, a.team_key, s.id, s.zone_id, s.tier, a.d,
        s.is_on_call, 'IMPORTED', {t}, {t}
   FROM _imp_asg a
   JOIN _imp_uid u ON u.email = a.email
-  JOIN schedule_shift s ON s.code = a.shift
+  JOIN team_schedule_shift s ON s.code = a.shift
   LEFT JOIN team tm ON lower(tm.name) = a.team_key
 ON CONFLICT DO NOTHING;
 """)
@@ -404,19 +358,19 @@ ON CONFLICT DO NOTHING;
     w.append("INSERT INTO _imp_abs VALUES\n" + ",\n".join(
         f"  ({sql(m)},{sql(k)},{sql(kd)},{sql(to)},'{s}','{e}')" for m, k, kd, to, s, e in absences) + ";")
     w.append(f"""
-DELETE FROM schedule_absence WHERE created_by = {t};
-INSERT INTO schedule_absence (user_id, team_key, kind_id, allocated_to, starts_on, ends_on, note, created_by, updated_by)
+DELETE FROM team_schedule_absence WHERE created_by = {t};
+INSERT INTO team_schedule_absence (user_id, team_key, kind_id, allocated_to, starts_on, ends_on, note, created_by, updated_by)
 SELECT u.user_id, a.team_key, k.id, a.allocated_to, a.s, a.e, 'imported from the ABT roster sheet', {t}, {t}
   FROM _imp_abs a
   JOIN _imp_uid u ON u.email = a.email
-  JOIN schedule_absence_kind k ON k.code = a.kind;
+  JOIN team_schedule_absence_kind k ON k.code = a.kind;
 
 -- What landed, so a short count is visible without a second query.
-SELECT 'assignments' AS what, count(*) FROM schedule_assignment WHERE created_by = {t}
-UNION ALL SELECT 'absences', count(*) FROM schedule_absence WHERE created_by = {t}
+SELECT 'assignments' AS what, count(*) FROM team_schedule_assignment WHERE created_by = {t}
+UNION ALL SELECT 'absences', count(*) FROM team_schedule_absence WHERE created_by = {t}
 UNION ALL SELECT 'team members', count(*) FROM team_member WHERE created_by = {t}
-UNION ALL SELECT 'assignment rows not placed', (SELECT count(*) FROM _imp_asg) - (SELECT count(*) FROM schedule_assignment WHERE created_by = {t})
-UNION ALL SELECT 'absence rows not placed', (SELECT count(*) FROM _imp_abs) - (SELECT count(*) FROM schedule_absence WHERE created_by = {t});
+UNION ALL SELECT 'assignment rows not placed', (SELECT count(*) FROM _imp_asg) - (SELECT count(*) FROM team_schedule_assignment WHERE created_by = {t})
+UNION ALL SELECT 'absence rows not placed', (SELECT count(*) FROM _imp_abs) - (SELECT count(*) FROM team_schedule_absence WHERE created_by = {t});
 COMMIT;
 """)
     with open(path, "w") as fh:

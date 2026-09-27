@@ -87,10 +87,10 @@ func newScheduleIntegrationRepo(t *testing.T) (ScheduleRepository, *pgxpool.Pool
 	// Torn down first, not after: a test that fails half way should still
 	// leave the next run a clean slate.
 	for _, stmt := range []string{
-		`DELETE FROM schedule_assignment_activity WHERE team_key IN ($1, $2)`,
-		`DELETE FROM schedule_absence_activity WHERE team_key IN ($1, $2)`,
-		`DELETE FROM schedule_assignment WHERE team_key IN ($1, $2)`,
-		`DELETE FROM schedule_absence WHERE team_key IN ($1, $2)`,
+		`DELETE FROM team_schedule_assignment_activity WHERE team_key IN ($1, $2)`,
+		`DELETE FROM team_schedule_absence_activity WHERE team_key IN ($1, $2)`,
+		`DELETE FROM team_schedule_assignment WHERE team_key IN ($1, $2)`,
+		`DELETE FROM team_schedule_absence WHERE team_key IN ($1, $2)`,
 	} {
 		mustExec(t, pool, stmt, schedTeamKey, schedOtherTeam)
 	}
@@ -136,7 +136,7 @@ func shiftWithScope(t *testing.T, pool *pgxpool.Pool, family, scope string) stri
 	t.Helper()
 	var code string
 	err := pool.QueryRow(context.Background(), `
-		SELECT code FROM schedule_shift
+		SELECT code FROM team_schedule_shift
 		 WHERE family::text = $1 AND day_scope::text = $2
 		 ORDER BY sort_order LIMIT 1`, family, scope).Scan(&code)
 	if err != nil {
@@ -266,7 +266,7 @@ func TestScheduleIntegration_ApplyRangeSkipsDaysTheWindowIsNotWorkedOn(t *testin
 	}
 
 	if n := countRows(t, pool,
-		`SELECT count(*) FROM schedule_assignment WHERE user_id = $1::uuid AND rota_date BETWEEN $2::date AND $3::date`,
+		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND rota_date BETWEEN $2::date AND $3::date`,
 		schedMemberID, schedMonday, "2026-09-27"); n != 5 {
 		t.Fatalf("%d assignment rows in the range, want 5", n)
 	}
@@ -292,17 +292,17 @@ func TestScheduleIntegration_ApplyRangeReplacesAndRecordsWhatItDisplaced(t *test
 	}
 
 	if n := countRows(t, pool,
-		`SELECT count(*) FROM schedule_assignment WHERE user_id = $1::uuid AND rota_date = $2::date`,
+		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND rota_date = $2::date`,
 		schedMemberID, schedMonday); n != 1 {
 		t.Fatalf("%d rows on the day, want exactly 1 -- the day is one slot per person", n)
 	}
 	if n := countRows(t, pool,
-		`SELECT count(*) FROM schedule_assignment_activity WHERE user_id = $1::uuid AND action = 'DELETED'`,
+		`SELECT count(*) FROM team_schedule_assignment_activity WHERE user_id = $1::uuid AND action = 'DELETED'`,
 		schedMemberID); n != 1 {
 		t.Fatalf("%d DELETED activity rows, want 1 for the displaced assignment", n)
 	}
 	if n := countRows(t, pool,
-		`SELECT count(*) FROM schedule_assignment_activity WHERE user_id = $1::uuid AND action = 'CREATED'`,
+		`SELECT count(*) FROM team_schedule_assignment_activity WHERE user_id = $1::uuid AND action = 'CREATED'`,
 		schedMemberID); n != 2 {
 		t.Fatalf("%d CREATED activity rows, want 2", n)
 	}
@@ -338,7 +338,7 @@ func TestScheduleIntegration_ApplyRangeWithNoShiftCodeClearsTheSpan(t *testing.T
 		t.Fatalf("cleared %d days, want the 3 that held something", res.Applied)
 	}
 	if n := countRows(t, pool,
-		`SELECT count(*) FROM schedule_assignment WHERE user_id = $1::uuid`, schedMemberID); n != 0 {
+		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid`, schedMemberID); n != 0 {
 		t.Fatalf("%d assignments left after clearing, want 0", n)
 	}
 }
@@ -378,7 +378,7 @@ func absenceKind(t *testing.T, pool *pgxpool.Pool, bucket string) string {
 	t.Helper()
 	var code string
 	if err := pool.QueryRow(context.Background(),
-		`SELECT code FROM schedule_absence_kind WHERE bucket = $1 ORDER BY sort_order LIMIT 1`,
+		`SELECT code FROM team_schedule_absence_kind WHERE bucket = $1 ORDER BY sort_order LIMIT 1`,
 		bucket).Scan(&code); err != nil {
 		t.Fatalf("no %s absence kind: %v", bucket, err)
 	}
@@ -403,7 +403,7 @@ func TestScheduleIntegration_ApplyAbsenceMarksTheWholeSpanIncludingTheWeekend(t 
 	}
 	var starts, ends time.Time
 	if err := pool.QueryRow(context.Background(),
-		`SELECT starts_on, ends_on FROM schedule_absence WHERE user_id = $1::uuid`,
+		`SELECT starts_on, ends_on FROM team_schedule_absence WHERE user_id = $1::uuid`,
 		schedMemberID).Scan(&starts, &ends); err != nil {
 		t.Fatalf("read the absence back: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestScheduleIntegration_ClearingTheMiddleOfALeaveSpanSplitsIt(t *testing.T)
 	}
 
 	rows, err := pool.Query(ctx,
-		`SELECT starts_on, ends_on FROM schedule_absence WHERE user_id = $1::uuid ORDER BY starts_on`,
+		`SELECT starts_on, ends_on FROM team_schedule_absence WHERE user_id = $1::uuid ORDER BY starts_on`,
 		schedMemberID)
 	if err != nil {
 		t.Fatalf("read the absences back: %v", err)
@@ -491,12 +491,12 @@ func TestScheduleIntegration_ClearingOverALeaveSpanRemovesIt(t *testing.T) {
 		t.Fatalf("removed %d trimmed %d, want removed 1 trimmed 0", res.Removed, res.Trimmed)
 	}
 	if n := countRows(t, pool,
-		`SELECT count(*) FROM schedule_absence WHERE user_id = $1::uuid`, schedMemberID); n != 0 {
+		`SELECT count(*) FROM team_schedule_absence WHERE user_id = $1::uuid`, schedMemberID); n != 0 {
 		t.Fatalf("%d absences left, want 0", n)
 	}
 	// The removal is recorded, since the row it describes is gone.
 	if n := countRows(t, pool,
-		`SELECT count(*) FROM schedule_absence_activity WHERE user_id = $1::uuid AND action = 'DELETED'`,
+		`SELECT count(*) FROM team_schedule_absence_activity WHERE user_id = $1::uuid AND action = 'DELETED'`,
 		schedMemberID); n != 1 {
 		t.Fatalf("%d DELETED absence activity rows, want 1", n)
 	}
@@ -518,7 +518,7 @@ func TestScheduleIntegration_MarkingOverExistingLeaveLeavesOneSpan(t *testing.T)
 		}
 	}
 	if n := countRows(t, pool,
-		`SELECT count(*) FROM schedule_absence WHERE user_id = $1::uuid`, schedMemberID); n != 1 {
+		`SELECT count(*) FROM team_schedule_absence WHERE user_id = $1::uuid`, schedMemberID); n != 1 {
 		t.Fatalf("%d absence rows, want 1 -- the second span swallowed the first", n)
 	}
 }
@@ -599,7 +599,7 @@ func TestScheduleIntegration_OnDutyAtExcludesSomebodyOnLeave(t *testing.T) {
 
 	var startsAt, endsAt time.Time
 	if err := pool.QueryRow(ctx,
-		`SELECT starts_at, ends_at FROM schedule_assignment WHERE user_id = $1::uuid`,
+		`SELECT starts_at, ends_at FROM team_schedule_assignment WHERE user_id = $1::uuid`,
 		schedMemberID).Scan(&startsAt, &endsAt); err != nil {
 		t.Fatalf("read the window back: %v", err)
 	}
@@ -644,7 +644,7 @@ func TestScheduleIntegration_OnDutyAtExcludesSomebodyOnLeave(t *testing.T) {
 		t.Fatalf("ApplyAbsence: %v", err)
 	}
 	if n := countRows(t, pool,
-		`SELECT count(*) FROM schedule_assignment WHERE user_id = $1::uuid`, schedMemberID); n != 1 {
+		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid`, schedMemberID); n != 1 {
 		t.Fatalf("the assignment went away when leave was booked; %d rows left", n)
 	}
 	if onDuty() {
@@ -724,7 +724,7 @@ func TestScheduleIntegration_CreateUpdateDeleteLeaveATrail(t *testing.T) {
 	// row says so.
 	var source string
 	if err := pool.QueryRow(ctx,
-		`SELECT source FROM schedule_assignment WHERE id = $1::uuid`, made.ID).Scan(&source); err != nil {
+		`SELECT source FROM team_schedule_assignment WHERE id = $1::uuid`, made.ID).Scan(&source); err != nil {
 		t.Fatalf("read source: %v", err)
 	}
 	if source != "SWAP" {
@@ -736,7 +736,7 @@ func TestScheduleIntegration_CreateUpdateDeleteLeaveATrail(t *testing.T) {
 		t.Fatalf("DeleteAssignment: %v", err)
 	}
 	if n := countRows(t, pool,
-		`SELECT count(*) FROM schedule_assignment WHERE id = $1::uuid`, made.ID); n != 0 {
+		`SELECT count(*) FROM team_schedule_assignment WHERE id = $1::uuid`, made.ID); n != 0 {
 		t.Fatalf("%d rows left after the delete, want 0", n)
 	}
 
@@ -744,7 +744,7 @@ func TestScheduleIntegration_CreateUpdateDeleteLeaveATrail(t *testing.T) {
 	// change is detected on who they are, not on what they are called.
 	var field, oldV, newV string
 	if err := pool.QueryRow(ctx, `
-		SELECT field_name, old_value, new_value FROM schedule_assignment_activity
+		SELECT field_name, old_value, new_value FROM team_schedule_assignment_activity
 		 WHERE assignment_id = $1::uuid AND action = 'UPDATED' AND field_name = 'user'`,
 		made.ID).Scan(&field, &oldV, &newV); err != nil {
 		t.Fatalf("no UPDATED row for the engineer change: %v", err)
@@ -757,7 +757,7 @@ func TestScheduleIntegration_CreateUpdateDeleteLeaveATrail(t *testing.T) {
 	// is not.
 	for _, action := range []string{"CREATED", "UPDATED", "DELETED"} {
 		if n := countRows(t, pool,
-			`SELECT count(*) FROM schedule_assignment_activity WHERE assignment_id = $1::uuid AND action = $2`,
+			`SELECT count(*) FROM team_schedule_assignment_activity WHERE assignment_id = $1::uuid AND action = $2`,
 			made.ID, action); n == 0 {
 			t.Fatalf("no %s activity row survived for the deleted assignment", action)
 		}
