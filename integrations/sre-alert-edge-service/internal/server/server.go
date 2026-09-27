@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -65,11 +66,37 @@ type Pipeline interface {
 	Ingest(ctx context.Context, req Request) Result
 }
 
+// Rejection describes a webhook answered 400 or 413. It never claimed an id.
+type Rejection struct {
+	Vendor      string
+	Status      int
+	Error       string
+	Route       string
+	RequestID   string
+	RemoteAddr  string
+	ContentType string
+	// Body is what was read; for a 413 it stops at the size limit.
+	Body     []byte
+	BodySize int64
+	// VendorTotal is this replica's rejection count for Vendor since it started.
+	VendorTotal int64
+}
+
+// RejectNotifier is told about every rejected webhook (the rejected-webhook Chat card).
+// It must not block the request.
+type RejectNotifier interface {
+	Rejected(Rejection)
+}
+
+// logPreviewChars bounds how much of a rejected body goes into the log line.
+const logPreviewChars = 200
+
 // Options configures a Server.
 type Options struct {
 	Logger       *slog.Logger
 	Auth         auth.Authenticator
-	Pipeline     Pipeline // nil answers 503 on every vendor route
+	Pipeline     Pipeline       // nil answers 503 on every vendor route
+	Rejects      RejectNotifier // nil only logs rejections
 	Vendors      []string
 	MaxBodyBytes int64
 	ReadTimeout  time.Duration
@@ -81,6 +108,8 @@ type Server struct {
 	logger       *slog.Logger
 	auth         auth.Authenticator
 	pipeline     Pipeline
+	rejects      RejectNotifier
+	rejectCounts sync.Map // vendor -> *atomic.Int64
 	vendors      map[string]bool
 	maxBodyBytes int64
 	draining     atomic.Bool
@@ -95,6 +124,7 @@ func New(opts Options) *Server {
 		logger:       opts.Logger,
 		auth:         opts.Auth,
 		pipeline:     opts.Pipeline,
+		rejects:      opts.Rejects,
 		vendors:      make(map[string]bool, len(opts.Vendors)),
 		maxBodyBytes: opts.MaxBodyBytes,
 		readTimeout:  opts.ReadTimeout,
@@ -163,8 +193,11 @@ func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			// Too large never reaches a transform, so it never claims an id.
-			s.logger.Warn("webhook rejected: payload too large", "request_id", RequestID(r.Context()),
-				"vendor", vendor, "limit_bytes", s.maxBodyBytes)
+			size := r.ContentLength
+			if size < 0 {
+				size = int64(len(body))
+			}
+			s.reject(r, vendor, http.StatusRequestEntityTooLarge, "payload too large", body, size)
 			writeJSON(w, http.StatusRequestEntityTooLarge, rejected("payload too large"))
 			return
 		}
@@ -198,9 +231,30 @@ func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 			"count":   len(res.AltIDs),
 		})
 	case http.StatusBadRequest:
+		s.reject(r, vendor, http.StatusBadRequest, res.Error, body, int64(len(body)))
 		writeJSON(w, http.StatusBadRequest, rejected(res.Error))
 	default:
 		writeUnavailable(w, res.Error)
+	}
+}
+
+// reject logs a rejected webhook, counts it per vendor, and hands it to the RejectNotifier.
+func (s *Server) reject(r *http.Request, vendor string, status int, msg string, body []byte, size int64) {
+	counter, _ := s.rejectCounts.LoadOrStore(vendor, new(atomic.Int64))
+	total := counter.(*atomic.Int64).Add(1)
+	preview := body
+	if len(preview) > logPreviewChars {
+		preview = preview[:logPreviewChars]
+	}
+	s.logger.Warn("webhook rejected", "request_id", RequestID(r.Context()), "vendor", vendor,
+		"status", status, "error", msg, "body_size", size, "body_preview", string(preview),
+		"vendor_rejections_total", total)
+	if s.rejects != nil {
+		s.rejects.Rejected(Rejection{
+			Vendor: vendor, Status: status, Error: msg, Route: r.URL.Path,
+			RequestID: RequestID(r.Context()), RemoteAddr: r.RemoteAddr,
+			ContentType: r.Header.Get("Content-Type"), Body: body, BodySize: size, VendorTotal: total,
+		})
 	}
 }
 
