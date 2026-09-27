@@ -267,14 +267,17 @@ func stringPtrOrNil(s *string) *string {
 }
 
 // getEscalationNotifiedUsers batch-fetches the notification list for every
-// id in escalationIDs, avoiding one query per escalation.
-func (r *escalationRepo) getEscalationNotifiedUsers(ctx context.Context, escalationIDs []string) (map[string][]domain.EscalationNotifiedUser, error) {
+// id in escalationIDs, avoiding one query per escalation. q is a
+// rowsQuerier (case_repo.go) rather than always r.db, so CreateEscalation
+// can run this against the open tx before commit -- see that method's own
+// call site for why.
+func (r *escalationRepo) getEscalationNotifiedUsers(ctx context.Context, q rowsQuerier, escalationIDs []string) (map[string][]domain.EscalationNotifiedUser, error) {
 	out := map[string][]domain.EscalationNotifiedUser{}
 	if len(escalationIDs) == 0 {
 		return out, nil
 	}
 
-	rows, err := r.db.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		SELECT cenl.case_escalation_id, u.id, u.user_name, COALESCE(u.name, NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), '')), u.email
 		FROM case_escalation_notification_list cenl
 		JOIN "user" u ON u.id = cenl.user_id
@@ -376,7 +379,7 @@ func (r *escalationRepo) SearchEscalations(ctx context.Context, caseIDs []string
 	for i, e := range escalations {
 		ids[i] = e.ID
 	}
-	notifiedByEscalation, err := r.getEscalationNotifiedUsers(ctx, ids)
+	notifiedByEscalation, err := r.getEscalationNotifiedUsers(ctx, r.db, ids)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -456,6 +459,15 @@ type escalationCaseContext struct {
 // from this call. A configured notifyCfg group id that doesn't exist or has
 // no members resolves to an empty list, not an error -- identical to an
 // unconfigured (empty) group id slot.
+//
+// r.groups.GroupMemberUserIDs runs against r.groups's own pool, deliberately
+// NOT against CreateEscalation's open tx -- group membership (team_member)
+// is reference data with no relationship to the case row CreateEscalation
+// has locked, so it doesn't need that transaction's snapshot. This is
+// correct as-is; it is called out explicitly so a future refactor doesn't
+// thread tx through here and then hit "transaction already closed" once
+// this runs after CreateEscalation's own commit, or an unnecessary lock
+// dependency if run before it.
 func (r *escalationRepo) resolveEscalationRecipients(ctx context.Context, newLevel int, cc escalationCaseContext) ([]string, error) {
 	seen := map[string]bool{}
 	add := func(id *string) {
@@ -622,20 +634,29 @@ func (r *escalationRepo) CreateEscalation(ctx context.Context, caseID string, ac
 		return domain.CreatedEscalation{}, fmt.Errorf("create escalation: update work_item: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return domain.CreatedEscalation{}, fmt.Errorf("create escalation: commit tx: %w", err)
-	}
-
-	// Read back after commit, on the pool rather than the (now-closed) tx --
-	// reuses getEscalationNotifiedUsers as-is rather than re-deriving the
-	// same join SearchEscalations already relies on.
-	notifiedByEscalation, err := r.getEscalationNotifiedUsers(ctx, []string{escalationID})
+	// Read back INSIDE the still-open tx, before commit -- not after. The
+	// response needs richer fields (userName, name, email) than
+	// recipientIDs alone carries (userName is a required field on
+	// EscalationNotifiedUser per openapi.yaml, so it can't be synthesized
+	// from just a user id), and reuses getEscalationNotifiedUsers's own
+	// join rather than re-deriving it. Reading uncommitted rows this tx
+	// itself just inserted is fine (a transaction sees its own writes).
+	// Doing this AFTER commit instead (the original approach) meant a
+	// failure here -- transient DB issue, pool timeout -- surfaced as a 5xx
+	// for a write that had already succeeded, and a client retry would then
+	// create a second, orphaned case_escalation row. Inside the tx, the
+	// same failure safely rolls back the whole escalation instead.
+	notifiedByEscalation, err := r.getEscalationNotifiedUsers(ctx, tx, []string{escalationID})
 	if err != nil {
 		return domain.CreatedEscalation{}, err
 	}
 	notified := notifiedByEscalation[escalationID]
 	if notified == nil {
 		notified = []domain.EscalationNotifiedUser{}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.CreatedEscalation{}, fmt.Errorf("create escalation: commit tx: %w", err)
 	}
 
 	return domain.CreatedEscalation{

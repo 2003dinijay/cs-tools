@@ -40,7 +40,7 @@ type fakeEscalationRepoForService struct {
 }
 
 func (f *fakeEscalationRepoForService) SearchEscalations(context.Context, []string, []int, string, string, int, int) ([]domain.Escalation, int, error) {
-	panic("not used by these tests")
+	panic("fakeEscalationRepoForService.SearchEscalations: not expected to be called by these tests")
 }
 
 func (f *fakeEscalationRepoForService) CreateEscalation(_ context.Context, _ string, action domain.EscalationAction, reason *string, actorEmail string) (domain.CreatedEscalation, error) {
@@ -66,22 +66,22 @@ func (f *fakeUserRepoForEscalationService) GetUserByEmail(_ context.Context, ema
 	return domain.User{}, &apierror.NotFoundError{Msg: "no user found with email: " + email}
 }
 func (f *fakeUserRepoForEscalationService) SearchUsers(context.Context, domain.SearchUsersRequest) ([]domain.User, int, error) {
-	panic("not used")
+	panic("fakeUserRepoForEscalationService.SearchUsers: not expected to be called by these tests")
 }
 func (f *fakeUserRepoForEscalationService) GetUserRoles(context.Context, string) ([]string, error) {
-	panic("not used")
+	panic("fakeUserRepoForEscalationService.GetUserRoles: not expected to be called by these tests")
 }
 func (f *fakeUserRepoForEscalationService) GetUserDetail(context.Context, string) (domain.UserDetail, error) {
-	panic("not used")
+	panic("fakeUserRepoForEscalationService.GetUserDetail: not expected to be called by these tests")
 }
 func (f *fakeUserRepoForEscalationService) GetUserProjectAccess(context.Context, string) ([]domain.UserContactAccess, error) {
-	panic("not used")
+	panic("fakeUserRepoForEscalationService.GetUserProjectAccess: not expected to be called by these tests")
 }
 func (f *fakeUserRepoForEscalationService) GetUserGroups(context.Context, string) ([]domain.UserGroupRef, error) {
-	panic("not used")
+	panic("fakeUserRepoForEscalationService.GetUserGroups: not expected to be called by these tests")
 }
 func (f *fakeUserRepoForEscalationService) CreateUser(context.Context, domain.CreateUserRequest, string) (domain.User, error) {
-	panic("not used")
+	panic("fakeUserRepoForEscalationService.CreateUser: not expected to be called by these tests")
 }
 
 func newTestEscalationService(repo *fakeEscalationRepoForService) (EscalationService, *fakeUserRepoForEscalationService) {

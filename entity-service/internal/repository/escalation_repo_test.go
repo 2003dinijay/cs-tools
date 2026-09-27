@@ -168,6 +168,34 @@ func TestResolveEscalationRecipients_CumulativeAcrossLevels(t *testing.T) {
 	}
 }
 
+// TestResolveEscalationRecipients_LevelZeroReturnsEmpty guards the fact that
+// none of the "if newLevel >= N" branches fire at level 0 (a DEESCALATE that
+// brought the case back down to EL0): the notification list must come back
+// empty, matching is_escalated turning FALSE at that level. Configures a
+// real EL1 group AND a case-derived id (technicalOwnerID) that WOULD be
+// picked up at level >= 1, specifically so a future edit that accidentally
+// adds an unconditional recipient outside any level guard fails this test
+// instead of shipping silently.
+func TestResolveEscalationRecipients_LevelZeroReturnsEmpty(t *testing.T) {
+	ctx := context.Background()
+	groups := &fakeGroupMemberResolver{membersByGroup: map[string][]string{
+		"group-el1-tl": {"user-a"},
+	}}
+	r := &escalationRepo{
+		groups:    groups,
+		notifyCfg: EscalationNotificationConfig{EL1AmericasTLGroupID: "group-el1-tl"},
+	}
+	cc := escalationCaseContext{technicalOwnerID: strPtr("user-owner")}
+
+	got, err := r.resolveEscalationRecipients(ctx, 0, cc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("level 0 must produce no recipients, got %v", got)
+	}
+}
+
 func TestResolveEscalationRecipients_ProductRouting(t *testing.T) {
 	ctx := context.Background()
 	groups := &fakeGroupMemberResolver{membersByGroup: map[string][]string{

@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -116,6 +117,18 @@ func (s *escalationService) CreateEscalation(ctx context.Context, req domain.Cre
 	}
 	actor, err := s.userRepo.GetUserByEmail(ctx, email)
 	if err != nil {
+		// An already-authenticated caller getting GetUserByEmail's raw
+		// NotFoundError back (surfaced as a 404) is confusing on their OWN
+		// identity, and leaks the implementation detail that user emails
+		// must be pre-seeded in Postgres. Substitute an UnauthorizedError
+		// instead -- caseService.resolveActor does NOT have this same
+		// handling today (it propagates GetUserByEmail's error verbatim),
+		// so this isn't matching an existing pattern; it's a genuine fix
+		// that resolveActor likely wants too, out of scope here.
+		var notFound *apierror.NotFoundError
+		if errors.As(err, &notFound) {
+			return domain.CreateEscalationResponse{}, &apierror.UnauthorizedError{Msg: "authenticated user is not recognised in this system"}
+		}
 		return domain.CreateEscalationResponse{}, err
 	}
 

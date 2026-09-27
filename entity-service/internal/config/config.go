@@ -23,10 +23,11 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/validate"
 )
 
 // DataSource identifies which backend the service reads from.
@@ -604,16 +605,12 @@ func (c *Config) Validate() error {
 		"ESCALATION_EL5_CEO_GROUP_ID":             c.EscalationEL5CEOGroupID,
 	}
 	for envVar, value := range escalationGroupIDs {
-		if value != "" && !uuidRE.MatchString(value) {
+		if value != "" && !validate.IsUUID(value) {
 			return fmt.Errorf("%s %q is not a valid UUID", envVar, value)
 		}
 	}
 	return nil
 }
-
-// uuidRE matches a well-formed UUID (any version/variant), the same shape
-// internal/service's own uuidRE validates request-body ids against.
-var uuidRE = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // HasPortalMembershipWrites reports whether the portal-driven membership
 // write endpoints may be registered: the flag is on, the data source is
