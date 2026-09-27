@@ -94,6 +94,10 @@ func (f *fakeScheduleRepo) ApplyAbsence(_ context.Context, req domain.ApplySched
 	return domain.ApplyScheduleAbsenceResponse{Created: 1}, f.err
 }
 
+func (f *fakeScheduleRepo) EditMarkers(context.Context, string, string) ([]domain.ScheduleEditMarker, error) {
+	return nil, f.err
+}
+
 func (f *fakeScheduleRepo) UserInTeam(context.Context, string, string) (bool, error) {
 	return true, f.err
 }

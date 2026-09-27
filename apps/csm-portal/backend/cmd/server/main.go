@@ -331,6 +331,7 @@ func main() {
 	route("PATCH /team-schedule/assignments/{id}", handler.PermWrite, scheduleHandler.UpdateScheduleAssignment)
 	route("DELETE /team-schedule/assignments/{id}", handler.PermWrite, scheduleHandler.DeleteScheduleAssignment)
 	route("GET /team-schedule/activity", handler.PermView, scheduleHandler.GetScheduleActivity)
+	route("GET /team-schedule/edit-markers", handler.PermView, scheduleHandler.GetScheduleEditMarkers)
 	route("GET /team-schedule/my-lead-teams", handler.PermView, scheduleHandler.GetMyLeadTeams)
 	route("POST /team-schedule/assignments/apply", handler.PermWrite, scheduleHandler.ApplyScheduleRange)
 	route("POST /team-schedule/absences/apply", handler.PermWrite, scheduleHandler.ApplyScheduleAbsence)

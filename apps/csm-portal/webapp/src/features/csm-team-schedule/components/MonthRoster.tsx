@@ -65,6 +65,12 @@ interface MonthRosterProps {
   /** The teams this reader leads, and may therefore edit. Empty for everyone
    *  else, which is most people. */
   leadTeams?: readonly string[];
+  /** Which cells somebody has changed by hand, keyed "userId|rotaDate".
+   *
+   *  Optional and arrives late on purpose: the grid renders from the rota
+   *  alone and picks these up when they load, so a slow history lookup never
+   *  holds up a three-month page. */
+  editedCells?: ReadonlyMap<string, { actor: string; changedAt: string }>;
   /** Whether the page is in edit mode. A lead reads this grid far more often
    *  than they change it, so cells are inert until editing is switched on --
    *  a rota that writes on a single stray click is worse than one that needs
@@ -133,6 +139,7 @@ export default function MonthRoster({
   families,
   meEmail,
   leadTeams,
+  editedCells,
   editing = false,
   changedCells,
   onEditCell,
@@ -369,6 +376,19 @@ export default function MonthRoster({
     });
   };
 
+  /** What to add to a cell's tooltip when somebody has changed it, and
+   *  whether to mark it at all. Empty for the overwhelming majority of cells,
+   *  which nobody has touched since the rota was generated. */
+  const changedBy = (userId: string, iso: string): { mark: boolean; note: string } => {
+    const hit = editedCells?.get(`${userId}|${iso}`);
+    if (!hit) return { mark: false, note: "" };
+    const when = new Date(hit.changedAt).toLocaleDateString(undefined, {
+      day: "numeric",
+      month: "short",
+    });
+    return { mark: true, note: ` — changed by ${hit.actor} on ${when}` };
+  };
+
   const meRow = useRef<HTMLTableRowElement | null>(null);
   const scrolled = useRef(false);
   useEffect(() => {
@@ -592,15 +612,18 @@ export default function MonthRoster({
 
                   if (!split) {
                     const editable = canEdit(row.teamKey);
+                    const touched = changedBy(row.userId, iso);
                     return (
                       <td
                         key={iso}
-                        className={`${marks} ${faded(cell)}${editable ? " c editable" : ""}`}
+                        className={`${marks} ${faded(cell)}${editable ? " c editable" : ""}${
+                          touched.mark ? " touched" : ""
+                        }`}
                         title={
                           editable
-                            ? `${row.name} · ${cell ? cell.title : "nothing rostered"} — click to change`
-                            : cell
-                              ? `${row.name} · ${cell.title}`
+                            ? `${row.name} · ${cell ? cell.title : "nothing rostered"}${touched.note} — click to change`
+                            : cell || touched.mark
+                              ? `${row.name} · ${cell ? cell.title : "nothing rostered"}${touched.note}`
                               : undefined
                         }
                         onClick={editable ? (e) => openCell(e, row, iso, cell) : undefined}

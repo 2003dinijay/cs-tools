@@ -147,3 +147,36 @@ export interface ScheduleAbsencesResponse {
   absences: ScheduleAbsence[];
   count: number;
 }
+
+/** One recorded change to a team's rota or leave, as the history keeps it. */
+export interface ScheduleActivity {
+  id: string;
+  assignmentId: string;
+  userId: string;
+  teamKey: string;
+  /** The day changed; for leave, the first day of the span. */
+  rotaDate: string;
+  subject: "rota" | "leave";
+  /** For leave, the last day of the span. */
+  endsOn?: string;
+  /** The window's code, or for leave the absence kind's code. */
+  shiftCode: string;
+  action: "CREATED" | "UPDATED" | "DELETED" | "TRIMMED";
+  actorEmail: string;
+  note?: string;
+  createdOn: string;
+}
+
+/** One roster cell that a person has changed, and who changed it last. */
+export interface ScheduleEditMarker {
+  userId: string;
+  rotaDate: string;
+  actor: string;
+  changedAt: string;
+  action: "CREATED" | "UPDATED" | "DELETED";
+}
+
+export interface ScheduleEditMarkersResponse {
+  markers: ScheduleEditMarker[];
+  count: number;
+}

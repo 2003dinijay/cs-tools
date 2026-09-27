@@ -55,6 +55,9 @@ type ScheduleService interface {
 	// ApplyRange is how the roster's picker edits: one engineer, one window,
 	// across a span of days.
 	ApplyRange(ctx context.Context, req domain.ApplyScheduleRangeRequest) (domain.ApplyScheduleRangeResponse, error)
+	// EditMarkers is which cells in a window somebody has changed by hand.
+	EditMarkers(ctx context.Context, from, to string) (domain.ScheduleEditMarkersResponse, error)
+
 	// ApplyAbsence is the same picker marking somebody away, or bringing them
 	// back, across a span.
 	ApplyAbsence(ctx context.Context, req domain.ApplyScheduleAbsenceRequest) (domain.ApplyScheduleAbsenceResponse, error)
@@ -361,4 +364,19 @@ func (s *scheduleService) ApplyAbsence(ctx context.Context, req domain.ApplySche
 		return domain.ApplyScheduleAbsenceResponse{}, err
 	}
 	return s.repo.ApplyAbsence(ctx, req, auth.IdentityFromContext(ctx).UserEmail)
+}
+
+// EditMarkers implements ScheduleService.
+func (s *scheduleService) EditMarkers(ctx context.Context, from, to string) (domain.ScheduleEditMarkersResponse, error) {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return domain.ScheduleEditMarkersResponse{}, err
+	}
+	if _, _, err := parseWindow(from, to); err != nil {
+		return domain.ScheduleEditMarkersResponse{}, err
+	}
+	rows, err := s.repo.EditMarkers(ctx, from, to)
+	if err != nil {
+		return domain.ScheduleEditMarkersResponse{}, err
+	}
+	return domain.ScheduleEditMarkersResponse{Markers: rows, Count: len(rows)}, nil
 }

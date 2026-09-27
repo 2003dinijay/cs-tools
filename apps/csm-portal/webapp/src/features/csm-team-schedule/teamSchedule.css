@@ -1267,3 +1267,152 @@
   min-width: 26px;
   justify-content: center;
 }
+
+/* ── Changed this session ─────────────────────────────────────────────────
+   A saved change looks like any other value, so the cells a lead has changed
+   are ringed, with a dot in the corner, until they click Done editing. Drawn
+   on ::before so it sits over the selection, today and week marks -- which
+   use box-shadow and ::after -- instead of fighting them for the same
+   property. */
+.csm-ts .tw.roster tbody td.changed::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border: 2px solid var(--accent);
+  border-radius: 4px;
+  /* The corner dot, drawn in the same layer: ::after already belongs to the
+     current-week band, and a second claim on it would erase the band. */
+  background: radial-gradient(circle at calc(100% - 5px) 5px, var(--accent) 3px, transparent 3.5px);
+  pointer-events: none;
+  z-index: 1;
+}
+.csm-ts .tw.roster tbody td.changed {
+  position: relative;
+}
+.csm-ts .editbar .chg-key {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin: 0 4px 0 10px;
+  vertical-align: -1px;
+  border: 2px solid var(--accent);
+  border-radius: 3px;
+}
+
+/* Maternity and paternity leave (000100): colours of their own, so a long
+   planned absence reads apart from annual and lieu leave at a glance. */
+.csm-ts {
+  --mat-bg: #f3c6dc; --mat-fg: #7a1f4f;
+  --pat-bg: #c7d8f3; --pat-fg: #1f3d7a;
+}
+:root[data-color-scheme="dark"] .csm-ts {
+  --mat-bg: #5a2742; --mat-fg: #f6cde2;
+  --pat-bg: #243b5f; --pat-fg: #c9dbf6;
+}
+.csm-ts .chip.MAT { background: var(--mat-bg); color: var(--mat-fg); }
+.csm-ts .chip.PAT { background: var(--pat-bg); color: var(--pat-fg); }
+.csm-ts .offcard.MAT { --cc: var(--mat-fg); }
+.csm-ts .offcard.PAT { --cc: var(--pat-fg); }
+
+/* ── Recent changes (leads, on the roster) ────────────────────────────────
+   A quiet list under the edit bar: when, who and what, newest first. Leave
+   entries carry the leave colour at their edge, rota entries the accent. */
+.csm-ts .recent {
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.csm-ts .recent .rc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.csm-ts .recent .rc-sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+.csm-ts .recent .rc-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  max-height: 280px;
+  overflow: auto;
+}
+.csm-ts .recent .rc-i {
+  display: grid;
+  grid-template-columns: 84px 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 14px 6px 11px;
+  border-left: 3px solid var(--accent);
+  font-size: 12.5px;
+}
+.csm-ts .recent .rc-i.leave {
+  border-left-color: var(--ll-bg);
+}
+.csm-ts .recent .rc-i + .rc-i {
+  border-top: 1px solid var(--line);
+}
+.csm-ts .recent .rc-when {
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.csm-ts .recent .rc-by {
+  color: var(--faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.csm-ts .recent .rc-more {
+  margin: 0 14px 10px;
+}
+
+/* The current week as a soft region, not a boxed one. Its two hard edges --
+   2px accent rules at Monday and Sunday -- and the underline on its dates
+   read as a frame drawn over the grid, heavier than anything else on it. The
+   week is a tint alone now, a little stronger on the date row so it is still
+   found at a glance; today keeps its circled date inside it. */
+.csm-ts .tw.roster thead th.day.cwa::after,
+.csm-ts .tw.roster tbody td.cwa::after,
+.csm-ts .tw.roster thead th.day.cwz::after,
+.csm-ts .tw.roster tbody td.cwz::after {
+  border-left: 0;
+  border-right: 0;
+}
+.csm-ts .tw.roster thead th.day.cw:not(.sel)::after {
+  border-bottom: 0;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.csm-ts .tw.roster tbody td.cw::after {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+/* ── A cell somebody changed by hand ──────────────────────────────────────
+   A corner mark, not a fill or a border: the grid already spends background
+   on the weekend, today, the hovered row and the editable cell, and edges on
+   the selected column, the week band and the month rule. This has to sit
+   alongside all of them without arguing, and it is on a handful of cells out
+   of eleven thousand. The tooltip carries who and when; the mark only says
+   there is something to point at. */
+.csm-ts .tw.roster td.touched {
+  /* Only `.c` cells set this already, and a mark can land on any of them. */
+  position: relative;
+}
+.csm-ts .tw.roster td.touched::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.75;
+  pointer-events: none;
+}

@@ -42,6 +42,10 @@ type mockEntityScheduleClient struct {
 	absenceFn  func(ctx context.Context, body []byte) ([]byte, error)
 }
 
+func (m *mockEntityScheduleClient) GetScheduleEditMarkers(context.Context, string, string) ([]byte, error) {
+	return nil, nil
+}
+
 func (m *mockEntityScheduleClient) ApplyScheduleAbsence(ctx context.Context, body []byte) ([]byte, error) {
 	if m.absenceFn == nil {
 		return nil, nil

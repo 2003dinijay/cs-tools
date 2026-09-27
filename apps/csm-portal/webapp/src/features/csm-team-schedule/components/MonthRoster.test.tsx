@@ -206,3 +206,45 @@ describe("MonthRoster: the zone-split grid", () => {
     expect(closes.length).toBeLessThanOrEqual(rows);
   });
 });
+
+describe("MonthRoster: changes made this session", () => {
+  it("marks exactly the days changed, and nothing else", () => {
+    const { container } = renderRoster({
+      changedCells: new Set(["u-Asela|2026-09-21", "u-Asela|2026-09-22"]),
+    });
+    const marked = container.querySelectorAll("tbody td.changed");
+    expect(marked).toHaveLength(2);
+  });
+
+  it("marks nothing when there are no changes", () => {
+    const { container } = renderRoster({ changedCells: new Set() });
+    expect(container.querySelectorAll("tbody td.changed")).toHaveLength(0);
+  });
+});
+
+describe("MonthRoster: who changed a cell", () => {
+  const edited = new Map([
+    ["u-Asela|2026-09-21", { actor: "lead@example.test", changedAt: "2026-09-20T10:00:00.000Z" }],
+  ]);
+
+  it("marks only the cells somebody actually changed", () => {
+    // The mark has to stay rare: on a three-month grid almost every cell was
+    // generated, and marking those would say nothing.
+    const { container } = renderRoster({ editedCells: edited });
+    expect(container.querySelectorAll("td.touched")).toHaveLength(1);
+  });
+
+  it("says who changed it and when, on the cell itself", () => {
+    const { container } = renderRoster({ editedCells: edited });
+    expect(container.querySelector("td.touched")).toHaveAttribute(
+      "title",
+      expect.stringContaining("changed by lead@example.test"),
+    );
+  });
+
+  it("marks nothing at all when the history has not arrived yet", () => {
+    // The grid renders from the rota alone; markers turn up when they turn up.
+    const { container } = renderRoster({ editedCells: undefined });
+    expect(container.querySelectorAll("td.touched")).toHaveLength(0);
+  });
+});

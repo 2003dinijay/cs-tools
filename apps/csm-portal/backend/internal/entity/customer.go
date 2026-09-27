@@ -889,3 +889,11 @@ func (c *CustomerEntityClient) ApplyScheduleRange(ctx context.Context, body []by
 func (c *CustomerEntityClient) ApplyScheduleAbsence(ctx context.Context, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, "/team-schedule/absences/apply", body)
 }
+
+// GetScheduleEditMarkers calls GET /team-schedule/edit-markers on the entity
+// service -- which roster cells a person has changed, in a window.
+func (c *CustomerEntityClient) GetScheduleEditMarkers(ctx context.Context, from, to string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet,
+		fmt.Sprintf("/team-schedule/edit-markers?from=%s&to=%s",
+			url.QueryEscape(from), url.QueryEscape(to)), nil)
+}

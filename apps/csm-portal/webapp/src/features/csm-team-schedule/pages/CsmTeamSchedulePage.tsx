@@ -22,6 +22,7 @@ import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import {
   useApplyAbsence,
+  useScheduleEditMarkers,
   useApplyRange,
   useMyLeadTeams,
   useScheduleAbsences,
@@ -438,6 +439,21 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  even though the grid shows them. Read off the catalogue's own bucket
    *  rather than a list of codes, so a leave kind added later appears without
    *  a change here. */
+  /** Who changed which cell, over exactly the months the roster is showing.
+   *
+   *  Only asked for while the roster is open -- no other view marks a cell --
+   *  and kept out of the rota's own query so the grid never waits on it. */
+  const editMarkers = useScheduleEditMarkers(rosterMonths, view === "roster");
+
+  /** Keyed for the roster to look up a cell in one step rather than scanning. */
+  const editedCells = useMemo(() => {
+    const out = new Map<string, { actor: string; changedAt: string }>();
+    for (const m of editMarkers.markers) {
+      out.set(`${m.userId}|${m.rotaDate}`, { actor: m.actor, changedAt: m.changedAt });
+    }
+    return out;
+  }, [editMarkers.markers]);
+
   const leaveKinds = useMemo(
     () => (catalogue.data?.absenceKinds ?? []).filter((k) => k.bucket === "LEAVE"),
     [catalogue.data?.absenceKinds],
@@ -854,6 +870,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               selectedIso={toIsoDate(anchor)}
               meEmail={user?.email}
               leadTeams={leadTeams.data ?? []}
+              editedCells={editedCells}
               editing={editing}
               onEditCell={editCell}
               changedCells={editing ? changedCells : undefined}

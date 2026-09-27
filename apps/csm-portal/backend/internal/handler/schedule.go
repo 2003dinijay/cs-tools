@@ -43,6 +43,7 @@ type entityScheduleClient interface {
 	GetMyLeadTeams(ctx context.Context) ([]byte, error)
 	ApplyScheduleRange(ctx context.Context, body []byte) ([]byte, error)
 	ApplyScheduleAbsence(ctx context.Context, body []byte) ([]byte, error)
+	GetScheduleEditMarkers(ctx context.Context, from, to string) ([]byte, error)
 }
 
 // ScheduleHandler handles the Team Schedule reads: who is working, when, and
@@ -278,6 +279,25 @@ func (h *ScheduleHandler) ApplyScheduleAbsence(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity ApplyScheduleAbsence failed", "userID", userID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to change who is away.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// GetScheduleEditMarkers handles GET /team-schedule/edit-markers.
+func (h *ScheduleHandler) GetScheduleEditMarkers(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	q := r.URL.Query()
+	result, err := h.entity.GetScheduleEditMarkers(r.Context(), q.Get("from"), q.Get("to"))
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity GetScheduleEditMarkers failed", "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to load who changed the rota.")
 		return
 	}
 

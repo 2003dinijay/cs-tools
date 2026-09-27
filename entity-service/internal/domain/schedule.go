@@ -183,21 +183,49 @@ type ApplyScheduleAbsenceResponse struct {
 	Trimmed int `json:"trimmed"`
 }
 
-// ScheduleAssignmentActivity is one recorded change to the rota.
+// ScheduleEditMarker says that a cell on the roster was changed by a person,
+// and by whom.
+//
+// Deliberately not the change itself. The roster is a hundred-odd engineers
+// wide by three months, and shipping every field that moved for every cell
+// would cost far more than the marks are worth -- the page only needs to know
+// which cells to mark and what to say when one is pointed at. The full history
+// of a cell is a second request, made when somebody asks for it.
+type ScheduleEditMarker struct {
+	UserID    string    `json:"userId"`
+	RotaDate  string    `json:"rotaDate"`
+	Actor     string    `json:"actor"`
+	ChangedAt time.Time `json:"changedAt"`
+	Action    string    `json:"action"`
+}
+
+// ScheduleEditMarkersResponse is every marked cell in a window.
+type ScheduleEditMarkersResponse struct {
+	Markers []ScheduleEditMarker `json:"markers"`
+	Count   int                  `json:"count"`
+}
+
+// ScheduleAssignmentActivity is one recorded change to the rota -- a window
+// set or cleared, or a span of leave marked or cleared.
 type ScheduleAssignmentActivity struct {
-	ID           string    `json:"id"`
-	AssignmentID string    `json:"assignmentId"`
-	UserID       string    `json:"userId"`
-	TeamKey      string    `json:"teamKey"`
-	RotaDate     string    `json:"rotaDate"`
-	ShiftCode    string    `json:"shiftCode"`
-	Action       string    `json:"action"`
-	FieldName    *string   `json:"fieldName,omitempty"`
-	OldValue     *string   `json:"oldValue,omitempty"`
-	NewValue     *string   `json:"newValue,omitempty"`
-	ActorEmail   string    `json:"actorEmail"`
-	Note         *string   `json:"note,omitempty"`
-	CreatedOn    time.Time `json:"createdOn"`
+	ID           string `json:"id"`
+	AssignmentID string `json:"assignmentId"`
+	UserID       string `json:"userId"`
+	TeamKey      string `json:"teamKey"`
+	RotaDate     string `json:"rotaDate"`
+	// Subject is "rota" for a change to a window and "leave" for a change to an
+	// absence. For leave, ShiftCode carries the absence kind's code, RotaDate
+	// the first day and EndsOn the last (absent for an open-ended span).
+	Subject    string    `json:"subject"`
+	EndsOn     *string   `json:"endsOn,omitempty"`
+	ShiftCode  string    `json:"shiftCode"`
+	Action     string    `json:"action"`
+	FieldName  *string   `json:"fieldName,omitempty"`
+	OldValue   *string   `json:"oldValue,omitempty"`
+	NewValue   *string   `json:"newValue,omitempty"`
+	ActorEmail string    `json:"actorEmail"`
+	Note       *string   `json:"note,omitempty"`
+	CreatedOn  time.Time `json:"createdOn"`
 }
 
 type ScheduleAssignment struct {

@@ -28,9 +28,12 @@ import {
 import { useBackendApi } from "@api/backend/client";
 import type {
   ScheduleAbsencesResponse,
+  ScheduleActivity,
   ScheduleAssignment,
   ScheduleAssignmentsResponse,
   ScheduleCatalogue,
+  ScheduleEditMarker,
+  ScheduleEditMarkersResponse,
   SearchScheduleAbsencesPayload,
   SearchScheduleAssignmentsPayload,
 } from "../types";
@@ -51,6 +54,8 @@ const QK = {
     ["team-schedule", "assignments", p] as const,
   absences: (p: SearchScheduleAbsencesPayload) => ["team-schedule", "absences", p] as const,
   leadTeams: ["team-schedule", "my-lead-teams"] as const,
+  editMarkers: (from: string, to: string) =>
+    ["team-schedule", "edit-markers", from, to] as const,
 };
 
 /**
@@ -191,6 +196,52 @@ export function useScheduleAbsencesByMonth(
   });
 }
 
+/**
+ * The recorded changes to the rota and leave of the teams a lead leads, over
+ * the months on screen, newest first.
+ *
+ * One read per team per month. Per team because the history is kept, and
+ * authorised, per team -- only a team's lead may read it. Per month because
+ * entity-service caps a read at 70 days and the roster shows three months: a
+ * single read of the whole window is refused.
+ *
+ * A span of leave that crosses a month boundary comes back from both months,
+ * so the merge keeps one copy per id.
+ */
+export function useTeamActivity(
+  teamKeys: readonly string[],
+  months: readonly MonthWindow[],
+  enabled = true,
+): RotaRead<ScheduleActivity[]> {
+  const api = useBackendApi();
+  return useQueries({
+    queries: teamKeys.flatMap((teamKey) =>
+      months.map((m) => ({
+        queryKey: ["team-schedule", "activity", teamKey, m.from, m.to] as const,
+        queryFn: async () =>
+          (
+            await api.get<{ activity: ScheduleActivity[] }>(
+              `/team-schedule/activity?teamKey=${encodeURIComponent(teamKey)}&from=${m.from}&to=${m.to}`,
+            )
+          )?.activity ?? [],
+        enabled,
+        staleTime: ROTA_STALE_MS,
+      })),
+    ),
+    combine: (results): RotaRead<ScheduleActivity[]> => {
+      const failed = results.find((r) => r.isError);
+      const byId = new Map<string, ScheduleActivity>();
+      for (const r of results) for (const a of r.data ?? []) byId.set(a.id, a);
+      return {
+        data: [...byId.values()].sort((a, b) => b.createdOn.localeCompare(a.createdOn)),
+        isLoading: results.some((r) => r.isLoading),
+        isError: Boolean(failed),
+        error: failed?.error ?? null,
+      };
+    },
+  });
+}
+
 /** Who is out of the rota over a date window. */
 export function useScheduleAbsences(
   payload: SearchScheduleAbsencesPayload,
@@ -235,6 +286,7 @@ export function useMyLeadTeams(): UseQueryResult<string[], Error> {
 function invalidateRota(qc: ReturnType<typeof useQueryClient>): void {
   void qc.invalidateQueries({ queryKey: ["team-schedule", "assignments"] });
   void qc.invalidateQueries({ queryKey: ["team-schedule", "absences"] });
+  void qc.invalidateQueries({ queryKey: ["team-schedule", "activity"] });
 }
 
 export interface CreateAssignmentPayload {
@@ -371,5 +423,46 @@ export function useApplyAbsence(): UseMutationResult<ApplyAbsenceResult, Error, 
     mutationFn: (payload) =>
       api.post<ApplyAbsencePayload, ApplyAbsenceResult>("/team-schedule/absences/apply", payload),
     onSuccess: () => invalidateRota(qc),
+  });
+}
+
+/**
+ * Which roster cells somebody changed by hand.
+ *
+ * Fetched a month at a time, like the rota itself: a single read is capped at
+ * 70 days and the roster spans three months, so one request for the whole span
+ * is refused. The months are the same ones the rota was fetched in, so the two
+ * share a cache key shape and a month already on screen is not asked for twice.
+ *
+ * Its own query rather than part of the rota's, and deliberately so: the grid
+ * renders from the rota alone and picks these up when they arrive. A
+ * three-month grid is slow enough to build without waiting on a second call
+ * before anything can be drawn, and a missing mark is a far smaller problem
+ * than a late page.
+ *
+ * Only edits made by a person come back -- a handful of rows a month, against
+ * twelve thousand assignments -- so the payload stays small however wide the
+ * grid gets.
+ */
+export function useScheduleEditMarkers(
+  months: readonly MonthWindow[],
+  enabled: boolean,
+): { markers: ScheduleEditMarker[] } {
+  const api = useBackendApi();
+  return useQueries({
+    queries: months.map((m) => ({
+      queryKey: QK.editMarkers(m.from, m.to),
+      queryFn: async () => {
+        const r = await api.get<ScheduleEditMarkersResponse>(
+          `/team-schedule/edit-markers?from=${m.from}&to=${m.to}`,
+        );
+        return r ?? { markers: [], count: 0 };
+      },
+      enabled,
+      staleTime: ROTA_STALE_MS,
+    })),
+    combine: (results) => ({
+      markers: results.flatMap((r) => r.data?.markers ?? []),
+    }),
   });
 }

@@ -68,11 +68,32 @@ type ScheduleRepository interface {
 	// ApplyRange sets one engineer to one window across a span of days, which
 	// is how the roster's picker edits.
 	ApplyRange(ctx context.Context, req domain.ApplyScheduleRangeRequest, actorEmail string) (domain.ApplyScheduleRangeResponse, error)
+	// EditMarkers is which cells in a window a person has changed, for the
+	// roster to mark. One row per cell, not the changes themselves.
+	EditMarkers(ctx context.Context, from, to string) ([]domain.ScheduleEditMarker, error)
+
 	// ApplyAbsence marks one engineer away across a span, or clears it.
 	ApplyAbsence(ctx context.Context, req domain.ApplyScheduleAbsenceRequest, actorEmail string) (domain.ApplyScheduleAbsenceResponse, error)
 }
 
 type scheduleRepository struct{ db *pgxpool.Pool }
+
+// nameTheActor tells the database who is making this change, for the audit
+// triggers (000104) to record.
+//
+// The triggers can usually read it off the row's own updated_by, but not on a
+// DELETE: there the row can only offer whoever last wrote it, which is not the
+// person removing it. Set for the transaction, so it covers every statement in
+// the change and is gone again afterwards.
+func nameTheActor(ctx context.Context, tx pgx.Tx, actorEmail string) error {
+	if actorEmail == "" {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.actor', $1, true)`, actorEmail); err != nil {
+		return fmt.Errorf("name the actor for the audit trail: %w", err)
+	}
+	return nil
+}
 
 // NewScheduleRepository constructs a ScheduleRepository over the given pool.
 func NewScheduleRepository(db *pgxpool.Pool) ScheduleRepository {
@@ -428,6 +449,10 @@ func (r *scheduleRepository) CreateAssignment(ctx context.Context, req domain.Cr
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := nameTheActor(ctx, tx, actorEmail); err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+
 	var id string
 	err = tx.QueryRow(ctx, `
 		INSERT INTO team_schedule_assignment
@@ -499,6 +524,10 @@ func (r *scheduleRepository) UpdateAssignment(ctx context.Context, id string, re
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := nameTheActor(ctx, tx, actorEmail); err != nil {
+		return domain.ScheduleAssignment{}, err
+	}
+
 	before, err := assignmentByIDTx(ctx, tx, id)
 	if err != nil {
 		return domain.ScheduleAssignment{}, err
@@ -569,6 +598,10 @@ func (r *scheduleRepository) DeleteAssignment(ctx context.Context, id, actorEmai
 		return fmt.Errorf("begin delete assignment: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := nameTheActor(ctx, tx, actorEmail); err != nil {
+		return err
+	}
 
 	before, err := assignmentByIDTx(ctx, tx, id)
 	if err != nil {
@@ -713,6 +746,10 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 		return out, fmt.Errorf("begin apply range: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := nameTheActor(ctx, tx, actorEmail); err != nil {
+		return out, err
+	}
 
 	// No shift code means "take them off over this span" -- the picker's own
 	// clear option. There is no window to check a day against, so no day is
@@ -864,6 +901,10 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := nameTheActor(ctx, tx, actorEmail); err != nil {
+		return out, err
+	}
+
 	var kindID string
 	if req.KindCode != "" {
 		if err := tx.QueryRow(ctx,
@@ -1008,6 +1049,45 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 
 	if err := tx.Commit(ctx); err != nil {
 		return out, fmt.Errorf("commit apply absence: %w", err)
+	}
+	return out, nil
+}
+
+// EditMarkers implements ScheduleRepository.
+//
+// Reads the typed activity table rather than the audit trail. Both record the
+// same edits, but this one is indexed by date and holds only what the service
+// did -- which is exactly the set worth marking. The audit trail also carries
+// every row the seed and the importer wrote, and marking twelve thousand
+// generated cells as "changed" would say nothing at all.
+//
+// DISTINCT ON keeps the latest change per cell: the page marks a cell once and
+// names whoever touched it last, not everyone who ever has.
+func (r *scheduleRepository) EditMarkers(ctx context.Context, from, to string) ([]domain.ScheduleEditMarker, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT ON (user_id, rota_date)
+		       user_id::text, rota_date::text, actor_email, created_on, action
+		  FROM team_schedule_assignment_activity
+		 WHERE rota_date BETWEEN $1::date AND $2::date
+		   -- People, not the seed or the importer: those wrote the rota, they
+		   -- did not change somebody's day.
+		   AND actor_email LIKE '%@%'
+		 ORDER BY user_id, rota_date, created_on DESC`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("read edit markers: %w", err)
+	}
+	defer rows.Close()
+
+	out := []domain.ScheduleEditMarker{}
+	for rows.Next() {
+		var m domain.ScheduleEditMarker
+		if err := rows.Scan(&m.UserID, &m.RotaDate, &m.Actor, &m.ChangedAt, &m.Action); err != nil {
+			return nil, fmt.Errorf("scan edit marker: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read edit markers: %w", err)
 	}
 	return out, nil
 }

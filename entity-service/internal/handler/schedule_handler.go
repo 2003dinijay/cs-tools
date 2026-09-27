@@ -193,3 +193,14 @@ func (h *ScheduleHandler) ApplyScheduleAbsence(w http.ResponseWriter, r *http.Re
 	}
 	writeScheduleJSON(w, http.StatusOK, res)
 }
+
+// GetScheduleEditMarkers handles GET /team-schedule/edit-markers.
+func (h *ScheduleHandler) GetScheduleEditMarkers(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	res, err := h.svc.EditMarkers(r.Context(), q.Get("from"), q.Get("to"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeScheduleJSON(w, http.StatusOK, res)
+}

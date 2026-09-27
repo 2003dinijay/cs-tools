@@ -5532,6 +5532,61 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /team-schedule/edit-markers:
+    get:
+      summary: Which roster cells a person has changed, in a window.
+      description: >
+        One row per cell, not the changes themselves. The month roster is a
+        hundred-odd engineers by three months, so shipping every field that
+        moved for every cell would cost far more than the marks are worth: the
+        page needs to know which cells to mark and what to say when one is
+        pointed at. A cell's full history is a separate request.
+
+
+        Only changes made by a person are listed. The seed and the roster
+        importer wrote most of the rota; they did not change anybody's day, and
+        marking twelve thousand generated cells would say nothing.
+      operationId: getScheduleEditMarkers
+      parameters:
+        - in: query
+          name: from
+          required: true
+          schema: { type: string, format: date }
+        - in: query
+          name: to
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: The marked cells in that window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleEditMarkersResponse'
+        "400":
+          description: Bad request — a missing or malformed window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/absences/apply:
     post:
       summary: Mark one engineer away across a span, or bring them back over it.
@@ -16110,6 +16165,26 @@ components:
         name: { type: string }
         email: { type: string }
         isLead: { type: boolean }
+    ScheduleEditMarker:
+      type: object
+      required: [userId, rotaDate, actor, changedAt, action]
+      properties:
+        userId: { type: string, format: uuid }
+        rotaDate: { type: string, format: date }
+        actor:
+          type: string
+          description: Who made the change, by email.
+        changedAt: { type: string, format: date-time }
+        action: { type: string, enum: [CREATED, UPDATED, DELETED] }
+    ScheduleEditMarkersResponse:
+      type: object
+      required: [markers, count]
+      properties:
+        markers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduleEditMarker'
+        count: { type: integer }
     ApplyScheduleAbsenceRequest:
       type: object
       required: [userId, teamKey, from, to]
