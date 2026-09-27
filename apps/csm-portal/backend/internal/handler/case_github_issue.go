@@ -42,10 +42,14 @@ const (
 	errMsgGitHubTitleInvalid   = "A title of up to 256 characters is required."
 	errMsgGitHubBodyTooLong    = "The issue description is too long."
 
-	// regressionLabel is applied when the caller marks the issue a regression.
-	regressionLabel = "regression"
-	// incidentIssueTypeLabel is the one issue type a priority label applies to.
-	incidentIssueTypeLabel = "Type/Incident"
+	regressionLabel          = "regression"
+	originLabel              = "Origin/CS"
+	patchIssueTypeLabel      = "Type/Patch"
+	patchExtraLabel          = "patch"
+	discussionIssueTypeLabel = "Type/Discussion"
+	hotfixLabel              = "Require/Hotfix"
+	migrationLabel           = "Affected/Migration"
+	onboardingLabel          = "Onboarding/affected"
 )
 
 // engineeringGitIssueClient is the engineering entity service call used to file
@@ -70,16 +74,18 @@ func (h *CaseHandler) WithEngineeringClient(c engineeringGitIssueClient) *CaseHa
 type caseGitHubIssueRequest struct {
 	Title        string `json:"title"`
 	Description  string `json:"description"`
+	Reason       string `json:"reason"`
 	RepoOverride *struct {
 		Owner string `json:"owner"`
 		Repo  string `json:"repo"`
 	} `json:"repoOverride"`
-	UpdateLevel    string `json:"updateLevel"`
-	PublicIssueURL string `json:"publicIssueUrl"`
-	Regression     bool   `json:"regression"`
-	HotFixRequired bool   `json:"hotFixRequired"`
-	IssueTypeLabel string `json:"issueTypeLabel"`
-	PriorityLevel  string `json:"priorityLevel"`
+	UpdateLevel          string `json:"updateLevel"`
+	PublicIssueURL       string `json:"publicIssueUrl"`
+	Regression           bool   `json:"regression"`
+	HotFixRequired       bool   `json:"hotFixRequired"`
+	IssueTypeLabel       string `json:"issueTypeLabel"`
+	PriorityLevel        string `json:"priorityLevel"`
+	OnboardingInProgress bool   `json:"onboardingInProgress"`
 }
 
 type caseGitHubIssueResponse struct {
@@ -129,9 +135,10 @@ func buildGitHubIssueBody(req caseGitHubIssueRequest) string {
 	return strings.TrimSpace(b.String())
 }
 
-// buildGitHubIssueLabels is the repo option's own label, then the issue-type
-// label, the priority (only for an incident), and "regression" when flagged,
-// without duplicates and without blanks.
+// buildGitHubIssueLabels applies the sheet's rules. Origin/CS and the product
+// label always go on. Patch adds Type/Patch and patch. Discussion adds the
+// priority label. The switches add Require/Hotfix, regression, and
+// Affected/Migration. An in-progress project adds Onboarding/affected.
 func buildGitHubIssueLabels(option githubissue.RepoOption, req caseGitHubIssueRequest) []string {
 	var labels []string
 	seen := make(map[string]bool)
@@ -143,14 +150,28 @@ func buildGitHubIssueLabels(option githubissue.RepoOption, req caseGitHubIssueRe
 		seen[strings.ToLower(l)] = true
 		labels = append(labels, l)
 	}
+	add(originLabel)
+	add(req.UpdateLevel)
 	add(option.GithubLabel)
 	issueType := strings.TrimSpace(req.IssueTypeLabel)
-	add(issueType)
-	if issueType == incidentIssueTypeLabel {
+	switch issueType {
+	case patchIssueTypeLabel:
+		add(patchIssueTypeLabel)
+		add(patchExtraLabel)
+	case discussionIssueTypeLabel:
 		add(req.PriorityLevel)
+	}
+	if req.HotFixRequired {
+		add(hotfixLabel)
 	}
 	if req.Regression {
 		add(regressionLabel)
+	}
+	if strings.EqualFold(strings.TrimSpace(req.Reason), "migration") {
+		add(migrationLabel)
+	}
+	if req.OnboardingInProgress {
+		add(onboardingLabel)
 	}
 	return labels
 }
