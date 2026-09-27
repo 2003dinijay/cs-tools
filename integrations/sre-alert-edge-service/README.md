@@ -14,8 +14,8 @@ vendor ──POST──▶ edge (transform → allocator: CAS-claim ids → inse
 
 ## What it does
 
-- **Transforms**: one per vendor, copied unchanged from the alert-integration adapters
-  (`internal/vendors/<vendor>/`). A payload the transform rejects is answered `400` and never
+- **Transforms**: one per vendor (`internal/vendors/<vendor>/`), following the ServiceNow Edge
+  API mappings for that vendor. A payload the transform rejects is answered `400` and never
   claims an id.
 - **Ids**: every replica claims ranges of ids from the `alert_seq` row with a lightweight
   transaction (compare-and-set), so ids never repeat across replicas. One claim covers everything
@@ -98,7 +98,7 @@ docker run --rm -p 8080:8080 --env-file .env \
 | `CASSANDRA_PORT` | no | Default `10350` |
 | `ALERT_CORE_WAKE_URL` | no | alerts-core's `POST /alert` URL. Empty: no wake-up, alerts-core's poll still works |
 | `FALLBACK_CHAT_WEBHOOK_URLS` | no | Comma-separated Google Chat webhook URLs (secret). Empty: no cards, only logs |
-| `<VENDOR>_ALERT_CONFIG` | no* | Per-vendor JSON overrides, same names and shapes as the alert-integration adapters, e.g. `DATADOG_ALERT_CONFIG` |
+| `<VENDOR>_ALERT_CONFIG` | no* | Per-vendor JSON overrides, same keys and shapes as the ServiceNow Edge API alert-config properties, e.g. `DATADOG_ALERT_CONFIG` |
 | `CONFIG_PATH` | no | Path to `config.toml`. Default `./config.toml`; a missing file means built-in defaults |
 | `PORT` | no | Default `8080` |
 
@@ -169,7 +169,7 @@ curl -sS -X POST "$BASE/site24x7" -H 'Content-Type: application/json' -d '{"STAT
 ## Deploying on Choreo
 
 1. **Component**: create a *Service* component from this repo with build context
-   `choreo/sre-alert-edge-service` and the Dockerfile build preset. The Dockerfile runs the
+   `integrations/sre-alert-edge-service` and the Dockerfile build preset. The Dockerfile runs the
    tests, builds a static binary and runs it as user `10014`.
 2. **Endpoints** come from [`.choreo/component.yaml`](.choreo/component.yaml):
    - `sre-alert-api`, base path `/api/wso2/v1/sre_alert_api`, Public: the vendor webhooks.

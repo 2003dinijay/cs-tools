@@ -14,8 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package vendors maps each route name to its transform. The per-vendor packages are copied
-// unchanged from alert-integration; this file only wires them to the canonical model.
+// Package vendors maps each route name to its transform. The per-vendor packages follow the
+// ServiceNow Edge API mappings; this file only wires them to the canonical model.
 package vendors
 
 import (
