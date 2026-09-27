@@ -280,7 +280,8 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 		slog.WarnContext(ctx, "escalation: plan has no reachable recipients; nothing scheduled",
 			"incidentId", t.IncidentID, "priority", t.Priority, "rule", t.Routing.Rule(),
 			"shift", string(t.Routing.Shift), "product", t.Routing.Product, "team", t.Routing.AssignedCRETeam)
-		return e.writeNote(ctx, plan, nil, nil, nil, "")
+		e.writeNote(ctx, plan, nil, nil, nil, "")
+		return nil
 	}
 
 	// A ladder whose every call is already in the past has nothing left to
@@ -409,9 +410,7 @@ func (e *Engine) cancelBy(ctx context.Context, incidentID string, reason cancelR
 			"cancelledCalls", len(pending))
 	}
 
-	if err := e.writeNote(ctx, st.Plan, st.Placed, st.Failed, st.Cancelled, st.CancelReason); err != nil {
-		return err
-	}
+	e.writeNote(ctx, st.Plan, st.Placed, st.Failed, st.Cancelled, st.CancelReason)
 	return e.store.Delete(ctx, incidentID)
 }
 
@@ -489,9 +488,7 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 	if st.AllSettled() {
 		// The ladder ran to its end without anyone acknowledging. Record what
 		// happened and stop tracking it.
-		if err := e.writeNote(ctx, st.Plan, st.Placed, st.Failed, nil, ""); err != nil {
-			return err
-		}
+		e.writeNote(ctx, st.Plan, st.Placed, st.Failed, nil, "")
 		slog.WarnContext(ctx, "escalation: ladder exhausted without acknowledgement",
 			"incidentId", incidentID, "priority", st.Plan.Trigger.Priority,
 			"rule", st.Plan.Trigger.Routing.Rule(), "reachedLevel", st.ReachedLevel(),
@@ -568,17 +565,29 @@ func messageKind(ssml bool) string {
 // With no entity-service client configured the summary is logged instead, so a
 // deployment without one still runs the ladder rather than failing every
 // record.
-func (e *Engine) writeNote(ctx context.Context, plan Plan, placed []bool, failed []string, cancelledAt *time.Time, reason string) error {
+func (e *Engine) writeNote(ctx context.Context, plan Plan, placed []bool, failed []string, cancelledAt *time.Time, reason string) {
 	note := plan.WorkNote(placed, failed, cancelledAt, reason)
 	if e.notes == nil {
 		slog.InfoContext(ctx, "escalation: no incident-notes client configured; execution summary not written back",
 			"incidentId", plan.Trigger.IncidentID)
-		return nil
+		return
 	}
 	if err := e.notes.AppendWorkNote(ctx, plan.Trigger.IncidentID, note); err != nil {
-		return fmt.Errorf("escalation: write execution summary for %s: %w", plan.Trigger.IncidentID, err)
+		// Logged, never returned. This used to propagate, and a record whose
+		// summary could not be written was retried three times and then
+		// dead-lettered -- an incident that had genuinely been handled,
+		// abandoned because the note about it would not save. PATCH
+		// /incidents is 503 on a Postgres deployment, so that was every
+		// record, including ones with nobody to call, which is how it was
+		// found.
+		//
+		// The summary is a record of work already done: the calls are placed,
+		// the cards are posted, the state is settled. Losing the record is a
+		// loss; discarding the event is worse, and retrying cannot help,
+		// because whatever refused the write will refuse it again.
+		slog.ErrorContext(ctx, "escalation: could not write the execution summary; it is lost for this incident",
+			"incidentId", plan.Trigger.IncidentID, "error", err)
 	}
-	return nil
 }
 
 // RunTicker calls Tick every interval until ctx is done, from its own

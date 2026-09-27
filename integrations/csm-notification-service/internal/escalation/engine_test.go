@@ -705,8 +705,26 @@ func TestNewEngine_NilNotesClientDoesNotPanic(t *testing.T) {
 		t.Fatal("a nil *EntityClient must leave the interface field nil, not hold a nil pointer")
 	}
 	// writeNote is the path that would panic; it must log and return instead.
-	if err := e.writeNote(context.Background(), Plan{}, nil, nil, nil, ""); err != nil {
-		t.Errorf("writeNote with no client should be a no-op, got %v", err)
+	e.writeNote(context.Background(), Plan{}, nil, nil, nil, "")
+}
+
+// A summary that cannot be written is a lost record, not a lost incident. It
+// used to be returned, so a record whose note would not save was retried and
+// dead-lettered -- and PATCH /incidents is 503 on a Postgres deployment, so
+// that was every record, including ones that had nothing to call anybody
+// about.
+func TestEngine_HandleSurvivesAnUnwritableSummary(t *testing.T) {
+	e := testEngine(newMemStore(), &fakeCaller{},
+		&fakeNotes{err: errors.New("upstream returned 503")}, enabled())
+	// Nobody reachable, so the ladder settles on arrival and writes its
+	// summary on the way out: the shortest path to the write that used to
+	// fail the whole record.
+	e.resolver = StaticResolver{}
+
+	err := e.Handle(context.Background(), createdEvent(t, "P0", time.Now()))
+
+	if err != nil {
+		t.Fatalf("Handle = %v, want nil: a failed summary must not fail the record", err)
 	}
 }
 
