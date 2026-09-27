@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS alertintegration.incidents_processed (
   fallback                boolean,    -- one-time Chat notification, sent only while CSM remains unconfirmed
   csm_confirmed           boolean,
   csm_attempts            int,        -- failed CreateIncident attempts against this incident
-  csm_permanently_failed  boolean     -- true once csm_attempts hits notify.max_csm_attempts, or CSM returned a non-retryable 4xx
+  csm_permanently_failed  boolean,    -- true once csm_attempts hits notify.max_csm_attempts, or CSM returned a non-retryable 4xx
+  csm_last_attempt_at     timestamp   -- backs exponential retry backoff during a CSM outage
 ) WITH cosmosdb_cell_level_timestamp = true
   AND cosmosdb_cell_level_timestamp_tombstones = true
   AND cosmosdb_cell_level_timetolive = true;

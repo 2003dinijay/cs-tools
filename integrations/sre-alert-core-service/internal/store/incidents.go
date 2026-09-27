@@ -32,7 +32,7 @@ var incidentColumns = []string{
 	"fingerprint", "incident_id", "incident_number", "status", "severity", "impact", "urgency", "service",
 	"metric_name", "description", "category", "environment", "source", "alert_ids", "alert_count", "work_notes",
 	"pending_notes", "first_seen", "last_seen", "state_checked_at", "fallback", "csm_confirmed", "csm_attempts",
-	"csm_permanently_failed",
+	"csm_permanently_failed", "csm_last_attempt_at",
 }
 
 // Bounds unbounded lists so a flapping alert can't blow past Cosmos's row-size limit; AlertCount keeps growing regardless.
@@ -41,13 +41,9 @@ const maxWorkNotes = 200
 // IncidentRepo owns the incidents table; dedup uniqueness is a lightweight CAS transaction on fingerprint.
 type IncidentRepo struct {
 	session gocqlx.Session
-	// maxAlertIDs bounds the AlertIDs list used for replay idempotency. It must be at least
-	// poll.max_window: a poll window can replay any of its ids after a later Retry stalls the cycle,
-	// and a shorter cap would let an id already tail-trimmed out of AlertIDs be treated as new again,
-	// duplicating its work note.
+	// maxAlertIDs bounds AlertIDs for replay idempotency; must be >= poll.max_window to prevent re-duplicating trimmed IDs.
 	maxAlertIDs int
-	// dedupWindow bounds how long an incident keeps absorbing duplicates before IsOpen treats it as
-	// closed and Upsert starts a fresh generation; see model.Incident.IsOpen.
+	// dedupWindow bounds how long an incident absorbs duplicates before starting a new generation.
 	dedupWindow time.Duration
 }
 
@@ -69,18 +65,14 @@ func capTail[T any](list []T, max int) []T {
 	return append([]T{}, list[len(list)-max:]...)
 }
 
-// isPending mirrors the filter RetrySweep needs: an incident still owes CSM/Chat delivery either
-// because CSM hasn't been confirmed yet and hasn't permanently failed (so it must keep being
-// retried), or because CSM is confirmed but a work note is still queued to be pushed.
+// isPending returns true if an incident still owes CSM/Chat delivery.
 func isPending(csmConfirmed, csmPermanentlyFailed bool, pendingNotesLen int) bool {
 	owesCSMOrChat := !csmConfirmed && !csmPermanentlyFailed
 	owesNotes := csmConfirmed && pendingNotesLen > 0
 	return owesCSMOrChat || owesNotes
 }
 
-// setPendingIndex keeps incidents_pending (RetrySweep's lookup index) in sync with pending, without
-// re-reading incidents_processed -- callers that already know the up-to-date field values (Upsert,
-// AppendWorkNote) use this directly to avoid an extra round trip.
+// setPendingIndex syncs incidents_pending without re-reading incidents_processed.
 func (r *IncidentRepo) setPendingIndex(ctx context.Context, fp string, pending bool) error {
 	if pending {
 		stmt, names := qb.Insert("incidents_pending").Columns("fingerprint").ToCql()
@@ -96,10 +88,7 @@ func (r *IncidentRepo) setPendingIndex(ctx context.Context, fp string, pending b
 	return nil
 }
 
-// syncPendingIndex re-derives pending status from the ground-truth row and applies it via
-// setPendingIndex -- used by callers (RecordCSMIncident, RecordCSMAttemptFailure, ClearPendingNotes)
-// that don't already have every relevant field in hand. Still a single point read on the primary key,
-// nothing like the full-table scan this index replaces.
+// syncPendingIndex re-derives pending status from the ground-truth row without a full-table scan.
 func (r *IncidentRepo) syncPendingIndex(ctx context.Context, fp string) error {
 	inc, found, err := r.get(ctx, fp)
 	if err != nil {
@@ -147,10 +136,7 @@ func (r *IncidentRepo) Upsert(ctx context.Context, alertID string, a model.Alert
 			return model.Incident{}, false, fmt.Errorf("create incident %s: %w", fp, err)
 		}
 		if applied {
-			// Best-effort: the incident row is already durably created, and Handle's own idempotency
-			// check (matching this alertID in AlertIDs) would skip calling Upsert again on retry, so
-			// failing this call over a missed index write would strand the incident with no delivery
-			// ever attempted. A missed insert here just delays RetrySweep noticing it, it doesn't lose it.
+			// Best-effort: row is durable, Handle's idempotency check would skip retry, so a missed index write just delays RetrySweep.
 			_ = r.setPendingIndex(ctx, fp, true)
 			return inc, true, nil
 		}
@@ -196,13 +182,9 @@ func (r *IncidentRepo) Upsert(ctx context.Context, alertID string, a model.Alert
 	}
 
 	setCols := []string{"alert_ids", "alert_count", "severity", "impact", "urgency", "category", "description", "last_seen"}
-	// Handle only reaches here for a closed (or permanently-failed) incident: reset delivery fields or
-	// the recurrence is silently swallowed. FirstSeen reset also gives DedupTag a fresh value for
-	// NotifyCSM. PendingNotes/StateCheckedAt reset too: they belonged to the old CSM incident this
-	// generation is leaving behind.
+	// Reset delivery fields on generation boundaries to prevent silently swallowing recurrences.
 	if !existing.IsOpen(time.Now(), r.dedupWindow) {
-		// New generation: the old Description named the previous generation's alert id, so it must
-		// be rebuilt from this alert or NotifyCSM would push a stale creation note to the new CSM incident.
+		// Rebuild Description with new alert ID so NotifyCSM doesn't push a stale creation note.
 		updated.Description = model.BuildCreationNote(alertID, a)
 		updated.Status = "new"
 		updated.IncidentID = ""
@@ -211,11 +193,12 @@ func (r *IncidentRepo) Upsert(ctx context.Context, alertID string, a model.Alert
 		updated.CSMConfirmed = false
 		updated.CSMAttempts = 0
 		updated.CSMPermanentlyFailed = false
+		updated.CSMLastAttemptAt = time.Time{}
 		updated.FirstSeen = updated.LastSeen
 		updated.PendingNotes = nil
 		updated.StateCheckedAt = time.Time{}
 		setCols = append(setCols, "status", "incident_id", "incident_number", "fallback", "csm_confirmed", "csm_attempts",
-			"csm_permanently_failed", "first_seen", "pending_notes", "state_checked_at")
+			"csm_permanently_failed", "csm_last_attempt_at", "first_seen", "pending_notes", "state_checked_at")
 	}
 
 	stmt, names := qb.Update("incidents_processed").
@@ -225,8 +208,7 @@ func (r *IncidentRepo) Upsert(ctx context.Context, alertID string, a model.Alert
 	if err := r.session.Query(stmt, names).WithContext(ctx).BindStruct(updated).ExecRelease(); err != nil {
 		return model.Incident{}, false, fmt.Errorf("update incident %s: %w", fp, err)
 	}
-	// Best-effort, same reasoning as the create branches above: the row is already durably updated
-	// (including this alertID), so Handle's idempotency check would skip retrying this call.
+	// Best-effort: row is durable, so a missed index sync doesn't affect Handle's idempotency check.
 	_ = r.setPendingIndex(ctx, fp, isPending(updated.CSMConfirmed, updated.CSMPermanentlyFailed, len(updated.PendingNotes)))
 	return updated, false, nil
 }
@@ -268,26 +250,21 @@ func (r *IncidentRepo) RecordCSMIncident(ctx context.Context, fingerprint, incid
 	if err != nil {
 		return fmt.Errorf("record csm incident for %s: %w", fingerprint, err)
 	}
-	// Best-effort: csm_confirmed is already durably set, so failing this call would make the engine
-	// wrongly believe CSM confirmation itself failed and retry NotifyCSM -- relying on its dedup-by-tag
-	// search to avoid a duplicate incident, when the index sync failing has nothing to do with that.
+	// Best-effort: csm_confirmed is durable, so a missed index sync mustn't mask CSM success.
 	_ = r.syncPendingIndex(ctx, fingerprint)
 	return nil
 }
 
-// RecordCSMAttemptStarted persists the bumped attempt count before NotifyCSM is called, not after an
-// observed failure: a lost success response, or a failed write here or in RecordCSMAttemptFailure,
-// must never leave csm_attempts understating how many attempts may have already reached CSM, since
-// NotifyCSM's own dedup-search fail-open decision depends on that count being at least as large as
-// the number of CreateIncident calls actually made.
+// RecordCSMAttemptStarted persists attempts before NotifyCSM so the count is a lower bound for fail-open decisions.
 func (r *IncidentRepo) RecordCSMAttemptStarted(ctx context.Context, fingerprint string, attempts int) error {
 	stmt, names := qb.Update("incidents_processed").
-		Set("csm_attempts").
+		Set("csm_attempts", "csm_last_attempt_at").
 		Where(qb.Eq("fingerprint")).
 		ToCql()
 	err := r.session.Query(stmt, names).WithContext(ctx).BindMap(qb.M{
-		"fingerprint":  fingerprint,
-		"csm_attempts": attempts,
+		"fingerprint":         fingerprint,
+		"csm_attempts":        attempts,
+		"csm_last_attempt_at": time.Now().UTC(),
 	}).ExecRelease()
 	if err != nil {
 		return fmt.Errorf("record csm attempt started for %s: %w", fingerprint, err)
@@ -310,14 +287,12 @@ func (r *IncidentRepo) RecordCSMAttemptFailure(ctx context.Context, fingerprint 
 	if err != nil {
 		return fmt.Errorf("record csm attempt failure for %s: %w", fingerprint, err)
 	}
-	// Best-effort, same reasoning as RecordCSMIncident: the attempt/failure state is already durably
-	// persisted, so a missed index sync must not be reported as this call having failed.
+	// Best-effort: attempt/failure state is durable, so a missed index sync mustn't mask durability.
 	_ = r.syncPendingIndex(ctx, fingerprint)
 	return nil
 }
 
-// SyncStatus persists CSM's status so IsOpen reflects CSM's lifecycle, not a value only this service wrote.
-// checkedAt is stamped alongside so the next syncIncidentState call can throttle off it.
+// SyncStatus persists CSM's status and checkedAt timestamp for throttling future state checks.
 func (r *IncidentRepo) SyncStatus(ctx context.Context, fingerprint, status string, checkedAt time.Time) error {
 	stmt, names := qb.Update("incidents_processed").
 		Set("status", "state_checked_at").
@@ -334,8 +309,7 @@ func (r *IncidentRepo) SyncStatus(ctx context.Context, fingerprint, status strin
 	return nil
 }
 
-// RecordStateChecked stamps state_checked_at alone, for the common case where CSM's status hasn't
-// changed since the last check but the throttle window must still advance.
+// RecordStateChecked advances the throttle window when status hasn't changed.
 func (r *IncidentRepo) RecordStateChecked(ctx context.Context, fingerprint string, checkedAt time.Time) error {
 	stmt, names := qb.Update("incidents_processed").
 		Set("state_checked_at").
@@ -372,8 +346,7 @@ func (r *IncidentRepo) MarkFallbackNotified(ctx context.Context, fingerprint str
 	return nil
 }
 
-// ListPending reads the maintained incidents_pending index, bounded by outstanding work, instead of
-// scanning the whole (unbounded, ever-growing) incidents_processed table.
+// ListPending reads the incidents_pending index instead of scanning the whole incidents_processed table.
 func (r *IncidentRepo) ListPending(ctx context.Context) ([]model.Incident, error) {
 	stmt, names := qb.Select("incidents_pending").Columns("fingerprint").ToCql()
 	var rows []struct {
@@ -402,12 +375,7 @@ func (r *IncidentRepo) ListPending(ctx context.Context) ([]model.Incident, error
 	return pending, nil
 }
 
-// BackfillPendingIndex populates incidents_pending for any row in incidents_processed that already
-// owes delivery, so upgrading to the indexed ListPending above doesn't silently lose track of
-// incidents created before this index existed. Intended to run once at startup: it's a full scan of
-// incidents_processed, but a one-time cost per process start rather than a recurring one every sweep
-// interval, and idempotent (inserting an already-indexed fingerprint is a harmless no-op) so it's safe
-// to run on every restart.
+// BackfillPendingIndex populates incidents_pending for rows that owe delivery before this index existed (one-time cost at startup).
 func (r *IncidentRepo) BackfillPendingIndex(ctx context.Context) error {
 	stmt, names := qb.Select("incidents_processed").
 		Columns("fingerprint", "csm_confirmed", "csm_permanently_failed", "pending_notes").
@@ -432,8 +400,7 @@ func (r *IncidentRepo) BackfillPendingIndex(ctx context.Context) error {
 	return nil
 }
 
-// AppendWorkNote appends the note to both the full audit log (work_notes) and the not-yet-pushed
-// queue (pending_notes), since Cosmos's Cassandra API lacks native list append.
+// AppendWorkNote appends to both work_notes (audit log) and pending_notes (delivery queue) since Cassandra lacks native list append.
 func (r *IncidentRepo) AppendWorkNote(ctx context.Context, existing model.Incident, note string) error {
 	updatedNotes := capTail(append(append([]string{}, existing.WorkNotes...), note), maxWorkNotes)
 	updatedPending := capTail(append(append([]string{}, existing.PendingNotes...), note), maxWorkNotes)
@@ -449,14 +416,12 @@ func (r *IncidentRepo) AppendWorkNote(ctx context.Context, existing model.Incide
 	if err != nil {
 		return fmt.Errorf("append work note to incident %s: %w", existing.Fingerprint, err)
 	}
-	// Best-effort, same reasoning as Upsert: the note is already durably appended, so a missed index
-	// sync must not be reported as this call having failed.
+	// Best-effort: note is durable, so a missed index sync doesn't affect delivery state.
 	_ = r.setPendingIndex(ctx, existing.Fingerprint, isPending(existing.CSMConfirmed, existing.CSMPermanentlyFailed, len(updatedPending)))
 	return nil
 }
 
-// ClearPendingNotes persists the notes still owed to CSM after a (possibly partial) push attempt;
-// remaining is empty on full success, or the unpushed suffix on a failure partway through.
+// ClearPendingNotes persists unpushed notes after a push attempt (empty on full success, unpushed suffix on partial failure).
 func (r *IncidentRepo) ClearPendingNotes(ctx context.Context, fingerprint string, remaining []string) error {
 	stmt, names := qb.Update("incidents_processed").
 		Set("pending_notes").

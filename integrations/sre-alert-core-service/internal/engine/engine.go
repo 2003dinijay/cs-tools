@@ -66,21 +66,30 @@ type Engine struct {
 	defaults  model.Defaults
 	// maxCSMAttempts caps failed CreateIncident attempts before RetrySweep gives up on the incident.
 	maxCSMAttempts int
-	// stateCheckInterval throttles syncIncidentState's CSM round trips, so a flapping alert on a
-	// confirmed incident costs at most one CSM search per interval rather than one per duplicate.
+	// stateCheckInterval throttles CSM searches to at most one per interval during alert flaps.
 	stateCheckInterval time.Duration
-	// dedupWindow bounds how long an incident keeps absorbing duplicates before the next alert on
-	// the same fingerprint starts a fresh generation; see model.Incident.IsOpen.
+	// dedupWindow bounds how long an incident absorbs duplicates before starting a new generation.
 	dedupWindow time.Duration
+	// csmRetry bounds how RetrySweep backs off CSM retries during a prolonged outage.
+	csmRetry CSMRetryConfig
 	// locks is per-fingerprint so distinct incidents never serialize; racing callers re-read the row under lock.
 	locks *fpLocks
 }
 
-// New wires the engine's collaborators, alert defaults, CSM attempt cap, state-check throttle, and dedup window together.
-func New(logger *slog.Logger, alerts alertReader, incidents incidentStore, n notifier, defaults model.Defaults, maxCSMAttempts int, stateCheckInterval time.Duration, dedupWindow time.Duration) *Engine {
+// CSMRetryConfig bounds RetrySweep's exponential backoff for CSM retries, so a prolonged outage
+// doesn't get hit on every sweep: waits grow BaseDelay, BaseDelay*Multiplier, ..., capped at MaxDelay.
+type CSMRetryConfig struct {
+	BaseDelay  time.Duration
+	Multiplier float64
+	MaxDelay   time.Duration
+}
+
+// New wires the engine's collaborators, alert defaults, CSM attempt cap, state-check throttle, dedup window, and CSM retry backoff together.
+func New(logger *slog.Logger, alerts alertReader, incidents incidentStore, n notifier, defaults model.Defaults, maxCSMAttempts int, stateCheckInterval time.Duration, dedupWindow time.Duration, csmRetry CSMRetryConfig) *Engine {
 	return &Engine{
 		logger: logger, alerts: alerts, incidents: incidents, notifier: n, defaults: defaults,
-		maxCSMAttempts: maxCSMAttempts, stateCheckInterval: stateCheckInterval, dedupWindow: dedupWindow, locks: newFPLocks(),
+		maxCSMAttempts: maxCSMAttempts, stateCheckInterval: stateCheckInterval, dedupWindow: dedupWindow,
+		csmRetry: csmRetry, locks: newFPLocks(),
 	}
 }
 
@@ -118,11 +127,7 @@ func (e *Engine) Process(ctx context.Context, alertID string) Outcome {
 	return e.Handle(ctx, alertID, alert)
 }
 
-// Prepare reads and normalizes one alert; ready is false when unprocessable (see outcome). notFound is
-// only meaningful when !ready && outcome == Retry: it's true when the row simply isn't visible yet
-// (expected, temporary replication lag) and false for any other read error (e.g. Cosmos unreachable).
-// The poller's gap-timeout skip must only ever fire on the former -- skipping on the latter would
-// silently drop an alert during a real database outage instead of just waiting it out.
+// Prepare reads and normalizes an alert; notFound distinguishes transient replication lag from real errors so the poller's gap-timeout skip only fires on the former.
 func (e *Engine) Prepare(ctx context.Context, alertID string) (alert model.Alert, fingerprint string, outcome Outcome, ready bool, notFound bool) {
 	alert, err := e.alerts.Get(ctx, alertID)
 	if err != nil {
@@ -183,10 +188,7 @@ func (e *Engine) Handle(ctx context.Context, alertID string, alert model.Alert) 
 			return e.annotate(ctx, existing, alertID, "Duplicate", alert)
 		}
 
-		// existing is closed/permanently-failed/past its dedup window: Upsert is about to reset it
-		// into a new generation, discarding PendingNotes in the process. Flush whatever's still owed
-		// to the outgoing generation's CSM incident first, or a note queued just before expiry would
-		// be silently lost instead of ever reaching CSM.
+		// Flush notes owed to the old CSM incident before Upsert resets to a new generation.
 		e.flushBeforeGenerationReset(ctx, existing)
 	}
 
@@ -209,12 +211,7 @@ func (e *Engine) Handle(ctx context.Context, alertID string, alert model.Alert) 
 	return Processed
 }
 
-// annotate appends an OK/Duplicate work note, records alertID for idempotency, and pushes the note
-// (this one plus any earlier ones still owed) to CSM via deliverAndPersist's shared retry machinery.
-// It holds the fingerprint lock across the read-modify-write of PendingNotes: RetrySweep's
-// flushPendingNotes (via deliverAndPersist) runs concurrently with the poller and writes the same
-// list from its own snapshot, so appending here without the lock could resurrect a note CSM already
-// received, or discard one this call just added.
+// annotate appends a work note and records alertID for idempotency; the lock prevents concurrent PendingNotes updates.
 func (e *Engine) annotate(ctx context.Context, existing model.Incident, alertID, kind string, alert model.Alert) Outcome {
 	fp := existing.Fingerprint
 	unlock := e.locks.lock(fp)
@@ -254,9 +251,7 @@ func (e *Engine) annotate(ctx context.Context, existing model.Incident, alertID,
 	return Processed
 }
 
-// syncIncidentState refreshes inc's local Status from CSM so IsOpen reflects reality, not stale local
-// state. Throttled by stateCheckInterval: without it, a flapping alert on a confirmed incident would
-// cost one CSM search per duplicate during a storm.
+// syncIncidentState refreshes local Status from CSM and throttles checks to prevent storms of duplicates.
 func (e *Engine) syncIncidentState(ctx context.Context, inc model.Incident) model.Incident {
 	if !inc.CSMConfirmed {
 		return inc // nothing created on CSM yet.
@@ -266,8 +261,7 @@ func (e *Engine) syncIncidentState(ctx context.Context, inc model.Incident) mode
 	}
 	open, found, err := e.notifier.IncidentState(ctx, inc.IncidentNumber)
 	if err != nil {
-		// Don't stamp StateCheckedAt: a failed check shouldn't extend the throttle window past a
-		// successful one, or the next duplicate would wait a full interval for a check that never happened.
+		// Don't stamp StateCheckedAt so a failed check doesn't extend the throttle window.
 		e.logger.Warn("csm incident state check failed, using last known state", "incident_number", inc.IncidentNumber, "error", err)
 		return inc
 	}
@@ -299,7 +293,7 @@ func (e *Engine) syncIncidentState(ctx context.Context, inc model.Incident) mode
 // persistTimeout bounds recording a delivery result after its external call already completed.
 const persistTimeout = 5 * time.Second
 
-// persistCtx survives ctx's cancellation, so a successful delivery still gets recorded on shutdown.
+// persistCtx survives parent cancellation so results record even on shutdown.
 func persistCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 }
@@ -323,18 +317,10 @@ func (e *Engine) deliverAndPersist(ctx context.Context, fingerprint string) {
 	}
 
 	csmConfirmed := inc.CSMConfirmed
-	// csmSucceeded tracks CSM acceptance itself, independent of whether persisting that result below
-	// succeeds: even if RecordCSMIncident fails, CSM already has this incident, so Chat must not also
-	// fire and tell a human about an incident that already exists on CSM.
+	// csmSucceeded tracks actual CSM acceptance independent of persistence; prevents Chat redundancy if CSM succeeded.
 	csmSucceeded := csmConfirmed
-	if !csmConfirmed {
-		// Persist the bumped attempt count *before* calling NotifyCSM, not after a failure. NotifyCSM's
-		// own dedup search fails open only when CSMAttempts <= 1 (this being the very first attempt for
-		// this incident generation); if we only recorded attempts after an observed failure, a lost
-		// response (CSM created it but RecordCSMIncident below fails) or a failed RecordCSMAttemptFailure
-		// write would leave CSMAttempts unchanged, and the next call would wrongly fail open on a search
-		// error and create a duplicate. Persisting first makes CSMAttempts a lower bound on "attempts
-		// that may have reached CSM," which is what the fail-open decision actually needs.
+	if !csmConfirmed && inc.CSMRetryDue(time.Now(), e.csmRetry.BaseDelay, e.csmRetry.Multiplier, e.csmRetry.MaxDelay) {
+		// Persist attempt count before NotifyCSM so CSMAttempts is a lower bound on attempts that may have reached CSM.
 		attempts := inc.CSMAttempts + 1
 		pctx, cancel := persistCtx(ctx)
 		startErr := e.incidents.RecordCSMAttemptStarted(pctx, inc.Fingerprint, attempts)
@@ -389,8 +375,7 @@ func (e *Engine) deliverAndPersist(ctx context.Context, fingerprint string) {
 	}
 }
 
-// flushPendingNotes pushes inc's PendingNotes to CSM in order, stopping at the first failure so a note
-// is never skipped ahead of one still pending. Persists whatever progress was made even on partial failure.
+// flushPendingNotes pushes notes in order and persists progress even on partial failure.
 func (e *Engine) flushPendingNotes(ctx context.Context, inc model.Incident) model.Incident {
 	remaining := inc.PendingNotes
 	for i, note := range inc.PendingNotes {
@@ -415,11 +400,7 @@ func (e *Engine) flushPendingNotes(ctx context.Context, inc model.Incident) mode
 	return inc
 }
 
-// flushBeforeGenerationReset pushes any work notes still owed to existing's CSM incident before the
-// caller lets Upsert reset it into a new generation (which discards PendingNotes). Best-effort: it
-// takes the same per-fingerprint lock as annotate/deliverAndPersist so it can't race a concurrent
-// RetrySweep flush, re-reads under that lock since existing may already be stale, and does nothing if
-// there's nothing owed or a concurrent caller already handled it.
+// flushBeforeGenerationReset pushes notes to the old CSM incident before Upsert starts a new generation (best-effort).
 func (e *Engine) flushBeforeGenerationReset(ctx context.Context, existing model.Incident) {
 	if !existing.CSMConfirmed || len(existing.PendingNotes) == 0 {
 		return // nothing owed to CSM (unconfirmed incidents have no CSM incident to push a note to).

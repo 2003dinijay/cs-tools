@@ -104,9 +104,7 @@ func TestStuckTrackerResetsOnProgress(t *testing.T) {
 		t.Fatalf("expected tracker to record id 1 as stuck, got %d", s.at)
 	}
 
-	// id 1 becomes ready (still the window's head, but no longer blocked), so the tracker
-	// must forget it rather than counting time against a since-resolved id if it ever gets
-	// stuck again later.
+	// id 1 becomes ready; tracker must forget it, not count time against a resolved id.
 	s.observe(1, false, now.Add(30*time.Second), gap)
 	if s.at != 0 {
 		t.Fatalf("expected tracker to clear after progress, got at=%d", s.at)

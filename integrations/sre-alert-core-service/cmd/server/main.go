@@ -78,8 +78,7 @@ func main() {
 		logger.Error("failed to initialise incident repository", "error", err)
 		os.Exit(1)
 	}
-	// One-time (per process start) backfill so incidents_pending covers rows created before this
-	// index existed; a failure here doesn't block startup since it can just be retried on next restart.
+	// Backfill pending index for pre-existing rows; startup continues if this fails as it will retry on next restart.
 	if err := incidents.BackfillPendingIndex(context.Background()); err != nil {
 		logger.Warn("failed to backfill pending incident index, will retry on next restart", "error", err)
 	}
@@ -104,7 +103,11 @@ func main() {
 		RetryBaseDelay:   depCfg.Notify.RetryBaseDelay.Duration(),
 		HTTPTimeout:      depCfg.Notify.HTTPTimeout.Duration(),
 	})
-	eng := engine.New(base.With("component", "engine"), alerts, incidents, notifier, defaults, depCfg.Notify.MaxCSMAttempts, depCfg.Notify.StateCheckInterval.Duration(), depCfg.Engine.DedupWindow.Duration())
+	eng := engine.New(base.With("component", "engine"), alerts, incidents, notifier, defaults, depCfg.Notify.MaxCSMAttempts, depCfg.Notify.StateCheckInterval.Duration(), depCfg.Engine.DedupWindow.Duration(), engine.CSMRetryConfig{
+		BaseDelay:  depCfg.Notify.CSMRetryBaseDelay.Duration(),
+		Multiplier: depCfg.Notify.CSMRetryMultiplier,
+		MaxDelay:   depCfg.Notify.CSMRetryMaxDelay.Duration(),
+	})
 	poller, err := poll.New(base.With("component", "poll"), session, eng, processorLease, poll.Settings{
 		Interval:            depCfg.Poll.Interval.Duration(),
 		Concurrency:         depCfg.Poll.Concurrency,
@@ -122,10 +125,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// leaseCtx is separate from ctx (which SIGTERM cancels immediately) so renewal keeps running for
-	// the full drain window below; a window can take longer than lease.ttl (max_window alerts, each
-	// possibly making CSM/Chat calls), and if renewal stopped at SIGTERM the lease could expire and a
-	// standby could steal it while this replica still has Handle calls in flight, duplicating notifications.
+	// leaseCtx stays alive through drain so renewal outlives it; lease could expire mid-delivery if renewal stopped at SIGTERM.
 	leaseCtx, cancelLease := context.WithCancel(context.Background())
 	defer cancelLease()
 	leaseDone := make(chan struct{})
@@ -184,9 +184,7 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), depCfg.Server.ShutdownGrace.Duration())
 		defer cancel()
 
-		// Cancels the poller and waits for drain before releasing the lease, to avoid duplicate delivery.
-		// Renewal (leaseCtx) must keep running throughout this wait -- stopping it early would let the
-		// lease expire and a standby steal it while this replica still has in-flight Handle calls.
+		// Cancel poller and wait for drain before releasing lease; renewal must outlive that wait or a standby could steal the lease mid-delivery.
 		cancelPoll()
 		select {
 		case <-pollerDone:
@@ -194,11 +192,7 @@ func main() {
 			logger.Warn("poller did not drain within shutdown_grace")
 		}
 		cancelLease()
-		// Join Run before releasing: cancelLease alone doesn't wait for its in-flight
-		// tryAcquireOrRenew CAS to finish. Without this join, Release's "IF owner = self" CAS could run
-		// concurrently with a stale acquire CAS (lease was free/expired) and lose the race -- Release
-		// observes a mismatched owner and no-ops, while the acquire then completes and holds the lease
-		// until its own expiry, defeating the immediate-release-on-shutdown guarantee.
+		// Join Run before releasing: cancelLease alone doesn't wait for in-flight tryAcquireOrRenew to finish, risking concurrent CAS with stale owner.
 		<-leaseDone
 
 		// Released only after drain, so a standby resumes immediately and never races a mid-delivery replica.
@@ -221,7 +215,6 @@ func mustEnv(logger *slog.Logger, name string) string {
 	return v
 }
 
-// splitComma splits a comma-separated env var into trimmed, non-empty values.
 func splitComma(raw string) []string {
 	var out []string
 	for _, v := range strings.Split(raw, ",") {

@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -60,36 +61,37 @@ type Incident struct {
 	AlertIDs       []string `json:"alert_ids" db:"alert_ids"`
 	AlertCount     int      `json:"alert_count" db:"alert_count"`
 	WorkNotes      []string `json:"work_notes" db:"work_notes"`
-	// PendingNotes is the FIFO subset of WorkNotes not yet confirmed pushed to CSM; cleared as CSM accepts
-	// each one, in order. Separate from WorkNotes (the full local audit log) because WorkNotes is capped
-	// and tail-trimmed, which would misalign a simple "notes pushed so far" counter.
+	// PendingNotes is the FIFO subset not yet confirmed by CSM; kept separate because WorkNotes is tail-trimmed.
 	PendingNotes []string  `json:"pending_notes" db:"pending_notes"`
 	FirstSeen    time.Time `json:"first_seen" db:"first_seen"`
 	LastSeen     time.Time `json:"last_seen" db:"last_seen"`
-	// StateCheckedAt throttles how often syncIncidentState calls CSM to refresh Status, so a flapping
-	// alert on a confirmed incident doesn't cost one CSM round trip per duplicate during a storm.
+	// StateCheckedAt throttles CSM refresh calls to avoid excessive round trips during alert storms.
 	StateCheckedAt time.Time `json:"state_checked_at" db:"state_checked_at"`
-	// Fallback and CSMConfirmed are independent obligations, each retried separately until true.
-	// Fallback tracks the one-time Chat notification sent only while CSM remains unconfirmed --
-	// it's not a general "was this incident announced" flag.
+	// Fallback and CSMConfirmed are independent delivery obligations tracked separately.
 	Fallback     bool `json:"fallback" db:"fallback"`
 	CSMConfirmed bool `json:"csm_confirmed" db:"csm_confirmed"`
-	// CSMAttempts caps retries so permanently-rejected (4xx) payloads stop being rescanned; CSMPermanentlyFailed then excludes the row from ListPending.
+	// CSMAttempts and CSMPermanentlyFailed track retry limits to prevent permanently-rejected payloads from being rescanned.
 	CSMAttempts          int  `json:"csm_attempts" db:"csm_attempts"`
 	CSMPermanentlyFailed bool `json:"csm_permanently_failed" db:"csm_permanently_failed"`
+	// CSMLastAttemptAt backs CSMRetryDue's exponential backoff, so RetrySweep doesn't hit CSM every sweep during an outage.
+	CSMLastAttemptAt time.Time `json:"csm_last_attempt_at" db:"csm_last_attempt_at"`
 }
 
-// IsOpen defaults to true until CSM confirms "closed", since this service never closes incidents and unsynced rows must not look closed.
-// A permanently-failed incident is treated as closed too: CSM will never confirm it, so without this
-// every later alert on the same fingerprint would be folded into it as a silent local Duplicate note
-// forever, with no further CSM attempt and no further Chat message. Upsert's existing closed-incident
-// handling already resets delivery state and starts a fresh generation, which is exactly what a
-// permanently-failed incident needs on its next occurrence.
-//
-// dedupWindow additionally bounds how long an incident keeps absorbing duplicates: it's a fixed
-// window measured from FirstSeen (not a sliding idle timeout), so once now is dedupWindow past
-// FirstSeen the incident reports closed even if CSM still has it open, and the next alert on the
-// same fingerprint starts a fresh generation via the same closed-incident path.
+// CSMRetryDue reports whether enough time has passed since the last CSM attempt to try again,
+// growing the wait exponentially (base, base*mult, base*mult^2, ...) capped at maxDelay, so a
+// prolonged CSM outage doesn't get hit every sweep interval forever.
+func (i Incident) CSMRetryDue(now time.Time, base time.Duration, multiplier float64, maxDelay time.Duration) bool {
+	if i.CSMAttempts == 0 {
+		return true // never attempted yet
+	}
+	delay := time.Duration(float64(base) * math.Pow(multiplier, float64(i.CSMAttempts-1)))
+	if delay > maxDelay {
+		delay = maxDelay
+	}
+	return now.Sub(i.CSMLastAttemptAt) >= delay
+}
+
+// IsOpen reports open status; false if permanently-failed, older than dedupWindow, or CSM-confirmed as closed.
 func (i Incident) IsOpen(now time.Time, dedupWindow time.Duration) bool {
 	if i.CSMPermanentlyFailed {
 		return false
@@ -186,8 +188,7 @@ func ImpactUrgency(severityNum int) (impact, urgency string) {
 	}
 }
 
-// BuildWorkNote formats a journal entry, referencing the alert by id rather than an instance URL link.
-// CSM timestamps notes itself, so the text carries no separate timestamp.
+// BuildWorkNote formats a work note, referencing the alert by id rather than instance URL.
 func BuildWorkNote(kind, alertID, metricName, source string) string {
 	metricName = firstNonEmpty(metricName, "N/A")
 	source = firstNonEmpty(source, "N/A")
@@ -195,18 +196,13 @@ func BuildWorkNote(kind, alertID, metricName, source string) string {
 		kind, alertID, metricName, source)
 }
 
-// kv is one row of an HTML table rendered by jsonValueToHTML, kept as an ordered slice (rather than a
-// map) so field order is deterministic -- Go map iteration order is not, unlike the JS object literal
-// order this mirrors.
+// kv preserves field order in HTML tables (Go map iteration is random).
 type kv struct {
 	key string
 	val any
 }
 
-// jsonValueToHTML recursively renders v as an HTML fragment, porting the ServiceNow
-// JSONToHtmlAction flow action (nil -> italic placeholder, []any -> a bordered list of divs,
-// map[string]any -> a nested key/value table, everything else -> an escaped scalar) so alert-core-service
-// can produce the same structure directly instead of relying on ServiceNow to convert it after the fact.
+// jsonValueToHTML recursively renders JSON as HTML, matching ServiceNow's JSONToHtmlAction output.
 func jsonValueToHTML(v any) string {
 	switch val := v.(type) {
 	case nil:
@@ -245,8 +241,7 @@ func jsonValueToHTML(v any) string {
 	}
 }
 
-// fieldsToHTMLTable renders fields as the same bordered key/value table JSONToHtmlAction builds for a
-// JSON object, one row per field, in the given order.
+// fieldsToHTMLTable renders fields as a bordered key/value HTML table.
 func fieldsToHTMLTable(fields []kv) string {
 	var b strings.Builder
 	b.WriteString(`<table style='border:1px solid #dcdcdc; border-collapse:collapse; width:100%; font-family:Arial, sans-serif; font-size:13px;'>`)
@@ -259,10 +254,7 @@ func fieldsToHTMLTable(fields []kv) string {
 	return b.String()
 }
 
-// BuildCreationNote formats the note CSM receives when an incident is first auto-created from an
-// alert: a plain-text traceability line naming this service's own alert id, followed by the
-// triggering alert's own fields rendered as an HTML table (matching the ServiceNow JSONToHtmlAction
-// output this replaces, so the table looks the same whichever side produces it).
+// BuildCreationNote formats the initial CSM note with alert traceability and HTML table.
 func BuildCreationNote(alertID string, a Alert) string {
 	fields := []kv{
 		{"service", a.Service},
