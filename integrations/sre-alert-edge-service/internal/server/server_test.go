@@ -202,3 +202,24 @@ func TestVendorRoute_AuthHookRunsBeforePipeline(t *testing.T) {
 		t.Error("pipeline must not run when auth rejects")
 	}
 }
+
+func TestAccessLog_CarriesVendorAndAltIDs(t *testing.T) {
+	var buf strings.Builder
+	p := &fakePipeline{result: Result{Status: http.StatusCreated, AltIDs: []string{"ALT000000007"}}}
+	s := New(Options{
+		Logger: slog.New(slog.NewJSONHandler(&buf, nil)), Auth: auth.None{}, Pipeline: p,
+		Vendors: []string{"aws"}, MaxBodyBytes: 1024,
+	})
+	do(t, s, "POST", VendorRoutePrefix+"aws", "{}")
+	do(t, s, "GET", "/healthz", "")
+
+	out := buf.String()
+	for _, want := range []string{`"msg":"request"`, `"vendor":"aws"`, `"alt_ids":["ALT000000007"]`, `"status":201`, `"duration_ms"`, `"request_id"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log missing %s:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "/healthz") {
+		t.Error("health probes should not be access-logged")
+	}
+}

@@ -178,6 +178,8 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 	vendor := r.PathValue("vendor")
+	info := requestInfoFrom(r.Context())
+	info.vendor = vendor
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -223,6 +225,7 @@ func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 		ContentType: r.Header.Get("Content-Type"),
 		Body:        body,
 	})
+	info.altIDs, info.err = res.AltIDs, res.Error
 	switch res.Status {
 	case http.StatusCreated:
 		writeJSON(w, http.StatusCreated, map[string]any{
@@ -315,7 +318,24 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
-// withAccessLog logs every vendor-route request; health probes are skipped to keep logs quiet.
+// requestInfo is filled in by the vendor route so the access log can carry the outcome.
+type requestInfo struct {
+	vendor string
+	altIDs []string
+	err    string
+}
+
+type requestInfoKey struct{}
+
+func requestInfoFrom(ctx context.Context) *requestInfo {
+	if info, ok := ctx.Value(requestInfoKey{}).(*requestInfo); ok {
+		return info
+	}
+	return &requestInfo{}
+}
+
+// withAccessLog writes one line per request with the vendor, alt ids and latency. Health
+// probes are skipped to keep logs quiet.
 func (s *Server) withAccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/livez" || r.URL.Path == "/healthz" {
@@ -323,9 +343,25 @@ func (s *Server) withAccessLog(next http.Handler) http.Handler {
 			return
 		}
 		start := time.Now()
+		info := &requestInfo{}
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		s.logger.Info("request", "request_id", RequestID(r.Context()), "method", r.Method,
-			"path", r.URL.Path, "status", rec.status, "duration_ms", time.Since(start).Milliseconds())
+		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), requestInfoKey{}, info)))
+
+		attrs := []any{"request_id", RequestID(r.Context()), "method", r.Method, "path", r.URL.Path,
+			"status", rec.status, "duration_ms", time.Since(start).Milliseconds()}
+		if info.vendor != "" {
+			attrs = append(attrs, "vendor", info.vendor)
+		}
+		if len(info.altIDs) > 0 {
+			attrs = append(attrs, "alt_ids", info.altIDs, "count", len(info.altIDs))
+		}
+		if info.err != "" {
+			attrs = append(attrs, "error", info.err)
+		}
+		if rec.status >= http.StatusInternalServerError {
+			s.logger.Warn("request", attrs...)
+			return
+		}
+		s.logger.Info("request", attrs...)
 	})
 }

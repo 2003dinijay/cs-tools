@@ -241,14 +241,19 @@ func (a *Allocator) claimLoop() {
 			}
 		}
 
-		start, err := a.claim(n)
+		claimStart := time.Now()
+		start, attempts, err := a.claim(n)
 		if err != nil {
-			a.logger.Error("claim failed; batch rejected, no ids claimed", "alerts", n, "error", err)
+			a.logger.Error("claim failed; batch rejected, no ids claimed", "alerts", n,
+				"submissions", len(batch), "claim_attempts", attempts, "error", err)
 			for _, sub := range batch {
 				sub.done <- Result{Err: ErrClaimFailed}
 			}
 			continue
 		}
+		a.logger.Info("batch claimed", "alerts", n, "submissions", len(batch),
+			"first_id", cassandra.FormatID(start), "last_id", cassandra.FormatID(start+int64(n)-1),
+			"claim_attempts", attempts, "claim_ms", time.Since(claimStart).Milliseconds())
 		a.writes.Add(1)
 		go a.writeBatch(batch, start)
 	}
@@ -260,11 +265,11 @@ func (a *Allocator) claimLoop() {
 // If the compare-and-set call itself errors (e.g. times out), it may still have applied on the
 // server; those ids would then have no rows and alerts-core would wait gap_timeout on each.
 // The retry can't tell, so this is logged; it's the same class of failure as "DB down".
-func (a *Allocator) claim(n int) (int64, error) {
+func (a *Allocator) claim(n int) (start int64, attempts int, err error) {
 	ctx := context.Background()
 	current, err := a.store.ReadSeq(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	var lastErr error
 	for attempt := 1; attempt <= a.cfg.ClaimMaxAttempts; attempt++ {
@@ -278,16 +283,13 @@ func (a *Allocator) claim(n int) (int64, error) {
 				lastErr = err
 			}
 		case applied:
-			if attempt > 1 {
-				a.logger.Info("claim succeeded after retries", "attempts", attempt, "alerts", n)
-			}
-			return current + 1, nil
+			return current + 1, attempt, nil
 		default:
 			current = seen
 		}
 		a.pause()
 	}
-	return 0, fmt.Errorf("gave up after %d attempts: %v", a.cfg.ClaimMaxAttempts, lastErr)
+	return 0, a.cfg.ClaimMaxAttempts, fmt.Errorf("gave up after %d attempts: %v", a.cfg.ClaimMaxAttempts, lastErr)
 }
 
 func (a *Allocator) pause() {
@@ -306,6 +308,7 @@ type alertJob struct {
 // replies to each submitter with its ids, and wakes alerts-core once if anything was stored.
 func (a *Allocator) writeBatch(batch []*submission, start int64) {
 	defer a.writes.Done()
+	writeStart := time.Now()
 
 	type outcome struct {
 		ids    []string
@@ -340,6 +343,15 @@ func (a *Allocator) writeBatch(batch []*submission, start int64) {
 		}
 	}
 	wg.Wait()
+
+	failed := 0
+	for _, o := range outcomes {
+		if o.failed {
+			failed++
+		}
+	}
+	a.logger.Info("batch written", "alerts", seq-start, "first_id", cassandra.FormatID(start),
+		"failed_submissions", failed, "write_ms", time.Since(writeStart).Milliseconds())
 
 	for si, sub := range batch {
 		if outcomes[si].failed {
