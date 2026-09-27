@@ -126,11 +126,15 @@ func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident) (incidentI
 		ServiceID: serviceID,
 		Impact:    inc.Impact,
 		Urgency:   inc.Urgency,
-		Subject:   tag + " " + incidentSubject(inc),
+		Subject:   incidentSubject(inc),
 	}
+	// The dedup tag no longer lives in Subject (title is metric-name only), so it must
+	// stay in WorkNotes for SearchIncidentByTag's free-text search to keep finding it.
+	workNotes := fmt.Sprintf("<p>%s</p>", tag)
 	if inc.Description != "" {
-		req.WorkNotes = &inc.Description
+		workNotes += inc.Description
 	}
+	req.WorkNotes = &workNotes
 
 	res, err := n.createIncidentWithRetry(ctx, tag, req)
 	if err != nil {
@@ -228,13 +232,11 @@ func csmCategory(category string) string {
 	return "SERVICE_INTERRUPTION"
 }
 
+// incidentSubject is the metric name alone; the dedup tag and other alert context live in WorkNotes instead of the title.
 func incidentSubject(inc model.Incident) string {
-	subject := inc.Service
-	if inc.MetricName != "" {
-		subject += " - " + inc.MetricName
-	}
-	if inc.Environment != "" {
-		subject += " (" + inc.Environment + ")"
+	subject := inc.MetricName
+	if subject == "" {
+		subject = inc.Service
 	}
 	if inc.Fallback {
 		// Chat already fired before CSM confirmed, so this create call is a delayed catch-up, not a fresh occurrence.

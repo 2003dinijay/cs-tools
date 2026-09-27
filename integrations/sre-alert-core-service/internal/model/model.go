@@ -266,7 +266,7 @@ func BuildCreationNote(alertID string, a Alert) string {
 		{"unique_identifier", a.UniqueIdentifier},
 		{"description", a.Description},
 	}
-	return fmt.Sprintf("Incident auto-created from Alert: %s\n%s", alertID, fieldsToHTMLTable(fields))
+	return fmt.Sprintf("<p>Incident auto-created from Alert: %s</p>%s", html.EscapeString(alertID), fieldsToHTMLTable(fields))
 }
 
 // Fingerprint is the dedup key; a distinct unique identifier always starts a new incident.
