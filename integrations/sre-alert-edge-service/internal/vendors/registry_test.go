@@ -17,6 +17,8 @@
 package vendors
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +46,20 @@ func newTestRegistry(t *testing.T) *Registry {
 		t.Fatalf("New: %v", err)
 	}
 	return r
+}
+
+// compactFile returns a testdata payload as single-line JSON.
+func compactFile(t *testing.T, vendor, name string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", vendor+"_"+name+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
 }
 
 func transformFile(t *testing.T, r *Registry, vendor, name string) []model.Alert {
@@ -152,7 +168,7 @@ func TestRegistry_RecoveryResolvesInAlertsCore(t *testing.T) {
 func TestRegistry_OpenObserveKeepsOnlyCanonicalFields(t *testing.T) {
 	a := transformFile(t, newTestRegistry(t), "openobserve", "firing")[0]
 	if a.UniqueIdentifier != "9f3a7c2e-4b1d-4e8a-9c3f-2b8d5e6f1a9c" || a.Source != "OpenObserve" ||
-		a.Description != "p99 latency has been above 2000ms for 5 minutes" {
+		a.Description != "p99 latency has been above 2000ms for 5 minutes\n\nRaw payload: "+compactFile(t, "openobserve", "firing") {
 		t.Errorf("alert = %+v", a)
 	}
 }

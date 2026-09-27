@@ -17,7 +17,9 @@
 package openobserve
 
 import (
+	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -118,13 +120,54 @@ func TestTransform_UniqueIdentifierIsCorrelationID(t *testing.T) {
 	}
 }
 
-func TestTransform_DescriptionIsPlainTextNotRawJSON(t *testing.T) {
-	a, err := Transform(samplePayload(nil), Config{})
+func compact(t *testing.T, raw []byte) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
+}
+
+func TestTransform_DescriptionIsTextThenRawPayload(t *testing.T) {
+	raw := samplePayload(nil)
+	a, err := Transform(raw, Config{})
 	if err != nil {
 		t.Fatalf("Transform: %v", err)
 	}
-	if a.Description != "CPU usage exceeded 90% for 5 minutes" {
-		t.Errorf("Description = %q, want the plain-text description field (not raw JSON)", a.Description)
+	want := "CPU usage exceeded 90% for 5 minutes\n\nRaw payload: " + compact(t, raw)
+	if a.Description != want {
+		t.Errorf("Description = %q, want %q", a.Description, want)
+	}
+	for _, field := range []string{`"urgency":"1"`, `"impact":"2"`, `"caller_id":"openobserve"`} {
+		if !strings.Contains(a.Description, field) {
+			t.Errorf("Description should keep %s from the payload", field)
+		}
+	}
+}
+
+func TestTransform_DescriptionWithoutTextIsRawPayloadOnly(t *testing.T) {
+	for _, raw := range [][]byte{
+		samplePayload(map[string]string{"description": ""}),
+		[]byte(`{"correlation_id":"abc","urgency":"1"}`),
+	} {
+		a, err := Transform(raw, Config{})
+		if err != nil {
+			t.Fatalf("Transform: %v", err)
+		}
+		if want := "Raw payload: " + compact(t, raw); a.Description != want {
+			t.Errorf("Description = %q, want %q", a.Description, want)
+		}
+	}
+}
+
+func TestTransform_DescriptionKeepsLargeNumbersExact(t *testing.T) {
+	a, err := Transform([]byte(`{"short_description":"s","correlation_id":12345678901234567890}`), Config{})
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if !strings.Contains(a.Description, `"correlation_id":12345678901234567890`) {
+		t.Errorf("Description = %q, want the correlation_id unchanged", a.Description)
 	}
 }
 

@@ -143,6 +143,13 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		severity = mapSeverity(rawImpact)
 	}
 
+	// Description keeps the raw payload, like every other vendor; the readable text goes
+	// first because the Chat fallback card shows only the first 500 characters.
+	desc := "Raw payload: " + vendorutil.CompactJSON(raw)
+	if description != "" {
+		desc = description + "\n\n" + desc
+	}
+
 	alert := Alert{
 		Service:          configValue(cfg, "SERVICE", vendorutil.Str(payload, "service")),
 		MetricName:       metricName,
@@ -152,7 +159,7 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Source:           source,
 		UniqueIdentifier: correlationID,
 		ShortDescription: vendorutil.FirstNonEmpty(shortDescription, metricName),
-		Description:      description,
+		Description:      desc,
 		Urgency:          rawUrgency,
 		Impact:           rawImpact,
 		CorrelationID:    correlationID,
