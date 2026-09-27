@@ -23,15 +23,19 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 const escalationTestCaseID = "11111111-1111-1111-1111-111111111111"
 
 // fakeEscalationRepoForService is a minimal repository.EscalationRepository
 // fake for escalationService's request-validation tests -- it never touches
-// a real database. It records the last CreateEscalation call so a test can
-// assert what escalationService normalized/forwarded.
+// a real database. It records the last CreateEscalation call (and whether it
+// was called at all, which the IDOR-scoping tests assert on directly: an
+// out-of-scope case must never reach here) so a test can assert what
+// escalationService normalized/forwarded.
 type fakeEscalationRepoForService struct {
+	called         bool
 	lastAction     domain.EscalationAction
 	lastReason     *string
 	lastActorEmail string
@@ -44,6 +48,7 @@ func (f *fakeEscalationRepoForService) SearchEscalations(context.Context, []stri
 }
 
 func (f *fakeEscalationRepoForService) CreateEscalation(_ context.Context, _ string, action domain.EscalationAction, reason *string, actorEmail string) (domain.CreatedEscalation, error) {
+	f.called = true
 	f.lastAction = action
 	f.lastReason = reason
 	f.lastActorEmail = actorEmail
@@ -84,12 +89,30 @@ func (f *fakeUserRepoForEscalationService) CreateUser(context.Context, domain.Cr
 	panic("fakeUserRepoForEscalationService.CreateUser: not expected to be called by these tests")
 }
 
+// caseFoundInScopeRepo is the default stubCaseRepo.GetCaseByID for tests
+// unrelated to authorization: the case is always found and always in scope,
+// so those tests aren't coupled to the new access-scoping check (see
+// stubCaseRepo/alwaysUnrestrictedAccess, both already defined in
+// case_service_test.go and reused here as-is -- same package, same shape
+// the IDOR fix's own doc comment says to copy).
+func caseFoundInScopeRepo() *stubCaseRepo {
+	return &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ID: escalationTestCaseID}, nil
+		},
+	}
+}
+
 func newTestEscalationService(repo *fakeEscalationRepoForService) (EscalationService, *fakeUserRepoForEscalationService) {
+	return newTestEscalationServiceWithCaseAccess(repo, caseFoundInScopeRepo(), alwaysUnrestrictedAccess{})
+}
+
+func newTestEscalationServiceWithCaseAccess(repo *fakeEscalationRepoForService, caseRepo repository.CaseRepository, access AccessService) (EscalationService, *fakeUserRepoForEscalationService) {
 	userRepo := &fakeUserRepoForEscalationService{
 		knownEmail: "engineer@example.com",
 		user:       domain.User{ID: "user-engineer", Email: "engineer@example.com"},
 	}
-	return NewEscalationService(repo, userRepo), userRepo
+	return NewEscalationService(repo, userRepo, caseRepo, access), userRepo
 }
 
 func TestEscalationService_CreateEscalation_InvalidCaseID(t *testing.T) {
@@ -182,5 +205,64 @@ func TestEscalationService_CreateEscalation_NormalizesLowercaseActionAndForwards
 	}
 	if resp.Message == "" {
 		t.Error("expected a non-empty message")
+	}
+}
+
+// TestEscalationService_CreateEscalation_OutOfScopeCaseIsNotFound is the
+// IDOR regression guard: a caller whose AccessScope doesn't cover caseId
+// must get exactly what GetCaseByID/SearchCases already give an out-of-scope
+// by-id read -- a NotFoundError, indistinguishable from the case not
+// existing at all (never a 403 that would confirm it exists) -- and
+// repo.CreateEscalation must never be reached at all, not merely fail
+// afterward.
+func TestEscalationService_CreateEscalation_OutOfScopeCaseIsNotFound(t *testing.T) {
+	caseRepo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			// Mirrors exactly what CaseRepository.GetCaseByID itself returns
+			// for a case outside the caller's scope (its scopeClause simply
+			// matches zero rows) -- see that method's own doc comment.
+			return domain.CaseView{}, &apierror.NotFoundError{Msg: "case not found"}
+		},
+	}
+	repo := &fakeEscalationRepoForService{createResp: domain.CreatedEscalation{
+		PreviousLevel: domain.ChoiceListItem{Label: "0"},
+		CurrentLevel:  domain.ChoiceListItem{Label: "1"},
+	}}
+	svc, _ := newTestEscalationServiceWithCaseAccess(repo, caseRepo, alwaysUnrestrictedAccess{})
+
+	reason := "trying to escalate a case outside my scope"
+	_, err := svc.CreateEscalation(contextWithUserIDToken(fakeJWTWithEmail(t, "engineer@example.com")), domain.CreateEscalationRequest{
+		CaseID: escalationTestCaseID,
+		Reason: &reason,
+	})
+	var notFound *apierror.NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("got %v (%T), want *apierror.NotFoundError", err, err)
+	}
+	if repo.called {
+		t.Error("repo.CreateEscalation must never be called for an out-of-scope case -- the IDOR this check closes")
+	}
+}
+
+// TestEscalationService_CreateEscalation_InScopeCaseStillWorks is the
+// positive-path counterpart: a case the caller's scope DOES cover must not
+// be collaterally blocked by the new authorization check.
+func TestEscalationService_CreateEscalation_InScopeCaseStillWorks(t *testing.T) {
+	repo := &fakeEscalationRepoForService{createResp: domain.CreatedEscalation{
+		PreviousLevel: domain.ChoiceListItem{Label: "0"},
+		CurrentLevel:  domain.ChoiceListItem{Label: "1"},
+	}}
+	svc, _ := newTestEscalationServiceWithCaseAccess(repo, caseFoundInScopeRepo(), alwaysUnrestrictedAccess{})
+
+	reason := "customer requested management involvement"
+	_, err := svc.CreateEscalation(contextWithUserIDToken(fakeJWTWithEmail(t, "engineer@example.com")), domain.CreateEscalationRequest{
+		CaseID: escalationTestCaseID,
+		Reason: &reason,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for an in-scope case: %v", err)
+	}
+	if !repo.called {
+		t.Error("repo.CreateEscalation should have been called for an in-scope case")
 	}
 }

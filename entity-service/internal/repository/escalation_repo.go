@@ -146,26 +146,30 @@ type EscalationNotificationConfig struct {
 // specifically for group membership but had no consumer until this one. An
 // interface, not a direct query call, so tests can substitute an in-memory
 // fixture instead of a real team_member table (see escalation_repo_test.go's
-// fakeGroupMemberResolver).
+// fakeGroupMemberResolver). Takes a rowsQuerier (case_repo.go, satisfied by
+// both *pgxpool.Pool and pgx.Tx) rather than always using its own pool, so
+// CreateEscalation can run this against the SAME open tx that already holds
+// the case row's FOR UPDATE lock -- see resolveEscalationRecipients's own
+// doc comment for why that matters.
 type groupMemberResolver interface {
 	// GroupMemberUserIDs returns groupID's member "user".id values, empty
 	// (not an error) if the group doesn't exist or currently has zero
 	// team_member rows.
-	GroupMemberUserIDs(ctx context.Context, groupID string) ([]string, error)
+	GroupMemberUserIDs(ctx context.Context, q rowsQuerier, groupID string) ([]string, error)
 }
 
-// dbGroupMemberResolver is groupMemberResolver backed by a real connection pool.
-type dbGroupMemberResolver struct {
-	db *pgxpool.Pool
-}
+// dbGroupMemberResolver is groupMemberResolver's real implementation --
+// stateless (it carries no *pgxpool.Pool of its own): every call receives
+// its querier explicitly, so it has no "own connection" to fall back to.
+type dbGroupMemberResolver struct{}
 
 // GroupMemberUserIDs implements groupMemberResolver. Joined to "user" the
 // same way every other recipient resolution in this file is, even though
 // team_member.user_id's own FK already guarantees a matching row -- kept for
 // consistency with the rest of this file's style, not because it changes
 // the result.
-func (r *dbGroupMemberResolver) GroupMemberUserIDs(ctx context.Context, groupID string) ([]string, error) {
-	rows, err := r.db.Query(ctx, `
+func (r *dbGroupMemberResolver) GroupMemberUserIDs(ctx context.Context, q rowsQuerier, groupID string) ([]string, error) {
+	rows, err := q.Query(ctx, `
 		SELECT u.id
 		FROM team_member tm
 		JOIN "user" u ON u.id = tm.user_id
@@ -198,7 +202,7 @@ type escalationRepo struct {
 // NewEscalationRepository constructs an EscalationRepository backed by the
 // given connection pool.
 func NewEscalationRepository(db *pgxpool.Pool, notifyCfg EscalationNotificationConfig) EscalationRepository {
-	return &escalationRepo{db: db, notifyCfg: notifyCfg, groups: &dbGroupMemberResolver{db: db}}
+	return &escalationRepo{db: db, notifyCfg: notifyCfg, groups: &dbGroupMemberResolver{}}
 }
 
 // escalationLevelToEnum/escalationLevelFromEnum convert between
@@ -460,15 +464,19 @@ type escalationCaseContext struct {
 // no members resolves to an empty list, not an error -- identical to an
 // unconfigured (empty) group id slot.
 //
-// r.groups.GroupMemberUserIDs runs against r.groups's own pool, deliberately
-// NOT against CreateEscalation's open tx -- group membership (team_member)
-// is reference data with no relationship to the case row CreateEscalation
-// has locked, so it doesn't need that transaction's snapshot. This is
-// correct as-is; it is called out explicitly so a future refactor doesn't
-// thread tx through here and then hit "transaction already closed" once
-// this runs after CreateEscalation's own commit, or an unnecessary lock
-// dependency if run before it.
-func (r *escalationRepo) resolveEscalationRecipients(ctx context.Context, newLevel int, cc escalationCaseContext) ([]string, error) {
+// q is CreateEscalation's own open tx, not r's pool -- CreateEscalation
+// holds one pool connection for that tx, with a FOR UPDATE lock on the case
+// row, for its whole duration. If GroupMemberUserIDs instead acquired a
+// SECOND pool connection per call (as an earlier revision of this method
+// did), a saturated pool means every concurrent escalation blocks on
+// pool.Acquire while it's still holding its own tx connection and the
+// case-row lock -- a real deadlock/stall risk under load, not just a
+// theoretical one. Running the read on q=tx instead needs no second
+// connection at all. This is safe: the call happens before tx.Commit (see
+// CreateEscalation's own call site), so "transaction already closed" cannot
+// occur, and getEscalationNotifiedUsers already reads through tx for the
+// exact same reason. The reads are read-only, so this adds no extra locks.
+func (r *escalationRepo) resolveEscalationRecipients(ctx context.Context, q rowsQuerier, newLevel int, cc escalationCaseContext) ([]string, error) {
 	seen := map[string]bool{}
 	add := func(id *string) {
 		if id != nil && *id != "" {
@@ -480,7 +488,7 @@ func (r *escalationRepo) resolveEscalationRecipients(ctx context.Context, newLev
 		if groupID == "" {
 			return nil
 		}
-		ids, err := r.groups.GroupMemberUserIDs(ctx, groupID)
+		ids, err := r.groups.GroupMemberUserIDs(ctx, q, groupID)
 		if err != nil {
 			return fmt.Errorf("resolve escalation recipient group %s: %w", groupID, err)
 		}
@@ -593,7 +601,7 @@ func (r *escalationRepo) CreateEscalation(ctx context.Context, caseID string, ac
 	}
 	isEscalated := newLevelInt >= 1
 
-	recipientIDs, err := r.resolveEscalationRecipients(ctx, newLevelInt, cc)
+	recipientIDs, err := r.resolveEscalationRecipients(ctx, tx, newLevelInt, cc)
 	if err != nil {
 		return domain.CreatedEscalation{}, err
 	}

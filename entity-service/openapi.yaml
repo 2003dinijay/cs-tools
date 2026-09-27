@@ -4211,12 +4211,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Case escalations are only supported for the ServiceNow data source.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
     post:
       summary: Escalate or de-escalate a case.
       operationId: createCaseEscalation
@@ -4261,12 +4255,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Case escalations are only supported for the ServiceNow data source.
           content:
             application/json:
               schema:
@@ -7745,12 +7733,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Escalations are only supported for the ServiceNow data source.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
   /escalations:
     post:
@@ -7779,7 +7761,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
-          description: Missing or invalid x-user-id-token header (ServiceNow data source only).
+          description: >-
+            Missing or invalid x-user-id-token header, or (Postgres data source) the
+            authenticated user is not recognised in this system.
           content:
             application/json:
               schema:
@@ -7792,12 +7776,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Escalations are only supported for the ServiceNow data source.
           content:
             application/json:
               schema:

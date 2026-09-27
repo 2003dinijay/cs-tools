@@ -31,14 +31,20 @@ import (
 type escalationService struct {
 	repo     repository.EscalationRepository
 	userRepo repository.UserRepository
+	caseRepo repository.CaseRepository
+	access   AccessService
 }
 
 // NewEscalationService constructs an EscalationService backed by Postgres.
 // userRepo resolves the caller's x-user-id-token into an actor email for
 // CreateEscalation's created_by/updated_by attribution, the same
-// resolveActor pattern caseService uses.
-func NewEscalationService(repo repository.EscalationRepository, userRepo repository.UserRepository) EscalationService {
-	return &escalationService{repo: repo, userRepo: userRepo}
+// resolveActor pattern caseService uses. caseRepo/access authorize
+// CreateEscalation's caseId against the caller's AccessScope -- see that
+// method's own doc comment for why (a real IDOR otherwise: repo.
+// CreateEscalation locks and mutates whatever case id it's given, with
+// nothing upstream checking the caller may act on it at all).
+func NewEscalationService(repo repository.EscalationRepository, userRepo repository.UserRepository, caseRepo repository.CaseRepository, access AccessService) EscalationService {
+	return &escalationService{repo: repo, userRepo: userRepo, caseRepo: caseRepo, access: access}
 }
 
 // SearchEscalations implements EscalationService.
@@ -89,6 +95,31 @@ func (s *escalationService) SearchEscalations(ctx context.Context, req domain.Se
 // sources reject the same malformed input the same way -- the actual
 // level-transition/notification-recipient rule lives in
 // EscalationRepository.CreateEscalation's own doc comment.
+//
+// req.CaseID is authorized against the caller's AccessScope before
+// repo.CreateEscalation ever runs: resolve the scope, then read the case
+// through it via CaseRepository.GetCaseByID (the exact same scoped-query
+// shape GetCaseByID/SearchCases already use -- see AccessService's own doc
+// comment), which returns a NotFoundError for a case outside scope,
+// indistinguishable from one that doesn't exist at all (never a 403 that
+// would confirm it exists to someone not entitled to know that). Without
+// this, any authenticated caller who merely knows another account's case
+// UUID could escalate/de-escalate it and read back its details -- an IDOR.
+// This is the SOLE implementation both entry points (POST /escalations and
+// POST /cases/{id}/escalations, via CaseEscalationService's thin wrapper)
+// funnel through, so both are covered by this one check.
+//
+// This intentionally reverses this codebase's own documented "not yet
+// wired" stance on escalations (see CLAUDE.md's "Token validation and
+// caller-scoped access" -- escalations were explicitly listed there
+// alongside comments/time cards/attachments/etc. as accepted, deferred
+// follow-up work, not a decision to fix them now). Every sibling case
+// mutation (UpdateCase, AddCaseTag, AcknowledgeCase, CreateCaseComment, ...)
+// remains genuinely unscoped after this change -- the same caller this
+// closes the door on for escalations can still read/act on an out-of-scope
+// case through any of those. Scoping just this one write endpoint, without
+// a decision to also close the others, is a real, flagged inconsistency,
+// not a silent claim that "every write is scoped now."
 func (s *escalationService) CreateEscalation(ctx context.Context, req domain.CreateEscalationRequest) (domain.CreateEscalationResponse, error) {
 	if err := validateUUIDs("caseId", []string{req.CaseID}); err != nil {
 		return domain.CreateEscalationResponse{}, err
@@ -105,6 +136,14 @@ func (s *escalationService) CreateEscalation(ctx context.Context, req domain.Cre
 	}
 	if action == domain.EscalationActionEscalate && (req.Reason == nil || strings.TrimSpace(*req.Reason) == "") {
 		return domain.CreateEscalationResponse{}, &apierror.ValidationError{Msg: "reason is required when action is ESCALATE"}
+	}
+
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.CreateEscalationResponse{}, err
+	}
+	if _, err := s.caseRepo.GetCaseByID(ctx, req.CaseID, scope); err != nil {
+		return domain.CreateEscalationResponse{}, err
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)

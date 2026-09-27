@@ -34,7 +34,13 @@ type fakeGroupMemberResolver struct {
 	membersByGroup map[string][]string
 }
 
-func (f *fakeGroupMemberResolver) GroupMemberUserIDs(_ context.Context, groupID string) ([]string, error) {
+// GroupMemberUserIDs ignores q entirely -- this fake never touches a real
+// database, so it has nothing to run a query through; q is accepted (and a
+// test may legitimately pass nil for it) purely to satisfy groupMemberResolver's
+// real signature, which now threads CreateEscalation's own tx through
+// (rowsQuerier, case_repo.go) rather than always using a separate pool
+// connection -- see resolveEscalationRecipients's own doc comment for why.
+func (f *fakeGroupMemberResolver) GroupMemberUserIDs(_ context.Context, _ rowsQuerier, groupID string) ([]string, error) {
 	// A group id with no seeded team_member rows (unknown group, or a real
 	// group with zero members) resolves to nil, not an error -- the map's
 	// own zero value already gives this for free, mirroring
@@ -142,7 +148,7 @@ func TestResolveEscalationRecipients_CumulativeAcrossLevels(t *testing.T) {
 
 	// Level 1: only the EL1 sources, but the whole group membership (both
 	// group-el1-tl members), not just one of them.
-	got1, err := r.resolveEscalationRecipients(ctx, 1, cc)
+	got1, err := r.resolveEscalationRecipients(ctx, nil, 1, cc)
 	if err != nil {
 		t.Fatalf("level 1: unexpected error: %v", err)
 	}
@@ -154,7 +160,7 @@ func TestResolveEscalationRecipients_CumulativeAcrossLevels(t *testing.T) {
 	// Level 3: EL1 recipients are STILL present (cumulative), plus EL2/EL3
 	// sources join in. This is the key assertion: escalating straight to
 	// EL3 must not drop the EL1 recipients in favor of only EL3's own.
-	got3, err := r.resolveEscalationRecipients(ctx, 3, cc)
+	got3, err := r.resolveEscalationRecipients(ctx, nil, 3, cc)
 	if err != nil {
 		t.Fatalf("level 3: unexpected error: %v", err)
 	}
@@ -187,7 +193,7 @@ func TestResolveEscalationRecipients_LevelZeroReturnsEmpty(t *testing.T) {
 	}
 	cc := escalationCaseContext{technicalOwnerID: strPtr("user-owner")}
 
-	got, err := r.resolveEscalationRecipients(ctx, 0, cc)
+	got, err := r.resolveEscalationRecipients(ctx, nil, 0, cc)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -243,7 +249,7 @@ func TestResolveEscalationRecipients_ProductRouting(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := r.resolveEscalationRecipients(ctx, 2, tc.cc)
+			got, err := r.resolveEscalationRecipients(ctx, nil, 2, tc.cc)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -260,7 +266,7 @@ func TestResolveEscalationRecipients_UnconfiguredEnvVarsDoNotError(t *testing.T)
 	r := &escalationRepo{groups: &fakeGroupMemberResolver{membersByGroup: map[string][]string{}}, notifyCfg: EscalationNotificationConfig{}}
 
 	// Level 5 exercises every tier's group id slot at once.
-	got, err := r.resolveEscalationRecipients(ctx, 5, escalationCaseContext{})
+	got, err := r.resolveEscalationRecipients(ctx, nil, 5, escalationCaseContext{})
 	if err != nil {
 		t.Fatalf("unexpected error with every notifyCfg slot unset: %v", err)
 	}
@@ -279,7 +285,7 @@ func TestResolveEscalationRecipients_UnknownOrEmptyGroupIsSkippedNotFatal(t *tes
 		notifyCfg: EscalationNotificationConfig{EL5CEOGroupID: "group-ceo-empty"},
 	}
 
-	got, err := r.resolveEscalationRecipients(ctx, 5, escalationCaseContext{})
+	got, err := r.resolveEscalationRecipients(ctx, nil, 5, escalationCaseContext{})
 	if err != nil {
 		t.Fatalf("an unknown/empty group must be skipped, not fatal: %v", err)
 	}
