@@ -33,6 +33,11 @@ type CreateIncidentRequest struct {
 	Urgency   string  `json:"urgency"` // "HIGH" | "MEDIUM" | "LOW"
 	Subject   string  `json:"subject"`
 	WorkNotes *string `json:"workNotes,omitempty"`
+	// CorrelationID is the dedup fingerprint tag, stored on ServiceNow's own
+	// correlation_id field so SearchIncidentByCorrelationID can find a prior
+	// create by exact match, without needing the tag visible in Subject or
+	// WorkNotes.
+	CorrelationID *string `json:"correlationId,omitempty"`
 }
 
 // createdIncident is the subset of the response's nested "incident" object this service actually reads.
@@ -99,8 +104,9 @@ type searchIncidentsRequest struct {
 }
 
 type searchIncidentsFilters struct {
-	Number      string `json:"number,omitempty"`
-	SearchQuery string `json:"searchQuery,omitempty"`
+	Number        string `json:"number,omitempty"`
+	SearchQuery   string `json:"searchQuery,omitempty"`
+	CorrelationID string `json:"correlationId,omitempty"`
 }
 
 type pagination struct {
@@ -148,10 +154,12 @@ func (c *Client) IncidentState(ctx context.Context, number string) (open bool, f
 	return openIncidentStates[*resp.Incidents[0].State], true, nil
 }
 
-// SearchIncidentByTag is the pre-create dedup check: a lost CreateIncident response must not cause a duplicate on retry.
-func (c *Client) SearchIncidentByTag(ctx context.Context, tag string) (id, number string, found bool, err error) {
+// SearchIncidentByCorrelationID is the pre-create dedup check: a lost CreateIncident response must not
+// cause a duplicate on retry. Matches on ServiceNow's own correlation_id field (exact match) rather than
+// free-text search, so the dedup tag never needs to appear in Subject or WorkNotes.
+func (c *Client) SearchIncidentByCorrelationID(ctx context.Context, correlationID string) (id, number string, found bool, err error) {
 	req := searchIncidentsRequest{
-		Filters:    searchIncidentsFilters{SearchQuery: tag},
+		Filters:    searchIncidentsFilters{CorrelationID: correlationID},
 		Pagination: pagination{Limit: 1, Offset: 0},
 	}
 	body, err := json.Marshal(req)

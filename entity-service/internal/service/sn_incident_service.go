@@ -98,6 +98,10 @@ type snIncidentFilters struct {
 	// match against ServiceNow's `number` column -- not part of the
 	// free-text SearchQuery scan.
 	Number string `json:"number,omitempty"`
+	// CorrelationID: see domain.SearchIncidentsFilters.CorrelationID doc
+	// comment. Exact match against ServiceNow's `correlation_id` column --
+	// not part of the free-text SearchQuery scan.
+	CorrelationID string `json:"correlationId,omitempty"`
 	// StateKeys: see domain.SearchIncidentsFilters.StateKeys doc comment.
 	StateKeys []int `json:"stateKeys,omitempty"`
 	// IncidentStateKeys: see domain.SearchIncidentsFilters Filters
@@ -242,6 +246,9 @@ func (s *snIncidentService) SearchIncidents(ctx context.Context, req domain.Sear
 	if err := validateExactNumber("number", req.Filters.Number); err != nil {
 		return domain.SearchIncidentsResponse{}, err
 	}
+	if err := validateExactNumber("correlationId", req.Filters.CorrelationID); err != nil {
+		return domain.SearchIncidentsResponse{}, err
+	}
 	if req.SortBy.Field != "" && !validIncidentSortField[req.SortBy.Field] {
 		return domain.SearchIncidentsResponse{}, &apierror.ValidationError{Msg: "sortBy.field contains invalid value: " + string(req.SortBy.Field)}
 	}
@@ -287,6 +294,7 @@ func (s *snIncidentService) SearchIncidents(ctx context.Context, req domain.Sear
 			PriorityKeys:       priorityKeys,
 			ParentIDs:          uuidsToSysids(req.Filters.ParentIDs),
 			Number:             stringPtrValue(req.Filters.Number),
+			CorrelationID:      stringPtrValue(req.Filters.CorrelationID),
 			StateKeys:          parsedFilters.StateKeys,
 			IncidentStateKeys:  snIncidentStateKeysFromStrings(parsedFilters.IncidentStateKeys),
 			AssignmentGroupIDs: uuidsToSysids(parsedFilters.AssignmentGroupIDs),
@@ -669,6 +677,9 @@ type snCreateIncidentPayload struct {
 	ChangeRequestID     *string  `json:"changeRequestId,omitempty"`
 	ProblemID           *string  `json:"problemId,omitempty"`
 	CausedByID          *string  `json:"causedById,omitempty"`
+	// CorrelationID: see domain.CreateIncidentRequest.CorrelationID doc
+	// comment. Maps to ServiceNow's stock `correlation_id` field.
+	CorrelationID *string `json:"correlationId,omitempty"`
 }
 
 // snCreateIncidentResponse mirrors the Choreo POST /incidents response.
@@ -764,6 +775,7 @@ func (s *snIncidentService) CreateIncident(ctx context.Context, req domain.Creat
 		WatchList:          watchList,
 		AdditionalComments: req.AdditionalComments,
 		WorkNotes:          req.WorkNotes,
+		CorrelationID:      req.CorrelationID,
 	}
 	if req.Subcategory != nil {
 		v := snIncidentSubcategoryKeyMap[*req.Subcategory]

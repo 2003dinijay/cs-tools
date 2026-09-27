@@ -4951,6 +4951,13 @@ type SearchIncidentsFilters struct {
 	// ServiceNow's `number` column, routed as a first-class filter rather
 	// than through the free-text SearchQuery scan.
 	Number *string `json:"number,omitempty"`
+	// CorrelationID filters to the incident whose ServiceNow `correlation_id`
+	// exactly matches (optional). Lets an external system (e.g. a monitoring
+	// integration) look up an incident it previously created by the same
+	// caller-supplied key it passed to CreateIncidentRequest.CorrelationID,
+	// without depending on free-text SearchQuery matching visible fields like
+	// Subject or WorkNotes.
+	CorrelationID *string `json:"correlationId,omitempty"`
 	// Filters is the generic field/op/values filter array. Supported fields:
 	//   - "state" (op in): domain IncidentState enum values (NEW,
 	//     IN_PROGRESS, ON_HOLD, RESOLVED, CLOSED, CANCELLED), translated to
@@ -5180,6 +5187,13 @@ type CreateIncidentRequest struct {
 	ChangeRequestID     *string              `json:"changeRequestId,omitempty"`
 	ProblemID           *string              `json:"problemId,omitempty"`
 	CausedByID          *string              `json:"causedById,omitempty"`
+	// CorrelationID is an optional caller-supplied external-system key, stored
+	// on ServiceNow's stock `correlation_id` field. Lets a monitoring
+	// integration find an incident it already created (SearchIncidentsFilters.
+	// CorrelationID) without depending on free-text search over Subject or
+	// WorkNotes, and without exposing an internal dedup tag in either of
+	// those human-visible fields.
+	CorrelationID *string `json:"correlationId,omitempty"`
 }
 
 // CreateIncidentResponse is the output for POST /incidents.
