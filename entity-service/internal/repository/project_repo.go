@@ -172,7 +172,8 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 
 	dataQuery := fmt.Sprintf(
 		`SELECT p.id, p.account_id, p.sf_id, p.name, p.key, pt.name,
-		        p.start_date, p.end_date, p.created_on, p.updated_on, p.wso2_closure_state::TEXT
+		        p.start_date, p.end_date, p.created_on, p.updated_on,
+		        INITCAP(REPLACE(p.wso2_closure_state::TEXT, '_', ' '))
 		 FROM project p
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
 		 %s
