@@ -175,9 +175,11 @@ curl -sS -X POST "$BASE/site24x7" -H 'Content-Type: application/json' -d '{"STAT
 3. **Environment variables**: set everything from [Environment variables](#environment-variables).
    Mark `CASSANDRA_KEY` and `FALLBACK_CHAT_WEBHOOK_URLS` as secrets.
 4. **config.toml file mount**: to change any default, add a *file mount* under
-   Configs & Secrets with mount path `/app/config.toml` and the contents of your edited
-   `config.toml.example`, then set `CONFIG_PATH=/app/config.toml`. Without the mount the service
-   runs on the built-in defaults.
+   Configs & Secrets with mount path `/etc/sre-alert-edge-service/config.toml` and the contents
+   of your edited `config.toml.example`, then set
+   `CONFIG_PATH=/etc/sre-alert-edge-service/config.toml`. Keep it out of `/app`, where the binary
+   lives, so the mount can never hide it. Without the mount the service runs on the built-in
+   defaults.
 5. **Connecting to alerts-core**: add a connection from this component to the
    `sre-alert-core-service` component's endpoint (Project visibility is enough) and set
    `ALERT_CORE_WAKE_URL` to that endpoint's URL plus `/alert`. Both components must use the same
