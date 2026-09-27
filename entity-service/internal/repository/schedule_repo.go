@@ -501,13 +501,19 @@ func (r *scheduleRepository) UpdateAssignment(ctx context.Context, id string, re
 		return domain.ScheduleAssignment{}, err
 	}
 
-	for _, ch := range []struct{ field, old, new string }{
-		{"user", before.Engineer.Name, after.Engineer.Name},
-		{"tier", deref(before.Tier), deref(after.Tier)},
-		{"isOnCall", boolText(before.IsOnCall), boolText(after.IsOnCall)},
-		{"note", deref(before.Note), deref(after.Note)},
+	// Each change is detected on the value that identifies it and recorded as
+	// the value a reader wants to see. For the engineer those are not the
+	// same thing: two people on one rota can share a display name, and
+	// comparing names let a slot move between them with nothing written down
+	// -- the row changed, the history did not, and the history is the only
+	// reason this table exists.
+	for _, ch := range []struct{ field, was, now, old, new string }{
+		{"user", before.Engineer.UserID, after.Engineer.UserID, before.Engineer.Name, after.Engineer.Name},
+		{"tier", deref(before.Tier), deref(after.Tier), deref(before.Tier), deref(after.Tier)},
+		{"isOnCall", boolText(before.IsOnCall), boolText(after.IsOnCall), boolText(before.IsOnCall), boolText(after.IsOnCall)},
+		{"note", deref(before.Note), deref(after.Note), deref(before.Note), deref(after.Note)},
 	} {
-		if ch.old == ch.new {
+		if ch.was == ch.now {
 			continue
 		}
 		f, o, n := ch.field, ch.old, ch.new
