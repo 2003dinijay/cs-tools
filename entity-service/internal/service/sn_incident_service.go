@@ -680,6 +680,12 @@ type snCreateIncidentPayload struct {
 	// CorrelationID: see domain.CreateIncidentRequest.CorrelationID doc
 	// comment. Maps to ServiceNow's stock `correlation_id` field.
 	CorrelationID *string `json:"correlationId,omitempty"`
+	// Environment: see domain.CreateIncidentRequest.Environment doc comment.
+	// Maps to ServiceNow's own custom incident.u_enviroment field -- the
+	// JSON key here is that field's exact name (misspelling included), not
+	// a rewritten "environment", since this is what the Choreo connector's
+	// own contract exposes for a custom field.
+	Environment *string `json:"u_enviroment,omitempty"`
 }
 
 // snCreateIncidentResponse mirrors the Choreo POST /incidents response.
@@ -694,6 +700,16 @@ type snCreateIncidentResponse struct {
 }
 
 func (s *snIncidentService) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
+	// Reject before the ServiceNow call, not after: createIncidentSNFirst
+	// creates the ServiceNow incident first and has no compensating delete,
+	// so a value too long for either ServiceNow's u_enviroment (max 40) or
+	// this service's own environment column (VARCHAR(40)) must fail fast
+	// here rather than leave an orphaned ServiceNow incident behind.
+	if req.Environment != nil && len([]rune(*req.Environment)) > 40 {
+		return domain.CreateIncidentResponse{}, &apierror.ValidationError{
+			Msg: "environment must not exceed 40 characters",
+		}
+	}
 	if req.Subject == "" {
 		return domain.CreateIncidentResponse{}, &apierror.ValidationError{Msg: "subject is required"}
 	}
@@ -776,6 +792,7 @@ func (s *snIncidentService) CreateIncident(ctx context.Context, req domain.Creat
 		AdditionalComments: req.AdditionalComments,
 		WorkNotes:          req.WorkNotes,
 		CorrelationID:      req.CorrelationID,
+		Environment:        req.Environment,
 	}
 	if req.Subcategory != nil {
 		v := snIncidentSubcategoryKeyMap[*req.Subcategory]
