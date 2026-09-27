@@ -235,14 +235,24 @@ services:
       EVENT_HUB_TOPIC: case-events
       EVENT_PUBLISHING_ENABLED: "true"
       SSL_CERT_FILE: /certs/ca.crt
-      # Token validation is always on (see internal/config/config.go), so this
-      # stack needs a real issuer to start at all -- mock-oidc, the same one
-      # csm-portal-backend/customer-portal-backend already validate against,
-      # exercising the same code path this compose stack otherwise wouldn't
-      # cover.
-      AUTH_ISSUER: http://localhost:9100/oauth2/token
-      AUTH_JWKS_URL: http://mock-oidc:9100/oauth2/jwks
-      AUTH_USER_TOKEN_AUDIENCES: csm-portal-webapp,customer-portal-webapp
+      # TEMPORARY / LOCAL DEV ONLY -- pointed at real Asgardeo instead of
+      # mock-oidc, specifically to test the SPL merge against the real dev
+      # config (real Asgardeo login + real dev csm-portal-backend for
+      # everything except /spl/*, which still routes to this local stack via
+      # spl-backend-proxy.js). AUTH_INTERNAL_CLIENT_IDS below is untouched
+      # and still checked against mock-oidc-issued client-credentials
+      # tokens: ExtractClientID (internal/auth/validator.go) decodes
+      # x-jwt-assertion WITHOUT verifying its signature, so it's unaffected
+      # by which issuer/JWKS AUTH_ISSUER/AUTH_JWKS_URL point at -- only
+      # ValidateUserToken (the x-user-id-token path) uses those two values,
+      # with real signature verification. Reverting: restore
+      # AUTH_ISSUER=http://localhost:9100/oauth2/token,
+      # AUTH_JWKS_URL=http://mock-oidc:9100/oauth2/jwks, and drop the
+      # Asgardeo client id from AUTH_USER_TOKEN_AUDIENCES, to go back to
+      # mock-oidc-only testing.
+      AUTH_ISSUER: https://api.asgardeo.io/t/wso2/oauth2/token
+      AUTH_JWKS_URL: https://api.asgardeo.io/t/wso2/oauth2/jwks
+      AUTH_USER_TOKEN_AUDIENCES: csm-portal-webapp,customer-portal-webapp,Yezn9A7Jb2ROuApr4m5hXHflgAka
       AUTH_INTERNAL_CLIENT_IDS: csm-portal-backend-dev-client,csm-integration-service-dev-client
     volumes:
       - csm-dev-certs:/certs:ro

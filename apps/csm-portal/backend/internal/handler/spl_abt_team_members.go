@@ -18,18 +18,19 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
-	"net/url"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
-// abtTeamMembersServiceNowClient abstracts the ServiceNow Table API
-// operations used by SplABTTeamMembersHandler.
-type abtTeamMembersServiceNowClient interface {
-	TableQuery(ctx context.Context, table string, params url.Values) ([]byte, error)
+// abtTeamMembersClient abstracts the roster lookup used by
+// SplABTTeamMembersHandler — a small domain-shaped interface (not raw
+// ServiceNow TableQuery) specifically so both the ServiceNow and Postgres
+// data sources can implement it, the same pattern every other SPL domain
+// already uses.
+type abtTeamMembersClient interface {
+	GetABTTeamMembers(ctx context.Context, teamID string) ([]servicenow.ABTTeamRosterMember, error)
 }
 
 // SplABTTeamMemberView is one entry of the GET /spl/abt-team-members
@@ -42,37 +43,21 @@ type SplABTTeamMemberView struct {
 	EmployeeThumbnail *string `json:"employeeThumbnail"`
 }
 
-type snABTTeamMemberRow struct {
-	UserName  string `json:"user.name"`
-	UserEmail string `json:"user.email"`
-}
-
-type snABTTeamMembersResult struct {
-	Result []snABTTeamMemberRow `json:"result"`
-}
-
-type snTeamMemberRoleRow struct {
-	Role string `json:"u_role"`
-}
-
-type snTeamMemberRolesResult struct {
-	Result []snTeamMemberRoleRow `json:"result"`
-}
-
 // SplABTTeamMembersHandler handles HTTP requests for an ABT team's member
-// roster, cross-referencing ServiceNow (team membership, role) and the
-// employee-info service (thumbnail).
+// roster, cross-referencing the roster client (team membership, role) and
+// the employee-info service (thumbnail) — the thumbnail enrichment is
+// shared across data sources here rather than duplicated in each client.
 type SplABTTeamMembersHandler struct {
-	serviceNow    abtTeamMembersServiceNowClient
+	roster        abtTeamMembersClient
 	employeeInfo  employeeInfoClient
 	allowedGroups []string
 }
 
 // NewSplABTTeamMembersHandler creates a SplABTTeamMembersHandler backed by
-// the given ServiceNow and employee-info clients. allowedGroups is
+// the given roster and employee-info clients. allowedGroups is
 // SupportPortalLite's blanket access-gate group list (SPL_ALLOWED_GROUPS).
-func NewSplABTTeamMembersHandler(serviceNow abtTeamMembersServiceNowClient, employeeInfo employeeInfoClient, allowedGroups []string) *SplABTTeamMembersHandler {
-	return &SplABTTeamMembersHandler{serviceNow: serviceNow, employeeInfo: employeeInfo, allowedGroups: allowedGroups}
+func NewSplABTTeamMembersHandler(roster abtTeamMembersClient, employeeInfo employeeInfoClient, allowedGroups []string) *SplABTTeamMembersHandler {
+	return &SplABTTeamMembersHandler{roster: roster, employeeInfo: employeeInfo, allowedGroups: allowedGroups}
 }
 
 // GetABTTeamMembers handles GET /spl/abt-team-members?teamId=... — ported
@@ -102,57 +87,27 @@ func (h *SplABTTeamMembersHandler) GetABTTeamMembers(w http.ResponseWriter, r *h
 
 	ctx := r.Context()
 
-	membersRaw, err := h.serviceNow.TableQuery(ctx, "sys_user_grmember", url.Values{
-		"sysparm_query":  {servicenow.BuildEncodedQuery("group=" + teamID)},
-		"sysparm_fields": {"user.name, user.email"},
-	})
+	roster, err := h.roster.GetABTTeamMembers(ctx, teamID)
 	if err != nil {
-		slog.ErrorContext(ctx, "servicenow TableQuery sys_user_grmember failed", "userID", user.UserID, "teamID", teamID, "err", err)
+		slog.ErrorContext(ctx, "GetABTTeamMembers failed", "userID", user.UserID, "teamID", teamID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to retrieve ABT team members.")
 		return
 	}
 
-	var members snABTTeamMembersResult
-	if err := json.Unmarshal(membersRaw, &members); err != nil {
-		slog.ErrorContext(ctx, "decode sys_user_grmember response failed", "userID", user.UserID, "err", err)
-		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
-		return
-	}
-
-	if len(members.Result) == 0 {
+	if len(roster) == 0 {
 		writeError(w, http.StatusNotFound, ErrMsgNotFound)
 		return
 	}
 
-	views := make([]SplABTTeamMemberView, 0, len(members.Result))
-	for _, m := range members.Result {
-		view := SplABTTeamMemberView{Name: m.UserName, Email: m.UserEmail}
+	views := make([]SplABTTeamMemberView, 0, len(roster))
+	for _, m := range roster {
+		view := SplABTTeamMemberView{Name: m.Name, Email: m.Email, Role: m.Role}
 
-		if employee, err := h.employeeInfo.GetEmployeeData(ctx, m.UserEmail); err != nil {
+		if employee, err := h.employeeInfo.GetEmployeeData(ctx, m.Email); err != nil {
 			slog.WarnContext(ctx, "employeeinfo GetEmployeeData failed for ABT team member; leaving thumbnail blank",
-				"userID", user.UserID, "memberEmail", m.UserEmail, "err", err)
+				"userID", user.UserID, "memberEmail", m.Email, "err", err)
 		} else {
 			view.EmployeeThumbnail = employee.EmployeeThumbnail
-		}
-
-		// user.name is ServiceNow's own returned value for this row, not
-		// caller-supplied input, so it is not run through SanitizeQueryValue —
-		// mirroring the Ballerina source, which also concatenates it unescaped.
-		roleRaw, err := h.serviceNow.TableQuery(ctx, "u_team_member_role", url.Values{
-			"sysparm_query":  {servicenow.BuildEncodedQuery("u_member.name=" + m.UserName)},
-			"sysparm_fields": {"u_role"},
-		})
-		if err != nil {
-			slog.WarnContext(ctx, "servicenow TableQuery u_team_member_role failed; leaving role blank",
-				"userID", user.UserID, "memberName", m.UserName, "err", err)
-		} else {
-			var roles snTeamMemberRolesResult
-			if err := json.Unmarshal(roleRaw, &roles); err != nil {
-				slog.WarnContext(ctx, "decode u_team_member_role response failed; leaving role blank",
-					"userID", user.UserID, "memberName", m.UserName, "err", err)
-			} else if len(roles.Result) > 0 {
-				view.Role = roles.Result[0].Role
-			}
 		}
 
 		views = append(views, view)

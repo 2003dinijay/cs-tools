@@ -24,11 +24,26 @@ import (
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/employeeinfo"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
+
+// mockAbtTeamMembersClient mocks abtTeamMembersClient — the small domain
+// interface both the ServiceNow and Postgres data sources implement (see
+// this handler's own doc comment on why it no longer depends on raw
+// TableQuery; the ServiceNow-specific two-call merge logic this test used to
+// exercise directly now lives in servicenow.Client.GetABTTeamMembers, with
+// its own test coverage there).
+type mockAbtTeamMembersClient struct {
+	fn func(ctx context.Context, teamID string) ([]servicenow.ABTTeamRosterMember, error)
+}
+
+func (m *mockAbtTeamMembersClient) GetABTTeamMembers(ctx context.Context, teamID string) ([]servicenow.ABTTeamRosterMember, error) {
+	return m.fn(ctx, teamID)
+}
 
 func TestSplGetABTTeamMembers(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
-		h := NewSplABTTeamMembersHandler(&mockABTTeamMembersServiceNowClient{}, &mockEmployeeInfoClient{}, []string{"csm-agents"})
+		h := NewSplABTTeamMembersHandler(&mockAbtTeamMembersClient{}, &mockEmployeeInfoClient{}, []string{"csm-agents"})
 		r := httptest.NewRequest(http.MethodGet, "/spl/abt-team-members?teamId=team-1", nil)
 		w := httptest.NewRecorder()
 		h.GetABTTeamMembers(w, r)
@@ -36,7 +51,7 @@ func TestSplGetABTTeamMembers(t *testing.T) {
 	})
 
 	t.Run("rejects missing teamId", func(t *testing.T) {
-		h := NewSplABTTeamMembersHandler(&mockABTTeamMembersServiceNowClient{}, &mockEmployeeInfoClient{}, []string{"csm-agents"})
+		h := NewSplABTTeamMembersHandler(&mockAbtTeamMembersClient{}, &mockEmployeeInfoClient{}, []string{"csm-agents"})
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-members", nil))
 		w := httptest.NewRecorder()
 		h.GetABTTeamMembers(w, r)
@@ -45,47 +60,42 @@ func TestSplGetABTTeamMembers(t *testing.T) {
 
 	t.Run("rejects a teamId that would inject a query clause", func(t *testing.T) {
 		called := false
-		sn := &mockABTTeamMembersServiceNowClient{
-			tableQueryFn: func(ctx context.Context, table string, params url.Values) ([]byte, error) {
+		roster := &mockAbtTeamMembersClient{
+			fn: func(ctx context.Context, teamID string) ([]servicenow.ABTTeamRosterMember, error) {
 				called = true
-				return []byte(`{"result":[]}`), nil
+				return nil, nil
 			},
 		}
-		h := NewSplABTTeamMembersHandler(sn, &mockEmployeeInfoClient{}, []string{"csm-agents"})
+		h := NewSplABTTeamMembersHandler(roster, &mockEmployeeInfoClient{}, []string{"csm-agents"})
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-members?teamId="+url.QueryEscape("team-1^OR active=true"), nil))
 		w := httptest.NewRecorder()
 		h.GetABTTeamMembers(w, r)
 		assertStatus(t, w, http.StatusBadRequest)
 		if called {
-			t.Error("upstream should not have been called for an unsafe teamId")
+			t.Error("roster client should not have been called for an unsafe teamId")
 		}
 	})
 
 	t.Run("returns 404 when no members found", func(t *testing.T) {
-		sn := &mockABTTeamMembersServiceNowClient{
-			tableQueryFn: func(ctx context.Context, table string, params url.Values) ([]byte, error) {
-				return []byte(`{"result":[]}`), nil
+		roster := &mockAbtTeamMembersClient{
+			fn: func(ctx context.Context, teamID string) ([]servicenow.ABTTeamRosterMember, error) {
+				return nil, nil
 			},
 		}
-		h := NewSplABTTeamMembersHandler(sn, &mockEmployeeInfoClient{}, []string{"csm-agents"})
+		h := NewSplABTTeamMembersHandler(roster, &mockEmployeeInfoClient{}, []string{"csm-agents"})
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-members?teamId=team-1", nil))
 		w := httptest.NewRecorder()
 		h.GetABTTeamMembers(w, r)
 		assertStatus(t, w, http.StatusNotFound)
 	})
 
-	t.Run("merges member, role, and thumbnail data", func(t *testing.T) {
-		var capturedQueries []string
-		sn := &mockABTTeamMembersServiceNowClient{
-			tableQueryFn: func(ctx context.Context, table string, params url.Values) ([]byte, error) {
-				capturedQueries = append(capturedQueries, table+":"+params.Get("sysparm_query"))
-				switch table {
-				case "sys_user_grmember":
-					return []byte(`{"result":[{"user.name":"Jane Doe","user.email":"jane@example.com"}]}`), nil
-				case "u_team_member_role":
-					return []byte(`{"result":[{"u_role":"Lead"}]}`), nil
+	t.Run("merges member and thumbnail data", func(t *testing.T) {
+		roster := &mockAbtTeamMembersClient{
+			fn: func(ctx context.Context, teamID string) ([]servicenow.ABTTeamRosterMember, error) {
+				if teamID != "team-1" {
+					t.Errorf("teamID = %q, want team-1", teamID)
 				}
-				return []byte(`{"result":[]}`), nil
+				return []servicenow.ABTTeamRosterMember{{Name: "Jane Doe", Email: "jane@example.com", Role: "Lead"}}, nil
 			},
 		}
 		thumb := "https://example.com/thumb.png"
@@ -94,7 +104,7 @@ func TestSplGetABTTeamMembers(t *testing.T) {
 				return &employeeinfo.Employee{FirstName: "Jane", LastName: "Doe", EmployeeThumbnail: &thumb}, nil
 			},
 		}
-		h := NewSplABTTeamMembersHandler(sn, ei, []string{"csm-agents"})
+		h := NewSplABTTeamMembersHandler(roster, ei, []string{"csm-agents"})
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-members?teamId=team-1", nil))
 		w := httptest.NewRecorder()
 		h.GetABTTeamMembers(w, r)
@@ -110,18 +120,12 @@ func TestSplGetABTTeamMembers(t *testing.T) {
 		if v.EmployeeThumbnail == nil || *v.EmployeeThumbnail != thumb {
 			t.Errorf("EmployeeThumbnail = %v, want %q", v.EmployeeThumbnail, thumb)
 		}
-		if len(capturedQueries) != 2 || capturedQueries[0] != "sys_user_grmember:group=team-1" {
-			t.Errorf("captured queries = %v, unexpected", capturedQueries)
-		}
 	})
 
-	t.Run("member row survives an employee-info or role lookup failure", func(t *testing.T) {
-		sn := &mockABTTeamMembersServiceNowClient{
-			tableQueryFn: func(ctx context.Context, table string, params url.Values) ([]byte, error) {
-				if table == "sys_user_grmember" {
-					return []byte(`{"result":[{"user.name":"Jane Doe","user.email":"jane@example.com"}]}`), nil
-				}
-				return nil, context.DeadlineExceeded
+	t.Run("member row survives an employee-info lookup failure", func(t *testing.T) {
+		roster := &mockAbtTeamMembersClient{
+			fn: func(ctx context.Context, teamID string) ([]servicenow.ABTTeamRosterMember, error) {
+				return []servicenow.ABTTeamRosterMember{{Name: "Jane Doe", Email: "jane@example.com"}}, nil
 			},
 		}
 		ei := &mockEmployeeInfoClient{
@@ -129,7 +133,7 @@ func TestSplGetABTTeamMembers(t *testing.T) {
 				return nil, context.DeadlineExceeded
 			},
 		}
-		h := NewSplABTTeamMembersHandler(sn, ei, []string{"csm-agents"})
+		h := NewSplABTTeamMembersHandler(roster, ei, []string{"csm-agents"})
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-members?teamId=team-1", nil))
 		w := httptest.NewRecorder()
 		h.GetABTTeamMembers(w, r)
