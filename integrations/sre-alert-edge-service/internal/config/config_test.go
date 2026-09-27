@@ -69,6 +69,7 @@ func TestLoad_RejectsInvalidValues(t *testing.T) {
 		"negative timeout": "[store]\nquery_timeout = \"-1s\"\n",
 		"empty auth mode":  "[auth]\nmode = \"\"\n",
 		"bad duration":     "[wake]\ntimeout = \"soon\"\n",
+		"zero idle":        "[server]\nidle_timeout = \"0s\"\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

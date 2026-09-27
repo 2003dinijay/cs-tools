@@ -39,10 +39,6 @@ import (
 // VendorRoutePrefix is the path every vendor webhook lives under.
 const VendorRoutePrefix = "/api/wso2/v1/sre_alert_api/"
 
-// idleTimeout closes keep-alive connections nobody is using, so idle vendor connections
-// can't pile up on a replica.
-const idleTimeout = 60 * time.Second
-
 // retryAfterSeconds is sent with every 503 so vendors back off before retrying.
 const retryAfterSeconds = 60
 
@@ -105,6 +101,9 @@ type Options struct {
 	MaxBodyBytes int64
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+	// IdleTimeout closes keep-alive connections nobody is using, so idle vendor connections
+	// can't pile up on a replica.
+	IdleTimeout time.Duration
 }
 
 // Server serves the vendor routes and health endpoints.
@@ -120,6 +119,7 @@ type Server struct {
 	handler      http.Handler
 	readTimeout  time.Duration
 	writeTimeout time.Duration
+	idleTimeout  time.Duration
 }
 
 // New builds a Server; call Handler to mount it or ListenAndServe via HTTPServer.
@@ -133,6 +133,7 @@ func New(opts Options) *Server {
 		maxBodyBytes: opts.MaxBodyBytes,
 		readTimeout:  opts.ReadTimeout,
 		writeTimeout: opts.WriteTimeout,
+		idleTimeout:  opts.IdleTimeout,
 	}
 	for _, v := range opts.Vendors {
 		s.vendors[v] = true
@@ -157,7 +158,7 @@ func (s *Server) HTTPServer(addr string) *http.Server {
 		ReadTimeout:       s.readTimeout,
 		ReadHeaderTimeout: s.readTimeout,
 		WriteTimeout:      s.writeTimeout,
-		IdleTimeout:       idleTimeout,
+		IdleTimeout:       s.idleTimeout,
 	}
 }
 

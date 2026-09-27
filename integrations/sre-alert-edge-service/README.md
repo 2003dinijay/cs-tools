@@ -116,6 +116,7 @@ default and a comment. The main knobs:
 |---|---|---|
 | `server.shutdown_grace` | `20s` | Time on SIGTERM to finish in-flight requests and writes |
 | `server.write_timeout` | `30s` | A request waits for its ids up to this minus 5s, then gets `503` |
+| `server.idle_timeout` | `60s` | Idle keep-alive connections are closed after this |
 | `server.max_body_bytes` | `1048576` | Larger bodies get `413` |
 | `auth.mode` | `none` | Hook for vendor authentication; only `none` exists today |
 | `allocator.queue_size` | `5000` | Queued submissions per replica before `503` |

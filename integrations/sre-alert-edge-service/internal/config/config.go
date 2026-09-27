@@ -50,6 +50,7 @@ type ServerConfig struct {
 	ShutdownGrace Duration `toml:"shutdown_grace"`
 	ReadTimeout   Duration `toml:"read_timeout"`
 	WriteTimeout  Duration `toml:"write_timeout"`
+	IdleTimeout   Duration `toml:"idle_timeout"`
 	MaxBodyBytes  int64    `toml:"max_body_bytes"`
 }
 
@@ -124,6 +125,7 @@ func Defaults() Config {
 			ShutdownGrace: Duration(20 * time.Second),
 			ReadTimeout:   Duration(10 * time.Second),
 			WriteTimeout:  Duration(30 * time.Second),
+			IdleTimeout:   Duration(60 * time.Second),
 			MaxBodyBytes:  1 << 20,
 		},
 		Auth: AuthConfig{Mode: "none"},
@@ -180,6 +182,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("server.read_timeout must be positive")
 	case c.Server.WriteTimeout <= 0:
 		return fmt.Errorf("server.write_timeout must be positive")
+	case c.Server.IdleTimeout <= 0:
+		return fmt.Errorf("server.idle_timeout must be positive")
 	case c.Server.MaxBodyBytes <= 0:
 		return fmt.Errorf("server.max_body_bytes must be positive")
 	case c.Auth.Mode == "":

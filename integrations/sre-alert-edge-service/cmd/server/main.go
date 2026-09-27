@@ -137,6 +137,7 @@ func main() {
 		MaxBodyBytes: cfg.Server.MaxBodyBytes,
 		ReadTimeout:  cfg.Server.ReadTimeout.Duration(),
 		WriteTimeout: cfg.Server.WriteTimeout.Duration(),
+		IdleTimeout:  cfg.Server.IdleTimeout.Duration(),
 	})
 	httpSrv := srv.HTTPServer(":" + envCfg.Port)
 
