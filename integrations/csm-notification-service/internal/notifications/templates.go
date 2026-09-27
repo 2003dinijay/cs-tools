@@ -143,6 +143,17 @@ var safeImageDataURI = regexp.MustCompile(`(?i)^data:(image/(?:png|jpe?g|gif|web
 // (typically well under 1MB) with headroom to spare.
 const maxInlineImageBytes = 5 * 1024 * 1024
 
+// maxTotalInlineImageBytes bounds the combined decoded size of every image
+// one sanitizeRichText call extracts. maxInlineImageBytes alone doesn't
+// prevent several images that are each individually within budget from
+// still summing past email-service's own 10MB request-body limit once
+// base64-re-encoded for the JSON attachments array (base64 inflates size
+// by roughly 4/3 — two untouched 5MB images alone would already exceed
+// it). 6MB of combined raw image bytes encodes to about 8MB, leaving
+// headroom in that 10MB budget for the HTML body and JSON structure
+// overhead.
+const maxTotalInlineImageBytes = 6 * 1024 * 1024
+
 // maxInlineImagesPerComment bounds how many images one sanitizeRichText
 // call will extract — a real comment realistically embeds one or two
 // pasted screenshots, not dozens; this caps the worst case (a comment
@@ -316,6 +327,7 @@ func sanitizeRichText(s string) (string, []InlineImage) {
 	var b strings.Builder
 	var stack []openTag
 	var images []InlineImage
+	var totalImageBytes int
 
 	for {
 		switch z.Next() {
@@ -354,15 +366,18 @@ func sanitizeRichText(s string) (string, []InlineImage) {
 				// reached, every further <img> is dropped the same as an
 				// unsafe one — see that const's own doc comment.
 				if m := safeImageDataURI.FindStringSubmatch(src); m != nil && len(images) < maxInlineImagesPerComment {
-					// A base64 payload that fails to decode, or decodes
-					// past maxInlineImageBytes, is dropped silently, same
-					// as any other rejected <img> — the regex already
+					// A base64 payload that fails to decode, decodes past
+					// maxInlineImageBytes, or would push the running total
+					// past maxTotalInlineImageBytes, is dropped silently,
+					// same as any other rejected <img> — the regex already
 					// rejected anything not shaped like valid base64, so a
 					// decode failure here only ever catches an edge case
 					// (e.g. non-canonical padding) the regex alone can't.
-					if data, err := base64.StdEncoding.DecodeString(m[2]); err == nil && len(data) <= maxInlineImageBytes {
+					if data, err := base64.StdEncoding.DecodeString(m[2]); err == nil &&
+						len(data) <= maxInlineImageBytes && totalImageBytes+len(data) <= maxTotalInlineImageBytes {
 						contentID := nextInlineImageContentID()
 						images = append(images, InlineImage{ContentID: contentID, ContentType: m[1], Data: data})
+						totalImageBytes += len(data)
 						b.WriteString(`<img src="cid:` + contentID + `" alt="` + escapeHTML(alt) + `" style="max-width:100%;height:auto;">`)
 					}
 				}

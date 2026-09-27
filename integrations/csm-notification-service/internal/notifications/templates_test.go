@@ -234,6 +234,29 @@ func TestSanitizeRichText_Images(t *testing.T) {
 			t.Errorf("got %d images, want exactly %d (the cap)", len(images), maxInlineImagesPerComment)
 		}
 	})
+
+	// maxInlineImageBytes alone doesn't stop several individually-small-enough
+	// images from summing past email-service's own request-body limit once
+	// base64-re-encoded — maxTotalInlineImageBytes bounds the running total
+	// across one comment, not just each image on its own.
+	t.Run("a second image that would push the running total past maxTotalInlineImageBytes is dropped", func(t *testing.T) {
+		// firstSize is at maxInlineImageBytes itself (allowed on its own);
+		// secondSize alone is also within maxInlineImageBytes, but the two
+		// combined exceed maxTotalInlineImageBytes, so only the second must
+		// be rejected — isolating the total-budget check from the
+		// per-image one.
+		const firstSize = maxInlineImageBytes
+		const secondSize = maxTotalInlineImageBytes - maxInlineImageBytes + 1
+		first := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, firstSize))
+		second := "data:image/png;base64," + base64.StdEncoding.EncodeToString(make([]byte, secondSize))
+		_, images := sanitizeRichText(`<img src="` + first + `"><img src="` + second + `">`)
+		if len(images) != 1 {
+			t.Fatalf("got %d images, want exactly 1 (the second must be dropped for exceeding the total budget)", len(images))
+		}
+		if len(images[0].Data) != firstSize {
+			t.Errorf("first image size = %d, want %d (must survive unchanged)", len(images[0].Data), firstSize)
+		}
+	})
 }
 
 // TestSanitizeRichText_ScriptContentNeverExecutes verifies a <script> tag's
