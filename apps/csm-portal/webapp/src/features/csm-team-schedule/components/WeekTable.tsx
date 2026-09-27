@@ -26,7 +26,7 @@ import {
   standingWindowKey,
   toIsoDate,
 } from "../utils/rota";
-import { teamColour } from "../utils/rotaHues";
+import { accentOf, teamColour } from "../utils/rotaHues";
 
 interface WeekTableProps {
   weekStart: Date;
@@ -270,7 +270,7 @@ export default function WeekTable({
               <tr
                 key={code}
                 className="hued"
-                style={{ ["--rc" as string]: `var(--${token.toLowerCase()}-fg, var(--faint))` }}
+                style={{ ["--rc" as string]: accentOf(token) }}
               >
                 <th className="lab">
                   <span className={`chip sm ${token}`}>

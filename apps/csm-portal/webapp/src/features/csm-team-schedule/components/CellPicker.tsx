@@ -258,11 +258,17 @@ export default function CellPicker({
                 type="button"
                 className={`pk-c ${shift.code === target.shiftCode ? "on" : ""} ${ok ? "" : "bad"}`}
                 disabled={!ok || busy}
-                title={ok ? shift.label : notWorked(shift)}
+                title={ok ? shift.label : `${shift.label} — ${notWorked(shift)}`}
                 onClick={() => onApply(shift.code, target.rotaDate, lastDay)}
               >
                 <span className={`chip sm ${shift.colourToken}`}>{shift.shortCode}</span>
-                <span className="pk-l">{ok ? shift.label : notWorked(shift)}</span>
+                {/* A window that does not apply today still says what it is.
+                    "weekends only" on its own left a lead reading chips to
+                    work out which weekend window was which. */}
+                <span className="pk-l">
+                  {shift.label}
+                  {ok ? null : <small className="pk-n">{notWorked(shift)}</small>}
+                </span>
               </button>
             ))}
           </Fragment>

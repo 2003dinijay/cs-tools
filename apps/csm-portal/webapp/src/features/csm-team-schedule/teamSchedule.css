@@ -1121,3 +1121,60 @@
 .csm-ts .tw.roster.split thead tr:first-child th.day.mstart {
   border-left: 2px solid var(--ink-2);
 }
+
+/* A card holding more than its hours have room for says so, rather than
+   clipping in silence: a tab on its bottom edge, and the whole card opens on
+   hover, focus or a tap. */
+.csm-ts .ladder .zblk.canopen:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.csm-ts .ladder .zblk .zbmore {
+  position: absolute;
+  right: 6px;
+  bottom: 3px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent-ink);
+  background: var(--surface-solid);
+  box-shadow: 0 0 0 1px var(--line-2);
+  pointer-events: none;
+}
+/* Open, the card is raised above its neighbours at its natural height, on a
+   solid ground so the ladder behind does not show through the names. */
+.csm-ts .ladder .zblk.open {
+  background: linear-gradient(color-mix(in srgb, var(--zc) 10%, transparent),
+      color-mix(in srgb, var(--zc) 10%, transparent)), var(--surface-solid);
+}
+
+/* ── The lead's cell picker ───────────────────────────────────────────────
+   Opaque: it sat on --surface, the portal's semi-transparent paper, so the
+   roster underneath read straight through it -- dates and chips behind the
+   choices. And taller, so a lead sees every window and every kind of leave
+   without scrolling a box a third the height of the screen. The placement
+   code keeps it inside the window either way. */
+.csm-ts .picker {
+  background: var(--surface-solid);
+  width: 420px;
+  max-height: min(88vh, 860px);
+}
+.csm-ts .pk-c .pk-l .pk-n {
+  display: block;
+  margin-top: 1px;
+  font-size: 10.5px;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--faint);
+}
+
+/* Team keys are stored lower-case ("sirius"), and were printed that way
+   wherever a key stood in for a name -- the team list in a crowded card, the
+   tag beside a name -- while every heading capitalised them. Displayed as
+   names; the data is untouched. */
+.csm-ts .teamsplit .tn,
+.csm-ts .tw .nm .team,
+.csm-ts .ladder .lnm .tier-t {
+  text-transform: capitalize;
+}

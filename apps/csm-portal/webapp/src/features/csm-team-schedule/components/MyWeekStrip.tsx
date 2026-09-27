@@ -25,7 +25,7 @@ import type {
   ScheduleShift,
 } from "../types";
 import { addDays, groupBy, initialsOf, shortDayName, timeOf, toIsoDate , isPeerRotation } from "../utils/rota";
-import { teamColour } from "../utils/rotaHues";
+import { accentOf, teamColour } from "../utils/rotaHues";
 
 interface MyWeekStripProps {
   weekStart: Date;
@@ -137,7 +137,7 @@ export default function MyWeekStrip({
               ]
                 .filter(Boolean)
                 .join(" ")}
-              style={{ ["--rc" as string]: `var(--${(shift?.colourToken ?? "lk").toLowerCase()}-fg, var(--faint))` }}
+              style={{ ["--rc" as string]: accentOf(shift?.colourToken ?? "lk") }}
               role="button"
               tabIndex={0}
               aria-expanded={openDay === iso}

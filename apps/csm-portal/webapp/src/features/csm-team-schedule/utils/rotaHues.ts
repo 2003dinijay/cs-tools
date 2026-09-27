@@ -71,3 +71,19 @@ export function zoneColour(code: string): string {
 export function teamColour(teamKey: string): string {
   return TEAM_COLOURS[teamKey.toLowerCase()] ?? "#6b7280";
 }
+
+/**
+ * Chips drawn as light text on a dark fill. For these the text colour is
+ * white, so a card or row tinted "in the chip's colour" by its text colour was
+ * tinted white -- the evening card's title all but vanished on a light page.
+ * Their fill is the colour that identifies them.
+ */
+const DARK_CHIPS = new Set(["pm", "ext", "al", "ll", "onb", "exc"]);
+
+/** The colour a card, cell or row takes from a chip's colour token: the
+ *  chip's text colour, or its fill for a chip that is dark with light text. */
+export function accentOf(token: string | undefined, fallback = "var(--faint)"): string {
+  const t = (token ?? "").toLowerCase();
+  if (!t) return fallback;
+  return DARK_CHIPS.has(t) ? `var(--${t}-bg, ${fallback})` : `var(--${t}-fg, ${fallback})`;
+}

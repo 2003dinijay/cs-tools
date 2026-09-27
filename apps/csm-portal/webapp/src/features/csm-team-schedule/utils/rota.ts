@@ -234,8 +234,11 @@ export function shiftsByCode(shifts: ScheduleShift[]): Map<string, ScheduleShift
 
 /** Initials for an avatar, from a display name. */
 export function initialsOf(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
+  // Words only: a numbering suffix ("Engineer 11") is not an initial, and
+  // made every numbered account read "A1".
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  const parts = words.filter((w) => !/^\d+$/.test(w));
+  if (parts.length === 0) return words.length ? words[0].slice(0, 2).toUpperCase() : "?";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }

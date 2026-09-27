@@ -27,7 +27,7 @@ import {
   timeOf,
   toIsoDate,
 } from "../utils/rota";
-import { teamColour } from "../utils/rotaHues";
+import { accentOf, teamColour } from "../utils/rotaHues";
 
 /** Pixels per hour, as the prototype draws it. */
 const HOUR_PX = 38;
@@ -566,7 +566,7 @@ function LadderBlock({ block, tz }: { block: Block; tz: string }): JSX.Element {
         ...(isOpen
           ? { height: "auto", minHeight: px(block.endMin - block.startMin) }
           : { height: px(block.endMin - block.startMin) }),
-        ["--zc" as string]: `var(--${token.toLowerCase()}-fg, var(--faint))`,
+        ["--zc" as string]: accentOf(token),
       }}
       tabIndex={clipped ? 0 : undefined}
       aria-expanded={clipped ? isOpen : undefined}
