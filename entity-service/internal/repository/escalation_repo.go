@@ -58,8 +58,8 @@ type EscalationRepository interface {
 	// EL1+EL2 cumulative set, identical to an escalation landing at EL2.
 	// This is an approximation of ServiceNow's real EscalationUtils.
 	// createEscalation/EscalationNotificationUtils.resolveNotificationUsers
-	// (scoped app x_wso2_customer_0, read live against wso2sndev.
-	// service-now.com), built from what this schema actually has:
+	// (scoped app x_wso2_customer_0, read live against the DEV tenant),
+	// built from what this schema actually has:
 	//
 	//   - EL1 (level >= 1): the case's account -> account.cre_team_id ->
 	//     "group".manager_id -- an APPROXIMATION of SN's real rule (team
