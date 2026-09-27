@@ -102,7 +102,7 @@ func DedupTag(fingerprint string, firstSeen time.Time) string {
 // NotifyCSM returns permanent=true for non-retryable rejections (non-429 4xx). CSMAttempts >= 1 already counts current attempt; only first attempts fail open on search errors.
 func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident) (incidentID, incidentNumber string, ok bool, permanent bool) {
 	tag := DedupTag(inc.Fingerprint, inc.FirstSeen)
-	if id, number, found, err := n.csm.SearchIncidentByTag(ctx, tag); err != nil {
+	if id, number, found, err := n.csm.SearchIncidentByCorrelationID(ctx, tag); err != nil {
 		if inc.CSMAttempts > 1 {
 			n.logger.Warn("csm dedup search failed on retry, deferring to avoid a duplicate create", "incident_number", inc.IncidentNumber, "error", err)
 			return "", "", false, false
@@ -121,12 +121,13 @@ func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident) (incidentI
 	}
 
 	req := csm.CreateIncidentRequest{
-		CallerID:  n.callerID,
-		Category:  csmCategory(inc.Category),
-		ServiceID: serviceID,
-		Impact:    inc.Impact,
-		Urgency:   inc.Urgency,
-		Subject:   tag + " " + incidentSubject(inc),
+		CallerID:      n.callerID,
+		Category:      csmCategory(inc.Category),
+		ServiceID:     serviceID,
+		Impact:        inc.Impact,
+		Urgency:       inc.Urgency,
+		Subject:       incidentSubject(inc),
+		CorrelationID: &tag,
 	}
 	if inc.Description != "" {
 		req.WorkNotes = &inc.Description
@@ -169,7 +170,7 @@ func (n *Notifier) createIncidentWithRetry(ctx context.Context, tag string, req 
 		attempt++
 		if attempt > 1 {
 			// Recheck dedup on retry: prior attempt may have succeeded but lost response; CreateIncident isn't idempotent.
-			id, number, found, err := n.csm.SearchIncidentByTag(ctx, tag)
+			id, number, found, err := n.csm.SearchIncidentByCorrelationID(ctx, tag)
 			if err != nil {
 				return fmt.Errorf("dedup search before retry: %w", err)
 			}
@@ -228,13 +229,11 @@ func csmCategory(category string) string {
 	return "SERVICE_INTERRUPTION"
 }
 
+// incidentSubject is the metric name alone; the dedup tag and other alert context live in WorkNotes instead of the title.
 func incidentSubject(inc model.Incident) string {
-	subject := inc.Service
-	if inc.MetricName != "" {
-		subject += " - " + inc.MetricName
-	}
-	if inc.Environment != "" {
-		subject += " (" + inc.Environment + ")"
+	subject := inc.MetricName
+	if subject == "" {
+		subject = inc.Service
 	}
 	if inc.Fallback {
 		// Chat already fired before CSM confirmed, so this create call is a delayed catch-up, not a fresh occurrence.

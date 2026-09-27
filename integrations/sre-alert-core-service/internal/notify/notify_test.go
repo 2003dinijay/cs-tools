@@ -25,12 +25,20 @@ import (
 func TestIncidentSubject_TagsDelayedCSMCreation(t *testing.T) {
 	inc := model.Incident{Service: "checkout-svc", MetricName: "HighCPU", Environment: "Production"}
 
-	if got, want := incidentSubject(inc), "checkout-svc - HighCPU (Production)"; got != want {
+	if got, want := incidentSubject(inc), "HighCPU"; got != want {
 		t.Fatalf("incidentSubject() = %q, want %q", got, want)
 	}
 
 	inc.Fallback = true
-	if got, want := incidentSubject(inc), "[DELAYED-CSM] checkout-svc - HighCPU (Production)"; got != want {
+	if got, want := incidentSubject(inc), "[DELAYED-CSM] HighCPU"; got != want {
 		t.Fatalf("incidentSubject() with Fallback = %q, want %q", got, want)
+	}
+}
+
+func TestIncidentSubject_FallsBackToServiceWhenNoMetricName(t *testing.T) {
+	inc := model.Incident{Service: "checkout-svc"}
+
+	if got, want := incidentSubject(inc), "checkout-svc"; got != want {
+		t.Fatalf("incidentSubject() = %q, want %q", got, want)
 	}
 }
