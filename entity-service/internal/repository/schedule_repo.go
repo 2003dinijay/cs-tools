@@ -18,6 +18,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -43,6 +44,11 @@ type ScheduleRepository interface {
 	// LeadsTeam reports whether this user leads this team. The whole of the
 	// edit permission rests on it.
 	LeadsTeam(ctx context.Context, userEmail, teamKey string) (bool, error)
+
+	// UserInTeam reports whether this user is on this team at all, by id
+	// rather than by email. Leading a team says what a lead may change; this
+	// says whose rota is theirs to change it on.
+	UserInTeam(ctx context.Context, userID, teamKey string) (bool, error)
 
 	// The three writes. Each records its own activity row inside the same
 	// transaction as the change -- an activity row without its change, or a
@@ -377,6 +383,22 @@ func (r *scheduleRepository) LeadsTeam(ctx context.Context, userEmail, teamKey s
 	return ok, nil
 }
 
+// UserInTeam implements ScheduleRepository.
+func (r *scheduleRepository) UserInTeam(ctx context.Context, userID, teamKey string) (bool, error) {
+	var ok bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			  FROM team_member tm
+			  JOIN team t ON t.id = tm.team_id
+			 WHERE tm.user_id = $1::uuid
+			   AND lower(t.name) = lower($2))`, userID, teamKey).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check team membership: %w", err)
+	}
+	return ok, nil
+}
+
 // recordActivity writes one row of history. Always called on the same tx as the
 // change it describes.
 func recordActivity(ctx context.Context, tx pgx.Tx, a domain.ScheduleAssignment,
@@ -421,6 +443,14 @@ func (r *scheduleRepository) CreateAssignment(ctx context.Context, req domain.Cr
 		 WHERE s.code = $8
 		RETURNING id`,
 		actorEmail, req.UserID, req.TeamKey, req.Tier, req.RotaDate, req.IsOnCall, req.Note, req.ShiftCode).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The INSERT selects from schedule_shift, so a code that is not in the
+		// catalogue returns no rows rather than failing. Reported as the bad
+		// request it is instead of a 500.
+		return domain.ScheduleAssignment{}, &apierror.ValidationError{
+			Msg: fmt.Sprintf("no such shift %q", req.ShiftCode),
+		}
+	}
 	if err != nil {
 		return domain.ScheduleAssignment{}, fmt.Errorf("insert assignment: %w", err)
 	}
@@ -572,12 +602,25 @@ func boolText(b bool) string {
 
 // ActivityForTeam is "what changed on my team this week", newest first.
 func (r *scheduleRepository) ActivityForTeam(ctx context.Context, teamKey, from, to string) ([]domain.ScheduleAssignmentActivity, error) {
+	// Leave marked from the roster is a change a lead made too, so its history
+	// is read alongside the rota's -- a "recent changes" list without it would
+	// miss half of what a lead does. A span is in the window when it overlaps
+	// it at all.
 	rows, err := r.db.Query(ctx, `
-		SELECT id, assignment_id, user_id, team_key, rota_date, shift_code,
+		SELECT id, assignment_id, user_id, team_key, rota_date, NULL::date AS ends_on,
+		       'rota' AS subject, shift_code,
 		       action, field_name, old_value, new_value, actor_email, note, created_on
 		  FROM schedule_assignment_activity
 		 WHERE team_key = $1
 		   AND rota_date BETWEEN $2::date AND $3::date
+		UNION ALL
+		SELECT id, absence_id, user_id, team_key, starts_on, ends_on,
+		       'leave', kind_code,
+		       action, field_name, old_value, new_value, actor_email, note, created_on
+		  FROM schedule_absence_activity
+		 WHERE team_key = $1
+		   AND starts_on <= $3::date
+		   AND COALESCE(ends_on, 'infinity'::date) >= $2::date
 		 ORDER BY created_on DESC`, teamKey, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("query schedule activity: %w", err)
@@ -588,11 +631,16 @@ func (r *scheduleRepository) ActivityForTeam(ctx context.Context, teamKey, from,
 	for rows.Next() {
 		var a domain.ScheduleAssignmentActivity
 		var rota time.Time
-		if err := rows.Scan(&a.ID, &a.AssignmentID, &a.UserID, &a.TeamKey, &rota, &a.ShiftCode,
+		var endsOn *time.Time
+		if err := rows.Scan(&a.ID, &a.AssignmentID, &a.UserID, &a.TeamKey, &rota, &endsOn, &a.Subject, &a.ShiftCode,
 			&a.Action, &a.FieldName, &a.OldValue, &a.NewValue, &a.ActorEmail, &a.Note, &a.CreatedOn); err != nil {
 			return nil, fmt.Errorf("scan schedule activity: %w", err)
 		}
 		a.RotaDate = rota.Format("2006-01-02")
+		if endsOn != nil {
+			s := endsOn.Format("2006-01-02")
+			a.EndsOn = &s
+		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
@@ -874,9 +922,9 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO schedule_absence
 				  (id, created_on, updated_on, created_by, updated_by, user_id, team_key,
-				   kind_id, starts_on, ends_on, note)
+				   kind_id, starts_on, ends_on, note, allocated_to)
 				SELECT gen_random_uuid(), now(), now(), $1, $1, a.user_id, a.team_key,
-				       a.kind_id, $2::date, $3::date, a.note
+				       a.kind_id, $2::date, $3::date, a.note, a.allocated_to
 				  FROM schedule_absence a WHERE a.id = $4::uuid
 				RETURNING id::text`,
 				actorEmail, dayAfter, tailEnds, h.id).Scan(&tailID); err != nil {

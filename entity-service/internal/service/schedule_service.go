@@ -214,6 +214,29 @@ func (s *scheduleService) requireTeamLead(ctx context.Context, teamKey string) e
 	return nil
 }
 
+// requireTeamLeadOver is the lead check plus the engineer being changed.
+//
+// Leading a team says what a lead may change; it does not say whose rota they
+// may change it on. Without this second check a lead could name their own team
+// -- which they genuinely lead, so the first check passes -- and pass the id of
+// somebody on another team entirely, writing a row against a person they have
+// no say over. A team key in a request decides nothing on its own.
+func (s *scheduleService) requireTeamLeadOver(ctx context.Context, teamKey, userID string) error {
+	if err := s.requireTeamLead(ctx, teamKey); err != nil {
+		return err
+	}
+	member, err := s.repo.UserInTeam(ctx, userID, teamKey)
+	if err != nil {
+		return err
+	}
+	if !member {
+		return &apierror.ForbiddenError{
+			Msg: fmt.Sprintf("that engineer is not on %s, so their rota is not yours to change", teamKey),
+		}
+	}
+	return nil
+}
+
 // CreateAssignment implements ScheduleService.
 func (s *scheduleService) CreateAssignment(ctx context.Context, req domain.CreateScheduleAssignmentRequest) (domain.ScheduleAssignment, error) {
 	if err := validateUserID(req.UserID); err != nil {
@@ -225,7 +248,7 @@ func (s *scheduleService) CreateAssignment(ctx context.Context, req domain.Creat
 	if _, err := time.Parse("2006-01-02", req.RotaDate); err != nil {
 		return domain.ScheduleAssignment{}, &apierror.ValidationError{Msg: "rotaDate must be YYYY-MM-DD"}
 	}
-	if err := s.requireTeamLead(ctx, req.TeamKey); err != nil {
+	if err := s.requireTeamLeadOver(ctx, req.TeamKey, req.UserID); err != nil {
 		return domain.ScheduleAssignment{}, err
 	}
 	return s.repo.CreateAssignment(ctx, req, auth.IdentityFromContext(ctx).UserEmail)
@@ -316,7 +339,7 @@ func (s *scheduleService) ApplyRange(ctx context.Context, req domain.ApplySchedu
 			Msg: "userId, teamKey, from and to are all required",
 		}
 	}
-	if err := s.requireTeamLead(ctx, req.TeamKey); err != nil {
+	if err := s.requireTeamLeadOver(ctx, req.TeamKey, req.UserID); err != nil {
 		return domain.ApplyScheduleRangeResponse{}, err
 	}
 	return s.repo.ApplyRange(ctx, req, auth.IdentityFromContext(ctx).UserEmail)
@@ -334,7 +357,7 @@ func (s *scheduleService) ApplyAbsence(ctx context.Context, req domain.ApplySche
 			Msg: "userId, teamKey, from and to are all required",
 		}
 	}
-	if err := s.requireTeamLead(ctx, req.TeamKey); err != nil {
+	if err := s.requireTeamLeadOver(ctx, req.TeamKey, req.UserID); err != nil {
 		return domain.ApplyScheduleAbsenceResponse{}, err
 	}
 	return s.repo.ApplyAbsence(ctx, req, auth.IdentityFromContext(ctx).UserEmail)

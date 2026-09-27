@@ -94,6 +94,10 @@ func (f *fakeScheduleRepo) ApplyAbsence(_ context.Context, req domain.ApplySched
 	return domain.ApplyScheduleAbsenceResponse{Created: 1}, f.err
 }
 
+func (f *fakeScheduleRepo) UserInTeam(context.Context, string, string) (bool, error) {
+	return true, f.err
+}
+
 func (f *fakeScheduleRepo) LeadTeamsFor(context.Context, string) ([]string, error) {
 	if f.leadsTeam {
 		return []string{"castor"}, f.err
@@ -343,10 +347,18 @@ func TestScheduleSearchesRejectMalformedUserID(t *testing.T) {
 type leadOf struct {
 	fakeScheduleRepo
 	team string
+	// notOnTeam makes the engineer being changed a member of some other team,
+	// for the case where a lead names their own team and hands over somebody
+	// else's id.
+	notOnTeam bool
 }
 
 func (l *leadOf) LeadsTeam(_ context.Context, _, teamKey string) (bool, error) {
 	return teamKey == l.team, nil
+}
+
+func (l *leadOf) UserInTeam(context.Context, string, string) (bool, error) {
+	return !l.notOnTeam, nil
 }
 
 func leadCtx(email string) context.Context {
@@ -492,5 +504,53 @@ func TestClearingLeaveStillNeedsWhoAndWhen(t *testing.T) {
 	}
 	if repo.called {
 		t.Fatal("the repository was written to on an invalid request")
+	}
+}
+
+// Leading a team decides what a lead may change, not whose rota they may
+// change it on. The team key in the request is the lead's own here, so the
+// lead check passes -- and the engineer named belongs to somebody else.
+func TestALeadCannotEditAnEngineerFromAnotherTeam(t *testing.T) {
+	repo := &leadOf{team: "castor", notOnTeam: true}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	ctx := leadCtx("castor.01@example.com")
+
+	stranger := "22222222-2222-2222-2222-222222222222"
+
+	if _, err := svc.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: stranger, TeamKey: "castor", ShiftCode: "CRE_EVENING",
+		From: "2026-09-21", To: "2026-09-21",
+	}); err == nil {
+		t.Fatal("a lead set a rotation on an engineer who is not on their team")
+	} else {
+		var forbidden *apierror.ForbiddenError
+		if !errors.As(err, &forbidden) {
+			t.Fatalf("want ForbiddenError, got %v", err)
+		}
+	}
+	if repo.called {
+		t.Fatal("the write reached the repository despite the engineer not being on the team")
+	}
+
+	if _, err := svc.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: stranger, TeamKey: "castor", KindCode: "ANNUAL_LEAVE",
+		From: "2026-09-21", To: "2026-09-21",
+	}); err == nil {
+		t.Fatal("a lead booked leave for an engineer who is not on their team")
+	}
+	if repo.called {
+		t.Fatal("the absence write reached the repository")
+	}
+
+	// The same lead, on somebody who is on their team, is allowed through.
+	repo.notOnTeam = false
+	if _, err := svc.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: stranger, TeamKey: "castor", ShiftCode: "CRE_EVENING",
+		From: "2026-09-21", To: "2026-09-21",
+	}); err != nil {
+		t.Fatalf("a lead was refused an engineer on their own team: %v", err)
+	}
+	if !repo.called {
+		t.Fatal("the write never reached the repository")
 	}
 }

@@ -18,6 +18,7 @@
 
 import { useMemo, useState, type JSX } from "react";
 import QueryErrorState from "@components/QueryErrorState";
+import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import {
   useApplyAbsence,
@@ -28,6 +29,7 @@ import {
   useScheduleAssignments,
   useScheduleAssignmentsByMonth,
   useScheduleCatalogue,
+  useTeamActivity,
   type MonthWindow,
   type RotaRead,
 } from "../api/useTeamSchedule";
@@ -36,6 +38,7 @@ import DayLadder, { type LadderLane } from "../components/DayLadder";
 import MonthRoster from "../components/MonthRoster";
 import MyWeekStrip from "../components/MyWeekStrip";
 import NextRotation from "../components/NextRotation";
+import RecentChanges from "../components/RecentChanges";
 import WeekTable from "../components/WeekTable";
 import type {
   ScheduleAbsencesResponse,
@@ -102,6 +105,26 @@ function stepBy(from: Date, tab: ViewTab, direction: 1 | -1): Date {
   return addDays(from, 7 * direction);
 }
 
+/** A change made in the current editing session. */
+interface RotaChange {
+  userId: string;
+  name: string;
+  from: string;
+  to: string;
+  /** What the days became: a window's label, a kind of leave, or back on the rota. */
+  what: string;
+}
+
+/** "Thu 1 Oct", or "Thu 1 – Sat 3 Oct" for a span. */
+function fmtRange(from: string, to: string): string {
+  const f = new Date(`${from}T00:00:00`);
+  const opts = { weekday: "short", day: "numeric", month: "short" } as const;
+  if (from === to) return f.toLocaleDateString(undefined, opts);
+  return `${f.toLocaleDateString(undefined, { weekday: "short", day: "numeric" })} – ${new Date(
+    `${to}T00:00:00`,
+  ).toLocaleDateString(undefined, opts)}`;
+}
+
 const fmtShort = (d: Date): string =>
   d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 
@@ -135,6 +158,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // Which teams this reader may edit. Asked once: it changes when somebody is
   // made a lead, not while they are looking at a rota.
   const leadTeams = useMyLeadTeams();
+  const { showError } = useErrorBanner();
   const applyRange = useApplyRange();
   const applyAbsence = useApplyAbsence();
 
@@ -145,6 +169,26 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  a click does. Turning editing off closes whatever is open with it. */
   const [editing, setEditing] = useState(false);
   const [picker, setPicker] = useState<CellPickerTarget | null>(null);
+
+  /** The changes made in this editing session, newest last.
+   *
+   *  A change saves the moment it is made, and the cell then simply shows its
+   *  new value -- which looks exactly like a value that was always there. So
+   *  a lead who has changed six days could not see which six. Each saved
+   *  change is kept here and marked on the roster until they click Done
+   *  editing, which is the point they have said they are finished. */
+  const [changes, setChanges] = useState<RotaChange[]>([]);
+  /** Whether the lead has the recent-changes panel open on the roster. */
+  const [showRecent, setShowRecent] = useState(false);
+  const changedCells = useMemo(() => {
+    const out = new Set<string>();
+    for (const c of changes) {
+      for (let d = new Date(`${c.from}T00:00:00`); toIsoDate(d) <= c.to; d = addDays(d, 1)) {
+        out.add(`${c.userId}|${toIsoDate(d)}`);
+      }
+    }
+    return out;
+  }, [changes]);
 
   /** Whether this reader leads anything, which is what decides whether the
    *  toggle is offered. Whether a given row is theirs is a separate question
@@ -323,6 +367,11 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const absences: RotaRead<ScheduleAbsencesResponse> = rosterView ? rosterAbsences : dayAbsences;
 
   const shifts = useMemo(() => shiftsByCode(catalogue.data?.shifts ?? []), [catalogue.data?.shifts]);
+
+  // The history of the lead's own teams over the months on screen. Read only
+  // while the panel is open -- it is a question a lead asks now and then, not
+  // one every page load should pay for.
+  const activity = useTeamActivity(leadTeams.data ?? [], rosterMonths, showRecent && view === "roster");
   // Memoised rather than written inline: `?? []` builds a fresh array on every
   // render, so every memo downstream that depends on it recomputes every time
   // -- and the React Compiler refuses to optimise a component whose manual
@@ -333,6 +382,16 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     () => assignments.data?.assignments ?? [],
     [assignments.data?.assignments],
   );
+
+  /** Engineers' names by id, for the history, which keeps only ids. Taken from
+   *  what the roster already has loaded -- the same people the changes are to. */
+  const namesById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of rows) m.set(a.engineer.userId, a.engineer.name);
+    for (const ab of absences.data?.absences ?? []) m.set(ab.engineer.userId, ab.engineer.name);
+    return m;
+  }, [rows, absences.data?.absences]);
+  const nameOf = (userId: string): string | undefined => namesById.get(userId);
 
   /** A lead picked a cell on the roster. The roster says which slot and
    *  where on screen; the picker does the rest. */
@@ -412,9 +471,18 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         to,
         note: "set from the month roster",
       },
-      { onSettled: () => setPicker(null) },
+      {
+        onSuccess: () =>
+          recordChange(picker, from, to, shifts.get(shiftCode)?.label ?? shiftCode),
+        onError: (err) =>
+          showError("That change to the rota was not saved. Nothing has moved.", err),
+        onSettled: () => setPicker(null),
+      },
     );
   };
+
+  const recordChange = (target: CellPickerTarget, from: string, to: string, what: string): void =>
+    setChanges((cs) => [...cs, { userId: target.userId, name: target.name, from, to, what }]);
 
   const markAway = (kindCode: string, from: string, to: string): void => {
     if (!picker) return;
@@ -427,7 +495,20 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         to,
         note: "marked from the month roster",
       },
-      { onSettled: () => setPicker(null) },
+      {
+        onSuccess: () =>
+          recordChange(
+            picker,
+            from,
+            to,
+            kindCode
+              ? (leaveKinds.find((k) => k.code === kindCode)?.label ?? kindCode)
+              : "back on the rota",
+          ),
+        onError: (err) =>
+          showError("That change to who is away was not saved. Nothing has moved.", err),
+        onSettled: () => setPicker(null),
+      },
     );
   };
 
@@ -640,6 +721,16 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               </button>
             </div>
 
+            {canEditRota && view === "roster" ? (
+              <button
+                className={`btn sm${showRecent ? " primary" : ""}`}
+                aria-pressed={showRecent}
+                onClick={() => setShowRecent((v) => !v)}
+                title="What has changed on your teams' rota and leave"
+              >
+                Recent changes
+              </button>
+            ) : null}
             {canEditRota ? (
               <button
                 className={`btn sm${editing ? " primary" : ""}`}
@@ -647,6 +738,9 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                 onClick={() => {
                   setEditing((v) => !v);
                   setPicker(null);
+                  // Done editing is "I am finished": the marks have done their
+                  // job, and the next session starts clean.
+                  setChanges([]);
                 }}
               >
                 <svg
@@ -678,11 +772,41 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                 .map((t) => t.charAt(0).toUpperCase() + t.slice(1))
                 .join(", ")}
             </span>
-            <span className="hintx">
-              click a cell in your own team&rsquo;s rows to change that day
-              &middot; changes save as you make them
-            </span>
+            {changes.length === 0 ? (
+              <span className="hintx">
+                click a cell in your own team&rsquo;s rows to change that day
+                &middot; changes save as you make them
+              </span>
+            ) : (
+              // What has changed, so a lead can see their own edits: the count,
+              // and the last one spelled out. Every changed cell is ringed on
+              // the grid below until Done editing.
+              <span className="hintx" role="status">
+                <b>
+                  {changes.length} change{changes.length === 1 ? "" : "s"}
+                </b>{" "}
+                &middot; last: {changes[changes.length - 1].name},{" "}
+                {fmtRange(changes[changes.length - 1].from, changes[changes.length - 1].to)} &rarr;{" "}
+                {changes[changes.length - 1].what}
+                <i className="chg-key" aria-hidden="true" /> changed this session
+              </span>
+            )}
           </div>
+        ) : null}
+
+        {canEditRota && showRecent && view === "roster" ? (
+          <RecentChanges
+            activity={activity.data ?? []}
+            isLoading={activity.isLoading}
+            isError={activity.isError}
+            nameOf={nameOf}
+            shiftLabel={(code) => shifts.get(code)?.label ?? code}
+            kindLabel={(code) =>
+              catalogue.data?.absenceKinds.find((k) => k.code === code)?.label ??
+              code.replace(/_/g, " ").toLowerCase()
+            }
+            onClose={() => setShowRecent(false)}
+          />
         ) : null}
 
         {/* Above the card, not in it: this answers a question about the reader,
@@ -732,6 +856,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               leadTeams={leadTeams.data ?? []}
               editing={editing}
               onEditCell={editCell}
+              changedCells={editing ? changedCells : undefined}
               month={rosterStart}
               monthCount={rosterMonths.length}
               assignments={rows}

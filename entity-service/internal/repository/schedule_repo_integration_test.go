@@ -98,8 +98,8 @@ func newScheduleIntegrationRepo(t *testing.T) (ScheduleRepository, *pgxpool.Pool
 		schedLeadID, schedMemberID, schedOtherID)
 
 	mustExec(t, pool, `
-		INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, type)
-		VALUES ($1, NOW(), NOW(), 'fixture', 'fixture', $2, 'cre-abt')
+		INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, key, type)
+		VALUES ($1, NOW(), NOW(), 'fixture', 'fixture', $2, $2, 'cre-abt')
 		ON CONFLICT (id) DO NOTHING`, schedTeamID, schedTeamKey)
 
 	// Two of these deliberately share a display name. A rota can carry two

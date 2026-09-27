@@ -16065,6 +16065,18 @@ components:
         authoringTimeZone: { type: string, example: Asia/Colombo }
         isOnCall: { type: boolean }
         isEscalation: { type: boolean }
+        isRotation:
+          type: boolean
+          description: >-
+            Whether being on this window is a turn somebody takes, as opposed
+            to simply when their team works. Regular hours and the Americas
+            cover are not rotations.
+        requiredHeadcount:
+          type: integer
+          nullable: true
+          description: >-
+            How many people this window is meant to carry, where a target has
+            been agreed. Null where none has -- every SRE window today.
         crossesMidnight: { type: boolean }
         colourToken: { type: string }
         sortOrder: { type: integer }
@@ -16229,11 +16241,23 @@ components:
         rotaDate:
           type: string
           format: date
+          description: The day changed -- for leave, the first day of the span.
+        subject:
+          type: string
+          enum: [rota, leave]
+          description: Whether this changed a window on the rota or a span of leave.
+        endsOn:
+          type: string
+          format: date
+          nullable: true
+          description: For leave, the last day of the span; absent for an open-ended one.
         shiftCode:
           type: string
+          description: The window's code, or for leave the absence kind's code.
         action:
           type: string
-          enum: [CREATED, UPDATED, DELETED]
+          enum: [CREATED, UPDATED, DELETED, TRIMMED]
+          description: TRIMMED is leave shortened rather than removed.
         fieldName:
           type: string
           nullable: true

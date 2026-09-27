@@ -23,7 +23,7 @@ import type {
   ScheduleAssignment,
   ScheduleShift,
 } from "../types";
-import { initialsOf, isRotationShift, mondayOf, toIsoDate } from "../utils/rota";
+import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate } from "../utils/rota";
 import { teamColour } from "../utils/rotaHues";
 
 interface MonthRosterProps {
@@ -71,6 +71,9 @@ interface MonthRosterProps {
    *  two. The toggle lives in the page toolbar, beside the other controls
    *  that change what a click does. */
   editing?: boolean;
+  /** `${userId}|${YYYY-MM-DD}` for every day changed in this editing session,
+   *  so those cells can be marked until the lead clicks Done editing. */
+  changedCells?: ReadonlySet<string>;
   /** Called when a lead picks a cell to change. The roster does not own the
    *  picker -- it only reports which slot was chosen, what is on it, and
    *  where on screen it is, so the picker can open against the cell rather
@@ -131,6 +134,7 @@ export default function MonthRoster({
   meEmail,
   leadTeams,
   editing = false,
+  changedCells,
   onEditCell,
 }: MonthRosterProps): JSX.Element {
   const [query, setQuery] = useState("");
@@ -310,9 +314,11 @@ export default function MonthRoster({
    *  them: today stays the circled date inside it, and the reader's own row
    *  stays the filled row crossing it. */
   const weekFrom = toIsoDate(mondayOf(new Date()));
-  const weekTo = toIsoDate(
-    new Date(mondayOf(new Date()).getTime() + 6 * 86_400_000),
-  );
+  // addDays rather than six times 86,400,000ms: a week can contain a DST
+  // change that makes one local day 25 hours long, and the arithmetic then
+  // lands on Saturday 23:00. The band would drop the Sunday and put its
+  // closing edge on the Saturday, once a year, in one timezone.
+  const weekTo = toIsoDate(addDays(mondayOf(new Date()), 6));
   const inThisWeek = (iso: string): boolean => iso >= weekFrom && iso <= weekTo;
 
   /** The same marks for one zone sub-column of a split day: only the first
@@ -578,7 +584,9 @@ export default function MonthRoster({
                   const weekend = d.getDay() === 0 || d.getDay() === 6;
                   const marks = `${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""} ${
                     iso === selectedIso ? "sel" : ""
-                  } ${d.getDay() === 1 ? "wkstart" : ""}${opensMonth(d) ? " mstart" : ""}${weekMarks(iso)}`;
+                  } ${d.getDay() === 1 ? "wkstart" : ""}${opensMonth(d) ? " mstart" : ""}${weekMarks(iso)}${
+                    changedCells?.has(`${row.userId}|${iso}`) ? " changed" : ""
+                  }`;
                   const faded = (c: Cell | undefined) =>
                     rotationsOnly && c && !c.isRotation ? "muted" : "";
 
