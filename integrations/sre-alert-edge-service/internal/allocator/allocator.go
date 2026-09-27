@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"time"
 
@@ -127,6 +128,9 @@ type Allocator struct {
 	writeSem    chan struct{}
 	writes      sync.WaitGroup
 	claimerDone chan struct{}
+
+	pendingMu sync.Mutex
+	pending   map[int64]struct{} // claimed ids whose row or filler isn't written yet
 }
 
 // New starts the claimer goroutine. notifier and waker may be nil.
@@ -140,6 +144,7 @@ func New(logger *slog.Logger, store Store, notifier FailureNotifier, waker Waker
 		queue:       make(chan *submission, cfg.QueueSize),
 		writeSem:    make(chan struct{}, cfg.WriteConcurrency),
 		claimerDone: make(chan struct{}),
+		pending:     map[int64]struct{}{},
 	}
 	go a.claimLoop()
 	return a
@@ -190,6 +195,7 @@ func (a *Allocator) Close(ctx context.Context) error {
 	select {
 	case <-a.claimerDone:
 	case <-ctx.Done():
+		a.logUnwritten()
 		return fmt.Errorf("claimer did not drain: %w", ctx.Err())
 	}
 	written := make(chan struct{})
@@ -201,8 +207,34 @@ func (a *Allocator) Close(ctx context.Context) error {
 	case <-written:
 		return nil
 	case <-ctx.Done():
+		a.logUnwritten()
 		return fmt.Errorf("writers did not finish: %w", ctx.Err())
 	}
+}
+
+// maxLoggedIDs bounds the id list in the unwritten-ids log line.
+const maxLoggedIDs = 100
+
+// logUnwritten names the claimed ids left without a row, which alerts-core will wait
+// gap_timeout on.
+func (a *Allocator) logUnwritten() {
+	a.pendingMu.Lock()
+	seqs := make([]int64, 0, len(a.pending))
+	for s := range a.pending {
+		seqs = append(seqs, s)
+	}
+	a.pendingMu.Unlock()
+	if len(seqs) == 0 {
+		return
+	}
+	slices.Sort(seqs)
+	ids := make([]string, 0, min(len(seqs), maxLoggedIDs))
+	for _, s := range seqs[:min(len(seqs), maxLoggedIDs)] {
+		ids = append(ids, cassandra.FormatID(s))
+	}
+	a.logger.Error("shutdown cut off writes; these ids have no row and alerts-core will wait gap_timeout on them",
+		"count", len(seqs), "first_id", cassandra.FormatID(seqs[0]),
+		"last_id", cassandra.FormatID(seqs[len(seqs)-1]), "ids", ids)
 }
 
 // claimLoop takes the first waiting submission, then everything else already waiting up to
@@ -254,6 +286,11 @@ func (a *Allocator) claimLoop() {
 		a.logger.Info("batch claimed", "alerts", n, "submissions", len(batch),
 			"first_id", cassandra.FormatID(start), "last_id", cassandra.FormatID(start+int64(n)-1),
 			"claim_attempts", attempts, "claim_ms", time.Since(claimStart).Milliseconds())
+		a.pendingMu.Lock()
+		for s := start; s < start+int64(n); s++ {
+			a.pending[s] = struct{}{}
+		}
+		a.pendingMu.Unlock()
 		a.writes.Add(1)
 		go a.writeBatch(batch, start)
 	}
@@ -368,6 +405,11 @@ func (a *Allocator) writeBatch(batch []*submission, start int64) {
 // writeOne writes one alert under its claimed id, retrying on the same id, then falls back to
 // a filler row. ok reports whether the real alert was stored.
 func (a *Allocator) writeOne(job alertJob) (id string, ok bool) {
+	defer func() {
+		a.pendingMu.Lock()
+		delete(a.pending, job.seq)
+		a.pendingMu.Unlock()
+	}()
 	ctx := context.Background() // detached: a disconnected client must not leave this id empty
 	id = cassandra.FormatID(job.seq)
 	alert := job.sub.alerts[job.index]

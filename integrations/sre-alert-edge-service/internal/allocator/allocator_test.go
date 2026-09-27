@@ -17,6 +17,7 @@
 package allocator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -57,6 +58,8 @@ type fakeStore struct {
 	failAllInserts bool
 	// failFillers fails this many filler inserts before letting them through.
 	failFillers int
+	// insertGate, if set, blocks every Insert until closed.
+	insertGate chan struct{}
 	// hideOnce makes the first read-back of an id miss, as Cosmos DB sometimes does.
 	hideOnce map[string]bool
 
@@ -104,6 +107,9 @@ func (f *fakeStore) CompareAndSet(_ context.Context, from, to int64) (bool, int6
 }
 
 func (f *fakeStore) Insert(_ context.Context, id, vendor, alert string) error {
+	if f.insertGate != nil {
+		<-f.insertGate
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.inserts[id]++
@@ -527,4 +533,55 @@ func waitFor(t *testing.T, cond func() bool) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+func TestCloseTimeout_LogsUnwrittenIDs(t *testing.T) {
+	store := newFakeStore()
+	store.insertGate = make(chan struct{})
+	var logs bytes.Buffer
+	var logMu sync.Mutex
+	logger := slog.New(slog.NewTextHandler(&lockedWriter{w: &logs, mu: &logMu}, nil))
+	a := New(logger, store, nil, nil, testConfig())
+
+	submitted := make(chan struct{})
+	go func() {
+		_, _ = a.Submit(context.Background(), "aws", "req", []model.Alert{alert("svc", "u1"), alert("svc", "u2")})
+		close(submitted)
+	}()
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(time.Millisecond) {
+		a.pendingMu.Lock()
+		n := len(a.pending)
+		a.pendingMu.Unlock()
+		if n == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ids were never claimed")
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := a.Close(ctx); err == nil {
+		t.Fatal("Close should time out while writes are blocked")
+	}
+	logMu.Lock()
+	out := logs.String()
+	logMu.Unlock()
+	if !strings.Contains(out, "have no row") || !strings.Contains(out, "ALT000000001") || !strings.Contains(out, "ALT000000002") {
+		t.Errorf("log should name the unwritten ids, got:\n%s", out)
+	}
+	close(store.insertGate)
+	<-submitted
+}
+
+type lockedWriter struct {
+	w  io.Writer
+	mu *sync.Mutex
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
