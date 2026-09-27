@@ -88,6 +88,21 @@ func TestProcessLicenseDownload_RejectsMissingSubscriptionData(t *testing.T) {
 	}
 }
 
+// TestProcessLicenseDownload_RejectsMissingSignature is the regression test
+// for a success:true response with a well-formed subscriptionData object but
+// no signature — the customer's product has nothing to verify the data
+// against, the same failure shape as no subscriptionData at all.
+func TestProcessLicenseDownload_RejectsMissingSignature(t *testing.T) {
+	c := newLicenseTestServers(t, `{"result":{"success":true,"license":{"subscriptionData":{"clientId":"abc"}}}}`)
+
+	if _, err := c.ProcessLicenseDownload(context.Background(), LicenseDownloadRequest{
+		Email: "someone@wso2.com", ProjectID: "6fa0b42d-1bfa-a694-a002-c9d3604bcb77",
+		DeploymentID: "937bd77b-1ba0-8750-a002-c9d3604bcbbc",
+	}); err == nil {
+		t.Fatal("expected an error for a missing signature, got nil")
+	}
+}
+
 // TestProcessLicenseDownload_AcceptsValidLicense is the positive counterpart:
 // a genuine success:true response with an object subscriptionData must still
 // pass through unchanged.
