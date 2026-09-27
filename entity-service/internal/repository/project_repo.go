@@ -289,6 +289,11 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	// so they tolerate NULL (whether from a real account or a LEFT JOIN
 	// producing no row at all) without a separate local var.
 	var aID, aName *string
+	// aNumber is the same class of already-present-but-unselected gap
+	// account_repo.go's own comment describes for account.number -- kept as
+	// its own local var (rather than folded into aID/aName above) since only
+	// this one column needed the fix, not the whole account.* group.
+	var aNumber *string
 	// account.support_tier (migration 000092) is a nullable VARCHAR, but
 	// ProjectAccountRef.Tier is a plain (non-pointer) string -- scan into a
 	// *string local and default to "" via stringOrEmpty, same pattern as
@@ -313,7 +318,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	err := r.db.QueryRow(ctx,
 		`SELECT p.id, p.sf_id, p.name, p.key,
 		        p.start_date, p.end_date, p.created_on, p.updated_on,
-		        a.id, a.name, a.activation_date, a.region,
+		        a.id, a.name, a.number, a.activation_date, a.region,
 		        a.ai_gen_response_enabled, a.smart_knowledge_base_suggestions_enabled,
 		        a.support_tier,
 		        pt.name,
@@ -363,7 +368,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	).Scan(
 		&v.ID, &v.SfID, &v.Name, &v.Key,
 		&v.StartDate, &v.EndDate, &v.CreatedOn, &v.UpdatedOn,
-		&aID, &aName, &v.Account.ActivationDate, &v.Account.Region,
+		&aID, &aName, &aNumber, &v.Account.ActivationDate, &v.Account.Region,
 		&agentEnabled, &kbReferencesEnabled,
 		&supportTier,
 		&projectTypeName,
@@ -389,6 +394,9 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	}
 	if aName != nil {
 		v.Account.Name = *aName
+	}
+	if aNumber != nil {
+		v.Account.Number = *aNumber
 	}
 	v.Account.AgentEnabled = agentEnabled != nil && *agentEnabled
 	v.Account.KbReferencesEnabled = kbReferencesEnabled != nil && *kbReferencesEnabled
