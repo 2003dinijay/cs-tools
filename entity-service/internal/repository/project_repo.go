@@ -46,6 +46,17 @@ import (
 // match (account.ai_gen_response_enabled/
 // smart_knowledge_base_suggestions_enabled) despite the name difference and
 // are populated from them.
+//
+// GetProjectByID also now populates ClosureState/OnboardingStatus (from
+// project.wso2_closure_state/onboarding_status, cast ::TEXT the same way
+// UpdateProject's own closure-substate columns are), the onboarding date
+// trio, and the six query/onboarding hour balances (from project's INTERVAL
+// columns via EXTRACT(EPOCH FROM ...)/3600), plus
+// ProjectAccountRef.TechnicalOwnerEmail/OwnerEmail (resolved from
+// account.technical_owner_id/account_manager_id via a "user" join). See
+// GetProjectByID's own query comment for the two mappings flagged as
+// unconfirmed assumptions (ConsumedQueryHours <- consumed_duration, and
+// OwnerEmail <- account_manager_id).
 type ProjectRepository interface {
 	// SearchProjects returns a filtered, paginated slice of projects together
 	// with the total count of matching rows before pagination, narrowed to
@@ -280,10 +291,40 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		        p.start_date, p.end_date, p.created_on, p.updated_on,
 		        a.id, a.name, a.activation_date, a.region,
 		        a.ai_gen_response_enabled, a.smart_knowledge_base_suggestions_enabled,
-		        pt.name
+		        pt.name,
+		        p.wso2_closure_state::TEXT, p.onboarding_status::TEXT,
+		        p.onboarding_go_live_plan_date, p.onboarding_go_live_date, p.onboarding_expiry_date,
+		        EXTRACT(EPOCH FROM p.total_query_duration) / 3600,
+		        EXTRACT(EPOCH FROM p.remaining_query_duration) / 3600,
+		        -- ASSUMPTION, not confirmed against a live payload: project.consumed_duration
+		        -- has no "query" in its name, but it sits in the csm-sync repo's SN mapping
+		        -- file right next to total_query_duration/remaining_query_duration (mapped
+		        -- from ServiceNow's u_consumed_hours, next to u_total_query_hour/
+		        -- u_remaining_query_hours -- the onboarding trio below is separately and
+		        -- explicitly named u_total_onboarding_hours etc). Treated here as
+		        -- ConsumedQueryHours on that basis. Verify against a real payload before
+		        -- trusting it further.
+		        EXTRACT(EPOCH FROM p.consumed_duration) / 3600,
+		        EXTRACT(EPOCH FROM p.total_onboarding_duration) / 3600,
+		        EXTRACT(EPOCH FROM p.consumed_onboarding_duration) / 3600,
+		        EXTRACT(EPOCH FROM p.remaining_onboarding_duration) / 3600,
+		        tou.email, amu.email
 		 FROM project p
 		 LEFT JOIN account a ON p.account_id = a.id
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
+		 -- account.technical_owner_id/account_manager_id (migration 000008) are UUID FKs
+		 -- into "user"(id); resolved to email here the same way deployment_repo.go/
+		 -- other repos in this file resolve a *_by column to a display value.
+		 -- ASSUMPTION, not confirmed against a live payload: account_manager_id is
+		 -- mapped to ProjectAccountRef.OwnerEmail ("the account owner") purely from field
+		 -- naming. account also has customer_success_manager_id/technical_owner_id/
+		 -- secondary_technical_owner_id/renewal_account_manager_id, any of which could
+		 -- plausibly be "owner" -- sn_project_service.go's own OwnerEmail is a bare
+		 -- passthrough of Ballerina's snProjectAccount.OwnerEmail with no further
+		 -- ServiceNow field name recorded in this codebase to confirm the mapping
+		 -- against. Verify against a real payload before trusting it further.
+		 LEFT JOIN "user" tou ON tou.id = a.technical_owner_id
+		 LEFT JOIN "user" amu ON amu.id = a.account_manager_id
 		 WHERE p.id = $1`+scopeClause, scopeArgs...,
 	).Scan(
 		&v.ID, &v.SfID, &v.Name, &v.Key,
@@ -291,6 +332,12 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		&aID, &aName, &v.Account.ActivationDate, &v.Account.Region,
 		&agentEnabled, &kbReferencesEnabled,
 		&projectTypeName,
+		&v.ClosureState, &v.OnboardingStatus,
+		&v.GoLivePlanDate, &v.GoLiveDate, &v.OnboardingExpiryDate,
+		&v.TotalQueryHours, &v.RemainingQueryHours,
+		&v.ConsumedQueryHours,
+		&v.TotalOnboardingHours, &v.ConsumedOnboardingHours, &v.RemainingOnboardingHours,
+		&v.Account.TechnicalOwnerEmail, &v.Account.OwnerEmail,
 	)
 	// v.Account.Tier still has no real column -- see this repository's own
 	// doc comment; left at its zero value.
