@@ -118,20 +118,40 @@ func TestTransform_MultipleAlertsInOneBatch(t *testing.T) {
 	}
 }
 
-func TestTransform_BatchStatusOverridesEveryAlertRegardlessOfOwnStatus(t *testing.T) {
-	// Every real Alertmanager alert.status is a plain string ("firing" or
-	// "resolved"), which has no .state property -- so the reference
-	// script's per-alert status check always misses, and every alert
-	// falls through to the top-level batch status instead.
-	raw := alertmanagerPayload("resolved", []map[string]any{
-		sampleAlert(map[string]any{"status": "firing"}), // this alert's own status is ignored
+func TestTransform_MixedBatchUsesEachAlertsStatus(t *testing.T) {
+	raw := alertmanagerPayload("firing", []map[string]any{
+		sampleAlert(map[string]any{"fingerprint": "fp-1"}),
+		sampleAlert(map[string]any{"fingerprint": "fp-2", "status": "resolved"}),
 	})
 	alerts, err := Transform(raw, Config{})
 	if err != nil {
 		t.Fatalf("Transform: %v", err)
 	}
+	if alerts[0].Severity != "Critical" || alerts[1].Severity != "OK" {
+		t.Errorf("severities = %q, %q; want Critical, OK", alerts[0].Severity, alerts[1].Severity)
+	}
+}
+
+func TestTransform_StatusFallsBackToBatch(t *testing.T) {
+	a := sampleAlert(nil)
+	delete(a, "status")
+	alerts, err := Transform(alertmanagerPayload("resolved", []map[string]any{a}), Config{})
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
 	if alerts[0].Severity != "OK" {
-		t.Errorf("Severity = %q, want OK (batch-wide resolved status should force it)", alerts[0].Severity)
+		t.Errorf("Severity = %q, want OK from the batch status", alerts[0].Severity)
+	}
+}
+
+func TestTransform_ObjectStatusStillRead(t *testing.T) {
+	a := sampleAlert(map[string]any{"status": map[string]any{"state": "resolved"}})
+	alerts, err := Transform(alertmanagerPayload("firing", []map[string]any{a}), Config{})
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if alerts[0].Severity != "OK" {
+		t.Errorf("Severity = %q, want OK from status.state", alerts[0].Severity)
 	}
 }
 

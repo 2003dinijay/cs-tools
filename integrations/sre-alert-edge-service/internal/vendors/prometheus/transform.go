@@ -129,11 +129,7 @@ func Transform(raw []byte, cfg Config) ([]Alert, error) {
 
 	description := vendorutil.CompactJSON(raw)
 	receiver := vendorutil.Str(payload, "receiver")
-	// The reference script's alert-level status lookup is "status.state",
-	// but Alertmanager's real per-alert "status" field is a plain string
-	// ("firing"/"resolved"), which has no .state property -- so that tier
-	// always misses in practice, and every alert in the batch falls
-	// through to this one, batch-wide status instead of its own.
+	// Fallback for alerts without their own status.
 	batchStatus := vendorutil.Str(payload, "status")
 
 	alerts := make([]Alert, 0, len(rawAlerts))
@@ -157,13 +153,13 @@ func transformOne(alert map[string]any, cfg Config, receiver, batchStatus, descr
 		alertSource = grafanaSource
 	}
 
-	// alert.status, per the reference script, is checked as an object
-	// ({}.state); see the batch-wide status note in Transform.
-	var alertStatusFromObject string
+	// Alertmanager sends each alert's status as a string, so a mixed batch resolves per
+	// alert; the object form ({"state": ...}) is what the ServiceNow script read.
+	alertStatus := vendorutil.Str(alert, "status")
 	if statusObj, ok := alert["status"].(map[string]any); ok {
-		alertStatusFromObject = vendorutil.Str(statusObj, "state")
+		alertStatus = vendorutil.Str(statusObj, "state")
 	}
-	alertStatus := vendorutil.FirstNonEmpty(alertStatusFromObject, batchStatus)
+	alertStatus = vendorutil.FirstNonEmpty(alertStatus, batchStatus)
 
 	rawSeverity := vendorutil.FirstNonEmpty(vendorutil.Str(labels, "severity"), cfg["severity"], defaults["SEVERITY"])
 
