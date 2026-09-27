@@ -312,7 +312,9 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // The search filters by team, so an unfiltered view passes the family's own
   // teams rather than nothing.
   const absenceTeamKeys = teamKeys ?? TEAMS[family];
-  const dayAbsences = useScheduleAbsences({ from, to, teamKeys: absenceTeamKeys }, dayView);
+  // The week view reads leave too, for its leave row; `from`/`to` are already
+  // the week there.
+  const dayAbsences = useScheduleAbsences({ from, to, teamKeys: absenceTeamKeys }, dayView || view === "week");
   const rosterAbsences = useScheduleAbsencesByMonth(
     { teamKeys: absenceTeamKeys },
     rosterMonths,
@@ -715,7 +717,14 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               {...scopeControls}
             />
           ) : view === "week" ? (
-            <WeekTable weekStart={weekStart} assignments={rows} shifts={shifts} {...scopeControls} />
+            <WeekTable
+              weekStart={weekStart}
+              assignments={rows}
+              shifts={shifts}
+              absences={absences.data?.absences ?? []}
+              absenceKinds={catalogue.data?.absenceKinds ?? []}
+              {...scopeControls}
+            />
           ) : view === "roster" ? (
             <MonthRoster
               selectedIso={toIsoDate(anchor)}

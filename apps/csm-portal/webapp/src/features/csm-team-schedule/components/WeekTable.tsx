@@ -16,8 +16,8 @@
  * under the License.
  */
 
-import { useMemo, useState, type JSX } from "react";
-import type { ScheduleAssignment, ScheduleShift } from "../types";
+import { useEffect, useMemo, useState, type JSX } from "react";
+import type { ScheduleAbsence, ScheduleAbsenceKind, ScheduleAssignment, ScheduleShift } from "../types";
 import {
   addDays,
   groupBy,
@@ -43,6 +43,9 @@ interface WeekTableProps {
   /** CRE and SRE in the order they should read -- the reader's own group
    *  first, because the first of a pair reads as the default. */
   families: readonly ("CRE" | "SRE")[];
+  /** Absences over the week, for the leave row at the foot of the table. */
+  absences?: ScheduleAbsence[];
+  absenceKinds?: ScheduleAbsenceKind[];
 }
 
 /**
@@ -161,6 +164,8 @@ export default function WeekTable({
   onTeamKeyChange,
   teams,
   families,
+  absences = [],
+  absenceKinds = [],
 }: WeekTableProps): JSX.Element {
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
 
@@ -184,6 +189,37 @@ export default function WeekTable({
   }, [assignments, shifts]);
 
   const todayIso = toIsoDate(new Date());
+
+  // The clock, for "which rotation is on right now". In state rather than read
+  // during render, and ticked each minute so a handover moves the mark
+  // without a reload.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(t);
+  }, []);
+  const isOnNow = (a: ScheduleAssignment): boolean =>
+    new Date(a.startsAt).getTime() <= nowMs && nowMs < new Date(a.endsAt).getTime();
+
+  /** Who is on leave each day, for the row at the foot of the week. Leave
+   *  only -- allocations are work, and have their own place in the day view --
+   *  and weekdays only, because leave is not taken on a weekend. */
+  const leaveByDay = useMemo(() => {
+    const kindByCode = new Map(absenceKinds.map((k) => [k.code, k]));
+    const out = new Map<string, { ab: ScheduleAbsence; kind: ScheduleAbsenceKind }[]>();
+    for (const d of days) {
+      if (d.getDay() === 0 || d.getDay() === 6) continue;
+      const iso = toIsoDate(d);
+      const list = absences
+        .filter((ab) => ab.startsOn <= iso && (!ab.endsOn || iso <= ab.endsOn))
+        .map((ab) => ({ ab, kind: kindByCode.get(ab.kindCode) }))
+        .filter((x): x is { ab: ScheduleAbsence; kind: ScheduleAbsenceKind } => x.kind?.bucket === "LEAVE")
+        .sort((a, b) => a.kind.sortOrder - b.kind.sortOrder || a.ab.engineer.name.localeCompare(b.ab.engineer.name));
+      out.set(iso, list);
+    }
+    return out;
+  }, [absences, absenceKinds, days]);
+  const anyLeave = [...leaveByDay.values()].some((l) => l.length > 0);
 
   /** Distinct people on the rota this week, not rows: one engineer covering
    *  three rotations is one engineer. */
@@ -266,16 +302,21 @@ export default function WeekTable({
           {rows.map(({ code, shift, list }) => {
             const byDay = groupBy(list, (a) => a.rotaDate);
             const token = shift?.colourToken ?? "";
+            // The rotation running right now, found by its stored instants --
+            // so a night crew rostered yesterday still lights up after
+            // midnight -- and marked on both its row and its cell.
+            const liveIso = list.find(isOnNow)?.rotaDate;
             return (
               <tr
                 key={code}
-                className="hued"
+                className={`hued${liveIso ? " nowband" : ""}`}
                 style={{ ["--rc" as string]: accentOf(token) }}
               >
                 <th className="lab">
                   <span className={`chip sm ${token}`}>
                     {shift ? `${fmtMinute(shift.startMinute)} – ${fmtMinute(shift.endMinute)}` : code}
                   </span>
+                  {liveIso ? <span className="nowpill">Now</span> : null}
                   <small>{shift?.label ?? code}</small>
                 </th>
                 {days.map((d) => {
@@ -285,7 +326,9 @@ export default function WeekTable({
                   return (
                     <td
                       key={iso}
-                      className={`${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""}`}
+                      className={`${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""}${
+                        iso === liveIso ? " nowcell" : ""
+                      }`}
                     >
                       {cell.length === 0 ? (
                         <span className="none">—</span>
@@ -321,6 +364,36 @@ export default function WeekTable({
               </tr>
             );
           })}
+
+          {/* Who is away, at the foot of the week, so a lead reading down a day
+              sees its cover and its gaps in one column. */}
+          {anyLeave ? (
+            <tr className="leaverow">
+              <th className="lab">
+                <span className="chip sm AL">Leave</span>
+                <small>annual, lieu and sick</small>
+              </th>
+              {days.map((d) => {
+                const iso = toIsoDate(d);
+                const weekend = d.getDay() === 0 || d.getDay() === 6;
+                const list = leaveByDay.get(iso) ?? [];
+                return (
+                  <td key={iso} className={`${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""}`}>
+                    {list.length === 0 ? (
+                      <span className="none">—</span>
+                    ) : (
+                      list.map(({ ab, kind }) => (
+                        <div className="nm" key={ab.id} title={`${ab.engineer.name} · ${ab.teamKey} · ${kind.label}`}>
+                          <span className={`chip sm ${kind.colourToken}`}>{kind.shortCode}</span>
+                          <span className="who">{ab.engineer.name}</span>
+                        </div>
+                      ))
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          ) : null}
         </tbody>
       </table>
       </div>
