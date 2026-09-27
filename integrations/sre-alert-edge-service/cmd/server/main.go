@@ -29,13 +29,8 @@ import (
 	"sre-alert-edge-service/internal/auth"
 	"sre-alert-edge-service/internal/config"
 	"sre-alert-edge-service/internal/server"
+	"sre-alert-edge-service/internal/vendors"
 )
-
-// vendors is the fixed route set.
-var vendors = []string{
-	"aws", "azure", "datadog", "elasticsearch", "gcp",
-	"icinga", "openobserve", "opensearch", "prometheus", "site24x7",
-}
 
 func main() {
 	base := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("app", "sre-alert-edge-service")
@@ -59,11 +54,16 @@ func main() {
 	if cfg.Auth.Mode == "none" {
 		logger.Warn("auth.mode is \"none\": vendor routes are unauthenticated")
 	}
+	registry, err := vendors.New()
+	if err != nil {
+		logger.Error("failed to load vendor config", "error", err)
+		os.Exit(1)
+	}
 
 	srv := server.New(server.Options{
 		Logger:       base.With("component", "server"),
 		Auth:         authn,
-		Vendors:      vendors,
+		Vendors:      registry.Names(),
 		MaxBodyBytes: cfg.Server.MaxBodyBytes,
 		ReadTimeout:  cfg.Server.ReadTimeout.Duration(),
 		WriteTimeout: cfg.Server.WriteTimeout.Duration(),
