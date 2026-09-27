@@ -266,8 +266,20 @@ func (t Trigger) caseRef() string {
 	return t.Number
 }
 
-// instruction is the closing line of the voice message, which differs by
-// trigger exactly as section 10.0's template does.
+// instruction is the closing line of the voice message, which differs by what
+// started the ladder.
+//
+// A new incident is told to do both things: move the ticket to Work In
+// Progress AND leave a public comment. Only the first of those actually stops
+// this ladder today - leaving NEW is the signal the engine cancels on - but
+// the state alone says nothing to whoever asks later why it took eleven
+// minutes, and section 10.0's own wording asked for less than the CS team
+// wants people to do. An elevation is told to comment and nothing else,
+// because an elevated incident has normally already left NEW and that signal
+// can never fire for it again.
+//
+// The asymmetry is deliberate: the line names what a responder should do, and
+// for an elevation that genuinely is only the comment.
 //
 // quoted reproduces the specification's own punctuation — it writes the state
 // as 'Work In Progress' — and is right inside SSML, where the quotes sit in
@@ -281,9 +293,9 @@ func (t Trigger) instruction(quoted bool) string {
 		return "Add a public comment to stop further notifications."
 	}
 	if quoted {
-		return "Update the ticket status to 'Work In Progress' to stop further notifications."
+		return "Update the ticket status to 'Work In Progress' and add a public comment to stop further notifications."
 	}
-	return "Update the ticket status to Work In Progress to stop further notifications."
+	return "Update the ticket status to Work In Progress and add a public comment to stop further notifications."
 }
 
 // VoiceSpeech renders section 10.0's alert as a structured SSML document, in

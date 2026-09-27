@@ -418,3 +418,46 @@ func TestVoiceMessagePlain_CarriesEveryFieldAndNoMarkup(t *testing.T) {
 		t.Errorf("elevation instruction missing\n  got: %s", elevated.VoiceMessagePlain())
 	}
 }
+
+// What a responder is told to do is the whole point of the alert, and it
+// differs by what started the ladder. A new incident is told to do both
+// things; an elevation is told to comment, because it has normally already
+// left NEW and that signal can never fire for it again.
+func TestInstruction_NamesWhatToDo(t *testing.T) {
+	cases := []struct {
+		name       string
+		kind       TriggerKind
+		quoted     bool
+		wantAll    []string
+		wantAbsent []string
+	}{
+		{
+			name: "new incident", kind: TriggerNewIncident,
+			wantAll: []string{"Work In Progress", "public comment"},
+		},
+		{
+			name: "new incident, spoken", kind: TriggerNewIncident, quoted: true,
+			wantAll: []string{"'Work In Progress'", "public comment"},
+		},
+		{
+			name: "priority elevation", kind: TriggerPriorityElevated,
+			wantAll:    []string{"public comment"},
+			wantAbsent: []string{"Work In Progress"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Trigger{Kind: tc.kind}.instruction(tc.quoted)
+			for _, want := range tc.wantAll {
+				if !strings.Contains(got, want) {
+					t.Errorf("instruction = %q, want it to name %q", got, want)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Errorf("instruction = %q, must not mention %q", got, absent)
+				}
+			}
+		})
+	}
+}
