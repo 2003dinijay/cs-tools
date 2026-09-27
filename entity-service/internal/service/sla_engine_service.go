@@ -54,40 +54,30 @@ type SLAEngineService interface {
 	// rates), in which case this logs and returns without registering
 	// anything, same as the old design's "severity not in map" handling.
 	RegisterCaseClocks(ctx context.Context, caseID string, severity *domain.CaseSeverity, projectID string)
-	// ReviseCaseClocks re-resolves and re-applies this engine's policy/
-	// duration for every clock type the case's NEW severity applies to --
-	// called from UpdateCase when an EXISTING case's severity changes (see
-	// RegisterCaseClocks's own doc comment: registration only ever runs
-	// once, from CreateCase, so a case re-severitized after creation would
-	// otherwise keep running its already-registered clocks against the
-	// original severity's durations forever).
+	// ReviseCaseClocks cancels every existing active clock for the case
+	// (CancelActiveClocks) and registers an entirely fresh set for its NEW
+	// severity (RegisterCaseClocks) -- called from UpdateCase when an
+	// EXISTING case's severity changes (see RegisterCaseClocks's own doc
+	// comment: registration only ever runs once, from CreateCase, so a case
+	// re-severitized after creation would otherwise keep running its
+	// already-registered clocks against the original severity's durations
+	// forever).
 	//
-	// For each clock type the new severity applies to (slaApplicableClockTypes),
-	// this tries revising an existing active clock's policy/duration in
-	// place first (repository.SLAEngineRepository.RevisePolicy -- the
-	// common case: the clock type was already applicable and registered
-	// under the old severity). When no active clock of that type exists,
-	// repository.SLAEngineRepository.ClockEverExisted disambiguates why: a
-	// severity increase that makes a clock type newly applicable for the
-	// first time (Low -> Catastrophic gaining "workaround"/"resolution")
-	// falls back to RegisterClock, but a clock type that WAS registered
-	// before and has since reached a terminal stage (e.g. the "response"
-	// clock already ACHIEVED by CompleteResponseClock) is deliberately left
-	// alone -- it must not be resurrected as a brand new running clock just
-	// because the case's severity changed afterwards. start_on, stage, and
-	// pause state are never touched by the revise path -- only the policy id
-	// and target duration change; RecomputeActive picks up the new
-	// percentage/breach status against the revised duration on its next
-	// tick, same as RevisePolicy's own doc comment says.
-	//
-	// Deliberately does NOT cancel, pause, or remove a clock whose type is
-	// no longer applicable after a severity DOWNGRADE (e.g.
-	// Catastrophic -> Low losing "workaround"/"resolution") -- that clock
-	// is left running, untouched, against its old policy. Whether/how to
-	// retire a no-longer-applicable clock is a separate, unmade design
-	// decision -- left as an explicit, documented gap here, not invented,
-	// same as ApplyCaseStateEffects' own documented workaround-completion
-	// gap above.
+	// Per explicit product direction, the new clocks have NO relation to the
+	// old ones: no revised-in-place policy/duration, no carried-over
+	// start_on or elapsed time. The old severity's clocks run into a
+	// terminal CANCELLED state and the new ones start from zero, exactly as
+	// if the case had just been created at the new severity. This also
+	// means a clock type no longer applicable after a severity DOWNGRADE
+	// (e.g. Catastrophic -> Low losing "workaround"/"resolution") is
+	// cancelled along with every other active clock, not left running --
+	// unlike RegisterCaseClocks alone, CancelActiveClocks touches every
+	// clock type on the case, not just the ones the new severity resolves.
+	// A clock already in a terminal stage (e.g. a response clock
+	// CompleteResponseClock already marked ACHIEVED) is untouched by
+	// CancelActiveClocks (it is not "active") and never resurrected by the
+	// registration that follows, since RegisterClock's own guard only fires
+	// when no active row exists for that type.
 	//
 	// severity/projectID have the exact same nil/empty handling as
 	// RegisterCaseClocks (see its own doc comment).
@@ -154,66 +144,19 @@ func (s *slaEngineService) RegisterCaseClocks(ctx context.Context, caseID string
 
 // ReviseCaseClocks implements SLAEngineService.
 func (s *slaEngineService) ReviseCaseClocks(ctx context.Context, caseID string, severity *domain.CaseSeverity, projectID string) {
-	if severity == nil {
-		slog.InfoContext(ctx, "sla engine: not revising clocks, case has no severity", "caseId", caseID)
-		return
+	cancelled, err := s.repo.CancelActiveClocks(ctx, caseID)
+	if err != nil {
+		slog.ErrorContext(ctx, "sla engine: cancel active clocks on severity change failed", "caseId", caseID, "err", err)
+		// Still attempts registration below even if the cancel failed --
+		// RegisterClock's own NOT EXISTS guard means a clock type whose old
+		// row is still active just gets skipped (logged, not silently
+		// duplicated), same as any other already-registered case; better to
+		// register what it can than to abandon the whole severity change
+		// over one failed UPDATE.
+	} else if cancelled > 0 {
+		slog.InfoContext(ctx, "sla engine: cancelled active clocks for severity change", "caseId", caseID, "count", cancelled)
 	}
-	clockTypes, ok := slaApplicableClockTypes[*severity]
-	if !ok || len(clockTypes) == 0 {
-		slog.WarnContext(ctx, "sla engine: not revising clocks, no applicable clock types for severity", "caseId", caseID, "severity", *severity)
-		return
-	}
-
-	plan := resolveCasePlan(ctx, s.projectSvc, projectID)
-	for _, clockType := range clockTypes {
-		policy, ok := s.resolver.resolve(ctx, *severity, clockType, plan)
-		if !ok {
-			// resolve already logged why -- same "no fallback duration"
-			// behavior RegisterCaseClocks gives this.
-			continue
-		}
-		revised, err := s.repo.RevisePolicy(ctx, caseID, policy)
-		if err != nil {
-			slog.ErrorContext(ctx, "sla engine: revise clock policy failed", "caseId", caseID, "clockType", clockType, "err", err)
-			continue
-		}
-		if revised {
-			continue
-		}
-		// RevisePolicy found no existing ACTIVE clock of this type -- but
-		// that alone doesn't tell us whether it's newly applicable (never
-		// registered before, safe to RegisterClock fresh) or was already
-		// registered and has since reached a terminal stage (e.g.
-		// CompleteResponseClock already marked "response" ACHIEVED after the
-		// first reply). Falling back to RegisterClock unconditionally here
-		// would incorrectly resurrect the latter case -- RegisterClock's own
-		// idempotency guard only checks for an ACTIVE row too, so it would
-		// happily insert a brand new IN_PROGRESS clock for a type that was
-		// legitimately already completed. ClockEverExisted disambiguates.
-		everExisted, err := s.repo.ClockEverExisted(ctx, caseID, policy.Target)
-		if err != nil {
-			slog.ErrorContext(ctx, "sla engine: check clock ever existed failed", "caseId", caseID, "clockType", clockType, "err", err)
-			continue
-		}
-		if everExisted {
-			slog.InfoContext(ctx, "sla engine: skipping replacement for completed/terminal clock", "caseId", caseID, "clockType", clockType)
-			continue
-		}
-		// Truly never existed before -- the severity change made it newly
-		// applicable (a severity increase gaining a clock type it didn't
-		// have before), so register it fresh.
-		registered, err := s.repo.RegisterClock(ctx, caseID, policy)
-		if err != nil {
-			slog.ErrorContext(ctx, "sla engine: register clock failed during revision", "caseId", caseID, "clockType", clockType, "err", err)
-			continue
-		}
-		if !registered {
-			// Shouldn't happen (RevisePolicy already reported no active row
-			// for this target) -- RegisterClock's own idempotency guard
-			// covers a race between the two calls safely either way.
-			slog.InfoContext(ctx, "sla engine: clock already registered, skipped", "caseId", caseID, "clockType", clockType)
-		}
-	}
+	s.RegisterCaseClocks(ctx, caseID, severity, projectID)
 }
 
 // CompleteResponseClock implements SLAEngineService.

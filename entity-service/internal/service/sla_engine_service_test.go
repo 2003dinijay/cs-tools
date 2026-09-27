@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -32,32 +33,18 @@ import (
 type recordingSLAEngineRepo struct {
 	fakePolicyLookupRepo
 	registered []string // "workItemID|policyID"
-	revised    []string // "workItemID|target|policyID"
 	completed  []string // "workItemID|target"
 	paused     []string // "workItemID|target|true" or "...|false"
+	cancelled  []string // "workItemID"
 
 	registerErr error
 	registerOK  bool // if false, RegisterClock reports "already registered"
-
-	reviseErr error
-	// reviseOK, keyed by "workItemID|target", reports whether RevisePolicy
-	// found an existing active row to update for that pair -- absent
-	// entries default to false (nothing to revise), matching a clock type
-	// that was never registered under the case's old severity.
-	reviseOK map[string]bool
-
-	everExistedErr error
-	// everExisted, keyed by "workItemID|target", simulates ClockEverExisted's
-	// answer for that pair -- absent entries default to false ("truly never
-	// existed", the newly-applicable-clock-type case), while a true entry
-	// simulates "a clock of this type was registered before but has since
-	// reached a terminal stage" (the resurrection bug this fix guards
-	// against).
-	everExisted map[string]bool
+	cancelErr   error
+	cancelCount int
 }
 
 func newRecordingSLAEngineRepo() *recordingSLAEngineRepo {
-	return &recordingSLAEngineRepo{fakePolicyLookupRepo: *newFakePolicyLookupRepo(), registerOK: true, reviseOK: map[string]bool{}, everExisted: map[string]bool{}}
+	return &recordingSLAEngineRepo{fakePolicyLookupRepo: *newFakePolicyLookupRepo(), registerOK: true}
 }
 
 func (r *recordingSLAEngineRepo) RegisterClock(_ context.Context, workItemID string, policy repository.SLAPolicyRef) (bool, error) {
@@ -68,19 +55,12 @@ func (r *recordingSLAEngineRepo) RegisterClock(_ context.Context, workItemID str
 	return r.registerOK, nil
 }
 
-func (r *recordingSLAEngineRepo) RevisePolicy(_ context.Context, workItemID string, policy repository.SLAPolicyRef) (bool, error) {
-	if r.reviseErr != nil {
-		return false, r.reviseErr
+func (r *recordingSLAEngineRepo) CancelActiveClocks(_ context.Context, workItemID string) (int, error) {
+	if r.cancelErr != nil {
+		return 0, r.cancelErr
 	}
-	r.revised = append(r.revised, workItemID+"|"+policy.Target+"|"+policy.ID)
-	return r.reviseOK[workItemID+"|"+policy.Target], nil
-}
-
-func (r *recordingSLAEngineRepo) ClockEverExisted(_ context.Context, workItemID, target string) (bool, error) {
-	if r.everExistedErr != nil {
-		return false, r.everExistedErr
-	}
-	return r.everExisted[workItemID+"|"+target], nil
+	r.cancelled = append(r.cancelled, workItemID)
+	return r.cancelCount, nil
 }
 
 func (r *recordingSLAEngineRepo) CompleteClock(_ context.Context, workItemID, target string) (bool, error) {
@@ -230,139 +210,90 @@ func TestSLAEngineService_ApplyCaseStateEffects(t *testing.T) {
 // place -- not register a duplicate alongside it (RegisterClock is never
 // called at all here, since RevisePolicy reports a row was found for every
 // clock type CATASTROPHIC applies to).
-func TestSLAEngineService_ReviseCaseClocks_RevisesExistingClockInPlace(t *testing.T) {
+// TestSLAEngineService_ReviseCaseClocks_CancelsThenRegistersFresh confirms
+// a severity change on an existing case cancels every one of its existing
+// clocks before registering entirely new ones for the new severity, in
+// that order -- so the new registration is never blocked by RegisterClock's
+// own NOT EXISTS guard seeing a still-active old-severity row, and the new
+// clocks carry no relation to the old ones (fresh start_on, zero elapsed).
+func TestSLAEngineService_ReviseCaseClocks_CancelsThenRegistersFresh(t *testing.T) {
 	repo := newRecordingSLAEngineRepo()
-	// Every P0 clock type already has an active row for this case (as if
-	// RegisterCaseClocks had run earlier under a different severity).
-	repo.reviseOK["case-8|RESPONSE"] = true
-	repo.reviseOK["case-8|WORKAROUND"] = true
-	repo.reviseOK["case-8|RESOLUTION"] = true
 	svc := NewSLAEngineService(repo, nil)
 
-	sev := domain.CaseSeverityCatastrophic
+	sev := domain.CaseSeverityCatastrophic // P0
 	svc.ReviseCaseClocks(context.Background(), "case-8", &sev, "")
 
-	wantRevised := []string{"case-8|RESPONSE|p0-r-ms", "case-8|WORKAROUND|p0-w-ms", "case-8|RESOLUTION|p0-res-ms"}
-	if len(repo.revised) != len(wantRevised) {
-		t.Fatalf("revised = %v, want %v", repo.revised, wantRevised)
+	if len(repo.cancelled) != 1 || repo.cancelled[0] != "case-8" {
+		t.Fatalf("cancelled = %v, want [case-8]", repo.cancelled)
 	}
-	for i, w := range wantRevised {
-		if repo.revised[i] != w {
-			t.Errorf("revised[%d] = %q, want %q", i, repo.revised[i], w)
-		}
+	want := []string{"case-8|p0-r-ms", "case-8|p0-w-ms", "case-8|p0-res-ms"}
+	if len(repo.registered) != len(want) {
+		t.Fatalf("registered = %v, want %v", repo.registered, want)
 	}
-	if len(repo.registered) != 0 {
-		t.Errorf("registered = %v, want none -- every clock type already had an active row to revise", repo.registered)
-	}
-}
-
-// TestSLAEngineService_ReviseCaseClocks_FallsBackToRegisterForNewlyApplicableType
-// covers a severity INCREASE: the case was created at LOW (response clock
-// only) and is revised up to CATASTROPHIC, which also applies "workaround"/
-// "resolution" -- clock types that were never registered before. RevisePolicy
-// reports no existing row for those two (reviseOK unset, defaults false), so
-// ReviseCaseClocks must fall back to RegisterClock for them, while still
-// revising the pre-existing response clock in place.
-func TestSLAEngineService_ReviseCaseClocks_FallsBackToRegisterForNewlyApplicableType(t *testing.T) {
-	repo := newRecordingSLAEngineRepo()
-	repo.reviseOK["case-9|RESPONSE"] = true // the only clock type LOW ever registered
-
-	svc := NewSLAEngineService(repo, nil)
-
-	sev := domain.CaseSeverityCatastrophic
-	svc.ReviseCaseClocks(context.Background(), "case-9", &sev, "")
-
-	// RevisePolicy is attempted for every applicable clock type regardless
-	// of outcome (that's how the fallback is even discovered) -- only
-	// RESPONSE actually finds an existing row to update; the other two
-	// attempts report "nothing to revise" and fall back to RegisterClock
-	// below.
-	wantRevised := []string{"case-9|RESPONSE|p0-r-ms", "case-9|WORKAROUND|p0-w-ms", "case-9|RESOLUTION|p0-res-ms"}
-	if len(repo.revised) != len(wantRevised) {
-		t.Fatalf("revised = %v, want %v", repo.revised, wantRevised)
-	}
-	for i, w := range wantRevised {
-		if repo.revised[i] != w {
-			t.Errorf("revised[%d] = %q, want %q", i, repo.revised[i], w)
-		}
-	}
-	wantRegistered := []string{"case-9|p0-w-ms", "case-9|p0-res-ms"}
-	if len(repo.registered) != len(wantRegistered) {
-		t.Fatalf("registered = %v, want %v", repo.registered, wantRegistered)
-	}
-	for i, w := range wantRegistered {
+	for i, w := range want {
 		if repo.registered[i] != w {
 			t.Errorf("registered[%d] = %q, want %q", i, repo.registered[i], w)
 		}
 	}
 }
 
-// TestSLAEngineService_ReviseCaseClocks_DoesNotResurrectTerminalClock is the
-// regression test for this fix: a case's response clock was already marked
-// terminal (e.g. ACHIEVED by CompleteResponseClock once the first reply went
-// out), so RevisePolicy correctly reports "nothing to revise" for RESPONSE
-// (no ACTIVE row exists any more) -- but that must NOT be read as "RESPONSE
-// was never applicable," which would incorrectly resurrect it via
-// RegisterClock. ClockEverExisted reporting true for RESPONSE is what tells
-// ReviseCaseClocks to leave it alone. Meanwhile a genuinely new clock type
-// for the same call (WORKAROUND/RESOLUTION, ClockEverExisted false -- truly
-// never existed) must still correctly fall back to RegisterClock, same as
-// TestSLAEngineService_ReviseCaseClocks_FallsBackToRegisterForNewlyApplicableType.
-func TestSLAEngineService_ReviseCaseClocks_DoesNotResurrectTerminalClock(t *testing.T) {
+// TestSLAEngineService_ReviseCaseClocks_DowngradeStillCancelsEveryClockType
+// covers a severity DOWNGRADE: CancelActiveClocks cancels every active
+// clock type on the case regardless of what the new severity resolves to,
+// so a clock type no longer applicable after the downgrade (e.g. LOW
+// dropping "workaround"/"resolution") is cancelled too, not left running.
+// This is the one already-cancelled call recorded per case, independent of
+// how many (fewer, for a downgrade) clock types get freshly registered.
+func TestSLAEngineService_ReviseCaseClocks_DowngradeStillCancelsEveryClockType(t *testing.T) {
 	repo := newRecordingSLAEngineRepo()
-	// RESPONSE has no active row to revise (already terminal, not merely
-	// "never registered") -- reviseOK left at its default false, but
-	// everExisted true marks it as "existed before, now terminal."
-	repo.everExisted["case-11|RESPONSE"] = true
-	// WORKAROUND/RESOLUTION are truly new: reviseOK and everExisted both
-	// left at their default false.
+	svc := NewSLAEngineService(repo, nil)
 
+	sev := domain.CaseSeverityLow // Query -- response only
+	svc.ReviseCaseClocks(context.Background(), "case-9", &sev, "")
+
+	if len(repo.cancelled) != 1 || repo.cancelled[0] != "case-9" {
+		t.Fatalf("cancelled = %v, want [case-9]", repo.cancelled)
+	}
+	if len(repo.registered) != 1 || repo.registered[0] != "case-9|q-r-os" {
+		t.Errorf("registered = %v, want [case-9|q-r-os]", repo.registered)
+	}
+}
+
+// TestSLAEngineService_ReviseCaseClocks_StillRegistersIfCancelFails confirms
+// a failed cancel doesn't abandon registering fresh clocks for the new
+// severity -- see ReviseCaseClocks' own doc comment on why.
+func TestSLAEngineService_ReviseCaseClocks_StillRegistersIfCancelFails(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	repo.cancelErr = errors.New("db unavailable")
 	svc := NewSLAEngineService(repo, nil)
 
 	sev := domain.CaseSeverityCatastrophic
 	svc.ReviseCaseClocks(context.Background(), "case-11", &sev, "")
 
-	// RevisePolicy is still attempted for every applicable clock type
-	// regardless of outcome, same as the sibling test above.
-	wantRevised := []string{"case-11|RESPONSE|p0-r-ms", "case-11|WORKAROUND|p0-w-ms", "case-11|RESOLUTION|p0-res-ms"}
-	if len(repo.revised) != len(wantRevised) {
-		t.Fatalf("revised = %v, want %v", repo.revised, wantRevised)
+	if len(repo.cancelled) != 0 {
+		t.Errorf("cancelled = %v, want none recorded (CancelActiveClocks errored)", repo.cancelled)
 	}
-	for i, w := range wantRevised {
-		if repo.revised[i] != w {
-			t.Errorf("revised[%d] = %q, want %q", i, repo.revised[i], w)
-		}
-	}
-
-	// RESPONSE must NOT be registered (it's terminal, not newly applicable);
-	// WORKAROUND/RESOLUTION must still register, exactly as the
-	// newly-applicable-clock-type path already does.
-	wantRegistered := []string{"case-11|p0-w-ms", "case-11|p0-res-ms"}
-	if len(repo.registered) != len(wantRegistered) {
-		t.Fatalf("registered = %v, want %v -- a terminal RESPONSE clock must not be resurrected", repo.registered, wantRegistered)
-	}
-	for i, w := range wantRegistered {
-		if repo.registered[i] != w {
-			t.Errorf("registered[%d] = %q, want %q", i, repo.registered[i], w)
-		}
-	}
-	for _, r := range repo.registered {
-		if r == "case-11|p0-r-ms" {
-			t.Fatalf("registered = %v, want no RESPONSE registration -- a completed/terminal clock was incorrectly resurrected", repo.registered)
-		}
+	want := []string{"case-11|p0-r-ms", "case-11|p0-w-ms", "case-11|p0-res-ms"}
+	if len(repo.registered) != len(want) {
+		t.Fatalf("registered = %v, want %v (registration still proceeds despite the cancel failure)", repo.registered, want)
 	}
 }
 
-// TestSLAEngineService_ReviseCaseClocks_NilSeverityRevisesNothing mirrors
-// RegisterCaseClocks' own nil-severity handling.
-func TestSLAEngineService_ReviseCaseClocks_NilSeverityRevisesNothing(t *testing.T) {
+// TestSLAEngineService_ReviseCaseClocks_NilSeverityStillCancels confirms a
+// nil newSeverity (RegisterCaseClocks' own no-op case) still runs the
+// cancel step -- a case moving to an unrecognised/nil severity must not
+// keep its old clocks running just because the new one can't be resolved.
+func TestSLAEngineService_ReviseCaseClocks_NilSeverityStillCancels(t *testing.T) {
 	repo := newRecordingSLAEngineRepo()
 	svc := NewSLAEngineService(repo, nil)
 
 	svc.ReviseCaseClocks(context.Background(), "case-10", nil, "")
 
-	if len(repo.revised) != 0 || len(repo.registered) != 0 {
-		t.Errorf("revised = %v, registered = %v, want none for a case with no severity", repo.revised, repo.registered)
+	if len(repo.cancelled) != 1 || repo.cancelled[0] != "case-10" {
+		t.Fatalf("cancelled = %v, want [case-10]", repo.cancelled)
+	}
+	if len(repo.registered) != 0 {
+		t.Errorf("registered = %v, want none (nil severity)", repo.registered)
 	}
 }
 

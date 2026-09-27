@@ -1483,11 +1483,12 @@ func (s *snCaseService) applyCaseStateSLAEffects(ctx context.Context, caseID str
 	s.slaEngine.ApplyCaseStateEffects(ctx, caseID, state)
 }
 
-// reviseCaseSLAClocks best-effort revises the CSM-native SLA engine's clock
-// policies/durations for an EXISTING case whose severity just changed (see
-// SLAEngineService.ReviseCaseClocks' own doc comment for the exact
-// revise-in-place-then-fall-back-to-register behavior this triggers). A
-// pure in-process DB operation, deliberately independent of s.publisher --
+// reviseCaseSLAClocks best-effort cancels the CSM-native SLA engine's
+// existing clocks and registers an entirely fresh set for an EXISTING
+// case's new severity (see SLAEngineService.ReviseCaseClocks' own doc
+// comment for the exact cancel-then-register-from-zero behavior this
+// triggers). A pure in-process DB operation, deliberately independent of
+// s.publisher --
 // see this method's own call site in UpdateCase for why. Skipped entirely
 // when s.slaEngine is nil (no database configured -- see
 // snCaseService.slaEngine's own doc comment); that guard lives at the call

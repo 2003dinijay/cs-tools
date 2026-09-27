@@ -92,41 +92,21 @@ type SLAEngineRepository interface {
 	// and returns how many rows were touched.
 	RecomputeActive(ctx context.Context) (int, error)
 
-	// RevisePolicy updates the sla_policy_id and duration of the existing
-	// active (see slaEngineActiveStageFilter) source='CSM' clock for
-	// (workItemID, policy.Target) IN PLACE -- start_on, stage, and pause
-	// state are left untouched, only the policy id and target duration
-	// change. This exists for a case whose severity changes AFTER creation
-	// (see SLAEngineService.ReviseCaseClocks): the clock keeps running from
-	// its original start_on against the newly-resolved policy/duration, and
-	// business_elapsed_percentage/has_breached are deliberately NOT
-	// recomputed inline here -- RecomputeActive's own worker picks up the
-	// new percentage/breach status against the revised duration on its next
-	// tick, same as it does for every other IN_PROGRESS row. Returns
-	// whether an active row was found and updated -- false (not an error)
-	// when no active clock of this target exists yet, e.g. a severity
-	// change that makes a clock type applicable for the first time, which
-	// the caller then falls back to RegisterClock for.
-	RevisePolicy(ctx context.Context, workItemID string, policy SLAPolicyRef) (bool, error)
-
-	// ClockEverExisted reports whether ANY source='CSM' "sla" row has ever
-	// existed for (workItemID, target), regardless of stage -- deliberately
-	// the one query in this file with no slaEngineActiveStageFilter at all,
-	// since its entire purpose is to see past that filter.
-	//
-	// This exists for SLAEngineService.ReviseCaseClocks, which needs to tell
-	// apart two situations RevisePolicy's own "false" return can't
-	// distinguish on its own:
-	//   - this clock type was never applicable/registered for this case
-	//     before (a severity increase making it newly applicable) -- safe to
-	//     RegisterClock fresh.
-	//   - this clock type WAS registered before but has since reached a
-	//     terminal stage (e.g. CompleteResponseClock already marked the
-	//     "response" clock ACHIEVED once the first reply went out) -- must
-	//     NOT be resurrected by a later severity change, or a case whose
-	//     response was already given would incorrectly grow a brand new
-	//     running response clock.
-	ClockEverExisted(ctx context.Context, workItemID, target string) (bool, error)
+	// CancelActiveClocks marks every active (see slaEngineActiveStageFilter)
+	// source='CSM' clock for workItemID CANCELLED, across every clock type --
+	// used when a case's severity changes: per explicit product direction,
+	// the old severity's clocks must not be revised or carried forward in
+	// any way, they run into a terminal CANCELLED state, and the new
+	// severity's clocks start completely fresh with no relation to the old
+	// numbers (see SLAEngineService.ReviseCaseClocks). The caller registers
+	// fresh clocks for the new severity separately (RegisterClock's own NOT
+	// EXISTS guard is why this must happen first -- it would otherwise see
+	// the still-active old clock and skip registering a new one for the
+	// same clock type). A clock already in a terminal stage (e.g. a
+	// response clock CompleteResponseClock already marked ACHIEVED) is left
+	// untouched -- it is not "active" and this never resurrects it. Returns
+	// how many rows were cancelled.
+	CancelActiveClocks(ctx context.Context, workItemID string) (int, error)
 }
 
 type slaEngineRepo struct {
@@ -203,43 +183,6 @@ func (r *slaEngineRepo) RegisterClock(ctx context.Context, workItemID string, po
 		return false, fmt.Errorf("register csm sla clock: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
-}
-
-// RevisePolicy implements SLAEngineRepository.
-func (r *slaEngineRepo) RevisePolicy(ctx context.Context, workItemID string, policy SLAPolicyRef) (bool, error) {
-	const query = `
-		UPDATE sla s
-		SET sla_policy_id = $3, duration = $4::interval, updated_on = NOW(), updated_by = $5
-		FROM sla_policy sp
-		WHERE s.sla_policy_id = sp.id
-		  AND s.work_item_id = $1::uuid
-		  AND s.source = 'CSM'
-		  AND sp.target::TEXT = $2
-		  AND s.stage::TEXT ` + slaEngineActiveStageFilter
-
-	tag, err := r.db.Exec(ctx, query, workItemID, policy.Target, policy.ID, formatIntervalLiteral(policy.Duration), sqlActorLiteral)
-	if err != nil {
-		return false, fmt.Errorf("revise csm sla clock policy: %w", err)
-	}
-	return tag.RowsAffected() > 0, nil
-}
-
-// ClockEverExisted implements SLAEngineRepository.
-func (r *slaEngineRepo) ClockEverExisted(ctx context.Context, workItemID, target string) (bool, error) {
-	const query = `
-		SELECT EXISTS (
-			SELECT 1 FROM sla s
-			JOIN sla_policy sp ON sp.id = s.sla_policy_id
-			WHERE s.work_item_id = $1::uuid
-			  AND s.source = 'CSM'
-			  AND sp.target::TEXT = $2
-		)`
-
-	var exists bool
-	if err := r.db.QueryRow(ctx, query, workItemID, target).Scan(&exists); err != nil {
-		return false, fmt.Errorf("check csm sla clock ever existed: %w", err)
-	}
-	return exists, nil
 }
 
 // CompleteClock implements SLAEngineRepository.
@@ -320,6 +263,23 @@ func (r *slaEngineRepo) RecomputeActive(ctx context.Context) (int, error) {
 	tag, err := r.db.Exec(ctx, query, sqlActorLiteral)
 	if err != nil {
 		return 0, fmt.Errorf("recompute csm sla clocks: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// CancelActiveClocks implements SLAEngineRepository.
+func (r *slaEngineRepo) CancelActiveClocks(ctx context.Context, workItemID string) (int, error) {
+	const query = `
+		UPDATE sla
+		SET stage = 'CANCELLED'::sla_stage_enum,
+		    updated_on = NOW(), updated_by = $2
+		WHERE work_item_id = $1::uuid
+		  AND source = 'CSM'
+		  AND stage::TEXT ` + slaEngineActiveStageFilter
+
+	tag, err := r.db.Exec(ctx, query, workItemID, sqlActorLiteral)
+	if err != nil {
+		return 0, fmt.Errorf("cancel active csm sla clocks: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }
