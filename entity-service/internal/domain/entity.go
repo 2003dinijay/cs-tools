@@ -2313,15 +2313,23 @@ type CaseView struct {
 	// Severity/IssueType/State are null in practice for a large share of
 	// real cases -- see domain.Case's own doc comment for the confirmed
 	// production null rates.
-	Severity       *CaseSeverity  `json:"severity"`
-	IssueType      *CaseIssueType `json:"issueType"`
-	State          *CaseState     `json:"state"`
-	WorkState      *CaseWorkState `json:"workState"`
-	Type           *string        `json:"type"`
-	EngagementType *string        `json:"engagementType"`
-	CreatedOn      time.Time      `json:"createdOn"`
-	UpdatedOn      time.Time      `json:"updatedOn"`
-	ClosedOn       *time.Time     `json:"closedOn"`
+	Severity  *CaseSeverity  `json:"severity"`
+	IssueType *CaseIssueType `json:"issueType"`
+	State     *CaseState     `json:"state"`
+	WorkState *CaseWorkState `json:"workState"`
+	Type      *string        `json:"type"`
+	// AnnouncementType is only meaningful when Type is "announcement" -- the
+	// real ServiceNow classification (u_announcement_type, migrated into
+	// Postgres' own announcement.announcement_type column) of "GENERAL" vs
+	// "SECURITY", set at creation time from CreateCaseRequest.IsSecurityAnnouncement
+	// (which already exists for a different purpose -- see that field's own
+	// doc comment -- reused here rather than adding a second flag for the
+	// same underlying yes/no). Nil for every other case-like type.
+	AnnouncementType *string    `json:"announcementType,omitempty"`
+	EngagementType   *string    `json:"engagementType"`
+	CreatedOn        time.Time  `json:"createdOn"`
+	UpdatedOn        time.Time  `json:"updatedOn"`
+	ClosedOn         *time.Time `json:"closedOn"`
 	// CreatedBy is the canonical user reference for the case creator. Its id is
 	// populated only where the backing data source already supplies one, and
 	// null otherwise: see UserReference.
