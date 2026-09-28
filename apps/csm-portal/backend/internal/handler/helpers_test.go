@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/scim"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/updates"
@@ -512,6 +513,7 @@ type mockEntityAccountClient struct {
 	getAccountFn            func(ctx context.Context, id string) ([]byte, error)
 	searchAccountsFn        func(ctx context.Context, body []byte) ([]byte, error)
 	searchAccountContactsFn func(ctx context.Context, accountID string, body []byte) ([]byte, error)
+	updateAccountTeamsFn    func(ctx context.Context, id string, body []byte) ([]byte, error)
 }
 
 func (m *mockEntityAccountClient) GetAccount(ctx context.Context, id string) ([]byte, error) {
@@ -531,6 +533,13 @@ func (m *mockEntityAccountClient) SearchAccounts(ctx context.Context, body []byt
 func (m *mockEntityAccountClient) SearchAccountContacts(ctx context.Context, accountID string, body []byte) ([]byte, error) {
 	if m.searchAccountContactsFn != nil {
 		return m.searchAccountContactsFn(ctx, accountID, body)
+	}
+	return []byte(`{}`), nil
+}
+
+func (m *mockEntityAccountClient) UpdateAccountTeams(ctx context.Context, id string, body []byte) ([]byte, error) {
+	if m.updateAccountTeamsFn != nil {
+		return m.updateAccountTeamsFn(ctx, id, body)
 	}
 	return []byte(`{}`), nil
 }
@@ -586,6 +595,19 @@ func (m *mockEntityProjectClient) UpdateProject(ctx context.Context, id string, 
 		return m.updateProjectFn(ctx, id, body)
 	}
 	return []byte(`{}`), nil
+}
+
+// ----- mock entity onboarding step client -----
+
+type mockEntityOnboardingStepClient struct {
+	searchOnboardingStepsFn func(ctx context.Context, req entity.OnboardingStepSearchRequest) (entity.OnboardingStepSearchResponse, error)
+}
+
+func (m *mockEntityOnboardingStepClient) SearchOnboardingSteps(ctx context.Context, req entity.OnboardingStepSearchRequest) (entity.OnboardingStepSearchResponse, error) {
+	if m.searchOnboardingStepsFn != nil {
+		return m.searchOnboardingStepsFn(ctx, req)
+	}
+	return entity.OnboardingStepSearchResponse{Steps: []entity.OnboardingStep{}}, nil
 }
 
 // ----- mock entity product client -----
@@ -1154,4 +1176,25 @@ func (m *mockEntityTaskClient) UpdateTask(ctx context.Context, id string, body [
 		return m.updateTaskFn(ctx, id, body)
 	}
 	return []byte(`{"id":"11111111-1111-1111-1111-111111111111"}`), nil
+}
+
+// ----- mock entity comment client -----
+
+type mockEntityCommentClient struct {
+	updateCommentFn func(ctx context.Context, id string, body []byte) ([]byte, error)
+	deleteCommentFn func(ctx context.Context, id string) ([]byte, error)
+}
+
+func (m *mockEntityCommentClient) UpdateComment(ctx context.Context, id string, body []byte) ([]byte, error) {
+	if m.updateCommentFn != nil {
+		return m.updateCommentFn(ctx, id, body)
+	}
+	return []byte(`{"id":"` + id + `","content":"updated"}`), nil
+}
+
+func (m *mockEntityCommentClient) DeleteComment(ctx context.Context, id string) ([]byte, error) {
+	if m.deleteCommentFn != nil {
+		return m.deleteCommentFn(ctx, id)
+	}
+	return nil, nil
 }

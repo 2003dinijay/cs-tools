@@ -490,7 +490,16 @@ easy to wire up for real once both exist.
   created with no watchers is a normal state, not an error, so publishing is
   silently skipped rather than sending a payload
   `csm-notification-service`'s `events.Validate` would reject anyway for an
-  empty `recipients` list.
+  empty `recipients` list. The same skip applies when the case has no
+  severity: `CaseCreatedPayload.Priority` has no `omitempty` (a consumer
+  always expects a real value) and `""` is not a real priority. Since
+  severity is a required, validated field for `type: "case"`
+  (`validateCreateCaseRequest`), this only actually triggers for the other
+  four types `publishCaseCreatedEvent` also serves —
+  `announcement`/`engagement`/`service_request`/`security_report_analysis`
+  have no severity concept at all (a `"case"`-only column) — so none of
+  those four ever publish `case.created`, by explicit request, not by
+  oversight.
 - **`snIncidentService.CreateIncident`** publishes `incident.created` via
   `publishIncidentCreated`, called the same way. No enrichment round trip is
   needed here: `req.Subject`/`req.AdditionalComments` already carry
@@ -686,6 +695,120 @@ corrected after creation, routing its acknowledgement to the *current*
 owning team's space is arguably more useful than a stale one. Left as
 current-product routing; revisit only if the same-space guarantee turns
 out to matter in practice.
+
+**`caseService.UpdateCase` (the Postgres data source) supports
+`Acknowledge`/`AssigneeEmail` too** — `caseService.acknowledgeCase`/
+`updateCaseAssignee` (own branches in `UpdateCase`, alongside
+`updateCaseWatchList`/`updateCaseParent`/`updateCaseFields`) write
+`work_item.acknowledged_by_user_id`/`assigned_to_id` via
+`CaseRepository.AcknowledgeCase`/`UpdateCaseAssignee`.
+`CaseRepository.AcknowledgeCase` claims a case first-write-wins inside a
+transaction that row-locks `work_item` (`SELECT ... FOR UPDATE`) before
+reading whether it's already claimed, so two concurrent Acknowledge calls on
+the same case can't both believe they were first; it returns
+`alreadyAcknowledged` plus whoever now holds the claim, read back from the
+same "user" join regardless of which branch actually ran. `UpdateCaseAssignee`
+has no such guard at all — it unconditionally writes `assigned_to_id` every
+call, no no-op detection in the repository layer.
+- **This service's own contribution on top of that**: neither
+  `acknowledgeCase` nor `updateCaseAssignee` originally published a
+  `case.acknowledged`/`case.assigned` event on the Postgres data source at
+  all — Acknowledge/AssigneeEmail worked (the write itself succeeded,
+  ServiceNow-mirror dispatch fired under dual-write mode), but
+  `csm-notification-service` never heard about either one unless
+  `DATA_SOURCE=servicenow`. Closing that gap added:
+  - **`updateCaseAssignee`'s own no-op detection**, done at the service
+    layer since the repository doesn't do it: a `GetCaseByID` fetch right
+    before the write (gated on `s.publisher != nil`, so a deployment with no
+    Event Hub configured pays nothing extra) compares
+    `cv.AssignedEngineer.Email` against the requested `AssigneeEmail`
+    case-insensitively — the same guard `snCaseService.UpdateCase`'s own
+    AssigneeEmail path applies, just done here instead of in SQL.
+  - **`publishCaseAcknowledged`/`publishCaseAssigned`**, reusing the exact
+    same shared helpers/payload shapes ServiceNow's own versions do
+    (`caseProductName`/`caseTeamName`/`watchListUserEmails`,
+    `events.CaseAcknowledgedPayload`/`CaseAssignedPayload`) — both live in
+    the same `service` package, so nothing needed duplicating.
+    `publishCaseAcknowledged` only fires when `!alreadyAcknowledged` (a
+    repeat `Acknowledge:true` against an already-claimed case changed
+    nothing, so nothing to publish — the same distinction
+    `snCaseService.publishCaseAcknowledged`'s own call site makes) and takes
+    `acknowledgerName` straight from `AcknowledgeCase`'s own return value, no
+    second lookup. `publishCaseAssigned` re-fetches the case via
+    `GetCaseByID` *after* the write (the pre-write fetch above exists only
+    to detect the no-op, not to reuse as a payload source) and guards
+    `cv.ProjectDetails` as nilable — unlike ServiceNow's `CaseView`, which
+    always has one, this data source's does not (see `GetCaseByID`'s own
+    comment on why project/deployment joins are `LEFT JOIN`s here).
+  - **`GetCaseByID`'s query now also joins `acknowledged_by_user_id`**
+    (`LEFT JOIN "user" ack ON ack.id = wi.acknowledged_by_user_id`, same
+    pattern as its pre-existing `assigned_to_id`/`ae` join) to populate
+    `CaseView.AcknowledgedBy` — previously always nil on this data source
+    even after a successful Acknowledge, since nothing read the column back
+    for display outside `AcknowledgeCase`'s own one-off query.
+- **Not carried over from the ServiceNow path**: there is no elevated-role
+  check on `Acknowledge` here — `acknowledgeCase`'s own doc comment notes
+  this is deliberate, not an oversight: no Postgres-side permission model
+  exists yet, so this data source only requires a known authenticated
+  caller, same as every other Postgres case mutation. `SearchCaseView` still
+  has no `AcknowledgedBy` field either (matching ServiceNow's own
+  `SearchCaseView`-equivalent, which doesn't surface it there either — only
+  `GetCaseByID` does).
+
+**`work_item_activity` (migration 000056) now gets written to on the
+Postgres data source too.** `SearchCaseActivities`' own `field_change` branch
+already rendered any `field_name` generically (`caseActivityFieldChangeLabel`
+title-cases it, e.g. `"assigned_to_id"` → `"Assigned To Id"`) — the table was
+fully wired up on the read side, but **nothing in this codebase ever wrote to
+it** on this data source (the ServiceNow data source's own case activity
+comes from a live upstream call instead, not this table; this table appears
+to exist for the ServiceNow data source's own sync process to populate,
+which this data source has no equivalent of). The practical symptom: a
+Postgres-native state/severity/workState/assign/acknowledge/parent change
+produced no entry in the case's own activity feed at all — a real, reported
+gap ("with servicenow data source all are shown").
+- **`CaseRepository.RecordCaseFieldChangeActivity(ctx, caseID, fieldName,
+  oldValue, newValue, actorEmail)`** is the missing write half — a plain
+  `INSERT INTO work_item_activity`. `caseService.recordFieldChangeActivity`
+  wraps it best-effort (log and ignore on failure, same posture as every
+  `publishXxx` helper in this file): the mutation itself has already
+  succeeded by the time this runs, so a failure here must never undo it or
+  report the request as failed. A blank `actorEmail` skips the write
+  entirely (no anonymous rows) rather than inserting one with an empty
+  `user_email`.
+- **Old/new value convention, since there's no ServiceNow sync to match
+  against**: `state`/`severity`/`work_state` store the raw lowercase domain
+  enum value (e.g. `"work_in_progress"`), the same representation the JSON
+  API already uses for these fields — no separate display-label map
+  invented purely for this. `assigned_to_id`/`acknowledged_by_user_id`
+  store a human display name instead (e.g. `"Jane Doe"`, or `"Unassigned"`
+  for "no prior assignee") — a raw UUID would be useless to a human reading
+  the activity feed, and `caseActivityFieldChangeLabel` already title-cases
+  `field_name` itself to say *which* field, so the value only needs to say
+  *who*. `parent_id` stores the parent case's own number (e.g.
+  `"CS0001"`), fetched via an extra best-effort `GetCaseByID` before/after
+  the write in `updateCaseParent` (rare operation, so the extra round trips
+  are an acceptable cost) — an empty string if that lookup fails.
+- **Call sites**: `updateCaseAssignee`/`acknowledgeCase`/`updateCaseParent`
+  already resolve an `actor` for other reasons (ServiceNow mirror
+  attribution, first-write-wins claiming) and reuse `actor.Email` directly.
+  The main `UpdateCase` body's state/severity/workState branch is the one
+  exception — it has never required an authenticated caller before (no
+  permission model exists for Postgres-side case mutations at all yet), so
+  it resolves the actor **best-effort**: a missing/invalid `x-user-id-token`
+  just means this update's activity entry is skipped, not a newly-rejected
+  request. That branch's own `before` `*domain.CaseView` fetch (previously
+  gated on `s.publisher != nil && req.State != nil`, only for
+  `case.status_changed`'s sake) is now unconditional whenever `req.State` or
+  `req.WorkState` is set, since the activity write needs the prior value
+  regardless of whether Event Hub is configured at all.
+- **Deliberately out of scope**: `updateCaseFields`'s combinable "plain
+  field" bundle (Subject/Description/DeploymentID/DeployedProductID/fix-ETAs/
+  RelatedCaseID/WorkaroundProvided) does not write to `work_item_activity`
+  yet — up to nine fields in one call, several without a cheaply-available
+  "old" value, is a larger and more speculative addition than the six
+  branches above; left for a future change if it turns out to matter in
+  practice the same way assign/state did.
 
 Every helper above runs **synchronously** (not detached/async the way
 `apps/csm-portal/backend`'s own `internal/handler/cases.go` `publishAsync`
@@ -1352,6 +1475,41 @@ changed.
   (`domain.NewUserReference("", ...)`), never the watcher's own resolved id
   — `WatchListUser.User`'s own doc comment requires that field to stay null
   regardless of whether this data source happens to know it.
+
+  **A new case always gets no watchers at all on the SN-first create
+  path.** `CreateCaseFromServiceNow`'s insert only ever writes `work_item`/
+  the type-specific extension table — never `work_item_watcher` — so every
+  Postgres-sourced read of a freshly created case (`GetCaseByID`,
+  `SearchCases`) showed no watchers, and `publishCaseCreatedEvent`'s own
+  `Recipients` (built from a `GetCaseByID` call) went out to nobody. An
+  earlier revision of this fix mirrored `req.WatchList` (whatever the
+  caller sent, forwarded to ServiceNow via `s.snMirror.CreateCase`) into
+  `work_item_watcher` — deliberately replaced: that design still routed the
+  default watch list through ServiceNow-shaped concepts (email vs. UUID
+  resolution, `userRepo.GetUserByEmail` lookups) for something this schema
+  can answer directly.
+
+  **Every case now gets its account's four named stakeholders as watchers,
+  unconditionally, from a pure Postgres lookup — no ServiceNow involved.**
+  `account.customer_success_manager_id`/`technical_owner_id`/
+  `secondary_technical_owner_id`/`account_manager_id` (migration 000008)
+  are already `"user"` ids, so there's no email/UUID ambiguity to resolve
+  at all. `createCaseSNFirst` calls `addAccountDefaultWatchers` right after
+  `CreateCaseFromServiceNow` succeeds and before `publishCaseCreatedEvent`;
+  it resolves those four ids for the case's project via
+  `CaseRepository.AccountDefaultWatcherIDs` (a `project JOIN account`,
+  whichever of the four are set, deduplicated) and writes them with the
+  same `CaseRepository.SetCaseWatchList` the `UpdateCase` branch above
+  already uses. A project with no linked account, or an account with none
+  of the four roles set, is a normal state (an empty slice, `SetCaseWatchList`
+  never called) — not an error. A repository failure here is logged, not
+  returned: ServiceNow already has the case by this point, so a missing
+  default watch list must not be reported as a failed create, same posture
+  as every other post-ServiceNow-success step in this file (event
+  publishing included). `req.WatchList` itself is unaffected by any of
+  this — it's still forwarded to ServiceNow as part of the create request
+  the normal way; this addition is purely about what the Postgres mirror
+  also guarantees.
 - **Account contacts** (`account_contact`, migration 000020) and **project
   contacts** (`project_contact` + `project_contact_group`/`project_group`/
   `project_group_role`/`project_role`, migrations 000022-000025): new
@@ -1423,6 +1581,131 @@ again. `resolveCallerEmail` (`account_contact_service.go`) is the shared
 helper: decodes `x-user-id-token`'s `email` claim without a `"user"` table
 lookup, since nothing on these paths needs the caller's platform id today,
 only their claimed email.
+
+## PATCH /cases/{id}: assignee, acknowledge, parent, and the combinable field bundle
+
+Found live: assigning a case ("Assign to me") and acknowledging one both
+400'd on this data source with a generic "Invalid request payload." (the
+CSM/customer portal backend's own catch-all for any upstream 400) --
+`AssigneeEmail` and `Acknowledge` were on `UpdateCase`'s unconditional
+"only supported for the ServiceNow data source" rejection list even though
+neither actually needs anything ServiceNow-specific: `work_item.
+assigned_to_id` (migration 000036) and `work_item.acknowledged_by_user_id`
+(migration 000016) are both real, direct columns, already read elsewhere
+(`assignedUserId` search filter, `GetCaseByID`'s own `AssignedEngineer`).
+Prompted by that bug report, this pass re-derived `UpdateCase`'s *entire*
+field-combination contract from `sn_case_service.go`'s own UpdateCase --
+the actual, currently-enforced source of truth for which fields may be
+combined -- rather than re-guessing it, since the Postgres and ServiceNow
+data sources must accept the same PATCH shapes.
+
+**The exclusive/combinable split now mirrors ServiceNow's exactly**, down to
+the variable names (`exclusiveCount`/`combinableCount` in both files' own
+`UpdateCase`):
+- **Exclusive** (at most one per request, and none may be combined with
+  anything else, including each other): `state`/`severity`/`workState` (one
+  of the three), `watchList`, `assigneeEmail`, `parentId`, `acknowledge`.
+  `parentId` joins this group for the first time here -- it was previously
+  rejected outright; `work_item.parent_id` (migration 000036) is the same
+  self-reference `GetCaseByID`'s own `ParentCase` already reads the other
+  direction, so `updateCaseParent`/`CaseRepository.UpdateCaseParent` wire it
+  up the same way `updateCaseAssignee` does.
+- **Combinable** (any subset, freely combined with each other, never with
+  the exclusive group): `subject`, `description`, `deploymentId`,
+  `deployedProductId`, `bestCaseFixEta`/`mostLikelyFixEta`/`worstCaseFixEta`,
+  `relatedCaseId`, `workaroundProvided` -- all newly wired up via
+  `updateCaseFields`/`CaseRepository.UpdateCaseFields`, one dynamic
+  `UPDATE ... SET` per table (`work_item` for most of these,
+  `"case"` for `relatedCaseId` alone) built from exactly the non-nil pointers
+  `req` carries. `UpdatedCase` only has an echo slot for the fix-ETA trio
+  (see each field's own doc comment, "Present only when the update set X");
+  every other field in this bundle follows ServiceNow's own "a plain field
+  write only returns `{id, updatedOn, updatedBy}`" contract -- the caller
+  re-reads via `GetCaseByID` to see the new value.
+- **`resolutionCode`/`cause`/`closeNotes` are deliberately NOT in either
+  group above.** `sn_case_service.go`'s own UpdateCase only allows them
+  alongside a `state` transition, and only to `closed` or
+  `solution_proposed` (`snResolutionStates`) -- so they ride inside the
+  existing `state`/`severity`/`workState` branch's own `"case"` `UPDATE`
+  (`updateCaseQuery`'s new `$5`/`$6`/`$7`), gated by the identical
+  restriction, rather than living in the free-standing combinable bundle.
+  `closeNotes` uses `COALESCE($7, close_notes)` rather than the other five
+  columns' `''`-sentinel trick, since `""` is itself a meaningful value to
+  write there (clearing existing notes), unlike an enum column where `''` is
+  never valid anyway.
+- **`issueType`/`engagementType`/`engagementPaymentType`/`catalogId`/
+  `catalogItemId`/`variables` stay rejected**, for the mirror-image reason:
+  `sn_case_service.go` only accepts them when `type` is also provided (a
+  full type transfer) -- `"engagementType, engagementPaymentType, issueType,
+  catalogId, catalogItemId, and variables are only allowed when type is also
+  provided"`. `type` itself has no Postgres implementation (a real type
+  transfer would mean moving a row between `"case"`/`engagement`/
+  `service_request`/etc, each a physically separate extension table --
+  genuinely larger, separate work, not attempted here), so none of its five
+  companions have anywhere to go either. `addPublicComment`/`product`/
+  `publicTicket` (the "Share Fix ETA" comment-posting side effect) and
+  `autocloseHoldUntil` (no backing column anywhere in this schema) remain
+  rejected too.
+
+**A real pre-existing read-side bug found while building the write side**:
+`GetCaseByID` cast `"case".resolution_code` straight into
+`domain.CaseResolutionCode` with no translation at all
+(`domain.CaseResolutionCode(*resolutionCode)`), but three of the sixteen
+`case_resolution_code_enum` labels don't match their domain constant by
+identity -- `CONSIDERED_FOR_ROADMAP_ALT`/`SOLVED_WORKAROUND_PROVIDED_ALT`
+are ServiceNow's own duplicate picklist entries for a concept the Postgres
+enum only has one canonical label for, and
+`AbruptlyClosedDueToNonResponsiveness` is missing the enum's own
+`_THROUGH_AUTO_CLOSURE` suffix. Every case resolved with that last code
+rendered a `resolutionCode` value no `domain.CaseResolutionCode` constant
+declares. `caseResolutionCodeToEnum`/`caseResolutionCodeFromEnum`
+(`case_repo.go`, next to `caseSeverityToEnum`'s own identical-shaped fix)
+hold the mapping both directions now, same "flag the mismatch explicitly
+rather than guess" precedent as severity's own S0..S4 mapping.
+
+**The SN-mirror-writeback pattern was extended to match**, so
+`DATA_SOURCE=postgres-servicenow-dual-write` doesn't drift on these fields
+either: `patchCaseAssignee`/`patchCaseAcknowledge`/`patchCaseParent`/
+`patchCaseFieldsBundle` (`sn_case_service.go`) are bare ServiceNow PATCHes
+with none of `UpdateCase`'s own enrichment reads or no-op detection --
+exactly `patchCaseFields`/`patchCaseWatchList`'s own established shape,
+reached through four new narrow interfaces
+(`snAssigneePatcher`/`snAcknowledgePatcher`/`snParentPatcher`/
+`snFieldsBundlePatcher`). The acknowledge mirror only fires when this call's
+own claim actually succeeded (`!alreadyAcknowledged`) -- a repeat
+`Acknowledge:true` against an already-acknowledged case changed nothing in
+Postgres, so there's nothing new to mirror.
+
+**`patchCaseFieldsBundle` mirrors only four of the nine combinable
+fields.** `snUpdateCasePayload`'s own field comments say
+`Title`/`Description`/`DeploymentID`/`DeployedProductID`/`RelatedCaseID`
+are each "not yet available in the backing service" -- a first version of
+this mirror sent them anyway (Subject onto the payload's `Title`,
+`DeploymentID`/`DeployedProductID`/`RelatedCaseID` converted to sysids),
+which a CodeRabbit review on PR #1986 caught: sending a field the backing
+service doesn't implement either gets silently ignored or fails the whole
+PATCH, neither of which leaves ServiceNow any better synced than not
+mirroring it. Only `BestCaseFixEta`/`MostLikelyFixEta`/`WorstCaseFixEta`/
+`WorkaroundProvided` are confirmed available (their own doc comments say
+so) and actually forwarded; the function returns `nil` without a PATCH
+call at all when a request sets none of those four, rather than sending an
+empty no-op. All nine fields still write to Postgres via
+`CaseRepository.UpdateCaseFields` regardless -- this only narrows what the
+*ServiceNow mirror* attempts. The `sn_writeback_failures` payload for this
+branch (`updateCaseFields`'s own `Dispatch` call) records the actual values
+of those same four fields, not a fixed field-name placeholder, so a failed
+mirror can actually be replayed by hand.
+
+**`resolutionCode`/`cause`/`closeNotes`'s state-gating check runs before
+the branch dispatch, not after.** The same CodeRabbit review caught that
+neither `exclusiveCount` nor `combinableCount` counts these three fields at
+all, so a request like `{assigneeEmail, resolutionCode}` or `{subject,
+closeNotes}` used to sail past the mutual-exclusion check, get dispatched
+to `updateCaseAssignee`/`updateCaseFields`, and return 200 with the
+resolution fields silently ignored -- never validated, never written. The
+check now runs immediately after the `exclusiveCount`/`combinableCount`
+validation and before any branch (`WatchList`/`AssigneeEmail`/`ParentID`/
+`Acknowledge`/the combinable bundle) gets a chance to return early.
 
 ## Change requests
 
@@ -1634,6 +1917,22 @@ product, account, deployment, deployed_product, split across
     still correct. `account_id` is read directly off `work_item.account_id`
     (a real, direct column — migration 000016) rather than derived
     transitively through the project, since work_item has its own.
+
+    **`work_item.account_id` was never populated at create time, on any of
+    the five SN-first create paths.** `CreateCaseFromServiceNow`'s five
+    `create*FromServiceNowQuery` inserts (case/announcement/service_request/
+    engagement/security_report_analysis) all wrote `project_id`/
+    `deployment_id`/`deployed_product_id` but never `account_id` — so a case
+    created on `DATA_SOURCE=postgres-servicenow-dual-write` always showed a
+    blank Account on its overview card, even though its project has one.
+    `CreateCaseRequest` has no `accountId` field for a caller to supply
+    (ServiceNow's own create response doesn't return one either — there was
+    genuinely nothing to write), so every insert now derives it with
+    `(SELECT account_id FROM project WHERE id = $7)`, `$7` being the
+    already-bound `project_id` parameter — no new bind parameter needed. The
+    plain-Postgres-only `CreateCase` (still 503s on `work_item.number` — see
+    "CreateCase and case numbers" below) got the same fix via a `LEFT JOIN
+    project` for consistency, even though it can't be exercised yet.
   - `CreateCaseComment`/`SearchCaseComments`: now target the real
     generic `comment` table (migration 000037, keyed by `work_item_id`, not
     `case_id`) instead of the nonexistent `case_comments` — sharing the
@@ -1670,6 +1969,88 @@ product, account, deployment, deployed_product, split across
     the already-stated design), or Go-side generation with a retry-on-
     conflict loop — either way, the exact prefix/padding/format needs a
     real answer, not an invented one.
+
+## A freshly created case silently omitted escalationLevel/isEscalated entirely
+
+Found the same way as the project-fields gaps above (HAR diff, this time against case-creation
+traffic): `GET /cases/{id}` genuinely has real Postgres backing and working code for both fields
+(`GetCaseByID` already selects `current_escalation_level`/`is_escalated` and `SearchCases`'
+own escalation filter already treats a NULL row as "not escalated" -- see this file's own
+"escalation (isEmpty / isNotEmpty)" note), but a brand-new case has NULL for both columns
+(case creation sets neither), and the read path passed that NULL straight through as `nil` --
+which `omitempty` then drops from the response entirely, rather than rendering the same
+"never escalated" default ServiceNow's own case response always includes (`escalationLevel:
+{id: "0", label: "EL0"}`, `isEscalated: false`) from the moment a case exists. Fixed by
+defaulting NULL to that same state in `GetCaseByID`, matching the semantic the filter side
+already gives NULL rather than inventing a new one.
+
+## POST /deployments/{id}/products/search dropped product.abbreviation on Postgres
+
+`ProductRef.Abbreviation`'s own doc comment claimed "absent on the Postgres data source, whose
+products table has no equivalent column" -- checked directly against real data and this is
+wrong: `product.code` (migration 000010) holds exactly this value (`"wso2am"` for `"WSO2 API
+Manager"`, `"wso2is"` for `"WSO2 Identity Server"`), the same vocabulary this field's own doc
+comment already describes the product-updates catalogue keying on. `SearchDeployedProducts`
+simply never selected it. Fixed by adding `p.code` to the query and scanning it straight into
+`Product.Abbreviation` (already the correct `*string` type for a nullable column). Doc comment
+corrected to match.
+
+## GET /projects/{id} and POST /projects/search were missing most of a project's own fields
+
+Found by diffing the Postgres and ServiceNow customer-portal responses field-for-field
+(HAR capture comparison) against the real customer-portal-backend-v2 traffic: `GetProjectByID`
+never selected most of `ProjectDetailsView`'s own fields, even though every one of them has a
+real Postgres column (migration 000009) -- `account.ownerEmail`/`technicalOwnerEmail`,
+`closureState`, `onboardingStatus`, `goLivePlanDate`, `onboardingExpiryDate`, and all six
+query/onboarding-hours balances (`totalQueryHours`, `consumedQueryHours`, `remainingQueryHours`,
+`totalOnboardingHours`, `consumedOnboardingHours`, `remainingOnboardingHours`) all came back as
+their zero value regardless of what was actually stored. Fixed by extending `GetProjectByID`'s
+query and scan:
+- `mgr`/`tow` are two new `LEFT JOIN "user"` aliases resolving `account.account_manager_id`/
+  `technical_owner_id` to `.email` -- the same two FKs `account_repo.go`'s own
+  `accountSelectColumns` already resolves for `GET /accounts/{id}`, reused here under the same
+  alias names. `TechnicalOwnerEmail`'s mapping is exact (the column is literally named
+  `technical_owner_id`); `OwnerEmail` is inferred as `account_manager_id` -- the account's other
+  named "owner" role, and the one ServiceNow's own project payload pairs with
+  `technicalOwnerEmail` the same way. Revisit if that pairing turns out to be wrong.
+- `wso2_closure_state`/`onboarding_status`/`onboarding_go_live_date`/`onboarding_go_live_plan_date`/
+  `onboarding_expiry_date` scan straight into `ProjectDetailsView`'s already-pointer fields --
+  no local var needed, same NULL-tolerance as every other optional column here.
+- The six query/onboarding-hours balances are stored as `INTERVAL`, not a plain number;
+  `EXTRACT(EPOCH FROM ...) / 3600.0` converts to hours in SQL (matching
+  `project_case_stats_repo.go`'s existing `EXTRACT(EPOCH ...)` convention for a duration column)
+  and scans directly into the matching `*float64` field -- a NULL interval extracts to a NULL
+  numeric, preserving "not tracked" instead of becoming a fabricated `0`.
+
+`ProjectClosureFields.ClosureState`'s own doc comment used to say "(ServiceNow data source only)"
+-- stale even before this fix, since `project.wso2_closure_state` was always a real column; only
+the query never read it. Corrected to say it's populated on both data sources now.
+
+`POST /projects/search` had the same gap for `closureState` specifically, but through a second,
+independent bug on top of the first: `project_repo.go`'s `SearchProjects` query never selected
+`wso2_closure_state` at all (so `domain.Project` had nowhere to put it), **and**
+`project_service.go`'s `domain.Project` -> `domain.ProjectView` mapping didn't copy the field
+across even after it was added to the repo type -- the same shape of bug this file's own
+`StartDate` fix (see "SearchProjects crashed..." below) already hit once for a different field on
+this exact mapping. Both had to be fixed together: `domain.Project` gained a `ClosureState *string`
+field, the repo query now selects `p.wso2_closure_state::TEXT`, and the service layer's
+`ProjectView` construction now sets `ProjectClosureFields: domain.ProjectClosureFields{ClosureState: p.ClosureState}`.
+
+Two things intentionally left untouched by this same audit, not code bugs:
+- `GET /projects/{id}/features`' `acceptedSeverityValues`/`has*Access` flags being empty on some
+  environments is a **migration data-backfill gap, not a code bug** -- confirmed live: migration
+  000085's `ADD COLUMN`s exist, but its `UPDATE ... WHERE name = '<project type>'` backfill never
+  ran, because that environment's schema is owned by a separate sync tool (its own
+  `csm_migration_*` tracking tables, an entirely different numbering/naming scheme) that mirrors
+  column shape but has no way to replicate entity-service's own custom seed-data logic embedded in
+  a migration file. Redeploying entity-service will not fix this on its own; the backfill has to be
+  run directly against that environment.
+- `GET /projects/{id}/filters`' `severityBasedAllocationTime` has no real Postgres source and was
+  deliberately not derived from `sla_policy` (migration 000089 and its ServiceNow-synced rows) as a
+  substitute -- checked directly against real data, and none of that table's `RESPONSE`-target
+  durations match the actual per-severity minutes a real project's filters response returns, so
+  synthesizing a value from it would risk returning a plausible-looking but wrong number. This
+  stays an explicit TODO (see `project_metadata_service.go`'s own comment) rather than a fix.
 
 ## GetProjectByID 404'd on any project with no linked account
 
@@ -2719,13 +3100,42 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
 
 `caseRepo.SearchCases` implements `tag`, `projectOnboardingStatus` (in/notIn),
 `taskSLABusinessElapsedPercent` (gte/lte), `escalationLevel`, `escalation`
-(isEmpty/isNotEmpty) and `anyOf`. The rest of the ServiceNow-shaped filters are
-still rejected with a 400 by `caseService.SearchCases` (`product`, `projectType`,
-`creTeam`/`sreTeam`, `slaBreached`, `accountEscalationActive`, ...) because
-dropping one would silently widen the result set. `creTeam`/`sreTeam` and
-call-request `assignmentTeamIds` are blocked on data, not schema: the group
-columns exist but staging's `group` table was empty (the sync has no job for the
-full group source) so every group FK is NULL.
+(isEmpty/isNotEmpty), `parentId` (eq), `product`, `creTeam`/`sreTeam` (in), and
+`anyOf`. The rest of the ServiceNow-shaped filters are still rejected with a 400
+by `caseService.SearchCases` (`projectType`, `slaBreached`,
+`accountEscalationActive`, ...) because dropping one would silently widen the
+result set.
+
+- **`product` (in)** was rejected outright even though `SearchCases`'s own
+  joins already carry `prod` (the deployed product's catalog row, used for
+  every result's `ProductName`) -- found alongside `creTeam`/`sreTeam` below
+  by proactively auditing `caseService.SearchCases`'s remaining rejections
+  for real backing columns rather than waiting for another live report.
+  Matches on `prod.name = ANY(...)`, an exact match against the same value
+  already selected into each row.
+- **`creTeam`/`sreTeam` (in)** were rejected the same way, but `SearchCases`
+  had no `account`/`"group"` join to filter on at all -- only `GetCaseByID`
+  had it (`account a` -> `"group" cre`/`"group" sre` via
+  `a.cre_team_id`/`a.sre_team_id`). Added the identical joins to
+  `SearchCases` and matched on `cre.id`/`sre.id = ANY(...)`. **Still blocked
+  on data, not schema, the same caveat as before this fix**: staging's
+  `group` table was empty as of the investigation that first found this (the
+  sync has no job for the full group source), so every group FK is NULL --
+  confirm `group` is actually populated in the target environment before
+  expecting this filter to return anything.
+
+- **`parentId eq`** was accepted by `ParseCaseFieldFilters` (the customer/CSM
+  portals' "Linked Items" tab sends it to find a case's child cases) but
+  unconditionally rejected by `caseService.SearchCases` with "not supported
+  by this data source", even though nothing about it is actually
+  ServiceNow-specific: `work_item.parent_id` (migration 000036) is the exact
+  same generic self-reference `GetCaseByID`'s own `ParentCase` already reads
+  in the other direction. Fixed with a plain `wi.parent_id = $N::uuid`
+  predicate in `SearchCases`'s `WHERE` clause — not routed through the
+  shared `caseFieldPredicates` (top-level + `anyOf` branches), since
+  `rejectUnsupportedOrGroupFields` already refuses `parentId` inside an
+  `anyOf` branch unconditionally (a pre-existing, unrelated rule, left as
+  is), so it only ever needs to apply at the top level.
 
 - **One builder for top-level fields and `anyOf` branches.** `caseFieldPredicates`
   (`case_field_predicates.go`) turns a `caseFieldSet` into SQL for type, project,
@@ -2860,6 +3270,57 @@ orders on `LOWER(COALESCE(NULLIF(name,''), first + last, user_name))` because
 `"user".name` is empty for a few synced rows (5 of 2,937 in staging); `u.id` is
 always the last tie-break so pages are stable. No `sortBy` keeps newest-first.
 
+## POST /users/search active filter on the Postgres data source
+
+`userService.SearchUsers` used to reject any `active` filter on Postgres
+("only supported for the ServiceNow data source") even though `"user".
+is_active` is a real, already-read column — found live via the case
+detail page's Time Tracking tab, whose approver search sends
+`{roleIds: ["timecard_approver"], active: true}` to only offer active
+approvers, and 400'd outright. `userRepo.SearchUsers` now filters on it:
+`active: true` matches `is_active IS NULL OR is_active = TRUE` (a NULL row
+counts as active, the same convention `AccessService.ResolveScope` already
+uses for this exact column), `active: false` matches `is_active = FALSE`
+strictly — a row with no `is_active` recorded at all is not known to be
+inactive, so it must not satisfy that filter.
+
+## POST /users/search userIds/groupIds/groupNames filters on the Postgres data source
+
+Same shape of gap as the `active` filter above, found by proactively auditing
+`SearchUsersFilters` for other fields still rejected outright on Postgres
+rather than waiting for another endpoint to hit one: `userIds`, `groupIds`
+and `groupNames` were all bundled into one blanket rejection, even though
+each has a real backing column/table already read elsewhere. `userRepo.
+SearchUsers` now filters on them:
+- `userIds` — `u.id = ANY($n::uuid[])`.
+- `groupIds` — `EXISTS (SELECT 1 FROM team_member tm WHERE tm.user_id = u.id
+  AND tm.team_id = ANY($n::uuid[]))` (migration 000028, the same table
+  `GetUserGroups` reads).
+- `groupNames` — the same `EXISTS` joined to `team` on `t.id = tm.team_id`,
+  matching `t.name = ANY($n::text[])` instead of the id; kept alongside
+  `groupIds` because callers' team registries are keyed by name (ids differ
+  per environment and not every configured team has one).
+
+`userService.SearchUsers` still validates `userIds`/`groupIds` as UUIDs
+(`validateUUIDs`) before they reach the repository — only the "unsupported on
+Postgres" rejection was removed, not the format check.
+
+## POST /users/search roleIds silently matched nothing for a namespaced role name
+
+Reported live: the Time Tracking tab's approver search
+(`{roleIds: ["timecard_approver"], active: true}`) came back empty (not a 400
+— the `active` fix above was already live) once the caller's list was scoped
+to that one role. `userRepo.SearchUsers`'s `roleIds` predicate did an exact
+`r.name = ANY(...)` match, but the synced `role.name` value carries a
+namespace prefix for at least some roles (`sn_customerservice.
+timecard_approver`, not the bare `timecard_approver` a caller sends — see the
+CSM webapp's own `ResponsiveRoleChips.tsx`'s `ROLE_CATALOGUE_ALIASES`, which
+exists purely to strip this same prefix back off for *display*; there was no
+equivalent normalization for *searching*). Fixed by also matching on the
+suffix after the last `.` (`regexp_replace(r.name, '^.*\.', '')`), so a filter
+value matches whether the stored name is bare or namespaced — purely
+additive: it can never match less than a plain `r.name = ANY(...)` did before.
+
 ## POST /users/search returns each user's roles (Postgres data source)
 
 The Postgres `User` had no roles, so the CSM users page showed none even though
@@ -2956,6 +3417,22 @@ in. Implementing this would be a genuinely new feature (a migration + a real
 `task_repo.go`), not a fix to something already wired up incorrectly — same
 class of gap as `GlobalService.GlobalSearch`'s own "no Postgres
 implementation" note elsewhere in this file.
+
+## SearchProjects crashed on any page containing a NULL project.sf_id
+
+Reported live: `POST /projects/search` failing with `cannot scan NULL into
+*string`. `project.sf_id` is declared `NOT NULL` (migration 000009), but that
+constraint turned out not to be actually enforced against real data — the
+same class of gap `CaseView.InternalID`'s own doc comment describes for
+`wso2_id`, and `SearchDeployments`'s for `deployment.type` (see that section
+above) — and `project_repo.go`'s `SearchProjects` scanned the column straight
+into `domain.Project.SfID` (a required, non-pointer field). Fixed the same
+way as those: the wire contract stays a required string, only the scan side
+changes — `p.sf_id` now scans into a `*string` local, defaulted to `""` when
+NULL, rather than widening `Project.SfID` to `*string` and touching every
+other reader of it. `GetProjectDetails`'s own `sf_id` scan (a separate query,
+a separate endpoint) was not touched -- not reported broken, so left alone
+rather than fixed speculatively.
 
 ## Case feedback silently 404'd on the Postgres data source instead of a documented 503
 

@@ -109,8 +109,11 @@ type onboardingStepRecorder interface {
 // emails, and notifications.EmailClient binds its From at construction.
 // Steps (satisfied by *entity.CustomerEntityClient) records each step's
 // outcome on entity-service's onboarding-step ledger, best-effort — see
-// recordOnboardingStep. PortalURL is the sign-in link the invitation
-// points at (ONBOARD_PORTAL_URL).
+// recordOnboardingStep — and is also read back for the duplicate-invitation
+// check. Recording tolerates a nil Steps, but EmailEnabled does not: with
+// no ledger to read there is no duplicate check, so the EMAIL step fails as
+// a configuration error rather than sending unguarded. PortalURL is the
+// sign-in link the invitation points at (ONBOARD_PORTAL_URL).
 type OnboardingConfig struct {
 	Identity        identityProvisioner
 	Email           emailSender
@@ -497,14 +500,14 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 		caseRef := displayCaseRef(p.CaseNumber, p.CaseID)
 		subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, p.CaseTitle)
 		var emailErr error
-		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) string {
+		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
 			return notifications.RenderCaseCreatedEmail(notifications.CaseCreatedEmailData{
 				ReporterName:              p.ReporterName,
 				ProjectName:               p.ProjectName,
 				CaseNumber:                caseRef,
 				CaseTitle:                 p.CaseTitle,
 				CaseType:                  p.CaseType,
-				Priority:                  p.Priority,
+				Priority:                  emailSeverityLabel(p.Priority),
 				Product:                   p.Product,
 				CreatedAt:                 p.CreatedAt,
 				Description:               p.Description,
@@ -600,7 +603,7 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 	}
 	baseKey := recordBaseKey(record)
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, p.CaseTitle)
-	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) string {
+	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
 		if p.IsInternalNote {
 			// See events.CommentAddedPayload.IsInternalNote's own doc
 			// comment: a distinct layout, and WSO2CaseID (not CaseNumber)
@@ -639,8 +642,8 @@ func (d *Dispatcher) handleStatusChanged(ctx context.Context, record eventbus.Re
 		title = "Status changed to " + p.NewStatus
 	}
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, title)
-	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) string {
-		return notifications.RenderStatusChangedEmail(caseRef, p.NewStatus, caseLink, commentLinkFor(caseLink, ""))
+	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
+		return notifications.RenderStatusChangedEmail(caseRef, p.NewStatus, caseLink, commentLinkFor(caseLink, "")), nil
 	})
 	if record.NoMoreRetries {
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
@@ -758,8 +761,8 @@ func (d *Dispatcher) handleCaseAssigned(ctx context.Context, record eventbus.Rec
 		title = "Case assigned"
 	}
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, title)
-	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) string {
-		return notifications.RenderCaseAssignedEmail(p.AssigneeName, p.AssigneeEmail, caseRef, caseLink, commentLinkFor(caseLink, ""))
+	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
+		return notifications.RenderCaseAssignedEmail(p.AssigneeName, p.AssigneeEmail, caseRef, caseLink, commentLinkFor(caseLink, "")), nil
 	})
 	if record.NoMoreRetries {
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
@@ -855,6 +858,8 @@ func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.
 	caseRef := displayCaseRef(p.CaseNumber, p.CaseID)
 	oldLabel, oldColor := severityLabelAndColor(p.OldSeverity)
 	newLabel, newColor := severityLabelAndColor(p.NewSeverity)
+	emailOldLabel := emailSeverityLabel(p.OldSeverity)
+	emailNewLabel := emailSeverityLabel(p.NewSeverity)
 
 	groups, groupUserIDs, err := d.groupByLink(ctx, p.Recipients, p.ProjectID, p.CaseID)
 	if err != nil {
@@ -865,12 +870,12 @@ func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.
 			// A publisher that hasn't sent CaseTitle still gets a meaningful
 			// subject rather than a blank title slot — same fallback
 			// handleStatusChanged/handleCaseAssigned use.
-			title = "Severity changed to " + newLabel
+			title = "Severity changed to " + emailNewLabel
 		}
 		subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, title)
 		var emailErr error
-		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) string {
-			return notifications.RenderSeverityChangedEmail(caseRef, oldLabel, newLabel, caseLink, commentLinkFor(caseLink, ""))
+		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
+			return notifications.RenderSeverityChangedEmail(caseRef, emailOldLabel, emailNewLabel, caseLink, commentLinkFor(caseLink, "")), nil
 		})
 		if emailErr != nil {
 			errs = append(errs, emailErr)
@@ -1000,6 +1005,34 @@ func severityLabelAndColor(severity string) (label, color string) {
 	return label, "#6B7280"
 }
 
+// emailSeverityLabels maps entity-service's raw uppercase severity value
+// (e.g. "HIGH", as sent on CaseCreatedPayload.Priority/SeverityChangedPayload.
+// OldSeverity/NewSeverity) to the title-case "<Label>(S<n>)" format shown in
+// case.created/case.severity_changed emails — S0..S4 matching entity-service's
+// own case_severity_enum labels (CATASTROPHIC=S0 .. LOW=S4, see that
+// service's own CLAUDE.md), not the P0..P4 notation severityLabelAndColor
+// above uses for Google Chat cards. Deliberately a separate, email-specific
+// convention per explicit request — not meant to be reconciled with Chat's
+// own labels.
+var emailSeverityLabels = map[string]string{
+	"CATASTROPHIC": "Catastrophic(S0)",
+	"CRITICAL":     "Critical(S1)",
+	"HIGH":         "High(S2)",
+	"MEDIUM":       "Medium(S3)",
+	"LOW":          "Low(S4)",
+}
+
+// emailSeverityLabel resolves severity to its email display label
+// (case/whitespace-insensitive), falling back to the raw trimmed value for
+// anything unrecognized — including blank, which stays blank so an absent
+// Priority still renders as an empty field rather than a fabricated label.
+func emailSeverityLabel(severity string) string {
+	if label, ok := emailSeverityLabels[strings.ToUpper(strings.TrimSpace(severity))]; ok {
+		return label
+	}
+	return strings.TrimSpace(severity)
+}
+
 // maxChatTitleLength bounds truncateTitle's output — long enough to still
 // be informative in a Chat card, short enough that a card doesn't dominate
 // the space with one case's title.
@@ -1096,7 +1129,47 @@ func maskPhone(phone string) string {
 // true but emailDebugRecipients is empty — sending to zero recipients would
 // either be rejected by the email provider or silently do nothing, neither
 // of which is better than not calling it at all.
-func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, groupUserIDs map[string][]string, subject string, render func(caseLink string) string) ([]string, error) {
+// inlineImageExtensions maps an InlineImage's ContentType to the file
+// extension its EmailAttachment.ContentName is given — email-service
+// requires a contentName on every attachment, but an inline image's name is
+// otherwise never shown to the recipient (Content-Disposition: inline, not
+// attachment), so any reasonably-shaped name satisfies that requirement.
+// Falls back to no extension for a content type outside this small,
+// deliberately narrow list — sanitizeRichText's own safeImageDataURI regex
+// only ever admits one of these exact raster subtypes (never a wildcard
+// "image/*", which would also let through image/svg+xml — XML, not a
+// raster format, and capable of carrying active content), so this covers
+// every real case; keep the two lists in sync if either ever changes.
+var inlineImageExtensions = map[string]string{
+	"image/png":  ".png",
+	"image/jpg":  ".jpg",
+	"image/jpeg": ".jpg",
+	"image/gif":  ".gif",
+	"image/webp": ".webp",
+}
+
+// inlineAttachments converts sanitizeRichText's own extracted images into
+// the EmailAttachment shape EmailClient.SendEmail expects, each marked
+// Inline with its matching ContentID — the exact pairing the returned HTML
+// body's own cid:<contentId> references depend on.
+func inlineAttachments(images []notifications.InlineImage) []notifications.EmailAttachment {
+	if len(images) == 0 {
+		return nil
+	}
+	attachments := make([]notifications.EmailAttachment, len(images))
+	for i, img := range images {
+		attachments[i] = notifications.EmailAttachment{
+			ContentName: img.ContentID + inlineImageExtensions[img.ContentType],
+			ContentType: img.ContentType,
+			Attachment:  img.Data,
+			Inline:      true,
+			ContentID:   img.ContentID,
+		}
+	}
+	return attachments
+}
+
+func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, groupUserIDs map[string][]string, subject string, render func(caseLink string) (string, []notifications.InlineImage)) ([]string, error) {
 	var errs []error
 	var owned []string
 	for _, caseLink := range slices.Sorted(maps.Keys(groups)) {
@@ -1121,7 +1194,8 @@ func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, g
 				"subject", subject, "realRecipientCount", len(to), "debugRecipientCount", len(d.emailDebugRecipients))
 			to = d.emailDebugRecipients
 		}
-		if err := d.email.SendEmail(ctx, to, nil, nil, nil, subject, render(caseLink), nil); err != nil {
+		htmlBody, images := render(caseLink)
+		if err := d.email.SendEmail(ctx, to, nil, nil, nil, subject, htmlBody, inlineAttachments(images)); err != nil {
 			errs = append(errs, err)
 			d.forget(key)
 			continue
@@ -1338,7 +1412,7 @@ func (d *Dispatcher) handleCRPlanDateNotice(ctx context.Context, record eventbus
 		recipients = d.emailDebugRecipients
 	}
 
-	body := notifications.RenderCRPlanDateNoticeEmail(notifications.CRPlanDateEmailData{
+	body, images := notifications.RenderCRPlanDateNoticeEmail(notifications.CRPlanDateEmailData{
 		Kind:             p.Kind,
 		Number:           p.Number,
 		ActorName:        p.ActorName,
@@ -1355,7 +1429,7 @@ func (d *Dispatcher) handleCRPlanDateNotice(ctx context.Context, record eventbus
 	if p.Audience == crAudienceCustomer {
 		to, bcc = []string{d.email.FromAddress()}, recipients
 	}
-	if err := d.email.SendEmail(ctx, to, nil, bcc, nil, p.Subject, body, nil); err != nil {
+	if err := d.email.SendEmail(ctx, to, nil, bcc, nil, p.Subject, body, inlineAttachments(images)); err != nil {
 		return fmt.Errorf("dispatch: send plan date notice for %s: %w", p.ChangeRequestID, err)
 	}
 	slog.InfoContext(ctx, "dispatch: plan date notice sent",
@@ -1382,6 +1456,13 @@ func (d *Dispatcher) handleCRPlanDateNotice(ctx context.Context, record eventbus
 // was added"), so a failed identity step returns before any email is
 // attempted — the invitee must not be told to sign in to an account that
 // doesn't exist.
+//
+// A resend (ProjectContactInvitedPayload.IsResend, set by entity-service
+// when an admin presses "Resend invitation") is the one case that skips
+// the duplicate-invitation ledger check below and uses the short reminder
+// template instead of either of the other two. The identity step is
+// unchanged: the SCIM endpoint is create-if-absent, so a resend simply
+// finds the account the first invitation created.
 //
 // An integration user (IsIntegrationUser) never signs in and gets no
 // email: both steps are recorded SKIPPED and nothing else happens. A step
@@ -1513,6 +1594,23 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 			d.recordOnboardingStep(ctx, p, entity.OnboardingStepEmail, entity.OnboardingStepFailed, err)
 			return err
 		}
+		if !p.IsResend && d.onboarding.Steps == nil {
+			// A resend never reaches the read below, so a missing recorder
+			// costs it nothing but the (best-effort) record of the send;
+			// failing a deliberate resend over it would be gratuitous.
+			//
+			// recordOnboardingStep tolerates a nil recorder -- a step
+			// outcome nobody can write down is worth a warning, not a
+			// failed record. The read below is not that: without it there
+			// is no duplicate check at all, and sending anyway is the
+			// second invitation this whole block exists to prevent. So it
+			// is a configuration error, reported the same way as the two
+			// nil checks above, and the record follows the normal
+			// retry/DLQ path instead of panicking inside the consumer.
+			err := fmt.Errorf("dispatch: invitation email enabled but no onboarding-step ledger configured; cannot check whether an invitation was already sent")
+			d.recordOnboardingStep(ctx, p, entity.OnboardingStepEmail, entity.OnboardingStepFailed, err)
+			return err
+		}
 
 		// Last check before sending: has an invitation for this membership
 		// already gone out? The other two guards cannot answer that. The
@@ -1540,7 +1638,19 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 		// A failure to read the ledger is not a reason to send, and not a
 		// reason to give up either, so it is returned and the record is
 		// retried.
-		if sent, err := d.onboarding.Steps.EmailAlreadySent(ctx, p.MembershipSfID); err != nil {
+		//
+		// A resend skips the check entirely. The guard exists to stop an
+		// *accidental* second invitation -- every portal invitation also
+		// writes the membership back to Salesforce, so the same contact
+		// returns through the ingest as an event and would otherwise be
+		// invited twice. An admin pressing "Resend invitation" is not
+		// that: entity-service republishes this event with isResend set
+		// precisely because the invitation should go out again. The EMAIL
+		// step is still recorded either way, so the ledger's attemptCount
+		// keeps showing how many invitations actually went out.
+		if p.IsResend {
+			slog.InfoContext(ctx, "dispatch: resend requested; not checking the invitation ledger", logAttrs...)
+		} else if sent, err := d.onboarding.Steps.EmailAlreadySent(ctx, p.MembershipSfID); err != nil {
 			return fmt.Errorf("dispatch: check invitation already sent for membership %s: %w", p.MembershipSfID, err)
 		} else if sent {
 			slog.InfoContext(ctx, "dispatch: invitation already recorded as sent for this membership; not sending again", logAttrs...)
@@ -1562,10 +1672,21 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 		// been created for you" nor "you already have one", only how to
 		// sign in.
 		var subject, body string
-		if d.onboarding.IdentityEnabled && existed {
+		switch {
+		case p.IsResend:
+			// A resend always uses the reminder wording, whatever the
+			// identity step answered. By now the account exists (the first
+			// invitation, or this record's own identity step, created it),
+			// so the "existing" template would tell someone who may never
+			// have opened the first email that they already have an
+			// account -- and the "new" one would welcome them a second
+			// time. The reminder claims neither.
+			subject = fmt.Sprintf("[WSO2 Support] Reminder: your invitation to %s", data.ProjectName)
+			body = notifications.RenderProjectContactInvitedReminderEmail(data)
+		case d.onboarding.IdentityEnabled && existed:
 			subject = fmt.Sprintf("[WSO2 Support] %s has been added to your account", data.ProjectName)
 			body = notifications.RenderProjectContactInvitedExistingEmail(data)
-		} else {
+		default:
 			data.AccountCreated = d.onboarding.IdentityEnabled
 			subject = fmt.Sprintf("[WSO2 Support] You have been given access to %s", data.ProjectName)
 			if data.AccountCreated {
@@ -1579,7 +1700,7 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 			return err
 		}
 		d.recordOnboardingStep(ctx, p, entity.OnboardingStepEmail, entity.OnboardingStepSucceeded, nil)
-		slog.InfoContext(ctx, "dispatch: invitation email sent", append(logAttrs, "existingAccount", d.onboarding.IdentityEnabled && existed)...)
+		slog.InfoContext(ctx, "dispatch: invitation email sent", append(logAttrs, "existingAccount", d.onboarding.IdentityEnabled && existed, "resend", p.IsResend)...)
 	}
 
 	return nil

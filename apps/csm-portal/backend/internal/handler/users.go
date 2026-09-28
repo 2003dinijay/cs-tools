@@ -102,7 +102,7 @@ type userMeResponse struct {
 	FirstName *string `json:"firstName,omitempty"`
 	LastName  *string `json:"lastName,omitempty"`
 	TimeZone  *string `json:"timeZone,omitempty"`
-	// Roles is which portal roles (viewer, support_engineer, admin, ...) the
+	// Roles is which portal roles (viewer, cs_engineer, admin, ...) the
 	// caller's token roles grant: several are possible. It is not the entity
 	// service's role data, which this response no longer carries. Always
 	// present, [] when they hold none.
@@ -361,6 +361,10 @@ func (h *UsersHandler) GetUser(w http.ResponseWriter, r *http.Request) {
 	// SCIM's "external" org existence/lock check is independent of the teams
 	// enrichment above, so a failure in either never blocks the other.
 	enriched = h.withExternalAccountStatus(r.Context(), enriched, user.UserID)
+
+	// Independent of both enrichments above: replaces entity-service's own
+	// role vocabulary with the portal-role one, for an internal target only.
+	enriched = h.withPortalRoles(r.Context(), enriched, user.UserID)
 
 	writeJSON(w, http.StatusOK, enriched)
 }

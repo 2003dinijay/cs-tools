@@ -156,7 +156,11 @@ func scanUser(row interface{ Scan(...any) error }) (domain.User, error) {
 func (r *userRepo) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
 	u, err := scanUser(r.db.QueryRow(ctx, `SELECT `+userColumns+` FROM "user" WHERE email = $1`, email))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.User{}, &apierror.NotFoundError{Msg: "no user found with email: " + email}
+		// Msg never carries the email — writeServiceError (internal/handler/
+		// decode.go) logs every NotFoundError's Msg verbatim, so this is the
+		// one place that decides whether it leaks into logs for every caller
+		// of this method, not just GetMe.
+		return domain.User{}, &apierror.NotFoundError{Msg: "no user found with that email"}
 	}
 	if err != nil {
 		return domain.User{}, fmt.Errorf("get user by email: %w", err)
@@ -201,16 +205,63 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 		// ("deliberately an open string type"). Matches if the user holds
 		// ANY of the given roles (OR semantics), via user_role (migration
 		// 000006).
+		//
+		// The synced role.name value carries a namespace prefix for at
+		// least some roles (e.g. "sn_customerservice.timecard_approver" --
+		// see the webapp's own ROLE_CATALOGUE_ALIASES, which exists purely
+		// to strip this same prefix back off for display), while a caller
+		// filtering by roleIds sends the bare, unnamespaced name (matching
+		// CSM_USER_ROLES' own vocabulary). Matching on the suffix after the
+		// last "." as well as the exact value handles either shape without
+		// hardcoding a specific namespace string, and never matches less
+		// than a plain r.name = ANY(...) would have on its own.
 		roleNames := make([]string, len(req.Filters.RoleIDs))
 		for i, role := range req.Filters.RoleIDs {
 			roleNames[i] = string(role)
 		}
 		where += fmt.Sprintf(` AND EXISTS (
 			SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
-			WHERE ur.user_id = u.id AND r.name = ANY($%d::text[])
-		)`, argIdx)
+			WHERE ur.user_id = u.id
+			  AND (r.name = ANY($%d::text[]) OR regexp_replace(r.name, '^.*\.', '') = ANY($%d::text[]))
+		)`, argIdx, argIdx)
 		filterArgs = append(filterArgs, roleNames)
 		argIdx++
+	}
+
+	if len(req.Filters.UserIDs) > 0 {
+		where += fmt.Sprintf(" AND u.id = ANY($%d::uuid[])", argIdx)
+		filterArgs = append(filterArgs, req.Filters.UserIDs)
+		argIdx++
+	}
+
+	if len(req.Filters.GroupIDs) > 0 {
+		where += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM team_member tm WHERE tm.user_id = u.id AND tm.team_id = ANY($%d::uuid[])
+		)`, argIdx)
+		filterArgs = append(filterArgs, req.Filters.GroupIDs)
+		argIdx++
+	}
+
+	if len(req.Filters.GroupNames) > 0 {
+		where += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM team_member tm JOIN team t ON t.id = tm.team_id
+			WHERE tm.user_id = u.id AND t.name = ANY($%d::text[])
+		)`, argIdx)
+		filterArgs = append(filterArgs, req.Filters.GroupNames)
+		argIdx++
+	}
+
+	if req.Filters.Active != nil {
+		// "user".is_active is nullable; a NULL row counts as active, the same
+		// convention AccessService.ResolveScope already uses for this exact
+		// column ("user.is_active NULL counts as active" -- access_repo.go).
+		// active=false is strict, though: a row with no is_active recorded at
+		// all is not known to be inactive, so it must not match that filter.
+		if *req.Filters.Active {
+			where += " AND (u.is_active IS NULL OR u.is_active = TRUE)"
+		} else {
+			where += " AND u.is_active = FALSE"
+		}
 	}
 
 	const fromClause = `FROM "user" u`
@@ -444,7 +495,12 @@ func (r *userRepo) CreateUser(ctx context.Context, req domain.CreateUserRequest,
 	).Scan(&u.ID, &u.UserName, &firstName, &lastName, &u.Email, &userType, &u.CreatedOn, &u.UpdatedOn)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return domain.User{}, &apierror.ConflictError{Msg: "a user with this email already exists: " + email}
+			// Msg never carries the email -- writeServiceError (internal/
+			// handler/decode.go) logs every ConflictError's Msg verbatim, and
+			// this endpoint lets any caller submit any req.Email, so echoing
+			// it back would both log and return a third party's address to
+			// whoever happened to guess/probe it.
+			return domain.User{}, &apierror.ConflictError{Msg: "a user with this email already exists"}
 		}
 		return domain.User{}, fmt.Errorf("create user: insert user: %w", err)
 	}

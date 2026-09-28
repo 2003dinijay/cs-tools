@@ -19,13 +19,16 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -76,6 +79,13 @@ func derefSeverity(s *domain.CaseSeverity) domain.CaseSeverity {
 }
 
 func derefState(s *domain.CaseState) domain.CaseState {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func derefWorkState(s *domain.CaseWorkState) domain.CaseWorkState {
 	if s == nil {
 		return ""
 	}
@@ -206,12 +216,11 @@ func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersReq
 	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchUsersResponse{}, err
 	}
-	if len(req.Filters.UserIDs) > 0 || len(req.Filters.GroupIDs) > 0 || len(req.Filters.GroupNames) > 0 {
-		return domain.SearchUsersResponse{}, &apierror.ValidationError{
-			Msg: "userIds, groupIds and groupNames filters are only supported for the ServiceNow data source"}
+	if err := validateUUIDs("userIds", req.Filters.UserIDs); err != nil {
+		return domain.SearchUsersResponse{}, err
 	}
-	if req.Filters.Active != nil {
-		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "active filter is only supported for the ServiceNow data source"}
+	if err := validateUUIDs("groupIds", req.Filters.GroupIDs); err != nil {
+		return domain.SearchUsersResponse{}, err
 	}
 	if req.SortBy.Field != "" && !validUserSortField[req.SortBy.Field] {
 		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "sortBy.field contains invalid value: " + string(req.SortBy.Field)}
@@ -273,6 +282,15 @@ func (s *userService) GetMe(ctx context.Context) (domain.GetUserMeResponse, erro
 	}
 	user, err := s.repo.GetUserByEmail(ctx, email)
 	if err != nil {
+		var nfe *apierror.NotFoundError
+		if errors.As(err, &nfe) {
+			// callerId, not email — see user_repo.go's GetUserByEmail for why
+			// no log line on this path may carry the caller's email address.
+			// UserID is Asgardeo's own stable per-account identifier (the
+			// validated x-user-id-token's "userid" claim), already resolved
+			// into context by auth.Middleware earlier in the chain.
+			slog.WarnContext(ctx, "get me: no user found for caller", "callerId", auth.IdentityFromContext(ctx).UserID)
+		}
 		return domain.GetUserMeResponse{}, err
 	}
 	roles, err := s.repo.GetUserRoles(ctx, user.ID)

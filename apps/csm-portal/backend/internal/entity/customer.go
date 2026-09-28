@@ -192,6 +192,13 @@ func (c *CustomerEntityClient) SearchAccountContacts(ctx context.Context, accoun
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/accounts/%s/contacts/search", url.PathEscape(accountID)), body)
 }
 
+// UpdateAccountTeams calls PATCH /accounts/{id} on the entity service to update an
+// account's CRE team and/or SRE team assignment.
+// Response is returned as raw JSON; typed response structs are deferred.
+func (c *CustomerEntityClient) UpdateAccountTeams(ctx context.Context, id string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/accounts/%s", url.PathEscape(id)), body)
+}
+
 // GetProject calls GET /projects/{id} on the entity service.
 // Response is returned as raw JSON; typed response structs are deferred.
 func (c *CustomerEntityClient) GetProject(ctx context.Context, id string) ([]byte, error) {
@@ -598,6 +605,21 @@ func (c *CustomerEntityClient) SearchComments(ctx context.Context, body []byte) 
 // The body must be a JSON-encoded CreateCommentRequest (referenceId, referenceType, type, content).
 func (c *CustomerEntityClient) CreateComment(ctx context.Context, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, "/comments", body)
+}
+
+// UpdateComment calls PATCH /comments/{id} on the entity service — the generic
+// edit path for any comment regardless of the aggregate (case, change request,
+// incident, ...) it belongs to. Author-or-admin gated upstream.
+func (c *CustomerEntityClient) UpdateComment(ctx context.Context, id string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/comments/%s", url.PathEscape(id)), body)
+}
+
+// DeleteComment calls DELETE /comments/{id} on the entity service — a soft
+// delete, same author-or-admin gate as UpdateComment. The entity service
+// returns 204 No Content on success, so the returned byte slice is always
+// empty; the caller only needs the error.
+func (c *CustomerEntityClient) DeleteComment(ctx context.Context, id string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/comments/%s", url.PathEscape(id)), nil)
 }
 
 // SearchConversations calls POST /conversations/search on the entity service.
