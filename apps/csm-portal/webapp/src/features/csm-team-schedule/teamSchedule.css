@@ -1735,3 +1735,18 @@
 .csm-ts .pk-delerr {
   grid-column: 1 / -1;
 }
+
+/* This week: today's column keeps its frame unbroken through the windows on
+   now. A now cell used to swap the column's side rules for a ring of its own,
+   and since the windows on now are rarely next to each other -- the table runs
+   in window order -- today's column came out as a frame broken into pieces,
+   with separate red boxes stacked down it. The now cell keeps the column's
+   rules and says "now" with a fill instead; the row's own Now pill still says
+   which windows those are. */
+.csm-ts .weekwrap .tw tbody tr > td.today.nowcell {
+  box-shadow: inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent);
+  background: color-mix(in srgb, var(--now) 12%, var(--surface));
+}
+:root[data-color-scheme="dark"] .csm-ts .weekwrap .tw tbody tr > td.today.nowcell {
+  background: color-mix(in srgb, var(--now) 20%, var(--surface));
+}
