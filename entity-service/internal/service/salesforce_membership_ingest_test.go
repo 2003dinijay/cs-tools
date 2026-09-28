@@ -109,6 +109,10 @@ func (f *fakeMembershipRepo) UpsertWithin(context.Context, string, string, repos
 	return domain.SalesforceMembershipUpsertResult{}, errors.New("not used by the ingest")
 }
 
+func (f *fakeMembershipRepo) ResolveWriteContext(context.Context, string, string) (repository.MembershipWriteContext, error) {
+	return repository.MembershipWriteContext{}, errors.New("not used by the ingest")
+}
+
 func (f *fakeMembershipRepo) GetMembershipByEmail(context.Context, string, string) (domain.ProjectMembershipRow, error) {
 	return domain.ProjectMembershipRow{}, errors.New("not used by the ingest")
 }

@@ -53,6 +53,13 @@ type ProjectMembershipRepository interface {
 	// GetMembershipByEmail returns the membership of projectID held by
 	// email, outside any transaction. A NotFoundError when there is none.
 	GetMembershipByEmail(ctx context.Context, projectID, email string) (domain.ProjectMembershipRow, error)
+	// ResolveWriteContext reads what UpsertWithin would hand its plan -- the
+	// project, its account and any membership already there -- outside any
+	// transaction and without the write lock, and writes nothing. It is for
+	// the invitation dry run, which must decide on the same inputs as the
+	// invite but never hold the lock across its Salesforce reads.
+	// NotFoundError for an unknown project or one with no Salesforce account.
+	ResolveWriteContext(ctx context.Context, projectID, email string) (MembershipWriteContext, error)
 	// DeactivateBySfID sets project_contact.state = DEACTIVATED for the
 	// membership with that Salesforce id and marks its DATABASE onboarding
 	// step as applied by a DELETED event, so the ingest's duplicate guard does
@@ -259,6 +266,19 @@ func (r *projectMembershipRepo) GetMembershipByEmail(ctx context.Context, projec
 		return domain.ProjectMembershipRow{}, &apierror.NotFoundError{Msg: "contact not found on this project"}
 	}
 	return *row, nil
+}
+
+// ResolveWriteContext implements ProjectMembershipRepository.
+func (r *projectMembershipRepo) ResolveWriteContext(ctx context.Context, projectID, email string) (MembershipWriteContext, error) {
+	target, err := resolveWriteTarget(ctx, r.db, projectID)
+	if err != nil {
+		return MembershipWriteContext{}, err
+	}
+	existing, err := membershipByEmail(ctx, r.db, projectID, email)
+	if err != nil {
+		return MembershipWriteContext{}, err
+	}
+	return MembershipWriteContext{Target: target, Existing: existing}, nil
 }
 
 // resolveWriteTarget reads the project a portal write names and the account

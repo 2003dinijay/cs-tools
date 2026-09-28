@@ -291,7 +291,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// cfg.HasPortalMembershipWrites() -- the flag, a Postgres-authoritative data source
 	// and a complete sales-entity-service connection -- because every one of
 	// these writes is half a Postgres transaction and half a Salesforce
-	// call. Off by default: nil handler means the four routes below are
+	// call. Off by default: nil handler means the routes below are
 	// never registered, so a portal built against them fails loudly with a
 	// 404 rather than writing one system and not the other.
 	var projectMembershipHandler *handler.ProjectMembershipHandler
@@ -1098,6 +1098,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// keys a membership; {contactId} on the GET above is a user id, and
 		// the two never collide because the methods differ.
 		mux.HandleFunc("POST /projects/{id}/contacts", projectMembershipHandler.InviteProjectContact)
+		// The invitation's dry run. The literal "validate" segment wins over
+		// {email} by specificity, and no POST is registered on {email} anyway.
+		mux.HandleFunc("POST /projects/{id}/contacts/validate", projectMembershipHandler.ValidateProjectContact)
 		mux.HandleFunc("PATCH /projects/{id}/contacts/{email}", projectMembershipHandler.UpdateProjectContactRoles)
 		mux.HandleFunc("DELETE /projects/{id}/contacts/{email}", projectMembershipHandler.DeactivateProjectContact)
 		mux.HandleFunc("POST /projects/{id}/contacts/{email}/resend-invitation", projectMembershipHandler.ResendProjectContactInvitation)
