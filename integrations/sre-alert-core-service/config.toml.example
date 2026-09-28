@@ -61,9 +61,7 @@ csm_retry_base_delay = "30s"
 csm_retry_multiplier = 3
 # Caps how long the exponential CSM retry wait can grow to.
 csm_retry_max_delay = "1h"
-# Whether CreateIncident sends the environment field. Off: the live csm-integration-service
-# connector currently 400s ("Invalid request payload.") on any create carrying an environment
-# value. Flip on once the SN-side connector accepts it again.
+# Whether CreateIncident sends the environment field; off because the live connector 400s on it.
 send_environment_field = false
 
 [server]

@@ -96,11 +96,7 @@ type NotifyConfig struct {
 	CSMRetryMultiplier float64 `toml:"csm_retry_multiplier"`
 	// CSMRetryMaxDelay caps how long the exponential CSM retry wait can grow to.
 	CSMRetryMaxDelay Duration `toml:"csm_retry_max_delay"`
-	// SendEnvironmentField gates whether CreateIncidentRequest.Environment is populated.
-	// Off by default: the live csm-integration-service connector currently rejects any
-	// create carrying an environment value with a 400 ("Invalid request payload."),
-	// regardless of field name -- verified 2026-09-28 against the staging Choreo
-	// endpoint. Flip on once the SN-side connector accepts it again.
+	// Gates CreateIncidentRequest.Environment; off by default since the live connector 400s on it (verified 2026-09-28).
 	SendEnvironmentField bool `toml:"send_environment_field"`
 }
 
@@ -149,16 +145,17 @@ func defaults() Config {
 			QueryTimeout:       Duration(10 * time.Second),
 		},
 		Notify: NotifyConfig{
-			MaxAttempts:        3,
-			RetryBaseDelay:     Duration(200 * time.Millisecond),
-			HTTPTimeout:        Duration(10 * time.Second),
-			RetrySweepInterval: Duration(30 * time.Second),
-			MaxCSMAttempts:     20,
-			ServiceCacheTTL:    Duration(15 * time.Minute),
-			StateCheckInterval: Duration(1 * time.Minute),
-			CSMRetryBaseDelay:  Duration(30 * time.Second),
-			CSMRetryMultiplier: 3,
-			CSMRetryMaxDelay:   Duration(time.Hour),
+			MaxAttempts:          3,
+			RetryBaseDelay:       Duration(200 * time.Millisecond),
+			HTTPTimeout:          Duration(10 * time.Second),
+			RetrySweepInterval:   Duration(30 * time.Second),
+			MaxCSMAttempts:       20,
+			ServiceCacheTTL:      Duration(15 * time.Minute),
+			StateCheckInterval:   Duration(1 * time.Minute),
+			CSMRetryBaseDelay:    Duration(30 * time.Second),
+			CSMRetryMultiplier:   3,
+			CSMRetryMaxDelay:     Duration(time.Hour),
+			SendEnvironmentField: false,
 		},
 		Server: ServerConfig{
 			ShutdownGrace: Duration(15 * time.Second),

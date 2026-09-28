@@ -64,8 +64,7 @@ type Config struct {
 	MaxAttempts     int
 	RetryBaseDelay  time.Duration
 	HTTPTimeout     time.Duration
-	// SendEnvironmentField gates whether NotifyCSM populates
-	// CreateIncidentRequest.Environment. See config.NotifyConfig.SendEnvironmentField.
+	// Gates whether NotifyCSM populates CreateIncidentRequest.Environment.
 	SendEnvironmentField bool
 }
 
