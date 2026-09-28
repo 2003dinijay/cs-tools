@@ -24,6 +24,7 @@ import {
   Divider,
   Stack,
   TextField,
+  Tooltip,
   Typography,
   alpha,
   useTheme,
@@ -36,6 +37,7 @@ import {
   Tag,
   Building2,
   Info,
+  Lock,
   Mail,
   FileText,
   ExternalLink,
@@ -706,18 +708,33 @@ export default function CaseDetailsDetailsPanel({
         }
       >
         {isEditingWatchList ? (() => {
-          type WatchOption = { label: string; value: string; readonly?: boolean };
+          type WatchOption = { label: string; value: string; readonly?: boolean; locked?: boolean };
+          // The account's 4 stakeholder watchers (CSM, technical owner, ...) —
+          // the backend always re-adds these on the next write regardless of
+          // what's submitted, so offering a working remove control for them
+          // would be a lie. Matched by email/userName against the case's own
+          // (pre-edit) watch list, since that's the only place `locked` is
+          // known — a watcher just added in this same editing session was
+          // never locked.
+          const lockedEmails = new Set(
+            (data?.watchList ?? [])
+              .filter((w) => w.locked)
+              .map((w) => w.email ?? w.userName ?? "")
+              .filter(Boolean),
+          );
+          const isLocked = (email: string) => lockedEmails.has(email);
           const hiddenWatcherOptions: WatchOption[] = pendingWatchList
-            .filter((email) => !contactOptions.some((o) => o.value === email))
+            .filter((email) => isLocked(email) || !contactOptions.some((o) => o.value === email))
             .map((email) => ({
               label:
                 data?.watchList?.find((w) => w.email === email || w.userName === email)?.name ??
                 email,
               value: email,
               readonly: true,
+              locked: isLocked(email),
             }));
           const editableValue: WatchOption[] = pendingWatchList
-            .filter((email) => contactOptions.some((o) => o.value === email))
+            .filter((email) => !isLocked(email) && contactOptions.some((o) => o.value === email))
             .map((email) => contactOptions.find((o) => o.value === email)!);
           return (
             <Box>
@@ -734,7 +751,7 @@ export default function CaseDetailsDetailsPanel({
                   .filter((o) => !o.readonly)
                   .map((o) => o.value);
                 const hiddenEmails = pendingWatchList.filter(
-                  (email) => !contactOptions.some((o) => o.value === email),
+                  (email) => isLocked(email) || !contactOptions.some((o) => o.value === email),
                 );
                 setPendingWatchList([...visibleEmails, ...hiddenEmails]);
               }}
@@ -755,6 +772,22 @@ export default function CaseDetailsDetailsPanel({
               renderTags={(tagValue, getTagProps) =>
                 tagValue.map((option, index) => {
                   const { key, onDelete, ...tagProps } = getTagProps({ index });
+                  if (option.locked) {
+                    return (
+                      <Tooltip
+                        key={key}
+                        title="Automatically watching as an account stakeholder — cannot be removed"
+                      >
+                        <Chip
+                          label={option.label}
+                          size="small"
+                          icon={<Lock size={12} aria-hidden />}
+                          {...tagProps}
+                          sx={{ opacity: 0.6, "& .MuiChip-icon": { ml: "6px" } }}
+                        />
+                      </Tooltip>
+                    );
+                  }
                   return option.readonly ? (
                     <Chip
                       key={key}
