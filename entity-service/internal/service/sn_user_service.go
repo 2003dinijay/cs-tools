@@ -35,6 +35,7 @@ type snUserMeResponse struct {
 	FirstName *string  `json:"firstName"`
 	LastName  string   `json:"lastName"`
 	TimeZone  *string  `json:"timeZone"`
+	UserType  string   `json:"userType"`
 	Roles     []string `json:"roles"`
 }
 
@@ -555,10 +556,11 @@ func (s *snUserService) resolveProjectAccess(
 	return access
 }
 
-// GetMe is not gated the way GetUser is: the /users/me response carries no user-type field
-// to branch on (see snUserMeResponse above), and GET /users/me is only ever called for the
-// caller's own identity, which the caller already knows. Adding a lookup solely to determine
-// gating here would defeat the point of skipping an upstream call.
+// GetMe handles GET /users/me.
+//
+// Group membership is internal-only, exactly as it is for GetUser: the upstream ACL rejects
+// this lookup for external (customer) users, so skip the call entirely for them rather than
+// making a request known to fail.
 func (s *snUserService) GetMe(ctx context.Context) (domain.GetUserMeResponse, error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 
@@ -577,15 +579,25 @@ func (s *snUserService) GetMe(ctx context.Context) (domain.GetUserMeResponse, er
 		roles = []string{}
 	}
 
-	return domain.GetUserMeResponse{
+	userType := domain.UserType(snResp.UserType)
+
+	resp := domain.GetUserMeResponse{
 		ID:        sysidToUUID(snResp.ID),
 		Email:     snResp.Email,
 		FirstName: snResp.FirstName,
 		LastName:  snResp.LastName,
 		TimeZone:  snResp.TimeZone,
+		UserType:  userType,
 		Roles:     roles,
-		Groups:    s.resolveUserGroups(ctx, token, snResp.ID),
-	}, nil
+	}
+
+	if userType == domain.UserTypeExternal {
+		resp.Groups = []domain.UserGroupRef{}
+	} else {
+		resp.Groups = s.resolveUserGroups(ctx, token, snResp.ID)
+	}
+
+	return resp, nil
 }
 
 func (s *snUserService) PatchMe(ctx context.Context, req domain.PatchUserMeRequest) (domain.PatchUserMeResponse, error) {
