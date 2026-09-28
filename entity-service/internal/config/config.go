@@ -103,6 +103,13 @@ type Config struct {
 	// false: those envelopes are then acknowledged and ignored, as before
 	// the branch existed. The Account branch is unaffected by this flag.
 	CSMMigrationSalesforceMembershipIngestEnabled bool
+	// CSMMigrationSalesforceAccountIngestEnabled turns on the Account branch
+	// of POST /salesforce/events, from
+	// CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED=true. Defaults to false:
+	// Account envelopes are then acknowledged and ignored, because the
+	// ServiceNow sync still owns the account table and both writing it would
+	// fight over the same rows.
+	CSMMigrationSalesforceAccountIngestEnabled bool
 	// CSMMigrationMembershipRegistrationEnabled turns on POST /users/me/memberships/register,
 	// which marks the signed-in user's still-INVITED memberships as
 	// REGISTERED in Salesforce (see membership_registration_service.go). Defaults to
@@ -336,6 +343,7 @@ func Load() *Config {
 		GithubLabelStatusAssigned:                os.Getenv("GITHUB_LABEL_STATUS_ASSIGNED"),
 		CRNoticesEnabled:                         os.Getenv("CR_NOTICES_ENABLED") == "true",
 		CSMMigrationSalesforceMembershipIngestEnabled: os.Getenv("CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED") == "true",
+		CSMMigrationSalesforceAccountIngestEnabled:    os.Getenv("CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED") == "true",
 		CSMMigrationPortalWritesEnabled:               os.Getenv("CSM_MIGRATION_PORTAL_WRITES_ENABLED") == "true",
 		CREventHubTopic:                               getEnvOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
 		ProjectEventHubTopic:                          getEnvOrDefault("PROJECT_EVENT_HUB_TOPIC", "project-events"),

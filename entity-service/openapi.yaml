@@ -23,8 +23,9 @@ paths:
     post:
       summary: >-
         Ingest a Salesforce change event from sales-apex-trigger-subscriber.
-        Entity Account: fetches the Account via REST sales/sales-entity-service
-        POST /customer-search (isRealTime true), not GraphQL
+        Entity Account, only when CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED=true
+        (otherwise acknowledged and ignored): fetches the Account via REST
+        sales/sales-entity-service POST /customer-search (isRealTime true), not GraphQL
         sales/entity-graphql-service, and upserts the csm-platform account table.
         Entity Project_Contact__c (also accepted as Project_Contact), only when
         CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true: CREATED/UPDATED/RESTORED fetch
@@ -2428,13 +2429,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Project not found, or the project has no Salesforce account to add a contact to.
+          description: Project not found.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: The address is already an active contact on this project.
+          description: >
+            The address is already an active contact on this project, or the project,
+            its account or the membership being re-invited has no Salesforce id yet (a
+            generic "please contact WSO2 support" message; the missing id is logged, not returned).
           content:
             application/json:
               schema:
@@ -2578,7 +2582,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: The membership is neither INVITED nor RE-INVITED, so there is no outstanding invitation to re-send.
+          description: >
+            The membership is neither INVITED nor RE-INVITED, so there is no outstanding
+            invitation to re-send; or the membership or its contact has no Salesforce id yet
+            (a generic "please contact WSO2 support" message; the missing id is logged, not returned).
           content:
             application/json:
               schema:
@@ -2714,6 +2721,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >
+            The project, its account, the membership or its contact has no Salesforce id
+            yet (a generic "please contact WSO2 support" message; the missing id is logged,
+            not returned). Nothing is written to either system.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error.
           content:
@@ -2775,6 +2791,15 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Project not found, or the contact is not a contact on this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >
+            The project, its account, the membership or its contact has no Salesforce id
+            yet (a generic "please contact WSO2 support" message; the missing id is logged,
+            not returned). Nothing is written to either system.
           content:
             application/json:
               schema:

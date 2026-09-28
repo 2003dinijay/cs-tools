@@ -243,13 +243,19 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			ClientSecret: cfg.SalesEntityClientSecret,
 			Scopes:       cfg.SalesEntityScopes,
 		})
+		// A nil account repository turns the Account branch off: its envelopes
+		// are acknowledged and ignored (see CSMMigrationSalesforceAccountIngestEnabled).
+		var accountIngestRepo repository.AccountRepository
+		if cfg.CSMMigrationSalesforceAccountIngestEnabled {
+			accountIngestRepo = accountRepo
+		}
 		if cfg.CSMMigrationSalesforceMembershipIngestEnabled {
 			// The membership branch (Project_Contact__c / Contact envelopes)
 			// writes user/account_contact/project_contact rows and the
 			// DATABASE onboarding step, and publishes project_contact.invited
 			// when eventPublisher is configured (nil is a no-op there).
 			membershipIngestSvc = service.NewSalesforceEventServiceWithMembershipIngest(
-				accountRepo, salesEntityClient, service.MembershipIngest{
+				accountIngestRepo, salesEntityClient, service.MembershipIngest{
 					Memberships: repository.NewProjectMembershipRepository(db),
 					Steps:       repository.NewOnboardingStepRepository(db),
 					SalesEntity: salesEntityClient,
@@ -257,7 +263,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				})
 			salesforceEventHandler = handler.NewSalesforceEventHandler(membershipIngestSvc)
 		} else {
-			salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventService(accountRepo, salesEntityClient))
+			salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient))
 		}
 	}
 

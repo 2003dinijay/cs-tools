@@ -164,7 +164,8 @@ func TestValidateInvitation_ActiveMembershipIsAConflict(t *testing.T) {
 func TestValidateInvitation_DeactivatedMembershipCanBeBroughtBack(t *testing.T) {
 	h, _ := newValidateHarness(t)
 	h.repo.existing = &domain.ProjectMembershipRow{
-		ProjectContactID: "pc-1", ContactSfID: writeContactSfID, Email: writeEmail, State: domain.MembershipStateDeactivated,
+		ProjectContactID: "pc-1", MembershipSfID: writeMembershipID, ContactSfID: writeContactSfID, Email: writeEmail,
+		State: domain.MembershipStateDeactivated,
 	}
 	h.se.contact = existingSalesforceContact()
 
@@ -250,4 +251,25 @@ func TestValidateInvitation_CheckFailuresStayErrors(t *testing.T) {
 	if !errors.As(err, &nf) {
 		t.Fatalf("err = %v, want NotFoundError", err)
 	}
+}
+
+// TestValidateInvitation_MissingSalesforceIDIsRefused: a project with no
+// Salesforce id is refused as INVALID (never CONFLICT, which callers show as
+// "already a contact") with Invite's generic message, before any Salesforce read.
+func TestValidateInvitation_MissingSalesforceIDIsRefused(t *testing.T) {
+	h, sales := newValidateHarness(t)
+	h.repo.target.ProjectSfID = ""
+	sales.err = errors.New("the invitation validator must not run")
+
+	got, err := h.svc.ValidateInvitation(context.Background(), writeProjectID, domain.ValidateProjectMembershipRequest{Email: writeEmail})
+	if err != nil {
+		t.Fatalf("ValidateInvitation: %v", err)
+	}
+	if got.Valid || got.Reason != domain.MembershipValidationInvalid || got.Message != membershipNotLinkedMessages[membershipOpInvite] {
+		t.Errorf("got %+v, want an INVALID refusal with the invite support message", got)
+	}
+	if len(h.se.contactGets)+len(h.se.contactSearchs) != 0 {
+		t.Errorf("Salesforce read before the guard: gets=%v searches=%v", h.se.contactGets, h.se.contactSearchs)
+	}
+	assertNothingWritten(t, h)
 }
