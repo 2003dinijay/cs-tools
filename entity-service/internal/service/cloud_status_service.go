@@ -85,7 +85,11 @@ func (s *cloudStatusService) Sweep(ctx context.Context) (domain.CloudStatusSweep
 
 	resp := domain.CloudStatusSweepResponse{Scanned: len(candidates)}
 	for _, c := range candidates {
-		if domain.CloudOfferingSlug(c.Cloud) == "" {
+		clouds, err := s.cloudsFor(ctx, c)
+		if err != nil {
+			return domain.CloudStatusSweepResponse{}, err
+		}
+		if len(clouds) == 0 {
 			// No cloud monitor on the outage's configuration item, or an
 			// offering this service does not know how to address. Either way
 			// there is nowhere to post.
@@ -101,15 +105,19 @@ func (s *cloudStatusService) Sweep(ctx context.Context) (domain.CloudStatusSweep
 				"outageId", c.OutageID, "number", c.Number, "cloudOffering", c.Cloud)
 			continue
 		}
-		recorded, err := s.repo.Record(ctx, c)
-		if err != nil {
-			return domain.CloudStatusSweepResponse{}, err
-		}
-		if recorded {
-			resp.Recorded++
-			slog.InfoContext(ctx, "cloud status transition recorded",
-				"outageId", c.OutageID, "number", c.Number,
-				"event", string(c.Event), "cloud", c.Cloud)
+		for _, cloud := range clouds {
+			rec := c
+			rec.Cloud = cloud
+			recorded, err := s.repo.Record(ctx, rec)
+			if err != nil {
+				return domain.CloudStatusSweepResponse{}, err
+			}
+			if recorded {
+				resp.Recorded++
+				slog.InfoContext(ctx, "cloud status transition recorded",
+					"outageId", c.OutageID, "number", c.Number,
+					"event", string(c.Event), "cloud", cloud)
+			}
 		}
 
 		// The status write runs on EVERY sweep, not only when the transition
@@ -131,6 +139,62 @@ func (s *cloudStatusService) Sweep(ctx context.Context) (domain.CloudStatusSweep
 		}
 	}
 	return resp, nil
+}
+
+// cloudsFor returns every cloud that must be told about this outage.
+//
+// TWO FLOWS, TWO ANSWERS, AND THEY DIFFER BY ARM. This port merges a pair of
+// ServiceNow flows that do the same work off different triggers:
+//
+//	Cloud Status Event Notification Flow                fires on the outage
+//	Cloud Status Event Notification Flow - Affected CI  fires on each affected CI
+//
+// The first posts for the outage's own cloud on BOTH arms. The second posts
+// for the affected CI's own cloud and has only ONE arm -- its condition is
+// "Outage is not Completed", so it never runs once the outage has ended.
+//
+//	ongoing    own cloud  +  every in-scope affected cloud
+//	completed  own cloud only
+//
+// Fanning out on completion too would look like a tidy symmetry and would be
+// wrong: it posts resolution webhooks to dashboards ServiceNow never tells,
+// and on a public status page an unexpected all-clear is the worst direction
+// to be wrong in.
+//
+// Unroutable clouds are dropped here rather than at the point of sending, so
+// a cloud this build cannot address never reaches the events table and cannot
+// become a webhook nobody can deliver.
+func (s *cloudStatusService) cloudsFor(ctx context.Context, c repository.CloudStatusCandidate) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+
+	add := func(cloud string) {
+		if cloud == "" || seen[cloud] || domain.CloudOfferingSlug(cloud) == "" {
+			return
+		}
+		seen[cloud] = true
+		out = append(out, cloud)
+	}
+	add(c.Cloud)
+
+	// The completed arm is the outage-triggered flow alone.
+	if c.Event == domain.CloudStatusEventOutageEnd {
+		return out, nil
+	}
+
+	affected, err := s.repo.AffectedClouds(ctx, c.OutageID, s.parentServiceIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, cloud := range affected {
+		if domain.CloudOfferingSlug(cloud) == "" {
+			slog.WarnContext(ctx, "affected CI sits on a cloud this build cannot address; no webhook for it",
+				"outageId", c.OutageID, "number", c.Number, "cloudOffering", cloud)
+			continue
+		}
+		add(cloud)
+	}
+	return out, nil
 }
 
 // applyMonitorStatus writes the status every monitor affected by this outage

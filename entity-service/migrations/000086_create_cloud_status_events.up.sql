@@ -52,11 +52,24 @@ CREATE TABLE IF NOT EXISTS cloud_status_events (
     created_on TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_on TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    -- One send per outage per transition. This is the whole idempotency
-    -- guarantee: ServiceNow re-fires on every qualifying record update and
-    -- relies on nothing, so a port that swept without this would re-post the
-    -- same begin event on every pass.
-    UNIQUE (outage_id, event)
+    -- One send per outage per transition PER CLOUD.
+    --
+    -- The idempotency guarantee: ServiceNow re-fires on every qualifying
+    -- record update and relies on nothing, so a port that swept without this
+    -- would re-post the same begin event on every pass.
+    --
+    -- *** CLOUD IS PART OF THE KEY, AND THAT IS NOT AN OPTIMISATION. *** One
+    -- outage can touch more than one cloud: the flow being ported has a
+    -- sibling, `Cloud Status Event Notification Flow - Affected CI`, that
+    -- triggers on the affected-CI join table and routes its webhook by THAT
+    -- CI's cloud rather than the outage's own. So a Devant outage that also
+    -- affects an Asgardeo component tells both dashboards, and each needs its
+    -- own refresh -- they are separate deployments with separate data.
+    --
+    -- Keying on (outage_id, event) alone silently suppressed the second
+    -- cloud as a duplicate, which would have left one public status page
+    -- stale with nothing logged.
+    UNIQUE (outage_id, event, cloud)
 );
 
 -- The sweep's read: transitions still owed a successful delivery, oldest

@@ -34,9 +34,10 @@ type fakeCloudStatusRepo struct {
 	recorded  []repository.CloudStatusCandidate
 	conflicts map[string]bool // key -> already present, so Record reports false
 
-	monitors     map[string][]string
-	monitorsErr  error
-	statusWrites []statusWrite
+	monitors       map[string][]string
+	affectedClouds map[string][]string
+	monitorsErr    error
+	statusWrites   []statusWrite
 
 	pending    []domain.PendingCloudStatusWebhook
 	pendingErr error
@@ -62,6 +63,10 @@ func (f *fakeCloudStatusRepo) Record(_ context.Context, c repository.CloudStatus
 
 func (f *fakeCloudStatusRepo) AffectedMonitors(_ context.Context, outageID string) ([]string, error) {
 	return f.monitors[outageID], f.monitorsErr
+}
+
+func (f *fakeCloudStatusRepo) AffectedClouds(_ context.Context, outageID string, _ []string) ([]string, error) {
+	return f.affectedClouds[outageID], nil
 }
 
 func (f *fakeCloudStatusRepo) SetMonitorStatus(_ context.Context, ids []string, status domain.CloudMonitorStatus) (int64, error) {
@@ -417,5 +422,95 @@ func TestCloudStatusSweep_NoAffectedMonitorsIsNotAnError(t *testing.T) {
 	}
 	if len(repo.statusWrites) != 0 {
 		t.Errorf("nothing to write, got %+v", repo.statusWrites)
+	}
+}
+
+// TestCloudStatusSweep_OngoingFansOutToEveryAffectedCloud is the sibling flow,
+// `Cloud Status Event Notification Flow - Affected CI`, folded into the sweep.
+//
+// An outage on one cloud whose affected CIs sit on another must refresh both
+// dashboards: they are separate deployments showing separate components, and
+// telling only one leaves the other stale.
+func TestCloudStatusSweep_OngoingFansOutToEveryAffectedCloud(t *testing.T) {
+	repo := &fakeCloudStatusRepo{
+		candidates: []repository.CloudStatusCandidate{{
+			OutageID: "o1", Number: "OUT1", Cloud: "DEVANT",
+			Event: domain.CloudStatusEventOutageBegin, Type: "OUTAGE",
+		}},
+		// One repeats the outage's own cloud and must not produce a second
+		// event for it; one is new; one is unroutable and must be dropped.
+		affectedClouds: map[string][]string{"o1": {"ASGARDEO", "DEVANT", "NOT_A_CLOUD"}},
+	}
+	svc := NewCloudStatusService(repo, []string{testServiceID})
+
+	got, err := svc.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Recorded != 2 {
+		t.Errorf("recorded = %d, want 2 (devant once, asgardeo once)", got.Recorded)
+	}
+	seen := map[string]int{}
+	for _, r := range repo.recorded {
+		seen[r.Cloud]++
+	}
+	if seen["DEVANT"] != 1 || seen["ASGARDEO"] != 1 {
+		t.Errorf("wrong cloud fan-out: %v", seen)
+	}
+	if seen["NOT_A_CLOUD"] != 0 {
+		t.Error("an unroutable cloud must never reach the events table")
+	}
+}
+
+// TestCloudStatusSweep_CompletedDoesNotFanOut is the asymmetry between the two
+// flows. The affected-CI flow's condition is "Outage is not Completed", so it
+// never runs on resolution — only the outage's own cloud is told.
+//
+// Fanning out here would look like a tidy symmetry and would post all-clears
+// to dashboards ServiceNow never tells.
+func TestCloudStatusSweep_CompletedDoesNotFanOut(t *testing.T) {
+	repo := &fakeCloudStatusRepo{
+		candidates: []repository.CloudStatusCandidate{{
+			OutageID: "o1", Number: "OUT1", Cloud: "DEVANT",
+			Event: domain.CloudStatusEventOutageEnd, Type: "OUTAGE",
+		}},
+		affectedClouds: map[string][]string{"o1": {"ASGARDEO", "BIJIRA"}},
+	}
+	svc := NewCloudStatusService(repo, []string{testServiceID})
+
+	got, err := svc.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Recorded != 1 {
+		t.Errorf("recorded = %d, want 1 — completion tells the outage's own cloud only", got.Recorded)
+	}
+	if len(repo.recorded) != 1 || repo.recorded[0].Cloud != "DEVANT" {
+		t.Errorf("wrong cloud on completion: %+v", repo.recorded)
+	}
+}
+
+// TestCloudStatusSweep_ReachableOnlyViaAffectedCI covers the scope union: the
+// affected-CI flow's trigger qualifies on the AFFECTED CI's parent, so an
+// outage whose own configuration item is out of scope still counts.
+func TestCloudStatusSweep_ReachableOnlyViaAffectedCI(t *testing.T) {
+	repo := &fakeCloudStatusRepo{
+		candidates: []repository.CloudStatusCandidate{{
+			OutageID: "o1", Number: "OUT1", Cloud: "", // no usable cloud of its own
+			Event: domain.CloudStatusEventOutageBegin, Type: "OUTAGE",
+		}},
+		affectedClouds: map[string][]string{"o1": {"CHOREO"}},
+	}
+	svc := NewCloudStatusService(repo, []string{testServiceID})
+
+	got, err := svc.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.SkippedNoCloud != 0 {
+		t.Errorf("an outage reachable through its affected CIs must not be skipped")
+	}
+	if got.Recorded != 1 || repo.recorded[0].Cloud != "CHOREO" {
+		t.Errorf("recorded %+v, want one CHOREO event", repo.recorded)
 	}
 }

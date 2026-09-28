@@ -49,6 +49,7 @@ type CloudStatusRepository interface {
 	Candidates(ctx context.Context, parentServiceIDs []string) ([]CloudStatusCandidate, error)
 	Record(ctx context.Context, c CloudStatusCandidate) (bool, error)
 	AffectedMonitors(ctx context.Context, outageID string) ([]string, error)
+	AffectedClouds(ctx context.Context, outageID string, parentServiceIDs []string) ([]string, error)
 	SetMonitorStatus(ctx context.Context, monitorIDs []string, status domain.CloudMonitorStatus) (int64, error)
 	Pending(ctx context.Context, limit, maxAttempts int) ([]domain.PendingCloudStatusWebhook, error)
 	RecordDelivery(ctx context.Context, id string, delivered bool, errMsg string) error
@@ -66,8 +67,23 @@ func NewCloudStatusRepository(db *pgxpool.Pool) CloudStatusRepository {
 // candidatesSQL finds every outage in the flow's scope and states the single
 // transition it currently implies.
 //
-// THE SCOPE FILTER reproduces the ServiceNow trigger exactly, and the exactness
-// matters. The trigger reads
+// THE SCOPE IS THE UNION OF TWO TRIGGERS, because two flows share this work.
+//
+//	Cloud Status Event Notification Flow               on cmdb_ci_outage
+//	Cloud Status Event Notification Flow - Affected CI  on cmdb_outage_ci_mtom
+//
+// They apply the SAME 14-service condition to DIFFERENT records: the first to
+// the outage's own configuration item, the second to each affected CI. So an
+// outage whose own CI is out of scope still qualifies if any affected CI is in
+// scope -- the second flow fires for it and the first never does.
+//
+// Filtering only on the outage's own offering, as this did at first, silently
+// dropped exactly those outages. The LEFT JOIN matters for the same reason: an
+// outage reachable only through its affected CIs may have no usable offering
+// of its own, and an inner join would discard it before the EXISTS ran.
+//
+// THE FILTER ITSELF reproduces the ServiceNow trigger exactly, and the
+// exactness matters. The trigger reads
 //
 //	Configuration Item -> Parent [Service Offering] -> Sys ID  is one of 14
 //
@@ -112,10 +128,19 @@ const candidatesSQL = `
            ),
            COALESCE(o.type::text, '')
       FROM outage o
-      JOIN service_offering so ON so.id = o.service_offering_id
+      LEFT JOIN service_offering so ON so.id = o.service_offering_id
       LEFT JOIN cloud_monitor cm ON cm.service_offering_id = o.service_offering_id
-     WHERE so.parent_id = ANY($1::uuid[])
-       AND o.start_on IS NOT NULL
+     WHERE o.start_on IS NOT NULL
+       AND (
+             so.parent_id = ANY($1::uuid[])
+          OR EXISTS (
+                 SELECT 1
+                   FROM outage_affected_ci ac
+                   JOIN service_offering aso ON aso.id = ac.ci_id
+                  WHERE ac.outage_id = o.id
+                    AND aso.parent_id = ANY($1::uuid[])
+             )
+           )
      ORDER BY COALESCE(o.end_on, o.start_on)
 `
 
@@ -154,7 +179,7 @@ func (r *cloudStatusRepository) Candidates(ctx context.Context, parentServiceIDs
 const recordSQL = `
     INSERT INTO cloud_status_events (outage_id, event, cloud)
     VALUES ($1::uuid, $2::cloud_status_event_enum, $3)
-    ON CONFLICT (outage_id, event) DO NOTHING
+    ON CONFLICT (outage_id, event, cloud) DO NOTHING
     RETURNING id
 `
 
@@ -336,4 +361,63 @@ func (r *cloudStatusRepository) SetMonitorStatus(ctx context.Context, monitorIDs
 		return 0, fmt.Errorf("set cloud monitor status: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+// affectedCloudsSQL lists the distinct clouds an outage's affected CIs sit on.
+//
+// This is what the sibling flow `Cloud Status Event Notification Flow -
+// Affected CI` exists to serve. It triggers on the affected-CI join table and
+// routes its webhook by the affected CI's OWN cloud, not the outage's -- so an
+// outage spanning two clouds produces a refresh on both dashboards, because
+// they are separate deployments showing separate components.
+//
+// *** THE PARENT FILTER IS THE SIBLING FLOW'S OWN TRIGGER CONDITION, AND IT
+// DOES NOT MATCH AffectedMonitors. *** That flow triggers on
+//
+//	Configuration Item -> Parent [Service Offering] -> Sys ID  is one of 14
+//
+// applied to the AFFECTED CI, so an affected CI hanging off some other service
+// produces no webhook at all. The status writes have no such filter -- the
+// outage-triggered flow updates every affected CI's monitor regardless of its
+// parent, because by then the trigger has already qualified on the outage.
+//
+// So the two reads deliberately disagree about which affected CIs count, and
+// that asymmetry is ServiceNow's, not an oversight here: without the filter
+// this would post webhooks ServiceNow never sends.
+//
+// Returned separately from AffectedMonitors rather than derived from it: the
+// monitors drive the status writes and are needed individually, the clouds
+// drive the webhooks and are only needed as a set.
+const affectedCloudsSQL = `
+    SELECT DISTINCT cm.cloud_offering::text
+      FROM outage_affected_ci ac
+      JOIN service_offering so ON so.id = ac.ci_id
+      JOIN cloud_monitor cm ON cm.service_offering_id = so.id
+     WHERE ac.outage_id = $1::uuid
+       AND ac.ci_id IS NOT NULL
+       AND cm.cloud_offering IS NOT NULL
+       AND so.parent_id = ANY($2::uuid[])
+`
+
+// AffectedClouds returns the distinct cloud offerings behind one outage's
+// affected configuration items.
+func (r *cloudStatusRepository) AffectedClouds(ctx context.Context, outageID string, parentServiceIDs []string) ([]string, error) {
+	rows, err := r.db.Query(ctx, affectedCloudsSQL, outageID, parentServiceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query affected clouds: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, fmt.Errorf("scan affected cloud: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate affected clouds: %w", err)
+	}
+	return out, nil
 }

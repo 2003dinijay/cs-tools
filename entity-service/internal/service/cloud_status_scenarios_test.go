@@ -44,9 +44,12 @@ type scenario struct {
 	outageType string
 	// ended closes the outage.
 	ended bool
-	// inScope false moves the fixture under a service the sweep is not
-	// configured for, which should make it vanish from the sweep entirely.
+	// inScope false moves the fixture out from under the configured service.
 	inScope bool
+	// affectedInScope false also detaches its affected CIs. Both must be
+	// false for the outage to leave the sweep's scope, because the scope is
+	// the union of two triggers -- see candidatesSQL.
+	affectedInScope bool
 
 	wantScanned  int
 	wantRecorded int
@@ -69,37 +72,45 @@ func TestIntegrationCloudStatusScenarios(t *testing.T) {
 	scenarios := []scenario{
 		{
 			name: "ongoing/type=outage -> Partial Outage", outageType: "OUTAGE",
-			inScope: true, wantScanned: 1, wantRecorded: 1,
+			inScope: true, affectedInScope: true, wantScanned: 1, wantRecorded: 1,
 			wantEvent: domain.CloudStatusEventOutageBegin, wantStatus: domain.CloudMonitorStatusPartialOutage,
 		},
 		{
 			name: "ongoing/type=degradation -> Degraded", outageType: "DEGRADATION",
-			inScope: true, wantScanned: 1, wantRecorded: 1,
+			inScope: true, affectedInScope: true, wantScanned: 1, wantRecorded: 1,
 			wantEvent: domain.CloudStatusEventOutageBegin, wantStatus: domain.CloudMonitorStatusDegraded,
 		},
 		{
 			name: "ongoing/type=planned -> Maintenance", outageType: "PLANNED",
-			inScope: true, wantScanned: 1, wantRecorded: 1,
+			inScope: true, affectedInScope: true, wantScanned: 1, wantRecorded: 1,
 			wantEvent: domain.CloudStatusEventOutageBegin, wantStatus: domain.CloudMonitorStatusMaintenance,
 		},
 		{
 			// ServiceNow wrote undefined here. The port must not leave a
 			// public page claiming Operational during an incident.
 			name: "ongoing/type missing -> Degraded, counted", outageType: "",
-			inScope: true, wantScanned: 1, wantRecorded: 1,
+			inScope: true, affectedInScope: true, wantScanned: 1, wantRecorded: 1,
 			wantEvent: domain.CloudStatusEventOutageBegin, wantStatus: domain.CloudMonitorStatusDegraded,
 			wantUnknown: 1,
 		},
 		{
 			name: "completed -> Operational", outageType: "OUTAGE", ended: true,
-			inScope: true, wantScanned: 1, wantRecorded: 1,
+			inScope: true, affectedInScope: true, wantScanned: 1, wantRecorded: 1,
 			wantEvent: domain.CloudStatusEventOutageEnd, wantStatus: domain.CloudMonitorStatusOperational,
 		},
 		{
-			// The trigger's whole purpose. An outage outside the configured
-			// services must be invisible to the sweep.
-			name: "out of scope -> not seen at all", outageType: "OUTAGE",
-			inScope: false, wantScanned: 0, wantRecorded: 0,
+			// The sibling flow's case: the outage's own configuration item is
+			// out of scope, but an affected CI is in scope. ServiceNow's
+			// affected-CI flow fires for this and the outage-triggered one
+			// never does, so the sweep must still see it.
+			name: "in scope only via an affected CI", outageType: "OUTAGE",
+			inScope: false, affectedInScope: true, wantScanned: 1, wantRecorded: 1,
+			wantEvent: domain.CloudStatusEventOutageBegin, wantStatus: domain.CloudMonitorStatusPartialOutage,
+		},
+		{
+			// Out of scope by BOTH triggers, which is the only way out.
+			name: "out of scope entirely -> not seen at all", outageType: "OUTAGE",
+			inScope: false, affectedInScope: false, wantScanned: 0, wantRecorded: 0,
 		},
 	}
 
@@ -154,7 +165,7 @@ func TestIntegrationCloudStatusScenarios(t *testing.T) {
 	}
 
 	t.Run("cleanup", func(t *testing.T) {
-		resetFixture(t, pool, scenario{outageType: "OUTAGE", inScope: true})
+		resetFixture(t, pool, scenario{outageType: "OUTAGE", inScope: true, affectedInScope: true})
 		t.Log("fixture left ongoing and in scope for the delivery run")
 	})
 }
@@ -203,6 +214,27 @@ func resetFixture(t *testing.T, pool *pgxpool.Pool, sc scenario) {
 		t.Fatalf("reset fixture: %v", err)
 	}
 
+	// Detach or reattach the affected CIs. Pointing ci_id at NULL is what
+	// takes the outage out of the affected-CI trigger's reach without
+	// deleting rows the next scenario needs back.
+	if sc.affectedInScope {
+		if _, err := pool.Exec(ctx, `
+            UPDATE outage_affected_ci
+               SET ci_id = CASE id
+                   WHEN 'aaaaaaaa-0000-4000-8000-00000000000a'::uuid
+                        THEN '78665653-1b80-b290-a002-c9d3604bcbcd'::uuid
+                   ELSE '64ab9e5b-1b80-b290-a002-c9d3604bcb48'::uuid END
+             WHERE outage_id = $1::uuid`, fixtureOutageID); err != nil {
+			t.Fatalf("reattach affected CIs: %v", err)
+		}
+	} else {
+		if _, err := pool.Exec(ctx,
+			`UPDATE outage_affected_ci SET ci_id = NULL WHERE outage_id = $1::uuid`,
+			fixtureOutageID); err != nil {
+			t.Fatalf("detach affected CIs: %v", err)
+		}
+	}
+
 	// Put the monitors back to Operational so each scenario's write is a
 	// real transition rather than a no-op the repository would skip.
 	if _, err := pool.Exec(ctx, `
@@ -229,7 +261,7 @@ func TestIntegrationCloudStatusOverHTTP(t *testing.T) {
 	ctx := context.Background()
 
 	// Leave the fixture ongoing and undelivered so there is something to read.
-	resetFixture(t, pool, scenario{outageType: "OUTAGE", inScope: true})
+	resetFixture(t, pool, scenario{outageType: "OUTAGE", inScope: true, affectedInScope: true})
 
 	svc := NewCloudStatusService(repository.NewCloudStatusRepository(pool), []string{scope})
 	if _, err := svc.Sweep(ctx); err != nil {
