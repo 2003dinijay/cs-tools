@@ -785,6 +785,41 @@ func TestContactEvent_UpdatedReplaysMemberships(t *testing.T) {
 	}
 }
 
+// A contact edit leaves the membership's LastModifiedDate unchanged, so the
+// guard must compare the contact's own timestamp or the rename is dropped.
+func TestContactEvent_RenameAfterEarlierIngestIsApplied(t *testing.T) {
+	contact := sampleContact()
+	contact.Name = sampleStr("Jane Roe")
+	contact.LastName = sampleStr("Roe")
+	contact.LastModifiedDate = sampleStr("2026-09-18T08:15:00.000+0000")
+	h := newIngestHarness(sampleProjectContact("REGISTERED", "Portal user"), contact, false)
+	h.steps.existing = []domain.OnboardingStep{{
+		MembershipSfID: testMembershipID, Step: domain.OnboardingStepDatabase, Status: domain.OnboardingStepSucceeded,
+		EventModifiedOn: time.Date(2026, 9, 18, 6, 37, 7, 0, time.UTC), // == membership lastModifiedDate
+	}}
+
+	req := domain.SalesforceEventRequest{EventType: "UPDATED", Entity: "Contact", ReferenceID: testContactID}
+	if err := h.svc.HandleEvent(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.repo.upserts) != 1 || h.repo.upserts[0].ContactLastName != "Roe" {
+		t.Fatalf("contact rename not applied: %+v", h.repo.upserts)
+	}
+	want := time.Date(2026, 9, 18, 8, 15, 0, 0, time.UTC)
+	if got := h.repo.steps[0].EventModifiedOn; !got.Equal(want) {
+		t.Errorf("step eventModifiedOn = %s, want the contact's %s", got, want)
+	}
+
+	// Replaying the same contact version is now a duplicate.
+	h.steps.existing[0].EventModifiedOn = want
+	if err := h.svc.HandleEvent(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.repo.upserts) != 1 {
+		t.Errorf("replay of the same contact version must be skipped: upserts=%d", len(h.repo.upserts))
+	}
+}
+
 func TestContactEvent_FirstErrorReturnedAfterProcessingAll(t *testing.T) {
 	pc1 := sampleProjectContact("REGISTERED", "Portal user")
 	pc2 := sampleProjectContact("REGISTERED", "Portal user")

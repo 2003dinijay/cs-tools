@@ -134,6 +134,7 @@ type Contact struct {
 	LockoutStatus       *bool               `json:"lockoutStatus"`
 	Account             *ContactAccount     `json:"account"`
 	Memberships         []ContactMembership `json:"memberships"`
+	LastModifiedDate    *string             `json:"lastModifiedDate"`
 }
 
 // ContactAccount is the parent account of a Contact.
