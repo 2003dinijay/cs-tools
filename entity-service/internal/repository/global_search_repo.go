@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
 )
@@ -102,11 +101,11 @@ type GlobalSearchRepository interface {
 }
 
 type globalSearchRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
 // NewGlobalSearchRepository constructs a GlobalSearchRepository backed by the given connection pool.
-func NewGlobalSearchRepository(db *pgxpool.Pool) GlobalSearchRepository {
+func NewGlobalSearchRepository(db *Scoped) GlobalSearchRepository {
 	return &globalSearchRepo{db: db}
 }
 
@@ -141,16 +140,23 @@ func orderDirection(desc bool) string {
 	return "ASC"
 }
 
-// runSearch executes the count and page queries concurrently, each inside
-// its own transaction with the caller's identity set via
-// runWithCallerIdentity -- required so any table these queries touch that
-// carries a caller-scoped row-level-security policy (currently just
-// `announcement`, via SearchCases's join) is evaluated correctly. This
-// applies unconditionally, including for SearchProjects, which doesn't
-// currently need it: the cost is two trivial extra statements per query, and
-// it means a future RLS policy on another table this function's callers
-// might one day join against needs no further change here.
-func runSearch[T any](ctx context.Context, db *pgxpool.Pool, scope SearchScope, countSQL, pageSQL string, f searchFilter, pagination domain.Pagination, scan func(pgx.Rows) (T, error)) ([]T, int, error) {
+// runSearch executes the count and page queries concurrently, each through
+// Scoped so the caller's identity (stamped onto ctx from the explicit scope
+// parameter below) is set correctly -- required so any table these queries
+// touch that carries a caller-scoped row-level-security policy (currently
+// `announcement` and, once work_item's own RLS is in play, SearchCases'
+// join more broadly) is evaluated correctly. This applies unconditionally,
+// including for SearchProjects, which doesn't currently need it: the cost
+// is negligible, and it means a future RLS policy on another table this
+// function's callers might one day join against needs no further change
+// here.
+func runSearch[T any](ctx context.Context, db *Scoped, scope SearchScope, countSQL, pageSQL string, f searchFilter, pagination domain.Pagination, scan func(pgx.Rows) (T, error)) ([]T, int, error) {
+	// WithCallerIdentity from the explicit scope parameter, not whatever
+	// identity ctx already carries -- same convention as case_repo.go's
+	// GetCaseByID/SearchCases, which take an identical explicit parameter
+	// for the same reason.
+	ctx = WithCallerIdentity(ctx, scope)
+
 	pageArgs := append(append([]any{}, f.args...), pagination.Limit, pagination.Offset)
 	pageSQL = fmt.Sprintf("%s LIMIT $%d OFFSET $%d", pageSQL, len(f.args)+1, len(f.args)+2)
 
@@ -159,29 +165,25 @@ func runSearch[T any](ctx context.Context, db *pgxpool.Pool, scope SearchScope, 
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.Go(func() error {
-		return runWithCallerIdentity(egCtx, db, scope, func(tx pgx.Tx) error {
-			if err := tx.QueryRow(egCtx, countSQL, f.args...).Scan(&total); err != nil {
-				return fmt.Errorf("count: %w", err)
-			}
-			return nil
-		})
+		if err := db.QueryRow(egCtx, countSQL, f.args...).Scan(&total); err != nil {
+			return fmt.Errorf("count: %w", err)
+		}
+		return nil
 	})
 	eg.Go(func() error {
-		return runWithCallerIdentity(egCtx, db, scope, func(tx pgx.Tx) error {
-			rows, err := tx.Query(egCtx, pageSQL, pageArgs...)
+		rows, err := db.Query(egCtx, pageSQL, pageArgs...)
+		if err != nil {
+			return fmt.Errorf("query: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			v, err := scan(rows)
 			if err != nil {
-				return fmt.Errorf("query: %w", err)
+				return fmt.Errorf("scan: %w", err)
 			}
-			defer rows.Close()
-			for rows.Next() {
-				v, err := scan(rows)
-				if err != nil {
-					return fmt.Errorf("scan: %w", err)
-				}
-				out = append(out, v)
-			}
-			return rows.Err()
-		})
+			out = append(out, v)
+		}
+		return rows.Err()
 	})
 	if err := eg.Wait(); err != nil {
 		return nil, 0, err

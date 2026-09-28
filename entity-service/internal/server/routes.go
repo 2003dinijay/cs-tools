@@ -129,7 +129,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// sla_clocks table entirely; see domain.SLAStatus's own doc comment.
 	var slaStatusHandler *handler.SLAStatusHandler
 	if db != nil {
-		slaStatusRepo := repository.NewSLAStatusRepository(db)
+		slaStatusRepo := repository.NewSLAStatusRepository(repository.NewScoped(db))
 		slaStatusHandler = handler.NewSLAStatusHandler(service.NewSLAStatusService(slaStatusRepo, accessSvc))
 	}
 
@@ -839,7 +839,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	} else {
 		globalHandler = handler.NewGlobalHandler(service.NewGlobalService(
 			referenceDataRepo,
-			repository.NewGlobalSearchRepository(db),
+			repository.NewGlobalSearchRepository(repository.NewScoped(db)),
 			accessSvc,
 		))
 	}
