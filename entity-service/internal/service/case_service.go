@@ -1161,12 +1161,22 @@ func (s *caseService) validateWatchListProjectMembership(ctx context.Context, cv
 		return nil
 	}
 	for _, userID := range userIDs {
-		if _, err := s.projectContactRepo.GetProjectContactByUserID(ctx, cv.ProjectDetails.ID, userID, ""); err != nil {
+		contact, err := s.projectContactRepo.GetProjectContactByUserID(ctx, cv.ProjectDetails.ID, userID, "")
+		if err != nil {
 			var notFound *apierror.NotFoundError
 			if errors.As(err, &notFound) {
 				return &apierror.ValidationError{Msg: fmt.Sprintf("user %s is not a contact on this case's project", userID)}
 			}
 			return err
+		}
+		// A row existing isn't enough -- INVITED/RE-INVITED hasn't been
+		// accepted yet and DEACTIVATED no longer applies, so neither
+		// actually represents someone who belongs on this project today.
+		// Same REGISTERED-only bar AccessService.ResolveScope and
+		// user_repo.go's own GrantsCaseAccess already apply for the
+		// identical concept (see access_repo.go's registeredContactState).
+		if contact.RegistrationState != "REGISTERED" {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("user %s is not a registered contact on this case's project", userID)}
 		}
 	}
 	return nil
@@ -1239,7 +1249,12 @@ func (s *caseService) updateCaseWatchList(ctx context.Context, req domain.Update
 	// pattern as the State/Severity/WorkState mirror above.
 	if s.snWriteback != nil {
 		if patcher, ok := s.snMirror.(snWatchListPatcher); ok {
-			mirrorUserIDs := append([]string(nil), userIDs...)
+			// finalIDs, not userIDs -- otherwise ServiceNow's mirror would
+			// only ever get the caller's own submission, never the account's
+			// merged-in default stakeholders Postgres just persisted above,
+			// leaving the two systems permanently disagreeing about who's
+			// actually watching the case.
+			mirrorUserIDs := append([]string(nil), finalIDs...)
 			s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
 				map[string]any{"id": req.ID, "watchList": mirrorUserIDs},
 				func(writeCtx context.Context) error {

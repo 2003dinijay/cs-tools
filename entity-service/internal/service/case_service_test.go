@@ -3294,6 +3294,71 @@ func TestCaseService_UpdateCase_WatchList_MirrorsToServiceNow(t *testing.T) {
 	}
 }
 
+// TestCaseService_UpdateCase_WatchList_MirrorGetsMergedAccountDefaults is the
+// regression test for a CodeRabbit finding on this same change: the
+// ServiceNow mirror dispatch used to forward the caller's own pre-merge
+// userIDs, while Postgres persisted finalIDs (userIDs merged with the
+// account's default stakeholders) -- silently leaving ServiceNow's own copy
+// of the watch list missing whichever stakeholders the caller didn't already
+// list, permanently disagreeing with what Postgres actually has.
+func TestCaseService_UpdateCase_WatchList_MirrorGetsMergedAccountDefaults(t *testing.T) {
+	const projectID = "6fa0b42d-1bfa-a694-a002-c9d3604bcb77"
+	const submittedID = "11111111-1111-1111-1111-111111111111"
+	const stakeholderID = "22222222-2222-2222-2222-222222222222"
+	userIDs := []string{submittedID}
+
+	called := make(chan []string, 1)
+	mirror := &stubMirrorCaseService{
+		patchCaseWatchListFn: func(_ context.Context, caseID string, gotUserIDs []string) (domain.UpdatedCase, error) {
+			called <- gotUserIDs
+			return domain.UpdatedCase{}, nil
+		},
+	}
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ProjectDetails: &domain.EntityRef{ID: projectID}}, nil
+		},
+		accountDefaultWatcherIDs: func(context.Context, string) ([]string, error) {
+			return []string{stakeholderID}, nil
+		},
+		setCaseWatchList: func(context.Context, string, []string, string) ([]domain.WatchListUser, time.Time, error) {
+			return nil, time.Now(), nil
+		},
+	}
+	contactRepo := &stubProjectContactRepo{
+		getProjectContactByUserID: func(context.Context, string, string, string) (repository.ProjectContactRow, error) {
+			return repository.ProjectContactRow{Email: "member@example.com", RegistrationState: "REGISTERED"}, nil
+		},
+	}
+	failures := &recordingSNWritebackFailures{}
+	dispatcher := NewSNWritebackDispatcher(failures)
+	userRepo := stubUserRepo{getUserByEmail: func(context.Context, string) (domain.User, error) {
+		return domain.User{ID: testDeploymentUUID, Email: "jane.doe@example.com"}, nil
+	}}
+	svc := NewCaseServiceWithSNWriteback(repo, userRepo, nil, alwaysUnrestrictedAccess{}, contactRepo, dispatcher, mirror)
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	req := domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &userIDs}
+	if _, err := svc.UpdateCase(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case got := <-called:
+		want := []string{submittedID, stakeholderID}
+		if len(got) != len(want) {
+			t.Fatalf("mirror got %v, want %v (submitted + merged-in stakeholder)", got, want)
+		}
+		for i, id := range want {
+			if got[i] != id {
+				t.Errorf("mirror got[%d] = %q, want %q", i, got[i], id)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("mirror.patchCaseWatchList was never called")
+	}
+}
+
 // TestCaseService_UpdateCase_WatchList_MirrorFailureRecordsWritebackFailure
 // covers the failure half: Postgres already succeeded, so the call must
 // still report success, but the mirror error lands in sn_writeback_failures
@@ -3358,7 +3423,7 @@ func TestCaseService_UpdateCase_WatchList_RejectsNonProjectMember(t *testing.T) 
 			if userID == nonMemberUserID {
 				return repository.ProjectContactRow{}, &apierror.NotFoundError{Msg: "contact not found on this project"}
 			}
-			return repository.ProjectContactRow{Email: "member@example.com"}, nil
+			return repository.ProjectContactRow{Email: "member@example.com", RegistrationState: "REGISTERED"}, nil
 		},
 	}
 	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, contactRepo)
@@ -3372,6 +3437,46 @@ func TestCaseService_UpdateCase_WatchList_RejectsNonProjectMember(t *testing.T) 
 	}
 	if setCaseWatchListCalled {
 		t.Error("SetCaseWatchList was called despite a non-member user in the watch list")
+	}
+}
+
+// TestCaseService_UpdateCase_WatchList_RejectsUnregisteredContact is the
+// regression test for a CodeRabbit finding on this same change:
+// validateWatchListProjectMembership only checked that a project_contact row
+// existed, not its state -- an INVITED (not yet accepted) or DEACTIVATED
+// contact would pass. Neither actually belongs on the project today; only
+// REGISTERED should.
+func TestCaseService_UpdateCase_WatchList_RejectsUnregisteredContact(t *testing.T) {
+	const projectID = "6fa0b42d-1bfa-a694-a002-c9d3604bcb77"
+	const invitedUserID = "11111111-1111-1111-1111-111111111111"
+	userIDs := []string{invitedUserID}
+
+	setCaseWatchListCalled := false
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ProjectDetails: &domain.EntityRef{ID: projectID}}, nil
+		},
+		setCaseWatchList: func(context.Context, string, []string, string) ([]domain.WatchListUser, time.Time, error) {
+			setCaseWatchListCalled = true
+			return nil, time.Now(), nil
+		},
+	}
+	contactRepo := &stubProjectContactRepo{
+		getProjectContactByUserID: func(context.Context, string, string, string) (repository.ProjectContactRow, error) {
+			return repository.ProjectContactRow{Email: "invited@example.com", RegistrationState: "INVITED"}, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, contactRepo)
+
+	req := domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &userIDs}
+	_, err := svc.UpdateCase(context.Background(), req)
+
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) {
+		t.Fatalf("expected a ValidationError for an INVITED (not yet REGISTERED) contact, got %v", err)
+	}
+	if setCaseWatchListCalled {
+		t.Error("SetCaseWatchList was called despite an unregistered contact in the watch list")
 	}
 }
 
@@ -3392,7 +3497,7 @@ func TestCaseService_UpdateCase_WatchList_AcceptsProjectMembers(t *testing.T) {
 	}
 	contactRepo := &stubProjectContactRepo{
 		getProjectContactByUserID: func(context.Context, string, string, string) (repository.ProjectContactRow, error) {
-			return repository.ProjectContactRow{Email: "member@example.com"}, nil
+			return repository.ProjectContactRow{Email: "member@example.com", RegistrationState: "REGISTERED"}, nil
 		},
 	}
 	svc := NewCaseService(repo, stubUserRepo{getUserByEmail: func(context.Context, string) (domain.User, error) {
@@ -3440,7 +3545,7 @@ func TestCaseService_UpdateCase_WatchList_KeepsAccountDefaultsEvenWhenOmitted(t 
 	contactRepo := &stubProjectContactRepo{
 		getProjectContactByUserID: func(_ context.Context, _ string, userID, _ string) (repository.ProjectContactRow, error) {
 			checkedIDs = append(checkedIDs, userID)
-			return repository.ProjectContactRow{Email: "member@example.com"}, nil
+			return repository.ProjectContactRow{Email: "member@example.com", RegistrationState: "REGISTERED"}, nil
 		},
 	}
 	svc := NewCaseService(repo, stubUserRepo{getUserByEmail: func(context.Context, string) (domain.User, error) {

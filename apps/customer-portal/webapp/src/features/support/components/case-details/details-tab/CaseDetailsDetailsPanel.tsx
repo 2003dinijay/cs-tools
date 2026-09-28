@@ -773,6 +773,16 @@ export default function CaseDetailsDetailsPanel({
                 tagValue.map((option, index) => {
                   const { key, onDelete, ...tagProps } = getTagProps({ index });
                   if (option.locked) {
+                    // tabIndex is overridden to 0 (MUI's own getTagProps
+                    // defaults a chip with no onDelete to -1, i.e.
+                    // unreachable by keyboard) so a keyboard/screen-reader
+                    // user can actually focus this chip and hear the
+                    // Tooltip's title via its default aria-describedby wiring
+                    // -- mouse-only hover was the only way to learn why this
+                    // one can't be removed. The chip's own accessible name
+                    // still comes from `label` (option.label, the person's
+                    // name); the tooltip only adds a description alongside
+                    // it, never replaces it.
                     return (
                       <Tooltip
                         key={key}
@@ -783,6 +793,7 @@ export default function CaseDetailsDetailsPanel({
                           size="small"
                           icon={<Lock size={12} aria-hidden />}
                           {...tagProps}
+                          tabIndex={0}
                           sx={{ opacity: 0.6, "& .MuiChip-icon": { ml: "6px" } }}
                         />
                       </Tooltip>
