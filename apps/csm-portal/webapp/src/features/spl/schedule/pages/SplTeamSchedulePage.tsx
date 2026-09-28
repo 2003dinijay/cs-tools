@@ -153,8 +153,22 @@ export default function SplTeamSchedulePage(): JSX.Element {
   const { sysId } = useParams<{ sysId?: string }>();
   const [teamId, setTeamId] = useState(sysId ? DOMPurify.sanitize(sysId) : "");
   const [duration, setDuration] = useState("");
-  const [from, setFrom] = useState<string>(new Date().toLocaleDateString("en-CA"));
+  const [from, setFrom] = useState<string>(formatDateOnly(new Date()));
   const [eventType, setEventType] = useState("");
+
+  // Keep teamId synced with the routed :sysId — without this, navigating
+  // between /spl/team-schedule/:sysId links while this page stays mounted
+  // (same component, React preserves its state) would leave the selector,
+  // request, and ServiceNow link pointing at the previous team. Adjusting
+  // state during render (React's documented pattern for this, see
+  // https://react.dev/learn/you-might-not-need-an-effect) instead of an
+  // effect, so it resolves in the same commit rather than triggering an
+  // extra render.
+  const [prevSysId, setPrevSysId] = useState(sysId);
+  if (sysId !== prevSysId) {
+    setPrevSysId(sysId);
+    setTeamId(sysId ? DOMPurify.sanitize(sysId) : "");
+  }
 
   const { data, isLoading, error } = useGetTeamSchedule({ teamId, duration, from, eventType });
 

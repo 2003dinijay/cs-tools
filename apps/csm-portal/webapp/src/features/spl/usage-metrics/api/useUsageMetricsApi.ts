@@ -67,18 +67,26 @@ export function usePostApi<T>(): PostApiResponse<T> {
   const [data, setData] = useState<T>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<UsageMetricsApiError>();
+  // Guards against an older in-flight call's response landing after a newer
+  // one and clobbering it — e.g. SplUsageMetricsPage's project-search effect
+  // re-invokes postApiData per keystroke, and a slow response for an earlier
+  // query arriving last must not overwrite the current query's results.
+  const requestIdRef = useRef(0);
 
   const postApiData = useCallback(
     async (payload: unknown, url: string) => {
+      const requestId = ++requestIdRef.current;
       setLoading(true);
       setError(undefined);
       try {
         const result = await api.post<unknown, T>(url, payload);
+        if (requestId !== requestIdRef.current) return;
         setData(result);
       } catch (err) {
+        if (requestId !== requestIdRef.current) return;
         setError(toApiError(err));
       } finally {
-        setLoading(false);
+        if (requestId === requestIdRef.current) setLoading(false);
       }
     },
     [api],
@@ -101,11 +109,22 @@ export function useParallelPostApi<T>(): ParallelPostApiResponse<T> {
   const api = useBackendApi();
   const [dataMap, setDataMap] = useState<Map<string, T>>(new Map());
   const [loading, setLoading] = useState(false);
+  // Bumped only by a replace call (merge=false) or clearAll — these
+  // invalidate any earlier in-flight call outright. A merge call must NOT
+  // bump it: SplUsageMetricsPage fires one merge call per expanded product,
+  // and an unrelated product's call landing while another is still in
+  // flight must not cause that other call's own results to be discarded.
   const generationRef = useRef(0);
+  // Counts merge calls currently in flight, so `loading` reflects "at least
+  // one call running" instead of only the most recent one.
+  const inFlightRef = useRef(0);
   const dataMapRef = useRef(dataMap);
   dataMapRef.current = dataMap;
 
-  const clearAll = () => setDataMap(new Map());
+  const clearAll = () => {
+    generationRef.current++;
+    setDataMap(new Map());
+  };
 
   const postAll = useCallback(
     async (
@@ -116,7 +135,8 @@ export function useParallelPostApi<T>(): ParallelPostApiResponse<T> {
       const toFetch = merge ? items.filter(({ id }) => !dataMapRef.current.has(id)) : items;
       if (toFetch.length === 0) return;
 
-      const generation = ++generationRef.current;
+      const generation = merge ? generationRef.current : ++generationRef.current;
+      inFlightRef.current++;
       setLoading(true);
       try {
         const results = await Promise.all(
@@ -147,7 +167,8 @@ export function useParallelPostApi<T>(): ParallelPostApiResponse<T> {
           setDataMap(newMap);
         }
       } finally {
-        if (generation === generationRef.current) setLoading(false);
+        inFlightRef.current--;
+        if (inFlightRef.current === 0) setLoading(false);
       }
     },
     [api],

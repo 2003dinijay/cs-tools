@@ -27,6 +27,7 @@ import {
   Checkbox,
   CircularProgress,
   FormControlLabel,
+  IconButton,
   Paper,
   Stack,
   TextField,
@@ -50,17 +51,17 @@ export default function SplUserScanPage(): JSX.Element {
   const [isEmailError, setIsEmailError] = useState(false);
   const [isPageLoading, setIsPageLoading] = useState(false);
   const [isProjectKeyError, setIsProjectKeyError] = useState(false);
+  const [scanErrorMessage, setScanErrorMessage] = useState("");
 
   const runScan = () => {
+    setResponseData([]);
+    setScanErrorMessage("");
     if (email === "") {
       setIsEmailError(true);
-      setResponseData([]);
     } else if (projectKey === "") {
       setIsProjectKeyError(true);
-      setResponseData([]);
-    } else if (!/^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,4}$/i.test(email)) {
+    } else if (!/^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(email)) {
       setIsEmailError(true);
-      setResponseData([]);
     } else {
       setIsEmailError(false);
       setIsProjectKeyError(false);
@@ -73,22 +74,36 @@ export default function SplUserScanPage(): JSX.Element {
         { email, subscriptionKey: projectKey, isPartner },
         {
           onSuccess: (result) => setResponseData(result),
-          onError: () => setResponseData([]),
+          onError: () => setScanErrorMessage("Something went wrong while scanning this user. Please try again."),
         },
       );
     }
+  };
+
+  // Stale results (including a confidential invitation link) must not
+  // linger once the operator changes what they're scanning for.
+  const clearScanResults = () => {
+    setResponseData([]);
+    setScanErrorMessage("");
   };
 
   const handleEmailFieldChange = (event: ChangeEvent<HTMLInputElement>) => {
     setEmail(event.target.value);
     setIsEmailError(false);
     setIsPageLoading(true);
+    clearScanResults();
   };
 
   const handleProjectFieldChange = (event: ChangeEvent<HTMLInputElement>) => {
     setProjectKey(event.target.value);
     setIsProjectKeyError(false);
     setIsPageLoading(true);
+    clearScanResults();
+  };
+
+  const handleIsPartnerChange = () => {
+    setIsPartner(!isPartner);
+    clearScanResults();
   };
 
   return (
@@ -121,7 +136,7 @@ export default function SplUserScanPage(): JSX.Element {
             onChange={handleProjectFieldChange}
           />
           <FormControlLabel
-            control={<Checkbox checked={isPartner} onChange={() => setIsPartner(!isPartner)} />}
+            control={<Checkbox checked={isPartner} onChange={handleIsPartnerChange} />}
             label="Is Partner"
           />
           <Button
@@ -142,6 +157,11 @@ export default function SplUserScanPage(): JSX.Element {
         {isProjectKeyError && (
           <Typography variant="body2" color="error" sx={{ mt: 1 }}>
             Please provide valid subscription key
+          </Typography>
+        )}
+        {scanErrorMessage && (
+          <Typography variant="body2" color="error" sx={{ mt: 1 }}>
+            {scanErrorMessage}
           </Typography>
         )}
       </Paper>
@@ -194,13 +214,14 @@ export default function SplUserScanPage(): JSX.Element {
                         <strong>directly without CC-ing anyone or group.</strong>&nbsp; It is
                         confidential. To copy, click the icon.&nbsp;
                         <Tooltip title="Copy here">
-                          <Box
-                            component="span"
-                            sx={{ cursor: "pointer", verticalAlign: "middle", display: "inline-flex" }}
+                          <IconButton
+                            size="small"
+                            aria-label="Copy invitation link"
+                            sx={{ verticalAlign: "middle" }}
                             onClick={() => copyToClipboard(systemResult.information.invitationUrl!)}
                           >
                             <CopyIcon size={16} />
-                          </Box>
+                          </IconButton>
                         </Tooltip>
                       </Box>
                     </Box>
