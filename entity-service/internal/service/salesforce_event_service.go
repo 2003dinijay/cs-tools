@@ -133,6 +133,12 @@ func (s *salesforceEventService) upsertAccount(ctx context.Context, sfID string)
 	if strings.TrimSpace(derefString(cust.Name)) == "" {
 		return &apierror.ServiceUnavailableError{Msg: "sales/sales-entity-service customer is missing Name"}
 	}
+	// The Salesforce id is stored as both sf_id and account.number (NOT NULL,
+	// UNIQUE), so a record without one could only be inserted as an empty
+	// number, once.
+	if strings.TrimSpace(cust.ID) == "" {
+		return &apierror.ServiceUnavailableError{Msg: "sales/sales-entity-service customer is missing id"}
+	}
 
 	row := mapSalesEntityCustomer(cust)
 	row.TechnicalOwnerID, err = s.lookupOwner(ctx, derefString(cust.TechnicalOwner))
