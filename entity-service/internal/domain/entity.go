@@ -378,9 +378,14 @@ type PatchUserMeResponse struct {
 
 // SearchAccountsFilters holds the optional filter criteria for an account search.
 type SearchAccountsFilters struct {
-	SearchQuery    string `json:"searchQuery,omitempty"`
-	Active         *bool  `json:"active,omitempty"`
-	Pod            string `json:"pod,omitempty"`
+	SearchQuery string `json:"searchQuery,omitempty"`
+	Active      *bool  `json:"active,omitempty"`
+	Pod         string `json:"pod,omitempty"`
+	// OwnerEmail filters to accounts where this email is the technical
+	// owner, account manager, or renewal account manager (any of the
+	// three) — a "my accounts" filter for whichever of those roles the
+	// caller holds. Case-insensitive exact match.
+	OwnerEmail     string `json:"ownerEmail,omitempty"`
 	Classification string `json:"classification,omitempty"`
 }
 
@@ -396,17 +401,27 @@ type SearchAccountsRequest struct {
 // Fields not available from a given data source are left nil.
 // SupportTier is returned as a plain label string (no ID).
 type AccountView struct {
-	ID                    string     `json:"id"`
-	Name                  string     `json:"name"`
-	Classification        string     `json:"classification"`
-	Pod                   *string    `json:"pod"`
-	SfID                  *string    `json:"sfId"`
-	Region                *string    `json:"region"`
-	SupportTier           *string    `json:"supportTier"`
-	ArrToday              *string    `json:"arrToday"`
-	TechnicalOwner        *PersonRef `json:"technicalOwner"`
-	AccountManager        *PersonRef `json:"accountManager"`
-	RenewalAccountManager *PersonRef `json:"renewalAccountManager"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Number is the account's ServiceNow-style identifier (e.g. "ACC0001") —
+	// present and populated on the Postgres data source (account.number, NOT
+	// NULL UNIQUE), unlike SupportTier/ArrToday below.
+	Number         string  `json:"number"`
+	Classification string  `json:"classification"`
+	Pod            *string `json:"pod"`
+	SfID           *string `json:"sfId"`
+	Region         *string `json:"region"`
+	Country        *string `json:"country"`
+	City           *string `json:"city"`
+	// DriveLocation is a free-text Google Drive folder reference — present
+	// on the Postgres data source (account.drive_location).
+	DriveLocation          *string    `json:"driveLocation"`
+	SupportTier            *string    `json:"supportTier"`
+	ArrToday               *string    `json:"arrToday"`
+	TechnicalOwner         *PersonRef `json:"technicalOwner"`
+	AccountManager         *PersonRef `json:"accountManager"`
+	RenewalAccountManager  *PersonRef `json:"renewalAccountManager"`
+	CustomerSuccessManager *PersonRef `json:"customerSuccessManager"`
 	// CreTeam is the account's CRE (customer relationship engineering) team,
 	// resolved to a named group reference -- account.cre_team_id (migration
 	// 000074) on the Postgres data source. Mirrors AccountRef.CreTeam.
@@ -453,17 +468,22 @@ type SNSupportTierRef struct {
 // sources for GET /accounts/{id}. SupportTier is returned as an {id, label}
 // object. Fields not available from a given data source are left nil.
 type AccountDetail struct {
-	ID                    string            `json:"id"`
-	Name                  string            `json:"name"`
-	Classification        string            `json:"classification"`
-	Pod                   *string           `json:"pod"`
-	SfID                  *string           `json:"sfId"`
-	Region                *string           `json:"region"`
-	SupportTier           *SNSupportTierRef `json:"supportTier"`
-	ArrToday              *string           `json:"arrToday"`
-	TechnicalOwner        *PersonRef        `json:"technicalOwner"`
-	AccountManager        *PersonRef        `json:"accountManager"`
-	RenewalAccountManager *PersonRef        `json:"renewalAccountManager"`
+	ID                     string            `json:"id"`
+	Name                   string            `json:"name"`
+	Number                 string            `json:"number"`
+	Classification         string            `json:"classification"`
+	Pod                    *string           `json:"pod"`
+	SfID                   *string           `json:"sfId"`
+	Region                 *string           `json:"region"`
+	Country                *string           `json:"country"`
+	City                   *string           `json:"city"`
+	DriveLocation          *string           `json:"driveLocation"`
+	SupportTier            *SNSupportTierRef `json:"supportTier"`
+	ArrToday               *string           `json:"arrToday"`
+	TechnicalOwner         *PersonRef        `json:"technicalOwner"`
+	AccountManager         *PersonRef        `json:"accountManager"`
+	RenewalAccountManager  *PersonRef        `json:"renewalAccountManager"`
+	CustomerSuccessManager *PersonRef        `json:"customerSuccessManager"`
 	// CreTeam is the account's CRE (customer relationship engineering) team,
 	// resolved to a named group reference -- account.cre_team_id (migration
 	// 000074) on the Postgres data source. Mirrors AccountRef.CreTeam.
@@ -908,8 +928,12 @@ type Project struct {
 
 // ProjectAccountRef is the embedded account summary returned in project detail responses.
 type ProjectAccountRef struct {
-	ID                  string     `json:"id"`
-	Name                string     `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Number is the account's ServiceNow-style identifier — see
+	// AccountView.Number's own doc comment for why this is populated on the
+	// Postgres data source too, not just ServiceNow.
+	Number              string     `json:"number"`
 	ActivationDate      *time.Time `json:"activationDate"`
 	Tier                string     `json:"tier"`
 	Region              *string    `json:"region"`
@@ -1060,9 +1084,11 @@ type SearchProjectsRequest struct {
 	SortBy string `json:"sortBy"`
 	// SortOrder is the sort direction ("asc" or "desc", ServiceNow data source only).
 	SortOrder string `json:"sortOrder"`
-	// AccountID filters to projects belonging to this account. Platform UUID,
-	// converted to the backing data source's internal id before dispatch
-	// (ServiceNow data source only).
+	// AccountID filters to projects belonging to this account. Platform
+	// UUID. Supported on both data sources: the ServiceNow path converts it
+	// to that backing data source's internal id before dispatch; the
+	// Postgres path applies it directly against project.account_id
+	// (project_repo.go).
 	AccountID string `json:"accountId"`
 	// OnboardingStatus filters to projects whose onboarding status is one of
 	// the given values (ServiceNow data source only).
@@ -7556,4 +7582,21 @@ type CreateServiceRequestFromIssueResponse struct {
 	// Created distinguishes a new record from one that already existed, so a
 	// caller retrying after a timeout can tell without parsing Message.
 	Created bool `json:"created"`
+}
+
+// TeamMember is one member of a team's roster (GET /teams/{id}/members).
+// Mirrors team_member joined to "user" (migrations 000028/000029). Role is
+// team_member.role -- "member" or "lead" only (a fixed two-value check
+// constraint), narrower than ServiceNow's free-form u_role on
+// sys_user_grmember, but always populated (NOT NULL with a default).
+type TeamMember struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Email *string `json:"email"`
+	Role  *string `json:"role"`
+}
+
+// GetTeamMembersResponse is the response for GET /teams/{id}/members.
+type GetTeamMembersResponse struct {
+	Members []TeamMember `json:"members"`
 }

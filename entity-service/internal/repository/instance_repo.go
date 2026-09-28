@@ -95,6 +95,13 @@ func NewInstanceRepository(db *pgxpool.Pool) InstanceRepository {
 // Verified against staging's 16 nodes: 14 resolve to a project and 11 to a
 // deployment (each within the node's own project), and none resolves to a
 // deployment of another project.
+//
+// project_key/deployment_number are staging's real (sync-built) column
+// names -- migration 0054 (post-restructure) creates deployment_node under
+// these same names directly, rather than the stale subscription_key/
+// deployment_ref its pre-restructure version used, so a database built
+// purely from migrations/, applied in order, can run this query too. See
+// CLAUDE.md's "Staging schema drift".
 const instanceRefJoins = `
 	LEFT JOIN product_version pv ON pv.id = dn.product_version_id
 	LEFT JOIN product p ON p.id = pv.product_id

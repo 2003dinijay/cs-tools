@@ -179,9 +179,11 @@ func (r *projectStatsRepo) DeployedProductCount(ctx context.Context, projectID s
 // instance_repo.go's own instanceRefJoins does.
 //
 // The column is spelled project_key, following the live (sync-built) schema
-// rather than migration 0054's subscription_key -- the same deliberate
-// choice instance_repo.go makes, and the reason a database built purely from
-// migrations/ cannot run this query. See CLAUDE.md's "Staging schema drift".
+// -- migration 0054 (post-restructure) creates it under this name directly
+// rather than the stale subscription_key its pre-restructure version used,
+// the same deliberate choice instance_repo.go makes, so a database built
+// purely from migrations/, applied in order, can run this query too. See
+// CLAUDE.md's "Staging schema drift".
 func (r *projectStatsRepo) InstanceCount(ctx context.Context, projectID string) (int, error) {
 	var n int
 	err := r.db.QueryRow(ctx, `

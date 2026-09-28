@@ -211,6 +211,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	accountRepo := repository.NewAccountRepository(db)
 	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
 
+	// teamHandler has no ServiceNow-backed counterpart to switch on — see
+	// TeamService's own doc comment for why this is a new capability, not a
+	// migrated one. Still gated on db != nil like every other Postgres-only
+	// handler above: NewPoolIfNeeded returns a nil pool for
+	// DATA_SOURCE=servicenow, and TeamRepository's queries would nil-pointer
+	// on the first request rather than being unregistered like the rest.
+	var teamHandler *handler.TeamHandler
+	if db != nil {
+		teamRepo := repository.NewTeamRepository(db)
+		teamHandler = handler.NewTeamHandler(service.NewTeamService(teamRepo))
+	}
+
 	var salesforceEventHandler *handler.SalesforceEventHandler
 	// membershipRegistrationHandler and projectContactSyncHandler both need
 	// the very same membership-ingest-enabled SalesforceEventService this
@@ -1020,6 +1032,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("GET /accounts/{id}", accountHandler.GetAccount)
 		mux.HandleFunc("POST /accounts/search", accountHandler.SearchAccounts)
 		mux.HandleFunc("PATCH /accounts/{id}", accountHandler.PatchAccountTeams)
+	}
+	if teamHandler != nil {
+		mux.HandleFunc("GET /teams/{id}/members", teamHandler.GetTeamMembers)
 	}
 	mux.HandleFunc("POST /accounts/{id}/contacts/search", accountContactHandler.SearchAccountContacts)
 	if opportunityHandler != nil {

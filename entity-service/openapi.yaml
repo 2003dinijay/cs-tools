@@ -1932,6 +1932,43 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /teams/{id}/members:
+    get:
+      summary: Get a team's member roster.
+      operationId: getTeamMembers
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The team's members.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTeamMembersResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Team not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /accounts/search:
     post:
       summary: Search accounts by name or Salesforce ID.
@@ -12408,6 +12445,37 @@ components:
         email:
           type: string
           nullable: true
+
+    TeamMember:
+      type: object
+      description: >-
+        One member of a team's roster. Role is "member" or "lead" only (a
+        fixed two-value constraint), narrower than ServiceNow's free-form
+        u_role on sys_user_grmember, but always populated.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum: [member, lead]
+      required:
+        - id
+        - name
+        - role
+
+    GetTeamMembersResponse:
+      type: object
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamMember'
 
     DeployedProductRef:
       type: object

@@ -43,6 +43,11 @@ func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchPr
 	if err := validateSearchQuery(req.SearchQuery); err != nil {
 		return domain.SearchProjectsResponse{}, err
 	}
+	if req.AccountID != "" {
+		if err := validateUUIDs("accountId", []string{req.AccountID}); err != nil {
+			return domain.SearchProjectsResponse{}, err
+		}
+	}
 	scope, err := s.access.ResolveScope(ctx)
 	if err != nil {
 		return domain.SearchProjectsResponse{}, err

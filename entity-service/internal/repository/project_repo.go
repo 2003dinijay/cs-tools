@@ -167,6 +167,17 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		argIdx++
 	}
 
+	// AccountID was previously documented "ServiceNow data source only" even
+	// though project.account_id (migration 000009) is a plain FK already
+	// selected/returned by this same query below -- this is what actually
+	// applies it as a filter for the Postgres data source too. The service
+	// layer validates it's a UUID before this point (project_service.go).
+	if req.AccountID != "" {
+		where += fmt.Sprintf(" AND p.account_id = $%d::uuid", argIdx)
+		filterArgs = append(filterArgs, req.AccountID)
+		argIdx++
+	}
+
 	countQuery := "SELECT COUNT(*) FROM project p LEFT JOIN project_type pt ON pt.id = p.project_type_id " + where
 
 	dataQuery := fmt.Sprintf(
@@ -277,6 +288,11 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	// so they tolerate NULL (whether from a real account or a LEFT JOIN
 	// producing no row at all) without a separate local var.
 	var aID, aName *string
+	// aNumber is the same class of already-present-but-unselected gap
+	// account_repo.go's own comment describes for account.number -- kept as
+	// its own local var (rather than folded into aID/aName above) since only
+	// this one column needed the fix, not the whole account.* group.
+	var aNumber *string
 	// account.support_tier (migration 0101) is support_tier_enum, not a plain
 	// VARCHAR -- like every other enum column this repository package scans
 	// into a Go string (see e.g. this file's wso2_closure_state/
@@ -306,7 +322,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	err := r.db.QueryRow(ctx,
 		`SELECT p.id, p.sf_id, p.name, p.key,
 		        p.start_date, p.end_date, p.created_on, p.updated_on,
-		        a.id, a.name, a.activation_date, a.region,
+		        a.id, a.name, a.number, a.activation_date, a.region,
 		        a.ai_gen_response_enabled, a.smart_knowledge_base_suggestions_enabled,
 		        a.support_tier::TEXT,
 		        pt.name,
@@ -356,7 +372,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	).Scan(
 		&v.ID, &v.SfID, &v.Name, &v.Key,
 		&v.StartDate, &v.EndDate, &v.CreatedOn, &v.UpdatedOn,
-		&aID, &aName, &v.Account.ActivationDate, &v.Account.Region,
+		&aID, &aName, &aNumber, &v.Account.ActivationDate, &v.Account.Region,
 		&agentEnabled, &kbReferencesEnabled,
 		&supportTier,
 		&projectTypeName,
@@ -386,6 +402,9 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	}
 	if aName != nil {
 		v.Account.Name = *aName
+	}
+	if aNumber != nil {
+		v.Account.Number = *aNumber
 	}
 	v.Account.AgentEnabled = agentEnabled != nil && *agentEnabled
 	v.Account.KbReferencesEnabled = kbReferencesEnabled != nil && *kbReferencesEnabled
