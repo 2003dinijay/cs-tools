@@ -288,55 +288,102 @@ func (r *accountRepo) UpdateAccountTeams(ctx context.Context, accountID string, 
 
 const salesforceSyncActor = domain.SalesforceSyncActor
 
+// UpsertFromSalesforce writes one Salesforce Account. account.sf_id is not
+// unique (migration 0095 dropped the constraint, so ON CONFLICT (sf_id) has
+// nothing to arbitrate on), so the row is resolved by hand inside one
+// transaction, serialised per sf_id by an advisory lock so two concurrent
+// events for a new account cannot both insert:
+//
+//  1. update every row already carrying this sf_id;
+//  2. else link the row with the same account number that has no sf_id yet
+//     (a ServiceNow-synced row), rather than tripping account_number_key;
+//  3. else insert.
+//
+// Salesforce does not supply account_vertical or
+// secondary_technical_owner_id, so an update keeps the stored value when the
+// incoming one is NULL instead of blanking it.
 func (r *accountRepo) UpsertFromSalesforce(ctx context.Context, row domain.SalesforceAccountUpsert) error {
-	query := `
-		INSERT INTO account (
-			id, created_on, updated_on, created_by, updated_by,
-			name, number, sf_id,
-			industry, region, global_pod, phone, sales_region, sub_region,
-			account_vertical, life_cycle, naics_industry, sub_industry,
-			classification, technical_owner_id, secondary_technical_owner_id,
-			deactivation_date, sync_time_stamp
-		) VALUES (
-			gen_random_uuid(), now(), now(), $1, $1,
-			$2, $3, $4,
-			$5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14,
-			$15, $16, $17,
-			NULL, now()
-		)
-		ON CONFLICT (sf_id) DO UPDATE SET
-			name = EXCLUDED.name,
-			industry = EXCLUDED.industry,
-			region = EXCLUDED.region,
-			global_pod = EXCLUDED.global_pod,
-			phone = CASE WHEN $18 THEN account.phone ELSE EXCLUDED.phone END,
-			sales_region = EXCLUDED.sales_region,
-			sub_region = EXCLUDED.sub_region,
-			account_vertical = EXCLUDED.account_vertical,
-			life_cycle = EXCLUDED.life_cycle,
-			naics_industry = EXCLUDED.naics_industry,
-			sub_industry = EXCLUDED.sub_industry,
-			classification = EXCLUDED.classification,
-			technical_owner_id = EXCLUDED.technical_owner_id,
-			secondary_technical_owner_id = EXCLUDED.secondary_technical_owner_id,
-			deactivation_date = NULL,
-			updated_on = now(),
-			updated_by = EXCLUDED.updated_by,
-			sync_time_stamp = now()`
-	_, err := r.db.Exec(ctx, query,
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("upsert account from salesforce: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0::bigint))`, "account-sf:"+row.SfID); err != nil {
+		return fmt.Errorf("upsert account from salesforce: lock: %w", err)
+	}
+
+	args := []any{
 		salesforceSyncActor,
 		row.Name, row.Number, row.SfID,
 		row.Industry, row.Region, row.GlobalPod, row.Phone, row.SalesRegion, row.SubRegion,
 		row.AccountVertical, row.LifeCycle, row.NAICSIndustry, row.SubIndustry,
 		row.Classification, row.TechnicalOwnerID, row.SecondaryTechnicalOwnerID,
 		row.KeepExistingPhone,
-	)
+	}
+	tag, err := tx.Exec(ctx, updateAccountFromSalesforceQuery+` WHERE sf_id = $4`, args...)
 	if err != nil {
-		return fmt.Errorf("upsert account from salesforce: %w", err)
+		return fmt.Errorf("upsert account from salesforce: update by sf_id: %w", err)
+	}
+	if tag.RowsAffected() == 0 && row.Number != "" {
+		tag, err = tx.Exec(ctx, updateAccountFromSalesforceQuery+` WHERE number = $3 AND sf_id IS NULL`, args...)
+		if err != nil {
+			return fmt.Errorf("upsert account from salesforce: link by number: %w", err)
+		}
+	}
+	if tag.RowsAffected() == 0 {
+		if _, err := tx.Exec(ctx, insertAccountFromSalesforceQuery, args[:17]...); err != nil {
+			return fmt.Errorf("upsert account from salesforce: insert: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("upsert account from salesforce: commit: %w", err)
 	}
 	return nil
 }
+
+// updateAccountFromSalesforceQuery is completed with a WHERE clause by
+// UpsertFromSalesforce; its parameters match insertAccountFromSalesforceQuery
+// plus $18 (keep the existing phone).
+const updateAccountFromSalesforceQuery = `
+	UPDATE account SET
+		name = $2,
+		number = COALESCE(account.number, NULLIF($3::text, '')),
+		sf_id = $4,
+		industry = $5,
+		region = $6,
+		global_pod = $7,
+		phone = CASE WHEN $18 THEN account.phone ELSE $8 END,
+		sales_region = $9,
+		sub_region = $10,
+		account_vertical = COALESCE($11, account.account_vertical),
+		life_cycle = $12,
+		naics_industry = $13,
+		sub_industry = $14,
+		classification = $15,
+		technical_owner_id = $16,
+		secondary_technical_owner_id = COALESCE($17, account.secondary_technical_owner_id),
+		deactivation_date = NULL,
+		updated_on = now(),
+		updated_by = $1,
+		sync_time_stamp = now()`
+
+const insertAccountFromSalesforceQuery = `
+	INSERT INTO account (
+		id, created_on, updated_on, created_by, updated_by,
+		name, number, sf_id,
+		industry, region, global_pod, phone, sales_region, sub_region,
+		account_vertical, life_cycle, naics_industry, sub_industry,
+		classification, technical_owner_id, secondary_technical_owner_id,
+		deactivation_date, sync_time_stamp
+	) VALUES (
+		gen_random_uuid(), now(), now(), $1, $1,
+		$2, $3, $4,
+		$5, $6, $7, $8, $9, $10,
+		$11, $12, $13, $14,
+		$15, $16, $17,
+		NULL, now()
+	)`
 
 func (r *accountRepo) SoftDeleteBySfID(ctx context.Context, sfID string) error {
 	_, err := r.db.Exec(ctx, `

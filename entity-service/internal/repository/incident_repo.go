@@ -439,7 +439,7 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 		       caused_by_cr.id, caused_by_wi.number,
 		       inc.resolution_code::TEXT, inc.close_notes,
 		       rb.id, COALESCE(rb.name, NULLIF(TRIM(CONCAT_WS(' ', rb.first_name, rb.last_name)), '')),
-		       inc.resolved_on, inc.incident_report,
+		       inc.resolved_on, inc.incident_report, wi.description,
 		       wi.created_on, wi.created_by, wi.updated_on, wi.updated_by
 		` + incidentFromJoins + `
 		WHERE wi.id = $1 AND wi.type = 'INCIDENT'`
@@ -461,6 +461,7 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 		rbID, rbName                       *string
 		resolvedOn                         *time.Time
 		incidentReport                     *string
+		description                        *string
 		createdOn, updatedOn               time.Time
 		createdBy, updatedBy               string
 	)
@@ -478,7 +479,7 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 		&causedByID, &causedByNumber,
 		&resolutionCode, &closeNotes,
 		&rbID, &rbName,
-		&resolvedOn, &incidentReport,
+		&resolvedOn, &incidentReport, &description,
 		&createdOn, &createdBy, &updatedOn, &updatedBy,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -493,6 +494,7 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 		Priority: priority, State: state, Category: category, Subcategory: subcatL,
 		ContactType: contactType, Impact: impact, Urgency: urgency,
 		ResolutionCode: resolutionCode, ResolutionNotes: closeNotes, IncidentReport: incidentReport,
+		Description:           description,
 		WatchList:             []domain.IncidentWatchListItem{},
 		LinkedServiceRequests: []domain.LinkedServiceRequestRef{},
 		CreatedOn:             createdOn.UTC().Format(time.RFC3339), CreatedBy: createdBy,

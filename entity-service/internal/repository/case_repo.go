@@ -63,6 +63,30 @@ var caseSeverityFromEnum = map[string]domain.CaseSeverity{
 	"S4": domain.CaseSeverityLow,
 }
 
+// announcementTypeEnumValue maps CreateCaseRequest.IsSecurityAnnouncement to
+// announcement.announcement_type's announcement_type_enum literal
+// (migration 0088). Only meaningful for req.Type == "announcement" -- the
+// caller passes req.IsSecurityAnnouncement directly, never derives it from
+// anything else.
+func announcementTypeEnumValue(isSecurityAnnouncement bool) string {
+	if isSecurityAnnouncement {
+		return "SECURITY"
+	}
+	return "GENERAL"
+}
+
+// announcementTypeEnumValuePtr is announcementTypeEnumValue's nil-safe
+// counterpart for a partial update (COALESCE against the existing column
+// value) -- a nil req field must leave announcement_type untouched, not
+// silently reset it to GENERAL.
+func announcementTypeEnumValuePtr(isSecurityAnnouncement *bool) *string {
+	if isSecurityAnnouncement == nil {
+		return nil
+	}
+	v := announcementTypeEnumValue(*isSecurityAnnouncement)
+	return &v
+}
+
 // caseResolutionCodeToEnum maps domain.CaseResolutionCode (verified against
 // ServiceNow's live resolution-code picklist -- see that type's own doc
 // comment) to "case".resolution_code's real case_resolution_code_enum
@@ -312,13 +336,25 @@ type CaseRepository interface {
 	// exist.
 	SetCaseWatchList(ctx context.Context, caseID string, userIDs []string, callerEmail string) ([]domain.WatchListUser, time.Time, error)
 	// AccountDefaultWatcherIDs returns the account owning projectID's four
-	// named stakeholder ids -- customer_success_manager_id, technical_owner_id,
-	// secondary_technical_owner_id, account_manager_id (migration 0012) --
-	// whichever are set, deduplicated, in that order. A project with no
-	// linked account, or a project id that does not exist, returns an empty
-	// slice rather than an error: this is a default watch list, not a
-	// requirement.
+	// named stakeholder ids -- technical_owner_id, secondary_technical_owner_id,
+	// account_manager_id, renewal_account_manager_id (migration 0012) --
+	// whichever are set, deduplicated, in that order. customer_success_manager_id
+	// is deliberately excluded: unlike the other four, the CSM is not meant to
+	// receive these default case notifications. A project with no linked
+	// account, or a project id that does not exist, returns an empty slice
+	// rather than an error: this is a default watch list, not a requirement.
 	AccountDefaultWatcherIDs(ctx context.Context, projectID string) ([]string, error)
+	// ProjectContactEmailsByRole returns the distinct project_contact.email
+	// addresses for projectID whose contact currently holds role (a
+	// project_role_enum label, e.g. "SECURITY_CONTACT" or "PORTAL_USER") via
+	// project_contact_group -> project_group -> project_group_role ->
+	// project_role. Excludes DEACTIVATED contacts; every other state
+	// (INVITED/REGISTERED/RE-INVITED/NULL) counts, since this is an email
+	// audience, not a case-access grant. Used to resolve an announcement
+	// case's recipients -- see publishCaseCreatedEvent's own doc comment. A
+	// project with no contact holding role returns an empty slice, not an
+	// error.
+	ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error)
 	// UpdateCaseAssignee sets work_item.assigned_to_id to userID -- already
 	// resolved and validated as a real "user" row by the caller (CaseService.
 	// updateCaseAssignee, via GetUserByEmail) -- and bumps updated_on/updated_by,
@@ -581,7 +617,12 @@ const createCaseFromServiceNowQuery = `
 // comment). $8 is the announcement's initial state, already resolved to
 // announcement_state_enum's literal ('OPEN' in practice -- see
 // snAnnouncementStateToEnum) by the caller, not derived here: this layer
-// stays free of ServiceNow label vocabulary. cause/closed_by_user_id/
+// stays free of ServiceNow label vocabulary. $9 is the announcement's
+// announcement_type (GENERAL/SECURITY, migration 0088), resolved from
+// req.IsSecurityAnnouncement via announcementTypeEnumValue -- reusing that
+// existing field (added for a different purpose, deciding the case's
+// default watcher audience) rather than a second, redundant flag for the
+// same underlying yes/no. cause/closed_by_user_id/
 // closed_on/resolved_on are left NULL -- all four are closure-time-only
 // fields, meaningless on a fresh row.
 //
@@ -604,8 +645,8 @@ const createAnnouncementFromServiceNowQuery = `
 		          subject, description, created_on, updated_on
 	),
 	inserted_announcement AS (
-		INSERT INTO announcement (id, state)
-		VALUES ($1, $8::announcement_state_enum)
+		INSERT INTO announcement (id, state, announcement_type)
+		VALUES ($1, $8::announcement_state_enum, $9::announcement_type_enum)
 		RETURNING id, state, closed_on
 	)
 	SELECT iwi.id, iwi.number, iwi.wso2_id, iwi.created_by,
@@ -766,7 +807,7 @@ func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.Crea
 		row = r.db.QueryRow(ctx, createAnnouncementFromServiceNowQuery,
 			id, createdBy,
 			number, wso2ID, req.Subject, req.Description,
-			req.ProjectID, state,
+			req.ProjectID, state, announcementTypeEnumValue(req.IsSecurityAnnouncement),
 		)
 	case "service_request":
 		row = r.db.QueryRow(ctx, createServiceRequestFromServiceNowQuery,
@@ -843,8 +884,9 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		ackID, ackName, ackEmail                 *string
 		pcID, pcNum, pcType                      *string
 		rcID, rcNum                              *string
-		accountID, accountName                   *string
+		accountID, accountName, accountTier      *string
 		severity, issueType, workState, caseType *string
+		announcementType                         *string
 		state, cause, closeNotes, resolutionCode *string
 		escalationLevel                          *string
 		isEscalated                              *bool
@@ -869,7 +911,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		scopeArgs = append(scopeArgs, scope.ProjectIDs)
 	}
 	err := r.db.QueryRow(ctx,
-		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT,
+		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT, ann.announcement_type::TEXT,
 		        wi.description, c.severity::TEXT, c.issue_type::TEXT, c.work_state::TEXT,
 		        `+caseLikeStateColumn+`, `+caseLikeCauseColumn+`, `+caseLikeCloseNotesColumn+`,
 		        c.resolution_code::TEXT, c.current_escalation_level::TEXT, c.is_escalated,
@@ -880,7 +922,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		        d.id, d.name,
 		        dp.id, prod.name || COALESCE(' ' || pv.version, ''),
 		        prod.id, prod.name,
-		        a.id, a.name,
+		        a.id, a.name, a.support_tier::TEXT,
 		        cre.id, cre.name, sre.id, sre.name,
 		        ae.id, COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')), ae.email,
 		        ack.id, COALESCE(ack.name, NULLIF(TRIM(CONCAT_WS(' ', ack.first_name, ack.last_name)), '')), ack.email,
@@ -905,7 +947,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		 LEFT JOIN work_item rc_wi ON rc_wi.id = rc.id
 		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)`+scopeClause, scopeArgs...,
 	).Scan(
-		&cv.ID, &cv.Number, &internalID, &caseType,
+		&cv.ID, &cv.Number, &internalID, &caseType, &announcementType,
 		&description, &severity, &issueType, &workState,
 		&state, &cause, &closeNotes,
 		&resolutionCode, &escalationLevel, &isEscalated,
@@ -916,7 +958,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		&depID, &depName,
 		&dpID, &dpDisplayName,
 		&prodID, &prodName,
-		&accountID, &accountName,
+		&accountID, &accountName, &accountTier,
 		&creTeamID, &creTeamName, &sreTeamID, &sreTeamName,
 		&aeID, &aeName, &aeEmail,
 		&ackID, &ackName, &ackEmail,
@@ -930,6 +972,11 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		return domain.CaseView{}, fmt.Errorf("get case by id: %w", err)
 	}
 	cv.InternalID = stringOrEmpty(internalID)
+	// announcement_type only exists on the "announcement" extension table (a
+	// real ServiceNow field, u_announcement_type, migrated in migration
+	// 0088_announcement_add_announcement_type) -- nil for every other
+	// case-like type, where the LEFT JOIN never matches.
+	cv.AnnouncementType = announcementType
 	// work_item.description (migration 0038) has no NOT NULL constraint,
 	// unlike subject; CaseView.Description is a required (non-pointer)
 	// string, so a NULL column becomes "" rather than left unset.
@@ -1020,13 +1067,13 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		if accountName != nil {
 			name = *accountName
 		}
-		// Type (support tier) has no real column anywhere in the migrations
-		// -- account has no tier-like column at all -- so it is left "".
-		// CreTeam/SreTeam are account.cre_team_id/sre_team_id (migration
-		// 000074, ex-integration_cs_team_id), real FKs into "group" now --
-		// see accountSelectColumns' own comment in account_repo.go for the
-		// same join, added for the dedicated /accounts endpoint.
-		accountRef := &domain.AccountRef{ID: *accountID, Name: name}
+		// Type (support tier) is account.support_tier (migration 0101,
+		// BASIC/ENTERPRISE), same column GetProjectByID already reads into
+		// ProjectAccountRef.Tier. CreTeam/SreTeam are account.cre_team_id/
+		// sre_team_id, real FKs into "group" -- see accountSelectColumns' own
+		// comment in account_repo.go for the same join, added for the
+		// dedicated /accounts endpoint.
+		accountRef := &domain.AccountRef{ID: *accountID, Name: name, Type: stringOrEmpty(accountTier)}
 		if creTeamID != nil {
 			accountRef.CreTeam = &domain.EntityRef{ID: *creTeamID, Name: stringOrEmpty(creTeamName)}
 		}
@@ -2105,10 +2152,25 @@ type rowsQuerier interface {
 // by), so results are ordered by user_name for a stable, deterministic
 // response instead.
 func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]domain.WatchListUser, error) {
+	// locked mirrors AccountDefaultWatcherIDs' own four columns, joined
+	// live rather than cross-checked against a snapshot -- see
+	// WatchListUser.Locked's own doc comment on why that's deliberate.
+	// LEFT JOINs throughout so a case with no project, or a project with no
+	// account, still returns every watcher with locked=false rather than
+	// zero rows (an INNER JOIN here would silently drop every watcher on
+	// such a case, the same class of false-empty-result bug this file's own
+	// "Case-like work_item types" fixes already guard against elsewhere).
 	rows, err := q.Query(ctx, `
-		SELECT u.id, u.user_name, COALESCE(u.name, CONCAT_WS(' ', u.first_name, u.last_name)), u.email
+		SELECT u.id, u.user_name, COALESCE(u.name, CONCAT_WS(' ', u.first_name, u.last_name)), u.email,
+		       COALESCE(u.id = acct.customer_success_manager_id, false)
+		           OR COALESCE(u.id = acct.technical_owner_id, false)
+		           OR COALESCE(u.id = acct.secondary_technical_owner_id, false)
+		           OR COALESCE(u.id = acct.account_manager_id, false) AS locked
 		FROM work_item_watcher w
 		JOIN "user" u ON u.id = w.user_id
+		LEFT JOIN work_item wi ON wi.id = w.work_item_id
+		LEFT JOIN project p ON p.id = wi.project_id
+		LEFT JOIN account acct ON acct.id = p.account_id
 		WHERE w.work_item_id = $1
 		ORDER BY u.user_name`, caseID)
 	if err != nil {
@@ -2118,21 +2180,24 @@ func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]dom
 
 	var watchers []domain.WatchListUser
 	for rows.Next() {
-		var id, userName, name, email string
-		if err := rows.Scan(&id, &userName, &name, &email); err != nil {
+		var id, userName, name string
+		var email *string
+		var locked bool
+		if err := rows.Scan(&id, &userName, &name, &email, &locked); err != nil {
 			return nil, fmt.Errorf("scan case watcher: %w", err)
 		}
 		watchers = append(watchers, domain.WatchListUser{
 			ID:       id,
 			UserName: userName,
 			Name:     name,
-			Email:    email,
+			Email:    stringOrEmpty(email),
+			Locked:   locked,
 			// User.ID is always null by contract -- see WatchListUser.User's
 			// own doc comment ("its id is always null: a watch-list entry is
 			// not guaranteed to point at a user record"). Pass "" rather
 			// than id so NewUserReference omits it, even though this
 			// particular row is known to resolve to a real user.
-			User: domain.NewUserReference("", email, name),
+			User: domain.NewUserReference("", stringOrEmpty(email), name),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -2188,14 +2253,14 @@ func (r *caseRepo) SetCaseWatchList(ctx context.Context, caseID string, userIDs 
 
 // AccountDefaultWatcherIDs implements CaseRepository.
 func (r *caseRepo) AccountDefaultWatcherIDs(ctx context.Context, projectID string) ([]string, error) {
-	var csmID, towID, stowID, amID *string
+	var towID, stowID, amID, ramID *string
 	err := r.db.QueryRow(ctx, `
-		SELECT a.customer_success_manager_id, a.technical_owner_id,
-		       a.secondary_technical_owner_id, a.account_manager_id
+		SELECT a.technical_owner_id, a.secondary_technical_owner_id,
+		       a.account_manager_id, a.renewal_account_manager_id
 		FROM project p
 		JOIN account a ON a.id = p.account_id
 		WHERE p.id = $1`, projectID,
-	).Scan(&csmID, &towID, &stowID, &amID)
+	).Scan(&towID, &stowID, &amID, &ramID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -2205,7 +2270,7 @@ func (r *caseRepo) AccountDefaultWatcherIDs(ctx context.Context, projectID strin
 
 	ids := make([]string, 0, 4)
 	seen := make(map[string]struct{}, 4)
-	for _, id := range []*string{csmID, towID, stowID, amID} {
+	for _, id := range []*string{towID, stowID, amID, ramID} {
 		if id == nil || *id == "" {
 			continue
 		}
@@ -2216,6 +2281,38 @@ func (r *caseRepo) AccountDefaultWatcherIDs(ctx context.Context, projectID strin
 		ids = append(ids, *id)
 	}
 	return ids, nil
+}
+
+// ProjectContactEmailsByRole implements CaseRepository.
+func (r *caseRepo) ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT pc.email
+		FROM project_contact pc
+		JOIN project_contact_group pcg ON pcg.project_contact_id = pc.id
+		JOIN project_group_role pgr ON pgr.project_group_id = pcg.project_group_id
+		JOIN project_role pr ON pr.id = pgr.project_role_id
+		WHERE pc.project_id = $1
+		  AND pr.role = $2::project_role_enum
+		  AND (pc.state IS NULL OR pc.state <> 'DEACTIVATED'::project_contact_state_enum)`,
+		projectID, role,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("project contact emails by role: %w", err)
+	}
+	defer rows.Close()
+
+	var emails []string
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return nil, fmt.Errorf("project contact emails by role: scan: %w", err)
+		}
+		emails = append(emails, email)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("project contact emails by role: %w", err)
+	}
+	return emails, nil
 }
 
 // updateCaseAssigneeQuery atomically applies the no-op check inside the

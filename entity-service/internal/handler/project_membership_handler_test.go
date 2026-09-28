@@ -22,9 +22,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 )
@@ -36,6 +39,11 @@ type slowMembershipService struct{ delay time.Duration }
 func (s slowMembershipService) Invite(context.Context, string, domain.CreateProjectMembershipRequest) (domain.ProjectMembership, error) {
 	time.Sleep(s.delay)
 	return domain.ProjectMembership{ProjectContactID: "pc-1", State: domain.MembershipStateInvited}, nil
+}
+
+func (s slowMembershipService) ValidateInvitation(context.Context, string, domain.ValidateProjectMembershipRequest) (domain.ProjectMembershipValidation, error) {
+	time.Sleep(s.delay)
+	return domain.ProjectMembershipValidation{Valid: true}, nil
 }
 
 func (s slowMembershipService) UpdateRoles(context.Context, string, string, domain.UpdateProjectMembershipRolesRequest) (domain.ProjectMembership, error) {
@@ -107,5 +115,51 @@ func TestServerWriteTimeout_DropsASlowHandlerWithoutTheExtension(t *testing.T) {
 	if err == nil {
 		resp.Body.Close()
 		t.Fatalf("got status %d, want the connection dropped", resp.StatusCode)
+	}
+}
+
+// refusingMembershipService answers every dry run with a refusal, or fails
+// it with err when set.
+type refusingMembershipService struct {
+	slowMembershipService
+	err error
+}
+
+func (s refusingMembershipService) ValidateInvitation(context.Context, string, domain.ValidateProjectMembershipRequest) (domain.ProjectMembershipValidation, error) {
+	if s.err != nil {
+		return domain.ProjectMembershipValidation{}, s.err
+	}
+	return domain.ProjectMembershipValidation{Reason: domain.MembershipValidationForbidden, Message: "domain not allowed"}, nil
+}
+
+// TestValidateProjectContact_RefusalIsA200: a refused invitation is the
+// answer to the question asked, so it comes back 200 with valid=false; only
+// a failed check is an error status.
+func TestValidateProjectContact_RefusalIsA200(t *testing.T) {
+	cases := []struct {
+		name       string
+		svc        refusingMembershipService
+		wantStatus int
+		wantBody   string
+	}{
+		{"refused", refusingMembershipService{}, http.StatusOK, `"valid":false`},
+		{"check failed", refusingMembershipService{err: &apierror.ServiceUnavailableError{Msg: "salesentity down"}}, http.StatusServiceUnavailable, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewProjectMembershipHandler(tc.svc)
+			mux := http.NewServeMux()
+			mux.HandleFunc("POST /projects/{id}/contacts/validate", h.ValidateProjectContact)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/projects/p-1/contacts/validate", bytes.NewBufferString(`{"email":"jane@acme.com"}`))
+			req.Header.Set("Content-Type", "application/json")
+			mux.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantBody != "" && !strings.Contains(rec.Body.String(), tc.wantBody) {
+				t.Errorf("body = %s, want it to contain %s", rec.Body.String(), tc.wantBody)
+			}
+		})
 	}
 }

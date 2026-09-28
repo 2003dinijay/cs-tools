@@ -1102,7 +1102,7 @@ func (s *snCaseService) registerCaseSLAClocks(ctx context.Context, caseID string
 // reasoning — this is now a thin wrapper around it, same shape as
 // snIncidentService.publishIncidentCreated/publishIncidentCreatedEvent.
 func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.CreateCaseRequest, caseID string) {
-	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, req, caseID)
+	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, req, caseID)
 }
 
 // publishCaseCreatedEvent is publishCaseCreated's actual body, factored out
@@ -1115,7 +1115,9 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 // in this mode) cannot yet, or ever, return. getCaseByID is the caller's
 // own GetCaseByID method value (ServiceNow-backed for snCaseService,
 // Postgres-backed for caseService) — this function is data-source-agnostic
-// beyond that.
+// beyond that. resolveProjectContactEmailsByRole is the caller's own
+// ProjectContactEmailsByRole method value, used only for req.Type ==
+// "announcement" (see below).
 //
 // It re-fetches the case via getCaseByID rather than building the payload
 // from the create response/req alone: a create response carries only a
@@ -1124,15 +1126,41 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 // what events.CaseCreatedPayload needs and req/the create response don't
 // have.
 //
-// Recipients is the case's WatchList emails only (per explicit decision —
-// this service has no other notion of "who should be emailed" for a case).
-// A case created with no watchers is a real, expected state (watchers are
-// often added after creation), not an error — publishing is silently skipped
-// rather than sending a payload csm-notification-service's events.Validate
-// would reject anyway for an empty recipients list. On the Postgres data
-// source this is the common case for a case moments old: nothing has had a
-// chance to add a watcher yet, same as a freshly-created ServiceNow case
-// before anyone does.
+// Only type=="case" requires a severity to publish at all: a case with no
+// severity has no priority to report (CaseCreatedPayload.Priority has no
+// omitempty -- a consumer always expects a real value, and "" is not a real
+// priority, just derefSeverity's zero value standing in for "unset"), and
+// severity is a "case"-only field (case_service.go) that the other four
+// types never have. Those four types (engagement/service_request/
+// security_report_analysis/announcement) publish regardless of severity —
+// see "Recipients" below for how each resolves an audience with no
+// watch-list-based severity concept to gate on.
+//
+// Recipients depends on req.Type:
+//   - "case"/"engagement"/"service_request"/"security_report_analysis": the
+//     case's own WatchList emails (per explicit decision — this service has
+//     no other notion of "who should be emailed" for these types), which
+//     already includes the account's four default-watcher stakeholders (see
+//     CaseRepository.AccountDefaultWatcherIDs) once addAccountDefaultWatchers
+//     has run for the case (Postgres/dual-write data source only — see that
+//     function's own doc comment).
+//   - "announcement": every project_contact holding the SECURITY_CONTACT
+//     project role (req.IsSecurityAnnouncement true) or PORTAL_USER (false),
+//     via resolveProjectContactEmailsByRole — bypassing the watch-list
+//     mechanism entirely, since a project contact often has no matching
+//     "user" row to add as a work_item_watcher (work_item_watcher.user_id is
+//     NOT NULL). Falls back to the case's own WatchList emails (the account's
+//     default watchers) when no contact holds the requested role for that
+//     project — a project with no security contacts must still notify
+//     someone for a security announcement, not silently notify no one.
+//
+// A case created with no recipients either way is a real, expected state
+// (watchers/contacts are often added or invited after creation), not an
+// error — publishing is silently skipped rather than sending a payload
+// csm-notification-service's events.Validate would reject anyway for an
+// empty recipients list. On the Postgres data source this is the common case
+// for a case moments old: nothing has had a chance to add a watcher yet,
+// same as a freshly-created ServiceNow case before anyone does.
 //
 // Runs synchronously (not detached/async like apps/csm-portal/backend's own
 // publishAsync) so no goroutine-draining hook is needed on this service's
@@ -1144,7 +1172,14 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 // publisher may be nil (e.g. the dual-write mirror instance is constructed
 // with publisher=nil specifically so its own CreateCase never
 // double-publishes — see routes.go's case DataSource wiring).
-func publishCaseCreatedEvent(ctx context.Context, publisher EventPublisherService, getCaseByID func(context.Context, string) (domain.CaseView, error), req domain.CreateCaseRequest, caseID string) {
+func publishCaseCreatedEvent(
+	ctx context.Context,
+	publisher EventPublisherService,
+	getCaseByID func(context.Context, string) (domain.CaseView, error),
+	resolveProjectContactEmailsByRole func(context.Context, string, string) ([]string, error),
+	req domain.CreateCaseRequest,
+	caseID string,
+) {
 	if publisher == nil {
 		return
 	}
@@ -1161,20 +1196,30 @@ func publishCaseCreatedEvent(ctx context.Context, publisher EventPublisherServic
 		return
 	}
 
-	// A case with no severity has no priority to report -- CaseCreatedPayload.
-	// Priority has no omitempty (a consumer always expects a real value), and
-	// "" is not a real priority, just derefSeverity's zero value standing in
-	// for "unset". Applies to every type this function serves (case/
-	// engagement/service_request/security_report_analysis/announcement): the
-	// four non-case types never have a severity at all (case_service.go's
-	// own "case"-only field), so this also means those never publish
-	// case.created -- explicit, requested behavior, not an oversight.
-	if cv.Severity == nil {
+	if req.Type == "case" && cv.Severity == nil {
 		slog.InfoContext(ctx, "create case: case.created not published, case has no severity", "caseId", caseID)
 		return
 	}
 
-	recipients := watchListUserEmails(cv.WatchList)
+	var recipients []string
+	if req.Type == "announcement" {
+		role := "PORTAL_USER"
+		if req.IsSecurityAnnouncement {
+			role = "SECURITY_CONTACT"
+		}
+		recipients, err = resolveProjectContactEmailsByRole(ctx, req.ProjectID, role)
+		if err != nil {
+			slog.ErrorContext(ctx, "create case: resolving announcement recipients failed", "caseId", caseID, "error", err)
+			return
+		}
+		if len(recipients) == 0 {
+			// No project contact holds the requested role -- fall back to
+			// the account's default watchers rather than notifying no one.
+			recipients = watchListUserEmails(cv.WatchList)
+		}
+	} else {
+		recipients = watchListUserEmails(cv.WatchList)
+	}
 	if len(recipients) == 0 {
 		slog.InfoContext(ctx, "create case: case.created not published, case has no watchers to email", "caseId", caseID)
 		return
@@ -1834,6 +1879,21 @@ func (s *snCaseService) publishCaseAcknowledged(ctx context.Context, caseID, ack
 		// line for why.
 		slog.ErrorContext(ctx, "sn update case: publish case.acknowledged failed", "caseId", caseID)
 	}
+}
+
+// ProjectContactEmailsByRole implements CaseService. project_contact/
+// project_role are Postgres-only concepts (populated by the Salesforce
+// membership ingest, independent of DATA_SOURCE) with no ServiceNow
+// equivalent, so this delegates to pgFallback when one is configured; a pure
+// ServiceNow deployment with no Postgres pool at all (pgFallback nil) has
+// nothing to query and returns an empty slice, no error -- same "can't
+// resolve, fall back" posture as every other Postgres-only gap in this
+// service.
+func (s *snCaseService) ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error) {
+	if s.pgFallback == nil {
+		return nil, nil
+	}
+	return s.pgFallback.ProjectContactEmailsByRole(ctx, projectID, role)
 }
 
 func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {

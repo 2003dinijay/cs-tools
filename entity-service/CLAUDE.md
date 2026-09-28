@@ -51,6 +51,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `SALES_ENTITY_SCOPES` | no | — | Optional space-separated OAuth2 scopes for REST `sales/sales-entity-service` |
 | `CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED` | no | `false` | Must be `"true"` for `POST /users/me/memberships/register` to be registered at all (see "Membership registration" below). Off = the route 404s and nothing on that path can write to Salesforce |
 | `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes (see "Salesforce membership ingest" below). The Account branch is unaffected |
+| `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Keep it off while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; `account_vertical` and `secondary_technical_owner_id` are kept when Salesforce sends none |
 | `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `false` | Must be `"true"` to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
 
 \* `DB_USER`/`DB_PASSWORD`/`DB_NAME` are required when `DATA_SOURCE=postgres`
@@ -484,22 +485,53 @@ easy to wire up for real once both exist.
   carries only a few fields — see `snCreateCaseResponse`), it re-fetches the
   case via `GetCaseByID`, whose own SN response already resolves the
   reporter's display name, the project's name, and each watcher's email —
-  exactly what `events.CaseCreatedPayload` needs. `Recipients` is the
-  resolved watch list's emails only (an explicit, deliberate decision — this
-  service has no other notion of who should be emailed for a case); a case
-  created with no watchers is a normal state, not an error, so publishing is
-  silently skipped rather than sending a payload
+  exactly what `events.CaseCreatedPayload` needs. A case created with no
+  recipients (either way, see below) is a normal state, not an error, so
+  publishing is silently skipped rather than sending a payload
   `csm-notification-service`'s `events.Validate` would reject anyway for an
-  empty `recipients` list. The same skip applies when the case has no
-  severity: `CaseCreatedPayload.Priority` has no `omitempty` (a consumer
-  always expects a real value) and `""` is not a real priority. Since
-  severity is a required, validated field for `type: "case"`
-  (`validateCreateCaseRequest`), this only actually triggers for the other
+  empty `recipients` list.
+
+  **Only `type: "case"` requires a severity to publish at all.**
+  `CaseCreatedPayload.Priority` has no `omitempty` (a consumer always
+  expects a real value) and `""` is not a real priority, so a nil severity
+  used to skip the whole publish — but severity is a `"case"`-only column
+  (`validateCreateCaseRequest`), so that gate previously meant the other
   four types `publishCaseCreatedEvent` also serves —
-  `announcement`/`engagement`/`service_request`/`security_report_analysis`
-  have no severity concept at all (a `"case"`-only column) — so none of
-  those four ever publish `case.created`, by explicit request, not by
-  oversight.
+  `engagement`/`service_request`/`security_report_analysis`/`announcement`
+  — never published `case.created` at all. **Fixed at explicit request**:
+  the severity gate now only applies when `req.Type == "case"`; the other
+  four publish regardless, with `Priority` simply left `""`
+  (`csm-notification-service` already renders that gracefully — see its own
+  `CLAUDE.md`).
+
+  **`Recipients` depends on `req.Type`.** For `case`/`engagement`/
+  `service_request`/`security_report_analysis` it's still the case's own
+  resolved watch list emails only (this service has no other notion of who
+  should be emailed for these types) — which, on the Postgres/dual-write
+  data source, already includes the account's four default-watcher
+  stakeholders once `addAccountDefaultWatchers` has run (see
+  `CaseRepository.AccountDefaultWatcherIDs` below). For `announcement`,
+  `publishCaseCreatedEvent` instead resolves the audience via
+  `CaseService.ProjectContactEmailsByRole` — every `project_contact`
+  currently holding the `SECURITY_CONTACT` project role when
+  `req.IsSecurityAnnouncement` is true, else every contact holding
+  `PORTAL_USER` — bypassing the watch-list mechanism entirely, since a
+  project contact often has no matching `"user"` row to add as a
+  `work_item_watcher` (`work_item_watcher.user_id` is `NOT NULL`). Falls
+  back to the case's own watch-list emails (the account's default
+  watchers) when no contact holds the requested role for that project — a
+  project with nobody in the requested role must still notify someone, not
+  silently notify no one. `ProjectContactEmailsByRole` is Postgres-only
+  (`project_contact`/`project_role` have no ServiceNow equivalent); on
+  `snCaseService` it delegates to `pgFallback` when configured, else
+  returns empty (no error) — same "can't resolve, skip" posture as every
+  other Postgres-only gap in this file.
+
+  `csm-notification-service`'s own `handleCaseCreated` mirrors this split
+  on the Chat side: its Google Chat alert is skipped entirely for these
+  same four non-`"case"` types (an exclude-list keyed on
+  `CaseCreatedPayload.CaseType`) — those types notify by email only, per
+  the same explicit request. See that service's own `CLAUDE.md`.
 - **`snIncidentService.CreateIncident`** publishes `incident.created` via
   `publishIncidentCreated`, called the same way. No enrichment round trip is
   needed here: `req.Subject`/`req.AdditionalComments` already carry
@@ -954,10 +986,11 @@ by the ingest's duplicate guard.
 
 | Endpoint | Body | Success | Errors |
 |---|---|---|---|
-| `POST /projects/{id}/contacts` | `{email, firstName?, lastName?, roles: []}` | **201** + `ProjectMembership` | 400 bad address / unknown role / no roles, 403, 404 unknown project or no Salesforce account, 409 already an active contact, 503 |
-| `PATCH /projects/{id}/contacts/{email}` | `{roles: []}` | **200** + `ProjectMembership` | 400, 403, 404, 503 |
-| `DELETE /projects/{id}/contacts/{email}` | — | **204** | 400, 403, 404, 503 |
-| `POST /projects/{id}/contacts/{email}/resend-invitation` | — | **204** | 400, 403, 404, 409 not INVITED, **429** inside the cooldown, 503 |
+| `POST /projects/{id}/contacts` | `{email, firstName?, lastName?, roles: []}` | **201** + `ProjectMembership` | 400 bad address / unknown role / no roles, 403, 404 unknown project, 409 already an active contact or a missing Salesforce id, 503 |
+| `POST /projects/{id}/contacts/validate` | `{email, inviterEmail?}` | **200** + `ProjectMembershipValidation` (`valid:false` + `reason` CONFLICT/FORBIDDEN/INVALID + `message` for a refusal; INVALID with the generic support message when a Salesforce id is missing) | 400 bad address, 403 not internal, 404, 503 |
+| `PATCH /projects/{id}/contacts/{email}` | `{roles: []}` | **200** + `ProjectMembership` | 400, 403, 404, 409 missing Salesforce id, 503 |
+| `DELETE /projects/{id}/contacts/{email}` | — | **204** | 400, 403, 404, 409 missing Salesforce id, 503 |
+| `POST /projects/{id}/contacts/{email}/resend-invitation` | — | **204** | 400, 403, 404, 409 not INVITED or missing Salesforce id, **429** inside the cooldown, 503 |
 
 - **Invite** resolves the project and its account, finds the Salesforce
   contact by address and creates it only if absent, finds the membership for
@@ -970,6 +1003,14 @@ by the ingest's duplicate guard.
   not about re-inviting somebody who is already there. At least one role is
   required: an invitation granting nothing would provision an identity that
   sees an empty portal.
+- **Validate** is Invite's dry run: the same caller gate, the same "already
+  an active contact" rule and the same `InvitationValidator`, run against the
+  project and membership read outside any transaction
+  (`ResolveWriteContext`, no advisory lock). Nothing is written and nothing
+  is published. A refusal is a 200 with `valid:false` so the caller can tell
+  it apart from a failed check; a valid answer carries the Salesforce contact
+  the invitation would adopt, if any. The Customer Portal calls it before
+  showing the invite form.
 - **Change roles** replaces the Salesforce `Role__c` picklist and, with it,
   the membership's project groups. The state is untouched (the PATCH sends
   only `role`). An empty list is accepted and removes every group.
@@ -996,6 +1037,25 @@ by the ingest's duplicate guard.
   configured this is a 503 rather than a silent success: unlike an
   invitation, whose database and Salesforce writes are the substance of the
   call, a resend **is** the event.
+
+**A missing Salesforce id fails the write cleanly.** Every write needs the
+project's `sf_id` and its account's `sf_id`; a write on a membership that is
+already there (role change, deactivate, re-invite, resend) also needs that
+membership's `project_contact.sf_id` and its contact's Salesforce id. If any
+is NULL or blank, `requireSalesforceLinks` (resend: an inline check) refuses
+the call with a **409** carrying a generic, per-operation message ("This
+contact can't be updated right now. Please contact WSO2 support.") **before any
+Salesforce call**, and logs the operation, the project and membership ids and
+which ids were missing. The alternative was worse on every path: a NULL
+`project.sf_id` failed the target read with a raw driver error (bare 500); a
+blank one reached Salesforce and was refused there with an internal
+validation message, sometimes after a Contact had been created; and a
+membership with no `sf_id` was looked up by (project, contact) and, on a miss,
+a second `Project_Contact__c` was created — for a deactivation, a new
+DEACTIVATED record beside the real one. 409 rather than 400/404/503: the
+request is well-formed, the rows exist, and retrying will not help until the
+data is fixed; what blocks it is the rows' current state, and a
+`ConflictError` message reaches the caller verbatim.
 
 `apierror.TooManyRequestsError` was added for the cooldown (429 in
 `writeServiceError`) — the first rate-limit this service applies, and a
@@ -1491,10 +1551,14 @@ changed.
 
   **Every case now gets its account's four named stakeholders as watchers,
   unconditionally, from a pure Postgres lookup — no ServiceNow involved.**
-  `account.customer_success_manager_id`/`technical_owner_id`/
-  `secondary_technical_owner_id`/`account_manager_id` (migration 0012)
+  `account.technical_owner_id`/`secondary_technical_owner_id`/
+  `account_manager_id`/`renewal_account_manager_id` (migration 0012)
   are already `"user"` ids, so there's no email/UUID ambiguity to resolve
-  at all. `createCaseSNFirst` calls `addAccountDefaultWatchers` right after
+  at all. `customer_success_manager_id` is deliberately excluded — unlike
+  the other four, the CSM is not meant to receive these default case
+  notifications (an earlier version of this lookup wrongly included it and
+  omitted `renewal_account_manager_id`; fixed at explicit request).
+  `createCaseSNFirst` calls `addAccountDefaultWatchers` right after
   `CreateCaseFromServiceNow` succeeds and before `publishCaseCreatedEvent`;
   it resolves those four ids for the case's project via
   `CaseRepository.AccountDefaultWatcherIDs` (a `project JOIN account`,
@@ -2266,8 +2330,10 @@ decision, not overlooked.
 
 ## IT services (CMDB services)
 
-`service` (migration 0044) is a standalone table — no FK to or from any
-other table in this schema. `ITServiceRepository.SearchITServices`
+`service` (migration 0044) is the CMDB service catalogue: `incident`,
+`incident_task`, `change_request`, `outage` and `cloud_monitor` reference it
+via `service_id`, `service_offering` via `parent_id`, and its five group
+columns (migration 0075) reference `"group"`. `ITServiceRepository.SearchITServices`
 (`it_service_repo.go`) wires `POST /services/search` up to it on Postgres;
 previously this route only existed on the ServiceNow data source.
 `domain.ITService.Class` is mapped from `service.category` (a free-text
@@ -2279,6 +2345,16 @@ literally named "class". `BusinessCriticality` maps 1:1 (case-folded) via
 ServiceNow data source) has no corresponding column on `service` at all —
 `category`/`subcategory` are free text, not drawn from that three-value set
 — so it is always left `nil` on Postgres rather than guessed at.
+
+**`SupportGroup` comes from `service.support_group_id`** (LEFT JOIN `"group"`).
+It was never selected before, so the CSM portal's Create Incident page — which
+defaults the incident's assignment group to the service's support group —
+always showed it blank. Use `support_group_id`, not `service.assignment_group_id`:
+support group is the ServiceNow/CSDM "team that handles this service's
+incidents" field (in synced data, 98% of incidents with both a service and an
+assignment group carry that service's support group), while a CI's own
+`assignment_group` is a different, generic field that no synced service sets.
+The incident's own group belongs on `work_item.assignment_group_id`.
 
 ## time_card.state/issue_complexity became real enums; case_id now targets work_item
 
