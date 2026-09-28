@@ -34,6 +34,10 @@ type fakeCloudStatusRepo struct {
 	recorded  []repository.CloudStatusCandidate
 	conflicts map[string]bool // key -> already present, so Record reports false
 
+	monitors     map[string][]string
+	monitorsErr  error
+	statusWrites []statusWrite
+
 	pending    []domain.PendingCloudStatusWebhook
 	pendingErr error
 
@@ -56,6 +60,15 @@ func (f *fakeCloudStatusRepo) Record(_ context.Context, c repository.CloudStatus
 	return true, nil
 }
 
+func (f *fakeCloudStatusRepo) AffectedMonitors(_ context.Context, outageID string) ([]string, error) {
+	return f.monitors[outageID], f.monitorsErr
+}
+
+func (f *fakeCloudStatusRepo) SetMonitorStatus(_ context.Context, ids []string, status domain.CloudMonitorStatus) (int64, error) {
+	f.statusWrites = append(f.statusWrites, statusWrite{ids: ids, status: status})
+	return int64(len(ids)), nil
+}
+
 func (f *fakeCloudStatusRepo) Pending(_ context.Context, _, _ int) ([]domain.PendingCloudStatusWebhook, error) {
 	return f.pending, f.pendingErr
 }
@@ -67,6 +80,11 @@ func (f *fakeCloudStatusRepo) RecordDelivery(_ context.Context, id string, deliv
 		errMsg    string
 	}{id, delivered, errMsg})
 	return nil
+}
+
+type statusWrite struct {
+	ids    []string
+	status domain.CloudMonitorStatus
 }
 
 const testServiceID = "11111111-1111-1111-1111-111111111111"
@@ -256,5 +274,148 @@ func TestCloudStatusRecordDelivery_SuccessNeedsNoReason(t *testing.T) {
 	}
 	if len(repo.deliveries) != 1 || !repo.deliveries[0].delivered {
 		t.Errorf("delivery not recorded: %+v", repo.deliveries)
+	}
+}
+
+// TestCloudStatusSweep_OngoingOutageSetsSeverityByType is the ongoing arm's
+// mapping, straight from the flow's script. Note that type "outage" produces
+// PARTIAL_OUTAGE, not MAJOR_OUTAGE -- that is what the flow did.
+func TestCloudStatusSweep_OngoingOutageSetsSeverityByType(t *testing.T) {
+	cases := []struct {
+		outageType string
+		want       domain.CloudMonitorStatus
+	}{
+		{"PLANNED", domain.CloudMonitorStatusMaintenance},
+		{"DEGRADATION", domain.CloudMonitorStatusDegraded},
+		{"OUTAGE", domain.CloudMonitorStatusPartialOutage},
+	}
+	for _, tc := range cases {
+		t.Run(tc.outageType, func(t *testing.T) {
+			repo := &fakeCloudStatusRepo{
+				candidates: []repository.CloudStatusCandidate{{
+					OutageID: "o1", Cloud: "CHOREO",
+					Event: domain.CloudStatusEventOutageBegin, Type: tc.outageType,
+				}},
+				monitors: map[string][]string{"o1": {"m1", "m2"}},
+			}
+			svc := NewCloudStatusService(repo, []string{testServiceID})
+
+			got, err := svc.Sweep(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(repo.statusWrites) != 1 || repo.statusWrites[0].status != tc.want {
+				t.Fatalf("status writes: %+v, want %s", repo.statusWrites, tc.want)
+			}
+			if got.MonitorsUpdated != 2 {
+				t.Errorf("monitorsUpdated: got %d, want 2", got.MonitorsUpdated)
+			}
+			if got.UnknownOutageType != 0 {
+				t.Errorf("a known type must not be counted as unknown")
+			}
+		})
+	}
+}
+
+// TestCloudStatusSweep_EndedOutageReturnsMonitorsToOperational is the
+// completed arm's literal 0.
+func TestCloudStatusSweep_EndedOutageReturnsMonitorsToOperational(t *testing.T) {
+	repo := &fakeCloudStatusRepo{
+		candidates: []repository.CloudStatusCandidate{{
+			OutageID: "o1", Cloud: "CHOREO",
+			Event: domain.CloudStatusEventOutageEnd, Type: "OUTAGE",
+		}},
+		monitors: map[string][]string{"o1": {"m1"}},
+	}
+	svc := NewCloudStatusService(repo, []string{testServiceID})
+
+	if _, err := svc.Sweep(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repo.statusWrites) != 1 {
+		t.Fatalf("status writes: %+v", repo.statusWrites)
+	}
+	// The outage's own type is OUTAGE and must be ignored on this arm: a
+	// completed outage is Operational regardless of what it was.
+	if repo.statusWrites[0].status != domain.CloudMonitorStatusOperational {
+		t.Errorf("status: got %s, want OPERATIONAL", repo.statusWrites[0].status)
+	}
+}
+
+// TestCloudStatusSweep_MissingTypeFallsBackAndIsCounted covers the defect
+// ServiceNow had: its script fell off the end and wrote undefined. A public
+// status page must not be left asserting all is well during an incident.
+func TestCloudStatusSweep_MissingTypeFallsBackAndIsCounted(t *testing.T) {
+	repo := &fakeCloudStatusRepo{
+		candidates: []repository.CloudStatusCandidate{{
+			OutageID: "o1", Cloud: "CHOREO",
+			Event: domain.CloudStatusEventOutageBegin, Type: "",
+		}},
+		monitors: map[string][]string{"o1": {"m1"}},
+	}
+	svc := NewCloudStatusService(repo, []string{testServiceID})
+
+	got, err := svc.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.UnknownOutageType != 1 {
+		t.Errorf("unknownOutageType: got %d, want 1", got.UnknownOutageType)
+	}
+	if len(repo.statusWrites) != 1 || repo.statusWrites[0].status != domain.CloudMonitorStatusUnknownType {
+		t.Fatalf("a missing type must still write a non-operational status: %+v", repo.statusWrites)
+	}
+	if repo.statusWrites[0].status == domain.CloudMonitorStatusOperational {
+		t.Error("a missing type must never leave the page claiming Operational")
+	}
+}
+
+// TestCloudStatusSweep_StatusIsReassertedEvenWhenAlreadyRecorded is the
+// self-healing property: recording is once-only, the status is a desired end
+// state and is re-asserted every sweep.
+func TestCloudStatusSweep_StatusIsReassertedEvenWhenAlreadyRecorded(t *testing.T) {
+	repo := &fakeCloudStatusRepo{
+		candidates: []repository.CloudStatusCandidate{{
+			OutageID: "o1", Cloud: "CHOREO",
+			Event: domain.CloudStatusEventOutageBegin, Type: "OUTAGE",
+		}},
+		conflicts: map[string]bool{"o1" + string(domain.CloudStatusEventOutageBegin): true},
+		monitors:  map[string][]string{"o1": {"m1"}},
+	}
+	svc := NewCloudStatusService(repo, []string{testServiceID})
+
+	got, err := svc.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Recorded != 0 {
+		t.Errorf("the webhook must not be re-recorded, got %d", got.Recorded)
+	}
+	if len(repo.statusWrites) != 1 {
+		t.Errorf("the status must still be re-asserted: %+v", repo.statusWrites)
+	}
+}
+
+// TestCloudStatusSweep_NoAffectedMonitorsIsNotAnError: most outages name no
+// affected CIs, and the webhook still goes out regardless.
+func TestCloudStatusSweep_NoAffectedMonitorsIsNotAnError(t *testing.T) {
+	repo := &fakeCloudStatusRepo{
+		candidates: []repository.CloudStatusCandidate{{
+			OutageID: "o1", Cloud: "CHOREO",
+			Event: domain.CloudStatusEventOutageBegin, Type: "OUTAGE",
+		}},
+		monitors: map[string][]string{},
+	}
+	svc := NewCloudStatusService(repo, []string{testServiceID})
+
+	got, err := svc.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Recorded != 1 {
+		t.Errorf("the webhook must still be recorded, got %d", got.Recorded)
+	}
+	if len(repo.statusWrites) != 0 {
+		t.Errorf("nothing to write, got %+v", repo.statusWrites)
 	}
 }

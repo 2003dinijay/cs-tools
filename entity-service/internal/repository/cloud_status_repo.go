@@ -37,6 +37,10 @@ type CloudStatusCandidate struct {
 	Event domain.CloudStatusEvent
 	// Timestamp is the begin or the end instant, matching Event.
 	Timestamp string
+	// Type is the outage's own type, used to decide what its affected
+	// monitors should show while it is ongoing. Empty is possible and is
+	// handled, not assumed away.
+	Type string
 }
 
 // CloudStatusRepository reads which outages owe the status dashboard a
@@ -44,6 +48,8 @@ type CloudStatusCandidate struct {
 type CloudStatusRepository interface {
 	Candidates(ctx context.Context, parentServiceIDs []string) ([]CloudStatusCandidate, error)
 	Record(ctx context.Context, c CloudStatusCandidate) (bool, error)
+	AffectedMonitors(ctx context.Context, outageID string) ([]string, error)
+	SetMonitorStatus(ctx context.Context, monitorIDs []string, status domain.CloudMonitorStatus) (int64, error)
 	Pending(ctx context.Context, limit, maxAttempts int) ([]domain.PendingCloudStatusWebhook, error)
 	RecordDelivery(ctx context.Context, id string, delivered bool, errMsg string) error
 }
@@ -96,7 +102,8 @@ const candidatesSQL = `
                CASE WHEN o.end_on IS NULL THEN o.start_on ELSE o.end_on END
                AT TIME ZONE 'UTC',
                'YYYY-MM-DD"T"HH24:MI:SS"Z"'
-           )
+           ),
+           COALESCE(o.type::text, '')
       FROM outage o
       JOIN service_offering so ON so.id = o.service_offering_id
       LEFT JOIN cloud_monitor cm ON cm.service_offering_id = o.service_offering_id
@@ -117,7 +124,7 @@ func (r *cloudStatusRepository) Candidates(ctx context.Context, parentServiceIDs
 	var out []CloudStatusCandidate
 	for rows.Next() {
 		var c CloudStatusCandidate
-		if err := rows.Scan(&c.OutageID, &c.Number, &c.Cloud, &c.Event, &c.Timestamp); err != nil {
+		if err := rows.Scan(&c.OutageID, &c.Number, &c.Cloud, &c.Event, &c.Timestamp, &c.Type); err != nil {
 			return nil, fmt.Errorf("scan cloud status candidate: %w", err)
 		}
 		out = append(out, c)
@@ -235,4 +242,91 @@ func (r *cloudStatusRepository) RecordDelivery(ctx context.Context, id string, d
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+// affectedMonitorsSQL resolves one outage's affected configuration items to
+// the cloud monitors that represent them.
+//
+// This is steps 3+5 (and 10+12) of the flow, collapsed into one query. The
+// flow looked up the join rows, then looked up a monitor per row; a join does
+// the same work without the round trips, and without the flow's "first record
+// only" behaviour on the monitor lookup.
+//
+// THE JOIN TO service_offering IS WHY ci_id IS NOT A FOREIGN KEY upstream. The
+// source column references cmdb_ci, the base class, so a row may point at a
+// service, an application, or anything else that is not a service offering.
+// Those rows simply do not join here and are skipped -- which is correct: a
+// cloud monitor hangs off a service offering, so a CI that is not one has no
+// monitor to update.
+//
+// The trigger outage's OWN configuration item is deliberately not unioned in.
+// The flow kept them separate -- the affected-CI list drives the status
+// writes, the outage's own CI drives the webhook's routing -- and merging them
+// would silently widen which monitors get rewritten.
+const affectedMonitorsSQL = `
+    SELECT DISTINCT cm.id::text
+      FROM outage_affected_ci ac
+      JOIN service_offering so ON so.id = ac.ci_id
+      JOIN cloud_monitor cm ON cm.service_offering_id = so.id
+     WHERE ac.outage_id = $1::uuid
+       AND ac.ci_id IS NOT NULL
+`
+
+// AffectedMonitors returns the cloud monitors for every affected CI of one
+// outage that resolves to a service offering.
+func (r *cloudStatusRepository) AffectedMonitors(ctx context.Context, outageID string) ([]string, error) {
+	rows, err := r.db.Query(ctx, affectedMonitorsSQL, outageID)
+	if err != nil {
+		return nil, fmt.Errorf("query affected cloud monitors: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan affected cloud monitor: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate affected cloud monitors: %w", err)
+	}
+	return out, nil
+}
+
+// setMonitorStatusSQL writes the status for a set of monitors at once.
+//
+// *** THIS WRITES A SYNC-MIRRORED COLUMN. *** cloud_monitor is populated by
+// csm-sync-service from u_cloud_monitor (digiops-cs 0079), so in any
+// environment where that sync runs against a live ServiceNow, the next run
+// overwrites whatever this writes. That is understood and accepted for dev,
+// where the sync is not competing. It is NOT settled for production: either
+// `status` comes out of the sync mapping so Go owns the column outright, or
+// the port keeps its own table and the column is switched at cutover. Do not
+// promote this beyond dev until that is decided.
+//
+// The WHERE clause skips monitors already showing the target status so a
+// repeated sweep does not churn updated_on on every tick -- which matters
+// because updated_on is a sync-visible column and pointless writes to it make
+// the sync's own change detection noisier.
+const setMonitorStatusSQL = `
+    UPDATE cloud_monitor
+       SET status = $2::cloud_monitor_status_enum,
+           updated_on = NOW()
+     WHERE id = ANY($1::uuid[])
+       AND (status IS DISTINCT FROM $2::cloud_monitor_status_enum)
+`
+
+// SetMonitorStatus writes status to every listed monitor that is not already
+// showing it, returning how many rows actually changed.
+func (r *cloudStatusRepository) SetMonitorStatus(ctx context.Context, monitorIDs []string, status domain.CloudMonitorStatus) (int64, error) {
+	if len(monitorIDs) == 0 {
+		return 0, nil
+	}
+	tag, err := r.db.Exec(ctx, setMonitorStatusSQL, monitorIDs, string(status))
+	if err != nil {
+		return 0, fmt.Errorf("set cloud monitor status: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }

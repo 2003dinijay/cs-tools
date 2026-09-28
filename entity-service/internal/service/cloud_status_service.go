@@ -111,8 +111,86 @@ func (s *cloudStatusService) Sweep(ctx context.Context) (domain.CloudStatusSweep
 				"outageId", c.OutageID, "number", c.Number,
 				"event", string(c.Event), "cloud", c.Cloud)
 		}
+
+		// The status write runs on EVERY sweep, not only when the transition
+		// was newly recorded.
+		//
+		// Recording is once-only because a webhook must not be re-sent; the
+		// status is the opposite kind of thing. It is a desired end state, and
+		// re-asserting it is how the port self-heals -- if the sync overwrites
+		// a monitor, or a row was missed, the next sweep puts it right. The
+		// repository skips monitors already showing the target value, so the
+		// steady state costs a read and no writes.
+		changed, unknownType, err := s.applyMonitorStatus(ctx, c)
+		if err != nil {
+			return domain.CloudStatusSweepResponse{}, err
+		}
+		resp.MonitorsUpdated += changed
+		if unknownType {
+			resp.UnknownOutageType++
+		}
 	}
 	return resp, nil
+}
+
+// applyMonitorStatus writes the status every monitor affected by this outage
+// should currently show. It reports how many rows changed and whether the
+// outage's type had to be guessed at.
+//
+// This is steps 3-6 and 10-13 of the flow. The two arms differ only in the
+// status they write: a completed outage returns its monitors to OPERATIONAL,
+// an ongoing one sets the severity its type implies.
+func (s *cloudStatusService) applyMonitorStatus(ctx context.Context, c repository.CloudStatusCandidate) (int64, bool, error) {
+	var status domain.CloudMonitorStatus
+	var unknownType bool
+
+	if c.Event == domain.CloudStatusEventOutageEnd {
+		// The completed arm wrote a literal 0. Note what it did NOT do: it did
+		// not check whether some OTHER ongoing outage also affects these
+		// monitors. Two overlapping outages on one component mean the first to
+		// end clears the second's status, and the page shows Operational while
+		// an incident is still running.
+		//
+		// That is faithfully reproduced here rather than fixed, because fixing
+		// it changes what the public page says and needs a decision from
+		// whoever owns it -- see this port's own notes. It is recorded so the
+		// next person does not have to rediscover it from behaviour.
+		status = domain.CloudMonitorStatusOperational
+	} else {
+		mapped, ok := domain.StatusForOngoingOutage(c.Type)
+		if !ok {
+			status = domain.CloudMonitorStatusUnknownType
+			unknownType = true
+			slog.ErrorContext(ctx, "ongoing outage has no usable type; falling back rather than leaving the status page claiming all is well",
+				"outageId", c.OutageID, "number", c.Number,
+				"outageType", c.Type, "fallback", string(status))
+		} else {
+			status = mapped
+		}
+	}
+
+	monitors, err := s.repo.AffectedMonitors(ctx, c.OutageID)
+	if err != nil {
+		return 0, unknownType, err
+	}
+	if len(monitors) == 0 {
+		// Common and not an error: most outages name no affected CIs at all,
+		// and a CI that is not a service offering has no monitor. The webhook
+		// still goes out -- it is routed from the outage's own configuration
+		// item, not from this list.
+		return 0, unknownType, nil
+	}
+
+	changed, err := s.repo.SetMonitorStatus(ctx, monitors, status)
+	if err != nil {
+		return 0, unknownType, err
+	}
+	if changed > 0 {
+		slog.InfoContext(ctx, "cloud monitor status updated",
+			"outageId", c.OutageID, "number", c.Number,
+			"status", string(status), "monitorsChanged", changed)
+	}
+	return changed, unknownType, nil
 }
 
 // PendingWebhooks returns the webhooks still owed to the dashboard, for the

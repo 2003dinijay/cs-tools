@@ -16,6 +16,8 @@
 
 package domain
 
+import "strings"
+
 // Cloud status webhooks
 //
 // The port of ServiceNow's `Cloud Status Event Notification Flow`. When an
@@ -103,6 +105,73 @@ func CloudOfferingSlug(offering string) string {
 	return cloudOfferingWireValues[offering]
 }
 
+// CloudMonitorStatus is a value of cloud_monitor_status_enum -- what the
+// public status dashboard renders for one monitored component.
+type CloudMonitorStatus string
+
+const (
+	CloudMonitorStatusOperational   CloudMonitorStatus = "OPERATIONAL"
+	CloudMonitorStatusMaintenance   CloudMonitorStatus = "MAINTENANCE"
+	CloudMonitorStatusDegraded      CloudMonitorStatus = "DEGRADED"
+	CloudMonitorStatusPartialOutage CloudMonitorStatus = "PARTIAL_OUTAGE"
+
+	// CloudMonitorStatusMajorOutage exists in the enum and is NEVER written by
+	// this port, because the flow never wrote it either: its script mapped the
+	// three outage types to 1, 2 and 3, and 4 was unreachable. Declaring it
+	// here documents that the omission is known rather than missed.
+	CloudMonitorStatusMajorOutage CloudMonitorStatus = "MAJOR_OUTAGE"
+)
+
+// StatusForOngoingOutage maps an outage's type to the status its affected
+// monitors should show while it is in progress.
+//
+// THE MAPPING IS THE FLOW'S, TRANSLATED FROM NUMBERS. ServiceNow's script
+// returned the raw choice values 1, 2 and 3; the Postgres column is an enum,
+// so the same decision reads as names here:
+//
+//	planned      -> 1 -> MAINTENANCE
+//	degradation  -> 2 -> DEGRADED
+//	outage       -> 3 -> PARTIAL_OUTAGE
+//
+// Note the last one: an outage of type "outage" shows as PARTIAL_OUTAGE, not
+// MAJOR_OUTAGE. That looks like an off-by-one and is not -- it is what the
+// flow did, and changing it would change what the public page says during an
+// incident, which is a product decision and not a porting one.
+//
+// ok is false when the type is missing or unrecognised; see the caller for
+// what it does about that, which is NOT what ServiceNow did.
+func StatusForOngoingOutage(outageType string) (CloudMonitorStatus, bool) {
+	switch strings.ToUpper(strings.TrimSpace(outageType)) {
+	case "PLANNED":
+		return CloudMonitorStatusMaintenance, true
+	case "DEGRADATION":
+		return CloudMonitorStatusDegraded, true
+	case "OUTAGE":
+		return CloudMonitorStatusPartialOutage, true
+	default:
+		return "", false
+	}
+}
+
+// CloudMonitorStatusUnknownType is what an ongoing outage with no usable type
+// writes instead of nothing.
+//
+// ServiceNow's script had no default arm: an empty type fell off the end and
+// returned undefined, which the Update Record step then wrote. This port will
+// not reproduce that, and the choice of what to do instead is forced by which
+// way the page should fail.
+//
+// Skipping the write leaves the monitor showing whatever it showed before --
+// for a newly declared outage that is OPERATIONAL, i.e. the public page
+// asserts everything is fine in the middle of an incident. Writing DEGRADED
+// says something is wrong without claiming to know how badly. On a page whose
+// entire purpose is telling customers when something is broken, understating
+// is recoverable and a false all-clear is not.
+//
+// It is logged and counted at every use, because the real fix is the outage
+// record having a type.
+const CloudMonitorStatusUnknownType = CloudMonitorStatusDegraded
+
 // PendingCloudStatusWebhook is one webhook this service has decided is owed to
 // the dashboard and not yet seen delivered.
 //
@@ -152,6 +221,15 @@ type CloudStatusSweepResponse struct {
 	// failed its whole execution on this; this port skips the outage and keeps
 	// going, so the count is the only way to notice.
 	SkippedNoCloud int `json:"skippedNoCloud"`
+	// MonitorsUpdated is how many cloud_monitor rows actually changed status.
+	// 0 in the steady state: the write skips monitors already showing the
+	// target value, so a repeated sweep is a read and no writes.
+	MonitorsUpdated int64 `json:"monitorsUpdated"`
+	// UnknownOutageType counts ongoing outages whose type could not be mapped
+	// and which therefore fell back to a default severity. Non-zero means an
+	// outage record is missing its type and the public page is showing a
+	// guess -- fix the record, not this service.
+	UnknownOutageType int `json:"unknownOutageType"`
 }
 
 // RecordCloudStatusDeliveryRequest reports the outcome of one webhook attempt.
