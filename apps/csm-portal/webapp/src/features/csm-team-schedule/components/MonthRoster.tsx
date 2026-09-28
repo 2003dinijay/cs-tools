@@ -582,7 +582,11 @@ export default function MonthRoster({
         <table className={`tw roster${split ? " split" : ""}`}>
           <thead>
             <tr>
-              <th className="lab">Engineer</th>
+              {/* Spans the zone row too on a split day, so the heading sits in
+                  the middle of the header rather than on top of an empty cell. */}
+              <th className="lab eng" rowSpan={split ? 2 : undefined}>
+                Engineer
+              </th>
               {days.map((d) => {
                 const iso = toIsoDate(d);
                 const weekend = d.getDay() === 0 || d.getDay() === 6;
@@ -610,7 +614,6 @@ export default function MonthRoster({
                 the catalogue says so, and this follows it. */}
             {split ? (
               <tr className="zrow">
-                <th className="lab" aria-hidden="true" />
                 {days.map((d) => {
                   const iso = toIsoDate(d);
                   const weekend = d.getDay() === 0 || d.getDay() === 6;
@@ -644,7 +647,9 @@ export default function MonthRoster({
               <tr
                 key={row.userId}
                 ref={isMe ? meRow : undefined}
-                className={`${isMe ? "me" : ""}${opensTeam ? " teamtop" : ""}`.trim() || undefined}
+                // Every other row banded, so one engineer's month reads across
+                // the grid without a hover to follow it.
+                className={`${isMe ? "me" : ""}${opensTeam ? " teamtop" : ""}${i % 2 === 1 ? " alt" : ""}`.trim() || undefined}
                 aria-current={isMe ? "true" : undefined}
               >
                 <th className="lab">
