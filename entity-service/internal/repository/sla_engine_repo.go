@@ -75,6 +75,21 @@ type SLAEngineRepository interface {
 	// Returns apierror.NotFoundError if neither exists.
 	FindPolicyByName(ctx context.Context, name, target string) (SLAPolicyRef, error)
 
+	// FindPolicyByPattern is sla_policy_resolver.go's last-resort fallback,
+	// tried only once FindPolicyByName has failed under both plan labels --
+	// see resolve's own doc comment for why. Real ServiceNow tenants outside
+	// prod (confirmed on wso2sndev.service-now.com's synced data) don't all
+	// follow the "P{n} - {Type} ({Plan})" naming convention prod's policies
+	// were verified against, e.g. "P2 - IR - Resolution (Open Source)"
+	// instead of "P2 - Resolution (Open Source)" -- an exact-name lookup
+	// finds nothing there even though a policy for that severity/clockType
+	// clearly exists. Matches any name that starts with "<prefix> - " and
+	// contains <label> anywhere after that, for the given target, preferring
+	// the shortest matching name (closest to the canonical form) when more
+	// than one qualifies. Returns apierror.NotFoundError if none match --
+	// callers treat that exactly like FindPolicyByName's own NotFoundError.
+	FindPolicyByPattern(ctx context.Context, prefix, label, target string) (SLAPolicyRef, error)
+
 	// RegisterClock inserts a new source='CSM' "sla" row for
 	// (workItemID, policy.Target) and starts it running now, UNLESS an
 	// active (see slaEngineActiveStageFilter) source='CSM' row already
@@ -179,6 +194,39 @@ func (r *slaEngineRepo) FindPolicyByName(ctx context.Context, name, target strin
 	}
 	if err != nil {
 		return SLAPolicyRef{}, fmt.Errorf("find sla policy by name: %w", err)
+	}
+	ref.Duration = time.Duration(durationSeconds * float64(time.Second))
+	return ref, nil
+}
+
+// FindPolicyByPattern implements SLAEngineRepository.
+//
+// ORDER BY length(name), source: shortest name first, so a plain
+// "<prefix> - <label> (<plan>)" row (if one happens to also match this
+// looser pattern) is preferred over a longer, more qualified variant like
+// "<prefix> - IR - <label> (<plan>)"; source as the tiebreaker for the same
+// reason FindPolicyByName uses it.
+func (r *slaEngineRepo) FindPolicyByPattern(ctx context.Context, prefix, label, target string) (SLAPolicyRef, error) {
+	const query = `
+		SELECT id, name, target::TEXT, EXTRACT(EPOCH FROM duration)
+		FROM sla_policy
+		WHERE name ILIKE $1 || ' - %'
+		  AND name ILIKE '%' || $2 || '%'
+		  AND target = $3::sla_policy_target_enum
+		  AND source IN ('SERVICENOW', 'CSM')
+		  AND (is_active IS NULL OR is_active)
+		  AND duration IS NOT NULL
+		ORDER BY length(name), source
+		LIMIT 1`
+
+	var ref SLAPolicyRef
+	var durationSeconds float64
+	err := r.db.QueryRow(ctx, query, prefix, label, target).Scan(&ref.ID, &ref.Name, &ref.Target, &durationSeconds)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SLAPolicyRef{}, &apierror.NotFoundError{Msg: "no sla_policy found matching " + prefix + "/" + label + "/" + target}
+	}
+	if err != nil {
+		return SLAPolicyRef{}, fmt.Errorf("find sla policy by pattern: %w", err)
 	}
 	ref.Duration = time.Duration(durationSeconds * float64(time.Second))
 	return ref, nil
