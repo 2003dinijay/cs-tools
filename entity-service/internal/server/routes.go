@@ -233,7 +233,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// block builds, so all three are wired together rather than side by side.
 	var membershipIngestSvc service.SalesforceEventService
 	var salesEntityClient *salesentity.Client
-	if db != nil && cfg.DataSource == config.DataSourcePostgres && cfg.SalesEntityConfigured() {
+	// PostgresAuthoritative, not DATA_SOURCE=postgres alone: the dual-write
+	// mode serves memberships from PostgreSQL too, and memberships reach
+	// ServiceNow from Salesforce directly, so nothing here needs its mirror.
+	if db != nil && cfg.PostgresAuthoritative() && cfg.SalesEntityConfigured() {
 		salesEntityClient = salesentity.New(cfg.SalesEntityBaseURL, salesentity.ClientCredentialsConfig{
 			TokenURL:     cfg.SalesEntityTokenURL,
 			ClientID:     cfg.SalesEntityClientID,
@@ -285,7 +288,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 
 	// The portal-driven membership writes. Gated on a pool AND
-	// cfg.HasPortalMembershipWrites() -- the flag, the Postgres data source
+	// cfg.HasPortalMembershipWrites() -- the flag, a Postgres-authoritative data source
 	// and a complete sales-entity-service connection -- because every one of
 	// these writes is half a Postgres transaction and half a Salesforce
 	// call. Off by default: nil handler means the four routes below are

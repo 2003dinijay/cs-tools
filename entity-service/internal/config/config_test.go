@@ -489,10 +489,16 @@ func TestConfig_HasPortalMembershipWrites(t *testing.T) {
 	if c := complete(); !c.HasPortalMembershipWrites() {
 		t.Error("a complete configuration with the flag on must enable the writes")
 	}
+	// Dual-write serves memberships from Postgres too; ServiceNow gets them
+	// from Salesforce directly, so the writes run there as well.
+	dualWrite := complete()
+	dualWrite.DataSource = DataSourcePostgresServiceNowDualWrite
+	if !dualWrite.HasPortalMembershipWrites() {
+		t.Error("dual-write with the flag on must enable the writes")
+	}
 	for name, mod := range map[string]func(*Config){
 		"flag off":               func(c *Config) { c.CSMMigrationPortalWritesEnabled = false },
 		"servicenow data source": func(c *Config) { c.DataSource = DataSourceServiceNow },
-		"dual-write data source": func(c *Config) { c.DataSource = DataSourcePostgresServiceNowDualWrite },
 		"no sales entity base":   func(c *Config) { c.SalesEntityBaseURL = "" },
 		"no sales entity secret": func(c *Config) { c.SalesEntityClientSecret = "" },
 		"no sales entity at all": func(c *Config) {
@@ -555,5 +561,21 @@ func TestConfig_Validate_EscalationGroupIDsMustBeUUIDsIfSet(t *testing.T) {
 	c.EscalationEL5CEOGroupID = "not-a-uuid"
 	if err := c.Validate(); err == nil {
 		t.Fatal("want a startup error for a malformed group id")
+	}
+}
+
+// TestConfig_PostgresAuthoritative: the onboarding features run wherever
+// PostgreSQL is the system of record, and nowhere else.
+func TestConfig_PostgresAuthoritative(t *testing.T) {
+	for ds, want := range map[DataSource]bool{
+		DataSourcePostgres:                    true,
+		DataSourcePostgresServiceNowDualWrite: true,
+		DataSourceServiceNow:                  false,
+		"":                                    false,
+	} {
+		c := Config{DataSource: ds}
+		if got := c.PostgresAuthoritative(); got != want {
+			t.Errorf("DataSource %q: PostgresAuthoritative() = %v, want %v", ds, got, want)
+		}
 	}
 }
