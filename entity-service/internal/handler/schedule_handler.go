@@ -145,6 +145,33 @@ func (h *ScheduleHandler) DeleteScheduleAssignment(w http.ResponseWriter, r *htt
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// DeleteScheduleAbsence handles DELETE /team-schedule/absences/{id}.
+func (h *ScheduleHandler) DeleteScheduleAbsence(w http.ResponseWriter, r *http.Request) {
+	var note *string
+	if v := r.URL.Query().Get("note"); v != "" {
+		note = &v
+	}
+	if err := h.svc.DeleteAbsence(r.Context(), r.PathValue("id"), note); err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// CreateScheduleAbsenceKind handles POST /team-schedule/absence-kinds.
+func (h *ScheduleHandler) CreateScheduleAbsenceKind(w http.ResponseWriter, r *http.Request) {
+	var req domain.CreateScheduleAbsenceKindRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	kind, err := h.svc.CreateAbsenceKind(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeScheduleJSON(w, http.StatusCreated, kind)
+}
+
 // GetScheduleActivity handles GET /team-schedule/activity.
 func (h *ScheduleHandler) GetScheduleActivity(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

@@ -890,6 +890,22 @@ func (c *CustomerEntityClient) ApplyScheduleAbsence(ctx context.Context, body []
 	return c.do(ctx, http.MethodPost, "/team-schedule/absences/apply", body)
 }
 
+// DeleteScheduleAbsence calls DELETE /team-schedule/absences/{id} on the
+// entity service -- one absence removed whole, open-ended ones included.
+func (c *CustomerEntityClient) DeleteScheduleAbsence(ctx context.Context, id, note string) ([]byte, error) {
+	path := "/team-schedule/absences/" + url.PathEscape(id)
+	if note != "" {
+		path += "?note=" + url.QueryEscape(note)
+	}
+	return c.do(ctx, http.MethodDelete, path, nil)
+}
+
+// CreateScheduleAbsenceKind calls POST /team-schedule/absence-kinds on the
+// entity service -- a lead adding a shared leave or allocation tag.
+func (c *CustomerEntityClient) CreateScheduleAbsenceKind(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/team-schedule/absence-kinds", body)
+}
+
 // GetScheduleEditMarkers calls GET /team-schedule/edit-markers on the entity
 // service -- which roster cells a person has changed, in a window.
 func (c *CustomerEntityClient) GetScheduleEditMarkers(ctx context.Context, from, to string) ([]byte, error) {

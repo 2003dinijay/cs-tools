@@ -20,7 +20,9 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
@@ -61,6 +63,12 @@ type ScheduleService interface {
 	// ApplyAbsence is the same picker marking somebody away, or bringing them
 	// back, across a span.
 	ApplyAbsence(ctx context.Context, req domain.ApplyScheduleAbsenceRequest) (domain.ApplyScheduleAbsenceResponse, error)
+	// DeleteAbsence removes one absence -- the whole span, open-ended or not
+	// -- which is what "remove this leave" means to the lead clicking it.
+	DeleteAbsence(ctx context.Context, id string, note *string) error
+	// CreateAbsenceKind adds a leave or allocation kind to the shared
+	// catalogue. Any team lead may; every team then sees it.
+	CreateAbsenceKind(ctx context.Context, req domain.CreateScheduleAbsenceKindRequest) (domain.ScheduleAbsenceKind, error)
 }
 
 type scheduleService struct {
@@ -348,6 +356,9 @@ func (s *scheduleService) ApplyRange(ctx context.Context, req domain.ApplySchedu
 	return s.repo.ApplyRange(ctx, req, auth.IdentityFromContext(ctx).UserEmail)
 }
 
+// maxAllocatedToLength is team_schedule_absence.allocated_to's width.
+const maxAllocatedToLength = 100
+
 // ApplyAbsence implements ScheduleService.
 func (s *scheduleService) ApplyAbsence(ctx context.Context, req domain.ApplyScheduleAbsenceRequest) (domain.ApplyScheduleAbsenceResponse, error) {
 	if err := validateUserID(req.UserID); err != nil {
@@ -360,10 +371,107 @@ func (s *scheduleService) ApplyAbsence(ctx context.Context, req domain.ApplySche
 			Msg: "userId, teamKey, from and to are all required",
 		}
 	}
+	if req.AllocatedTo != nil {
+		v := strings.TrimSpace(*req.AllocatedTo)
+		switch {
+		case v == "":
+			req.AllocatedTo = nil
+		case utf8.RuneCountInString(v) > maxAllocatedToLength:
+			return domain.ApplyScheduleAbsenceResponse{}, &apierror.ValidationError{
+				Msg: fmt.Sprintf("allocatedTo is at most %d characters", maxAllocatedToLength),
+			}
+		default:
+			req.AllocatedTo = &v
+		}
+	}
 	if err := s.requireTeamLeadOver(ctx, req.TeamKey, req.UserID); err != nil {
 		return domain.ApplyScheduleAbsenceResponse{}, err
 	}
 	return s.repo.ApplyAbsence(ctx, req, auth.IdentityFromContext(ctx).UserEmail)
+}
+
+// DeleteAbsence implements ScheduleService.
+//
+// The team and engineer are read from the row rather than taken from the
+// caller, for the same reason UpdateAssignment does: otherwise a lead could
+// name their own team and remove anybody's leave.
+func (s *scheduleService) DeleteAbsence(ctx context.Context, id string, note *string) error {
+	if err := validateUserID(id); err != nil {
+		return &apierror.ValidationError{Msg: fmt.Sprintf("absence id %q is not a UUID", id)}
+	}
+	// Internal first, so an outside caller cannot probe which ids exist by
+	// the difference between 403 and 404.
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return err
+	}
+	existing, err := s.repo.AbsenceByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.requireTeamLeadOver(ctx, existing.TeamKey, existing.Engineer.UserID); err != nil {
+		return err
+	}
+	return s.repo.DeleteAbsence(ctx, existing.ID, auth.IdentityFromContext(ctx).UserEmail, note)
+}
+
+// absenceKindColours are the colour tokens a new kind may use: the ones the
+// portal's stylesheet draws a leave or allocation chip for. Anything else
+// would render as an uncoloured chip nobody could tell apart.
+var absenceKindColours = map[string]bool{
+	"AL": true, "LL": true, "MAT": true, "PAT": true, "RND": true, "EXT": true,
+	"INT": true, "BR": true, "MIG": true, "ONB": true, "EXC": true, "IND": true,
+}
+
+var nonCodeChars = regexp.MustCompile(`[^A-Z0-9]+`)
+
+// absenceKindCode derives a kind's code from its label: "Customer on-call" is
+// CUSTOMER_ON_CALL. Derived rather than asked for, so it is always a valid
+// code and the same label cannot be added twice under two spellings.
+func absenceKindCode(label string) string {
+	c := strings.Trim(nonCodeChars.ReplaceAllString(strings.ToUpper(label), "_"), "_")
+	if len(c) > 32 {
+		c = strings.TrimRight(c[:32], "_")
+	}
+	return c
+}
+
+// CreateAbsenceKind implements ScheduleService.
+func (s *scheduleService) CreateAbsenceKind(ctx context.Context, req domain.CreateScheduleAbsenceKindRequest) (domain.ScheduleAbsenceKind, error) {
+	req.ShortCode = strings.TrimSpace(req.ShortCode)
+	req.Label = strings.TrimSpace(req.Label)
+	req.Bucket = strings.ToUpper(strings.TrimSpace(req.Bucket))
+	req.ColourToken = strings.ToUpper(strings.TrimSpace(req.ColourToken))
+	switch {
+	case req.ShortCode == "" || utf8.RuneCountInString(req.ShortCode) > 12:
+		return domain.ScheduleAbsenceKind{}, &apierror.ValidationError{Msg: "shortCode is required and at most 12 characters"}
+	case req.Label == "" || utf8.RuneCountInString(req.Label) > 100:
+		return domain.ScheduleAbsenceKind{}, &apierror.ValidationError{Msg: "label is required and at most 100 characters"}
+	// EXCLUDED -- off the rota entirely -- is not a lead's to invent more of.
+	case req.Bucket != "LEAVE" && req.Bucket != "ALLOCATION":
+		return domain.ScheduleAbsenceKind{}, &apierror.ValidationError{Msg: "bucket must be LEAVE or ALLOCATION"}
+	case !absenceKindColours[req.ColourToken]:
+		return domain.ScheduleAbsenceKind{}, &apierror.ValidationError{Msg: fmt.Sprintf("colourToken %q is not one the rota can draw", req.ColourToken)}
+	}
+	code := absenceKindCode(req.Label)
+	if code == "" {
+		return domain.ScheduleAbsenceKind{}, &apierror.ValidationError{Msg: "label needs at least one letter or digit"}
+	}
+
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return domain.ScheduleAbsenceKind{}, err
+	}
+	email := auth.IdentityFromContext(ctx).UserEmail
+	if email == "" {
+		return domain.ScheduleAbsenceKind{}, &apierror.ForbiddenError{Msg: "adding a tag needs a user token, not a service credential"}
+	}
+	teams, err := s.repo.LeadTeamsFor(ctx, email)
+	if err != nil {
+		return domain.ScheduleAbsenceKind{}, err
+	}
+	if len(teams) == 0 {
+		return domain.ScheduleAbsenceKind{}, &apierror.ForbiddenError{Msg: "only a team lead can add a tag"}
+	}
+	return s.repo.CreateAbsenceKind(ctx, code, req, email)
 }
 
 // EditMarkers implements ScheduleService.

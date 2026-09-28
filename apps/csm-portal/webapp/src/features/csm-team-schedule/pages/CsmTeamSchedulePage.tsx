@@ -22,6 +22,8 @@ import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import {
   useApplyAbsence,
+  useCreateAbsenceKind,
+  useDeleteAbsence,
   useScheduleEditMarkers,
   useApplyRange,
   useMyLeadTeams,
@@ -34,7 +36,8 @@ import {
   type MonthWindow,
   type RotaRead,
 } from "../api/useTeamSchedule";
-import CellPicker, { type CellPickerTarget } from "../components/CellPicker";
+import CellPicker, { type CellPickerTarget, type NewAbsenceKind } from "../components/CellPicker";
+import { BackendApiError } from "@api/backend/client";
 import DayLadder, { type LadderLane } from "../components/DayLadder";
 import MonthRoster from "../components/MonthRoster";
 import MyWeekStrip from "../components/MyWeekStrip";
@@ -173,6 +176,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const { showError } = useErrorBanner();
   const applyRange = useApplyRange();
   const applyAbsence = useApplyAbsence();
+  const deleteAbsence = useDeleteAbsence();
+  const createKind = useCreateAbsenceKind();
 
   /** Edit mode, and the cell it has open.
    *
@@ -465,8 +470,15 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     return out;
   }, [editMarkers.markers]);
 
-  const leaveKinds = useMemo(
-    () => (catalogue.data?.absenceKinds ?? []).filter((k) => k.bucket === "LEAVE"),
+  /** What a lead can mark somebody away for from the roster: leave, and time
+   *  allocated elsewhere (a customer, RnD, the Brazil rotation). EXCLUDED --
+   *  off the rota entirely -- is not a lead's to set from a cell. The
+   *  catalogue already serves active kinds only. */
+  const awayKinds = useMemo(
+    () =>
+      (catalogue.data?.absenceKinds ?? []).filter(
+        (k) => k.bucket === "LEAVE" || k.bucket === "ALLOCATION",
+      ),
     [catalogue.data?.absenceKinds],
   );
 
@@ -511,7 +523,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const recordChange = (target: CellPickerTarget, from: string, to: string, what: string): void =>
     setChanges((cs) => [...cs, { userId: target.userId, name: target.name, from, to, what }]);
 
-  const markAway = (kindCode: string, from: string, to: string): void => {
+  const markAway = (kindCode: string, from: string, to: string, allocatedTo?: string): void => {
     if (!picker) return;
     applyAbsence.mutate(
       {
@@ -521,6 +533,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         from,
         to,
         note: "marked from the month roster",
+        ...(allocatedTo ? { allocatedTo } : {}),
       },
       {
         onSuccess: () =>
@@ -529,7 +542,9 @@ export default function CsmTeamSchedulePage(): JSX.Element {
             from,
             to,
             kindCode
-              ? (leaveKinds.find((k) => k.code === kindCode)?.label ?? kindCode)
+              ? `${awayKinds.find((k) => k.code === kindCode)?.label ?? kindCode}${
+                  allocatedTo ? ` (${allocatedTo})` : ""
+                }`
               : "back on the rota",
           ),
         onError: (err) =>
@@ -538,6 +553,39 @@ export default function CsmTeamSchedulePage(): JSX.Element {
       },
     );
   };
+
+  /** Remove the whole leave or allocation the clicked cell is part of. */
+  const removeAbsence = (absenceId: string): void => {
+    if (!picker?.absence) return;
+    const ab = picker.absence;
+    const label = awayKinds.find((k) => k.code === ab.kindCode)?.label ?? ab.kindCode;
+    deleteAbsence.mutate(
+      { id: absenceId, note: "removed from the month roster" },
+      {
+        onSuccess: () =>
+          recordChange(picker, ab.startsOn, ab.endsOn ?? ab.startsOn, `${label} removed`),
+        onError: (err) =>
+          showError("That leave or allocation was not removed. Nothing has changed.", err),
+        onSettled: () => setPicker(null),
+      },
+    );
+  };
+
+  /** Add a tag to the shared catalogue. The picker stays open so the lead can
+   *  use it straight away; the form shows why when it is refused. */
+  const addKind = (kind: NewAbsenceKind): Promise<void> =>
+    createKind.mutateAsync(kind).then(
+      () => undefined,
+      (err: unknown) => {
+        throw new Error(
+          err instanceof BackendApiError && err.status === 409
+            ? "A tag with that name or short code already exists."
+            : err instanceof BackendApiError && err.status === 403
+              ? "Only a team lead can add a tag."
+              : "The tag was not added. Try again.",
+        );
+      },
+    );
 
   /** Clearing a cell means two different writes depending on what is on it.
    *
@@ -927,10 +975,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           key={`${picker.userId}|${picker.rotaDate}|${picker.zoneCode ?? ""}`}
           target={picker}
           shifts={pickerShifts}
-          busy={applyRange.isPending || applyAbsence.isPending}
-          leaveKinds={leaveKinds}
+          busy={applyRange.isPending || applyAbsence.isPending || deleteAbsence.isPending}
+          awayKinds={awayKinds}
           onApply={applyToCell}
           onMarkAway={markAway}
+          onRemoveAbsence={removeAbsence}
+          onCreateKind={addKind}
           onClear={clearCell}
           onClose={() => setPicker(null)}
         />

@@ -65,6 +65,16 @@ type ScheduleRepository interface {
 	// to show the control to everyone and let the 403 explain.
 	LeadTeamsFor(ctx context.Context, userEmail string) ([]string, error)
 
+	// AbsenceByID reads one absence, so the service can check who may remove
+	// it before anything is touched.
+	AbsenceByID(ctx context.Context, id string) (domain.ScheduleAbsence, error)
+	// DeleteAbsence removes one absence outright, open-ended ones included,
+	// recording it in the absence history inside the same transaction.
+	DeleteAbsence(ctx context.Context, id, actorEmail string, note *string) error
+	// CreateAbsenceKind adds a kind to the shared catalogue under the given
+	// code. A code already taken is a ConflictError.
+	CreateAbsenceKind(ctx context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, actorEmail string) (domain.ScheduleAbsenceKind, error)
+
 	// ApplyRange sets one engineer to one window across a span of days, which
 	// is how the roster's picker edits.
 	ApplyRange(ctx context.Context, req domain.ApplyScheduleRangeRequest, actorEmail string) (domain.ApplyScheduleRangeResponse, error)
@@ -952,12 +962,21 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 		return out, err
 	}
 
-	var kindID string
+	var kindID, bucket string
 	if req.KindCode != "" {
+		// Active kinds only: a retired kind is kept so older absences stay
+		// readable, not so new ones can be marked against it.
 		if err := tx.QueryRow(ctx,
-			`SELECT id::text FROM team_schedule_absence_kind WHERE code = $1`, req.KindCode).Scan(&kindID); err != nil {
+			`SELECT id::text, bucket::text FROM team_schedule_absence_kind WHERE code = $1 AND is_active`,
+			req.KindCode).Scan(&kindID, &bucket); err != nil {
 			return out, &apierror.ValidationError{Msg: fmt.Sprintf("no such absence kind %q", req.KindCode)}
 		}
+	}
+	// Who the time is for means something only for an allocation. Leave is
+	// not "for" anybody, so a value sent with a leave kind is not stored.
+	allocatedTo := req.AllocatedTo
+	if bucket != "ALLOCATION" {
+		allocatedTo = nil
 	}
 
 	// Everything of this engineer's that the span touches. An open-ended
@@ -1080,10 +1099,10 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO team_schedule_absence
 			  (id, created_on, updated_on, created_by, updated_by, user_id, team_key,
-			   kind_id, starts_on, ends_on, note)
-			VALUES (gen_random_uuid(), now(), now(), $1, $1, $2::uuid, $3, $4::uuid, $5::date, $6::date, $7)
+			   kind_id, starts_on, ends_on, note, allocated_to)
+			VALUES (gen_random_uuid(), now(), now(), $1, $1, $2::uuid, $3, $4::uuid, $5::date, $6::date, $7, $8)
 			RETURNING id::text`,
-			actorEmail, req.UserID, req.TeamKey, kindID, from.Format(iso), to.Format(iso), req.Note).Scan(&id); err != nil {
+			actorEmail, req.UserID, req.TeamKey, kindID, from.Format(iso), to.Format(iso), req.Note, allocatedTo).Scan(&id); err != nil {
 			return out, fmt.Errorf("insert absence: %w", err)
 		}
 		toIso := to.Format(iso)
@@ -1098,6 +1117,133 @@ func (r *scheduleRepository) ApplyAbsence(ctx context.Context, req domain.ApplyS
 		return out, fmt.Errorf("commit apply absence: %w", err)
 	}
 	return out, nil
+}
+
+// AbsenceByID implements ScheduleRepository.
+func (r *scheduleRepository) AbsenceByID(ctx context.Context, id string) (domain.ScheduleAbsence, error) {
+	var a domain.ScheduleAbsence
+	var starts time.Time
+	var ends *time.Time
+	err := r.db.QueryRow(ctx, `
+		SELECT a.id::text, a.user_id::text, a.team_key, k.code, a.starts_on, a.ends_on
+		  FROM team_schedule_absence a
+		  JOIN team_schedule_absence_kind k ON k.id = a.kind_id
+		 WHERE a.id = $1::uuid`, id).Scan(&a.ID, &a.Engineer.UserID, &a.TeamKey, &a.KindCode, &starts, &ends)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return a, &apierror.NotFoundError{Msg: "no such absence"}
+	}
+	if err != nil {
+		return a, fmt.Errorf("read absence: %w", err)
+	}
+	a.StartsOn = starts.Format("2006-01-02")
+	if ends != nil {
+		e := ends.Format("2006-01-02")
+		a.EndsOn = &e
+	}
+	return a, nil
+}
+
+// DeleteAbsence implements ScheduleRepository.
+//
+// The history row is written first, while the absence still exists to be
+// described -- the same order, and the same reason, as DeleteAssignment.
+func (r *scheduleRepository) DeleteAbsence(ctx context.Context, id, actorEmail string, note *string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delete absence: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := nameTheActor(ctx, tx, actorEmail); err != nil {
+		return err
+	}
+
+	var userID, teamKey, kindCode string
+	var starts time.Time
+	var ends *time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT a.user_id::text, a.team_key, k.code, a.starts_on, a.ends_on
+		  FROM team_schedule_absence a
+		  JOIN team_schedule_absence_kind k ON k.id = a.kind_id
+		 WHERE a.id = $1::uuid
+		   FOR UPDATE OF a`, id).Scan(&userID, &teamKey, &kindCode, &starts, &ends)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &apierror.NotFoundError{Msg: "no such absence"}
+	}
+	if err != nil {
+		return fmt.Errorf("read absence for delete: %w", err)
+	}
+	var endsOn *string
+	if ends != nil {
+		e := ends.Format("2006-01-02")
+		endsOn = &e
+	}
+	if err := recordAbsenceActivity(ctx, tx, id, userID, teamKey, kindCode,
+		starts.Format("2006-01-02"), endsOn, "DELETED", actorEmail, nil, nil, nil, note); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM team_schedule_absence WHERE id = $1::uuid`, id); err != nil {
+		return fmt.Errorf("delete absence: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delete absence: %w", err)
+	}
+	return nil
+}
+
+// CreateAbsenceKind implements ScheduleRepository.
+//
+// A new kind sorts after the existing kinds in its own bucket, so it lands at
+// the end of the right group in the picker and the legend rather than in the
+// middle of another.
+func (r *scheduleRepository) CreateAbsenceKind(ctx context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, actorEmail string) (domain.ScheduleAbsenceKind, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return domain.ScheduleAbsenceKind{}, fmt.Errorf("begin create absence kind: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := nameTheActor(ctx, tx, actorEmail); err != nil {
+		return domain.ScheduleAbsenceKind{}, err
+	}
+
+	// A short code is what a roster cell draws, so two active kinds sharing
+	// one would be indistinguishable on the grid.
+	var clash bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM team_schedule_absence_kind WHERE is_active AND lower(short_code) = lower($1))`,
+		req.ShortCode).Scan(&clash); err != nil {
+		return domain.ScheduleAbsenceKind{}, fmt.Errorf("check short code: %w", err)
+	}
+	if clash {
+		return domain.ScheduleAbsenceKind{}, &apierror.ConflictError{
+			Msg: fmt.Sprintf("a tag with the short code %q already exists", req.ShortCode),
+		}
+	}
+
+	k := domain.ScheduleAbsenceKind{Code: code, ShortCode: req.ShortCode, Label: req.Label, Bucket: req.Bucket, ColourToken: req.ColourToken}
+	err = tx.QueryRow(ctx, `
+		INSERT INTO team_schedule_absence_kind
+		  (code, short_code, label, bucket, colour_token, sort_order, created_by, updated_by)
+		SELECT $1, $2, $3, $4::team_schedule_absence_bucket_enum, $5,
+		       COALESCE(MAX(sort_order), 0) + 1, $6, $6
+		  FROM team_schedule_absence_kind
+		 WHERE bucket = $4::team_schedule_absence_bucket_enum
+		ON CONFLICT (code) DO NOTHING
+		RETURNING id::text, sort_order`,
+		code, req.ShortCode, req.Label, req.Bucket, req.ColourToken, actorEmail).Scan(&k.ID, &k.SortOrder)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ScheduleAbsenceKind{}, &apierror.ConflictError{
+			Msg: fmt.Sprintf("a tag called %q already exists", req.Label),
+		}
+	}
+	if err != nil {
+		return domain.ScheduleAbsenceKind{}, fmt.Errorf("insert absence kind: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.ScheduleAbsenceKind{}, fmt.Errorf("commit create absence kind: %w", err)
+	}
+	return k, nil
 }
 
 // EditMarkers implements ScheduleRepository.

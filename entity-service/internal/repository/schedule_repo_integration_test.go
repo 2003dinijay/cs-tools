@@ -37,11 +37,13 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
@@ -406,7 +408,7 @@ func absenceKind(t *testing.T, pool *pgxpool.Pool, bucket string) string {
 	t.Helper()
 	var code string
 	if err := pool.QueryRow(context.Background(),
-		`SELECT code FROM team_schedule_absence_kind WHERE bucket = $1 ORDER BY sort_order LIMIT 1`,
+		`SELECT code FROM team_schedule_absence_kind WHERE bucket = $1 AND is_active ORDER BY sort_order LIMIT 1`,
 		bucket).Scan(&code); err != nil {
 		t.Fatalf("no %s absence kind: %v", bucket, err)
 	}
@@ -560,6 +562,157 @@ func TestScheduleIntegration_ApplyAbsenceRefusesAnUnknownKind(t *testing.T) {
 	}, schedLeadEmail)
 	if err == nil {
 		t.Fatal("an absence kind that is not in the catalogue was accepted")
+	}
+}
+
+// An allocation says who the time is for; leave is not for anybody, so the
+// same value sent with a leave kind is not stored.
+func TestScheduleIntegration_ApplyAbsenceKeepsWhoAnAllocationIsFor(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	customer := "Acme Corp"
+
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, KindCode: absenceKind(t, pool, "ALLOCATION"),
+		From: "2026-09-01", To: "2026-09-04", AllocatedTo: &customer,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("ApplyAbsence (allocation): %v", err)
+	}
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, KindCode: absenceKind(t, pool, "LEAVE"),
+		From: "2026-09-21", To: "2026-09-22", AllocatedTo: &customer,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("ApplyAbsence (leave): %v", err)
+	}
+
+	got := map[string]*string{}
+	rows, err := pool.Query(ctx,
+		`SELECT k.bucket::text, a.allocated_to FROM team_schedule_absence a
+		   JOIN team_schedule_absence_kind k ON k.id = a.kind_id
+		  WHERE a.user_id = $1::uuid`, schedMemberID)
+	if err != nil {
+		t.Fatalf("read the absences back: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var bucket string
+		var to *string
+		if err := rows.Scan(&bucket, &to); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[bucket] = to
+	}
+	if v := got["ALLOCATION"]; v == nil || *v != customer {
+		t.Errorf("allocation stored allocated_to %v, want %q", v, customer)
+	}
+	if v, ok := got["LEAVE"]; !ok || v != nil {
+		t.Errorf("leave stored allocated_to %v, want it left empty", v)
+	}
+}
+
+// A retired kind stays in the catalogue so older absences read correctly, but
+// nothing new can be marked against it.
+func TestScheduleIntegration_ApplyAbsenceRefusesARetiredKind(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	var retired string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT code FROM team_schedule_absence_kind WHERE NOT is_active LIMIT 1`).Scan(&retired); err != nil {
+		t.Skipf("no retired kind in this catalogue: %v", err)
+	}
+	if _, err := repo.ApplyAbsence(context.Background(), domain.ApplyScheduleAbsenceRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, KindCode: retired,
+		From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err == nil {
+		t.Fatalf("retired kind %s was accepted", retired)
+	}
+}
+
+// Removing an absence removes all of it, including one with no end date --
+// which clearing a date range cannot do, since there is no range to name.
+func TestScheduleIntegration_DeleteAbsenceRemovesAnOpenEndedSpan(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+
+	var id string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO team_schedule_absence (user_id, team_key, kind_id, starts_on, ends_on)
+		SELECT $1::uuid, $2, id, '2026-09-01', NULL FROM team_schedule_absence_kind WHERE code = $3
+		RETURNING id::text`, schedMemberID, schedTeamKey, absenceKind(t, pool, "ALLOCATION")).Scan(&id); err != nil {
+		t.Fatalf("seed an open-ended allocation: %v", err)
+	}
+
+	got, err := repo.AbsenceByID(ctx, id)
+	if err != nil {
+		t.Fatalf("AbsenceByID: %v", err)
+	}
+	if got.TeamKey != schedTeamKey || got.Engineer.UserID != schedMemberID || got.EndsOn != nil {
+		t.Fatalf("read back %+v, want the member's open-ended span on %s", got, schedTeamKey)
+	}
+
+	if err := repo.DeleteAbsence(ctx, id, schedLeadEmail, nil); err != nil {
+		t.Fatalf("DeleteAbsence: %v", err)
+	}
+	var left, history int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM team_schedule_absence WHERE id = $1::uuid`, id).Scan(&left); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM team_schedule_absence_activity WHERE absence_id = $1::uuid AND action = 'DELETED'`,
+		id).Scan(&history); err != nil {
+		t.Fatalf("count history: %v", err)
+	}
+	if left != 0 || history != 1 {
+		t.Fatalf("after delete: %d rows left and %d DELETED history rows, want 0 and 1", left, history)
+	}
+
+	var notFound *apierror.NotFoundError
+	if err := repo.DeleteAbsence(ctx, id, schedLeadEmail, nil); !errors.As(err, &notFound) {
+		t.Fatalf("deleting it again: want NotFoundError, got %v", err)
+	}
+}
+
+// A new tag lands at the end of its own bucket, and can be marked at once.
+// The same label, or a short code another active kind already draws, is
+// refused rather than creating a twin.
+func TestScheduleIntegration_CreateAbsenceKindJoinsTheEndOfItsBucket(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM team_schedule_absence WHERE kind_id IN (SELECT id FROM team_schedule_absence_kind WHERE code = 'INTEGRATION_TEST_TAG')`)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM team_schedule_absence_kind WHERE code = 'INTEGRATION_TEST_TAG'`)
+	})
+
+	var maxAllocation int
+	if err := pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(sort_order), 0) FROM team_schedule_absence_kind WHERE bucket = 'ALLOCATION'`).Scan(&maxAllocation); err != nil {
+		t.Fatalf("read sort order: %v", err)
+	}
+
+	req := domain.CreateScheduleAbsenceKindRequest{ShortCode: "ITT", Label: "Integration test tag", Bucket: "ALLOCATION", ColourToken: "INT"}
+	k, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_TEST_TAG", req, schedLeadEmail)
+	if err != nil {
+		t.Fatalf("CreateAbsenceKind: %v", err)
+	}
+	if k.ID == "" || k.SortOrder != maxAllocation+1 {
+		t.Fatalf("created %+v, want an id and sort order %d", k, maxAllocation+1)
+	}
+
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, KindCode: k.Code, From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("marking the new tag: %v", err)
+	}
+
+	var conflict *apierror.ConflictError
+	if _, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_TEST_TAG", domain.CreateScheduleAbsenceKindRequest{
+		ShortCode: "IT2", Label: "Integration test tag", Bucket: "ALLOCATION", ColourToken: "INT",
+	}, schedLeadEmail); !errors.As(err, &conflict) {
+		t.Fatalf("the same label again: want ConflictError, got %v", err)
+	}
+	if _, err := repo.CreateAbsenceKind(ctx, "SOMETHING_ELSE", domain.CreateScheduleAbsenceKindRequest{
+		ShortCode: "al", Label: "Something else", Bucket: "LEAVE", ColourToken: "AL",
+	}, schedLeadEmail); !errors.As(err, &conflict) {
+		t.Fatalf("annual leave's short code: want ConflictError, got %v", err)
 	}
 }
 

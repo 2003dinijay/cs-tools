@@ -94,6 +94,32 @@ absences stay readable.
 Re-running 0143 never overwrites a row a lead has since edited
 (`ON CONFLICT DO NOTHING`).
 
+### What a lead can do from the roster
+
+A lead edits their own team's rows in the Month roster's cell picker:
+
+- **Mark leave or an allocation over a span.** They choose a start and end
+  date (both editable; the start defaults to the clicked day), then a kind.
+  For an allocation there is an optional **For** field, which is stored as
+  `allocated_to`. It is never stored with leave. The write is
+  `POST /team-schedule/absences/apply`.
+- **Remove a whole span in one click.** Clicking any day of a leave or
+  allocation shows the whole span with a **Remove** button, which deletes
+  every day of it, including a span with no end date. The write is
+  `DELETE /team-schedule/absences/{id}`. Clearing just a few days out of a
+  span is still done with the date range and **Clear**.
+- **Add a tag.** "+ New tag" adds a leave or allocation kind to the shared
+  catalogue: a short code, a name, and a colour from the chip colours the rota
+  already draws. The code is derived from the name. A name that is already
+  used, or a short code another active kind already uses, is refused. Only
+  team leads may add a tag, and every team sees it once added. The write is
+  `POST /team-schedule/absence-kinds`. There is no delete; retire a kind with
+  `is_active = FALSE`.
+
+All three are gated on the caller leading the team (for a removal, the team
+recorded on the absence row), and each is recorded in the absence history
+and the audit table.
+
 ## 3. `team.key` — the one shared-table change (0141)
 
 The rota lists every `team` whose `type` starts with `CRE` or `SRE`. It refers

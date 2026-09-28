@@ -18,6 +18,7 @@
 
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import type {
+  CellAbsence,
   ScheduleAbsence,
   ScheduleAbsenceKind,
   ScheduleAssignment,
@@ -100,9 +101,13 @@ interface MonthRosterProps {
      *  from the TZ2 column is a mis-click waiting to happen. Absent on a CRE
      *  day, and on leave, which belongs to the whole day rather than a zone. */
     zoneCode?: string;
+    /** The whole absence this cell is one day of, so the picker can offer to
+     *  remove all of it rather than the day that was clicked. */
+    absence?: CellAbsence;
     anchor: { top: number; left: number; bottom: number; right: number };
   }) => void;
 }
+
 
 interface Cell {
   code: string;
@@ -117,6 +122,8 @@ interface Cell {
   /** The absence kind covering this day, where one does. The picker marks it
    *  as what is held so leave reads the same as a rotation does. */
   absenceKindCode?: string;
+  /** The span that kind comes from, which the picker can remove whole. */
+  absence?: CellAbsence;
 }
 
 /**
@@ -281,6 +288,13 @@ export default function MonthRoster({
         if (iso >= ab.startsOn && iso <= end) {
           row.days.set(iso, {
             absenceKindCode: ab.kindCode,
+            absence: {
+              id: ab.id,
+              kindCode: ab.kindCode,
+              startsOn: ab.startsOn,
+              endsOn: ab.endsOn,
+              allocatedTo: ab.allocatedTo,
+            },
             // An allocation names who it is for, where it knows: a lead
             // scanning the month wants "TFL", not six identical "CUS-OFF"s.
             // Clipped to what a day column holds; the title has it in full.
@@ -379,6 +393,7 @@ export default function MonthRoster({
       rotaDate: iso,
       shiftCode: cell?.shiftCode,
       absenceKindCode: cell?.absenceKindCode,
+      absence: cell?.absence,
       zoneCode,
       anchor: { top: r.top, left: r.left, bottom: r.bottom, right: r.right },
     });

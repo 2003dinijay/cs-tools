@@ -5612,6 +5612,114 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/absences/{id}:
+    delete:
+      summary: Remove one absence — the whole span, open-ended or not.
+      description: >
+        Lead edit, gated on the team the absence belongs to (read from the row,
+        not from the caller). Unlike clearing a date range with
+        /team-schedule/absences/apply, this also removes an absence with no end
+        date. The removal is recorded in the absence history before the row
+        goes.
+      operationId: deleteScheduleAbsence
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: note
+          in: query
+          required: false
+          description: Why it was removed, kept on the history row.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Bad request — malformed id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this absence's team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such absence.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/absence-kinds:
+    post:
+      summary: Add a leave or allocation kind to the shared catalogue.
+      description: >
+        Any team lead may add one, and every team then sees it. The code is
+        derived from the label (upper case, words joined by underscores), so the
+        same label cannot be added twice. The colour must be one the rota draws
+        a leave or allocation chip for.
+      operationId: createScheduleAbsenceKind
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateScheduleAbsenceKindRequest'
+      responses:
+        "201":
+          description: The new kind.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleAbsenceKind'
+        "400":
+          description: Bad request — a missing or over-long field, an unknown bucket or colour.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller leads no team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: A kind with that label, or an active kind with that short code, already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/absences/apply:
     post:
       summary: Mark one engineer away across a span, or bring them back over it.
@@ -15983,6 +16091,23 @@ components:
           description: >-
             Display order, and what gives a team a stable colour without any
             client naming it.
+    CreateScheduleAbsenceKindRequest:
+      type: object
+      required: [shortCode, label, bucket, colourToken]
+      properties:
+        shortCode:
+          type: string
+          maxLength: 12
+          description: What a roster cell draws, e.g. "Trn". Unique among active kinds.
+        label:
+          type: string
+          maxLength: 100
+        bucket:
+          type: string
+          enum: [LEAVE, ALLOCATION]
+        colourToken:
+          type: string
+          enum: [AL, LL, MAT, PAT, RND, EXT, INT, BR, MIG, ONB, EXC, IND]
     ScheduleAbsenceKind:
       type: object
       description: Why someone is out of the rota.
@@ -16049,7 +16174,7 @@ components:
           type: string
           description: >-
             A schedule_absence_kind code, e.g. ANNUAL_LEAVE. Empty, or omitted,
-            brings them back over the span instead.
+            brings them back over the span instead. Must be an active kind.
         from:
           type: string
           format: date
@@ -16058,6 +16183,13 @@ components:
           format: date
         note:
           type: string
+        allocatedTo:
+          type: string
+          maxLength: 100
+          description: >-
+            Who an allocation is for: the customer, or the product team for
+            RnD. Stored only with an ALLOCATION kind; ignored for leave, and a
+            blank value is treated as absent.
     ApplyScheduleAbsenceResponse:
       type: object
       required: [created, removed, trimmed]

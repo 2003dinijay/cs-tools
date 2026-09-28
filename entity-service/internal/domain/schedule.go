@@ -184,6 +184,21 @@ type ApplyScheduleAbsenceRequest struct {
 	From     string  `json:"from"`
 	To       string  `json:"to"`
 	Note     *string `json:"note,omitempty"`
+	// AllocatedTo is who an allocation is for: the customer, or the product
+	// team for RnD. Kept only when KindCode is an ALLOCATION kind -- leave is
+	// not "for" anybody -- and dropped when blank.
+	AllocatedTo *string `json:"allocatedTo,omitempty"`
+}
+
+// CreateScheduleAbsenceKindRequest is a lead adding a kind of time away the
+// catalogue does not have yet. The kind is shared: once created it is offered
+// to every team. The code is derived from the label, not taken from the
+// caller, so two leads naming the same thing arrive at the same code.
+type CreateScheduleAbsenceKindRequest struct {
+	ShortCode   string `json:"shortCode"`
+	Label       string `json:"label"`
+	Bucket      string `json:"bucket"`
+	ColourToken string `json:"colourToken"`
 }
 
 // ApplyScheduleAbsenceResponse says what the span did to what was already

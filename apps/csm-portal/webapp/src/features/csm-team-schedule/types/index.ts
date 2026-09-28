@@ -126,6 +126,17 @@ export interface ScheduleAbsence {
   allocatedTo?: string;
 }
 
+/** One leave or allocation span as a roster cell hands it to the picker, so
+ *  the picker can remove the whole span rather than the day that was clicked. */
+export interface CellAbsence {
+  id: string;
+  kindCode: string;
+  startsOn: string;
+  /** Absent for a span that runs until further notice. */
+  endsOn?: string;
+  allocatedTo?: string;
+}
+
 export interface SearchScheduleAssignmentsPayload {
   from: string;
   to: string;

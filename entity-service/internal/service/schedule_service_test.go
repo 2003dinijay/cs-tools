@@ -49,6 +49,8 @@ type fakeScheduleRepo struct {
 	updated     domain.UpdateScheduleAssignmentRequest
 	deletedID   string
 	gotActorEml string
+	absenceByID domain.ScheduleAbsence
+	gotKindCode string
 }
 
 func (f *fakeScheduleRepo) AssignmentByID(context.Context, string) (domain.ScheduleAssignment, error) {
@@ -92,6 +94,27 @@ func (f *fakeScheduleRepo) ApplyRange(_ context.Context, req domain.ApplySchedul
 func (f *fakeScheduleRepo) ApplyAbsence(_ context.Context, req domain.ApplyScheduleAbsenceRequest, actor string) (domain.ApplyScheduleAbsenceResponse, error) {
 	f.called, f.gotActorEml = true, actor
 	return domain.ApplyScheduleAbsenceResponse{Created: 1}, f.err
+}
+
+func (f *fakeScheduleRepo) AbsenceByID(_ context.Context, id string) (domain.ScheduleAbsence, error) {
+	if f.err != nil {
+		return domain.ScheduleAbsence{}, f.err
+	}
+	a := f.absenceByID
+	if a.ID == "" {
+		a.ID = id
+	}
+	return a, nil
+}
+
+func (f *fakeScheduleRepo) DeleteAbsence(_ context.Context, id, actor string, _ *string) error {
+	f.called, f.deletedID, f.gotActorEml = true, id, actor
+	return f.err
+}
+
+func (f *fakeScheduleRepo) CreateAbsenceKind(_ context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, actor string) (domain.ScheduleAbsenceKind, error) {
+	f.called, f.gotKindCode, f.gotActorEml = true, code, actor
+	return domain.ScheduleAbsenceKind{Code: code, ShortCode: req.ShortCode, Label: req.Label, Bucket: req.Bucket, ColourToken: req.ColourToken}, f.err
 }
 
 func (f *fakeScheduleRepo) EditMarkers(context.Context, string, string) ([]domain.ScheduleEditMarker, error) {
@@ -556,5 +579,101 @@ func TestALeadCannotEditAnEngineerFromAnotherTeam(t *testing.T) {
 	}
 	if !repo.called {
 		t.Fatal("the write never reached the repository")
+	}
+}
+
+// Removing an absence is gated on the team the absence belongs to, read from
+// the row, not on anything the caller says.
+func TestRemovingAnAbsenceIsLimitedToTheCallersOwnTeam(t *testing.T) {
+	repo := &leadOf{team: "castor"}
+	repo.absenceByID = domain.ScheduleAbsence{
+		TeamKey:  "draco",
+		Engineer: domain.ScheduleEngineer{UserID: "22222222-2222-2222-2222-222222222222"},
+	}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	ctx := leadCtx("castor.01@example.com")
+	id := "33333333-3333-3333-3333-333333333333"
+
+	err := svc.DeleteAbsence(ctx, id, nil)
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("a Castor lead removing Draco leave: want ForbiddenError, got %v", err)
+	}
+	if repo.called {
+		t.Fatal("the absence was deleted despite the caller not leading its team")
+	}
+
+	repo.absenceByID.TeamKey = "castor"
+	if err := svc.DeleteAbsence(ctx, id, nil); err != nil {
+		t.Fatalf("a Castor lead was refused their own team's leave: %v", err)
+	}
+	if repo.deletedID != id {
+		t.Fatalf("deleted %q, want %q", repo.deletedID, id)
+	}
+}
+
+func TestRemovingAnAbsenceNeedsAUUID(t *testing.T) {
+	repo := &leadOf{team: "castor"}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	var invalid *apierror.ValidationError
+	if err := svc.DeleteAbsence(leadCtx("castor.01@example.com"), "not-a-uuid", nil); !errors.As(err, &invalid) {
+		t.Fatalf("want ValidationError, got %v", err)
+	}
+}
+
+func TestANewTagIsDerivedAndChecked(t *testing.T) {
+	ok := domain.CreateScheduleAbsenceKindRequest{
+		ShortCode: " Trn ", Label: "Training — external", Bucket: "allocation", ColourToken: "int",
+	}
+
+	t.Run("a lead's tag gets a code from its label", func(t *testing.T) {
+		repo := &fakeScheduleRepo{leadsTeam: true}
+		svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+		k, err := svc.CreateAbsenceKind(leadCtx("castor.01@example.com"), ok)
+		if err != nil {
+			t.Fatalf("CreateAbsenceKind: %v", err)
+		}
+		if repo.gotKindCode != "TRAINING_EXTERNAL" {
+			t.Fatalf("code %q, want TRAINING_EXTERNAL", repo.gotKindCode)
+		}
+		if k.ShortCode != "Trn" || k.Bucket != "ALLOCATION" || k.ColourToken != "INT" {
+			t.Fatalf("stored %+v, want the fields trimmed and upper-cased", k)
+		}
+	})
+
+	t.Run("somebody who leads nothing is refused", func(t *testing.T) {
+		repo := &fakeScheduleRepo{leadsTeam: false}
+		svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+		var forbidden *apierror.ForbiddenError
+		if _, err := svc.CreateAbsenceKind(leadCtx("engineer@example.com"), ok); !errors.As(err, &forbidden) {
+			t.Fatalf("want ForbiddenError, got %v", err)
+		}
+		if repo.called {
+			t.Fatal("the catalogue was written to by a non-lead")
+		}
+	})
+
+	bad := map[string]func(r *domain.CreateScheduleAbsenceKindRequest){
+		"no short code":             func(r *domain.CreateScheduleAbsenceKindRequest) { r.ShortCode = " " },
+		"short code too long":       func(r *domain.CreateScheduleAbsenceKindRequest) { r.ShortCode = "ABCDEFGHIJKLM" },
+		"no label":                  func(r *domain.CreateScheduleAbsenceKindRequest) { r.Label = "" },
+		"label with no letters":     func(r *domain.CreateScheduleAbsenceKindRequest) { r.Label = "— —" },
+		"excluded is not for leads": func(r *domain.CreateScheduleAbsenceKindRequest) { r.Bucket = "EXCLUDED" },
+		"a colour the rota lacks":   func(r *domain.CreateScheduleAbsenceKindRequest) { r.ColourToken = "TZ1" },
+	}
+	for name, mutate := range bad {
+		t.Run(name, func(t *testing.T) {
+			repo := &fakeScheduleRepo{leadsTeam: true}
+			svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+			req := ok
+			mutate(&req)
+			var invalid *apierror.ValidationError
+			if _, err := svc.CreateAbsenceKind(leadCtx("castor.01@example.com"), req); !errors.As(err, &invalid) {
+				t.Fatalf("want ValidationError, got %v", err)
+			}
+			if repo.called {
+				t.Fatal("an invalid tag reached the repository")
+			}
+		})
 	}
 }
