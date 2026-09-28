@@ -299,7 +299,7 @@ function PeekRows({
    *  keeps a card per window below. */
   const { zones, rest } = useMemo(() => {
     type Group = { key: string; label: string; token: string; list: ScheduleAssignment[]; sort: number };
-    const zoneCols: { zoneCode: string; tiers: Group[] }[] = [];
+    const zoneCols: { zoneCode: string; label: string; tiers: Group[] }[] = [];
     const byTurn = new Map<string, Group>();
     if (rows.some((r) => shifts.get(r.shiftCode)?.family === "SRE")) {
       const sreShifts = [...shifts.values()].filter((sh) => sh.family === "SRE");
@@ -309,7 +309,7 @@ function PeekRows({
           byTurn.set(g.key, g);
           return g;
         });
-        zoneCols.push({ zoneCode: row.zoneCode, tiers });
+        zoneCols.push({ zoneCode: row.zoneCode, label: row.label, tiers });
       }
     }
     const others: ScheduleAssignment[] = [];
@@ -348,7 +348,7 @@ function PeekRows({
           {zones.map((z) => (
             <div className="pz" key={z.zoneCode}>
               <h5 className="pzh">
-                <span className={`chip sm ${z.zoneCode}`}>{z.zoneCode}</span>
+                <span className={`chip sm ${z.zoneCode}`}>{z.label}</span>
                 <span className="count">{z.tiers.reduce((n, t) => n + t.list.length, 0)}</span>
               </h5>
               {z.tiers.map((t) => (

@@ -145,7 +145,7 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, role)
 SELECT md5('seed-tm-'||e.team_key||'-'||e.seq)::uuid, now(), now(), 'seed', 'seed',
        md5('seed-team-'||e.team_key)::uuid, e.id,
-       CASE WHEN e.is_lead THEN 'lead' ELSE 'member' END
+       CASE WHEN e.is_lead THEN 'lead' ELSE 'engineer' END
 FROM _eng e
 ON CONFLICT (id) DO NOTHING;
 
@@ -342,13 +342,13 @@ CROSS JOIN LATERAL _seed_span(d.d, v.code) sp
 WHERE NOT d.is_weekend
 ON CONFLICT DO NOTHING;
 
--- the weekend runs two zones, one crew each
+-- the weekend runs two crews: TZ1 and TZ2 as one by day, TZ3 by night
 INSERT INTO team_schedule_assignment
   (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, created_by, updated_by)
 SELECT s.id, md5('seed-team-'||s.team_key)::uuid, s.team_key, sp.shift_id, sp.zone_id,
        'L1'::team_schedule_tier_enum, d.d, sp.starts_at, sp.ends_at, FALSE, 'GENERATED', 'seed', 'seed'
 FROM _day d
-CROSS JOIN (VALUES ('SRE_WE_TZ1',0),('SRE_WE_TZ2',1)) AS v(code, slot)
+CROSS JOIN (VALUES ('SRE_WE_TZ1',0),('SRE_TZ3',1)) AS v(code, slot)
 CROSS JOIN (VALUES ('apollo'),('artemis')) AS tm(team_key)
 JOIN _sre s ON s.team_key = tm.team_key AND s.rn = ((d.n * 2 + v.slot) % s.total) + 1
 CROSS JOIN LATERAL _seed_span(d.d, v.code) sp

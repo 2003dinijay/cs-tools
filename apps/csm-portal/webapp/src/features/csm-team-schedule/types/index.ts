@@ -67,6 +67,12 @@ export interface ScheduleAbsenceKind {
   /** A tag a lead added from the portal, which a lead may also delete. The
    *  catalogue's own kinds are never custom. */
   custom?: boolean;
+  /** The rota the kind is offered on; absent for a kind both use, which is
+   *  every kind of leave. SRE allocates RnD, CRE allocates Migration. */
+  family?: "CRE" | "SRE";
+  /** No longer offered. Still served so the days already marked with it keep
+   *  their label, but a picker must not offer it. */
+  retired?: boolean;
 }
 
 /** One team the rota is run for, served so no client holds the list. */

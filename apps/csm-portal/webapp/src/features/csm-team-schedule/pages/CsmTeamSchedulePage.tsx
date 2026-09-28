@@ -56,10 +56,12 @@ import { TeamColourProvider } from "../utils/teamColour";
 import {
   addDays,
   isRotationShift,
+  kindsOfferedOn,
   mondayOf,
   shiftsByCode,
   toIsoDate,
   zoneAbbreviation,
+  zoneLabelOn,
 } from "../utils/rota";
 import { zoneColour } from "../utils/rotaHues";
 import { SCHEDULE_THEME_VARS } from "../utils/useScheduleTheme";
@@ -480,15 +482,15 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   }, [editMarkers.markers]);
 
   /** What a lead can mark somebody away for from the roster: leave, and time
-   *  allocated elsewhere (a customer, RnD, the Brazil rotation). EXCLUDED --
-   *  off the rota entirely -- is not a lead's to set from a cell. The
-   *  catalogue already serves active kinds only. */
+   *  allocated elsewhere -- on this rota. CRE and SRE allocate time to
+   *  different things (RnD is SRE's, Migration is CRE's), so each is offered
+   *  only its own. EXCLUDED -- off the rota entirely -- is not a lead's to set
+   *  from a cell, and a retired kind is served only so old days keep their
+   *  label. */
   const awayKinds = useMemo(
     () =>
-      (catalogue.data?.absenceKinds ?? []).filter(
-        (k) => k.bucket === "LEAVE" || k.bucket === "ALLOCATION",
-      ),
-    [catalogue.data?.absenceKinds],
+      kindsOfferedOn(catalogue.data?.absenceKinds ?? [], family),
+    [catalogue.data?.absenceKinds, family],
   );
 
   /** The windows the picker offers for the cell that is open: every window
@@ -561,7 +563,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const removeAbsence = (absenceId: string): void => {
     if (!picker?.absence) return;
     const ab = picker.absence;
-    const label = awayKinds.find((k) => k.code === ab.kindCode)?.label ?? ab.kindCode;
+    const label =
+      (catalogue.data?.absenceKinds ?? []).find((k) => k.code === ab.kindCode)?.label ?? ab.kindCode;
     deleteAbsence.mutate(
       { id: absenceId, note: "removed from the month roster" },
       {
@@ -650,9 +653,9 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // clock, so it gets one lane.
   /** The zones SRE actually staffs on the day being viewed.
    *
-   *  The catalogue's weekend windows are TZ1 and TZ2 only -- there is no
-   *  weekend TZ3 for anyone to be rostered into -- so a weekend earns two
-   *  lanes and a weekday three. Read from the shifts rather than written down
+   *  At the weekend TZ1 and TZ2 are one crew, carried under TZ1, and TZ3 is
+   *  as it is on a weekday -- so a weekend earns two lanes and a weekday
+   *  three. Read from the shifts rather than written down
    *  here, which is the same rule the month roster follows and from the same
    *  place: a rota change lands in both without a code change, and a lane can
    *  never appear that nobody could be working in.
@@ -678,17 +681,22 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         { name: "Rotations", sub: "on-call, the night and regular hours", colour: "var(--muted)", assignments: rows },
       ];
     }
-    return zonesOnDay.map((z) => ({
-      name: z.code,
-      sub: z.label,
-      colour: zoneColour(z.code),
-      // The same resolution the month roster uses: an assignment's own zone,
-      // else its window's, so a zoned window stored without one still lands.
-      assignments: rows.filter((a) => (a.zoneCode ?? shifts.get(a.shiftCode)?.zoneCode) === z.code),
-      // Escalation on one side, everyone else in the zone on the other.
-      layout: "zone" as const,
-    }));
-  }, [family, rows, shifts, zonesOnDay]);
+    const weekendDay = anchor.getDay() === 0 || anchor.getDay() === 6;
+    return zonesOnDay.map((z) => {
+      // At the weekend the TZ1 lane is TZ1 and TZ2 together.
+      const name = zoneLabelOn(shifts, z.code, weekendDay);
+      return {
+        name,
+        sub: name === z.code ? z.label : "Weekend crew",
+        colour: zoneColour(z.code),
+        // The same resolution the month roster uses: an assignment's own zone,
+        // else its window's, so a zoned window stored without one still lands.
+        assignments: rows.filter((a) => (a.zoneCode ?? shifts.get(a.shiftCode)?.zoneCode) === z.code),
+        // Escalation on one side, everyone else in the zone on the other.
+        layout: "zone" as const,
+      };
+    });
+  }, [anchor, family, rows, shifts, zonesOnDay]);
 
   if (catalogue.isError) {
     return <QueryErrorState message="Could not load the schedule catalogue." error={catalogue.error} />;
@@ -1026,6 +1034,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           shifts={pickerShifts}
           busy={applyRange.isPending || applyAbsence.isPending || deleteAbsence.isPending}
           awayKinds={awayKinds}
+          allKinds={catalogue.data?.absenceKinds}
           onApply={applyToCell}
           onMarkAway={markAway}
           onRemoveAbsence={removeAbsence}

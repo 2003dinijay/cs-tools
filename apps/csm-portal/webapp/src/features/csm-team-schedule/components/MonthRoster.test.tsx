@@ -334,3 +334,41 @@ describe("MonthRoster: a turn on a zone's regular hours", () => {
     expect(duo).toHaveTextContent("SUP");
   });
 });
+
+describe("MonthRoster: an unmarked weekday is a working day", () => {
+  // September 2026 has 22 weekdays; the fixture engineer holds a turn on one.
+  it("shows LK on every weekday nobody has marked, and nothing at the weekend", () => {
+    const { container } = renderRoster();
+    expect(container.querySelectorAll(".chip.dflt")).toHaveLength(21);
+    expect([...container.querySelectorAll(".chip.dflt")].every((c) => c.textContent === "LK")).toBe(true);
+    // The turn on the 21st is still the turn, not LK.
+    expect(screen.getByText("6-9p")).toBeInTheDocument();
+  });
+
+  it("gives way to leave the moment it is marked", () => {
+    const { container } = renderRoster({
+      absences: [absence({ name: "Asela", startsOn: "2026-09-22", endsOn: "2026-09-23" })],
+    });
+    expect(container.querySelectorAll(".chip.dflt")).toHaveLength(19);
+    expect(screen.getAllByText("AL")).toHaveLength(2);
+  });
+
+  it("spans an SRE day's zones as one LK, and leaves a day with a zone alone", () => {
+    const { container } = renderRoster({
+      assignments: [
+        assignment({ name: "Apollo01", rotaDate: "2026-09-21", shiftCode: TZ1.code, zoneCode: "TZ1", teamKey: "delta" }),
+      ],
+      family: "SRE",
+    });
+    expect(container.querySelectorAll("td.zwhole .chip.dflt")).toHaveLength(21);
+  });
+
+  it("opens an LK day in the picker as an empty day, not as a held window", () => {
+    const onEditCell = vi.fn();
+    const { container } = renderRoster({ leadTeams: ["alpha"], editing: true, onEditCell });
+    fireEvent.click(container.querySelector(".chip.dflt")!.closest("td")!);
+    expect(onEditCell).toHaveBeenCalledWith(
+      expect.objectContaining({ shiftCode: undefined, absenceKindCode: undefined }),
+    );
+  });
+});

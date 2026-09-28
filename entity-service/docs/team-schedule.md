@@ -31,7 +31,7 @@ ServiceNow's `cmn_schedule` tables and are unrelated to this.
 |---|---|---|---|
 | Catalogue | `team_schedule_zone` | an SRE time zone (TZ1–TZ3) | migration 0154 |
 | | `team_schedule_shift` | a named window of the day, e.g. "Evening 6-9pm", "TZ2 escalation" | migration 0154 |
-| | `team_schedule_absence_kind` | a kind of time away, e.g. annual leave, customer allocation | migration 0154 |
+| | `team_schedule_absence_kind` | a kind of time away, e.g. annual leave, Allo-EXT; `family` says which rota offers it | migration 0154 |
 | Facts | `team_schedule_assignment` | one engineer, one rota day, one window | leads, via the portal; importers |
 | | `team_schedule_absence` | a span of days an engineer is away | leads, via the portal; importers |
 | History | `team_schedule_assignment_activity`, `team_schedule_absence_activity` | one change a lead made, as the portal's "Recent changes" shows it | entity-service |
@@ -70,9 +70,14 @@ block is Monday's, even though six of its hours fall on Tuesday.
 
 | Zone | L1, L2 and L3 | Regular hours (SUP) | Weekend crew |
 |---|---|---|---|
-| TZ1 | 06:00–13:30 | 06:00–15:00 | weekend TZ1, 06:00–18:00 |
-| TZ2 | 13:30–21:00 | 12:00–21:00 | weekend TZ1 |
-| TZ3 | 21:00–06:00 | 21:00–06:00 | weekend TZ2, 18:00–06:00 |
+| TZ1 | 06:00–13:30 | 06:00–15:00 | TZ1+2, 06:00–21:00 |
+| TZ2 | 13:30–21:00 | 12:00–21:00 | TZ1+2 |
+| TZ3 | 21:00–06:00 | 21:00–06:00 | TZ3, 21:00–06:00 |
+
+At the weekend TZ1 and TZ2 are one crew (`SRE_WE_TZ1`, drawn **TZ1+2**) and TZ3
+runs as on a weekday: `SRE_TZ3` is `day_scope = 'ANY'`, and TZ3 is its own
+weekend zone. An older database's weekend TZ2 window (`SRE_WE_TZ2`, standing in
+for TZ3) is folded into `SRE_TZ3` by 0154, turns included.
 
 **CRE windows:** 6–9am (and its on-call), regular hours LK and IND, 6–9pm,
 Americas cover, weekend rotation 06:00–21:00, and Americas weekend (and its
@@ -88,13 +93,24 @@ Regular hours are drawn **SUP** (support in normal hours).
 | Bucket | Kinds |
 |---|---|
 | `LEAVE` | Annual (AL), Lieu (LL), Maternity (ML), Paternity (PL), Sick (SL) |
-| `ALLOCATION` | RnD, Customer on site, Customer off site, Brazil rotation, Migration, Onboarding |
+| `ALLOCATION` | Allo-INT, Allo-EXT, Brazil rotation (BR) on both rotas; RnD on SRE only; Migration (Mig) on CRE only |
 | `EXCLUDED` | Excluded from rota |
+
+`team_schedule_absence_kind.family` is the rota a kind is offered on, and NULL
+for both, which is every kind of leave. A lead's picker offers only the kinds
+for the rota they are editing.
 
 An allocation is a kind plus **`allocated_to`**, which says who the time is for
 (the customer, or the product team for RnD). A new customer is a value, not a new
-kind. Four retired kinds stay in the table as `is_active = FALSE`, so that older
-absences stay readable.
+kind. Retired kinds stay in the table as `is_active = FALSE`: Customer on site,
+Customer off site, Customer (unspecified), Onboarding and CRIS. The catalogue
+still serves them, marked `retired`, so days already marked with one keep
+their label; nothing offers them. On an older database 0154 moves customer
+allocations to Allo-EXT, keeping `allocated_to`.
+
+A weekday with nothing marked is a working day. The roster draws it as **LK**
+(the CRE regular-hours code) without storing anything, and it gives way as
+soon as leave, an allocation or a turn is marked. Weekends stay blank.
 
 Re-running 0154 never overwrites a row a lead has since edited
 (`ON CONFLICT DO NOTHING`).
@@ -228,7 +244,7 @@ exist, it refuses and changes nothing. The four old filenames left in
 ### Check it worked
 
 ```sql
--- 19 windows, 16 kinds (12 active), 3 zones
+-- 18 windows, 16 kinds (11 active), 3 zones
 SELECT (SELECT count(*) FROM team_schedule_shift)                         AS shifts,
        (SELECT count(*) FROM team_schedule_absence_kind WHERE is_active)  AS active_kinds,
        (SELECT count(*) FROM team_schedule_zone)                          AS zones;
@@ -277,3 +293,8 @@ DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_
   exactly (compared with `pg_dump` against a server built from the old chain).
   They also add the `team.key` fill trigger. The old files are gone; nothing
   should apply them.
+- **Weekend and kinds, same PR.** The SRE weekend is TZ1+2 by day and TZ3 by
+  night (was weekend TZ1 and a weekend TZ2 for the night). Absence kinds gained
+  `family`; Allo-INT and Allo-EXT are offered again, and the customer
+  allocations and Onboarding are retired. 0153 and 0154 bring an older
+  database to both, and re-running them changes nothing.

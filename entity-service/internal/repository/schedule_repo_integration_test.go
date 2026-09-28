@@ -1201,3 +1201,51 @@ func mustExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 		t.Fatalf("seed: %v", err)
 	}
 }
+
+// Each rota is offered its own allocations: RnD is SRE's, Migration is CRE's,
+// and the rest (Allo-INT, Allo-EXT, the Brazil rotation, all leave) are both
+// rotas'. A retired kind is still served, marked, so the days already marked
+// with it keep their label.
+func TestScheduleIntegration_CatalogueKindsCarryFamilyAndRetired(t *testing.T) {
+	repo, _ := newScheduleIntegrationRepo(t)
+	cat, err := repo.Catalogue(context.Background())
+	if err != nil {
+		t.Fatalf("Catalogue: %v", err)
+	}
+	byCode := map[string]domain.ScheduleAbsenceKind{}
+	for _, k := range cat.AbsenceKinds {
+		byCode[k.Code] = k
+	}
+	family := func(code string) string {
+		if f := byCode[code].Family; f != nil {
+			return *f
+		}
+		return ""
+	}
+	for code, want := range map[string]string{
+		"RND": "SRE", "MIGRATION": "CRE", "ALLO_INT": "", "ALLO_EXT": "", "ALLO_BR": "", "ANNUAL_LEAVE": "",
+	} {
+		if _, ok := byCode[code]; !ok {
+			t.Fatalf("%s is not in the catalogue", code)
+		}
+		if got := family(code); got != want {
+			t.Errorf("%s family = %q, want %q", code, got, want)
+		}
+		if byCode[code].Retired {
+			t.Errorf("%s is retired, want offered", code)
+		}
+	}
+	for _, code := range []string{"CUSTOMER_ONSITE", "CUSTOMER_OFFSITE", "ONBOARDING"} {
+		k, ok := byCode[code]
+		if !ok {
+			t.Fatalf("retired %s is not served, so days marked with it lose their label", code)
+		}
+		if !k.Retired {
+			t.Errorf("%s is offered, want retired", code)
+		}
+	}
+	if byCode["ALLO_INT"].ShortCode != "Allo-INT" || byCode["ALLO_EXT"].ShortCode != "Allo-EXT" {
+		t.Errorf("short codes = %q, %q, want Allo-INT, Allo-EXT",
+			byCode["ALLO_INT"].ShortCode, byCode["ALLO_EXT"].ShortCode)
+	}
+}

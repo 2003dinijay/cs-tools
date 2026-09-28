@@ -185,9 +185,18 @@ CREATE TABLE IF NOT EXISTS team_schedule_absence_kind (
     colour_token  VARCHAR(24) NOT NULL,
     sort_order    SMALLINT NOT NULL DEFAULT 0,
     -- A retired kind is deactivated, never deleted: absences point at it
-    -- ON DELETE RESTRICT, and the catalogue serves active kinds only.
-    is_active     BOOLEAN NOT NULL DEFAULT TRUE
+    -- ON DELETE RESTRICT. The catalogue still serves it, marked retired, so
+    -- the days already marked with it keep their label; nothing offers it.
+    is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+    -- The rota a kind is offered on: CRE and SRE allocate time to different
+    -- things (only SRE does RnD; only CRE does Migration). NULL is both,
+    -- which is every kind of leave.
+    family        team_schedule_shift_family_enum
 );
+
+-- An older database's table, from before a kind had a rota of its own.
+ALTER TABLE team_schedule_absence_kind
+    ADD COLUMN IF NOT EXISTS family team_schedule_shift_family_enum;
 
 -- ── The facts ─────────────────────────────────────────────────────────────
 

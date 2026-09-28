@@ -256,15 +256,15 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 
 	kindRows, err := r.db.Query(ctx, `
 		SELECT id, code, short_code, label, bucket, colour_token, sort_order,
-		       created_by IS DISTINCT FROM 'migration'
-		FROM team_schedule_absence_kind WHERE is_active ORDER BY sort_order`)
+		       created_by IS DISTINCT FROM 'migration', family::text, NOT is_active
+		FROM team_schedule_absence_kind ORDER BY sort_order`)
 	if err != nil {
 		return cat, fmt.Errorf("query schedule absence kinds: %w", err)
 	}
 	defer kindRows.Close()
 	for kindRows.Next() {
 		var k domain.ScheduleAbsenceKind
-		if err := kindRows.Scan(&k.ID, &k.Code, &k.ShortCode, &k.Label, &k.Bucket, &k.ColourToken, &k.SortOrder, &k.Custom); err != nil {
+		if err := kindRows.Scan(&k.ID, &k.Code, &k.ShortCode, &k.Label, &k.Bucket, &k.ColourToken, &k.SortOrder, &k.Custom, &k.Family, &k.Retired); err != nil {
 			return cat, fmt.Errorf("scan schedule absence kind: %w", err)
 		}
 		cat.AbsenceKinds = append(cat.AbsenceKinds, k)

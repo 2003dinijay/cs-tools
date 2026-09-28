@@ -16170,6 +16170,15 @@ components:
         custom:
           type: boolean
           description: True for a tag a lead added from the portal, which a lead may also delete.
+        family:
+          type: string
+          enum: [CRE, SRE]
+          description: The rota the kind is offered on. Absent for a kind both rotas use, which is every kind of leave.
+        retired:
+          type: boolean
+          description: >-
+            True for a kind no longer offered. Still served so the days already
+            marked with it keep their label; a client must not offer it.
     ScheduleCatalogue:
       type: object
       properties:

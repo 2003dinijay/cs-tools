@@ -19,7 +19,7 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleAssignment, ScheduleShift } from "../types";
 import { TZ1, TZ1_L1, TZ1_WE, TZ2, TZ2_WE, TZ3, REGULAR } from "../test/fixtures";
-import { escalationGrid } from "./rota";
+import { escalationGrid, kindsOfferedOn, zoneLabelOn } from "./rota";
 import {
   dayLabel,
   zoneAbbreviation,
@@ -262,5 +262,55 @@ describe("escalationGrid", () => {
 
   it("is empty for a group with no escalation windows", () => {
     expect(escalationGrid([REGULAR], "2026-09-23")).toEqual([]);
+  });
+});
+
+describe("zoneLabelOn", () => {
+  const WE_TZ12 = { ...TZ1_WE, shortCode: "TZ1+2", label: "Weekend TZ1 + TZ2" };
+  it("names the combined weekend crew from its window", () => {
+    expect(zoneLabelOn([TZ1, WE_TZ12, TZ3], "TZ1", true)).toBe("TZ1+2");
+  });
+  it("is the zone's own code on a weekday, and for a zone with no weekend window of its own", () => {
+    expect(zoneLabelOn([TZ1, WE_TZ12, TZ3], "TZ1", false)).toBe("TZ1");
+    expect(zoneLabelOn([TZ1, WE_TZ12, TZ3], "TZ3", true)).toBe("TZ3");
+  });
+});
+
+describe("kindsOfferedOn", () => {
+  const kind = (code: string, over: Partial<import("../types").ScheduleAbsenceKind> = {}) => ({
+    id: code,
+    code,
+    shortCode: code,
+    label: code,
+    bucket: "ALLOCATION" as const,
+    colourToken: "",
+    sortOrder: 0,
+    ...over,
+  });
+  const catalogue = [
+    kind("ANNUAL_LEAVE", { bucket: "LEAVE" }),
+    kind("ALLO_INT"),
+    kind("ALLO_EXT"),
+    kind("ALLO_BR"),
+    kind("RND", { family: "SRE" }),
+    kind("MIGRATION", { family: "CRE" }),
+    kind("CUSTOMER_OFFSITE", { retired: true }),
+    kind("EXCLUDED", { bucket: "EXCLUDED" }),
+  ];
+  const codes = (family: "CRE" | "SRE") => kindsOfferedOn(catalogue, family).map((k) => k.code);
+
+  it("offers CRE its own allocations and the shared ones, never RnD", () => {
+    expect(codes("CRE")).toEqual(["ANNUAL_LEAVE", "ALLO_INT", "ALLO_EXT", "ALLO_BR", "MIGRATION"]);
+  });
+
+  it("offers SRE RnD and the shared ones, never Migration", () => {
+    expect(codes("SRE")).toEqual(["ANNUAL_LEAVE", "ALLO_INT", "ALLO_EXT", "ALLO_BR", "RND"]);
+  });
+
+  it("never offers a retired kind or EXCLUDED", () => {
+    for (const f of ["CRE", "SRE"] as const) {
+      expect(codes(f)).not.toContain("CUSTOMER_OFFSITE");
+      expect(codes(f)).not.toContain("EXCLUDED");
+    }
   });
 });

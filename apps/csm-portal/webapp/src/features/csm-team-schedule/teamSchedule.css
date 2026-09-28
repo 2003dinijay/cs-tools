@@ -1937,3 +1937,18 @@
 :root[data-color-scheme="dark"] .csm-ts .tw.roster :where(tbody tr.alt) > th.lab {
   background: linear-gradient(color-mix(in srgb, var(--ink) 8%, transparent), color-mix(in srgb, var(--ink) 8%, transparent)), var(--surface-solid);
 }
+
+/* The selected day's header is pinned like every other date, so its tint is
+   laid over the solid surface rather than painted as a see-through colour on
+   its own -- otherwise the rows scrolling underneath show through it ("AL"
+   floating over the date), which is what today's header already avoids the
+   same way. */
+.csm-ts .tw.roster thead th.day.sel {
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--surface-solid);
+}
+.csm-ts .tw.roster thead th.day.sel.today {
+  background:
+    linear-gradient(var(--accent-soft), var(--accent-soft)),
+    linear-gradient(color-mix(in srgb, var(--today) 7%, transparent), color-mix(in srgb, var(--today) 7%, transparent)),
+    var(--surface-solid);
+}

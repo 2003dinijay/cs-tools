@@ -25,7 +25,7 @@ import type {
   ScheduleShift,
   ScheduleTier,
 } from "../types";
-import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate } from "../utils/rota";
+import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate, zoneLabelOn } from "../utils/rota";
 import { useTeamColour } from "../utils/teamColourContext";
 
 interface MonthRosterProps {
@@ -130,6 +130,20 @@ interface Cell {
   /** The span that kind comes from, which the picker can remove whole. */
   absence?: CellAbsence;
 }
+
+/** What a weekday nobody has marked is: an ordinary working day.
+ *
+ *  Drawn, never stored. The rota sheet this replaces wrote LK into every
+ *  such cell by hand; here it is simply what an empty weekday means, so it
+ *  gives way the moment leave, an allocation or a turn is marked, and there
+ *  is nothing to clean up when one is. Not a turn, so "Rotations only" fades
+ *  it like the rest of the standing hours. */
+const WORKING_DAY: Cell = {
+  code: "LK",
+  token: "LK",
+  title: "Working day (LK)",
+  isRotation: false,
+};
 
 /**
  * The month as engineers down the side and days across the top -- the shape of
@@ -610,8 +624,8 @@ export default function MonthRoster({
             </tr>
 
             {/* The zone row. A weekend has two columns rather than three
-                because there is no weekend TZ3 window to be rostered into --
-                the catalogue says so, and this follows it. */}
+                because TZ1 and TZ2 are one crew at the weekend ("TZ1+2") and
+                TZ3 is as it is -- the catalogue says so, and this follows it. */}
             {split ? (
               <tr className="zrow">
                 {days.map((d) => {
@@ -624,8 +638,10 @@ export default function MonthRoster({
                         i === 0 && opensMonth(d) ? " mstart" : ""
                       }`}
                       scope="col"
+                      title={zoneLabelOn(shifts, z, weekend) === z ? undefined : `${zoneLabelOn(shifts, z, weekend)}: TZ1 and TZ2 are one crew at the weekend`}
                     >
-                      {z}
+                      {/* "TZ1+2" at the weekend, when TZ1 and TZ2 are one crew. */}
+                      {zoneLabelOn(shifts, z, weekend)}
                     </th>
                   ));
                 })}
@@ -691,17 +707,19 @@ export default function MonthRoster({
                   if (!split) {
                     const editable = canEdit(row.teamKey);
                     const touched = changedBy(row.userId, iso);
+                    // An unmarked weekday is a working day; a weekend is not.
+                    const shown = cell ?? alloc ?? (weekend ? undefined : WORKING_DAY);
                     return (
                       <td
                         key={iso}
-                        className={`${marks} ${faded(cell)}${editable ? " c editable" : ""}${
+                        className={`${marks} ${faded(shown)}${editable ? " c editable" : ""}${
                           touched.mark ? " touched" : ""
                         }`}
                         title={
                           editable
-                            ? `${row.name} · ${cell ? (withAlloc(cell)?.title ?? cell.title) : "nothing rostered"}${touched.note} — click to change`
-                            : cell || touched.mark
-                              ? `${row.name} · ${cell ? cell.title : "nothing rostered"}${touched.note}`
+                            ? `${row.name} · ${shown ? (withAlloc(cell)?.title ?? shown.title) : "nothing rostered"}${touched.note} — click to change`
+                            : shown || touched.mark
+                              ? `${row.name} · ${shown ? shown.title : "nothing rostered"}${touched.note}`
                               : undefined
                         }
                         onClick={editable ? (e) => openCell(e, row, iso, withAlloc(cell)) : undefined}
@@ -711,8 +729,8 @@ export default function MonthRoster({
                             <span className={`chip sm ${cell.token}`}>{cell.code}</span>
                             <span className={`chip sm ${alloc.token}`}>{alloc.code}</span>
                           </span>
-                        ) : cell ? (
-                          <span className={`chip sm ${cell.token}`}>{cell.code}</span>
+                        ) : shown ? (
+                          <span className={`chip sm ${shown.token}${shown === WORKING_DAY ? " dflt" : ""}`}>{shown.code}</span>
                         ) : (
                           <span className="none">·</span>
                         )}
@@ -724,24 +742,28 @@ export default function MonthRoster({
 
                   // Leave belongs to the day, not to a zone: somebody away is
                   // away from all of them, so it spans rather than picking one
-                  // arbitrarily.
-                  if (cell) {
+                  // arbitrarily. So does an unmarked weekday -- a working day,
+                  // in no zone yet -- which reads as one LK, not three blanks.
+                  const unmarked =
+                    !cell && !alloc && !weekend && zones.every((z) => !row.zoned.has(`${iso}|${z}`));
+                  const whole = cell ?? (unmarked ? WORKING_DAY : undefined);
+                  if (whole) {
                     const editable = canEdit(row.teamKey);
                     return (
                       <td
                         key={iso}
                         colSpan={zones.length}
-                        className={`c zwhole ${marks} ${faded(cell)}${
+                        className={`c zwhole ${marks} ${faded(whole)}${
                           editable ? " editable" : ""
                         }`}
                         title={
                           editable
-                            ? `${row.name} · ${cell.title} — click to change`
-                            : `${row.name} · ${cell.title}`
+                            ? `${row.name} · ${whole.title} — click to change`
+                            : `${row.name} · ${whole.title}`
                         }
                         onClick={editable ? (e) => openCell(e, row, iso, cell) : undefined}
                       >
-                        <span className={`chip sm ${cell.token}`}>{cell.code}</span>
+                        <span className={`chip sm ${whole.token}${whole === WORKING_DAY ? " dflt" : ""}`}>{whole.code}</span>
                       </td>
                     );
                   }

@@ -77,6 +77,12 @@ type ScheduleAbsenceKind struct {
 	// Custom is true for a kind a lead added from the portal, which a lead may
 	// also delete. The catalogue's own kinds, seeded by migration, are not.
 	Custom bool `json:"custom"`
+	// Family is the rota the kind is offered on, CRE or SRE; absent for a kind
+	// both rotas use, which is every kind of leave.
+	Family *string `json:"family,omitempty"`
+	// Retired is true for a kind no longer offered. It is still served so the
+	// days already marked with it keep their label, but nothing should offer it.
+	Retired bool `json:"retired,omitempty"`
 }
 
 // ScheduleCatalogue is everything the UI needs before it can draw a rota:

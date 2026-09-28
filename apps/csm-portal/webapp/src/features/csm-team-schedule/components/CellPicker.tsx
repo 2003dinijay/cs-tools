@@ -66,6 +66,10 @@ interface CellPickerProps {
    *  in two groups by bucket; anything else the catalogue holds is not
    *  offered here. */
   awayKinds: ScheduleAbsenceKind[];
+  /** Every kind the catalogue has, retired and the other rota's included --
+   *  only to name what a cell already holds. A day marked with a kind this
+   *  rota no longer offers still says what it is when a lead opens it. */
+  allKinds?: ScheduleAbsenceKind[];
   /** Put them on a window over the span. `tier` is set for an escalation
    *  window that leaves the tier to the person. */
   onApply: (shiftCode: string, from: string, to: string, tier?: ScheduleTier) => void;
@@ -160,6 +164,7 @@ export default function CellPicker({
   target,
   shifts,
   awayKinds,
+  allKinds,
   onApply,
   onMarkAway,
   onClear,
@@ -310,7 +315,7 @@ export default function CellPicker({
         <div className="pk-remove">
           {(() => {
             const ab = target.absence;
-            const kind = awayKinds.find((k) => k.code === ab.kindCode);
+            const kind = (allKinds ?? awayKinds).find((k) => k.code === ab.kindCode);
             const range = ab.endsOn
               ? ab.endsOn === ab.startsOn
                 ? shortDate(ab.startsOn)
@@ -430,7 +435,7 @@ export default function CellPicker({
                   key={row.zoneCode}
                   className={`pk-escr${row.zoneCode === target.zoneCode ? " here" : ""}`}
                 >
-                  <span className="pk-escz">{row.zoneCode}</span>
+                  <span className="pk-escz">{row.label}</span>
                   {row.tiers.map(({ tier, shift }) => {
                     const held =
                       Boolean(shift) &&
@@ -442,8 +447,8 @@ export default function CellPicker({
                         type="button"
                         className={`pk-t${held ? " on" : ""}`}
                         disabled={!shift || busy}
-                        aria-label={`${tier} for ${row.zoneCode}`}
-                        title={shift ? `${tier} · ${shift.label}` : `${row.zoneCode} has no ${tier} window`}
+                        aria-label={`${tier} for ${row.label}`}
+                        title={shift ? `${tier} · ${shift.label}` : `${row.label} has no ${tier} window`}
                         onClick={() =>
                           shift && onApply(shift.code, firstDay, lastDay, shift.tier ? undefined : tier)
                         }

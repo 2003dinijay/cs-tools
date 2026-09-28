@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import type { ScheduleAssignment, ScheduleShift, ScheduleTier } from "../types";
+import type { ScheduleAbsenceKind, ScheduleAssignment, ScheduleShift, ScheduleTier } from "../types";
 
 
 /**
@@ -299,6 +299,9 @@ export function standingWindowKey(shift: ScheduleShift | undefined, fallback: st
 /** One zone's row of the escalation grid: which window each tier goes on. */
 export interface EscalationRow {
   zoneCode: string;
+  /** What the zone is called on this kind of day -- "TZ1+2" at the weekend,
+   *  when TZ1 and TZ2 are one crew -- see zoneLabelOn. */
+  label: string;
   tiers: { tier: ScheduleTier; shift?: ScheduleShift }[];
 }
 
@@ -324,6 +327,7 @@ export function escalationGrid(shifts: ScheduleShift[], iso: string): Escalation
     const here = esc.filter((s) => s.zoneCode === zoneCode).sort((a, b) => a.sortOrder - b.sortOrder);
     return {
       zoneCode,
+      label: zoneLabelOn(shifts, zoneCode, weekend),
       tiers: ESCALATION_TIERS.map((tier) => ({
         tier,
         shift: here.find((s) => s.tier === tier) ?? here.find((s) => !s.tier),
@@ -366,4 +370,51 @@ export function escalationTurnOf(
 export function isTierlessEscalation(a: ScheduleAssignment, shifts: Map<string, ScheduleShift>): boolean {
   const sh = shifts.get(a.shiftCode);
   return Boolean(sh?.isEscalation && (a.zoneCode ?? sh.zoneCode) && !a.tier && !sh.tier);
+}
+
+/**
+ * What a zone is called on a weekday or at the weekend.
+ *
+ * At the weekend TZ1 and TZ2 are one crew, carried under TZ1, and the
+ * catalogue's window for it says so in its short code ("TZ1+2"). So the name
+ * is read off the zone's own escalation window for that kind of day -- the
+ * one that leaves the tier open -- rather than written down here, and a
+ * weekday, or a zone with no such window, is simply its code.
+ */
+export function zoneLabelOn(
+  shifts: ScheduleShift[] | Map<string, ScheduleShift>,
+  zoneCode: string,
+  weekend: boolean,
+): string {
+  if (!weekend) return zoneCode;
+  const list = Array.isArray(shifts) ? shifts : [...shifts.values()];
+  const own = list.find(
+    (s) => s.isEscalation && !s.tier && s.zoneCode === zoneCode && s.dayScope === "WEEKEND",
+  );
+  // Only a short code that extends the zone's own ("TZ1" -> "TZ1+2") names
+  // the crew; anything else ("L1") is the chip, not a zone name.
+  return own?.shortCode && own.shortCode !== zoneCode && own.shortCode.startsWith(zoneCode)
+    ? own.shortCode
+    : zoneCode;
+}
+
+
+/** The kinds a lead may mark somebody away for on one rota: leave, and the
+ *  time allocations that rota uses.
+ *
+ *  CRE and SRE allocate time to different things -- RnD is SRE's, Migration
+ *  is CRE's -- so each is offered only its own, plus what both share (every
+ *  kind of leave, Allo-INT, Allo-EXT, the Brazil rotation). EXCLUDED, off
+ *  the rota entirely, is not a lead's to set from a cell, and a retired kind
+ *  is served only so the days already marked with it keep their label. */
+export function kindsOfferedOn(
+  kinds: readonly ScheduleAbsenceKind[],
+  family: "CRE" | "SRE",
+): ScheduleAbsenceKind[] {
+  return kinds.filter(
+    (k) =>
+      (k.bucket === "LEAVE" || k.bucket === "ALLOCATION") &&
+      !k.retired &&
+      (!k.family || k.family === family),
+  );
 }

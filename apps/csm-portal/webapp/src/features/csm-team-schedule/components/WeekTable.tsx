@@ -260,7 +260,12 @@ export default function WeekTable({
           code: `esc:${key}`,
           shift: windowFor.get(key) ?? shifts.get(a.shiftCode),
           list: [],
-          label: `${scope === "we" ? "Weekend " : ""}${zone} ${tier} support`,
+          // A weekend window names its own crew ("Weekend TZ1 + TZ2"), since
+          // TZ1 and TZ2 are one crew at the weekend.
+          label:
+            scope === "we"
+              ? `${windowFor.get(key)?.label ?? `Weekend ${zone}`} ${tier} support`
+              : `${zone} ${tier} support`,
           token: tier,
           sort: (scope === "we" ? 200 : 110) + TIERS.indexOf(tier as ScheduleTier),
           tiered: true,
