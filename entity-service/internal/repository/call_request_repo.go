@@ -34,7 +34,7 @@ import (
 )
 
 // callRequestStateLabels is the display label per customer_call_state_enum
-// value (migration 000072), keyed by the domain state id (the lowercased enum
+// value (migration 0073), keyed by the domain state id (the lowercased enum
 // label -- all eight labels match domain.CallRequestStateType exactly once
 // case-folded, e.g. CANCELED/canceled; unlike case_state_enum there is no
 // spelling drift to normalize).
@@ -90,7 +90,7 @@ func normalizeFinalTime(raw string) (string, bool) {
 	return "", false
 }
 
-// decodeFinalTimes reads customer_call.final_times (JSONB, migration 000072)
+// decodeFinalTimes reads customer_call.final_times (JSONB, migration 0073)
 // as the call request's preferred times, as RFC 3339 UTC strings.
 //
 // Two shapes exist in the column: synced rows are an array of objects
@@ -147,7 +147,7 @@ func decodeFinalTimes(raw []byte) []string {
 }
 
 // parseActualDurationMin parses customer_call.actual_call_duration (a free
-// VARCHAR, migration 000072) as a whole number of minutes -- the format this
+// VARCHAR, migration 0073) as a whole number of minutes -- the format this
 // service itself writes. Anything unparseable (e.g. a differently formatted
 // value from a data sync) is nil rather than a guess.
 func parseActualDurationMin(raw *string) *int {
@@ -162,7 +162,7 @@ func parseActualDurationMin(raw *string) *int {
 }
 
 // CallRequestRepository defines the persistence operations for customer_call
-// (migration 000072), the Postgres backing for call requests.
+// (migration 0073), the Postgres backing for call requests.
 //
 // Known gaps, all left at their zero value rather than guessed:
 //   - number has no default/sequence and no confirmed format, so a created
@@ -190,7 +190,7 @@ type CallRequestRepository interface {
 	// req.CaseID is set, none belongs to that case).
 	UpdateCallRequest(ctx context.Context, req domain.UpdateCallRequestRequest, assigneeID *string, callerEmail string) (domain.UpdateCallRequestResponse, error)
 	// SetCallRequestSNSysID best-effort persists ServiceNow's own sys_id for
-	// the call request identified by id (migration 000088) -- called from
+	// the call request identified by id (migration 0135) -- called from
 	// CreateCallRequest's async ServiceNow mirror success path, never from
 	// the synchronous request path. A no-op (returns nil) if id does not
 	// exist: the row may have raced with a concurrent delete, and this is

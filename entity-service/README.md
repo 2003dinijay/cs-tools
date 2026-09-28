@@ -44,7 +44,7 @@ entity-service/
 │   │   ├── recovery.go          # Panic recovery → 500
 │   │   └── timeout.go           # Per-request context deadline
 │   └── apierror/errors.go       # Sentinel errors and JSON error responder
-├── migrations/                  # SQL migration files (up/down)
+├── migrations/                  # SQL migration files, one per NNNN_<description>.sql, no separate up/down
 ├── queries/                     # Raw SQL queries (sqlc source)
 ├── deploy/                      # Dockerfile and docker-compose
 ├── sqlc.yaml                    # sqlc code generation config

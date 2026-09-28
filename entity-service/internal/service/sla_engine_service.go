@@ -26,7 +26,7 @@ import (
 )
 
 // SLAEngineService is the CSM-native SLA clock engine: it registers,
-// completes, pauses and resumes source='CSM' "sla" rows (migration 000088)
+// completes, pauses and resumes source='CSM' "sla" rows (migration 0134)
 // in reaction to case-lifecycle events, sourcing real durations from the
 // ServiceNow-synced sla_policy table (via slaPolicyResolver) instead of the
 // old, deleted sla_clocks design's hardcoded severity->duration map (see

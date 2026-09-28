@@ -104,7 +104,7 @@ func NewAccountRepository(db *pgxpool.Pool) AccountRepository {
 // accountSelectColumns' cre/sre joins are the same "group" table
 // change_request_repo.go's own customer_group_id join already uses (see
 // that file's changeRequestDetailJoins) -- account.cre_team_id/sre_team_id
-// (renamed/added by migration 000074, ex-integration_cs_team_id) are real
+// (renamed/added by migration 0075, ex-integration_cs_team_id) are real
 // FKs into "group" now, unlike when CreTeam/SreTeam were first documented
 // as "ServiceNow data source only" on domain.AccountView/AccountDetail;
 // this is what actually reads them back for the Postgres data source.

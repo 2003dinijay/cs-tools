@@ -61,17 +61,17 @@ type SLAPolicyRef struct {
 // SLAEngineRepository defines the read/write operations backing the
 // CSM-native SLA engine (internal/service/sla_policy_resolver.go,
 // sla_engine_service.go) -- every write here is scoped to source='CSM' rows
-// only (migration 000088): source='SERVICENOW' rows are exclusively owned
+// only (migration 0134): source='SERVICENOW' rows are exclusively owned
 // by the ServiceNow sync and this repository never mutates one. Read-side
 // consumers of "sla" (GET /sla-status, POST /task-slas/search) need no
 // changes at all -- both source values look identical to them, which is the
-// entire point of sharing the table (see migration 000088's own comment).
+// entire point of sharing the table (see migration 0134's own comment).
 type SLAEngineRepository interface {
 	// FindPolicyByName resolves the single active sla_policy row matching
 	// name/target, preferring a source='SERVICENOW' row (the real
 	// ServiceNow-synced policy) but falling back to a source='CSM' row (a
 	// gap-filling policy this engine itself seeded, e.g. the P0 rows added
-	// by migration 000089) when no synced row exists under that exact name.
+	// by migration 0136) when no synced row exists under that exact name.
 	// Returns apierror.NotFoundError if neither exists.
 	FindPolicyByName(ctx context.Context, name, target string) (SLAPolicyRef, error)
 
@@ -152,7 +152,7 @@ func NewSLAEngineRepository(db *pgxpool.Pool) SLAEngineRepository {
 // both a SERVICENOW and a CSM row happen to share a name -- which should
 // never actually happen (this engine only ever seeds names ServiceNow's
 // own real policy set is confirmed NOT to define, e.g. the P0 rows from
-// migration 000089), but preferring the synced row costs nothing and
+// migration 0136), but preferring the synced row costs nothing and
 // removes any doubt about which one wins if it ever did.
 func (r *slaEngineRepo) FindPolicyByName(ctx context.Context, name, target string) (SLAPolicyRef, error) {
 	// EXTRACT(EPOCH FROM duration) rather than scanning the INTERVAL column

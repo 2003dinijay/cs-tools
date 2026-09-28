@@ -74,7 +74,7 @@ func TestParseUpdateDeployedProductDescription(t *testing.T) {
 // TestDeployedProductCreateFKField locks in the constraint-name -> field-name
 // mapping CreateDeployedProductFromServiceNow's 23503 handling depends on --
 // these names come from Postgres' own default "<table>_<column>_fkey"
-// naming for migration 000014's unnamed foreign keys, so a schema rename
+// naming for migration 0019's unnamed foreign keys, so a schema rename
 // would silently break this mapping (falling back to the generic "one or
 // more referenced fields" message) without this test to catch it.
 func TestDeployedProductCreateFKField(t *testing.T) {
