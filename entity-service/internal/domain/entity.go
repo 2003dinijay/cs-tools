@@ -5656,6 +5656,7 @@ type ProblemDetail struct {
 	ID                  *string         `json:"id"`
 	Number              *string         `json:"number"`
 	Subject             *string         `json:"subject"`
+	Description         *string         `json:"description"`
 	State               *string         `json:"state"`
 	Priority            *string         `json:"priority"`
 	Category            *string         `json:"category"`

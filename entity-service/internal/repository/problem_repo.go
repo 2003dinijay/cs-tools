@@ -332,7 +332,7 @@ func (r *problemRepo) AggregateProblems(ctx context.Context, req domain.SearchPr
 // GetProblem implements ProblemRepository.
 func (r *problemRepo) GetProblem(ctx context.Context, id string) (domain.ProblemDetail, error) {
 	query := `
-		SELECT wi.id, wi.number, wi.subject, pr.state::TEXT, pr.priority::TEXT,
+		SELECT wi.id, wi.number, wi.subject, wi.description, pr.state::TEXT, pr.priority::TEXT,
 		       pr.category::TEXT, sc.label,
 		       origin_case.id, origin_case.number,
 		       primary_inc.id, primary_inc_wi.number,
@@ -346,6 +346,7 @@ func (r *problemRepo) GetProblem(ctx context.Context, id string) (domain.Problem
 
 	var (
 		id2, number, subject             string
+		description                      *string
 		state, priority                  *string
 		category, subcategoryLabel       *string
 		originCaseID, originCaseNumber   *string
@@ -359,7 +360,7 @@ func (r *problemRepo) GetProblem(ctx context.Context, id string) (domain.Problem
 		openedOn, closedOn               *time.Time
 	)
 	err := r.db.QueryRow(ctx, query, id).Scan(
-		&id2, &number, &subject, &state, &priority,
+		&id2, &number, &subject, &description, &state, &priority,
 		&category, &subcategoryLabel,
 		&originCaseID, &originCaseNumber,
 		&priIncID, &priIncNumber,
@@ -377,7 +378,7 @@ func (r *problemRepo) GetProblem(ctx context.Context, id string) (domain.Problem
 	}
 
 	d := domain.ProblemDetail{
-		ID: &id2, Number: &number, Subject: &subject, State: state, Priority: priority,
+		ID: &id2, Number: &number, Subject: &subject, Description: description, State: state, Priority: priority,
 		Category: category, Subcategory: subcategoryLabel,
 		ResolutionCode: resolutionCode, CauseNotes: causeNotes, FixNotes: fixNotes, Workaround: workaround,
 	}
