@@ -88,7 +88,7 @@ function buildPdfContent(
   });
   frontPage.innerHTML = `
     <img src="${logo}" alt="Logo" class="front-page-logo" />
-    <h1 class="header-title">${account} - Customer Success Report </h1>
+    <h1 class="header-title">${escapeHtml(account)} - Customer Success Report </h1>
     <p>Accelerating Success Together</p>
     <hr class="section-divider"/>
     <p class="current-date">Generated on: ${formattedDate}</p>
@@ -274,7 +274,7 @@ function buildPdfContent(
             ${records
               .map(
                 (record: { task: string; slaDefinition: string; businessElapsedPercentage: string }) => `
-                <tr><td>${record.task}</td><td>${record.slaDefinition}</td><td>${record.businessElapsedPercentage}</td></tr>
+                <tr><td>${escapeHtml(record.task)}</td><td>${escapeHtml(record.slaDefinition)}</td><td>${escapeHtml(record.businessElapsedPercentage)}</td></tr>
             `,
               )
               .join("")}
