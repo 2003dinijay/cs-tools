@@ -1632,3 +1632,106 @@
 .csm-ts .ladhd:not(.onelane) .lnh.offhd {
   flex: 0 0 clamp(248px, calc((100% - 80px) * 0.15 + 80px), 274px);
 }
+
+/* Two tags in one day cell: a rotation turn and the allocation beside it,
+   stacked so each keeps its own chip in a column one tag wide. */
+.csm-ts .roster td .duo {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.csm-ts .roster td .duo .chip {
+  font-size: 9.5px;
+  padding: 0 4px;
+  line-height: 14px;
+  min-height: 0;
+}
+
+/* The escalation grid: a row per zone, L1 / L2 / L3 across it. The zone the
+   lead clicked from is marked, not the only one offered. */
+.csm-ts .pk-esc {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.csm-ts .pk-escr {
+  display: grid;
+  grid-template-columns: 44px repeat(3, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 8px;
+}
+.csm-ts .pk-escr.here {
+  background: var(--accent-soft-2);
+  box-shadow: inset 0 0 0 1px var(--accent-soft);
+}
+.csm-ts .pk-escz {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+.csm-ts .pk-t {
+  display: flex;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 4px 0;
+  cursor: pointer;
+}
+.csm-ts .pk-t:hover:not(:disabled) {
+  border-color: var(--line-2);
+  background: var(--surface-2);
+}
+.csm-ts .pk-t.on {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.csm-ts .pk-t:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* A tag a lead added carries its own delete control, top right. */
+.csm-ts .pk-cw {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+.csm-ts .pk-cw > .pk-c {
+  flex: 1;
+  padding-right: 26px;
+}
+.csm-ts .pk-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.csm-ts .pk-del:hover:not(:disabled),
+.csm-ts .pk-del.ask {
+  border-color: var(--crit, #c9302c);
+  color: var(--crit, #c9302c);
+  background: var(--surface);
+}
+.csm-ts .pk-del.ask {
+  font-size: 11px;
+  font-weight: 600;
+}
+.csm-ts .pk-delerr {
+  grid-column: 1 / -1;
+}

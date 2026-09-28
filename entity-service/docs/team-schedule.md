@@ -68,7 +68,7 @@ block is Monday's, even though six of its hours fall on Tuesday.
 
 **SRE day**, as the leads run it:
 
-| Zone | L1 and L2 | Regular hours | Weekend crew |
+| Zone | L1, L2 and L3 | Regular hours (SUP) | Weekend crew |
 |---|---|---|---|
 | TZ1 | 06:00–13:30 | 06:00–15:00 | weekend TZ1, 06:00–18:00 |
 | TZ2 | 13:30–21:00 | 12:00–21:00 | weekend TZ1 |
@@ -77,6 +77,11 @@ block is Monday's, even though six of its hours fall on Tuesday.
 **CRE windows:** 6–9am (and its on-call), regular hours LK and IND, 6–9pm,
 Americas cover, weekend rotation 06:00–21:00, and Americas weekend (and its
 on-call).
+
+Any tier, L1, L2 or L3, can be rostered in any zone. It goes on the zone's
+window that fixes that tier where there is one (TZ1's and TZ2's own L1 windows),
+otherwise on the zone's escalation window, which leaves the tier to the person.
+Regular hours are drawn **SUP** (support in normal hours).
 
 **Kinds of time away**, grouped by bucket:
 
@@ -103,6 +108,16 @@ A lead edits their own team's rows in the Month roster's cell picker:
   For an allocation there is an optional **For** field, which is stored as
   `allocated_to`. It is never stored with leave. The write is
   `POST /team-schedule/absences/apply`.
+- **Roster L1, L2 or L3 in any zone.** For SRE the picker shows an
+  escalation grid: every zone worked that day, with L1, L2 and L3 in each,
+  not just the zone column that was clicked. The write is
+  `POST /team-schedule/assignments/apply` with a `tier`.
+- **Two tags in one day.** An allocation (RnD, customer) does not hide a
+  rotation turn on the same day. The roster shows both: in the turn's own
+  zone column on an SRE day, and stacked in the cell otherwise. Leave still
+  takes the whole day, because someone on leave is not on the rota. In a cell
+  holding both, **Clear** clears the turn, and the allocation has its own
+  **Remove**.
 - **Remove a whole span in one click.** Clicking any day of a leave or
   allocation shows the whole span with a **Remove** button, which deletes
   every day of it, including a span with no end date. The write is
@@ -113,8 +128,13 @@ A lead edits their own team's rows in the Month roster's cell picker:
   already draws. The code is derived from the name. A name that is already
   used, or a short code another active kind already uses, is refused. Only
   team leads may add a tag, and every team sees it once added. The write is
-  `POST /team-schedule/absence-kinds`. There is no delete; retire a kind with
-  `is_active = FALSE`.
+  `POST /team-schedule/absence-kinds`.
+- **Delete a tag a lead added.** A custom tag carries a delete control, and
+  deleting takes two clicks because the tag is shared by every team. A
+  built-in tag cannot be deleted. A tag still used by any leave or allocation
+  is refused, with how many entries use it, rather than retired quietly, which
+  would leave those entries with no label or colour. The write is
+  `DELETE /team-schedule/absence-kinds/{code}`.
 
 All three are gated on the caller leading the team (for a removal, the team
 recorded on the absence row), and each is recorded in the absence history

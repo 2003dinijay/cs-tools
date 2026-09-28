@@ -716,6 +716,102 @@ func TestScheduleIntegration_CreateAbsenceKindJoinsTheEndOfItsBucket(t *testing.
 	}
 }
 
+// Any tier can be rostered on a zone's escalation window: the window leaves
+// the tier to the person. A window that fixes a tier accepts only that one,
+// and a window that is not an escalation window holds none.
+func TestScheduleIntegration_ApplyRangeRostersAnyTierOnAZonesEscalationWindow(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	l3 := "L3"
+
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: "SRE_TZ1",
+		From: schedMonday, To: schedMonday, Tier: &l3,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("L3 on SRE_TZ1: %v", err)
+	}
+	var tier, zone string
+	if err := pool.QueryRow(ctx, `
+		SELECT a.tier::text, z.code FROM team_schedule_assignment a
+		  JOIN team_schedule_zone z ON z.id = a.zone_id
+		 WHERE a.user_id = $1::uuid AND a.rota_date = $2::date`, schedMemberID, schedMonday).Scan(&tier, &zone); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if tier != "L3" || zone != "TZ1" {
+		t.Fatalf("stored %s in %s, want L3 in TZ1", tier, zone)
+	}
+
+	var invalid *apierror.ValidationError
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: "SRE_TZ1_L1",
+		From: schedMonday, To: schedMonday, Tier: &l3,
+	}, schedLeadEmail); !errors.As(err, &invalid) {
+		t.Fatalf("L3 on the L1-only window: want ValidationError, got %v", err)
+	}
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: "SRE_TZ1_REGULAR",
+		From: schedMonday, To: schedMonday, Tier: &l3,
+	}, schedLeadEmail); !errors.As(err, &invalid) {
+		t.Fatalf("a tier on regular hours: want ValidationError, got %v", err)
+	}
+}
+
+// A lead may delete a tag a lead added, once nothing uses it -- never one of
+// the catalogue's own.
+func TestScheduleIntegration_DeleteAbsenceKindOnlyRemovesAnUnusedCustomTag(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM team_schedule_absence WHERE kind_id IN (SELECT id FROM team_schedule_absence_kind WHERE code = 'INTEGRATION_DELETE_TAG')`)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM team_schedule_absence_kind WHERE code = 'INTEGRATION_DELETE_TAG'`)
+	})
+
+	var forbidden *apierror.ForbiddenError
+	if err := repo.DeleteAbsenceKind(ctx, "ANNUAL_LEAVE", schedLeadEmail); !errors.As(err, &forbidden) {
+		t.Fatalf("deleting annual leave: want ForbiddenError, got %v", err)
+	}
+
+	k, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_DELETE_TAG", domain.CreateScheduleAbsenceKindRequest{
+		ShortCode: "IDT", Label: "Integration delete tag", Bucket: "ALLOCATION", ColourToken: "INT",
+	}, schedLeadEmail)
+	if err != nil {
+		t.Fatalf("CreateAbsenceKind: %v", err)
+	}
+	if !k.Custom {
+		t.Fatal("a tag a lead added did not come back marked custom")
+	}
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, KindCode: k.Code, From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("marking the tag: %v", err)
+	}
+	var conflict *apierror.ConflictError
+	if err := repo.DeleteAbsenceKind(ctx, k.Code, schedLeadEmail); !errors.As(err, &conflict) {
+		t.Fatalf("deleting a tag in use: want ConflictError, got %v", err)
+	}
+
+	if _, err := repo.ApplyAbsence(ctx, domain.ApplyScheduleAbsenceRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("clearing the day: %v", err)
+	}
+	if err := repo.DeleteAbsenceKind(ctx, k.Code, schedLeadEmail); err != nil {
+		t.Fatalf("deleting the unused tag: %v", err)
+	}
+	cat, err := repo.Catalogue(ctx)
+	if err != nil {
+		t.Fatalf("Catalogue: %v", err)
+	}
+	for _, kind := range cat.AbsenceKinds {
+		if kind.Code == k.Code {
+			t.Fatal("the deleted tag is still in the catalogue")
+		}
+		if kind.Code == "ANNUAL_LEAVE" && kind.Custom {
+			t.Fatal("annual leave is marked custom")
+		}
+	}
+}
+
 // ── reads ─────────────────────────────────────────────────────────────────
 
 func TestScheduleIntegration_SearchAssignmentsFiltersByTeamAndWindow(t *testing.T) {

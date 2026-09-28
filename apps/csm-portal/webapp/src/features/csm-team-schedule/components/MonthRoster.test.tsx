@@ -29,6 +29,7 @@ import {
   TZ1_WE,
   TZ2,
   TZ2_WE,
+  RND,
   absence,
   assignment,
   scopeControls,
@@ -253,5 +254,43 @@ describe("MonthRoster: who changed a cell", () => {
     // The grid renders from the rota alone; markers turn up when they turn up.
     const { container } = renderRoster({ editedCells: undefined });
     expect(container.querySelectorAll("td.touched")).toHaveLength(0);
+  });
+});
+
+describe("MonthRoster: two tags in one cell", () => {
+  it("shows a rotation turn and the allocation beside it", () => {
+    const { container } = renderRoster({
+      assignments: [assignment({ name: "Asela", rotaDate: "2026-09-21", shiftCode: EVENING.code })],
+      absences: [absence({ name: "Asela", startsOn: "2026-09-21", endsOn: "2026-09-21", kindCode: RND.code })],
+      absenceKinds: [ANNUAL_LEAVE, RND],
+    });
+    const duo = container.querySelector(".duo");
+    expect(duo).not.toBeNull();
+    expect(duo).toHaveTextContent(EVENING.shortCode);
+    expect(duo).toHaveTextContent(RND.shortCode);
+  });
+
+  it("lets leave take the whole day", () => {
+    const { container } = renderRoster({
+      assignments: [assignment({ name: "Asela", rotaDate: "2026-09-21", shiftCode: EVENING.code })],
+      absences: [absence({ name: "Asela", startsOn: "2026-09-21", endsOn: "2026-09-21" })],
+    });
+    expect(container.querySelector(".duo")).toBeNull();
+  });
+
+  it("hands both to the picker when the cell is opened", () => {
+    const onEditCell = vi.fn();
+    const { container } = renderRoster({
+      leadTeams: ["alpha"],
+      editing: true,
+      onEditCell,
+      assignments: [assignment({ name: "Asela", rotaDate: "2026-09-21", shiftCode: EVENING.code })],
+      absences: [absence({ name: "Asela", startsOn: "2026-09-21", endsOn: "2026-09-21", kindCode: RND.code })],
+      absenceKinds: [ANNUAL_LEAVE, RND],
+    });
+    fireEvent.click(container.querySelector(".duo")!.closest("td")!);
+    expect(onEditCell).toHaveBeenCalledWith(
+      expect.objectContaining({ shiftCode: EVENING.code, absenceKindCode: RND.code }),
+    );
   });
 });

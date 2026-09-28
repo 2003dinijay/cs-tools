@@ -51,6 +51,7 @@ type fakeScheduleRepo struct {
 	gotActorEml string
 	absenceByID domain.ScheduleAbsence
 	gotKindCode string
+	gotRange    domain.ApplyScheduleRangeRequest
 }
 
 func (f *fakeScheduleRepo) AssignmentByID(context.Context, string) (domain.ScheduleAssignment, error) {
@@ -87,7 +88,7 @@ func (f *fakeScheduleRepo) ActivityForTeam(context.Context, string, string, stri
 }
 
 func (f *fakeScheduleRepo) ApplyRange(_ context.Context, req domain.ApplyScheduleRangeRequest, actor string) (domain.ApplyScheduleRangeResponse, error) {
-	f.called, f.gotActorEml = true, actor
+	f.called, f.gotActorEml, f.gotRange = true, actor, req
 	return domain.ApplyScheduleRangeResponse{Applied: 1, SkippedDates: []string{}}, f.err
 }
 
@@ -115,6 +116,11 @@ func (f *fakeScheduleRepo) DeleteAbsence(_ context.Context, id, actor string, _ 
 func (f *fakeScheduleRepo) CreateAbsenceKind(_ context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, actor string) (domain.ScheduleAbsenceKind, error) {
 	f.called, f.gotKindCode, f.gotActorEml = true, code, actor
 	return domain.ScheduleAbsenceKind{Code: code, ShortCode: req.ShortCode, Label: req.Label, Bucket: req.Bucket, ColourToken: req.ColourToken}, f.err
+}
+
+func (f *fakeScheduleRepo) DeleteAbsenceKind(_ context.Context, code, actor string) error {
+	f.called, f.gotKindCode, f.gotActorEml = true, code, actor
+	return f.err
 }
 
 func (f *fakeScheduleRepo) EditMarkers(context.Context, string, string) ([]domain.ScheduleEditMarker, error) {
@@ -675,5 +681,63 @@ func TestANewTagIsDerivedAndChecked(t *testing.T) {
 				t.Fatal("an invalid tag reached the repository")
 			}
 		})
+	}
+}
+
+func TestApplyRangeChecksTheTier(t *testing.T) {
+	req := func(tier string) domain.ApplyScheduleRangeRequest {
+		return domain.ApplyScheduleRangeRequest{
+			UserID: "22222222-2222-2222-2222-222222222222", TeamKey: "castor",
+			ShiftCode: "SRE_TZ1", From: "2026-09-21", To: "2026-09-21", Tier: &tier,
+		}
+	}
+	ctx := leadCtx("castor.01@example.com")
+
+	repo := &leadOf{team: "castor"}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	if _, err := svc.ApplyRange(ctx, req(" l3 ")); err != nil {
+		t.Fatalf("L3: %v", err)
+	}
+	if repo.gotRange.Tier == nil || *repo.gotRange.Tier != "L3" {
+		t.Fatalf("tier reached the repository as %v, want L3", repo.gotRange.Tier)
+	}
+
+	for _, bad := range []string{"L4", "tz1"} {
+		repo := &leadOf{team: "castor"}
+		svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+		var invalid *apierror.ValidationError
+		if _, err := svc.ApplyRange(ctx, req(bad)); !errors.As(err, &invalid) {
+			t.Fatalf("tier %q: want ValidationError, got %v", bad, err)
+		}
+		if repo.called {
+			t.Fatalf("tier %q reached the repository", bad)
+		}
+	}
+
+	clearing := req("L1")
+	clearing.ShiftCode = ""
+	var invalid *apierror.ValidationError
+	if _, err := svc.ApplyRange(ctx, clearing); !errors.As(err, &invalid) {
+		t.Fatalf("a tier with no window: want ValidationError, got %v", err)
+	}
+}
+
+func TestDeletingATagNeedsALead(t *testing.T) {
+	repo := &fakeScheduleRepo{leadsTeam: false}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	var forbidden *apierror.ForbiddenError
+	if err := svc.DeleteAbsenceKind(leadCtx("engineer@example.com"), "TRAINING"); !errors.As(err, &forbidden) {
+		t.Fatalf("want ForbiddenError, got %v", err)
+	}
+	if repo.called {
+		t.Fatal("a non-lead reached the repository")
+	}
+
+	repo.leadsTeam = true
+	if err := svc.DeleteAbsenceKind(leadCtx("castor.01@example.com"), " TRAINING "); err != nil {
+		t.Fatalf("a lead was refused: %v", err)
+	}
+	if repo.gotKindCode != "TRAINING" {
+		t.Fatalf("deleted %q, want TRAINING", repo.gotKindCode)
 	}
 }

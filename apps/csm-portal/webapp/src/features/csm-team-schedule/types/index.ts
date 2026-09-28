@@ -64,6 +64,9 @@ export interface ScheduleAbsenceKind {
   bucket: "LEAVE" | "ALLOCATION" | "EXCLUDED";
   colourToken: string;
   sortOrder: number;
+  /** A tag a lead added from the portal, which a lead may also delete. The
+   *  catalogue's own kinds are never custom. */
+  custom?: boolean;
 }
 
 /** One team the rota is run for, served so no client holds the list. */

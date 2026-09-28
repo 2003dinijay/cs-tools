@@ -5720,6 +5720,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/absence-kinds/{code}:
+    delete:
+      summary: Delete a tag a lead added.
+      description: >
+        Any team lead may. Only a tag added from the portal can be deleted, never
+        one of the catalogue's own, and only once no leave or allocation uses it
+        -- a tag still in use is refused with how many entries use it, since
+        retiring it quietly would leave those entries with no label or colour.
+      operationId: deleteScheduleAbsenceKind
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller leads no team, or the tag is a built-in one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such tag.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The tag is still in use.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/absences/apply:
     post:
       summary: Mark one engineer away across a span, or bring them back over it.
@@ -16119,6 +16167,9 @@ components:
         bucket: { type: string, enum: [LEAVE, ALLOCATION, EXCLUDED] }
         colourToken: { type: string }
         sortOrder: { type: integer }
+        custom:
+          type: boolean
+          description: True for a tag a lead added from the portal, which a lead may also delete.
     ScheduleCatalogue:
       type: object
       properties:
@@ -16226,6 +16277,14 @@ components:
         note:
           type: string
           nullable: true
+        tier:
+          type: string
+          enum: [L1, L2, L3]
+          description: >-
+            For an escalation window that leaves the tier to the person
+            (SRE_TZ1, SRE_TZ3, ...), which tier they hold. Omitted takes the
+            window's own tier; a window that fixes a tier accepts only that
+            one, and a window that is not an escalation window accepts none.
 
     ApplyScheduleRangeResponse:
       type: object

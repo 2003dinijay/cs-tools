@@ -43,6 +43,7 @@ type mockEntityScheduleClient struct {
 
 	deleteAbsenceFn func(ctx context.Context, id, note string) ([]byte, error)
 	createKindFn    func(ctx context.Context, body []byte) ([]byte, error)
+	deleteKindFn    func(ctx context.Context, code string) ([]byte, error)
 	applyFn         func(ctx context.Context, body []byte) ([]byte, error)
 	absenceFn       func(ctx context.Context, body []byte) ([]byte, error)
 }
@@ -56,6 +57,13 @@ func (m *mockEntityScheduleClient) DeleteScheduleAbsence(ctx context.Context, id
 		return nil, nil
 	}
 	return m.deleteAbsenceFn(ctx, id, note)
+}
+
+func (m *mockEntityScheduleClient) DeleteScheduleAbsenceKind(ctx context.Context, code string) ([]byte, error) {
+	if m.deleteKindFn == nil {
+		return nil, nil
+	}
+	return m.deleteKindFn(ctx, code)
 }
 
 func (m *mockEntityScheduleClient) CreateScheduleAbsenceKind(ctx context.Context, body []byte) ([]byte, error) {
@@ -367,5 +375,35 @@ func TestCreateScheduleAbsenceKind(t *testing.T) {
 		if called {
 			t.Fatal("an invalid body reached entity-service")
 		}
+	})
+}
+
+func TestDeleteScheduleAbsenceKind(t *testing.T) {
+	t.Run("forwards the code and answers 204", func(t *testing.T) {
+		var got string
+		h := NewScheduleHandler(&mockEntityScheduleClient{
+			deleteKindFn: func(_ context.Context, code string) ([]byte, error) { got = code; return nil, nil },
+		})
+		r := withUser(httptest.NewRequest(http.MethodDelete, "/team-schedule/absence-kinds/TRAINING", nil))
+		r.SetPathValue("code", "TRAINING")
+		w := httptest.NewRecorder()
+		h.DeleteScheduleAbsenceKind(w, r)
+		assertStatus(t, w, http.StatusNoContent)
+		if got != "TRAINING" {
+			t.Fatalf("forwarded %q, want TRAINING", got)
+		}
+	})
+
+	t.Run("a tag still in use stays a 409", func(t *testing.T) {
+		h := NewScheduleHandler(&mockEntityScheduleClient{
+			deleteKindFn: func(context.Context, string) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusConflict}
+			},
+		})
+		r := withUser(httptest.NewRequest(http.MethodDelete, "/team-schedule/absence-kinds/TRAINING", nil))
+		r.SetPathValue("code", "TRAINING")
+		w := httptest.NewRecorder()
+		h.DeleteScheduleAbsenceKind(w, r)
+		assertStatus(t, w, http.StatusConflict)
 	})
 }

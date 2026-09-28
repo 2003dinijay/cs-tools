@@ -25,7 +25,8 @@ import {
   useState,
   type JSX,
 } from "react";
-import type { CellAbsence, ScheduleAbsenceKind, ScheduleShift } from "../types";
+import type { CellAbsence, ScheduleAbsenceKind, ScheduleShift, ScheduleTier } from "../types";
+import { escalationGrid } from "../utils/rota";
 
 
 export interface CellPickerTarget {
@@ -35,6 +36,8 @@ export interface CellPickerTarget {
   rotaDate: string;
   /** What they currently hold that day, for marking the live code. */
   shiftCode?: string;
+  /** The tier they hold on it, where it is an escalation window. */
+  tier?: ScheduleTier;
   /** The leave or allocation covering that day, if any, marked the same way. */
   absenceKindCode?: string;
   /** The zone column this was opened from, on a day split across them. */
@@ -59,7 +62,9 @@ interface CellPickerProps {
    *  in two groups by bucket; anything else the catalogue holds is not
    *  offered here. */
   awayKinds: ScheduleAbsenceKind[];
-  onApply: (shiftCode: string, from: string, to: string) => void;
+  /** Put them on a window over the span. `tier` is set for an escalation
+   *  window that leaves the tier to the person. */
+  onApply: (shiftCode: string, from: string, to: string, tier?: ScheduleTier) => void;
   /** Mark them away over the span, for a leave or allocation kind rather than
    *  a window. `allocatedTo` is who an allocation is for, when given. */
   onMarkAway: (kindCode: string, from: string, to: string, allocatedTo?: string) => void;
@@ -73,6 +78,9 @@ interface CellPickerProps {
    *  exists; rejects with a message the form can show. Absent hides the
    *  "New tag" control. */
   onCreateKind?: (kind: NewAbsenceKind) => Promise<void>;
+  /** Delete a tag a lead added. Resolves once gone; rejects with a message
+   *  the picker can show (a tag still in use is refused). */
+  onDeleteKind?: (code: string) => Promise<void>;
   onClose: () => void;
   busy?: boolean;
 }
@@ -153,6 +161,7 @@ export default function CellPicker({
   onClear,
   onRemoveAbsence,
   onCreateKind,
+  onDeleteKind,
   onClose,
   busy,
 }: CellPickerProps): JSX.Element {
@@ -168,6 +177,9 @@ export default function CellPicker({
   });
   const [tagError, setTagError] = useState("");
   const [tagBusy, setTagBusy] = useState(false);
+  /** A custom tag asked to be deleted once, awaiting the second click. */
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState("");
   const box = useRef<HTMLDivElement | null>(null);
   const endField = useRef<HTMLInputElement | null>(null);
   const [at, setAt] = useState<{ left: number; top: number } | null>(null);
@@ -214,11 +226,16 @@ export default function CellPicker({
       [...list]
         .sort((a, b) => a.sortOrder - b.sortOrder)
         .map((s) => ({ shift: s, ok: allowedOn(s, firstDay) }));
+    // Escalation windows are picked from the grid below, by zone and tier,
+    // rather than listed here a second time.
     return [
-      { heading: "Rotations", items: decorate(shifts.filter((s) => s.isRotation)) },
+      { heading: "Rotations", items: decorate(shifts.filter((s) => s.isRotation && !s.isEscalation)) },
       { heading: "Standing hours", items: decorate(shifts.filter((s) => !s.isRotation)) },
     ].filter((g) => g.items.length > 0);
   }, [shifts, firstDay]);
+
+  /** L1, L2 and L3 for every zone worked on the span's first day. */
+  const grid = useMemo(() => escalationGrid(shifts, firstDay), [shifts, firstDay]);
   const groupCount = groups.reduce((n, g) => n + g.items.length, 0);
 
   /** Leave, then allocations, each under its own heading. */
@@ -252,7 +269,7 @@ export default function CellPicker({
     if (top + h > window.innerHeight - m) top = Math.max(m, target.anchor.top - h - 8);
     if (top + h > window.innerHeight - m) top = Math.max(m, window.innerHeight - h - m);
     setAt({ left: Math.round(left), top: Math.round(top) });
-  }, [target.anchor, groupCount, awayGroups.length, tagOpen]);
+  }, [target.anchor, groupCount, awayGroups.length, tagOpen, grid.length]);
 
   /** What clearing means here. A weekend has no standing window to fall back
    *  to, so clearing it genuinely empties the day. */
@@ -397,6 +414,46 @@ export default function CellPicker({
           </Fragment>
         ))}
 
+        {grid.length > 0 ? (
+          <>
+            <div className="pk-sec">Escalation</div>
+            {/* Every zone, not only the column that was clicked: a lead
+                rostering L3 for TZ2 from a TZ1 cell should not have to find
+                the TZ2 column first. The clicked zone is marked. */}
+            <div className="pk-esc">
+              {grid.map((row) => (
+                <div
+                  key={row.zoneCode}
+                  className={`pk-escr${row.zoneCode === target.zoneCode ? " here" : ""}`}
+                >
+                  <span className="pk-escz">{row.zoneCode}</span>
+                  {row.tiers.map(({ tier, shift }) => {
+                    const held =
+                      Boolean(shift) &&
+                      shift?.code === target.shiftCode &&
+                      (target.tier ?? shift?.tier) === tier;
+                    return (
+                      <button
+                        key={tier}
+                        type="button"
+                        className={`pk-t${held ? " on" : ""}`}
+                        disabled={!shift || busy}
+                        aria-label={`${tier} for ${row.zoneCode}`}
+                        title={shift ? `${tier} · ${shift.label}` : `${row.zoneCode} has no ${tier} window`}
+                        onClick={() =>
+                          shift && onApply(shift.code, firstDay, lastDay, shift.tier ? undefined : tier)
+                        }
+                      >
+                        <span className={`chip sm ${tier}`}>{tier}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </>
+        ) : null}
+
         {awayGroups.map((group) => (
           <Fragment key={group.bucket}>
             <div className="pk-sec">{group.heading}</div>
@@ -422,7 +479,7 @@ export default function CellPicker({
               // one. An allocation has no such rule -- the time is given to
               // someone else whichever day it starts.
               const blocked = onWeekend && kind.bucket === "LEAVE";
-              return (
+              const mark = (
                 <button
                   key={kind.code}
                   type="button"
@@ -447,7 +504,40 @@ export default function CellPicker({
                   <span className="pk-l">{kind.label}</span>
                 </button>
               );
+              if (!kind.custom || !onDeleteKind) return mark;
+              // A tag a lead added can be deleted from where it is used. Two
+              // clicks, because it is shared: the tag goes for every team.
+              const asking = confirmDelete === kind.code;
+              return (
+                <div className="pk-cw" key={kind.code}>
+                  {mark}
+                  <button
+                    type="button"
+                    className={`pk-del${asking ? " ask" : ""}`}
+                    aria-label={asking ? `Confirm deleting the ${kind.label} tag` : `Delete the ${kind.label} tag`}
+                    title={asking ? "Click again to delete it for every team" : "Delete this tag"}
+                    disabled={busy}
+                    onClick={() => {
+                      if (!asking) {
+                        setConfirmDelete(kind.code);
+                        setDeleteError("");
+                        return;
+                      }
+                      onDeleteKind(kind.code)
+                        .then(() => setConfirmDelete(null))
+                        .catch((err: unknown) =>
+                          setDeleteError(err instanceof Error && err.message ? err.message : "The tag was not deleted."),
+                        );
+                    }}
+                  >
+                    {asking ? "Delete?" : "×"}
+                  </button>
+                </div>
+              );
             })}
+            {deleteError && group.kinds.some((k) => k.code === confirmDelete) ? (
+              <div className="tf-err pk-delerr" role="alert">{deleteError}</div>
+            ) : null}
           </Fragment>
         ))}
 
@@ -558,7 +648,7 @@ export default function CellPicker({
               thing in the three cases. Somebody marked away comes back onto
               whatever the rota already had for them; a weekend has no standing
               window to fall back to at all. */}
-          {target.absenceKindCode
+          {target.absenceKindCode && !target.shiftCode
             ? "Clear — back on the rota"
             : backTo
               ? `Clear — back to ${shifts.find((s) => s.code === backTo)?.label ?? "regular hours"}`

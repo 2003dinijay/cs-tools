@@ -18,6 +18,8 @@
 
 import { describe, expect, it } from "vitest";
 import type { ScheduleAssignment, ScheduleShift } from "../types";
+import { TZ1, TZ1_L1, TZ1_WE, TZ2, TZ2_WE, TZ3, REGULAR } from "../test/fixtures";
+import { escalationGrid } from "./rota";
 import {
   dayLabel,
   zoneAbbreviation,
@@ -233,5 +235,32 @@ describe("standingWindowKey", () => {
 
   it("falls back to the code when the catalogue has no such shift", () => {
     expect(standingWindowKey(undefined, "MYSTERY")).toBe("MYSTERY");
+  });
+});
+
+describe("escalationGrid", () => {
+  const all = [TZ1, TZ1_L1, TZ2, TZ3, TZ1_WE, TZ2_WE, REGULAR];
+
+  it("offers L1, L2 and L3 in every weekday zone", () => {
+    const grid = escalationGrid(all, "2026-09-23"); // a Wednesday
+    expect(grid.map((r) => r.zoneCode)).toEqual(["TZ1", "TZ2", "TZ3"]);
+    for (const row of grid) expect(row.tiers.map((t) => t.tier)).toEqual(["L1", "L2", "L3"]);
+  });
+
+  it("puts a tier on the window that fixes it, else on the zone's open window", () => {
+    const tz1 = escalationGrid(all, "2026-09-23")[0];
+    expect(tz1.tiers.map((t) => t.shift?.code)).toEqual(["SRE_TZ1_L1", "SRE_TZ1", "SRE_TZ1"]);
+    const tz3 = escalationGrid(all, "2026-09-23")[2];
+    expect(tz3.tiers.map((t) => t.shift?.code)).toEqual(["SRE_TZ3", "SRE_TZ3", "SRE_TZ3"]);
+  });
+
+  it("uses the weekend windows on a weekend", () => {
+    const grid = escalationGrid(all, "2026-09-26"); // a Saturday
+    expect(grid.map((r) => r.zoneCode)).toEqual(["TZ1", "TZ2"]);
+    expect(grid[0].tiers[2].shift?.code).toBe("SRE_WE_TZ1");
+  });
+
+  it("is empty for a group with no escalation windows", () => {
+    expect(escalationGrid([REGULAR], "2026-09-23")).toEqual([]);
   });
 });

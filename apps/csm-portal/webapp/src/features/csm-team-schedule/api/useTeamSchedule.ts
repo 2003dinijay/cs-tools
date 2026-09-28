@@ -28,6 +28,7 @@ import {
 import { useBackendApi } from "@api/backend/client";
 import type {
   ScheduleAbsenceKind,
+  ScheduleTier,
   ScheduleAbsencesResponse,
   ScheduleActivity,
   ScheduleAssignment,
@@ -371,6 +372,9 @@ export interface ApplyRangePayload {
   from: string;
   to: string;
   note?: string;
+  /** L1, L2 or L3 on an escalation window that leaves the tier to the
+   *  person. Omitted takes the window's own. */
+  tier?: ScheduleTier;
 }
 
 export interface ApplyRangeResult {
@@ -480,6 +484,21 @@ export function useCreateAbsenceKind(): UseMutationResult<
   return useMutation<ScheduleAbsenceKind, Error, CreateAbsenceKindPayload>({
     mutationFn: (payload) =>
       api.post<CreateAbsenceKindPayload, ScheduleAbsenceKind>("/team-schedule/absence-kinds", payload),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.catalogue });
+    },
+  });
+}
+
+/**
+ * Delete a tag a lead added. The server refuses one of the catalogue's own,
+ * or one still in use, so a failure here is worth showing as it is.
+ */
+export function useDeleteAbsenceKind(): UseMutationResult<unknown, Error, string> {
+  const api = useBackendApi();
+  const qc = useQueryClient();
+  return useMutation<unknown, Error, string>({
+    mutationFn: (code) => api.del(`/team-schedule/absence-kinds/${encodeURIComponent(code)}`),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: QK.catalogue });
     },

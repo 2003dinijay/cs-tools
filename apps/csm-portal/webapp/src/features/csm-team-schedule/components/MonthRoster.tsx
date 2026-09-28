@@ -23,6 +23,7 @@ import type {
   ScheduleAbsenceKind,
   ScheduleAssignment,
   ScheduleShift,
+  ScheduleTier,
 } from "../types";
 import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate } from "../utils/rota";
 import { useTeamColour } from "../utils/teamColourContext";
@@ -95,6 +96,8 @@ interface MonthRosterProps {
     teamKey: string;
     rotaDate: string;
     shiftCode?: string;
+    /** The tier held on that window, where it holds one. */
+    tier?: ScheduleTier;
     absenceKindCode?: string;
     /** Which zone column was clicked, on an SRE day split across them. The
      *  picker narrows to that zone's own windows: offering TZ1's windows
@@ -119,6 +122,8 @@ interface Cell {
   /** The window this cell came from, where it came from a rota row at all.
    *  Absent for leave and allocations, which are not a window. */
   shiftCode?: string;
+  /** The tier held on that window, where it holds one. */
+  tier?: ScheduleTier;
   /** The absence kind covering this day, where one does. The picker marks it
    *  as what is held so leave reads the same as a rotation does. */
   absenceKindCode?: string;
@@ -229,13 +234,17 @@ export default function MonthRoster({
         days: Map<string, Cell>;
         /** Zoned facts, keyed `${iso}|${zoneCode}` -- one per sub-column. */
         zoned: Map<string, Cell>;
+        /** An allocation on a day that also holds a rotation turn. Kept beside
+         *  the turn rather than over it: an engineer on RnD who is also L1
+         *  for TZ1 that day is both, and the cell says both. */
+        allocs: Map<string, Cell>;
       }
     >();
 
     const seat = (userId: string, name: string, email: string, teamKey: string) => {
       let row = people.get(userId);
       if (!row) {
-        row = { name, email, teamKey, days: new Map(), zoned: new Map() };
+        row = { name, email, teamKey, days: new Map(), zoned: new Map(), allocs: new Map() };
         people.set(userId, row);
       }
       return row;
@@ -258,6 +267,7 @@ export default function MonthRoster({
         title: shift?.label ?? a.shiftCode,
         isRotation,
         shiftCode: a.shiftCode,
+        tier: a.tier,
       };
 
       // A zoned window lands in its own sub-column; anything else is a fact
@@ -272,8 +282,16 @@ export default function MonthRoster({
       if (!existing || a.tier) row.days.set(a.rotaDate, made);
     }
 
-    // Absences win: someone on leave is not on the rota that day, whatever a
-    // generated row says.
+    /** Does this engineer hold a rotation turn on this day -- anything but
+     *  regular hours -- in any zone or none? */
+    const holdsTurn = (row: { days: Map<string, Cell>; zoned: Map<string, Cell> }, iso: string) =>
+      Boolean(row.days.get(iso)?.isRotation) ||
+      [...row.zoned.entries()].some(([k, c]) => k.startsWith(`${iso}|`) && c.isRotation);
+
+    // Leave wins: someone on leave is not on the rota that day, whatever a
+    // generated row says. An allocation is different -- time given elsewhere
+    // does not stop someone holding a turn the same day -- so on a day with a
+    // turn it is kept beside it rather than over it.
     for (const ab of absences) {
       const kind = kindByCode.get(ab.kindCode);
       const row = seat(ab.engineer.userId, ab.engineer.name, ab.engineer.email, ab.teamKey);
@@ -286,7 +304,9 @@ export default function MonthRoster({
         const weekendDay = d.getDay() === 0 || d.getDay() === 6;
         if (weekendDay && kind?.bucket === "LEAVE") continue;
         if (iso >= ab.startsOn && iso <= end) {
-          row.days.set(iso, {
+          const target =
+            kind?.bucket === "ALLOCATION" && holdsTurn(row, iso) ? row.allocs : row.days;
+          target.set(iso, {
             absenceKindCode: ab.kindCode,
             absence: {
               id: ab.id,
@@ -392,6 +412,7 @@ export default function MonthRoster({
       teamKey: row.teamKey,
       rotaDate: iso,
       shiftCode: cell?.shiftCode,
+      tier: cell?.tier,
       absenceKindCode: cell?.absenceKindCode,
       absence: cell?.absence,
       zoneCode,
@@ -633,6 +654,20 @@ export default function MonthRoster({
                   const faded = (c: Cell | undefined) =>
                     rotationsOnly && c && !c.isRotation ? "muted" : "";
 
+                  const alloc = row.allocs.get(iso);
+                  /** A turn and the allocation beside it, as one thing to
+                   *  open: the picker shows the turn as held and offers to
+                   *  remove the allocation. */
+                  const withAlloc = (c: Cell | undefined): Cell | undefined =>
+                    alloc
+                      ? {
+                          ...(c ?? alloc),
+                          absenceKindCode: alloc.absenceKindCode,
+                          absence: alloc.absence,
+                          title: c ? `${c.title} · also ${alloc.title}` : alloc.title,
+                        }
+                      : c;
+
                   if (!split) {
                     const editable = canEdit(row.teamKey);
                     const touched = changedBy(row.userId, iso);
@@ -644,14 +679,19 @@ export default function MonthRoster({
                         }`}
                         title={
                           editable
-                            ? `${row.name} · ${cell ? cell.title : "nothing rostered"}${touched.note} — click to change`
+                            ? `${row.name} · ${cell ? (withAlloc(cell)?.title ?? cell.title) : "nothing rostered"}${touched.note} — click to change`
                             : cell || touched.mark
                               ? `${row.name} · ${cell ? cell.title : "nothing rostered"}${touched.note}`
                               : undefined
                         }
-                        onClick={editable ? (e) => openCell(e, row, iso, cell) : undefined}
+                        onClick={editable ? (e) => openCell(e, row, iso, withAlloc(cell)) : undefined}
                       >
-                        {cell ? (
+                        {cell && alloc ? (
+                          <span className="duo">
+                            <span className={`chip sm ${cell.token}`}>{cell.code}</span>
+                            <span className={`chip sm ${alloc.token}`}>{alloc.code}</span>
+                          </span>
+                        ) : cell ? (
                           <span className={`chip sm ${cell.token}`}>{cell.code}</span>
                         ) : (
                           <span className="none">·</span>
@@ -688,7 +728,9 @@ export default function MonthRoster({
 
                   const editable = canEdit(row.teamKey);
                   return zones.map((z, i) => {
-                    const zc = row.zoned.get(`${iso}|${z}`);
+                    // A zone the engineer holds a turn in shows the turn; the
+                    // rest of the day shows the allocation that fills it.
+                    const zc = row.zoned.get(`${iso}|${z}`) ?? alloc;
                     return (
                       <td
                         key={`${iso}|${z}`}
@@ -703,12 +745,12 @@ export default function MonthRoster({
                         } ${faded(zc)}${editable ? " editable" : ""}`}
                         title={
                           editable
-                            ? `${row.name} · ${z} · ${zc ? zc.title : "nothing rostered"} — click to change`
+                            ? `${row.name} · ${z} · ${zc ? (withAlloc(row.zoned.get(`${iso}|${z}`))?.title ?? zc.title) : "nothing rostered"} — click to change`
                             : zc
                               ? `${row.name} · ${z} · ${zc.title}`
                               : undefined
                         }
-                        onClick={editable ? (e) => openCell(e, row, iso, zc, z) : undefined}
+                        onClick={editable ? (e) => openCell(e, row, iso, withAlloc(row.zoned.get(`${iso}|${z}`)), z) : undefined}
                       >
                         {zc ? (
                           <span className={`chip sm ${zc.token}`}>{zc.code}</span>

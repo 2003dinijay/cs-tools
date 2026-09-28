@@ -906,6 +906,12 @@ func (c *CustomerEntityClient) CreateScheduleAbsenceKind(ctx context.Context, bo
 	return c.do(ctx, http.MethodPost, "/team-schedule/absence-kinds", body)
 }
 
+// DeleteScheduleAbsenceKind calls DELETE /team-schedule/absence-kinds/{code}
+// on the entity service -- a lead deleting a tag a lead added.
+func (c *CustomerEntityClient) DeleteScheduleAbsenceKind(ctx context.Context, code string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/absence-kinds/"+url.PathEscape(code), nil)
+}
+
 // GetScheduleEditMarkers calls GET /team-schedule/edit-markers on the entity
 // service -- which roster cells a person has changed, in a window.
 func (c *CustomerEntityClient) GetScheduleEditMarkers(ctx context.Context, from, to string) ([]byte, error) {

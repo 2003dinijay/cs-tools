@@ -71,6 +71,9 @@ type ScheduleRepository interface {
 	// DeleteAbsence removes one absence outright, open-ended ones included,
 	// recording it in the absence history inside the same transaction.
 	DeleteAbsence(ctx context.Context, id, actorEmail string, note *string) error
+	// DeleteAbsenceKind removes a kind a lead added. The catalogue's own kinds
+	// are refused, and so is one still in use.
+	DeleteAbsenceKind(ctx context.Context, code, actorEmail string) error
 	// CreateAbsenceKind adds a kind to the shared catalogue under the given
 	// code. A code already taken is a ConflictError.
 	CreateAbsenceKind(ctx context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, actorEmail string) (domain.ScheduleAbsenceKind, error)
@@ -252,7 +255,8 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 	}
 
 	kindRows, err := r.db.Query(ctx, `
-		SELECT id, code, short_code, label, bucket, colour_token, sort_order
+		SELECT id, code, short_code, label, bucket, colour_token, sort_order,
+		       created_by IS DISTINCT FROM 'migration'
 		FROM team_schedule_absence_kind WHERE is_active ORDER BY sort_order`)
 	if err != nil {
 		return cat, fmt.Errorf("query schedule absence kinds: %w", err)
@@ -260,7 +264,7 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 	defer kindRows.Close()
 	for kindRows.Next() {
 		var k domain.ScheduleAbsenceKind
-		if err := kindRows.Scan(&k.ID, &k.Code, &k.ShortCode, &k.Label, &k.Bucket, &k.ColourToken, &k.SortOrder); err != nil {
+		if err := kindRows.Scan(&k.ID, &k.Code, &k.ShortCode, &k.Label, &k.Bucket, &k.ColourToken, &k.SortOrder, &k.Custom); err != nil {
 			return cat, fmt.Errorf("scan schedule absence kind: %w", err)
 		}
 		cat.AbsenceKinds = append(cat.AbsenceKinds, k)
@@ -809,9 +813,22 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 	// The window's own day scope decides which days it can be worked.
 	var scope string
 	if !clearing {
+		var isEscalation bool
+		var fixedTier *string
 		if err := tx.QueryRow(ctx,
-			`SELECT day_scope::text FROM team_schedule_shift WHERE code = $1`, req.ShiftCode).Scan(&scope); err != nil {
+			`SELECT day_scope::text, is_escalation, tier::text FROM team_schedule_shift WHERE code = $1`,
+			req.ShiftCode).Scan(&scope, &isEscalation, &fixedTier); err != nil {
 			return out, &apierror.ValidationError{Msg: fmt.Sprintf("no such shift %q", req.ShiftCode)}
+		}
+		// Said here rather than left to the trigger, whose message names ids
+		// rather than the choice the lead actually made.
+		if req.Tier != nil {
+			if !isEscalation {
+				return out, &apierror.ValidationError{Msg: fmt.Sprintf("%s is not an escalation window, so it holds no tier", req.ShiftCode)}
+			}
+			if fixedTier != nil && *fixedTier != *req.Tier {
+				return out, &apierror.ValidationError{Msg: fmt.Sprintf("%s is an %s window; it cannot hold %s", req.ShiftCode, *fixedTier, *req.Tier)}
+			}
 		}
 	}
 
@@ -868,14 +885,14 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 			   shift_id, zone_id, tier, rota_date, starts_at, ends_at, is_on_call, source, note)
 			SELECT gen_random_uuid(), now(), now(), $1, $1, $2::uuid,
 			       (SELECT t.id FROM team t WHERE t.key = lower($3)), $3,
-			       s.id, s.zone_id, s.tier, $4::date,
+			       s.id, s.zone_id, COALESCE($7::team_schedule_tier_enum, s.tier), $4::date,
 			       ($4::date::timestamp + make_interval(mins => s.start_minute)) AT TIME ZONE s.authoring_time_zone,
 			       ($4::date::timestamp + make_interval(mins => s.end_minute))   AT TIME ZONE s.authoring_time_zone,
 			       s.is_on_call, 'MANUAL', $5
 			  FROM team_schedule_shift s
 			 WHERE s.code = $6
 			RETURNING id`,
-			actorEmail, req.UserID, req.TeamKey, iso, req.Note, req.ShiftCode).Scan(&id)
+			actorEmail, req.UserID, req.TeamKey, iso, req.Note, req.ShiftCode, req.Tier).Scan(&id)
 		if err != nil {
 			return out, fmt.Errorf("insert assignment for %s: %w", iso, err)
 		}
@@ -1191,6 +1208,56 @@ func (r *scheduleRepository) DeleteAbsence(ctx context.Context, id, actorEmail s
 	return nil
 }
 
+// DeleteAbsenceKind implements ScheduleRepository.
+//
+// Only a kind nothing points at goes. One still in use is refused with how
+// many absences use it, rather than retired quietly: a retired kind drops out
+// of the catalogue, and the absences marked with it would lose their label
+// and colour on every page that draws them.
+func (r *scheduleRepository) DeleteAbsenceKind(ctx context.Context, code, actorEmail string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delete absence kind: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := nameTheActor(ctx, tx, actorEmail); err != nil {
+		return err
+	}
+
+	var id string
+	var builtIn bool
+	err = tx.QueryRow(ctx, `
+		SELECT id::text, created_by IS NOT DISTINCT FROM 'migration'
+		  FROM team_schedule_absence_kind WHERE code = $1 FOR UPDATE`, code).Scan(&id, &builtIn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &apierror.NotFoundError{Msg: "no such tag"}
+	}
+	if err != nil {
+		return fmt.Errorf("read absence kind: %w", err)
+	}
+	if builtIn {
+		return &apierror.ForbiddenError{Msg: "a built-in tag cannot be deleted; only tags added from the portal can"}
+	}
+	var inUse int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM team_schedule_absence WHERE kind_id = $1::uuid`, id).Scan(&inUse); err != nil {
+		return fmt.Errorf("count absences of kind: %w", err)
+	}
+	if inUse > 0 {
+		return &apierror.ConflictError{
+			Msg: fmt.Sprintf("the tag is still used by %d leave or allocation entries; remove those first", inUse),
+		}
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM team_schedule_absence_kind WHERE id = $1::uuid`, id); err != nil {
+		return fmt.Errorf("delete absence kind: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delete absence kind: %w", err)
+	}
+	return nil
+}
+
 // CreateAbsenceKind implements ScheduleRepository.
 //
 // A new kind sorts after the existing kinds in its own bucket, so it lands at
@@ -1221,7 +1288,7 @@ func (r *scheduleRepository) CreateAbsenceKind(ctx context.Context, code string,
 		}
 	}
 
-	k := domain.ScheduleAbsenceKind{Code: code, ShortCode: req.ShortCode, Label: req.Label, Bucket: req.Bucket, ColourToken: req.ColourToken}
+	k := domain.ScheduleAbsenceKind{Code: code, ShortCode: req.ShortCode, Label: req.Label, Bucket: req.Bucket, ColourToken: req.ColourToken, Custom: true}
 	err = tx.QueryRow(ctx, `
 		INSERT INTO team_schedule_absence_kind
 		  (code, short_code, label, bucket, colour_token, sort_order, created_by, updated_by)

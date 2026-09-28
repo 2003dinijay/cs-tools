@@ -172,6 +172,15 @@ func (h *ScheduleHandler) CreateScheduleAbsenceKind(w http.ResponseWriter, r *ht
 	writeScheduleJSON(w, http.StatusCreated, kind)
 }
 
+// DeleteScheduleAbsenceKind handles DELETE /team-schedule/absence-kinds/{code}.
+func (h *ScheduleHandler) DeleteScheduleAbsenceKind(w http.ResponseWriter, r *http.Request) {
+	if err := h.svc.DeleteAbsenceKind(r.Context(), r.PathValue("code")); err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // GetScheduleActivity handles GET /team-schedule/activity.
 func (h *ScheduleHandler) GetScheduleActivity(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import type { ScheduleAssignment, ScheduleShift } from "../types";
+import type { ScheduleAssignment, ScheduleShift, ScheduleTier } from "../types";
 
 
 /**
@@ -294,4 +294,40 @@ export function standingWindowKey(shift: ScheduleShift | undefined, fallback: st
     shift.authoringTimeZone,
     shift.dayScope,
   ].join(":");
+}
+
+/** One zone's row of the escalation grid: which window each tier goes on. */
+export interface EscalationRow {
+  zoneCode: string;
+  tiers: { tier: ScheduleTier; shift?: ScheduleShift }[];
+}
+
+const ESCALATION_TIERS: ScheduleTier[] = ["L1", "L2", "L3"];
+
+/**
+ * The escalation grid a lead picks from: every zone worked on this kind of day
+ * (weekday or weekend), and L1, L2 and L3 in each.
+ *
+ * A tier goes on the zone's window that fixes that tier where there is one
+ * (TZ1's own L1 window), else on the zone's escalation window that leaves the
+ * tier to the person (SRE_TZ1, SRE_TZ3). A tier with neither is left without
+ * a window, and the picker shows it unavailable rather than guessing one.
+ */
+export function escalationGrid(shifts: ScheduleShift[], iso: string): EscalationRow[] {
+  const d = new Date(`${iso}T00:00:00`);
+  const weekend = d.getDay() === 0 || d.getDay() === 6;
+  const worked = (s: ScheduleShift) =>
+    s.dayScope === "ANY" || (s.dayScope === "WEEKEND") === weekend;
+  const esc = shifts.filter((s) => s.isEscalation && s.zoneCode && worked(s));
+  const zones = [...new Set(esc.map((s) => s.zoneCode as string))].sort();
+  return zones.map((zoneCode) => {
+    const here = esc.filter((s) => s.zoneCode === zoneCode).sort((a, b) => a.sortOrder - b.sortOrder);
+    return {
+      zoneCode,
+      tiers: ESCALATION_TIERS.map((tier) => ({
+        tier,
+        shift: here.find((s) => s.tier === tier) ?? here.find((s) => !s.tier),
+      })),
+    };
+  });
 }

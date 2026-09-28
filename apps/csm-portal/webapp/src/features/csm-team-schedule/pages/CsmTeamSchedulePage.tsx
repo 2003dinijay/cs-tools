@@ -23,6 +23,7 @@ import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import {
   useApplyAbsence,
   useCreateAbsenceKind,
+  useDeleteAbsenceKind,
   useDeleteAbsence,
   useScheduleEditMarkers,
   useApplyRange,
@@ -48,6 +49,7 @@ import type {
   ScheduleAbsencesResponse,
   ScheduleAssignment,
   ScheduleAssignmentsResponse,
+  ScheduleTier,
 } from "../types";
 import { resolveDisplayTimeZone } from "@utils/dateTime";
 import { TeamColourProvider } from "../utils/teamColour";
@@ -178,6 +180,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const applyAbsence = useApplyAbsence();
   const deleteAbsence = useDeleteAbsence();
   const createKind = useCreateAbsenceKind();
+  const deleteKind = useDeleteAbsenceKind();
 
   /** Edit mode, and the cell it has open.
    *
@@ -482,25 +485,19 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     [catalogue.data?.absenceKinds],
   );
 
-  /** The windows the picker offers for the cell that is open.
-   *
-   *  Always the group's own, and on an SRE day split across zone columns also
-   *  only that zone's: the column a lead clicked is the zone they mean, and
-   *  offering TZ1's windows from the TZ2 column invites a mis-click that is
-   *  invisible afterwards -- the cell fills in, just in the wrong lane.
-   *
-   *  Windows belonging to no zone stay on offer either way. SRE regular hours
-   *  is not a zone's to own, and a lead putting somebody back on ordinary
-   *  hours should not have to leave the column to do it. */
-  const pickerShifts = useMemo(() => {
-    const zone = picker?.zoneCode;
-    return [...shifts.values()].filter(
-      (sh) => sh.family === family && (!zone || !sh.zoneCode || sh.zoneCode === zone),
-    );
-  }, [shifts, family, picker?.zoneCode]);
+  /** The windows the picker offers for the cell that is open: every window
+   *  the group works, in every zone. The zone column a lead clicked is marked
+   *  in the picker rather than used to hide the others -- rostering L3 for
+   *  TZ2 from a TZ1 cell is an ordinary thing to want, and having to find the
+   *  TZ2 column first made it a hunt. */
+  const pickerShifts = useMemo(
+    () => [...shifts.values()].filter((sh) => sh.family === family),
+    [shifts, family],
+  );
 
-  const applyToCell = (shiftCode: string, from: string, to: string): void => {
+  const applyToCell = (shiftCode: string, from: string, to: string, tier?: ScheduleTier): void => {
     if (!picker) return;
+    const label = shifts.get(shiftCode)?.label ?? shiftCode;
     applyRange.mutate(
       {
         userId: picker.userId,
@@ -509,10 +506,10 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         from,
         to,
         note: "set from the month roster",
+        ...(tier ? { tier } : {}),
       },
       {
-        onSuccess: () =>
-          recordChange(picker, from, to, shifts.get(shiftCode)?.label ?? shiftCode),
+        onSuccess: () => recordChange(picker, from, to, tier ? `${tier} · ${label}` : label),
         onError: (err) =>
           showError("That change to the rota was not saved. Nothing has moved.", err),
         onSettled: () => setPicker(null),
@@ -587,6 +584,22 @@ export default function CsmTeamSchedulePage(): JSX.Element {
       },
     );
 
+  /** Delete a tag a lead added. The picker stays open and shows why when the
+   *  server refuses -- most often because the tag is still in use. */
+  const removeKind = (code: string): Promise<void> =>
+    deleteKind.mutateAsync(code).then(
+      () => undefined,
+      (err: unknown) => {
+        throw new Error(
+          err instanceof BackendApiError && err.status === 409
+            ? "That tag is still used on the rota. Remove those entries first."
+            : err instanceof BackendApiError && err.status === 403
+              ? "Only a team lead can delete a tag, and never a built-in one."
+              : "The tag was not deleted. Try again.",
+        );
+      },
+    );
+
   /** Clearing a cell means two different writes depending on what is on it.
    *
    *  Somebody marked away comes back by removing the absence, and the rota
@@ -596,7 +609,9 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  back to the standing window the way it always did. */
   const clearCell = (shiftCode: string, from: string, to: string): void => {
     if (!picker) return;
-    if (picker.absenceKindCode) {
+    // A cell holding a turn and an allocation beside it clears the turn;
+    // the allocation has its own Remove.
+    if (picker.absenceKindCode && !picker.shiftCode) {
       markAway("", from, to);
       return;
     }
@@ -981,6 +996,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           onMarkAway={markAway}
           onRemoveAbsence={removeAbsence}
           onCreateKind={addKind}
+          onDeleteKind={removeKind}
           onClear={clearCell}
           onClose={() => setPicker(null)}
         />

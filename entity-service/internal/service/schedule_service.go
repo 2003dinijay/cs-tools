@@ -69,6 +69,8 @@ type ScheduleService interface {
 	// CreateAbsenceKind adds a leave or allocation kind to the shared
 	// catalogue. Any team lead may; every team then sees it.
 	CreateAbsenceKind(ctx context.Context, req domain.CreateScheduleAbsenceKindRequest) (domain.ScheduleAbsenceKind, error)
+	// DeleteAbsenceKind removes a kind a lead added, once nothing uses it.
+	DeleteAbsenceKind(ctx context.Context, code string) error
 }
 
 type scheduleService struct {
@@ -350,6 +352,19 @@ func (s *scheduleService) ApplyRange(ctx context.Context, req domain.ApplySchedu
 			Msg: "userId, teamKey, from and to are all required",
 		}
 	}
+	if req.Tier != nil {
+		t := strings.ToUpper(strings.TrimSpace(*req.Tier))
+		switch {
+		case t == "":
+			req.Tier = nil
+		case t != "L1" && t != "L2" && t != "L3":
+			return domain.ApplyScheduleRangeResponse{}, &apierror.ValidationError{Msg: "tier must be L1, L2 or L3"}
+		case req.ShiftCode == "":
+			return domain.ApplyScheduleRangeResponse{}, &apierror.ValidationError{Msg: "a tier needs a shiftCode to hold it"}
+		default:
+			req.Tier = &t
+		}
+	}
 	if err := s.requireTeamLeadOver(ctx, req.TeamKey, req.UserID); err != nil {
 		return domain.ApplyScheduleRangeResponse{}, err
 	}
@@ -388,6 +403,43 @@ func (s *scheduleService) ApplyAbsence(ctx context.Context, req domain.ApplySche
 		return domain.ApplyScheduleAbsenceResponse{}, err
 	}
 	return s.repo.ApplyAbsence(ctx, req, auth.IdentityFromContext(ctx).UserEmail)
+}
+
+// DeleteAbsenceKind implements ScheduleService.
+//
+// Any team lead may, as any team lead may add one: the tags are shared, and
+// the repository refuses a built-in tag or one still in use.
+func (s *scheduleService) DeleteAbsenceKind(ctx context.Context, code string) error {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return &apierror.ValidationError{Msg: "a tag code is required"}
+	}
+	email, err := s.requireAnyTeamLead(ctx, "deleting a tag")
+	if err != nil {
+		return err
+	}
+	return s.repo.DeleteAbsenceKind(ctx, code, email)
+}
+
+// requireAnyTeamLead is the gate for the shared tag catalogue: an internal
+// caller with a user token who leads at least one team. It returns the
+// caller's email for the history.
+func (s *scheduleService) requireAnyTeamLead(ctx context.Context, doing string) (string, error) {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return "", err
+	}
+	email := auth.IdentityFromContext(ctx).UserEmail
+	if email == "" {
+		return "", &apierror.ForbiddenError{Msg: doing + " needs a user token, not a service credential"}
+	}
+	teams, err := s.repo.LeadTeamsFor(ctx, email)
+	if err != nil {
+		return "", err
+	}
+	if len(teams) == 0 {
+		return "", &apierror.ForbiddenError{Msg: "only a team lead can change the tags"}
+	}
+	return email, nil
 }
 
 // DeleteAbsence implements ScheduleService.
@@ -457,19 +509,9 @@ func (s *scheduleService) CreateAbsenceKind(ctx context.Context, req domain.Crea
 		return domain.ScheduleAbsenceKind{}, &apierror.ValidationError{Msg: "label needs at least one letter or digit"}
 	}
 
-	if err := s.requireInternalCaller(ctx); err != nil {
-		return domain.ScheduleAbsenceKind{}, err
-	}
-	email := auth.IdentityFromContext(ctx).UserEmail
-	if email == "" {
-		return domain.ScheduleAbsenceKind{}, &apierror.ForbiddenError{Msg: "adding a tag needs a user token, not a service credential"}
-	}
-	teams, err := s.repo.LeadTeamsFor(ctx, email)
+	email, err := s.requireAnyTeamLead(ctx, "adding a tag")
 	if err != nil {
 		return domain.ScheduleAbsenceKind{}, err
-	}
-	if len(teams) == 0 {
-		return domain.ScheduleAbsenceKind{}, &apierror.ForbiddenError{Msg: "only a team lead can add a tag"}
 	}
 	return s.repo.CreateAbsenceKind(ctx, code, req, email)
 }

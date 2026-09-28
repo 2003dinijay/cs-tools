@@ -70,10 +70,11 @@ ON CONFLICT (code) DO NOTHING;
 --   TZ2       13:30-21:00      12:00-21:00
 --   TZ3       21:00-06:00      21:00-06:00
 --
--- Each zone has an escalation window (SRE_TZn, tier left open: L1 or L2 is a
--- fact about the person that week), an L1 window for TZ1/TZ2, and its own
--- regular hours. TZ3's regular window matches its escalation one on purpose:
--- the window is not what separates them, the escalation rota is.
+-- Each zone has an escalation window (SRE_TZn, tier left open: L1, L2 or L3
+-- is a fact about the person that week), an L1 window for TZ1/TZ2, and its
+-- own regular hours, drawn SUP (support in normal hours). TZ3's regular
+-- window matches its escalation one on purpose: the window is not what
+-- separates them, the escalation rota is.
 INSERT INTO team_schedule_shift
     (code, label, family, zone_id, tier, day_scope, start_minute, end_minute,
      is_on_call, is_escalation, is_rotation, required_headcount,
@@ -83,9 +84,9 @@ SELECT v.code, v.label, 'SRE'::team_schedule_shift_family_enum, z.id,
        v.start_minute, v.end_minute, FALSE, v.is_escalation, v.is_rotation, NULL,
        v.short_code, v.colour_token, v.sort_order, 'migration', 'migration'
 FROM (VALUES
-    ('SRE_TZ1_REGULAR', 'TZ1 regular hours', 'TZ1', NULL, 'WEEKDAY',  360,  900, FALSE, FALSE, 'REG', 'LK',  101),
-    ('SRE_TZ2_REGULAR', 'TZ2 regular hours', 'TZ2', NULL, 'WEEKDAY',  720, 1260, FALSE, FALSE, 'REG', 'LK',  102),
-    ('SRE_TZ3_REGULAR', 'TZ3 regular hours', 'TZ3', NULL, 'WEEKDAY', 1260, 1800, FALSE, FALSE, 'REG', 'LK',  103),
+    ('SRE_TZ1_REGULAR', 'TZ1 regular hours', 'TZ1', NULL, 'WEEKDAY',  360,  900, FALSE, FALSE, 'SUP', 'LK',  101),
+    ('SRE_TZ2_REGULAR', 'TZ2 regular hours', 'TZ2', NULL, 'WEEKDAY',  720, 1260, FALSE, FALSE, 'SUP', 'LK',  102),
+    ('SRE_TZ3_REGULAR', 'TZ3 regular hours', 'TZ3', NULL, 'WEEKDAY', 1260, 1800, FALSE, FALSE, 'SUP', 'LK',  103),
     ('SRE_TZ1_L1',      'TZ1 L1 support',    'TZ1', 'L1', 'WEEKDAY',  360,  810, TRUE,  TRUE,  'L1',  'L1',  110),
     ('SRE_TZ1',         'TZ1 escalation',    'TZ1', NULL, 'WEEKDAY',  360,  810, TRUE,  TRUE,  'TZ1', 'TZ1', 120),
     ('SRE_TZ2_L1',      'TZ2 L1 support',    'TZ2', 'L1', 'WEEKDAY',  810, 1260, TRUE,  TRUE,  'L1',  'L1',  130),
@@ -114,7 +115,7 @@ VALUES
     ('MATERNITY_LEAVE',  'ML',      'Maternity leave',                   'LEAVE',      'MAT',  21, TRUE,  'migration', 'migration'),
     ('PATERNITY_LEAVE',  'PL',      'Paternity leave',                   'LEAVE',      'PAT',  22, TRUE,  'migration', 'migration'),
     ('SICK_LEAVE',       'SL',      'Sick leave',                        'LEAVE',      'AL',   25, TRUE,  'migration', 'migration'),
-    ('RND',              'RnD',     'RnD (product team)',                'ALLOCATION', 'RND',  30, TRUE,  'migration', 'migration'),
+    ('RND',              'RnD',     'RnD',                               'ALLOCATION', 'RND',  30, TRUE,  'migration', 'migration'),
     ('CUSTOMER_ONSITE',  'CUS-ON',  'Customer allocation — on site',     'ALLOCATION', 'EXT',  41, TRUE,  'migration', 'migration'),
     ('CUSTOMER_OFFSITE', 'CUS-OFF', 'Customer allocation — off site',    'ALLOCATION', 'EXT',  42, TRUE,  'migration', 'migration'),
     ('ALLO_BR',          'BR',      'Brazil rotation',                   'ALLOCATION', 'BR',   70, TRUE,  'migration', 'migration'),

@@ -21,7 +21,7 @@ import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import CellPicker, { type CellPickerTarget } from "./CellPicker";
 import type { CellAbsence } from "../types";
-import { ANNUAL_LEAVE, EVENING, LIEU_LEAVE, REGULAR, RND, WEEKEND } from "../test/fixtures";
+import { ANNUAL_LEAVE, EVENING, LIEU_LEAVE, REGULAR, RND, TZ1, TZ1_L1, TZ2, TZ3, WEEKEND } from "../test/fixtures";
 
 const ANCHOR = { top: 100, left: 100, bottom: 130, right: 144 };
 
@@ -354,5 +354,96 @@ describe("CellPicker: adding a tag", () => {
     fireEvent.change(screen.getByLabelText("Tag name"), { target: { value: "Something" } });
     fireEvent.click(screen.getByRole("button", { name: "Add tag" }));
     expect(await screen.findByText(/already exists/)).toBeInTheDocument();
+  });
+});
+
+describe("CellPicker: the SRE escalation grid", () => {
+  function renderSre(over: Partial<CellPickerTarget> = {}, onApply = vi.fn()) {
+    render(
+      <CellPicker
+        target={target({ zoneCode: "TZ1", ...over })}
+        shifts={[TZ1, TZ1_L1, TZ2, TZ3]}
+        awayKinds={[ANNUAL_LEAVE, RND]}
+        onApply={onApply}
+        onMarkAway={vi.fn()}
+        onClear={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    return onApply;
+  }
+
+  it("offers L1, L2 and L3 for every zone, not just the one clicked", () => {
+    renderSre();
+    for (const zone of ["TZ1", "TZ2", "TZ3"]) {
+      for (const tier of ["L1", "L2", "L3"]) {
+        expect(screen.getByRole("button", { name: `${tier} for ${zone}` })).toBeEnabled();
+      }
+    }
+    // The escalation windows are not listed a second time as rotations.
+    expect(screen.queryByRole("button", { name: /TZ2 escalation/ })).not.toBeInTheDocument();
+  });
+
+  it("rosters L3 for another zone on that zone's open window", () => {
+    const onApply = renderSre();
+    fireEvent.click(screen.getByRole("button", { name: "L3 for TZ2" }));
+    expect(onApply).toHaveBeenCalledWith("SRE_TZ2", "2026-09-23", "2026-09-23", "L3");
+  });
+
+  it("uses the window that fixes a tier without sending one", () => {
+    const onApply = renderSre();
+    fireEvent.click(screen.getByRole("button", { name: "L1 for TZ1" }));
+    expect(onApply).toHaveBeenCalledWith("SRE_TZ1_L1", "2026-09-23", "2026-09-23", undefined);
+  });
+
+  it("marks the tier already held", () => {
+    renderSre({ shiftCode: "SRE_TZ1", tier: "L2" });
+    expect(screen.getByRole("button", { name: "L2 for TZ1" })).toHaveClass("on");
+    expect(screen.getByRole("button", { name: "L1 for TZ1" })).not.toHaveClass("on");
+  });
+
+  it("clears the turn, not the allocation beside it", () => {
+    // A cell holding L1 and RnD: the allocation has its own Remove, so Clear
+    // is about the turn.
+    renderSre({ shiftCode: "SRE_TZ1", tier: "L1", absenceKindCode: "RND", baseShiftCode: REGULAR.code });
+    const clear = screen.getByRole("button", { name: /Clear/ });
+    expect(clear).toHaveTextContent(/back to regular hours/i);
+    expect(clear).not.toHaveTextContent("back on the rota");
+  });
+});
+
+describe("CellPicker: deleting a tag a lead added", () => {
+  const CUSTOM = { ...RND, id: "k9", code: "TRAINING", shortCode: "Trn", label: "Training", custom: true };
+
+  function renderWithDelete(onDeleteKind: (code: string) => Promise<void>) {
+    render(
+      <CellPicker
+        target={target()}
+        shifts={[REGULAR]}
+        awayKinds={[ANNUAL_LEAVE, RND, CUSTOM]}
+        onApply={vi.fn()}
+        onMarkAway={vi.fn()}
+        onClear={vi.fn()}
+        onDeleteKind={onDeleteKind}
+        onClose={vi.fn()}
+      />,
+    );
+  }
+
+  it("offers delete on a custom tag only, and asks before deleting", async () => {
+    const onDeleteKind = vi.fn(() => Promise.resolve());
+    renderWithDelete(onDeleteKind);
+    expect(screen.queryByRole("button", { name: /Delete the R&D tag/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete the Training tag" }));
+    expect(onDeleteKind).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm deleting the Training tag" }));
+    expect(onDeleteKind).toHaveBeenCalledWith("TRAINING");
+  });
+
+  it("says why a tag was not deleted", async () => {
+    renderWithDelete(() => Promise.reject(new Error("That tag is still used on the rota.")));
+    fireEvent.click(screen.getByRole("button", { name: "Delete the Training tag" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm deleting the Training tag" }));
+    expect(await screen.findByText(/still used on the rota/)).toBeInTheDocument();
   });
 });
