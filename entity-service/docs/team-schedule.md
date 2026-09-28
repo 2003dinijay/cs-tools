@@ -159,7 +159,7 @@ A lead edits their own team's rows in the Month roster's cell picker:
   catalogue: a short code, a name, and a colour from the chip colours the rota
   already draws. The code is derived from the name. A name that is already
   used, or a short code another active kind already uses, is refused. Only
-  team leads may add a tag, and every team sees it once added. The write is
+  team leads and rota admins may add a tag, and every team sees it once added. The write is
   `POST /team-schedule/absence-kinds`.
 - **Delete a tag a lead added.** A custom tag carries a delete control, and
   deleting takes two clicks because the tag is shared by every team. A
@@ -168,9 +168,9 @@ A lead edits their own team's rows in the Month roster's cell picker:
   would leave those entries with no label or colour. The write is
   `DELETE /team-schedule/absence-kinds/{code}`.
 
-All three are gated on the caller leading the team (for a removal, the team
-recorded on the absence row), and each is recorded in the absence history
-and the audit table.
+Every write above is gated on the caller leading the team, or being a rota
+admin for its group (for a removal, the team recorded on the absence row), and
+each is recorded in the absence history and the audit table.
 
 ## 3. `team.key` — the one shared-table change (0152)
 

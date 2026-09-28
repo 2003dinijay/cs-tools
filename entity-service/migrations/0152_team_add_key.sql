@@ -29,16 +29,37 @@
 --     the proposed row is checked before the conflict is resolved.
 --   * An existing row's key is never rewritten, so a rename in ServiceNow
 --     does not move a team's rota history out from under it.
+--   * A filled key always fits and never collides. team.name allows 255
+--     characters and key 64, and a new team can share a name, ignoring
+--     case, with one that already has a key; either would otherwise fail
+--     the sync's insert on the length or on team_key_unique. The name is
+--     cut to fit, and on a clash the team's own id is appended.
 --
 -- Safe to re-run: every step is guarded, and the backfill only fills blanks.
 
 ALTER TABLE team ADD COLUMN IF NOT EXISTS key VARCHAR(64);
 
 CREATE OR REPLACE FUNCTION team_fill_key() RETURNS TRIGGER AS $$
+DECLARE
+    base      TEXT := lower(NEW.name);
+    candidate TEXT := left(lower(NEW.name), 64);
+    n         INT  := 0;
 BEGIN
-    IF NEW.key IS NULL THEN
-        NEW.key := lower(NEW.name);
+    IF NEW.key IS NOT NULL THEN
+        RETURN NEW;
     END IF;
+    -- Another team's key only: an upsert of this very team (same id) finds
+    -- its own row, and that is no clash -- the conflict resolves to an
+    -- UPDATE, which leaves key alone.
+    WHILE EXISTS (SELECT 1 FROM team WHERE key = candidate AND id IS DISTINCT FROM NEW.id) LOOP
+        n := n + 1;
+        -- 36 for the id, 1 for its dash; a counter only from the second try.
+        candidate := CASE WHEN n = 1
+            THEN left(base, 64 - 37) || '-' || NEW.id::text
+            ELSE left(base, 64 - 38 - length(n::text)) || '-' || NEW.id::text || '-' || n
+        END;
+    END LOOP;
+    NEW.key := candidate;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -56,7 +77,7 @@ DO $$
 DECLARE clash TEXT;
 BEGIN
     SELECT string_agg(k, ', ') INTO clash FROM (
-        SELECT COALESCE(key, lower(name)) AS k
+        SELECT COALESCE(key, left(lower(name), 64)) AS k
           FROM team
          GROUP BY 1
         HAVING count(*) > 1
@@ -68,7 +89,7 @@ BEGIN
     END IF;
 END $$;
 
-UPDATE team SET key = lower(name) WHERE key IS NULL;
+UPDATE team SET key = left(lower(name), 64) WHERE key IS NULL;
 
 ALTER TABLE team ALTER COLUMN key SET NOT NULL;
 

@@ -197,7 +197,7 @@ ON CONFLICT (id) DO NOTHING;
 
 -- The non-lead role is asked for rather than named.
 --
--- team_member.role's vocabulary is being changed by work in flight: 000029
+-- team_member.role's vocabulary is being changed by work in flight: 0034
 -- constrains it to ('member', 'lead'), and the escalation roster branch
 -- replaces 'member' with a rung set of its own ('engineer', 'sub_lead',
 -- 'lead', 'cre_head', 'cs_head'). Naming either one fails outright against
@@ -212,7 +212,12 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, role)
 SELECT md5('seed-tm-'||e.team_key||'-'||e.seq)::uuid, now(), now(), 'seed', 'seed',
        md5('seed-team-'||e.team_key)::uuid, e.id,
-       CASE WHEN e.is_lead THEN 'lead' ELSE 'engineer' END
+       CASE WHEN e.is_lead THEN 'lead' ELSE
+            COALESCE((SELECT CASE WHEN pg_get_constraintdef(c.oid) LIKE '%''member''%'
+                                  THEN 'member' ELSE 'engineer' END
+                        FROM pg_constraint c WHERE c.conname = 'team_member_role_check'),
+                     'member')
+       END
 FROM _eng e
 ON CONFLICT (id) DO NOTHING;
 

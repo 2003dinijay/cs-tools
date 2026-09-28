@@ -1028,7 +1028,15 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           key={`${picker.userId}|${picker.rotaDate}|${picker.zoneCode ?? ""}`}
           target={picker}
           shifts={pickerShifts}
-          busy={applyRange.isPending || applyAbsence.isPending || deleteAbsence.isPending}
+          // A tag being added or deleted counts too: the shared catalogue is
+          // mid-change, so a second click would send a second request.
+          busy={
+            applyRange.isPending ||
+            applyAbsence.isPending ||
+            deleteAbsence.isPending ||
+            createKind.isPending ||
+            deleteKind.isPending
+          }
           awayKinds={awayKinds}
           allKinds={catalogue.data?.absenceKinds}
           onApply={applyToCell}
