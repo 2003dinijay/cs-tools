@@ -2001,6 +2001,63 @@ func TestCaseService_CreateCase_AddsAccountDefaultWatchers(t *testing.T) {
 	}
 }
 
+// TestCaseService_CreateCase_MergesRequestedWatchersWithAccountDefaults
+// proves the fix for the "customer's own watch-list picks were silently
+// discarded from Postgres on create" gap: req.WatchList must end up merged
+// with the account's four stakeholders, not overwritten by them.
+func TestCaseService_CreateCase_MergesRequestedWatchersWithAccountDefaults(t *testing.T) {
+	const caseID = "44444444-4444-4444-4444-444444444444"
+	const projectID = "proj-1"
+	stakeholderIDs := []string{"csm-id", "tow-id"}
+	requestedIDs := []string{"customer-pick-1", "csm-id"} // "csm-id" overlaps on purpose
+
+	mirror := &stubMirrorCaseService{
+		createCase: func(_ context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+			return domain.CreateCaseResponse{
+				Message: "Case created successfully.",
+				Case:    domain.CreateCaseDetails{ID: caseID, InternalID: "WSO2-CS-2", Number: "CS0023002", CreatedBy: "jane.doe@example.com", State: "Open"},
+			}, nil
+		},
+	}
+	var setWatchListUserIDs []string
+	repo := &stubCaseRepo{
+		createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
+			respState := domain.CaseStateOpen
+			return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy, ProjectID: projectID, State: &respState}, nil
+		},
+		accountDefaultWatcherIDs: func(context.Context, string) ([]string, error) { return stakeholderIDs, nil },
+		setCaseWatchList: func(_ context.Context, _ string, userIDs []string, _ string) ([]domain.WatchListUser, time.Time, error) {
+			setWatchListUserIDs = userIDs
+			return nil, time.Time{}, nil
+		},
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			severity := domain.CaseSeverityHigh
+			return domain.CaseView{
+				ID: caseID, ProjectDetails: &domain.EntityRef{ID: projectID},
+				WatchList: []domain.WatchListUser{{Email: "watcher@example.com"}}, Severity: &severity,
+			}, nil
+		},
+	}
+	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+	svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, &mockEventPublisher{}, alwaysUnrestrictedAccess{}, nil, dispatcher, mirror)
+
+	req := validCreateCaseRequest()
+	req.WatchList = requestedIDs
+	if _, err := svc.CreateCase(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{"csm-id", "tow-id", "customer-pick-1"} // defaults first, then new requested ids, deduplicated
+	if len(setWatchListUserIDs) != len(want) {
+		t.Fatalf("SetCaseWatchList userIDs = %v, want %v", setWatchListUserIDs, want)
+	}
+	for i, id := range want {
+		if setWatchListUserIDs[i] != id {
+			t.Errorf("SetCaseWatchList userIDs[%d] = %q, want %q", i, setWatchListUserIDs[i], id)
+		}
+	}
+}
+
 // TestCaseService_CreateCase_NoAccountDefaultWatchersIsNotAnError proves the
 // other half: a project with no linked account, or one whose account has
 // none of the four stakeholder roles set, is a normal state
@@ -3346,6 +3403,68 @@ func TestCaseService_UpdateCase_WatchList_AcceptsProjectMembers(t *testing.T) {
 	req := domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &userIDs}
 	if _, err := svc.UpdateCase(ctx, req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestCaseService_UpdateCase_WatchList_KeepsAccountDefaultsEvenWhenOmitted is
+// the regression test for the "4 mandatory stakeholders can never be
+// removed" rule: a caller submitting a watch list that leaves out one of the
+// account's four named stakeholders must still end up with that stakeholder
+// present in what actually gets written -- and that stakeholder must never
+// be checked against project_contact (it's a WSO2-internal role, not a
+// customer-side contact; see validateWatchListProjectMembership's own doc
+// comment).
+func TestCaseService_UpdateCase_WatchList_KeepsAccountDefaultsEvenWhenOmitted(t *testing.T) {
+	const projectID = "6fa0b42d-1bfa-a694-a002-c9d3604bcb77"
+	const submittedID = "11111111-1111-1111-1111-111111111111"
+	const stakeholderID = "csm-id-not-submitted"
+	userIDs := []string{submittedID}
+
+	var setWatchListUserIDs []string
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ProjectDetails: &domain.EntityRef{ID: projectID}}, nil
+		},
+		accountDefaultWatcherIDs: func(_ context.Context, gotProjectID string) ([]string, error) {
+			if gotProjectID != projectID {
+				t.Errorf("AccountDefaultWatcherIDs projectID = %q, want %q", gotProjectID, projectID)
+			}
+			return []string{stakeholderID}, nil
+		},
+		setCaseWatchList: func(_ context.Context, _ string, ids []string, _ string) ([]domain.WatchListUser, time.Time, error) {
+			setWatchListUserIDs = ids
+			return nil, time.Now(), nil
+		},
+	}
+	var checkedIDs []string
+	contactRepo := &stubProjectContactRepo{
+		getProjectContactByUserID: func(_ context.Context, _ string, userID, _ string) (repository.ProjectContactRow, error) {
+			checkedIDs = append(checkedIDs, userID)
+			return repository.ProjectContactRow{Email: "member@example.com"}, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{getUserByEmail: func(context.Context, string) (domain.User, error) {
+		return domain.User{ID: testDeploymentUUID, Email: "jane.doe@example.com"}, nil
+	}}, nil, alwaysUnrestrictedAccess{}, contactRepo)
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	req := domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &userIDs}
+	if _, err := svc.UpdateCase(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{submittedID, stakeholderID}
+	if len(setWatchListUserIDs) != len(want) {
+		t.Fatalf("SetCaseWatchList userIDs = %v, want %v (submitted + mandatory stakeholder)", setWatchListUserIDs, want)
+	}
+	for i, id := range want {
+		if setWatchListUserIDs[i] != id {
+			t.Errorf("SetCaseWatchList userIDs[%d] = %q, want %q", i, setWatchListUserIDs[i], id)
+		}
+	}
+
+	if len(checkedIDs) != 1 || checkedIDs[0] != submittedID {
+		t.Errorf("project-membership check ran against %v, want only the caller-submitted %q (the mandatory stakeholder must be exempt)", checkedIDs, submittedID)
 	}
 }
 

@@ -2915,6 +2915,21 @@ type WatchListUser struct {
 	UserName string `json:"userName"`
 	Name     string `json:"name,omitempty"`
 	Email    string `json:"email,omitempty"`
+	// Locked is true when this watcher is currently one of the case's
+	// project's account's four named stakeholders (customer success manager,
+	// technical owner, secondary technical owner, account manager --
+	// CaseRepository.AccountDefaultWatcherIDs). A caller cannot remove a
+	// locked watcher via UpdateCase's WatchList field -- see
+	// caseService.updateCaseWatchList's own doc comment -- so a UI should
+	// disable the remove control for these specifically, rather than let the
+	// removal silently fail to stick. Computed live from the account's
+	// current stakeholder columns, not stamped at the time the watcher was
+	// added, so it tracks a later stakeholder change (e.g. a reassigned CSM)
+	// automatically rather than going stale. Postgres-data-source only --
+	// this concept has no ServiceNow-side equivalent, so a ServiceNow-backed
+	// watcher is always Locked: false, which is accurate for that data
+	// source (nothing there enforces this rule).
+	Locked bool `json:"locked"`
 	// User is the canonical user reference for this watcher, a sibling of the
 	// flat id/userName/name/email fields. Its id is always null: a watch-list
 	// entry is not guaranteed to point at a user record (the list collapses

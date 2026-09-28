@@ -579,12 +579,14 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 		return domain.CreateCaseResponse{}, err
 	}
 
-	// Every case gets its account's four named stakeholders as watchers by
-	// default -- a pure Postgres lookup, independent of req.WatchList and of
-	// ServiceNow entirely (no forwarding, no email/UUID resolution). Must run
-	// before the publish call below: it builds its own Recipients from a
-	// GetCaseByID call, which reads watchers from work_item_watcher.
-	s.addAccountDefaultWatchers(ctx, c.ID, c.ProjectID, c.CreatedBy)
+	// Every case gets its account's four named stakeholders as watchers,
+	// merged with whatever the caller's own req.WatchList already asked for
+	// -- a pure Postgres lookup, independent of ServiceNow entirely (no
+	// forwarding, no email/UUID resolution: entity-service's own WatchList
+	// contract is already user ids). Must run before the publish call below:
+	// it builds its own Recipients from a GetCaseByID call, which reads
+	// watchers from work_item_watcher.
+	s.addAccountDefaultWatchers(ctx, c.ID, c.ProjectID, c.CreatedBy, req.WatchList)
 
 	// Only now — Postgres has confirmed the row this mode's reads actually
 	// depend on — is it safe to publish. See publishCaseCreatedEvent's doc
@@ -611,31 +613,61 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	}, nil
 }
 
+// mergeUnique returns the union of a and b, deduplicated, preserving the
+// order each id first appears in (every id from a, in order, then any id
+// from b not already seen).
+func mergeUnique(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, ids := range [][]string{a, b} {
+		for _, id := range ids {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // addAccountDefaultWatchers adds a just-created case's account's four named
 // stakeholders (customer_success_manager_id, technical_owner_id,
 // secondary_technical_owner_id, account_manager_id -- migration 000008) as
-// its initial watchers -- see createCaseSNFirst's own call site comment for
-// why this exists. A plain Postgres lookup keyed by projectID, independent
-// of req.WatchList and of ServiceNow entirely: no forwarding, no email/UUID
-// resolution -- the four columns are already user ids.
+// watchers, merged with requestedWatcherIDs (the caller's own
+// CreateCaseRequest.WatchList) -- see createCaseSNFirst's own call site
+// comment for why this exists, and updateCaseWatchList's own doc comment for
+// the matching update-side rule: the four stakeholders can never be removed
+// by a caller, on either path. A plain Postgres lookup keyed by projectID,
+// independent of ServiceNow entirely: no forwarding, no email/UUID
+// resolution needed here -- entity-service's own WatchList contract is
+// already user ids on both create and update, unlike the portal-facing BFFs
+// that may collect emails and must resolve them before this is ever reached.
 //
 // Best-effort: ServiceNow already has the case by the time this runs (see
 // createCaseSNFirst's own "no orphan gets created" vs. "real drift"
 // distinction), so a failure here must not fail the create -- logged rather
 // than returned, the same posture publishCaseCreatedEvent's own doc comment
-// documents for the sibling publish step right after this one. A project
-// with no linked account, or none of the four roles set, is a normal state
-// (AccountDefaultWatcherIDs returns an empty slice), not an error.
-func (s *caseService) addAccountDefaultWatchers(ctx context.Context, caseID, projectID, callerEmail string) {
-	userIDs, err := s.repo.AccountDefaultWatcherIDs(ctx, projectID)
+// documents for the sibling publish step right after this one. A bad id in
+// requestedWatcherIDs surfaces the same way: SetCaseWatchList's own
+// foreign-key-violation handling turns it into a ValidationError, which this
+// function only logs, so the case still ends up watched by the four
+// stakeholders even if the caller's own list didn't stick. A project with no
+// linked account, or an account with none of the four roles set, is a normal
+// state (AccountDefaultWatcherIDs returns an empty slice) -- the case still
+// ends up watched by whichever of requestedWatcherIDs were actually asked
+// for, not an error either way.
+func (s *caseService) addAccountDefaultWatchers(ctx context.Context, caseID, projectID, callerEmail string, requestedWatcherIDs []string) {
+	defaultIDs, err := s.repo.AccountDefaultWatcherIDs(ctx, projectID)
 	if err != nil {
 		slog.ErrorContext(ctx, "create case: resolving account default watchers failed", "caseId", caseID, "error", err)
 		return
 	}
-	if len(userIDs) == 0 {
+	watcherIDs := mergeUnique(defaultIDs, requestedWatcherIDs)
+	if len(watcherIDs) == 0 {
 		return
 	}
-	if _, _, err := s.repo.SetCaseWatchList(ctx, caseID, userIDs, callerEmail); err != nil {
+	if _, _, err := s.repo.SetCaseWatchList(ctx, caseID, watcherIDs, callerEmail); err != nil {
 		slog.ErrorContext(ctx, "create case: adding account default watchers failed", "caseId", caseID, "error", err)
 	}
 }
@@ -1107,19 +1139,23 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 // live: 2856 of 2860 real assignees are not project contacts on their case's
 // project).
 //
-// A case with no project linked (ProjectDetails is nil — a documented, real
-// state, not an error) has nothing to validate watchers against, so the
+// Takes the case's already-fetched CaseView rather than fetching it again --
+// updateCaseWatchList needs the same fetch for the mandatory-stakeholder
+// merge right after this call, and a case's project can't change between the
+// two. A case with no project linked (ProjectDetails is nil — a documented,
+// real state, not an error) has nothing to validate watchers against, so the
 // check is skipped rather than rejecting every watch-list update on such a
-// case. Fetches the case via GetCaseByID rather than a lighter project-id-only
-// query, matching updateCaseAssignee's own existing enrichment call in this
-// file.
-func (s *caseService) validateWatchListProjectMembership(ctx context.Context, caseID string, userIDs []string) error {
+// case.
+//
+// Deliberately never applied to the account's four named stakeholders that
+// updateCaseWatchList merges in afterward: those are WSO2-internal roles
+// (customer success manager, technical owner, ...), not customer-side
+// project contacts, so validating them here would reject the very watchers
+// this system itself always adds, on most real accounts. Only userIDs -- the
+// caller's own requested subset, before that merge -- is ever checked.
+func (s *caseService) validateWatchListProjectMembership(ctx context.Context, cv domain.CaseView, userIDs []string) error {
 	if len(userIDs) == 0 {
 		return nil
-	}
-	cv, err := s.GetCaseByID(ctx, caseID)
-	if err != nil {
-		return err
 	}
 	if cv.ProjectDetails == nil {
 		return nil
@@ -1139,16 +1175,45 @@ func (s *caseService) validateWatchListProjectMembership(ctx context.Context, ca
 // updateCaseWatchList implements UpdateCase's WatchList branch: replacing
 // the case's watch list wholesale with req's user ids via
 // CaseRepository.SetCaseWatchList. An explicitly empty (non-nil) WatchList
-// clears the watch list -- validateUUIDs on an empty slice is a no-op, so
-// that reaches the repository as an empty replacement, not an error.
+// clears every *caller-removable* watcher -- validateUUIDs on an empty slice
+// is a no-op, so that reaches this function as an empty req userIDs -- but
+// never clears the case below its account's four named stakeholders (see
+// addAccountDefaultWatchers' own doc comment for why the same rule exists on
+// create): those are merged back in unconditionally right before the write,
+// so a caller can never remove them through this endpoint, whether or not
+// their own request even mentioned them. This is a silent floor, not a
+// rejection -- a request that tries to drop one of the four still succeeds,
+// it just doesn't take for that specific id (see the answered design
+// question this shipped against: removal is blocked at the UI level, not
+// with a 400 here).
 func (s *caseService) updateCaseWatchList(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
 	userIDs := *req.WatchList
 	if err := validateUUIDs("watchList", userIDs); err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
 
-	if err := s.validateWatchListProjectMembership(ctx, req.ID, userIDs); err != nil {
+	cv, err := s.GetCaseByID(ctx, req.ID)
+	if err != nil {
 		return domain.UpdateCaseResponse{}, err
+	}
+
+	if err := s.validateWatchListProjectMembership(ctx, cv, userIDs); err != nil {
+		return domain.UpdateCaseResponse{}, err
+	}
+
+	finalIDs := userIDs
+	if cv.ProjectDetails != nil {
+		defaultIDs, err := s.repo.AccountDefaultWatcherIDs(ctx, cv.ProjectDetails.ID)
+		if err != nil {
+			// Best-effort, same posture as addAccountDefaultWatchers' own
+			// create-time equivalent: a lookup hiccup must not block a
+			// watch-list write the caller is otherwise entitled to make, it
+			// just means the mandatory-stakeholder floor isn't enforced on
+			// this particular call.
+			slog.ErrorContext(ctx, "update case watch list: resolving account default watchers failed", "caseId", req.ID, "error", err)
+		} else {
+			finalIDs = mergeUnique(userIDs, defaultIDs)
+		}
 	}
 
 	actor, err := s.resolveActor(ctx)
@@ -1156,7 +1221,7 @@ func (s *caseService) updateCaseWatchList(ctx context.Context, req domain.Update
 		return domain.UpdateCaseResponse{}, err
 	}
 
-	watchers, updatedOn, err := s.repo.SetCaseWatchList(ctx, req.ID, userIDs, actor.Email)
+	watchers, updatedOn, err := s.repo.SetCaseWatchList(ctx, req.ID, finalIDs, actor.Email)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
