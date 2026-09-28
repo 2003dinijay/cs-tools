@@ -78,6 +78,10 @@ type MembershipWriteDeps struct {
 	// is then logged rather than recorded.
 	Failures EventPublishFailureService
 	Access   AccessService
+	// Invitations checks an invitation before anything is written. May be
+	// nil, in which case invitations are not checked beyond the request's
+	// own shape.
+	Invitations InvitationValidator
 }
 
 type projectMembershipWriteService struct {
@@ -164,6 +168,13 @@ func (s *projectMembershipWriteService) Invite(ctx context.Context, projectID st
 			// is a distinct Salesforce state and a distinct email.
 			state = domain.MembershipStateReInvited
 		}
+		if s.deps.Invitations != nil {
+			// Before any Salesforce write: a refused invitation must leave
+			// both systems exactly as they were.
+			if err := s.deps.Invitations.Validate(ctx, wc.Target, email, req.InviterEmail); err != nil {
+				return domain.SalesforceMembershipUpsert{}, domain.UpsertOnboardingStepRequest{}, err
+			}
+		}
 		in, rec, err := s.writeSalesforce(ctx, wc, salesforceWriteIntent{
 			Email:               email,
 			FirstName:           strings.TrimSpace(req.FirstName),
@@ -200,6 +211,119 @@ func (s *projectMembershipWriteService) Invite(ctx context.Context, projectID st
 	// what keeps one invitation to one email.
 	s.publishInvited(ctx, membership, written, false)
 	return membership, nil
+}
+
+// msgAlreadyProjectContact is the refusal for inviting somebody who is
+// already an active contact on the project.
+const msgAlreadyProjectContact = "this address is already a contact on the project; change their roles instead"
+
+// ValidateInvitation implements ProjectMembershipWriteService.
+//
+// It makes Invite's decisions and none of its writes: the same caller gate,
+// the same input checks, the same "already an active contact" rule and the
+// same InvitationValidator, run against the project and membership read
+// outside any transaction. No Salesforce record is created or changed, no
+// row is written and no event is published, so a portal can ask it before
+// every invitation without side effects.
+//
+// The answer can go stale between this call and the invitation (somebody
+// else may invite the same person, or an account's domain list may change);
+// Invite checks everything again, so this is advice to the person inviting,
+// never a guarantee.
+func (s *projectMembershipWriteService) ValidateInvitation(ctx context.Context, projectID string, req domain.ValidateProjectMembershipRequest) (domain.ProjectMembershipValidation, error) {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return domain.ProjectMembershipValidation{}, err
+	}
+	if err := validateUUIDs("id", []string{projectID}); err != nil {
+		return domain.ProjectMembershipValidation{}, err
+	}
+	email, err := normalizeMembershipEmail(req.Email)
+	if err != nil {
+		return domain.ProjectMembershipValidation{}, err
+	}
+
+	wc, err := s.deps.Memberships.ResolveWriteContext(ctx, projectID, email)
+	if err != nil {
+		return domain.ProjectMembershipValidation{}, err
+	}
+	var result domain.ProjectMembershipValidation
+	if wc.Existing != nil {
+		if !strings.EqualFold(wc.Existing.State, domain.MembershipStateDeactivated) {
+			return refusedInvitation(&apierror.ConflictError{Msg: msgAlreadyProjectContact})
+		}
+		result.ExistingMembershipState = wc.Existing.State
+	}
+	if s.deps.Invitations != nil {
+		if err := s.deps.Invitations.Validate(ctx, wc.Target, email, req.InviterEmail); err != nil {
+			return refusedInvitation(err)
+		}
+	}
+
+	contact, found, err := s.invitationContact(ctx, wc, email)
+	if err != nil {
+		return domain.ProjectMembershipValidation{}, err
+	}
+	if found {
+		result.ExistingContact = validatedInvitee(contact)
+	}
+	result.Valid = true
+	return result, nil
+}
+
+// invitationContact finds the Salesforce contact an invitation would adopt,
+// so the caller can show the person inviting the name Salesforce already
+// holds. Like writeSalesforce, a membership that already carries a contact
+// id is resolved by that id, and by address when the id is stale or absent.
+// The validator has already refused an address with more than one contact.
+func (s *projectMembershipWriteService) invitationContact(ctx context.Context, wc repository.MembershipWriteContext, email string) (salesentity.Contact, bool, error) {
+	if wc.Existing != nil && strings.TrimSpace(wc.Existing.ContactSfID) != "" {
+		c, err := s.deps.SalesEntity.GetContact(ctx, wc.Existing.ContactSfID)
+		if err == nil {
+			return c, true, nil
+		}
+		slog.WarnContext(ctx, "invitation dry run: linked contact not readable by id, searching by address",
+			"contactSfId", wc.Existing.ContactSfID, "err", err)
+	}
+	return s.deps.SalesEntity.SearchContactByEmail(ctx, email)
+}
+
+// refusedInvitation turns an invitation check's refusal into a dry-run
+// answer. Only the three refusals an invitation can meet become an answer;
+// anything else (Salesforce or the database being unavailable, say) is the
+// check failing, and stays an error.
+func refusedInvitation(err error) (domain.ProjectMembershipValidation, error) {
+	var (
+		conflict  *apierror.ConflictError
+		forbidden *apierror.ForbiddenError
+		invalid   *apierror.ValidationError
+	)
+	switch {
+	case errors.As(err, &conflict):
+		return domain.ProjectMembershipValidation{Reason: domain.MembershipValidationConflict, Message: conflict.Msg}, nil
+	case errors.As(err, &forbidden):
+		return domain.ProjectMembershipValidation{Reason: domain.MembershipValidationForbidden, Message: forbidden.Msg}, nil
+	case errors.As(err, &invalid):
+		return domain.ProjectMembershipValidation{Reason: domain.MembershipValidationInvalid, Message: invalid.Msg}, nil
+	default:
+		return domain.ProjectMembershipValidation{}, err
+	}
+}
+
+func validatedInvitee(c salesentity.Contact) *domain.ValidatedInvitee {
+	out := &domain.ValidatedInvitee{
+		ContactSfID:         derefString(c.ID),
+		Email:               derefString(c.Email),
+		FirstName:           derefString(c.FirstName),
+		LastName:            derefString(c.LastName),
+		IsCsAdmin:           c.IsCsAdmin != nil && *c.IsCsAdmin,
+		IsCsIntegrationUser: c.IsCsIntegrationUser != nil && *c.IsCsIntegrationUser,
+	}
+	if c.Account != nil {
+		out.AccountSfID = c.Account.ID
+		out.AccountClassification = c.Account.Classification
+		out.IsPartnerAccount = c.Account.IsPartner
+	}
+	return out
 }
 
 // UpdateRoles implements ProjectMembershipWriteService.

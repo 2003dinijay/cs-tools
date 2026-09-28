@@ -986,6 +986,7 @@ by the ingest's duplicate guard.
 | Endpoint | Body | Success | Errors |
 |---|---|---|---|
 | `POST /projects/{id}/contacts` | `{email, firstName?, lastName?, roles: []}` | **201** + `ProjectMembership` | 400 bad address / unknown role / no roles, 403, 404 unknown project or no Salesforce account, 409 already an active contact, 503 |
+| `POST /projects/{id}/contacts/validate` | `{email, inviterEmail?}` | **200** + `ProjectMembershipValidation` (`valid:false` + `reason` CONFLICT/FORBIDDEN/INVALID + `message` for a refusal) | 400 bad address, 403 not internal, 404, 503 |
 | `PATCH /projects/{id}/contacts/{email}` | `{roles: []}` | **200** + `ProjectMembership` | 400, 403, 404, 503 |
 | `DELETE /projects/{id}/contacts/{email}` | — | **204** | 400, 403, 404, 503 |
 | `POST /projects/{id}/contacts/{email}/resend-invitation` | — | **204** | 400, 403, 404, 409 not INVITED, **429** inside the cooldown, 503 |
@@ -1001,6 +1002,14 @@ by the ingest's duplicate guard.
   not about re-inviting somebody who is already there. At least one role is
   required: an invitation granting nothing would provision an identity that
   sees an empty portal.
+- **Validate** is Invite's dry run: the same caller gate, the same "already
+  an active contact" rule and the same `InvitationValidator`, run against the
+  project and membership read outside any transaction
+  (`ResolveWriteContext`, no advisory lock). Nothing is written and nothing
+  is published. A refusal is a 200 with `valid:false` so the caller can tell
+  it apart from a failed check; a valid answer carries the Salesforce contact
+  the invitation would adopt, if any. The Customer Portal calls it before
+  showing the invite form.
 - **Change roles** replaces the Salesforce `Role__c` picklist and, with it,
   the membership's project groups. The state is untouched (the PATCH sends
   only `role`). An empty list is accepted and removes every group.
