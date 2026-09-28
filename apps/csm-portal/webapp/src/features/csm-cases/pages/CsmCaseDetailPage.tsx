@@ -621,6 +621,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const {
     data: caseProject,
     isLoading: isCaseProjectLoading,
+    isError: isCaseProjectError,
     refetch: refetchCaseProject,
     isFetching: isFetchingCaseProject,
   } = useGetProject(data?.projectId);
@@ -3296,6 +3297,13 @@ export default function CsmCaseDetailPage(): JSX.Element {
           defaultTitle={c.subject}
           defaultDescription={c.description}
           showRepoField={isCloudSupportSubscription(caseProject?.subscriptionType)}
+          productName={c.product}
+          onboardingInProgress={caseProject?.onboardingStatus === "In-Progress"}
+          projectStatusPending={Boolean(c.projectId) && caseProject === undefined && !isCaseProjectError}
+          projectStatusFailed={Boolean(c.projectId) && isCaseProjectError}
+          onRetryProjectStatus={() => {
+            void refetchCaseProject();
+          }}
           onClose={() => {
             setGithubIssueOpen(false);
             setGithubIssueError(null);
@@ -3315,6 +3323,23 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   // done reading the confirmation.
                   setActiveTab("activities");
                   setGithubIssueResult(res);
+                  const tagLabels = ["s_dp"];
+                  if (payload.regression) tagLabels.push("s_rg");
+                  if (payload.reason === "migration") tagLabels.push("migration");
+                  // Each mutateAsync promise is handled on its own. Per-call
+                  // callbacks on mutate are replaced by the next call.
+                  void Promise.all(
+                    tagLabels.map(async (label) => {
+                      try {
+                        await addTag.mutateAsync(label);
+                      } catch (err) {
+                        showError(
+                          `The GitHub issue was created, but the case tag "${label}" could not be added.`,
+                          err,
+                        );
+                      }
+                    }),
+                  );
                 },
                 onError: (err) => {
                   // Surface the backend's own message on 4xx (invalid state,
