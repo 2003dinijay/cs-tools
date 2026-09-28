@@ -478,9 +478,14 @@ func (s *snUserService) GetUser(ctx context.Context, id string) (domain.SNUserDe
 	// The enrichments are best-effort: each degrades to empty on upstream failure rather
 	// than failing the whole profile, matching how the caller's own team is resolved on
 	// GET /users/me.
-	detail.Groups = s.resolveUserGroups(ctx, token, sysID)
+	//
+	// Group membership is internal-only: the upstream ACL rejects this lookup for external
+	// (customer) users, so skip the call entirely rather than making a request known to fail.
 	if detail.UserType == domain.UserTypeExternal {
+		detail.Groups = []domain.UserGroupRef{}
 		detail.ProjectAccess = s.resolveProjectAccess(ctx, token, u.Email)
+	} else {
+		detail.Groups = s.resolveUserGroups(ctx, token, sysID)
 	}
 
 	return detail, nil
@@ -550,6 +555,10 @@ func (s *snUserService) resolveProjectAccess(
 	return access
 }
 
+// GetMe is not gated the way GetUser is: the /users/me response carries no user-type field
+// to branch on (see snUserMeResponse above), and GET /users/me is only ever called for the
+// caller's own identity, which the caller already knows. Adding a lookup solely to determine
+// gating here would defeat the point of skipping an upstream call.
 func (s *snUserService) GetMe(ctx context.Context) (domain.GetUserMeResponse, error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 
