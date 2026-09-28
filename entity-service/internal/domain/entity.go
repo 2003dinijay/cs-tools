@@ -5476,9 +5476,8 @@ type IncidentView struct {
 	ResolvedOn      *string `json:"resolvedOn"`
 	IncidentReport  *string `json:"incidentReport"`
 	// Description is ServiceNow's incident.description field (separate from Subject, which
-	// maps to the shorter short_description). Not yet synced from ServiceNow as of this
-	// column's introduction -- see csm-sync-service's incident_details.yaml -- so this is
-	// always nil until that companion change lands.
+	// maps to the shorter short_description), read from work_item.description -- the same
+	// column every other work_item type already uses for its own long-form description.
 	Description *string `json:"description"`
 	// SpecialistHandoff is the derived summary of a specialist-group handoff, null when the
 	// incident has never been handed off. Nothing is persisted for it: the backing data

@@ -439,7 +439,7 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 		       caused_by_cr.id, caused_by_wi.number,
 		       inc.resolution_code::TEXT, inc.close_notes,
 		       rb.id, COALESCE(rb.name, NULLIF(TRIM(CONCAT_WS(' ', rb.first_name, rb.last_name)), '')),
-		       inc.resolved_on, inc.incident_report, inc.description,
+		       inc.resolved_on, inc.incident_report, wi.description,
 		       wi.created_on, wi.created_by, wi.updated_on, wi.updated_by
 		` + incidentFromJoins + `
 		WHERE wi.id = $1 AND wi.type = 'INCIDENT'`
