@@ -19,6 +19,7 @@ package sweep
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -338,5 +339,50 @@ func TestResolveDueInvoice_NoLinksReturnsNilWithoutCallingInvoiceSearch(t *testi
 	}
 	if invoiceSearchCalled {
 		t.Error("SearchInvoices should not be called when a project has no linked opportunities")
+	}
+}
+
+// twoInvoiceReader links project p1 to opp1 (twice, to exercise de-duplication)
+// and opp2, each with one eligible invoice: opp1's due later than opp2's.
+func twoInvoiceReader() *mockEntityReader {
+	return &mockEntityReader{
+		searchProjectOpportunityLinksFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			return oppLinksResponse("p1", "opp1", "opp2", "opp1"), nil
+		},
+		getOpportunityFn: func(ctx context.Context, id string) ([]byte, error) {
+			return []byte(`{"id":"` + id + `","name":"Opp ` + id + `","stage":"50 - Closed Won","eulaVersion":"EULA 3.4","eulaVersionDecimal":"3.4"}`), nil
+		},
+		searchInvoicesFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			var req struct {
+				OpportunityID string `json:"opportunityId"`
+			}
+			json.Unmarshal(body, &req)
+			switch req.OpportunityID {
+			case "opp1":
+				return []byte(`{"invoices":[{"id":"inv-later","name":"US-LATER","sfId":"a0I-later","invoiceDate":"2026-01-01","invoicedDueDate":"2026-06-01","opportunity":{"id":"opp1"}}]}`), nil
+			case "opp2":
+				return []byte(`{"invoices":[{"id":"inv-earlier","name":"US-EARLIER","sfId":"a0I-earlier","invoiceDate":"2026-01-01","invoicedDueDate":"2026-03-01","opportunity":{"id":"opp2"}}]}`), nil
+			}
+			return []byte(`{"invoices":[]}`), nil
+		},
+	}
+}
+
+// TestResolveDueInvoices_ReturnsAllEligibleSortedByDueDate mirrors legacy
+// fetchDueInvoicesByProject, which returns every eligible due invoice ordered
+// by due date (orderBy u_invoiced_due_date) and passes the whole list to the
+// email, while deciding timing from the first. An invoice reached through
+// two links to the same opportunity is listed once.
+func TestResolveDueInvoices_ReturnsAllEligibleSortedByDueDate(t *testing.T) {
+	got, err := resolveDueInvoices(context.Background(), twoInvoiceReader(), project{ID: "p1"})
+	if err != nil {
+		t.Fatalf("resolveDueInvoices() error = %v, want nil", err)
+	}
+	var ids []string
+	for _, inv := range got {
+		ids = append(ids, inv.ID)
+	}
+	if want := []string{"inv-earlier", "inv-later"}; strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Errorf("invoices = %v, want %v (all eligible, earliest due first, no duplicates)", ids, want)
 	}
 }

@@ -317,13 +317,13 @@ func TestProcessProject_InvoiceCascade_PassesInvoiceSfIDToInternalNoticeOnly(t *
 	for _, n := range ntf.sent {
 		if n.Subject == "[ACP] Project Suspension Notice of Test Project" {
 			sawInternal = true
-			if n.InvoiceSfID != "a0IE2000006XBu5MAG" {
-				t.Errorf("internal notice InvoiceSfID = %q, want %q", n.InvoiceSfID, "a0IE2000006XBu5MAG")
+			if strings.Join(n.InvoiceSfIDs, ",") != "a0IE2000006XBu5MAG" {
+				t.Errorf("internal notice InvoiceSfIDs = %v, want [a0IE2000006XBu5MAG]", n.InvoiceSfIDs)
 			}
 			continue
 		}
-		if n.InvoiceSfID != "" {
-			t.Errorf("notice %q has InvoiceSfID = %q, want empty (internal notice only)", n.Subject, n.InvoiceSfID)
+		if len(n.InvoiceSfIDs) != 0 {
+			t.Errorf("notice %q has InvoiceSfIDs = %v, want none (internal notice only)", n.Subject, n.InvoiceSfIDs)
 		}
 	}
 	if !sawInternal {
@@ -378,5 +378,43 @@ func TestProcessProject_InvoiceNoticeShowsInvoiceNumber(t *testing.T) {
 			}
 			t.Fatalf("no internal invoice notice sent; got %+v", ntf.sent)
 		})
+	}
+}
+
+// TestProcessProject_InternalInvoiceNoticeListsEveryDueInvoice covers legacy's
+// internal invoice email, which lists every due invoice for the project (each
+// in its own box with its own Salesforce link), while timing is still
+// decided by the earliest-due one and the customer-facing notice lists none.
+func TestProcessProject_InternalInvoiceNoticeListsEveryDueInvoice(t *testing.T) {
+	now := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC) // the earlier invoice's due date: day 0
+	reader := twoInvoiceReader()
+	reader.getAccountFn = func(ctx context.Context, id string) ([]byte, error) {
+		return []byte(`{"hasPrimaryPartner":false}`), nil
+	}
+	ntf := &mockNotifier{sendFn: func(ctx context.Context, n notify.Notice) (bool, error) { return true, nil }}
+	proj := project{ID: "p1", Name: "Test Project", Account: &projectAccountRef{ID: "a1"}}
+
+	if err := processProject(context.Background(), reader, &mockProjectUpdater{}, ntf, now, proj); err != nil {
+		t.Fatalf("processProject() error = %v, want nil", err)
+	}
+
+	var internal *notify.Notice
+	for i := range ntf.sent {
+		if ntf.sent[i].Subject == "[ACP] Project Suspension Notice of Test Project" {
+			internal = &ntf.sent[i]
+		} else if strings.Contains(ntf.sent[i].Body, "Invoice Id:") {
+			t.Errorf("notice %q lists invoices; only the internal notice should", ntf.sent[i].Subject)
+		}
+	}
+	if internal == nil {
+		t.Fatalf("no internal invoice suspension notice sent; got %+v", ntf.sent)
+	}
+	earlier := strings.Index(internal.Body, "Invoice Id: US-EARLIER")
+	later := strings.Index(internal.Body, "Invoice Id: US-LATER")
+	if earlier < 0 || later < 0 || earlier > later {
+		t.Errorf("internal body should list both invoices, earliest due first\nbody: %s", internal.Body)
+	}
+	if strings.Join(internal.InvoiceSfIDs, ",") != "a0I-earlier,a0I-later" {
+		t.Errorf("InvoiceSfIDs = %v, want [a0I-earlier a0I-later] (one per listed invoice, same order)", internal.InvoiceSfIDs)
 	}
 }

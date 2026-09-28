@@ -34,10 +34,10 @@ func TestEmailNotifier_Send_InvoiceNoticeLinksOpenInSalesforceWhenInvoiceSfIDPre
 	n := &EmailNotifier{Sender: sender, Logger: discardLogger(), AllowNonWSO2Recipients: true}
 
 	_, err := n.Send(context.Background(), Notice{
-		Subject:     "subject",
-		Body:        invoiceReminderBody(),
-		InvoiceSfID: "a0IE2000006XBu5MAG",
-		Recipients:  Recipients{AccountOwner: recipients.Contact{Email: "am@wso2.com"}},
+		Subject:      "subject",
+		Body:         invoiceReminderBody(),
+		InvoiceSfIDs: []string{"a0IE2000006XBu5MAG"},
+		Recipients:   Recipients{AccountOwner: recipients.Contact{Email: "am@wso2.com"}},
 	})
 	if err != nil {
 		t.Fatalf("Send() error = %v, want nil", err)
@@ -83,9 +83,9 @@ func TestEmailNotifier_Send_CustomerNoticeNeverGetsOpenInSalesforce(t *testing.T
 	n := &EmailNotifier{Sender: sender, Logger: discardLogger(), AllowNonWSO2Recipients: true}
 
 	_, err := n.Send(context.Background(), Notice{
-		Subject:     "subject",
-		Body:        "Your invoice US12345 is due.",
-		InvoiceSfID: "a0IE2000006XBu5MAG",
+		Subject:      "subject",
+		Body:         "Your invoice US12345 is due.",
+		InvoiceSfIDs: []string{"a0IE2000006XBu5MAG"},
 		Recipients: Recipients{
 			AccountOwner: recipients.Contact{Email: "am@wso2.com"},
 			Customer:     &recipients.Contact{Email: "customer@wso2.com"},
@@ -96,5 +96,45 @@ func TestEmailNotifier_Send_CustomerNoticeNeverGetsOpenInSalesforce(t *testing.T
 	}
 	if got := sender.calls[0].htmlBody; strings.Contains(got, "Open in Salesforce") || strings.Contains(got, "salesforce.com") {
 		t.Errorf("customer-facing htmlBody must never contain a Salesforce link; got: %s", got)
+	}
+}
+
+// TestEmailNotifier_Send_InvoiceNoticeRendersOneBoxPerInvoice covers the
+// multi-invoice internal notice: each Invoice Id/Opportunity/Due Date triple
+// in the body gets its own box with its own "Open in Salesforce" link, in
+// order, as in the real legacy email (actual_invoice_email.png).
+func TestEmailNotifier_Send_InvoiceNoticeRendersOneBoxPerInvoice(t *testing.T) {
+	body := strings.Replace(invoiceReminderBody(),
+		"Due Date: 2026-02-15",
+		"Due Date: 2026-02-15\n\nInvoice Id: US99999\n\nOpportunity: Acme - Expansion\n\nDue Date: 2026-03-01", 1)
+	sender := &mockEmailSender{}
+	n := &EmailNotifier{Sender: sender, Logger: discardLogger(), AllowNonWSO2Recipients: true}
+
+	_, err := n.Send(context.Background(), Notice{
+		Subject:      "subject",
+		Body:         body,
+		InvoiceSfIDs: []string{"a0I-first", "a0I-second"},
+		Recipients:   Recipients{AccountOwner: recipients.Contact{Email: "am@wso2.com"}},
+	})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	got := sender.calls[0].htmlBody
+
+	first := strings.Index(got, "Invoice Id: <strong>US12345</strong>")
+	firstLink := strings.Index(got, "https://wso2.my.salesforce.com/a0I-first")
+	second := strings.Index(got, "Invoice Id: <strong>US99999</strong>")
+	secondLink := strings.Index(got, "https://wso2.my.salesforce.com/a0I-second")
+	if first < 0 || firstLink < 0 || second < 0 || secondLink < 0 {
+		t.Fatalf("htmlBody missing an invoice or its link\ngot: %s", got)
+	}
+	if !(first < firstLink && firstLink < second && second < secondLink) {
+		t.Errorf("each invoice box should carry its own link, in order\ngot: %s", got)
+	}
+	if strings.Count(got, "Open in Salesforce") != 2 {
+		t.Errorf("want 2 Open in Salesforce links, got %d", strings.Count(got, "Open in Salesforce"))
+	}
+	if strings.Contains(got, "Since projects need to be due") == false {
+		t.Error("closing paragraph missing: the multi-invoice body wasn't recognised as an invoice notice")
 	}
 }
