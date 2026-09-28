@@ -299,3 +299,104 @@ func TestAnnouncementVisibilitySearchCasesIntegration(t *testing.T) {
 		})
 	}
 }
+
+const (
+	avNoSecProjectID      = "b0000000-0000-0000-0000-000000000098"
+	avNoSecAccountID      = "a0000000-0000-0000-0000-000000000098"
+	avNoSecContactID      = "c0000000-0000-0000-0000-000000000098"
+	avNoSecAnnouncementID = "34444444-4444-4444-4444-444444444444"
+)
+
+// seedAnnouncementSecurityFallbackFixture creates a SEPARATE project from
+// seedAnnouncementVisibilityFixtures' own -- deliberately with only a
+// General Access (PORTAL_USER) contact and no Security Only/Full Access
+// contact at all -- plus one security announcement in it, to exercise the
+// fallback migration 000101 added: a security announcement in a project
+// with no security contact is visible to ordinary portal users instead of
+// being invisible to everyone but internal callers. The main fixture's own
+// project cannot exercise this: it deliberately includes a Security Only
+// contact, so project_has_security_contact is always true there.
+func seedAnnouncementSecurityFallbackFixture(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
+
+	cleanup := func() {
+		// work_item now has FORCE ROW LEVEL SECURITY (migration 000099) --
+		// scoped, not a raw pool.Exec, or this DELETE silently affects zero
+		// rows under its internal-only DELETE policy, leaving the row (and
+		// its child announcement row) behind for the next run. Matched by
+		// id as well as project_id: a row orphaned by a prior buggy
+		// cleanup run can have project_id already NULLed out by the
+		// project-delete cascade below having run first.
+		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE project_id = $1 OR id = $2`, avNoSecProjectID, avNoSecAnnouncementID)
+		_, _ = pool.Exec(ctx, `DELETE FROM project_contact WHERE project_id = $1`, avNoSecProjectID)
+		_, _ = pool.Exec(ctx, `DELETE FROM project WHERE id = $1`, avNoSecProjectID)
+		_, _ = pool.Exec(ctx, `DELETE FROM account_contact WHERE id = $1`, avNoSecContactID)
+		_, _ = pool.Exec(ctx, `DELETE FROM account WHERE id = $1`, avNoSecAccountID)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	mustExec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed: %s: %v", sql, err)
+		}
+	}
+	mustExecScoped := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := scoped.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed: %s: %v", sql, err)
+		}
+	}
+	now := time.Now().UTC()
+
+	mustExec(`INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id)
+		VALUES ($1, $2, $2, 'test', 'test', 'AV No-Sec Test Account', 'AV-ACC-2', 'AV-SF-ACC-2')`, avNoSecAccountID, now)
+	mustExec(`INSERT INTO account_contact (id, created_on, updated_on, created_by, updated_by, user_name, account_id)
+		VALUES ($1, $2, $2, 'test', 'test', 'AV No-Sec Test Contact', $3)`, avNoSecContactID, now, avNoSecAccountID)
+	mustExec(`INSERT INTO project (id, created_on, updated_on, created_by, updated_by, key, sf_id, name, account_id)
+		VALUES ($1, $2, $2, 'test', 'test', 'AVNOSECPROJ', 'AV-SF-PROJ-2', 'AV No-Sec Test Project', $3)`, avNoSecProjectID, now, avNoSecAccountID)
+
+	var groupID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM project_group WHERE "group" = 'General Access'`).Scan(&groupID); err != nil {
+		t.Fatalf("reference data missing: project_group \"General Access\" not found: %v", err)
+	}
+	var contactRowID string
+	if err := pool.QueryRow(ctx, `INSERT INTO project_contact (id, created_on, updated_on, created_by, updated_by, email, account_contact_id, project_id, state)
+		VALUES (gen_random_uuid(), $1, $1, 'test', 'test', 'av-nosec-portal-user@test.local', $2, $3, 'REGISTERED') RETURNING id`,
+		now, avNoSecContactID, avNoSecProjectID).Scan(&contactRowID); err != nil {
+		t.Fatalf("seed project_contact: %v", err)
+	}
+	mustExec(`INSERT INTO project_contact_group (id, created_on, updated_on, created_by, updated_by, project_contact_id, project_group_id)
+		VALUES (gen_random_uuid(), $1, $1, 'test', 'test', $2, $3)`, now, contactRowID, groupID)
+
+	mustExecScoped(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type, project_id)
+		VALUES ($1, $2, $2, 'test', 'test', 'AV-NOSEC-1', 'AV-WSO2-NOSEC-1', 'AV no-security-contact fallback test', 'ANNOUNCEMENT', $3)`,
+		avNoSecAnnouncementID, now, avNoSecProjectID)
+	mustExecScoped(`INSERT INTO announcement (id, announcement_type) VALUES ($1, 'SECURITY')`, avNoSecAnnouncementID)
+}
+
+// TestAnnouncementSecurityFallbackNoSecurityContactIntegration is the
+// regression test for migration 000101's own fallback: a security
+// announcement in a project with no SECURITY_CONTACT at all must be
+// visible to that project's ordinary portal users, not just internal
+// callers -- confirmed live against this database copy (several real
+// projects have PORTAL_USER contacts but no security contact) before this
+// migration was written.
+func TestAnnouncementSecurityFallbackNoSecurityContactIntegration(t *testing.T) {
+	pool := announcementVisibilityPool(t)
+	seedAnnouncementSecurityFallbackFixture(t, pool)
+	repo := repository.NewCaseRepository(repository.NewScoped(pool))
+
+	if !announcementVisible(t, repo, avNoSecAnnouncementID, repository.SearchScope{Unrestricted: true}) {
+		t.Error("internal caller: security announcement in a no-security-contact project = not visible, want visible")
+	}
+	if !announcementVisible(t, repo, avNoSecAnnouncementID, repository.SearchScope{ProjectIDs: []string{avNoSecProjectID}, ViewerEmail: "av-nosec-portal-user@test.local"}) {
+		t.Error("PORTAL_USER, no security contact in project: security announcement = not visible, want visible (the fallback)")
+	}
+	if announcementVisible(t, repo, avNoSecAnnouncementID, repository.SearchScope{ProjectIDs: []string{avNoSecProjectID}, ViewerEmail: "nobody@nowhere.local"}) {
+		t.Error("unrelated caller: security announcement in a no-security-contact project = visible, want not visible")
+	}
+}
