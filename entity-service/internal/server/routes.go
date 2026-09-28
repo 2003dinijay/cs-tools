@@ -815,7 +815,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	incidentTaskHandler := handler.NewIncidentTaskHandler(activeIncidentTaskSvc)
 
-	conversationRepo := repository.NewConversationRepository(db)
+	conversationRepo := repository.NewConversationRepository(repository.NewScoped(db))
 	var activeConversationSvc service.ConversationService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeConversationSvc = service.NewServiceNowConversationService(serviceNowIntegrationServiceClient)
