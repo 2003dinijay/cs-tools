@@ -51,6 +51,7 @@ type Notifier struct {
 	fallbackChatWebhookURLs []string
 	maxAttempts             int
 	retryBaseDelay          time.Duration
+	sendEnvironmentField    bool
 }
 
 // Config groups New's dependencies to avoid a growing positional-argument list.
@@ -63,6 +64,9 @@ type Config struct {
 	MaxAttempts     int
 	RetryBaseDelay  time.Duration
 	HTTPTimeout     time.Duration
+	// SendEnvironmentField gates whether NotifyCSM populates
+	// CreateIncidentRequest.Environment. See config.NotifyConfig.SendEnvironmentField.
+	SendEnvironmentField bool
 }
 
 func New(logger *slog.Logger, csm *csm.Client, cfg Config) *Notifier {
@@ -76,6 +80,7 @@ func New(logger *slog.Logger, csm *csm.Client, cfg Config) *Notifier {
 		fallbackChatWebhookURLs: splitURLs(os.Getenv("FALLBACK_CHAT_WEBHOOK_URLS")),
 		maxAttempts:             cfg.MaxAttempts,
 		retryBaseDelay:          cfg.RetryBaseDelay,
+		sendEnvironmentField:    cfg.SendEnvironmentField,
 	}
 	if len(n.fallbackChatWebhookURLs) == 0 {
 		logger.Warn("FALLBACK_CHAT_WEBHOOK_URLS not set; incidents will not reach Chat if CSM fails")
@@ -132,7 +137,7 @@ func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident) (incidentI
 	if inc.Description != "" {
 		req.WorkNotes = &inc.Description
 	}
-	if inc.Environment != "" {
+	if n.sendEnvironmentField && inc.Environment != "" {
 		env := truncateRunes(inc.Environment, maxEnvironmentLen)
 		req.Environment = &env
 	}

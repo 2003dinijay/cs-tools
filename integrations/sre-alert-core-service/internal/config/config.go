@@ -96,6 +96,12 @@ type NotifyConfig struct {
 	CSMRetryMultiplier float64 `toml:"csm_retry_multiplier"`
 	// CSMRetryMaxDelay caps how long the exponential CSM retry wait can grow to.
 	CSMRetryMaxDelay Duration `toml:"csm_retry_max_delay"`
+	// SendEnvironmentField gates whether CreateIncidentRequest.Environment is populated.
+	// Off by default: the live csm-integration-service connector currently rejects any
+	// create carrying an environment value with a 400 ("Invalid request payload."),
+	// regardless of field name -- verified 2026-09-28 against the staging Choreo
+	// endpoint. Flip on once the SN-side connector accepts it again.
+	SendEnvironmentField bool `toml:"send_environment_field"`
 }
 
 // ServerConfig tunes how long the HTTP server waits for in-flight requests to drain during a graceful shutdown before forcing the process to exit.
