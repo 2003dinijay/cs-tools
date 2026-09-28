@@ -17767,6 +17767,13 @@ components:
           type: string
           nullable: true
           description: Root-cause/incident report notes. Populated for resolved/closed ServiceNow incidents; null otherwise.
+        description:
+          type: string
+          nullable: true
+          description: >-
+            ServiceNow's incident.description field (distinct from subject, which maps to the
+            shorter short_description). Not yet synced from ServiceNow as of this field's
+            introduction, so always null until the companion csm-sync-service change lands.
         specialistHandoff:
           allOf:
             - $ref: '#/components/schemas/IncidentSpecialistHandoffSummary'
