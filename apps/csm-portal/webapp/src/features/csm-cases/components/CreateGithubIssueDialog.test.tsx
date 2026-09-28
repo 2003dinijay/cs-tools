@@ -460,6 +460,27 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
     expect(screen.getByText(/waiting for this case's project status/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /create issue/i })).toBeDisabled();
   });
+
+  it("keeps Create issue disabled when the project lookup failed, until retry", () => {
+    const onRetryProjectStatus = vi.fn();
+    render(
+      <CreateGithubIssueDialog
+        open
+        productName="Asgardeo"
+        projectStatusFailed
+        onRetryProjectStatus={onRetryProjectStatus}
+        submitting={false}
+        error={null}
+        onClose={() => {}}
+        onSubmit={() => {}}
+      />,
+    );
+    fillRequiredFields();
+    expect(screen.getByText(/could not load this case's project status/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create issue/i })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+    expect(onRetryProjectStatus).toHaveBeenCalledOnce();
+  });
 });
 
 describe("CreateGithubIssueDialog — confirm step before filing a real issue", () => {
