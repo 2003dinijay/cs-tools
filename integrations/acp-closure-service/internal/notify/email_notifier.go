@@ -367,7 +367,11 @@ const noBusinessContactBodyParagraphCount = 5
 func renderInternalEmailHTML(body, projectSfID string, invoiceSfIDs []string) string {
 	paragraphs := strings.Split(body, "\n\n")
 	switch n := len(paragraphs); {
-	case isInvoiceBodyShape(n):
+	// Invoice notices always carry one InvoiceSfIDs entry per invoice (even
+	// an empty one), subscription notices none. Checking that as well as the
+	// paragraph count stops a subscription body whose project name contains
+	// blank lines from matching an invoice shape (CodeRabbit, PR #2085).
+	case len(invoiceSfIDs) > 0 && isInvoiceBodyShape(n):
 		return renderInternalInvoiceEmailHTML(paragraphs, projectSfID, invoiceSfIDs)
 	case n == internalBodyParagraphCount:
 		return renderInternalSubscriptionEmailHTML(paragraphs, projectSfID)

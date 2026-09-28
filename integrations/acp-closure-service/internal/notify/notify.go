@@ -73,9 +73,9 @@ type Notice struct {
 	// that box — and customer-facing notices never carry any (customers have
 	// no Salesforce access).
 	InvoiceSfIDs []string
-	StartDate   time.Time
-	EndDate     time.Time
-	Window      closure.NoticeWindow
+	StartDate    time.Time
+	EndDate      time.Time
+	Window       closure.NoticeWindow
 	// Subject is the notice's title line — one of five templates depending
 	// on notice type and window (see sweep.go's internalNoticeSubject/
 	// customerNoticeSubject for the exact wording): the internal day-count

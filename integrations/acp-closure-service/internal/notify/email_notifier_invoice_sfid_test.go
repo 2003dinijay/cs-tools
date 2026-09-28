@@ -62,14 +62,19 @@ func TestEmailNotifier_Send_InvoiceNoticeHasNoOpenInSalesforceWhenInvoiceSfIDAbs
 	n := &EmailNotifier{Sender: sender, Logger: discardLogger(), AllowNonWSO2Recipients: true}
 
 	_, err := n.Send(context.Background(), Notice{
-		Subject:    "subject",
-		Body:       invoiceReminderBody(),
-		Recipients: Recipients{AccountOwner: recipients.Contact{Email: "am@wso2.com"}},
+		Subject: "subject",
+		Body:    invoiceReminderBody(),
+		// The real shape of an invoice with no Salesforce ID: one empty entry.
+		InvoiceSfIDs: []string{""},
+		Recipients:   Recipients{AccountOwner: recipients.Contact{Email: "am@wso2.com"}},
 	})
 	if err != nil {
 		t.Fatalf("Send() error = %v, want nil", err)
 	}
 	got := sender.calls[0].htmlBody
+	if !strings.Contains(got, invoiceBoxMarker) {
+		t.Errorf("invoice notice without a Salesforce ID should still render its invoice box; got: %s", got)
+	}
 	if strings.Contains(got, "Open in Salesforce") || strings.Contains(got, "salesforce.com") {
 		t.Errorf("htmlBody should have no Salesforce link when InvoiceSfID is empty; got: %s", got)
 	}
@@ -138,3 +143,33 @@ func TestEmailNotifier_Send_InvoiceNoticeRendersOneBoxPerInvoice(t *testing.T) {
 		t.Error("closing paragraph missing: the multi-invoice body wasn't recognised as an invoice notice")
 	}
 }
+
+// TestEmailNotifier_Send_SubscriptionNoticeNeverUsesInvoiceLayout guards the
+// renderer's shape detection (CodeRabbit, PR #2085): a subscription notice
+// whose project name contains blank lines can have the same paragraph count
+// as a two-invoice notice. Without invoice links on the notice it must never
+// be drawn with invoice boxes.
+func TestEmailNotifier_Send_SubscriptionNoticeNeverUsesInvoiceLayout(t *testing.T) {
+	body := strings.Replace(internalReminderBody(),
+		"Project Name: Acme - Subscription",
+		"Project Name: Acme\n\nA\n\nB\n\nC\n\nD\n\nE\n\nF", 1) // 9 + 6 = 15 paragraphs
+	sender := &mockEmailSender{}
+	n := &EmailNotifier{Sender: sender, Logger: discardLogger(), AllowNonWSO2Recipients: true}
+
+	if _, err := n.Send(context.Background(), Notice{
+		Subject:    "subject",
+		Body:       body,
+		Recipients: Recipients{AccountOwner: recipients.Contact{Email: "am@wso2.com"}},
+	}); err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	if n := len(strings.Split(body, "\n\n")); n != 15 {
+		t.Fatalf("test setup: body has %d paragraphs, want 15 (a two-invoice shape)", n)
+	}
+	if got := sender.calls[0].htmlBody; strings.Contains(got, invoiceBoxMarker) {
+		t.Errorf("subscription notice was rendered with invoice boxes\ngot: %s", got)
+	}
+}
+
+// invoiceBoxMarker is a style fragment that only invoiceBoxHTML emits.
+const invoiceBoxMarker = "background-color:#ffffff;padding:12px 16px;margin-top:8px;"

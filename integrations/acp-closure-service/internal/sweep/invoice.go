@@ -165,7 +165,7 @@ func internalInvoiceNoticeBody(window closure.NoticeWindow, proj project, accoun
 	var fields []string
 	for _, l := range invoice.lines() {
 		due := l.DueDate
-		fields = append(fields, fmt.Sprintf("Invoice Id: %s\n\nOpportunity: %s\n\nDue Date: %s", l.Number, l.Opportunity, formatDate(&due)))
+		fields = append(fields, fmt.Sprintf("Invoice Id: %s\n\nOpportunity: %s\n\nDue Date: %s", oneLine(l.Number), oneLine(l.Opportunity), formatDate(&due)))
 	}
 	return fmt.Sprintf(template,
 		accountOwnerName, proj.Name, proj.ProjectKey, formatDate(proj.StartDate), formatDate(proj.EndDate),
@@ -208,4 +208,16 @@ func customerInvoiceNoticeBody(window closure.NoticeWindow, proj project, invoic
 		return fmt.Sprintf(customerInvoiceSuspendedBodyTemplate, proj.Name, proj.ProjectKey, formatDateUS(&invoice.SuspendDate))
 	}
 	return fmt.Sprintf(customerInvoicePaymentReminderBodyTemplate, proj.Name, formatDateUS(&invoice.DueDate))
+}
+
+// lineBreaks matches every kind of line break an upstream value might carry.
+var lineBreaks = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
+
+// oneLine flattens line breaks in an upstream value to spaces. The notify
+// renderer finds each invoice group by counting blank-line-separated
+// paragraphs, so a value containing blank lines would otherwise create extra
+// groups and put a Salesforce link beside the wrong invoice (CodeRabbit,
+// PR #2085).
+func oneLine(s string) string {
+	return lineBreaks.Replace(s)
 }

@@ -98,6 +98,8 @@ func TestEmailNotifier_Send_InvoiceNoticeLinksProjectNameWhenSfIDPresent(t *test
 		Subject:     "subject",
 		Body:        invoiceReminderBody(),
 		ProjectSfID: "a0d4U00000aUJURQA4",
+		// Real invoice notices carry one entry per invoice; "" = no sfId.
+		InvoiceSfIDs: []string{""},
 		Recipients: Recipients{
 			AccountOwner: recipients.Contact{Email: "am@wso2.com"},
 		},
