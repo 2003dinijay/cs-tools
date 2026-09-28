@@ -305,10 +305,21 @@ DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_
 
 ## 5. Known gaps
 
-- **Why 0152–0155.** 0141–0150 are claimed by the open RLS work in #2094, and
-  upstream's 0151 already sits after that range, so these follow it. 0152's
-  number has not been checked against `operations/csm-sync-service`, which owns
-  `team`; confirm it is free there before production.
+- **Why 0152–0157.** 0141–0150 are claimed by the open RLS work in #2094, and
+  upstream's 0151 already sits after that range, so these follow it. The
+  numbers have not been checked against `operations/csm-sync-service`, which
+  owns `team`, `role` and `recompute_user_type()`; confirm 0152, 0156 and 0157
+  are free there before production.
+- **0157 replaces a function the sync service also defines.**
+  `recompute_user_type()` comes from 0011, which mirrors the sync service's own
+  migrations. If the sync service ever runs its own `CREATE OR REPLACE` of it,
+  the two rota admin names are dropped without any error. Rota admins then
+  resolve to `NOT_AVAILABLE` and the schedule refuses them with a 403 that
+  says nothing about roles. Either mirror 0157 into the sync service, or re-run
+  0157 after any sync-service change to that function. Check it with:
+  ```sql
+  SELECT prosrc LIKE '%cre_rota_admin%' FROM pg_proc WHERE proname = 'recompute_user_type';  -- expect t
+  ```
 - **The sync must never need to change `team.key`.** It cannot today, because
   it does not know the column exists. If it ever writes `key`, that value wins
   over the trigger.
