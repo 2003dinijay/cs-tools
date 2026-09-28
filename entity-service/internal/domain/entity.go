@@ -750,6 +750,15 @@ type CreateProjectMembershipRequest struct {
 	// existing contact keeps whatever Salesforce already says, which is the
 	// authority on what kind of contact it is.
 	IsCsIntegrationUser bool `json:"isCsIntegrationUser,omitempty"`
+	// InviterEmail is the address of the person sending the invitation, set
+	// by the Customer Portal backend from the signed-in user's verified token
+	// (never from its own request body). When present, the invitation is
+	// checked the way the project-contact onboarding service checked it:
+	// the inviter's account must own or partner the project, and the allowed
+	// email domains start from that account. The CSM Portal leaves it empty.
+	// Trusted only because every caller of this route is an allow-listed
+	// internal client.
+	InviterEmail string `json:"inviterEmail,omitempty"`
 }
 
 // UpdateProjectMembershipRolesRequest is the body of
