@@ -409,6 +409,41 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
     expect(screen.queryByText(/\(Choreo-Connect\)/)).not.toBeInTheDocument();
   });
 
+  it("does not file when several catalogue rows match and none is exact", () => {
+    mockUseGetGithubIssueRepoOptions.mockReturnValue({
+      data: [
+        {
+          value: "is-analytics",
+          displayLabel: "WSO2 Identity Server Analytics",
+          owner: "wso2-enterprise",
+          repo: "wso2-iam-internal",
+          githubLabel: "IS-Analytics",
+        },
+        {
+          value: "is",
+          displayLabel: "WSO2 Identity Server",
+          owner: "wso2-enterprise",
+          repo: "wso2-iam-internal",
+          githubLabel: "IS",
+        },
+      ],
+      isLoading: false,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    render(
+      <CreateGithubIssueDialog
+        open
+        productName="Identity Server"
+        submitting={false}
+        error={null}
+        onClose={() => {}}
+        onSubmit={() => {}}
+      />,
+    );
+    expect(screen.getByText(/no github repository is mapped/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create issue/i })).toBeDisabled();
+  });
+
   it("keeps Create issue disabled while a linked project's status is still loading", () => {
     render(
       <CreateGithubIssueDialog
