@@ -40,7 +40,7 @@ import {
 import CellPicker, { type CellPickerTarget, type NewAbsenceKind } from "../components/CellPicker";
 import { BackendApiError } from "@api/backend/client";
 import DayLadder, { type LadderLane } from "../components/DayLadder";
-import MonthRoster, { type RosterSpan } from "../components/MonthRoster";
+import MonthRoster from "../components/MonthRoster";
 import MyWeekStrip from "../components/MyWeekStrip";
 import NextRotation from "../components/NextRotation";
 import RecentChanges from "../components/RecentChanges";
@@ -57,6 +57,10 @@ import {
   addDays,
   isRotationShift,
   kindsOfferedOn,
+  monthPieces,
+  readerFamily,
+  rosterRange,
+  type RosterSpan,
   mondayOf,
   shiftsByCode,
   toIsoDate,
@@ -86,24 +90,15 @@ const TITLE: Record<ViewTab, string> = {
   roster: "Month roster",
 };
 
-/** Which months the roster shows, as offsets from the selected one, for each
- *  span it offers.
- *
- *   1   the selected month alone, for a lead working one month through.
- *   3   last month, this month and next -- the history a lead checks a swap
- *       against, and the month they are planning, without paging. The default.
- *   6   last month and the next four: a rota is planned forward, so the extra
- *       months go ahead of the selected one rather than behind it. */
-const ROSTER_SPAN_OFFSETS: Record<RosterSpan, readonly number[]> = {
-  1: [0],
-  3: [-1, 0, 1],
-  6: [-1, 0, 1, 2, 3, 4],
-};
-
-const fmtMonthRange = (first: Date, last: Date): string => {
+/** The roster's window as days, "14 Sept – 12 Oct 2026": it opens and closes
+ *  on the days either side of the selected one, not on month boundaries. */
+const fmtDayRange = (first: Date, last: Date): string => {
   const sameYear = first.getFullYear() === last.getFullYear();
-  const a = first.toLocaleDateString(undefined, sameYear ? { month: "short" } : { month: "short", year: "numeric" });
-  const b = last.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  const a = first.toLocaleDateString(
+    undefined,
+    sameYear ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" },
+  );
+  const b = last.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   return `${a} – ${b}`;
 };
 
@@ -159,8 +154,10 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  would show them three disabled tabs on arrival. */
   const [familyChoice, setFamilyChoice] = useState<Family | null>(null);
   const [teamKey, setTeamKey] = useState<string>("");
-  /** How many months the roster shows; see ROSTER_SPAN_OFFSETS. */
-  const [rosterSpan, setRosterSpan] = useState<RosterSpan>(3);
+  /** How many months the roster shows, centred on the selected day; see
+   *  rosterRange. One by default: the fortnight either side of today is what
+   *  a lead opens the roster to check. */
+  const [rosterSpan, setRosterSpan] = useState<RosterSpan>(1);
   const [anchor, setAnchor] = useState<Date>(() => new Date());
   /** Bumped by Today; a view listens to it to re-centre on the current day. */
   const [focusRequest, setFocusRequest] = useState(0);
@@ -229,16 +226,19 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const canEditRota = (leadTeams.data ?? []).length > 0;
 
 
-  /** The reader's own group, from their CSM profile. Absent for anyone who
-   *  belongs to no team -- a manager -- which is why it is optional rather
-   *  than defaulting to CRE. */
+  /** The reader's own group, from their CSM profile: their team, or for a
+   *  rota admin the group their role runs (see readerFamily). Absent for
+   *  anyone who belongs to neither -- a manager -- which is why it is
+   *  optional rather than defaulting to CRE. */
   const myFamily: Family | undefined = useMemo(() => {
-    const f = user?.team?.family?.toUpperCase();
-    if (!f) return undefined;
-    return f.startsWith("SRE") ? "SRE" : "CRE";
-  }, [user?.team?.family]);
+    const familyOfTeam = new Map((catalogue.data?.teams ?? []).map((t) => [t.key, t.family]));
+    const editable = (leadTeams.data ?? [])
+      .map((k) => familyOfTeam.get(k))
+      .filter((f): f is Family => Boolean(f));
+    return readerFamily(user?.team?.family, user?.roles, editable);
+  }, [user?.team?.family, user?.roles, leadTeams.data, catalogue.data?.teams]);
 
-  /** Nobody's group: a manager, who belongs to no team at all. */
+  /** Nobody's group: a manager, who belongs to no team and runs no rota. */
   const isManager = myFamily === undefined;
 
   /** The tab the page opens on. An engineer's first question is their own
@@ -313,22 +313,14 @@ export default function CsmTeamSchedulePage(): JSX.Element {
 
   const dayView = view === "today";
   const rosterView = view === "roster";
-  /** The roster's window: the months its span covers around the selected
-   *  one, as the calendar months it is fetched in. Keyed on the month rather
-   *  than the anchor, so stepping a day inside a month does not rebuild it. */
-  const anchorMonthKey = `${anchor.getFullYear()}-${anchor.getMonth()}`;
-  const rosterMonths: MonthWindow[] = useMemo(() => {
-    const [y, m] = anchorMonthKey.split("-").map(Number);
-    return ROSTER_SPAN_OFFSETS[rosterSpan].map((o) => ({
-      from: toIsoDate(new Date(y, m + o, 1)),
-      to: toIsoDate(new Date(y, m + o + 1, 0)),
-    }));
-  }, [anchorMonthKey, rosterSpan]);
-  const rosterStart = useMemo(() => new Date(`${rosterMonths[0].from}T00:00:00`), [rosterMonths]);
-  const rosterEnd = useMemo(
-    () => new Date(`${rosterMonths[rosterMonths.length - 1].to}T00:00:00`),
-    [rosterMonths],
-  );
+  /** The roster's window: its span either side of the selected day, and the
+   *  calendar-month pieces it is fetched in. Keyed on the day and the span
+   *  rather than on the Date, which is a fresh object each render. */
+  const anchorIso = toIsoDate(anchor);
+  const { rosterStart, rosterEnd, rosterMonths } = useMemo(() => {
+    const { start, end } = rosterRange(new Date(`${anchorIso}T00:00:00`), rosterSpan);
+    return { rosterStart: start, rosterEnd: end, rosterMonths: monthPieces(start, end) as MonthWindow[] };
+  }, [anchorIso, rosterSpan]);
   const from = dayView ? toIsoDate(anchor) : toIsoDate(weekStart);
   const to = dayView ? toIsoDate(anchor) : toIsoDate(addDays(weekStart, 6));
   const teamKeys = shownTeamKey ? [shownTeamKey] : undefined;
@@ -742,7 +734,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                   {t === "today"
                     ? fmtShort(anchor)
                     : t === "roster"
-                      ? fmtMonthRange(rosterStart, rosterEnd)
+                      ? fmtDayRange(rosterStart, rosterEnd)
                       : `${fmtShort(weekStart)} – ${fmtShort(addDays(weekStart, 6))}`}
                 </span>
               </button>
@@ -788,7 +780,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                     {dayView
                       ? fmtLong(anchor)
                       : rosterView
-                        ? fmtMonthRange(rosterStart, rosterEnd)
+                        ? fmtDayRange(rosterStart, rosterEnd)
                         : `${fmtShort(weekStart)} – ${fmtShort(addDays(weekStart, 6))}`}
                   </b>
                   {/* The day the single chevrons are moving. Without it, a day
@@ -997,7 +989,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               onEditCell={editCell}
               changedCells={editing ? changedCells : undefined}
               month={rosterStart}
-              monthCount={rosterMonths.length}
+              from={rosterStart}
+              to={rosterEnd}
               span={rosterSpan}
               onSpanChange={setRosterSpan}
               assignments={rows}

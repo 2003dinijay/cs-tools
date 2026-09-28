@@ -408,3 +408,14 @@ describe("MonthRoster: how many months", () => {
     expect(container.querySelectorAll("thead th.day")).toHaveLength(181);
   });
 });
+
+describe("MonthRoster: a window around a day", () => {
+  it("runs from the first day to the last, naming the month on the first column", () => {
+    const { container } = renderRoster({ from: new Date(2026, 8, 14), to: new Date(2026, 9, 12) });
+    const heads = container.querySelectorAll("thead th.day");
+    expect(heads).toHaveLength(29);
+    expect(heads[0].querySelector(".d")?.textContent).toBe("14");
+    expect(heads[0].querySelector(".mo")).not.toBeNull();
+    expect(heads[heads.length - 1].querySelector(".d")?.textContent).toBe("12");
+  });
+});

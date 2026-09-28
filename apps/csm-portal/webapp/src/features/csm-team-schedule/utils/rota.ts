@@ -418,3 +418,73 @@ export function kindsOfferedOn(
       (!k.family || k.family === family),
   );
 }
+
+/** How many months the roster can show at once. */
+export type RosterSpan = 1 | 3 | 6;
+
+/** Days either side of the selected day for each span: a span is centred on
+ *  the day the reader is looking at (today, until they move it), not a run of
+ *  calendar months. One month is two weeks either way; three and six are a
+ *  month and a half and three months either way. */
+export const ROSTER_SPAN_HALF_DAYS: Record<RosterSpan, number> = { 1: 14, 3: 45, 6: 91 };
+
+/** The first and last day the roster shows around `anchor`. */
+export function rosterRange(anchor: Date, span: RosterSpan): { start: Date; end: Date } {
+  const day = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
+  const half = ROSTER_SPAN_HALF_DAYS[span];
+  return { start: addDays(day, -half), end: addDays(day, half) };
+}
+
+/** A range cut into the calendar months it touches, each clipped to the
+ *  range: the shape the rota is fetched in. A turn belongs to one rota day, so
+ *  the pieces never overlap; the whole months in the middle keep the same
+ *  query key as the reader steps a day, so only the two ends are re-read. */
+export function monthPieces(start: Date, end: Date): { from: string; to: string }[] {
+  const out: { from: string; to: string }[] = [];
+  let y = start.getFullYear();
+  let m = start.getMonth();
+  const last = toIsoDate(end);
+  const first = toIsoDate(start);
+  for (;;) {
+    const monthFrom = toIsoDate(new Date(y, m, 1));
+    const monthTo = toIsoDate(new Date(y, m + 1, 0));
+    if (monthFrom > last) break;
+    out.push({ from: monthFrom < first ? first : monthFrom, to: monthTo > last ? last : monthTo });
+    m += 1;
+    if (m === 12) {
+      m = 0;
+      y += 1;
+    }
+  }
+  return out;
+}
+
+/** The rota a reader belongs to, for deciding what the page shows them.
+ *
+ *  Their team says it where they have one. A rota admin holds no team, but
+ *  runs one group's rota all the same, and reads that group's views as their
+ *  own and the other group's Today only. Two things can say which group:
+ *
+ *   - the cre_rota_admin / sre_rota_admin role, where the sign-in carries it
+ *     (matched on the part after any namespace, "x.cre_rota_admin");
+ *   - the teams they may edit, which the server grants a rota admin as every
+ *     team of their group -- the only signal when the sign-in carries only
+ *     its groups, not the portal's own roles.
+ *
+ *  Both roles, or editable teams spanning both groups, or none of it, is
+ *  nobody's group: a manager, who sees both groups everywhere. */
+export function readerFamily(
+  teamFamily: string | undefined | null,
+  roles: readonly string[] | undefined | null,
+  editableFamilies: readonly string[] = [],
+): "CRE" | "SRE" | undefined {
+  const f = teamFamily?.toUpperCase();
+  if (f) return f.startsWith("SRE") ? "SRE" : "CRE";
+  const held = new Set((roles ?? []).map((r) => r.toLowerCase().replace(/^.*\./, "")));
+  const cre = held.has("cre_rota_admin");
+  const sre = held.has("sre_rota_admin");
+  if (cre !== sre) return cre ? "CRE" : "SRE";
+  if (cre && sre) return undefined;
+  const edits = new Set(editableFamilies.map((x) => (x.toUpperCase().startsWith("SRE") ? "SRE" : "CRE")));
+  return edits.size === 1 ? [...edits][0] as "CRE" | "SRE" : undefined;
+}

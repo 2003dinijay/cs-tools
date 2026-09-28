@@ -25,11 +25,10 @@ import type {
   ScheduleShift,
   ScheduleTier,
 } from "../types";
-import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate, zoneLabelOn } from "../utils/rota";
+import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate, zoneLabelOn, type RosterSpan } from "../utils/rota";
 import { useTeamColour } from "../utils/teamColourContext";
 
-/** How many months the roster can show at once. */
-export type RosterSpan = 1 | 3 | 6;
+export type { RosterSpan };
 const SPANS: readonly RosterSpan[] = [1, 3, 6];
 
 interface MonthRosterProps {
@@ -39,6 +38,11 @@ interface MonthRosterProps {
    *  sheet this replaces showed a whole year; one month was too little to
    *  check a swap against last month or plan the next. */
   monthCount?: number;
+  /** The exact first and last day, where the grid is a window around a day
+   *  rather than whole months. Both or neither; with them, `month` and
+   *  `monthCount` are ignored. */
+  from?: Date;
+  to?: Date;
   /** The span the reader has picked, and the way to change it. The page owns
    *  it because the page fetches the months; without a handler there is no
    *  choice to offer. */
@@ -165,6 +169,8 @@ const WORKING_DAY: Cell = {
 export default function MonthRoster({
   month,
   monthCount = 1,
+  from: rangeFrom,
+  to: rangeTo,
   span,
   onSpanChange,
   assignments,
@@ -204,12 +210,19 @@ export default function MonthRoster({
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const touched = useRef(false);
 
+  // Keyed on the days themselves: the page hands a fresh Date each render.
+  const fromIso = rangeFrom ? toIsoDate(rangeFrom) : "";
+  const toIso = rangeTo ? toIsoDate(rangeTo) : "";
   const days = useMemo(() => {
-    const first = new Date(month.getFullYear(), month.getMonth(), 1);
-    const last = new Date(month.getFullYear(), month.getMonth() + monthCount, 0);
+    const first = fromIso
+      ? new Date(`${fromIso}T00:00:00`)
+      : new Date(month.getFullYear(), month.getMonth(), 1);
+    const last = toIso
+      ? new Date(`${toIso}T00:00:00`)
+      : new Date(month.getFullYear(), month.getMonth() + monthCount, 0);
     const count = Math.round((last.getTime() - first.getTime()) / 86_400_000) + 1;
-    return Array.from({ length: count }, (_, i) => new Date(first.getFullYear(), first.getMonth(), i + 1));
-  }, [month, monthCount]);
+    return Array.from({ length: count }, (_, i) => new Date(first.getFullYear(), first.getMonth(), first.getDate() + i));
+  }, [month, monthCount, fromIso, toIso]);
   /** The 1st of each month after the first: where the grid draws a month rule
    *  and names the month, so ninety columns still read as three months. */
   const opensMonth = (d: Date): boolean => d.getDate() === 1 && d.getTime() !== days[0].getTime();
@@ -648,7 +661,10 @@ export default function MonthRoster({
                     title={d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}
                   >
                     <span className="d">{d.getDate()}</span>
-                    {d.getDate() === 1 ? (
+                    {/* The month is named where it starts, and on the first
+                        column too: a window opening on the 14th still has to
+                        say which month the 14th is in. */}
+                    {d.getDate() === 1 || d.getTime() === days[0].getTime() ? (
                       <span className="mo">{d.toLocaleDateString(undefined, { month: "short" })}</span>
                     ) : null}
                   </th>
