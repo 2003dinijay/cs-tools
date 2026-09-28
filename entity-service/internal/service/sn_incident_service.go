@@ -1265,7 +1265,10 @@ type snUpdateIncidentPayload struct {
 	WorkNotes           *string   `json:"workNotes,omitempty"`
 	WatchList           *[]string `json:"watchList,omitempty"`
 	// Environment: see snCreateIncidentPayload.Environment doc comment.
-	Environment *string `json:"u_enviroment,omitempty"`
+	// json.RawMessage (not *string) so an explicit clear can be forwarded to
+	// ServiceNow as a real `null`, not just omitted -- same pattern as
+	// sn_change_request_service.go's CustomerGroupID.
+	Environment json.RawMessage `json:"u_enviroment,omitempty"`
 }
 
 // snUpdateIncidentResponse mirrors the Choreo PATCH /incidents/{id} response.
@@ -1292,8 +1295,10 @@ func (s *snIncidentService) UpdateIncident(ctx context.Context, req domain.Updat
 	}
 
 	// Reject before the ServiceNow call, same as CreateIncident: a value too
-	// long for ServiceNow's u_enviroment (max 40) must fail fast here.
-	if req.Environment != nil && len([]rune(*req.Environment)) > 40 {
+	// long for ServiceNow's u_enviroment (max 40) must fail fast here. Skipped
+	// for an explicit clear (*req.Environment == nil) -- there's no length to
+	// check when the new value is null.
+	if req.Environment != nil && *req.Environment != nil && len([]rune(**req.Environment)) > 40 {
 		return domain.UpdateIncidentResponse{}, &apierror.ValidationError{Msg: "environment must not exceed 40 characters"}
 	}
 
@@ -1358,7 +1363,17 @@ func (s *snIncidentService) UpdateIncident(ctx context.Context, req domain.Updat
 		IncidentReport:     req.IncidentReport,
 		AdditionalComments: req.AdditionalComments,
 		WorkNotes:          req.WorkNotes,
-		Environment:        req.Environment,
+	}
+	if req.Environment != nil {
+		var v any
+		if *req.Environment != nil {
+			v = **req.Environment
+		}
+		raw, err := rawJSONOrNull(v)
+		if err != nil {
+			return domain.UpdateIncidentResponse{}, fmt.Errorf("sn update incident: marshal environment: %w", err)
+		}
+		payload.Environment = raw
 	}
 	if req.WatchList != nil {
 		// The backing service's incident-update payload declares the watch list as
