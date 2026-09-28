@@ -77,12 +77,16 @@ function matchProductRepo(
     label: o.displayLabel.trim().toLowerCase(),
     gitLabel: (o.githubLabel ?? "").trim().toLowerCase(),
   });
-  const exact = options.find((o) => {
+  const exactHits = options.filter((o) => {
     const { label, gitLabel } = namesOf(o);
     return label === name || gitLabel === name;
   });
-  if (exact) return exact;
-  return options.find((o) => {
+  // One exact row is the product. Several exact rows, or several looser
+  // rows and no exact row, are ambiguous: filing would follow catalogue
+  // order, and the engineer can no longer pick a different repository.
+  if (exactHits.length === 1) return exactHits[0];
+  if (exactHits.length > 1) return undefined;
+  const looseHits = options.filter((o) => {
     const { label, gitLabel } = namesOf(o);
     return (
       containsTerm(name, label) ||
@@ -91,6 +95,8 @@ function matchProductRepo(
       containsTerm(gitLabel, name)
     );
   });
+  if (looseHits.length === 1) return looseHits[0];
+  return undefined;
 }
 
 // Cloud-case repositories. Fetched from GET /metadata's
@@ -118,8 +124,9 @@ export interface CreateGithubIssueDialogProps {
   defaultTitle?: string;
   /** Prefill for the Description field, taken from the case's description. */
   defaultDescription?: string;
-  /** Kept so existing callers still compile. The repository is chosen from
-   * the case product, so this no longer shows a dropdown. */
+  /** Cloud cases pass true. There is no repository dropdown either way.
+   * When true, Update Level and Public Git Issue are hidden. When false,
+   * a Patch must fill both. */
   showRepoField?: boolean;
   /** Deployed product name on the case. Matched to the catalogue. */
   productName?: string;
@@ -143,17 +150,14 @@ export interface CreateGithubIssueDialogProps {
 // ---------------------------------------------------------------------------
 
 /**
- * Form for filing an internal GitHub issue from a case (ISSU-020). Mirrors the
- * legacy ServiceNow "Open Git Issue" form. Subject + Description are always
- * required; Type is required too and drives which other fields are shown/
- * required (per review on #1085):
- *   - Query: Severity and Hotfix Required are hidden.
- *   - Incident: Severity is required; Hotfix Required is hidden.
- *   - Patch: Severity is hidden; Update Level, Public Git Issue, and Hotfix
- *     Required are all required.
- * Reason is fixed to `default` (the migration / R&D-ticket variants were
- * separate SN actions). Repo selection is offered for cloud cases; when unset
- * the SN side routes by the case's product unit.
+ * Form for filing an internal GitHub issue from a case (ISSU-020).
+ * Subject and Description are always required. Type is Patch or Discussion:
+ *   - Discussion: Severity is required. Hotfix Required is hidden.
+ *   - Patch: Severity is hidden. Hotfix Required is shown. On a non-cloud
+ *     case, Update Level and Public Git Issue are required.
+ * Migration sends reason "migration"; otherwise reason is "default".
+ * The repository comes from the case product. Submit stays disabled until
+ * exactly one catalogue row matches.
  */
 export function CreateGithubIssueDialog({
   open,
@@ -190,21 +194,15 @@ export function CreateGithubIssueDialog({
 
   // The parent only mounts this dialog once it's actually opened (see
   // CsmCaseDetailPage.tsx's `githubIssueOpen &&` guard), so this only fires
-  // per open, not on every case detail page load. `repoOptions` itself is
-  // only ever rendered when `showRepoField` is true.
+  // per open, not on every case detail page load.
   const {
     data: repoOptionsData,
     isLoading: repoOptionsLoading,
     isError: repoOptionsError,
   } = useGetGithubIssueRepoOptions();
   const repoOptions = repoOptionsData ?? [];
-  // Until this resolves (success or a confirmed-empty catalogue), a cloud
-  // case's submission must not be allowed through: handleSubmit only sets
-  // repoOverride when a repo is actually selected, and no repo can be
-  // selected before repoOptions is populated. Letting canSubmit go true in
-  // that window would silently fall back to product-unit routing — which
-  // this dialog's own doc comment above says only applies to non-cloud
-  // projects — for a case where the engineer never got the chance to choose.
+  // Submit stays disabled until the catalogue has loaded. There is no
+  // product-unit fallback when it has not.
   const repoOptionsUnavailable = repoOptionsLoading || repoOptionsError;
   const selectedRepoOption = matchProductRepo(repoOptions, productName);
 
