@@ -121,13 +121,12 @@ window.config = {
 
   // SPL (Support Portal Lite) section — ported from the former standalone
   // apps/support-portal-lite/webapp, now served by this app against the
-  // same CSM_PORTAL_BACKEND_BASE_URL above (its /spl/* routes). Empty/unset
-  // group lists below mean nobody sees the section / has the action.
-  // CSM_PORTAL_SPL_AUDIENCE_GROUPS: ["sales-team", "sales-engineering-team"],
-  // CSM_PORTAL_SPL_ADD_WORKNOTE_GROUPS: [],
-  // CSM_PORTAL_SPL_ADD_ESCALATION_GROUPS: [],
-  // CSM_PORTAL_SPL_DOWNLOAD_ATTACHMENT_GROUPS: [],
-  // CSM_PORTAL_SPL_USAGE_METRICS_GROUPS: [],
+  // same CSM_PORTAL_BACKEND_BASE_URL above (its /spl/* routes). Access is
+  // driven entirely by the signed-in user's GET /users/me roles (the
+  // sales_solutions role for the section itself, plus escalator/
+  // attachment_downloader/usage_metrics_viewer for its fine-grained
+  // actions — see AUTH_SALES_SOLUTIONS_ROLES etc. in the backend's own
+  // .env.example) — no separate frontend config needed.
 
   // Customer-onboarding status column on a project's Contacts tab: per
   // contact, how far their Customer Portal invitation got (IDENTITY /

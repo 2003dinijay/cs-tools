@@ -15,41 +15,40 @@
 // under the License.
 
 import { useMemo, type ReactNode } from "react";
-import { useAsgardeoGroups, hasAnyGroup } from "@hooks/useAsgardeoGroups";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
+import { PORTAL_ROLE } from "@context/current-user/portalAccess";
 import { SplPermissionContext, type SplPermissions } from "./splPermissionsContext";
 
-function splAddWorknoteGroups(): string[] {
-  return window.config?.CSM_PORTAL_SPL_ADD_WORKNOTE_GROUPS ?? [];
-}
-function splAddEscalationGroups(): string[] {
-  return window.config?.CSM_PORTAL_SPL_ADD_ESCALATION_GROUPS ?? [];
-}
-function splDownloadAttachmentGroups(): string[] {
-  return window.config?.CSM_PORTAL_SPL_DOWNLOAD_ATTACHMENT_GROUPS ?? [];
-}
-function splUsageMetricsGroups(): string[] {
-  return window.config?.CSM_PORTAL_SPL_USAGE_METRICS_GROUPS ?? [];
-}
-
-// Ported from apps/support-portal-lite/webapp's own SplPermissionProvider
-// (itself ported from SupportPortalLite's Ballerina-app Authorize.tsx /
-// one-wso2's version) — see useAsgardeoGroups.ts for why this reads
-// Asgardeo groups client-side rather than this app's usual backend-`roles`
-// pattern. Four independent booleans, each a group-membership check —
-// UI guidance only: the Go backend enforces its own copies of these same
-// checks server-side (internal/handler/spl_auth.go's requireSPLSubGroups).
+// Ported from apps/support-portal-lite/webapp's own SplPermissionProvider,
+// now reading the same backend-`roles` array (`GET /users/me`) as every
+// other permission check in this app instead of Asgardeo groups — see
+// useSplAccess.ts for why the earlier client-side-groups exception was
+// removed. Three independent booleans, each a role-membership check — UI
+// guidance only: the Go backend enforces its own copies of these same
+// checks server-side (internal/handler/spl_auth.go's requireSPLPermission).
 export function SplPermissionProvider({ children }: { children: ReactNode }) {
-  const { groups } = useAsgardeoGroups();
+  let roles: string[] | undefined;
+  try {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    roles = useCurrentUser().user?.roles;
+  } catch {
+    roles = undefined;
+  }
 
-  const value = useMemo<SplPermissions>(
-    () => ({
-      canAddWorkNotes: hasAnyGroup(groups, splAddWorknoteGroups()),
-      canAddEscalations: hasAnyGroup(groups, splAddEscalationGroups()),
-      canDownloadAttachments: hasAnyGroup(groups, splDownloadAttachmentGroups()),
-      canViewUsageMetrics: hasAnyGroup(groups, splUsageMetricsGroups()),
-    }),
-    [groups],
-  );
+  const value = useMemo<SplPermissions>(() => {
+    const held = new Set(roles ?? []);
+    const full = held.has(PORTAL_ROLE.csEngineer) || held.has(PORTAL_ROLE.admin);
+    return {
+      // No backend permission grants this — the /spl/cases/:id/work-notes
+      // route it once gated was removed from the Go backend before this
+      // migration, so this stays permanently false rather than being wired
+      // to a role that doesn't correspond to anything server-side.
+      canAddWorkNotes: false,
+      canAddEscalations: full || held.has(PORTAL_ROLE.escalator),
+      canDownloadAttachments: full || held.has(PORTAL_ROLE.attachmentDownloader),
+      canViewUsageMetrics: full || held.has(PORTAL_ROLE.usageMetricsViewer),
+    };
+  }, [roles]);
 
   return <SplPermissionContext.Provider value={value}>{children}</SplPermissionContext.Provider>;
 }
