@@ -477,9 +477,9 @@ func TestIncidentService_UpdateIncident_WorkNotesOnly(t *testing.T) {
 
 // TestIncidentService_UpdateIncident_NoForwardedTokenFallsBackToSystemActor
 // pins the scenario this whole UpdateIncident extension exists for: an M2M
-// caller with no end-user identity to forward at all (sre-alert-ingestion-service
-// via csm-integration-service, both M2M-only by design -- see resolveActor's
-// own doc comment). Unlike caseService.resolveActor, this must NOT 401 when
+// caller with no end-user identity to forward at all (a machine client via
+// csm-integration-service, both M2M-only by design -- see resolveActor's own
+// doc comment). Unlike caseService.resolveActor, this must NOT 401 when
 // context.Background() carries no x-user-id-token -- it must succeed, using
 // incidentSystemActorEmail as comment.created_by.
 func TestIncidentService_UpdateIncident_NoForwardedTokenFallsBackToSystemActor(t *testing.T) {

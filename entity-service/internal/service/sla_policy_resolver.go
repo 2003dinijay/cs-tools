@@ -47,7 +47,7 @@ var slaClockTypeTarget = map[string]string{
 // slaClockTypeNameLabel is the title-case word sla_policy.name uses for
 // each target, e.g. "P1 - Response (Managed Services)" -- confirmed
 // against real production sla_policy names (see this package's own
-// CLAUDE.md task notes / the migration 000089 doc comment for the full
+// CLAUDE.md task notes / the migration 0136 doc comment for the full
 // set of examples this was checked against).
 var slaClockTypeNameLabel = map[string]string{
 	slaClockTypeResponse:   "Response",
@@ -102,7 +102,7 @@ const (
 // a given severity/clock-type/plan combination, replacing the old, deleted
 // sla_clocks design's hardcoded slaDurations map (internal/service/
 // sla_policy.go before commit 116d43522) with a lookup against the real
-// ServiceNow-synced policy data (migration 000051/000052) that map never
+// ServiceNow-synced policy data (migration 0047/0048) that map never
 // read at all.
 type slaPolicyResolver struct {
 	repo repository.SLAEngineRepository
@@ -118,26 +118,32 @@ func newSLAPolicyResolver(repo repository.SLAEngineRepository) *slaPolicyResolve
 // reasons: (1) resolveCasePlan's derivation is a best-effort heuristic with
 // no reliable underlying signal (see its own doc comment) -- a wrong guess
 // must not silently drop SLA tracking for a case entirely; (2) P0 policies
-// (migration 000089) are seeded ONLY under "Managed Services" (ServiceNow's
+// (migration 0136) are seeded ONLY under "Managed Services" (ServiceNow's
 // own real data has no Open Source P0 rows either -- P0 is WSO2's most
 // severe, paid-support-only tier), so a CATASTROPHIC-severity case whose
 // project looks like Open Source must still resolve to the real P0 policy
 // rather than getting no clock at all.
 //
-// ok=false (with no error) means no policy exists under EITHER plan label
+// ok=false with a nil error means no policy exists under EITHER plan label
 // for this severity/clockType combination -- logged as a warning by the
 // caller, exactly like the old slaDurations map's "severity not in map"
-// case, never a fabricated fallback duration.
-func (r *slaPolicyResolver) resolve(ctx context.Context, severity domain.CaseSeverity, clockType, derivedPlan string) (repository.SLAPolicyRef, bool) {
+// case, never a fabricated fallback duration. A non-nil error means the
+// lookup itself failed (e.g. a database blip), NOT that the policy is
+// absent -- callers must treat these two cases differently: RegisterCaseClocks
+// safely skips either one (nothing existing is at risk), but ReviseCaseClocks
+// must NOT proceed to cancel a case's existing clocks on the strength of an
+// incomplete policy list caused by a transient lookup failure (see
+// resolveApplicablePolicies' own doc comment).
+func (r *slaPolicyResolver) resolve(ctx context.Context, severity domain.CaseSeverity, clockType, derivedPlan string) (repository.SLAPolicyRef, bool, error) {
 	prefix, ok := slaSeverityPolicyPrefix[severity]
 	if !ok {
 		slog.WarnContext(ctx, "sla engine: no policy name prefix for severity", "severity", severity)
-		return repository.SLAPolicyRef{}, false
+		return repository.SLAPolicyRef{}, false, nil
 	}
 	target, ok := slaClockTypeTarget[clockType]
 	if !ok {
 		slog.WarnContext(ctx, "sla engine: unknown clock type", "clockType", clockType)
-		return repository.SLAPolicyRef{}, false
+		return repository.SLAPolicyRef{}, false, nil
 	}
 	label := slaClockTypeNameLabel[clockType]
 
@@ -150,17 +156,17 @@ func (r *slaPolicyResolver) resolve(ctx context.Context, severity domain.CaseSev
 		name := prefix + " - " + label + " (" + plan + ")"
 		ref, err := r.repo.FindPolicyByName(ctx, name, target)
 		if err == nil {
-			return ref, true
+			return ref, true, nil
 		}
 		var notFound *apierror.NotFoundError
 		if !errors.As(err, &notFound) {
 			slog.ErrorContext(ctx, "sla engine: policy lookup failed", "name", name, "err", err)
-			return repository.SLAPolicyRef{}, false
+			return repository.SLAPolicyRef{}, false, err
 		}
 	}
 	slog.WarnContext(ctx, "sla engine: no sla_policy found for severity/clockType under either plan",
 		"severity", severity, "clockType", clockType, "triedPlans", []string{derivedPlan, altPlan})
-	return repository.SLAPolicyRef{}, false
+	return repository.SLAPolicyRef{}, false, nil
 }
 
 // resolveCasePlan is this engine's single biggest judgment call: nothing in

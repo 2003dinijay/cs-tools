@@ -185,9 +185,7 @@ func (p *Poller) processWindow(ctx context.Context, cursor, latest int64) int64 
 		}
 		outcomes[i] = slots[i].outcome // Failed: terminal, skip past it
 	}
-	// The window head is only "stuck" in the gap-timeout sense when it's specifically not-visible-yet
-	// (replication lag); a real read error (e.g. a Cosmos outage) must block indefinitely instead of
-	// eventually being skipped, or a long outage would silently drop one alert per gap timeout.
+	// Window head is stuck only when not-visible-yet (replication lag), not on read errors which must block indefinitely to avoid silent alert drops.
 	headNotFound := n > 0 && readStop == 0 && slots[0].notFound
 	for i := readStop; i < n; i++ {
 		outcomes[i] = engine.Retry // deferred to the next cycle
@@ -222,8 +220,7 @@ func (p *Poller) processWindow(ctx context.Context, cursor, latest int64) int64 
 	return target
 }
 
-// prepared holds the result of reading and normalizing one alert id. notFound is only meaningful when
-// !ready: see engine.Prepare for why it must not be conflated with other read errors.
+// prepared holds the result of reading and normalizing one alert id; notFound is only meaningful when !ready.
 type prepared struct {
 	alert    model.Alert
 	fp       string

@@ -79,23 +79,6 @@ type Config struct {
 	ServiceNowIntegrationServiceClientID     string
 	ServiceNowIntegrationServiceClientSecret string
 	ServiceNowIntegrationServiceScopes       string
-	// ConsumptionOperationBaseURL is the base URL of the Choreo subscription
-	// operation (operations/choreo-subscription-on-project-create), with the
-	// client credentials it is reached with.
-	//
-	// There is deliberately no default. The operation creates Choreo
-	// applications and issues signed licences for real customers, so a
-	// deployment that forgets to configure it must fail to register the
-	// licence route rather than quietly provision against whatever
-	// environment a baked-in default names.
-	ConsumptionOperationBaseURL      string
-	ConsumptionOperationTokenURL     string
-	ConsumptionOperationClientID     string
-	ConsumptionOperationClientSecret string
-	ConsumptionOperationScopes       string
-	// ConsumptionDualWriteEnabled controls whether provisioning state and
-	// artifacts are mirrored into Postgres alongside ServiceNow. Defaults to true.
-	ConsumptionDualWriteEnabled bool
 	// EventHubBroker/EventHubConnectionString/EventHubTopic configure this
 	// service's EventPublisherService (internal/service/
 	// event_publisher_service.go). Optional — gated on EventHubBroker being
@@ -287,7 +270,7 @@ type Config struct {
 	// source) layers on top of the per-case-derived ones (account technical
 	// owner, CRE team lead, product routing, CSM) -- see that method's own
 	// doc comment for the full EL1..EL5 cumulative rule these feed. Each one
-	// is a "group".id (migration 000073), resolved to its real member list
+	// is a "group".id (migration 0074), resolved to its real member list
 	// via team_member.group_id, NOT a single fixed address -- every
 	// configured tier notifies however many people are actually in that
 	// group. Every one of these is OPTIONAL: an unset/empty value means "no
@@ -336,12 +319,6 @@ func Load() *Config {
 		ServiceNowIntegrationServiceClientID:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID"),
 		ServiceNowIntegrationServiceClientSecret: os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET"),
 		ServiceNowIntegrationServiceScopes:       os.Getenv("SERVICENOW_INTEGRATION_SERVICE_SCOPES"),
-		ConsumptionOperationBaseURL:              os.Getenv("PRODUCT_CONSUMPTION_OPERATION_URL"),
-		ConsumptionOperationTokenURL:             os.Getenv("PRODUCT_CONSUMPTION_OPERATION_TOKEN_URL"),
-		ConsumptionOperationClientID:             os.Getenv("PRODUCT_CONSUMPTION_OPERATION_CLIENT_ID"),
-		ConsumptionOperationClientSecret:         os.Getenv("PRODUCT_CONSUMPTION_OPERATION_CLIENT_SECRET"),
-		ConsumptionOperationScopes:               os.Getenv("PRODUCT_CONSUMPTION_OPERATION_SCOPES"),
-		ConsumptionDualWriteEnabled:              getBoolOrDefault("CONSUMPTION_DUAL_WRITE_ENABLED", true),
 		EventHubBroker:                           os.Getenv("EVENT_HUB_BROKER"),
 		EventHubConnectionString:                 os.Getenv("EVENT_HUB_CONNECTION_STRING"),
 		EventHubTopic:                            os.Getenv("EVENT_HUB_TOPIC"),

@@ -114,7 +114,7 @@ type IncidentRepository interface {
 	// incident creation (see incidentService.createIncidentSNFirst's own doc
 	// comment). Unlike CaseRepository.CreateCaseFromServiceNow, no wso2ID
 	// parameter exists here: work_item.wso2_id is only required (by the
-	// work_item_wso2_id_required_by_type CHECK constraint, migration 000016)
+	// work_item_wso2_id_required_by_type CHECK constraint, migration 0021)
 	// for CASE/SERVICE_REQUEST/ANNOUNCEMENT/ENGAGEMENT/
 	// SECURITY_REPORT_ANALYSIS -- INCIDENT is deliberately excluded from that
 	// list, and ServiceNow's own incident-create response
@@ -185,6 +185,9 @@ func incidentWhereClause(f domain.SearchIncidentsFilters, priorities, states, se
 
 	if f.Number != nil && *f.Number != "" {
 		add("wi.number = $%d", *f.Number)
+	}
+	if f.CorrelationID != nil && *f.CorrelationID != "" {
+		add("inc.correlation_id = $%d", *f.CorrelationID)
 	}
 	if f.SearchQuery != "" {
 		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(f.SearchQuery)
@@ -660,7 +663,7 @@ func (r *incidentRepo) SearchIncidentActivities(ctx context.Context, req domain.
 }
 
 // incidentContactTypeToEnum maps domain.IncidentContactType to
-// incident_contact_type_enum's real labels (migration 000058) -- identity
+// incident_contact_type_enum's real labels (migration 0058) -- identity
 // for every value except "Site 24/7", where the enum spells it
 // 'SITE_24_7' but domain.IncidentContactTypeSite247 spells it "SITE_247".
 func incidentContactTypeToEnum(c domain.IncidentContactType) string {
@@ -749,13 +752,13 @@ const createIncidentFromServiceNowQuery = `
 			id, caller_id, category, impact, urgency,
 			service_id, service_offering_id, contact_type,
 			change_request_id, caused_by_id, parent_incident_id, problem_id,
-			opened_on
+			opened_on, correlation_id, environment
 		)
 		VALUES (
 			$1, $6::uuid, $7::incident_category_enum, $8::incident_impact_enum, $9::incident_urgency_enum,
 			$10::uuid, $11::uuid, $12::incident_contact_type_enum,
 			$13::uuid, $14::uuid, $15::uuid, $16::uuid,
-			NOW()
+			NOW(), $17, $18
 		)
 		RETURNING id
 	)
@@ -781,6 +784,7 @@ func (r *incidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req dom
 		req.CallerID, string(req.Category), string(req.Impact), string(req.Urgency),
 		req.ServiceID, req.ServiceOfferingID, contactType,
 		req.ChangeRequestID, req.CausedByID, req.ParentIncidentID, req.ProblemID,
+		req.CorrelationID, req.Environment,
 	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {

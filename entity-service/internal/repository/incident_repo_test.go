@@ -18,11 +18,36 @@ package repository
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
+
+func TestIncidentWhereClause_CorrelationIDExactMatch(t *testing.T) {
+	id := "fp:abc123:169000"
+	where, args := incidentWhereClause(domain.SearchIncidentsFilters{CorrelationID: &id}, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	if !strings.Contains(where, "inc.correlation_id = $1") {
+		t.Fatalf("expected an exact-match correlation_id clause, got: %s", where)
+	}
+	if len(args) != 1 || args[0] != id {
+		t.Fatalf("expected args [%q], got %v", id, args)
+	}
+}
+
+func TestIncidentWhereClause_CorrelationIDOmittedWhenAbsentOrEmpty(t *testing.T) {
+	for _, id := range []*string{nil, strPtr("")} {
+		where, args := incidentWhereClause(domain.SearchIncidentsFilters{CorrelationID: id}, nil, nil, nil, nil, nil, nil, nil, nil)
+		if strings.Contains(where, "correlation_id") {
+			t.Fatalf("expected no correlation_id clause for %v, got: %s", id, where)
+		}
+		if len(args) != 0 {
+			t.Fatalf("expected no args for %v, got %v", id, args)
+		}
+	}
+}
 
 // TestIncidentRepo_CreateIncidentComment_RejectsActivityType locks in
 // CreateIncidentComment's guard against CommentTypeActivity -- mirroring

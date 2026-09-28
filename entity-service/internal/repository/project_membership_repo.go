@@ -573,7 +573,7 @@ func syncGlobalRoles(ctx context.Context, tx pgx.Tx, userID string, wanted []str
 // of their memberships and grants or revokes each one accordingly.
 //
 // Admin is stored per project (the ADMIN project_role, reached through the
-// Admin project_group — migration 000084). The account-level role is derived
+// Admin project_group — migration 0128). The account-level role is derived
 // from it: admin on ANY project under an account means admin on EVERY project
 // under that account, and nothing outside it.
 //

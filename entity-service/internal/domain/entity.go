@@ -128,7 +128,7 @@ type UserSortBy struct {
 // Postgres data source. userType is never accepted here -- it is derived by
 // a database trigger from is_system_user and role membership (migration
 // 000007), never set directly by a caller. roles is optional; each name is
-// resolved against the role table (migration 000004) and rejected with a
+// resolved against the role table (migration 0008) and rejected with a
 // ServiceUnavailableError if any is not seeded there -- the same posture
 // syncGlobalRoles uses for the Salesforce membership ingest.
 type CreateUserRequest struct {
@@ -412,7 +412,7 @@ type AccountView struct {
 	// 000074) on the Postgres data source. Mirrors AccountRef.CreTeam.
 	CreTeam *EntityRef `json:"creTeam"`
 	// SreTeam is the account's SRE team, resolved to a named group reference
-	// -- account.sre_team_id (migration 000074) on the Postgres data
+	// -- account.sre_team_id (migration 0075) on the Postgres data
 	// source. Mirrors AccountRef.SreTeam.
 	SreTeam          *EntityRef `json:"sreTeam"`
 	ActivationDate   *string    `json:"activationDate"`
@@ -469,7 +469,7 @@ type AccountDetail struct {
 	// 000074) on the Postgres data source. Mirrors AccountRef.CreTeam.
 	CreTeam *EntityRef `json:"creTeam"`
 	// SreTeam is the account's SRE team, resolved to a named group reference
-	// -- account.sre_team_id (migration 000074) on the Postgres data
+	// -- account.sre_team_id (migration 0075) on the Postgres data
 	// source. Mirrors AccountRef.SreTeam.
 	SreTeam          *EntityRef `json:"sreTeam"`
 	ActivationDate   *string    `json:"activationDate"`
@@ -534,7 +534,7 @@ const (
 	// ledger for what it is.
 	PortalMembershipWriteEventType = "PORTAL_WRITE"
 	// SLAEngineActor is created_by/updated_by for every "sla" row the
-	// CSM-native SLA engine writes (source='CSM', migration 000088) --
+	// CSM-native SLA engine writes (source='CSM', migration 0134) --
 	// distinguishes its own rows in the audit columns from the ServiceNow
 	// sync's, which share the same table but never carry this value. See
 	// internal/service/sla_policy_resolver.go.
@@ -788,7 +788,7 @@ const (
 )
 
 // OnboardingStep is one row of onboarding_step — see migration
-// 000075_onboarding_step_table for the column semantics.
+// 0116_onboarding_step_table for the column semantics.
 type OnboardingStep struct {
 	ID               string               `json:"id"`
 	MembershipSfID   string               `json:"membershipSfId"`
@@ -882,7 +882,7 @@ const (
 // internal repository<->service handoff type for SearchProjects, never
 // serialized directly to a caller (ProjectView is). AccountID/StartDate/
 // EndDate are pointers because project.account_id/start_date/end_date
-// (migration 000009) are all nullable columns and genuinely NULL on live
+// (migration 0014) are all nullable columns and genuinely NULL on live
 // data (confirmed: 14/1956, 13/1956, 14/1956 rows respectively) -- matching
 // ProjectDetailsView's own StartDate/EndDate, which document the same
 // "may legitimately be unset" reality.
@@ -894,10 +894,16 @@ type Project struct {
 	Key              string           `json:"key"`
 	SubscriptionType SubscriptionType `json:"subscriptionType"`
 	ClosureStatus    *ClosureStatus   `json:"closureStatus"`
-	StartDate        *time.Time       `json:"startDate"`
-	EndDate          *time.Time       `json:"endDate"`
-	CreatedOn        time.Time        `json:"createdOn"`
-	UpdatedOn        time.Time        `json:"updatedOn"`
+	// ClosureState mirrors ProjectDetailsView's own field of the same name
+	// (project.wso2_closure_state) -- a distinct concept from ClosureStatus
+	// above despite the similar name: this is the raw enum label
+	// (e.g. "Suspended") SearchProjects' own ProjectView.ClosureState
+	// (ProjectClosureFields, embedded there) is populated from.
+	ClosureState *string    `json:"closureState"`
+	StartDate    *time.Time `json:"startDate"`
+	EndDate      *time.Time `json:"endDate"`
+	CreatedOn    time.Time  `json:"createdOn"`
+	UpdatedOn    time.Time  `json:"updatedOn"`
 }
 
 // ProjectAccountRef is the embedded account summary returned in project detail responses.
@@ -927,7 +933,8 @@ type ProjectAccountRef struct {
 // promotes its fields to the parent's JSON object, so the wire shape is
 // unaffected.
 type ProjectClosureFields struct {
-	// ClosureState is the project's closure/access state (ServiceNow data source only).
+	// ClosureState is the project's closure/access state (project.wso2_closure_state,
+	// migration 0014 -- populated on both data sources).
 	ClosureState *string `json:"closureState"`
 	// EndDateClosureState reflects the closure state driven by the project's end date
 	// (ServiceNow data source only).
@@ -1080,7 +1087,7 @@ type SearchProjectsRequest struct {
 	// any of the given values, e.g. ["cloud_support", "cloud_evaluation_support"].
 	// Same "no upstream filter, applied in Go" caveat as ExcludeClosureStates
 	// for the ServiceNow data source. The Postgres data source applies it as a
-	// real SQL filter against project_type.name (migrations 000026/000027,
+	// real SQL filter against project_type.name (migrations 0031/0032,
 	// joined via project.project_type_id -- the same ServiceNow project
 	// "type" reference field, normalized the same way
 	// snTypeNameToSubscriptionType normalizes it) -- a project with no
@@ -1736,8 +1743,9 @@ type DeployedProductView struct {
 type ProductRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	// Abbreviation is absent on the Postgres data source, whose products table
-	// has no equivalent column — it is populated only from ServiceNow.
+	// Abbreviation is product.code on the Postgres data source (e.g. "wso2am"
+	// for "WSO2 API Manager") -- the exact vocabulary this field's own doc
+	// comment above describes the product-updates catalogue keying on.
 	Abbreviation *string `json:"abbreviation,omitempty"`
 }
 
@@ -1777,7 +1785,7 @@ type SearchDeployedProductsResponse struct {
 // than a product/version. Needed for EOL/product-version-targeted
 // announcements: there is no existing query path from "product X, version Y"
 // back to the projects running it. Supported on both data sources: Postgres
-// resolves it directly via deployed_product.project_id (migration 000014's
+// resolves it directly via deployed_product.project_id (migration 0019's
 // FK straight to project), ServiceNow via a platform-wide deployment scan
 // (see that data source's own implementation).
 //
@@ -2107,7 +2115,7 @@ type AccountRef struct {
 	// 000074) on the Postgres data source, see CaseRepository.GetCaseByID.
 	CreTeam *EntityRef `json:"creTeam,omitempty"`
 	// SreTeam is the account's SRE team, resolved to a named group reference
-	// -- account.sre_team_id (migration 000074) on the Postgres data
+	// -- account.sre_team_id (migration 0075) on the Postgres data
 	// source, see CaseRepository.GetCaseByID.
 	SreTeam *EntityRef `json:"sreTeam,omitempty"`
 }
@@ -2271,7 +2279,7 @@ type CaseView struct {
 	Cause           *CaseCause          `json:"cause"`
 	ResolutionNotes *string             `json:"resolutionNotes"`
 	// WatchList is the set of users watching the case. For the Postgres data
-	// source this is backed by work_item_watcher (migration 000040).
+	// source this is backed by work_item_watcher (migration 0042).
 	WatchList []WatchListUser `json:"watchList,omitempty"`
 	// AutoclosureStep indicates where the case sits in ServiceNow's staged auto-closure
 	// sequence: DEFAULT -> FIRST_COMMENT -> ON_HOLD -> SECOND_COMMENT. Read-only —
@@ -3523,7 +3531,7 @@ const (
 	ChangeRequestTypeSiteReliabilityOps ChangeRequestType = "site_reliability_ops"
 	ChangeRequestTypeAzure              ChangeRequestType = "azure"
 	// The following four have no ServiceNow-data-source equivalent today --
-	// added for change_request.change_model (migration 000055), whose real
+	// added for change_request.change_model (migration 0056), whose real
 	// enum values only partially overlap this type's existing ones (see
 	// changeRequestChangeModelToType in change_request_repo.go).
 	ChangeRequestTypeChangeRegistration  ChangeRequestType = "change_registration"
@@ -3870,7 +3878,7 @@ type SearchContactsFilters struct {
 }
 
 // ProjectContact is a contact associated with a project. For the Postgres
-// data source, backed by the project_contact table (migration 000022).
+// data source, backed by the project_contact table (migration 0027).
 type ProjectContact struct {
 	// ID is the contact's user id, for linking a row to that user's profile. Nil when
 	// the row has no contact record linked, or when the backing instance predates the
@@ -3933,7 +3941,7 @@ type SearchProjectContactsResponse struct {
 }
 
 // AccountContact is a contact associated with an account. For the Postgres
-// data source, backed by the account_contact table (migration 000020).
+// data source, backed by the account_contact table (migration 0026).
 type AccountContact struct {
 	Name      string `json:"name"`
 	Email     string `json:"email"`
@@ -4991,6 +4999,13 @@ type SearchIncidentsFilters struct {
 	// ServiceNow's `number` column, routed as a first-class filter rather
 	// than through the free-text SearchQuery scan.
 	Number *string `json:"number,omitempty"`
+	// CorrelationID filters to the incident whose ServiceNow `correlation_id`
+	// exactly matches (optional). Lets an external system (e.g. a monitoring
+	// integration) look up an incident it previously created by the same
+	// caller-supplied key it passed to CreateIncidentRequest.CorrelationID,
+	// without depending on free-text SearchQuery matching visible fields like
+	// Subject or WorkNotes.
+	CorrelationID *string `json:"correlationId,omitempty"`
 	// Filters is the generic field/op/values filter array. Supported fields:
 	//   - "state" (op in): domain IncidentState enum values (NEW,
 	//     IN_PROGRESS, ON_HOLD, RESOLVED, CLOSED, CANCELLED), translated to
@@ -5220,6 +5235,19 @@ type CreateIncidentRequest struct {
 	ChangeRequestID     *string              `json:"changeRequestId,omitempty"`
 	ProblemID           *string              `json:"problemId,omitempty"`
 	CausedByID          *string              `json:"causedById,omitempty"`
+	// CorrelationID is an optional caller-supplied external-system key, stored
+	// on ServiceNow's stock `correlation_id` field. Lets a monitoring
+	// integration find an incident it already created (SearchIncidentsFilters.
+	// CorrelationID) without depending on free-text search over Subject or
+	// WorkNotes, and without exposing an internal dedup tag in either of
+	// those human-visible fields.
+	CorrelationID *string `json:"correlationId,omitempty"`
+	// Environment is an optional caller-supplied label (e.g. "Staging",
+	// "Production") identifying the environment the source alert fired
+	// against. Maps to ServiceNow's own custom incident.u_enviroment field
+	// (max length 40; name kept as ServiceNow spells it, misspelling
+	// included). Also persisted on this service's own Postgres incident row.
+	Environment *string `json:"environment,omitempty"`
 }
 
 // CreateIncidentResponse is the output for POST /incidents.
@@ -5262,6 +5290,12 @@ type UpdateIncidentRequest struct {
 	AdditionalComments  *string                 `json:"additionalComments,omitempty"`
 	WorkNotes           *string                 `json:"workNotes,omitempty"`
 	WatchList           *[]string               `json:"watchList,omitempty"`
+	// Environment: see CreateIncidentRequest.Environment doc comment. Double
+	// pointer distinguishes "omitted" (nil) from an explicit `null` clear
+	// (non-nil outer, nil inner) from a new value (non-nil, non-nil) -- a
+	// single *string can't tell omitted apart from explicit null on decode,
+	// same convention as ChangeRequest's CustomerGroupID.
+	Environment **string `json:"environment"`
 }
 
 // UpdateIncidentResponse is the output for PATCH /incidents/{id}.
@@ -5298,6 +5332,7 @@ type IncidentView struct {
 	ContactType        *string                 `json:"contactType"`
 	Impact             *string                 `json:"impact"`
 	Urgency            *string                 `json:"urgency"`
+	Environment        *string                 `json:"environment"`
 	ChangeRequest      *EntityRef              `json:"changeRequest"`
 	Problem            *EntityRef              `json:"problem"`
 	CausedBy           *EntityRef              `json:"causedBy"`

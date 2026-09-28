@@ -19,13 +19,11 @@ package server
 import (
 	"context"
 	"log"
-	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/choreosubscription"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/github"
@@ -83,85 +81,6 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if db != nil {
 		eventPublishFailureSvc = service.NewEventPublishFailureService(repository.NewEventPublishFailureRepository(db))
 		eventPublishFailureHandler = handler.NewEventPublishFailureHandler(eventPublishFailureSvc)
-	}
-
-	// Project consumption is gated on having a database, NOT on the data
-	// source. It used to be Postgres-only, on the reasoning that ServiceNow
-	// deployments keep this state on the customer_project record; it now
-	// dual-writes both stores, and staging and production run
-	// DATA_SOURCE=servicenow, so gating on the data source would have disabled
-	// the feature exactly where it is needed. ServiceNow remains the source of
-	// truth for status, reached through the Choreo subscription operation.
-	//
-	// The two halves are configured independently, because they need different
-	// things and failing one must not take out the other.
-	//
-	// Reading and writing the stored state needs a pool. Issuing a licence does
-	// not:
-	// the sequence reads status from ServiceNow and runs through the Choreo
-	// operation, touching Postgres only to mirror state, which is best-effort
-	// and skipped entirely when there is no repository. Gating the licence
-	// route on the database would take licence downloads out of any deployment
-	// that happens not to have one — and the customer portal now issues every
-	// licence through this service.
-	//
-	// Every path that leaves a route unregistered says so at startup. A
-	// disabled route is otherwise indistinguishable from a typo in the URL —
-	// both are a bare 404 — and the one thing a person debugging that 404
-	// cannot discover from the outside is that the service deliberately chose
-	// not to register it.
-	// Not logged when db is nil: with no database pool configured, stored state
-	// cannot be registered. The licence route below does not depend on it.
-	var consumptionRepo repository.ProjectConsumptionRepository
-	if db != nil {
-		consumptionRepo = repository.NewProjectConsumptionRepository(db)
-	}
-
-	// Provisioning reaches an upstream that mints Choreo applications for real
-	// customers, so an unconfigured or partially-configured operation leaves
-	// the route absent rather than registering something that fails — or worse,
-	// succeeds — against the wrong environment.
-	var choreoClient choreosubscription.Client
-	if cfg.ConsumptionOperationBaseURL == "" {
-		slog.Info("deployment licence route not registered: PRODUCT_CONSUMPTION_OPERATION_URL is unset",
-			"routes", "POST /projects/{id}/deployments/{deploymentId}/license")
-	} else {
-		client, err := choreosubscription.NewClient(choreosubscription.Config{
-			BaseURL: cfg.ConsumptionOperationBaseURL,
-			Creds: choreosubscription.ClientCredentialsConfig{
-				TokenURL:     cfg.ConsumptionOperationTokenURL,
-				ClientID:     cfg.ConsumptionOperationClientID,
-				ClientSecret: cfg.ConsumptionOperationClientSecret,
-				Scopes:       cfg.ConsumptionOperationScopes,
-			},
-		})
-		if err != nil {
-			// The error names the offending field, never a credential value.
-			slog.Error("deployment licence route not registered: the product-consumption operation is not configured correctly",
-				"routes", "POST /projects/{id}/deployments/{deploymentId}/license", "error", err)
-		} else {
-			choreoClient = client
-		}
-	}
-
-	consumptionStateEnabled := consumptionRepo != nil
-	licenseProvisioningEnabled := choreoClient != nil
-
-	var projectConsumptionHandler *handler.ProjectConsumptionHandler
-	if consumptionStateEnabled || licenseProvisioningEnabled {
-		if !consumptionStateEnabled {
-			slog.Info("deployment licence route registered without Postgres state",
-				"routes", "POST /projects/{id}/deployments/{deploymentId}/license",
-				"reason", "ServiceNow remains the source of truth for status; the Postgres mirror is skipped")
-		}
-		projectConsumptionHandler = handler.NewProjectConsumptionHandler(
-			service.NewProjectConsumptionService(
-				consumptionRepo,
-				choreoClient,
-				accessSvc,
-				cfg.ConsumptionDualWriteEnabled,
-			),
-		)
 	}
 
 	// EventPublisherService is optional, like every ServiceNow-only
@@ -545,9 +464,19 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	deployedProductRepo := repository.NewDeployedProductRepository(db)
 	var activeDeployedProductSvc service.DeployedProductService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeDeployedProductSvc = service.NewServiceNowDeployedProductService(serviceNowIntegrationServiceClient, activeDeploymentSvc, activeProjectSvc)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		// CreateDeployedProduct is ServiceNow-first and synchronous;
+		// UpdateDeployedProduct is Postgres-first with an asynchronous
+		// ServiceNow mirror -- see
+		// deployedProductService.createDeployedProductSNFirst/UpdateDeployedProduct's
+		// own doc comments for the full reasoning (the same CREATE-vs-UPDATE
+		// asymmetry as deploymentService/caseService).
+		snDeployedProductMirrorSvc := service.NewServiceNowDeployedProductService(serviceNowIntegrationServiceClient, activeDeploymentSvc, activeProjectSvc)
+		activeDeployedProductSvc = service.NewDeployedProductServiceWithSNWriteback(deployedProductRepo, snWritebackDispatcher, snDeployedProductMirrorSvc)
+	default:
 		activeDeployedProductSvc = service.NewDeployedProductService(deployedProductRepo)
 	}
 	deployedProductHandler := handler.NewDeployedProductHandler(activeDeployedProductSvc)
@@ -566,7 +495,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	// The CSM-native SLA engine (internal/service/sla_engine_service.go)
 	// writes its own source='CSM' rows into the "sla"/"sla_policy" tables
-	// the ServiceNow sync also populates (migration 000088) -- gated on db
+	// the ServiceNow sync also populates (migration 0134) -- gated on db
 	// the same way slaStatusHandler above is: nowhere to store a clock at
 	// all with no database configured. activeProjectSvc backs its
 	// plan-derivation heuristic (see sla_policy_resolver.go's
@@ -678,7 +607,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc, cfg.M2MTrustedActorEmails)
 
-	// customer_call (migration 000072) backs call requests on the Postgres
+	// customer_call (migration 0073) backs call requests on the Postgres
 	// data source, so these routes are registered for both data sources.
 	callRequestRepo := repository.NewCallRequestRepository(db)
 	var activeCallRequestSvc service.CallRequestService
@@ -711,7 +640,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		caseGithubIssueHandler = handler.NewCaseGithubIssueHandler(service.NewServiceNowCaseGithubIssueService(serviceNowIntegrationServiceClient, activeCaseSvc))
 	}
 
-	// case_escalation/case_escalation_notification_list (migration 000053)
+	// case_escalation/case_escalation_notification_list (migration 0054)
 	// now back both SearchEscalations and CreateEscalation on Postgres for
 	// real -- see EscalationRepository.CreateEscalation's own doc comment
 	// for the level-transition/notification-recipient rule this
@@ -861,14 +790,19 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	case config.DataSourceServiceNow:
 		activeProblemSvc = service.NewServiceNowProblemService(serviceNowIntegrationServiceClient)
 	case config.DataSourcePostgresServiceNowDualWrite:
-		// Pilot extension: problem CREATE only, same ServiceNow-first,
-		// synchronous shape as the case/incident/change-request pilots
-		// above -- see problemService.createProblemSNFirst's own doc
-		// comment. Reads stay on Postgres in this mode;
-		// snProblemMirrorSvc's CreateProblem is the only method of it this
-		// mode ever calls.
+		// Pilot extension: problem CREATE (ServiceNow-first, synchronous,
+		// same shape as the case/incident/change-request pilots above -- see
+		// problemService.createProblemSNFirst's own doc comment) plus problem
+		// UPDATE (Postgres-first, best-effort async ServiceNow mirror -- see
+		// problemService.UpdateProblem's own doc comment). Reads stay on
+		// Postgres in this mode; snProblemMirrorSvc's CreateProblem/
+		// UpdateProblem are the only methods of it this mode ever calls.
+		//
+		// snWritebackDispatcher (the single shared instance constructed once
+		// above) is reused as-is for problem UPDATE's async ServiceNow
+		// mirror, same as incident's own dual-write branch above.
 		snProblemMirrorSvc := service.NewServiceNowProblemService(serviceNowIntegrationServiceClient)
-		activeProblemSvc = service.NewProblemServiceWithSNMirror(problemRepo, snProblemMirrorSvc)
+		activeProblemSvc = service.NewProblemServiceWithSNMirror(problemRepo, snProblemMirrorSvc, snWritebackDispatcher)
 	default:
 		activeProblemSvc = service.NewProblemService(problemRepo)
 	}
@@ -922,7 +856,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		))
 	}
 
-	// instance/usage tracking tables (migration 000054) -- see
+	// instance/usage tracking tables (migration 0054) -- see
 	// instance_repo.go's own doc comment for the caveats around resolving an
 	// instance's project/deployment/deployed-product references on this data
 	// source.
@@ -1113,15 +1047,6 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	mux.HandleFunc("GET /projects/{id}", projectHandler.GetProject)
 	mux.HandleFunc("POST /projects/search", projectHandler.SearchProjects)
-	// Registered independently: the stored-state routes read and write
-	// Postgres, the licence route does not need it at all.
-	if consumptionStateEnabled {
-		mux.HandleFunc("GET /projects/{id}/consumption", projectConsumptionHandler.GetProjectConsumption)
-		mux.HandleFunc("PATCH /projects/{id}/consumption", projectConsumptionHandler.UpdateProjectConsumption)
-	}
-	if licenseProvisioningEnabled {
-		mux.HandleFunc("POST /projects/{id}/deployments/{deploymentId}/license", projectConsumptionHandler.GetDeploymentLicense)
-	}
 	mux.HandleFunc("POST /projects/{id}/contacts/search", projectContactHandler.SearchProjectContacts)
 	mux.HandleFunc("GET /projects/{id}/contacts/{contactId}", projectContactHandler.GetProjectContact)
 	if projectMembershipHandler != nil {

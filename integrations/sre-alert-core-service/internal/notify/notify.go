@@ -94,29 +94,20 @@ func splitURLs(raw string) []string {
 	return urls
 }
 
-// DedupTag includes FirstSeen so a tag changes when a closed incident's fingerprint recurs.
-// Millisecond precision matches Cassandra's timestamp column, so a same-second recurrence still gets a distinct tag.
+// DedupTag includes FirstSeen for uniqueness; millisecond precision ensures same-second recurrences get distinct tags.
 func DedupTag(fingerprint string, firstSeen time.Time) string {
 	return fmt.Sprintf("[fp:%s:%d]", fingerprint[:12], firstSeen.UnixMilli())
 }
 
-// NotifyCSM returns permanent=true when CSM rejected the payload (non-429 4xx); retrying won't help.
-// Every call from deliverAndPersist while CSMConfirmed is false is itself a retry (RetrySweep calls it
-// again every sweep interval until confirmed). deliverAndPersist durably bumps inc.CSMAttempts *before*
-// calling this method, so the value observed here already counts the current attempt: CSMAttempts == 1
-// means this is the very first attempt for this incident generation (no prior CreateIncident could have
-// happened), and CSMAttempts > 1 means an earlier attempt may already have called CreateIncident and
-// lost the response. Failing open on a search error in the latter case would create a second CSM
-// incident; only the genuine first attempt may fail open.
+// NotifyCSM returns permanent=true for non-retryable rejections (non-429 4xx). CSMAttempts >= 1 already counts current attempt; only first attempts fail open on search errors.
 func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident) (incidentID, incidentNumber string, ok bool, permanent bool) {
 	tag := DedupTag(inc.Fingerprint, inc.FirstSeen)
-	if id, number, found, err := n.csm.SearchIncidentByTag(ctx, tag); err != nil {
+	if id, number, found, err := n.csm.SearchIncidentByCorrelationID(ctx, tag); err != nil {
 		if inc.CSMAttempts > 1 {
 			n.logger.Warn("csm dedup search failed on retry, deferring to avoid a duplicate create", "incident_number", inc.IncidentNumber, "error", err)
 			return "", "", false, false
 		}
-		// Fail open: this is the first attempt, so no prior create could have happened; a search error
-		// doesn't prove no incident exists, but there's nothing yet to duplicate.
+		// Fail open: first attempt, so no prior create possible; search error doesn't prove no incident exists.
 		n.logger.Warn("csm dedup search failed, proceeding to create", "incident_number", inc.IncidentNumber, "error", err)
 	} else if found {
 		n.logger.Info("found existing csm incident via dedup search, reusing", "incident_id", id, "incident_number", number)
@@ -130,15 +121,20 @@ func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident) (incidentI
 	}
 
 	req := csm.CreateIncidentRequest{
-		CallerID:  n.callerID,
-		Category:  csmCategory(inc.Category),
-		ServiceID: serviceID,
-		Impact:    inc.Impact,
-		Urgency:   inc.Urgency,
-		Subject:   tag + " " + incidentSubject(inc),
+		CallerID:      n.callerID,
+		Category:      csmCategory(inc.Category),
+		ServiceID:     serviceID,
+		Impact:        inc.Impact,
+		Urgency:       inc.Urgency,
+		Subject:       incidentSubject(inc),
+		CorrelationID: &tag,
 	}
 	if inc.Description != "" {
 		req.WorkNotes = &inc.Description
+	}
+	if inc.Environment != "" {
+		env := truncateRunes(inc.Environment, maxEnvironmentLen)
+		req.Environment = &env
 	}
 
 	res, err := n.createIncidentWithRetry(ctx, tag, req)
@@ -177,9 +173,8 @@ func (n *Notifier) createIncidentWithRetry(ctx context.Context, tag string, req 
 	err := backoff.Retry(func() error {
 		attempt++
 		if attempt > 1 {
-			// A prior attempt may have succeeded on CSM's side with its response lost; CreateIncident
-			// isn't idempotent, so a search error must not fall through to another create.
-			id, number, found, err := n.csm.SearchIncidentByTag(ctx, tag)
+			// Recheck dedup on retry: prior attempt may have succeeded but lost response; CreateIncident isn't idempotent.
+			id, number, found, err := n.csm.SearchIncidentByCorrelationID(ctx, tag)
 			if err != nil {
 				return fmt.Errorf("dedup search before retry: %w", err)
 			}
@@ -225,6 +220,19 @@ func (n *Notifier) resolveServiceID(ctx context.Context, label string) (string, 
 	return id, nil
 }
 
+// maxEnvironmentLen matches ServiceNow's custom incident.u_enviroment field's max_length.
+const maxEnvironmentLen = 40
+
+// truncateRunes bounds s to at most n runes, so a caller-supplied value never
+// overflows a downstream fixed-width field like ServiceNow's u_enviroment.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
 var csmCategoryMap = map[string]string{
 	"security": "SECURITY",
 	"inquiry":  "INQUIRY",
@@ -238,13 +246,15 @@ func csmCategory(category string) string {
 	return "SERVICE_INTERRUPTION"
 }
 
+// incidentSubject is the metric name alone; the dedup tag and other alert context live in WorkNotes instead of the title.
 func incidentSubject(inc model.Incident) string {
-	subject := inc.Service
-	if inc.MetricName != "" {
-		subject += " - " + inc.MetricName
+	subject := inc.MetricName
+	if subject == "" {
+		subject = inc.Service
 	}
-	if inc.Environment != "" {
-		subject += " (" + inc.Environment + ")"
+	if inc.Fallback {
+		// Chat already fired before CSM confirmed, so this create call is a delayed catch-up, not a fresh occurrence.
+		subject = "[DELAYED-CSM] " + subject
 	}
 	return subject
 }

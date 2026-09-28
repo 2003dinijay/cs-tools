@@ -32,7 +32,7 @@ import (
 )
 
 // EscalationRepository defines the persistence operations for case_escalation
-// and case_escalation_notification_list (migration 000053).
+// and case_escalation_notification_list (migration 0054).
 type EscalationRepository interface {
 	// SearchEscalations returns a filtered, sorted, paginated slice of
 	// escalations together with the total count of matching rows before
@@ -142,7 +142,7 @@ type EscalationNotificationConfig struct {
 }
 
 // groupMemberResolver resolves a "group".id to its real member user ids, via
-// team_member.group_id (migration 000074) -- that column was added
+// team_member.group_id (migration 0075) -- that column was added
 // specifically for group membership but had no consumer until this one. An
 // interface, not a direct query call, so tests can substitute an in-memory
 // fixture instead of a real team_member table (see escalation_repo_test.go's
@@ -408,7 +408,7 @@ const maxEscalationLevel = 5
 // escalationLevelInt parses a nullable current_level/previous_level column
 // ("EL0".."EL5", or NULL for a case never escalated) into a plain 0..5 int.
 // NULL is treated as EL0 -- "case".current_escalation_level/is_escalated
-// have no NOT NULL constraint or default (migration 000018), and a case
+// have no NOT NULL constraint or default (migration 0023), and a case
 // that's never been escalated is exactly the EL0 state.
 func escalationLevelInt(raw *string) int {
 	if raw == nil {

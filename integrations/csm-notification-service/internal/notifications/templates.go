@@ -18,11 +18,14 @@ package notifications
 
 import (
 	_ "embed"
+	"encoding/base64"
+	"fmt"
 	"html"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	xhtml "golang.org/x/net/html"
 )
@@ -110,16 +113,148 @@ var safeLinkSchemes = map[string]bool{
 }
 
 // safeImageDataURI matches a self-contained base64-encoded image data URI —
-// the ONLY form of <img src> sanitizeRichText allows through. Never an
-// http(s) URL: an externally-hosted image would have the recipient's mail
-// client fetch it the moment the email is opened, a classic tracking-pixel/
-// read-receipt leak (their IP, mail client, and open time, all revealed to
-// whoever controls that URL) that a comment's own author could embed
-// without the recipient ever knowing. The portal's own rich-text editor
-// only ever produces a data: URI for an inserted image in the first place
-// (apps/customer-portal/webapp's richTextEditor.tsx), so this loses no real
-// functionality.
-var safeImageDataURI = regexp.MustCompile(`(?i)^data:image/[a-z0-9.+-]+;base64,[a-z0-9+/]+=*$`)
+// the ONLY form of <img src> sanitizeRichText accepts as a source image.
+// Never an http(s) URL: an externally-hosted image would have the
+// recipient's mail client fetch it the moment the email is opened, a
+// classic tracking-pixel/read-receipt leak (their IP, mail client, and open
+// time, all revealed to whoever controls that URL) that a comment's own
+// author could embed without the recipient ever knowing. The portal's own
+// rich-text editor only ever produces a data: URI for an inserted image in
+// the first place (apps/customer-portal/webapp's richTextEditor.tsx), so
+// this loses no real functionality. A matching image is never re-embedded
+// as a data: URI in the output HTML, though — see InlineImage below.
+//
+// The media-type component is a fixed allow-list of raster formats
+// (png/jpeg/jpg/gif/webp), deliberately not a general "image/*" wildcard —
+// image/svg+xml is XML, not a raster format, and can carry a <script> tag
+// or an onload= event handler that some mail clients execute when they
+// render an inline image; a wildcard would have let a comment's own author
+// smuggle active content in as an "image." inlineImageExtensions
+// (dispatch.go) mirrors this exact list for its own reason (a file
+// extension for the resulting EmailAttachment's ContentName) — keep both
+// lists in sync if this one ever changes.
+var safeImageDataURI = regexp.MustCompile(`(?i)^data:(image/(?:png|jpe?g|gif|webp));base64,([a-z0-9+/]+=*)$`)
+
+// maxInlineImageBytes bounds one inline image's decoded size — without a
+// cap, a single comment could embed an image large enough to bloat the
+// outgoing email past email-service's own request-body limit (10MB
+// default, README.md there) or meaningfully inflate this process's memory
+// use while rendering. 5MB comfortably covers a real pasted screenshot
+// (typically well under 1MB) with headroom to spare.
+const maxInlineImageBytes = 5 * 1024 * 1024
+
+// maxTotalInlineImageBytes bounds the combined decoded size of every image
+// extracted toward ONE rendered email — see inlineImageBudget, which is
+// what actually enforces this across however many sanitizeRichText calls
+// that email's Render* function makes. maxInlineImageBytes alone doesn't
+// prevent several images that are each individually within budget from
+// still summing past email-service's own 10MB request-body limit once
+// base64-re-encoded for the JSON attachments array (base64 inflates size
+// by roughly 4/3 — two untouched 5MB images alone would already exceed
+// it). 6MB of combined raw image bytes encodes to about 8MB, leaving
+// headroom in that 10MB budget for the HTML body and JSON structure
+// overhead.
+const maxTotalInlineImageBytes = 6 * 1024 * 1024
+
+// maxInlineImagesPerComment bounds how many images toward ONE rendered
+// email inlineImageBudget will allow across however many sanitizeRichText
+// calls that email's Render* function makes — a real comment realistically
+// embeds one or two pasted screenshots, not dozens; this caps the worst
+// case (a comment crafted to embed many images) rather than trusting input
+// size alone. Once reached, every further <img> is dropped exactly like an
+// unsafe one (logged nowhere, same as any other rejected tag) — silently,
+// not an error, since a truncated comment still rendering is better than
+// the whole email failing to send over one over-decorated comment.
+const maxInlineImagesPerComment = 10
+
+// inlineImageBudget tracks how much of maxTotalInlineImageBytes/
+// maxInlineImagesPerComment has already been spent toward ONE rendered
+// email. A caller that renders more than one rich-text field into the same
+// email (RenderCaseCreatedEmail: Description + IncidentImpactDescription;
+// RenderCRPlanDateNoticeEmail: ShortDescription + Description) must share a
+// single *inlineImageBudget across both sanitizeRichText calls — a fresh
+// budget per call would let each field independently max out, and the two
+// fields' attachments still land on the same outgoing email/request. A
+// caller with only one rich-text field just constructs one and uses it
+// once.
+type inlineImageBudget struct {
+	totalBytes int
+	count      int
+}
+
+// allow reports whether one more image of size decoded bytes still fits
+// within this budget, and — only if so — reserves the space by updating
+// the running totals. Checking and reserving in one call keeps this
+// correct even though sanitizeRichText's own <img> branch calls it once
+// per candidate image with no other synchronization.
+func (b *inlineImageBudget) allow(size int) bool {
+	if b.count >= maxInlineImagesPerComment || size > maxInlineImageBytes || b.totalBytes+size > maxTotalInlineImageBytes {
+		return false
+	}
+	b.count++
+	b.totalBytes += size
+	return true
+}
+
+// InlineImage is one image sanitizeRichText extracted out of a data: URI
+// <img> tag. The caller (dispatch, via notifications.Render*) is
+// responsible for sending it as a real MIME attachment with
+// Content-Disposition: inline and this exact ContentID (EmailClient's
+// EmailAttachment carries both) — the returned HTML only ever contains a
+// short <img src="cid:<contentId>"> reference, never the original data:
+// URI. This exists because Gmail (and most major webmail clients) strip a
+// data: image src from received HTML on render, regardless of how
+// correctly it's encoded — the same reason internal/notifications' own
+// wso2LogoURL switched the WSO2 logo off a baked-in data: URI. A proper
+// cid:-referenced MIME part is the universally-supported way any mail
+// client renders an inline image; entity-service has no way to produce
+// one, hence this extraction step. See ServiceNow's own outbound mail (a
+// separate, native pipeline unrelated to this one) for a real example of
+// exactly this MIME shape — multipart/related, an inline part with a
+// Content-ID, and an <img src="cid:..."> reference.
+type InlineImage struct {
+	// ContentID is this image's Content-ID, without the RFC 2392 angle
+	// brackets (EmailClient adds those, matching how it wraps the id when
+	// building the actual header) — a value unique within THIS rendered
+	// email, matching the cid: reference sanitizeRichText wrote in its own
+	// HTML output. Generated by nextInlineImageContentID, never
+	// caller-supplied.
+	ContentID string
+	// ContentType is the image's MIME type (e.g. "image/png"), read
+	// straight out of the data: URI's own media-type component.
+	ContentType string
+	// Data is the decoded (no longer base64) image bytes.
+	Data []byte
+}
+
+// inlineImageContentIDDomain is the domain component nextInlineImageContentID
+// appends to every Content-ID it generates — not a real, resolvable
+// hostname, just a fixed placeholder identifying this service as the
+// minting system. email-service's own handler requires an inline
+// attachment's contentId to be shaped like RFC 2392's addr-spec
+// (local-part@domain) and rejects a bare token outright, so this can't be
+// left off.
+const inlineImageContentIDDomain = "csm-notification-service.internal"
+
+// inlineImageSeq is a process-wide counter backing nextInlineImageContentID
+// — atomic since sanitizeRichText can run concurrently across dispatch's
+// own concurrent Handle calls (see dispatch.go's own concurrency notes).
+// Only cross-call uniqueness matters (a Content-ID only has to be unique
+// within the one email it's attached to), but a shared counter is the
+// simplest way to guarantee that without adding a randomness source purely
+// for this.
+var inlineImageSeq int64
+
+// nextInlineImageContentID returns a new, process-wide-unique Content-ID
+// for one extracted InlineImage, already shaped as RFC 2392's addr-spec —
+// see inlineImageContentIDDomain's own doc comment for why. This exact
+// string is used both as the value written into the returned HTML's own
+// cid: reference and as the EmailAttachment.ContentID eventually sent to
+// email-service — the two must always match verbatim, so this is the one
+// and only place a Content-ID is minted.
+func nextInlineImageContentID() string {
+	return fmt.Sprintf("inline-image-%d@%s", atomic.AddInt64(&inlineImageSeq, 1), inlineImageContentIDDomain)
+}
 
 // isSafeLinkHref reports whether href is safe to render as a clickable
 // <a href> in an email — see safeLinkSchemes' own doc comment. An
@@ -156,7 +291,17 @@ func drainAttrs(z *xhtml.Tokenizer, hasAttr bool) {
 // safe HTML fragment for embedding in an email body: structure (paragraphs,
 // line breaks, lists), basic formatting (bold/italic/underline), hyperlinks,
 // and inline images are preserved; everything else is dropped down to its
-// own inner text.
+// own inner text. Also returns every InlineImage it extracted along the
+// way — the caller (a Render* function, ultimately dispatch) is
+// responsible for sending each one back to EmailClient.SendEmail as an
+// inline EmailAttachment, since the returned HTML only ever contains a
+// short cid: reference, never the original data: URI. budget tracks how
+// much of maxTotalInlineImageBytes/maxInlineImagesPerComment remains for
+// the email this call's result will end up part of — see
+// inlineImageBudget's own doc comment for why a caller rendering more than
+// one rich-text field into the same email must share a single budget
+// across every sanitizeRichText call it makes, rather than passing a fresh
+// one each time.
 //
 // Uses a real HTML tokenizer (golang.org/x/net/html), not a regex — a
 // hand-rolled regex sanitizer can't reliably reject malformed/adversarial
@@ -180,7 +325,8 @@ func drainAttrs(z *xhtml.Tokenizer, hasAttr bool) {
 //     attribute is dropped, and an unsafe/unparseable href drops the tag
 //     but keeps the link's own visible text
 //   - img: only when src is a safeImageDataURI — see that var's own doc
-//     comment for why http(s) is never allowed. alt is preserved if present
+//     comment for why http(s) is never allowed. alt is preserved if
+//     present; src itself is never kept as a data: URI — see InlineImage
 //
 // Every other tag (span, font, table, script, ...) is dropped, keeping its
 // inner text as plain (escaped) content — the same "no allow-list to get
@@ -214,15 +360,16 @@ func trimBoundaryBreaks(s string) string {
 	return s
 }
 
-func sanitizeRichText(s string) string {
+func sanitizeRichText(s string, budget *inlineImageBudget) (string, []InlineImage) {
 	z := xhtml.NewTokenizer(strings.NewReader(s))
 	var b strings.Builder
 	var stack []openTag
+	var images []InlineImage
 
 	for {
 		switch z.Next() {
 		case xhtml.ErrorToken:
-			return trimBoundaryBreaks(b.String())
+			return trimBoundaryBreaks(b.String()), images
 
 		case xhtml.TextToken:
 			b.WriteString(escapeHTML(string(z.Text())))
@@ -252,8 +399,26 @@ func sanitizeRichText(s string) string {
 						alt = string(val)
 					}
 				}
-				if safeImageDataURI.MatchString(src) {
-					b.WriteString(`<img src="` + escapeHTML(src) + `" alt="` + escapeHTML(alt) + `" style="max-width:100%;height:auto;">`)
+				// A base64 payload that fails to decode, or one budget.allow
+				// rejects (too big on its own, or would push this email's
+				// shared running total/count past its caps), is dropped
+				// silently, same as any other rejected <img> — the regex
+				// already rejected anything not shaped like valid base64,
+				// so a decode failure here only ever catches an edge case
+				// (e.g. non-canonical padding) the regex alone can't.
+				if m := safeImageDataURI.FindStringSubmatch(src); m != nil {
+					if data, err := base64.StdEncoding.DecodeString(m[2]); err == nil && budget.allow(len(data)) {
+						contentID := nextInlineImageContentID()
+						images = append(images, InlineImage{ContentID: contentID, ContentType: m[1], Data: data})
+						// The surrounding <br>s plus display:block take the image
+						// out of the inline line box it would otherwise share with
+						// adjacent text spans. Left inline, some renderers
+						// (confirmed: Outlook web/desktop) visually reorder a tall
+						// inline image ahead of the text it was inserted after,
+						// even though the underlying HTML keeps the original
+						// text-then-image source order — a real reported bug.
+						b.WriteString(`<br><img src="cid:` + contentID + `" alt="` + escapeHTML(alt) + `" style="display:block;max-width:100%;height:auto;margin:8px 0;"><br>`)
+					}
 				}
 				continue
 			}
@@ -364,16 +529,17 @@ func applyOptionalBlock(tmpl, name, value string) string {
 // case's human-readable reference (e.g. "CS0023001") — display-only,
 // distinct from the caseLink URL, which already carries whatever id the
 // portal needs.
-func RenderCommentAddedEmail(name, caseNumber, caseTitle, caseComment, commentLink, caseLink string) string {
+func RenderCommentAddedEmail(name, caseNumber, caseTitle, caseComment, commentLink, caseLink string) (string, []InlineImage) {
+	comment, images := sanitizeRichText(caseComment, &inlineImageBudget{})
 	replacer := strings.NewReplacer(
 		"<!-- [NAME] -->", escapeHTML(name),
 		"<!-- [CASE_NUMBER] -->", escapeHTML(caseNumber),
 		"<!-- [CASE_TITLE] -->", escapeHTML(caseTitle),
-		"<!-- [CASE_COMMENT] -->", sanitizeRichText(caseComment),
+		"<!-- [CASE_COMMENT] -->", comment,
 		"<!-- [COMMENT_LINK] -->", escapeHTML(commentLink),
 		"<!-- [CASE_LINK] -->", escapeHTML(caseLink),
 	)
-	return replacer.Replace(commentAddedTemplate)
+	return replacer.Replace(commentAddedTemplate), images
 }
 
 // RenderInternalNoteEmail fills in the "internal note" HTML email
@@ -386,16 +552,17 @@ func RenderCommentAddedEmail(name, caseNumber, caseTitle, caseComment, commentLi
 // (dispatch.handleCommentAdded's own concern which value to pass), not
 // the ServiceNow CaseNumber every other template uses — the internal case
 // reference is the one this audience actually recognizes.
-func RenderInternalNoteEmail(name, caseNumber, caseTitle, caseComment, commentLink, caseLink string) string {
+func RenderInternalNoteEmail(name, caseNumber, caseTitle, caseComment, commentLink, caseLink string) (string, []InlineImage) {
+	comment, images := sanitizeRichText(caseComment, &inlineImageBudget{})
 	replacer := strings.NewReplacer(
 		"<!-- [NAME] -->", escapeHTML(name),
 		"<!-- [CASE_NUMBER] -->", escapeHTML(caseNumber),
 		"<!-- [CASE_TITLE] -->", escapeHTML(caseTitle),
-		"<!-- [CASE_COMMENT] -->", sanitizeRichText(caseComment),
+		"<!-- [CASE_COMMENT] -->", comment,
 		"<!-- [COMMENT_LINK] -->", escapeHTML(commentLink),
 		"<!-- [CASE_LINK] -->", escapeHTML(caseLink),
 	)
-	return replacer.Replace(internalNoteTemplate)
+	return replacer.Replace(internalNoteTemplate), images
 }
 
 // RenderStatusChangedEmail fills in the "case status changed" HTML email
@@ -472,8 +639,15 @@ type CaseCreatedEmailData struct {
 }
 
 // RenderCaseCreatedEmail fills in the "case created" HTML email template.
-func RenderCaseCreatedEmail(data CaseCreatedEmailData) string {
+func RenderCaseCreatedEmail(data CaseCreatedEmailData) (string, []InlineImage) {
 	tmpl := applyOptionalBlock(caseCreatedTemplate, "IMPACT", data.IncidentImpactDescription)
+	// Description and IncidentImpactDescription both end up as attachments
+	// on this same outgoing email, so they must share one budget — see
+	// inlineImageBudget's own doc comment for why a fresh one per call
+	// would let each field independently max out.
+	budget := &inlineImageBudget{}
+	description, descImages := sanitizeRichText(data.Description, budget)
+	impact, impactImages := sanitizeRichText(data.IncidentImpactDescription, budget)
 	replacer := strings.NewReplacer(
 		"<!-- [REPORTER_NAME] -->", escapeHTML(data.ReporterName),
 		"<!-- [PROJECT_NAME] -->", escapeHTML(data.ProjectName),
@@ -483,12 +657,12 @@ func RenderCaseCreatedEmail(data CaseCreatedEmailData) string {
 		"<!-- [PRIORITY] -->", escapeHTML(data.Priority),
 		"<!-- [PRODUCT] -->", escapeHTML(data.Product),
 		"<!-- [CREATED_AT] -->", escapeHTML(data.CreatedAt),
-		"<!-- [DESCRIPTION] -->", sanitizeRichText(data.Description),
-		"<!-- [INCIDENT_IMPACT_DESCRIPTION] -->", sanitizeRichText(data.IncidentImpactDescription),
+		"<!-- [DESCRIPTION] -->", description,
+		"<!-- [INCIDENT_IMPACT_DESCRIPTION] -->", impact,
 		"<!-- [CASE_LINK] -->", escapeHTML(data.CaseLink),
 		"<!-- [COMMENT_LINK] -->", escapeHTML(data.CommentLink),
 	)
-	return replacer.Replace(tmpl)
+	return replacer.Replace(tmpl), append(descImages, impactImages...)
 }
 
 // crStateLabels turn the domain state into the words a reader recognises. The
@@ -597,7 +771,7 @@ var crPlanDateWording = map[string]struct{ headlineSuffix, closing string }{
 }
 
 // RenderCRPlanDateNoticeEmail renders one plan-start-date notice.
-func RenderCRPlanDateNoticeEmail(d CRPlanDateEmailData) string {
+func RenderCRPlanDateNoticeEmail(d CRPlanDateEmailData) (string, []InlineImage) {
 	w, ok := crPlanDateWording[d.Kind]
 	if !ok {
 		// An unmapped kind still sends: a plain statement beats no notice at
@@ -618,16 +792,22 @@ func RenderCRPlanDateNoticeEmail(d CRPlanDateEmailData) string {
 		projectAndNumber = escapeHTML(d.ProjectName) + " / " + escapeHTML(d.Number)
 	}
 
+	// ShortDescription and Description both end up as attachments on this
+	// same outgoing email — see inlineImageBudget's own doc comment for
+	// why they must share one budget rather than each getting a fresh one.
+	budget := &inlineImageBudget{}
+	shortDescription, shortDescImages := sanitizeRichText(d.ShortDescription, budget)
+	description, descImages := sanitizeRichText(d.Description, budget)
 	replacer := strings.NewReplacer(
 		"<!-- [CR_NUMBER] -->", escapeHTML(d.Number),
 		"<!-- [HEADLINE] -->", headline,
 		"<!-- [PROJECT_AND_NUMBER] -->", projectAndNumber,
-		"<!-- [SHORT_DESCRIPTION] -->", sanitizeRichText(d.ShortDescription),
-		"<!-- [DESCRIPTION] -->", sanitizeRichText(d.Description),
+		"<!-- [SHORT_DESCRIPTION] -->", shortDescription,
+		"<!-- [DESCRIPTION] -->", description,
 		"<!-- [CLOSING_LINE] -->", escapeHTML(w.closing),
 		"<!-- [CR_LINK] -->", escapeHTML(d.Link),
 	)
-	return replacer.Replace(crPlanDateNoticeTemplate)
+	return replacer.Replace(crPlanDateNoticeTemplate), append(shortDescImages, descImages...)
 }
 
 // ProjectContactInvitedEmailData holds every value substituted into the

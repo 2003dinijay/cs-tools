@@ -2378,8 +2378,10 @@ export interface BeCreateCaseGithubIssuePayload {
   hotFixRequired?: boolean;
   /** Issue-type label to apply on GitHub (e.g. "Type/Patch", "Type/Incident"). */
   issueTypeLabel?: string;
-  /** Priority label, applied only when `issueTypeLabel` is "Type/Incident". */
+  /** Priority label, applied when the type is Discussion. */
   priorityLevel?: string;
+  /** Project onboarding status is In-Progress. Adds Onboarding/affected. */
+  onboardingInProgress?: boolean;
 }
 
 /** `POST /cases/{id}/github-issues` response. */
@@ -3230,6 +3232,7 @@ export interface BeIncidentDetail extends BeIncident {
   contactType?: BeIncidentContactType | null;
   impact?: BeIncidentImpact | null;
   urgency?: BeIncidentUrgency | null;
+  environment?: string | null;
   changeRequest?: BeEntityRef | null;
   problem?: BeEntityRef | null;
   causedBy?: BeEntityRef | null;
@@ -3280,6 +3283,7 @@ export interface BeCreateIncidentPayload {
   changeRequestId?: string;
   problemId?: string;
   causedById?: string;
+  environment?: string;
 }
 
 /** `POST /incidents` response — the created identifiers. */
@@ -3349,6 +3353,7 @@ export interface BeUpdateIncidentPayload {
   changeRequestId?: string | null;
   problemId?: string | null;
   causedById?: string | null;
+  environment?: string | null;
 }
 
 /** `PATCH /incidents/{id}` response — the full updated incident. */

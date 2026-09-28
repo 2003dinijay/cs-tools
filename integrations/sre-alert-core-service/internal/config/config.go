@@ -40,17 +40,13 @@ type Config struct {
 
 // EngineConfig tunes the dedup engine's fixed duplicate-folding window.
 type EngineConfig struct {
-	// DedupWindow bounds how long an incident keeps absorbing duplicates, measured from when it was
-	// first created; once elapsed, the next alert on the same fingerprint starts a fresh incident
-	// even if CSM still reports the old one open.
+	// DedupWindow bounds how long an incident absorbs duplicates before starting fresh, even if CSM still reports it open.
 	DedupWindow Duration `toml:"dedup_window"`
 }
 
 // PollConfig tunes the alert poller's cadence, concurrency, and per-cycle alert id limits.
 type PollConfig struct {
-	// Interval is the backstop cadence for a missed Wake() ping; alert-ingestion's POST /alert
-	// call is what actually drives real-time pickup of new alerts, so this can stay wide
-	// without affecting responsiveness - it only bounds how long a dropped ping goes unnoticed.
+	// Interval is the backstop cadence; POST /alert drives real-time pickup, so this only bounds how long a dropped ping goes unnoticed.
 	Interval Duration `toml:"interval"`
 	// Concurrency is fingerprint-sharded worker count; same-fingerprint alerts stay serialized on one worker.
 	Concurrency int `toml:"concurrency"`
@@ -92,6 +88,12 @@ type NotifyConfig struct {
 	// StateCheckInterval throttles how often a confirmed incident's status is re-checked against CSM;
 	// without it, a flapping alert costs one CSM search per duplicate during a storm.
 	StateCheckInterval Duration `toml:"state_check_interval"`
+	// CSMRetryBaseDelay is the wait before the first RetrySweep-driven CSM retry after a failed attempt.
+	CSMRetryBaseDelay Duration `toml:"csm_retry_base_delay"`
+	// CSMRetryMultiplier grows the wait between successive CSM retries during a prolonged outage.
+	CSMRetryMultiplier float64 `toml:"csm_retry_multiplier"`
+	// CSMRetryMaxDelay caps how long the exponential CSM retry wait can grow to.
+	CSMRetryMaxDelay Duration `toml:"csm_retry_max_delay"`
 }
 
 // ServerConfig tunes how long the HTTP server waits for in-flight requests to drain during a graceful shutdown before forcing the process to exit.
@@ -146,6 +148,9 @@ func defaults() Config {
 			MaxCSMAttempts:     20,
 			ServiceCacheTTL:    Duration(15 * time.Minute),
 			StateCheckInterval: Duration(1 * time.Minute),
+			CSMRetryBaseDelay:  Duration(30 * time.Second),
+			CSMRetryMultiplier: 3,
+			CSMRetryMaxDelay:   Duration(time.Hour),
 		},
 		Server: ServerConfig{
 			ShutdownGrace: Duration(15 * time.Second),
@@ -156,9 +161,7 @@ func defaults() Config {
 	}
 }
 
-// Load falls back to the CONFIG_PATH env var, then DefaultPath, when path is empty. Every tunable
-// starts at its built-in default; if config.toml exists, its values override the defaults field by
-// field, so a partial file works fine. A missing file is not an error - the defaults apply as-is.
+// Load falls back to CONFIG_PATH env var, then DefaultPath, when path is empty; every tunable starts at its built-in default, and config.toml values override field by field, so partial files work fine and missing files are not an error.
 func Load(path string) (Config, error) {
 	if path == "" {
 		path = os.Getenv("CONFIG_PATH")
@@ -220,6 +223,12 @@ func (c Config) validate() error {
 		return fmt.Errorf("notify.service_cache_ttl must be positive")
 	case c.Notify.StateCheckInterval <= 0:
 		return fmt.Errorf("notify.state_check_interval must be positive")
+	case c.Notify.CSMRetryBaseDelay <= 0:
+		return fmt.Errorf("notify.csm_retry_base_delay must be positive")
+	case c.Notify.CSMRetryMultiplier <= 1:
+		return fmt.Errorf("notify.csm_retry_multiplier must be greater than 1")
+	case c.Notify.CSMRetryMaxDelay.Duration() < c.Notify.CSMRetryBaseDelay.Duration():
+		return fmt.Errorf("notify.csm_retry_max_delay must be at least csm_retry_base_delay")
 	case c.Server.ShutdownGrace <= 0:
 		return fmt.Errorf("server.shutdown_grace must be positive")
 	case c.Engine.DedupWindow <= 0:
