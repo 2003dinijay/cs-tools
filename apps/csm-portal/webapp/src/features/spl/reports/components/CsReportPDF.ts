@@ -34,6 +34,18 @@ import "../styles/CSReportPDF.css";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- mirrors the source's own loosely-typed report records */
 
+// Business Overview and Extra Notes are free-text textareas a CS engineer
+// types into, then rendered here via innerHTML (so the \n -> <br> conversion
+// below actually produces line breaks). Escaping first means that raw text
+// can never be interpreted as markup -- without it, a literal "<img
+// onerror=...>" typed into either textarea would execute in every viewer's
+// browser when the report renders.
+function escapeHtml(text: string): string {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 function generateAgendaPage(widgets: { selector: string; subTopic?: string }[], pdfContent: HTMLElement) {
   const agendaPage = document.createElement("div");
   agendaPage.classList.add("agenda-page");
@@ -178,7 +190,7 @@ function buildPdfContent(
     } else if (selector === ".business-overview-section" && businessOverviewText) {
       const title = element.querySelector(".widget-title")?.textContent || "Business Overview";
       const textarea = element.querySelector("textarea") as HTMLTextAreaElement | null;
-      const formattedText = textarea ? textarea.value.replace(/\n/g, "<br>") : "No data to show";
+      const formattedText = textarea ? escapeHtml(textarea.value).replace(/\n/g, "<br>") : "No data to show";
       widgetContainer.innerHTML = `<h2 class="widget-title">${title}</h2><p>${formattedText}</p>`;
       pdfContent.appendChild(widgetContainer);
     } else if (selector === ".deployment-image-section") {
@@ -204,7 +216,7 @@ function buildPdfContent(
       const title = element.querySelector(".widget-title")?.textContent || "Notes";
       const image = element.querySelector("img") as HTMLImageElement | null;
       const textarea = element.querySelector("textarea") as HTMLTextAreaElement | null;
-      const formattedText = textarea ? textarea.value.replace(/\n/g, "<br>") : "No data to show";
+      const formattedText = textarea ? escapeHtml(textarea.value).replace(/\n/g, "<br>") : "No data to show";
 
       const textElement = document.createElement("div");
       textElement.classList.add("styled-text");
