@@ -18283,6 +18283,9 @@ components:
         subject:
           type: string
           nullable: true
+        description:
+          type: string
+          nullable: true
         state:
           type: string
           nullable: true
