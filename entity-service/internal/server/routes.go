@@ -660,16 +660,28 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 
 	// case_escalation/case_escalation_notification_list (migration 0054)
-	// now back SearchEscalations on Postgres for real -- CreateEscalation
-	// still isn't supported there (see EscalationRepository's own doc
-	// comment for why), so this supersedes an earlier unconditional
+	// now back both SearchEscalations and CreateEscalation on Postgres for
+	// real -- see EscalationRepository.CreateEscalation's own doc comment
+	// for the level-transition/notification-recipient rule this
+	// approximates. This supersedes an earlier unconditional
 	// unavailableCaseEscalationService stand-in that predated the schema.
-	escalationRepo := repository.NewEscalationRepository(db)
+	escalationNotifyCfg := repository.EscalationNotificationConfig{
+		EL1AmericasTLGroupID:     cfg.EscalationEL1AmericasTLGroupID,
+		EL2AmericasTUGroupID:     cfg.EscalationEL2AmericasTUGroupID,
+		EL2ServiceProductGroupID: cfg.EscalationEL2ServiceProductGroupID,
+		EL2IdentityServerGroupID: cfg.EscalationEL2IdentityServerGroupID,
+		EL2DefaultProductGroupID: cfg.EscalationEL2DefaultProductGroupID,
+		EL3CREHeadGroupID:        cfg.EscalationEL3CREHeadGroupID,
+		EL4CCOGroupID:            cfg.EscalationEL4CCOGroupID,
+		EL4CROGroupID:            cfg.EscalationEL4CROGroupID,
+		EL5CEOGroupID:            cfg.EscalationEL5CEOGroupID,
+	}
+	escalationRepo := repository.NewEscalationRepository(db, escalationNotifyCfg)
 	var activeEscalationSvc service.EscalationService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeEscalationSvc = service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient)
 	} else {
-		activeEscalationSvc = service.NewEscalationService(escalationRepo)
+		activeEscalationSvc = service.NewEscalationService(escalationRepo, userRepo, caseRepo, accessSvc)
 	}
 	escalationHandler := handler.NewEscalationHandler(activeEscalationSvc)
 	caseEscalationHandler := handler.NewCaseEscalationHandler(service.NewCaseEscalationService(activeEscalationSvc, activeCaseSvc))

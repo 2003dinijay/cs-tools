@@ -2988,11 +2988,23 @@ operations above -- they are registered in ServiceNow mode deliberately (see
 there to scope them.
 
 **Not yet wired**: every other project/case-adjacent read (comments,
-escalations, time cards, attachments, conversations, change requests,
+time cards, attachments, conversations, change requests,
 call requests, catalogs, instances, etc.) still does no per-caller scoping --
 the auth middleware validates tokens on every route, but only the operations
 above actually call `AccessService`. Extending it further is follow-up work,
 not done in this pass.
+
+**Exception, added later**: `POST /escalations` / `POST /cases/{id}/escalations`
+(`EscalationService.CreateEscalation`, Postgres data source) DOES call
+`AccessService.ResolveScope` and authorizes `caseId` through
+`CaseRepository.GetCaseByID` before mutating anything -- an out-of-scope
+case is a `NotFoundError`, same convention as the by-id reads above. This was
+wired in specifically because CreateEscalation MUTATES a case (escalate/
+de-escalate) and returns its details, unlike the read endpoints still listed
+above as not-yet-wired. Every OTHER case mutation (`UpdateCase`, `AddCaseTag`,
+`AcknowledgeCase`, `CreateCaseComment`, ...) remains unscoped -- this is a
+narrow, deliberately inconsistent fix for one endpoint under active review,
+not a decision that case mutations are scoped now.
 
 ## Call requests and the service-request catalog (migrations 000067-000072)
 
