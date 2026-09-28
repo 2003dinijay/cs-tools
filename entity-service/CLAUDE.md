@@ -1529,7 +1529,7 @@ changed.
   `NotificationsEnabled` has no backing column anywhere in this schema and
   is hardcoded `true` (see `projectContactRowToDomain`'s own comment) —
   flagged as a known gap, not fabricated data pretending to be real.
-- **User roles** (`role`/`user_role`, migrations 000004/000006):
+- **User roles** (`role`/`user_role`, migrations 0008/0010):
   `SearchUsersFilters.RoleIDs` (holds role **names**, e.g. `"admin"`,
   despite the field's name — see `domain.UserRole`'s own doc comment) was
   previously rejected outright on Postgres; `user_repo.go`'s `SearchUsers`
@@ -1749,7 +1749,7 @@ v5 can't scan a binary-format timestamptz into a `*string`
 
 **`ServiceID`/`ServiceOfferingID` are now wired up** (migration 0046 added
 `change_request.service_id`/`service_offering_id`, FKs into `service`/
-`service_offering`, migrations 000048/000049): readable via
+`service_offering`, migrations 0044/0045): readable via
 `SearchChangeRequestView.Service`/`ServiceOffering` and writable via
 `PatchChangeRequestRequest.ServiceID`/`ServiceOfferingID`. `service`/
 `service_offering` also got their own Postgres implementations
@@ -2137,7 +2137,7 @@ column by column (a local database built from every migration here vs staging,
 68 shared tables) when checked:
 
 - **Tables only in `migrations/`, absent from staging:** `alert_incident_mapping`
-  (000014), `case_attachment` (000043/000044), `announcement_requests` (000077),
+  (0103), `case_attachment` (0106/0107), `announcement_requests` (0120),
   `onboarding_step` (000075). Queries on them fail in staging with "relation does
   not exist"; none of it is a naming problem, the tables were simply never created.
 - **Columns renamed in staging** (the code used the old names and failed with
@@ -2548,7 +2548,7 @@ from the original comment/attachment UNION ALL implementation) and was
 fixed alongside the new incident one rather than left for later, since it's
 the identical bug.
 
-## change_request.change_model and work_item_activity (migrations 000055/000056)
+## change_request.change_model and work_item_activity (migrations 0056/0055)
 
 Two small, unrelated migrations, both unverified against real data (neither
 table/column exists on the staging database this was developed against
@@ -2710,7 +2710,7 @@ ServiceNow-only. `parent_id` (FK into `service`, migration 0044) maps to
 `ServiceOffering.Service`; `SearchServiceOfferingsFilters.ServiceIDs` filters
 on it.
 
-`sla`/`sla_policy` (migrations 000051/000052) back `TaskSlaService`
+`sla`/`sla_policy` (migrations 0047/0048) back `TaskSlaService`
 (`task_sla_repo.go`) -- previously ServiceNow-only `POST /task-slas/search`/
 `GET /task-slas/{id}`. Both tables are real and populated in the staging
 database (66 `sla_policy` rows, 128k+ `sla` rows at the time this was

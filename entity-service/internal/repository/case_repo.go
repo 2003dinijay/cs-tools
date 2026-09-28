@@ -133,7 +133,7 @@ var caseResolutionCodeFromEnum = map[string]domain.CaseResolutionCode{
 // spelled as the real work_item_type_enum labels: the work_item types
 // GetCaseByID/SearchCases treat as "a case" -- each is a shared-PK
 // work_item extension with its own state/cause/close_notes/closed_on/
-// resolved_on columns (migrations 000018/000019), unlike CHANGE_REQUEST,
+// resolved_on columns (migrations 0023/0024), unlike CHANGE_REQUEST,
 // INCIDENT, PROBLEM, and the rest of work_item_type_enum, which are surfaced
 // through entirely different endpoints.
 const caseLikeWorkItemTypes = `'{CASE,ENGAGEMENT,SERVICE_REQUEST,SECURITY_REPORT_ANALYSIS,ANNOUNCEMENT}'::work_item_type_enum[]`
@@ -161,7 +161,7 @@ const caseLikeClosedOnColumn = `COALESCE(c.closed_on, eng.closed_on, sr.closed_o
 // than "case" itself (each caller already joins "case" under its own alias,
 // since some callers need it INNER/LEFT differently and some don't select
 // from it at all). Every join is on the shared-PK pattern (migrations
-// 000018/000019): <table>.id = wi.id.
+// 0023/0024): <table>.id = wi.id.
 const caseLikeJoins = `
 	LEFT JOIN engagement eng ON eng.id = wi.id
 	LEFT JOIN service_request sr ON sr.id = wi.id
@@ -418,7 +418,7 @@ func NewCaseRepository(db *pgxpool.Pool) CaseRepository {
 // CreateCase implements CaseRepository.
 //
 // A case is a work_item row (type CASE) plus a "case" extension row sharing its
-// id (migrations 000016/000018), written in one transaction. The old version
+// id (migrations 0021/0023), written in one transaction. The old version
 // inserted into a "cases" table that does not exist.
 //
 // The row's identifiers follow the synced data: work_item.created_by holds the

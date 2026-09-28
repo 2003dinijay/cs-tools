@@ -39,7 +39,7 @@ import (
 //
 // ServiceID/ServiceOfferingID are backed by change_request.service_id/
 // service_offering_id (migration 0046), FKs into service/service_offering
-// (migrations 000048/000049).
+// (migrations 0044/0045).
 //
 // Type (domain.ChangeRequestType) is backed by change_request.change_model
 // (migration 0056) -- NOT change_request.change_request_type, whose real

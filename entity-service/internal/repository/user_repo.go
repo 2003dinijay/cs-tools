@@ -139,7 +139,7 @@ func scanUser(row interface{ Scan(...any) error }) (domain.User, error) {
 	if err != nil {
 		return domain.User{}, err
 	}
-	// first_name/last_name/email/user_type (migration 0002/000007) all
+	// first_name/last_name/email/user_type (migration 0002/0011) all
 	// have no NOT NULL constraint; the domain.User fields they fill are
 	// required (non-pointer), so a NULL column becomes "" rather than
 	// failing the scan.

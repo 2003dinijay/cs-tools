@@ -102,7 +102,7 @@ const (
 // a given severity/clock-type/plan combination, replacing the old, deleted
 // sla_clocks design's hardcoded slaDurations map (internal/service/
 // sla_policy.go before commit 116d43522) with a lookup against the real
-// ServiceNow-synced policy data (migration 0047/000052) that map never
+// ServiceNow-synced policy data (migration 0047/0048) that map never
 // read at all.
 type slaPolicyResolver struct {
 	repo repository.SLAEngineRepository

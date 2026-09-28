@@ -944,7 +944,7 @@ type CommentService interface {
 }
 
 // TaskSlaService defines the operations available on the task-slas entity.
-// On Postgres this is backed by sla/sla_policy (migrations 000051/000052) --
+// On Postgres this is backed by sla/sla_policy (migrations 0047/0048) --
 // see TaskSlaRepository's own doc comment for the fields with no confirmed
 // rendering format that are left nil there.
 type TaskSlaService interface {

@@ -264,7 +264,7 @@ func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersReq
 // matching row. See case_service.go's identical pattern for CreateCase /
 // CreateCaseComment.
 //
-// Postgres has role/user_role tables (migrations 000004/000006 -- see
+// Postgres has role/user_role tables (migrations 0008/0010 -- see
 // SearchUsers' roleIds filter, which does query them) and no group-membership
 // table at all. GetMe doesn't resolve either here: Roles is left empty rather
 // than queried, since no caller has asked for it on this path yet, and Groups

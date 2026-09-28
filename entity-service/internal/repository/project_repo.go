@@ -34,7 +34,7 @@ import (
 // ProjectRepository defines the persistence operations for the project
 // table (migration 0014). domain.Project.SubscriptionType is populated
 // from project.project_type_id's linked project_type.name (migrations
-// 000026/000027) -- the same ServiceNow project "type" reference field
+// 0031/0032) -- the same ServiceNow project "type" reference field
 // sn_project_service.go's own snTypeNameToSubscriptionType converts, mirrored
 // here as projectTypeNameToSubscriptionType for this data source (see that
 // function's own doc comment). ClosureStatus still has no corresponding
@@ -143,7 +143,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		argIdx++
 	}
 
-	// project_type.name (migrations 000026/000027, LEFT JOINed below via
+	// project_type.name (migrations 0031/0032, LEFT JOINed below via
 	// p.project_type_id) holds the raw ServiceNow project "type" label (e.g.
 	// "Cloud Support") -- normalized in SQL the same way
 	// snTypeNameToSubscriptionType normalizes it in Go
@@ -506,7 +506,7 @@ func (r *projectRepo) UpdateProject(ctx context.Context, id string, req domain.P
 }
 
 // projectTypeNameToSubscriptionType converts a project_type.name label (e.g.
-// "Cloud Support", migrations 000026/000027) to the domain SubscriptionType
+// "Cloud Support", migrations 0031/0032) to the domain SubscriptionType
 // enum (e.g. "cloud_support") -- the same transform
 // sn_project_service.go's snTypeNameToSubscriptionType applies to the same
 // underlying ServiceNow field, duplicated here rather than shared because

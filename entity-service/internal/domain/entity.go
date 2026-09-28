@@ -1087,7 +1087,7 @@ type SearchProjectsRequest struct {
 	// any of the given values, e.g. ["cloud_support", "cloud_evaluation_support"].
 	// Same "no upstream filter, applied in Go" caveat as ExcludeClosureStates
 	// for the ServiceNow data source. The Postgres data source applies it as a
-	// real SQL filter against project_type.name (migrations 000026/000027,
+	// real SQL filter against project_type.name (migrations 0031/0032,
 	// joined via project.project_type_id -- the same ServiceNow project
 	// "type" reference field, normalized the same way
 	// snTypeNameToSubscriptionType normalizes it) -- a project with no
