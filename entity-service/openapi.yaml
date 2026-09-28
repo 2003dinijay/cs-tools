@@ -1932,6 +1932,43 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /teams/{id}/members:
+    get:
+      summary: Get a team's member roster.
+      operationId: getTeamMembers
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The team's members.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTeamMembersResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Team not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /accounts/search:
     post:
       summary: Search accounts by name or Salesforce ID.
@@ -2410,6 +2447,77 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: Salesforce is unavailable, or the change could not be saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{id}/contacts/validate:
+    post:
+      summary: Check an invitation without making it.
+      description: >
+        The dry run of POST /projects/{id}/contacts: the same caller gate, the same
+        "already an active contact" rule and the same invitation checks (public email
+        domains, the allowed domain list read from Salesforce, duplicate Salesforce
+        contacts and, with inviterEmail, whether the inviter's account owns or partners
+        the project). Nothing is written to Salesforce or the database and no event is
+        published. A refused invitation is answered 200 with valid=false, a reason and a
+        message safe to show the person inviting; error statuses mean the check itself
+        could not be made. The answer is advice, not a reservation: the invitation
+        checks everything again.
+
+
+        Registered and gated exactly like the invitation: Postgres data source,
+        CSM_MIGRATION_PORTAL_WRITES_ENABLED exactly "true", internal callers only.
+      operationId: validateProjectContact
+      tags: [Projects]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The CSM project id.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateProjectMembershipRequest'
+      responses:
+        '200':
+          description: The verdict, whether or not the invitation would be allowed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectMembershipValidation'
+        '400':
+          description: Bad request — the project id is not a UUID, or the e-mail address is missing or malformed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an allow-listed internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Project not found, or the project has no Salesforce account to add a contact to.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Salesforce is unavailable, so the checks could not be made.
           content:
             application/json:
               schema:
@@ -4170,7 +4278,7 @@ paths:
 
   /cases/{id}/escalations:
     get:
-      summary: Get a case's full escalation history, newest first (ServiceNow data source only).
+      summary: Get a case's full escalation history, newest first.
       operationId: searchCaseEscalations
       parameters:
         - name: id
@@ -4211,14 +4319,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Case escalations are only supported for the ServiceNow data source.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
     post:
-      summary: Escalate or de-escalate a case (ServiceNow data source only).
+      summary: Escalate or de-escalate a case.
       operationId: createCaseEscalation
       parameters:
         - name: id
@@ -4261,12 +4363,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Case escalations are only supported for the ServiceNow data source.
           content:
             application/json:
               schema:
@@ -5288,6 +5384,627 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
 
+  /team-schedule/catalogue:
+    get:
+      summary: The Team Schedule catalogue — time zones, shift windows and absence kinds.
+      description: >
+        Everything a client needs before it can draw a rota. Served as one
+        payload because a single day view needs all three, and three round
+        trips to render one screen is three too many.
+      operationId: getScheduleCatalogue
+      responses:
+        "200":
+          description: The zones, windows and absence kinds currently in use.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleCatalogue'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not internal staff — the rota is not available to customers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/assignments/search:
+    post:
+      summary: Who is working over a date window.
+      description: >
+        `includeOvernight` widens the window to catch a block that began before
+        `from` and is still running into it — the night crew a day view shows at
+        the top, rostered for yesterday but working this morning.
+      operationId: searchScheduleAssignments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchScheduleAssignmentsRequest'
+      responses:
+        "200":
+          description: The rota for the window asked for.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleAssignmentsResponse'
+        "400":
+          description: Bad request — missing, malformed or too wide a window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not internal staff — the rota is not available to customers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: >
+            Not found — the schedule routes are registered only when a database
+            pool is configured, so an entity-service running without one has no
+            such path.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/absences/search:
+    post:
+      summary: Who is out of the rota over a date window.
+      operationId: searchScheduleAbsences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchScheduleAbsencesRequest'
+      responses:
+        "200":
+          description: Absences overlapping the window asked for.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleAbsencesResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not internal staff — the rota is not available to customers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: >
+            Not found — the schedule routes are registered only when a database
+            pool is configured, so an entity-service running without one has no
+            such path.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/assignments:
+    post:
+      summary: Put somebody on a window for a day.
+      description: >
+        Lead edit. The caller must lead the team named in the request. `startsAt`
+        and `endsAt` are not accepted — they are resolved from the shift's own
+        window and authoring timezone, so a hand-placed cover cannot drift from
+        the window it claims to be.
+      operationId: createScheduleAssignment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateScheduleAssignmentRequest'
+      responses:
+        "201":
+          description: The assignment as stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleAssignment'
+        "400":
+          description: Bad request — missing or malformed fields.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/assignments/apply:
+    post:
+      summary: Set one engineer to one window across a span of days.
+      description: >
+        How the month roster's cell picker edits. Each day in the range replaces
+        whatever that engineer held, because the roster is one slot per person
+        per day. A day the window is not worked on — a weekday rotation landing
+        on a Saturday — is skipped rather than refused, and reported back in
+        `skippedDates`. The whole range is one transaction.
+      operationId: applyScheduleRange
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyScheduleRangeRequest'
+      responses:
+        "200":
+          description: What was applied, and what was skipped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyScheduleRangeResponse'
+        "400":
+          description: Bad request — missing fields, malformed dates, or a range over a year.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/edit-markers:
+    get:
+      summary: Which roster cells a person has changed, in a window.
+      description: >
+        One row per cell, not the changes themselves. The month roster is a
+        hundred-odd engineers by three months, so shipping every field that
+        moved for every cell would cost far more than the marks are worth: the
+        page needs to know which cells to mark and what to say when one is
+        pointed at. A cell's full history is a separate request.
+
+
+        Only changes made by a person are listed. The seed and the roster
+        importer wrote most of the rota; they did not change anybody's day, and
+        marking twelve thousand generated cells would say nothing.
+      operationId: getScheduleEditMarkers
+      parameters:
+        - in: query
+          name: from
+          required: true
+          schema: { type: string, format: date }
+        - in: query
+          name: to
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: The marked cells in that window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleEditMarkersResponse'
+        "400":
+          description: Bad request — a missing or malformed window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/absences/apply:
+    post:
+      summary: Mark one engineer away across a span, or bring them back over it.
+      description: >
+        The other half of the month roster's cell picker. Unlike a rota window
+        this is not resolved day by day — an absence is a span in the model and
+        stays one, so a weekend inside the range is covered too. An empty
+        `kindCode` clears the span instead of marking it.
+
+
+        Absences already there are reconciled rather than replaced: one that
+        falls entirely inside the span is removed, one overlapping either end is
+        shortened, and one straddling both is split in two. Clearing three days
+        out of a fortnight of leave leaves the fortnight either side standing.
+        The whole thing is one transaction.
+      operationId: applyScheduleAbsence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyScheduleAbsenceRequest'
+      responses:
+        "200":
+          description: What was created, removed and shortened.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyScheduleAbsenceResponse'
+        "400":
+          description: Bad request — missing fields, malformed dates, or a range over a year.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/assignments/{id}:
+    patch:
+      summary: Change who holds a slot, or its detail.
+      description: >
+        Lead edit. The team is read from the row being changed, not from the
+        request, so naming your own team does not grant access to another's slot.
+        Changing the person records the assignment as a `SWAP`.
+      operationId: updateScheduleAssignment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateScheduleAssignmentRequest'
+      responses:
+        "200":
+          description: The assignment after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleAssignment'
+        "400":
+          description: Bad request — malformed id or body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this slot's team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such assignment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Take somebody off a slot.
+      description: >
+        Lead edit. The change is recorded before the row is removed, so the
+        deletion survives in the activity trail.
+      operationId: deleteScheduleAssignment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: note
+          in: query
+          required: false
+          description: Why the person was taken off, kept on the activity row.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Bad request — malformed id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this slot's team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such assignment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/my-lead-teams:
+    get:
+      summary: Which teams the caller may edit.
+      description: >
+        The registry keys of every team this caller leads. An empty list is a
+        valid answer for somebody who leads nothing; the portal uses it to decide
+        which rows to offer an edit control on.
+      operationId: getMyLeadTeams
+      responses:
+        "200":
+          description: The caller's lead teams.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teamKeys:
+                    type: array
+                    items:
+                      type: string
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/activity:
+    get:
+      summary: What changed on a team's rota, newest first.
+      operationId: getScheduleActivity
+      parameters:
+        - name: teamKey
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: The changes in the window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleActivityResponse'
+        "400":
+          description: Bad request — missing or too wide a window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/on-duty:
+    get:
+      summary: Who is responsible at this instant.
+      description: >
+        The lookup an alert escalation makes before it decides who to ring.
+        Defaults to now; `at` asks about another moment.
+      operationId: getScheduleOnDuty
+      parameters:
+        - name: at
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: RFC3339 instant. Defaults to now.
+      responses:
+        "200":
+          description: Everyone whose window covers that instant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleAssignmentsResponse'
+        "400":
+          description: Bad request — `at` is not an RFC3339 instant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not internal staff — the rota is not available to customers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /groups/search:
     post:
       summary: Search groups (ServiceNow data source only).
@@ -7712,7 +8429,7 @@ paths:
 
   /escalations/search:
     post:
-      summary: Search case escalations (ServiceNow data source only).
+      summary: Search case escalations.
       operationId: searchEscalations
       requestBody:
         required: true
@@ -7745,16 +8462,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Escalations are only supported for the ServiceNow data source.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
   /escalations:
     post:
-      summary: Escalate or de-escalate a case (ServiceNow data source only).
+      summary: Escalate or de-escalate a case.
       description: >
         Defaults to action ESCALATE when omitted, which requires a non-blank reason.
         DEESCALATE does not require a reason.
@@ -7779,7 +8490,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
-          description: Missing or invalid x-user-id-token header (ServiceNow data source only).
+          description: >-
+            Missing or invalid x-user-id-token header, or (Postgres data source) the
+            authenticated user is not recognised in this system.
           content:
             application/json:
               schema:
@@ -7792,12 +8505,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "503":
-          description: Escalations are only supported for the ServiceNow data source.
           content:
             application/json:
               schema:
@@ -10605,6 +11312,55 @@ components:
             invitation email. Only honoured when this request creates the
             Salesforce contact; an existing contact keeps its own flag.
 
+    ValidateProjectMembershipRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          description: The address that would be invited.
+        inviterEmail:
+          type: string
+          format: email
+          description: >
+            As on CreateProjectMembershipRequest: the signed-in inviter's address, set by
+            the Customer Portal backend. Turns on the checks about who may invite.
+
+    ProjectMembershipValidation:
+      type: object
+      required: [valid]
+      properties:
+        valid:
+          type: boolean
+        reason:
+          type: string
+          enum: [CONFLICT, FORBIDDEN, INVALID]
+          description: >
+            Present when valid is false. The status the invitation itself would have been
+            refused with: CONFLICT 409 (already an active contact, or duplicate Salesforce
+            contacts), FORBIDDEN 403 (e.g. public or unlisted domain, inviter not allowed),
+            INVALID 400 (e.g. no domain list defined for the account).
+        message:
+          type: string
+          description: Present when valid is false. Safe to show the person inviting.
+        existingMembershipState:
+          type: string
+          description: The state of the project's existing membership for the address, if any. DEACTIVATED on a valid answer.
+        existingContact:
+          type: object
+          description: The Salesforce contact the invitation would adopt. Only on a valid answer.
+          properties:
+            contactSfId: {type: string}
+            email: {type: string}
+            firstName: {type: string}
+            lastName: {type: string}
+            isCsAdmin: {type: boolean}
+            isCsIntegrationUser: {type: boolean}
+            accountSfId: {type: string}
+            accountClassification: {type: string}
+            isPartnerAccount: {type: boolean}
+
     UpdateProjectMembershipRolesRequest:
       type: object
       required: [roles]
@@ -12408,6 +13164,37 @@ components:
         email:
           type: string
           nullable: true
+
+    TeamMember:
+      type: object
+      description: >-
+        One member of a team's roster. Role is "member" or "lead" only (a
+        fixed two-value constraint), narrower than ServiceNow's free-form
+        u_role on sys_user_grmember, but always populated.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum: [member, lead]
+      required:
+        - id
+        - name
+        - role
+
+    GetTeamMembersResponse:
+      type: object
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamMember'
 
     DeployedProductRef:
       type: object
@@ -15252,6 +16039,386 @@ components:
           type: string
           description: Free-text search query.
 
+    ScheduleZone:
+      type: object
+      description: An SRE time zone.
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string, example: TZ1 }
+        label: { type: string }
+        weekendZoneCode:
+          type: string
+          description: >
+            The zone that absorbs this one at the weekend, when three weekday
+            zones collapse into two.
+        sortOrder: { type: integer }
+    ScheduleShift:
+      type: object
+      description: >
+        A named window of the working day. Minutes are counted from midnight in
+        authoringTimeZone; an end past 1440 runs into the next day, so
+        21:00–06:00 is one window (1260 → 1800) rather than two.
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string, example: SRE_TZ1_L1 }
+        shortCode: { type: string, example: L1 }
+        label: { type: string }
+        family: { type: string, enum: [CRE, SRE] }
+        zoneCode: { type: string }
+        tier: { type: string, enum: [L1, L2, L3] }
+        dayScope: { type: string, enum: [WEEKDAY, WEEKEND, ANY] }
+        startMinute: { type: integer }
+        endMinute: { type: integer }
+        authoringTimeZone: { type: string, example: Asia/Colombo }
+        isOnCall: { type: boolean }
+        isEscalation: { type: boolean }
+        isRotation:
+          type: boolean
+          description: >-
+            Whether being on this window is a turn somebody takes, as opposed
+            to simply when their team works. Regular hours and the Americas
+            cover are not rotations.
+        requiredHeadcount:
+          type: integer
+          nullable: true
+          description: >-
+            How many people this window is meant to carry, where a target has
+            been agreed. Null where none has -- every SRE window today.
+        crossesMidnight: { type: boolean }
+        colourToken: { type: string }
+        sortOrder: { type: integer }
+    ScheduleTeam:
+      type: object
+      required: [key, name, family, sortOrder]
+      description: >-
+        One team the rota is run for. Served so no client has to hold the list:
+        team names are organisation vocabulary, and a frontend that hardcodes
+        them is coupled to a deploy it cannot see.
+      properties:
+        key: { type: string, example: castor }
+        name: { type: string }
+        family: { type: string, enum: [CRE, SRE] }
+        sortOrder:
+          type: integer
+          description: >-
+            Display order, and what gives a team a stable colour without any
+            client naming it.
+    ScheduleAbsenceKind:
+      type: object
+      description: Why someone is out of the rota.
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string, example: ANNUAL_LEAVE }
+        shortCode: { type: string, example: AL }
+        label: { type: string }
+        bucket: { type: string, enum: [LEAVE, ALLOCATION, EXCLUDED] }
+        colourToken: { type: string }
+        sortOrder: { type: integer }
+    ScheduleCatalogue:
+      type: object
+      properties:
+        zones:
+          type: array
+          items: { $ref: '#/components/schemas/ScheduleZone' }
+        shifts:
+          type: array
+          items: { $ref: '#/components/schemas/ScheduleShift' }
+        absenceKinds:
+          type: array
+          items: { $ref: '#/components/schemas/ScheduleAbsenceKind' }
+        teams:
+          type: array
+          items: { $ref: '#/components/schemas/ScheduleTeam' }
+    ScheduleEngineer:
+      type: object
+      properties:
+        userId: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string }
+        isLead: { type: boolean }
+    ScheduleEditMarker:
+      type: object
+      required: [userId, rotaDate, actor, changedAt, action]
+      properties:
+        userId: { type: string, format: uuid }
+        rotaDate: { type: string, format: date }
+        actor:
+          type: string
+          description: Who made the change, by email.
+        changedAt: { type: string, format: date-time }
+        action: { type: string, enum: [CREATED, UPDATED, DELETED] }
+    ScheduleEditMarkersResponse:
+      type: object
+      required: [markers, count]
+      properties:
+        markers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduleEditMarker'
+        count: { type: integer }
+    ApplyScheduleAbsenceRequest:
+      type: object
+      required: [userId, teamKey, from, to]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        teamKey:
+          type: string
+        kindCode:
+          type: string
+          description: >-
+            A schedule_absence_kind code, e.g. ANNUAL_LEAVE. Empty, or omitted,
+            brings them back over the span instead.
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        note:
+          type: string
+    ApplyScheduleAbsenceResponse:
+      type: object
+      required: [created, removed, trimmed]
+      properties:
+        created:
+          type: integer
+          description: 1 when a span was marked, 0 when it was cleared.
+        removed:
+          type: integer
+          description: Absences that fell entirely inside the span and went.
+        trimmed:
+          type: integer
+          description: Absences shortened or split rather than deleted.
+    ApplyScheduleRangeRequest:
+      type: object
+      required: [userId, teamKey, from, to]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        teamKey:
+          type: string
+        shiftCode:
+          type: string
+          description: >-
+            The window to put them on. Empty, or omitted, takes them off the
+            rota over the span instead -- the picker's own clear option.
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        note:
+          type: string
+          nullable: true
+
+    ApplyScheduleRangeResponse:
+      type: object
+      properties:
+        applied:
+          type: integer
+        skipped:
+          type: integer
+        skippedDates:
+          type: array
+          items:
+            type: string
+            format: date
+          description: The days the window is not worked on.
+
+    CreateScheduleAssignmentRequest:
+      type: object
+      required: [userId, teamKey, shiftCode, rotaDate]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        teamKey:
+          type: string
+        shiftCode:
+          type: string
+        rotaDate:
+          type: string
+          format: date
+        tier:
+          type: string
+          enum: [L1, L2, L3]
+          nullable: true
+        isOnCall:
+          type: boolean
+          nullable: true
+          description: Defaults to the shift's own setting when omitted.
+        note:
+          type: string
+          nullable: true
+
+    UpdateScheduleAssignmentRequest:
+      type: object
+      description: Every field optional; an omitted field is left as it was.
+      properties:
+        userId:
+          type: string
+          format: uuid
+        tier:
+          type: string
+          enum: [L1, L2, L3]
+        isOnCall:
+          type: boolean
+        note:
+          type: string
+
+    ScheduleAssignmentActivity:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        assignmentId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        teamKey:
+          type: string
+        rotaDate:
+          type: string
+          format: date
+          description: The day changed -- for leave, the first day of the span.
+        subject:
+          type: string
+          enum: [rota, leave]
+          description: Whether this changed a window on the rota or a span of leave.
+        endsOn:
+          type: string
+          format: date
+          nullable: true
+          description: For leave, the last day of the span; absent for an open-ended one.
+        shiftCode:
+          type: string
+          description: The window's code, or for leave the absence kind's code.
+        action:
+          type: string
+          enum: [CREATED, UPDATED, DELETED, TRIMMED]
+          description: TRIMMED is leave shortened rather than removed.
+        fieldName:
+          type: string
+          nullable: true
+        oldValue:
+          type: string
+          nullable: true
+        newValue:
+          type: string
+          nullable: true
+        actorEmail:
+          type: string
+          description: Who made the change, not who the row is about.
+        note:
+          type: string
+          nullable: true
+        createdOn:
+          type: string
+          format: date-time
+
+    ScheduleActivityResponse:
+      type: object
+      properties:
+        activity:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduleAssignmentActivity'
+        count:
+          type: integer
+
+    ScheduleAssignment:
+      type: object
+      description: One engineer, one rota day, one window.
+      properties:
+        id: { type: string, format: uuid }
+        engineer: { $ref: '#/components/schemas/ScheduleEngineer' }
+        teamKey: { type: string }
+        shiftCode: { type: string }
+        zoneCode: { type: string }
+        tier: { type: string, enum: [L1, L2, L3] }
+        rotaDate:
+          type: string
+          format: date
+          description: >
+            The day the crew is rostered for, not the calendar date of every
+            hour worked: a Monday 21:00–06:00 block carries the Monday even
+            though six of its hours fall on Tuesday.
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        isOnCall: { type: boolean }
+        source: { type: string, enum: [GENERATED, MANUAL, SWAP, IMPORTED] }
+        note: { type: string }
+    ScheduleAbsence:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        engineer: { $ref: '#/components/schemas/ScheduleEngineer' }
+        teamKey: { type: string }
+        kindCode: { type: string }
+        startsOn: { type: string, format: date }
+        endsOn:
+          type: string
+          format: date
+          description: Absent for a standing allocation that runs until further notice.
+        note: { type: string }
+        allocatedTo:
+          type: string
+          description: >
+            Who an allocation is for -- the customer for a customer allocation,
+            the product team for RnD. Absent when not known, and for leave.
+    SearchScheduleAssignmentsRequest:
+      type: object
+      required: [from, to]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        teamKeys:
+          type: array
+          items: { type: string }
+        family: { type: string, enum: [CRE, SRE] }
+        userId: { type: string, format: uuid }
+        userEmail:
+          type: string
+          description: >
+            One engineer's own rota. The portal knows its users by email rather
+            than by this service's ids, so it is resolved here.
+        includeOvernight:
+          type: boolean
+          description: >
+            Also return a block that began before `from` and is still running
+            into it — the night crew a day view shows at the top.
+    SearchScheduleAbsencesRequest:
+      type: object
+      required: [from, to]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        teamKeys:
+          type: array
+          items: { type: string }
+        userId: { type: string, format: uuid }
+        userEmail: { type: string }
+    ScheduleAssignmentsResponse:
+      type: object
+      properties:
+        assignments:
+          type: array
+          items: { $ref: '#/components/schemas/ScheduleAssignment' }
+        count: { type: integer }
+    ScheduleAbsencesResponse:
+      type: object
+      properties:
+        absences:
+          type: array
+          items: { $ref: '#/components/schemas/ScheduleAbsence' }
+        count: { type: integer }
     SearchGroupsRequest:
       type: object
       properties:
@@ -16518,6 +17685,9 @@ components:
           type: string
           nullable: true
           enum: [HIGH, MEDIUM, LOW]
+        environment:
+          type: string
+          nullable: true
         changeRequest:
           $ref: '#/components/schemas/EntityRef'
           nullable: true
@@ -16844,6 +18014,10 @@ components:
           description: |
             The full set of user identifiers to set as the incident watch list, replacing
             whatever is there. An empty array clears the watch list.
+        environment:
+          type: string
+          nullable: true
+          maxLength: 40
 
     UpdateIncidentResponse:
       type: object

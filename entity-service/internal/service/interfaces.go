@@ -220,6 +220,12 @@ type ProjectMembershipWriteService interface {
 	// systems, and a project_contact.invited event. A ConflictError when the
 	// address is already an active contact on the project.
 	Invite(ctx context.Context, projectID string, req domain.CreateProjectMembershipRequest) (domain.ProjectMembership, error)
+	// ValidateInvitation is Invite's dry run: the same checks, in the same
+	// order, against the same project and membership, with nothing written
+	// and nothing published. A refused invitation comes back as a
+	// ProjectMembershipValidation with Valid false; an error means the check
+	// itself could not be made.
+	ValidateInvitation(ctx context.Context, projectID string, req domain.ValidateProjectMembershipRequest) (domain.ProjectMembershipValidation, error)
 	// UpdateRoles replaces the membership's Salesforce roles, and with them
 	// its project groups. The state is untouched.
 	UpdateRoles(ctx context.Context, projectID, email string, req domain.UpdateProjectMembershipRolesRequest) (domain.ProjectMembership, error)
@@ -467,7 +473,7 @@ type ProjectStatsService interface {
 
 // ProjectContactService defines the operations available on project contacts.
 // The Postgres-backed implementation (projectContactService) reads from
-// project_contact (migration 000022), joined through account_contact to
+// project_contact (migration 0027), joined through account_contact to
 // "user" and through project_contact_group/project_group_role/project_role
 // (migrations 000023-000025) for roles.
 type ProjectContactService interface {
@@ -482,7 +488,7 @@ type ProjectContactService interface {
 
 // AccountContactService defines the operations available on account contacts.
 // The Postgres-backed implementation (accountContactService) reads from the
-// account_contact table (migration 000020), joined against "user" to
+// account_contact table (migration 0026), joined against "user" to
 // resolve a display name/email where possible.
 type AccountContactService interface {
 	// SearchAccountContacts returns a paginated list of contacts associated with
@@ -645,7 +651,7 @@ type CaseService interface {
 	// estimates/related case/workaround-provided) of a case.
 	// A ValidationError is returned for invalid values or malformed UUID; a NotFoundError if no case matches.
 	// WatchList is supported by both data sources (Postgres via work_item_watcher,
-	// migration 000040) and is mutually exclusive with State/Severity/WorkState.
+	// migration 0042) and is mutually exclusive with State/Severity/WorkState.
 	// BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta are supported by both data sources
 	// (Postgres via work_item.best_case_eta/most_likely_eta/worst_case_eta, part of the
 	// combinable-field-bundle CaseRepository.UpdateCaseFields writes); any subset of the
@@ -787,7 +793,7 @@ type FeedbackService interface {
 
 // CallRequestService defines the operations available on call requests. The
 // Postgres-backed implementation (callRequestService) reads and writes
-// customer_call (migration 000072) -- see call_request_repo.go for the fields
+// customer_call (migration 0073) -- see call_request_repo.go for the fields
 // with no backing column.
 type CallRequestService interface {
 	// CreateCallRequest creates a new call request for the given case.
@@ -810,7 +816,7 @@ type CallRequestService interface {
 
 // ChangeRequestService defines the operations available on the change_requests
 // entity. The Postgres-backed implementation (changeRequestService) reads
-// from change_request (migration 000047), a shared-PK extension of
+// from change_request (migration 0043), a shared-PK extension of
 // work_item -- see that repository's own doc comment for the fields with no
 // real column at all (ServiceID/ServiceOfferingID/ConfigurationItemID/
 // GroupID/AssignedTeamID/Type/ApprovedBy/ApprovedOn/LegalNextStates).
@@ -888,7 +894,7 @@ type ConfigurationItemService interface {
 }
 
 // GroupService defines the operations available on the groups entity. On
-// Postgres this is backed by the team table (migration 000028); Group.Active
+// Postgres this is backed by the team table (migration 0033); Group.Active
 // is always true and Group.Parent always nil there -- see
 // GroupRepository's own doc comment.
 type GroupService interface {
@@ -898,7 +904,7 @@ type GroupService interface {
 
 // ServiceOfferingService defines the operations available on the service
 // offerings entity. On Postgres this is backed by the service_offering
-// table (migration 000049).
+// table (migration 0045).
 type ServiceOfferingService interface {
 	// SearchServiceOfferings returns a paginated list of service offerings filtered by
 	// optional service IDs.
@@ -920,7 +926,7 @@ type ITServiceService interface {
 // "case", "conversation", "change_request", and "incident" -- every work_item
 // subtype the comment table's work_item_id foreign key can point at (see
 // repository.ReferenceTypeToWorkItemType). "deployment" is ServiceNow-only:
-// deployment is its own standalone table (migration 000013), not a work_item
+// deployment is its own standalone table (migration 0018), not a work_item
 // subtype, so a Postgres-backed comment can never reference one.
 type CommentService interface {
 	// SearchComments returns a paginated list of comments for the given reference entity.
@@ -944,7 +950,7 @@ type CommentService interface {
 }
 
 // TaskSlaService defines the operations available on the task-slas entity.
-// On Postgres this is backed by sla/sla_policy (migrations 000051/000052) --
+// On Postgres this is backed by sla/sla_policy (migrations 0047/0048) --
 // see TaskSlaRepository's own doc comment for the fields with no confirmed
 // rendering format that are left nil there.
 type TaskSlaService interface {
@@ -981,7 +987,7 @@ type TaskService interface {
 
 // ProductVulnerabilityService defines the operations available on product vulnerabilities.
 // The Postgres-backed implementation (productVulnerabilityService) reads
-// from the product_vulnerability table (migration 000034), which mirrors
+// from the product_vulnerability table (migration 0038), which mirrors
 // ServiceNow's own record 1:1 -- see that migration's own doc comment.
 // SyncProductVulnerabilities is the one method with no Postgres equivalent
 // (see its own doc comment for why).
@@ -1149,7 +1155,7 @@ type GlobalService interface {
 
 // EscalationService defines the operations available on the escalations
 // entity. On Postgres, SearchEscalations is backed by case_escalation/
-// case_escalation_notification_list (migration 000053); CreateEscalation
+// case_escalation_notification_list (migration 0054); CreateEscalation
 // requires the ServiceNow data source -- see EscalationRepository's own doc
 // comment for why.
 type EscalationService interface {

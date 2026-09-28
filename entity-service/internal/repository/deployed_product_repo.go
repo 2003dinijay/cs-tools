@@ -34,7 +34,7 @@ import (
 )
 
 // DeployedProductRepository defines the persistence operations for the
-// deployed_product table (migration 000014).
+// deployed_product table (migration 0019).
 type DeployedProductRepository interface {
 	// SearchDeployedProducts returns a filtered, paginated slice of enriched deployed-product
 	// views together with the total count of matching rows before pagination.
@@ -42,7 +42,7 @@ type DeployedProductRepository interface {
 	SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProductView, int, error)
 
 	// SearchDeployedProductMetrics returns per-day CORES readings (from
-	// hourly_usage_summary, migration 000054) for every deployment_node resolved to
+	// hourly_usage_summary, migration 0054) for every deployment_node resolved to
 	// the given deployed product and deployment. A NotFoundError is returned
 	// if the deployed product doesn't exist or isn't linked to deploymentID.
 	SearchDeployedProductMetrics(ctx context.Context, id, deploymentID, startDate, endDate string) (domain.DeployedProductMetricsResponse, error)
@@ -54,7 +54,7 @@ type DeployedProductRepository interface {
 
 	// SearchProjectsByProductVersion returns the deduplicated, paginated set
 	// of projects with a deployed_product on the given product+version,
-	// joining deployed_product directly to project (migration 000014's
+	// joining deployed_product directly to project (migration 0019's
 	// project_id FK) rather than going through deployment the way
 	// SearchDeployedProducts does -- there's no deployment-name/id to
 	// display here, only the owning project. excludeClosureStates/
@@ -611,7 +611,7 @@ func (r *deployedProductRepo) SearchProjectsByProductVersion(ctx context.Context
 }
 
 // deployedProductCreateFKField maps deployed_product's own foreign-key
-// constraint names (migration 000014's auto-generated
+// constraint names (migration 0019's auto-generated
 // "<table>_<column>_fkey" names) to the request field that referenced the
 // missing row, for CreateDeployedProductFromServiceNow's 23503 handling --
 // same map-based convention as change_request_repo.go's

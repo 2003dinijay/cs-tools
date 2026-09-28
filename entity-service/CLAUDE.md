@@ -257,7 +257,7 @@ back-filled instead of duplicated:
    onboarding design): `Portal user` + `Security Contact` → `Full Access`;
    `Portal user` → `General Access`; `Security Contact` → `Security Only`;
    `Lead` additionally → `Lead User Group`; `Admin` additionally → `Admin`
-   (the group carrying the `ADMIN` project role, migration 000084 — `Admin`
+   (the group carrying the `ADMIN` project role, migration 0128 — `Admin`
    used to be global-only and recorded nothing per project); unknown roles are
    logged as `ignoredRoles` and never fail the ingest. The row set is
    replaced. A missing `project_group` row is a 503.
@@ -317,7 +317,7 @@ without it. `role` must contain `external`, `customer`, `partner`,
 `customer_admin`, `partner_admin`; `project_group` must contain the four
 groups above.
 
-**Onboarding steps API** (`onboarding_step`, migration 000075; Postgres-only,
+**Onboarding steps API** (`onboarding_step`, migration 0118; Postgres-only,
 404 without a pool, like `scheduled_task_run`): one row per
 (`membershipSfId`, `step`), `step` ∈ IDENTITY / DATABASE / EMAIL /
 REGISTRATION, `status` ∈ SUCCEEDED / FAILED / SKIPPED, `attemptCount`
@@ -755,7 +755,7 @@ call, no no-op detection in the repository layer.
   `SearchCaseView`-equivalent, which doesn't surface it there either — only
   `GetCaseByID` does).
 
-**`work_item_activity` (migration 000056) now gets written to on the
+**`work_item_activity` (migration 0055) now gets written to on the
 Postgres data source too.** `SearchCaseActivities`' own `field_change` branch
 already rendered any `field_name` generically (`caseActivityFieldChangeLabel`
 title-cases it, e.g. `"assigned_to_id"` → `"Assigned To Id"`) — the table was
@@ -955,6 +955,7 @@ by the ingest's duplicate guard.
 | Endpoint | Body | Success | Errors |
 |---|---|---|---|
 | `POST /projects/{id}/contacts` | `{email, firstName?, lastName?, roles: []}` | **201** + `ProjectMembership` | 400 bad address / unknown role / no roles, 403, 404 unknown project or no Salesforce account, 409 already an active contact, 503 |
+| `POST /projects/{id}/contacts/validate` | `{email, inviterEmail?}` | **200** + `ProjectMembershipValidation` (`valid:false` + `reason` CONFLICT/FORBIDDEN/INVALID + `message` for a refusal) | 400 bad address, 403 not internal, 404, 503 |
 | `PATCH /projects/{id}/contacts/{email}` | `{roles: []}` | **200** + `ProjectMembership` | 400, 403, 404, 503 |
 | `DELETE /projects/{id}/contacts/{email}` | — | **204** | 400, 403, 404, 503 |
 | `POST /projects/{id}/contacts/{email}/resend-invitation` | — | **204** | 400, 403, 404, 409 not INVITED, **429** inside the cooldown, 503 |
@@ -970,6 +971,14 @@ by the ingest's duplicate guard.
   not about re-inviting somebody who is already there. At least one role is
   required: an invitation granting nothing would provision an identity that
   sees an empty portal.
+- **Validate** is Invite's dry run: the same caller gate, the same "already
+  an active contact" rule and the same `InvitationValidator`, run against the
+  project and membership read outside any transaction
+  (`ResolveWriteContext`, no advisory lock). Nothing is written and nothing
+  is published. A refusal is a 200 with `valid:false` so the caller can tell
+  it apart from a failed check; a valid answer carries the Salesforce contact
+  the invitation would adopt, if any. The Customer Portal calls it before
+  showing the invite form.
 - **Change roles** replaces the Salesforce `Role__c` picklist and, with it,
   the membership's project groups. The state is untouched (the PATCH sends
   only `role`). An empty list is accepted and removes every group.
@@ -1057,7 +1066,7 @@ user on project B lost their admin the moment B's membership was re-ingested.
 is derived from it: admin on any project under an account means admin on every
 project under that account, and nothing outside it.
 
-- `project_role_enum` **already carried `ADMIN`** (migration 000023 declared
+- `project_role_enum` **already carried `ADMIN`** (migration 0028 declared
   all five values up front), so there was no enum to widen — the task brief
   expected one, and the schema had already done it. What was missing is the
   vocabulary a membership can attach to: a membership reaches its roles
@@ -1136,7 +1145,7 @@ row.
 `000079`) — see that migration's own comment, and the history below, for
 why. `GET /sla-status` (`internal/domain/entity.go`'s `SLAStatus`,
 `internal/repository/sla_status_repo.go`, `internal/service/sla_status_service.go`)
-now reads SLA state **live from the `sla` table** (migration `000052`), which
+now reads SLA state **live from the `sla` table** (migration `0048`), which
 ServiceNow's own SLA engine populates via sync — real
 `businessElapsedPercent`/`hasBreached`/`stage` per `(work_item, sla_policy)`,
 not a value this service computes, schedules, or approximates itself. There
@@ -1243,7 +1252,7 @@ here.
 
 ## Scheduled task runs
 
-`scheduled_task_run` (migration `000045`, `internal/domain/entity.go`'s
+`scheduled_task_run` (migration `0108`, `internal/domain/entity.go`'s
 `ScheduledTaskRun`, `internal/repository/scheduled_task_run_repo.go`,
 `internal/service/scheduled_task_run_service.go`) is durable claim/retry
 state for `operations/csm-scheduled-tasks` — a single Choreo Scheduled Task
@@ -1326,8 +1335,8 @@ Exposed at:
 
 ## Comment, product vulnerability, and time-card Postgres support
 
-`comment` (migration 000037), `product_vulnerability` (migration 000034),
-and `time_card`/`time_card_approver` (migration 000039) had tables from the
+`comment` (migration 0040), `product_vulnerability` (migration 0038),
+and `time_card`/`time_card_approver` (migration 0041) had tables from the
 start but no repository/service ever queried them — every route backed by
 these entities (`/comments*`, `/products/vulnerabilities/*`, `/time-cards/*`,
 `/cases/time-cards/search`) was ServiceNow-only regardless of
@@ -1353,7 +1362,7 @@ already use — no route path, request, or response shape changed.
   `GetCaseByID`/`SearchCases` have matched all five case-like types since
   "Case-like work_item types" landed — this file was simply never updated to
   match. `"deployment"` has no entry:
-  `deployment` (migration 000013) is its own standalone table with its own
+  `deployment` (migration 0018) is its own standalone table with its own
   primary key space, not a work_item subtype, so `CreateComment`/
   `SearchComments` reject it with a `ValidationError` before any query runs.
   `CreateComment` also refuses to write `CommentTypeActivity`
@@ -1443,7 +1452,7 @@ following the same "SN branch vs. Postgres branch, same service interface"
 pattern as the section above — no route path, request, or response shape
 changed.
 
-- **Case tags** (`tag`/`work_item_tag`, migration 000021): `CaseService.
+- **Case tags** (`tag`/`work_item_tag`, migration 0026): `CaseService.
   AddCaseTag`/`RemoveCaseTag`/`SearchTags` in `case_service.go` were a
   detection-only stub that always returned 503 — see
   `detectPatchTagBillableOverride`'s own doc comment for that history — and
@@ -1456,7 +1465,7 @@ changed.
   (a) it was blocked on (case tags having real storage) is now true, but
   condition (b) (a consumer for `events.TypeCaseBillableStatusChanged`)
   still doesn't exist.
-- **Case watch list** (`work_item_watcher`, migration 000040):
+- **Case watch list** (`work_item_watcher`, migration 0042):
   `UpdateCase`'s `WatchList` field, previously rejected outright on this
   data source, now has its own branch (`updateCaseWatchList`) — split out
   with an early return specifically so it can't disturb the pre-existing
@@ -1492,7 +1501,7 @@ changed.
   **Every case now gets its account's four named stakeholders as watchers,
   unconditionally, from a pure Postgres lookup — no ServiceNow involved.**
   `account.customer_success_manager_id`/`technical_owner_id`/
-  `secondary_technical_owner_id`/`account_manager_id` (migration 000008)
+  `secondary_technical_owner_id`/`account_manager_id` (migration 0012)
   are already `"user"` ids, so there's no email/UUID ambiguity to resolve
   at all. `createCaseSNFirst` calls `addAccountDefaultWatchers` right after
   `CreateCaseFromServiceNow` succeeds and before `publishCaseCreatedEvent`;
@@ -1510,7 +1519,7 @@ changed.
   this — it's still forwarded to ServiceNow as part of the create request
   the normal way; this addition is purely about what the Postgres mirror
   also guarantees.
-- **Account contacts** (`account_contact`, migration 000020) and **project
+- **Account contacts** (`account_contact`, migration 0026) and **project
   contacts** (`project_contact` + `project_contact_group`/`project_group`/
   `project_group_role`/`project_role`, migrations 000022-000025): new
   `AccountContactService`/`ProjectContactService` Postgres implementations.
@@ -1529,7 +1538,7 @@ changed.
   `NotificationsEnabled` has no backing column anywhere in this schema and
   is hardcoded `true` (see `projectContactRowToDomain`'s own comment) —
   flagged as a known gap, not fabricated data pretending to be real.
-- **User roles** (`role`/`user_role`, migrations 000004/000006):
+- **User roles** (`role`/`user_role`, migrations 0008/0010):
   `SearchUsersFilters.RoleIDs` (holds role **names**, e.g. `"admin"`,
   despite the field's name — see `domain.UserRole`'s own doc comment) was
   previously rejected outright on Postgres; `user_repo.go`'s `SearchUsers`
@@ -1549,7 +1558,7 @@ changed.
   as the Event Hub section above); a caller resolves the actual bytes via
   `GET /attachments/{id}/content`. The comment branch's `"user"` join is by
   email (`comment.created_by` is a free-text VARCHAR, not a FK), and
-  `"user".email` has no unique constraint (migration 000001 only makes
+  `"user".email` has no unique constraint (migration 0002 only makes
   `user_name` UNIQUE) — so that join is wrapped in its own `DISTINCT ON
   (cm.id)` subquery to guarantee one activity row per comment even if two
   user rows share an address. Without it, a shared address would fan one
@@ -1560,7 +1569,7 @@ changed.
 **Pre-existing bug fixed as a side effect, not scope creep**: `user_repo.go`
 queried a `users` table with `created_at`/`updated_at`/`phone`/`timezone`
 columns that do not exist anywhere in `migrations/` — the real table is
-`"user"` (migration 000001) with `created_on`/`updated_on` and no
+`"user"` (migration 0002) with `created_on`/`updated_on` and no
 `phone`/`timezone` column at all. Every identity-resolution call this
 service makes (`GetUserByEmail`, used by `CreateCaseComment`, `AddCaseTag`/
 `RemoveCaseTag`/`SearchTags`, `SetCaseWatchList`, `CreateTimeCard`/
@@ -1590,8 +1599,8 @@ CSM/customer portal backend's own catch-all for any upstream 400) --
 `AssigneeEmail` and `Acknowledge` were on `UpdateCase`'s unconditional
 "only supported for the ServiceNow data source" rejection list even though
 neither actually needs anything ServiceNow-specific: `work_item.
-assigned_to_id` (migration 000036) and `work_item.acknowledged_by_user_id`
-(migration 000016) are both real, direct columns, already read elsewhere
+assigned_to_id` (migration 0039) and `work_item.acknowledged_by_user_id`
+(migration 0021) are both real, direct columns, already read elsewhere
 (`assignedUserId` search filter, `GetCaseByID`'s own `AssignedEngineer`).
 Prompted by that bug report, this pass re-derived `UpdateCase`'s *entire*
 field-combination contract from `sn_case_service.go`'s own UpdateCase --
@@ -1606,7 +1615,7 @@ the variable names (`exclusiveCount`/`combinableCount` in both files' own
   anything else, including each other): `state`/`severity`/`workState` (one
   of the three), `watchList`, `assigneeEmail`, `parentId`, `acknowledge`.
   `parentId` joins this group for the first time here -- it was previously
-  rejected outright; `work_item.parent_id` (migration 000036) is the same
+  rejected outright; `work_item.parent_id` (migration 0039) is the same
   self-reference `GetCaseByID`'s own `ParentCase` already reads the other
   direction, so `updateCaseParent`/`CaseRepository.UpdateCaseParent` wire it
   up the same way `updateCaseAssignee` does.
@@ -1709,7 +1718,7 @@ validation and before any branch (`WatchList`/`AssigneeEmail`/`ParentID`/
 
 ## Change requests
 
-`change_request` (migration 000047) is a shared-PK extension of `work_item`,
+`change_request` (migration 0043) is a shared-PK extension of `work_item`,
 same pattern as `"case"` (`change_request.id` IS `work_item.id`). `SearchChangeRequests`,
 `AggregateChangeRequests`, `GetChangeRequest`, and `PatchChangeRequest` are
 wired up to it (`change_request_repo.go`/`change_request_service.go`).
@@ -1747,9 +1756,9 @@ v5 can't scan a binary-format timestamptz into a `*string`
   without a schema change, so both always return a `ServiceUnavailableError`
   on Postgres.
 
-**`ServiceID`/`ServiceOfferingID` are now wired up** (migration 000050 added
+**`ServiceID`/`ServiceOfferingID` are now wired up** (migration 0046 added
 `change_request.service_id`/`service_offering_id`, FKs into `service`/
-`service_offering`, migrations 000048/000049): readable via
+`service_offering`, migrations 0044/0045): readable via
 `SearchChangeRequestView.Service`/`ServiceOffering` and writable via
 `PatchChangeRequestRequest.ServiceID`/`ServiceOfferingID`. `service`/
 `service_offering` also got their own Postgres implementations
@@ -1776,7 +1785,7 @@ is also left unset — no confirmed display format to render it in.
 `CaseID` maps to `work_item.parent_id` (`domain.LinkedChangeRequestRef`'s
 own doc comment already describes this as "the reverse of
 `PatchChangeRequestRequest.CaseID`" — confirmed here as the generic
-`work_item.parent_id` self-reference, migration 000036, not case-specific).
+`work_item.parent_id` self-reference, migration 0039, not case-specific).
 Because of this, `SearchChangeRequestView.Project`/`Case` can be empty
 (`EntityRef{}`)/`nil` for a change request that exists but hasn't been
 linked yet — a real, valid state for this schema, not a bug.
@@ -1821,7 +1830,7 @@ domain/contract change, only nil-checks in the scan.
 
 `POST /users/search` failed on every call whose results included a user with
 no `first_name` set: `scanUser` scanned `"user".first_name`/`last_name`
-(both nullable, migration 000001) directly into `domain.User`'s required
+(both nullable, migration 0002) directly into `domain.User`'s required
 (non-pointer) `FirstName`/`LastName` string fields — pgx v5 can't scan `NULL`
 into a plain `*string` destination. `email` (also nullable on `"user"`) had
 the same latent bug, not yet hit in production but certain to fail the same
@@ -1830,7 +1839,7 @@ way. Fixed by scanning all three into intermediate `*string` vars and
 column fix in this file.
 
 **`user_type` had a casing/mapping bug on top of the same NULL-scan risk**:
-`user_type_enum`'s real labels (migration 000007) are `SYSTEM`/`INTERNAL`/
+`user_type_enum`'s real labels (migration 0011) are `SYSTEM`/`INTERNAL`/
 `EXTERNAL`/`NOT_AVAILABLE`, scanned directly into `domain.UserType` (whose
 values are lowercase `internal`/`customer`/`system`/`external`) with no
 translation at all — never exercised before because `user_type` was
@@ -1839,7 +1848,7 @@ that got fully inspected. `userTypeFromEnum` now maps `EXTERNAL` to
 `UserTypeCustomer` specifically, not `UserTypeExternal` — see
 `UserTypeExternal`'s own doc comment: "the postgres source emits customer,
 ServiceNow emits external" for the same underlying concept (confirmed
-against `recompute_user_type`'s trigger logic, migration 000007: `EXTERNAL`
+against `recompute_user_type`'s trigger logic, migration 0011: `EXTERNAL`
 is derived from `external`/`partner`/`customer`/... roles). `NOT_AVAILABLE`
 (the trigger's fallback for a user with no matching role at all) has no
 domain equivalent and is left `""` — same as a `NULL` `user_type` — rather
@@ -1908,14 +1917,14 @@ product, account, deployment, deployed_product, split across
     issue-type/work-state filter implicitly narrows results to case-type
     rows, since a non-case row's joined `"case"` columns are always `NULL`.
     `EngagementTypes` filters/selects from the separate `engagement` table
-    (`eng.type`, migration 000019) the same way, LEFT joined. `ParentCase`
+    (`eng.type`, migration 0024) the same way, LEFT joined. `ParentCase`
     now resolves its `Type` from the parent's own real `work_item.type`
-    (via `work_item.parent_id`, migration 000036 — a generic self-reference
+    (via `work_item.parent_id`, migration 0039 — a generic self-reference
     across every work_item type, not case-specific) instead of always
     hardcoding `"case"`; `RelatedCase` (`"case".related_case_id`, migration
     000038) is genuinely case-specific, so hardcoding `"case"` there is
     still correct. `account_id` is read directly off `work_item.account_id`
-    (a real, direct column — migration 000016) rather than derived
+    (a real, direct column — migration 0021) rather than derived
     transitively through the project, since work_item has its own.
 
     **`work_item.account_id` was never populated at create time, on any of
@@ -1934,7 +1943,7 @@ product, account, deployment, deployed_product, split across
     "CreateCase and case numbers" below) got the same fix via a `LEFT JOIN
     project` for consistency, even though it can't be exercised yet.
   - `CreateCaseComment`/`SearchCaseComments`: now target the real
-    generic `comment` table (migration 000037, keyed by `work_item_id`, not
+    generic `comment` table (migration 0040, keyed by `work_item_id`, not
     `case_id`) instead of the nonexistent `case_comments` — sharing the
     same `comment_type_enum` mapping `commentTypeToEnum` in
     `comment_service.go` uses (`caseCommentTypeEnum`/`caseCommentEnumType`
@@ -1988,7 +1997,7 @@ already gives NULL rather than inventing a new one.
 
 `ProductRef.Abbreviation`'s own doc comment claimed "absent on the Postgres data source, whose
 products table has no equivalent column" -- checked directly against real data and this is
-wrong: `product.code` (migration 000010) holds exactly this value (`"wso2am"` for `"WSO2 API
+wrong: `product.code` (migration 0015) holds exactly this value (`"wso2am"` for `"WSO2 API
 Manager"`, `"wso2is"` for `"WSO2 Identity Server"`), the same vocabulary this field's own doc
 comment already describes the product-updates catalogue keying on. `SearchDeployedProducts`
 simply never selected it. Fixed by adding `p.code` to the query and scanning it straight into
@@ -2000,7 +2009,7 @@ corrected to match.
 Found by diffing the Postgres and ServiceNow customer-portal responses field-for-field
 (HAR capture comparison) against the real customer-portal-backend-v2 traffic: `GetProjectByID`
 never selected most of `ProjectDetailsView`'s own fields, even though every one of them has a
-real Postgres column (migration 000009) -- `account.ownerEmail`/`technicalOwnerEmail`,
+real Postgres column (migration 0014) -- `account.ownerEmail`/`technicalOwnerEmail`,
 `closureState`, `onboardingStatus`, `goLivePlanDate`, `onboardingExpiryDate`, and all six
 query/onboarding-hours balances (`totalQueryHours`, `consumedQueryHours`, `remainingQueryHours`,
 `totalOnboardingHours`, `consumedOnboardingHours`, `remainingOnboardingHours`) all came back as
@@ -2046,7 +2055,7 @@ Two things intentionally left untouched by this same audit, not code bugs:
   a migration file. Redeploying entity-service will not fix this on its own; the backfill has to be
   run directly against that environment.
 - `GET /projects/{id}/filters`' `severityBasedAllocationTime` has no real Postgres source and was
-  deliberately not derived from `sla_policy` (migration 000089 and its ServiceNow-synced rows) as a
+  deliberately not derived from `sla_policy` (migration 0136 and its ServiceNow-synced rows) as a
   substitute -- checked directly against real data, and none of that table's `RESPONSE`-target
   durations match the actual per-severity minutes a real project's filters response returns, so
   synthesizing a value from it would risk returning a plausible-looking but wrong number. This
@@ -2075,7 +2084,7 @@ already tolerated a LEFT JOIN's NULLs without any change, since
 ## SearchProjects crashed on any page containing a NULL start_date/end_date/account_id
 
 Found while auditing whether `GetProjectByID`/`SearchProjects` still work
-correctly. `project.start_date`/`end_date`/`account_id` (migration 000009)
+correctly. `project.start_date`/`end_date`/`account_id` (migration 0014)
 are all nullable, but `domain.Project` (the internal repository<->service
 handoff type `SearchProjects` uses -- never serialized directly; `ProjectView`
 is what actually reaches a caller) had non-pointer `time.Time`/`string`
@@ -2137,7 +2146,7 @@ column by column (a local database built from every migration here vs staging,
 68 shared tables) when checked:
 
 - **Tables only in `migrations/`, absent from staging:** `alert_incident_mapping`
-  (000014), `case_attachment` (000043/000044), `announcement_requests` (000077),
+  (0103), `case_attachment` (0106/0107), `announcement_requests` (0120),
   `onboarding_step` (000075). Queries on them fail in staging with "relation does
   not exist"; none of it is a naming problem, the tables were simply never created.
 - **Columns renamed in staging** (the code used the old names and failed with
@@ -2253,7 +2262,7 @@ the tables to back them already existed and were queried elsewhere:
 own id.
 
 **`POST /groups/search`** is now Postgres-backed too (`group_repo.go`),
-against `team` (migration 000028) — "mirror[s] a hand-curated allow-list of
+against `team` (migration 0033) — "mirror[s] a hand-curated allow-list of
 ServiceNow's OOB sys_user_group / sys_user_grmember tables" per that
 migration's own comment, the same concept `GroupService` searches.
 `domain.Group.Active` has no backing column and is hardcoded `true`;
@@ -2266,7 +2275,7 @@ decision, not overlooked.
 
 ## IT services (CMDB services)
 
-`service` (migration 000048) is a standalone table — no FK to or from any
+`service` (migration 0044) is a standalone table — no FK to or from any
 other table in this schema. `ITServiceRepository.SearchITServices`
 (`it_service_repo.go`) wires `POST /services/search` up to it on Postgres;
 previously this route only existed on the ServiceNow data source.
@@ -2355,7 +2364,7 @@ couldn't be exercised against live rows yet.
 Found via a direct query against `work_item` grouped by `type`: `wso2_id`
 (`InternalID`) is `NULL` for a handful of real `CASE`/`ENGAGEMENT`/
 `SERVICE_REQUEST` rows, even though the `work_item_wso2_id_required_by_type`
-`CHECK` constraint (migration 000016) requires it `NOT NULL` for those
+`CHECK` constraint (migration 0021) requires it `NOT NULL` for those
 types -- **the constraint is evidently not actually enforced against this
 data** (added after these rows already existed, and never backfilled/
 revalidated). Don't trust a `CHECK` constraint's claim over what a direct
@@ -2493,7 +2502,7 @@ name for what this schema calls `service`, the same identification
 Problem/Incident IS applied too, mapped to `work_item.assigned_to_id`, a
 real, direct column. `madeSla`/`slaViolated` on Incident map to
 `incident.is_sla_met` and an `EXISTS`/`NOT EXISTS` check against `sla.has_breached`
-(migration 000052) respectively.
+(migration 0048) respectively.
 
 **`SearchIncidentActivities` reuses `scanCaseActivity`'s exact query shape**
 (`case_repo.go`) -- an activity feed entry (comment or field change) is not
@@ -2548,7 +2557,7 @@ from the original comment/attachment UNION ALL implementation) and was
 fixed alongside the new incident one rather than left for later, since it's
 the identical bug.
 
-## change_request.change_model and work_item_activity (migrations 000055/000056)
+## change_request.change_model and work_item_activity (migrations 0056/0055)
 
 Two small, unrelated migrations, both unverified against real data (neither
 table/column exists on the staging database this was developed against
@@ -2615,15 +2624,20 @@ a real integer column (an earlier revision parsed a free-text `number_of_cores`)
 (`deployed_product.update_level_info` is a different, per-deployed-product
 concept, not per-node) and is always `nil`.
 
-**Column names follow staging, not `migrations/`.** Staging's schema is built by
-the sync service, and it renamed columns this code was written against:
+**Column names follow staging, not what an older revision of this file's own
+migration used to create.** Staging's schema is built by the sync service,
+which renamed columns this code was written against:
 `deployment_node.subscription_key` -> `project_key`, `deployment_node.deployment_ref`
 -> `deployment_number`, `deployment_information.number_of_cores` -> `core_count`
 and `reported_created_on/reported_updated_on` -> `payload_created_on/
 payload_updated_on`, `daily_usage_summary.deployment_ref` -> `deployment_number`.
-Migration 000054 still uses the old names. With the old names `SearchInstances`,
-`SearchInstanceMetrics` and `SearchInstanceUsage` failed on staging with "column
-does not exist". Check the live schema before trusting the migrations.
+Migration `0054_usage_tracking_tables.sql` used the old names until this was
+caught (checked directly against `operations/csm-sync-service`'s own copy of
+the same migration and this repo's own `instance_repo.go`, which already
+queried the *new* names) and fixed to match both — with the old names,
+`SearchInstances`, `SearchInstanceMetrics` and `SearchInstanceUsage` failed on
+staging with "column does not exist". Still worth checking the live schema
+before trusting any migration file, here or elsewhere.
 
 **Project/Deployment/DeployedProduct references, verified against staging.**
 `deployment_node.product_version_id` is a real foreign key, so `Product` is
@@ -2699,13 +2713,13 @@ tables with no current caller elsewhere in this file.
 
 ## Service offerings and task SLAs
 
-`service_offering` (migration 000049) is now Postgres-backed
+`service_offering` (migration 0045) is now Postgres-backed
 (`service_offering_repo.go`): `POST /service-offerings/search`, previously
-ServiceNow-only. `parent_id` (FK into `service`, migration 000048) maps to
+ServiceNow-only. `parent_id` (FK into `service`, migration 0044) maps to
 `ServiceOffering.Service`; `SearchServiceOfferingsFilters.ServiceIDs` filters
 on it.
 
-`sla`/`sla_policy` (migrations 000051/000052) back `TaskSlaService`
+`sla`/`sla_policy` (migrations 0047/0048) back `TaskSlaService`
 (`task_sla_repo.go`) -- previously ServiceNow-only `POST /task-slas/search`/
 `GET /task-slas/{id}`. Both tables are real and populated in the staging
 database (66 `sla_policy` rows, 128k+ `sla` rows at the time this was
@@ -2783,7 +2797,7 @@ this same split-interface-and-handler pattern rather than stubbing the rest.
 **`ReferenceDataRepository`** (`internal/repository/reference_data_repo.go`)
 backs both endpoints:
 - `ListProjectTypes`/`GetProjectByID` read the `project_type` table
-  (migration 000026) and `project.project_type_id` (migration 000027) --
+  (migration 0031) and `project.project_type_id` (migration 0032) --
   confirmed live: 1952 of 1956 `project` rows have a `project_type_id` set.
 - `EnumLabels` queries `pg_catalog.pg_enum`/`pg_type` directly (`WHERE
   t.typname = ANY($1::text[])`) rather than hardcoding each enum's label
@@ -2809,7 +2823,7 @@ ServiceNow-side config, not project/case data); `SeverityBasedAllocationTime`
 category field (no per-project feature-entitlement or severity-restriction
 columns exist anywhere in the Postgres schema -- checked directly against
 the `project` table's full column list, not just assumed). (`CallRequestStates`
-used to be on this list; `customer_call` -- migration 000072 -- has since
+used to be on this list; `customer_call` -- migration 0073 -- has since
 landed, so it's now read live from `customer_call_state_enum` like every other
 choice list. See "Call requests and the service-request catalog" below.)
 
@@ -2907,7 +2921,7 @@ customer results are limited by how much has been synced; flip the state in
 `access_repo.go` if INVITED contacts should count.
 
 **A related, separate gap surfaced while building this, not yet fixed**:
-`recompute_user_type()`'s trigger (migration 000007) classifies only the
+`recompute_user_type()`'s trigger (migration 0011) classifies only the
 `admin` and `internal` Asgardeo/SN roles as `user_type = INTERNAL` -- a person
 whose only role is `agent` ends up `NOT_AVAILABLE` and is denied here even
 though they *do* have a `user` row. Whether `agent` should count as internal
@@ -2983,11 +2997,23 @@ operations above -- they are registered in ServiceNow mode deliberately (see
 there to scope them.
 
 **Not yet wired**: every other project/case-adjacent read (comments,
-escalations, time cards, attachments, conversations, change requests,
+time cards, attachments, conversations, change requests,
 call requests, catalogs, instances, etc.) still does no per-caller scoping --
 the auth middleware validates tokens on every route, but only the operations
 above actually call `AccessService`. Extending it further is follow-up work,
 not done in this pass.
+
+**Exception, added later**: `POST /escalations` / `POST /cases/{id}/escalations`
+(`EscalationService.CreateEscalation`, Postgres data source) DOES call
+`AccessService.ResolveScope` and authorizes `caseId` through
+`CaseRepository.GetCaseByID` before mutating anything -- an out-of-scope
+case is a `NotFoundError`, same convention as the by-id reads above. This was
+wired in specifically because CreateEscalation MUTATES a case (escalate/
+de-escalate) and returns its details, unlike the read endpoints still listed
+above as not-yet-wired. Every OTHER case mutation (`UpdateCase`, `AddCaseTag`,
+`AcknowledgeCase`, `CreateCaseComment`, ...) remains unscoped -- this is a
+narrow, deliberately inconsistent fix for one endpoint under active review,
+not a decision that case mutations are scoped now.
 
 ## Call requests and the service-request catalog (migrations 000067-000072)
 
@@ -3128,7 +3154,7 @@ result set.
   portals' "Linked Items" tab sends it to find a case's child cases) but
   unconditionally rejected by `caseService.SearchCases` with "not supported
   by this data source", even though nothing about it is actually
-  ServiceNow-specific: `work_item.parent_id` (migration 000036) is the exact
+  ServiceNow-specific: `work_item.parent_id` (migration 0039) is the exact
   same generic self-reference `GetCaseByID`'s own `ParentCase` already reads
   in the other direction. Fixed with a plain `wi.parent_id = $N::uuid`
   predicate in `SearchCases`'s `WHERE` clause — not routed through the
@@ -3187,7 +3213,7 @@ result set.
 
 ## Announcement requests
 
-`announcement_requests` (migration `000040`, `internal/domain/entity.go`'s
+`announcement_requests` (migration `0042`, `internal/domain/entity.go`'s
 `AnnouncementRequest`, `internal/repository/announcement_request_repo.go`,
 `internal/service/announcement_request_service.go`) is durable state for an
 announcement that hasn't been published yet — `draft -> pending_approval ->
@@ -3294,7 +3320,7 @@ each has a real backing column/table already read elsewhere. `userRepo.
 SearchUsers` now filters on them:
 - `userIds` — `u.id = ANY($n::uuid[])`.
 - `groupIds` — `EXISTS (SELECT 1 FROM team_member tm WHERE tm.user_id = u.id
-  AND tm.team_id = ANY($n::uuid[]))` (migration 000028, the same table
+  AND tm.team_id = ANY($n::uuid[]))` (migration 0033, the same table
   `GetUserGroups` reads).
 - `groupNames` — the same `EXISTS` joined to `team` on `t.id = tm.team_id`,
   matching `t.name = ANY($n::text[])` instead of the id; kept alongside
@@ -3375,7 +3401,7 @@ only fires as a side effect of ingesting a Salesforce membership. `UserRepositor
 (`user_repo.go`) is the first direct write path: `user_name` is always `lower(email)` (matching the
 membership ingest's own convention), `is_active` is always `TRUE`, and `id`/`created_on`/
 `updated_on` are supplied inline (`gen_random_uuid(), NOW(), NOW()`) since the column has no DB-side
-default. `user_type` is never set directly — it's derived by a trigger (migration 000007) from
+default. `user_type` is never set directly — it's derived by a trigger (migration 0011) from
 `is_system_user` (left unset here, so NULL/false) and role membership, the same as every other write
 path in this codebase that touches `"user"`.
 
@@ -3395,7 +3421,7 @@ restricting who may call this is `apps/csm-portal/backend`'s job (see that repo'
 ## SearchDeployments crashed on any page containing a NULL deployment.type
 
 Reported live: `POST /deployments/search` failing with `cannot scan NULL into
-*string`. `deployment.type` (migration 000013) has no `NOT NULL` constraint —
+*string`. `deployment.type` (migration 0018) has no `NOT NULL` constraint —
 38 of 2859 rows are NULL on staging, checked live — but `DeploymentView.Type`
 is a required (non-pointer) `DeploymentType` field on the wire, and
 `deployment_repo.go`'s `SearchDeployments` scanned the column straight into
@@ -3421,7 +3447,7 @@ implementation" note elsewhere in this file.
 ## SearchProjects crashed on any page containing a NULL project.sf_id
 
 Reported live: `POST /projects/search` failing with `cannot scan NULL into
-*string`. `project.sf_id` is declared `NOT NULL` (migration 000009), but that
+*string`. `project.sf_id` is declared `NOT NULL` (migration 0014), but that
 constraint turned out not to be actually enforced against real data — the
 same class of gap `CaseView.InternalID`'s own doc comment describes for
 `wso2_id`, and `SearchDeployments`'s for `deployment.type` (see that section
@@ -3543,7 +3569,16 @@ All shared types live in `internal/domain/entity.go`. Conventions:
 
 ## Database migrations
 
-Migrations live in `migrations/` as plain SQL files, numbered `000NNN_<description>.up.sql` / `.down.sql`. Each migration creates its PostgreSQL enums, sequences, and tables in a single transaction. Apply them in ascending order before starting the service.
+Migrations live in `migrations/` as plain SQL files, numbered `NNNN_<description>.sql` (4-digit, single file, no separate `.up`/`.down`) — matching `operations/csm-sync-service`'s own convention exactly, since that service and this one migrate against the same shared Postgres database. This replaces the older `000NNN_<description>.up.sql`/`.down.sql` convention (6-digit, up/down pairs) this file used to document; every migration under the old convention was renumbered/consolidated into the new one, not left running side by side with it.
+
+- **Each file is a complete, forward-only migration** — there is no scripted rollback. A change that needs undoing is a new forward migration, not a `.down.sql`. `IF NOT EXISTS`/`IF EXISTS` guards (already this repo's convention) make every file safe to re-run.
+- **A migration file itself carries no tracking statement.** `make migrate` (Makefile) creates `csm_migration_applied_migration` (`filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now()`) if absent, then for each `migrations/*.sql` file, in ascending order: skips it if its name is already in that table, otherwise applies it (`psql -f`) and only then records it with a separate `INSERT INTO csm_migration_applied_migration (filename) VALUES (...)` — this exactly mirrors `operations/csm-sync-service`'s own `make migrate` loop, since both services must track migrations against the same shared database the same way. `scripts/generate_schema_bootstrap.sh` (a combined-file generator for a from-scratch DB, also ported from that service, supporting `--since`/`--from`/`--to` for a delta) is the one thing that *does* append the tracking insert per migration — necessary there because a single concatenated file has no per-statement loop to do it externally.
+- **Numbers `0001`–`0100` are a byte-for-byte mirror of `operations/csm-sync-service`'s own `migrations/0001`–`0100`**, including its control-plane tables (`migration_job`/`migration_run`/`sync_checkpoint`/`schema_version`, renamed to the `csm_migration_` prefix at `0091`) — entity-service's own Go code never queries those tables, but the file is kept here anyway so `make migrate` produces the *identical* resulting schema whichever repo it's run from, not just an overlapping subset. A handful of these (e.g. `0025`/`0033`/`0098`) are no-ops against this repo's own already-correct `CREATE TABLE` statements (guarded by `IF EXISTS`/`IF NOT EXISTS`/an already-true condition) — kept anyway, for the same reason. Beyond `0100`, each repo has its own entity-specific migrations that only exist on that side (this repo's `0101`+ covers GitHub integration, announcement requests, onboarding steps, and more — none of it sync-service's concern).
+- **Whenever a new migration touches a shared table (not something entity-service-only), check `operations/csm-sync-service/migrations/` directly for the next real number before picking one here** — its migrations are the authoritative record of what actually runs against the shared database, and it has continued past whatever this file's own highest number was at any given time. Picking a number here that sync-service has already used for something else creates two same-numbered-but-different migrations across the two repos; `make migrate` from either repo would then apply both under different filenames with no conflict *detected*, silently leaving whichever repo didn't get involved missing the other's columns/tables. When sync-service adds a migration for a table entity-service also cares about (or its own control-plane numbering advances), mirror the file here at the same number, the same way `0101`/`0102` (`account_support_fields`/`work_item_feedback_table`) were pulled in.
+- **The identical collision can happen entirely within this repo, with no other service involved.** Two branches cut from the same base each see the same "current highest number," each add their own next-numbered file, and both PRs merge cleanly — git sees two different filenames, so there's no merge conflict to catch it. The result is the same silent, undetected collision as the cross-repo case above: two unrelated migrations sharing one number, `make migrate` applies both under their own filenames without complaint, and the numbering no longer identifies one unambiguous point in the sequence. Rebase onto the target branch's actual latest `migrations/` state before opening a migration PR, and check for a same-number collision as part of reviewing one — this repo has no CI check enforcing unique leading numbers today.
+- **`ALTER TYPE ... ADD VALUE` migrations stay the only statement in their file** — it cannot run in the same transaction as a later statement that uses the new value, and every file here is expected to be applied with plain autocommit (never wrapped in `BEGIN`/`COMMIT`, never run with `psql -1`/`--single-transaction`).
+
+Each migration creates its PostgreSQL enums, sequences, and tables in a single transaction (aside from the `ALTER TYPE ... ADD VALUE` exception above). Apply them in ascending order before starting the service — `make migrate` does this.
 
 Key conventions enforced at the DB level:
 - Primary keys are `UUID DEFAULT gen_random_uuid()`
