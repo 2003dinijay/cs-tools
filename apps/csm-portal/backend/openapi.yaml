@@ -16418,6 +16418,8 @@ components:
       properties:
         subject:
           type: string
+        description:
+          type: string
         category:
           type: string
         subcategory:

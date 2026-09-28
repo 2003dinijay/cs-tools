@@ -17913,6 +17913,13 @@ components:
       properties:
         subject:
           type: string
+        description:
+          type: string
+          nullable: true
+          description: >-
+            Accepted and validated, but not yet forwarded to ServiceNow -- the
+            Choreo integration's own POST /problems contract has no field to
+            receive it. Silently dropped after validation until that changes.
         category:
           type: string
           nullable: true
