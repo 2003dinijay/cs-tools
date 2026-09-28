@@ -112,7 +112,7 @@ type timeCardRepo struct {
 
 // NewTimeCardRepository constructs a TimeCardRepository backed by the given
 // Scoped connection. time_card's project-membership visibility (migration
-// 000096) is enforced entirely by Postgres RLS now -- this repository
+// 0144) is enforced entirely by Postgres RLS now -- this repository
 // applies no project filtering of its own.
 func NewTimeCardRepository(db *Scoped) TimeCardRepository {
 	return &timeCardRepo{db: db}
@@ -736,7 +736,7 @@ func (r *timeCardRepo) TransitionTimeCardState(ctx context.Context, id string, s
 		// closing the gap a plain check-then-UPDATE would leave for a
 		// concurrent approver-list edit (or a second transition attempt) to
 		// race through. Postgres applies both the SELECT and UPDATE policies
-		// to a FOR UPDATE lock -- time_card's RLS policies (migration 000096)
+		// to a FOR UPDATE lock -- time_card's RLS policies (migration 0144)
 		// use the same is_project_member condition for both, so a legitimate
 		// caller's own row satisfies both together.
 		var submitterID string

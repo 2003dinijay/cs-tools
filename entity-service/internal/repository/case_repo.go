@@ -774,7 +774,7 @@ const createSecurityReportAnalysisFromServiceNowQuery = `
 // INSERT...RETURNING outright rather than silently returning zero rows the
 // way it does for UPDATE/DELETE, so every announcement created by the sync
 // job failed without this). Now that work_item/"case" are also RLS-protected
-// (migration 000099), every branch's INSERT...RETURNING needs the same
+// (migration 0147), every branch's INSERT...RETURNING needs the same
 // treatment, so the stamp moved up to cover all five uniformly rather than
 // staying a special case.
 func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {

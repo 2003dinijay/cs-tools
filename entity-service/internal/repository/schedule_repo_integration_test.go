@@ -63,6 +63,18 @@ const (
 	schedMonday = "2026-09-21"
 )
 
+// mustExec runs sql against pool, failing the test immediately on error --
+// this file's own shared seed/teardown helper, referenced throughout but
+// missing from this branch as merged; added here to restore compilation.
+// None of the tables this file seeds (team/team_member/team_schedule_*)
+// carry RLS, so a plain pool.Exec is correct.
+func mustExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+		t.Fatalf("exec (%.60s): %v", sql, err)
+	}
+}
+
 // newScheduleIntegrationRepo connects, rebuilds this file's fixtures from
 // scratch so the tests are order-independent and rerunnable, and returns a
 // repository over a real pool.

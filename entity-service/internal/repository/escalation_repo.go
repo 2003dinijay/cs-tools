@@ -34,7 +34,7 @@ import (
 // and case_escalation_notification_list (migration 0054).
 //
 // Both tables are project-membership-scoped by row-level security
-// (migration 000093, updated by a later migration once CreateEscalation
+// (migration 0141, updated by a later migration once CreateEscalation
 // below turned out to be a genuine customer-facing write, not
 // internal-only as first assumed), keyed on the caller identity Scoped
 // forwards as session GUCs -- this repository does no project filtering of

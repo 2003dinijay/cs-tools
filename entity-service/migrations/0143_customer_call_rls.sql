@@ -15,8 +15,8 @@
 -- under the License.
 
 -- Enforces project-membership visibility for customer_call (call requests)
--- at the database layer. Third table after case_escalation (000093) and
--- sla (000094). Unlike either of those, this was a previously ACKNOWLEDGED,
+-- at the database layer. Third table after case_escalation (0141) and
+-- sla (0142). Unlike either of those, this was a previously ACKNOWLEDGED,
 -- unfixed gap (call_request_repo.go's own prior doc comment: neither
 -- SearchCallRequests nor SearchAllCallRequests ever did any caller-scoped
 -- authorization at all) -- so this migration is closing a real, live

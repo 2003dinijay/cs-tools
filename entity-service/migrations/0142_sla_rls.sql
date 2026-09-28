@@ -15,7 +15,7 @@
 -- under the License.
 
 -- Enforces project-membership visibility for `sla` at the database layer,
--- second table after case_escalation (migration 000093) to move off
+-- second table after case_escalation (migration 0141) to move off
 -- Go-side project filtering.
 --
 -- Unlike case_escalation, `sla` has TWO real writers, both of which need to

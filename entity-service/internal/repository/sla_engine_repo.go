@@ -142,7 +142,7 @@ type slaEngineRepo struct {
 // given Scoped connection. This engine runs on a process-startup background
 // worker (cmd/api/main.go's slaEngineCtx), never an HTTP request, so that
 // context must carry WithSystemIdentity(ctx) rather than inheriting nothing
-// -- the sla table's write policies (migration 000094) require
+// -- the sla table's write policies (migration 0142) require
 // app.is_internal='true'.
 func NewSLAEngineRepository(db *Scoped) SLAEngineRepository {
 	return &slaEngineRepo{db: db}

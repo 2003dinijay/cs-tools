@@ -45,7 +45,7 @@ const slaEngineIntegrationWorkItemID = "47777777-0000-0000-0000-000000000001"
 func seedSLAEngineWorkItem(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	// WithSystemIdentity: work_item itself is RLS-protected now too
-	// (migration 000099), not just sla -- scoped, not just pool, backs this
+	// (migration 0147), not just sla -- scoped, not just pool, backs this
 	// seed's own insert/cleanup.
 	ctx := repository.WithSystemIdentity(context.Background())
 	scoped := repository.NewScoped(pool)
@@ -88,7 +88,7 @@ func TestSLAEngineIntegration_ReviseClocksDoesNotResurrectTerminalClock(t *testi
 	seedSLAEngineWorkItem(t, pool)
 	// WithSystemIdentity: this exercises the same engine the background
 	// recompute worker runs as (see NewSLAEngineRepository's own doc
-	// comment) -- sla's RLS policies (migration 000094) require an
+	// comment) -- sla's RLS policies (migration 0142) require an
 	// identity on every statement now. scoped, not just pool, backs this
 	// test's own setup/verification queries below too -- a raw pool.Query
 	// carries no identity at all and would see zero rows regardless of

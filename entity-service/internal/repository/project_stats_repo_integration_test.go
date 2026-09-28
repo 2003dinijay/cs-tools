@@ -36,7 +36,7 @@ const statsProjectID = "31111111-1111-1111-1111-111111111111"
 // something to return.
 func seedProjectStats(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	// WithSystemIdentity: time_card's RLS policies (migration 000096)
+	// WithSystemIdentity: time_card's RLS policies (migration 0144)
 	// require an identity on every statement now, including this seed's own
 	// writes. scoped, not just pool, backs mustExec below so every seed
 	// statement carries it uniformly (harmless for the non-RLS tables it

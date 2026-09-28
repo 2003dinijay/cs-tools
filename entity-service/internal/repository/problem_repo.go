@@ -481,7 +481,7 @@ func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domai
 	// WithSystemIdentity: this insert never sets a project_id on the new
 	// work_item row at all (problems have no project concept, same as
 	// incidents -- see this file's own package doc comment), so work_item's
-	// INSERT policy (migration 000099) can only be satisfied by is_internal.
+	// INSERT policy (migration 0147) can only be satisfied by is_internal.
 	// Same reasoning as IncidentRepository.CreateIncidentFromServiceNow's
 	// own identical stamp.
 	ctx = WithSystemIdentity(ctx)

@@ -76,9 +76,9 @@ const (
 func seedAnnouncementVisibilityFixtures(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	// WithSystemIdentity: work_item/announcement/work_item_tag all have RLS
-	// now (migrations 000085/000099) -- including an internal-only DELETE
+	// now (migrations 000085/0147) -- including an internal-only DELETE
 	// policy added specifically because this cleanup needs it (the same
-	// sla_delete lesson from migration 000094). scoped, not just pool,
+	// sla_delete lesson from migration 0142). scoped, not just pool,
 	// backs every write below that touches one of these three tables.
 	ctx := repository.WithSystemIdentity(context.Background())
 	scoped := repository.NewScoped(pool)
@@ -132,7 +132,7 @@ func seedAnnouncementVisibilityFixtures(t *testing.T, pool *pgxpool.Pool) {
 		var contactRowID string
 		// state = 'REGISTERED' matters now, not just historically for
 		// announcement's own role-based policy: work_item itself is
-		// RLS-protected too (migration 000099), and its is_project_member()
+		// RLS-protected too (migration 0147), and its is_project_member()
 		// check requires state = 'REGISTERED' -- a project_contact row left
 		// at its NULL default would pass announcement's own role check but
 		// fail work_item's, hiding the row from the join entirely regardless
@@ -311,7 +311,7 @@ const (
 // seedAnnouncementVisibilityFixtures' own -- deliberately with only a
 // General Access (PORTAL_USER) contact and no Security Only/Full Access
 // contact at all -- plus one security announcement in it, to exercise the
-// fallback migration 000101 added: a security announcement in a project
+// fallback migration 0149 added: a security announcement in a project
 // with no security contact is visible to ordinary portal users instead of
 // being invisible to everyone but internal callers. The main fixture's own
 // project cannot exercise this: it deliberately includes a Security Only
@@ -322,7 +322,7 @@ func seedAnnouncementSecurityFallbackFixture(t *testing.T, pool *pgxpool.Pool) {
 	scoped := repository.NewScoped(pool)
 
 	cleanup := func() {
-		// work_item now has FORCE ROW LEVEL SECURITY (migration 000099) --
+		// work_item now has FORCE ROW LEVEL SECURITY (migration 0147) --
 		// scoped, not a raw pool.Exec, or this DELETE silently affects zero
 		// rows under its internal-only DELETE policy, leaving the row (and
 		// its child announcement row) behind for the next run. Matched by
@@ -379,7 +379,7 @@ func seedAnnouncementSecurityFallbackFixture(t *testing.T, pool *pgxpool.Pool) {
 }
 
 // TestAnnouncementSecurityFallbackNoSecurityContactIntegration is the
-// regression test for migration 000101's own fallback: a security
+// regression test for migration 0149's own fallback: a security
 // announcement in a project with no SECURITY_CONTACT at all must be
 // visible to that project's ordinary portal users, not just internal
 // callers -- confirmed live against this database copy (several real

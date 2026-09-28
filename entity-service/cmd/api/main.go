@@ -94,7 +94,7 @@ func main() {
 	// nowhere to read/write a clock at all with no database configured.
 	// WithSystemIdentity: this worker runs on its own process-startup
 	// context, never an HTTP request, so there is no caller identity to
-	// inherit -- the sla table's write policies (migration 000094) require
+	// inherit -- the sla table's write policies (migration 0142) require
 	// app.is_internal='true', which this worker genuinely is.
 	slaEngineCtx, stopSLAEngine := context.WithCancel(repository.WithSystemIdentity(context.Background()))
 	defer stopSLAEngine()

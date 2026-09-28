@@ -16,7 +16,7 @@
 
 -- Enforces project-membership visibility for time_card (and its child
 -- time_card_approver) at the database layer. Fourth table after
--- case_escalation (000093), sla (000094), customer_call (000095).
+-- case_escalation (0141), sla (0142), customer_call (0143).
 --
 -- time_card.case_id is NOT NULL (unlike every nullable join column in the
 -- earlier three migrations), so is_project_member sees a real project_id
@@ -67,7 +67,7 @@ CREATE POLICY time_card_delete ON time_card
 -- time_card_approver has no project_id of its own -- it reaches one via
 -- time_card.case_id, so its policy re-derives the same membership check
 -- through that join, mirroring case_escalation_notification_list's own
--- reasoning (migration 000093).
+-- reasoning (migration 0141).
 ALTER TABLE time_card_approver ENABLE ROW LEVEL SECURITY;
 ALTER TABLE time_card_approver FORCE ROW LEVEL SECURITY;
 

@@ -125,7 +125,7 @@ func NewGithubMutationRepository(db *Scoped) GithubMutationRepository {
 // CreateChangeRequestFromServiceNow and to the SLA engine's own background
 // worker (see NewSLAEngineRepository's doc comment).
 //
-// This is not optional only for the tables migration 000097 protects: EVERY
+// This is not optional only for the tables migration 0145 protects: EVERY
 // Scoped method requires SOME identity on ctx regardless of whether the
 // target table has RLS at all (Scoped.Query/QueryRow/Exec return
 // ErrNoCallerIdentity outright otherwise) -- so every method on

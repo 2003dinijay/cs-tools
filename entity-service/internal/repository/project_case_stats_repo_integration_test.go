@@ -54,7 +54,7 @@ const caseStatsProjectID = "11111111-1111-1111-1111-111111111111"
 // RESPONSE SLA. Everything is removed afterwards, so the test is re-runnable.
 func seedCaseStats(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	// WithSystemIdentity: sla's RLS policies (migration 000094) require an
+	// WithSystemIdentity: sla's RLS policies (migration 0142) require an
 	// identity on every statement now, including this seed/cleanup's own
 	// writes -- an internal identity is what makes them (and sla_delete,
 	// the internal-only DELETE policy) succeed regardless of which project

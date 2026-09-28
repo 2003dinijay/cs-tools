@@ -116,7 +116,7 @@ type projectStatsRepo struct {
 
 // NewProjectStatsRepository constructs a ProjectStatsRepository backed by
 // the given Scoped connection -- time_card's project-membership visibility
-// (migration 000096) and announcement's (migration 000085) are both
+// (migration 0144) and announcement's (migration 000085) are both
 // enforced entirely by Postgres RLS now, reading the caller's identity from
 // ctx automatically.
 func NewProjectStatsRepository(db *Scoped) ProjectStatsRepository {

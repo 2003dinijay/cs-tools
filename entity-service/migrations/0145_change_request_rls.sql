@@ -17,8 +17,8 @@
 -- Enforces project-membership visibility for change_request (plus the
 -- generic approval_stage/approval_stage_approver tables it uses for its
 -- approval workflow) at the database layer. Fifth table after
--- case_escalation (000093), sla (000094), customer_call (000095), time_card
--- (000096). This is another previously-ACKNOWLEDGED gap, specifically named
+-- case_escalation (0141), sla (0142), customer_call (0143), time_card
+-- (0144). This is another previously-ACKNOWLEDGED gap, specifically named
 -- in the team review that started this whole migration series
 -- ("GetChangeRequestApprovals" and the patch flow) -- change_request_repo.go
 -- never did any caller-scoped authorization at all before this.
@@ -30,7 +30,7 @@
 --
 -- IMPORTANT, deliberately deferred (same posture already accepted for
 -- case_repo.go/incident_repo.go's SLA-filter regression -- see migration
--- 000096's own history): work_item itself has NO RLS yet (that lands in the
+-- 0144's own history): work_item itself has NO RLS yet (that lands in the
 -- case-adjacent phase, which finally converts case_repo.go). PatchChangeRequest
 -- updates BOTH work_item and change_request in one transaction; only the
 -- change_request half is protected by this migration. Concretely: title/
@@ -58,7 +58,7 @@ CREATE POLICY change_request_visibility ON change_request
 -- rather than correlating back to the row being updated -- caught live via
 -- "more than one row returned by a subquery used as an expression" the first
 -- time this policy was exercised against real data. sla/customer_call/
--- time_card's own WITH CHECK subqueries (migrations 000094-000096) never hit
+-- time_card's own WITH CHECK subqueries (migrations 0142-0144) never hit
 -- this because they correlate on work_item_id, a name work_item has no
 -- column called, so there was no ambiguity to resolve incorrectly.
 CREATE POLICY change_request_update ON change_request

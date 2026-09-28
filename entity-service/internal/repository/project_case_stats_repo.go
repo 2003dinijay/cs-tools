@@ -133,7 +133,7 @@ type projectCaseStatsRepo struct {
 
 // NewProjectCaseStatsRepository constructs a ProjectCaseStatsRepository
 // backed by the given Scoped connection -- announcement's RLS (migration
-// 000085) and sla's (migration 000094) are both enforced entirely by
+// 000085) and sla's (migration 0142) are both enforced entirely by
 // Postgres now, reading the caller's identity from ctx automatically
 // instead of a filter field the caller had to remember to populate.
 func NewProjectCaseStatsRepository(db *Scoped) ProjectCaseStatsRepository {

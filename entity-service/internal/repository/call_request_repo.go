@@ -209,7 +209,7 @@ type callRequestRepo struct {
 
 // NewCallRequestRepository constructs a CallRequestRepository backed by the
 // given Scoped connection. customer_call's project-membership visibility
-// (migration 000095) is enforced entirely by Postgres RLS now -- this
+// (migration 0143) is enforced entirely by Postgres RLS now -- this
 // repository applies no project filtering of its own, closing what was
 // previously an acknowledged, unfixed gap (see this file's git history):
 // neither SearchCallRequests nor SearchAllCallRequests ever did any
@@ -293,7 +293,7 @@ func scanCallRequest(row pgx.Row) (domain.CallRequestView, error) {
 // runCallRequestSearch executes the count and page queries concurrently for
 // the given WHERE/ORDER BY and their bound args, each through Scoped so the
 // caller's identity (pulled from ctx) is set for both customer_call's own
-// RLS policy (migration 000095) and, through callRequestFrom's caseLikeJoins,
+// RLS policy (migration 0143) and, through callRequestFrom's caseLikeJoins,
 // the RLS-protected `announcement` table's (migration 000085) -- both must
 // see the SAME transaction's identity, which Scoped guarantees per call.
 func (r *callRequestRepo) runCallRequestSearch(ctx context.Context, where, orderBy string, args []any, pagination domain.Pagination) ([]domain.CallRequestView, int, error) {

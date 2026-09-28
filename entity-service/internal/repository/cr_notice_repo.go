@@ -143,7 +143,7 @@ func (r *crNoticeRepository) ClaimChanges(ctx context.Context, entityTypes []str
 // row can be deleted between the outbox row being written and this running,
 // and a notice about a deleted record is a silent no-op, not a fault to retry.
 func (r *crNoticeRepository) Details(ctx context.Context, id string) (CRNoticeDetails, error) {
-	// WithSystemIdentity: change_request's RLS policies (migration 000097)
+	// WithSystemIdentity: change_request's RLS policies (migration 0145)
 	// would otherwise silently filter this read to zero rows -- this
 	// repository is the CR-notice drainer's own reader, an internal
 	// background process with no customer viewer to speak for (same

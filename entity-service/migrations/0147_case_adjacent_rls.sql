@@ -38,7 +38,7 @@
 -- protected, a caller who can't see the work_item row can never reach
 -- their extension row either -- the same reasoning that already excluded
 -- project_contact/project_contact_group/project_group_role/project_role
--- from RLS (migration 000093's own comment): protecting them would only
+-- from RLS (migration 0141's own comment): protecting them would only
 -- risk infinite-recursion policy errors for zero additional safety.
 ALTER TABLE work_item ENABLE ROW LEVEL SECURITY;
 ALTER TABLE work_item FORCE ROW LEVEL SECURITY;
@@ -56,7 +56,7 @@ CREATE POLICY work_item_visibility ON work_item
 -- writing the same expression in both is what stops a caller moving a case
 -- OUT of a project they belong to as much as it stops moving one IN --
 -- PatchChangeRequest's own project_id write (already live, migration
--- 000097's own deferred-gap note) is exactly the write path this closes.
+-- 0145's own deferred-gap note) is exactly the write path this closes.
 CREATE POLICY work_item_update ON work_item
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -89,7 +89,7 @@ CREATE POLICY work_item_write ON work_item
 -- Internal-only, not omitted entirely: nothing in PRODUCTION code deletes a
 -- work_item row, but FORCE plus zero policies would also block legitimate
 -- internal/admin/test cleanup, the same sla_delete lesson from migration
--- 000094.
+-- 0142.
 CREATE POLICY work_item_delete_internal_only ON work_item
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
 
@@ -179,7 +179,7 @@ CREATE POLICY comment_delete_internal_only ON comment
 -- comment_edit_history has no project_id or work_item_id of its own -- it
 -- reaches one via comment.work_item_id, so its policy re-derives the same
 -- membership check through that join, mirroring case_escalation_
--- notification_list's own reasoning (migration 000093). Append-only from
+-- notification_list's own reasoning (migration 0141). Append-only from
 -- this codebase's perspective (UpdateComment inserts a row every time it
 -- runs, nothing ever updates or deletes one), so only SELECT/INSERT
 -- policies exist.
@@ -285,7 +285,7 @@ CREATE POLICY work_item_tag_delete ON work_item_tag
 -- work_item_watcher has no project_id of its own -- reaches one via
 -- work_item_id. No UPDATE policy: SetCaseWatchList always deletes and
 -- re-inserts the whole list, mirroring time_card_approver's identical
--- reasoning (migration 000096) for why that table also has no UPDATE
+-- reasoning (migration 0144) for why that table also has no UPDATE
 -- policy.
 ALTER TABLE work_item_watcher ENABLE ROW LEVEL SECURITY;
 ALTER TABLE work_item_watcher FORCE ROW LEVEL SECURITY;

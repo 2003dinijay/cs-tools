@@ -15,12 +15,12 @@
 -- under the License.
 
 -- Enforces project-membership visibility for conversation at the database
--- layer. Sixth table after case_escalation (000093), sla (000094),
--- customer_call (000095), time_card (000096), change_request (000097).
+-- layer. Sixth table after case_escalation (0141), sla (0142),
+-- customer_call (0143), time_card (0144), change_request (0145).
 --
 -- conversation shares its primary key with work_item (conversation.id IS
 -- work_item.id), same shape as change_request -- membership is derived
--- through that shared id, and (learned the hard way in migration 000097)
+-- through that shared id, and (learned the hard way in migration 0145)
 -- every correlated subquery below writes conversation.id explicitly, never
 -- a bare id, since work_item also has a column literally named id and an
 -- unqualified reference inside a "FROM work_item wi" subquery resolves to
@@ -57,7 +57,7 @@ CREATE POLICY conversation_update ON conversation
 -- ConversationRepository's own package doc comment), so nothing currently
 -- writes a new conversation row. Still given an explicit internal-only
 -- policy rather than left at zero, matching case_escalation's own
--- precedent (migration 000093): FORCE plus zero INSERT policies would also
+-- precedent (migration 0141): FORCE plus zero INSERT policies would also
 -- block a future internal/admin tooling need, not just an external one.
 CREATE POLICY conversation_write_internal_only ON conversation
   FOR INSERT WITH CHECK (current_setting('app.is_internal', true) = 'true');

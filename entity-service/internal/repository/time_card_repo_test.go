@@ -58,7 +58,7 @@ const (
 // combination went unexercised until this bug was reported.
 func seedTimeCardWithNullDurations(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	// WithSystemIdentity: time_card's RLS policies (migration 000096)
+	// WithSystemIdentity: time_card's RLS policies (migration 0144)
 	// require an identity on every statement now, including this seed's own
 	// writes. scoped, not just pool, backs mustExec below.
 	ctx := repository.WithSystemIdentity(context.Background())
@@ -122,7 +122,7 @@ func TestTimeCardIntegration_SearchTimeCardsToleratesNullDurationColumns(t *test
 	// WithSystemIdentity: this test is about NULL-duration scanning, not
 	// authorization -- it never seeds a project_contact for
 	// timeCardTestProjectID, so an internal/unrestricted identity is what
-	// makes the row visible under time_card's RLS policy (migration 000096).
+	// makes the row visible under time_card's RLS policy (migration 0144).
 	ctx := repository.WithSystemIdentity(context.Background())
 	views, total, err := repo.SearchTimeCards(ctx, domain.SearchTimeCardsRequest{
 		Filters:    &domain.SearchTimeCardsFilters{CaseID: ptrTo(timeCardTestCaseID)},

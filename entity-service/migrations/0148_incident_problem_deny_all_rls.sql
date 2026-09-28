@@ -24,7 +24,7 @@
 -- these three services relied on with one DB-level rule.
 --
 -- The Go side (incident_repo.go/incident_task_repo.go/problem_repo.go) was
--- already converted to Scoped in the previous migration (000099), since
+-- already converted to Scoped in the previous migration (0147), since
 -- work_item's own new RLS affected them immediately regardless of whether
 -- incident/incident_task/problem had their own policies yet -- this
 -- migration adds no new Go-side identity plumbing, only the policies

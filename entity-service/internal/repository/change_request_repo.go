@@ -941,7 +941,7 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			}
 			return "", fmt.Errorf("patch change request: %w", err)
 		}
-		// change_request's RLS USING clause (migration 000097) silently
+		// change_request's RLS USING clause (migration 0145) silently
 		// excludes a row the caller isn't a project member of -- a plain
 		// Exec with no RETURNING never surfaces that as pgx.ErrNoRows the
 		// way the work_item UPDATE above does, so it must be checked
@@ -1028,7 +1028,7 @@ func (r *changeRequestRepo) CreateChangeRequestFromServiceNow(ctx context.Contex
 		outID, outNumber, outSubject, outCreatedBy string
 		outCreatedOn, outUpdatedOn                 time.Time
 	)
-	// WithSystemIdentity: change_request's INSERT policy (migration 000097)
+	// WithSystemIdentity: change_request's INSERT policy (migration 0145)
 	// is internal-only -- this insert never sets a project_id (see this
 	// file's own package doc comment on CreateChangeRequestFromServiceNow),
 	// so there is nothing to check project membership against regardless of

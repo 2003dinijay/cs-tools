@@ -70,7 +70,7 @@ $$;
 
 -- project_has_security_contact centralizes the new "does this project have
 -- anyone who can see security announcements at all" check -- written the
--- same way is_project_member is (migration 000093): a shared, STABLE
+-- same way is_project_member is (migration 0141): a shared, STABLE
 -- function rather than a per-policy copy of the same join chain, so this
 -- rule can't drift if it's ever needed elsewhere.
 CREATE OR REPLACE FUNCTION project_has_security_contact(target_project_id UUID)

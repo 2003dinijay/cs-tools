@@ -353,13 +353,13 @@ func (r *conversationRepo) UpdateConversation(ctx context.Context, id string, st
 		if err != nil {
 			return fmt.Errorf("update conversation state: %w", err)
 		}
-		// conversation's RLS USING clause (migration 000098) silently
+		// conversation's RLS USING clause (migration 0146) silently
 		// excludes a row the caller isn't a project member of -- a plain
 		// Exec with no RETURNING never surfaces that as pgx.ErrNoRows the
 		// way the work_item UPDATE below does, so it must be checked
 		// explicitly here or a non-member caller would see a false
 		// "success" with the state left unchanged (same fix already applied
-		// to PatchChangeRequest, migration 000097).
+		// to PatchChangeRequest, migration 0145).
 		if ct.RowsAffected() == 0 {
 			return &apierror.NotFoundError{Msg: "conversation not found"}
 		}

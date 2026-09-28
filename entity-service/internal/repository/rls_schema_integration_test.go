@@ -35,7 +35,7 @@ import (
 )
 
 // rlsProtectedTables is every table this migration series (000085,
-// 000093-000101) put under FORCE ROW LEVEL SECURITY, gathered directly from
+// 0141-0149) put under FORCE ROW LEVEL SECURITY, gathered directly from
 // the migrations/ directory rather than hand-maintained from memory --
 // see this file's own test for how it's cross-checked against that
 // directory. Keep this list and the migrations in sync: a table added here
