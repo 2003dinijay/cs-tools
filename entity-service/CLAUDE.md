@@ -954,10 +954,10 @@ by the ingest's duplicate guard.
 
 | Endpoint | Body | Success | Errors |
 |---|---|---|---|
-| `POST /projects/{id}/contacts` | `{email, firstName?, lastName?, roles: []}` | **201** + `ProjectMembership` | 400 bad address / unknown role / no roles, 403, 404 unknown project or no Salesforce account, 409 already an active contact, 503 |
-| `PATCH /projects/{id}/contacts/{email}` | `{roles: []}` | **200** + `ProjectMembership` | 400, 403, 404, 503 |
-| `DELETE /projects/{id}/contacts/{email}` | — | **204** | 400, 403, 404, 503 |
-| `POST /projects/{id}/contacts/{email}/resend-invitation` | — | **204** | 400, 403, 404, 409 not INVITED, **429** inside the cooldown, 503 |
+| `POST /projects/{id}/contacts` | `{email, firstName?, lastName?, roles: []}` | **201** + `ProjectMembership` | 400 bad address / unknown role / no roles, 403, 404 unknown project, 409 already an active contact or a missing Salesforce id, 503 |
+| `PATCH /projects/{id}/contacts/{email}` | `{roles: []}` | **200** + `ProjectMembership` | 400, 403, 404, 409 missing Salesforce id, 503 |
+| `DELETE /projects/{id}/contacts/{email}` | — | **204** | 400, 403, 404, 409 missing Salesforce id, 503 |
+| `POST /projects/{id}/contacts/{email}/resend-invitation` | — | **204** | 400, 403, 404, 409 not INVITED or missing Salesforce id, **429** inside the cooldown, 503 |
 
 - **Invite** resolves the project and its account, finds the Salesforce
   contact by address and creates it only if absent, finds the membership for
@@ -996,6 +996,25 @@ by the ingest's duplicate guard.
   configured this is a 503 rather than a silent success: unlike an
   invitation, whose database and Salesforce writes are the substance of the
   call, a resend **is** the event.
+
+**A missing Salesforce id fails the write cleanly.** Every write needs the
+project's `sf_id` and its account's `sf_id`; a write on a membership that is
+already there (role change, deactivate, re-invite, resend) also needs that
+membership's `project_contact.sf_id` and its contact's Salesforce id. If any
+is NULL or blank, `requireSalesforceLinks` (resend: an inline check) refuses
+the call with a **409** carrying a generic, per-operation message ("This
+contact can't be updated right now. Please contact WSO2 support.") **before any
+Salesforce call**, and logs the operation, the project and membership ids and
+which ids were missing. The alternative was worse on every path: a NULL
+`project.sf_id` failed the target read with a raw driver error (bare 500); a
+blank one reached Salesforce and was refused there with an internal
+validation message, sometimes after a Contact had been created; and a
+membership with no `sf_id` was looked up by (project, contact) and, on a miss,
+a second `Project_Contact__c` was created — for a deactivation, a new
+DEACTIVATED record beside the real one. 409 rather than 400/404/503: the
+request is well-formed, the rows exist, and retrying will not help until the
+data is fixed; what blocks it is the rows' current state, and a
+`ConflictError` message reaches the caller verbatim.
 
 `apierror.TooManyRequestsError` was added for the cooldown (429 in
 `writeServiceError`) — the first rate-limit this service applies, and a
