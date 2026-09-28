@@ -134,7 +134,14 @@ describe("MonthRoster: what the grid says", () => {
   });
 
   it("marks the week the reader is in, its two ends included", () => {
-    const { container } = renderRoster({ month: new Date() });
+    // Three months around today, as the page renders it: with one month the
+    // test failed in any week that crosses a month end (a week starting on the
+    // 28th shows three of its days in that month).
+    const now = new Date();
+    const { container } = renderRoster({
+      month: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+      monthCount: 3,
+    });
     const band = container.querySelectorAll("thead th.day.cw");
     expect(band).toHaveLength(7);
     expect(container.querySelectorAll("thead th.day.cwa")).toHaveLength(1);

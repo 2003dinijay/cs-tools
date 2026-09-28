@@ -143,6 +143,14 @@ function noteFor(
 }
 
 /** How many names a card shows before it counts the rest. */
+/**
+ * The off-rota column's width on a day with a single lane (CRE). The narrow
+ * width it has elsewhere is SRE's budget -- three zone lanes have to fit a
+ * laptop -- but CRE's one lane leaves room, and off rota is where CRE carries
+ * the most: leave by team, allocations, and who each is for.
+ */
+const OFF_ROTA_WIDE_PX = 340;
+
 const NAME_LIMIT = 12;
 
 /**
@@ -369,7 +377,7 @@ export default function DayLadder({
     () =>
       56 +
       built.reduce((sum, lane) => sum + Math.max(1, lane.columns.length) * MIN_COLUMN_PX + 12, 0) +
-      240,
+      (built.length === 1 ? OFF_ROTA_WIDE_PX : 240),
     [built],
   );
 
@@ -438,7 +446,7 @@ export default function DayLadder({
           TZ1's column. Sticky to the top keeps them visible while the day
           scrolls down; being in the same scroller keeps them over the right
           column while it scrolls across. */}
-      <div className="ladhd" style={{ minWidth: ladderWidth }}>
+      <div className={`ladhd${built.length === 1 ? " onelane" : ""}`} style={{ minWidth: ladderWidth }}>
         {/* The clock sits at the head of the column of times it describes,
             aligned with the hours below it -- the same place a table puts a
             unit. A sentence above the card said the same thing in a whole row
@@ -468,7 +476,10 @@ export default function DayLadder({
         </div>
       </div>
 
-      <div className="ladder" style={{ height: px(1440) + 8, minWidth: ladderWidth }}>
+      <div
+        className={`ladder${built.length === 1 ? " onelane" : ""}`}
+        style={{ height: px(1440) + 8, minWidth: ladderWidth }}
+      >
           <div className="lax">
             {hours.map((h) => (
               <span key={h} className="hr" style={{ top: px(h * 60) }}>

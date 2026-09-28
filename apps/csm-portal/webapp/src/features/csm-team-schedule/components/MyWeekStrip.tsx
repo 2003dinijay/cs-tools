@@ -269,7 +269,6 @@ function PeekRows({
                 <span className="av" style={{ background: teamColourOf(a.teamKey) }}>{initialsOf(a.engineer.name)}</span>
                 <span className="who">{a.engineer.name}</span>
                 {a.engineer.isLead ? <span className="tag lead-t">Lead</span> : null}
-                <span className="team">{a.teamKey}</span>
               </div>
             ))}
           </div>

@@ -100,11 +100,17 @@ func NewScheduleRepository(db *pgxpool.Pool) ScheduleRepository {
 	return &scheduleRepository{db: db}
 }
 
+// The engineer's name is the portal's usual display rule: the display name,
+// else first + last, else the user name. Reading "user".name alone showed the
+// rota sheet's nickname ("JaneD") for someone whose record has a real first
+// and last name, and nothing at all for a synced row whose name is NULL.
+const engineerName = `COALESCE(NULLIF(u.name, ''), NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.user_name, '')`
+
 // assignmentColumns is shared by every assignment read so the row scan below
 // stays in one place -- three queries returning differently-shaped rows for
 // the same struct is how scan bugs get in.
 const assignmentColumns = `
-    a.id, u.id, COALESCE(u.name, ''), COALESCE(u.email, ''),
+    a.id, u.id, ` + engineerName + `, COALESCE(u.email, ''),
     -- Lead-ness is looked up rather than joined, because team_schedule_assignment.team_id
     -- is nullable and routinely absent for a registry-only team. A LEFT JOIN on it
     -- silently returned FALSE for a real lead -- no error, just a missing badge.
@@ -361,7 +367,7 @@ func (r *scheduleRepository) SearchAbsences(ctx context.Context, req domain.Sear
 	}
 
 	rows, err := r.db.Query(ctx, `
-		SELECT ab.id, u.id, COALESCE(u.name, ''), COALESCE(u.email, ''), FALSE,
+		SELECT ab.id, u.id, `+engineerName+`, COALESCE(u.email, ''), FALSE,
 		       ab.team_key, k.code, ab.starts_on, ab.ends_on, ab.note, ab.allocated_to
 		FROM team_schedule_absence ab
 		JOIN "user" u ON u.id = ab.user_id

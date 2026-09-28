@@ -1480,3 +1480,11 @@
 :root[data-color-scheme="dark"] .csm-ts .tab:hover:not(.on) {
   background: color-mix(in srgb, var(--ink) 9%, transparent);
 }
+
+/* A one-lane day (CRE) has the width SRE's three zones do not, so its off-rota
+   column takes more of it: names and team tags fit on a line instead of
+   wrapping to three. SRE keeps the narrow budget above. */
+.csm-ts .ladder.onelane .lane.offlane,
+.csm-ts .ladhd.onelane .lnh.offhd {
+  flex: 0 0 clamp(260px, 26%, 340px);
+}
