@@ -19,6 +19,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -67,12 +68,16 @@ func NewCaseHandler(entity entityCaseClient) *CaseHandler {
 //
 // A contact whose email doesn't resolve to any entity-service user (not yet a
 // registered platform user — a real, valid state for a project contact) is
-// dropped from the result rather than failing the whole request; logged so the
-// gap is visible without blocking every other watcher the caller did intend to
-// keep.
-func (h *CaseHandler) resolveWatchListUserIDs(ctx context.Context, emails []string) []string {
+// dropped from the result rather than failing the whole request on its own —
+// what an all-unresolved result should mean is a call-site decision (see
+// CreateCase/PatchCase). A SearchUsers failure is different in kind: this
+// backend couldn't answer the question at all, which must never be
+// indistinguishable from "nobody matched" — so that case returns an error
+// instead of a possibly-empty result, and the caller must stop the write
+// rather than silently proceeding as if no watchers had been requested.
+func (h *CaseHandler) resolveWatchListUserIDs(ctx context.Context, emails []string) ([]string, error) {
 	if len(emails) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	resp, err := h.entity.SearchUsers(ctx, entity.SearchUsersRequest{
@@ -80,8 +85,7 @@ func (h *CaseHandler) resolveWatchListUserIDs(ctx context.Context, emails []stri
 		Filters:    entity.SearchUsersFilters{Emails: emails},
 	})
 	if err != nil {
-		slog.ErrorContext(ctx, "entity SearchUsers failed while resolving watch-list emails", "err", summarizeErr(err))
-		return nil
+		return nil, fmt.Errorf("resolve watch-list emails: %w", err)
 	}
 
 	byEmail := make(map[string]string, len(resp.Users))
@@ -90,15 +94,22 @@ func (h *CaseHandler) resolveWatchListUserIDs(ctx context.Context, emails []stri
 	}
 
 	ids := make([]string, 0, len(emails))
+	unresolved := 0
 	for _, email := range emails {
 		id, ok := byEmail[strings.ToLower(email)]
 		if !ok {
-			slog.WarnContext(ctx, "watch-list email did not resolve to a platform user, dropping from watch list", "email", email)
+			unresolved++
 			continue
 		}
 		ids = append(ids, id)
 	}
-	return ids
+	if unresolved > 0 {
+		// Never log the email itself here -- it's PII (CWE-532); a count is
+		// enough to notice the gap without exposing whose address it was.
+		slog.WarnContext(ctx, "some watch-list emails did not resolve to a platform user, dropped from watch list",
+			"requested", len(emails), "unresolved", unresolved)
+	}
+	return ids, nil
 }
 
 // SearchCases handles POST /projects/{id}/cases/search.
@@ -308,8 +319,16 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 	// would be silently dropped anyway, but set it explicitly for clarity).
 	entityReq.CreatedBy = user.Email
 	// req.WatchList carries project-contact emails, not entity-service user
-	// ids — resolve before forwarding (see resolveWatchListUserIDs).
-	entityReq.WatchList = h.resolveWatchListUserIDs(r.Context(), req.WatchList)
+	// ids — resolve before forwarding (see resolveWatchListUserIDs). A lookup
+	// failure must stop the create, not silently proceed as if no watchers
+	// had been requested.
+	watchListIDs, err := h.resolveWatchListUserIDs(r.Context(), req.WatchList)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "resolving watch-list emails failed", "userID", user.UserID, "err", summarizeErr(err))
+		mapUpstreamError(w, err, "Failed to resolve watch list.")
+		return
+	}
+	entityReq.WatchList = watchListIDs
 
 	result, err := h.entity.CreateCase(r.Context(), entityReq)
 	if err != nil {
@@ -376,7 +395,25 @@ func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 	// meaningful when WatchList is actually the field being set (StateKey is
 	// the other, mutually exclusive branch validated above).
 	if len(req.WatchList) > 0 {
-		req.WatchList = h.resolveWatchListUserIDs(r.Context(), req.WatchList)
+		resolvedIDs, err := h.resolveWatchListUserIDs(r.Context(), req.WatchList)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "resolving watch-list emails failed", "userID", user.UserID, "caseID", id, "err", summarizeErr(err))
+			mapUpstreamError(w, err, "Failed to resolve watch list.")
+			return
+		}
+		if len(resolvedIDs) == 0 {
+			// Every submitted email failed to resolve. Forwarding an empty
+			// list here would satisfy neither this endpoint's own "exactly
+			// one of stateKey/watchList" check (already passed, above) nor
+			// entity-service's identical one -- UpdateCase would either 400
+			// with a confusing message or (per entity-service's own
+			// len(WatchList)>0 gate) silently do nothing while still
+			// returning 200. Reject explicitly instead, before ever calling
+			// UpdateCase.
+			writeError(w, http.StatusBadRequest, "None of the provided watch list users could be found.")
+			return
+		}
+		req.WatchList = resolvedIDs
 	}
 
 	result, err := h.entity.UpdateCase(r.Context(), id, dto.BuildEntityUpdateCaseRequest(id, req))

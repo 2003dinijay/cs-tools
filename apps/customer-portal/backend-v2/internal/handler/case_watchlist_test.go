@@ -75,9 +75,12 @@ func TestResolveWatchListUserIDs_ResolvesKnownEmailsAndDropsUnknown(t *testing.T
 	}
 	h := NewCaseHandler(fake)
 
-	got := h.resolveWatchListUserIDs(context.Background(), []string{
+	got, err := h.resolveWatchListUserIDs(context.Background(), []string{
 		"alice@example.com", "unknown@example.com", "bob@example.com",
 	})
+	if err != nil {
+		t.Fatalf("resolveWatchListUserIDs() error = %v, want nil", err)
+	}
 
 	want := []string{"11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"}
 	if len(got) != len(want) {
@@ -96,18 +99,32 @@ func TestResolveWatchListUserIDs_EmptyInputSkipsUpstreamCall(t *testing.T) {
 	}
 	h := NewCaseHandler(fake)
 
-	if got := h.resolveWatchListUserIDs(context.Background(), nil); got != nil {
+	got, err := h.resolveWatchListUserIDs(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("resolveWatchListUserIDs(nil) error = %v, want nil", err)
+	}
+	if got != nil {
 		t.Fatalf("resolveWatchListUserIDs(nil) = %v, want nil", got)
 	}
 }
 
-func TestResolveWatchListUserIDs_UpstreamErrorReturnsNilNotPartial(t *testing.T) {
+// TestResolveWatchListUserIDs_UpstreamErrorIsPropagated is the regression
+// test for a CodeRabbit finding on this fix's own PR: an upstream SearchUsers
+// failure used to be swallowed and returned as an empty (but non-error)
+// result, indistinguishable from "nobody matched" -- which let CreateCase
+// silently create a case with no requested watchers, and let PatchCase
+// silently forward a no-op update, both while still reporting success. The
+// error must now come back to the caller instead.
+func TestResolveWatchListUserIDs_UpstreamErrorIsPropagated(t *testing.T) {
 	fake := &fakeWatchListEntityClient{searchUsersErr: errors.New("boom")}
 	h := NewCaseHandler(fake)
 
-	got := h.resolveWatchListUserIDs(context.Background(), []string{"alice@example.com"})
+	got, err := h.resolveWatchListUserIDs(context.Background(), []string{"alice@example.com"})
+	if err == nil {
+		t.Fatal("resolveWatchListUserIDs() error = nil, want a propagated error")
+	}
 	if got != nil {
-		t.Fatalf("resolveWatchListUserIDs() = %v, want nil on upstream error", got)
+		t.Fatalf("resolveWatchListUserIDs() = %v, want nil alongside the error", got)
 	}
 }
 
@@ -172,5 +189,52 @@ func TestPatchCase_WatchList_ResolvesEmailsToUserIDs(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("entity UpdateCaseRequest.WatchList[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// TestCreateCase_WatchList_ResolveFailure_StopsCreate is the regression test
+// for the CodeRabbit finding that a SearchUsers failure must stop the write,
+// not silently create a case with no requested watchers.
+func TestCreateCase_WatchList_ResolveFailure_StopsCreate(t *testing.T) {
+	fake := &fakeWatchListEntityClient{searchUsersErr: errors.New("upstream unavailable")}
+	h := NewCaseHandler(fake)
+
+	reqBody := `{"projectId":"33333333-3333-3333-3333-333333333333","title":"Test Case","description":"Details","watchList":["alice@example.com"]}`
+	req := authedRequest(http.MethodPost, "/cases", reqBody)
+	rec := httptest.NewRecorder()
+
+	h.CreateCase(rec, req)
+
+	if rec.Code == http.StatusCreated {
+		t.Fatalf("expected CreateCase to fail when watch-list resolution fails, got 201: %s", rec.Body.String())
+	}
+	if fake.gotCreateCaseReq.ProjectID != "" {
+		t.Fatalf("entity CreateCase must not be called when watch-list resolution fails, got %+v", fake.gotCreateCaseReq)
+	}
+}
+
+// TestPatchCase_WatchList_AllUnresolved_Rejects400 is the regression test for
+// the CodeRabbit finding that a patch whose every submitted email fails to
+// resolve must be rejected explicitly, rather than silently forwarding an
+// empty watchList that satisfies neither this endpoint's nor entity-service's
+// "exactly one of stateKey/watchList" requirement.
+func TestPatchCase_WatchList_AllUnresolved_Rejects400(t *testing.T) {
+	fake := &fakeWatchListEntityClient{usersByEmail: map[string]string{}}
+	h := NewCaseHandler(fake)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("PATCH /cases/{id}", h.PatchCase)
+
+	reqBody := `{"watchList":["unknown1@example.com","unknown2@example.com"]}`
+	req := authedRequest(http.MethodPatch, "/cases/33333333-3333-3333-3333-333333333333", reqBody)
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if fake.gotUpdateCaseReq.ID != "" {
+		t.Fatalf("entity UpdateCase must not be called when every watch-list email is unresolved, got %+v", fake.gotUpdateCaseReq)
 	}
 }
