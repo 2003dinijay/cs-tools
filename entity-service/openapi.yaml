@@ -16518,6 +16518,9 @@ components:
           type: string
           nullable: true
           enum: [HIGH, MEDIUM, LOW]
+        environment:
+          type: string
+          nullable: true
         changeRequest:
           $ref: '#/components/schemas/EntityRef'
           nullable: true
@@ -16844,6 +16847,10 @@ components:
           description: |
             The full set of user identifiers to set as the incident watch list, replacing
             whatever is there. An empty array clears the watch list.
+        environment:
+          type: string
+          nullable: true
+          maxLength: 40
 
     UpdateIncidentResponse:
       type: object

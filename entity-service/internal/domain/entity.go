@@ -5290,6 +5290,12 @@ type UpdateIncidentRequest struct {
 	AdditionalComments  *string                 `json:"additionalComments,omitempty"`
 	WorkNotes           *string                 `json:"workNotes,omitempty"`
 	WatchList           *[]string               `json:"watchList,omitempty"`
+	// Environment: see CreateIncidentRequest.Environment doc comment. Double
+	// pointer distinguishes "omitted" (nil) from an explicit `null` clear
+	// (non-nil outer, nil inner) from a new value (non-nil, non-nil) -- a
+	// single *string can't tell omitted apart from explicit null on decode,
+	// same convention as ChangeRequest's CustomerGroupID.
+	Environment **string `json:"environment"`
 }
 
 // UpdateIncidentResponse is the output for PATCH /incidents/{id}.
@@ -5326,6 +5332,7 @@ type IncidentView struct {
 	ContactType        *string                 `json:"contactType"`
 	Impact             *string                 `json:"impact"`
 	Urgency            *string                 `json:"urgency"`
+	Environment        *string                 `json:"environment"`
 	ChangeRequest      *EntityRef              `json:"changeRequest"`
 	Problem            *EntityRef              `json:"problem"`
 	CausedBy           *EntityRef              `json:"causedBy"`

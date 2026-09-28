@@ -3230,6 +3230,7 @@ export interface BeIncidentDetail extends BeIncident {
   contactType?: BeIncidentContactType | null;
   impact?: BeIncidentImpact | null;
   urgency?: BeIncidentUrgency | null;
+  environment?: string | null;
   changeRequest?: BeEntityRef | null;
   problem?: BeEntityRef | null;
   causedBy?: BeEntityRef | null;
@@ -3280,6 +3281,7 @@ export interface BeCreateIncidentPayload {
   changeRequestId?: string;
   problemId?: string;
   causedById?: string;
+  environment?: string;
 }
 
 /** `POST /incidents` response — the created identifiers. */
@@ -3349,6 +3351,7 @@ export interface BeUpdateIncidentPayload {
   changeRequestId?: string | null;
   problemId?: string | null;
   causedById?: string | null;
+  environment?: string | null;
 }
 
 /** `PATCH /incidents/{id}` response — the full updated incident. */
