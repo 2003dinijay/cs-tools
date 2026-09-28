@@ -50,13 +50,16 @@ import (
 // disabled that isPartner=true/hasPrimaryPartner=true combination entirely
 // — a real behavioral gap versus legacy, not a documented simplification.
 func buildInvoiceCascade(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, proj project, now time.Time) (*cascadeDecision, error) {
-	invoice, err := resolveDueInvoice(ctx, reader, proj)
+	dueInvoices, err := resolveDueInvoices(ctx, reader, proj)
 	if err != nil {
 		return nil, fmt.Errorf("resolve due invoice for project %s: %w", proj.ID, err)
 	}
-	if invoice == nil {
+	if len(dueInvoices) == 0 {
 		return nil, nil
 	}
+	// The earliest due invoice drives the timing, as in legacy; the internal
+	// notice lists all of them (resolvedForNotice.Listed).
+	invoice := dueInvoices[0]
 
 	hasPrimaryPartner, err := resolveHasPrimaryPartner(ctx, reader, proj.accountID())
 	if err != nil {
@@ -79,9 +82,10 @@ func buildInvoiceCascade(ctx context.Context, reader entityReader, updater proje
 	}
 
 	resolvedForNotice := dueInvoice{
-		ID:          invoice.ID,
+		ID:          invoice.Number,
 		Opportunity: invoice.Opportunity,
 		SfID:        invoice.SfID,
+		Listed:      listedInvoices(dueInvoices),
 		DueDate:     invoice.DueDate,
 		SuspendDate: closure.InvoiceSuspendDate(invoice.InvoiceDate, invoice.DueDate, invoice.EULAVersionDecimal, hasPrimaryPartner),
 	}
@@ -105,7 +109,7 @@ func actInvoice(ctx context.Context, reader entityReader, updater projectUpdater
 		delivered := false
 		var err error
 		if !alreadyClosed {
-			delivered, err = notifyForWindow(ctx, reader, ntf, proj, decision.Window, invoice.SfID,
+			delivered, err = notifyForWindow(ctx, reader, ntf, proj, decision.Window, invoice.sfIDs(),
 				func(w closure.NoticeWindow, p project, accountOwnerName string) string {
 					return internalInvoiceNoticeBody(w, p, accountOwnerName, invoice)
 				},
@@ -197,4 +201,14 @@ func suspendInvoice(ctx context.Context, updater projectUpdater, proj project) e
 
 	_, err = updater.UpdateProject(ctx, proj.ID, body)
 	return err
+}
+
+// listedInvoices turns the resolved due invoices into the lines the internal
+// notice lists, keeping their earliest-due-first order.
+func listedInvoices(invoices []resolvedInvoice) []invoiceLine {
+	lines := make([]invoiceLine, len(invoices))
+	for i, inv := range invoices {
+		lines[i] = invoiceLine{Number: inv.Number, Opportunity: inv.Opportunity, DueDate: inv.DueDate, SfID: inv.SfID}
+	}
+	return lines
 }

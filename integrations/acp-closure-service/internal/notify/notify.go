@@ -65,16 +65,17 @@ type Notice struct {
 	// don't get this link at all (confirmed absent from the real
 	// customer-facing reference email).
 	ProjectSfID string
-	// InvoiceSfID is the due invoice's own Salesforce record ID (an a0I...
-	// ID, distinct from ProjectSfID), set only on the internal invoice
-	// notice. EmailNotifier renders it as the invoice box's "Open in
-	// Salesforce" link, matching the real reference email. Empty means no
-	// link — including for every customer-facing notice, which never gets
-	// one (customers have no Salesforce access).
-	InvoiceSfID string
-	StartDate   time.Time
-	EndDate     time.Time
-	Window      closure.NoticeWindow
+	// InvoiceSfIDs are the listed invoices' own Salesforce record IDs (a0I...
+	// IDs, distinct from ProjectSfID), one per invoice box in Body and in
+	// the same order, set only on the internal invoice notice. EmailNotifier
+	// renders each as that box's "Open in Salesforce" link, matching the real
+	// reference email. An empty entry, or a missing one, means no link for
+	// that box — and customer-facing notices never carry any (customers have
+	// no Salesforce access).
+	InvoiceSfIDs []string
+	StartDate    time.Time
+	EndDate      time.Time
+	Window       closure.NoticeWindow
 	// Subject is the notice's title line — one of five templates depending
 	// on notice type and window (see sweep.go's internalNoticeSubject/
 	// customerNoticeSubject for the exact wording): the internal day-count

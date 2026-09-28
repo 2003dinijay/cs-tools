@@ -457,6 +457,33 @@ Project Name link only appears in `TEST_PROJECT_ID`-scoped runs until the
 API populates it. No change is needed here when it does: `project.SfID`
 already reads the field from both endpoints.
 
+**"Invoice Id" shows the invoice number, not a record ID.** The internal
+invoice notice's "Invoice Id:" field shows the invoice's `name` (ServiceNow
+`u_name`, e.g. `US20268838`), which is what the real legacy email shows. The
+API's `id` is an internal record ID (a UUID) that nobody recognises. The
+invoice's Salesforce ID (ServiceNow `u_id`, the API's `sfId`) is used only
+for the "Open in Salesforce" link, as in the reference email. Confirmed by
+comparing a real staging invoice in ServiceNow: `u_name` = `2166`, `u_id` =
+`a0IE200000AJuOvMAL`. `invoiceNumber` (`invoice_resolve.go`) falls back to
+the record ID only when an invoice has no name. The field showed the UUID
+until 2026-09-28.
+
+**The internal invoice notice lists every due invoice.** Legacy
+`fetchDueInvoicesByProject` returns all eligible due invoices ordered by
+due date; `decideActionBasedOnDueInvoices` takes timing from the first
+(`dueInvoiceList[0]`) but passes the whole list on, and the real legacy
+email shows one box per invoice, each with its own Salesforce link
+(`local-docs/actual_invoice_email.png`). `resolveDueInvoices`
+(`invoice_resolve.go`) returns that list, earliest due first, each invoice
+once even when reached through two links to the same opportunity. The
+cascade's timing still comes from the first; `dueInvoice.Listed` carries
+all of them to `internalInvoiceNoticeBody`, which writes one Invoice Id /
+Opportunity / Due Date group per invoice. `Notice.InvoiceSfIDs` holds their
+Salesforce IDs in the same order. On the notify side, `isInvoiceBodyShape`
+recognises 12 + 3k paragraphs and `renderInternalInvoiceEmailHTML` renders
+one `invoiceBoxHTML` per group. Customer-facing invoice notices list no
+invoices, in legacy or here; they only mention the first invoice's date.
+
 **"Open in Salesforce" (invoice notices, internal only):** the real
 reference email also has a separate "Open in Salesforce" link inside the
 invoice box, pointing at the *invoice's own* Salesforce record (an `a0I…`
