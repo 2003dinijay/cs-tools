@@ -134,6 +134,10 @@ export interface CreateGithubIssueDialogProps {
   onboardingInProgress?: boolean;
   /** True while a linked project's status is still loading. Projectless cases leave this unset. */
   projectStatusPending?: boolean;
+  /** True when a linked project's lookup failed. Filing stays blocked until it resolves. */
+  projectStatusFailed?: boolean;
+  /** Retries the project lookup after projectStatusFailed. */
+  onRetryProjectStatus?: () => void;
   onClose: () => void;
   /** Body for `POST /cases/{id}/github-issues` (caseId is added by the caller). */
   onSubmit: (payload: BeCreateCaseGithubIssuePayload) => void;
@@ -171,6 +175,8 @@ export function CreateGithubIssueDialog({
   productName,
   onboardingInProgress,
   projectStatusPending,
+  projectStatusFailed,
+  onRetryProjectStatus,
   onClose,
   onSubmit,
   onOpenConfirm,
@@ -241,7 +247,8 @@ export function CreateGithubIssueDialog({
     (!requirePublicIssueUrl || publicIssueUrl.trim().length > 0) &&
     !repoOptionsUnavailable &&
     !!selectedRepoOption &&
-    !projectStatusPending;
+    !projectStatusPending &&
+    !projectStatusFailed;
 
   const handleSubmit = () => {
     if (!canSubmit || !selectedRepoOption) return;
@@ -413,15 +420,26 @@ export function CreateGithubIssueDialog({
             label="Regression"
           />
 
-          <Typography variant="body2" color={selectedRepoOption && !projectStatusPending ? "text.secondary" : "error"}>
-            {projectStatusPending
-              ? "Waiting for this case's project status…"
-              : repoOptionsLoading
-                ? "Looking up the GitHub repository for this product…"
-                : selectedRepoOption
-                  ? `Repository: ${selectedRepoOption.owner}/${selectedRepoOption.repo} (${selectedRepoOption.displayLabel})`
-                  : "No GitHub repository is mapped for this product."}
-          </Typography>
+          {projectStatusFailed ? (
+            <Box>
+              <Typography variant="body2" color="error">
+                Could not load this case's project status.
+              </Typography>
+              <Button size="small" onClick={onRetryProjectStatus} disabled={submitting}>
+                Try again
+              </Button>
+            </Box>
+          ) : (
+            <Typography variant="body2" color={selectedRepoOption && !projectStatusPending ? "text.secondary" : "error"}>
+              {projectStatusPending
+                ? "Waiting for this case's project status…"
+                : repoOptionsLoading
+                  ? "Looking up the GitHub repository for this product…"
+                  : selectedRepoOption
+                    ? `Repository: ${selectedRepoOption.owner}/${selectedRepoOption.repo} (${selectedRepoOption.displayLabel})`
+                    : "No GitHub repository is mapped for this product."}
+            </Typography>
+          )}
         </Box>
       </DialogContent>
       <DialogActions>
