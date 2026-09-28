@@ -32,6 +32,7 @@ function SettingsUserManagement(props: { projectId: string }) {
 const DEFAULT_CONTACTS = [{ id: "1", email: "user@test.dev", membershipStatus: "Active" }];
 // The contact list each test sees; tests replace it before rendering.
 const contactsState = vi.hoisted(() => ({ data: [] as unknown[] }));
+const resendMutate = vi.hoisted(() => vi.fn());
 
 vi.mock("@features/settings/api/useGetProjectContacts", () => ({
   default: () => ({
@@ -48,6 +49,9 @@ vi.mock("@features/settings/api/usePostProjectContact", () => ({
 }));
 vi.mock("@features/settings/api/useDeleteProjectContact", () => ({
   useDeleteProjectContact: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+vi.mock("@features/settings/api/useResendProjectContactInvitation", () => ({
+  useResendProjectContactInvitation: () => ({ mutate: resendMutate, isPending: false }),
 }));
 vi.mock("@features/settings/api/usePatchProjectContact", () => ({
   usePatchProjectContact: () => ({ mutate: vi.fn(), isPending: false }),
@@ -139,6 +143,21 @@ describe("SettingsUserManagement", () => {
       fireEvent.click(within(row).getByRole("button", { name: "Retry invitation" }));
     });
     expect(within(screen.getByTestId("pending-invite-new@acme.com")).getByText("Inviting…")).toBeInTheDocument();
+  });
+
+  it("offers a resend only on rows the backend marks as resendable", () => {
+    contactsState.data = [
+      { id: "c-1", email: "invited@acme.com", membershipStatus: "INVITED", canResendInvitation: true },
+      { id: "c-2", email: "registered@acme.com", membershipStatus: "REGISTERED" },
+      // A pre-cutover row never carries the flag, even while INVITED.
+      { id: "c-3", email: "legacy@acme.com", membershipStatus: "INVITED" },
+    ];
+    render(<SettingsUserManagement projectId="p-1" />);
+
+    const buttons = screen.getAllByRole("button", { name: "Resend invitation" });
+    expect(buttons).toHaveLength(1);
+    fireEvent.click(buttons[0]);
+    expect(resendMutate).toHaveBeenCalledWith("invited@acme.com", expect.any(Object));
   });
 
   describe("pagination", () => {
