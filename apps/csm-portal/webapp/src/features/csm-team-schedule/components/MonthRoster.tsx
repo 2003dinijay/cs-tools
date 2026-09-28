@@ -28,6 +28,10 @@ import type {
 import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate, zoneLabelOn } from "../utils/rota";
 import { useTeamColour } from "../utils/teamColourContext";
 
+/** How many months the roster can show at once. */
+export type RosterSpan = 1 | 3 | 6;
+const SPANS: readonly RosterSpan[] = [1, 3, 6];
+
 interface MonthRosterProps {
   /** The first month on the grid. */
   month: Date;
@@ -35,6 +39,11 @@ interface MonthRosterProps {
    *  sheet this replaces showed a whole year; one month was too little to
    *  check a swap against last month or plan the next. */
   monthCount?: number;
+  /** The span the reader has picked, and the way to change it. The page owns
+   *  it because the page fetches the months; without a handler there is no
+   *  choice to offer. */
+  span?: RosterSpan;
+  onSpanChange?: (span: RosterSpan) => void;
   assignments: ScheduleAssignment[];
   absences: ScheduleAbsence[];
   shifts: Map<string, ScheduleShift>;
@@ -156,6 +165,8 @@ const WORKING_DAY: Cell = {
 export default function MonthRoster({
   month,
   monthCount = 1,
+  span,
+  onSpanChange,
   assignments,
   absences,
   shifts,
@@ -516,19 +527,23 @@ export default function MonthRoster({
   return (
     <>
       <div className="card-head">
-        <div className="seg teamseg" role="tablist" aria-label="Show CRE or SRE">
-          {families.map((f) => (
-            <button
-              key={f}
-              role="tab"
-              aria-selected={family === f}
-              className={family === f ? "on" : ""}
-              onClick={() => onFamilyChange(f)}
-            >
-              {f}
-            </button>
-          ))}
-        </div>
+        {/* One group means nothing to switch to: only Today, or a manager,
+            can look at the other group. */}
+        {families.length > 1 ? (
+          <div className="seg teamseg" role="tablist" aria-label="Show CRE or SRE">
+            {families.map((f) => (
+              <button
+                key={f}
+                role="tab"
+                aria-selected={family === f}
+                className={family === f ? "on" : ""}
+                onClick={() => onFamilyChange(f)}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         <h2>
           Roster <span className="count">{rows.length}</span>
@@ -563,6 +578,24 @@ export default function MonthRoster({
               </button>
             ) : null}
           </label>
+
+          {onSpanChange ? (
+            // One month to work through, three to check a swap against the
+            // months around it, six to plan ahead. The same for CRE and SRE.
+            <div className="seg spanseg" role="group" aria-label="Months shown">
+              {SPANS.map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  className={span === n ? "on" : ""}
+                  aria-pressed={span === n}
+                  onClick={() => onSpanChange(n)}
+                >
+                  {n === 1 ? "1 month" : `${n} months`}
+                </button>
+              ))}
+            </div>
+          ) : null}
 
           <select
             className="teampick"

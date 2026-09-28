@@ -1952,3 +1952,11 @@
     linear-gradient(color-mix(in srgb, var(--today) 7%, transparent), color-mix(in srgb, var(--today) 7%, transparent)),
     var(--surface-solid);
 }
+
+/* The roster's 1 / 3 / 6 months choice: one row, never wrapped mid-choice. */
+.csm-ts .spanseg {
+  flex-wrap: nowrap;
+}
+.csm-ts .spanseg button {
+  white-space: nowrap;
+}

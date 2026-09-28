@@ -372,3 +372,39 @@ describe("MonthRoster: an unmarked weekday is a working day", () => {
     );
   });
 });
+
+describe("MonthRoster: the CRE / SRE switch", () => {
+  it("offers the switch when there are two groups to look at", () => {
+    renderRoster({ families: ["CRE", "SRE"] });
+    expect(screen.getByRole("tablist", { name: "Show CRE or SRE" })).toBeInTheDocument();
+  });
+
+  it("offers no switch on an engineer's own rota, which is one group", () => {
+    renderRoster({ families: ["SRE"], family: "SRE" });
+    expect(screen.queryByRole("tablist", { name: "Show CRE or SRE" })).not.toBeInTheDocument();
+  });
+});
+
+describe("MonthRoster: how many months", () => {
+  it("offers 1, 3 and 6 months, marks the one showing, and reports a change", () => {
+    const onSpanChange = vi.fn();
+    renderRoster({ span: 3, onSpanChange });
+    const group = screen.getByRole("group", { name: "Months shown" });
+    expect(group).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "3 months" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "1 month" })).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByRole("button", { name: "6 months" }));
+    expect(onSpanChange).toHaveBeenCalledWith(6);
+  });
+
+  it("offers no choice when the page cannot change the months", () => {
+    renderRoster();
+    expect(screen.queryByRole("group", { name: "Months shown" })).not.toBeInTheDocument();
+  });
+
+  it("draws a column for every day of six months", () => {
+    // Sept 2026 through Feb 2027: 30 + 31 + 30 + 31 + 31 + 28.
+    const { container } = renderRoster({ monthCount: 6 });
+    expect(container.querySelectorAll("thead th.day")).toHaveLength(181);
+  });
+});

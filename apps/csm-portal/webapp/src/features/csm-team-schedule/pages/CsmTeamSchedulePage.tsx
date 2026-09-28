@@ -40,7 +40,7 @@ import {
 import CellPicker, { type CellPickerTarget, type NewAbsenceKind } from "../components/CellPicker";
 import { BackendApiError } from "@api/backend/client";
 import DayLadder, { type LadderLane } from "../components/DayLadder";
-import MonthRoster from "../components/MonthRoster";
+import MonthRoster, { type RosterSpan } from "../components/MonthRoster";
 import MyWeekStrip from "../components/MyWeekStrip";
 import NextRotation from "../components/NextRotation";
 import RecentChanges from "../components/RecentChanges";
@@ -86,10 +86,19 @@ const TITLE: Record<ViewTab, string> = {
   roster: "Month roster",
 };
 
-/** How many months the roster shows either side of the selected one. One:
- *  last month, this month and next -- the history a lead checks a swap
- *  against, and the month they are planning, without paging. */
-const ROSTER_MONTHS_EITHER_SIDE = 1;
+/** Which months the roster shows, as offsets from the selected one, for each
+ *  span it offers.
+ *
+ *   1   the selected month alone, for a lead working one month through.
+ *   3   last month, this month and next -- the history a lead checks a swap
+ *       against, and the month they are planning, without paging. The default.
+ *   6   last month and the next four: a rota is planned forward, so the extra
+ *       months go ahead of the selected one rather than behind it. */
+const ROSTER_SPAN_OFFSETS: Record<RosterSpan, readonly number[]> = {
+  1: [0],
+  3: [-1, 0, 1],
+  6: [-1, 0, 1, 2, 3, 4],
+};
 
 const fmtMonthRange = (first: Date, last: Date): string => {
   const sameYear = first.getFullYear() === last.getFullYear();
@@ -150,6 +159,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  would show them three disabled tabs on arrival. */
   const [familyChoice, setFamilyChoice] = useState<Family | null>(null);
   const [teamKey, setTeamKey] = useState<string>("");
+  /** How many months the roster shows; see ROSTER_SPAN_OFFSETS. */
+  const [rosterSpan, setRosterSpan] = useState<RosterSpan>(3);
   const [anchor, setAnchor] = useState<Date>(() => new Date());
   /** Bumped by Today; a view listens to it to re-centre on the current day. */
   const [focusRequest, setFocusRequest] = useState(0);
@@ -227,67 +238,62 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     return f.startsWith("SRE") ? "SRE" : "CRE";
   }, [user?.team?.family]);
 
-  /** The group on screen: the reader's own until they choose otherwise.
-   *  CRE only as a last resort, for a manager who belongs to neither. */
-  const family: Family = familyChoice ?? myFamily ?? "CRE";
-
-  /** Their own group first in the segment. An SRE engineer reads "SRE | CRE",
-   *  because the first thing in a pair reads as the default, and theirs is. */
-  const families: Family[] =
-    myFamily === "SRE" ? ["SRE", "CRE"] : ["CRE", "SRE"];
-
   /** Nobody's group: a manager, who belongs to no team at all. */
   const isManager = myFamily === undefined;
 
   /** The tab the page opens on. An engineer's first question is their own
    *  rota, so they land on My week; a manager holds none, and comes here to see
    *  who is covering, so they land on Today. Derived rather than set in an
-   *  effect, like `family` above: /users/me has settled before this page
-   *  mounts, so the first frame is already the right one. */
+   *  effect: /users/me has settled before this page mounts, so the first frame
+   *  is already the right one. */
   const tab: ViewTab = tabChoice ?? (isManager ? "today" : "mine");
 
-  /** Whether the group on screen is the reader's own. */
-  const ownGroup = !isManager && myFamily === family;
-
   /**
-   * Which views apply to this reader, on this group.
-   *
-   *   own group     all four -- their rota, their team, their month
-   *   other group   Today only. It answers "who is covering right now", which
-   *                 a CRE engineer escalating to SRE needs. This week and the
-   *                 roster are planning views for a rota they are not part of.
-   *   a manager     everything but My week, on both groups. The one thing
-   *                 that genuinely has nothing to show them is their own rota,
-   *                 because they hold none. Who is covering -- today, across
-   *                 the week, across the month -- is their question for CRE
-   *                 and SRE alike, so the roster is theirs to read too.
-   */
-  const appliesToView = (t: ViewTab): boolean => {
-    if (isManager) return t !== "mine";
-    return ownGroup || t === "today";
-  };
-
-  /**
-   * Which tabs are on the strip at all.
-   *
-   * Disabling and removing answer different situations. An engineer looking at
-   * the other group sees the tab greyed, because toggling back brings it
-   * straight back -- removing it would make the strip change shape under them.
-   * A manager has no such toggle: they hold no rota on either group, so My week
-   * can never apply to them, and a permanently dead tab is just something to
-   * wonder about. It is not offered.
+   * Which tabs are on the strip at all. A manager holds no rota on either
+   * group, so My week can never apply to them, and a permanently dead tab is
+   * just something to wonder about. It is not offered.
    */
   const visibleTabs: ViewTab[] = (["mine", "today", "week", "roster"] as ViewTab[]).filter(
     (t) => !(isManager && t === "mine"),
   );
 
-  /** The tab actually being shown.
+  /** The tab actually being shown. A manager's remembered My week (from
+   *  before the profile said they hold no rota) falls back to Today. */
+  const view: ViewTab = isManager && tab === "mine" ? "today" : tab;
+
+  /**
+   * Whether this view can show the other group.
    *
-   *  Derived, not corrected after the fact: switching group while on My week
-   *  has to land somewhere the same render, or the reader sees one frame of an
-   *  empty strip before it rights itself. Their choice of tab is remembered,
-   *  so switching back to their own group returns them to My week. */
-  const view: ViewTab = appliesToView(tab) ? tab : "today";
+   *   Today         yes. It answers "who is covering right now", which a CRE
+   *                 engineer escalating to SRE needs, and the other way round.
+   *   the rest      no, for an engineer. My week, This week and the roster are
+   *                 planning views for their own rota; the other group's is
+   *                 not theirs to check, so there is no switch to offer.
+   *   a manager     yes, everywhere. They belong to neither group, and who is
+   *                 covering -- today, across the week, across the month -- is
+   *                 their question for CRE and SRE alike.
+   */
+  const crossesGroups = isManager || view === "today";
+
+  /** The group on screen: the reader's own, unless Today (or a manager) has
+   *  picked the other. CRE only as a last resort, for a manager who belongs
+   *  to neither. The choice made on Today is kept for Today, so leaving it
+   *  for the roster and coming back does not lose it. */
+  const family: Family = crossesGroups ? (familyChoice ?? myFamily ?? "CRE") : (myFamily ?? "CRE");
+
+  /** The groups the switch offers, the reader's own first: an SRE engineer
+   *  reads "SRE | CRE", because the first thing in a pair reads as the
+   *  default, and theirs is. One group means no switch at all. */
+  const families: Family[] = !crossesGroups
+    ? [family]
+    : myFamily === "SRE"
+      ? ["SRE", "CRE"]
+      : ["CRE", "SRE"];
+
+  /** The team filter, where it belongs to the group on screen. A team picked
+   *  on Today's SRE side means nothing on the reader's CRE roster, and would
+   *  otherwise filter it to nobody. */
+  const shownTeamKey = teamKey && teamsOf(family).includes(teamKey) ? teamKey : "";
 
   const weekStart = useMemo(() => mondayOf(anchor), [anchor]);
   /** The group/team controls the cards render in their own heads. It is the
@@ -299,7 +305,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
       setFamilyChoice(f);
       setTeamKey("");
     },
-    teamKey,
+    teamKey: shownTeamKey,
     onTeamKeyChange: setTeamKey,
     teams: teamsOf(family),
     families,
@@ -307,18 +313,17 @@ export default function CsmTeamSchedulePage(): JSX.Element {
 
   const dayView = view === "today";
   const rosterView = view === "roster";
-  /** The roster's window: the selected month with one either side, as the
-   *  calendar months it is fetched in. Keyed on the month rather than the
-   *  anchor, so stepping a day inside a month does not rebuild it. */
+  /** The roster's window: the months its span covers around the selected
+   *  one, as the calendar months it is fetched in. Keyed on the month rather
+   *  than the anchor, so stepping a day inside a month does not rebuild it. */
   const anchorMonthKey = `${anchor.getFullYear()}-${anchor.getMonth()}`;
   const rosterMonths: MonthWindow[] = useMemo(() => {
     const [y, m] = anchorMonthKey.split("-").map(Number);
-    const out: MonthWindow[] = [];
-    for (let o = -ROSTER_MONTHS_EITHER_SIDE; o <= ROSTER_MONTHS_EITHER_SIDE; o++) {
-      out.push({ from: toIsoDate(new Date(y, m + o, 1)), to: toIsoDate(new Date(y, m + o + 1, 0)) });
-    }
-    return out;
-  }, [anchorMonthKey]);
+    return ROSTER_SPAN_OFFSETS[rosterSpan].map((o) => ({
+      from: toIsoDate(new Date(y, m + o, 1)),
+      to: toIsoDate(new Date(y, m + o + 1, 0)),
+    }));
+  }, [anchorMonthKey, rosterSpan]);
   const rosterStart = useMemo(() => new Date(`${rosterMonths[0].from}T00:00:00`), [rosterMonths]);
   const rosterEnd = useMemo(
     () => new Date(`${rosterMonths[rosterMonths.length - 1].to}T00:00:00`),
@@ -326,7 +331,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   );
   const from = dayView ? toIsoDate(anchor) : toIsoDate(weekStart);
   const to = dayView ? toIsoDate(anchor) : toIsoDate(addDays(weekStart, 6));
-  const teamKeys = teamKey ? [teamKey] : undefined;
+  const teamKeys = shownTeamKey ? [shownTeamKey] : undefined;
 
   const singleRead = useScheduleAssignments(
     {
@@ -713,28 +718,24 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         <div className="tabrow">
           <div className="tabs" role="tablist">
             {visibleTabs.map((t) => {
-              const off = !appliesToView(t);
               return (
               <button
                 key={t}
                 id={`ts-tab-${t}`}
-                className={`tab ${view === t ? "on" : ""}${off ? " off" : ""}`}
+                className={`tab ${view === t ? "on" : ""}`}
                 role="tab"
                 // The CSS class said which tab was active; nothing did for a
                 // screen reader, which read four equal buttons and a panel
                 // belonging to none of them.
                 aria-selected={view === t}
                 aria-controls="ts-panel"
-                disabled={off}
-                aria-disabled={off}
-                title={
-                  !off
-                    ? undefined
-                    : isManager
-                      ? "You hold no rota, so this view has nothing of yours to show."
-                      : `You are on ${myFamily}. Only “Who is working today” applies to ${family}.`
-                }
-                onClick={() => setTab(t)}
+                onClick={() => {
+                  setTab(t);
+                  // My week is the reader's own rota and who they work it
+                  // with, whichever team that is -- a team picked on another
+                  // view would hide those people, so it opens on All teams.
+                  if (t === "mine") setTeamKey("");
+                }}
               >
                 <span className="tl">{TITLE[t]}</span>
                 <span className="tsub">
@@ -997,6 +998,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               changedCells={editing ? changedCells : undefined}
               month={rosterStart}
               monthCount={rosterMonths.length}
+              span={rosterSpan}
+              onSpanChange={setRosterSpan}
               assignments={rows}
               absences={absences.data?.absences ?? []}
               shifts={shifts}

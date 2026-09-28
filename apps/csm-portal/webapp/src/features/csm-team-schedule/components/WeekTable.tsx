@@ -348,19 +348,23 @@ export default function WeekTable({
 
   const head = (
     <div className="card-head">
-      <div className="seg teamseg" role="tablist" aria-label="Show CRE or SRE">
-        {families.map((f) => (
-          <button
-            key={f}
-            role="tab"
-            aria-selected={family === f}
-            className={family === f ? "on" : ""}
-            onClick={() => onFamilyChange(f)}
-          >
-            {f}
-          </button>
-        ))}
-      </div>
+      {/* One group means nothing to switch to: only Today, or a manager,
+          can look at the other group. */}
+      {families.length > 1 ? (
+        <div className="seg teamseg" role="tablist" aria-label="Show CRE or SRE">
+          {families.map((f) => (
+            <button
+              key={f}
+              role="tab"
+              aria-selected={family === f}
+              className={family === f ? "on" : ""}
+              onClick={() => onFamilyChange(f)}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       <h2>
         This week <span className="count">{headcount}</span>
