@@ -231,8 +231,24 @@ export default function WeekTable({
     }
     const escRows = new Map(out.map((r) => [r.code, r]));
 
+    /** A zone's own regular-hours window, on a weekday. */
+    const regularOf = (zone: string) =>
+      familyShifts.find((sh) => sh.zoneCode === zone && !sh.isEscalation && !sh.isRotation && sh.dayScope !== "WEEKEND");
+
     const rest: ScheduleAssignment[] = [];
     for (const a of assignments) {
+      // No tier on a zone's escalation window is what "works this zone, not on
+      // the escalation rota" looks like -- the zone's regular hours -- so it
+      // is read as that, not as a turn with its tier missing.
+      const sh = shifts.get(a.shiftCode);
+      const zone = a.zoneCode ?? sh?.zoneCode;
+      if (sh?.isEscalation && zone && !a.tier && !sh.tier && sh.dayScope !== "WEEKEND") {
+        const reg = regularOf(zone);
+        if (reg) {
+          rest.push({ ...a, shiftCode: reg.code });
+          continue;
+        }
+      }
       const key = escKey(a);
       if (!key) {
         rest.push(a);

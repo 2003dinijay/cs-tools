@@ -812,16 +812,41 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 
 	// The window's own day scope decides which days it can be worked.
 	var scope string
+	// What a write takes off the day before it lands:
+	//   day  -- everything the person holds that day on this team (a regular
+	//           window, a CRE rotation, or a clear of the whole day);
+	//   turn -- an escalation turn: only what is in the same zone or overlaps
+	//           it in time, so one engineer can be TZ1 L1 in the morning and
+	//           TZ2 L2 in the afternoon;
+	//   zone -- a clear of one zone's turn, leaving the rest of the day.
+	displace := "day"
+	var zoneID *string
+	var isEscalation bool
+	if clearing && req.ZoneCode != nil {
+		var id string
+		if err := tx.QueryRow(ctx, `SELECT id::text FROM team_schedule_zone WHERE code = $1`, *req.ZoneCode).Scan(&id); err != nil {
+			return out, &apierror.ValidationError{Msg: fmt.Sprintf("no such zone %q", *req.ZoneCode)}
+		}
+		zoneID, displace = &id, "zone"
+	}
 	if !clearing {
-		var isEscalation bool
 		var fixedTier *string
 		if err := tx.QueryRow(ctx,
-			`SELECT day_scope::text, is_escalation, tier::text FROM team_schedule_shift WHERE code = $1`,
-			req.ShiftCode).Scan(&scope, &isEscalation, &fixedTier); err != nil {
+			`SELECT day_scope::text, is_escalation, tier::text, zone_id::text FROM team_schedule_shift WHERE code = $1`,
+			req.ShiftCode).Scan(&scope, &isEscalation, &fixedTier, &zoneID); err != nil {
 			return out, &apierror.ValidationError{Msg: fmt.Sprintf("no such shift %q", req.ShiftCode)}
+		}
+		if isEscalation && zoneID != nil {
+			displace = "turn"
 		}
 		// Said here rather than left to the trigger, whose message names ids
 		// rather than the choice the lead actually made.
+		// An escalation window that leaves the tier to the person needs one:
+		// without it the turn says nothing about the ladder, and it reads as
+		// the zone's regular hours, which have a window of their own.
+		if req.Tier == nil && isEscalation && fixedTier == nil {
+			return out, &apierror.ValidationError{Msg: fmt.Sprintf("%s needs a tier: choose L1, L2 or L3, or the zone's regular hours", req.ShiftCode)}
+		}
 		if req.Tier != nil {
 			if !isEscalation {
 				return out, &apierror.ValidationError{Msg: fmt.Sprintf("%s is not an escalation window, so it holds no tier", req.ShiftCode)}
@@ -848,9 +873,23 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 		// engineer can be on two: without this, a lead of one could clear
 		// the row the other team put them on that day, which is not theirs
 		// to touch.
+		//
+		// Which of that day goes is decided by `displace` above. For a turn,
+		// the new window's own instants are resolved here the same way the
+		// insert below resolves them, so "overlaps" means what the no-overlap
+		// constraint will mean a moment later.
 		rows, err := tx.Query(ctx, `SELECT `+assignmentColumns+assignmentFrom+`
-			WHERE a.user_id = $1::uuid AND a.rota_date = $2::date AND a.team_key = $3`,
-			req.UserID, iso, req.TeamKey)
+			WHERE a.user_id = $1::uuid AND a.rota_date = $2::date AND a.team_key = $3
+			  AND (   $4::text = 'day'
+			       OR ($4 = 'zone' AND a.zone_id = $5::uuid)
+			       OR ($4 = 'turn' AND (a.zone_id = $5::uuid OR EXISTS (
+			              SELECT 1 FROM team_schedule_shift n
+			               WHERE n.code = $6
+			                 AND tstzrange(a.starts_at, a.ends_at, '[)') && tstzrange(
+			                     ($2::date::timestamp + make_interval(mins => n.start_minute)) AT TIME ZONE n.authoring_time_zone,
+			                     ($2::date::timestamp + make_interval(mins => n.end_minute))   AT TIME ZONE n.authoring_time_zone,
+			                     '[)')))))`,
+			req.UserID, iso, req.TeamKey, displace, zoneID, req.ShiftCode)
 		if err != nil {
 			return out, fmt.Errorf("read displaced assignments: %w", err)
 		}
@@ -859,16 +898,18 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 		if err != nil {
 			return out, err
 		}
+		ids := make([]string, 0, len(displaced))
 		for _, old := range displaced {
 			if err := recordActivity(ctx, tx, old, "DELETED", actorEmail, nil, nil, nil, req.Note); err != nil {
 				return out, err
 			}
+			ids = append(ids, old.ID)
 		}
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM team_schedule_assignment
-			  WHERE user_id = $1::uuid AND rota_date = $2::date AND team_key = $3`,
-			req.UserID, iso, req.TeamKey); err != nil {
-			return out, fmt.Errorf("clear the day: %w", err)
+		if len(ids) > 0 {
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM team_schedule_assignment WHERE id = ANY($1::uuid[])`, ids); err != nil {
+				return out, fmt.Errorf("clear the day: %w", err)
+			}
 		}
 
 		if clearing {

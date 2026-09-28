@@ -16285,6 +16285,16 @@ components:
             (SRE_TZ1, SRE_TZ3, ...), which tier they hold. Omitted takes the
             window's own tier; a window that fixes a tier accepts only that
             one, and a window that is not an escalation window accepts none.
+            An escalation window that leaves the tier open requires one --
+            with no tier, the person is on the zone's regular hours, which
+            have a window of their own.
+        zoneCode:
+          type: string
+          description: >-
+            With shiftCode empty, clears only this zone's turn and leaves the
+            rest of the day. (An escalation turn only ever displaces what is in
+            its own zone or overlaps it in time, so one engineer can hold turns
+            in two zones on one day.)
 
     ApplyScheduleRangeResponse:
       type: object

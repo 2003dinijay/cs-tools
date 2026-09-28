@@ -352,6 +352,17 @@ func (s *scheduleService) ApplyRange(ctx context.Context, req domain.ApplySchedu
 			Msg: "userId, teamKey, from and to are all required",
 		}
 	}
+	if req.ZoneCode != nil {
+		z := strings.ToUpper(strings.TrimSpace(*req.ZoneCode))
+		switch {
+		case z == "":
+			req.ZoneCode = nil
+		case req.ShiftCode != "":
+			return domain.ApplyScheduleRangeResponse{}, &apierror.ValidationError{Msg: "zoneCode only narrows a clear; leave shiftCode empty with it"}
+		default:
+			req.ZoneCode = &z
+		}
+	}
 	if req.Tier != nil {
 		t := strings.ToUpper(strings.TrimSpace(*req.Tier))
 		switch {

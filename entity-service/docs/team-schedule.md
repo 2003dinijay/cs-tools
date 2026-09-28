@@ -112,6 +112,16 @@ A lead edits their own team's rows in the Month roster's cell picker:
   escalation grid: every zone worked that day, with L1, L2 and L3 in each,
   not just the zone column that was clicked. The write is
   `POST /team-schedule/assignments/apply` with a `tier`.
+- **Turns in more than one zone on the same day.** One engineer can be TZ1
+  L1 in the morning and TZ2 L2 in the afternoon. A new escalation turn
+  displaces only what is in its own zone or overlaps it in time. A regular
+  window, or a CRE rotation, still replaces the whole day. Clearing one zone's
+  cell, when the person holds turns elsewhere that day, takes off that zone
+  only (`zoneCode` on apply).
+- **A tier is required on a zone's shared escalation window** (SRE_TZ1,
+  SRE_TZ3, ...). A turn there with no tier is the zone's regular hours, which
+  have their own window, and the views read any older tier-less turn that
+  way.
 - **Two tags in one day.** An allocation (RnD, customer) does not hide a
   rotation turn on the same day. The roster shows both: in the turn's own
   zone column on an SRE day, and stacked in the cell otherwise. Leave still

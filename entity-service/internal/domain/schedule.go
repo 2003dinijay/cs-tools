@@ -164,6 +164,9 @@ type ApplyScheduleRangeRequest struct {
 	// the person (SRE_TZ1, SRE_TZ3, ...). Absent takes the window's own tier.
 	// A window that fixes a tier accepts only that one.
 	Tier *string `json:"tier,omitempty"`
+	// ZoneCode narrows a clear (ShiftCode empty) to that zone's turn, leaving
+	// the rest of the person's day. Only meaningful when clearing.
+	ZoneCode *string `json:"zoneCode,omitempty"`
 }
 
 // ApplyScheduleRangeResponse says what actually happened, because it is

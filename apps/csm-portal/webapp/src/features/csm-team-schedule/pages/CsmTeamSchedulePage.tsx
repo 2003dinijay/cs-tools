@@ -415,15 +415,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
 
   /** A lead picked a cell on the roster. The roster says which slot and
    *  where on screen; the picker does the rest. */
-  const editCell = (edit: {
-    userId: string;
-    name: string;
-    teamKey: string;
-    rotaDate: string;
-    shiftCode?: string;
-    anchor: { top: number; left: number; bottom: number; right: number };
-  }): void => {
-    setPicker({ ...edit, baseShiftCode: baseShiftFor(edit.userId) });
+  const editCell = (edit: Omit<CellPickerTarget, "baseShiftCode" | "otherTurns">): void => {
+    setPicker({
+      ...edit,
+      baseShiftCode: baseShiftFor(edit.userId),
+      otherTurns: holdsTurnElsewhere(edit.userId, edit.rotaDate, edit.zoneCode, edit.shiftCode),
+    });
   };
 
   /** The standing window this engineer sits in on an ordinary weekday, read
@@ -433,6 +430,20 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  goes back to when a rotation is cleared is a fact about that engineer,
    *  not about their group, and guessing it would quietly move people onto
    *  the wrong clock. */
+  /** Does this engineer hold an escalation turn in another zone that day?
+   *  Then clearing the clicked zone takes off that zone's turn only, rather
+   *  than putting the whole day back on regular hours. */
+  const holdsTurnElsewhere = (userId: string, rotaDate: string, zoneCode?: string, shiftCode?: string): boolean => {
+    if (!zoneCode || !shiftCode || !shifts.get(shiftCode)?.isEscalation) return false;
+    return rows.some(
+      (a) =>
+        a.engineer.userId === userId &&
+        a.rotaDate === rotaDate &&
+        shifts.get(a.shiftCode)?.isEscalation &&
+        (a.zoneCode ?? shifts.get(a.shiftCode)?.zoneCode) !== zoneCode,
+    );
+  };
+
   const baseShiftFor = (userId: string): string | undefined => {
     const seen = new Map<string, number>();
     for (const a of rows) {
@@ -451,13 +462,6 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   /** The windows this group runs, which is what the picker offers. Filtered
    *  by family and nothing narrower: the catalogue's own codes are already
    *  CRE or SRE, so there is no second rule to keep in step with. */
-  /** What a lead may mark somebody away for: leave, and only leave.
-   *
-   *  An allocation -- a customer engagement, an onboarding -- is not the ABT
-   *  lead's call to make from a rota grid, so those kinds stay read-only here
-   *  even though the grid shows them. Read off the catalogue's own bucket
-   *  rather than a list of codes, so a leave kind added later appears without
-   *  a change here. */
   /** Who changed which cell, over exactly the months the roster is showing.
    *
    *  Only asked for while the roster is open -- no other view marks a cell --
@@ -613,6 +617,27 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     // the allocation has its own Remove.
     if (picker.absenceKindCode && !picker.shiftCode) {
       markAway("", from, to);
+      return;
+    }
+    // One zone's turn, on a day with turns in other zones too: take off this
+    // one and leave the rest of the day as it is.
+    if (picker.otherTurns && picker.zoneCode) {
+      applyRange.mutate(
+        {
+          userId: picker.userId,
+          teamKey: picker.teamKey,
+          shiftCode: "",
+          zoneCode: picker.zoneCode,
+          from,
+          to,
+          note: "cleared from the month roster",
+        },
+        {
+          onSuccess: () => recordChange(picker, from, to, `off ${picker.zoneCode}`),
+          onError: (err) => showError("That change to the rota was not saved. Nothing has moved.", err),
+          onSettled: () => setPicker(null),
+        },
+      );
       return;
     }
     applyToCell(shiftCode, from, to);

@@ -1767,3 +1767,27 @@
   font-size: 9.5px;
   justify-content: center;
 }
+
+/* Every zone sub-column the same width, with room around each chip, so a day
+   reads as three equal lanes. The width used to be a minimum only, so one long
+   chip ("Exeter") stretched its column and the day's lanes came out uneven.
+   A chip that does not fit is cut with an ellipsis; the cell's title carries
+   it in full. */
+.csm-ts .tw.roster.split td.c.z,
+.csm-ts .tw.roster.split thead tr.zrow th.zc {
+  width: 42px;
+  min-width: 42px;
+  max-width: 42px;
+  padding: 3px 3px;
+}
+.csm-ts .tw.roster.split tbody td.c.z .chip.sm {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+.csm-ts .tw.roster.split tbody td.c.z .duo .chip.sm {
+  display: block;
+}

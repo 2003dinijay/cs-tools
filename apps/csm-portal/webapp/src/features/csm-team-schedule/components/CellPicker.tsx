@@ -38,6 +38,9 @@ export interface CellPickerTarget {
   shiftCode?: string;
   /** The tier they hold on it, where it is an escalation window. */
   tier?: ScheduleTier;
+  /** They hold a turn in another zone that day too, so clearing this cell
+   *  takes off this zone's turn only. */
+  otherTurns?: boolean;
   /** The leave or allocation covering that day, if any, marked the same way. */
   absenceKindCode?: string;
   /** The zone column this was opened from, on a day split across them. */
@@ -648,7 +651,9 @@ export default function CellPicker({
               thing in the three cases. Somebody marked away comes back onto
               whatever the rota already had for them; a weekend has no standing
               window to fall back to at all. */}
-          {target.absenceKindCode && !target.shiftCode
+          {target.otherTurns && target.zoneCode
+            ? `Clear — take off ${target.zoneCode} only`
+            : target.absenceKindCode && !target.shiftCode
             ? "Clear — back on the rota"
             : backTo
               ? `Clear — back to ${shifts.find((s) => s.code === backTo)?.label ?? "regular hours"}`

@@ -375,6 +375,8 @@ export interface ApplyRangePayload {
   /** L1, L2 or L3 on an escalation window that leaves the tier to the
    *  person. Omitted takes the window's own. */
   tier?: ScheduleTier;
+  /** With an empty shiftCode, clears only this zone's turn that day. */
+  zoneCode?: string;
 }
 
 export interface ApplyRangeResult {

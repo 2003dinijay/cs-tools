@@ -38,6 +38,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -743,6 +744,12 @@ func TestScheduleIntegration_ApplyRangeRostersAnyTierOnAZonesEscalationWindow(t 
 
 	var invalid *apierror.ValidationError
 	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: "SRE_TZ1",
+		From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); !errors.As(err, &invalid) {
+		t.Fatalf("SRE_TZ1 with no tier: want ValidationError, got %v", err)
+	}
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
 		UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: "SRE_TZ1_L1",
 		From: schedMonday, To: schedMonday, Tier: &l3,
 	}, schedLeadEmail); !errors.As(err, &invalid) {
@@ -810,6 +817,66 @@ func TestScheduleIntegration_DeleteAbsenceKindOnlyRemovesAnUnusedCustomTag(t *te
 			t.Fatal("annual leave is marked custom")
 		}
 	}
+}
+
+// One engineer can hold turns in two zones on the same day -- TZ1 L1 in the
+// morning, TZ2 L2 in the afternoon. A new turn only displaces what is in its
+// own zone or overlaps it; a clear can be narrowed to one zone; a regular
+// window still replaces the whole day.
+func TestScheduleIntegration_ApplyRangeKeepsTurnsInOtherZones(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	l2 := "L2"
+	apply := func(code string, tier *string, zone *string) {
+		t.Helper()
+		if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+			UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: code,
+			From: schedMonday, To: schedMonday, Tier: tier, ZoneCode: zone,
+		}, schedLeadEmail); err != nil {
+			t.Fatalf("apply %q: %v", code, err)
+		}
+	}
+	held := func() []string {
+		t.Helper()
+		rows, err := pool.Query(ctx, `
+			SELECT s.code || ':' || COALESCE(a.tier::text, '-') FROM team_schedule_assignment a
+			  JOIN team_schedule_shift s ON s.id = a.shift_id
+			 WHERE a.user_id = $1::uuid AND a.rota_date = $2::date ORDER BY a.starts_at`, schedMemberID, schedMonday)
+		if err != nil {
+			t.Fatalf("read the day: %v", err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			out = append(out, v)
+		}
+		return out
+	}
+	want := func(label string, expect ...string) {
+		t.Helper()
+		got := held()
+		if fmt.Sprint(got) != fmt.Sprint(expect) {
+			t.Fatalf("%s: holds %v, want %v", label, got, expect)
+		}
+	}
+
+	apply("SRE_TZ1_L1", nil, nil)
+	apply("SRE_TZ2", &l2, nil)
+	want("TZ1 L1 then TZ2 L2", "SRE_TZ1_L1:L1", "SRE_TZ2:L2")
+
+	apply("SRE_TZ1", &l2, nil)
+	want("TZ1 L2 replaces TZ1 L1", "SRE_TZ1:L2", "SRE_TZ2:L2")
+
+	tz2 := "TZ2"
+	apply("", nil, &tz2)
+	want("clearing TZ2 only", "SRE_TZ1:L2")
+
+	apply("SRE_TZ1_REGULAR", nil, nil)
+	want("regular hours replace the day", "SRE_TZ1_REGULAR:-")
 }
 
 // ── reads ─────────────────────────────────────────────────────────────────
