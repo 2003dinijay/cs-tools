@@ -16565,7 +16565,7 @@ components:
             - business_service
             - technology_management_service
             - application_service
-        supportGroup:
+        assignmentGroup:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/EntityRef'
