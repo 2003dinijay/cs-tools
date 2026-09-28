@@ -18,6 +18,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -121,7 +122,7 @@ func (h *SplReportsHandler) GenerateTimelogsBreakdownReport(w http.ResponseWrite
 
 	report, err := h.servicenow.GetTimeLogBreakdown(r.Context(), projectID)
 	if err != nil {
-		if err == servicenow.ErrProjectNotFound {
+		if errors.Is(err, servicenow.ErrProjectNotFound) {
 			writeError(w, http.StatusNotFound, ErrMsgNotFound)
 			return
 		}
