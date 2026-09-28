@@ -27,10 +27,10 @@
 //
 // Skipped unless ENTITY_TEST_DATABASE_URL is set, so `go test ./...` on a
 // machine with no database stays green. Apply every migration in order first;
-// this file reads tables and enums spread across 000088-000096:
+// the tables this file reads are created by 0141-0144:
 //
 //	createdb entity_test
-//	for f in migrations/*.up.sql; do psql -v ON_ERROR_STOP=1 -d entity_test -f "$f"; done
+//	for f in migrations/*.sql; do psql -v ON_ERROR_STOP=1 -d entity_test -f "$f"; done
 //	ENTITY_TEST_DATABASE_URL="postgres:///entity_test" go test -v -run TestScheduleIntegration ./internal/repository/
 
 package repository
@@ -858,5 +858,15 @@ func TestScheduleIntegration_ApplyRangeOnlyClearsTheCallersOwnTeam(t *testing.T)
 		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND team_key = $2`,
 		schedMemberID, schedOtherTeam); n != 1 {
 		t.Fatalf("%d rows left on the other team, want the 1 it put there", n)
+	}
+}
+
+// mustExec runs one seeding statement, failing the test on error. It used to
+// be borrowed from the project-consumption integration test, which has since
+// been removed.
+func mustExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+		t.Fatalf("seed: %v", err)
 	}
 }

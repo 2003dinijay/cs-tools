@@ -79,7 +79,7 @@ type ScheduleRepository interface {
 type scheduleRepository struct{ db *pgxpool.Pool }
 
 // nameTheActor tells the database who is making this change, for the audit
-// triggers (000104) to record.
+// triggers (migration 0144) to record.
 //
 // The triggers can usually read it off the row's own updated_by, but not on a
 // DELETE: there the row can only offer whoever last wrote it, which is not the
@@ -881,7 +881,7 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 }
 
 // recordAbsenceActivity writes one row of absence history inside the caller's
-// transaction, for the reason 000095 gives.
+// transaction, for the reason migration 0142 gives on that table.
 func recordAbsenceActivity(ctx context.Context, tx pgx.Tx,
 	id, userID, teamKey, kindCode, startsOn string, endsOn *string,
 	action, actorEmail string, field, oldV, newV, note *string) error {
