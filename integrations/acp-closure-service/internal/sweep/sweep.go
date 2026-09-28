@@ -45,7 +45,11 @@ import (
 // urgency order" shape matters, not just single-reason correctness.
 type cascadeDecision struct {
 	decision closure.Decision
-	act      func(ctx context.Context, alreadyClosed bool) error
+	// act carries out the cascade. history is the run's current
+	// suspensionProcessState: the cascade's own record write builds on it
+	// and updates it, so a later cascade in the same run never writes back a
+	// stale copy of an earlier one's section (see processProject).
+	act func(ctx context.Context, alreadyClosed bool, history *json.RawMessage) error
 }
 
 // processProject evaluates every closure reason this team handles —
@@ -75,6 +79,16 @@ type cascadeDecision struct {
 // Tracking the fact in memory — something this process already knows with
 // certainty, since decision.ShouldSuspend is computed locally, not read
 // back from the API — sidesteps that entirely.
+//
+// suspensionProcessState is tracked the same way, for the same reason. Each
+// cascade's record write replaces the whole object, so each must build on
+// the previous cascade's write, not on the snapshot fetched at the start of
+// the run. Building both from the snapshot let the second write reset the
+// first cascade's section: a real staging run recorded an invoice "suspend"
+// and then the subscription cascade's IGNORED record wrote the invoice
+// section back to "open", after which ServiceNow reopened the project and
+// the next run suspended and emailed it again. history is that in-memory
+// copy, updated after every successful record write.
 //
 // A failure *acting* on one cascade (in the execution loop below) returns
 // immediately without attempting the next — matching how a failure partway
@@ -123,8 +137,9 @@ func processProject(ctx context.Context, reader entityReader, updater projectUpd
 	})
 
 	alreadyClosed := proj.ClosureState != nil && *proj.ClosureState != "Open"
+	history := proj.SuspensionProcessState
 	for _, c := range cascades {
-		if err := c.act(ctx, alreadyClosed); err != nil {
+		if err := c.act(ctx, alreadyClosed, &history); err != nil {
 			return err
 		}
 		if c.decision.ShouldSuspend {
@@ -156,8 +171,8 @@ func buildSubscriptionCascade(reader entityReader, updater projectUpdater, ntf n
 
 	return &cascadeDecision{
 		decision: decision,
-		act: func(ctx context.Context, alreadyClosed bool) error {
-			return actSubscription(ctx, reader, updater, ntf, proj, decision, alreadyClosed)
+		act: func(ctx context.Context, alreadyClosed bool, history *json.RawMessage) error {
+			return actSubscription(ctx, reader, updater, ntf, proj, decision, alreadyClosed, history)
 		},
 	}, nil
 }
@@ -170,7 +185,7 @@ func buildSubscriptionCascade(reader entityReader, updater projectUpdater, ntf n
 // from notify returns immediately — this ordering, not a separate flag, is
 // what guarantees suspend never proceeds after a failed notify (the day-0
 // "email first, stop on failure" contract).
-func actSubscription(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, proj project, decision closure.Decision, alreadyClosed bool) error {
+func actSubscription(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, proj project, decision closure.Decision, alreadyClosed bool, history *json.RawMessage) error {
 	if decision.ShouldNotify {
 		delivered := false
 		var err error
@@ -180,7 +195,7 @@ func actSubscription(ctx context.Context, reader entityReader, updater projectUp
 				return fmt.Errorf("sweep: notify project %s: %w", proj.ID, err)
 			}
 		}
-		if err := recordNoticeSent(ctx, updater, proj, decision.Window, delivered); err != nil {
+		if err := recordNoticeSent(ctx, updater, proj.ID, history, decision.Window, delivered); err != nil {
 			return fmt.Errorf("sweep: record notice for project %s: %w", proj.ID, err)
 		}
 	}
@@ -605,13 +620,15 @@ func fetchContacts(ctx context.Context, reader entityReader, proj project) ([]re
 // actionSendEmailNotification records "SUCCESSFUL" only when delivered is
 // true (the notifier in use actually sends real notices); otherwise it
 // records "IGNORED" — the notice was logged, not sent, and the state must
-// not claim a delivery that never happened.
-func recordNoticeSent(ctx context.Context, updater projectUpdater, proj project, window closure.NoticeWindow, delivered bool) error {
+// not claim a delivery that never happened. It builds on, and after a
+// successful write updates, history: the run's current suspensionProcessState
+// (see processProject), never the start-of-run snapshot.
+func recordNoticeSent(ctx context.Context, updater projectUpdater, projectID string, history *json.RawMessage, window closure.NoticeWindow, delivered bool) error {
 	action := "IGNORED"
 	if delivered {
 		action = "SUCCESSFUL"
 	}
-	newState, err := suspensionstate.WithSubscriptionEndDateState(proj.SuspensionProcessState, window, map[string]string{
+	newState, err := suspensionstate.WithSubscriptionEndDateState(*history, window, map[string]string{
 		"actionSendEmailNotification": action,
 	})
 	if err != nil {
@@ -623,8 +640,11 @@ func recordNoticeSent(ctx context.Context, updater projectUpdater, proj project,
 		return fmt.Errorf("marshal update request: %w", err)
 	}
 
-	_, err = updater.UpdateProject(ctx, proj.ID, body)
-	return err
+	if _, err := updater.UpdateProject(ctx, projectID, body); err != nil {
+		return err
+	}
+	*history = newState
+	return nil
 }
 
 // suspend writes endDateClosureState=Suspended, unless this dimension has
