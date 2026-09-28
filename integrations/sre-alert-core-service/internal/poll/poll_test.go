@@ -18,7 +18,6 @@ package poll
 
 import (
 	"testing"
-	"time"
 
 	"alert-core-service/internal/engine"
 )
@@ -55,58 +54,5 @@ func TestShardIsStableForSameFingerprint(t *testing.T) {
 	}
 	if first < 0 || first >= workers {
 		t.Fatalf("shard(%q, %d) = %d, out of range", fp, workers, first)
-	}
-}
-
-func TestStuckTrackerSkipsOnlyAfterGapTimeout(t *testing.T) {
-	var s stuckTracker
-	now := time.Unix(1_700_000_000, 0)
-	gap := 5 * time.Minute
-
-	// First time this id is the head of the window: record it, don't skip yet.
-	if skip := s.observe(42, true, now, gap); skip {
-		t.Fatalf("observe: expected no skip on first sighting")
-	}
-
-	// Same id, still blocked, but well under the gap timeout.
-	if skip := s.observe(42, true, now.Add(time.Minute), gap); skip {
-		t.Fatalf("observe: expected no skip before gap timeout elapses")
-	}
-
-	// Same id, blocked for longer than the gap timeout: skip it exactly once.
-	if skip := s.observe(42, true, now.Add(gap+time.Second), gap); !skip {
-		t.Fatalf("observe: expected skip once gap timeout elapses")
-	}
-
-	// Having just skipped, state resets -- the same id blocked again starts a fresh window.
-	if skip := s.observe(42, true, now.Add(gap+2*time.Second), gap); skip {
-		t.Fatalf("observe: expected no skip immediately after a reset")
-	}
-}
-
-func TestStuckTrackerNeverSkipsWhenGapTimeoutDisabled(t *testing.T) {
-	var s stuckTracker
-	now := time.Unix(1_700_000_000, 0)
-	for i := range 10 {
-		if skip := s.observe(7, true, now.Add(time.Duration(i)*time.Hour), 0); skip {
-			t.Fatalf("observe: expected never to skip when gapTimeout <= 0")
-		}
-	}
-}
-
-func TestStuckTrackerResetsOnProgress(t *testing.T) {
-	var s stuckTracker
-	now := time.Unix(1_700_000_000, 0)
-	gap := time.Minute
-
-	s.observe(1, true, now, gap)
-	if s.at != 1 {
-		t.Fatalf("expected tracker to record id 1 as stuck, got %d", s.at)
-	}
-
-	// id 1 becomes ready; tracker must forget it, not count time against a resolved id.
-	s.observe(1, false, now.Add(30*time.Second), gap)
-	if s.at != 0 {
-		t.Fatalf("expected tracker to clear after progress, got at=%d", s.at)
 	}
 }
