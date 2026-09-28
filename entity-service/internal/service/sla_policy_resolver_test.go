@@ -62,14 +62,39 @@ func (f *fakePolicyLookupRepo) FindPolicyByName(_ context.Context, name, target 
 	return ref, nil
 }
 
-func (f *fakePolicyLookupRepo) FindPolicyByPattern(_ context.Context, prefix, label, target string) (repository.SLAPolicyRef, error) {
-	f.patternCalls = append(f.patternCalls, prefix+"|"+label+"|"+target)
+// FindPolicyByPattern mirrors the real repository's ordering rule: among
+// every candidate matching prefix/label/target, a name containing
+// derivedPlan always wins over one that doesn't, and the shortest name wins
+// within that group -- deterministic, unlike ranging over patternPolicies
+// (a Go map) directly, which is what the real bug (plain length(name)
+// ordering ignoring plan) would have masked in a test that just returned
+// the first match found.
+func (f *fakePolicyLookupRepo) FindPolicyByPattern(_ context.Context, prefix, label, target, derivedPlan string) (repository.SLAPolicyRef, error) {
+	f.patternCalls = append(f.patternCalls, prefix+"|"+label+"|"+target+"|"+derivedPlan)
+	var best repository.SLAPolicyRef
+	bestName := ""
+	found := false
 	for name, ref := range f.patternPolicies {
-		if strings.HasPrefix(name, prefix+" - ") && strings.Contains(name, label) && ref.Target == target {
-			return ref, nil
+		if !strings.HasPrefix(name, prefix+" - ") || !strings.Contains(name, label) || ref.Target != target {
+			continue
+		}
+		if !found {
+			best, bestName, found = ref, name, true
+			continue
+		}
+		bestMatchesPlan := strings.Contains(bestName, derivedPlan)
+		candidateMatchesPlan := strings.Contains(name, derivedPlan)
+		switch {
+		case candidateMatchesPlan && !bestMatchesPlan:
+			best, bestName = ref, name
+		case candidateMatchesPlan == bestMatchesPlan && len(name) < len(bestName):
+			best, bestName = ref, name
 		}
 	}
-	return repository.SLAPolicyRef{}, &apierror.NotFoundError{Msg: "no sla_policy found matching " + prefix + "/" + label + "/" + target}
+	if !found {
+		return repository.SLAPolicyRef{}, &apierror.NotFoundError{Msg: "no sla_policy found matching " + prefix + "/" + label + "/" + target}
+	}
+	return best, nil
 }
 
 func (f *fakePolicyLookupRepo) RegisterClock(context.Context, string, repository.SLAPolicyRef) (bool, error) {
@@ -218,6 +243,34 @@ func TestSLAPolicyResolver_Resolve_NoPolicyEvenWithPattern(t *testing.T) {
 	}
 	if ok {
 		t.Fatalf("resolve() ok = true, want false: no P2 resolution policy is seeded/faked under any name")
+	}
+}
+
+// TestSLAPolicyResolver_Resolve_PatternFallbackPrefersDerivedPlan is the
+// regression case CodeRabbit flagged on this fallback's first version:
+// plain shortest-name ordering, with no plan awareness at all, would pick
+// "P2 - IR - Resolution (Open Source)" over "P2 - IR - Resolution (Managed
+// Services)" purely because it's shorter -- silently returning the wrong
+// plan's duration even though the derived plan's own qualified policy
+// exists. The fallback must rank a name containing derivedPlan ahead of
+// one that doesn't, regardless of length.
+func TestSLAPolicyResolver_Resolve_PatternFallbackPrefersDerivedPlan(t *testing.T) {
+	repo := newFakePolicyLookupRepo()
+	repo.patternPolicies = map[string]repository.SLAPolicyRef{
+		"P2 - IR - Resolution (Open Source)":      {ID: "wrong-plan-shorter", Target: "RESOLUTION", Duration: 6 * time.Hour},
+		"P2 - IR - Resolution (Managed Services)": {ID: "right-plan-longer", Target: "RESOLUTION", Duration: 8 * time.Hour},
+	}
+
+	r := newSLAPolicyResolver(repo)
+	ref, ok, err := r.resolve(context.Background(), domain.CaseSeverityHigh, slaClockTypeResolution, slaPlanManagedServices)
+	if err != nil {
+		t.Fatalf("resolve() error = %v, want nil", err)
+	}
+	if !ok {
+		t.Fatalf("resolve() ok = false, want true")
+	}
+	if ref.ID != "right-plan-longer" {
+		t.Fatalf("resolve() ID = %q, want the derived plan's own policy despite the shorter name existing under the other plan", ref.ID)
 	}
 }
 

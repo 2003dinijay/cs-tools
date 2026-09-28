@@ -178,7 +178,7 @@ func (r *slaPolicyResolver) resolve(ctx context.Context, severity domain.CaseSev
 	// SLAEngineRepository.FindPolicyByPattern's own doc comment for the
 	// matching rule and why it's safe to also leave enabled on prod (it
 	// only ever fires once both exact-name attempts above have failed).
-	ref, err := r.repo.FindPolicyByPattern(ctx, prefix, label, target)
+	ref, err := r.repo.FindPolicyByPattern(ctx, prefix, label, target, derivedPlan)
 	if err == nil {
 		slog.WarnContext(ctx, "sla engine: resolved policy by loose pattern match, not exact name -- the environment's sla_policy naming may not follow the P{n} - {type} (plan) convention",
 			"severity", severity, "clockType", clockType, "triedPlans", []string{derivedPlan, altPlan}, "matchedName", ref.Name)

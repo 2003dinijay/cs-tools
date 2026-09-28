@@ -88,7 +88,11 @@ type SLAEngineRepository interface {
 	// the shortest matching name (closest to the canonical form) when more
 	// than one qualifies. Returns apierror.NotFoundError if none match --
 	// callers treat that exactly like FindPolicyByName's own NotFoundError.
-	FindPolicyByPattern(ctx context.Context, prefix, label, target string) (SLAPolicyRef, error)
+	// derivedPlan is a preference, not a filter: a matching name containing
+	// it is ranked first, but a policy that doesn't mention any plan at all
+	// is still returned rather than treated as absent -- see this method's
+	// own implementation doc comment for the full ordering rule.
+	FindPolicyByPattern(ctx context.Context, prefix, label, target, derivedPlan string) (SLAPolicyRef, error)
 
 	// RegisterClock inserts a new source='CSM' "sla" row for
 	// (workItemID, policy.Target) and starts it running now, UNLESS an
@@ -201,12 +205,21 @@ func (r *slaEngineRepo) FindPolicyByName(ctx context.Context, name, target strin
 
 // FindPolicyByPattern implements SLAEngineRepository.
 //
-// ORDER BY length(name), source: shortest name first, so a plain
-// "<prefix> - <label> (<plan>)" row (if one happens to also match this
-// looser pattern) is preferred over a longer, more qualified variant like
-// "<prefix> - IR - <label> (<plan>)"; source as the tiebreaker for the same
-// reason FindPolicyByName uses it.
-func (r *slaEngineRepo) FindPolicyByPattern(ctx context.Context, prefix, label, target string) (SLAPolicyRef, error) {
+// ORDER BY a plan-match rank first, then length(name), then source: a row
+// whose name contains derivedPlan always sorts ahead of one that doesn't,
+// regardless of length -- CodeRabbit correctly flagged that plain
+// length(name) ordering alone can pick the wrong plan, e.g. preferring a
+// shorter "P2 - IR - Resolution (Open Source)" over the derived plan's own
+// "P2 - IR - Resolution (Managed Services)" purely because it's shorter.
+// Within the same plan-match rank, shortest name first still prefers a
+// plain "<prefix> - <label> (<plan>)" row over a longer, more qualified
+// variant like "<prefix> - IR - <label> (<plan>)"; source is the final
+// tiebreaker for the same reason FindPolicyByName uses it. derivedPlan is
+// still only ever a preference, never a filter -- a policy that doesn't
+// mention it at all is still returned (matching resolve()'s own two-plan
+// fallback philosophy: a guessed-wrong plan must not silently drop SLA
+// tracking).
+func (r *slaEngineRepo) FindPolicyByPattern(ctx context.Context, prefix, label, target, derivedPlan string) (SLAPolicyRef, error) {
 	const query = `
 		SELECT id, name, target::TEXT, EXTRACT(EPOCH FROM duration)
 		FROM sla_policy
@@ -216,12 +229,12 @@ func (r *slaEngineRepo) FindPolicyByPattern(ctx context.Context, prefix, label, 
 		  AND source IN ('SERVICENOW', 'CSM')
 		  AND (is_active IS NULL OR is_active)
 		  AND duration IS NOT NULL
-		ORDER BY length(name), source
+		ORDER BY (CASE WHEN name ILIKE '%' || $4 || '%' THEN 0 ELSE 1 END), length(name), source
 		LIMIT 1`
 
 	var ref SLAPolicyRef
 	var durationSeconds float64
-	err := r.db.QueryRow(ctx, query, prefix, label, target).Scan(&ref.ID, &ref.Name, &ref.Target, &durationSeconds)
+	err := r.db.QueryRow(ctx, query, prefix, label, target, derivedPlan).Scan(&ref.ID, &ref.Name, &ref.Target, &durationSeconds)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SLAPolicyRef{}, &apierror.NotFoundError{Msg: "no sla_policy found matching " + prefix + "/" + label + "/" + target}
 	}
