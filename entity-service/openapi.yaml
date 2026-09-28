@@ -6579,6 +6579,92 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /outage-notifications/sweep:
+    post:
+      summary: Evaluate which internal-stakeholder outage emails are due.
+      description: >-
+        Postgres data source only. Backs the `outage_internal_notification`
+        sub-cron in operations/csm-scheduled-tasks, which renders and sends
+        the emails this returns.
+
+
+        The port of ServiceNow's `Internal Stakeholders Email Notification -
+        Outage Communication`. A sweep rather than a record trigger because
+        nothing in this stack writes `outage` — csm-sync-service mirrors it in
+        from ServiceNow, so there is no local write to react to.
+
+
+        POST rather than GET because it is not read-only: each decision is
+        recorded as sent BEFORE it is returned, so the same sweep run twice
+        does not report the same email twice. The consequence is deliberate —
+        a decision the caller fails to deliver is lost rather than retried,
+        because a duplicate outage notice to the whole internal audience is
+        worse than a missed one.
+
+
+        Internal callers only: a sweep is estate-wide by definition and has no
+        project or account to scope to.
+      operationId: sweepOutageNotifications
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+          description: Maximum outages to evaluate in this sweep.
+      responses:
+        "200":
+          description: >-
+            The emails to send. An empty `decisions` list is the normal
+            steady state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutageNotificationSweepResponse'
+        "400":
+          description: Bad request — limit is not an integer.
+        "403":
+          description: The caller is not an internal service.
+        "500":
+          description: Internal server error.
+  /outages/{id}/notification-state:
+    get:
+      summary: What has already been sent for one outage.
+      description: >-
+        Postgres data source only. Operational visibility, mainly for
+        answering why an outage did or did not produce an email.
+
+
+        `seededFromSync` distinguishes a phase this service earned by sending
+        an email from one seeded out of ServiceNow's own mirrored value at
+        cutover — which is why an outage can be `DECLARED` with no
+        `declaredOn`.
+      operationId: getOutageNotificationState
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The outage's notification state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutageNotificationState'
+        "400":
+          description: Bad request — the id is not a UUID.
+        "403":
+          description: The caller is not an internal service.
+        "404":
+          description: This outage has never been evaluated.
+        "500":
+          description: Internal server error.
   /outages/{id}/communications:
     post:
       summary: >-
@@ -16945,6 +17031,77 @@ components:
         additional:
           type: integer
 
+    OutageNotificationSweepResponse:
+      type: object
+      properties:
+        evaluated:
+          type: integer
+          description: Outages considered in this sweep.
+        decisions:
+          type: array
+          description: The emails to send, already recorded as sent.
+          items:
+            $ref: '#/components/schemas/OutageNotificationDecision'
+        errors:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            Keyed by outage id. An outage whose send could not be recorded is
+            reported here and deliberately omitted from `decisions` — nothing
+            is emailed without a trace of having been emailed.
+    OutageNotificationDecision:
+      type: object
+      properties:
+        outageId:
+          type: string
+          format: uuid
+        number:
+          type: string
+        kind:
+          type: string
+          enum: [DECLARED, RESOLVED, UPDATE]
+        reason:
+          type: string
+          description: >-
+            The branch that selected this email, in the ServiceNow flow's own
+            vocabulary, so a log line can be matched against the original.
+        subject:
+          type: string
+        body:
+          type: string
+          description: >-
+            A fixed sentence carrying no outage detail, reproducing the
+            ServiceNow original exactly.
+    OutageNotificationState:
+      type: object
+      properties:
+        outageId:
+          type: string
+          format: uuid
+        phase:
+          type: string
+          enum: [NONE, DECLARED, RESOLVED]
+          description: NONE is a real state — no email has gone out yet.
+        declaredOn:
+          type: string
+          format: date-time
+        resolvedOn:
+          type: string
+          format: date-time
+        lastUpdateOn:
+          type: string
+          format: date-time
+        updateCount:
+          type: integer
+          description: >-
+            The update arm advances no phase and can fire repeatedly, so its
+            noisiness is tracked here rather than in the state machine.
+        seededFromSync:
+          type: boolean
+          description: >-
+            True when `phase` came from ServiceNow's mirrored value rather
+            than from an email this service sent.
     OutageDetail:
       allOf:
         - $ref: '#/components/schemas/Outage'

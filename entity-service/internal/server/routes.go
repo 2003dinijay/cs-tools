@@ -859,6 +859,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	conversationHandler := handler.NewConversationHandler(activeConversationSvc)
 
+	var outageNotificationHandler *handler.OutageNotificationHandler
+	if cfg.HasDatabase() {
+		outageNotificationHandler = handler.NewOutageNotificationHandler(
+			service.NewOutageNotificationService(
+				repository.NewOutageNotificationRepository(db), accessSvc))
+	}
+
 	var outageHandler *handler.OutageHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		outageHandler = handler.NewOutageHandler(service.NewServiceNowOutageService(serviceNowIntegrationServiceClient))
@@ -1210,6 +1217,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /incidents/aggregate", incidentHandler.AggregateIncidents)
 	mux.HandleFunc("POST /incidents/{id}/activities/search", incidentHandler.SearchIncidentActivities)
 	mux.HandleFunc("POST /incidents/{id}/specialist-handoffs", incidentHandler.HandOffIncidentToSpecialist)
+
+	// Postgres-backed, and deliberately separate from outageHandler above:
+	// that one is the ServiceNow-backed outage entity API, this is only the
+	// internal-stakeholder notification sweep. They will converge when the
+	// outage entity itself moves to Postgres.
+	if outageNotificationHandler != nil {
+		mux.HandleFunc("POST /outage-notifications/sweep", outageNotificationHandler.SweepOutageNotifications)
+		mux.HandleFunc("GET /outages/{id}/notification-state", outageNotificationHandler.GetOutageNotificationState)
+	}
 
 	if outageHandler != nil {
 		mux.HandleFunc("POST /outages", outageHandler.CreateOutage)
