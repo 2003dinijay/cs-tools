@@ -119,8 +119,14 @@ func formatHoursMinutes(hours float64) string {
 // entity-service's internal project detail. Search-then-exact-match, the
 // same pattern used throughout this migration for every number-keyed lookup.
 func (c *postgresSplReportsClient) resolveProjectByNumber(ctx context.Context, projectNumber string) (entityProjectDetailsView, error) {
+	// Limit is entity-service's own maxLimit (see its SearchProjects
+	// validation) -- SearchQuery is a substring match against name/key/
+	// subscription type, and the exact-Key match below only looks inside
+	// this one page, so a low limit risked missing the target project
+	// whenever more than that many projects contained projectNumber as a
+	// substring.
 	body, err := json.Marshal(entitySearchProjectsRequest{
-		Pagination:  entityPagination{Limit: 5, Offset: 0},
+		Pagination:  entityPagination{Limit: 50, Offset: 0},
 		SearchQuery: projectNumber,
 	})
 	if err != nil {

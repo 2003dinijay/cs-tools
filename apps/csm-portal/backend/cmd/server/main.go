@@ -1275,7 +1275,6 @@ type splHandlerSet struct {
 // endpoints need, resolved by loadSPLConfig.
 type splConfig struct {
 	allowedGroups            []string
-	addWorknoteGroups        []string
 	addEscalationGroups      []string
 	downloadAttachmentGroups []string
 	usageMetricsGroups       []string
@@ -1335,7 +1334,6 @@ func loadSPLConfig() (bool, splConfig) {
 
 	return true, splConfig{
 		allowedGroups:            splitComma(mustEnv("SPL_ALLOWED_GROUPS")),
-		addWorknoteGroups:        splitComma(mustEnv("SPL_ADD_WORKNOTE_GROUPS")),
 		addEscalationGroups:      splitComma(mustEnv("SPL_ADD_ESCALATION_GROUPS")),
 		downloadAttachmentGroups: splitComma(mustEnv("SPL_DOWNLOAD_ATTACHMENT_GROUPS")),
 		usageMetricsGroups:       splitComma(mustEnv("SPL_USAGE_METRICS_GROUPS")),

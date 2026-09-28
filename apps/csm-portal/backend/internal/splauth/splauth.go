@@ -28,8 +28,13 @@
 //     addWorknote/createCaseEscalation/downloadAttachment/
 //     checkUsageMetricsAccess functions).
 //
-// IsAuthorized is the single primitive shared by all five checks; each
-// endpoint calls it with whichever configured list applies.
+// addWorknoteGroups is the one of the five with no group left in this Go
+// port: the /spl/* worknote endpoint it gated was later merged onto the
+// shared POST /cases/{id}/comments route (see main.go's SPL route
+// registration comment), which is gated by PermWrite, not an SPL group.
+//
+// IsAuthorized is the single primitive shared by the remaining four checks;
+// each endpoint calls it with whichever configured list applies.
 package splauth
 
 // IsAuthorized reports whether userGroups contains at least one group from

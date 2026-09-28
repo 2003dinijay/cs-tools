@@ -38,8 +38,17 @@ CREATE SEQUENCE IF NOT EXISTS portal_work_item_number_seq START 1;
 
 CREATE OR REPLACE FUNCTION next_portal_work_item_number()
 RETURNS TEXT AS $$
+DECLARE
+    v_next TEXT;
 BEGIN
-    RETURN 'CS-PORTAL-' || LPAD(nextval('portal_work_item_number_seq')::TEXT, 6, '0');
+    -- LPAD truncates (from the right) when the input is already longer than
+    -- the target width, so a bare LPAD(..., 6, '0') would make sequence
+    -- value 1000000 render as "100000" -- identical to value 100000's own
+    -- output. GREATEST(6, ...) keeps the usual 6-digit zero-padding below
+    -- that point and simply stops padding (never truncates) once the
+    -- sequence itself grows past 6 digits.
+    v_next := nextval('portal_work_item_number_seq')::TEXT;
+    RETURN 'CS-PORTAL-' || LPAD(v_next, GREATEST(6, LENGTH(v_next)), '0');
 END;
 $$ LANGUAGE plpgsql;
 

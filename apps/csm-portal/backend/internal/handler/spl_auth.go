@@ -45,8 +45,8 @@ func requireSPLGroups(w http.ResponseWriter, r *http.Request, allowedGroups []st
 }
 
 // requireSPLSubGroups performs one of SupportPortalLite's additional,
-// narrower group checks (addWorknoteGroups, addEscalationGroups,
-// downloadAttachmentGroups, usageMetricsGroups) layered on top of the
+// narrower group checks (addEscalationGroups, downloadAttachmentGroups,
+// usageMetricsGroups) layered on top of the
 // blanket allowedGroups gate requireSPLGroups already enforced. Call this
 // after requireSPLGroups, only for the handful of endpoints Ballerina's
 // operations.bal gates a second time. Returns false (and has already
