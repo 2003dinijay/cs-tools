@@ -3679,6 +3679,10 @@ export interface BeIncidentTaskSearchResponse {
  */
 export interface BeCreateProblemPayload {
   subject: string;
+  // Sanitized rich-text HTML (see sanitizeRichTextHtml), same convention as
+  // BeCreateCaseRequest.description. Not yet forwarded to ServiceNow — see
+  // entity-service's own CreateProblem doc comment.
+  description?: string;
   category?: string;
   subcategory?: string;
   originCaseId?: string;
