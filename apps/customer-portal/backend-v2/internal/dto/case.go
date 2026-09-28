@@ -300,6 +300,15 @@ type CaseWatchListUser struct {
 	UserName string `json:"userName,omitempty"`
 	Name     string `json:"name,omitempty"`
 	Email    string `json:"email,omitempty"`
+	// Locked is true when this watcher is one of the case's account's four
+	// named stakeholders (customer success manager, technical owner,
+	// secondary technical owner, account manager) -- entity-service always
+	// re-adds these on the next watch-list write regardless of what's
+	// submitted, so removing one here would never actually stick. The
+	// frontend uses this to disable the remove control for exactly these
+	// watchers, rather than let a customer attempt a removal that silently
+	// doesn't take.
+	Locked bool `json:"locked"`
 }
 
 // CaseDetails is the portal's response for GET /cases/{id} — shaped to
@@ -399,7 +408,7 @@ func MapCaseDetails(c entity.CaseView) CaseDetails {
 	if len(c.WatchList) > 0 {
 		watchList = make([]CaseWatchListUser, 0, len(c.WatchList))
 		for _, w := range c.WatchList {
-			watchList = append(watchList, CaseWatchListUser{ID: w.ID, UserName: w.UserName, Name: w.Name, Email: w.Email})
+			watchList = append(watchList, CaseWatchListUser{ID: w.ID, UserName: w.UserName, Name: w.Name, Email: w.Email, Locked: w.Locked})
 		}
 	}
 

@@ -2105,10 +2105,25 @@ type rowsQuerier interface {
 // by), so results are ordered by user_name for a stable, deterministic
 // response instead.
 func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]domain.WatchListUser, error) {
+	// locked mirrors AccountDefaultWatcherIDs' own four columns, joined
+	// live rather than cross-checked against a snapshot -- see
+	// WatchListUser.Locked's own doc comment on why that's deliberate.
+	// LEFT JOINs throughout so a case with no project, or a project with no
+	// account, still returns every watcher with locked=false rather than
+	// zero rows (an INNER JOIN here would silently drop every watcher on
+	// such a case, the same class of false-empty-result bug this file's own
+	// "Case-like work_item types" fixes already guard against elsewhere).
 	rows, err := q.Query(ctx, `
-		SELECT u.id, u.user_name, COALESCE(u.name, CONCAT_WS(' ', u.first_name, u.last_name)), u.email
+		SELECT u.id, u.user_name, COALESCE(u.name, CONCAT_WS(' ', u.first_name, u.last_name)), u.email,
+		       COALESCE(u.id = acct.customer_success_manager_id, false)
+		           OR COALESCE(u.id = acct.technical_owner_id, false)
+		           OR COALESCE(u.id = acct.secondary_technical_owner_id, false)
+		           OR COALESCE(u.id = acct.account_manager_id, false) AS locked
 		FROM work_item_watcher w
 		JOIN "user" u ON u.id = w.user_id
+		LEFT JOIN work_item wi ON wi.id = w.work_item_id
+		LEFT JOIN project p ON p.id = wi.project_id
+		LEFT JOIN account acct ON acct.id = p.account_id
 		WHERE w.work_item_id = $1
 		ORDER BY u.user_name`, caseID)
 	if err != nil {
@@ -2120,7 +2135,8 @@ func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]dom
 	for rows.Next() {
 		var id, userName, name string
 		var email *string
-		if err := rows.Scan(&id, &userName, &name, &email); err != nil {
+		var locked bool
+		if err := rows.Scan(&id, &userName, &name, &email, &locked); err != nil {
 			return nil, fmt.Errorf("scan case watcher: %w", err)
 		}
 		watchers = append(watchers, domain.WatchListUser{
@@ -2128,6 +2144,7 @@ func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]dom
 			UserName: userName,
 			Name:     name,
 			Email:    stringOrEmpty(email),
+			Locked:   locked,
 			// User.ID is always null by contract -- see WatchListUser.User's
 			// own doc comment ("its id is always null: a watch-list entry is
 			// not guaranteed to point at a user record"). Pass "" rather
