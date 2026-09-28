@@ -14,14 +14,14 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- migration 000037's own comment argued comment rows are append-only, mirroring
+-- migration 0040's own comment argued comment rows are append-only, mirroring
 -- ServiceNow's sys_journal_field -- that rationale no longer holds now that CSM
 -- Portal itself is a primary writer of this table (not just a mirror of SN's
 -- journal), so this migration adds edit/soft-delete support on top of it.
 ALTER TABLE comment
-    ADD COLUMN deleted_at TIMESTAMPTZ NULL,
-    ADD COLUMN deleted_by VARCHAR(255) NULL,
-    ADD COLUMN last_edited_at TIMESTAMPTZ NULL;
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ NULL,
+    ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(255) NULL,
+    ADD COLUMN IF NOT EXISTS last_edited_at TIMESTAMPTZ NULL;
 
 -- comment_edit_history keeps every prior body as its own row, for audit --
 -- body is always the PRE-edit content (what it was before the edit that

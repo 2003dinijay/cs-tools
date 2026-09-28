@@ -21,11 +21,11 @@
 -- slaengine needing a second lookup at tick time — it has no other way to
 -- reach case data. None of these participate in scheduling/breach logic.
 ALTER TABLE sla_clocks
-    ADD COLUMN case_number TEXT,
-    ADD COLUMN wso2_case_id TEXT,
-    ADD COLUMN case_title TEXT,
-    ADD COLUMN case_type TEXT,
-    ADD COLUMN product TEXT,
-    ADD COLUMN team TEXT,
-    ADD COLUMN priority TEXT,
-    ADD COLUMN state TEXT;
+    ADD COLUMN IF NOT EXISTS case_number TEXT,
+    ADD COLUMN IF NOT EXISTS wso2_case_id TEXT,
+    ADD COLUMN IF NOT EXISTS case_title TEXT,
+    ADD COLUMN IF NOT EXISTS case_type TEXT,
+    ADD COLUMN IF NOT EXISTS product TEXT,
+    ADD COLUMN IF NOT EXISTS team TEXT,
+    ADD COLUMN IF NOT EXISTS priority TEXT,
+    ADD COLUMN IF NOT EXISTS state TEXT;

@@ -23,5 +23,5 @@
 -- publishes it automatically once this time arrives -- exactly as if a human
 -- had clicked Publish. Left as-is after MarkPublished (a harmless historical
 -- value; the read side never queries it once the row leaves "approved").
-ALTER TABLE announcement_requests ADD COLUMN due_on TIMESTAMPTZ;
-ALTER TABLE announcement_requests ADD COLUMN scheduled_on TIMESTAMPTZ;
+ALTER TABLE announcement_requests ADD COLUMN IF NOT EXISTS due_on TIMESTAMPTZ;
+ALTER TABLE announcement_requests ADD COLUMN IF NOT EXISTS scheduled_on TIMESTAMPTZ;

@@ -25,4 +25,4 @@
 -- uses. It does not, and cannot, prevent a race against a manual Publish
 -- click (which has no notion of this column at all) -- see
 -- AnnouncementRequestService.AutoPublish's own doc comment.
-ALTER TABLE announcement_requests ADD COLUMN publish_claimed_on TIMESTAMPTZ;
+ALTER TABLE announcement_requests ADD COLUMN IF NOT EXISTS publish_claimed_on TIMESTAMPTZ;

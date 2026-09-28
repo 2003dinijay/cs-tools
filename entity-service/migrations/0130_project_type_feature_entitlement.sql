@@ -43,21 +43,21 @@
 -- Catastrophic, S1=10 Critical, S2=11 High, S3=12 Medium, S4=13 Low) --
 -- resolved back to those ids on the Go side, same as before.
 ALTER TABLE project_type
-    ADD COLUMN has_service_request_write_access BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN has_service_request_read_access BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN has_change_request_read_access BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN has_sra_write_access BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN has_sra_read_access BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN has_engagements_read_access BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN has_updates_read_access BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN has_deployment_write_access BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN has_deployment_read_access BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN has_time_logs_read_access BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN has_component_analysis_read_access BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN has_usage_metrics_read_access BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN accepted_severity_values case_severity_enum[],
-    ADD COLUMN default_case_product_categories deployed_product_category_enum[],
-    ADD COLUMN sr_product_categories deployed_product_category_enum[];
+    ADD COLUMN IF NOT EXISTS has_service_request_write_access BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS has_service_request_read_access BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS has_change_request_read_access BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS has_sra_write_access BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS has_sra_read_access BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS has_engagements_read_access BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS has_updates_read_access BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS has_deployment_write_access BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS has_deployment_read_access BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS has_time_logs_read_access BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS has_component_analysis_read_access BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS has_usage_metrics_read_access BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS accepted_severity_values case_severity_enum[],
+    ADD COLUMN IF NOT EXISTS default_case_product_categories deployed_product_category_enum[],
+    ADD COLUMN IF NOT EXISTS sr_product_categories deployed_product_category_enum[];
 
 -- FEATURE_MATRIX's 7 entries, transcribed field-for-field from the real
 -- ServiceNow Script Include (verified 2026-09-25 against staging).

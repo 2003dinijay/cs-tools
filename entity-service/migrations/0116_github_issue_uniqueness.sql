@@ -38,6 +38,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS work_item_account_github_issue_uniq
 ALTER TABLE github_webhook_delivery
     DROP CONSTRAINT IF EXISTS github_webhook_delivery_change_request_id_fkey;
 
+-- Postgres has no ADD CONSTRAINT IF NOT EXISTS; dropping the new name first
+-- (a no-op the first time this runs) is what makes re-running this file safe.
+ALTER TABLE github_webhook_delivery
+    DROP CONSTRAINT IF EXISTS github_webhook_delivery_work_item_id_fkey;
+
 ALTER TABLE github_webhook_delivery
     ADD CONSTRAINT github_webhook_delivery_work_item_id_fkey
     FOREIGN KEY (change_request_id) REFERENCES work_item(id) ON DELETE SET NULL;

@@ -16,4 +16,7 @@
 
 ALTER TABLE team_member ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'member';
 
+-- Postgres has no ADD CONSTRAINT IF NOT EXISTS; dropping it first (a no-op
+-- the first time this runs) is what makes re-running this file safe.
+ALTER TABLE team_member DROP CONSTRAINT IF EXISTS team_member_role_check;
 ALTER TABLE team_member ADD CONSTRAINT team_member_role_check CHECK (role IN ('member', 'lead'));

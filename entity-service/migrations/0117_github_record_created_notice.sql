@@ -94,9 +94,10 @@ $$ LANGUAGE plpgsql;
 -- work_item, but a change request carries no issue number of its own -- the
 -- parent does -- so it never found a repository and never enqueued anything.
 -- Had it worked it would have duplicated an announcement that already exists:
--- change_request_github_outbound (000069) fires AFTER INSERT and enqueues
+-- change_request_github_outbound (0112) fires AFTER INSERT and enqueues
 -- 'cr_created', which sn_cr_notifier.yml turns into the issue comment.
 
+DROP TRIGGER IF EXISTS service_request_created_github_notice ON service_request;
 CREATE TRIGGER service_request_created_github_notice
     AFTER INSERT ON service_request
     FOR EACH ROW EXECUTE FUNCTION trg_github_record_created();

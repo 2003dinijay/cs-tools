@@ -26,7 +26,7 @@ BEGIN;
 -- additive and backward-compatible with any existing rows (none in practice,
 -- since this feature is unshipped, but treated as a real migration regardless).
 ALTER TABLE case_attachment
-  ADD COLUMN status TEXT NOT NULL DEFAULT 'complete' CHECK (status IN ('pending', 'complete'));
+  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'complete' CHECK (status IN ('pending', 'complete'));
 
 -- Supports a future reconciliation job that scans for pending rows whose
 -- upload never completed (e.g. "status = 'pending' AND created_on < now() -

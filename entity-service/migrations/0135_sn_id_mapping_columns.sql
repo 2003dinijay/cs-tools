@@ -35,24 +35,24 @@
 -- Postgres remains authoritative regardless (see each mirror's own doc
 -- comment).
 --
--- comment (migration 000037) deliberately gets NO such column: ServiceNow's
+-- comment (migration 0040) deliberately gets NO such column: ServiceNow's
 -- sys_journal_field is append-only -- snCommentSearchService.UpdateComment/
 -- DeleteComment already unconditionally return ServiceUnavailableError,
 -- documented as a permanent platform limitation, not a gap to fill in later
 -- (see commentEditDeleteUnsupportedOnSNMsg's own doc comment). There is no
 -- ServiceNow-side identifier a mirror could ever target, so storing one
 -- would be dead schema.
-ALTER TABLE customer_call ADD COLUMN sn_sys_id VARCHAR(32);
-ALTER TABLE time_card ADD COLUMN sn_sys_id VARCHAR(32);
+ALTER TABLE customer_call ADD COLUMN IF NOT EXISTS sn_sys_id VARCHAR(32);
+ALTER TABLE time_card ADD COLUMN IF NOT EXISTS sn_sys_id VARCHAR(32);
 
 -- work_item_tag.sn_sys_id holds ServiceNow's own label_entry sys_id for this
 -- specific case-tag attachment, as returned by AddCaseTag's mirror (its
 -- response's tag.id, sysidToUUID-converted like everywhere else, then
 -- uuidToSysid'd back to raw form for storage). RemoveCaseTag identifies the
--- tag to detach by the Postgres tag_id alone (migration 000021), which has
+-- tag to detach by the Postgres tag_id alone (migration 0026), which has
 -- no relationship to ServiceNow's label_entry sys_id -- that mismatch is
 -- exactly why RemoveCaseTag's mirror was previously left unbuilt (see that
 -- method's own prior doc comment in case_service.go). ServiceNow's own
 -- DELETE /cases/{id}/tags/{tagId} requires that label_entry sys_id, not the
 -- label text AddCaseTag's own mirror already carries.
-ALTER TABLE work_item_tag ADD COLUMN sn_sys_id VARCHAR(32);
+ALTER TABLE work_item_tag ADD COLUMN IF NOT EXISTS sn_sys_id VARCHAR(32);
