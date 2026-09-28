@@ -115,16 +115,17 @@ func RolesFromRoleUpdateRequest(req MembershipRoleUpdateRequest) []string {
 }
 
 // BuildCreateProjectMembershipRequest builds entity-service's invite body
-// from the portal's own request. Unlike the pre-cutover path there is no
-// AdminEmail field: entity-service attributes the write from the caller's
-// validated token, so the acting admin can no longer be spoofed by the body.
-func BuildCreateProjectMembershipRequest(req ContactOnboardRequest) entity.CreateProjectMembershipRequest {
+// from the portal's own request. inviterEmail is always the signed-in user's
+// own address, never anything from the request body, so the inviter cannot
+// be spoofed.
+func BuildCreateProjectMembershipRequest(req ContactOnboardRequest, inviterEmail string) entity.CreateProjectMembershipRequest {
 	return entity.CreateProjectMembershipRequest{
 		Email:               strings.TrimSpace(req.ContactEmail),
 		FirstName:           strings.TrimSpace(req.ContactFirstName),
 		LastName:            strings.TrimSpace(req.ContactLastName),
 		Roles:               RolesFromOnboardRequest(req),
 		IsCsIntegrationUser: req.IsCsIntegrationUser,
+		InviterEmail:        strings.TrimSpace(inviterEmail),
 	}
 }
 

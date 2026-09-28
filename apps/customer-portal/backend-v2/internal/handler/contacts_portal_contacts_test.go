@@ -240,6 +240,8 @@ func TestCreateProjectContact_PortalContactsOnUsesEntityService(t *testing.T) {
 	want := entity.CreateProjectMembershipRequest{
 		Email: testInvitee, FirstName: "E2E", LastName: "One",
 		Roles: []string{"Portal user", "Security Contact"},
+		// Always the signed-in user, from the verified token.
+		InviterEmail: testCaller,
 	}
 	if !reflect.DeepEqual(f.memberships.create, want) {
 		t.Errorf("create body = %+v, want %+v", f.memberships.create, want)
@@ -724,5 +726,22 @@ func TestUpdateProjectContactRole_PortalTimeoutStaysAnError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+// TestCreateProjectContact_InviterComesFromTokenNotBody: a request body that
+// names someone else as the inviter must not change who entity-service is
+// told invited; the inviter decides which onboarding checks apply.
+func TestCreateProjectContact_InviterComesFromTokenNotBody(t *testing.T) {
+	mux, f := newContactMux(true, true)
+	body := `{"contactEmail":"shayan+e2e1@wso2.com","contactFirstName":"E2E","contactLastName":"One","isPortalUser":true,"inviterEmail":"ceo@othercorp.com","adminEmail":"ceo@othercorp.com"}`
+
+	rec := serveContact(mux, http.MethodPost, contactsPath(), body)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	if f.memberships.create.InviterEmail != testCaller {
+		t.Errorf("inviterEmail = %q, want the signed-in user %q", f.memberships.create.InviterEmail, testCaller)
 	}
 }

@@ -49,6 +49,11 @@ type CreateProjectMembershipRequest struct {
 	// and its Salesforce records like anyone else, but no Asgardeo identity
 	// and no invitation e-mail, because nobody ever signs in as it.
 	IsCsIntegrationUser bool `json:"isCsIntegrationUser,omitempty"`
+	// InviterEmail is the signed-in user's address, from their verified
+	// token. It makes entity-service apply the onboarding checks on who may
+	// invite, and start the allowed email domains from the inviter's own
+	// account, exactly as the pre-cutover onboarding service did.
+	InviterEmail string `json:"inviterEmail,omitempty"`
 }
 
 // UpdateProjectMembershipRolesRequest is the body of

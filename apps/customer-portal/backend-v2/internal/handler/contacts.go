@@ -205,7 +205,7 @@ func (h *ContactHandler) CreateProjectContact(w http.ResponseWriter, r *http.Req
 		}
 		wctx, cancel := entityWriteContext(r)
 		defer cancel()
-		membership, err := h.memberships.CreateProjectMembership(wctx, projectID, dto.BuildCreateProjectMembershipRequest(req))
+		membership, err := h.memberships.CreateProjectMembership(wctx, projectID, dto.BuildCreateProjectMembershipRequest(req, user.Email))
 		if errors.Is(err, context.DeadlineExceeded) {
 			// The portal stopped waiting, not entity-service: it keeps going
 			// and commits, so reporting a failure here would tell the admin

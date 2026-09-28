@@ -139,13 +139,14 @@ func TestBuildCreateProjectMembershipRequest(t *testing.T) {
 		IsCsIntegrationUser: true,
 		IsPortalUser:        true,
 		IsCsAdmin:           true,
-	})
+	}, " admin@acme.com ")
 	want := entity.CreateProjectMembershipRequest{
 		Email:               "jane@acme.com",
 		FirstName:           "Jane",
 		LastName:            "Doe",
 		Roles:               []string{"Portal user", "Admin"},
 		IsCsIntegrationUser: true,
+		InviterEmail:        "admin@acme.com",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
