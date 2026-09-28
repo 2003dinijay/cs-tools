@@ -23,8 +23,9 @@ paths:
     post:
       summary: >-
         Ingest a Salesforce change event from sales-apex-trigger-subscriber.
-        Entity Account: fetches the Account via REST sales/sales-entity-service
-        POST /customer-search (isRealTime true), not GraphQL
+        Entity Account, only when CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED=true
+        (otherwise acknowledged and ignored): fetches the Account via REST
+        sales/sales-entity-service POST /customer-search (isRealTime true), not GraphQL
         sales/entity-graphql-service, and upserts the csm-platform account table.
         Entity Project_Contact__c (also accepted as Project_Contact), only when
         CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true: CREATED/UPDATED/RESTORED fetch

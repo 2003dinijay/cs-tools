@@ -164,6 +164,32 @@ func TestHandleEvent_Deleted(t *testing.T) {
 	}
 }
 
+// With the account ingest flag off, routes.go passes a nil repository: every
+// Account envelope is acknowledged without a Sales Entity read or a write.
+func TestHandleEvent_AccountIngestDisabledIgnoresAccountEvents(t *testing.T) {
+	se := &stubSalesEntityClient{}
+	svc := NewSalesforceEventService(nil, se)
+
+	for _, eventType := range []string{
+		domain.SalesforceEventCreated,
+		domain.SalesforceEventUpdated,
+		domain.SalesforceEventDeleted,
+		domain.SalesforceEventUndefined,
+	} {
+		t.Run(eventType, func(t *testing.T) {
+			err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
+				EventType: eventType, Entity: "Account", ReferenceID: "001xx0000001",
+			})
+			if err != nil {
+				t.Fatalf("HandleEvent: %v", err)
+			}
+		})
+	}
+	if se.calls != 0 {
+		t.Errorf("GetCustomer calls = %d, want 0", se.calls)
+	}
+}
+
 func TestHandleEvent_UnknownEntityIgnored(t *testing.T) {
 	se := &stubSalesEntityClient{}
 	repo := &stubSalesforceAccountRepo{}
