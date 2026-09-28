@@ -183,6 +183,9 @@ export const SETTINGS_USER_ADD_ERROR = "Failed to add user. Please try again.";
 
 export const SETTINGS_USER_INVITING_NOTICE = "This takes a few seconds.";
 
+/** Contacts shown per page in User Management, as in the portal's other lists. */
+export const SETTINGS_USER_PAGE_SIZE = 10;
+
 export const SETTINGS_USER_INVITE_ALREADY_RUNNING =
   "An invitation to this address is already being sent.";
 

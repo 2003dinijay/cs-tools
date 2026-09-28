@@ -29,9 +29,13 @@ function SettingsUserManagement(props: { projectId: string }) {
   );
 }
 
+const DEFAULT_CONTACTS = [{ id: "1", email: "user@test.dev", membershipStatus: "Active" }];
+// The contact list each test sees; tests replace it before rendering.
+const contactsState = vi.hoisted(() => ({ data: [] as unknown[] }));
+
 vi.mock("@features/settings/api/useGetProjectContacts", () => ({
   default: () => ({
-    data: [{ id: "1", email: "user@test.dev", membershipStatus: "Active" }],
+    data: contactsState.data,
     isLoading: false,
     error: null,
     refetch: vi.fn().mockResolvedValue({ data: [] }),
@@ -87,7 +91,10 @@ vi.mock("@features/settings/components/RemoveUserModal", () => ({
 }));
 
 describe("SettingsUserManagement", () => {
-  beforeEach(() => resetPendingInvitesForTests());
+  beforeEach(() => {
+    resetPendingInvitesForTests();
+    contactsState.data = DEFAULT_CONTACTS;
+  });
 
   it("renders contacts and opens add-user modal", () => {
     render(<SettingsUserManagement projectId="p-1" />);
@@ -132,5 +139,80 @@ describe("SettingsUserManagement", () => {
       fireEvent.click(within(row).getByRole("button", { name: "Retry invitation" }));
     });
     expect(within(screen.getByTestId("pending-invite-new@acme.com")).getByText("Inviting…")).toBeInTheDocument();
+  });
+
+  describe("pagination", () => {
+    const manyContacts = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `c-${i + 1}`,
+        email: `person${String(i + 1).padStart(2, "0")}@acme.com`,
+        membershipStatus: "REGISTERED",
+      }));
+
+    it("shows ten contacts per page and the rest on the next page", () => {
+      contactsState.data = manyContacts(13);
+      render(<SettingsUserManagement projectId="p-1" />);
+
+      expect(screen.getByText("person01@acme.com")).toBeInTheDocument();
+      expect(screen.getByText("person10@acme.com")).toBeInTheDocument();
+      expect(screen.queryByText("person11@acme.com")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: /next page/i }));
+
+      expect(screen.getByText("person11@acme.com")).toBeInTheDocument();
+      expect(screen.getByText("person13@acme.com")).toBeInTheDocument();
+      expect(screen.queryByText("person01@acme.com")).not.toBeInTheDocument();
+    });
+
+    it("hides the pagination control when every contact fits on one page", () => {
+      contactsState.data = manyContacts(10);
+      render(<SettingsUserManagement projectId="p-1" />);
+
+      expect(screen.queryByRole("button", { name: /next page/i })).not.toBeInTheDocument();
+    });
+
+    it("searches the whole list and goes back to the first page", () => {
+      contactsState.data = manyContacts(13);
+      render(<SettingsUserManagement projectId="p-1" />);
+      fireEvent.click(screen.getByRole("button", { name: /next page/i }));
+
+      fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: "person03" } });
+
+      // person03 lives on page 1; it is found from page 2, and shown.
+      expect(screen.getByText("person03@acme.com")).toBeInTheDocument();
+      expect(screen.queryByText("person11@acme.com")).not.toBeInTheDocument();
+    });
+
+    it("moves back to the last page that still exists when the list shrinks", () => {
+      contactsState.data = manyContacts(13);
+      const view = render(<SettingsUserManagement projectId="p-1" />);
+      fireEvent.click(screen.getByRole("button", { name: /next page/i }));
+      expect(screen.getByText("person11@acme.com")).toBeInTheDocument();
+
+      contactsState.data = manyContacts(8);
+      view.rerender(<SettingsUserManagement projectId="p-1" />);
+
+      expect(screen.getByText("person01@acme.com")).toBeInTheDocument();
+      expect(screen.getByText("person08@acme.com")).toBeInTheDocument();
+    });
+
+    it("keeps pending invitations above the contacts on every page, outside the page size", async () => {
+      contactsState.data = manyContacts(13);
+      mutateAsync.mockReturnValue(new Promise(() => {}));
+      render(<SettingsUserManagement projectId="p-1" />);
+
+      fireEvent.click(screen.getByRole("button", { name: /add user/i }));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "submit-invite" }));
+      });
+
+      const rows = screen.getAllByRole("row");
+      expect(within(rows[1]).getByText("new@acme.com")).toBeInTheDocument();
+      expect(screen.getByText("person10@acme.com")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: /next page/i }));
+      expect(screen.getByTestId("pending-invite-new@acme.com")).toBeInTheDocument();
+      expect(screen.getByText("person13@acme.com")).toBeInTheDocument();
+    });
   });
 });

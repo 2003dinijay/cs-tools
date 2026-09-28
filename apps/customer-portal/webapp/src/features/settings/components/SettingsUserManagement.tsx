@@ -63,6 +63,7 @@ import {
   SETTINGS_USER_INVITE_ALREADY_RUNNING,
   SETTINGS_USER_INVITE_SUCCESS,
   SETTINGS_USER_INVITING_NOTICE,
+  SETTINGS_USER_PAGE_SIZE,
   SETTINGS_USER_PENDING_PROCESSING_TOOLTIP,
   SETTINGS_USER_PENDING_STATUS,
   SETTINGS_USER_REMOVE_ERROR,
@@ -76,6 +77,7 @@ import {
   SETTINGS_USER_UPDATE_ERROR,
 } from "@features/settings/constants/settingsConstants";
 import ErrorIndicator from "@components/error-indicator/ErrorIndicator";
+import ListPagination from "@components/list-view/ListPagination";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
 import AddUserModal from "./AddUserModal";
@@ -108,6 +110,8 @@ export default function SettingsUserManagement({
 }: SettingsUserManagementProps): JSX.Element {
   const theme = useTheme();
   const [searchQuery, setSearchQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(SETTINGS_USER_PAGE_SIZE);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<ProjectContact | null>(null);
   const [editTarget, setEditTarget] = useState<ProjectContact | null>(null);
@@ -139,6 +143,18 @@ export default function SettingsUserManagement({
       );
     });
   }, [contacts, searchQuery]);
+
+  // Paged on the client: the whole list is already fetched, and search runs
+  // over all of it. The page is clamped here rather than reset in an effect,
+  // so a list that shrinks (a removal, a refetch) never leaves an empty page.
+  // Pending invitations are not paged: they show above the contacts on every
+  // page until they resolve.
+  const totalPages = Math.max(1, Math.ceil(filteredContacts.length / rowsPerPage));
+  const currentPage = Math.min(page, totalPages);
+  const pagedContacts = useMemo(
+    () => filteredContacts.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage),
+    [filteredContacts, currentPage, rowsPerPage],
+  );
 
 
   const queryClient = useQueryClient();
@@ -240,7 +256,10 @@ export default function SettingsUserManagement({
           size="small"
           placeholder={SETTINGS_USER_SEARCH_PLACEHOLDER}
           value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
+          onChange={(e) => {
+            setSearchQuery(e.target.value);
+            setPage(1);
+          }}
           InputProps={{
             startAdornment: (
               <InputAdornment position="start">
@@ -249,7 +268,14 @@ export default function SettingsUserManagement({
             ),
             endAdornment: searchQuery ? (
               <InputAdornment position="end">
-                <IconButton size="small" edge="end" onClick={() => setSearchQuery("")}>
+                <IconButton
+                  size="small"
+                  edge="end"
+                  onClick={() => {
+                    setSearchQuery("");
+                    setPage(1);
+                  }}
+                >
                   <X size={16} />
                 </IconButton>
               </InputAdornment>
@@ -353,7 +379,7 @@ export default function SettingsUserManagement({
                     onDismiss={pendingInvites.dismiss}
                   />
                 )),
-                ...filteredContacts.map((contact) => (
+                ...pagedContacts.map((contact) => (
                 <TableRow key={contact.id} hover>
                   <TableCell>
                     <Box
@@ -463,6 +489,17 @@ export default function SettingsUserManagement({
           </TableBody>
         </Table>
       </TableContainer>
+
+      <ListPagination
+        totalRecords={filteredContacts.length}
+        page={currentPage}
+        rowsPerPage={rowsPerPage}
+        onPageChange={(_, value) => setPage(value)}
+        onRowsPerPageChange={(newSize) => {
+          setRowsPerPage(newSize);
+          setPage(1);
+        }}
+      />
 
       {/* Role Permissions */}
       <Paper
