@@ -25,7 +25,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
@@ -144,11 +143,11 @@ type ProblemRepository interface {
 }
 
 type problemRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
 // NewProblemRepository constructs a ProblemRepository backed by the given connection pool.
-func NewProblemRepository(db *pgxpool.Pool) ProblemRepository {
+func NewProblemRepository(db *Scoped) ProblemRepository {
 	return &problemRepo{db: db}
 }
 
@@ -479,6 +478,13 @@ const createProblemFromServiceNowQuery = `
 
 // CreateProblemFromServiceNow implements ProblemRepository.
 func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string) (domain.ProblemDetail, error) {
+	// WithSystemIdentity: this insert never sets a project_id on the new
+	// work_item row at all (problems have no project concept, same as
+	// incidents -- see this file's own package doc comment), so work_item's
+	// INSERT policy (migration 000099) can only be satisfied by is_internal.
+	// Same reasoning as IncidentRepository.CreateIncidentFromServiceNow's
+	// own identical stamp.
+	ctx = WithSystemIdentity(ctx)
 	var (
 		outID, outNumber, outSubject, outCreatedBy string
 		outCreatedOn, outUpdatedOn                 time.Time
@@ -523,12 +529,21 @@ func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domai
 // extension table uses). Same overall shape as
 // CaseRepository.UpdateCaseFields.
 func (r *problemRepo) UpdateProblemFields(ctx context.Context, req domain.UpdateProblemRequest, actorEmail string) (time.Time, error) {
-	tx, err := r.db.Begin(ctx)
+	var updatedOn time.Time
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		var txErr error
+		updatedOn, txErr = updateProblemFieldsTx(ctx, tx, req, actorEmail)
+		return txErr
+	})
 	if err != nil {
-		return time.Time{}, fmt.Errorf("update problem fields: begin tx: %w", err)
+		return time.Time{}, err
 	}
-	defer tx.Rollback(ctx)
+	return updatedOn, nil
+}
 
+// updateProblemFieldsTx is UpdateProblemFields' body, extracted so it can
+// run inside r.db.InTx's closure.
+func updateProblemFieldsTx(ctx context.Context, tx pgx.Tx, req domain.UpdateProblemRequest, actorEmail string) (time.Time, error) {
 	var problemSets []string
 	problemArgs := []any{req.ID}
 	idx := 2
@@ -579,7 +594,7 @@ func (r *problemRepo) UpdateProblemFields(ctx context.Context, req domain.Update
 	}
 
 	var updatedOn time.Time
-	err = tx.QueryRow(ctx, `UPDATE work_item SET `+strings.Join(wiSets, ", ")+` WHERE id = $1 AND type = 'PROBLEM' RETURNING updated_on`, wiArgs...).Scan(&updatedOn)
+	err := tx.QueryRow(ctx, `UPDATE work_item SET `+strings.Join(wiSets, ", ")+` WHERE id = $1 AND type = 'PROBLEM' RETURNING updated_on`, wiArgs...).Scan(&updatedOn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, &apierror.NotFoundError{Msg: "problem not found"}
 	}
@@ -590,8 +605,5 @@ func (r *problemRepo) UpdateProblemFields(ctx context.Context, req domain.Update
 		return time.Time{}, fmt.Errorf("update problem fields: work_item: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return time.Time{}, fmt.Errorf("update problem fields: commit tx: %w", err)
-	}
 	return updatedOn, nil
 }

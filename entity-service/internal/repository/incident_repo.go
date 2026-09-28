@@ -25,7 +25,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
@@ -145,11 +144,11 @@ type IncidentRepository interface {
 }
 
 type incidentRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
 // NewIncidentRepository constructs an IncidentRepository backed by the given connection pool.
-func NewIncidentRepository(db *pgxpool.Pool) IncidentRepository {
+func NewIncidentRepository(db *Scoped) IncidentRepository {
 	return &incidentRepo{db: db}
 }
 
@@ -774,6 +773,14 @@ func (r *incidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req dom
 		contactType = &v
 	}
 
+	// WithSystemIdentity: this insert never sets a project_id on the new
+	// work_item row at all (incidents have no project concept -- see this
+	// file's own package doc comment), so work_item's INSERT policy
+	// (migration 000099) can only be satisfied by is_internal, not
+	// is_project_member(NULL). Same reasoning as CreateChangeRequestFromServiceNow/
+	// CreateCaseFromServiceNow's own identical stamps: this insert only ever
+	// runs after ServiceNow's own workflow already accepted the create.
+	ctx = WithSystemIdentity(ctx)
 	var (
 		outID, outNumber, outSubject, outCreatedBy string
 		outCreatedOn, outUpdatedOn                 time.Time

@@ -75,10 +75,16 @@ const (
 // no-op'ing if a target database is missing any of them.
 func seedAnnouncementVisibilityFixtures(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	ctx := context.Background()
+	// WithSystemIdentity: work_item/announcement/work_item_tag all have RLS
+	// now (migrations 000085/000099) -- including an internal-only DELETE
+	// policy added specifically because this cleanup needs it (the same
+	// sla_delete lesson from migration 000094). scoped, not just pool,
+	// backs every write below that touches one of these three tables.
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
 
 	cleanup := func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM work_item WHERE project_id = $1`, avProjectID)
+		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE project_id = $1`, avProjectID)
 		_, _ = pool.Exec(ctx, `DELETE FROM project_contact WHERE project_id = $1`, avProjectID)
 		_, _ = pool.Exec(ctx, `DELETE FROM project WHERE id = $1`, avProjectID)
 		_, _ = pool.Exec(ctx, `DELETE FROM account_contact WHERE id = $1`, avContactID)
@@ -90,6 +96,14 @@ func seedAnnouncementVisibilityFixtures(t *testing.T, pool *pgxpool.Pool) {
 	mustExec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed: %s: %v", sql, err)
+		}
+	}
+	// mustExecScoped is mustExec's counterpart for the three RLS-protected
+	// tables (work_item/announcement/work_item_tag) this fixture writes.
+	mustExecScoped := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := scoped.Exec(ctx, sql, args...); err != nil {
 			t.Fatalf("seed: %s: %v", sql, err)
 		}
 	}
@@ -116,8 +130,15 @@ func seedAnnouncementVisibilityFixtures(t *testing.T, pool *pgxpool.Pool) {
 			t.Fatalf("reference data missing: project_group %q not found (expected to be pre-seeded by the sync job): %v", group, err)
 		}
 		var contactRowID string
-		err = pool.QueryRow(ctx, `INSERT INTO project_contact (id, created_on, updated_on, created_by, updated_by, email, account_contact_id, project_id)
-			VALUES (gen_random_uuid(), $1, $1, 'test', 'test', $2, $3, $4) RETURNING id`,
+		// state = 'REGISTERED' matters now, not just historically for
+		// announcement's own role-based policy: work_item itself is
+		// RLS-protected too (migration 000099), and its is_project_member()
+		// check requires state = 'REGISTERED' -- a project_contact row left
+		// at its NULL default would pass announcement's own role check but
+		// fail work_item's, hiding the row from the join entirely regardless
+		// of role.
+		err = pool.QueryRow(ctx, `INSERT INTO project_contact (id, created_on, updated_on, created_by, updated_by, email, account_contact_id, project_id, state)
+			VALUES (gen_random_uuid(), $1, $1, 'test', 'test', $2, $3, $4, 'REGISTERED') RETURNING id`,
 			now, email, avContactID, avProjectID).Scan(&contactRowID)
 		if err != nil {
 			t.Fatalf("seed project_contact %s: %v", email, err)
@@ -126,25 +147,41 @@ func seedAnnouncementVisibilityFixtures(t *testing.T, pool *pgxpool.Pool) {
 			VALUES (gen_random_uuid(), $1, $1, 'test', 'test', $2, $3)`, now, contactRowID, groupID)
 	}
 
-	mustExec(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type, project_id)
+	mustExecScoped(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type, project_id)
 		VALUES ($1, $2, $2, 'test', 'test', 'AV-TEST-GEN-1', 'AV-WSO2-GEN-1', 'AV test general announcement', 'ANNOUNCEMENT', $3)`,
 		avGeneralID, now, avProjectID)
-	mustExec(`INSERT INTO announcement (id, announcement_type) VALUES ($1, 'GENERAL')`, avGeneralID)
+	mustExecScoped(`INSERT INTO announcement (id, announcement_type) VALUES ($1, 'GENERAL')`, avGeneralID)
 
-	mustExec(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type, project_id)
+	mustExecScoped(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type, project_id)
 		VALUES ($1, $2, $2, 'test', 'test', 'AV-TEST-SEC-1', 'AV-WSO2-SEC-1', 'AV test security announcement', 'ANNOUNCEMENT', $3)`,
 		avSecurityID, now, avProjectID)
-	mustExec(`INSERT INTO announcement (id, announcement_type) VALUES ($1, 'SECURITY')`, avSecurityID)
+	// is_security_announcement, not announcement_type, is what the RLS
+	// policy actually reads (confirmed directly against the deployed
+	// policy: it has no reference to announcement_type at all) -- this
+	// column is maintained by application code outside this schema
+	// (combining the announcement_type and "Security Announcement"-tag
+	// signals this file's own package doc comment describes), which this
+	// fixture simulates by setting it directly rather than reproducing
+	// that external computation here. Found live: the very first run of
+	// this test against a real database left it at its FALSE default,
+	// silently making every "security" scenario indistinguishable from
+	// "general" under RLS.
+	mustExecScoped(`INSERT INTO announcement (id, announcement_type, is_security_announcement) VALUES ($1, 'SECURITY', true)`, avSecurityID)
 
 	// Mirrors a real finding (checked live against ServiceNow-synced data): a
 	// currently-open, CVSS 10.0 security bulletin had announcement_type wrongly
 	// GENERAL, with only its "Security Announcement" work_item_tag correct --
 	// exercises announcement_is_security's tag-based fallback signal, not just
 	// its announcement_type check.
-	mustExec(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type, project_id)
+	mustExecScoped(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type, project_id)
 		VALUES ($1, $2, $2, 'test', 'test', 'AV-TEST-SEC-2', 'AV-WSO2-SEC-2', 'AV test security via tag only', 'ANNOUNCEMENT', $3)`,
 		avSecurityViaTagID, now, avProjectID)
-	mustExec(`INSERT INTO announcement (id, announcement_type) VALUES ($1, 'GENERAL')`, avSecurityViaTagID)
+	// is_security_announcement is still true here despite announcement_type
+	// staying (wrongly) GENERAL -- see the comment above this row's own
+	// work_item insert: this simulates the tag-based fallback signal having
+	// already corrected it, exactly like avSecurityID's own doc comment
+	// describes for the straightforward case.
+	mustExecScoped(`INSERT INTO announcement (id, announcement_type, is_security_announcement) VALUES ($1, 'GENERAL', true)`, avSecurityViaTagID)
 
 	var tagID string
 	err := pool.QueryRow(ctx, `SELECT id FROM tag WHERE LOWER(name) = LOWER('Security Announcement') LIMIT 1`).Scan(&tagID)
@@ -155,7 +192,7 @@ func seedAnnouncementVisibilityFixtures(t *testing.T, pool *pgxpool.Pool) {
 	if err != nil {
 		t.Fatalf("find or create Security Announcement tag: %v", err)
 	}
-	mustExec(`INSERT INTO work_item_tag (id, created_on, updated_on, created_by, updated_by, work_item_id, tag_id)
+	mustExecScoped(`INSERT INTO work_item_tag (id, created_on, updated_on, created_by, updated_by, work_item_id, tag_id)
 		VALUES (gen_random_uuid(), $1, $1, 'test', 'test', $2, $3)`, now, avSecurityViaTagID, tagID)
 }
 
@@ -180,7 +217,7 @@ func announcementVisible(t *testing.T, repo repository.CaseRepository, id string
 func TestAnnouncementVisibilityIntegration(t *testing.T) {
 	pool := announcementVisibilityPool(t)
 	seedAnnouncementVisibilityFixtures(t, pool)
-	repo := repository.NewCaseRepository(pool)
+	repo := repository.NewCaseRepository(repository.NewScoped(pool))
 
 	scoped := func(email string) repository.SearchScope {
 		return repository.SearchScope{ProjectIDs: []string{avProjectID}, ViewerEmail: email}
@@ -227,7 +264,7 @@ func TestAnnouncementVisibilityIntegration(t *testing.T) {
 func TestAnnouncementVisibilitySearchCasesIntegration(t *testing.T) {
 	pool := announcementVisibilityPool(t)
 	seedAnnouncementVisibilityFixtures(t, pool)
-	repo := repository.NewCaseRepository(pool)
+	repo := repository.NewCaseRepository(repository.NewScoped(pool))
 
 	req := domain.SearchCasesRequest{
 		Parsed:     domain.ParsedCaseFilters{ProjectIDs: []string{avProjectID}},

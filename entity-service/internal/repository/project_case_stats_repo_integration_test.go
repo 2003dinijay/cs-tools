@@ -69,7 +69,7 @@ func seedCaseStats(t *testing.T, pool *pgxpool.Pool) {
 		// a cascading FK in both directions, so drop them explicitly first.
 		_, _ = scoped.Exec(ctx, `DELETE FROM sla WHERE created_by = 'case-stats-test'`)
 		_, _ = pool.Exec(ctx, `DELETE FROM sla_policy WHERE created_by = 'case-stats-test'`)
-		_, _ = pool.Exec(ctx, `DELETE FROM work_item WHERE created_by IN ('owner@wso2.com', 'other@wso2.com')`)
+		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE created_by IN ('owner@wso2.com', 'other@wso2.com')`)
 		_, _ = pool.Exec(ctx, `DELETE FROM project WHERE id = $1`, caseStatsProjectID)
 	}
 	cleanup()

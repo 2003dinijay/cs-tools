@@ -506,7 +506,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		slaEngineSvc = service.NewSLAEngineService(repository.NewSLAEngineRepository(repository.NewScoped(db)), activeProjectSvc)
 	}
 
-	caseRepo := repository.NewCaseRepository(db)
+	caseRepo := repository.NewCaseRepository(repository.NewScoped(db))
 	var activeCaseSvc service.CaseService
 	// caseAttachmentOverrideSvc, when non-nil, is the CaseService case
 	// attachment routes (registered further below) use INSTEAD of
@@ -734,7 +734,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// 000066) -- see incident_repo.go/problem_repo.go's own doc comments for
 	// what's implemented (reads) vs. still ServiceUnavailableError (writes
 	// needing work_item.number generation or undiscoverable business rules).
-	incidentRepo := repository.NewIncidentRepository(db)
+	incidentRepo := repository.NewIncidentRepository(repository.NewScoped(db))
 	var activeIncidentSvc service.IncidentService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
@@ -772,7 +772,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	incidentHandler := handler.NewIncidentHandler(activeIncidentSvc)
 
-	problemRepo := repository.NewProblemRepository(db)
+	problemRepo := repository.NewProblemRepository(repository.NewScoped(db))
 	var activeProblemSvc service.ProblemService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
@@ -806,7 +806,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		smartAlertHandler = handler.NewSmartAlertHandler(service.NewServiceNowSmartAlertService(serviceNowIntegrationServiceClient))
 	}
 
-	incidentTaskRepo := repository.NewIncidentTaskRepository(db)
+	incidentTaskRepo := repository.NewIncidentTaskRepository(repository.NewScoped(db))
 	var activeIncidentTaskSvc service.IncidentTaskService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeIncidentTaskSvc = service.NewServiceNowIncidentTaskService(serviceNowIntegrationServiceClient)
@@ -889,7 +889,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		configurationItemHandler = handler.NewConfigurationItemHandler(service.NewServiceNowConfigurationItemService(serviceNowIntegrationServiceClient))
 	}
 
-	commentRepo := repository.NewCommentRepository(db)
+	commentRepo := repository.NewCommentRepository(repository.NewScoped(db))
 	var activeCommentSvc service.CommentService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:

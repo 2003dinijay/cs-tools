@@ -44,16 +44,20 @@ const slaEngineIntegrationWorkItemID = "47777777-0000-0000-0000-000000000001"
 // integration test stays re-runnable against a shared database.
 func seedSLAEngineWorkItem(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	ctx := context.Background()
+	// WithSystemIdentity: work_item itself is RLS-protected now too
+	// (migration 000099), not just sla -- scoped, not just pool, backs this
+	// seed's own insert/cleanup.
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
 
 	cleanup := func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM sla WHERE work_item_id = $1::uuid`, slaEngineIntegrationWorkItemID)
-		_, _ = pool.Exec(ctx, `DELETE FROM work_item WHERE id = $1::uuid`, slaEngineIntegrationWorkItemID)
+		_, _ = scoped.Exec(ctx, `DELETE FROM sla WHERE work_item_id = $1::uuid`, slaEngineIntegrationWorkItemID)
+		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE id = $1::uuid`, slaEngineIntegrationWorkItemID)
 	}
 	cleanup()
 	t.Cleanup(cleanup)
 
-	if _, err := pool.Exec(ctx, `
+	if _, err := scoped.Exec(ctx, `
 		INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type)
 		VALUES ($1::uuid, NOW(), NOW(), 'sla-engine-test', 'sla-engine-test', 'SLAENGINE01', 'SLAENGINE-1', 'sla engine integration test case', 'CASE')`,
 		slaEngineIntegrationWorkItemID); err != nil {
