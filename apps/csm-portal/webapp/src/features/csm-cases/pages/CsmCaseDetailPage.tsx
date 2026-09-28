@@ -3312,9 +3312,16 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   // done reading the confirmation.
                   setActiveTab("activities");
                   setGithubIssueResult(res);
-                  addTag.mutate("s_dp");
-                  if (payload.regression) addTag.mutate("s_rg");
-                  if (payload.reason === "migration") addTag.mutate("migration");
+                  const warnTag = (label: string) => ({
+                    onError: (err: Error) =>
+                      showError(
+                        `The GitHub issue was created, but the case tag "${label}" could not be added.`,
+                        err,
+                      ),
+                  });
+                  addTag.mutate("s_dp", warnTag("s_dp"));
+                  if (payload.regression) addTag.mutate("s_rg", warnTag("s_rg"));
+                  if (payload.reason === "migration") addTag.mutate("migration", warnTag("migration"));
                 },
                 onError: (err) => {
                   // Surface the backend's own message on 4xx (invalid state,
