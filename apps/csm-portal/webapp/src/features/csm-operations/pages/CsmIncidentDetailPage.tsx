@@ -735,6 +735,15 @@ export default function CsmIncidentDetailPage(): JSX.Element {
         <Typography variant="h5">{incident.subject || "Incident"}</Typography>
       </Box>
 
+      {incident.description && (
+        <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1 }}>
+          <Typography variant="subtitle2">Description</Typography>
+          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+            {incident.description}
+          </Typography>
+        </Card>
+      )}
+
       {incident.specialistHandoff && (
         <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
           <Typography variant="subtitle2">Specialist handoff</Typography>
