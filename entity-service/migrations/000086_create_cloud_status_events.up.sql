@@ -28,9 +28,17 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 CREATE TABLE IF NOT EXISTS cloud_status_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    -- Not a foreign key: `outage` is sync output and may be recreated by a
-    -- migration there, which would cascade away our send history and re-post
-    -- every transition. Same choice sla_clocks and outage_notifications make.
+    -- Not a foreign key: while csm-sync-service still owns `outage`, a
+    -- migration there could recreate the table, cascading away our send
+    -- history and re-posting every transition. Same choice sla_clocks and
+    -- outage_notifications make.
+    --
+    -- That risk ends at cutover, when the sync is retired and `outage`
+    -- becomes natively owned -- at which point this could become a real
+    -- foreign key. Left as a plain column deliberately rather than
+    -- revisited then: re-posting every historical transition to a public
+    -- status page is a bad enough outcome that the constraint is not worth
+    -- the tidiness.
     outage_id UUID NOT NULL,
 
     event cloud_status_event_enum NOT NULL,

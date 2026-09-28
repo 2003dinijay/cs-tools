@@ -60,14 +60,34 @@ func NewCloudStatusService(repo repository.CloudStatusRepository, parentServiceI
 // Sweep decides which in-scope outages now owe the status dashboard a webhook
 // and records them. It sends nothing itself.
 //
-// WHY A SWEEP AND NOT AN EVENT. ServiceNow triggered on the outage record
-// being updated. In Postgres the `outage` table is sync output -- csm-sync-service
-// writes it and nothing in this service does -- so there is no write here to
-// hang a trigger or an outbox row off. A sweep over the current state is the
-// only honest way to notice a transition, and it has a property the trigger
-// lacked: it is self-healing. A sweep missed for any reason is made up by the
-// next one, because the decision is derived from the outage's state rather
-// than from having observed the change.
+// WHY A SWEEP AND NOT AN EVENT -- AND WHY THAT IS TEMPORARY.
+//
+// ServiceNow triggered on the outage record being updated. Today `outage` is
+// written by csm-sync-service and by nothing in this service, so there is no
+// write here to hang a trigger or an outbox row off, and a sweep over current
+// state is the only mechanism available.
+//
+// *** THAT CHANGES AT CUTOVER. *** csm-sync-service is a migration aid, not a
+// permanent component: once ServiceNow is decommissioned it stops running and
+// `outage` becomes a natively owned table like any other. At that point the
+// honest design is the one `change_request` already uses -- an AFTER-change
+// trigger writing to event_outbox, drained in process -- and this sweep
+// should be replaced by it rather than kept out of habit.
+//
+// Two things to carry across when that happens, both of which the sweep gets
+// for free and a trigger does not:
+//
+//   - SELF-HEALING. A sweep missed for any reason is made up by the next one,
+//     because the decision is derived from the outage's state rather than
+//     from having observed the change. A missed trigger is gone. Whatever
+//     replaces this wants a periodic reconciliation pass behind it.
+//   - THE EVENTS TABLE STAYS EITHER WAY. cloud_status_events is what makes a
+//     webhook send once; it is not an artifact of sweeping.
+//
+// And one property the sweep LOSES, which a trigger would recover: an outage
+// that begins and ends inside one sweep interval is only ever seen in its
+// final state, so it produces an end event and no begin event. Outages
+// shorter than the interval never appear on the public status page at all.
 func (s *cloudStatusService) Sweep(ctx context.Context) (domain.CloudStatusSweepResponse, error) {
 	if len(s.parentServiceIDs) == 0 {
 		// Not an error that should fail the sweep loudly on every tick, but

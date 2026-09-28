@@ -60,8 +60,10 @@ type WebhookConfig struct {
 	// malformed request.
 	BaseURLs map[string]string
 
-	// Secrets maps a cloud slug to its X-Webhook-Signature value, with
-	// defaultSecretKey as the fallback.
+	// Secrets maps a cloud slug to its FULL X-Webhook-Signature header value,
+	// with defaultSecretKey as the fallback. ServiceNow's value carries a
+	// scheme prefix -- `Secret <token>` -- so configure the whole string, not
+	// the token alone. Sent verbatim; see Post.
 	Secrets map[string]string
 }
 
@@ -113,12 +115,18 @@ type webhookBody struct {
 
 // Post delivers one event to the dashboard for cloud.
 //
-// The X-Webhook-Signature header carries the configured secret VERBATIM. It is
-// not an HMAC of the body despite the header's name -- ServiceNow set it to a
-// bare gs.getProperty value, so the receiver is comparing it against a known
-// string. Computing a real signature here would be strictly better security
-// and would be rejected by every dashboard until they are changed to match, so
-// it is a coordinated change, not an improvement to slip into a port.
+// The X-Webhook-Signature header carries the configured value VERBATIM, and
+// the whole value -- not just a token.
+//
+// Despite the header's name it is NOT an HMAC of the body. ServiceNow sends a
+// fixed string the receiver compares against a known one, and that string has
+// a scheme prefix: the literal word `Secret`, a space, then the token. So the
+// configured value must be the ENTIRE header, `Secret <token>`, and passing
+// only the token produces a request the dashboard rejects.
+//
+// Computing a real signature here would be strictly better security and would
+// be rejected by every dashboard until they are changed to match, so it is a
+// coordinated change with them, not an improvement to slip into a port.
 func (w *Webhook) Post(ctx context.Context, cloud, event, timestamp string) error {
 	base, ok := w.baseURL[cloud]
 	if !ok {
