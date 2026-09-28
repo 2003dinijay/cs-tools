@@ -63,6 +63,30 @@ var caseSeverityFromEnum = map[string]domain.CaseSeverity{
 	"S4": domain.CaseSeverityLow,
 }
 
+// announcementTypeEnumValue maps CreateCaseRequest.IsSecurityAnnouncement to
+// announcement.announcement_type's announcement_type_enum literal
+// (migration 0088). Only meaningful for req.Type == "announcement" -- the
+// caller passes req.IsSecurityAnnouncement directly, never derives it from
+// anything else.
+func announcementTypeEnumValue(isSecurityAnnouncement bool) string {
+	if isSecurityAnnouncement {
+		return "SECURITY"
+	}
+	return "GENERAL"
+}
+
+// announcementTypeEnumValuePtr is announcementTypeEnumValue's nil-safe
+// counterpart for a partial update (COALESCE against the existing column
+// value) -- a nil req field must leave announcement_type untouched, not
+// silently reset it to GENERAL.
+func announcementTypeEnumValuePtr(isSecurityAnnouncement *bool) *string {
+	if isSecurityAnnouncement == nil {
+		return nil
+	}
+	v := announcementTypeEnumValue(*isSecurityAnnouncement)
+	return &v
+}
+
 // caseResolutionCodeToEnum maps domain.CaseResolutionCode (verified against
 // ServiceNow's live resolution-code picklist -- see that type's own doc
 // comment) to "case".resolution_code's real case_resolution_code_enum
@@ -593,7 +617,12 @@ const createCaseFromServiceNowQuery = `
 // comment). $8 is the announcement's initial state, already resolved to
 // announcement_state_enum's literal ('OPEN' in practice -- see
 // snAnnouncementStateToEnum) by the caller, not derived here: this layer
-// stays free of ServiceNow label vocabulary. cause/closed_by_user_id/
+// stays free of ServiceNow label vocabulary. $9 is the announcement's
+// announcement_type (GENERAL/SECURITY, migration 0088), resolved from
+// req.IsSecurityAnnouncement via announcementTypeEnumValue -- reusing that
+// existing field (added for a different purpose, deciding the case's
+// default watcher audience) rather than a second, redundant flag for the
+// same underlying yes/no. cause/closed_by_user_id/
 // closed_on/resolved_on are left NULL -- all four are closure-time-only
 // fields, meaningless on a fresh row.
 //
@@ -616,8 +645,8 @@ const createAnnouncementFromServiceNowQuery = `
 		          subject, description, created_on, updated_on
 	),
 	inserted_announcement AS (
-		INSERT INTO announcement (id, state)
-		VALUES ($1, $8::announcement_state_enum)
+		INSERT INTO announcement (id, state, announcement_type)
+		VALUES ($1, $8::announcement_state_enum, $9::announcement_type_enum)
 		RETURNING id, state, closed_on
 	)
 	SELECT iwi.id, iwi.number, iwi.wso2_id, iwi.created_by,
@@ -778,7 +807,7 @@ func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.Crea
 		row = r.db.QueryRow(ctx, createAnnouncementFromServiceNowQuery,
 			id, createdBy,
 			number, wso2ID, req.Subject, req.Description,
-			req.ProjectID, state,
+			req.ProjectID, state, announcementTypeEnumValue(req.IsSecurityAnnouncement),
 		)
 	case "service_request":
 		row = r.db.QueryRow(ctx, createServiceRequestFromServiceNowQuery,
@@ -857,6 +886,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		rcID, rcNum                              *string
 		accountID, accountName                   *string
 		severity, issueType, workState, caseType *string
+		announcementType                         *string
 		state, cause, closeNotes, resolutionCode *string
 		escalationLevel                          *string
 		isEscalated                              *bool
@@ -881,7 +911,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		scopeArgs = append(scopeArgs, scope.ProjectIDs)
 	}
 	err := r.db.QueryRow(ctx,
-		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT,
+		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT, ann.announcement_type::TEXT,
 		        wi.description, c.severity::TEXT, c.issue_type::TEXT, c.work_state::TEXT,
 		        `+caseLikeStateColumn+`, `+caseLikeCauseColumn+`, `+caseLikeCloseNotesColumn+`,
 		        c.resolution_code::TEXT, c.current_escalation_level::TEXT, c.is_escalated,
@@ -917,7 +947,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		 LEFT JOIN work_item rc_wi ON rc_wi.id = rc.id
 		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)`+scopeClause, scopeArgs...,
 	).Scan(
-		&cv.ID, &cv.Number, &internalID, &caseType,
+		&cv.ID, &cv.Number, &internalID, &caseType, &announcementType,
 		&description, &severity, &issueType, &workState,
 		&state, &cause, &closeNotes,
 		&resolutionCode, &escalationLevel, &isEscalated,
@@ -942,6 +972,11 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		return domain.CaseView{}, fmt.Errorf("get case by id: %w", err)
 	}
 	cv.InternalID = stringOrEmpty(internalID)
+	// announcement_type only exists on the "announcement" extension table (a
+	// real ServiceNow field, u_announcement_type, migrated in migration
+	// 0088_announcement_add_announcement_type) -- nil for every other
+	// case-like type, where the LEFT JOIN never matches.
+	cv.AnnouncementType = announcementType
 	// work_item.description (migration 0038) has no NOT NULL constraint,
 	// unlike subject; CaseView.Description is a required (non-pointer)
 	// string, so a NULL column becomes "" rather than left unset.
