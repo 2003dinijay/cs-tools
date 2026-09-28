@@ -23,7 +23,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
 )
@@ -36,6 +35,12 @@ import (
 // engineer? an account's own escalation contacts?) to derive from the
 // schema alone -- see EscalationService's own doc comment for why writes
 // stay ServiceNow-only.
+//
+// Both tables are project-membership-scoped by row-level security
+// (migration 000086_case_escalation_rls), keyed on the caller identity
+// Scoped forwards as session GUCs -- this repository does no project
+// filtering of its own at all; a caller sees exactly the rows Postgres
+// decides to hand back.
 type EscalationRepository interface {
 	// SearchEscalations returns a filtered, sorted, paginated slice of
 	// escalations together with the total count of matching rows before
@@ -44,11 +49,14 @@ type EscalationRepository interface {
 }
 
 type escalationRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
-// NewEscalationRepository constructs an EscalationRepository backed by the given connection pool.
-func NewEscalationRepository(db *pgxpool.Pool) EscalationRepository {
+// NewEscalationRepository constructs an EscalationRepository backed by the
+// given Scoped connection -- never a raw *pgxpool.Pool, so every query this
+// repository issues carries the caller's identity for case_escalation's RLS
+// policy to read.
+func NewEscalationRepository(db *Scoped) EscalationRepository {
 	return &escalationRepo{db: db}
 }
 

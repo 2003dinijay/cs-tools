@@ -1,0 +1,256 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package repository
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// callerIdentityContextKey is the context key a resolved caller identity is
+// stored under, set once per request by the server's identity middleware
+// (after auth.Middleware resolves who is calling) and read by every Scoped
+// method below. Kept unexported and typed (not a plain string) so nothing
+// outside this package can collide with it.
+type callerIdentityContextKey struct{}
+
+// WithCallerIdentity attaches the caller's resolved identity to ctx. Called
+// exactly once per request, by the server's identity-resolution middleware --
+// every downstream Scoped call reads it back via CallerIdentityFromContext.
+// Only Unrestricted and ViewerEmail are meaningful here; a SearchScope's
+// ProjectIDs (still computed by AccessService for callers not yet migrated to
+// RLS) is deliberately not part of what Scoped forwards to Postgres --
+// project-membership is the database's job now, not something Go resolves
+// and hands down.
+func WithCallerIdentity(ctx context.Context, identity SearchScope) context.Context {
+	return context.WithValue(ctx, callerIdentityContextKey{}, identity)
+}
+
+// CallerIdentityFromContext returns the identity WithCallerIdentity attached,
+// or ok=false if none was ever set (a request that never passed through the
+// identity middleware, or a background job that forgot to stamp one -- see
+// Scoped's own doc comment for why that must fail loudly rather than
+// silently falling back to unrestricted).
+func CallerIdentityFromContext(ctx context.Context) (SearchScope, bool) {
+	v, ok := ctx.Value(callerIdentityContextKey{}).(SearchScope)
+	return v, ok
+}
+
+// ErrNoCallerIdentity is returned by every Scoped method when ctx carries no
+// caller identity. This must never be treated as "assume unrestricted" --
+// see WithSystemIdentity for the explicit, deliberate way a background job
+// declares itself internal instead.
+var ErrNoCallerIdentity = errors.New("scoped query: no caller identity on context (missing identity middleware, or a background job that forgot to stamp one)")
+
+// WithSystemIdentity marks ctx as an internal, unrestricted caller for code
+// that has no request to inherit identity from: process-startup workers (the
+// GitHub outbound worker, the CR-notice drainer, the SN-writeback dispatcher
+// pool), health checks, and the startup ping. Deliberately a separate,
+// explicit call rather than a fallback Scoped applies on its own when
+// identity is missing -- a silent "no identity means internal" default would
+// be the exact failure mode this mechanism exists to prevent: a context that
+// SHOULD have carried a real caller's identity (e.g. a customer-triggered
+// background job built from context.WithoutCancel(requestCtx), which
+// preserves context values) must never quietly upgrade to unrestricted just
+// because whoever wrote that call site didn't think about it.
+func WithSystemIdentity(ctx context.Context) context.Context {
+	return WithCallerIdentity(ctx, SearchScope{Unrestricted: true})
+}
+
+// Scoped wraps a *pgxpool.Pool so every statement it runs against a
+// caller-scoped, row-level-security-protected table carries the caller's
+// identity as the same two session-local GUCs setCallerIdentity already
+// established (app.is_internal / app.viewer_email) -- in the SAME
+// transaction as the guarded statement, which is the one thing empirically
+// proven necessary (see setCallerIdentity's own doc comment).
+//
+// This is the ONLY way protected repositories reach Postgres: they hold a
+// *Scoped, never a raw *pgxpool.Pool, so there is no call a repository
+// method can make that skips identity-setting by omission -- the earlier,
+// per-call-site runWithCallerIdentity wrapper this replaces was proven not
+// to hold that property (6 of 7 call sites missed it in review).
+//
+// Concurrency: each method opens its own short-lived transaction (a single
+// pgx.Batch sent as one round trip, which pgx runs as an implicit
+// transaction) rather than sharing one transaction for a whole request.
+// This is deliberate, not a shortcut -- the codebase runs COUNT and page
+// queries concurrently via errgroup throughout (case_repo.go alone has 13
+// such sites), and a pgx.Tx is one physical connection, unsafe to share
+// across goroutines. One transaction per statement preserves that
+// concurrency untouched; a single ambient per-request transaction would not.
+type Scoped struct {
+	pool *pgxpool.Pool
+}
+
+// NewScoped constructs a Scoped wrapping pool. Protected repository
+// constructors take a *Scoped instead of a *pgxpool.Pool.
+func NewScoped(pool *pgxpool.Pool) *Scoped {
+	return &Scoped{pool: pool}
+}
+
+// identityArgs renders scope as the two set_config argument strings.
+func identityArgs(scope SearchScope) (isInternal, viewerEmail string) {
+	return strconv.FormatBool(scope.Unrestricted), scope.ViewerEmail
+}
+
+// queueIdentity queues the two identity-setting statements onto batch, ahead
+// of whatever real statement the caller queues next -- never inlined into
+// that statement's own WHERE clause (see setCallerIdentity's own doc
+// comment for why: the planner can evaluate a non-leakproof function call
+// like set_config out of order under an index scan).
+func queueIdentity(batch *pgx.Batch, scope SearchScope) {
+	isInternal, viewerEmail := identityArgs(scope)
+	batch.Queue("SELECT set_config('app.is_internal', $1, true)", isInternal)
+	batch.Queue("SELECT set_config('app.viewer_email', $1, true)", viewerEmail)
+}
+
+// drainIdentity consumes the two queued identity-setting results ahead of
+// the caller's own statement result. On error it closes br itself (the
+// caller never got a result to be responsible for closing).
+func drainIdentity(br pgx.BatchResults) error {
+	if _, err := br.Exec(); err != nil {
+		_ = br.Close()
+		return fmt.Errorf("scoped: set is_internal: %w", err)
+	}
+	if _, err := br.Exec(); err != nil {
+		_ = br.Close()
+		return fmt.Errorf("scoped: set viewer_email: %w", err)
+	}
+	return nil
+}
+
+// scopedRows wraps pgx.Rows so that closing it also releases the batch's
+// underlying pooled connection (pgxpool.Pool.SendBatch ties the acquired
+// connection to the BatchResults it returns, not to the Rows/Row obtained
+// from it -- so whoever consumes those must close both, exactly once).
+type scopedRows struct {
+	pgx.Rows
+	br     pgx.BatchResults
+	closed bool
+}
+
+func (r *scopedRows) Close() {
+	r.Rows.Close()
+	if !r.closed {
+		r.closed = true
+		_ = r.br.Close()
+	}
+}
+
+// scopedRow is QueryRow's equivalent of scopedRows: Scan is always the last
+// thing called on a pgx.Row, so it's the one place to release the
+// connection, on every path (success, no-rows, or scan error).
+type scopedRow struct {
+	row pgx.Row
+	br  pgx.BatchResults
+}
+
+func (r *scopedRow) Scan(dest ...any) error {
+	defer func() { _ = r.br.Close() }()
+	return r.row.Scan(dest...)
+}
+
+// errRow is returned when identity-setting itself fails, before the
+// caller's own statement ever ran -- Scan reports that failure the same way
+// a real query's Scan would, rather than panicking or returning a bare nil
+// pgx.Row.
+type errRow struct{ err error }
+
+func (r errRow) Scan(...any) error { return r.err }
+
+// Query implements a caller-scoped equivalent of (*pgxpool.Pool).Query.
+func (s *Scoped) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	scope, ok := CallerIdentityFromContext(ctx)
+	if !ok {
+		return nil, ErrNoCallerIdentity
+	}
+	batch := &pgx.Batch{}
+	queueIdentity(batch, scope)
+	batch.Queue(sql, args...)
+
+	br := s.pool.SendBatch(ctx, batch)
+	if err := drainIdentity(br); err != nil {
+		return nil, err
+	}
+	rows, err := br.Query()
+	if err != nil {
+		_ = br.Close()
+		return nil, fmt.Errorf("scoped query: %w", err)
+	}
+	return &scopedRows{Rows: rows, br: br}, nil
+}
+
+// QueryRow implements a caller-scoped equivalent of (*pgxpool.Pool).QueryRow.
+func (s *Scoped) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	scope, ok := CallerIdentityFromContext(ctx)
+	if !ok {
+		return errRow{ErrNoCallerIdentity}
+	}
+	batch := &pgx.Batch{}
+	queueIdentity(batch, scope)
+	batch.Queue(sql, args...)
+
+	br := s.pool.SendBatch(ctx, batch)
+	if err := drainIdentity(br); err != nil {
+		return errRow{err}
+	}
+	return &scopedRow{row: br.QueryRow(), br: br}
+}
+
+// Exec implements a caller-scoped equivalent of (*pgxpool.Pool).Exec.
+func (s *Scoped) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	scope, ok := CallerIdentityFromContext(ctx)
+	if !ok {
+		return pgconn.CommandTag{}, ErrNoCallerIdentity
+	}
+	batch := &pgx.Batch{}
+	queueIdentity(batch, scope)
+	batch.Queue(sql, args...)
+
+	br := s.pool.SendBatch(ctx, batch)
+	defer func() { _ = br.Close() }()
+	if err := drainIdentity(br); err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	ct, err := br.Exec()
+	if err != nil {
+		return pgconn.CommandTag{}, fmt.Errorf("scoped exec: %w", err)
+	}
+	return ct, nil
+}
+
+// InTx runs fn inside one transaction with the caller's identity set once at
+// the start -- for the existing multi-statement transactional call sites
+// (a FOR UPDATE lock followed by a write, two tables updated atomically,
+// etc.) that need several statements to share one transaction rather than
+// each getting its own. A drop-in replacement for today's r.db.Begin(ctx)
+// at those call sites: same fn func(pgx.Tx) error shape, same
+// commit-on-success/rollback-on-error contract, sourced from Scoped instead
+// of the raw pool.
+func (s *Scoped) InTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	scope, ok := CallerIdentityFromContext(ctx)
+	if !ok {
+		return ErrNoCallerIdentity
+	}
+	return runWithCallerIdentity(ctx, s.pool, scope, fn)
+}

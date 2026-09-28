@@ -645,7 +645,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// still isn't supported there (see EscalationRepository's own doc
 	// comment for why), so this supersedes an earlier unconditional
 	// unavailableCaseEscalationService stand-in that predated the schema.
-	escalationRepo := repository.NewEscalationRepository(db)
+	escalationRepo := repository.NewEscalationRepository(repository.NewScoped(db))
 	var activeEscalationSvc service.EscalationService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeEscalationSvc = service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient)
@@ -1260,7 +1260,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			middleware.Logger(
 				middleware.UserIDToken(
 					auth.Middleware(tokenValidator)(
-						middleware.Timeout(30 * time.Second)(mux),
+						callerIdentityMiddleware(accessSvc)(
+							middleware.Timeout(30 * time.Second)(mux),
+						),
 					),
 				),
 			),
