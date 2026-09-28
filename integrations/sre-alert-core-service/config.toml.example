@@ -23,7 +23,9 @@ concurrency = 128
 read_concurrency = 64
 # Max alert ids processed per cycle; bounds memory under large bursts.
 max_window = 2000
-# Bounds how long a missing alert id blocks the rest before this service skips it (loudly logged).
+# How long a missing alert id may stay missing before this service skips it (loudly logged).
+# Measured per id from when the current leader first saw it missing; every missing id in the
+# window ages at once, so a whole gap is skipped together after one gap_timeout.
 gap_timeout = "10m"
 
 [lease]
