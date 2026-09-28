@@ -276,7 +276,14 @@ func (r *globalSearchRepo) SearchCases(ctx context.Context, scope SearchScope, q
 	}
 
 	f := searchFilter{where: `WHERE wi.type = ANY(` + caseLikeWorkItemTypes + `)`}
-	f.scope("wi.project_id", scope)
+	// No f.scope("wi.project_id", scope) call here any more -- work_item's
+	// own RLS policy (migration 0147) already applies the identical
+	// is_project_member check to every statement this repository's Scoped
+	// connection issues, so a second hand-written copy would only be a
+	// second place for the two to drift. The early return above still
+	// short-circuits the round trip for a scoped caller with zero
+	// registered projects; it's an optimization, not the enforcement.
+	//
 	// Without this, an ANNOUNCEMENT-typed row the caller can't see under
 	// migration 000085's RLS policy would still surface here with its
 	// subject/description intact (both live on the unprotected work_item

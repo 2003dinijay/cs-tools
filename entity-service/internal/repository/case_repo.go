@@ -898,12 +898,12 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 	// A scoped caller asking for a case outside their access still gets
 	// pgx.ErrNoRows -> NotFoundError below, the same as a genuinely
 	// nonexistent id: existence is never revealed to a caller who can't see
-	// the case, matching GetProjectByID's own reasoning.
-	scopeClause, scopeArgs := "", []any{id}
-	if !scope.Unrestricted {
-		scopeClause = " AND " + scopePredicate("wi.project_id", 2)
-		scopeArgs = append(scopeArgs, scope.ProjectIDs)
-	}
+	// the case, matching GetProjectByID's own reasoning. No Go-side project
+	// filter is needed here any more -- work_item's own RLS policy (migration
+	// 0147) already applies the identical is_project_member check to every
+	// statement WithCallerIdentity stamps, including this one, so a second
+	// hand-written copy would only be a second place for the two to drift.
+	scopeArgs := []any{id}
 
 	err := r.db.QueryRow(ctx,
 		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT,
@@ -946,7 +946,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		 -- unprotected, separate table) still leaked through. See
 		 -- SearchCases's identical condition for the fuller comment.
 		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)
-		   AND NOT (wi.type = 'ANNOUNCEMENT' AND ann.id IS NULL)`+scopeClause, scopeArgs...,
+		   AND NOT (wi.type = 'ANNOUNCEMENT' AND ann.id IS NULL)`, scopeArgs...,
 	).Scan(
 		&cv.ID, &cv.Number, &internalID, &caseType,
 		&description, &severity, &issueType, &workState,
@@ -1743,18 +1743,13 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 
 	where := "WHERE 1=1"
 
-	// The caller's access scope is ANDed in independently of whatever project
-	// filter the request itself carries (req.Parsed.ProjectIDs below): a
-	// scoped caller asking for a project outside their own scope gets zero
-	// rows, never someone else's data, and a scoped caller with no project
-	// filter of their own is still narrowed to just what they can see. An
-	// empty scope.ProjectIDs (no access at all) correctly matches nothing via
-	// ANY('{}').
-	if !scope.Unrestricted {
-		where += " AND " + scopePredicate("wi.project_id", argIdx)
-		filterArgs = append(filterArgs, scope.ProjectIDs)
-		argIdx++
-	}
+	// No Go-side project filter here any more -- work_item's own RLS policy
+	// (migration 0147) already applies the identical is_project_member check
+	// to every statement WithCallerIdentity stamps above, including this
+	// one. A scoped caller asking for a project outside their own access
+	// gets zero rows from Postgres itself, never someone else's data,
+	// regardless of what req.Parsed.ProjectIDs (below) additionally asks
+	// for.
 
 	// The announcement RLS policy (migration 000085) only hides ann.* --
 	// work_item itself (subject, description, existence) is a completely
