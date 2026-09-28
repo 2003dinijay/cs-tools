@@ -609,7 +609,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	// customer_call (migration 000072) backs call requests on the Postgres
 	// data source, so these routes are registered for both data sources.
-	callRequestRepo := repository.NewCallRequestRepository(db)
+	callRequestRepo := repository.NewCallRequestRepository(repository.NewScoped(db))
 	var activeCallRequestSvc service.CallRequestService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:

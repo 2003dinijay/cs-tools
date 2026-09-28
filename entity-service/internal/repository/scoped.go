@@ -27,6 +27,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// IsRLSPolicyViolation reports whether err is Postgres rejecting a write
+// because it violates a row-level-security policy's WITH CHECK clause
+// (SQLSTATE 42501) -- the error a customer's INSERT/UPDATE gets back when it
+// targets a project they are not a member of (e.g. creating or updating a
+// call request against another project's case). Repositories map this the
+// same way they already map "genuinely doesn't exist" (pgx.ErrNoRows) to
+// apierror.NotFoundError: the caller should not be able to distinguish "that
+// case doesn't exist" from "that case isn't yours" by the shape of the
+// error they get back, any more than they could by response timing.
+func IsRLSPolicyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42501"
+}
+
 // callerIdentityContextKey is the context key a resolved caller identity is
 // stored under, set once per request by the server's identity middleware
 // (after auth.Middleware resolves who is calling) and read by every Scoped

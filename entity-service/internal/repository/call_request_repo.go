@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
@@ -205,11 +204,17 @@ type CallRequestRepository interface {
 }
 
 type callRequestRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
-// NewCallRequestRepository constructs a CallRequestRepository backed by the given connection pool.
-func NewCallRequestRepository(db *pgxpool.Pool) CallRequestRepository {
+// NewCallRequestRepository constructs a CallRequestRepository backed by the
+// given Scoped connection. customer_call's project-membership visibility
+// (migration 000095) is enforced entirely by Postgres RLS now -- this
+// repository applies no project filtering of its own, closing what was
+// previously an acknowledged, unfixed gap (see this file's git history):
+// neither SearchCallRequests nor SearchAllCallRequests ever did any
+// caller-scoped authorization at all.
+func NewCallRequestRepository(db *Scoped) CallRequestRepository {
 	return &callRequestRepo{db: db}
 }
 
@@ -286,23 +291,12 @@ func scanCallRequest(row pgx.Row) (domain.CallRequestView, error) {
 }
 
 // runCallRequestSearch executes the count and page queries concurrently for
-// the given WHERE/ORDER BY and their bound args.
-//
-// callRequestFrom joins caseLikeJoins, which LEFT JOINs the RLS-protected
-// `announcement` table (migration 000085); SearchAllCallRequests's
-// caseStates/excludeCaseStates filters read caseLikeStateColumn, which folds
-// in announcement.state through that join, so both queries must set caller
-// identity in the same transaction they run in, same as every other
-// caseLikeJoins consumer, or a restricted announcement's state comes back
-// NULL instead of its real value.
-//
-// scope is always SearchScope{Unrestricted: true} today, from both call
-// sites: neither SearchCallRequests nor SearchAllCallRequests currently do
-// any caller-scoped authorization at all (callRequestService has no
-// AccessService dependency) -- a pre-existing gap, not something this fixes.
-// Passing Unrestricted here preserves that existing behavior unchanged; it
-// only makes the announcement join return real values instead of NULLs.
-func (r *callRequestRepo) runCallRequestSearch(ctx context.Context, scope SearchScope, where, orderBy string, args []any, pagination domain.Pagination) ([]domain.CallRequestView, int, error) {
+// the given WHERE/ORDER BY and their bound args, each through Scoped so the
+// caller's identity (pulled from ctx) is set for both customer_call's own
+// RLS policy (migration 000095) and, through callRequestFrom's caseLikeJoins,
+// the RLS-protected `announcement` table's (migration 000085) -- both must
+// see the SAME transaction's identity, which Scoped guarantees per call.
+func (r *callRequestRepo) runCallRequestSearch(ctx context.Context, where, orderBy string, args []any, pagination domain.Pagination) ([]domain.CallRequestView, int, error) {
 	countQuery := `SELECT COUNT(*) ` + callRequestFrom + ` ` + where
 	dataQuery := fmt.Sprintf(`%s %s %s %s LIMIT $%d OFFSET $%d`,
 		callRequestSelect, callRequestFrom, where, orderBy, len(args)+1, len(args)+2)
@@ -313,30 +307,25 @@ func (r *callRequestRepo) runCallRequestSearch(ctx context.Context, scope Search
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.Go(func() error {
-		err := runWithCallerIdentity(egCtx, r.db, scope, func(tx pgx.Tx) error {
-			return tx.QueryRow(egCtx, countQuery, args...).Scan(&total)
-		})
-		if err != nil {
+		if err := r.db.QueryRow(egCtx, countQuery, args...).Scan(&total); err != nil {
 			return fmt.Errorf("count call requests: %w", err)
 		}
 		return nil
 	})
 	eg.Go(func() error {
-		return runWithCallerIdentity(egCtx, r.db, scope, func(tx pgx.Tx) error {
-			rows, err := tx.Query(egCtx, dataQuery, dataArgs...)
+		rows, err := r.db.Query(egCtx, dataQuery, dataArgs...)
+		if err != nil {
+			return fmt.Errorf("query call requests: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			v, err := scanCallRequest(rows)
 			if err != nil {
-				return fmt.Errorf("query call requests: %w", err)
+				return fmt.Errorf("scan call request: %w", err)
 			}
-			defer rows.Close()
-			for rows.Next() {
-				v, err := scanCallRequest(rows)
-				if err != nil {
-					return fmt.Errorf("scan call request: %w", err)
-				}
-				views = append(views, v)
-			}
-			return rows.Err()
-		})
+			views = append(views, v)
+		}
+		return rows.Err()
 	})
 	if err := eg.Wait(); err != nil {
 		return nil, 0, err
@@ -368,7 +357,7 @@ func (r *callRequestRepo) SearchCallRequests(ctx context.Context, caseID string,
 		args = append(args, callRequestStatesToEnums(states))
 		where += fmt.Sprintf(` AND cc.state = ANY($%d::text[]::customer_call_state_enum[])`, len(args))
 	}
-	return r.runCallRequestSearch(ctx, SearchScope{Unrestricted: true}, where, `ORDER BY cc.created_on DESC, cc.id`, args, pagination)
+	return r.runCallRequestSearch(ctx, where, `ORDER BY cc.created_on DESC, cc.id`, args, pagination)
 }
 
 // callRequestSortColumns maps the accepted sort fields to their columns.
@@ -411,7 +400,7 @@ func (r *callRequestRepo) SearchAllCallRequests(ctx context.Context, f domain.Se
 	}
 	orderBy := fmt.Sprintf(`ORDER BY %s %s NULLS LAST, cc.id`, col, dir)
 
-	return r.runCallRequestSearch(ctx, SearchScope{Unrestricted: true}, where, orderBy, args, pagination)
+	return r.runCallRequestSearch(ctx, where, orderBy, args, pagination)
 }
 
 // CreateCallRequest implements CallRequestRepository.
@@ -445,7 +434,7 @@ func (r *callRequestRepo) CreateCallRequest(ctx context.Context, req domain.Crea
 	err = r.db.QueryRow(ctx, query,
 		callerEmail, callerID, req.DurationMinutes, req.Reason, string(times), req.CaseID,
 	).Scan(&id, &createdOn)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) || IsRLSPolicyViolation(err) {
 		return domain.CreateCallRequestResponse{}, &apierror.NotFoundError{Msg: "case not found"}
 	}
 	if err != nil {
@@ -521,7 +510,7 @@ func (r *callRequestRepo) UpdateCallRequest(ctx context.Context, req domain.Upda
 		finalTimes, req.DurationMinutes, scheduledOn, assigneeID,
 		req.Notes, req.Plan, req.Attendees, req.ActionItems, actual, caseID,
 	).Scan(&id, &updatedOn)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) || IsRLSPolicyViolation(err) {
 		if caseID != nil {
 			return domain.UpdateCallRequestResponse{}, &apierror.NotFoundError{Msg: "call request not found for this case"}
 		}
