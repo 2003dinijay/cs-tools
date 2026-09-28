@@ -83,6 +83,26 @@ func (h *ProjectMembershipHandler) InviteProjectContact(w http.ResponseWriter, r
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// ValidateProjectContact handles POST /projects/{id}/contacts/validate, the
+// invitation's dry run. It answers 200 whether or not the invitation would
+// be allowed; the body's valid flag says which. Error statuses mean the check
+// itself failed.
+func (h *ProjectMembershipHandler) ValidateProjectContact(w http.ResponseWriter, r *http.Request) {
+	// Several Salesforce reads, like the writes: the same deadline applies.
+	extendWriteDeadline(w, r)
+	var req domain.ValidateProjectMembershipRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.ValidateInvitation(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // UpdateProjectContactRoles handles PATCH /projects/{id}/contacts/{email}.
 func (h *ProjectMembershipHandler) UpdateProjectContactRoles(w http.ResponseWriter, r *http.Request) {
 	extendWriteDeadline(w, r)

@@ -2452,6 +2452,77 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /projects/{id}/contacts/validate:
+    post:
+      summary: Check an invitation without making it.
+      description: >
+        The dry run of POST /projects/{id}/contacts: the same caller gate, the same
+        "already an active contact" rule and the same invitation checks (public email
+        domains, the allowed domain list read from Salesforce, duplicate Salesforce
+        contacts and, with inviterEmail, whether the inviter's account owns or partners
+        the project). Nothing is written to Salesforce or the database and no event is
+        published. A refused invitation is answered 200 with valid=false, a reason and a
+        message safe to show the person inviting; error statuses mean the check itself
+        could not be made. The answer is advice, not a reservation: the invitation
+        checks everything again.
+
+
+        Registered and gated exactly like the invitation: Postgres data source,
+        CSM_MIGRATION_PORTAL_WRITES_ENABLED exactly "true", internal callers only.
+      operationId: validateProjectContact
+      tags: [Projects]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The CSM project id.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateProjectMembershipRequest'
+      responses:
+        '200':
+          description: The verdict, whether or not the invitation would be allowed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectMembershipValidation'
+        '400':
+          description: Bad request — the project id is not a UUID, or the e-mail address is missing or malformed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an allow-listed internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Project not found, or the project has no Salesforce account to add a contact to.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Salesforce is unavailable, so the checks could not be made.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /projects/{id}/contacts/{contactId}/resend-invitation:
     post:
       summary: Re-send a contact's invitation e-mail.
@@ -11240,6 +11311,55 @@ components:
             records like anyone else, but no Asgardeo identity and no
             invitation email. Only honoured when this request creates the
             Salesforce contact; an existing contact keeps its own flag.
+
+    ValidateProjectMembershipRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          description: The address that would be invited.
+        inviterEmail:
+          type: string
+          format: email
+          description: >
+            As on CreateProjectMembershipRequest: the signed-in inviter's address, set by
+            the Customer Portal backend. Turns on the checks about who may invite.
+
+    ProjectMembershipValidation:
+      type: object
+      required: [valid]
+      properties:
+        valid:
+          type: boolean
+        reason:
+          type: string
+          enum: [CONFLICT, FORBIDDEN, INVALID]
+          description: >
+            Present when valid is false. The status the invitation itself would have been
+            refused with: CONFLICT 409 (already an active contact, or duplicate Salesforce
+            contacts), FORBIDDEN 403 (e.g. public or unlisted domain, inviter not allowed),
+            INVALID 400 (e.g. no domain list defined for the account).
+        message:
+          type: string
+          description: Present when valid is false. Safe to show the person inviting.
+        existingMembershipState:
+          type: string
+          description: The state of the project's existing membership for the address, if any. DEACTIVATED on a valid answer.
+        existingContact:
+          type: object
+          description: The Salesforce contact the invitation would adopt. Only on a valid answer.
+          properties:
+            contactSfId: {type: string}
+            email: {type: string}
+            firstName: {type: string}
+            lastName: {type: string}
+            isCsAdmin: {type: boolean}
+            isCsIntegrationUser: {type: boolean}
+            accountSfId: {type: string}
+            accountClassification: {type: string}
+            isPartnerAccount: {type: boolean}
 
     UpdateProjectMembershipRolesRequest:
       type: object
