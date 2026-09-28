@@ -27,8 +27,10 @@ import type {
 import {
   addDays,
   escalationGrid,
+  escalationTurnOf,
   groupBy,
   initialsOf,
+  isTierlessEscalation,
   shortDayName,
   standingWindowKey,
   toIsoDate,
@@ -200,11 +202,8 @@ export default function WeekTable({
     // empty rows included, so a tier nobody holds reads as a gap. Weekend
     // windows keep their own hours and appear only when somebody is on them.
     const escKey = (a: ScheduleAssignment): string | null => {
-      const sh = shifts.get(a.shiftCode);
-      const zone = a.zoneCode ?? sh?.zoneCode;
-      const tier = a.tier ?? sh?.tier;
-      if (!sh?.isEscalation || !zone || !tier) return null;
-      return `${sh.dayScope === "WEEKEND" ? "we" : "wd"}|${zone}|${tier}`;
+      const turn = escalationTurnOf(a, shifts);
+      return turn ? `${turn.weekend ? "we" : "wd"}|${turn.zoneCode}|${turn.tier}` : null;
     };
     const familyShifts = [...shifts.values()].filter((sh) => sh.family === family);
     const weekdayIso = toIsoDate(days.find((d) => d.getDay() !== 0 && d.getDay() !== 6) ?? days[0]);
@@ -242,7 +241,7 @@ export default function WeekTable({
       // is read as that, not as a turn with its tier missing.
       const sh = shifts.get(a.shiftCode);
       const zone = a.zoneCode ?? sh?.zoneCode;
-      if (sh?.isEscalation && zone && !a.tier && !sh.tier && sh.dayScope !== "WEEKEND") {
+      if (zone && isTierlessEscalation(a, shifts) && sh?.dayScope !== "WEEKEND") {
         const reg = regularOf(zone);
         if (reg) {
           rest.push({ ...a, shiftCode: reg.code });

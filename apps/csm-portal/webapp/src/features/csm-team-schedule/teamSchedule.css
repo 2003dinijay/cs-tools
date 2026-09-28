@@ -1791,3 +1791,11 @@
 .csm-ts .tw.roster.split tbody td.c.z .duo .chip.sm {
   display: block;
 }
+
+/* My Week's day list: a tier card nobody holds that day. */
+.csm-ts .peekgrid .pgnone {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--faint);
+  padding: 2px 0;
+}

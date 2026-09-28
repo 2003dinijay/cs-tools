@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import MyWeekStrip from "./MyWeekStrip";
@@ -26,6 +26,10 @@ import {
   MONDAY,
   REGULAR,
   TZ,
+  TZ1,
+  TZ1_L1,
+  TZ2,
+  TZ3,
   absence,
   assignment,
   shiftMap,
@@ -78,5 +82,32 @@ describe("MyWeekStrip", () => {
       myAbsences: [absence({ name: "Asela", startsOn: "2026-09-22", endsOn: "2026-09-22" })],
     });
     expect(screen.getAllByText("AL").length).toBeGreaterThan(0);
+  });
+});
+
+describe("MyWeekStrip: the open day's SRE escalation", () => {
+  it("lists L1, L2 and L3 support for every zone, like This week", () => {
+    const tiered = (name: string, shiftCode: string, zoneCode: string, tier: "L1" | "L2" | "L3") => ({
+      ...assignment({ name, rotaDate: "2026-09-21", shiftCode, zoneCode }),
+      tier,
+    });
+    const { container } = renderStrip({
+      shifts: shiftMap(TZ1, TZ1_L1, TZ2, TZ3),
+      everyone: [
+        tiered("Jane", TZ1_L1.code, "TZ1", "L1"),
+        tiered("John", TZ1.code, "TZ1", "L2"),
+        tiered("Ada", TZ2.code, "TZ2", "L3"),
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Mon Sep 21 2026: show everyone on rotation/ }));
+    const cards = [...container.querySelectorAll(".peekgrid .pg")];
+    expect(cards.map((c) => c.querySelector("h5 .chip")?.textContent)).toEqual([
+      "TZ1 L1 support", "TZ1 L2 support", "TZ1 L3 support",
+      "TZ2 L1 support", "TZ2 L2 support", "TZ2 L3 support",
+      "TZ3 L1 support", "TZ3 L2 support", "TZ3 L3 support",
+    ]);
+    expect(cards[1]).toHaveTextContent("John");
+    expect(cards[5]).toHaveTextContent("Ada");
+    expect(cards[2]).toHaveTextContent("Nobody rostered");
   });
 });

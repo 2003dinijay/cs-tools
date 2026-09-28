@@ -331,3 +331,39 @@ export function escalationGrid(shifts: ScheduleShift[], iso: string): Escalation
     };
   });
 }
+
+/** Which zone and tier an escalation turn is, where it is one. */
+export interface EscalationTurn {
+  zoneCode: string;
+  tier: ScheduleTier;
+  weekend: boolean;
+}
+
+/**
+ * The zone and tier an assignment holds, if it is an escalation turn at all.
+ *
+ * The tier is the assignment's own, else the window's (TZ1's own L1 window
+ * fixes it). A turn on a zone's shared escalation window with no tier is not
+ * a turn -- see isTierlessEscalation -- and comes back null here.
+ */
+export function escalationTurnOf(
+  a: ScheduleAssignment,
+  shifts: Map<string, ScheduleShift>,
+): EscalationTurn | null {
+  const sh = shifts.get(a.shiftCode);
+  const zoneCode = a.zoneCode ?? sh?.zoneCode;
+  const tier = a.tier ?? sh?.tier;
+  if (!sh?.isEscalation || !zoneCode || !tier) return null;
+  return { zoneCode, tier, weekend: sh.dayScope === "WEEKEND" };
+}
+
+/**
+ * No tier on a zone's shared escalation window. That is what "works this
+ * zone, is not on the escalation rota" looks like -- the zone's regular hours
+ * -- so the views read it as that rather than as a turn missing its tier.
+ * New ones cannot be written any more; this is for rows written before.
+ */
+export function isTierlessEscalation(a: ScheduleAssignment, shifts: Map<string, ScheduleShift>): boolean {
+  const sh = shifts.get(a.shiftCode);
+  return Boolean(sh?.isEscalation && (a.zoneCode ?? sh.zoneCode) && !a.tier && !sh.tier);
+}

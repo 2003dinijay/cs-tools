@@ -24,7 +24,18 @@ import type {
   ScheduleAssignment,
   ScheduleShift,
 } from "../types";
-import { addDays, groupBy, initialsOf, shortDayName, timeOf, toIsoDate , isPeerRotation } from "../utils/rota";
+import {
+  addDays,
+  escalationGrid,
+  escalationTurnOf,
+  groupBy,
+  initialsOf,
+  isPeerRotation,
+  isTierlessEscalation,
+  shortDayName,
+  timeOf,
+  toIsoDate,
+} from "../utils/rota";
 import { accentOf } from "../utils/rotaHues";
 import { useTeamColour } from "../utils/teamColourContext";
 
@@ -97,7 +108,14 @@ export default function MyWeekStrip({
   // on a weekday is most of the team, and not the Americas night cover, which
   // is that team's own standing shift rather than a turn in the rota.
   const openRows = openDay
-    ? everyone.filter((a) => a.rotaDate === openDay && isPeerRotation(shifts.get(a.shiftCode)))
+    ? everyone.filter(
+        (a) =>
+          a.rotaDate === openDay &&
+          isPeerRotation(shifts.get(a.shiftCode)) &&
+          // A tier-less turn on a zone's escalation window is that zone's
+          // regular hours, not a rotation.
+          !isTierlessEscalation(a, shifts),
+      )
     : [];
   // Two different counts. "Rostered" is any day with something on it, regular
   // hours included; "on rotation" is only a turn on the rota. Counting the first
@@ -208,7 +226,7 @@ export default function MyWeekStrip({
               ×
             </button>
           </div>
-          <PeekRows rows={openRows} shifts={shifts} />
+          <PeekRows rows={openRows} shifts={shifts} iso={openDay} />
         </div>
       ) : (
         <div className="peek peekhint" id="mywk-peek">
@@ -236,17 +254,58 @@ export default function MyWeekStrip({
 function PeekRows({
   rows,
   shifts,
+  iso,
 }: {
   rows: ScheduleAssignment[];
   shifts: Map<string, ScheduleShift>;
+  iso: string;
 }): JSX.Element {
   const teamColourOf = useTeamColour();
-  const byShift = useMemo(() => {
-    const groups = [...groupBy(rows, (r) => r.shiftCode).entries()];
-    return groups.sort(
-      (a, b) => (shifts.get(a[0])?.sortOrder ?? 999) - (shifts.get(b[0])?.sortOrder ?? 999),
-    );
-  }, [rows, shifts]);
+
+  /** A card per window, except SRE escalation, which is a card per zone and
+   *  tier -- TZ1 L1, L2 and L3 support, then TZ2's, then TZ3's -- the same
+   *  way This week lays it out. Every tier of every zone worked that day gets
+   *  a card, empty ones included, so a tier nobody holds reads as a gap. */
+  const groups = useMemo(() => {
+    type Group = { key: string; label: string; token: string; list: ScheduleAssignment[]; sort: number };
+    const out: Group[] = [];
+    const sre = rows.some((r) => shifts.get(r.shiftCode)?.family === "SRE");
+    const byTurn = new Map<string, Group>();
+    if (sre) {
+      const sreShifts = [...shifts.values()].filter((sh) => sh.family === "SRE");
+      escalationGrid(sreShifts, iso).forEach((row, zi) =>
+        row.tiers.forEach(({ tier }, ti) => {
+          const g: Group = {
+            key: `esc:${row.zoneCode}|${tier}`,
+            label: `${row.zoneCode} ${tier} support`,
+            token: tier,
+            list: [],
+            sort: zi * 10 + ti,
+          };
+          byTurn.set(g.key, g);
+          out.push(g);
+        }),
+      );
+    }
+    const rest: ScheduleAssignment[] = [];
+    for (const r of rows) {
+      const turn = escalationTurnOf(r, shifts);
+      const g = turn ? byTurn.get(`esc:${turn.zoneCode}|${turn.tier}`) : undefined;
+      if (g) g.list.push(r);
+      else rest.push(r);
+    }
+    for (const [code, list] of groupBy(rest, (r) => r.shiftCode).entries()) {
+      const shift = shifts.get(code);
+      out.push({
+        key: code,
+        label: shift?.label ?? code,
+        token: shift?.colourToken ?? "",
+        list,
+        sort: 1000 + (shift?.sortOrder ?? 999),
+      });
+    }
+    return out.sort((a, b) => a.sort - b.sort);
+  }, [rows, shifts, iso]);
 
   if (rows.length === 0) {
     return <div className="offnone">Nobody is on the rota that day.</div>;
@@ -254,26 +313,22 @@ function PeekRows({
 
   return (
     <div className="peekgrid">
-      {byShift.map(([code, list]) => {
-        const shift = shifts.get(code);
-        return (
-          <div className="pg" key={code}>
-            <h5>
-              <span className={`chip sm ${shift?.colourToken ?? ""}`}>
-                {shift?.label ?? code}
-              </span>
-              <span className="count">{list.length}</span>
-            </h5>
-            {list.map((a) => (
-              <div className="nm" key={a.id}>
-                <span className="av" style={{ background: teamColourOf(a.teamKey) }}>{initialsOf(a.engineer.name)}</span>
-                <span className="who">{a.engineer.name}</span>
-                {a.engineer.isLead ? <span className="tag lead-t">Lead</span> : null}
-              </div>
-            ))}
-          </div>
-        );
-      })}
+      {groups.map((g) => (
+        <div className={`pg${g.list.length === 0 ? " pgempty" : ""}`} key={g.key}>
+          <h5>
+            <span className={`chip sm ${g.token}`}>{g.label}</span>
+            <span className="count">{g.list.length}</span>
+          </h5>
+          {g.list.length === 0 ? <div className="pgnone">Nobody rostered</div> : null}
+          {g.list.map((a) => (
+            <div className="nm" key={a.id}>
+              <span className="av" style={{ background: teamColourOf(a.teamKey) }}>{initialsOf(a.engineer.name)}</span>
+              <span className="who">{a.engineer.name}</span>
+              {a.engineer.isLead ? <span className="tag lead-t">Lead</span> : null}
+            </div>
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
