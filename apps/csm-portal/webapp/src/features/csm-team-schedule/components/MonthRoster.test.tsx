@@ -30,6 +30,7 @@ import {
   TZ2,
   TZ2_WE,
   RND,
+  TZ1_L1,
   absence,
   assignment,
   scopeControls,
@@ -292,5 +293,26 @@ describe("MonthRoster: two tags in one cell", () => {
     expect(onEditCell).toHaveBeenCalledWith(
       expect.objectContaining({ shiftCode: EVENING.code, absenceKindCode: RND.code }),
     );
+  });
+});
+
+describe("MonthRoster: a zone's turn on an allocation day", () => {
+  it("stacks the turn and the allocation in that zone, and shows the allocation in the rest", () => {
+    // Every zone this group works, weekday and weekend, so the day splits.
+    const { container } = renderRoster({
+      family: "SRE",
+      shifts: shiftMap(REGULAR, TZ1, TZ1_L1, TZ2, TZ1_WE, TZ2_WE),
+      assignments: [
+        { ...assignment({ name: "Asela", rotaDate: "2026-09-21", shiftCode: TZ1_L1.code, zoneCode: "TZ1" }), tier: "L1" },
+      ],
+      absences: [absence({ name: "Asela", startsOn: "2026-09-21", endsOn: "2026-09-21", kindCode: RND.code })],
+      absenceKinds: [ANNUAL_LEAVE, RND],
+    } as never);
+    const zoneCells = [...container.querySelectorAll("td.c.z")].filter((td) => td.textContent?.trim());
+    const tz1 = zoneCells.find((td) => td.querySelector(".duo"));
+    expect(tz1).toBeDefined();
+    expect(tz1).toHaveTextContent("L1");
+    expect(tz1).toHaveTextContent(RND.shortCode);
+    expect(zoneCells.some((td) => !td.querySelector(".duo") && td.textContent?.includes(RND.shortCode))).toBe(true);
   });
 });

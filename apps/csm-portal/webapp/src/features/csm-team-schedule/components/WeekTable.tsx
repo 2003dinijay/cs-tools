@@ -17,9 +17,16 @@
  */
 
 import { useEffect, useMemo, useState, type JSX } from "react";
-import type { ScheduleAbsence, ScheduleAbsenceKind, ScheduleAssignment, ScheduleShift } from "../types";
+import type {
+  ScheduleAbsence,
+  ScheduleAbsenceKind,
+  ScheduleAssignment,
+  ScheduleShift,
+  ScheduleTier,
+} from "../types";
 import {
   addDays,
+  escalationGrid,
   groupBy,
   initialsOf,
   shortDayName,
@@ -173,23 +180,111 @@ export default function WeekTable({
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
 
   const rows = useMemo(() => {
-    // Windows that are the same working day under different team names share a
-    // row -- see standingWindowKey. This table already lists regular hours by
-    // team, so the India region shift arrives as one more team rather than as
-    // a row of its own saying the same nine-to-five over again.
-    const byWindow = groupBy(assignments, (a) =>
-      standingWindowKey(shifts.get(a.shiftCode), a.shiftCode),
-    );
-    return [...byWindow.entries()]
-      .map(([, list]) => {
-        // The window most of these people are on names the row, so it keeps
-        // the label and colour a reader already knows it by.
-        const counts = groupBy(list, (a) => a.shiftCode);
-        const lead = [...counts.entries()].sort((a, b) => b[1].length - a[1].length)[0][0];
-        return { code: lead, shift: shifts.get(lead), list };
-      })
-      .sort((a, b) => (a.shift?.sortOrder ?? 999) - (b.shift?.sortOrder ?? 999));
-  }, [assignments, shifts]);
+    type Row = {
+      code: string;
+      shift?: ScheduleShift;
+      list: ScheduleAssignment[];
+      /** Set for an escalation row, which is named for its zone and tier rather
+       *  than for the window underneath it. */
+      label?: string;
+      token?: string;
+      sort: number;
+      tiered?: boolean;
+    };
+    const TIERS: ScheduleTier[] = ["L1", "L2", "L3"];
+    const out: Row[] = [];
+
+    // SRE escalation, as a row per zone and tier: "TZ1 L2 support" is the
+    // question a reader asks, and it had no row of its own -- L2 sat inside
+    // "TZ1 escalation", L3 nowhere. Every weekday zone gets L1, L2 and L3,
+    // empty rows included, so a tier nobody holds reads as a gap. Weekend
+    // windows keep their own hours and appear only when somebody is on them.
+    const escKey = (a: ScheduleAssignment): string | null => {
+      const sh = shifts.get(a.shiftCode);
+      const zone = a.zoneCode ?? sh?.zoneCode;
+      const tier = a.tier ?? sh?.tier;
+      if (!sh?.isEscalation || !zone || !tier) return null;
+      return `${sh.dayScope === "WEEKEND" ? "we" : "wd"}|${zone}|${tier}`;
+    };
+    const familyShifts = [...shifts.values()].filter((sh) => sh.family === family);
+    const weekdayIso = toIsoDate(days.find((d) => d.getDay() !== 0 && d.getDay() !== 6) ?? days[0]);
+    const weekendIso = toIsoDate(days.find((d) => d.getDay() === 0 || d.getDay() === 6) ?? days[0]);
+    const windowFor = new Map<string, ScheduleShift | undefined>();
+    for (const [scope, iso] of [["wd", weekdayIso], ["we", weekendIso]] as const) {
+      escalationGrid(familyShifts, iso).forEach((row, zi) =>
+        row.tiers.forEach(({ tier, shift }, ti) => {
+          const key = `${scope}|${row.zoneCode}|${tier}`;
+          windowFor.set(key, shift);
+          if (scope === "wd" && shift) {
+            out.push({
+              code: `esc:${key}`,
+              shift,
+              list: [],
+              label: `${row.zoneCode} ${tier} support`,
+              token: tier,
+              sort: 110 + zi * 10 + ti,
+              tiered: true,
+            });
+          }
+        }),
+      );
+    }
+    const escRows = new Map(out.map((r) => [r.code, r]));
+
+    const rest: ScheduleAssignment[] = [];
+    for (const a of assignments) {
+      const key = escKey(a);
+      if (!key) {
+        rest.push(a);
+        continue;
+      }
+      let row = escRows.get(`esc:${key}`);
+      if (!row) {
+        const [scope, zone, tier] = key.split("|");
+        row = {
+          code: `esc:${key}`,
+          shift: windowFor.get(key) ?? shifts.get(a.shiftCode),
+          list: [],
+          label: `${scope === "we" ? "Weekend " : ""}${zone} ${tier} support`,
+          token: tier,
+          sort: (scope === "we" ? 200 : 110) + TIERS.indexOf(tier as ScheduleTier),
+          tiered: true,
+        };
+        escRows.set(row.code, row);
+        out.push(row);
+      }
+      row.list.push(a);
+    }
+
+    // Everything else, by window. Windows that are the same working day under
+    // different team names share a row -- see standingWindowKey. This table
+    // already lists regular hours by team, so the India region shift arrives
+    // as one more team rather than as a row of its own saying the same
+    // nine-to-five over again.
+    const byWindow = groupBy(rest, (a) => standingWindowKey(shifts.get(a.shiftCode), a.shiftCode));
+    for (const [, list] of byWindow.entries()) {
+      // The window most of these people are on names the row, so it keeps the
+      // label and colour a reader already knows it by.
+      const counts = groupBy(list, (a) => a.shiftCode);
+      const lead = [...counts.entries()].sort((a, b) => b[1].length - a[1].length)[0][0];
+      const shift = shifts.get(lead);
+      // An escalation turn with no tier recorded -- marked before the picker
+      // asked for one -- has no tier row to go in. It keeps a row of its own,
+      // saying what is missing, so a lead can see it and pick the tier.
+      const untiered = shift?.isEscalation && shift.zoneCode;
+      out.push({
+        code: lead,
+        shift,
+        list,
+        label: untiered ? `${shift.label} · tier not set` : undefined,
+        sort: untiered ? 199 : (shift?.sortOrder ?? 999),
+      });
+    }
+
+    // The empty tier rows only belong to a week that has an SRE rota at all.
+    if (!out.some((r) => r.list.length > 0)) return [];
+    return out.sort((a, b) => a.sort - b.sort);
+  }, [assignments, shifts, family, days]);
 
   const todayIso = toIsoDate(new Date());
 
@@ -302,9 +397,9 @@ export default function WeekTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ code, shift, list }) => {
+          {rows.map(({ code, shift, list, label, token: rowToken, tiered }) => {
             const byDay = groupBy(list, (a) => a.rotaDate);
-            const token = shift?.colourToken ?? "";
+            const token = rowToken ?? shift?.colourToken ?? "";
             // The rotation running right now, found by its stored instants --
             // so a night crew rostered yesterday still lights up after
             // midnight -- and marked on both its row and its cell.
@@ -320,7 +415,7 @@ export default function WeekTable({
                     {shift ? `${fmtMinute(shift.startMinute)} – ${fmtMinute(shift.endMinute)}` : code}
                   </span>
                   {liveIso ? <span className="nowpill">Now</span> : null}
-                  <small>{shift?.label ?? code}</small>
+                  <small>{label ?? shift?.label ?? code}</small>
                 </th>
                 {days.map((d) => {
                   const iso = toIsoDate(d);
@@ -357,7 +452,8 @@ export default function WeekTable({
                               {initialsOf(a.engineer.name)}
                             </span>
                             <span className="who">{a.engineer.name}</span>
-                            {a.tier ? <span className="tier-t">{a.tier}</span> : null}
+                            {/* A tier row already names the tier. */}
+                            {a.tier && !tiered ? <span className="tier-t">{a.tier}</span> : null}
                           </div>
                         ))
                       )}

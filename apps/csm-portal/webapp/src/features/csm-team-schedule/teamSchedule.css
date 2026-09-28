@@ -1750,3 +1750,20 @@
 :root[data-color-scheme="dark"] .csm-ts .weekwrap .tw tbody tr > td.today.nowcell {
   background: color-mix(in srgb, var(--now) 20%, var(--surface));
 }
+
+/* Two tags stacked in one roster cell -- whole-day or a single zone's -- are
+   drawn a little shorter than a lone chip, so the row grows by a few pixels
+   rather than by a whole second chip. Only rows that hold such a day grow. */
+.csm-ts .tw.roster tbody td .duo {
+  display: flex;
+  width: 100%;
+}
+.csm-ts .tw.roster tbody td .duo .chip.sm {
+  height: 17px;
+  line-height: 17px;
+  min-width: 0;
+  width: 100%;
+  padding: 0 3px;
+  font-size: 9.5px;
+  justify-content: center;
+}

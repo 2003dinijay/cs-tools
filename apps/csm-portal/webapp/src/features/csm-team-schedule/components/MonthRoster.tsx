@@ -730,7 +730,8 @@ export default function MonthRoster({
                   return zones.map((z, i) => {
                     // A zone the engineer holds a turn in shows the turn; the
                     // rest of the day shows the allocation that fills it.
-                    const zc = row.zoned.get(`${iso}|${z}`) ?? alloc;
+                    const turn = row.zoned.get(`${iso}|${z}`);
+                    const zc = turn ?? alloc;
                     return (
                       <td
                         key={`${iso}|${z}`}
@@ -752,7 +753,15 @@ export default function MonthRoster({
                         }
                         onClick={editable ? (e) => openCell(e, row, iso, withAlloc(row.zoned.get(`${iso}|${z}`)), z) : undefined}
                       >
-                        {zc ? (
+                        {turn && alloc ? (
+                          // The zone's turn and the allocation the rest of the
+                          // day is given to, stacked: L1 in TZ1 is still an
+                          // RnD day, and the cell says both.
+                          <span className="duo">
+                            <span className={`chip sm ${turn.token}`}>{turn.code}</span>
+                            <span className={`chip sm ${alloc.token}`}>{alloc.code}</span>
+                          </span>
+                        ) : zc ? (
                           <span className={`chip sm ${zc.token}`}>{zc.code}</span>
                         ) : (
                           <span className="zempty" />
