@@ -30,8 +30,8 @@
 -- plain indexed range query that no client has to re-derive.
 --
 -- This file is the schema only. The catalogue rows it needs to render
--- anything are in 0143, and the change history in 0144. Requires team.key
--- (0141).
+-- anything are in 0154, and the change history in 0155. Requires team.key
+-- (0152).
 --
 -- It replaces the pre-restructure 000088-000107 chain with the state that
 -- chain ended in. Safe to re-run, and a no-op on a database that already

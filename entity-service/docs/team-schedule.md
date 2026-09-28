@@ -4,7 +4,7 @@ The CRE and SRE rota behind the CSM portal's Team Schedule: who is working,
 when, in which escalation tier, and who is away. Portal-native data with no
 ServiceNow equivalent, so these tables are the system of record, not a mirror.
 
-**Status:** code merged (#2032). Schema ships as migrations **0141–0144**.
+**Status:** code merged (#2032). Schema ships as migrations **0152–0155**.
 Nothing else needs configuring: the routes are registered whenever
 entity-service has a database.
 
@@ -29,15 +29,15 @@ ServiceNow's `cmn_schedule` tables and are unrelated to this.
 
 | Layer | Table | One row is | Written by |
 |---|---|---|---|
-| Catalogue | `team_schedule_zone` | an SRE time zone (TZ1–TZ3) | migration 0143 |
-| | `team_schedule_shift` | a named window of the day, e.g. "Evening 6-9pm", "TZ2 escalation" | migration 0143 |
-| | `team_schedule_absence_kind` | a kind of time away, e.g. annual leave, customer allocation | migration 0143 |
+| Catalogue | `team_schedule_zone` | an SRE time zone (TZ1–TZ3) | migration 0154 |
+| | `team_schedule_shift` | a named window of the day, e.g. "Evening 6-9pm", "TZ2 escalation" | migration 0154 |
+| | `team_schedule_absence_kind` | a kind of time away, e.g. annual leave, customer allocation | migration 0154 |
 | Facts | `team_schedule_assignment` | one engineer, one rota day, one window | leads, via the portal; importers |
 | | `team_schedule_absence` | a span of days an engineer is away | leads, via the portal; importers |
 | History | `team_schedule_assignment_activity`, `team_schedule_absence_activity` | one change a lead made, as the portal's "Recent changes" shows it | entity-service |
 | | `team_schedule_audit` | one row-level change to any state table, from triggers | Postgres |
 
-Plus one column on a shared table: **`team.key`** (0141). This is the only change outside the prefix.
+Plus one column on a shared table: **`team.key`** (0152). This is the only change outside the prefix.
 
 ### Time: authored in one clock, read in any
 
@@ -64,7 +64,7 @@ block is Monday's, even though six of its hours fall on Tuesday.
 | An assignment's `team_id` and `team_key` agree | composite FK to `team (id, key)` |
 | A kind in use cannot be deleted | `kind_id … ON DELETE RESTRICT`. Retire a kind with `is_active = FALSE`. |
 
-## 2. The catalogue (0143)
+## 2. The catalogue (0154)
 
 **SRE day**, as the leads run it:
 
@@ -96,7 +96,7 @@ An allocation is a kind plus **`allocated_to`**, which says who the time is for
 kind. Four retired kinds stay in the table as `is_active = FALSE`, so that older
 absences stay readable.
 
-Re-running 0143 never overwrites a row a lead has since edited
+Re-running 0154 never overwrites a row a lead has since edited
 (`ON CONFLICT DO NOTHING`).
 
 ### What a lead can do from the roster
@@ -140,13 +140,13 @@ All three are gated on the caller leading the team (for a removal, the team
 recorded on the absence row), and each is recorded in the absence history
 and the audit table.
 
-## 3. `team.key` — the one shared-table change (0141)
+## 3. `team.key` — the one shared-table change (0152)
 
 The rota lists every `team` whose `type` starts with `CRE` or `SRE`. It refers
 to each of them by `team.key`, a lower-case handle: `apollo`, `castor`, and so on.
 
 `team` is written by the ServiceNow sync, which knows nothing about `key`. So
-0141 adds a **`BEFORE INSERT` trigger that fills `key` from the name** when a
+0152 adds a **`BEFORE INSERT` trigger that fills `key` from the name** when a
 writer leaves it out. Without that trigger the `NOT NULL` would reject every
 sync insert that omits the column. That includes an `INSERT … ON CONFLICT DO
 UPDATE` of a team that already exists, because Postgres checks the proposed row
@@ -158,11 +158,11 @@ rewritten, so renaming a team in ServiceNow does not move its rota history.
 ### Prerequisites
 
 - **PostgreSQL 12 or later** (the schema uses a generated column).
-- **`btree_gist` available.** 0142 runs `CREATE EXTENSION IF NOT EXISTS btree_gist`.
+- **`btree_gist` available.** 0153 runs `CREATE EXTENSION IF NOT EXISTS btree_gist`.
   It ships with Postgres, but a managed server may need it allow-listed first
   (Azure Database for PostgreSQL: add it to the `azure.extensions` server
   parameter). The migrating role needs permission to create extensions.
-- **Team names unique ignoring case.** If they are not, 0141 stops before
+- **Team names unique ignoring case.** If they are not, 0152 stops before
   changing anything and names the clashing teams.
   ```sql
   SELECT lower(name), count(*) FROM team GROUP BY 1 HAVING count(*) > 1;   -- expect no rows
@@ -183,8 +183,8 @@ one so a later `make migrate` skips it:
 
 ```bash
 psql "$DATABASE_URL" -c "CREATE TABLE IF NOT EXISTS csm_migration_applied_migration (filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
-for f in 0141_team_add_key.sql 0142_team_schedule_tables.sql \
-         0143_team_schedule_catalogue.sql 0144_team_schedule_audit.sql; do
+for f in 0152_team_add_key.sql 0153_team_schedule_tables.sql \
+         0154_team_schedule_catalogue.sql 0155_team_schedule_audit.sql; do
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "migrations/$f" &&
   psql "$DATABASE_URL" -c "INSERT INTO csm_migration_applied_migration (filename) VALUES ('$f') ON CONFLICT DO NOTHING"
 done
@@ -192,10 +192,10 @@ done
 
 | File | Creates / changes | Touches shared tables |
 |---|---|---|
-| `0141_team_add_key.sql` | `team.key` + fill trigger + two unique constraints | **yes**: `team` |
-| `0142_team_schedule_tables.sql` | `btree_gist`, 5 enums, 7 tables, indexes, constraints, the matches-shift trigger | reads `team`, `"user"` (FKs only) |
-| `0143_team_schedule_catalogue.sql` | 3 zones, 19 windows, 16 kinds | no |
-| `0144_team_schedule_audit.sql` | `team_schedule_audit`, its trigger on 5 tables, one BASELINE row per existing row | no |
+| `0152_team_add_key.sql` | `team.key` + fill trigger + two unique constraints | **yes**: `team` |
+| `0153_team_schedule_tables.sql` | `btree_gist`, 5 enums, 7 tables, indexes, constraints, the matches-shift trigger | reads `team`, `"user"` (FKs only) |
+| `0154_team_schedule_catalogue.sql` | 3 zones, 19 windows, 16 kinds | no |
+| `0155_team_schedule_audit.sql` | `team_schedule_audit`, its trigger on 5 tables, one BASELINE row per existing row | no |
 
 ### A server that ran the old file names
 
@@ -204,7 +204,7 @@ Before this schema was renumbered it shipped as `000088`–`000104`, in the old
 files, and they sort ahead of `0001`. On a server that ran it in that window,
 the first two old files applied and the third failed, leaving
 `schedule_zone`/`_shift`/`_assignment`/`_absence` under their pre-rename names.
-0142 detects that state and drops those four tables, which can only hold
+0153 detects that state and drops those four tables, which can only hold
 catalogue rows, before building the real ones. If any assignment or absence rows
 exist, it refuses and changes nothing. The four old filenames left in
 `csm_migration_applied_migration` are harmless.
@@ -243,8 +243,10 @@ DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_
 
 ## 5. Known gaps
 
-- **0141's number was not checked against `operations/csm-sync-service`**,
-  which owns `team`. Confirm that 0141 is free there before production.
+- **Why 0152–0155.** 0141–0150 are claimed by the open RLS work in #2094, and
+  upstream's 0151 already sits after that range, so these follow it. 0152's
+  number has not been checked against `operations/csm-sync-service`, which owns
+  `team`; confirm it is free there before production.
 - **The sync must never need to change `team.key`.** It cannot today, because
   it does not know the column exists. If it ever writes `key`, that value wins
   over the trigger.
@@ -254,7 +256,7 @@ DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_
 
 ## Change log
 
-- **0141–0144** replace `000088`–`000107`, which were written in the old
+- **0152–0155** replace `000088`–`000107`, which were written in the old
   up/down format. They reproduce the schema and catalogue that chain ended in
   exactly (compared with `pg_dump` against a server built from the old chain).
   They also add the `team.key` fill trigger. The old files are gone; nothing

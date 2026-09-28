@@ -46,7 +46,7 @@ name order. Three consequences:
 - **Only `NNNN_*.sql` belongs in that folder.** The runner globs `*.sql`, so an
   old-style `000NNN_x.up.sql`/`.down.sql` pair would run both halves, and
   would run them ahead of `0001`. That is how the Team Schedule's original
-  files broke `make migrate` until they were rewritten as 0141–0144.
+  files broke `make migrate` until they were rewritten as 0152–0155.
 
 `scripts/csm-compose/migrate-and-seed.sh` (the local compose stack) still
 iterates the old `*.up.sql` names and keeps its own `schema_migrations` table.

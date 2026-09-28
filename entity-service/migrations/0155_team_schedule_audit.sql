@@ -15,11 +15,11 @@
 -- under the License.
 
 -- A database-level history of every Team Schedule table that holds state.
--- The two *_activity tables (0142) are what the portal shows a lead; this is
+-- The two *_activity tables (0153) are what the portal shows a lead; this is
 -- the record underneath them, written by triggers, so a change made outside
 -- the application -- a console fix, an import -- is recorded too.
 --
--- Numbered after the catalogue (0143) on purpose: the rows that already exist
+-- Numbered after the catalogue (0154) on purpose: the rows that already exist
 -- when this runs get a BASELINE entry rather than an INSERT one.
 
 CREATE TABLE IF NOT EXISTS team_schedule_audit (

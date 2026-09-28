@@ -15,7 +15,7 @@
 -- under the License.
 
 -- team.key: a stable, lower-case handle for a team, which the Team Schedule
--- (0142-0144) refers to teams by. The rota's catalogue is read from this table
+-- (0153-0155) refers to teams by. The rota's catalogue is read from this table
 -- -- a team whose type starts with CRE or SRE is a rota team -- and every
 -- assignment and absence names its team by key, under a foreign key.
 --

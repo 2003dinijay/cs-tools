@@ -27,7 +27,7 @@
 //
 // Skipped unless ENTITY_TEST_DATABASE_URL is set, so `go test ./...` on a
 // machine with no database stays green. Apply every migration in order first;
-// the tables this file reads are created by 0141-0144:
+// the tables this file reads are created by 0152-0155:
 //
 //	createdb entity_test
 //	for f in migrations/*.sql; do psql -v ON_ERROR_STOP=1 -d entity_test -f "$f"; done
