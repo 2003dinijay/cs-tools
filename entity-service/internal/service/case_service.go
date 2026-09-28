@@ -36,6 +36,12 @@ import (
 type caseService struct {
 	repo     repository.CaseRepository
 	userRepo repository.UserRepository
+	// projectContactRepo backs updateCaseWatchList's project-membership
+	// validation (see that method's own doc comment) — never nil for a
+	// Postgres-backed caseService (routes.go always constructs and passes
+	// one), unlike publisher/snWriteback/snMirror below, which genuinely
+	// are optional.
+	projectContactRepo repository.ProjectContactRepository
 	// publisher is nil when Event Hub is not configured — see
 	// snCaseService.publisher's own doc comment for the same convention.
 	// Currently only ever read by UpdateCase's (inert — see
@@ -127,8 +133,9 @@ type snFieldsBundlePatcher interface {
 // NewCaseService constructs a CaseService backed by the given repositories.
 // publisher may be nil (see caseService.publisher's own doc comment). access
 // scopes GetCaseByID/SearchCases's reads (see AccessService).
-func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService) CaseService {
-	return &caseService{repo: repo, userRepo: userRepo, publisher: publisher, access: access}
+// projectContactRepo backs updateCaseWatchList's project-membership check.
+func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService, projectContactRepo repository.ProjectContactRepository) CaseService {
+	return &caseService{repo: repo, userRepo: userRepo, publisher: publisher, access: access, projectContactRepo: projectContactRepo}
 }
 
 // NewCaseServiceWithSNWriteback is NewCaseService plus the wiring
@@ -145,11 +152,12 @@ func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepo
 // whose CreateCase/UpdateCase perform the real ServiceNow POST/PATCH. It is
 // never made the active CaseService here — reads always stay on Postgres in
 // this mode.
-func NewCaseServiceWithSNWriteback(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService, dispatcher *SNWritebackDispatcher, mirror CaseService) CaseService {
+func NewCaseServiceWithSNWriteback(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService, projectContactRepo repository.ProjectContactRepository, dispatcher *SNWritebackDispatcher, mirror CaseService) CaseService {
 	return &caseService{
 		repo: repo, userRepo: userRepo, publisher: publisher, access: access,
-		snWriteback: dispatcher,
-		snMirror:    mirror,
+		projectContactRepo: projectContactRepo,
+		snWriteback:        dispatcher,
+		snMirror:           mirror,
 	}
 }
 
@@ -1089,6 +1097,45 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	}, nil
 }
 
+// validateWatchListProjectMembership rejects a watch-list update wholesale
+// (never partially applied) if any of userIDs is not an active project_contact
+// on the case's own project. Watchers are customer-side users
+// (project_contact models exactly that — the customer's own users scoped to
+// a project), unlike an assignee, which is normally a WSO2 support engineer
+// with no project_contact row at all; this check deliberately covers
+// updateCaseWatchList only, not updateCaseAssignee, for that reason (checked
+// live: 2856 of 2860 real assignees are not project contacts on their case's
+// project).
+//
+// A case with no project linked (ProjectDetails is nil — a documented, real
+// state, not an error) has nothing to validate watchers against, so the
+// check is skipped rather than rejecting every watch-list update on such a
+// case. Fetches the case via GetCaseByID rather than a lighter project-id-only
+// query, matching updateCaseAssignee's own existing enrichment call in this
+// file.
+func (s *caseService) validateWatchListProjectMembership(ctx context.Context, caseID string, userIDs []string) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	cv, err := s.GetCaseByID(ctx, caseID)
+	if err != nil {
+		return err
+	}
+	if cv.ProjectDetails == nil {
+		return nil
+	}
+	for _, userID := range userIDs {
+		if _, err := s.projectContactRepo.GetProjectContactByUserID(ctx, cv.ProjectDetails.ID, userID, ""); err != nil {
+			var notFound *apierror.NotFoundError
+			if errors.As(err, &notFound) {
+				return &apierror.ValidationError{Msg: fmt.Sprintf("user %s is not a contact on this case's project", userID)}
+			}
+			return err
+		}
+	}
+	return nil
+}
+
 // updateCaseWatchList implements UpdateCase's WatchList branch: replacing
 // the case's watch list wholesale with req's user ids via
 // CaseRepository.SetCaseWatchList. An explicitly empty (non-nil) WatchList
@@ -1097,6 +1144,10 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 func (s *caseService) updateCaseWatchList(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
 	userIDs := *req.WatchList
 	if err := validateUUIDs("watchList", userIDs); err != nil {
+		return domain.UpdateCaseResponse{}, err
+	}
+
+	if err := s.validateWatchListProjectMembership(ctx, req.ID, userIDs); err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
 
