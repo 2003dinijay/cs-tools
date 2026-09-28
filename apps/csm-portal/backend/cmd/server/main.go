@@ -374,6 +374,28 @@ func main() {
 	route("POST /services/search", handler.PermView, itServiceHandler.SearchITServices)
 	route("POST /service-offerings/search", handler.PermView, serviceOfferingHandler.SearchServiceOfferings)
 	route("POST /groups/search", handler.PermView, groupHandler.SearchGroups)
+
+	// Team Schedule. Reads only for now, so everything sits under view: any
+	// role that can see the portal can see who is on the rota. Editing the
+	// rota is a lead's job and will need a permission of its own when the
+	// write routes land -- see the plan's Phase 2b.
+	scheduleHandler := handler.NewScheduleHandler(customerEntityClient)
+	route("GET /team-schedule/catalogue", handler.PermView, scheduleHandler.GetScheduleCatalogue)
+	route("POST /team-schedule/assignments/search", handler.PermView, scheduleHandler.SearchScheduleAssignments)
+	route("POST /team-schedule/absences/search", handler.PermView, scheduleHandler.SearchScheduleAbsences)
+	route("GET /team-schedule/on-duty", handler.PermView, scheduleHandler.GetScheduleOnDuty)
+
+	// Lead edit. PermWrite keeps the control away from a caller who could not
+	// use it at all; whether this particular person leads this particular team
+	// is decided by entity-service, which has the membership to decide it.
+	route("POST /team-schedule/assignments", handler.PermWrite, scheduleHandler.CreateScheduleAssignment)
+	route("PATCH /team-schedule/assignments/{id}", handler.PermWrite, scheduleHandler.UpdateScheduleAssignment)
+	route("DELETE /team-schedule/assignments/{id}", handler.PermWrite, scheduleHandler.DeleteScheduleAssignment)
+	route("GET /team-schedule/activity", handler.PermView, scheduleHandler.GetScheduleActivity)
+	route("GET /team-schedule/edit-markers", handler.PermView, scheduleHandler.GetScheduleEditMarkers)
+	route("GET /team-schedule/my-lead-teams", handler.PermView, scheduleHandler.GetMyLeadTeams)
+	route("POST /team-schedule/assignments/apply", handler.PermWrite, scheduleHandler.ApplyScheduleRange)
+	route("POST /team-schedule/absences/apply", handler.PermWrite, scheduleHandler.ApplyScheduleAbsence)
 	route("POST /configuration-items/search", handler.PermView, configurationItemHandler.SearchConfigurationItems)
 	route("POST /time-cards/search", handler.PermTimeCardsAndUpdates, timeCardHandler.SearchTimeCards)
 	route("POST /time-cards", handler.PermTimeCardsAndUpdates, timeCardHandler.CreateTimeCard)

@@ -207,6 +207,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// Constructed further below (once activeCaseSvc exists), not here —
 	// AutoPublish needs it for its own in-process case-creation fan-out.
 	var announcementRequestHandler *handler.AnnouncementRequestHandler
+	// Team Schedule is portal-native, like announcement_requests: it exists
+	// only in Postgres, so its routes are registered only when a pool is
+	// configured.
+	var scheduleHandler *handler.ScheduleHandler
 
 	accountRepo := repository.NewAccountRepository(db)
 	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
@@ -229,7 +233,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// block builds, so all three are wired together rather than side by side.
 	var membershipIngestSvc service.SalesforceEventService
 	var salesEntityClient *salesentity.Client
-	if db != nil && cfg.DataSource == config.DataSourcePostgres && cfg.SalesEntityConfigured() {
+	// PostgresAuthoritative, not DATA_SOURCE=postgres alone: the dual-write
+	// mode serves memberships from PostgreSQL too, and memberships reach
+	// ServiceNow from Salesforce directly, so nothing here needs its mirror.
+	if db != nil && cfg.PostgresAuthoritative() && cfg.SalesEntityConfigured() {
 		salesEntityClient = salesentity.New(cfg.SalesEntityBaseURL, salesentity.ClientCredentialsConfig{
 			TokenURL:     cfg.SalesEntityTokenURL,
 			ClientID:     cfg.SalesEntityClientID,
@@ -281,10 +288,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 
 	// The portal-driven membership writes. Gated on a pool AND
-	// cfg.HasPortalMembershipWrites() -- the flag, the Postgres data source
+	// cfg.HasPortalMembershipWrites() -- the flag, a Postgres-authoritative data source
 	// and a complete sales-entity-service connection -- because every one of
 	// these writes is half a Postgres transaction and half a Salesforce
-	// call. Off by default: nil handler means the four routes below are
+	// call. Off by default: nil handler means the routes below are
 	// never registered, so a portal built against them fails loudly with a
 	// 404 rather than writing one system and not the other.
 	var projectMembershipHandler *handler.ProjectMembershipHandler
@@ -296,6 +303,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			Publisher:   projectEventPublisher,
 			Failures:    eventPublishFailureSvc,
 			Access:      accessSvc,
+			Invitations: service.NewInvitationValidator(salesEntityClient, repository.NewAccountPartnerRepository(db)),
 		}))
 	}
 
@@ -609,6 +617,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		announcementRequestHandler = handler.NewAnnouncementRequestHandler(
 			service.NewAnnouncementRequestService(repository.NewAnnouncementRequestRepository(db), activeCaseSvc, accessSvc),
 		)
+		scheduleHandler = handler.NewScheduleHandler(
+			service.NewScheduleService(repository.NewScheduleRepository(db), accessSvc),
+		)
 	}
 	// activeAttachmentSvc backs the case-attachment routes registered below
 	// (POST/GET/PATCH/DELETE /attachments...) — see caseAttachmentOverrideSvc's
@@ -653,16 +664,28 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 
 	// case_escalation/case_escalation_notification_list (migration 0054)
-	// now back SearchEscalations on Postgres for real -- CreateEscalation
-	// still isn't supported there (see EscalationRepository's own doc
-	// comment for why), so this supersedes an earlier unconditional
+	// now back both SearchEscalations and CreateEscalation on Postgres for
+	// real -- see EscalationRepository.CreateEscalation's own doc comment
+	// for the level-transition/notification-recipient rule this
+	// approximates. This supersedes an earlier unconditional
 	// unavailableCaseEscalationService stand-in that predated the schema.
-	escalationRepo := repository.NewEscalationRepository(db)
+	escalationNotifyCfg := repository.EscalationNotificationConfig{
+		EL1AmericasTLGroupID:     cfg.EscalationEL1AmericasTLGroupID,
+		EL2AmericasTUGroupID:     cfg.EscalationEL2AmericasTUGroupID,
+		EL2ServiceProductGroupID: cfg.EscalationEL2ServiceProductGroupID,
+		EL2IdentityServerGroupID: cfg.EscalationEL2IdentityServerGroupID,
+		EL2DefaultProductGroupID: cfg.EscalationEL2DefaultProductGroupID,
+		EL3CREHeadGroupID:        cfg.EscalationEL3CREHeadGroupID,
+		EL4CCOGroupID:            cfg.EscalationEL4CCOGroupID,
+		EL4CROGroupID:            cfg.EscalationEL4CROGroupID,
+		EL5CEOGroupID:            cfg.EscalationEL5CEOGroupID,
+	}
+	escalationRepo := repository.NewEscalationRepository(db, escalationNotifyCfg)
 	var activeEscalationSvc service.EscalationService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeEscalationSvc = service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient)
 	} else {
-		activeEscalationSvc = service.NewEscalationService(escalationRepo)
+		activeEscalationSvc = service.NewEscalationService(escalationRepo, userRepo, caseRepo, accessSvc)
 	}
 	escalationHandler := handler.NewEscalationHandler(activeEscalationSvc)
 	caseEscalationHandler := handler.NewCaseEscalationHandler(service.NewCaseEscalationService(activeEscalationSvc, activeCaseSvc))
@@ -987,6 +1010,24 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /alert-incident-mappings", alertIncidentMappingHandler.CreateAlertIncidentMapping)
 		mux.HandleFunc("POST /alert-incident-mappings/lookup", alertIncidentMappingHandler.LookupAlertIncidentMappings)
 	}
+	if scheduleHandler != nil {
+		mux.HandleFunc("GET /team-schedule/catalogue", scheduleHandler.GetScheduleCatalogue)
+		mux.HandleFunc("POST /team-schedule/assignments/search", scheduleHandler.SearchScheduleAssignments)
+		mux.HandleFunc("POST /team-schedule/absences/search", scheduleHandler.SearchScheduleAbsences)
+		mux.HandleFunc("GET /team-schedule/on-duty", scheduleHandler.GetScheduleOnDuty)
+
+		// Lead edit. Own team only -- the service reads the team from the row
+		// being changed rather than from the request, so naming your own team
+		// does not let you edit somebody else's slot.
+		mux.HandleFunc("POST /team-schedule/assignments", scheduleHandler.CreateScheduleAssignment)
+		mux.HandleFunc("PATCH /team-schedule/assignments/{id}", scheduleHandler.UpdateScheduleAssignment)
+		mux.HandleFunc("DELETE /team-schedule/assignments/{id}", scheduleHandler.DeleteScheduleAssignment)
+		mux.HandleFunc("GET /team-schedule/activity", scheduleHandler.GetScheduleActivity)
+		mux.HandleFunc("GET /team-schedule/edit-markers", scheduleHandler.GetScheduleEditMarkers)
+		mux.HandleFunc("GET /team-schedule/my-lead-teams", scheduleHandler.GetMyLeadTeams)
+		mux.HandleFunc("POST /team-schedule/assignments/apply", scheduleHandler.ApplyScheduleRange)
+		mux.HandleFunc("POST /team-schedule/absences/apply", scheduleHandler.ApplyScheduleAbsence)
+	}
 	if announcementRequestHandler != nil {
 		mux.HandleFunc("POST /announcement-requests", announcementRequestHandler.CreateAnnouncementRequest)
 		mux.HandleFunc("GET /announcement-requests/{id}", announcementRequestHandler.GetAnnouncementRequest)
@@ -1057,6 +1098,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// keys a membership; {contactId} on the GET above is a user id, and
 		// the two never collide because the methods differ.
 		mux.HandleFunc("POST /projects/{id}/contacts", projectMembershipHandler.InviteProjectContact)
+		// The invitation's dry run. The literal "validate" segment wins over
+		// {email} by specificity, and no POST is registered on {email} anyway.
+		mux.HandleFunc("POST /projects/{id}/contacts/validate", projectMembershipHandler.ValidateProjectContact)
 		mux.HandleFunc("PATCH /projects/{id}/contacts/{email}", projectMembershipHandler.UpdateProjectContactRoles)
 		mux.HandleFunc("DELETE /projects/{id}/contacts/{email}", projectMembershipHandler.DeactivateProjectContact)
 		mux.HandleFunc("POST /projects/{id}/contacts/{email}/resend-invitation", projectMembershipHandler.ResendProjectContactInvitation)

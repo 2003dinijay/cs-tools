@@ -2133,7 +2133,8 @@ func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]dom
 
 	var watchers []domain.WatchListUser
 	for rows.Next() {
-		var id, userName, name, email string
+		var id, userName, name string
+		var email *string
 		var locked bool
 		if err := rows.Scan(&id, &userName, &name, &email, &locked); err != nil {
 			return nil, fmt.Errorf("scan case watcher: %w", err)
@@ -2142,14 +2143,14 @@ func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]dom
 			ID:       id,
 			UserName: userName,
 			Name:     name,
-			Email:    email,
+			Email:    stringOrEmpty(email),
 			Locked:   locked,
 			// User.ID is always null by contract -- see WatchListUser.User's
 			// own doc comment ("its id is always null: a watch-list entry is
 			// not guaranteed to point at a user record"). Pass "" rather
 			// than id so NewUserReference omits it, even though this
 			// particular row is known to resolve to a real user.
-			User: domain.NewUserReference("", email, name),
+			User: domain.NewUserReference("", stringOrEmpty(email), name),
 		})
 	}
 	if err := rows.Err(); err != nil {

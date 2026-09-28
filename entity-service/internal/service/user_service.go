@@ -32,9 +32,8 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/validate"
 )
-
-var uuidRE = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // emailRE matches the Ballerina `Email` constraint used by the Customer Portal
 // backend (`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`).
@@ -58,7 +57,7 @@ func validateEmail(email string) error {
 // validateUUIDs returns a ValidationError if any element of ids is not a valid UUID.
 func validateUUIDs(field string, ids []string) error {
 	for _, id := range ids {
-		if !uuidRE.MatchString(id) {
+		if !validate.IsUUID(id) {
 			return &apierror.ValidationError{Msg: fmt.Sprintf("%s contains invalid UUID: %q", field, id)}
 		}
 	}

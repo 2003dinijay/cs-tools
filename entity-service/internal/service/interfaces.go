@@ -220,6 +220,12 @@ type ProjectMembershipWriteService interface {
 	// systems, and a project_contact.invited event. A ConflictError when the
 	// address is already an active contact on the project.
 	Invite(ctx context.Context, projectID string, req domain.CreateProjectMembershipRequest) (domain.ProjectMembership, error)
+	// ValidateInvitation is Invite's dry run: the same checks, in the same
+	// order, against the same project and membership, with nothing written
+	// and nothing published. A refused invitation comes back as a
+	// ProjectMembershipValidation with Valid false; an error means the check
+	// itself could not be made.
+	ValidateInvitation(ctx context.Context, projectID string, req domain.ValidateProjectMembershipRequest) (domain.ProjectMembershipValidation, error)
 	// UpdateRoles replaces the membership's Salesforce roles, and with them
 	// its project groups. The state is untouched.
 	UpdateRoles(ctx context.Context, projectID, email string, req domain.UpdateProjectMembershipRolesRequest) (domain.ProjectMembership, error)
