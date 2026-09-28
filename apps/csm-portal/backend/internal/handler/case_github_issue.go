@@ -69,8 +69,8 @@ func (h *CaseHandler) WithEngineeringClient(c engineeringGitIssueClient) *CaseHa
 }
 
 // caseGitHubIssueRequest is the subset of the POST /cases/{id}/github-issues
-// body this path reads. reason only steers the entity service's own repo
-// routing, so it plays no part here: the target is always repoOverride.
+// body this path reads. The target repository is always repoOverride.
+// reason does not choose the repository; "migration" adds Affected/Migration.
 type caseGitHubIssueRequest struct {
 	Title        string `json:"title"`
 	Description  string `json:"description"`
@@ -183,6 +183,10 @@ func buildGitHubIssueLabels(option githubissue.RepoOption, req caseGitHubIssueRe
 
 // reservedIssueLabel reports whether s is a label this builder assigns for a
 // reason other than the product version.
+//
+// The three priority strings are the values of SEVERITY_OPTIONS in
+// CreateGithubIssueDialog.tsx. A new severity there has to be added here too,
+// or an update level with that text would be filed as a label.
 func reservedIssueLabel(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case strings.ToLower(originLabel),
@@ -206,8 +210,13 @@ func reservedIssueLabel(s string) bool {
 // repository through the engineering entity service. The case must exist and be
 // visible to the caller (the entity service enforces that on GetCase).
 //
-// Unlike the entity service's own implementation, this does not write the issue
-// URL back into the case's work notes or tag the case as a regression.
+// When the engineering client is configured, every create uses this path.
+// The catalogue does not split some repositories back to the entity service.
+// After GitHub accepts the issue, a work note with the issue URL is written
+// on the case. That write is best-effort: a failure is logged and the create
+// response is still success, because the issue already exists. Case tags
+// stay on the portal, which already calls POST /cases/{id}/tags and can show
+// a failure there.
 func (h *CaseHandler) createGitHubIssueViaEngineering(w http.ResponseWriter, r *http.Request, user *middleware.UserInfo, caseID string, body []byte) {
 	var req caseGitHubIssueRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -256,12 +265,30 @@ func (h *CaseHandler) createGitHubIssueViaEngineering(w http.ResponseWriter, r *
 	// and labels but no URL, and files issues on github.com, so the URL is built
 	// from the repo and number.
 	slog.InfoContext(r.Context(), "GitHub issue created from case", "userID", user.UserID, "caseID", caseID, "repo", option.Owner+"/"+option.Repo, "number", issue.Number)
+	issueURL := fmt.Sprintf("https://github.com/%s/%s/issues/%d", option.Owner, option.Repo, issue.Number)
+	h.recordGitHubIssueWorkNote(r.Context(), user, caseID, issueURL)
 	writeJSONValue(w, http.StatusCreated, caseGitHubIssueResponse{
 		Message: "GitHub issue created.",
 		Issue: caseGitHubIssueResult{
-			URL:    fmt.Sprintf("https://github.com/%s/%s/issues/%d", option.Owner, option.Repo, issue.Number),
+			URL:    issueURL,
 			Number: issue.Number,
 			Repo:   option.Owner + "/" + option.Repo,
 		},
 	})
+}
+
+// recordGitHubIssueWorkNote leaves the issue URL on the case. Best-effort:
+// the GitHub issue already exists, so a failed note must not fail the create.
+func (h *CaseHandler) recordGitHubIssueWorkNote(ctx context.Context, user *middleware.UserInfo, caseID, issueURL string) {
+	body, err := json.Marshal(map[string]string{
+		"type":    "work_note",
+		"content": "GitHub issue filed: " + issueURL,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to build GitHub issue work note", "userID", user.UserID, "caseID", caseID, "err", err)
+		return
+	}
+	if _, err := h.entity.CreateCaseComment(ctx, caseID, body); err != nil {
+		slog.WarnContext(ctx, "failed to record GitHub issue work note", "userID", user.UserID, "caseID", caseID, "err", err)
+	}
 }
