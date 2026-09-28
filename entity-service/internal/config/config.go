@@ -222,6 +222,21 @@ type Config struct {
 	// token in Authorization: Bearer. AuthUserTokenAudiences are the client ids
 	// (Asgardeo SPA/application ids) an ID token's aud must contain to be
 	// accepted as a user token.
+	// CloudStatusServiceIDs are the business services whose outages are
+	// published to the public cloud status dashboard, as a comma-separated
+	// list of UUIDs (CLOUD_STATUS_SERVICE_IDS).
+	//
+	// These are `service` rows, NOT service offerings. The ServiceNow flow
+	// this ports dot-walked an outage's configuration item AS a service
+	// offering and compared that offering's PARENT against a list of 14 ids.
+	// Setting offering ids here instead would match nothing and the sweep
+	// would silently never fire.
+	//
+	// Empty means the sweep is a no-op, which it logs. That is the safe
+	// default: an unconfigured deployment posts nothing to a public status
+	// page rather than guessing a scope.
+	CloudStatusServiceIDs []string
+
 	AuthIssuer             string
 	AuthJWKSURL            string
 	AuthUserTokenAudiences []string
@@ -308,6 +323,7 @@ func Load() *Config {
 		AuthClockSkew:                                 envDuration("AUTH_CLOCK_SKEW", 30*time.Second),
 		AuthInternalClientIDsRaw:                      os.Getenv("AUTH_INTERNAL_CLIENT_IDS"),
 		CustomerRoles:                                 splitComma(os.Getenv("CUSTOMER_ROLES")),
+		CloudStatusServiceIDs:                         splitComma(os.Getenv("CLOUD_STATUS_SERVICE_IDS")),
 		SalesEntityBaseURL:                            os.Getenv("SALES_ENTITY_BASE_URL"),
 		SalesEntityTokenURL:                           os.Getenv("SALES_ENTITY_TOKEN_URL"),
 		SalesEntityClientID:                           os.Getenv("SALES_ENTITY_CLIENT_ID"),

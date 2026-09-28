@@ -863,6 +863,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if cfg.DataSource == config.DataSourceServiceNow {
 		outageHandler = handler.NewOutageHandler(service.NewServiceNowOutageService(serviceNowIntegrationServiceClient))
 	}
+
+	// cloudStatusHandler is Postgres-only, and unconditionally so even though
+	// the outage endpoints above are ServiceNow-only. It reads the mirrored
+	// `outage` table directly rather than through the integration service:
+	// the sweep is a background decision over every in-scope outage, not a
+	// user-facing read, and routing it through ServiceNow would both reproduce
+	// the flow it is replacing and make the port depend on the system being
+	// decommissioned.
+	cloudStatusHandler := handler.NewCloudStatusHandler(
+		service.NewCloudStatusService(repository.NewCloudStatusRepository(db), cfg.CloudStatusServiceIDs),
+	)
 	// globalHandler is wired for both data sources now: GetSystemMetadata has
 	// a Postgres-backed implementation (globalService, reusing
 	// referenceDataRepo above); GlobalSearch does not yet, and returns a
@@ -1220,6 +1231,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /outages/{id}/communications", outageHandler.AddOutageCommunication)
 		mux.HandleFunc("POST /outages/{id}/communications/search", outageHandler.SearchOutageCommunications)
 	}
+
+	// Cloud status webhooks: service-to-service, called by csm-scheduled-tasks.
+	mux.HandleFunc("POST /internal/cloud-status/sweep", cloudStatusHandler.Sweep)
+	mux.HandleFunc("GET /internal/cloud-status/pending", cloudStatusHandler.Pending)
+	mux.HandleFunc("POST /internal/cloud-status/{id}/delivery", cloudStatusHandler.RecordDelivery)
 
 	mux.HandleFunc("POST /problems", problemHandler.CreateProblem)
 	mux.HandleFunc("POST /problems/search", problemHandler.SearchProblems)

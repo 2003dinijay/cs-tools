@@ -1217,3 +1217,24 @@ type OutageService interface {
 	// channels, monitored clouds) needed to render an outage create/edit form.
 	GetOutageMetadata(ctx context.Context) (domain.OutageMetadataResponse, error)
 }
+
+// CloudStatusService decides which outages owe the public status dashboard a
+// webhook, and records what was delivered.
+//
+// The port of ServiceNow's `Cloud Status Event Notification Flow`. It decides
+// and records only; the posting is done by csm-scheduled-tasks, the same
+// division the outage and query-hour notices use.
+type CloudStatusService interface {
+	// Sweep records a webhook for every in-scope outage transition not
+	// already recorded. It is idempotent: a sweep that finds nothing new
+	// records nothing, which is the steady state.
+	Sweep(ctx context.Context) (domain.CloudStatusSweepResponse, error)
+
+	// PendingWebhooks returns the webhooks still owed to the dashboard, with
+	// their cloud already translated to the dashboard's slug.
+	PendingWebhooks(ctx context.Context) (domain.PendingCloudStatusWebhooksResponse, error)
+
+	// RecordDelivery stamps the outcome of one attempt. A ValidationError is
+	// returned when a failure is reported without an error message.
+	RecordDelivery(ctx context.Context, req domain.RecordCloudStatusDeliveryRequest) error
+}

@@ -1163,6 +1163,94 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /internal/cloud-status/sweep:
+    post:
+      summary: >-
+        Internal-caller-only. Re-derives which outage transitions the public
+        cloud status dashboards are owed and records any not already recorded.
+        Decides only — sends nothing. The port of ServiceNow's `Cloud Status
+        Event Notification Flow`; invoked by operations/csm-scheduled-tasks'
+        cloud_status_webhooks sub-cron immediately before it delivers.
+        Idempotent: a sweep that finds nothing new records nothing, which is
+        the steady state.
+      operationId: sweepCloudStatusTransitions
+      responses:
+        "200":
+          description: The sweep ran. Recorded is 0 in the steady state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudStatusSweepResult'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/cloud-status/pending:
+    get:
+      summary: >-
+        Internal-caller-only. Returns the cloud status webhooks still owed to
+        the public dashboards and not yet past their attempt limit, oldest
+        first, with each cloud already translated to the slug the dashboards
+        are addressed by.
+      operationId: listPendingCloudStatusWebhooks
+      responses:
+        "200":
+          description: The webhooks still owed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PendingCloudStatusWebhooks'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/cloud-status/{id}/delivery:
+    post:
+      summary: >-
+        Internal-caller-only. Records the outcome of one webhook attempt.
+        Increments the attempt count on success and failure alike — it counts
+        what was tried, not what failed.
+      operationId: recordCloudStatusDelivery
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloudStatusDeliveryReport'
+      responses:
+        "204":
+          description: Outcome recorded.
+        "400":
+          description: >-
+            BadRequest — invalid id, or a failure reported with no error
+            message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such webhook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /scheduled-tasks/attempts:
     post:
       summary: >-
@@ -18442,6 +18530,79 @@ components:
         offset:
           type: integer
 
+    CloudStatusSweepResult:
+      type: object
+      properties:
+        scanned:
+          type: integer
+          description: How many in-scope outages the sweep considered.
+        recorded:
+          type: integer
+          description: >-
+            How many new transitions were recorded. 0 is the steady state — a
+            sweep that records nothing is working correctly.
+        skippedNoCloud:
+          type: integer
+          description: >-
+            In-scope outages whose configuration item has no cloud monitor, or
+            whose cloud offering this build cannot address, and which therefore
+            cannot be routed to any dashboard. Non-zero means those outages are
+            never reaching the status page — a data problem in the outage
+            record, not a failure of the sweep.
+      required: [scanned, recorded, skippedNoCloud]
+    PendingCloudStatusWebhook:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        outageId:
+          type: string
+          format: uuid
+        number:
+          type: string
+          description: >-
+            The outage number, for logging and for whoever reads a failure. Not
+            part of the webhook body sent to the dashboard.
+        event:
+          type: string
+          enum: [OUTAGE_BEGIN, OUTAGE_END]
+        cloud:
+          type: string
+          description: >-
+            The dashboard slug, already translated from the stored offering
+            enum — e.g. "choreo-eu", not "CHOREO_EU".
+        timestamp:
+          type: string
+          format: date-time
+          description: >-
+            The outage's own begin or end instant, matching event — not the
+            moment of sending, so a delayed or retried webhook still reports
+            when the outage actually changed.
+        attemptCount:
+          type: integer
+        lastError:
+          type: string
+      required: [id, outageId, number, event, cloud, timestamp, attemptCount]
+    PendingCloudStatusWebhooks:
+      type: object
+      properties:
+        count:
+          type: integer
+        webhooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PendingCloudStatusWebhook'
+      required: [count, webhooks]
+    CloudStatusDeliveryReport:
+      type: object
+      properties:
+        delivered:
+          type: boolean
+        error:
+          type: string
+          description: Required when delivered is false.
+      required: [delivered]
     AnnouncementRequest:
       description: >
         A draft, in-review, or approved announcement that has not yet been
