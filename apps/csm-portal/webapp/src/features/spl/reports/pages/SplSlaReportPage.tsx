@@ -56,6 +56,20 @@ import DividedCell from "@features/spl/reports/components/DividedCell";
 import type { CaseDataList, SLAReportResponse } from "@features/spl/reports/api/reportTypes";
 import "@features/spl/reports/styles/SLAReport.css";
 
+// This report's case rows are still ServiceNow-sourced (see
+// postgresSplReportsClient's own doc comment on the backend -- report case
+// data isn't part of the accounts/projects/cases entity-service merge), so
+// caseSysId is a bare 32-character ServiceNow sys_id, not entity-service's
+// own dashed UUID. entity-service's Postgres id for a ServiceNow-sourced
+// case IS that same sys_id, just reformatted with hyphens at the standard
+// 8-4-4-4-12 positions (confirmed against the backend's own sysidToUUID) --
+// so inserting them here is what SPL's own /spl/cases/:caseId route (which
+// validates a dashed UUID) needs to resolve the right case.
+function caseSysIdToUuid(sysId: string): string {
+  if (!/^[0-9a-fA-F]{32}$/.test(sysId)) return sysId;
+  return `${sysId.slice(0, 8)}-${sysId.slice(8, 12)}-${sysId.slice(12, 16)}-${sysId.slice(16, 20)}-${sysId.slice(20)}`;
+}
+
 // Hoisted out of the page component — this codebase's lint config
 // (react-hooks/static-components, for React Compiler compatibility) forbids
 // components whose identity is recreated on every render.
@@ -347,8 +361,8 @@ export default function SplSlaReportPage(): JSX.Element {
   const handleToChange = (newValue: Dayjs | null) => newValue && setTo(newValue.format("YYYY-MM-DD"));
 
   const handleRowClick = (rowData: CaseDataList) => {
-    if (rowData?.caseNumber !== "") {
-      window.open(`/cases/${rowData.caseNumber}`, "_blank");
+    if (rowData?.caseSysId) {
+      window.open(`/spl/cases/${caseSysIdToUuid(rowData.caseSysId)}`, "_blank");
     } else {
       setErrorMessage("Case not found.");
     }

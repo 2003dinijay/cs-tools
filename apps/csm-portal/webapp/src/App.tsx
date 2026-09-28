@@ -116,10 +116,12 @@ import SplProjectDetailPage from "@features/spl/projects/pages/SplProjectDetailP
 import SplSlaReportPage from "@features/spl/reports/pages/SplSlaReportPage";
 import SplCsReportPage from "@features/spl/reports/pages/SplCsReportPage";
 import SplTimelogsReportPage from "@features/spl/reports/pages/SplTimelogsReportPage";
+import SplTeamSchedulePage from "@features/spl/schedule/pages/SplTeamSchedulePage";
+import SplUserScanPage from "@features/spl/user-scan/pages/SplUserScanPage";
+import SplUsageMetricsPage from "@features/spl/usage-metrics/pages/SplUsageMetricsPage";
 import SplCustomerHealthDashboardPage from "@features/spl/customer-health/pages/SplCustomerHealthDashboardPage";
 import SplCustomerHealthDetailPage from "@features/spl/customer-health/pages/SplCustomerHealthDetailPage";
-// Cases, Team schedule, User scan and Usage metrics land in their own
-// follow-up PRs (feat/spl-merge-2-cases, feat/spl-merge-3b-*) -- see this
+// Cases lands in its own follow-up PR (feat/spl-merge-2-cases) -- see this
 // PR's own description for why this port was split by domain.
 
 /**
@@ -637,10 +639,9 @@ export default function App(): JSX.Element {
                       real enforcement point (an audience-gate 403, not just
                       a hidden nav entry) and also mounts
                       SplPermissionProvider for every screen below it.
-                      Cases, Team schedule, User scan and Usage metrics land
-                      in their own follow-up PRs -- this port was split by
-                      domain to stay under CodeRabbit's 100-file review
-                      limit. */}
+                      Cases lands in its own follow-up PR -- this port was
+                      split by domain to stay under CodeRabbit's 100-file
+                      review limit. */}
                   <Route path="spl" element={<SplRouteGuard />}>
                     {/* SplAccountsPage reads the path leaf itself to decide
                         all-accounts vs my-accounts — same component, two
@@ -672,6 +673,13 @@ export default function App(): JSX.Element {
                       path="projects/:projectId/timelogs-report"
                       element={<SplTimelogsReportPage />}
                     />
+
+                    <Route path="team-schedule" element={<SplTeamSchedulePage />} />
+                    <Route path="team-schedule/:sysId" element={<SplTeamSchedulePage />} />
+
+                    <Route path="user-scan" element={<SplUserScanPage />} />
+
+                    <Route path="usage-metrics" element={<SplUsageMetricsPage />} />
 
                     <Route
                       path="customer-health"
