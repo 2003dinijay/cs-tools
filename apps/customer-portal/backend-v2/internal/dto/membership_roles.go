@@ -185,12 +185,6 @@ func flagsFromProjectRoles(roles []string) membershipRoleFlags {
 	return f
 }
 
-// IsProjectAdmin reports whether a database contact row carries the ADMIN
-// project role.
-func IsProjectAdmin(c entity.ProjectContact) bool {
-	return flagsFromProjectRoles(c.Roles).IsCsAdmin
-}
-
 // MapEntityProjectContact renders a database contact row in the portal's own
 // Contact shape, so the settings page is unchanged by where the list is read
 // from.

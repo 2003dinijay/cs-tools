@@ -105,6 +105,13 @@ type fakeMemberships struct {
 	// call arrived: whether it was already cancelled, whether it carried a
 	// deadline, and whether the request's values survived.
 	seen []writeContext
+	// roles are the caller's account roles as GET /users/me returns them.
+	roles []string
+	meErr error
+}
+
+func (f *fakeMemberships) GetMe(context.Context) (entity.GetUserMeResponse, error) {
+	return entity.GetUserMeResponse{Email: testCaller, Roles: f.roles}, f.meErr
 }
 
 type writeContext struct {
@@ -167,9 +174,12 @@ func newContactMux(portalContacts, withClient bool) (*http.ServeMux, contactFake
 	f := contactFakes{
 		resolver: &fakeProjectResolver{},
 		legacy:   &fakeLegacyContacts{},
-		memberships: &fakeMemberships{contacts: []entity.ProjectContact{
-			{Email: testCaller, RegistrationState: "REGISTERED", Roles: []string{"ADMIN", "PORTAL_USER"}},
-		}},
+		memberships: &fakeMemberships{
+			roles: []string{"external", "customer", "customer_admin"},
+			contacts: []entity.ProjectContact{
+				{Email: testCaller, RegistrationState: "REGISTERED", Roles: []string{"PORTAL_USER"}},
+			},
+		},
 	}
 	var mc membershipsClient
 	if withClient {
@@ -457,19 +467,28 @@ var portalWriteRequests = []struct {
 // leaves to the portal: a signed-in user who is not an active CS admin of the
 // project must get 403 and nothing may reach entity-service.
 func TestPortalContacts_RefuseCallerWhoIsNotProjectAdmin(t *testing.T) {
+	member := []entity.ProjectContact{{Email: testCaller, RegistrationState: "REGISTERED", Roles: []string{"PORTAL_USER"}}}
 	callers := []struct {
 		name     string
+		roles    []string
 		contacts []entity.ProjectContact
 	}{
-		{"not on the project", []entity.ProjectContact{{Email: "someone@acme.com", RegistrationState: "REGISTERED", Roles: []string{"ADMIN"}}}},
-		{"on the project without admin", []entity.ProjectContact{{Email: testCaller, RegistrationState: "REGISTERED", Roles: []string{"PORTAL_USER", "LEAD_USER"}}}},
-		{"deactivated admin", []entity.ProjectContact{{Email: testCaller, RegistrationState: "Deactivated", Roles: []string{"ADMIN"}}}},
-		{"empty contact list", nil},
+		{"member without an account admin role", []string{"external", "customer"}, member},
+		// A project ADMIN role alone does not count: admin is the account role.
+		{"project ADMIN but no account role", []string{"external", "customer"},
+			[]entity.ProjectContact{{Email: testCaller, RegistrationState: "REGISTERED", Roles: []string{"ADMIN"}}}},
+		{"account admin not on the project", []string{"customer_admin"},
+			[]entity.ProjectContact{{Email: "someone@acme.com", RegistrationState: "REGISTERED"}}},
+		{"account admin with a deactivated membership", []string{"customer_admin"},
+			[]entity.ProjectContact{{Email: testCaller, RegistrationState: "Deactivated"}}},
+		{"account admin, empty contact list", []string{"customer_admin"}, nil},
+		{"no roles at all", nil, member},
 	}
 	for _, caller := range callers {
 		for _, rq := range portalWriteRequests {
 			t.Run(caller.name+"/"+rq.name, func(t *testing.T) {
 				mux, f := newContactMux(true, true)
+				f.memberships.roles = caller.roles
 				f.memberships.contacts = caller.contacts
 
 				rec := serveContact(mux, rq.method, rq.path, rq.body)
@@ -485,14 +504,57 @@ func TestPortalContacts_RefuseCallerWhoIsNotProjectAdmin(t *testing.T) {
 	}
 }
 
+// TestPortalContacts_AllowAccountAdminWhoIsAMember: either account admin
+// role is enough on a project the caller belongs to, whatever roles their
+// own membership there carries.
+func TestPortalContacts_AllowAccountAdminWhoIsAMember(t *testing.T) {
+	for _, role := range []string{"customer_admin", "partner_admin", "CUSTOMER_ADMIN"} {
+		for _, rq := range portalWriteRequests {
+			t.Run(role+"/"+rq.name, func(t *testing.T) {
+				mux, f := newContactMux(true, true)
+				f.memberships.roles = []string{"external", role}
+
+				rec := serveContact(mux, rq.method, rq.path, rq.body)
+
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+				}
+				if len(f.memberships.calls) != 1 {
+					t.Errorf("entity writes = %v, want exactly one", f.memberships.calls)
+				}
+			})
+		}
+	}
+}
+
+// TestPortalContacts_RoleLookupFailureBlocksWrite: when the caller's roles
+// cannot be read, the write must not go ahead.
+func TestPortalContacts_RoleLookupFailureBlocksWrite(t *testing.T) {
+	for _, rq := range portalWriteRequests {
+		t.Run(rq.name, func(t *testing.T) {
+			mux, f := newContactMux(true, true)
+			f.memberships.meErr = apierror.NewUpstreamError(http.StatusBadGateway, nil)
+
+			rec := serveContact(mux, rq.method, rq.path, rq.body)
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503; body %s", rec.Code, rec.Body)
+			}
+			if len(f.memberships.calls) != 0 || f.memberships.listed != 0 {
+				t.Errorf("entity writes = %v, contact list reads = %d; want none", f.memberships.calls, f.memberships.listed)
+			}
+		})
+	}
+}
+
 // TestPortalContacts_AdminEmailMatchIgnoresCase: Salesforce does not keep the
 // casing the address was typed in, and a case mismatch must not lock an
-// admin out of their own project.
+// admin out of a project they belong to.
 func TestPortalContacts_AdminEmailMatchIgnoresCase(t *testing.T) {
 	for _, rq := range portalWriteRequests {
 		t.Run(rq.name, func(t *testing.T) {
 			mux, f := newContactMux(true, true)
-			f.memberships.contacts = []entity.ProjectContact{{Email: " Admin@ACME.com ", RegistrationState: "REGISTERED", Roles: []string{"admin"}}}
+			f.memberships.contacts = []entity.ProjectContact{{Email: " Admin@ACME.com ", RegistrationState: "REGISTERED"}}
 
 			rec := serveContact(mux, rq.method, rq.path, rq.body)
 

@@ -172,7 +172,7 @@ A separate service (not entity-service, not SCIM) — see
 | `AUTH_ISSUER` | Expected `iss` claim value |
 | `AUTH_AUDIENCE` | Comma-separated accepted `aud` values |
 | `AUTH_TOKEN_VALIDATOR_ENABLED` | `false` skips JWT signature verification — **local development only**; `.env.example` ships `false` for local convenience. Production **must** set this to `true` with a real `AUTH_JWKS_ENDPOINT`/`AUTH_ISSUER`/`AUTH_AUDIENCE` |
-| `AUTH_ADMIN_ROLE` | The role string (from entity-service's `GET /users/me` `roles`) that grants admin privileges for registry-token and project-contact management |
+| `AUTH_ADMIN_ROLE` | The role string (from entity-service's `GET /users/me` `roles`) that grants admin privileges for registry-token management. Project-contact writes under `CSM_MIGRATION_PORTAL_CONTACTS_ENABLED` use the account admin roles `customer_admin` and `partner_admin` instead, together with an active membership on the project |
 
 ### ServiceNow-to-CSM cutover
 
