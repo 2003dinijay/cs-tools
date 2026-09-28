@@ -29,7 +29,11 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/db"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/eventbus"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/github"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/server"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
 
 func main() {
@@ -42,16 +46,100 @@ func main() {
 		log.Fatalf("invalid configuration: %v", err)
 	}
 
+	// A database is mandatory for DATA_SOURCE=postgres and skipped entirely
+	// for servicenow, where entity traffic goes to the SN integration
+	// service instead. With no pool the Postgres-only feature sets
+	// (event_publish_failures, sla_clocks, scheduled_task_run) are left
+	// unregistered rather than failing startup — see db.NewPoolIfNeeded and
+	// server.NewRouter.
 	pool, err := db.NewPoolIfNeeded(cfg)
 	if err != nil {
 		log.Fatalf("connect to database: %v", err)
 	}
 	if pool != nil {
 		defer pool.Close()
+	} else {
+		log.Printf("no database pool (DATA_SOURCE=%s): event-publish-failures, sla-clocks, and scheduled-task-run endpoints are disabled", cfg.DataSource)
 	}
 
 	addr := ":" + cfg.ServerPort
-	srv, eventPublisher := server.New(addr, pool, cfg)
+	srv, closePublishers := server.New(addr, pool, cfg)
+
+	// The outbound GitHub worker: drains github_outbound_queue and pushes
+	// change-request activity to the linked issue. Same gate as the webhook --
+	// one switch turns the whole integration on or off, so it can never run
+	// half-connected.
+	githubCtx, stopGithub := context.WithCancel(context.Background())
+	defer stopGithub()
+	if cfg.HasGithubIntegration() {
+		if pool == nil {
+			log.Printf("GITHUB_INTEGRATION_ENABLED is set but there is no database pool (DATA_SOURCE=%s): the outbound worker is disabled", cfg.DataSource)
+		} else {
+			worker := service.NewGithubOutboundWorker(
+				repository.NewGithubOutboundRepository(pool),
+				service.NewGithubOutboundService(
+					github.NewClient(github.Config{BaseURL: cfg.GithubBaseURL, Token: cfg.GithubToken}),
+				),
+				cfg.GithubOutboundInterval,
+			)
+			go worker.Run(githubCtx)
+			log.Printf("github outbound worker enabled (every %s)", cfg.GithubOutboundInterval)
+		}
+	}
+
+	// CSM-native SLA engine recompute worker: periodically recomputes every
+	// source='CSM' "sla" row's elaped percentage/breach status (migration
+	// 000088) — see service.SLAEngineRecomputeWorker's own doc comment.
+	// Gated on pool the same way the GitHub outbound worker above is:
+	// nowhere to read/write a clock at all with no database configured.
+	slaEngineCtx, stopSLAEngine := context.WithCancel(context.Background())
+	defer stopSLAEngine()
+	if pool != nil {
+		slaEngineWorker := service.NewSLAEngineRecomputeWorker(repository.NewSLAEngineRepository(pool), cfg.SLARecomputeInterval)
+		go slaEngineWorker.Run(slaEngineCtx)
+		log.Printf("sla engine recompute worker enabled (every %s)", cfg.SLARecomputeInterval)
+	}
+
+	// Change-request notices: a background poller over event_outbox, gated on
+	// CR_NOTICES_ENABLED. Off by default because ServiceNow still sends these
+	// mails — turning it on is a paired change with disabling them there, or
+	// every approver is notified twice.
+	//
+	// Its own producer on its own topic, NOT the case-events one above. Every
+	// consumer group reads its whole topic, so sharing would make the case
+	// consumer read and discard every change-request record and vice versa —
+	// a separate topic is what isolates the two volumes, where a separate
+	// consumer group would only isolate the processing.
+	crNoticeCtx, stopCRNotices := context.WithCancel(context.Background())
+	defer stopCRNotices()
+	var crPublisher service.EventPublisherService
+	if cfg.CRNoticesEnabled {
+		switch {
+		case pool == nil:
+			log.Printf("CR_NOTICES_ENABLED is set but there is no database pool (DATA_SOURCE=%s): change-request notices are disabled", cfg.DataSource)
+		case cfg.EventHubBroker == "" || !cfg.EventPublishingEnabled:
+			log.Printf("CR_NOTICES_ENABLED is set but event publishing is not configured (EVENT_HUB_BROKER/EVENT_PUBLISHING_ENABLED): change-request notices are disabled")
+		case cfg.CREventHubTopic == "":
+			log.Printf("CR_NOTICES_ENABLED is set but CR_EVENT_HUB_TOPIC is empty: change-request notices are disabled")
+		default:
+			crPublisher = service.NewEventPublisherService(
+				eventbus.NewProducer(eventbus.Config{
+					Broker:           cfg.EventHubBroker,
+					ConnectionString: cfg.EventHubConnectionString,
+					Topic:            cfg.CREventHubTopic,
+				}),
+				service.NewEventPublishFailureService(repository.NewEventPublishFailureRepository(pool)),
+			)
+			crRepo := repository.NewCRNoticeRepository(pool)
+			drainer := service.NewCRNoticeDrainer(
+				crRepo,
+				service.NewCRNoticeService(crRepo, crPublisher),
+				cfg.CRNoticePollInterval,
+			)
+			go drainer.Run(crNoticeCtx)
+			log.Printf("change-request notices enabled: publishing to topic %q every %s", cfg.CREventHubTopic, cfg.CRNoticePollInterval)
+		}
+	}
 
 	// The health probe listens separately, on its own port, so that only its
 	// own route is reachable at the public visibility it is published with —
@@ -92,8 +180,15 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("graceful shutdown failed: %v", err)
 	}
-	if eventPublisher != nil {
-		eventPublisher.Close()
+	// Closes both of the router's producers -- the shared event topic and
+	// the onboarding one.
+	closePublishers()
+	// Stop the drainer before closing its producer, so a notice in flight is
+	// not handed a writer that has already gone away.
+	stopCRNotices()
+	if crPublisher != nil {
+		crPublisher.Close()
 	}
+	stopSLAEngine()
 	log.Println("server stopped")
 }

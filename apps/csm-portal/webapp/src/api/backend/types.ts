@@ -37,6 +37,34 @@ export interface BeErrorPayload {
   message?: string;
 }
 
+/** CSM list that owns a saved filter view. Isolated so views never leak across lists. */
+export type BeSavedFilterListKey = "cases" | "incidents" | "change_requests" | "problems";
+
+/** Named bookmark of a list URL query string. `qs` is opaque. */
+export interface BeSavedFilterView {
+  name: string;
+  qs: string;
+}
+
+export interface BeSavedFilterViewList {
+  views: BeSavedFilterView[];
+}
+
+export interface BeSaveSavedFilterViewPayload {
+  listKey: BeSavedFilterListKey;
+  name: string;
+  qs: string;
+}
+
+export interface BeReorderSavedFilterViewPayload {
+  listKey: BeSavedFilterListKey;
+  name: string;
+  /** One-slot move. Omit when `position` is set. */
+  direction?: "up" | "down";
+  /** 0-based target index. Wins over `direction` when both are set. */
+  position?: number;
+}
+
 export interface BeSearchResponseBase {
   total: number;
   limit: number;
@@ -588,6 +616,8 @@ export interface BeAnnouncementCreatePayload {
   projectId: string;
   subject: string;
   description: string;
+  /** Decides the case's default email audience on the backend: SECURITY_CONTACT project-role contacts when true, PORTAL_USER contacts otherwise. */
+  isSecurityAnnouncement: boolean;
 }
 
 /**
@@ -833,8 +863,12 @@ export type BeCaseUpdatePayload =
   | (Omit<BeCaseUpdateNever, "type"> & { type: "security_report_analysis" })
   /** Work sub-state toggle (`ongoing` / `paused`) for an in-progress case. */
   | (Omit<BeCaseUpdateNever, "workState"> & { workState: BeCaseWorkState })
-  /** Email of the engineer to assign (ServiceNow only). */
-  | (Omit<BeCaseUpdateNever, "assigneeEmail"> & { assigneeEmail: string })
+  /**
+   * Email of the engineer to assign (ServiceNow only). `null` clears the
+   * assignee instead of assigning one — distinct from omitting the field,
+   * which the backend rejects as an empty update.
+   */
+  | (Omit<BeCaseUpdateNever, "assigneeEmail"> & { assigneeEmail: string | null })
   /**
    * Full replacement watch list, as platform user UUIDs — not a delta, and
    * not emails: the backend resolves each id to whatever identifier the
@@ -1278,17 +1312,35 @@ export interface BeComment {
   id: string;
   /** Parent reference id — the case id or conversation id per the endpoint. */
   referenceId?: string;
-  /** Rich-text HTML (case comment) or Markdown (Novera chat) body. */
+  /** Rich-text HTML (case comment) or Markdown (Novera chat) body. Once
+   * `isDeleted` is true, this is the literal string `"[deleted]"` for a
+   * non-admin internal caller, or the real (never-destroyed) content for an
+   * admin — the frontend renders whatever is given here, no client-side
+   * redaction. */
   content: string;
   /** Normalized comment type; `string` (not the enum) to tolerate new values. */
   type: string;
   createdOn: string;
   createdBy: BeUserReference | null;
+  /** ISO timestamp of the comment's most recent edit. Present once a comment
+   * has been edited at least once via `PATCH /comments/{id}`; absent on a
+   * never-edited comment. */
+  lastEditedOn?: string;
+  /** True once the comment has been soft-deleted via `DELETE /comments/{id}`.
+   * A customer-role caller never receives a soft-deleted row at all, so this
+   * only ever appears for an internal caller. `omitempty` on the wire — absent
+   * or false on a never-deleted comment. */
+  isDeleted?: boolean;
 }
 
 export interface BeCommentSearchResponse extends BeSearchResponseBase {
   /** Optional: the backend may omit the array on an empty result. */
   comments?: BeComment[];
+}
+
+/** Body of `PATCH /comments/{id}`. */
+export interface BeCommentPatchPayload {
+  content: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1530,6 +1582,15 @@ export interface BeAttachmentUploadTokenRequest {
   mimeType: string;
   sizeBytes: number;
   description?: string | null;
+  /**
+   * Reference entity type for the attachment being minted. Optional; the BE
+   * defaults to `"case"` when omitted. Only `"case"` is actually supported by
+   * direct-upload storage today — `"change_request"`/`"incident"` are
+   * authorized but rejected with a deterministic 422, so the webapp routes
+   * those two through the legacy base64 path instead of calling this
+   * endpoint at all.
+   */
+  referenceType?: BeReferenceType;
 }
 
 /**
@@ -1643,6 +1704,18 @@ export interface BeUser {
   userType?: BeUserType;
   createdAt?: string;
   updatedAt?: string;
+}
+
+/**
+ * `POST /users` request body. At least one of firstName/lastName is
+ * required. `roles` is accepted by the backend but not currently sent by the
+ * webapp — there is no Asgardeo-backed way to browse/assign roles at
+ * account-creation time yet.
+ */
+export interface BeCreateUserPayload {
+  firstName?: string;
+  lastName?: string;
+  email: string;
 }
 
 export interface BeUserSearchFilters {
@@ -1845,6 +1918,70 @@ export interface BeProjectContactSearchResponse {
   offset: number;
   limit: number;
   total: number;
+}
+
+// ---------------------------------------------------------------------------
+// Project onboarding steps (GET /projects/{id}/onboarding-steps — behind the
+// CSM_MIGRATION_ONBOARDING_STATUS_ENABLED flag on both backend and webapp)
+// ---------------------------------------------------------------------------
+
+/**
+ * One step of the customer onboarding flow, in the order it runs. DATABASE is
+ * the csm-platform write done by the Salesforce membership ingest; IDENTITY
+ * the Asgardeo user provisioned via the SCIM service; EMAIL the invitation
+ * email; REGISTRATION the member's first sign-in.
+ */
+export type BeOnboardingStepName = "IDENTITY" | "DATABASE" | "EMAIL" | "REGISTRATION";
+
+/** SKIPPED marks a step that does not apply (e.g. IDENTITY and EMAIL for an integration user). */
+export type BeOnboardingStepStatus = "SUCCEEDED" | "FAILED" | "SKIPPED";
+
+/**
+ * The latest recorded outcome of one onboarding step for one membership,
+ * exactly as the entity service's ledger holds it — nothing is derived.
+ */
+export interface BeProjectOnboardingStep {
+  step: BeOnboardingStepName;
+  status: BeOnboardingStepStatus;
+  /** How many times this step has been recorded for the membership; 1 on first write. */
+  attemptCount: number;
+  /**
+   * The error of the most recent FAILED write, null once the step succeeds.
+   * Upstream error text — render it as plain text only.
+   */
+  lastError: string | null;
+  /** The Salesforce event type (CREATED, UPDATED, RESTORED, ...) or caller-defined trigger. */
+  eventType: string;
+  eventModifiedOn: string;
+  updatedOn: string;
+}
+
+/**
+ * Every recorded onboarding step of one Salesforce Project_Contact__c
+ * membership (one invited email on this project), in flow order. Matched to
+ * a {@link BeProjectContact} row by lower-cased `email` — the contact row
+ * carries no membership or `project_contact` id.
+ */
+export interface BeProjectOnboardingMembership {
+  membershipSfId: string;
+  contactSfId: string | null;
+  /** The invited email, lower-cased. */
+  email: string;
+  /** csm-platform project_contact row, set once DATABASE succeeded. */
+  projectContactId: string | null;
+  steps: BeProjectOnboardingStep[];
+}
+
+export interface BeProjectOnboardingStepsResponse {
+  /** Ordered by email, then membership id. */
+  memberships: BeProjectOnboardingMembership[];
+  /** Number of memberships (not of step rows). */
+  total: number;
+  /**
+   * True when the project's ledger had more rows than the backend walks, so
+   * some memberships may be missing or incomplete.
+   */
+  truncated: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -2243,8 +2380,10 @@ export interface BeCreateCaseGithubIssuePayload {
   hotFixRequired?: boolean;
   /** Issue-type label to apply on GitHub (e.g. "Type/Patch", "Type/Incident"). */
   issueTypeLabel?: string;
-  /** Priority label, applied only when `issueTypeLabel` is "Type/Incident". */
+  /** Priority label, applied when the type is Discussion. */
   priorityLevel?: string;
+  /** Project onboarding status is In-Progress. Adds Onboarding/affected. */
+  onboardingInProgress?: boolean;
 }
 
 /** `POST /cases/{id}/github-issues` response. */
@@ -2784,6 +2923,7 @@ export interface BeItService {
   class?: string | null;
   businessCriticality?: string | null;
   serviceClassification?: string | null;
+  supportGroup?: BeEntityRef | null;
 }
 
 export interface BeItServiceSearchPayload {
@@ -3094,6 +3234,7 @@ export interface BeIncidentDetail extends BeIncident {
   contactType?: BeIncidentContactType | null;
   impact?: BeIncidentImpact | null;
   urgency?: BeIncidentUrgency | null;
+  environment?: string | null;
   changeRequest?: BeEntityRef | null;
   problem?: BeEntityRef | null;
   causedBy?: BeEntityRef | null;
@@ -3136,9 +3277,15 @@ export interface BeCreateIncidentPayload {
   additionalComments?: string;
   workNotes?: string;
   parentId?: string;
+  /** Links this incident to another incident as its parent (ServiceNow's
+   * dedicated `parent_incident` self-reference on the Incident table) —
+   * distinct from the generic `parentId` above, which links to a case,
+   * change request, or problem instead. */
+  parentIncidentId?: string;
   changeRequestId?: string;
   problemId?: string;
   causedById?: string;
+  environment?: string;
 }
 
 /** `POST /incidents` response — the created identifiers. */
@@ -3208,6 +3355,7 @@ export interface BeUpdateIncidentPayload {
   changeRequestId?: string | null;
   problemId?: string | null;
   causedById?: string | null;
+  environment?: string | null;
 }
 
 /** `PATCH /incidents/{id}` response — the full updated incident. */

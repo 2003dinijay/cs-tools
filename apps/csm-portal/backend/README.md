@@ -131,14 +131,24 @@ Backs `entity.CustomerEntityClient` (this repo's entity-service; cases, accounts
 | `CUSTOMER_ENTITY_BASE_URL` | Base URL of the customer entity service |
 | `CUSTOMER_ENTITY_SCOPES` | Comma-separated OAuth2 scopes (optional) |
 
-### Engineering entity service (not yet wired in)
+### Engineering entity service (optional)
 
-Backs `entity.EngineeringEntityClient.CreateGitIssue` (a separate internal engineering entity service) but is not constructed in `cmd/server/main.go` — no handler calls it yet. These variables are not read by any code today. It uses the same shared OAuth2 credentials above (same `OAUTH2_CLIENT_ID`/`_CLIENT_SECRET`/`_TOKEN_URL`) — only its base URL and scopes are its own.
+Backs `entity.EngineeringEntityClient.CreateGitIssue` (a separate internal engineering entity service). When `ENGINEERING_ENTITY_BASE_URL` is set, `POST /cases/{id}/github-issues` files the issue through it instead of forwarding to the entity service; unset, that endpoint behaves exactly as before. It uses the same shared OAuth2 credentials above (`OAUTH2_CLIENT_ID`/`_CLIENT_SECRET`/`_TOKEN_URL`) — only its base URL and scopes are its own. The same configuration also backs its `GET /health/dependencies` check (see [Health](#health) above); unset, that dependency reports `not_configured` there too.
 
 | Variable | Description |
 |---|---|
-| `ENGINEERING_ENTITY_BASE_URL` | Base URL of the engineering entity service (optional) |
+| `ENGINEERING_ENTITY_BASE_URL` | Base URL of the engineering entity service. Optional — setting it switches "Open Git issue" over to it. Must be `https` (a path is allowed, but no userinfo, query or fragment); anything else fails startup |
 | `ENGINEERING_ENTITY_SCOPES` | Comma-separated OAuth2 scopes (optional) |
+
+On this path the target must be `repoOverride` and must match an entry of `GITHUB_ISSUE_REPO_OPTIONS` (owner/repo, case-insensitive), so the service account can only file in the curated repositories; the catalogue's `owner` is passed as both the GitHub organisation and owner (the engineering service selects its GitHub access token by that organisation name, so it must be one it is configured with). The service's response has no issue URL, so the URL returned to the web app is built as `https://github.com/<owner>/<repo>/issues/<number>`. The title (max 256 characters) and description are sent, with `updateLevel`, `publicIssueUrl` and `hotFixRequired` appended to the body, and the labels are the repo option's `githubLabel`, `issueTypeLabel`, `priorityLevel` (only for `Type/Incident`) and `regression`. `reason` is ignored, since it only steers the entity service's own routing. Unlike the entity service's implementation, this path does **not** write the issue URL back into the case's work notes or tag the case as a regression.
+
+### Customer-onboarding status (optional, off by default)
+
+Backs `GET /projects/{id}/onboarding-steps` — the per-contact onboarding status the CSM Portal's project Contacts tab shows (which of IDENTITY / DATABASE / EMAIL / REGISTRATION succeeded, failed or was skipped for each invited email, with the attempt count and last error). It reads the entity service's onboarding ledger (`POST /onboarding-steps/search`) through the existing `CustomerEntityClient`; no extra URL or credential is needed.
+
+| Variable | Description |
+|---|---|
+| `CSM_MIGRATION_ONBOARDING_STATUS_ENABLED` | Exactly `true` registers the route. Unset, empty or any other value (including `1`, `TRUE`, `yes`) keeps it off: the route is not registered (the path 404s) and nothing else in the backend changes. Stricter than the `strconv.ParseBool` parsing `SFTPGO_*` uses on purpose — every `CSM_MIGRATION_*` flag is a cutover switch |
 
 ### Updates service
 
@@ -153,6 +163,17 @@ Backs `entity.EngineeringEntityClient.CreateGitIssue` (a separate internal engin
 |---|---|
 | `SCIM_BASE_URL` | Base URL of the SCIM operations service |
 | `SCIM_SCOPES` | Comma-separated OAuth2 scopes (optional) |
+
+### csm-notification-service / csm-integration-service (health check only)
+
+Both optional — used only to back `GET /health/dependencies` today (see "Health" under [API Endpoints](#health) above). Unset leaves that dependency reported as `not_configured` rather than failing startup. Uses the shared `OAUTH2_*` credentials above.
+
+| Variable | Description |
+|---|---|
+| `CSM_NOTIFICATION_SERVICE_BASE_URL` | Base URL of `integrations/csm-notification-service`. Optional |
+| `CSM_NOTIFICATION_SERVICE_SCOPES` | Comma-separated OAuth2 scopes (optional) |
+| `CSM_INTEGRATION_SERVICE_BASE_URL` | Base URL of `integrations/csm-integration-service`. Optional |
+| `CSM_INTEGRATION_SERVICE_SCOPES` | Comma-separated OAuth2 scopes (optional) |
 
 ### Notifications — email channel (not yet wired in)
 
@@ -194,6 +215,14 @@ schema.
 | `DASHBOARDS_DIR` | Directory holding one `*.json` file per dashboard. `.env.example` ships `./dashboards.example` so a fresh clone starts; for a real set, `cp -r dashboards.example dashboards` (`./dashboards` is gitignored) and point this at it. A missing directory is fatal |
 | `DASHBOARDS_HOT_RELOAD` | Re-read `DASHBOARDS_DIR` on every request instead of serving the startup snapshot. Parsed with `strconv.ParseBool`, so `1`/`t`/`true`/`yes`-style values are not interchangeable — `1`, `t`, `T`, `TRUE`, `true`, `True` are true, and an unparseable non-empty value logs a warning and is treated as false. **Local development only**; default false |
 | `DASHBOARDS_CONFIG` | **Deprecated.** The whole registry crammed into one JSON array variable. Honoured only when `DASHBOARDS_DIR` is unset, and warns when used. Malformed content is fatal |
+
+A dashboard definition may set `"restricted": true` — then only a caller holding the `cs_engineer`
+or `admin` role can see it: `GET /dashboards` leaves it out of the list for everyone else, and
+`GET /dashboards/{id}` returns `403` for a direct request to its id. Every other role sees only the
+unrestricted dashboards. Unset (the default, `false`) means every portal role can see it, same as
+before this field existed. This is enforced by `handler.DashboardHandler` itself, not by the route's
+own permission (`GET /dashboards`/`GET /dashboards/{id}` both stay `PermView` — the list route must
+still run for every viewer and only filter its result, not reject the whole request).
 
 ### Directory vocabularies
 
@@ -238,6 +267,63 @@ than organisation-specific. It drives both the `roleIds` filter validation and t
 | `AUTH_AUDIENCE` | Comma-separated accepted `aud` values; token passes if any listed value is present in its `aud` claim |
 | `AUTH_TOKEN_VALIDATOR_ENABLED` | Set to `false` for local development to skip signature verification (default `true`) |
 
+### Access control
+
+A valid token proves who the caller is; the **roles on the token** decide what they may do. The
+`roles` claim of the validated `x-jwt-assertion` is checked against the role names configured for
+each role — no upstream call is made. Every route is registered in `cmd/server/main.go` through
+`route(pattern, permission, handler)`, which takes the permission as a required argument, so a new
+route cannot be added without choosing one.
+
+Each portal role's token role names are configuration. The variable holds a comma-separated list; holding **any
+one** of the listed roles grants the role. Matching is exact and case-sensitive. There is
+**no default**: the names are organisation vocabulary and are not committed here, so a role whose
+variable is unset or empty is held by nobody (startup logs a warning naming each one). With none
+configured at all, nobody can use the portal.
+
+| Variable | Grants |
+|---|---|
+| `AUTH_VIEWER_ROLES` | view |
+| `AUTH_ESCALATOR_ROLES` | view, escalate |
+| `AUTH_ATTACHMENT_DOWNLOADER_ROLES` | view, download_attachment |
+| `AUTH_SUPPORT_ENGINEER_ROLES` | view, view_operations, time_cards_and_updates, escalate, download_attachment, write (which includes posting comments), security_center — everything except `admin`-only routes. Grants the `cs_engineer` portal role (renamed from `support_engineer`; the env var name was deliberately left as-is to avoid a coordinated deployment config change) |
+| `AUTH_ADMIN_ROLES` | everything, including `admin`-only routes no other role holds |
+| `AUTH_USAGE_METRICS_VIEWER_ROLES` | view |
+| `AUTH_TIMECARD_APPROVER_ROLES` | view, time_cards_and_updates |
+| `AUTH_DASHBOARD_DESIGNER_ROLES` | view |
+
+```bash
+# Several token roles can grant one portal role; any one is enough.
+AUTH_ESCALATOR_ROLES=example-escalators-role,example-leads-role
+```
+
+| Permission | Routes |
+|---|---|
+| authenticated | `GET`/`PATCH /users/me` — any valid token, no role needed, so a user holding no portal role can still load their profile and be shown a "no access" screen |
+| `view` | every other `GET`, `*/search` and `*/aggregate` |
+| `view_operations` | the same reads under `/incidents`, `/change-requests`, `/problems`, `/incident-tasks`, `/outages`, `/alerts` and `/smart-alerts` — CS engineer and admin only, so a view-only role sees cases and customers but not Operations |
+| `time_cards_and_updates` | every time-card route (`POST /time-cards/search`, `POST /time-cards`, `PATCH`/`DELETE /time-cards/{id}`) and the update-level lookups (`GET /updates/product-update-levels`, `POST /updates/levels/search`) — CS engineer, admin and time-card approver only, so a view-only role sees neither area, and an approver can approve without being a CS engineer |
+| `escalate` | `POST /cases/{id}/escalations` |
+| `download_attachment` | `GET /attachments/{id}/content`, `POST /attachments/{id}/share` |
+| `write` | every other `POST`/`PATCH`/`DELETE`, including case, incident and change-request comments — except the `admin`-only routes below |
+| `admin` | `POST /users` (create a new platform user) — held by the `admin` role alone; `cs_engineer` does not grant it |
+| `security_center` | `POST /products/vulnerabilities/search`, `GET /products/vulnerabilities/{id}`, plus security-report cases (a `POST /cases/search`/`GET /cases/{id}` request naming case type `security_report_analysis`) — `cs_engineer` and `admin` only, even though every other role also holding `view` can otherwise read cases and products freely. See `CaseHandler.WithAccessGuard`'s own doc comment for why `GET /cases/{id}` cannot enforce this per-case (the response's `type` field is null on the Postgres data source) |
+
+A caller whose token holds none of the required roles gets `403`. Escalation and
+attachment-download are separate from `cs_engineer` so other staff can be granted just that one
+ability. Posting a public case comment still additionally requires being the case's assigned
+engineer (see `CreateCaseComment`); the role is necessary, not sufficient.
+
+`GET /users/me` returns `roles` — which portal roles the caller holds, as stable keys (`viewer`,
+`escalator`, `attachment_downloader`, `cs_engineer`, `usage_metrics_viewer`,
+`timecard_approver`, `dashboard_designer`, `admin`). A caller can hold several; it is `[]` for a caller
+holding no portal role. It comes from the same guard that authorises the routes, so what the frontend
+is told and what the backend enforces cannot disagree. This is the portal roles only: the entity
+service's own role data is no longer returned. The frontend decides what to show or hide from these
+roles; the backend's `403` is the real gate. `GET /users/{id}` reports the same vocabulary for an
+internal target (see that endpoint's own entry below) — sourced from SCIM instead of a JWT, since
+this endpoint is looking at someone *other* than the caller.
+
 ### Server
 
 | Variable | Description |
@@ -255,7 +341,8 @@ backend/
 │   │   ├── doc.go               # Package overview — one config/client pair per entity service
 │   │   ├── customer_client.go   # OAuth2 HTTP client for the customer entity service (this repo's entity-service)
 │   │   ├── customer.go          # CustomerEntityClient operations (cases, accounts, projects, ...)
-│   │   └── engineering.go       # EngineeringEntityClient — CreateGitIssue (not yet wired into main.go — no caller)
+│   │   ├── onboarding.go        # CustomerEntityClient.SearchOnboardingSteps — typed onboarding-ledger search
+│   │   └── engineering.go       # EngineeringEntityClient — CreateGitIssue (wired when ENGINEERING_ENTITY_BASE_URL is set)
 │   ├── githubissue/
 │   │   ├── options.go          # RepoOption + ParseRepoOptions (GITHUB_ISSUE_REPO_OPTIONS)
 │   │   └── registry.go         # Active/SetActive — the resolved catalogue GET /metadata's githubIssueRepoOptions field serves
@@ -264,6 +351,10 @@ backend/
 │   ├── updates/
 │   │   ├── client.go           # OAuth2 HTTP client for the updates service
 │   │   └── updates.go          # Updates service operations
+│   ├── csmnotification/
+│   │   └── client.go           # OAuth2 HTTP client for csm-notification-service (health check only)
+│   ├── csmintegration/
+│   │   └── client.go           # OAuth2 HTTP client for csm-integration-service (health check only)
 │   ├── middleware/
 │   │   ├── auth.go             # JWT validation; injects UserInfo into context
 │   │   ├── correlation.go      # X-CSM-Correlation-ID propagation + slog enrichment
@@ -279,15 +370,22 @@ backend/
 │       ├── deployments.go                # HTTP handlers for deployment endpoints
 │       ├── products.go                   # HTTP handlers for product endpoints
 │       ├── projects.go                   # HTTP handlers for project endpoints
+│       ├── onboarding_steps.go           # GET /projects/{id}/onboarding-steps (behind CSM_MIGRATION_ONBOARDING_STATUS_ENABLED)
 │       ├── incidents.go                  # HTTP handlers for incident endpoints (ServiceNow only)
 │       ├── problems.go                   # HTTP handlers for problem endpoints (ServiceNow only)
 │       ├── updates.go                    # HTTP handlers for updates endpoints
+│       ├── health.go                     # GET /health/dependencies — aggregating dependency health check
 │       └── users.go                      # HTTP handlers for user endpoints
 ├── .env                        # Local config (git-ignored)
 └── go.mod
 ```
 
 ## API Endpoints
+
+### Health
+
+- `GET /health` — Liveness probe; always `200`, no dependency calls. Wire this up as the restart/drain-triggering probe
+- `GET /health/dependencies` — Aggregating dependency check: SCIM Service, Updates Service, CSM Notification Service, CSM Integration Service and Engineering Entity Service (each independently optional except SCIM/Updates). This backend's own core entity-service is not checked here. `200` when every checked dependency is `ok`, `503` if any is `down`. Do **not** wire this one up as a liveness/restart probe — see [Configuration](#configuration) and `internal/handler/health.go`'s own doc comment for why the two are kept separate
 
 ### Cases
 
@@ -304,7 +402,7 @@ backend/
 - `POST /cases/{id}/call-requests` — Create a call request for a case (ServiceNow only)
 - `POST /cases/{id}/call-requests/search` — Search call requests for a case (ServiceNow only)
 - `PATCH /cases/{id}/call-requests/{callRequestId}` — Update a call request (ServiceNow only)
-- `POST /cases/{id}/github-issues` — Create a GitHub issue from a case; `reason` selects target repo (`default`/`migration`/`rd_ticket`; ServiceNow only)
+- `POST /cases/{id}/github-issues` — Create a GitHub issue from a case. By default forwarded to the entity service (`reason` selects the target repo — `default`/`migration`/`rd_ticket`; ServiceNow only); with `ENGINEERING_ENTITY_BASE_URL` set it is filed through the engineering entity service instead (see above)
 
 ### Metadata
 
@@ -312,10 +410,11 @@ backend/
 
 ### Users
 
-- `GET /users/me` — Get current user profile (`id`, `email`, `firstName`, `lastName`, `timeZone`, `roles` from entity service; `phoneNumber` from SCIM)
+- `GET /users/me` — Get current user profile (`id`, `email`, `firstName`, `lastName`, `timeZone` from entity service; `roles` are the portal roles granted by the caller's token; `phoneNumber` from SCIM)
 - `PATCH /users/me` — Update current user profile (`phoneNumber` via SCIM, `timeZone` via entity service)
 - `POST /users/search` — Search users; optional `filters` (`searchQuery`, `roles`, `userNames`, `emails`, `active`) and `sortBy` (`field`, `order`); response shape depends on data source (`User` for postgres, `SNUser` for ServiceNow)
-- `GET /users/{id}` — Get one user's full profile (ServiceNow data source only); adds `teams` (derived from `groups`) and, for external contacts only, `externalAccount` (`exists`/`locked`, from SCIM's "external" org search). Both are best-effort — absent rather than failing the request if their lookup fails
+- `GET /users/{id}` — Get one user's full profile (both data sources); adds `teams` (derived from `groups`) and, for external contacts only, `externalAccount` (`exists`/`locked`, from SCIM's "external" org search). For an internal (WSO2 staff) target, `roles` is replaced with the same portal-role vocabulary `GET /users/me` reports (`viewer`/`escalator`/.../`admin`), sourced from that user's own SCIM role assignment (filtered to this portal's `app-csm-*` roles) rather than entity-service's own role data — entity-service's `roles` is left as-is for an external contact, a genuinely different vocabulary. All three enrichments (teams, externalAccount, roles) are best-effort — absent/unchanged rather than failing the request if their lookup fails
+- `POST /users` — Create a new user (`firstName`, `lastName`, `email` required to have at least one of firstName/lastName; optional `roles`, validated against the configured role allow-list). **Admin-only** (`admin` permission — see "Access control" above); Postgres data source only
 
 ### Accounts
 
@@ -326,6 +425,7 @@ backend/
 
 - `GET /projects/{id}` — Get project by ID
 - `POST /projects/search` — Search projects
+- `GET /projects/{id}/onboarding-steps` — Customer-onboarding steps of the project's contacts, grouped per membership (invited email) in flow order; only registered when `CSM_MIGRATION_ONBOARDING_STATUS_ENABLED=true` (see Configuration)
 
 ### Products
 

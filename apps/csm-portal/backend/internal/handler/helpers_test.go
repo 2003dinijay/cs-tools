@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/scim"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/updates"
@@ -35,7 +36,6 @@ import (
 var testUser = &middleware.UserInfo{
 	Email:  "agent@example.com",
 	UserID: "f2d9bf5b-7067-43dc-8578-802c8623af5d",
-	Groups: []string{"csm-agents"},
 }
 
 // testPlatformUserID is the id GET /users/me resolves for testUser: the
@@ -124,6 +124,25 @@ type mockEntityCaseClient struct {
 	removeCaseTagFn            func(ctx context.Context, caseID, tagID string) ([]byte, error)
 	searchTagsFn               func(ctx context.Context, body []byte) ([]byte, error)
 	getUserMeFn                func(ctx context.Context) ([]byte, error)
+	// getChangeRequestFn/getIncidentFn back the attachmentStorageEntityClient
+	// interface (see attachment_storage.go) so this same mock serves
+	// AttachmentStorageHandler's per-reference-type access checks.
+	getChangeRequestFn func(ctx context.Context, id string) ([]byte, error)
+	getIncidentFn      func(ctx context.Context, id string) ([]byte, error)
+}
+
+func (m *mockEntityCaseClient) GetChangeRequest(ctx context.Context, id string) ([]byte, error) {
+	if m.getChangeRequestFn != nil {
+		return m.getChangeRequestFn(ctx, id)
+	}
+	return []byte(`{}`), nil
+}
+
+func (m *mockEntityCaseClient) GetIncident(ctx context.Context, id string) ([]byte, error) {
+	if m.getIncidentFn != nil {
+		return m.getIncidentFn(ctx, id)
+	}
+	return []byte(`{}`), nil
 }
 
 // GetUserMe defaults to the platform user record for testUser: note the id is
@@ -383,10 +402,22 @@ func (m *mockSCIMClient) UpdateUserPhone(ctx context.Context, userID, mobile str
 // ----- mock entity user client -----
 
 type mockEntityUserClient struct {
-	getUserMeFn   func(ctx context.Context) ([]byte, error)
-	patchUserMeFn func(ctx context.Context, body []byte) ([]byte, error)
-	searchUsersFn func(ctx context.Context, body []byte) ([]byte, error)
-	getUserFn     func(ctx context.Context, id string) ([]byte, error)
+	getUserMeFn              func(ctx context.Context) ([]byte, error)
+	patchUserMeFn            func(ctx context.Context, body []byte) ([]byte, error)
+	searchUsersFn            func(ctx context.Context, body []byte) ([]byte, error)
+	getUserFn                func(ctx context.Context, id string) ([]byte, error)
+	listSavedFilterViewsFn   func(ctx context.Context, listKey string) ([]byte, error)
+	saveSavedFilterViewFn    func(ctx context.Context, body []byte) ([]byte, error)
+	deleteSavedFilterViewFn  func(ctx context.Context, listKey, name string) ([]byte, error)
+	reorderSavedFilterViewFn func(ctx context.Context, body []byte) ([]byte, error)
+	createUserFn             func(ctx context.Context, body []byte) ([]byte, error)
+}
+
+func (m *mockEntityUserClient) CreateUser(ctx context.Context, body []byte) ([]byte, error) {
+	if m.createUserFn != nil {
+		return m.createUserFn(ctx, body)
+	}
+	return []byte(`{}`), nil
 }
 
 func (m *mockEntityUserClient) GetUser(ctx context.Context, id string) ([]byte, error) {
@@ -448,12 +479,41 @@ func (m *mockEntityUserClient) SearchUsers(ctx context.Context, body []byte) ([]
 	return []byte(`{}`), nil
 }
 
+func (m *mockEntityUserClient) ListSavedFilterViews(ctx context.Context, listKey string) ([]byte, error) {
+	if m.listSavedFilterViewsFn != nil {
+		return m.listSavedFilterViewsFn(ctx, listKey)
+	}
+	return []byte(`{"views":[]}`), nil
+}
+
+func (m *mockEntityUserClient) SaveSavedFilterView(ctx context.Context, body []byte) ([]byte, error) {
+	if m.saveSavedFilterViewFn != nil {
+		return m.saveSavedFilterViewFn(ctx, body)
+	}
+	return []byte(`{"views":[]}`), nil
+}
+
+func (m *mockEntityUserClient) DeleteSavedFilterView(ctx context.Context, listKey, name string) ([]byte, error) {
+	if m.deleteSavedFilterViewFn != nil {
+		return m.deleteSavedFilterViewFn(ctx, listKey, name)
+	}
+	return []byte(`{"views":[]}`), nil
+}
+
+func (m *mockEntityUserClient) ReorderSavedFilterView(ctx context.Context, body []byte) ([]byte, error) {
+	if m.reorderSavedFilterViewFn != nil {
+		return m.reorderSavedFilterViewFn(ctx, body)
+	}
+	return []byte(`{"views":[]}`), nil
+}
+
 // ----- mock entity account client -----
 
 type mockEntityAccountClient struct {
 	getAccountFn            func(ctx context.Context, id string) ([]byte, error)
 	searchAccountsFn        func(ctx context.Context, body []byte) ([]byte, error)
 	searchAccountContactsFn func(ctx context.Context, accountID string, body []byte) ([]byte, error)
+	updateAccountTeamsFn    func(ctx context.Context, id string, body []byte) ([]byte, error)
 }
 
 func (m *mockEntityAccountClient) GetAccount(ctx context.Context, id string) ([]byte, error) {
@@ -473,6 +533,13 @@ func (m *mockEntityAccountClient) SearchAccounts(ctx context.Context, body []byt
 func (m *mockEntityAccountClient) SearchAccountContacts(ctx context.Context, accountID string, body []byte) ([]byte, error) {
 	if m.searchAccountContactsFn != nil {
 		return m.searchAccountContactsFn(ctx, accountID, body)
+	}
+	return []byte(`{}`), nil
+}
+
+func (m *mockEntityAccountClient) UpdateAccountTeams(ctx context.Context, id string, body []byte) ([]byte, error) {
+	if m.updateAccountTeamsFn != nil {
+		return m.updateAccountTeamsFn(ctx, id, body)
 	}
 	return []byte(`{}`), nil
 }
@@ -528,6 +595,19 @@ func (m *mockEntityProjectClient) UpdateProject(ctx context.Context, id string, 
 		return m.updateProjectFn(ctx, id, body)
 	}
 	return []byte(`{}`), nil
+}
+
+// ----- mock entity onboarding step client -----
+
+type mockEntityOnboardingStepClient struct {
+	searchOnboardingStepsFn func(ctx context.Context, req entity.OnboardingStepSearchRequest) (entity.OnboardingStepSearchResponse, error)
+}
+
+func (m *mockEntityOnboardingStepClient) SearchOnboardingSteps(ctx context.Context, req entity.OnboardingStepSearchRequest) (entity.OnboardingStepSearchResponse, error) {
+	if m.searchOnboardingStepsFn != nil {
+		return m.searchOnboardingStepsFn(ctx, req)
+	}
+	return entity.OnboardingStepSearchResponse{Steps: []entity.OnboardingStep{}}, nil
 }
 
 // ----- mock entity product client -----
@@ -1096,4 +1176,25 @@ func (m *mockEntityTaskClient) UpdateTask(ctx context.Context, id string, body [
 		return m.updateTaskFn(ctx, id, body)
 	}
 	return []byte(`{"id":"11111111-1111-1111-1111-111111111111"}`), nil
+}
+
+// ----- mock entity comment client -----
+
+type mockEntityCommentClient struct {
+	updateCommentFn func(ctx context.Context, id string, body []byte) ([]byte, error)
+	deleteCommentFn func(ctx context.Context, id string) ([]byte, error)
+}
+
+func (m *mockEntityCommentClient) UpdateComment(ctx context.Context, id string, body []byte) ([]byte, error) {
+	if m.updateCommentFn != nil {
+		return m.updateCommentFn(ctx, id, body)
+	}
+	return []byte(`{"id":"` + id + `","content":"updated"}`), nil
+}
+
+func (m *mockEntityCommentClient) DeleteComment(ctx context.Context, id string) ([]byte, error) {
+	if m.deleteCommentFn != nil {
+		return m.deleteCommentFn(ctx, id)
+	}
+	return nil, nil
 }

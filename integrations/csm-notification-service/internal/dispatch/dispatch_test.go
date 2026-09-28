@@ -32,9 +32,12 @@ import (
 )
 
 type sentEmail struct {
-	to       []string
-	subject  string
-	htmlBody string
+	from        string
+	to          []string
+	bcc         []string
+	subject     string
+	htmlBody    string
+	attachments []notifications.EmailAttachment
 }
 
 type mockEmailSender struct {
@@ -48,12 +51,31 @@ type mockEmailSender struct {
 	// other test here, which drives Handle sequentially.
 	mu    sync.Mutex
 	calls []sentEmail
+	// block, when non-nil, holds every send open until it is closed, so a
+	// test can have a second Handle call arrive mid-send.
+	block chan struct{}
+	// onSend, when set, runs as the send completes -- a seam for a test
+	// that needs something to happen between the e-mail going out and the
+	// step being recorded.
+	onSend func()
 }
 
+func (m *mockEmailSender) FromAddress() string { return "noreply@wso2.com" }
+
 func (m *mockEmailSender) SendEmail(ctx context.Context, to, cc, bcc, replyTo []string, subject, htmlBody string, attachments []notifications.EmailAttachment) error {
+	return m.SendEmailFrom(ctx, "", to, cc, bcc, replyTo, subject, htmlBody, attachments)
+}
+
+func (m *mockEmailSender) SendEmailFrom(ctx context.Context, from string, to, cc, bcc, replyTo []string, subject, htmlBody string, attachments []notifications.EmailAttachment) error {
+	if m.block != nil {
+		<-m.block
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, sentEmail{to: to, subject: subject, htmlBody: htmlBody})
+	m.calls = append(m.calls, sentEmail{from: from, to: to, bcc: bcc, subject: subject, htmlBody: htmlBody, attachments: attachments})
+	if m.onSend != nil {
+		m.onSend()
+	}
 	if m.errFor != nil {
 		return m.errFor(to)
 	}
@@ -68,6 +90,10 @@ type sentCaseCreatedAlert struct {
 	product, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string
 }
 
+type sentSecurityReportAnalysisAlert struct {
+	product, caseNumber, wso2CaseID, productName, title, team, caseLink string
+}
+
 type sentCaseAcknowledgedAlert struct {
 	product, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string
 }
@@ -79,11 +105,12 @@ type sentSeverityChangedAlert struct {
 type mockGoogleChatSender struct {
 	err error
 	// mu guards calls — see mockEmailSender.mu's doc comment.
-	mu                    sync.Mutex
-	calls                 []sentChatAlert
-	caseCreatedCalls      []sentCaseCreatedAlert
-	caseAcknowledgedCalls []sentCaseAcknowledgedAlert
-	severityChangedCalls  []sentSeverityChangedAlert
+	mu                          sync.Mutex
+	calls                       []sentChatAlert
+	caseCreatedCalls            []sentCaseCreatedAlert
+	caseAcknowledgedCalls       []sentCaseAcknowledgedAlert
+	severityChangedCalls        []sentSeverityChangedAlert
+	securityReportAnalysisCalls []sentSecurityReportAnalysisAlert
 }
 
 func (m *mockGoogleChatSender) SendIncidentAlert(ctx context.Context, product, title, shortDescription, portalURL string) error {
@@ -97,6 +124,13 @@ func (m *mockGoogleChatSender) SendCaseCreatedAlert(ctx context.Context, product
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.caseCreatedCalls = append(m.caseCreatedCalls, sentCaseCreatedAlert{product, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink})
+	return m.err
+}
+
+func (m *mockGoogleChatSender) SendSecurityReportAnalysisAlert(ctx context.Context, product, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.securityReportAnalysisCalls = append(m.securityReportAnalysisCalls, sentSecurityReportAnalysisAlert{product, caseNumber, wso2CaseID, productName, title, team, caseLink})
 	return m.err
 }
 
@@ -158,6 +192,16 @@ func (m *mockLinkResolver) IncidentLink(incidentID string) string {
 	return "https://csm.example/operations/incidents/" + incidentID
 }
 
+// ChangeRequestLink mirrors the real resolver's audience split: a customer
+// notice links into the customer portal, under the project; everyone else
+// links into the CSM portal.
+func (m *mockLinkResolver) ChangeRequestLink(audience, changeRequestID, projectID string) string {
+	if audience == "customer" && projectID != "" {
+		return "https://customer.example/projects/" + projectID + "/operations/change-requests/" + changeRequestID
+	}
+	return "https://csm.example/operations/change-requests/" + changeRequestID
+}
+
 func (m *mockLinkResolver) ResolveLinks(ctx context.Context, emails []string, projectID, caseID string) ([]recipientlinks.RecipientLink, error) {
 	m.gotEmails = emails
 	m.gotProjectID = projectID
@@ -212,6 +256,80 @@ func TestDispatcher_Handle_CaseCreated(t *testing.T) {
 	gotChat := chat.caseCreatedCalls[0]
 	if gotChat.title != "Something broke" || gotChat.caseLink != "https://csm.example/cases/CASE-1" {
 		t.Errorf("unexpected SendCaseCreatedAlert args: %+v", gotChat)
+	}
+}
+
+// TestDispatcher_Handle_CaseCreated_NonCaseTypesSkipChatButStillEmail verifies
+// handleCaseCreated's CaseType gate: every non-"CASE" type (engagement,
+// service_request, security_report_analysis, announcement) sends no Google
+// Chat alert at all — explicit product direction, those types notify their
+// audience by email only — while the email reaction is unaffected.
+func TestDispatcher_Handle_CaseCreated_NonCaseTypesSkipChatButStillEmail(t *testing.T) {
+	for _, caseType := range []string{"ENGAGEMENT", "SERVICE_REQUEST", "SECURITY_REPORT_ANALYSIS", "ANNOUNCEMENT"} {
+		t.Run(caseType, func(t *testing.T) {
+			email := &mockEmailSender{}
+			chat := &mockGoogleChatSender{}
+			d := newTestDispatcher(email, chat, &mockCallSender{})
+
+			record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"` + caseType + `","priority":"","product":"api-manager","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+
+			if err := d.Handle(context.Background(), record); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+
+			if len(chat.caseCreatedCalls) != 0 {
+				t.Errorf("expected SendCaseCreatedAlert NOT to be called for a %s case, got %d call(s)", caseType, len(chat.caseCreatedCalls))
+			}
+			if len(chat.securityReportAnalysisCalls) != 0 {
+				t.Errorf("expected SendSecurityReportAnalysisAlert NOT to be called for a %s case, got %d call(s)", caseType, len(chat.securityReportAnalysisCalls))
+			}
+			if len(email.calls) != 1 {
+				t.Errorf("expected the email reaction to still fire for a %s case, got %d call(s)", caseType, len(email.calls))
+			}
+		})
+	}
+}
+
+// TestDispatcher_Handle_CaseCreated_EmailShowsHumanReadableCaseType verifies
+// the "Case Type" row in the case-created email shows a reader-friendly
+// label (e.g. "Security Report Analysis"), not entity-service's raw
+// UPPER_SNAKE_CASE wire value — a real reported issue where a recipient saw
+// "SECURITY_REPORT_ANALYSIS" verbatim in their inbox.
+func TestDispatcher_Handle_CaseCreated_EmailShowsHumanReadableCaseType(t *testing.T) {
+	testCases := []struct {
+		wire  string
+		label string
+	}{
+		{"CASE", "Case"},
+		{"ENGAGEMENT", "Engagement"},
+		{"SERVICE_REQUEST", "Service Request"},
+		{"SECURITY_REPORT_ANALYSIS", "Security Report Analysis"},
+		{"ANNOUNCEMENT", "Announcement"},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.wire, func(t *testing.T) {
+			email := &mockEmailSender{}
+			d := newTestDispatcher(email, &mockGoogleChatSender{}, &mockCallSender{})
+
+			// entityId/caseId deliberately avoid the substring "CASE" (unlike
+			// this file's other fixtures), so the "no raw wire value" check
+			// below can't false-positive against it when tc.wire is "CASE".
+			record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"C-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"C-1","caseTitle":"Something broke","caseType":"` + tc.wire + `","priority":"","product":"api-manager","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+
+			if err := d.Handle(context.Background(), record); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+			if len(email.calls) != 1 {
+				t.Fatalf("expected 1 email sent, got %d", len(email.calls))
+			}
+			body := email.calls[0].htmlBody
+			if !strings.Contains(body, tc.label) {
+				t.Errorf("rendered email doesn't contain the human-readable label %q", tc.label)
+			}
+			if strings.Contains(body, tc.wire) {
+				t.Errorf("rendered email still contains the raw wire value %q", tc.wire)
+			}
+		})
 	}
 }
 
@@ -454,6 +572,44 @@ func TestDispatcher_Handle_CommentAdded(t *testing.T) {
 	}
 }
 
+// TestDispatcher_Handle_CommentAdded_InlineImage verifies a comment
+// containing an inline (data: URI) image ends up sent as a real inline
+// EmailAttachment with a matching Content-ID, referenced from the email
+// body as cid:<contentId> — never as the original data: URI, which Gmail
+// and most major webmail clients strip from received HTML on render.
+func TestDispatcher_Handle_CommentAdded_InlineImage(t *testing.T) {
+	mock := &mockEmailSender{}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+
+	const dataURI = "data:image/png;base64,aGVsbG8="
+	payload := `{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseComment":"<p>see attached<img src=\"` + dataURI + `\"></p>","commentId":"C-1","recipients":["test-recipient@example.com"]}}`
+	record := eventbus.Record{Value: []byte(payload)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 email sent, got %d", len(mock.calls))
+	}
+	call := mock.calls[0]
+	if strings.Contains(call.htmlBody, "data:image") {
+		t.Error("htmlBody must never contain the original data: URI")
+	}
+	if len(call.attachments) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(call.attachments))
+	}
+	att := call.attachments[0]
+	if !att.Inline || att.ContentID == "" {
+		t.Errorf("attachment not marked inline with a Content-ID: %+v", att)
+	}
+	if !strings.Contains(call.htmlBody, "cid:"+att.ContentID) {
+		t.Errorf("htmlBody does not reference cid:%s", att.ContentID)
+	}
+	if att.ContentType != "image/png" || string(att.Attachment) != "hello" {
+		t.Errorf("attachment bytes/type not carried through correctly: %+v", att)
+	}
+}
+
 // TestDispatcher_Handle_CommentAdded_InternalNote_UsesInternalNoteLayout
 // verifies that isInternalNote:true routes through RenderInternalNoteEmail
 // instead of RenderCommentAddedEmail: the "added work note" wording (not
@@ -687,7 +843,7 @@ func TestDispatcher_Handle_SeverityChanged(t *testing.T) {
 	if len(gotEmail.to) != 1 || gotEmail.to[0] != testRecipient {
 		t.Errorf("to = %v, want [%s]", gotEmail.to, testRecipient)
 	}
-	if !strings.Contains(gotEmail.htmlBody, "High (P2)") || !strings.Contains(gotEmail.htmlBody, "Low (P4)") {
+	if !strings.Contains(gotEmail.htmlBody, "High(S2)") || !strings.Contains(gotEmail.htmlBody, "Low(S4)") {
 		t.Error("htmlBody does not contain both the old and new severity labels")
 	}
 
@@ -1257,25 +1413,20 @@ func TestDispatcher_Handle_CaseCreated_EmailSendingDisabled(t *testing.T) {
 	}
 }
 
-// TestDispatcher_Handle_IgnoresSLAEventTypes verifies that
-// sla.clock.register/sla.tier_reached records — consumed by
-// internal/slaengine's own consumer group, which shares this topic — are a
-// silent no-op here, not an error. Erroring would burn this consumer's
-// retries and dead-letter an event that was never broken.
-func TestDispatcher_Handle_IgnoresSLAEventTypes(t *testing.T) {
+// TestDispatcher_Handle_IgnoresSLATierReached verifies that a
+// sla.tier_reached record — published by internal/slaengine's own poller,
+// which this dispatcher's consumers still get a full copy of via the shared
+// topic — is a silent no-op here, not an error. Erroring would burn this
+// consumer's retries and dead-letter an event that was never broken.
+func TestDispatcher_Handle_IgnoresSLATierReached(t *testing.T) {
 	mock := &mockEmailSender{}
 	chat := &mockGoogleChatSender{}
 	call := &mockCallSender{}
 	d := newTestDispatcher(mock, chat, call)
 
-	records := []string{
-		`{"type":"sla.clock.register","entityId":"CASE-1","payload":{"caseId":"CASE-1","durations":{"response":"2h"}}}`,
-		`{"type":"sla.tier_reached","entityId":"CASE-1","payload":{"caseId":"CASE-1","clockType":"response","tier":"50"}}`,
-	}
-	for _, r := range records {
-		if err := d.Handle(context.Background(), eventbus.Record{Value: []byte(r)}); err != nil {
-			t.Errorf("Handle(%s) error = %v, want nil", r, err)
-		}
+	record := `{"type":"sla.tier_reached","entityId":"CASE-1","payload":{"caseId":"CASE-1","clockType":"response","tier":"50"}}`
+	if err := d.Handle(context.Background(), eventbus.Record{Value: []byte(record)}); err != nil {
+		t.Errorf("Handle(%s) error = %v, want nil", record, err)
 	}
 	if len(mock.calls) != 0 || len(chat.calls) != 0 || len(call.calls) != 0 {
 		t.Errorf("expected no notification sent, got email=%d chat=%d call=%d", len(mock.calls), len(chat.calls), len(call.calls))
@@ -1343,6 +1494,10 @@ func (s *concurrencyProbeChatSender) SendCaseCreatedAlert(ctx context.Context, p
 	return nil
 }
 
+func (s *concurrencyProbeChatSender) SendSecurityReportAnalysisAlert(ctx context.Context, product, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
+	return nil
+}
+
 func (s *concurrencyProbeChatSender) SendCaseAcknowledgedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
 	return nil
 }
@@ -1403,6 +1558,10 @@ func (s *blockingCaseAcknowledgedChatSender) SendIncidentAlert(ctx context.Conte
 }
 
 func (s *blockingCaseAcknowledgedChatSender) SendCaseCreatedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendSecurityReportAnalysisAlert(ctx context.Context, product, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
 	return nil
 }
 
@@ -1476,6 +1635,12 @@ func TestDispatcher_Handle_CaseAcknowledged_LosingConcurrentCallDoesNotReleaseWi
 type blockingEmailSender struct {
 	proceed chan struct{}
 	calls   int32
+}
+
+func (s *blockingEmailSender) FromAddress() string { return "noreply@wso2.com" }
+
+func (s *blockingEmailSender) SendEmailFrom(ctx context.Context, from string, to, cc, bcc, replyTo []string, subject, htmlBody string, attachments []notifications.EmailAttachment) error {
+	return s.SendEmail(ctx, to, cc, bcc, replyTo, subject, htmlBody, attachments)
 }
 
 func (s *blockingEmailSender) SendEmail(ctx context.Context, to, cc, bcc, replyTo []string, subject, htmlBody string, attachments []notifications.EmailAttachment) error {
@@ -1659,6 +1824,245 @@ func TestDispatcher_Handle_SubjectLine_StandardFormat(t *testing.T) {
 			}
 			if mock.calls[0].subject != tt.want {
 				t.Errorf("subject = %q, want %q", mock.calls[0].subject, tt.want)
+			}
+		})
+	}
+}
+
+// crRecord builds a change_request.approval_requested record. audience picks
+// which portal the link should point at.
+func crRecord(audience, projectID string) eventbus.Record {
+	return eventbus.Record{Value: []byte(`{"type":"change_request.approval_requested","entityId":"CR-1","payload":{` +
+		`"changeRequestId":"CR-1","number":"CHG0031234","state":"REVIEW","audience":"` + audience + `",` +
+		`"projectId":"` + projectID + `","groupName":"Devops Review","team":"Choreo",` +
+		`"subject":"[WSO2 Support] [CR][Choreo] (CHG0031234) Request for approval - Review",` +
+		`"recipients":["` + testRecipient + `"]}}`)}
+}
+
+// TestDispatcher_Handle_CRApprovalRequested_UsesTheFlowsSubject: the flow
+// reproduces ServiceNow's per-branch wording, so this service must send that
+// subject verbatim rather than building one of its own.
+func TestDispatcher_Handle_CRApprovalRequested_UsesTheFlowsSubject(t *testing.T) {
+	mock := &mockEmailSender{}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+
+	if err := d.Handle(context.Background(), crRecord("internal", "")); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("sent %d emails, want 1", len(mock.calls))
+	}
+	sent := mock.calls[0]
+	if want := "[WSO2 Support] [CR][Choreo] (CHG0031234) Request for approval - Review"; sent.subject != want {
+		t.Errorf("subject = %q, want the flow's own %q", sent.subject, want)
+	}
+	if len(sent.to) != 1 || sent.to[0] != testRecipient {
+		t.Errorf("to = %v, want the payload's resolved recipients verbatim", sent.to)
+	}
+}
+
+// TestDispatcher_Handle_CRApprovalRequested_LinksByAudience is the regression
+// guard for a link that pointed at /cases/<id>: a change request is not a case,
+// and the two audiences do not even share a portal.
+func TestDispatcher_Handle_CRApprovalRequested_LinksByAudience(t *testing.T) {
+	tests := []struct {
+		name, audience, projectID, wantLink string
+	}{
+		{"internal goes to the CSM portal", "internal", "",
+			"https://csm.example/operations/change-requests/CR-1"},
+		{"customer goes to the customer portal, under the project", "customer", "PROJ-1",
+			"https://customer.example/projects/PROJ-1/operations/change-requests/CR-1"},
+		{"customer with no project falls back rather than building a broken link", "customer", "",
+			"https://csm.example/operations/change-requests/CR-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockEmailSender{}
+			d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+
+			if err := d.Handle(context.Background(), crRecord(tt.audience, tt.projectID)); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+			if len(mock.calls) != 1 {
+				t.Fatalf("sent %d emails, want 1", len(mock.calls))
+			}
+			if !strings.Contains(mock.calls[0].htmlBody, tt.wantLink) {
+				t.Errorf("body does not link to %q", tt.wantLink)
+			}
+			if strings.Contains(mock.calls[0].htmlBody, "/cases/CR-1") {
+				t.Error("body links to a case URL — a change request is not a case")
+			}
+		})
+	}
+}
+
+// TestDispatcher_Handle_CRApprovalRequested_Killswitch: EMAIL_SENDING_ENABLED
+// must silence this the same way it silences every other email here.
+func TestDispatcher_Handle_CRApprovalRequested_Killswitch(t *testing.T) {
+	mock := &mockEmailSender{}
+	d := NewDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}, &mockLinkResolver{},
+		false, false, nil, true, "", "")
+
+	if err := d.Handle(context.Background(), crRecord("internal", "")); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(mock.calls) != 0 {
+		t.Fatalf("sent %d emails with sending disabled, want 0", len(mock.calls))
+	}
+}
+
+// TestDispatcher_Handle_CRApprovalRequested_DebugMode redirects to the test
+// mailbox instead of the real approval group.
+func TestDispatcher_Handle_CRApprovalRequested_DebugMode(t *testing.T) {
+	mock := &mockEmailSender{}
+	d := NewDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}, &mockLinkResolver{},
+		true, true, []string{"debug@wso2.com"}, true, "", "")
+
+	if err := d.Handle(context.Background(), crRecord("internal", "")); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("sent %d emails, want 1", len(mock.calls))
+	}
+	if got := mock.calls[0].to; len(got) != 1 || got[0] != "debug@wso2.com" {
+		t.Errorf("to = %v, want the debug list to replace the real audience", got)
+	}
+}
+
+// TestDispatcher_Handle_CRApprovalRequested_CustomerAudienceIsBCC guards a real
+// exposure. ServiceNow sent one email per recipient, so no customer contact
+// ever saw who else was notified; collapsing that into one message must not
+// publish a project's contact list to itself. Project contacts routinely span
+// several organisations, so a visible To would disclose addresses across
+// companies with no relationship to each other.
+func TestDispatcher_Handle_CRApprovalRequested_CustomerAudienceIsBCC(t *testing.T) {
+	t.Run("customer recipients are hidden from each other", func(t *testing.T) {
+		mock := &mockEmailSender{}
+		d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+
+		record := eventbus.Record{Value: []byte(`{"type":"change_request.approval_requested","entityId":"CR-1","payload":{` +
+			`"changeRequestId":"CR-1","number":"CHG0031234","state":"CUSTOMER_REVIEW","audience":"customer",` +
+			`"projectId":"PROJ-1","subject":"[WSO2 Support] [CR] (CHG0031234) Request for approval - Customer Review",` +
+			`"recipients":["a@acme.example","b@globex.example","c@initech.example"]}}`)}
+
+		if err := d.Handle(context.Background(), record); err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+		if len(mock.calls) != 1 {
+			t.Fatalf("sent %d emails, want 1", len(mock.calls))
+		}
+		sent := mock.calls[0]
+
+		if len(sent.bcc) != 3 {
+			t.Errorf("bcc = %v, want all three contacts", sent.bcc)
+		}
+		if len(sent.to) != 1 || sent.to[0] != "noreply@wso2.com" {
+			t.Errorf("to = %v, want only the sender — the service rejects an empty To, and the sender discloses nobody", sent.to)
+		}
+		for _, addr := range []string{"a@acme.example", "b@globex.example", "c@initech.example"} {
+			for _, visible := range sent.to {
+				if visible == addr {
+					t.Errorf("%s appears in To, where every other recipient can read it", addr)
+				}
+			}
+		}
+	})
+
+	t.Run("internal recipients stay visible to each other", func(t *testing.T) {
+		mock := &mockEmailSender{}
+		d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+
+		if err := d.Handle(context.Background(), crRecord("internal", "")); err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+		sent := mock.calls[0]
+		if len(sent.bcc) != 0 {
+			t.Errorf("bcc = %v, want none — one WSO2 approval group should see who else was asked", sent.bcc)
+		}
+		if len(sent.to) != 1 || sent.to[0] != testRecipient {
+			t.Errorf("to = %v, want the approval group itself", sent.to)
+		}
+	})
+}
+
+func planDateRecord(kind, audience, projectID string) eventbus.Record {
+	return eventbus.Record{Value: []byte(`{"type":"change_request.plan_date_notice","entityId":"CR-1","payload":{` +
+		`"changeRequestId":"CR-1","number":"CHG0031234","kind":"` + kind + `","audience":"` + audience + `",` +
+		`"projectId":"` + projectID + `","projectName":"Acme Cloud","actorName":"Perera Nimal",` +
+		`"shortDescription":"Upgrade the gateway","description":"Full details",` +
+		`"subject":"[WSO2 Support] [CR] (CHG0031234) Customer has updated the plan start date",` +
+		`"recipients":["` + testRecipient + `"]}}`)}
+}
+
+// TestDispatcher_Handle_CRPlanDateNotice covers all three turns: who sees the
+// recipient list, and which portal each is linked into.
+func TestDispatcher_Handle_CRPlanDateNotice(t *testing.T) {
+	tests := []struct {
+		name, kind, audience, projectID string
+		wantLink                        string
+		wantBCC                         bool
+	}{
+		{"customer proposed — internal audience, visible To", "customer_proposed", "internal", "",
+			"https://csm.example/operations/change-requests/CR-1", false},
+		{"WSO2 accepted — customer audience, BCC", "accepted", "customer", "PROJ-1",
+			"https://customer.example/projects/PROJ-1/operations/change-requests/CR-1", true},
+		{"WSO2 rejected — customer audience, BCC", "rejected", "customer", "PROJ-1",
+			"https://customer.example/projects/PROJ-1/operations/change-requests/CR-1", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockEmailSender{}
+			d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+
+			if err := d.Handle(context.Background(), planDateRecord(tt.kind, tt.audience, tt.projectID)); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+			if len(mock.calls) != 1 {
+				t.Fatalf("sent %d emails, want 1", len(mock.calls))
+			}
+			sent := mock.calls[0]
+
+			if !strings.Contains(sent.htmlBody, tt.wantLink) {
+				t.Errorf("body does not link to %q", tt.wantLink)
+			}
+			if tt.wantBCC {
+				if len(sent.bcc) != 1 || len(sent.to) != 1 || sent.to[0] != "noreply@wso2.com" {
+					t.Errorf("to=%v bcc=%v, want the audience hidden in BCC", sent.to, sent.bcc)
+				}
+			} else if len(sent.bcc) != 0 {
+				t.Errorf("bcc=%v, want an internal group visible to each other", sent.bcc)
+			}
+		})
+	}
+}
+
+// TestDispatcher_Handle_CRPlanDateNotice_WordingPerKind pins the three body
+// texts, reproduced from ServiceNow including its own awkward grammar.
+func TestDispatcher_Handle_CRPlanDateNotice_WordingPerKind(t *testing.T) {
+	tests := []struct{ kind, audience, want string }{
+		{"customer_proposed", "internal", "Customer has updated the plan start date. Please review the change."},
+		{"accepted", "customer", "The proposed plan start date accepted by the WSO2 Team."},
+		{"rejected", "customer", "WSO2 Team request to change the plan start date."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.kind, func(t *testing.T) {
+			mock := &mockEmailSender{}
+			d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{})
+			if err := d.Handle(context.Background(), planDateRecord(tt.kind, tt.audience, "PROJ-1")); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+			body := mock.calls[0].htmlBody
+			if !strings.Contains(body, tt.want) {
+				t.Errorf("body missing %q", tt.want)
+			}
+			if !strings.Contains(body, "Perera Nimal") {
+				t.Error("body does not name the actor")
+			}
+			if !strings.Contains(body, "Acme Cloud / CHG0031234") {
+				t.Error("body missing the project / number line")
+			}
+			if strings.Count(body, "<!DOCTYPE") != 1 {
+				t.Errorf("rendered %d documents, want 1", strings.Count(body, "<!DOCTYPE"))
 			}
 		})
 	}

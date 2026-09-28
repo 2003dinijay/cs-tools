@@ -43,14 +43,18 @@ const (
 // User represents a single user entity as stored in the database.
 // Phone and Timezone are optional and omitted from JSON when absent.
 type User struct {
-	ID        string    `json:"id"`
-	UserName  string    `json:"userName"`
-	FirstName string    `json:"firstName"`
-	LastName  string    `json:"lastName"`
-	Email     string    `json:"email"`
-	Phone     *string   `json:"phone"`
-	Timezone  *string   `json:"timezone"`
-	UserType  UserType  `json:"userType"`
+	ID        string   `json:"id"`
+	UserName  string   `json:"userName"`
+	FirstName string   `json:"firstName"`
+	LastName  string   `json:"lastName"`
+	Email     string   `json:"email"`
+	Phone     *string  `json:"phone"`
+	Timezone  *string  `json:"timezone"`
+	UserType  UserType `json:"userType"`
+	// Roles are the names of the roles assigned through user_role, sorted, and
+	// always non-nil ([] when none) in a user search result. Only user search
+	// fills it in; other lookups leave it nil.
+	Roles     []string  `json:"roles"`
 	CreatedOn time.Time `json:"createdOn"`
 	UpdatedOn time.Time `json:"updatedOn"`
 }
@@ -95,14 +99,18 @@ type SearchUsersFilters struct {
 	Emails      []string   `json:"emails"`
 	// UserIDs restricts the search to specific users. It intersects with the other
 	// filters, and supplying it also lifts the active-only default so a deactivated
-	// user stays retrievable by ID.
+	// user stays retrievable by ID (ServiceNow data source; the Postgres data
+	// source has no such implicit active-only default to lift -- it only
+	// filters by activeness when Active is explicitly set).
 	UserIDs []string `json:"userIds"`
-	// GroupIDs restricts the search to members of these groups. Resolved to a user-ID
-	// set before the upstream call, since the data source cannot join users against
-	// group membership in one query.
+	// GroupIDs restricts the search to members of these groups -- on
+	// ServiceNow, resolved to a user-ID set before the upstream call, since
+	// that data source cannot join users against group membership in one
+	// query; on Postgres, a plain EXISTS against team_member (migration
+	// 000028), matched directly in the same query.
 	GroupIDs []string `json:"groupIds"`
 	// GroupNames restricts the search to members of the groups with these exact display
-	// names, resolved to a user-ID set the same way GroupIDs is. It exists alongside
+	// names, resolved the same way GroupIDs is on each data source. It exists alongside
 	// GroupIDs because the caller's team registry is keyed by group name: group ids
 	// differ between environments while the names do not, and not every configured team
 	// carries an id at all.
@@ -114,6 +122,20 @@ type SearchUsersFilters struct {
 type UserSortBy struct {
 	Field UserSortField `json:"field"`
 	Order UserSortOrder `json:"order"`
+}
+
+// CreateUserRequest is the input for creating a new "user" row on the
+// Postgres data source. userType is never accepted here -- it is derived by
+// a database trigger from is_system_user and role membership (migration
+// 000007), never set directly by a caller. roles is optional; each name is
+// resolved against the role table (migration 0008) and rejected with a
+// ServiceUnavailableError if any is not seeded there -- the same posture
+// syncGlobalRoles uses for the Salesforce membership ingest.
+type CreateUserRequest struct {
+	FirstName string     `json:"firstName"`
+	LastName  string     `json:"lastName"`
+	Email     string     `json:"email"`
+	Roles     []UserRole `json:"roles"`
 }
 
 // SearchUsersRequest is the input for a user search operation.
@@ -131,6 +153,62 @@ type SearchUsersResponse struct {
 	Limit   int    `json:"limit"`
 	Offset  int    `json:"offset"`
 	HasMore bool   `json:"hasMore"`
+}
+
+// SavedFilterListKey identifies which CSM list a filter belongs to.
+// The frontend owns the query-string codec per list; this service only
+// isolates stores so filters never leak across lists.
+type SavedFilterListKey string
+
+const (
+	SavedFilterListKeyCases          SavedFilterListKey = "cases"
+	SavedFilterListKeyIncidents      SavedFilterListKey = "incidents"
+	SavedFilterListKeyChangeRequests SavedFilterListKey = "change_requests"
+	SavedFilterListKeyProblems       SavedFilterListKey = "problems"
+)
+
+// MaxSavedFilterViews is the cap per (user, list_key), matching the
+// previous localStorage client.
+const MaxSavedFilterViews = 50
+
+// SavedFilterMoveDirection is up/down in display order (filter_position 0 is first).
+type SavedFilterMoveDirection string
+
+const (
+	SavedFilterMoveUp   SavedFilterMoveDirection = "up"
+	SavedFilterMoveDown SavedFilterMoveDirection = "down"
+)
+
+// SavedFilterView is a named bookmark of a list URL query string. qs is
+// opaque — the frontend already serializes/parses it; this service must not
+// interpret filter fields.
+type SavedFilterView struct {
+	Name string `json:"name"`
+	Qs   string `json:"qs"`
+}
+
+// SavedFilterViewList is the ordered list of filters for one list_key
+// (array order is display order; filter_position 0 is first).
+type SavedFilterViewList struct {
+	Views []SavedFilterView `json:"views"`
+}
+
+// SaveSavedFilterViewRequest is PATCH /users/me/saved-filter-views. Same-name
+// overwrite is case-insensitive; a new name is inserted at the front.
+type SaveSavedFilterViewRequest struct {
+	ListKey SavedFilterListKey `json:"listKey"`
+	Name    string             `json:"name"`
+	Qs      string             `json:"qs"`
+}
+
+// ReorderSavedFilterViewRequest is POST /users/me/saved-filter-views/reorder.
+// Direction moves one slot. Position, when set, is the 0-based target index
+// and takes precedence so a drag can jump several slots in one request.
+type ReorderSavedFilterViewRequest struct {
+	ListKey   SavedFilterListKey       `json:"listKey"`
+	Name      string                   `json:"name"`
+	Direction SavedFilterMoveDirection `json:"direction,omitempty"`
+	Position  *int                     `json:"position,omitempty"`
 }
 
 // SNUser is the user view returned by the ServiceNow data source.
@@ -206,6 +284,57 @@ type UserProjectAccess struct {
 	GrantsCaseAccess     bool     `json:"grantsCaseAccess"`
 }
 
+// UserDetail is a single user's profile on the Postgres data source: the user row
+// plus role, group and (for customers) project-contact information.
+//
+// It is deliberately not SNUserDetail. That type always sends lockedOut, timeZone
+// and per-project notificationsEnabled, which this schema has no column for, and
+// the CSM page shows "Locked out: No" whenever lockedOut is present, so reusing it
+// would state something this data source cannot know. Those fields are omitted
+// here instead.
+type UserDetail struct {
+	ID       string   `json:"id"`
+	UserName string   `json:"userName"`
+	Name     string   `json:"name"`
+	Email    string   `json:"email"`
+	UserType UserType `json:"userType,omitempty"`
+	// Active is false only when user.is_active is explicitly FALSE (a NULL counts
+	// as active, matching how the rest of this schema treats an unset flag).
+	Active    bool      `json:"active"`
+	CreatedOn time.Time `json:"createdOn"`
+	UpdatedOn time.Time `json:"updatedOn"`
+	Roles     []string  `json:"roles"`
+	// Groups are the teams the user belongs to (team_member). Which of them are
+	// registry teams is the caller's determination.
+	Groups []UserGroupRef `json:"groups"`
+	// ProjectAccess is populated for customers (user_type EXTERNAL) only.
+	ProjectAccess []UserContactAccess `json:"projectAccess,omitempty"`
+}
+
+// UserContactAccess is one project_contact row for a customer, reported as stored
+// rather than as filtered, so a caller can see why a contact does or does not
+// reach a project's cases.
+type UserContactAccess struct {
+	ProjectID   string `json:"projectId"`
+	ProjectName string `json:"projectName"`
+	ProjectKey  string `json:"projectKey"`
+	// ContactEmail is the email the row was invited under.
+	ContactEmail string `json:"contactEmail"`
+	// ContactRecordPresent is false when the row has no account_contact linked.
+	ContactRecordPresent bool `json:"contactRecordPresent"`
+	// ContactRecordEmail is the linked account_contact's own user name (its
+	// login email), which can differ from ContactEmail (20 of 357 rows in staging).
+	ContactRecordEmail string `json:"contactRecordEmail,omitempty"`
+	// RegistrationState is project_contact.state (INVITED, REGISTERED, ...).
+	RegistrationState string `json:"registrationState"`
+	// Roles are the contact's project roles (PORTAL_USER, SECURITY_CONTACT, ...),
+	// through project_contact_group -> project_group_role -> project_role.
+	Roles []string `json:"roles"`
+	// GrantsCaseAccess is the rule this service actually enforces when it scopes a
+	// customer's projects and cases: the contact is REGISTERED.
+	GrantsCaseAccess bool `json:"grantsCaseAccess"`
+}
+
 // SearchSNUsersResponse is the paginated result of a ServiceNow user search.
 type SearchSNUsersResponse struct {
 	Users  []SNUser `json:"users"`
@@ -249,9 +378,14 @@ type PatchUserMeResponse struct {
 
 // SearchAccountsFilters holds the optional filter criteria for an account search.
 type SearchAccountsFilters struct {
-	SearchQuery    string `json:"searchQuery,omitempty"`
-	Active         *bool  `json:"active,omitempty"`
-	Pod            string `json:"pod,omitempty"`
+	SearchQuery string `json:"searchQuery,omitempty"`
+	Active      *bool  `json:"active,omitempty"`
+	Pod         string `json:"pod,omitempty"`
+	// OwnerEmail filters to accounts where this email is the technical
+	// owner, account manager, or renewal account manager (any of the
+	// three) — a "my accounts" filter for whichever of those roles the
+	// caller holds. Case-insensitive exact match.
+	OwnerEmail     string `json:"ownerEmail,omitempty"`
 	Classification string `json:"classification,omitempty"`
 }
 
@@ -267,22 +401,34 @@ type SearchAccountsRequest struct {
 // Fields not available from a given data source are left nil.
 // SupportTier is returned as a plain label string (no ID).
 type AccountView struct {
-	ID                    string     `json:"id"`
-	Name                  string     `json:"name"`
-	Classification        string     `json:"classification"`
-	Pod                   *string    `json:"pod"`
-	SfID                  *string    `json:"sfId"`
-	Region                *string    `json:"region"`
-	SupportTier           *string    `json:"supportTier"`
-	ArrToday              *string    `json:"arrToday"`
-	TechnicalOwner        *PersonRef `json:"technicalOwner"`
-	AccountManager        *PersonRef `json:"accountManager"`
-	RenewalAccountManager *PersonRef `json:"renewalAccountManager"`
-	// CreTeam is the account's CRE (customer relationship engineering) team, resolved to a
-	// named group reference (ServiceNow data source only). Mirrors AccountRef.CreTeam.
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Number is the account's ServiceNow-style identifier (e.g. "ACC0001") —
+	// present and populated on the Postgres data source (account.number, NOT
+	// NULL UNIQUE), unlike SupportTier/ArrToday below.
+	Number         string  `json:"number"`
+	Classification string  `json:"classification"`
+	Pod            *string `json:"pod"`
+	SfID           *string `json:"sfId"`
+	Region         *string `json:"region"`
+	Country        *string `json:"country"`
+	City           *string `json:"city"`
+	// DriveLocation is a free-text Google Drive folder reference — present
+	// on the Postgres data source (account.drive_location).
+	DriveLocation          *string    `json:"driveLocation"`
+	SupportTier            *string    `json:"supportTier"`
+	ArrToday               *string    `json:"arrToday"`
+	TechnicalOwner         *PersonRef `json:"technicalOwner"`
+	AccountManager         *PersonRef `json:"accountManager"`
+	RenewalAccountManager  *PersonRef `json:"renewalAccountManager"`
+	CustomerSuccessManager *PersonRef `json:"customerSuccessManager"`
+	// CreTeam is the account's CRE (customer relationship engineering) team,
+	// resolved to a named group reference -- account.cre_team_id (migration
+	// 000074) on the Postgres data source. Mirrors AccountRef.CreTeam.
 	CreTeam *EntityRef `json:"creTeam"`
-	// SreTeam is the account's SRE team, resolved to a named group reference (ServiceNow
-	// data source only). Mirrors AccountRef.SreTeam.
+	// SreTeam is the account's SRE team, resolved to a named group reference
+	// -- account.sre_team_id (migration 0075) on the Postgres data
+	// source. Mirrors AccountRef.SreTeam.
 	SreTeam          *EntityRef `json:"sreTeam"`
 	ActivationDate   *string    `json:"activationDate"`
 	DeactivationDate *string    `json:"deactivationDate"`
@@ -322,22 +468,29 @@ type SNSupportTierRef struct {
 // sources for GET /accounts/{id}. SupportTier is returned as an {id, label}
 // object. Fields not available from a given data source are left nil.
 type AccountDetail struct {
-	ID                    string            `json:"id"`
-	Name                  string            `json:"name"`
-	Classification        string            `json:"classification"`
-	Pod                   *string           `json:"pod"`
-	SfID                  *string           `json:"sfId"`
-	Region                *string           `json:"region"`
-	SupportTier           *SNSupportTierRef `json:"supportTier"`
-	ArrToday              *string           `json:"arrToday"`
-	TechnicalOwner        *PersonRef        `json:"technicalOwner"`
-	AccountManager        *PersonRef        `json:"accountManager"`
-	RenewalAccountManager *PersonRef        `json:"renewalAccountManager"`
-	// CreTeam is the account's CRE (customer relationship engineering) team, resolved to a
-	// named group reference (ServiceNow data source only). Mirrors AccountRef.CreTeam.
+	ID                     string            `json:"id"`
+	Name                   string            `json:"name"`
+	Number                 string            `json:"number"`
+	Classification         string            `json:"classification"`
+	Pod                    *string           `json:"pod"`
+	SfID                   *string           `json:"sfId"`
+	Region                 *string           `json:"region"`
+	Country                *string           `json:"country"`
+	City                   *string           `json:"city"`
+	DriveLocation          *string           `json:"driveLocation"`
+	SupportTier            *SNSupportTierRef `json:"supportTier"`
+	ArrToday               *string           `json:"arrToday"`
+	TechnicalOwner         *PersonRef        `json:"technicalOwner"`
+	AccountManager         *PersonRef        `json:"accountManager"`
+	RenewalAccountManager  *PersonRef        `json:"renewalAccountManager"`
+	CustomerSuccessManager *PersonRef        `json:"customerSuccessManager"`
+	// CreTeam is the account's CRE (customer relationship engineering) team,
+	// resolved to a named group reference -- account.cre_team_id (migration
+	// 000074) on the Postgres data source. Mirrors AccountRef.CreTeam.
 	CreTeam *EntityRef `json:"creTeam"`
-	// SreTeam is the account's SRE team, resolved to a named group reference (ServiceNow
-	// data source only). Mirrors AccountRef.SreTeam.
+	// SreTeam is the account's SRE team, resolved to a named group reference
+	// -- account.sre_team_id (migration 0075) on the Postgres data
+	// source. Mirrors AccountRef.SreTeam.
 	SreTeam          *EntityRef `json:"sreTeam"`
 	ActivationDate   *string    `json:"activationDate"`
 	DeactivationDate *string    `json:"deactivationDate"`
@@ -352,6 +505,439 @@ type AccountDetail struct {
 	// HasPrimaryPartner is whether this account has a primary partner account set
 	// (ServiceNow data source only). Mirrors AccountView.HasPrimaryPartner.
 	HasPrimaryPartner *bool `json:"hasPrimaryPartner"`
+}
+
+// UpdateAccountTeamsRequest is the input for PATCH /accounts/{id} (Postgres
+// data source only). At least one of CreTeamID/SreTeamID must be provided.
+//
+// A nil field leaves that team assignment unchanged, the same "pointer nil
+// means don't touch this field" convention as UpdateCaseRequest's
+// scalar-valued fields. Unlike UpdateCaseRequest.WatchList, there is no
+// distinct signal here for "explicitly clear this to no team" -- WatchList's
+// trick (nil vs. non-nil-but-empty) works because it's a slice; a single
+// team ID field has no third state to spend on that without a wrapper type,
+// and no existing convention in this codebase does that for a scalar field.
+// If clearing a team assignment is needed later, this request shape will
+// need to grow one (e.g. a documented empty-string sentinel, or a
+// present-but-null wrapper).
+type UpdateAccountTeamsRequest struct {
+	ID string `json:"-"`
+	// CreTeamID references team.id. Nil leaves the current CRE team unchanged.
+	CreTeamID *string `json:"creTeamId"`
+	// SreTeamID references team.id. Nil leaves the current SRE team unchanged.
+	SreTeamID *string `json:"sreTeamId"`
+}
+
+const (
+	SalesforceEventCreated   = "CREATED"
+	SalesforceEventUpdated   = "UPDATED"
+	SalesforceEventDeleted   = "DELETED"
+	SalesforceEventRestored  = "RESTORED"
+	SalesforceEventUndefined = "UNDEFINED"
+	SalesforceEntityAccount  = "Account"
+	// SalesforceEntityProjectContact is the Project_Contact__c custom object
+	// (a contact's membership of a project). SalesforceEntityProjectContactAlt
+	// is accepted too in case the publisher drops the __c suffix.
+	SalesforceEntityProjectContact    = "Project_Contact__c"
+	SalesforceEntityProjectContactAlt = "Project_Contact"
+	SalesforceEntityContact           = "Contact"
+	SalesforceSyncActor               = "salesforce-sync"
+	// PortalMembershipWriteActor is created_by/updated_by for a membership
+	// written by a portal rather than by the Salesforce ingest, so the two
+	// origins stay distinguishable in the audit columns even though they
+	// share the same write path.
+	PortalMembershipWriteActor = "portal-membership-write"
+	// PortalMembershipWriteEventType is the onboarding_step.event_type a
+	// portal write records. It is deliberately not one of the Salesforce
+	// event types: the step's duplicate guard only ever special-cases
+	// DELETED, and this value makes a portal-originated write visible in the
+	// ledger for what it is.
+	PortalMembershipWriteEventType = "PORTAL_WRITE"
+	// SLAEngineActor is created_by/updated_by for every "sla" row the
+	// CSM-native SLA engine writes (source='CSM', migration 0134) --
+	// distinguishes its own rows in the audit columns from the ServiceNow
+	// sync's, which share the same table but never carry this value. See
+	// internal/service/sla_policy_resolver.go.
+	SLAEngineActor = "sla-engine"
+)
+
+// SalesforceEventRequest is the ASB envelope POSTed to /salesforce/events.
+type SalesforceEventRequest struct {
+	EventType   string `json:"eventType"`
+	Entity      string `json:"entity"`
+	ReferenceID string `json:"referenceId"`
+}
+
+// SalesforceAccountUpsert is the mapped Salesforce Account written to account.
+type SalesforceAccountUpsert struct {
+	SfID                      string
+	Name                      string
+	Number                    string
+	Industry                  *string
+	Region                    *string
+	GlobalPod                 *string
+	Phone                     *string
+	KeepExistingPhone         bool
+	SalesRegion               *string
+	SubRegion                 *string
+	AccountVertical           *string
+	LifeCycle                 *string
+	NAICSIndustry             *string
+	SubIndustry               *string
+	Classification            *string
+	TechnicalOwnerID          *string
+	SecondaryTechnicalOwnerID *string
+}
+
+// Salesforce Project_Contact__c states, as stored in Salesforce State__c and
+// in project_contact.state (project_contact_state_enum).
+const (
+	MembershipStateInvited     = "INVITED"
+	MembershipStateRegistered  = "REGISTERED"
+	MembershipStateReInvited   = "RE-INVITED"
+	MembershipStateDeactivated = "DEACTIVATED"
+)
+
+// Salesforce Contact_Type__c values on Project_Contact__c.
+const (
+	MembershipTypeOwnContact     = "OWN CONTACT"
+	MembershipTypePartnerContact = "PARTNER CONTACT"
+)
+
+// SalesforceMembershipUpsert is one Salesforce Project_Contact__c, mapped and
+// resolved by the ingest service, ready to be written by
+// repository.ProjectMembershipRepository.Upsert. The repository resolves the
+// existing rows by natural keys (project key / sf_id, account sf_id, contact
+// email) and stamps every Salesforce id it touches, so a replay of the same
+// membership is idempotent. GlobalRoles / ProjectGroups / ManagedAdminRoles
+// are already mapped from the Salesforce roles by the service (see
+// mapGlobalRoles / mapProjectGroups) — the repository only resolves names to
+// rows.
+type SalesforceMembershipUpsert struct {
+	MembershipSfID string
+	State          string
+	Type           string
+	// Email is the invited address stored on project_contact.email.
+	Email string
+
+	// Actor is created_by/updated_by for every row this write touches.
+	// Empty defaults to SalesforceSyncActor, which is what the ingest wants;
+	// the portal writes set PortalMembershipWriteActor.
+	Actor string
+
+	// ProjectID short-circuits the repository's project resolution when the
+	// caller already holds the CSM project id (the portal writes address a
+	// project by its UUID, not by its Salesforce key). Empty falls back to
+	// the ingest's own natural-key resolution, ProjectKey then ProjectSfID.
+	ProjectID string
+
+	ContactSfID         string
+	ContactEmail        string
+	ContactName         string
+	ContactFirstName    string
+	ContactLastName     string
+	ContactAccountSfID  string
+	IsCsAdmin           bool
+	IsCsIntegrationUser bool
+
+	ProjectSfID string
+	ProjectKey  string
+
+	// GlobalRoles are the role.name values the user must hold after the upsert
+	// (e.g. external, customer, customer_admin). Roles not listed here and not
+	// in ManagedAdminRoles are left untouched.
+	GlobalRoles []string
+	// ManagedAdminRoles are the role.name values the ingest owns exclusively
+	// (customer_admin, partner_admin). Exactly one of them is granted when
+	// the user turns out to be an admin, and every one of them that is not
+	// AdminRoleName is revoked. Every other role the user holds is left
+	// alone.
+	ManagedAdminRoles []string
+	// AdminRoleName is which of ManagedAdminRoles this contact would hold if
+	// they are an admin: partner_admin for a PARTNER CONTACT, customer_admin
+	// otherwise, and empty for an integration user (which gets no global
+	// roles at all).
+	//
+	// WHETHER they hold it is NOT decided from the membership being written.
+	// Admin is a project role now, and the account-level role is derived: the
+	// repository re-reads every membership this user has, after this one has
+	// been written, and grants the role when ANY of them carries the project
+	// ADMIN role (or the contact's own Salesforce isCsAdmin flag is set).
+	// Deciding it from the one membership in hand is what used to strip a
+	// user's admin everywhere the moment a single non-admin membership was
+	// processed.
+	AdminRoleName string
+	// ProjectGroups are the project_group."group" names the membership must be
+	// in after the upsert; every other group membership of this project
+	// contact is removed.
+	ProjectGroups []string
+}
+
+// SalesforceMembershipUpsertResult reports what the upsert resolved or created.
+type SalesforceMembershipUpsertResult struct {
+	ProjectID             string
+	AccountID             string
+	UserID                string
+	AccountContactID      string
+	ProjectContactID      string
+	CreatedUser           bool
+	CreatedAccountContact bool
+	CreatedProjectContact bool
+	// PreviousState is the project_contact.state the row carried BEFORE this
+	// upsert overwrote it, empty when the row was created here. It is the
+	// echo-suppression signal the Salesforce ingest gates on: a portal write
+	// has already stored the new state by the time its own echo arrives, so
+	// PreviousState then equals the incoming state and the ingest stays
+	// silent, while a state Salesforce itself moved (DEACTIVATED to
+	// RE-INVITED, say) differs and is published.
+	PreviousState string
+	// IsAccountAdmin is the derived account-level admin decision the upsert
+	// just applied: true when at least one of this user's live memberships
+	// carries the project ADMIN role (or the contact's Salesforce isCsAdmin
+	// flag is set), which is exactly when AdminRoleName is held.
+	IsAccountAdmin bool
+}
+
+// MembershipWriteTarget is the project (and its account) a portal membership
+// write lands on, read inside the write's own transaction before the
+// Salesforce half runs. The Salesforce ids are what the Salesforce calls need;
+// the UUIDs are what the rows need.
+type MembershipWriteTarget struct {
+	ProjectID   string
+	ProjectKey  string
+	ProjectName string
+	ProjectSfID string
+	AccountID   string
+	AccountSfID string
+}
+
+// ProjectMembership is one customer's membership of one project, as returned
+// by the portal write endpoints. It is deliberately a different shape from
+// ProjectContact (the read model the contacts search returns): this one is
+// about the write that just happened, and carries the Salesforce ids the
+// caller needs to correlate the onboarding ledger.
+type ProjectMembership struct {
+	ProjectID        string `json:"projectId"`
+	ProjectContactID string `json:"projectContactId"`
+	MembershipSfID   string `json:"membershipSfId"`
+	ContactSfID      string `json:"contactSfId"`
+	// UserID is the "user" row the membership resolved to. Always set: the
+	// write creates the user row when no match exists.
+	UserID string `json:"userId"`
+	Email  string `json:"email"`
+	// State is a project_contact_state_enum value (INVITED / REGISTERED /
+	// RE-INVITED / DEACTIVATED).
+	State string `json:"state"`
+	// Roles are the raw Salesforce Role__c labels the membership now carries
+	// ("Portal user", "Admin", ...), exactly as they were written to
+	// Salesforce — not the derived project_role/project_group values.
+	Roles []string `json:"roles"`
+}
+
+// CreateProjectMembershipRequest is the body of POST /projects/{id}/contacts:
+// invite someone to a project. FirstName/LastName are used only when the
+// Salesforce contact has to be created; an existing contact keeps its own
+// name. Roles are raw Salesforce Role__c labels.
+type CreateProjectMembershipRequest struct {
+	Email     string   `json:"email"`
+	FirstName string   `json:"firstName"`
+	LastName  string   `json:"lastName"`
+	Roles     []string `json:"roles"`
+	// IsCsIntegrationUser marks a machine account: it gets its database row
+	// and its Salesforce records like anyone else, but no Asgardeo identity
+	// and no invitation e-mail, because nobody ever signs in as it. Only
+	// honoured when the Salesforce contact is created by this request; an
+	// existing contact keeps whatever Salesforce already says, which is the
+	// authority on what kind of contact it is.
+	IsCsIntegrationUser bool `json:"isCsIntegrationUser,omitempty"`
+	// InviterEmail is the address of the person sending the invitation, set
+	// by the Customer Portal backend from the signed-in user's verified token
+	// (never from its own request body). When present, the invitation is
+	// checked the way the project-contact onboarding service checked it:
+	// the inviter's account must own or partner the project, and the allowed
+	// email domains start from that account. The CSM Portal leaves it empty.
+	// Trusted only because every caller of this route is an allow-listed
+	// internal client.
+	InviterEmail string `json:"inviterEmail,omitempty"`
+}
+
+// ValidateProjectMembershipRequest is the body of
+// POST /projects/{id}/contacts/validate: the invitation to check, without
+// making it. InviterEmail means exactly what it means on
+// CreateProjectMembershipRequest.
+type ValidateProjectMembershipRequest struct {
+	Email        string `json:"email"`
+	InviterEmail string `json:"inviterEmail,omitempty"`
+}
+
+// Reasons a ProjectMembershipValidation gives for refusing an invitation.
+// Each names the status the invitation itself would have been refused with,
+// so a caller can keep answering its own users the way it did before.
+const (
+	// MembershipValidationConflict: the address is already an active contact
+	// on the project, or Salesforce holds more than one contact for it (409).
+	MembershipValidationConflict = "CONFLICT"
+	// MembershipValidationForbidden: the invitation is not allowed, e.g. a
+	// public email domain, a domain outside the allowed list, or an inviter
+	// whose account neither owns nor partners the project (403).
+	MembershipValidationForbidden = "FORBIDDEN"
+	// MembershipValidationInvalid: the invitation cannot be made as it
+	// stands, e.g. the account has no domain list defined (400).
+	MembershipValidationInvalid = "INVALID"
+)
+
+// ProjectMembershipValidation is the answer of
+// POST /projects/{id}/contacts/validate. A refused invitation is an ordinary
+// answer here (Valid false, with Reason and Message), not an error status:
+// the error statuses are kept for the call itself failing, so a caller can
+// tell "this person may not be invited" apart from "the check could not run".
+type ProjectMembershipValidation struct {
+	Valid bool `json:"valid"`
+	// Reason is one of the MembershipValidation* constants. Empty when Valid.
+	Reason string `json:"reason,omitempty"`
+	// Message says why, in words safe to show the person who is inviting:
+	// the wording the project-contact onboarding service used.
+	Message string `json:"message,omitempty"`
+	// ExistingMembershipState is the state of the membership this project
+	// already holds for the address, when there is one. On a valid answer it
+	// can only be DEACTIVATED, meaning the invitation would bring it back.
+	ExistingMembershipState string `json:"existingMembershipState,omitempty"`
+	// ExistingContact is the Salesforce contact the invitation would adopt,
+	// when one already exists. Set only on a valid answer.
+	ExistingContact *ValidatedInvitee `json:"existingContact,omitempty"`
+}
+
+// ValidatedInvitee is the existing Salesforce contact an invitation would
+// adopt rather than create.
+type ValidatedInvitee struct {
+	ContactSfID           string  `json:"contactSfId"`
+	Email                 string  `json:"email"`
+	FirstName             string  `json:"firstName,omitempty"`
+	LastName              string  `json:"lastName,omitempty"`
+	IsCsAdmin             bool    `json:"isCsAdmin"`
+	IsCsIntegrationUser   bool    `json:"isCsIntegrationUser"`
+	AccountSfID           *string `json:"accountSfId,omitempty"`
+	AccountClassification *string `json:"accountClassification,omitempty"`
+	IsPartnerAccount      *bool   `json:"isPartnerAccount,omitempty"`
+}
+
+// UpdateProjectMembershipRolesRequest is the body of
+// PATCH /projects/{id}/contacts/{email}: replace the membership's Salesforce
+// roles. An empty list is allowed and means "no roles" — it removes every
+// project group, it does not leave the current set alone.
+type UpdateProjectMembershipRolesRequest struct {
+	Roles []string `json:"roles"`
+}
+
+// ProjectMembershipRow is an existing membership as read back by the write
+// path, keyed by (project, email). Roles are the raw Salesforce labels
+// reconstructed from the membership's project groups, so a role change can be
+// expressed as a replacement of the whole picklist.
+type ProjectMembershipRow struct {
+	ProjectContactID string
+	MembershipSfID   string
+	ContactSfID      string
+	UserID           string
+	Email            string
+	State            string
+	ProjectGroups    []string
+	// The rest is what re-publishing an invitation needs without a second
+	// query or a Salesforce round trip: csm-notification-service addresses
+	// the person and names the project from the event payload alone.
+	FirstName   string
+	LastName    string
+	ProjectKey  string
+	ProjectName string
+	// Type is the Salesforce Contact_Type__c equivalent, derived rather than
+	// stored: project_contact carries no type column, so a contact whose
+	// account_contact hangs off a different account than the project's is a
+	// PARTNER CONTACT and anything else an OWN CONTACT.
+	Type              string
+	IsIntegrationUser bool
+}
+
+// OnboardingStepName is the onboarding_step.step enum: one row per membership
+// per step, the latest outcome of that step.
+type OnboardingStepName string
+
+const (
+	OnboardingStepIdentity     OnboardingStepName = "IDENTITY"
+	OnboardingStepDatabase     OnboardingStepName = "DATABASE"
+	OnboardingStepEmail        OnboardingStepName = "EMAIL"
+	OnboardingStepRegistration OnboardingStepName = "REGISTRATION"
+)
+
+// OnboardingStepStatus is the onboarding_step.status enum.
+type OnboardingStepStatus string
+
+const (
+	OnboardingStepSucceeded OnboardingStepStatus = "SUCCEEDED"
+	OnboardingStepFailed    OnboardingStepStatus = "FAILED"
+	OnboardingStepSkipped   OnboardingStepStatus = "SKIPPED"
+)
+
+// OnboardingStep is one row of onboarding_step — see migration
+// 0116_onboarding_step_table for the column semantics.
+type OnboardingStep struct {
+	ID               string               `json:"id"`
+	MembershipSfID   string               `json:"membershipSfId"`
+	ContactSfID      *string              `json:"contactSfId"`
+	Email            string               `json:"email"`
+	ProjectID        *string              `json:"projectId"`
+	ProjectContactID *string              `json:"projectContactId"`
+	Step             OnboardingStepName   `json:"step"`
+	Status           OnboardingStepStatus `json:"status"`
+	AttemptCount     int                  `json:"attemptCount"`
+	LastError        *string              `json:"lastError"`
+	EventType        string               `json:"eventType"`
+	EventModifiedOn  time.Time            `json:"eventModifiedOn"`
+	CreatedOn        time.Time            `json:"createdOn"`
+	UpdatedOn        time.Time            `json:"updatedOn"`
+}
+
+// UpsertOnboardingStepRequest is the body of
+// PUT /onboarding-steps/{membershipSfId}/{step}. The membership id and the
+// step come from the path (json:"-"). Repeating the call for the same
+// membership + step updates the row and increments attemptCount.
+type UpsertOnboardingStepRequest struct {
+	MembershipSfID   string               `json:"-"`
+	Step             OnboardingStepName   `json:"-"`
+	Status           OnboardingStepStatus `json:"status"`
+	LastError        *string              `json:"lastError"`
+	EventType        string               `json:"eventType"`
+	EventModifiedOn  time.Time            `json:"eventModifiedOn"`
+	Email            string               `json:"email"`
+	ContactSfID      *string              `json:"contactSfId"`
+	ProjectID        *string              `json:"projectId"`
+	ProjectContactID *string              `json:"projectContactId"`
+	// UpdatedBy is set by the service, not the caller.
+	UpdatedBy string `json:"-"`
+}
+
+// OnboardingStepFilters narrows POST /onboarding-steps/search.
+type OnboardingStepFilters struct {
+	ProjectID       *string                `json:"projectId"`
+	MembershipSfIDs []string               `json:"membershipSfIds"`
+	Statuses        []OnboardingStepStatus `json:"statuses"`
+}
+
+// SearchOnboardingStepsRequest is the body of POST /onboarding-steps/search.
+type SearchOnboardingStepsRequest struct {
+	Filters    OnboardingStepFilters `json:"filters"`
+	Pagination Pagination            `json:"pagination"`
+}
+
+// SearchOnboardingStepsResponse is the paginated result of a step search.
+type SearchOnboardingStepsResponse struct {
+	Steps  []OnboardingStep `json:"steps"`
+	Total  int              `json:"total"`
+	Limit  int              `json:"limit"`
+	Offset int              `json:"offset"`
+}
+
+// GetOnboardingStepsResponse is the body of GET /onboarding-steps/{membershipSfId}.
+type GetOnboardingStepsResponse struct {
+	Steps []OnboardingStep `json:"steps"`
 }
 
 // SubscriptionType classifies the subscription type of a project.
@@ -381,25 +967,42 @@ const (
 	ClosureStatusSuspended  ClosureStatus = "suspended"
 )
 
-// Project represents a customer project linked to an account.
+// Project represents a customer project linked to an account. This is an
+// internal repository<->service handoff type for SearchProjects, never
+// serialized directly to a caller (ProjectView is). AccountID/StartDate/
+// EndDate are pointers because project.account_id/start_date/end_date
+// (migration 0014) are all nullable columns and genuinely NULL on live
+// data (confirmed: 14/1956, 13/1956, 14/1956 rows respectively) -- matching
+// ProjectDetailsView's own StartDate/EndDate, which document the same
+// "may legitimately be unset" reality.
 type Project struct {
 	ID               string           `json:"id"`
-	AccountID        string           `json:"accountId"`
+	AccountID        *string          `json:"accountId"`
 	SfID             string           `json:"sfId"`
 	Name             string           `json:"name"`
 	Key              string           `json:"key"`
 	SubscriptionType SubscriptionType `json:"subscriptionType"`
 	ClosureStatus    *ClosureStatus   `json:"closureStatus"`
-	StartDate        time.Time        `json:"startDate"`
-	EndDate          time.Time        `json:"endDate"`
-	CreatedOn        time.Time        `json:"createdOn"`
-	UpdatedOn        time.Time        `json:"updatedOn"`
+	// ClosureState mirrors ProjectDetailsView's own field of the same name
+	// (project.wso2_closure_state) -- a distinct concept from ClosureStatus
+	// above despite the similar name: this is the raw enum label
+	// (e.g. "Suspended") SearchProjects' own ProjectView.ClosureState
+	// (ProjectClosureFields, embedded there) is populated from.
+	ClosureState *string    `json:"closureState"`
+	StartDate    *time.Time `json:"startDate"`
+	EndDate      *time.Time `json:"endDate"`
+	CreatedOn    time.Time  `json:"createdOn"`
+	UpdatedOn    time.Time  `json:"updatedOn"`
 }
 
 // ProjectAccountRef is the embedded account summary returned in project detail responses.
 type ProjectAccountRef struct {
-	ID                  string     `json:"id"`
-	Name                string     `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Number is the account's ServiceNow-style identifier — see
+	// AccountView.Number's own doc comment for why this is populated on the
+	// Postgres data source too, not just ServiceNow.
+	Number              string     `json:"number"`
 	ActivationDate      *time.Time `json:"activationDate"`
 	Tier                string     `json:"tier"`
 	Region              *string    `json:"region"`
@@ -423,7 +1026,8 @@ type ProjectAccountRef struct {
 // promotes its fields to the parent's JSON object, so the wire shape is
 // unaffected.
 type ProjectClosureFields struct {
-	// ClosureState is the project's closure/access state (ServiceNow data source only).
+	// ClosureState is the project's closure/access state (project.wso2_closure_state,
+	// migration 0014 -- populated on both data sources).
 	ClosureState *string `json:"closureState"`
 	// EndDateClosureState reflects the closure state driven by the project's end date
 	// (ServiceNow data source only).
@@ -549,9 +1153,11 @@ type SearchProjectsRequest struct {
 	SortBy string `json:"sortBy"`
 	// SortOrder is the sort direction ("asc" or "desc", ServiceNow data source only).
 	SortOrder string `json:"sortOrder"`
-	// AccountID filters to projects belonging to this account. Platform UUID,
-	// converted to the backing data source's internal id before dispatch
-	// (ServiceNow data source only).
+	// AccountID filters to projects belonging to this account. Platform
+	// UUID. Supported on both data sources: the ServiceNow path converts it
+	// to that backing data source's internal id before dispatch; the
+	// Postgres path applies it directly against project.account_id
+	// (project_repo.go).
 	AccountID string `json:"accountId"`
 	// OnboardingStatus filters to projects whose onboarding status is one of
 	// the given values (ServiceNow data source only).
@@ -568,22 +1174,30 @@ type SearchProjectsRequest struct {
 	// ClosureStatus above, there is no upstream ServiceNow filter parameter for
 	// excluding a set of states, so the ServiceNow data source applies this by
 	// paging through every match and filtering in Go, not by passing it through
-	// as a request filter (ServiceNow data source only; the Postgres data
-	// source rejects a non-empty value).
+	// as a request filter. The Postgres data source applies it as a real SQL
+	// filter instead, against the project.wso2_closure_state column (case-
+	// insensitive — see project_repo.go's SearchProjects).
 	ExcludeClosureStates []string `json:"excludeClosureStates,omitempty"`
 	// ExcludeSubscriptionTypes filters out projects whose subscription type is
 	// any of the given values, e.g. ["cloud_support", "cloud_evaluation_support"].
 	// Same "no upstream filter, applied in Go" caveat as ExcludeClosureStates
-	// (ServiceNow data source only; the Postgres data source rejects a
-	// non-empty value).
+	// for the ServiceNow data source. The Postgres data source applies it as a
+	// real SQL filter against project_type.name (migrations 0031/0032,
+	// joined via project.project_type_id -- the same ServiceNow project
+	// "type" reference field, normalized the same way
+	// snTypeNameToSubscriptionType normalizes it) -- a project with no
+	// project_type_id set is never excluded, same NULL-permissive
+	// semantics as ExcludeClosureStates (see project_repo.go's
+	// SearchProjects).
 	ExcludeSubscriptionTypes []SubscriptionType `json:"excludeSubscriptionTypes,omitempty"`
 	// ExcludeProjectKeys filters out projects whose Key (see ProjectView.Key)
 	// is any of the given values, e.g. ["APEXIA", "VERIDIAN"] — a caller-
 	// supplied denylist by project key, unrelated to closure state or
 	// subscription type. Same "no upstream filter, applied in Go" caveat as
-	// ExcludeClosureStates (ServiceNow data source only; the Postgres data
-	// source rejects a non-empty value). Matching is exact and case-sensitive
-	// (project keys are opaque identifiers, not display text).
+	// ExcludeClosureStates for the ServiceNow data source; the Postgres data
+	// source applies it as a real SQL filter against project.key instead.
+	// Matching is exact and case-sensitive (project keys are opaque
+	// identifiers, not display text).
 	ExcludeProjectKeys []string `json:"excludeProjectKeys,omitempty"`
 }
 
@@ -709,6 +1323,8 @@ type Invoice struct {
 	Opportunity *EntityRef `json:"opportunity"`
 	// Classification is a short code (e.g. "CL"), nil when not set.
 	Classification *string `json:"classification"`
+	// SfID is the Salesforce record id for this invoice, nil when not linked.
+	SfID *string `json:"sfId"`
 }
 
 // SearchInvoicesRequest is the input for searching invoices (ServiceNow data source only).
@@ -1222,8 +1838,9 @@ type DeployedProductView struct {
 type ProductRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	// Abbreviation is absent on the Postgres data source, whose products table
-	// has no equivalent column — it is populated only from ServiceNow.
+	// Abbreviation is product.code on the Postgres data source (e.g. "wso2am"
+	// for "WSO2 API Manager") -- the exact vocabulary this field's own doc
+	// comment above describes the product-updates catalogue keying on.
 	Abbreviation *string `json:"abbreviation,omitempty"`
 }
 
@@ -1262,9 +1879,10 @@ type SearchDeployedProductsResponse struct {
 // DeploymentIDs filter, which starts from already-known deployments rather
 // than a product/version. Needed for EOL/product-version-targeted
 // announcements: there is no existing query path from "product X, version Y"
-// back to the projects running it. ServiceNow data source only — the
-// Postgres data source rejects a call outright (see that data source's own
-// implementation).
+// back to the projects running it. Supported on both data sources: Postgres
+// resolves it directly via deployed_product.project_id (migration 0019's
+// FK straight to project), ServiceNow via a platform-wide deployment scan
+// (see that data source's own implementation).
 //
 // The result is always restricted to projects eligible for an announcement
 // at all (excluding Restricted/Suspended closure states and Cloud Support/
@@ -1506,22 +2124,35 @@ type CaseSort struct {
 // ClosedOn and WorkState are the only nullable fields; all others are required.
 // Used as the response for write operations (create/update).
 type Case struct {
-	ID                string         `json:"id"`
-	Number            string         `json:"number"`
-	InternalID        string         `json:"internalId"`
-	CreatedBy         string         `json:"createdBy"`
-	ProjectID         string         `json:"projectId"`
-	DeploymentID      string         `json:"deploymentId"`
-	DeployedProductID string         `json:"deployedProductId"`
-	Subject           string         `json:"subject"`
-	Description       string         `json:"description"`
-	Severity          CaseSeverity   `json:"severity"`
-	IssueType         CaseIssueType  `json:"issueType"`
-	State             CaseState      `json:"state"`
-	WorkState         *CaseWorkState `json:"workState"`
-	CreatedOn         time.Time      `json:"createdOn"`
-	UpdatedOn         time.Time      `json:"updatedOn"`
-	ClosedOn          *time.Time     `json:"closedOn"`
+	ID     string `json:"id"`
+	Number string `json:"number"`
+	// InternalID (work_item.wso2_id) stays a required, non-nullable string
+	// ("" when the column is NULL/blank) -- entity-service's own OpenAPI
+	// spec, the customer-portal Ballerina client, and backend-v2 all
+	// declare it non-nullable, so this can't become *string without a
+	// coordinated cross-repo contract change. See case_repo.go's own
+	// comment on this for the scan-side fix that avoids a NULL-scan panic
+	// without changing this wire type.
+	InternalID        string `json:"internalId"`
+	CreatedBy         string `json:"createdBy"`
+	ProjectID         string `json:"projectId"`
+	DeploymentID      string `json:"deploymentId"`
+	DeployedProductID string `json:"deployedProductId"`
+	Subject           string `json:"subject"`
+	Description       string `json:"description"`
+	// Severity/IssueType are null in practice for most real cases (confirmed
+	// against production data: ~86%/~99% of cases have no severity/issue
+	// type set on "case") -- not an edge case, the common case.
+	Severity  *CaseSeverity  `json:"severity"`
+	IssueType *CaseIssueType `json:"issueType"`
+	// State is null only for a handful of real cases, but "case".state is
+	// nullable and observed null in practice, so this stays consistent with
+	// Severity/IssueType rather than assuming it never happens.
+	State     *CaseState     `json:"state"`
+	WorkState *CaseWorkState `json:"workState"`
+	CreatedOn time.Time      `json:"createdOn"`
+	UpdatedOn time.Time      `json:"updatedOn"`
+	ClosedOn  *time.Time     `json:"closedOn"`
 }
 
 // AssignedEngineerRef is a compact reference to an assigned support engineer.
@@ -1574,11 +2205,13 @@ type AccountRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Type string `json:"type"`
-	// CreTeam is the account's CRE (customer relationship engineering) team, resolved to a
-	// named group reference (ServiceNow data source only).
+	// CreTeam is the account's CRE (customer relationship engineering) team,
+	// resolved to a named group reference -- account.cre_team_id (migration
+	// 000074) on the Postgres data source, see CaseRepository.GetCaseByID.
 	CreTeam *EntityRef `json:"creTeam,omitempty"`
-	// SreTeam is the account's SRE team, resolved to a named group reference (ServiceNow
-	// data source only).
+	// SreTeam is the account's SRE team, resolved to a named group reference
+	// -- account.sre_team_id (migration 0075) on the Postgres data
+	// source, see CaseRepository.GetCaseByID.
 	SreTeam *EntityRef `json:"sreTeam,omitempty"`
 }
 
@@ -1670,25 +2303,41 @@ type DeployedProductRef struct {
 
 // CaseView is the enriched read representation of a case.
 type CaseView struct {
-	ID             string         `json:"id"`
-	Number         string         `json:"number"`
-	InternalID     string         `json:"internalId"`
-	Subject        string         `json:"subject"`
-	Description    string         `json:"description"`
-	Severity       CaseSeverity   `json:"severity"`
-	IssueType      CaseIssueType  `json:"issueType"`
-	State          CaseState      `json:"state"`
-	WorkState      *CaseWorkState `json:"workState"`
-	Type           *string        `json:"type"`
-	EngagementType *string        `json:"engagementType"`
-	CreatedOn      time.Time      `json:"createdOn"`
-	UpdatedOn      time.Time      `json:"updatedOn"`
-	ClosedOn       *time.Time     `json:"closedOn"`
+	ID     string `json:"id"`
+	Number string `json:"number"`
+	// InternalID (work_item.wso2_id) stays a required, non-nullable string
+	// -- see domain.Case's own doc comment for why.
+	InternalID  string `json:"internalId"`
+	Subject     string `json:"subject"`
+	Description string `json:"description"`
+	// Severity/IssueType/State are null in practice for a large share of
+	// real cases -- see domain.Case's own doc comment for the confirmed
+	// production null rates.
+	Severity  *CaseSeverity  `json:"severity"`
+	IssueType *CaseIssueType `json:"issueType"`
+	State     *CaseState     `json:"state"`
+	WorkState *CaseWorkState `json:"workState"`
+	Type      *string        `json:"type"`
+	// AnnouncementType is only meaningful when Type is "announcement" -- the
+	// real ServiceNow classification (u_announcement_type, migrated into
+	// Postgres' own announcement.announcement_type column) of "GENERAL" vs
+	// "SECURITY", set at creation time from CreateCaseRequest.IsSecurityAnnouncement
+	// (which already exists for a different purpose -- see that field's own
+	// doc comment -- reused here rather than adding a second flag for the
+	// same underlying yes/no). Nil for every other case-like type.
+	AnnouncementType *string    `json:"announcementType,omitempty"`
+	EngagementType   *string    `json:"engagementType"`
+	CreatedOn        time.Time  `json:"createdOn"`
+	UpdatedOn        time.Time  `json:"updatedOn"`
+	ClosedOn         *time.Time `json:"closedOn"`
 	// CreatedBy is the canonical user reference for the case creator. Its id is
 	// populated only where the backing data source already supplies one, and
 	// null otherwise: see UserReference.
-	CreatedBy              *UserReference      `json:"createdBy"`
-	ProjectDetails         EntityRef           `json:"project"`
+	CreatedBy *UserReference `json:"createdBy"`
+	// ProjectDetails is null for a case with no project linked -- a real,
+	// valid state on the Postgres data source (work_item.project_id has no
+	// NOT NULL constraint).
+	ProjectDetails         *EntityRef          `json:"project"`
 	DeploymentDetails      *EntityRef          `json:"deployment"`
 	DeployedProductDetails *DeployedProductRef `json:"deployedProduct"`
 	Catalog                *EntityRef          `json:"catalog"`
@@ -1732,7 +2381,8 @@ type CaseView struct {
 	ResolutionCode  *CaseResolutionCode `json:"resolutionCode"`
 	Cause           *CaseCause          `json:"cause"`
 	ResolutionNotes *string             `json:"resolutionNotes"`
-	// WatchList is the set of users watching the case (ServiceNow data source only).
+	// WatchList is the set of users watching the case. For the Postgres data
+	// source this is backed by work_item_watcher (migration 0042).
 	WatchList []WatchListUser `json:"watchList,omitempty"`
 	// AutoclosureStep indicates where the case sits in ServiceNow's staged auto-closure
 	// sequence: DEFAULT -> FIRST_COMMENT -> ON_HOLD -> SECOND_COMMENT. Read-only —
@@ -2069,7 +2719,9 @@ type AggregateResponse struct {
 // SearchCaseView is the unified case representation returned in search results.
 // Fields absent for a given data source are nil.
 type SearchCaseView struct {
-	ID         string `json:"id"`
+	ID string `json:"id"`
+	// InternalID (work_item.wso2_id) stays a required, non-nullable string
+	// -- see domain.Case's own doc comment for why.
 	InternalID string `json:"internalId"`
 	Number     string `json:"number"`
 	CreatedOn  string `json:"createdOn"`
@@ -2081,7 +2733,7 @@ type SearchCaseView struct {
 	Subject        *string        `json:"subject"`
 	Description    *string        `json:"description"`
 	IssueType      *string        `json:"issueType"`
-	State          string         `json:"state"`
+	State          *string        `json:"state"`
 	Severity       *string        `json:"severity"`
 	Catalog        *EntityRef     `json:"catalog"`
 	CatalogItem    *EntityRef     `json:"catalogItem"`
@@ -2090,7 +2742,10 @@ type SearchCaseView struct {
 	EngagementType *string        `json:"engagementType"`
 	WorkState      *string        `json:"workState"`
 	Type           string         `json:"type"`
-	Project        EntityRef      `json:"project"`
+	// Project is null for a case with no project linked -- a real, valid
+	// state on the Postgres data source (work_item.project_id has no NOT
+	// NULL constraint).
+	Project *EntityRef `json:"project"`
 	// ProjectKey is the project's short human-readable key (e.g. "TESTQUERYSUB").
 	// Populated for the ServiceNow data source only; null otherwise.
 	ProjectKey      *string    `json:"projectKey"`
@@ -2190,8 +2845,12 @@ type UpdateCaseRequest struct {
 	// accepted and resolved to emails for CSM callers. It is a pointer so an
 	// absent field and an explicitly empty list are distinguishable: nil leaves
 	// the watch list untouched, while an empty list clears it.
-	WatchList      *[]string           `json:"watchList"`
-	AssigneeEmail  *string             `json:"assigneeEmail"`
+	WatchList *[]string `json:"watchList"`
+	// AssigneeEmail uses json.RawMessage to preserve three states: nil/empty = omit,
+	// "null" = clear (unassign), `"value"` = set -- mirroring
+	// UpdateAttachmentRequest.Description, since a plain *string cannot tell an omitted
+	// field apart from an explicit null.
+	AssigneeEmail  json.RawMessage     `json:"assigneeEmail"`
 	ResolutionCode *CaseResolutionCode `json:"resolutionCode"`
 	Cause          *CaseCause          `json:"cause"`
 	CloseNotes     *string             `json:"closeNotes"`
@@ -2260,6 +2919,14 @@ type UpdateCaseRequest struct {
 	// the provider and pauses the case's Workaround SLA clock in the backing data
 	// source; recalling clears both (ServiceNow data source only).
 	WorkaroundProvided *bool `json:"workaroundProvided"`
+	// MarkFixIssued, when true, records that a fix has been issued for the case:
+	// it stamps work_item.fix_issued_on with the current time if it isn't already set,
+	// and otherwise succeeds without changing anything (first-write-wins, same
+	// shape as Acknowledge -- there is no un-mark). Only true is accepted -- like
+	// Acknowledge, there is no unmark path -- and it cannot be combined with any
+	// other field in the same request (Postgres data source only; the mirrored
+	// ServiceNow write happens asynchronously through the dual-write mechanism).
+	MarkFixIssued *bool `json:"markFixIssued"`
 }
 
 // UpdateCaseResponse is the response for PATCH /cases/{id}.
@@ -2276,11 +2943,11 @@ type CaseLabelRef struct {
 
 // UpdatedCase carries the fields of a case that may change after an update.
 type UpdatedCase struct {
-	ID        string       `json:"id"`
-	UpdatedOn time.Time    `json:"updatedOn"`
-	UpdatedBy string       `json:"updatedBy,omitempty"`
-	State     CaseState    `json:"state,omitempty"`
-	Severity  CaseSeverity `json:"severity,omitempty"`
+	ID        string        `json:"id"`
+	UpdatedOn time.Time     `json:"updatedOn"`
+	UpdatedBy string        `json:"updatedBy,omitempty"`
+	State     *CaseState    `json:"state,omitempty"`
+	Severity  *CaseSeverity `json:"severity,omitempty"`
 	// Type echoes the case's new type back on a successful transfer.
 	// EngagementType/CatalogID/CatalogItemID/Variables aren't echoed -- same as every
 	// other field this update accepts alongside a type-defining field (subject,
@@ -2323,6 +2990,12 @@ type UpdatedCase struct {
 	// request set it or found it already set. Present only when the update set
 	// acknowledge.
 	AcknowledgedBy *AssignedEngineerRef `json:"acknowledgedBy,omitempty"`
+	// FixIssued echoes the case's fix-issued timestamp back on a successful
+	// markFixIssued update, whether this request just set it (first write) or it
+	// was already set (first-write-wins no-op). Present only when the update set
+	// markFixIssued -- not part of the general read model (CaseView/GetCaseByID/
+	// SearchCases), which is a separate, later piece of work.
+	FixIssued *time.Time `json:"fixIssued,omitempty"`
 	// WorkaroundProvidedOn/WorkaroundProvidedBy are not echoed here: ServiceNow's
 	// Update Case response only ever returns {id, updatedOn, updatedBy} for a plain
 	// field write like this one (same as Subject/Description/the fix-ETA fields
@@ -2345,6 +3018,21 @@ type WatchListUser struct {
 	UserName string `json:"userName"`
 	Name     string `json:"name,omitempty"`
 	Email    string `json:"email,omitempty"`
+	// Locked is true when this watcher is currently one of the case's
+	// project's account's four named stakeholders (customer success manager,
+	// technical owner, secondary technical owner, account manager --
+	// CaseRepository.AccountDefaultWatcherIDs). A caller cannot remove a
+	// locked watcher via UpdateCase's WatchList field -- see
+	// caseService.updateCaseWatchList's own doc comment -- so a UI should
+	// disable the remove control for these specifically, rather than let the
+	// removal silently fail to stick. Computed live from the account's
+	// current stakeholder columns, not stamped at the time the watcher was
+	// added, so it tracks a later stakeholder change (e.g. a reassigned CSM)
+	// automatically rather than going stale. Postgres-data-source only --
+	// this concept has no ServiceNow-side equivalent, so a ServiceNow-backed
+	// watcher is always Locked: false, which is accurate for that data
+	// source (nothing there enforces this rule).
+	Locked bool `json:"locked"`
 	// User is the canonical user reference for this watcher, a sibling of the
 	// flat id/userName/name/email fields. Its id is always null: a watch-list
 	// entry is not guaranteed to point at a user record (the list collapses
@@ -2414,6 +3102,11 @@ type CreateCaseRequest struct {
 	// For engagement type
 	EngagementType        EngagementType        `json:"engagementType"`
 	EngagementPaymentType EngagementPaymentType `json:"engagementPaymentType"`
+	// For announcement type only -- decides the case's default audience:
+	// true resolves to every project contact holding the SECURITY_CONTACT
+	// project role, false to every contact holding PORTAL_USER. Ignored for
+	// every other type. See publishCaseCreatedEvent's own doc comment.
+	IsSecurityAnnouncement bool `json:"isSecurityAnnouncement,omitempty"`
 }
 
 // CommentType classifies the type of a case comment.
@@ -2464,6 +3157,14 @@ type CreateCaseCommentRequest struct {
 	CreatedBy string      `json:"-"`
 	Type      CommentType `json:"type"`
 	Content   string      `json:"content"`
+	// ActorEmail is set only by an M2M caller that has no x-user-id-token to
+	// resolve an acting user from (e.g. UMT via csm-integration-service).
+	// The handler checks it against a configured allowlist of trusted
+	// service-account emails (config.Config.M2MTrustedActorEmails) before
+	// honoring it -- an arbitrary caller-supplied value is never trusted
+	// as-is, since that would let any caller claim to be any user. Mutually
+	// exclusive with a real x-user-id-token on the same request.
+	ActorEmail *string `json:"actorEmail,omitempty"`
 }
 
 // AddCaseTagRequest is the request body for POST /cases/{id}/tags. SN's tagging is
@@ -2472,6 +3173,14 @@ type CreateCaseCommentRequest struct {
 type AddCaseTagRequest struct {
 	CaseID string `json:"-"`
 	Label  string `json:"label"`
+	// ActorEmail is set only by an M2M caller that has no x-user-id-token to
+	// resolve an acting user from (e.g. UMT via csm-integration-service).
+	// The handler checks it against a configured allowlist of trusted
+	// service-account emails (config.Config.M2MTrustedActorEmails) before
+	// honoring it -- an arbitrary caller-supplied value is never trusted
+	// as-is, since that would let any caller claim to be any user. Mutually
+	// exclusive with a real x-user-id-token on the same request.
+	ActorEmail *string `json:"actorEmail,omitempty"`
 }
 
 // SearchTagsFilters holds the optional filters for a tag search.
@@ -2652,6 +3361,43 @@ type Comment struct {
 	// is populated when the backing data source resolved the author to a real
 	// user record, and null otherwise. See UserReference.
 	CreatedBy *UserReference `json:"createdBy"`
+	// LastEditedOn is set once the comment has been edited at least once via
+	// PATCH /comments/{id} (Postgres data source only -- see
+	// repository.CommentRow.LastEditedAt).
+	LastEditedOn *time.Time `json:"lastEditedOn,omitempty"`
+	// IsDeleted reflects the comment's soft-delete state. Content is only
+	// ever the caller-visible representation of a deleted comment (see
+	// commentService's own visibility rule doc comment): the literal string
+	// "[deleted]" for a non-admin internal caller, the real content for an
+	// admin, and never returned at all to a customer caller (the row itself
+	// is omitted from that caller's results).
+	IsDeleted bool `json:"isDeleted,omitempty"`
+}
+
+// UpdateCommentRequest is the input for PATCH /comments/{id}. ID is populated
+// from the URL path parameter and is not part of the JSON body.
+type UpdateCommentRequest struct {
+	ID      string `json:"-"`
+	Content string `json:"content"`
+}
+
+// UpdateCommentResponse is the response for PATCH /comments/{id}.
+type UpdateCommentResponse struct {
+	Message string  `json:"message"`
+	Comment Comment `json:"comment"`
+}
+
+// CommentEditHistoryEntry is one prior version of a comment's body, newest
+// first, returned by GET /comments/{id}/history.
+type CommentEditHistoryEntry struct {
+	Body     string    `json:"body"`
+	EditedBy string    `json:"editedBy"`
+	EditedOn time.Time `json:"editedOn"`
+}
+
+// GetCommentEditHistoryResponse is the response for GET /comments/{id}/history.
+type GetCommentEditHistoryResponse struct {
+	History []CommentEditHistoryEntry `json:"history"`
 }
 
 // SearchCommentsRequest is the input for POST /comments/search.
@@ -2907,6 +3653,14 @@ const (
 	ChangeRequestTypeModel              ChangeRequestType = "model"
 	ChangeRequestTypeSiteReliabilityOps ChangeRequestType = "site_reliability_ops"
 	ChangeRequestTypeAzure              ChangeRequestType = "azure"
+	// The following four have no ServiceNow-data-source equivalent today --
+	// added for change_request.change_model (migration 0056), whose real
+	// enum values only partially overlap this type's existing ones (see
+	// changeRequestChangeModelToType in change_request_repo.go).
+	ChangeRequestTypeChangeRegistration  ChangeRequestType = "change_registration"
+	ChangeRequestTypeCloudInfrastructure ChangeRequestType = "cloud_infrastructure"
+	ChangeRequestTypeInfra               ChangeRequestType = "infra"
+	ChangeRequestTypeUnauthorizedChange  ChangeRequestType = "unauthorized_change"
 )
 
 // ChangeRequestState represents the current workflow state of a change request.
@@ -3130,6 +3884,8 @@ type SearchChangeRequestView struct {
 	Deployment       *EntityRef `json:"deployment"`
 	DeployedProduct  *EntityRef `json:"deployedProduct"`
 	Product          *EntityRef `json:"product"`
+	Service          *EntityRef `json:"service"`
+	ServiceOffering  *EntityRef `json:"serviceOffering"`
 	AssignedEngineer *EntityRef `json:"assignedEngineer"`
 	AssignedTeam     *EntityRef `json:"assignedTeam"`
 	PlannedStartOn   *string    `json:"plannedStartOn"`
@@ -3244,8 +4000,8 @@ type SearchContactsFilters struct {
 	SearchQuery string `json:"searchQuery"`
 }
 
-// ProjectContact is a contact associated with a project. Supported by the
-// ServiceNow data source only; there is no Postgres equivalent.
+// ProjectContact is a contact associated with a project. For the Postgres
+// data source, backed by the project_contact table (migration 0027).
 type ProjectContact struct {
 	// ID is the contact's user id, for linking a row to that user's profile. Nil when
 	// the row has no contact record linked, or when the backing instance predates the
@@ -3264,6 +4020,20 @@ type ProjectContact struct {
 	RegistrationState    string   `json:"registrationState"`
 	NotificationsEnabled bool     `json:"notificationsEnabled"`
 	Roles                []string `json:"roles"`
+	// AccountRoles are this person's account-level roles (role.name), a
+	// SEPARATE list from Roles and never merged into it: Roles is what they
+	// may do on THIS project, AccountRoles what they are across the account
+	// they belong to. It holds only the five roles the membership write owns
+	// -- external, customer/partner, and the derived customer_admin/
+	// partner_admin -- so an internal role a staff account happens to hold
+	// never leaks into a customer-facing contact list. Empty for a row with
+	// no linked "user" row, since account roles live on the user.
+	//
+	// The admin entry is the point: admin is stored per project now, and a
+	// user is an account admin when ANY of their memberships carries the
+	// project ADMIN role. Returning it here is what lets both portals render
+	// an "Admin" badge on a contact list without a second call per row.
+	AccountRoles []string `json:"accountRoles"`
 	// CustomerContactPresent and GrantsCaseAccess answer "can this person actually see
 	// this project's cases" per row, not just "are they listed". CustomerContactPresent
 	// is whether a contact record is linked at all (false is the same fault ID==nil
@@ -3293,8 +4063,8 @@ type SearchProjectContactsResponse struct {
 	Offset   int              `json:"offset"`
 }
 
-// AccountContact is a contact associated with an account. Supported by the
-// ServiceNow data source only; there is no Postgres equivalent.
+// AccountContact is a contact associated with an account. For the Postgres
+// data source, backed by the account_contact table (migration 0026).
 type AccountContact struct {
 	Name      string `json:"name"`
 	Email     string `json:"email"`
@@ -3325,6 +4095,8 @@ type PatchChangeRequestRequest struct {
 	CaseID             *string              `json:"caseId,omitempty"`
 	DeploymentID       *string              `json:"deploymentId,omitempty"`
 	DeployedProductID  *string              `json:"deployedProductId,omitempty"`
+	ServiceID          *string              `json:"serviceId,omitempty"`
+	ServiceOfferingID  *string              `json:"serviceOfferingId,omitempty"`
 	AssignedEngineerID *string              `json:"assignedEngineerId,omitempty"`
 	AssignedTeamID     *string              `json:"assignedTeamId,omitempty"`
 	PlannedStartOn     *string              `json:"plannedStartOn,omitempty"`
@@ -3800,6 +4572,7 @@ type ITService struct {
 	Class                 *string                `json:"class"`
 	BusinessCriticality   *BusinessCriticality   `json:"businessCriticality"`
 	ServiceClassification *ServiceClassification `json:"serviceClassification"`
+	SupportGroup          *EntityRef             `json:"supportGroup"`
 }
 
 // ConfigurationItem is a single CMDB configuration item returned in a search response.
@@ -4349,6 +5122,13 @@ type SearchIncidentsFilters struct {
 	// ServiceNow's `number` column, routed as a first-class filter rather
 	// than through the free-text SearchQuery scan.
 	Number *string `json:"number,omitempty"`
+	// CorrelationID filters to the incident whose ServiceNow `correlation_id`
+	// exactly matches (optional). Lets an external system (e.g. a monitoring
+	// integration) look up an incident it previously created by the same
+	// caller-supplied key it passed to CreateIncidentRequest.CorrelationID,
+	// without depending on free-text SearchQuery matching visible fields like
+	// Subject or WorkNotes.
+	CorrelationID *string `json:"correlationId,omitempty"`
 	// Filters is the generic field/op/values filter array. Supported fields:
 	//   - "state" (op in): domain IncidentState enum values (NEW,
 	//     IN_PROGRESS, ON_HOLD, RESOLVED, CLOSED, CANCELLED), translated to
@@ -4578,6 +5358,19 @@ type CreateIncidentRequest struct {
 	ChangeRequestID     *string              `json:"changeRequestId,omitempty"`
 	ProblemID           *string              `json:"problemId,omitempty"`
 	CausedByID          *string              `json:"causedById,omitempty"`
+	// CorrelationID is an optional caller-supplied external-system key, stored
+	// on ServiceNow's stock `correlation_id` field. Lets a monitoring
+	// integration find an incident it already created (SearchIncidentsFilters.
+	// CorrelationID) without depending on free-text search over Subject or
+	// WorkNotes, and without exposing an internal dedup tag in either of
+	// those human-visible fields.
+	CorrelationID *string `json:"correlationId,omitempty"`
+	// Environment is an optional caller-supplied label (e.g. "Staging",
+	// "Production") identifying the environment the source alert fired
+	// against. Maps to ServiceNow's own custom incident.u_enviroment field
+	// (max length 40; name kept as ServiceNow spells it, misspelling
+	// included). Also persisted on this service's own Postgres incident row.
+	Environment *string `json:"environment,omitempty"`
 }
 
 // CreateIncidentResponse is the output for POST /incidents.
@@ -4620,6 +5413,12 @@ type UpdateIncidentRequest struct {
 	AdditionalComments  *string                 `json:"additionalComments,omitempty"`
 	WorkNotes           *string                 `json:"workNotes,omitempty"`
 	WatchList           *[]string               `json:"watchList,omitempty"`
+	// Environment: see CreateIncidentRequest.Environment doc comment. Double
+	// pointer distinguishes "omitted" (nil) from an explicit `null` clear
+	// (non-nil outer, nil inner) from a new value (non-nil, non-nil) -- a
+	// single *string can't tell omitted apart from explicit null on decode,
+	// same convention as ChangeRequest's CustomerGroupID.
+	Environment **string `json:"environment"`
 }
 
 // UpdateIncidentResponse is the output for PATCH /incidents/{id}.
@@ -4656,6 +5455,7 @@ type IncidentView struct {
 	ContactType        *string                 `json:"contactType"`
 	Impact             *string                 `json:"impact"`
 	Urgency            *string                 `json:"urgency"`
+	Environment        *string                 `json:"environment"`
 	ChangeRequest      *EntityRef              `json:"changeRequest"`
 	Problem            *EntityRef              `json:"problem"`
 	CausedBy           *EntityRef              `json:"causedBy"`
@@ -5641,16 +6441,23 @@ type CaseEmojiFeedback struct {
 // a bare string here. ReferenceType is genuinely absent from the upstream
 // response, so it is deliberately not modeled below.
 type AttachmentDetails struct {
-	ID          string    `json:"id"`
-	ReferenceID string    `json:"referenceId"`
-	Name        string    `json:"name"`
-	Type        string    `json:"type"`
-	SizeBytes   int       `json:"sizeBytes"`
-	Description *string   `json:"description"`
-	CreatedBy   string    `json:"createdBy"`
-	CreatedOn   time.Time `json:"createdOn"`
-	DownloadURL *string   `json:"downloadUrl"`
-	PreviewURL  *string   `json:"previewUrl"`
+	ID          string `json:"id"`
+	ReferenceID string `json:"referenceId"`
+	// ReferenceType identifies which entity type ReferenceID points at (see
+	// ReferenceType). Always populated for CSM-native (Postgres) data source
+	// attachments; nil (JSON null) when the backing data source's
+	// attachment-details lookup does not report a reference type. Callers
+	// authorizing access per referenced resource must treat a nil value as
+	// unknown and fail closed.
+	ReferenceType *ReferenceType `json:"referenceType"`
+	Name          string         `json:"name"`
+	Type          string         `json:"type"`
+	SizeBytes     int            `json:"sizeBytes"`
+	Description   *string        `json:"description"`
+	CreatedBy     string         `json:"createdBy"`
+	CreatedOn     time.Time      `json:"createdOn"`
+	DownloadURL   *string        `json:"downloadUrl"`
+	PreviewURL    *string        `json:"previewUrl"`
 	// Content is nil for CSM-native (Postgres) data source attachments: this
 	// service holds no bytes for them -- see CaseService.GetCaseAttachmentContent.
 	// Always non-nil for ServiceNow-sourced attachments.
@@ -5788,7 +6595,7 @@ type DeployedProductUsageCountsResponse struct {
 	ChartData       []DeployedProductUsageCountsChartEntry `json:"chartData"`
 }
 
-// --- escalations (ServiceNow data source only) ---
+// --- escalations ---
 
 // EscalationAction identifies whether an escalation request escalates or
 // de-escalates a case.
@@ -6200,89 +7007,464 @@ type SearchEventPublishFailuresResponse struct {
 	HasMore  bool                  `json:"hasMore"`
 }
 
-// SLAClock is the durable record of one SLA timer running against a case —
-// e.g. a "response" or "resolution" clock started when the case was created
-// (or last had its severity change reset it), due at a fixed point, with up
-// to three tier-crossing timestamps recorded as an SLA timer engine (see
-// integrations/csm-notification-service's internal/slaengine) observes 50%,
-// 75%, and 100% of the duration elapse. ClockType is a caller-defined string,
-// not a fixed enum here — which clock types exist, and what duration each
-// gets, is a policy decision made entirely by whatever publishes the
-// triggering sla.clock.register event; this service only stores the result.
+// SNWritebackFailure is the durable record of one failed best-effort
+// ServiceNow mirror write under DATA_SOURCE=postgres-servicenow-dual-write
+// (see config.DataSourcePostgresServiceNowDualWrite and
+// service.SNWritebackDispatcher). Postgres has already committed by the
+// time this is written — this table exists purely so an operator can see,
+// and manually replay, exactly what ServiceNow is missing before treating
+// it as a live rollback target. No retry logic reads this table today; it
+// is triage bookkeeping, the same role EventPublishFailure plays for Event
+// Hub.
 //
 // Like EventPublishFailure, this has no ServiceNow equivalent and is always
-// backed by Postgres regardless of DATA_SOURCE (see internal/db/postgres.go)
-// — CaseID is a plain string, not a foreign key to a local cases row, since a
-// ServiceNow-backed case has none.
-type SLAClock struct {
-	CaseID    string    `json:"caseId"`
-	ClockType string    `json:"clockType"`
-	StartedOn time.Time `json:"startedOn"`
-	DueOn     time.Time `json:"dueOn"`
-	// PausedOn is currently never set by any endpoint below — the column and
-	// this field exist so a future pause/resume feature has somewhere to
-	// land, and so SLATimerEngine's tier-scan can already skip a paused
-	// clock once one exists, without a schema change at that point. No
-	// omitempty: absent must serialize as JSON null, not be omitted.
-	PausedOn     *time.Time `json:"pausedOn"`
-	Reached50On  *time.Time `json:"reached50On"`
-	Reached75On  *time.Time `json:"reached75On"`
-	Reached100On *time.Time `json:"reached100On"`
+// backed by Postgres regardless of DATA_SOURCE (see internal/db/postgres.go).
+type SNWritebackFailure struct {
+	ID         string          `json:"id"`
+	EntityType string          `json:"entityType"`
+	EntityID   string          `json:"entityId"`
+	Operation  string          `json:"operation"`
+	Payload    json.RawMessage `json:"payload"`
+	// Error is the writeFn-returned reason the ServiceNow mirror write
+	// failed (e.g. a timeout or a downstream error message) — for a human
+	// triaging this table, not machine-parsed by anything.
+	Error     string    `json:"error"`
+	CreatedOn time.Time `json:"createdOn"`
 }
 
-// RegisterSLAClockRequest is the request body for
-// POST /cases/{caseId}/sla-clocks. CaseID is injected from the path, not
-// supplied in the body. Registering a clock that already exists for this
-// (caseId, clockType) pair resets it from scratch — started_at/due_at are
-// overwritten and paused_at/reached_*_at are all cleared — mirroring the
-// rule that a severity change (or any other reason to re-baseline a clock)
-// wipes and rebuilds it rather than adjusting it in place.
-type RegisterSLAClockRequest struct {
-	CaseID    string    `json:"-"`
-	ClockType string    `json:"clockType"`
-	StartedAt time.Time `json:"startedAt"`
-	DueAt     time.Time `json:"dueAt"`
+// CreateSNWritebackFailureRequest is the input to
+// SNWritebackFailureRepository.Create.
+type CreateSNWritebackFailureRequest struct {
+	EntityType string          `json:"entityType"`
+	EntityID   string          `json:"entityId"`
+	Operation  string          `json:"operation"`
+	Payload    json.RawMessage `json:"payload"`
+	Error      string          `json:"error"`
 }
 
-// SLATierStatus is the value of SetSLAClockTierRequest.Status.
-// SLATierStatusReached is the only valid value today — modeled as an enum
-// rather than a bare boolean or an action verb in the URL so a future
-// status (e.g. a manual override) can be added without a breaking change
-// to this request's shape.
-type SLATierStatus string
-
-const SLATierStatusReached SLATierStatus = "reached"
-
-// SetSLAClockTierRequest is the request body for
-// PATCH /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}.
-type SetSLAClockTierRequest struct {
-	Status SLATierStatus `json:"status"`
-}
-
-// SetSLAClockTierReachedResponse is the response body for
-// PATCH /cases/{caseId}/sla-clocks/{clockType}/tiers/{tier}.
-// ReachedOn is the timestamp now stored for that tier — either just written
-// by this call, or the pre-existing value if the tier was already reached
-// (the operation is idempotent; see the repository's SetTierReachedIfUnset).
-// AlreadyReached distinguishes those two cases: false means this call is
-// the one that just wrote ReachedOn; true means it was already set by an
-// earlier call.
+// SLAStatus is one case-like work item's current standing against one SLA
+// policy target (response/workaround/resolution), read live from the "sla"
+// table ServiceNow's own SLA engine populates via sync — not a value this
+// service computes or schedules itself. Replaces the old, hand-registered
+// "sla_clocks" table (a stand-in built before real SLA data existed in
+// Postgres, using a hardcoded severity->duration guess): see CLAUDE.md's
+// "SLA status now reads the real sla table" section for the full history.
 //
-// AlreadyReached reflects only the database claim, not whether any
-// caller's downstream reaction to winning that claim (e.g. publishing a
-// notification) ever actually succeeded. Gating a reaction on
-// AlreadyReached being false is a real, valid choice when duplicate-free
-// behavior matters more than guaranteed delivery — integrations/csm-notification-service's
-// internal/slaengine.Engine does exactly this (see that repo's CLAUDE.md
-// for its full reasoning) — but it's a trade-off: a caller whose own
-// reaction failed after it won the claim will, on retry, see
-// AlreadyReached=true and skip the reaction forever, having never
-// completed it once. Only rely on this field to gate a reaction if that
-// residual risk is acceptable, or if the reaction's own completion is
-// tracked durably and separately instead.
-type SetSLAClockTierReachedResponse struct {
-	ReachedOn      time.Time `json:"reachedOn"`
-	AlreadyReached bool      `json:"alreadyReached"`
+// ClockType is "response"/"workaround"/"resolution" — sla_policy.target
+// lower-cased, kept as a plain string (not a fixed Go enum) so it stays the
+// same wire vocabulary integrations/csm-notification-service's own
+// clockType handling already expects.
+type SLAStatus struct {
+	CaseID                 string  `json:"caseId"`
+	ClockType              string  `json:"clockType"`
+	BusinessElapsedPercent float64 `json:"businessElapsedPercent"`
+	// HasBreached mirrors sla.has_breached, ServiceNow's own verdict — not
+	// re-derived from BusinessElapsedPercent here, even though the two agree
+	// in every row checked so far (>=100% exactly where has_breached is
+	// true): this field is what should be trusted if that ever changes.
+	HasBreached bool `json:"hasBreached"`
+	// IsPaused is sla.stage = 'PAUSED' (is_active stays true while paused —
+	// see the "sla" table's own migration comment on the stage enum).
+	IsPaused bool `json:"isPaused"`
+	// StartedOn is sla.start_on — nullable because ServiceNow leaves it unset
+	// on some real rows. No omitempty: absent must serialize as JSON null.
+	StartedOn *time.Time `json:"startedOn"`
+	// The eight fields below are the same display-only shape SLAClock's
+	// retired display fields carried, still populated live off the case's
+	// current data (not a point-in-time snapshot, unlike the old design) —
+	// see SearchSLAStatusResponse's own doc comment for why csm-notification-service
+	// still needs them supplied here rather than looking them up itself.
+	CaseNumber string `json:"caseNumber,omitempty"`
+	WSO2CaseID string `json:"wso2CaseId,omitempty"`
+	CaseTitle  string `json:"caseTitle,omitempty"`
+	CaseType   string `json:"caseType,omitempty"`
+	Product    string `json:"product,omitempty"`
+	Team       string `json:"team,omitempty"`
+	Priority   string `json:"priority,omitempty"`
+	State      string `json:"state,omitempty"`
+}
+
+// SearchSLAStatusResponse is the response for GET /sla-status — every
+// currently-active (sla.is_active = true) clock across every case-like work
+// item, paginated. integrations/csm-notification-service polls this
+// periodically and diffs BusinessElapsedPercent against what it already
+// alerted on (see that repo's internal/slaengine) rather than this service
+// pushing individual tier-crossing notifications — this service has no
+// scheduling of its own now that there's nothing to schedule: the "sla" row
+// this reads already reflects ServiceNow's own SLA computation, pauses
+// included, with no separate due-date arithmetic to get out of sync.
+type SearchSLAStatusResponse struct {
+	Statuses []SLAStatus `json:"statuses"`
+	Total    int         `json:"total"`
+	Limit    int         `json:"limit"`
+	Offset   int         `json:"offset"`
+}
+
+// AnnouncementRequestState is the lifecycle state of an announcement_requests
+// row. Like SLAClock and EventPublishFailure, this entity has no ServiceNow
+// equivalent and is always backed by Postgres regardless of DATA_SOURCE.
+//
+//	draft             Editable. May have a recorded dry run (see
+//	                   AnnouncementRequest.DryRunCaseID) but nothing has been
+//	                   sent for approval yet.
+//	pending_approval  Content locked; ResolvedProjectIDs is frozen (taken at
+//	                   the moment of submission — not re-resolved later).
+//	                   Approval itself happens entirely outside this
+//	                   service, over email; this state only means "waiting
+//	                   for that reply." Editing while in this state reverts
+//	                   to draft (see AnnouncementRequestService.Update) —
+//	                   the content is out for real review, so a silent
+//	                   change under the reviewer isn't safe.
+//	approved          A human has said yes over email and whoever is
+//	                   working the request called Approve. Unlike
+//	                   pending_approval, editing here does NOT revert state
+//	                   — subject/description may still be tweaked in place
+//	                   (the frozen ResolvedProjectIDs snapshot never
+//	                   changes) since the decision has already been made.
+//	published         MarkPublished has been called. This service never
+//	                   creates the real per-project cases itself — that
+//	                   fan-out is the caller's job, unchanged from before
+//	                   this entity existed. This state only records that it
+//	                   happened, by whom, and when.
+type AnnouncementRequestState string
+
+const (
+	AnnouncementRequestStateDraft           AnnouncementRequestState = "draft"
+	AnnouncementRequestStatePendingApproval AnnouncementRequestState = "pending_approval"
+	AnnouncementRequestStateApproved        AnnouncementRequestState = "approved"
+	AnnouncementRequestStatePublished       AnnouncementRequestState = "published"
+)
+
+// AnnouncementRequestKind distinguishes which of the two announcement create
+// flows an announcement_requests row backs — the audience is resolved
+// completely differently for each (see AnnouncementRequest.AudienceDefinition),
+// but the state machine and every other field is shared.
+type AnnouncementRequestKind string
+
+const (
+	AnnouncementRequestKindCustomer AnnouncementRequestKind = "customer"
+	AnnouncementRequestKindEOL      AnnouncementRequestKind = "eol"
+)
+
+// AnnouncementRequest is a draft, in-review, or approved announcement that
+// has not yet been published. It exists purely to carry an announcement
+// through draft -> pending_approval -> approved -> published while the real
+// approval decision happens over email, outside this service entirely (see
+// AnnouncementRequestState's own doc comment for the full state machine).
+//
+// AudienceDefinition is whichever shape the caller's own create form
+// already builds — {scope, excludeCloudTypes, excludeClosedStates,
+// projectIds} for the customer flow, {productId, productVersionId} for EOL
+// — stored opaquely (this service does not interpret it) so a draft can be
+// re-opened and re-edited without re-deriving anything. ResolvedProjectIDs
+// is a *different* thing: the actual resolved project id list, computed and
+// frozen by the caller (with whatever exclusions it applies) at the moment
+// of Submit — never re-resolved later, since that's the version the
+// dry-run link and the approval email actually describe.
+type AnnouncementRequest struct {
+	ID                     string                   `json:"id"`
+	Kind                   AnnouncementRequestKind  `json:"kind"`
+	State                  AnnouncementRequestState `json:"state"`
+	Subject                string                   `json:"subject"`
+	Description            string                   `json:"description"`
+	IsSecurityAnnouncement bool                     `json:"isSecurityAnnouncement"`
+	AudienceDefinition     json.RawMessage          `json:"audienceDefinition"`
+	// ResolvedProjectIDs and ResolvedProjectCount are nil/unset until Submit
+	// has been called — see the struct's own doc comment.
+	ResolvedProjectIDs   []string   `json:"resolvedProjectIds,omitempty"`
+	ResolvedProjectCount *int       `json:"resolvedProjectCount,omitempty"`
+	DryRunCaseID         *string    `json:"dryRunCaseId,omitempty"`
+	DryRunAt             *time.Time `json:"dryRunAt,omitempty"`
+	DryRunBy             *string    `json:"dryRunBy,omitempty"`
+	CreatedBy            string     `json:"createdBy"`
+	// CreatedByEmail/SubmittedByEmail/ApprovedByEmail/PublishedByEmail are
+	// display-only companions to their own *By id field (the IdP's stable
+	// per-account "userid", opaque and not human-readable — see
+	// csm-portal-backend's middleware.UserInfo.UserID) — captured from that
+	// same actor's resolved email at the moment of each action, purely so
+	// the portal can show something readable instead of that raw id. The
+	// *By field itself remains the actual identity used for every
+	// creator-only check (Publish/AddUpdate) and must never be replaced by
+	// email — an address can change ownership or get reused in a way a
+	// stable account id can't. Nil for any row written before this field
+	// existed, or if the caller didn't supply one.
+	CreatedByEmail   *string    `json:"createdByEmail,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
+	SubmittedBy      *string    `json:"submittedBy,omitempty"`
+	SubmittedByEmail *string    `json:"submittedByEmail,omitempty"`
+	SubmittedAt      *time.Time `json:"submittedAt,omitempty"`
+	ApprovedBy       *string    `json:"approvedBy,omitempty"`
+	ApprovedByEmail  *string    `json:"approvedByEmail,omitempty"`
+	ApprovedAt       *time.Time `json:"approvedAt,omitempty"`
+	PublishedBy      *string    `json:"publishedBy,omitempty"`
+	PublishedByEmail *string    `json:"publishedByEmail,omitempty"`
+	PublishedAt      *time.Time `json:"publishedAt,omitempty"`
+	// PublishedCaseIDs is nil/unset until MarkPublished — the real case id
+	// created for each project in ResolvedProjectIDs, self-reported by the
+	// same creator-only caller MarkPublished restricts this transition to
+	// (see that method's own doc comment). This is what lets a later update
+	// (see AnnouncementRequestUpdate) target the exact cases this
+	// announcement actually created, instead of re-deriving them.
+	PublishedCaseIDs []string `json:"publishedCaseIds,omitempty"`
+	// DueOn is set once, automatically, by Submit (now + one month) — purely
+	// informational display in this slice, never enforced or acted on by
+	// this service. Nil for any row that hasn't been submitted yet.
+	DueOn *time.Time `json:"dueOn,omitempty"`
+	// ScheduledFor is set/cleared only via Schedule, never by Update — when
+	// non-nil and this row is approved, operations/csm-scheduled-tasks'
+	// "publish_scheduled_announcements" sub-cron publishes it automatically
+	// once this time arrives, exactly as if a human had clicked Publish.
+	// Left as-is after MarkPublished (a harmless historical value — the
+	// ReadyForScheduledPublish search filter already excludes anything not
+	// approved).
+	ScheduledFor *time.Time `json:"scheduledFor,omitempty"`
+}
+
+// CreateAnnouncementRequestRequest creates a new announcement_requests row
+// in state draft. CreatedBy is the caller-resolved actor id — this service
+// is called server-to-server (by csm-portal-backend, which is the one that
+// actually authenticates the browser user), so unlike the CSM-native
+// entities reachable directly from a browser (cases, comments, attachments),
+// there is no token to resolve an actor from here; the caller supplies it
+// directly, the same convention SLAClock/ScheduledTaskRun/EventPublishFailure
+// already established for this class of entity.
+type CreateAnnouncementRequestRequest struct {
+	Kind                   AnnouncementRequestKind `json:"kind"`
+	Subject                string                  `json:"subject"`
+	Description            string                  `json:"description"`
+	IsSecurityAnnouncement bool                    `json:"isSecurityAnnouncement"`
+	AudienceDefinition     json.RawMessage         `json:"audienceDefinition"`
+	CreatedBy              string                  `json:"createdBy"`
+	// CreatedByEmail is optional — see AnnouncementRequest.CreatedByEmail's
+	// own doc comment for what it's for. A caller that can't resolve one
+	// (or an older caller not yet updated for this field) simply leaves it
+	// empty; CreatedBy remains the real, required identity.
+	CreatedByEmail string `json:"createdByEmail,omitempty"`
+}
+
+// UpdateAnnouncementRequestRequest edits an announcement_requests row's own
+// content. Every field is optional — only non-nil fields are applied. What
+// actually happens depends entirely on the row's *current* state when this
+// arrives (see AnnouncementRequestService.Update's own doc comment); the
+// caller does not choose the behavior, the current state does.
+type UpdateAnnouncementRequestRequest struct {
+	Subject                *string         `json:"subject,omitempty"`
+	Description            *string         `json:"description,omitempty"`
+	IsSecurityAnnouncement *bool           `json:"isSecurityAnnouncement,omitempty"`
+	AudienceDefinition     json.RawMessage `json:"audienceDefinition,omitempty"`
+	// ActorID is who performed this edit — recorded nowhere on the row
+	// itself today (there's no "last edited by" field), but required so a
+	// future audit addition doesn't need a wire-contract change, and so a
+	// pending_approval -> draft revert (see Update's doc comment) has a
+	// consistent actor-required shape with every other transition below.
+	ActorID string `json:"actorId"`
+}
+
+// ScheduleAnnouncementRequestRequest sets or clears an approved request's
+// automatic-publish time — a dedicated action endpoint, not folded into the
+// generic Update, so it never interacts with that method's own
+// state-branching logic (see AnnouncementRequestService.Update's doc
+// comment). ScheduledFor nil unambiguously means "clear the schedule" here,
+// since setting/clearing that one field is this endpoint's entire job —
+// unlike Update, where nil already means "leave unchanged" for every field.
+type ScheduleAnnouncementRequestRequest struct {
+	ScheduledFor *time.Time `json:"scheduledFor"`
+	ActorID      string     `json:"actorId"`
+	ActorEmail   string     `json:"actorEmail,omitempty"`
+}
+
+// RecordAnnouncementDryRunRequest records that a dry run has been completed
+// for this request — CaseID is the real case id the caller's own dry-run
+// mechanism already created (this service does not create it, does not
+// validate that it exists, and does not know what "dry run" even means
+// beyond "a case id the caller is vouching for"). Recording one is what
+// Submit's own precondition checks for (see AnnouncementRequestService.Submit).
+type RecordAnnouncementDryRunRequest struct {
+	CaseID  string `json:"caseId"`
+	ActorID string `json:"actorId"`
+}
+
+// SubmitAnnouncementRequestRequest moves a draft to pending_approval.
+// ResolvedProjectIDs is the audience snapshot to freeze — computed and
+// exclusion-filtered by the caller (see the BFF's own submit handler, which
+// applies the mandatory excluded-project-key denylist before calling this),
+// never re-derived by this service from AudienceDefinition. An empty slice
+// is rejected (a submission with nothing to send to is not a valid state).
+type SubmitAnnouncementRequestRequest struct {
+	ResolvedProjectIDs []string `json:"resolvedProjectIds"`
+	ActorID            string   `json:"actorId"`
+	// ActorEmail is optional — see AnnouncementRequest.CreatedByEmail's own
+	// doc comment for what it's for.
+	ActorEmail string `json:"actorEmail,omitempty"`
+}
+
+// AnnouncementRequestActorRequest is the minimal request shape for a
+// transition that needs nothing but who's performing it — Approve uses
+// this. MarkPublished does not (see PublishAnnouncementRequestRequest):
+// it needs the created case ids too.
+type AnnouncementRequestActorRequest struct {
+	ActorID string `json:"actorId"`
+	// ActorEmail is optional — see AnnouncementRequest.CreatedByEmail's own
+	// doc comment for what it's for.
+	ActorEmail string `json:"actorEmail,omitempty"`
+}
+
+// PublishAnnouncementRequestRequest moves approved -> published.
+// CaseIDs is the real case id created for each project in the request's own
+// ResolvedProjectIDs, from the caller's own fan-out (see
+// domain.AnnouncementRequest.PublishedCaseIDs's own doc comment for the
+// trust model). A ValidationError is returned if it's empty — a "published"
+// request this service can't later target with an update is not a useful
+// state to be in.
+type PublishAnnouncementRequestRequest struct {
+	ActorID string   `json:"actorId"`
+	CaseIDs []string `json:"caseIds"`
+	// ActorEmail is optional — see AnnouncementRequest.CreatedByEmail's own
+	// doc comment for what it's for.
+	ActorEmail string `json:"actorEmail,omitempty"`
+}
+
+// AnnouncementRequestUpdate is one dated follow-up comment applied, after
+// the fact, to every case a published announcement request created — e.g.
+// a correction the CS/Security team asks to have appended. Mirrors
+// ServiceNow's own "Announcement Update with Comments" flow (see that
+// flow's own doc reference), except targeting AnnouncementRequest's real,
+// stored PublishedCaseIDs instead of a fragile short-description/
+// created-date-range match. Append-only — there is no edit/delete for one
+// of these once posted, the same audit-log shape comment/work_item_activity
+// already use elsewhere in this schema.
+type AnnouncementRequestUpdate struct {
+	ID                    string `json:"id"`
+	AnnouncementRequestID string `json:"announcementRequestId"`
+	Content               string `json:"content"`
+	CreatedBy             string `json:"createdBy"`
+	// CreatedByEmail is optional — see AnnouncementRequest.CreatedByEmail's
+	// own doc comment for what it's for.
+	CreatedByEmail *string `json:"createdByEmail,omitempty"`
+	// CreatedOn (not CreatedAt) -- this is a new type, added after this
+	// codebase's timestamp fields were standardized on the "On" suffix for
+	// both the DB column and the JSON wire field (see CLAUDE.md's "Domain
+	// types" section) -- unlike AnnouncementRequest's own older CreatedAt
+	// etc., which only got the DB-column half of that fix to avoid an
+	// unrelated wire-contract break.
+	CreatedOn time.Time `json:"createdOn"`
+}
+
+// CreateAnnouncementRequestUpdateRequest posts a new AnnouncementRequestUpdate.
+// This only records that the update happened, by whom and when, and what it
+// said — same "does not itself create any cases/comments" separation of
+// concerns as MarkPublished; the caller's own fan-out is what actually
+// applies Content as a comment on every PublishedCaseIDs case, separately,
+// after this call succeeds.
+type CreateAnnouncementRequestUpdateRequest struct {
+	Content string `json:"content"`
+	ActorID string `json:"actorId"`
+	// ActorEmail is optional — see AnnouncementRequest.CreatedByEmail's own
+	// doc comment for what it's for.
+	ActorEmail string `json:"actorEmail,omitempty"`
+}
+
+// SearchAnnouncementRequestUpdatesResponse lists every update posted for one
+// announcement request, newest first. No pagination: an announcement
+// realistically receives at most a handful of these over its lifetime, not
+// a volume that needs paging through.
+type SearchAnnouncementRequestUpdatesResponse struct {
+	Updates []AnnouncementRequestUpdate `json:"updates"`
+}
+
+// SearchAnnouncementRequestsRequest filters announcement_requests. State and
+// CreatedBy are both optional; omitting both returns every row (subject to
+// pagination) — there is no default filter, unlike some other search
+// endpoints in this service, since every caller of this endpoint so far
+// (the registry page's "Pending" tab) needs to choose its own filter
+// explicitly rather than inherit an implicit one.
+type SearchAnnouncementRequestsRequest struct {
+	State     *AnnouncementRequestState `json:"state,omitempty"`
+	CreatedBy *string                   `json:"createdBy,omitempty"`
+	// ReadyForScheduledPublish, when true, ignores State and instead matches
+	// every approved row whose ScheduledFor is set and has already arrived
+	// (scheduled_for <= now()) — the one query
+	// operations/csm-scheduled-tasks' "publish_scheduled_announcements"
+	// sub-cron needs. Mutually exclusive with State (ambiguous otherwise).
+	ReadyForScheduledPublish bool       `json:"readyForScheduledPublish,omitempty"`
+	Pagination               Pagination `json:"pagination"`
+}
+
+type SearchAnnouncementRequestsResponse struct {
+	Requests []AnnouncementRequest `json:"requests"`
+	Total    int                   `json:"total"`
+	Limit    int                   `json:"limit"`
+	Offset   int                   `json:"offset"`
+	HasMore  bool                  `json:"hasMore"`
+}
+
+// AnnouncementRequestDeliveryStatus is the outcome of one project's attempt
+// within an announcement request's Publish fan-out. There is no "pending"
+// value — a project with no recorded delivery yet simply has no row (see
+// AnnouncementRequestDelivery's own doc comment).
+type AnnouncementRequestDeliveryStatus string
+
+const (
+	// AnnouncementRequestDeliveryStatusSucceeded means the case was created
+	// and (for a security announcement) its mandatory tag attached.
+	AnnouncementRequestDeliveryStatusSucceeded AnnouncementRequestDeliveryStatus = "succeeded"
+	// AnnouncementRequestDeliveryStatusTagFailed means the case was created
+	// but attaching the mandatory security-announcement tag failed — the
+	// case is real (CaseID is set), but a retry must reattach the tag
+	// directly rather than creating a second case for the same project.
+	AnnouncementRequestDeliveryStatusTagFailed AnnouncementRequestDeliveryStatus = "tag_failed"
+	// AnnouncementRequestDeliveryStatusFailed means the case itself was
+	// never created — a retry must attempt case creation again.
+	AnnouncementRequestDeliveryStatusFailed AnnouncementRequestDeliveryStatus = "failed"
+)
+
+// AnnouncementRequestDelivery is the durable record of one project's outcome
+// within an announcement request's own Publish fan-out — see this table's
+// own migration (000081) doc comment for the full "why" (replacing purely
+// in-memory retry tracking that was lost if the dialog closed mid-retry).
+// No ServiceNow equivalent — always backed by Postgres.
+type AnnouncementRequestDelivery struct {
+	ID                    string `json:"id"`
+	AnnouncementRequestID string `json:"announcementRequestId"`
+	ProjectID             string `json:"projectId"`
+	// CaseID is set for Succeeded and TagFailed (the case is real either
+	// way), nil for Failed.
+	CaseID       *string                           `json:"caseId,omitempty"`
+	Status       AnnouncementRequestDeliveryStatus `json:"status"`
+	ErrorMessage *string                           `json:"errorMessage,omitempty"`
+	CreatedOn    time.Time                         `json:"createdOn"`
+	UpdatedOn    time.Time                         `json:"updatedOn"`
+}
+
+// RecordAnnouncementRequestDeliveryInput is one project's outcome within a
+// RecordAnnouncementRequestDeliveriesRequest batch.
+type RecordAnnouncementRequestDeliveryInput struct {
+	ProjectID    string                            `json:"projectId"`
+	CaseID       *string                           `json:"caseId,omitempty"`
+	Status       AnnouncementRequestDeliveryStatus `json:"status"`
+	ErrorMessage *string                           `json:"errorMessage,omitempty"`
+}
+
+// RecordAnnouncementRequestDeliveriesRequest records (upserts) the outcome
+// of one Publish fan-out pass — one input per project attempted in that
+// pass, not the full resolved audience (a pass that only retried failures
+// need not resend every already-succeeded project's own unchanged row).
+// Batched into one call per pass (not one call per project) because the
+// scenario this exists to fix is the dialog closing *between* passes, not a
+// mid-pass browser crash — see the hook using this for the full reasoning.
+type RecordAnnouncementRequestDeliveriesRequest struct {
+	ActorID    string                                   `json:"actorId"`
+	Deliveries []RecordAnnouncementRequestDeliveryInput `json:"deliveries"`
+}
+
+// SearchAnnouncementRequestDeliveriesResponse lists every delivery recorded
+// for one announcement request — at most one row per resolved project, no
+// particular order guaranteed beyond what the repository returns. No
+// pagination: a request's own resolved audience is already bounded by
+// whatever practical limit an announcement's project count has.
+type SearchAnnouncementRequestDeliveriesResponse struct {
+	Deliveries []AnnouncementRequestDelivery `json:"deliveries"`
 }
 
 // ScheduledTaskRun is the durable record of one attempted period of a
@@ -6463,8 +7645,55 @@ type LookupAlertIncidentMappingsRequest struct {
 
 // LookupAlertIncidentMappingsResponse is the response body for
 // POST /alert-incident-mappings/lookup. Mappings is most-recent-first
-// (ORDER BY created_at DESC) and empty (never null) when nothing matches —
+// (ORDER BY created_on DESC) and empty (never null) when nothing matches —
 // absence is a valid result for a lookup, not a 404.
 type LookupAlertIncidentMappingsResponse struct {
 	Mappings []AlertIncidentMappingView `json:"mappings"`
+}
+
+// CreateServiceRequestFromIssueRequest is the body of
+// POST /github/service-requests.
+//
+// The same information servicenow_create_case.yml puts in its payload, minus
+// everything the server can work out for itself: the account comes from the
+// repository mapping, the catalog and sr_type from the title and labels. A
+// caller sends what only it knows -- which issue, in which repository.
+type CreateServiceRequestFromIssueRequest struct {
+	Owner       string   `json:"owner"`
+	Repository  string   `json:"repository"`
+	IssueNumber int      `json:"issueNumber"`
+	Title       string   `json:"title"`
+	Body        string   `json:"body"`
+	Labels      []string `json:"labels,omitempty"`
+	// Author is the GitHub login that raised it, recorded as created_by.
+	Author string `json:"author,omitempty"`
+}
+
+// CreateServiceRequestFromIssueResponse names the record that was created.
+type CreateServiceRequestFromIssueResponse struct {
+	Message string `json:"message"`
+	ID      string `json:"id"`
+	// Number is absent when the request matched a record that already existed:
+	// this endpoint looks that up by issue number, which does not read it.
+	Number string `json:"number,omitempty"`
+	// Created distinguishes a new record from one that already existed, so a
+	// caller retrying after a timeout can tell without parsing Message.
+	Created bool `json:"created"`
+}
+
+// TeamMember is one member of a team's roster (GET /teams/{id}/members).
+// Mirrors team_member joined to "user" (migrations 000028/000029). Role is
+// team_member.role -- "member" or "lead" only (a fixed two-value check
+// constraint), narrower than ServiceNow's free-form u_role on
+// sys_user_grmember, but always populated (NOT NULL with a default).
+type TeamMember struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Email *string `json:"email"`
+	Role  *string `json:"role"`
+}
+
+// GetTeamMembersResponse is the response for GET /teams/{id}/members.
+type GetTeamMembersResponse struct {
+	Members []TeamMember `json:"members"`
 }

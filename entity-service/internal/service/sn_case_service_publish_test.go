@@ -107,7 +107,7 @@ func TestSNCaseService_CreateCase_PublishesCaseCreated(t *testing.T) {
 
 	client := newTestCreateCaseClient(t, caseSysid, getCaseBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	req := domain.CreateCaseRequest{
 		Type:              "case",
@@ -125,13 +125,21 @@ func TestSNCaseService_CreateCase_PublishesCaseCreated(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(publisher.calls) != 1 {
-		t.Fatalf("expected 1 publish call, got %d", len(publisher.calls))
+	// Exactly one case.created, however many other event types accompany it.
+	// Counting rather than stopping at the first match keeps the guarantee that
+	// matters — a duplicate case.created would notify every subscriber twice —
+	// while tolerating the other events this path now publishes.
+	var matches []mockPublishCall
+	for _, c := range publisher.calls {
+		if c.eventType == events.TypeCaseCreated {
+			matches = append(matches, c)
+		}
 	}
-	call := publisher.calls[0]
-	if call.eventType != events.TypeCaseCreated {
-		t.Errorf("eventType = %q, want %q", call.eventType, events.TypeCaseCreated)
+	if len(matches) != 1 {
+		t.Fatalf("expected exactly 1 %s publish call, got %d (of %d calls in total)",
+			events.TypeCaseCreated, len(matches), len(publisher.calls))
 	}
+	call := matches[0]
 	if call.entityID != resp.Case.ID {
 		t.Errorf("entityID = %q, want the new case's id %q", call.entityID, resp.Case.ID)
 	}
@@ -198,7 +206,7 @@ func TestSNCaseService_CreateCase_SkipsPublishWhenNoWatchers(t *testing.T) {
 
 	client := newTestCreateCaseClient(t, caseSysid, getCaseBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	req := domain.CreateCaseRequest{
 		Type:              "case",
@@ -216,6 +224,258 @@ func TestSNCaseService_CreateCase_SkipsPublishWhenNoWatchers(t *testing.T) {
 	}
 	if len(publisher.calls) != 0 {
 		t.Fatalf("expected no publish call for a case with no watchers, got %d", len(publisher.calls))
+	}
+}
+
+// TestSNCaseService_CreateCase_CaseTypeSkipsPublishWhenNoSeverity verifies
+// that a created record of type "case" still does not publish case.created
+// at all when GetCaseByID's own enrichment comes back with no severity --
+// CaseCreatedPayload.Priority has no omitempty (a consumer always expects a
+// real value), and "" is not a real priority. This guard is specific to
+// type "case": the other four types this shared function also serves never
+// have a severity concept at all (case-only field) and publish regardless
+// -- see the tests below.
+func TestSNCaseService_CreateCase_CaseTypeSkipsPublishWhenNoSeverity(t *testing.T) {
+	const caseSysid = "9999999999999999999999999999dddd"
+	const projectSysid = "8888888888888888888888888888eeee"
+	const watcherSysid = "7777777777777777777777777777ffff"
+
+	getCaseBody := `{
+		"id": "` + caseSysid + `",
+		"internalId": "WSO2-024",
+		"number": "CS0024001",
+		"title": "No severity here",
+		"description": "d",
+		"createdOn": "2026-01-02 10:00:00",
+		"createdBy": "jane.doe@example.com",
+		"createdByFullName": "Jane Doe",
+		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"state": {"id": 1, "label": "Open"},
+		"watchList": [
+			{"id": "` + watcherSysid + `", "userName": "jroe", "name": "John Roe", "email": "john.roe@example.com"}
+		]
+	}`
+
+	client := newTestCreateCaseClient(t, caseSysid, getCaseBody)
+	publisher := &mockEventPublisher{}
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
+
+	req := domain.CreateCaseRequest{
+		Type:              "case",
+		ProjectID:         testProjectUUID,
+		DeploymentID:      testDeploymentUUID,
+		DeployedProductID: testDeployedProdID,
+		Subject:           "No severity here",
+		Description:       "d",
+		Severity:          domain.CaseSeverityHigh,
+		IssueType:         domain.CaseIssueTypeQuestion,
+	}
+
+	if _, err := svc.CreateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(publisher.calls) != 0 {
+		t.Fatalf("expected no publish call for a case with no severity, got %d", len(publisher.calls))
+	}
+}
+
+// TestSNCaseService_CreateCase_AnnouncementFallsBackToWatchListWhenNoRoleMatch
+// verifies that an announcement case still publishes case.created using the
+// case's own watch list emails when ProjectContactEmailsByRole resolves no
+// contact for the requested role (here: no Postgres pgFallback configured
+// at all, which resolves to an empty slice the same as a real "no matching
+// contact" result) -- a project with nobody in the requested role must
+// still notify someone, not silently notify no one.
+func TestSNCaseService_CreateCase_AnnouncementFallsBackToWatchListWhenNoRoleMatch(t *testing.T) {
+	const caseSysid = "9999999999999999999999999999dddd"
+	const projectSysid = "8888888888888888888888888888eeee"
+	const watcherSysid = "7777777777777777777777777777ffff"
+
+	getCaseBody := `{
+		"id": "` + caseSysid + `",
+		"internalId": "WSO2-024",
+		"number": "CS0024001",
+		"title": "No severity here",
+		"description": "d",
+		"createdOn": "2026-01-02 10:00:00",
+		"createdBy": "jane.doe@example.com",
+		"createdByFullName": "Jane Doe",
+		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"state": {"id": 1, "label": "Open"},
+		"watchList": [
+			{"id": "` + watcherSysid + `", "userName": "jroe", "name": "John Roe", "email": "john.roe@example.com"}
+		]
+	}`
+
+	client := newTestCreateCaseClient(t, caseSysid, getCaseBody)
+	publisher := &mockEventPublisher{}
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
+
+	req := domain.CreateCaseRequest{
+		Type:        "announcement",
+		ProjectID:   testProjectUUID,
+		Subject:     "No severity here",
+		Description: "d",
+	}
+
+	if _, err := svc.CreateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(publisher.calls) != 1 {
+		t.Fatalf("expected 1 publish call, got %d", len(publisher.calls))
+	}
+	var payload events.CaseCreatedPayload
+	if err := json.Unmarshal(publisher.calls[0].payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if len(payload.Recipients) != 1 || payload.Recipients[0] != "john.roe@example.com" {
+		t.Errorf("Recipients = %v, want [john.roe@example.com] (the watch list fallback)", payload.Recipients)
+	}
+}
+
+// TestSNCaseService_CreateCase_AnnouncementResolvesRoleBasedRecipients
+// verifies an announcement's Recipients come from ProjectContactEmailsByRole
+// (SECURITY_CONTACT when IsSecurityAnnouncement, else PORTAL_USER),
+// bypassing the watch list entirely when a role match exists.
+func TestSNCaseService_CreateCase_AnnouncementResolvesRoleBasedRecipients(t *testing.T) {
+	const caseSysid = "9999999999999999999999999999dddd"
+	const projectSysid = "8888888888888888888888888888eeee"
+	const watcherSysid = "7777777777777777777777777777ffff"
+
+	getCaseBody := `{
+		"id": "` + caseSysid + `",
+		"internalId": "WSO2-024",
+		"number": "CS0024001",
+		"title": "Security notice",
+		"description": "d",
+		"createdOn": "2026-01-02 10:00:00",
+		"createdBy": "jane.doe@example.com",
+		"createdByFullName": "Jane Doe",
+		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"state": {"id": 1, "label": "Open"},
+		"watchList": [
+			{"id": "` + watcherSysid + `", "userName": "jroe", "name": "John Roe", "email": "john.roe@example.com"}
+		]
+	}`
+
+	testCases := []struct {
+		name           string
+		isSecurity     bool
+		wantRole       string
+		wantRecipients []string
+	}{
+		{"security announcement resolves SECURITY_CONTACT", true, "SECURITY_CONTACT", []string{"security@example.com"}},
+		{"regular announcement resolves PORTAL_USER", false, "PORTAL_USER", []string{"portal-user@example.com"}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newTestCreateCaseClient(t, caseSysid, getCaseBody)
+			publisher := &mockEventPublisher{}
+			var gotRole string
+			pgFallback := &stubMirrorCaseService{
+				projectContactEmailsByRoleFn: func(_ context.Context, gotProjectID, role string) ([]string, error) {
+					if gotProjectID != testProjectUUID {
+						t.Errorf("projectID = %q, want %q", gotProjectID, testProjectUUID)
+					}
+					gotRole = role
+					return tc.wantRecipients, nil
+				},
+			}
+			svc := NewServiceNowCaseService(client, pgFallback, publisher, nil, nil, "", nil)
+
+			req := domain.CreateCaseRequest{
+				Type:                   "announcement",
+				ProjectID:              testProjectUUID,
+				Subject:                "Security notice",
+				Description:            "d",
+				IsSecurityAnnouncement: tc.isSecurity,
+			}
+
+			if _, err := svc.CreateCase(contextWithUserIDToken("token"), req); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if gotRole != tc.wantRole {
+				t.Errorf("role = %q, want %q", gotRole, tc.wantRole)
+			}
+			if len(publisher.calls) != 1 {
+				t.Fatalf("expected 1 publish call, got %d", len(publisher.calls))
+			}
+			var payload events.CaseCreatedPayload
+			if err := json.Unmarshal(publisher.calls[0].payload, &payload); err != nil {
+				t.Fatalf("unmarshal payload: %v", err)
+			}
+			if len(payload.Recipients) != 1 || payload.Recipients[0] != tc.wantRecipients[0] {
+				t.Errorf("Recipients = %v, want %v (never the watch list, since a role match was found)", payload.Recipients, tc.wantRecipients)
+			}
+		})
+	}
+}
+
+// TestSNCaseService_CreateCase_ServiceRequestPublishesWithoutSeverity
+// verifies that service_request/engagement/security_report_analysis --
+// like announcement, but using the ordinary watch-list-based Recipients
+// path rather than project-contact-role resolution -- now publish
+// case.created despite having no severity, using the case's watch list as
+// Recipients. This used to be unconditionally skipped for every non-"case"
+// type; see publishCaseCreatedEvent's own doc comment for the fix.
+func TestSNCaseService_CreateCase_ServiceRequestPublishesWithoutSeverity(t *testing.T) {
+	const caseSysid = "9999999999999999999999999999dddd"
+	const projectSysid = "8888888888888888888888888888eeee"
+	const watcherSysid = "7777777777777777777777777777ffff"
+
+	getCaseBody := `{
+		"id": "` + caseSysid + `",
+		"internalId": "WSO2-024",
+		"number": "CS0024001",
+		"title": "Need a new sandbox",
+		"description": "d",
+		"createdOn": "2026-01-02 10:00:00",
+		"createdBy": "jane.doe@example.com",
+		"createdByFullName": "Jane Doe",
+		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"state": {"id": 1, "label": "Open"},
+		"watchList": [
+			{"id": "` + watcherSysid + `", "userName": "jroe", "name": "John Roe", "email": "john.roe@example.com"}
+		]
+	}`
+
+	client := newTestCreateCaseClient(t, caseSysid, getCaseBody)
+	publisher := &mockEventPublisher{}
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
+
+	req := domain.CreateCaseRequest{
+		Type:              "service_request",
+		ProjectID:         testProjectUUID,
+		DeploymentID:      testDeploymentUUID,
+		DeployedProductID: testDeployedProdID,
+		Subject:           "Need a new sandbox",
+		Description:       "d",
+		CatalogID:         "44444444-4444-4444-4444-444444444444",
+		CatalogItemID:     "55555555-5555-5555-5555-555555555555",
+		Variables:         []domain.Variable{{ID: "66666666-6666-6666-6666-666666666667", Value: "v"}},
+	}
+
+	if _, err := svc.CreateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(publisher.calls) != 1 {
+		t.Fatalf("expected 1 publish call, got %d", len(publisher.calls))
+	}
+	var payload events.CaseCreatedPayload
+	if err := json.Unmarshal(publisher.calls[0].payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if len(payload.Recipients) != 1 || payload.Recipients[0] != "john.roe@example.com" {
+		t.Errorf("Recipients = %v, want [john.roe@example.com]", payload.Recipients)
 	}
 }
 
@@ -241,6 +501,7 @@ func TestSNCaseService_CreateCase_PublishFailureDoesNotFailCreateCase(t *testing
 		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
 		"deployment": {"id": "", "name": ""},
 		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"severity": {"id": 3, "label": "3 - High"},
 		"state": {"id": 1, "label": "Open"},
 		"watchList": [
 			{"id": "` + watcherSysid + `", "userName": "jroe", "name": "John Roe", "email": "john.roe@example.com"}
@@ -249,7 +510,7 @@ func TestSNCaseService_CreateCase_PublishFailureDoesNotFailCreateCase(t *testing
 
 	client := newTestCreateCaseClient(t, caseSysid, getCaseBody)
 	publisher := &mockEventPublisher{err: errors.New("event hub unreachable")}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	req := domain.CreateCaseRequest{
 		Type:              "case",
@@ -292,7 +553,7 @@ func TestSNCaseService_CreateCase_NoPublisherConfigured(t *testing.T) {
 			"case": {"id": "` + caseSysid + `", "number": "CS0012001", "createdBy": "jane.doe@example.com", "createdOn": "2026-01-02 10:00:00", "state": {"id": 1, "label": "Open"}}
 		}`))
 	})
-	svc := NewServiceNowCaseService(client, nil, nil)
+	svc := NewServiceNowCaseService(client, nil, nil, nil, nil, "", nil)
 
 	req := domain.CreateCaseRequest{
 		Type:              "case",
@@ -379,7 +640,7 @@ func TestSNCaseService_CreateCaseComment_PublishesCommentAdded(t *testing.T) {
 
 	client := newTestCommentClient(t, getCaseBody, createCommentBody, searchCommentsBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	req := domain.CreateCaseCommentRequest{
 		CaseID:  caseID,
@@ -481,7 +742,7 @@ func TestSNCaseService_CreateCaseComment_WorkNote_FiltersRecipientsToWso2Domain(
 
 	client := newTestCommentClient(t, getCaseBody, createCommentBody, searchCommentsBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	req := domain.CreateCaseCommentRequest{
 		CaseID:  caseID,
@@ -552,7 +813,7 @@ func TestSNCaseService_CreateCaseComment_WorkNote_SkipsPublishWhenNoWso2Watchers
 
 	client := newTestCommentClient(t, getCaseBody, createCommentBody, searchCommentsBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	req := domain.CreateCaseCommentRequest{
 		CaseID:  caseID,
@@ -598,7 +859,7 @@ func TestSNCaseService_CreateCaseComment_SkipsPublishWhenNoWatchers(t *testing.T
 
 	client := newTestCommentClient(t, getCaseBody, createCommentBody, `{"comments":[],"offset":0,"limit":20,"totalRecords":0}`)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	req := domain.CreateCaseCommentRequest{CaseID: caseID, Type: domain.CommentTypeComment, Content: "hi"}
 	if _, err := svc.CreateCaseComment(contextWithUserIDToken("token"), req); err != nil {
@@ -606,6 +867,69 @@ func TestSNCaseService_CreateCaseComment_SkipsPublishWhenNoWatchers(t *testing.T
 	}
 	if len(publisher.calls) != 0 {
 		t.Fatalf("expected no publish call for a case with no watchers, got %d", len(publisher.calls))
+	}
+}
+
+// TestSNCaseService_CreateCaseComment_NoWatchersSkipsAuthorLookup is the
+// regression guard for a CodeRabbit finding on PR #1964: publishCommentAdded
+// used to resolve the comment author (a SearchCaseComments round trip)
+// before checking whether the case has anyone to notify at all, wasting that
+// call -- and burning part of the shared publishCommentAddedTimeout -- on a
+// comment nobody will ever be emailed about. The case here has no watchers,
+// so /comments/search must never be requested.
+func TestSNCaseService_CreateCaseComment_NoWatchersSkipsAuthorLookup(t *testing.T) {
+	caseSysid := sysid32('a')
+	projectSysid := sysid32('b')
+	commentSysid := sysid32('d')
+	caseID := sysidToUUID(caseSysid)
+
+	getCaseBody := `{
+		"id": "` + caseSysid + `",
+		"internalId": "WSO2-023",
+		"number": "CS0023001",
+		"title": "No watchers, no author lookup",
+		"description": "d",
+		"createdOn": "2026-01-02 10:00:00",
+		"createdBy": "jane.doe@example.com",
+		"createdByFullName": "Jane Doe",
+		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"state": {"id": 1, "label": "Open"}
+	}`
+	createCommentBody := `{
+		"message": "Comment created successfully",
+		"comment": {"id": "` + commentSysid + `", "createdOn": "2026-01-02 11:00:00", "createdBy": "agent.smith"}
+	}`
+
+	searchCommentsCalled := false
+	client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/comments":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(createCommentBody))
+		case r.Method == http.MethodPost && r.URL.Path == "/comments/search":
+			searchCommentsCalled = true
+			_, _ = w.Write([]byte(`{"comments":[],"offset":0,"limit":20,"totalRecords":0}`))
+		case strings.HasSuffix(r.URL.Path, "/tags"):
+			_, _ = w.Write([]byte(`{"tags":[]}`))
+		default:
+			_, _ = w.Write([]byte(getCaseBody))
+		}
+	})
+	publisher := &mockEventPublisher{}
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
+
+	req := domain.CreateCaseCommentRequest{CaseID: caseID, Type: domain.CommentTypeComment, Content: "hi"}
+	if _, err := svc.CreateCaseComment(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(publisher.calls) != 0 {
+		t.Fatalf("expected no publish call for a case with no watchers, got %d", len(publisher.calls))
+	}
+	if searchCommentsCalled {
+		t.Error("resolveCommentAuthor's SearchCaseComments lookup ran even though the case has no watchers to notify")
 	}
 }
 
@@ -647,7 +971,7 @@ func TestSNCaseService_CreateCaseComment_SkipsPublishWhenAuthorNameUnresolved(t 
 
 	client := newTestCommentClient(t, getCaseBody, createCommentBody, searchCommentsBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	req := domain.CreateCaseCommentRequest{CaseID: caseID, Type: domain.CommentTypeComment, Content: "hi"}
 	if _, err := svc.CreateCaseComment(contextWithUserIDToken("token"), req); err != nil {
@@ -713,7 +1037,7 @@ func TestSNCaseService_UpdateCase_PublishesStatusChanged(t *testing.T) {
 
 	client := newTestUpdateCaseClient(t, getCaseBody, updateCaseBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	newState := domain.CaseStateWorkInProgress
 	req := domain.UpdateCaseRequest{ID: caseID, State: &newState}
@@ -781,7 +1105,7 @@ func TestSNCaseService_UpdateCase_SkipsPublishWhenNoWatchers(t *testing.T) {
 
 	client := newTestUpdateCaseClient(t, getCaseBody, updateCaseBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	newState := domain.CaseStateWorkInProgress
 	req := domain.UpdateCaseRequest{ID: caseID, State: &newState}
@@ -830,7 +1154,7 @@ func TestSNCaseService_UpdateCase_SkipsPublishWhenStateUnchanged(t *testing.T) {
 
 	client := newTestUpdateCaseClient(t, getCaseBody, updateCaseBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	newState := domain.CaseStateWorkInProgress
 	req := domain.UpdateCaseRequest{ID: caseID, State: &newState}
@@ -878,10 +1202,10 @@ func TestSNCaseService_UpdateCase_DoesNotPublishStatusChangedForOtherFields(t *t
 
 	client := newTestUpdateCaseClient(t, getCaseBody, updateCaseBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	assigneeEmail := "alex@example.com"
-	req := domain.UpdateCaseRequest{ID: caseID, AssigneeEmail: &assigneeEmail}
+	req := domain.UpdateCaseRequest{ID: caseID, AssigneeEmail: json.RawMessage(`"` + assigneeEmail + `"`)}
 
 	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -929,10 +1253,10 @@ func TestSNCaseService_UpdateCase_PublishesCaseAssigned(t *testing.T) {
 
 	client := newTestUpdateCaseClient(t, getCaseBody, updateCaseBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	assigneeEmail := "alex@example.com"
-	req := domain.UpdateCaseRequest{ID: caseID, AssigneeEmail: &assigneeEmail}
+	req := domain.UpdateCaseRequest{ID: caseID, AssigneeEmail: json.RawMessage(`"` + assigneeEmail + `"`)}
 
 	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1001,10 +1325,10 @@ func TestSNCaseService_UpdateCase_SkipsPublishCaseAssignedWhenNoWatchers(t *test
 
 	client := newTestUpdateCaseClient(t, getCaseBody, updateCaseBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	assigneeEmail := "alex@example.com"
-	req := domain.UpdateCaseRequest{ID: caseID, AssigneeEmail: &assigneeEmail}
+	req := domain.UpdateCaseRequest{ID: caseID, AssigneeEmail: json.RawMessage(`"` + assigneeEmail + `"`)}
 
 	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1052,15 +1376,123 @@ func TestSNCaseService_UpdateCase_SkipsPublishCaseAssignedWhenAssigneeUnchanged(
 
 	client := newTestUpdateCaseClient(t, getCaseBody, updateCaseBody)
 	publisher := &mockEventPublisher{}
-	svc := NewServiceNowCaseService(client, nil, publisher)
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
 
 	assigneeEmail := "alex@example.com"
-	req := domain.UpdateCaseRequest{ID: caseID, AssigneeEmail: &assigneeEmail}
+	req := domain.UpdateCaseRequest{ID: caseID, AssigneeEmail: json.RawMessage(`"` + assigneeEmail + `"`)}
 
 	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(publisher.calls) != 0 {
 		t.Fatalf("expected no publish call when the assignee didn't actually change, got %d", len(publisher.calls))
+	}
+}
+
+// TestSNCaseService_UpdateCase_DoesNotPublishCaseAssignedOnClear verifies
+// that clearing the assignee (an explicit assigneeEmail:null PATCH) never
+// publishes case.assigned -- nobody was assigned by this PATCH, so that
+// event would be actively wrong, and there is no case.unassigned event to
+// publish instead. This case has an active watch list, so a false publish
+// here can't be confused with the no-watchers skip covered by
+// TestSNCaseService_UpdateCase_SkipsPublishCaseAssignedWhenNoWatchers.
+func TestSNCaseService_UpdateCase_DoesNotPublishCaseAssignedOnClear(t *testing.T) {
+	caseSysid := sysid32('a')
+	projectSysid := sysid32('b')
+	watcherSysid := sysid32('c')
+	caseID := sysidToUUID(caseSysid)
+
+	getCaseBody := `{
+		"id": "` + caseSysid + `",
+		"internalId": "WSO2-030",
+		"number": "CS0030001",
+		"title": "Clear assignee test",
+		"description": "d",
+		"createdOn": "2026-01-02 10:00:00",
+		"createdBy": "jane.doe@example.com",
+		"createdByFullName": "Jane Doe",
+		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"state": {"id": 1, "label": "Open"},
+		"assignedEngineer": {"id": "` + sysid32('e') + `", "name": "Alex Assignee", "email": "alex@example.com"},
+		"watchList": [
+			{"id": "` + watcherSysid + `", "userName": "jroe", "name": "John Roe", "email": "john.roe@example.com"}
+		]
+	}`
+	updateCaseBody := `{
+		"message": "Case updated successfully",
+		"case": {"id": "` + caseSysid + `", "updatedOn": "2026-01-02 12:00:00", "updatedBy": "jane.doe"}
+	}`
+
+	client := newTestUpdateCaseClient(t, getCaseBody, updateCaseBody)
+	publisher := &mockEventPublisher{}
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil)
+
+	req := domain.UpdateCaseRequest{ID: caseID, AssigneeEmail: json.RawMessage(`null`)}
+
+	if _, err := svc.UpdateCase(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(publisher.calls) != 0 {
+		t.Fatalf("expected no publish call when clearing the assignee, got %d", len(publisher.calls))
+	}
+}
+
+// TestSNCaseService_CreateBareCaseComment_NoSideEffects is the regression
+// guard CreateBareCaseComment exists for: unlike CreateCaseComment, it must
+// issue exactly one request (POST /comments) and nothing else -- no
+// GetCaseByID enrichment, no SearchComments author-name lookup, no
+// publishCommentAdded, no applyResponseSLAOnComment, no
+// applyCustomerReplyStateTransition. The fake server fails the test on any
+// request other than that single POST, which is what proves none of those
+// side effects ran, not just that the response looked right.
+func TestSNCaseService_CreateBareCaseComment_NoSideEffects(t *testing.T) {
+	caseSysid := sysid32('a')
+	commentSysid := sysid32('d')
+	caseID := sysidToUUID(caseSysid)
+	commentID := sysidToUUID(commentSysid)
+
+	var gotBody map[string]any
+	requestCount := 0
+	client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.Method != http.MethodPost || r.URL.Path != "/comments" {
+			t.Fatalf("CreateBareCaseComment must issue exactly one request, POST /comments — got %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"message": "Comment created successfully",
+			"comment": {"id": "` + commentSysid + `", "createdOn": "2026-01-02 11:00:00", "createdBy": "agent.smith"}
+		}`))
+	})
+	publisher := &mockEventPublisher{}
+	svc := NewServiceNowCaseService(client, nil, publisher, nil, nil, "", nil).(*snCaseService)
+
+	detail, err := svc.CreateBareCaseComment(contextWithUserIDToken("token"), caseID, domain.CommentTypeComment, "Working on it")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if detail.ID != commentID {
+		t.Errorf("comment id = %q, want %q", detail.ID, commentID)
+	}
+	if requestCount != 1 {
+		t.Errorf("expected exactly 1 HTTP request (the POST), got %d", requestCount)
+	}
+	if gotBody["referenceId"] != uuidToSysid(caseID) {
+		t.Errorf("referenceId = %v, want %v", gotBody["referenceId"], uuidToSysid(caseID))
+	}
+	if gotBody["referenceType"] != "case" {
+		t.Errorf("referenceType = %v, want %q", gotBody["referenceType"], "case")
+	}
+	if gotBody["content"] != "Working on it" {
+		t.Errorf("content = %v, want %q", gotBody["content"], "Working on it")
+	}
+	if len(publisher.calls) != 0 {
+		t.Errorf("expected 0 publish calls, got %d", len(publisher.calls))
 	}
 }

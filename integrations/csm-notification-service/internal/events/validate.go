@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -82,8 +83,20 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		if err := decodeStrict(raw, &p); err != nil {
 			return err
 		}
+		// Priority is deliberately NOT required here: entity-service only
+		// ever sets a severity (and so a Priority) for type=="case" — every
+		// other case type (service_request/security_report_analysis/
+		// announcement/engagement) genuinely has none, by design, not a
+		// data-quality bug (see entity-service's own validateCreateCaseRequest).
+		// Requiring it unconditionally used to reject case.created outright
+		// for every one of those types, before it ever reached dispatch's
+		// own CaseType branching — no email or Chat alert ever went out for
+		// them as a result. RenderCaseCreatedEmail drops its Priority row
+		// entirely (not just blank) when it's empty, and
+		// SendSecurityReportAnalysisAlert/SendCaseCreatedAlert both already
+		// omit their severity-derived line entirely when it's empty.
 		if p.ReporterName == "" || p.ProjectName == "" || p.ProjectID == "" || p.CaseID == "" || p.CaseTitle == "" ||
-			p.CaseType == "" || p.Priority == "" || p.CreatedAt == "" || p.Description == "" ||
+			p.CaseType == "" || p.CreatedAt == "" || p.Description == "" ||
 			!validRecipients(p.Recipients) {
 			return fmt.Errorf("events: missing required field for %s", t)
 		}
@@ -144,7 +157,16 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		if err := decodeStrict(raw, &p); err != nil {
 			return err
 		}
-		if p.ProjectID == "" || p.CaseID == "" || p.OldSeverity == "" || p.NewSeverity == "" ||
+		// OldSeverity/NewSeverity are trimmed before the emptiness check —
+		// unlike case.created's Priority (deliberately allowed blank, see
+		// that case's own comment), a severity change is meaningless
+		// without both values, and a whitespace-only value (which would
+		// pass a bare =="" check) would otherwise reach dispatch as if it
+		// were valid, only to render as a blank label once
+		// dispatch.emailSeverityLabel trims it — producing an email/Chat
+		// alert with an empty severity and, when CaseTitle is also empty,
+		// a subject of "Severity changed to ".
+		if p.ProjectID == "" || p.CaseID == "" || strings.TrimSpace(p.OldSeverity) == "" || strings.TrimSpace(p.NewSeverity) == "" ||
 			p.OldSeverity == p.NewSeverity || !validRecipients(p.Recipients) {
 			return fmt.Errorf("events: missing or invalid required field for %s", t)
 		}
@@ -173,33 +195,6 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		if p.CallTo != "" && !e164Pattern.MatchString(p.CallTo) {
 			return fmt.Errorf("events: %s callTo %q is not a valid E.164 phone number", t, p.CallTo)
 		}
-	case TypeSLAClockRegister:
-		var p SLAClockRegisterPayload
-		if err := decodeStrict(raw, &p); err != nil {
-			return err
-		}
-		if p.CaseID == "" || len(p.Durations) == 0 {
-			return fmt.Errorf("events: missing required field for %s", t)
-		}
-		for clockType, dur := range p.Durations {
-			if clockType == "" || dur == "" {
-				return fmt.Errorf("events: %s durations must have non-empty clock types and values", t)
-			}
-			// A duration time.ParseDuration can't parse would otherwise only
-			// surface deep inside slaengine's own registration loop, which
-			// logs and skips that one clockType rather than failing the
-			// whole record — for a payload whose durations are ALL
-			// unparsable, that means the record is silently marked handled
-			// with no clock ever registered and no retry/DLQ visibility.
-			// Rejecting it here instead makes it retried and dead-lettered
-			// like any other malformed record.
-			if d, err := time.ParseDuration(dur); err != nil || d <= 0 {
-				return fmt.Errorf("events: %s duration %q for clock type %q is not a valid positive duration", t, dur, clockType)
-			}
-		}
-		if p.CaseID != entityID {
-			return fmt.Errorf("events: payload caseId %q does not match entityId %q", p.CaseID, entityID)
-		}
 	case TypeSLATierReached:
 		var p SLATierReachedPayload
 		if err := decodeStrict(raw, &p); err != nil {
@@ -210,6 +205,88 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		}
 		if p.CaseID != entityID {
 			return fmt.Errorf("events: payload caseId %q does not match entityId %q", p.CaseID, entityID)
+		}
+	case TypeCaseBillableStatusChanged:
+		var p CaseBillableStatusChangedPayload
+		if err := decodeStrict(raw, &p); err != nil {
+			return err
+		}
+		if p.CaseID == "" {
+			return fmt.Errorf("events: missing required field for %s", t)
+		}
+		if p.CaseID != entityID {
+			return fmt.Errorf("events: payload caseId %q does not match entityId %q", p.CaseID, entityID)
+		}
+	case TypeCRPlanDateNotice:
+		var p CRPlanDateNoticePayload
+		if err := decodeStrict(raw, &p); err != nil {
+			return err
+		}
+		if p.ChangeRequestID == "" || p.Number == "" || p.Subject == "" || p.Kind == "" {
+			return fmt.Errorf("events: missing required field for %s", t)
+		}
+		if p.ChangeRequestID != entityID {
+			return fmt.Errorf("events: payload changeRequestId %q does not match entityId %q", p.ChangeRequestID, entityID)
+		}
+		// Kind and Audience are not independent: the kind decides who the
+		// notice is addressed to, and the audience decides the portal link
+		// and whether recipients go in To or BCC. A mismatched pair sends
+		// customer wording to an internal group, or puts an internal
+		// audience's addresses where a customer can read them.
+		switch {
+		case p.Kind == "customer_proposed" && p.Audience == "internal":
+		case p.Kind == "accepted" && p.Audience == "customer":
+		case p.Kind == "rejected" && p.Audience == "customer":
+		default:
+			return fmt.Errorf("events: %s has kind %q that does not go with audience %q", t, p.Kind, p.Audience)
+		}
+		if !validRecipients(p.Recipients) {
+			return fmt.Errorf("events: invalid recipients for %s", t)
+		}
+	case TypeCRApprovalRequested:
+		var p CRApprovalRequestedPayload
+		if err := decodeStrict(raw, &p); err != nil {
+			return err
+		}
+		// Subject and recipients are what makes this sendable at all: the
+		// flow builds the subject (reproducing ServiceNow's per-branch
+		// wording) and resolves the audience, and a notice missing either is
+		// one this service cannot repair by retrying.
+		if p.ChangeRequestID == "" || p.Number == "" || p.State == "" || p.Subject == "" {
+			return fmt.Errorf("events: missing required field for %s", t)
+		}
+		if p.ChangeRequestID != entityID {
+			return fmt.Errorf("events: payload changeRequestId %q does not match entityId %q", p.ChangeRequestID, entityID)
+		}
+		if p.Audience != "internal" && p.Audience != "customer" {
+			return fmt.Errorf("events: %s has unknown audience %q", t, p.Audience)
+		}
+		if !validRecipients(p.Recipients) {
+			return fmt.Errorf("events: invalid recipients for %s", t)
+		}
+	case TypeProjectContactInvited:
+		var p ProjectContactInvitedPayload
+		if err := decodeStrict(raw, &p); err != nil {
+			return err
+		}
+		// Only the two values no step can proceed without are required:
+		// MembershipSfID keys every onboarding-step write, and Email is
+		// both the Asgardeo userName and the invitation's recipient.
+		// GivenName/FamilyName are optional (Salesforce doesn't require a
+		// first name; dispatch falls back to the email's local part), and
+		// ProjectName/ProjectKey/Roles/Type are display-only, and
+		// IsResend is a marker dispatch acts on, valid either way —
+		// an absent one is simply a first invitation.
+		if p.MembershipSfID == "" || !emailPattern.MatchString(p.Email) {
+			return fmt.Errorf("events: missing or invalid required field for %s", t)
+		}
+		if p.MembershipSfID != entityID {
+			return fmt.Errorf("events: payload membershipSfId %q does not match entityId %q", p.MembershipSfID, entityID)
+		}
+		if p.EventModifiedOn != "" {
+			if _, err := time.Parse(time.RFC3339Nano, p.EventModifiedOn); err != nil {
+				return fmt.Errorf("events: eventModifiedOn %q is not RFC 3339: %w", p.EventModifiedOn, err)
+			}
 		}
 	default:
 		return fmt.Errorf("events: unknown event type %q", t)

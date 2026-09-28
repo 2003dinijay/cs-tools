@@ -37,6 +37,34 @@ const (
 	TypeCaseAcknowledged Type = "case.acknowledged"
 	TypeSeverityChanged  Type = "case.severity_changed"
 	TypeIncidentCreated  Type = "incident.created"
+	// TypeCaseBillableStatusChanged is Postgres-data-source-only (unlike
+	// every other type here, which is ServiceNow-only) — see
+	// CaseBillableStatusChangedPayload's own doc comment for what it's for
+	// and why the two data sources aren't symmetric here.
+	//
+	// TODO: the consumer group plumbing exists on the
+	// csm-notification-service side (its own dedicated consumer group,
+	// internal/timecardengine.Engine — not folded into dispatch.Dispatcher's
+	// group, since eventbus.Consumer.Run processes one record at a time,
+	// fully sequentially/blocking, and a bulk update over "several time
+	// cards" must not delay unrelated email/Chat delivery on the same
+	// consumer instance), but its Handle only logs today — the actual
+	// reaction (bulk-flip every time card on the case to match
+	// Payload.IsBillable) needs a time_cards table/repo/service on this
+	// data source first (it has none today; time cards are
+	// ServiceNow-only, see internal/service/sn_time_card_service.go).
+	// Publishing this event is therefore still commented out at its one
+	// call site (case_service.go's UpdateCase) — the detection logic is
+	// real and live, only the actual Publish call is inert, so there's
+	// nothing for that consumer to receive yet either.
+	TypeCaseBillableStatusChanged Type = "case.billable_status_changed"
+	// TypeProjectContactInvited is Postgres-data-source-only. Published by
+	// the Salesforce membership ingest (salesforceEventService) after a
+	// Project_Contact__c in state INVITED / RE-INVITED has been written to the
+	// database. csm-notification-service consumes it to create the Asgardeo
+	// identity (via scim-operations-service) and send the invitation email —
+	// see ProjectContactInvitedPayload. Keyed by the Salesforce membership Id.
+	TypeProjectContactInvited Type = "project_contact.invited"
 )
 
 // Envelope is the wire shape of every record on the case-events topic.
@@ -172,6 +200,28 @@ type SeverityChangedPayload struct {
 	Recipients []string `json:"recipients"`
 }
 
+// CaseBillableStatusChangedPayload is the Payload shape for
+// TypeCaseBillableStatusChanged — published (once a consumer exists — see
+// that type's own TODO) when a case's severity crosses into or out of LOW
+// on the Postgres data source. Type is always "case" and fixed forever for
+// a Postgres-backed case (see case_service.go's UpdateCase, which rejects
+// changing Type at all on this data source), so unlike the ServiceNow data
+// source — where Type can transfer between case/engagement/service_request
+// and severity is only ever meaningful for Type=="case" — the "does this
+// case count as S4 (WSO2's own support-policy tier for LOW severity, see
+// entity-service's sla_policy.go)" question collapses to a single check:
+// is the new severity LOW or not. IsBillable is the resulting target state
+// (true entering LOW, false leaving it) — precomputed here rather than left
+// for a consumer to re-derive from raw severity strings, since severity's
+// mapping to "billable" is business policy this service already owns (the
+// same reasoning sla_policy.go already established for SLA durations).
+// No Recipients/Product/Team: this event has no notification reaction at
+// all, only the (not yet built) time-card side effect.
+type CaseBillableStatusChangedPayload struct {
+	CaseID     string `json:"caseId"`
+	IsBillable bool   `json:"isBillable"`
+}
+
 // CaseCreatedPayload is the Payload shape for TypeCaseCreated — mirrors
 // csm-notification-service's own CaseCreatedPayload (its internal/events/
 // validate.go is the schema authority; keep this in sync by hand the same
@@ -230,4 +280,43 @@ type CaseCreatedPayload struct {
 type IncidentCreatedPayload struct {
 	Title            string `json:"title"`
 	ShortDescription string `json:"shortDescription"`
+}
+
+// ProjectContactInvitedPayload is the payload of TypeProjectContactInvited:
+// everything csm-notification-service needs to provision the invited person
+// and address the invitation, so it never has to re-read Salesforce. Roles
+// are the raw Salesforce Project_Role__c values (e.g. "Admin",
+// "Portal user"). IsIntegrationUser=true means: record the identity and email
+// steps as SKIPPED — integration users never sign in and get no email. Type is
+// the Salesforce Contact_Type__c ("OWN CONTACT" / "PARTNER CONTACT" /
+// "RELATED CONTACT"). Mirror any change here in csm-notification-service's
+// own copy of this struct.
+type ProjectContactInvitedPayload struct {
+	MembershipSfID    string   `json:"membershipSfId"`
+	ContactSfID       string   `json:"contactSfId"`
+	Email             string   `json:"email"`
+	GivenName         string   `json:"givenName"`
+	FamilyName        string   `json:"familyName"`
+	ProjectName       string   `json:"projectName"`
+	ProjectKey        string   `json:"projectKey"`
+	Roles             []string `json:"roles"`
+	IsIntegrationUser bool     `json:"isIntegrationUser"`
+	Type              string   `json:"type"`
+	// EventModifiedOn is the Salesforce LastModifiedDate of the membership
+	// version this event describes, RFC 3339 UTC. The consumer stamps its
+	// onboarding-step writes with it so a delayed older invitation cannot
+	// overwrite a newer one's outcome (the step upsert only applies writes
+	// whose eventModifiedOn is not older than the stored one). Empty only
+	// when Salesforce returned no parseable date.
+	EventModifiedOn string `json:"eventModifiedOn,omitempty"`
+	// Resend marks a deliberate re-send of an invitation that was already
+	// sent once (POST /projects/{id}/contacts/{email}/resend-invitation).
+	// csm-notification-service refuses to send a second invitation for a
+	// membership it has already recorded an EMAIL step for -- that guard is
+	// what stops a duplicate Salesforce event turning into a duplicate
+	// email -- and this field is the one thing that tells it a second send
+	// is what was actually asked for. Omitted on every ordinary invitation,
+	// so the wire shape is unchanged for them. Mirror any change here in
+	// csm-notification-service's own copy of this struct.
+	Resend bool `json:"resend,omitempty"`
 }

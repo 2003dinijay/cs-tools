@@ -30,6 +30,27 @@ type Ref struct {
 	Name string `json:"name"`
 }
 
+// Tag is a free-text label attached to a case (e.g. "Security Announcement",
+// attached to every case a security announcement creates) — customer-
+// appropriate as-is, unlike most of this file's trimming: a tag is written
+// specifically to be visible, not an internal CSM annotation.
+type Tag struct {
+	ID    string  `json:"id"`
+	Label string  `json:"label"`
+	Color *string `json:"color,omitempty"`
+}
+
+func mapTags(tags []entity.Tag) []Tag {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make([]Tag, 0, len(tags))
+	for _, t := range tags {
+		out = append(out, Tag{ID: t.ID, Label: t.Label, Color: t.Color})
+	}
+	return out
+}
+
 func mapRef(r *entity.EntityRef) *Ref {
 	if r == nil {
 		return nil
@@ -279,6 +300,15 @@ type CaseWatchListUser struct {
 	UserName string `json:"userName,omitempty"`
 	Name     string `json:"name,omitempty"`
 	Email    string `json:"email,omitempty"`
+	// Locked is true when this watcher is one of the case's account's four
+	// named stakeholders (customer success manager, technical owner,
+	// secondary technical owner, account manager) -- entity-service always
+	// re-adds these on the next watch-list write regardless of what's
+	// submitted, so removing one here would never actually stick. The
+	// frontend uses this to disable the remove control for exactly these
+	// watchers, rather than let a customer attempt a removal that silently
+	// doesn't take.
+	Locked bool `json:"locked"`
 }
 
 // CaseDetails is the portal's response for GET /cases/{id} — shaped to
@@ -345,6 +375,10 @@ type CaseDetails struct {
 	// the label is built here — the same split as case status and severity.
 	EscalationLevel *IDLabelRef `json:"escalationLevel,omitempty"`
 	IsEscalated     *bool       `json:"isEscalated,omitempty"`
+	Tags            []Tag       `json:"tags,omitempty"`
+	// AnnouncementType is only meaningful when Type.ID is "announcement" --
+	// "GENERAL" or "SECURITY". Nil for every other case-like type.
+	AnnouncementType *string `json:"announcementType,omitempty"`
 }
 
 // MapCaseDetails builds the portal response from entity-service's CaseView.
@@ -377,7 +411,7 @@ func MapCaseDetails(c entity.CaseView) CaseDetails {
 	if len(c.WatchList) > 0 {
 		watchList = make([]CaseWatchListUser, 0, len(c.WatchList))
 		for _, w := range c.WatchList {
-			watchList = append(watchList, CaseWatchListUser{ID: w.ID, UserName: w.UserName, Name: w.Name, Email: w.Email})
+			watchList = append(watchList, CaseWatchListUser{ID: w.ID, UserName: w.UserName, Name: w.Name, Email: w.Email, Locked: w.Locked})
 		}
 	}
 
@@ -419,6 +453,8 @@ func MapCaseDetails(c entity.CaseView) CaseDetails {
 		Duration:            c.Duration,
 		EscalationLevel:     caseEscalationLevelRef(c.EscalationLevel),
 		IsEscalated:         c.IsEscalated,
+		Tags:                mapTags(c.Tags),
+		AnnouncementType:    c.AnnouncementType,
 	}
 }
 

@@ -20,18 +20,19 @@ package service
 import (
 	"context"
 
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 type projectService struct {
-	repo repository.ProjectRepository
+	repo   repository.ProjectRepository
+	access AccessService
 }
 
-// NewProjectService constructs a ProjectService backed by the given repository.
-func NewProjectService(repo repository.ProjectRepository) ProjectService {
-	return &projectService{repo: repo}
+// NewProjectService constructs a ProjectService backed by the given
+// repository, scoping every read through access (see AccessService).
+func NewProjectService(repo repository.ProjectRepository, access AccessService) ProjectService {
+	return &projectService{repo: repo, access: access}
 }
 
 // SearchProjects implements ProjectService.
@@ -42,27 +43,40 @@ func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchPr
 	if err := validateSearchQuery(req.SearchQuery); err != nil {
 		return domain.SearchProjectsResponse{}, err
 	}
-	if len(req.ExcludeClosureStates) > 0 || len(req.ExcludeSubscriptionTypes) > 0 || len(req.ExcludeProjectKeys) > 0 {
-		return domain.SearchProjectsResponse{}, &apierror.ValidationError{
-			Msg: "excludeClosureStates, excludeSubscriptionTypes, and excludeProjectKeys are only supported for the ServiceNow data source",
+	if req.AccountID != "" {
+		if err := validateUUIDs("accountId", []string{req.AccountID}); err != nil {
+			return domain.SearchProjectsResponse{}, err
 		}
 	}
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.SearchProjectsResponse{}, err
+	}
 
-	projects, total, err := s.repo.SearchProjects(ctx, req)
+	projects, total, err := s.repo.SearchProjects(ctx, req, scope)
 	if err != nil {
 		return domain.SearchProjectsResponse{}, err
 	}
 
 	views := make([]domain.ProjectView, len(projects))
 	for i, p := range projects {
-		endDate := p.EndDate
 		views[i] = domain.ProjectView{
 			ID:               p.ID,
 			Name:             p.Name,
 			Key:              p.Key,
 			SubscriptionType: p.SubscriptionType,
-			EndDate:          &endDate,
-			CreatedOn:        p.CreatedOn,
+			// StartDate/EndDate are already *time.Time on domain.Project
+			// (nil when the column is NULL), so they pass straight through
+			// instead of being re-boxed through a local copy. StartDate was
+			// previously dropped entirely here despite ProjectView having a
+			// real field for it.
+			StartDate: p.StartDate,
+			EndDate:   p.EndDate,
+			CreatedOn: p.CreatedOn,
+			// ClosureState was previously dropped here the same way StartDate
+			// used to be (see the comment above) -- domain.Project already
+			// carried it from the repository, ProjectView just never read it.
+			ProjectClosureFields: domain.ProjectClosureFields{ClosureState: p.ClosureState},
 		}
 	}
 
@@ -77,8 +91,9 @@ func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchPr
 
 // GetProjectByID implements ProjectService.
 func (s *projectService) GetProjectByID(ctx context.Context, id string) (domain.ProjectDetailsView, error) {
-	if err := validateUUIDs("id", []string{id}); err != nil {
+	scope, err := resolveScopeForID(ctx, s.access, id)
+	if err != nil {
 		return domain.ProjectDetailsView{}, err
 	}
-	return s.repo.GetProjectByID(ctx, id)
+	return s.repo.GetProjectByID(ctx, id, scope)
 }

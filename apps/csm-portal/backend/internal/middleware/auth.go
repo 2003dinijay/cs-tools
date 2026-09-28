@@ -52,7 +52,9 @@ const userInfoKey contextKey = "user-info"
 type UserInfo struct {
 	Email  string
 	UserID string
-	Groups []string
+	// Roles is the token's "roles" claim, which portal authorisation checks
+	// (see handler.AccessGuard).
+	Roles []string
 }
 
 // Config holds JWT validation configuration.
@@ -67,10 +69,38 @@ type Config struct {
 // jwtClaims defines the expected JWT payload fields, mirroring the Ballerina
 // CustomJwtPayload in the authorization module.
 type jwtClaims struct {
-	Email  string   `json:"email"`
-	UserID string   `json:"userid"`
-	Groups []string `json:"groups"`
+	Email  string     `json:"email"`
+	UserID string     `json:"userid"`
+	Roles  stringList `json:"roles"`
 	jwt.RegisteredClaims
+}
+
+// stringList decodes a claim that Asgardeo emits as a bare string when it holds
+// one value and as an array when it holds several (its "roles" claim does
+// this). A plain []string would reject a single-role user's whole token, so
+// both shapes are accepted; anything else fails the token.
+//
+// SCIM's own "roles" attribute was assumed to follow this same convention but
+// does not -- observed in practice as an array of {value, ...} objects, a
+// different-enough shape (see scim.scimRoles) that it isn't reused here.
+type stringList []string
+
+func (l *stringList) UnmarshalJSON(b []byte) error {
+	var one string
+	if err := json.Unmarshal(b, &one); err == nil {
+		if one == "" {
+			*l = nil
+		} else {
+			*l = []string{one}
+		}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(b, &many); err != nil {
+		return fmt.Errorf("claim must be a string or an array of strings: %w", err)
+	}
+	*l = many
+	return nil
 }
 
 // Auth returns an HTTP middleware that validates the x-jwt-assertion header on
@@ -93,8 +123,8 @@ func Auth(cfg Config) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			addSecurityHeaders(w)
 
-			// Skip auth for the health check endpoint.
-			if r.Method == http.MethodGet && r.URL.Path == "/health" {
+			// Skip auth for both health check endpoints.
+			if r.Method == http.MethodGet && (r.URL.Path == "/health" || r.URL.Path == "/health/dependencies") {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -220,7 +250,7 @@ func extractUserInfo(tokenStr string, cfg Config, keyFunc jwt.Keyfunc) (*UserInf
 	return &UserInfo{
 		Email:  c.Email,
 		UserID: c.UserID,
-		Groups: c.Groups,
+		Roles:  []string(c.Roles),
 	}, nil
 }
 

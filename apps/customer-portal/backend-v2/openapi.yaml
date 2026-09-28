@@ -6341,6 +6341,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CaseWatchListUser'
+        tags:
+          type: array
+          description: >-
+            Free-text labels attached to the case, e.g. "Security
+            Announcement" on every case a security announcement creates.
+          items:
+            $ref: '#/components/schemas/Tag'
+        announcementType:
+          type: string
+          nullable: true
+          description: >-
+            Only meaningful when type.id is "announcement" -- "GENERAL" or
+            "SECURITY". Absent for every other case-like type.
+
+    Tag:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        color:
+          type: string
 
     CaseCreateRequest:
       type: object

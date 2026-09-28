@@ -25,6 +25,7 @@ import {
   useSearchParams,
 } from "react-router";
 import AuthGuard from "@layouts/AuthGuard";
+import { plgRoutes } from "@features/plg/PlgRoutes";
 import {
   LegacyQueryTabRedirect,
   SectionIndexRedirect,
@@ -34,6 +35,8 @@ import {
   featureStateForPath,
   firstEnabledDestination,
 } from "@config/featureFlags";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
+import { usePortalView } from "@context/current-user/usePortalView";
 import {
   POST_LOGIN_REDIRECT_KEY,
   PostLoginRedirectConsumer,
@@ -43,6 +46,7 @@ import CsmComingSoonPage from "@features/csm-coming-soon/pages/CsmComingSoonPage
 import Error401Page from "@components/error/Error401Page";
 import Error403Page from "@components/error/Error403Page";
 import Error404Page from "@components/error/Error404Page";
+import RequireWriteAccess from "@components/RequireWriteAccess";
 import { ErrorBannerProvider } from "@context/error-banner/ErrorBannerContext";
 import { SuccessBannerProvider } from "@context/success-banner/SuccessBannerContext";
 import { LoaderProvider } from "@context/linear-loader/LoaderContext";
@@ -91,6 +95,7 @@ import CsmCustomersLayout from "@features/csm-customers/pages/CsmCustomersLayout
 import CsmAccountsPage from "@features/csm-accounts/pages/CsmAccountsPage";
 import CsmAccountDetailPage from "@features/csm-accounts/pages/CsmAccountDetailPage";
 import CsmProjectsPage from "@features/csm-projects/pages/CsmProjectsPage";
+import CsmTeamSchedulePage from "@features/csm-team-schedule/pages/CsmTeamSchedulePage";
 import CsmProjectDetailPage from "@features/csm-projects/pages/CsmProjectDetailPage";
 import ConversationDetailPage from "@features/csm-projects/pages/ConversationDetailPage";
 import CsmUpdatesPage from "@features/updates/pages/CsmUpdatesPage";
@@ -103,6 +108,21 @@ import CsmTimeCardsPage from "@features/csm-timecards/pages/CsmTimeCardsPage";
 import CsmAnnouncementsPage from "@features/csm-announcements/pages/CsmAnnouncementsPage";
 import CsmAnnouncementCreatePage from "@features/csm-announcements/pages/CsmAnnouncementCreatePage";
 import HelpPage from "@features/help/pages/HelpPage";
+import SplRouteGuard from "@features/spl/pages/SplRouteGuard";
+import SplAccountsPage from "@features/spl/accounts/pages/SplAccountsPage";
+import SplAccountDetailPage from "@features/spl/accounts/pages/SplAccountDetailPage";
+import SplProjectsPage from "@features/spl/projects/pages/SplProjectsPage";
+import SplProjectDetailPage from "@features/spl/projects/pages/SplProjectDetailPage";
+import SplSlaReportPage from "@features/spl/reports/pages/SplSlaReportPage";
+import SplCsReportPage from "@features/spl/reports/pages/SplCsReportPage";
+import SplTimelogsReportPage from "@features/spl/reports/pages/SplTimelogsReportPage";
+import SplTeamSchedulePage from "@features/spl/schedule/pages/SplTeamSchedulePage";
+import SplUserScanPage from "@features/spl/user-scan/pages/SplUserScanPage";
+import SplUsageMetricsPage from "@features/spl/usage-metrics/pages/SplUsageMetricsPage";
+import SplCustomerHealthDashboardPage from "@features/spl/customer-health/pages/SplCustomerHealthDashboardPage";
+import SplCustomerHealthDetailPage from "@features/spl/customer-health/pages/SplCustomerHealthDetailPage";
+// Cases lands in its own follow-up PR (feat/spl-merge-2-cases) -- see this
+// PR's own description for why this port was split by domain.
 
 /**
  * Landing for `/`. Defers to AuthGuard's post-login deep-link restore when a
@@ -134,7 +154,14 @@ function RootLanding(): JSX.Element | null {
   const hasDeepLinkSearch = ["goto", "q"].some((key) =>
     Boolean(searchParams.get(key)?.trim()),
   );
-  return pending || hasDeepLinkSearch ? null : <Navigate to="/dashboard" replace />;
+  // The Sales/SA view has no dashboard (SPL never had one) — its landing
+  // page is Cases, same as the standalone app's own index redirect (see
+  // usePortalView.ts). Cases itself lands in a follow-up PR
+  // (feat/spl-merge-2-cases); until it merges, Accounts is this view's
+  // landing page instead.
+  const view = usePortalView();
+  const landing = view === "sales-sa" ? "/spl/accounts" : "/dashboard";
+  return pending || hasDeepLinkSearch ? null : <Navigate to={landing} replace />;
 }
 
 /**
@@ -158,11 +185,14 @@ function RootLanding(): JSX.Element | null {
  */
 function FeatureRouteGuard(): JSX.Element {
   const { pathname } = useLocation();
+  const access = usePortalAccess();
   const node = navNodeForPath(pathname);
-  const state = featureStateForPath(pathname);
+  // Per-user: a page the user's roles don't unlock (e.g. Operations for a
+  // view-only role) is hidden the same way a deployment-hidden page is.
+  const state = featureStateForPath(pathname, access);
 
   if (state === "hidden") {
-    const fallback = firstEnabledDestination();
+    const fallback = firstEnabledDestination(access);
     const samePath = fallback !== undefined && fallback.split(/[?#]/)[0] === pathname;
     return <Navigate to={!fallback || samePath ? "/404" : fallback} replace />;
   }
@@ -268,6 +298,12 @@ export default function App(): JSX.Element {
                 <Route element={<FeatureRouteGuard />}>
                   <Route path="/" element={<RootLanding />} />
 
+                  {/* PLG Customer Success Portal. Its pages, API hooks and nav
+                      section live under features/plg — this is the only line of
+                      csm-portal's routing the merge touches.
+                      */}
+                  {plgRoutes()}
+
                   {/* Customers — Accounts + Projects under one tabbed section.
                       BFF-backed pages (entity-service search + by-id endpoints).
                       Detail pages render full-width (outside the tab layout). */}
@@ -279,6 +315,7 @@ export default function App(): JSX.Element {
                     <Route path="accounts" element={<CsmAccountsPage />} />
                     <Route path="projects" element={<CsmProjectsPage />} />
                   </Route>
+                  <Route path="team-schedule" element={<CsmTeamSchedulePage />} />
                   <Route
                     path="customers/accounts/:id"
                     element={<CsmAccountDetailPage />}
@@ -435,7 +472,14 @@ export default function App(): JSX.Element {
                     element={<DashboardWidgetPreviewPage />}
                   />
                   <Route path="cases" element={<CsmCasesPage />} />
-                  <Route path="cases/new" element={<CsmCaseCreatePage />} />
+                  <Route
+                    path="cases/new"
+                    element={
+                      <RequireWriteAccess to="/cases">
+                        <CsmCaseCreatePage />
+                      </RequireWriteAccess>
+                    }
+                  />
                   <Route
                     path="cases/:caseId"
                     element={<CaseDetailRouteSync kind="case" />}
@@ -467,32 +511,71 @@ export default function App(): JSX.Element {
                       }
                     />
                     <Route path=":tab" element={<OperationsPage />} />
-                    <Route path="service-requests/new" element={<CreateServiceRequestPage />} />
+                    <Route
+                      path="service-requests/new"
+                      element={
+                        <RequireWriteAccess to="/operations">
+                          <CreateServiceRequestPage />
+                        </RequireWriteAccess>
+                      }
+                    />
                     <Route
                       path="service-requests/:caseId"
                       element={<CaseDetailRouteSync kind="service_request" />}
                     />
                     <Route
                       path="change-requests/new"
-                      element={<CreateChangeRequestPage />}
+                      element={
+                        <RequireWriteAccess to="/operations">
+                          <CreateChangeRequestPage />
+                        </RequireWriteAccess>
+                      }
                     />
                     <Route
                       path="change-requests/:id"
                       element={<CaseDetailRouteSync kind="change_request" paramName="id" />}
                     />
-                    <Route path="incidents/new" element={<CreateIncidentPage />} />
+                    <Route
+                      path="incidents/new"
+                      element={
+                        <RequireWriteAccess to="/operations">
+                          <CreateIncidentPage />
+                        </RequireWriteAccess>
+                      }
+                    />
                     <Route
                       path="incidents/:id"
                       element={<CaseDetailRouteSync kind="incident" paramName="id" />}
                     />
-                    <Route path="problems/new" element={<CreateProblemPage />} />
+                    <Route
+                      path="problems/new"
+                      element={
+                        <RequireWriteAccess to="/operations">
+                          <CreateProblemPage />
+                        </RequireWriteAccess>
+                      }
+                    />
                     <Route path="problems/:id" element={<ProblemDetailPage />} />
-                    <Route path="outages/new" element={<CreateOutagePage />} />
+                    <Route
+                      path="outages/new"
+                      element={
+                        <RequireWriteAccess to="/operations">
+                          <CreateOutagePage />
+                        </RequireWriteAccess>
+                      }
+                    />
                     <Route path="outages/:id" element={<OutageDetailPage />} />
                   </Route>
 
                   <Route path="engagements" element={<CsmEngagementsPage />} />
-                  <Route path="engagements/new" element={<CsmEngagementCreatePage />} />
+                  <Route
+                    path="engagements/new"
+                    element={
+                      <RequireWriteAccess to="/engagements">
+                        <CsmEngagementCreatePage />
+                      </RequireWriteAccess>
+                    }
+                  />
                   <Route
                     path="engagements/:caseId"
                     element={<CaseDetailRouteSync kind="engagement" />}
@@ -512,7 +595,14 @@ export default function App(): JSX.Element {
                       }
                     />
                     <Route path=":tab" element={<CsmSecurityCenterPage />} />
-                    <Route path="reports/new" element={<CreateSecurityReportPage />} />
+                    <Route
+                      path="reports/new"
+                      element={
+                        <RequireWriteAccess to="/security-center">
+                          <CreateSecurityReportPage />
+                        </RequireWriteAccess>
+                      }
+                    />
                     <Route
                       path="vulnerabilities/:id"
                       element={<ProductVulnerabilityDetailPage />}
@@ -526,7 +616,11 @@ export default function App(): JSX.Element {
                   <Route path="announcements" element={<CsmAnnouncementsPage />} />
                   <Route
                     path="announcements/new"
-                    element={<CsmAnnouncementCreatePage />}
+                    element={
+                      <RequireWriteAccess to="/announcements">
+                        <CsmAnnouncementCreatePage />
+                      </RequireWriteAccess>
+                    }
                   />
                   <Route
                     path="announcements/:caseId"
@@ -539,6 +633,63 @@ export default function App(): JSX.Element {
                       than its own route, so unlike Customers/Settings above
                       there is nothing to redirect an index route to. */}
                   <Route path="help" element={<HelpPage />} />
+
+                  {/* Support Portal Lite — ported from the former standalone
+                      apps/support-portal-lite/webapp. SplRouteGuard is the
+                      real enforcement point (an audience-gate 403, not just
+                      a hidden nav entry) and also mounts
+                      SplPermissionProvider for every screen below it.
+                      Cases lands in its own follow-up PR -- this port was
+                      split by domain to stay under CodeRabbit's 100-file
+                      review limit. */}
+                  <Route path="spl" element={<SplRouteGuard />}>
+                    {/* SplAccountsPage reads the path leaf itself to decide
+                        all-accounts vs my-accounts — same component, two
+                        routes. Only "accounts" has a csmNavItems.ts entry;
+                        "my-accounts" is reachable from within the page
+                        itself (a toggle), same as the source app. */}
+                    <Route path="accounts" element={<SplAccountsPage />} />
+                    <Route path="my-accounts" element={<SplAccountsPage />} />
+                    <Route path="accounts/:accountId" element={<SplAccountDetailPage />} />
+
+                    <Route path="projects" element={<SplProjectsPage />} />
+                    {/* SplProjectDetailPage only reads :projectId — reachable
+                        both directly and nested under its account, matching
+                        both links the source app's own components use. */}
+                    <Route path="projects/:projectId" element={<SplProjectDetailPage />} />
+                    <Route
+                      path="accounts/:accountId/projects/:projectId"
+                      element={<SplProjectDetailPage />}
+                    />
+                    <Route
+                      path="projects/:projectId/sla-report/:sysId"
+                      element={<SplSlaReportPage />}
+                    />
+                    <Route
+                      path="projects/:projectId/cs-report/:sysId"
+                      element={<SplCsReportPage />}
+                    />
+                    <Route
+                      path="projects/:projectId/timelogs-report"
+                      element={<SplTimelogsReportPage />}
+                    />
+
+                    <Route path="team-schedule" element={<SplTeamSchedulePage />} />
+                    <Route path="team-schedule/:sysId" element={<SplTeamSchedulePage />} />
+
+                    <Route path="user-scan" element={<SplUserScanPage />} />
+
+                    <Route path="usage-metrics" element={<SplUsageMetricsPage />} />
+
+                    <Route
+                      path="customer-health"
+                      element={<SplCustomerHealthDashboardPage />}
+                    />
+                    <Route
+                      path="customer-health/account/:accountId"
+                      element={<SplCustomerHealthDetailPage />}
+                    />
+                  </Route>
                 </Route>
               </Route>
 

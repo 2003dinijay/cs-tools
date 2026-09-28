@@ -22,25 +22,26 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/recipientlinks"
 )
 
-// entityClock abstracts EntityClient for testability.
-type entityClock interface {
-	RegisterClock(ctx context.Context, caseID, clockType string, startedAt, dueAt time.Time) error
-	GetClock(ctx context.Context, caseID, clockType string) (Clock, error)
-	SetTierReachedIfUnset(ctx context.Context, caseID, clockType, tier string) (reachedAt time.Time, alreadyReached bool, err error)
+// statusLister abstracts EntityClient's FetchAllActiveSLAStatuses for
+// testability.
+type statusLister interface {
+	FetchAllActiveSLAStatuses(ctx context.Context) ([]SLAStatus, error)
 }
 
-// wakeIndex abstracts WakeIndex for testability.
-type wakeIndex interface {
-	AddWake(ctx context.Context, member string, at time.Time) error
-	RemoveWake(ctx context.Context, member string) error
-	DueMembers(ctx context.Context, now time.Time) ([]string, error)
+// tierStore abstracts TierStore for testability.
+type tierStore interface {
+	GetTier(ctx context.Context, caseID, clockType string) (tier int, found bool, err error)
+	SetTier(ctx context.Context, caseID, clockType string, tier int) error
+	ClaimTier(ctx context.Context, caseID, clockType string, tier int) (claimed bool, err error)
+	ReleaseTier(ctx context.Context, caseID, clockType string, tier int) error
 }
 
 // eventPublisher abstracts eventbus.Producer for testability.
@@ -48,200 +49,217 @@ type eventPublisher interface {
 	Publish(ctx context.Context, key, value []byte) error
 }
 
-// tiers is the fixed set of elapsed-duration percentages this engine tracks
-// per clock — 50%, 75%, 100% of the way from startedAt to dueAt. Not
-// configurable: a real per-severity policy (see events.SLAClockRegisterPayload's
-// doc comment) could one day vary durations, but the three checkpoints
-// within a clock are a fixed part of this engine's own design, ported as-is
-// from the POC.
-var tiers = []string{"50", "75", "100"}
+// chatSender abstracts notifications.GoogleChatClient's SendSLABreachAlert
+// for testability. Signature unchanged from the previous design — the
+// bulk /sla-status response carries every field this alert needs directly,
+// so there's no second per-clock lookup to build it from anymore.
+type chatSender interface {
+	SendSLABreachAlert(ctx context.Context, product, clockType, tier, caseNumber, wso2CaseID, caseTitle, caseType, productName, team, severity, state, openedAt, caseLink string) error
+}
 
-// Engine is the SLA timer engine: Handle registers clocks (the consumer
-// side, wired into its own eventbus.Consumer — see cmd/server/main.go),
-// RunTicker/Tick scan the wake index and publish tier-crossing events.
+// linkResolver abstracts recipientlinks.Resolver's CSMLink for testability
+// — the only method this engine needs from it (unlike
+// internal/dispatch's own, larger linkResolver interface).
+type linkResolver interface {
+	CSMLink(caseID string) string
+}
+
+// tierSequence is the fixed set of elapsed-percentage checkpoints this
+// engine alerts on, in ascending order — not configurable, same as the
+// design this replaced.
+var tierSequence = []int{50, 75, 100}
+
+func tierLabel(tier int) string {
+	return fmt.Sprintf("%d", tier)
+}
+
+// tierForStatus derives the highest checkpoint s currently satisfies from
+// its live businessElapsedPercent — HasBreached is trusted directly for the
+// 100% case rather than re-derived from the percentage alone, matching
+// entity-service's own SLAStatus doc comment on why HasBreached is trusted
+// as-is (ServiceNow's own SLA engine sets it, and it agrees with
+// BusinessElapsedPercent >= 100 in every case checked live).
+func tierForStatus(s SLAStatus) int {
+	switch {
+	case s.HasBreached || s.BusinessElapsedPercent >= 100:
+		return 100
+	case s.BusinessElapsedPercent >= 75:
+		return 75
+	case s.BusinessElapsedPercent >= 50:
+		return 50
+	default:
+		return 0
+	}
+}
+
+// Engine is the SLA breach-alerting engine: RunTicker/Tick periodically poll
+// entity-service's GET /sla-status (see client.go), diff each clock's
+// current tier against the last tier this engine has seen for it (stored in
+// TierStore — see redis.go), and — on a genuine new crossing — send a
+// Google Chat alert directly (see sendBreachAlert; not routed through
+// internal/dispatch) and publish events.TypeSLATierReached.
 type Engine struct {
-	entity entityClock
-	wake   wakeIndex
+	entity statusLister
+	store  tierStore
 	pub    eventPublisher
+	chat   chatSender
+	links  linkResolver
+	// defaultChatProduct is sendBreachAlert's fallback when a clock's own
+	// Product (as returned by /sla-status) is empty — same "publisher
+	// didn't say" fallback reasoning as dispatch.Dispatcher.
+	// defaultChatProduct, reusing the same configured DEFAULT_CHAT_PRODUCT
+	// value (see cmd/server/main.go).
+	defaultChatProduct string
 }
 
 // NewEngine constructs an Engine.
-func NewEngine(entity *EntityClient, wake *WakeIndex, pub *eventbus.Producer) *Engine {
-	return &Engine{entity: entity, wake: wake, pub: pub}
+func NewEngine(entity *EntityClient, store *TierStore, pub *eventbus.Producer, chat *notifications.GoogleChatClient, links *recipientlinks.Resolver, defaultChatProduct string) *Engine {
+	return &Engine{entity: entity, store: store, pub: pub, chat: chat, links: links, defaultChatProduct: defaultChatProduct}
 }
 
-// Handle implements eventbus.Handle for the SLA engine's own consumer group.
-// It shares a topic with events unrelated to this engine (case.*,
-// incident.created, and its own sla.tier_reached output) — anything other
-// than events.TypeSLAClockRegister is silently ignored, not an error,
-// mirroring dispatch.Dispatcher.Handle's own no-op case for these two new
-// types (see dispatch.go).
-func (e *Engine) Handle(ctx context.Context, record eventbus.Record) error {
-	var env events.Envelope
-	if err := json.Unmarshal(record.Value, &env); err != nil {
-		return fmt.Errorf("slaengine: decode envelope: %w", err)
+// Tick polls every currently-active SLA clock and processes each — a failed
+// clock doesn't stop the others; every error is joined and returned so
+// RunTicker can log the whole batch's outcome in one line. Takes no explicit
+// "now": every tier decision comes from each clock's own live
+// businessElapsedPercent (see processStatus), not a comparison against a
+// point in time the way the wake-index design this replaced needed.
+func (e *Engine) Tick(ctx context.Context) error {
+	statuses, err := e.entity.FetchAllActiveSLAStatuses(ctx)
+	if err != nil {
+		return fmt.Errorf("slaengine: fetch active sla statuses: %w", err)
 	}
-	if env.Type != events.TypeSLAClockRegister {
+
+	var errs []error
+	for _, s := range statuses {
+		if err := e.processStatus(ctx, s); err != nil {
+			errs = append(errs, fmt.Errorf("%s/%s: %w", s.CaseID, s.ClockType, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// processStatus diffs one clock's current tier against TierStore's recorded
+// cursor for it and reacts:
+//
+//   - No cursor yet (first time this engine has ever seen this exact
+//     (caseID, clockType) pair, or its cursor expired — see tierTTL):
+//     seed the cursor at the clock's CURRENT tier WITHOUT alerting. This is
+//     deliberate, not an oversight: entity-service's "sla" table already
+//     holds around 120,000 pre-existing in-progress rows the first time
+//     this engine polls after this redesign deploys, most of them already
+//     well past 50%/75% elapsed — alerting for every one of those on first
+//     sight would flood Chat with alerts for SLAs that have been sitting at
+//     that percentage for a long time, not ones that just crossed it. Only
+//     a tier crossed on a SUBSEQUENT poll, relative to this seeded
+//     baseline, is a genuine new crossing worth alerting on.
+//   - Current tier is BELOW the stored cursor: the clock's percentage has
+//     gone backwards since the last poll — entity-service resets an SLA
+//     policy (about 0.5% of clocks have had this happen at least once, per
+//     a live check) or a genuinely new tracking cycle started under the
+//     same case/clock-type. Reseed the cursor at the new, lower tier
+//     without alerting, same reasoning as the no-cursor case: this is a new
+//     cycle, not a regression to warn about.
+//   - Current tier is AT the stored cursor: nothing crossed since the last
+//     poll — no-op.
+//   - Current tier is ABOVE the stored cursor: for every checkpoint
+//     strictly between the stored cursor and the current tier, in
+//     ascending order, atomically claim that tier via TierStore.ClaimTier
+//     (a Redis SETNX) before alerting for it — see ClaimTier's own doc
+//     comment for why a plain read-then-write on the cursor alone isn't
+//     enough: if this service is ever deployed with more than one replica,
+//     two replicas can both read the same stale cursor and both decide to
+//     alert for the same tier at once. Only the replica whose ClaimTier
+//     call actually wins alerts; a losing call just moves on to the next
+//     tier. A failure to alert after winning the claim releases it (so a
+//     later tick — this replica or another — can retry that exact tier
+//     rather than losing it for good), and advances the cursor only after
+//     a tier's alert actually succeeds, so a failure partway through a
+//     multi-tier crossing still keeps whatever alerted successfully and
+//     retries only the remainder on the next Tick.
+//
+// A paused clock (s.IsPaused) is skipped outright: ServiceNow freezes
+// businessElapsedPercent while paused, so there is nothing to cross either
+// way, and skipping avoids a pointless Redis round trip for every paused
+// clock on every poll.
+func (e *Engine) processStatus(ctx context.Context, s SLAStatus) error {
+	if s.IsPaused {
 		return nil
 	}
-	if err := events.Validate(env.EntityID, env.Type, env.Payload); err != nil {
-		return fmt.Errorf("slaengine: invalid payload: %w", err)
+
+	current := tierForStatus(s)
+	last, found, err := e.store.GetTier(ctx, s.CaseID, s.ClockType)
+	if err != nil {
+		return fmt.Errorf("get tier cursor: %w", err)
 	}
 
-	var p events.SLAClockRegisterPayload
-	if err := json.Unmarshal(env.Payload, &p); err != nil {
-		return fmt.Errorf("slaengine: decode sla.clock.register payload: %w", err)
+	if !found {
+		if err := e.store.SetTier(ctx, s.CaseID, s.ClockType, current); err != nil {
+			return fmt.Errorf("seed tier cursor: %w", err)
+		}
+		slog.InfoContext(ctx, "slaengine: seeded sla tier baseline, no alert on first sight", "caseId", s.CaseID, "clockType", s.ClockType, "tier", current)
+		return nil
 	}
-	return e.registerClocks(ctx, p.CaseID, p.Durations)
-}
 
-// registerClocks (re)creates every named clock and its 50/75/100% wake
-// entries — used for both first registration and a re-registration that
-// wipes and rebuilds a clock from scratch (entity-service's RegisterClock
-// endpoint always resets on conflict — see its own doc comment). By the time
-// Handle calls this, events.Validate has already rejected the whole record
-// if any duration in it failed to parse (mirroring this package's own
-// validRecipients: one bad entry fails the whole event, not just that one
-// clock) — the time.ParseDuration re-check below is defensive belt-and-
-// suspenders, not a reachable path through Handle's own call chain.
-func (e *Engine) registerClocks(ctx context.Context, caseID string, durations map[string]string) error {
-	var errs []error
-	for clockType, durStr := range durations {
-		d, err := time.ParseDuration(durStr)
-		if err != nil {
-			slog.ErrorContext(ctx, "slaengine: invalid sla clock duration, skipping", "caseId", caseID, "clockType", clockType, "duration", durStr, "err", err)
-			continue
-		}
-
-		startedAt := time.Now()
-		dueAt := startedAt.Add(d)
-		if err := e.entity.RegisterClock(ctx, caseID, clockType, startedAt, dueAt); err != nil {
-			errs = append(errs, fmt.Errorf("register clock %s/%s: %w", caseID, clockType, err))
-			continue
-		}
-
-		for _, tier := range tiers {
-			at := tierTime(startedAt, d, tier)
-			member := wakeMember(caseID, clockType, tier)
-			if err := e.wake.AddWake(ctx, member, at); err != nil {
-				errs = append(errs, fmt.Errorf("add wake entry %s: %w", member, err))
+	if current < last {
+		// A regression invalidates any claim this engine made for a tier
+		// above the new, lower one — those belonged to a now-superseded
+		// cycle (see the doc comment above). Release them so a later
+		// re-crossing under the new cycle can claim and alert again;
+		// without this, a stale claim from the old cycle would silently
+		// swallow the new cycle's own genuine crossing.
+		for _, tier := range tierSequence {
+			if tier <= current {
+				continue
+			}
+			if err := e.store.ReleaseTier(ctx, s.CaseID, s.ClockType, tier); err != nil {
+				return fmt.Errorf("release tier claim %d after regression: %w", tier, err)
 			}
 		}
-		slog.InfoContext(ctx, "slaengine: registered sla clock", "caseId", caseID, "clockType", clockType, "dueAt", dueAt.Format(time.RFC3339))
-	}
-	return errors.Join(errs...)
-}
-
-// tierTime returns the instant tier is reached, given a clock that started
-// at startedAt and runs for duration d.
-func tierTime(startedAt time.Time, d time.Duration, tier string) time.Time {
-	switch tier {
-	case "50":
-		return startedAt.Add(d / 2)
-	case "75":
-		return startedAt.Add(d * 3 / 4)
-	default: // "100"
-		return startedAt.Add(d)
-	}
-}
-
-// Tick scans the wake index for members due at or before now, and for each:
-// checks the clock isn't paused, records the tier reached (idempotently),
-// publishes events.TypeSLATierReached, and only then removes the wake
-// entry — in that order, so a publish failure leaves the wake entry in
-// place and retries on the next tick instead of silently losing it (the
-// entity-service write already happened and is itself idempotent, so
-// re-attempting it on a retry is harmless).
-//
-// ACCEPTED TRADE-OFF: processDueMember gates publishing on
-// SetTierReachedIfUnset's alreadyReached (skip if some earlier call already
-// claimed the tier) — a deliberate choice, made with eyes open to what it
-// costs. alreadyReached only reports whether the database claim succeeded,
-// not whether a notification was ever actually delivered: if the caller
-// that won the claim then fails to publish (Event Hub rejects the publish,
-// or this process crashes between the database write and the publish
-// call), a later rediscovery of that same tier will see alreadyReached=true
-// and skip publishing — the notification is then permanently lost, not
-// just delayed. That risk is judged acceptable here because a publish
-// failure to Azure Event Hub is rare, and clean, duplicate-free rediscovery
-// matters routinely, not just on the rare occasion a replica races
-// another: a planned (not yet built) fallback for when Redis itself is
-// unreachable — falling back to asking entity-service directly which
-// tiers are overdue — would, once Redis recovers, rediscover whatever
-// stale wake entries survived the outage. Without this gating, every one
-// of those would duplicate-publish on every recovery, not just
-// occasionally; that routine cost is what actually motivated keeping this
-// gating rather than the rare multi-replica race alone.
-//
-// If this trade-off ever stops being acceptable (e.g. Event Hub reliability
-// turns out worse in practice, or this service starts running multiple
-// replicas), the real fix is a durable delivery/outbox state tracked
-// separately from the reached-claim, with a lease or expiry so a failed
-// attempt's slot can still be retried by someone else — not built, and a
-// real addition, not a quick one.
-func (e *Engine) Tick(ctx context.Context, now time.Time) error {
-	members, err := e.wake.DueMembers(ctx, now)
-	if err != nil {
-		return fmt.Errorf("slaengine: scan due members: %w", err)
+		if err := e.store.SetTier(ctx, s.CaseID, s.ClockType, current); err != nil {
+			return fmt.Errorf("reseed tier cursor after regression: %w", err)
+		}
+		slog.InfoContext(ctx, "slaengine: sla clock tier regressed (policy reset or new cycle), rebaselined without alerting", "caseId", s.CaseID, "clockType", s.ClockType, "from", last, "to", current)
+		return nil
 	}
 
-	var errs []error
-	for _, member := range members {
-		if err := e.processDueMember(ctx, member); err != nil {
-			errs = append(errs, err)
+	for _, tier := range tierSequence {
+		if tier <= last || tier > current {
+			continue
+		}
+		claimed, err := e.store.ClaimTier(ctx, s.CaseID, s.ClockType, tier)
+		if err != nil {
+			return fmt.Errorf("claim tier %d: %w", tier, err)
+		}
+		if !claimed {
+			// Some other call already owns this tier — a concurrent
+			// replica, or an earlier attempt that's already alerted for
+			// it. Either way, this call must not alert again; move on to
+			// whatever tier comes next. The cursor is intentionally left
+			// untouched here — the call that actually won the claim
+			// advances it once its own alert succeeds, and this replica
+			// picks up the advanced value on its own next poll.
+			continue
+		}
+		if err := e.alertTier(ctx, s, tier); err != nil {
+			if releaseErr := e.store.ReleaseTier(ctx, s.CaseID, s.ClockType, tier); releaseErr != nil {
+				slog.ErrorContext(ctx, "slaengine: failed to release tier claim after a failed alert, tier may be stuck until it expires", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "err", releaseErr)
+			}
+			return fmt.Errorf("alert tier %d: %w", tier, err)
+		}
+		if err := e.store.SetTier(ctx, s.CaseID, s.ClockType, tier); err != nil {
+			return fmt.Errorf("advance tier cursor to %d: %w", tier, err)
 		}
 	}
-	return errors.Join(errs...)
+	return nil
 }
 
-// processDueMember handles one due wake-index member: checks the clock
-// isn't paused, claims the tier as reached on entity-service, and skips
-// publishing (just drops the wake entry) if that claim reports
-// alreadyReached — see Tick's own doc comment for the trade-off this
-// accepts. Otherwise it publishes events.TypeSLATierReached and only then
-// removes the wake entry, so a publish failure on this specific call
-// leaves the entry in place for the next tick to retry.
-func (e *Engine) processDueMember(ctx context.Context, member string) error {
-	caseID, clockType, tier, ok := parseWakeMember(member)
-	if !ok {
-		slog.ErrorContext(ctx, "slaengine: malformed wake member, dropping", "member", member)
-		return e.wake.RemoveWake(ctx, member)
-	}
-
-	clock, err := e.entity.GetClock(ctx, caseID, clockType)
-	if err != nil {
-		return fmt.Errorf("get clock %s/%s: %w", caseID, clockType, err)
-	}
-	if clock.PausedOn != nil {
-		slog.InfoContext(ctx, "slaengine: clock is paused, dropping wake entry", "caseId", caseID, "clockType", clockType)
-		return e.wake.RemoveWake(ctx, member)
-	}
-
-	reachedAt, alreadyReached, err := e.entity.SetTierReachedIfUnset(ctx, caseID, clockType, tier)
-	if err != nil {
-		return fmt.Errorf("set tier reached %s/%s/%s: %w", caseID, clockType, tier, err)
-	}
-	if alreadyReached {
-		// A deliberate, accepted trade-off — see this function's own doc
-		// comment above for the full reasoning: this skips publishing on
-		// the rare chance that the caller who won the claim already
-		// published but this caller can't tell that from "claimed but
-		// never got to publish." Chosen because a duplicate-free rediscovery
-		// path matters routinely (the planned Redis-outage fallback would
-		// otherwise duplicate on every recovery), while the residual risk
-		// this accepts — a publish to Event Hub failing, or this process
-		// crashing between the database write and the publish call — is
-		// judged rare enough to live with.
-		slog.InfoContext(ctx, "slaengine: tier already reached by another caller, dropping stale wake entry without republishing",
-			"caseId", caseID, "clockType", clockType, "tier", tier, "reachedAt", reachedAt.Format(time.RFC3339))
-		return e.wake.RemoveWake(ctx, member)
-	}
-
-	envelope := events.Envelope{
-		Type:     events.TypeSLATierReached,
-		EntityID: caseID,
-	}
-	payload, err := json.Marshal(events.SLATierReachedPayload{CaseID: caseID, ClockType: clockType, Tier: tier})
+// alertTier publishes events.TypeSLATierReached and sends the Google Chat
+// breach card for one newly-crossed tier — only ever called after
+// processStatus has already won that tier's Redis claim (see ClaimTier),
+// so this function itself needs no additional idempotency of its own.
+func (e *Engine) alertTier(ctx context.Context, s SLAStatus, tier int) error {
+	envelope := events.Envelope{Type: events.TypeSLATierReached, EntityID: s.CaseID}
+	payload, err := json.Marshal(events.SLATierReachedPayload{CaseID: s.CaseID, ClockType: s.ClockType, Tier: tierLabel(tier)})
 	if err != nil {
 		return fmt.Errorf("encode sla.tier_reached payload: %w", err)
 	}
@@ -250,21 +268,50 @@ func (e *Engine) processDueMember(ctx context.Context, member string) error {
 	if err != nil {
 		return fmt.Errorf("encode sla.tier_reached envelope: %w", err)
 	}
-
-	if err := e.pub.Publish(ctx, []byte(caseID), body); err != nil {
-		return fmt.Errorf("publish sla.tier_reached %s/%s/%s: %w", caseID, clockType, tier, err)
+	if err := e.pub.Publish(ctx, []byte(s.CaseID), body); err != nil {
+		return fmt.Errorf("publish sla.tier_reached: %w", err)
 	}
 
-	if err := e.wake.RemoveWake(ctx, member); err != nil {
-		return fmt.Errorf("remove wake entry %s after successful publish (at reachedAt %s): %w", member, reachedAt.Format(time.RFC3339), err)
+	if err := e.sendBreachAlert(ctx, s, tier); err != nil {
+		return fmt.Errorf("send sla breach alert: %w", err)
 	}
-	slog.InfoContext(ctx, "slaengine: sla tier reached", "caseId", caseID, "clockType", clockType, "tier", tier)
+	slog.InfoContext(ctx, "slaengine: sla tier reached", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier)
 	return nil
+}
+
+// sendBreachAlert builds and sends the Google Chat breach card for one tier
+// crossing, using s's own display fields — the bulk /sla-status response
+// already carries all eight, so no second lookup is needed here (unlike the
+// old per-clock GetClock design). product falls back to
+// e.defaultChatProduct when s's own Product is empty, same reasoning as
+// dispatch.Dispatcher's own Product fallback.
+func (e *Engine) sendBreachAlert(ctx context.Context, s SLAStatus, tier int) error {
+	product := s.Product
+	if product == "" {
+		product = e.defaultChatProduct
+	}
+	if product == "" {
+		slog.WarnContext(ctx, "slaengine: sla breach alert not sent, no Google Chat product configured", "caseId", s.CaseID, "clockType", s.ClockType)
+		return nil
+	}
+	caseNumber := s.CaseNumber
+	if caseNumber == "" {
+		// s.CaseNumber can be empty for a work item entity-service's own
+		// case-like joins don't cover — fall back to the raw case id so the
+		// card still has something to show rather than a blank "Case ID :"
+		// line.
+		caseNumber = s.CaseID
+	}
+	var openedAt string
+	if s.StartedOn != nil && !s.StartedOn.IsZero() {
+		openedAt = s.StartedOn.UTC().Format("2006-01-02 15:04:05") + " (UTC)"
+	}
+	return e.chat.SendSLABreachAlert(ctx, product, s.ClockType, tierLabel(tier), caseNumber, s.WSO2CaseID, s.CaseTitle, s.CaseType, s.Product, s.Team, s.Priority, s.State, openedAt, e.links.CSMLink(s.CaseID))
 }
 
 // RunTicker calls Tick every interval until ctx is done. Run from its own
 // goroutine (see cmd/server/main.go); a failed Tick is logged, not fatal —
-// the next tick gets another chance at whatever was due.
+// the next tick gets another chance at whatever needs (re)checking.
 func (e *Engine) RunTicker(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -273,21 +320,9 @@ func (e *Engine) RunTicker(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := e.Tick(ctx, time.Now()); err != nil {
+			if err := e.Tick(ctx); err != nil {
 				slog.ErrorContext(ctx, "slaengine: tick failed", "err", err)
 			}
 		}
 	}
-}
-
-func wakeMember(caseID, clockType, tier string) string {
-	return caseID + "|" + clockType + "|" + tier
-}
-
-func parseWakeMember(member string) (caseID, clockType, tier string, ok bool) {
-	parts := strings.Split(member, "|")
-	if len(parts) != 3 {
-		return "", "", "", false
-	}
-	return parts[0], parts[1], parts[2], true
 }
