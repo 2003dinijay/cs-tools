@@ -44,6 +44,14 @@ function formatDate(dateStr: string | null | undefined): string {
   return new Date(dateStr).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
+// The backend has no dedicated "healthy review" record type — a healthy
+// review is just a risk-history row the backend inserts with this exact
+// literal as its openedComment (csm-portal-backend's
+// internal/risk/health.go, MarkProjectHealthy). Named here so the six
+// comparisons below can't drift out of sync with each other on a wording
+// change.
+const HEALTHY_REVIEW_COMMENT = "Marked as healthy";
+
 export default function SplReviewStatusCell({
   project, accountSysId, healthStatus, onStatusChanged, onAddActionItem,
 }: SplReviewStatusCellProps) {
@@ -106,6 +114,7 @@ export default function SplReviewStatusCell({
       setCloseRiskOpen(false);
       setCloseRiskComment("");
       setPostCloseOpen(true);
+      onStatusChanged();
     } catch (err) {
       showError(closeProjectRiskErrorMessage(err, "Failed to close risk."));
     }
@@ -120,21 +129,21 @@ export default function SplReviewStatusCell({
     setHistoryOpen(true);
   };
 
-  const riskCycleCount = historyData ? historyData.filter((r) => r.openedComment !== "Marked as healthy").length : 0;
-  const healthyReviewCount = historyData ? historyData.filter((r) => r.openedComment === "Marked as healthy").length : 0;
+  const riskCycleCount = historyData ? historyData.filter((r) => r.openedComment !== HEALTHY_REVIEW_COMMENT).length : 0;
+  const healthyReviewCount = historyData ? historyData.filter((r) => r.openedComment === HEALTHY_REVIEW_COMMENT).length : 0;
 
   const riskNumberMap = new Map<number, number>();
   if (historyData) {
     const sortedAsc = [...historyData]
-      .filter((r) => r.openedComment !== "Marked as healthy")
+      .filter((r) => r.openedComment !== HEALTHY_REVIEW_COMMENT)
       .sort((a, b) => new Date(a.openedOn).getTime() - new Date(b.openedOn).getTime());
     sortedAsc.forEach((r, idx) => riskNumberMap.set(r.id, idx + 1));
   }
 
   const displayHistory = historyData
     ? [...historyData].sort((a, b) => {
-        const aIsOpen = a.status === "open" && a.openedComment !== "Marked as healthy";
-        const bIsOpen = b.status === "open" && b.openedComment !== "Marked as healthy";
+        const aIsOpen = a.status === "open" && a.openedComment !== HEALTHY_REVIEW_COMMENT;
+        const bIsOpen = b.status === "open" && b.openedComment !== HEALTHY_REVIEW_COMMENT;
         if (aIsOpen && !bIsOpen) return -1;
         if (!aIsOpen && bIsOpen) return 1;
         return new Date(b.openedOn).getTime() - new Date(a.openedOn).getTime();
@@ -297,7 +306,7 @@ export default function SplReviewStatusCell({
           {!historyLoading && historyData && historyData.length > 0 && (
             <Box sx={{ pt: 1 }}>
               {displayHistory.map((risk, idx, arr) => {
-                const isHealthyRecord = risk.openedComment === "Marked as healthy";
+                const isHealthyRecord = risk.openedComment === HEALTHY_REVIEW_COMMENT;
                 const isLast = idx === arr.length - 1;
                 const dotColor = isHealthyRecord ? theme.palette.success.main : theme.palette.error.main;
                 return (
