@@ -589,16 +589,30 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// PostgresAuthoritative reports whether PostgreSQL is the system of record:
+// DATA_SOURCE=postgres, or postgres-servicenow-dual-write, which serves every
+// read and write from PostgreSQL too and only mirrors some writes to
+// ServiceNow afterwards.
+//
+// The customer onboarding features (the Salesforce membership ingest, the
+// portal membership writes, first-access registration) need exactly this and
+// nothing more. Memberships never go through the ServiceNow mirror: ServiceNow
+// gets them from Salesforce, through its own Service Bus subscription, so it
+// stays current in either mode.
+func (c *Config) PostgresAuthoritative() bool {
+	return c.DataSource == DataSourcePostgres || c.DataSource == DataSourcePostgresServiceNowDualWrite
+}
+
 // HasPortalMembershipWrites reports whether the portal-driven membership
-// write endpoints may be registered: the flag is on, the data source is
-// Postgres (the write is a Postgres transaction — there is no ServiceNow
+// write endpoints may be registered: the flag is on, PostgreSQL is
+// authoritative (the write is a Postgres transaction — there is no ServiceNow
 // equivalent), and the REST sales/sales-entity-service connection is
 // complete, since half of every one of those writes goes to Salesforce.
 // routes.go ANDs this with db != nil, the same way every other
 // Postgres-only feature set is gated.
 func (c *Config) HasPortalMembershipWrites() bool {
 	return c.CSMMigrationPortalWritesEnabled &&
-		c.DataSource == DataSourcePostgres &&
+		c.PostgresAuthoritative() &&
 		c.SalesEntityConfigured()
 }
 

@@ -110,12 +110,10 @@ function pickActiveId(pathname: string): string {
 /**
  * Active id for the Sales/SA view's flat nav (see the "sales-sa" branch
  * below): the matched `spl.*` node, or "spl.accounts" (that view's own
- * landing page in this PR — see RootLanding in App.tsx) for any route this
- * nav has no entry for. This PR (Schedule/Usage Metrics/User Scan, split
- * out of the full SPL port to stay under CodeRabbit's 100-file limit) has
- * no "spl.cases" nav node yet -- that lands in a sibling PR -- so falling
- * back to it here would leave the rail with nothing highlighted, e.g. on
- * /spl/projects/:id/sla-report/:sysId or the bare "/" redirect.
+ * landing page — see RootLanding in App.tsx) for any route this nav has no
+ * entry for, e.g. /spl/projects/:id/sla-report/:sysId or the bare "/"
+ * redirect. Cases (a still-unmerged sibling PR) would otherwise leave the
+ * rail with nothing highlighted.
  */
 function pickSplActiveId(pathname: string): string {
   const match = navNodeMatchForPath(pathname);

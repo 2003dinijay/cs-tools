@@ -233,7 +233,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// block builds, so all three are wired together rather than side by side.
 	var membershipIngestSvc service.SalesforceEventService
 	var salesEntityClient *salesentity.Client
-	if db != nil && cfg.DataSource == config.DataSourcePostgres && cfg.SalesEntityConfigured() {
+	// PostgresAuthoritative, not DATA_SOURCE=postgres alone: the dual-write
+	// mode serves memberships from PostgreSQL too, and memberships reach
+	// ServiceNow from Salesforce directly, so nothing here needs its mirror.
+	if db != nil && cfg.PostgresAuthoritative() && cfg.SalesEntityConfigured() {
 		salesEntityClient = salesentity.New(cfg.SalesEntityBaseURL, salesentity.ClientCredentialsConfig{
 			TokenURL:     cfg.SalesEntityTokenURL,
 			ClientID:     cfg.SalesEntityClientID,
@@ -285,10 +288,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 
 	// The portal-driven membership writes. Gated on a pool AND
-	// cfg.HasPortalMembershipWrites() -- the flag, the Postgres data source
+	// cfg.HasPortalMembershipWrites() -- the flag, a Postgres-authoritative data source
 	// and a complete sales-entity-service connection -- because every one of
 	// these writes is half a Postgres transaction and half a Salesforce
-	// call. Off by default: nil handler means the four routes below are
+	// call. Off by default: nil handler means the routes below are
 	// never registered, so a portal built against them fails loudly with a
 	// 404 rather than writing one system and not the other.
 	var projectMembershipHandler *handler.ProjectMembershipHandler
@@ -300,6 +303,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			Publisher:   projectEventPublisher,
 			Failures:    eventPublishFailureSvc,
 			Access:      accessSvc,
+			Invitations: service.NewInvitationValidator(salesEntityClient, repository.NewAccountPartnerRepository(db)),
 		}))
 	}
 
@@ -532,7 +536,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var caseAttachmentOverrideSvc service.CaseService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
-		pgCaseFallbackSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
+		pgCaseFallbackSvc := service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo)
 		activeCaseSvc = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, pgCaseFallbackSvc, eventPublisher, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, slaEngineSvc)
 	case config.DataSourcePostgresServiceNowDualWrite:
 		// Pilot: case CREATE, and UPDATE's WorkState field only.
@@ -582,7 +586,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// and it is caseAttachmentOverrideSvc below, for case attachments
 		// specifically.
 		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, slaEngineSvc)
-		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, snWritebackDispatcher, snCaseMirrorSvc)
+		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo, snWritebackDispatcher, snCaseMirrorSvc)
 		// Case ATTACHMENTS are ServiceNow-only in this mode, permanently —
 		// unlike case metadata (CREATE/UPDATE above), not a pilot scope
 		// decision but a hard requirement: the sftpgo-backed Postgres
@@ -606,7 +610,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// confirm), not something this override introduces.
 		caseAttachmentOverrideSvc = snCaseMirrorSvc
 	default:
-		activeCaseSvc = service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc)
+		activeCaseSvc = service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo)
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MTrustedActorEmails)
 	if db != nil {
@@ -1094,6 +1098,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// keys a membership; {contactId} on the GET above is a user id, and
 		// the two never collide because the methods differ.
 		mux.HandleFunc("POST /projects/{id}/contacts", projectMembershipHandler.InviteProjectContact)
+		// The invitation's dry run. The literal "validate" segment wins over
+		// {email} by specificity, and no POST is registered on {email} anyway.
+		mux.HandleFunc("POST /projects/{id}/contacts/validate", projectMembershipHandler.ValidateProjectContact)
 		mux.HandleFunc("PATCH /projects/{id}/contacts/{email}", projectMembershipHandler.UpdateProjectContactRoles)
 		mux.HandleFunc("DELETE /projects/{id}/contacts/{email}", projectMembershipHandler.DeactivateProjectContact)
 		mux.HandleFunc("POST /projects/{id}/contacts/{email}/resend-invitation", projectMembershipHandler.ResendProjectContactInvitation)

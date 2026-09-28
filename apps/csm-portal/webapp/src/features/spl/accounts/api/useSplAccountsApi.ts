@@ -148,18 +148,22 @@ export function useSearchAccounts(params: {
     queryKey: ["accounts-search", email ?? "", phrase ?? "", offset, limit, active],
     queryFn: async () => {
       const body: Record<string, unknown> = {
-        filters: { searchQuery: phrase ?? "", ownerEmail: email ?? "" },
+        filters: {
+          searchQuery: phrase ?? "",
+          ownerEmail: email ?? "",
+          // Server-side filter (SearchAccountsFilters.active in
+          // entity-service's openapi.yaml, applied in account_repo.go) --
+          // only sent for Active Accounts mode, same as the request omits
+          // pod/classification when unused. Filtering client-side instead
+          // (as this used to) applies AFTER the server's own offset/limit,
+          // so a page containing inactive accounts would silently return
+          // fewer than a full page and could stall "next page" navigation.
+          ...(active ? { active: true } : {}),
+        },
         pagination: { offset, limit },
       };
       const resp = await api.post<typeof body, EntitySearchAccountsResponse>("/accounts/search", body);
-      const accounts = (resp?.accounts ?? []).map(toAccountDetails);
-      // "active" has no entity-service search filter (no server-side
-      // concept yet) -- filtered client-side instead, same visible result
-      // as before for this page size. A documented limitation: an
-      // inactive account on the current page still counts toward the
-      // page's own offset/limit math, so "Active accounts" can show fewer
-      // than a full page near the end of a large list.
-      return active ? accounts.filter((a) => !a._deactivationDate) : accounts;
+      return (resp?.accounts ?? []).map(toAccountDetails);
     },
     enabled,
   });

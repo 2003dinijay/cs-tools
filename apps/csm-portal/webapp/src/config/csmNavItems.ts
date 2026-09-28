@@ -31,6 +31,7 @@ import {
   FolderKanban,
   GitPullRequest,
   Headset,
+  HeartPulse,
   KeyRound,
   Layers,
   LifeBuoy,
@@ -386,11 +387,12 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     label: "Support Portal Lite",
     href: "/spl/accounts",
     icon: Layers,
-    // Cases and Customer health land in their own follow-up PRs (this port
-    // was split by domain to stay under CodeRabbit's 100-file review
-    // limit) -- each adds its own entry to this list, and Cases' PR should
-    // also move href back to /spl/cases (SPL's real landing page; see
-    // App.tsx's RootLanding for the matching redirect).
+    // Cases lands in its own follow-up PR (feat/spl-merge-2-cases; this
+    // port was split by domain to stay under CodeRabbit's 100-file review
+    // limit) -- that PR also moves href back to /spl/cases (SPL's real
+    // landing page; see App.tsx's RootLanding for the matching redirect).
+    // Customer health and Team schedule/User scan/Usage metrics (this PR)
+    // are already in below.
     children: [
       {
         id: "spl.accounts",
@@ -416,6 +418,12 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
         label: "Usage metrics",
         href: "/spl/usage-metrics",
         icon: BarChart3,
+      },
+      {
+        id: "spl.customer-health",
+        label: "Customer health",
+        href: "/spl/customer-health",
+        icon: HeartPulse,
       },
     ],
   },
