@@ -30,6 +30,8 @@ import (
 // tested now, independent of that. Whatever eventually resolves this from
 // the real API is expected to populate it.
 type dueInvoice struct {
+	// ID is what the notice shows as "Invoice Id": the invoice number (its
+	// name), not the internal record ID. See invoiceNumber.
 	ID          string
 	Opportunity string
 	// SfID is the invoice's own Salesforce record ID, for the internal

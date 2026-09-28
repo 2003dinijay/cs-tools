@@ -79,7 +79,7 @@ func buildInvoiceCascade(ctx context.Context, reader entityReader, updater proje
 	}
 
 	resolvedForNotice := dueInvoice{
-		ID:          invoice.ID,
+		ID:          invoice.Number,
 		Opportunity: invoice.Opportunity,
 		SfID:        invoice.SfID,
 		DueDate:     invoice.DueDate,

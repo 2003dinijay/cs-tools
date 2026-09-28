@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -29,7 +30,11 @@ import (
 // eligible ones), plus its opportunity's EULA version, which is what
 // closure.DecideInvoice/InvoiceSuspendDate need alongside it.
 type resolvedInvoice struct {
-	ID                 string
+	ID string
+	// Number is what the notice shows as "Invoice Id": the invoice's name
+	// (ServiceNow u_name, e.g. US20268838), as legacy shows it. Falls back to
+	// ID, the internal record ID, only when the invoice has no name.
+	Number             string
 	Opportunity        string
 	InvoiceDate        time.Time
 	DueDate            time.Time
@@ -108,6 +113,7 @@ func resolveDueInvoice(ctx context.Context, reader entityReader, proj project) (
 
 			candidate := &resolvedInvoice{
 				ID:                 inv.ID,
+				Number:             invoiceNumber(inv),
 				Opportunity:        oppName,
 				InvoiceDate:        invoiceDate,
 				DueDate:            dueDate,
@@ -250,4 +256,16 @@ func parseEULAVersionDecimal(s *string) (float64, error) {
 		return 0, nil
 	}
 	return strconv.ParseFloat(*s, 64)
+}
+
+// invoiceNumber returns the value the notice shows as "Invoice Id". Legacy
+// shows the invoice's name (ServiceNow u_name, e.g. US20268838). The API's
+// "id" is an internal record ID nobody recognises, and the Salesforce ID is
+// used only for the "Open in Salesforce" link. Falls back to the record ID
+// only when there's no name, so the field is never blank.
+func invoiceNumber(inv invoiceDTO) string {
+	if inv.Name != nil && strings.TrimSpace(*inv.Name) != "" {
+		return strings.TrimSpace(*inv.Name)
+	}
+	return inv.ID
 }

@@ -457,6 +457,17 @@ Project Name link only appears in `TEST_PROJECT_ID`-scoped runs until the
 API populates it. No change is needed here when it does: `project.SfID`
 already reads the field from both endpoints.
 
+**"Invoice Id" shows the invoice number, not a record ID.** The internal
+invoice notice's "Invoice Id:" field shows the invoice's `name` (ServiceNow
+`u_name`, e.g. `US20268838`), which is what the real legacy email shows. The
+API's `id` is an internal record ID (a UUID) that nobody recognises. The
+invoice's Salesforce ID (ServiceNow `u_id`, the API's `sfId`) is used only
+for the "Open in Salesforce" link, as in the reference email. Confirmed by
+comparing a real staging invoice in ServiceNow: `u_name` = `2166`, `u_id` =
+`a0IE200000AJuOvMAL`. `invoiceNumber` (`invoice_resolve.go`) falls back to
+the record ID only when an invoice has no name. The field showed the UUID
+until 2026-09-28.
+
 **"Open in Salesforce" (invoice notices, internal only):** the real
 reference email also has a separate "Open in Salesforce" link inside the
 invoice box, pointing at the *invoice's own* Salesforce record (an `a0I…`
