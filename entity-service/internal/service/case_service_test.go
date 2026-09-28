@@ -3573,6 +3573,95 @@ func TestCaseService_UpdateCase_WatchList_KeepsAccountDefaultsEvenWhenOmitted(t 
 	}
 }
 
+// TestCaseService_UpdateCase_WatchList_SubmittedStakeholderSkipsValidation is
+// the regression test for a CodeRabbit finding on this same change: the
+// frontend's edit flow always resubmits the case's *entire* current watch
+// list, including its already-present locked stakeholders, alongside
+// whatever the caller actually changed -- so a stakeholder id is normally
+// present IN userIDs, not just omitted from it (the sibling
+// KeepsAccountDefaultsEvenWhenOmitted test above only covers the omitted
+// case). Validating a submitted stakeholder id against project_contact would
+// reject the very people this system itself always adds, breaking a normal
+// edit essentially every time.
+func TestCaseService_UpdateCase_WatchList_SubmittedStakeholderSkipsValidation(t *testing.T) {
+	const projectID = "6fa0b42d-1bfa-a694-a002-c9d3604bcb77"
+	const submittedID = "11111111-1111-1111-1111-111111111111"
+	const stakeholderID = "22222222-2222-2222-2222-222222222222"
+	userIDs := []string{submittedID, stakeholderID}
+
+	var setWatchListUserIDs []string
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ProjectDetails: &domain.EntityRef{ID: projectID}}, nil
+		},
+		accountDefaultWatcherIDs: func(context.Context, string) ([]string, error) {
+			return []string{stakeholderID}, nil
+		},
+		setCaseWatchList: func(_ context.Context, _ string, ids []string, _ string) ([]domain.WatchListUser, time.Time, error) {
+			setWatchListUserIDs = ids
+			return nil, time.Now(), nil
+		},
+	}
+	var checkedIDs []string
+	contactRepo := &stubProjectContactRepo{
+		getProjectContactByUserID: func(_ context.Context, _ string, userID, _ string) (repository.ProjectContactRow, error) {
+			checkedIDs = append(checkedIDs, userID)
+			return repository.ProjectContactRow{Email: "member@example.com", RegistrationState: "REGISTERED"}, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{getUserByEmail: func(context.Context, string) (domain.User, error) {
+		return domain.User{ID: testDeploymentUUID, Email: "jane.doe@example.com"}, nil
+	}}, nil, alwaysUnrestrictedAccess{}, contactRepo)
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	req := domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &userIDs}
+	if _, err := svc.UpdateCase(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(setWatchListUserIDs) != 2 {
+		t.Fatalf("SetCaseWatchList userIDs = %v, want both ids (no duplication)", setWatchListUserIDs)
+	}
+	if len(checkedIDs) != 1 || checkedIDs[0] != submittedID {
+		t.Errorf("project-membership check ran against %v, want only %q (the stakeholder must be exempt even when it's part of the submission)", checkedIDs, submittedID)
+	}
+}
+
+// TestCaseService_UpdateCase_WatchList_FailsWhenAccountDefaultLookupFails is
+// the regression test for a CodeRabbit finding on this same change: a failed
+// AccountDefaultWatcherIDs lookup used to fall back to finalIDs = userIDs and
+// let SetCaseWatchList's full-replace write proceed anyway -- silently
+// dropping any existing account stakeholder from the case's watch list
+// entirely, on a transient lookup error, while still reporting success. The
+// whole update must fail instead, and SetCaseWatchList must never run.
+func TestCaseService_UpdateCase_WatchList_FailsWhenAccountDefaultLookupFails(t *testing.T) {
+	const projectID = "6fa0b42d-1bfa-a694-a002-c9d3604bcb77"
+	userIDs := []string{"11111111-1111-1111-1111-111111111111"}
+
+	setCaseWatchListCalled := false
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ProjectDetails: &domain.EntityRef{ID: projectID}}, nil
+		},
+		accountDefaultWatcherIDs: func(context.Context, string) ([]string, error) {
+			return nil, errors.New("boom")
+		},
+		setCaseWatchList: func(context.Context, string, []string, string) ([]domain.WatchListUser, time.Time, error) {
+			setCaseWatchListCalled = true
+			return nil, time.Now(), nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, &stubProjectContactRepo{})
+
+	req := domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &userIDs}
+	if _, err := svc.UpdateCase(context.Background(), req); err == nil {
+		t.Fatal("expected an error when the account default watcher lookup fails, got nil")
+	}
+	if setCaseWatchListCalled {
+		t.Error("SetCaseWatchList was called despite a failed account default watcher lookup -- this would have silently dropped any existing stakeholder from the case")
+	}
+}
+
 // TestCaseService_UpdateCase_WatchList_SkipsCheckWhenNoProjectLinked confirms
 // a case with no project linked (ProjectDetails nil, a documented real
 // state) never consults projectContactRepo at all -- there is nothing to

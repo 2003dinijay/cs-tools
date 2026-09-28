@@ -776,17 +776,21 @@ export default function CaseDetailsDetailsPanel({
                     // tabIndex is overridden to 0 (MUI's own getTagProps
                     // defaults a chip with no onDelete to -1, i.e.
                     // unreachable by keyboard) so a keyboard/screen-reader
-                    // user can actually focus this chip and hear the
-                    // Tooltip's title via its default aria-describedby wiring
-                    // -- mouse-only hover was the only way to learn why this
-                    // one can't be removed. The chip's own accessible name
-                    // still comes from `label` (option.label, the person's
-                    // name); the tooltip only adds a description alongside
-                    // it, never replaces it.
+                    // user can actually focus this chip and hear why it
+                    // can't be removed -- mouse-only hover was previously the
+                    // only way to learn that. By default MUI's Tooltip uses
+                    // `title` as the wrapped child's accessible *label*
+                    // (aria-label), which would replace the chip's real name;
+                    // `describeChild` switches it to aria-describedby instead,
+                    // so the tooltip only adds a description alongside the
+                    // name. That means the chip needs its own explicit
+                    // aria-label (option.label, the person's name) since the
+                    // tooltip no longer supplies one.
                     return (
                       <Tooltip
                         key={key}
                         title="Automatically watching as an account stakeholder — cannot be removed"
+                        describeChild
                       >
                         <Chip
                           label={option.label}
@@ -794,6 +798,7 @@ export default function CaseDetailsDetailsPanel({
                           icon={<Lock size={12} aria-hidden />}
                           {...tagProps}
                           tabIndex={0}
+                          aria-label={option.label}
                           sx={{ opacity: 0.6, "& .MuiChip-icon": { ml: "6px" } }}
                         />
                       </Tooltip>

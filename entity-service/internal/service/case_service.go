@@ -1207,24 +1207,48 @@ func (s *caseService) updateCaseWatchList(ctx context.Context, req domain.Update
 		return domain.UpdateCaseResponse{}, err
 	}
 
-	if err := s.validateWatchListProjectMembership(ctx, cv, userIDs); err != nil {
+	// Resolved before validation, not after: a caller re-submitting the
+	// case's own current watch list (the normal editing flow -- the
+	// frontend's pendingWatchList always includes the already-present locked
+	// stakeholders alongside whatever the customer actually changed) would
+	// otherwise have those stakeholder ids run through
+	// validateWatchListProjectMembership too. They're WSO2-internal roles,
+	// not customer-side project contacts (see that function's own doc
+	// comment), so validating them would reject a perfectly normal edit the
+	// moment it happens to include one -- which, given the frontend's own
+	// behavior, is effectively always.
+	var defaultIDs []string
+	if cv.ProjectDetails != nil {
+		defaultIDs, err = s.repo.AccountDefaultWatcherIDs(ctx, cv.ProjectDetails.ID)
+		if err != nil {
+			// Unlike addAccountDefaultWatchers' own create-time equivalent
+			// (a pure addition, safe to skip on failure), this lookup also
+			// decides what NOT to validate and what floor SetCaseWatchList's
+			// full-replace write must preserve below. Proceeding on a failed
+			// lookup would validate stakeholder ids that should have been
+			// exempt, or -- worse -- let the replace silently drop the
+			// account's existing stakeholders from the case entirely. Fail
+			// the whole update instead; the caller can retry.
+			return domain.UpdateCaseResponse{}, fmt.Errorf("update case watch list: resolving account default watchers: %w", err)
+		}
+	}
+
+	defaultSet := make(map[string]struct{}, len(defaultIDs))
+	for _, id := range defaultIDs {
+		defaultSet[id] = struct{}{}
+	}
+	validationIDs := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		if _, isDefault := defaultSet[id]; !isDefault {
+			validationIDs = append(validationIDs, id)
+		}
+	}
+
+	if err := s.validateWatchListProjectMembership(ctx, cv, validationIDs); err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
 
-	finalIDs := userIDs
-	if cv.ProjectDetails != nil {
-		defaultIDs, err := s.repo.AccountDefaultWatcherIDs(ctx, cv.ProjectDetails.ID)
-		if err != nil {
-			// Best-effort, same posture as addAccountDefaultWatchers' own
-			// create-time equivalent: a lookup hiccup must not block a
-			// watch-list write the caller is otherwise entitled to make, it
-			// just means the mandatory-stakeholder floor isn't enforced on
-			// this particular call.
-			slog.ErrorContext(ctx, "update case watch list: resolving account default watchers failed", "caseId", req.ID, "error", err)
-		} else {
-			finalIDs = mergeUnique(userIDs, defaultIDs)
-		}
-	}
+	finalIDs := mergeUnique(userIDs, defaultIDs)
 
 	actor, err := s.resolveActor(ctx)
 	if err != nil {
