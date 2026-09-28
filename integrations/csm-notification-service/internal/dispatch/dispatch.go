@@ -521,31 +521,37 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 		}
 	}
 
-	chatOwned := d.claim(chatKey)
-	if chatOwned {
-		product := p.Product
-		if product == "" {
-			product = d.defaultChatProduct
-		}
-		if product == "" {
-			slog.WarnContext(ctx, "dispatch: no product for case.created (payload and DEFAULT_CHAT_PRODUCT both empty); skipping Google Chat alert")
-		} else {
-			caseLink := d.links.CSMLink(p.CaseID)
-			title := truncateTitle(p.CaseTitle, maxChatTitleLength)
-			var chatErr error
-			if p.CaseType == "SECURITY_REPORT_ANALYSIS" {
-				// A dedicated card: severity is never set for this case
-				// type (see entity-service's own validateCreateCaseRequest),
-				// so SendCaseCreatedAlert's severity line wouldn't apply —
-				// see SendSecurityReportAnalysisAlert's own doc comment.
-				chatErr = d.googleChat.SendSecurityReportAnalysisAlert(ctx, product, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, p.Product, title, p.Team, caseLink)
-			} else {
-				severityLabel, severityColor := severityLabelAndColor(p.Priority)
-				chatErr = d.googleChat.SendCaseCreatedAlert(ctx, product, severityLabel, severityColor, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, p.Product, title, p.Team, caseLink)
+	// Chat is deliberately skipped for entity-service's four non-"case"
+	// types (engagement, service_request, security_report_analysis,
+	// announcement) — explicit product direction: those types notify their
+	// audience by email only. An exclude-list rather than an include-list
+	// on purpose: CaseType is a freeform display string in general (only
+	// entity-service's own real payloads use this exact UPPER_SNAKE
+	// vocabulary), so anything else — including "CASE" itself, an empty
+	// value, or an unrecognized one — stays chat-eligible, matching this
+	// file's own established "don't suppress on an unrecognized value"
+	// convention (see e.g. the unmatched-product Chat-space fallback).
+	// chatKey is simply never claimed when skipped; forgetting an unclaimed
+	// key below is a harmless no-op (see Dispatcher.forget), so nothing
+	// else in this function needs to change.
+	if !isNonCaseCaseType(p.CaseType) {
+		chatOwned := d.claim(chatKey)
+		if chatOwned {
+			product := p.Product
+			if product == "" {
+				product = d.defaultChatProduct
 			}
-			if chatErr != nil {
-				errs = append(errs, chatErr)
-				d.forget(chatKey)
+			if product == "" {
+				slog.WarnContext(ctx, "dispatch: no product for case.created (payload and DEFAULT_CHAT_PRODUCT both empty); skipping Google Chat alert")
+			} else {
+				caseLink := d.links.CSMLink(p.CaseID)
+				title := truncateTitle(p.CaseTitle, maxChatTitleLength)
+				severityLabel, severityColor := severityLabelAndColor(p.Priority)
+				chatErr := d.googleChat.SendCaseCreatedAlert(ctx, product, severityLabel, severityColor, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, p.Product, title, p.Team, caseLink)
+				if chatErr != nil {
+					errs = append(errs, chatErr)
+					d.forget(chatKey)
+				}
 			}
 		}
 	}
@@ -985,6 +991,25 @@ var severityDisplay = map[string]struct{ label, color string }{
 	"HIGH":   {"High (P2)", "#F97316"},
 	"MEDIUM": {"Medium (P3)", "#7C3AED"},
 	"LOW":    {"Low (P4)", "#6B7280"},
+}
+
+// nonCaseCaseTypes are entity-service's own case.created CaseType values
+// (strings.ToUpper(req.Type)) for the four types that never carry a
+// severity — engagement/service_request/security_report_analysis/
+// announcement, see that service's own CLAUDE.md — for which
+// handleCaseCreated skips the Google Chat alert and notifies by email only.
+var nonCaseCaseTypes = map[string]bool{
+	"ENGAGEMENT":               true,
+	"SERVICE_REQUEST":          true,
+	"SECURITY_REPORT_ANALYSIS": true,
+	"ANNOUNCEMENT":             true,
+}
+
+// isNonCaseCaseType reports whether caseType is one of the four types Chat
+// is skipped for. See handleCaseCreated's own call site comment for why
+// this is an exclude-list, not an include-list.
+func isNonCaseCaseType(caseType string) bool {
+	return nonCaseCaseTypes[caseType]
 }
 
 // severityLabelAndColor resolves severity to its Chat display label/color
