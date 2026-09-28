@@ -25,6 +25,7 @@ import {
   useSearchParams,
 } from "react-router";
 import AuthGuard from "@layouts/AuthGuard";
+import { plgRoutes } from "@features/plg/PlgRoutes";
 import {
   LegacyQueryTabRedirect,
   SectionIndexRedirect,
@@ -93,6 +94,7 @@ import CsmCustomersLayout from "@features/csm-customers/pages/CsmCustomersLayout
 import CsmAccountsPage from "@features/csm-accounts/pages/CsmAccountsPage";
 import CsmAccountDetailPage from "@features/csm-accounts/pages/CsmAccountDetailPage";
 import CsmProjectsPage from "@features/csm-projects/pages/CsmProjectsPage";
+import CsmTeamSchedulePage from "@features/csm-team-schedule/pages/CsmTeamSchedulePage";
 import CsmProjectDetailPage from "@features/csm-projects/pages/CsmProjectDetailPage";
 import ConversationDetailPage from "@features/csm-projects/pages/ConversationDetailPage";
 import CsmUpdatesPage from "@features/updates/pages/CsmUpdatesPage";
@@ -273,6 +275,12 @@ export default function App(): JSX.Element {
                 <Route element={<FeatureRouteGuard />}>
                   <Route path="/" element={<RootLanding />} />
 
+                  {/* PLG Customer Success Portal. Its pages, API hooks and nav
+                      section live under features/plg — this is the only line of
+                      csm-portal's routing the merge touches.
+                      */}
+                  {plgRoutes()}
+
                   {/* Customers — Accounts + Projects under one tabbed section.
                       BFF-backed pages (entity-service search + by-id endpoints).
                       Detail pages render full-width (outside the tab layout). */}
@@ -284,6 +292,7 @@ export default function App(): JSX.Element {
                     <Route path="accounts" element={<CsmAccountsPage />} />
                     <Route path="projects" element={<CsmProjectsPage />} />
                   </Route>
+                  <Route path="team-schedule" element={<CsmTeamSchedulePage />} />
                   <Route
                     path="customers/accounts/:id"
                     element={<CsmAccountDetailPage />}

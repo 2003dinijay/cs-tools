@@ -75,6 +75,11 @@ type Customer struct {
 	Status                *string `json:"status"`
 	AccountClassification *string `json:"accountClassification"`
 	TechnicalOwner        *string `json:"technicalOwner"`
+	// DomainList is the account's comma-separated list of email domains its
+	// contacts may use (Salesforce Account.Domain_List__c). It exists only in
+	// Salesforce: the CSM database has no copy, so invitation checks read it
+	// here at the moment they run.
+	DomainList *string `json:"domainList"`
 }
 
 type customerSearchRequest struct {

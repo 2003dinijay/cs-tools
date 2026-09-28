@@ -19,6 +19,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -28,17 +30,17 @@ import (
 // Postgres enum type names backing ProjectMetadataResponse's choice lists,
 // named exactly as their CREATE TYPE migration defines them.
 const (
-	caseStateEnumType             = "case_state_enum"              // migrations/000018_case_table.up.sql
-	caseSeverityEnumType          = "case_severity_enum"           // migrations/000018_case_table.up.sql
-	caseIssueTypeEnumType         = "case_issue_type_enum"         // migrations/000018_case_table.up.sql
-	deploymentTypeEnumType        = "deployment_type_enum"         // migrations/000013_deployment_table.up.sql
-	engagementTypeEnumType        = "engagement_type_enum"         // migrations/000019_work_item_extensions.up.sql
-	engagementPaymentTypeEnumType = "engagement_payment_type_enum" // migrations/000019_work_item_extensions.up.sql
-	changeRequestStateEnumType    = "change_request_state_enum"    // migrations/000047_change_request_table.up.sql
-	changeRequestImpactEnumType   = "change_request_impact_enum"   // migrations/000047_change_request_table.up.sql
-	timeCardStateEnumType         = "time_card_state_enum"         // migrations/000039_time_card_tables.up.sql
-	conversationStateEnumType     = "conversation_state_enum"      // migrations/000057_conversation_table.up.sql
-	callRequestStateEnumType      = "customer_call_state_enum"     // migrations/000072_customer_call_table.up.sql
+	caseStateEnumType             = "case_state_enum"              // migrations/0023_case_table.sql
+	caseSeverityEnumType          = "case_severity_enum"           // migrations/0023_case_table.sql
+	caseIssueTypeEnumType         = "case_issue_type_enum"         // migrations/0023_case_table.sql
+	deploymentTypeEnumType        = "deployment_type_enum"         // migrations/0018_deployment_table.sql
+	engagementTypeEnumType        = "engagement_type_enum"         // migrations/0024_work_item_extensions.sql
+	engagementPaymentTypeEnumType = "engagement_payment_type_enum" // migrations/0024_work_item_extensions.sql
+	changeRequestStateEnumType    = "change_request_state_enum"    // migrations/0043_change_request_details_table.sql
+	changeRequestImpactEnumType   = "change_request_impact_enum"   // migrations/0043_change_request_details_table.sql
+	timeCardStateEnumType         = "time_card_state_enum"         // migrations/0041_time_card_tables.sql
+	conversationStateEnumType     = "conversation_state_enum"      // migrations/0057_conversation_table.sql
+	callRequestStateEnumType      = "customer_call_state_enum"     // migrations/0073_customer_call_table.sql
 )
 
 // projectMetadataEnumTypes is every enum EnumLabels is asked for in one
@@ -125,6 +127,34 @@ func (s *projectMetadataService) GetProjectMetadata(ctx context.Context, project
 		projectTypeRef = domain.ReferenceTableItem{ID: projectType.ID, Name: projectType.Name}
 	}
 
+	features := domain.ProjectFeatures{
+		ProjectType:            projectTypeRef,
+		AcceptedSeverityValues: make([]domain.ChoiceListItem, 0),
+	}
+	// projectType's Has*Access/severity/category fields are already resolved
+	// by GetProjectByID's join against project_type (migration 0130) --
+	// all false/empty for a project with no type, or a type FEATURE_MATRIX
+	// itself has no entry for (Cloud Support - Platformer, Internal,
+	// Platformer Subscription, Regular), same as before this migration
+	// existed.
+	if projectType != nil {
+		features.HasServiceRequestWriteAccess = projectType.HasServiceRequestWriteAccess
+		features.HasServiceRequestReadAccess = projectType.HasServiceRequestReadAccess
+		features.HasChangeRequestReadAccess = projectType.HasChangeRequestReadAccess
+		features.HasSraWriteAccess = projectType.HasSraWriteAccess
+		features.HasSraReadAccess = projectType.HasSraReadAccess
+		features.HasEngagementsReadAccess = projectType.HasEngagementsReadAccess
+		features.HasUpdatesReadAccess = projectType.HasUpdatesReadAccess
+		features.HasDeploymentWriteAccess = projectType.HasDeploymentWriteAccess
+		features.HasDeploymentReadAccess = projectType.HasDeploymentReadAccess
+		features.HasTimeLogsReadAccess = projectType.HasTimeLogsReadAccess
+		features.HasComponentAnalysisReadAccess = projectType.HasComponentAnalysisReadAccess
+		features.HasUsageMetricsReadAccess = projectType.HasUsageMetricsReadAccess
+		features.AcceptedSeverityValues = severityChoiceItems(ctx, projectType.AcceptedSeverityValues)
+		features.DefaultCaseProductCategories = lowercaseAll(projectType.DefaultCaseProductCategories)
+		features.SrProductCategories = lowercaseAll(projectType.SrProductCategories)
+	}
+
 	return domain.ProjectMetadataResponse{
 		CaseStates:           choiceListFromLabels(labels[caseStateEnumType]),
 		CallRequestStates:    callRequestStateChoices(labels[callRequestStateEnumType]),
@@ -143,14 +173,59 @@ func (s *projectMetadataService) GetProjectMetadata(ctx context.Context, project
 		CaseTypes:                   caseTypeRefItems,
 		EngagementTypes:             choiceListFromLabels(labels[engagementTypeEnumType]),
 		EngagementPaymentTypes:      choiceListFromLabels(labels[engagementPaymentTypeEnumType]),
-		Features: domain.ProjectFeatures{
-			ProjectType: projectTypeRef,
-			// AcceptedSeverityValues and every Has*Access/product-category
-			// field below (left at zero value) have no backing column in
-			// Postgres yet -- no per-project severity-restriction or
-			// feature-entitlement table exists. Empty (not nil) for the same
-			// JSON-shape reason as above. TODO: populate once one does.
-			AcceptedSeverityValues: make([]domain.ChoiceListItem, 0),
-		},
+		Features:                    features,
 	}, nil
+}
+
+// severityEnumToChoice maps case_severity_enum's own labels (migration
+// 000018) to the {ServiceNow numeric id, display label} pair
+// ProjectFeatures.AcceptedSeverityValues has always carried on the
+// ServiceNow data source (snChoiceOption.id/label) -- the same ids
+// case_repo.go's severityToSNLabel resolves S0..S4 from/to, and the same
+// display labels backend-v2's own caseSeverityDisplayLabels uses.
+// AcceptedSeverityValues carries ServiceNow's own numeric ids, which
+// backend-v2's normalizeCaseSeverityChoices passes through unchanged rather
+// than relabeling, so the label has to be correct here already.
+var severityEnumToChoice = map[string]domain.ChoiceListItem{
+	"S1": {ID: "10", Label: "Critical (P1)"},
+	"S2": {ID: "11", Label: "High (P2)"},
+	"S3": {ID: "12", Label: "Medium (P3)"},
+	"S4": {ID: "13", Label: "Low (P4)"},
+	"S0": {ID: "14", Label: "Catastrophic (P0)"},
+}
+
+// severityChoiceItems converts stored case_severity_enum labels to the
+// {id, label} pairs ProjectFeatures.AcceptedSeverityValues expects, skipping
+// any label this service doesn't recognize rather than emitting a blank one.
+// A skip is logged rather than silent: case_severity_enum gaining a new
+// label (or a bad value somehow stored) would otherwise quietly truncate the
+// slice with nothing to point at when investigating.
+func severityChoiceItems(ctx context.Context, enumLabels []string) []domain.ChoiceListItem {
+	out := make([]domain.ChoiceListItem, 0, len(enumLabels))
+	for _, l := range enumLabels {
+		choice, ok := severityEnumToChoice[l]
+		if !ok {
+			slog.WarnContext(ctx, "project metadata: unrecognized case_severity_enum label in accepted_severity_values", "label", l)
+			continue
+		}
+		out = append(out, choice)
+	}
+	return out
+}
+
+// lowercaseAll converts deployed_product_category_enum's UPPER_SNAKE labels
+// (migration 0019) to the lowercase form ProjectFeatures.
+// DefaultCaseProductCategories/SrProductCategories have always carried --
+// matches the webapp's own ProductCategory enum (features/project-details/
+// types/deployments.ts: CLOUD = "cl", PDP = "pdp"). A nil slice stays nil,
+// not an empty one, matching *ProductCategories' omitempty json tag.
+func lowercaseAll(labels []string) []string {
+	if labels == nil {
+		return nil
+	}
+	out := make([]string, len(labels))
+	for i, l := range labels {
+		out[i] = strings.ToLower(l)
+	}
+	return out
 }

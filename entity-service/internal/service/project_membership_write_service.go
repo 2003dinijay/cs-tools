@@ -78,6 +78,10 @@ type MembershipWriteDeps struct {
 	// is then logged rather than recorded.
 	Failures EventPublishFailureService
 	Access   AccessService
+	// Invitations checks an invitation before anything is written. May be
+	// nil, in which case invitations are not checked beyond the request's
+	// own shape.
+	Invitations InvitationValidator
 }
 
 type projectMembershipWriteService struct {
@@ -163,6 +167,13 @@ func (s *projectMembershipWriteService) Invite(ctx context.Context, projectID st
 			// Bringing a deactivated contact back is a re-invitation, which
 			// is a distinct Salesforce state and a distinct email.
 			state = domain.MembershipStateReInvited
+		}
+		if s.deps.Invitations != nil {
+			// Before any Salesforce write: a refused invitation must leave
+			// both systems exactly as they were.
+			if err := s.deps.Invitations.Validate(ctx, wc.Target, email, req.InviterEmail); err != nil {
+				return domain.SalesforceMembershipUpsert{}, domain.UpsertOnboardingStepRequest{}, err
+			}
 		}
 		in, rec, err := s.writeSalesforce(ctx, wc, salesforceWriteIntent{
 			Email:               email,

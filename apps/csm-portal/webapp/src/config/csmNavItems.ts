@@ -20,6 +20,7 @@ import {
   Briefcase,
   Bug,
   Building2,
+  CalendarDays,
   ChartColumn,
   Clock,
   ClipboardList,
@@ -46,6 +47,8 @@ import type { PortalAccess } from "@context/current-user/portalAccess";
  * feature flags; `featureFlags.ts` resolves a {@link CsmNavNode.id} to a
  * visibility state.
  */
+import { PLG_NAV_SECTION } from "@features/plg/config/plgNavItems";
+
 export interface CsmNavNode {
   /**
    * Stable, dotted identifier: `"operations"` for a section,
@@ -115,6 +118,15 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     label: "Support",
     href: "/cases",
     icon: Headset,
+  },
+  {
+    id: "team-schedule",
+    label: "Team Schedule",
+    href: "/team-schedule",
+    // No `requires`: the rota is readable by everyone who can open the portal.
+    // Editing it is a lead's job and will gate on its own flag when the write
+    // routes land.
+    icon: CalendarDays,
   },
   {
     id: "operations",
@@ -354,6 +366,11 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
       { id: "help.settings", label: "Settings", href: "/help#settings" },
     ],
   },
+  // PLG Customer Success Portal. Declared in
+  // features/plg/config/plgNavItems so a change to PLG's pages does not
+  // touch this file. Hide the whole section with
+  // CSM_PORTAL_FEATURE_OVERRIDES: { "plg": "hidden" }.
+  PLG_NAV_SECTION,
 ];
 
 /** The pathname part of `href`, dropping any query string or hash. */
