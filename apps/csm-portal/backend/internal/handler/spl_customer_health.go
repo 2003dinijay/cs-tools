@@ -232,8 +232,15 @@ func (h *CustomerHealthHandler) summaryFilteredByHealthStatus(ctx context.Contex
 	}
 
 	total := len(filtered)
-	startIdx := min(payload.Offset, total)
-	endIdx := min(payload.Offset+payload.Limit, total)
+	// A negative Offset would otherwise reach filtered[startIdx:endIdx] as a
+	// negative slice index and panic; clamp to 0 the same way a negative
+	// Limit is never allowed to make endIdx < startIdx below.
+	offset := max(payload.Offset, 0)
+	startIdx := min(offset, total)
+	endIdx := min(offset+payload.Limit, total)
+	if endIdx < startIdx {
+		endIdx = startIdx
+	}
 	paged := filtered[startIdx:endIdx]
 
 	pagedIDs := make([]string, len(paged))

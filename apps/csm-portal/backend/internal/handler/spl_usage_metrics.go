@@ -101,6 +101,10 @@ func (h *UsageMetricsHandler) GetProjects(w http.ResponseWriter, r *http.Request
 
 	result, err := h.client.GetAllProjects(r.Context(), search)
 	if err != nil {
+		if isUnsafeQueryValue(err) {
+			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+			return
+		}
 		slog.ErrorContext(r.Context(), "servicenow GetAllProjects failed", "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to list projects.")
 		return

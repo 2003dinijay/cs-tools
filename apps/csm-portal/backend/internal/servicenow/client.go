@@ -241,14 +241,25 @@ func (c *Client) doRaw(ctx context.Context, method, path string, params url.Valu
 // 500, 502, 503, 504, and 408. Only requests with no body, or a body that
 // can be safely re-read (http.Request.GetBody set, which
 // http.NewRequestWithContext populates automatically for the []byte-backed
-// readers this package uses), are retried.
+// readers this package uses), are retried -- and only when the method is
+// idempotent (isIdempotentMethod): retrying a POST that creates a record
+// (e.g. createNewEscalation) or a PATCH that appends a work note (e.g.
+// linkCaseToEscalation, PostWorkNote) risks a second create/append when the
+// first attempt actually succeeded upstream but the response was lost or
+// timed out. retryBackoff is a short pause between attempts rather than an
+// immediate retry, giving a transient upstream hiccup a moment to clear.
 type retryTransport struct {
 	base       http.RoundTripper
 	maxRetries int
 }
 
+const retryBackoff = 200 * time.Millisecond
+
 func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(req)
+	if !isIdempotentMethod(req.Method) {
+		return resp, err
+	}
 	for attempt := 0; attempt < t.maxRetries && shouldRetry(resp, err); attempt++ {
 		if resp != nil {
 			_ = resp.Body.Close()
@@ -260,9 +271,26 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 			req.Body = body
 		}
+		select {
+		case <-time.After(retryBackoff):
+		case <-req.Context().Done():
+			return resp, err
+		}
 		resp, err = t.base.RoundTrip(req)
 	}
 	return resp, err
+}
+
+// isIdempotentMethod reports whether method may be safely retried -- POST
+// and PATCH are excluded here since this package uses them exclusively for
+// non-idempotent creates/appends (see retryTransport's own doc comment).
+func isIdempotentMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete, http.MethodOptions:
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldRetry(resp *http.Response, err error) bool {

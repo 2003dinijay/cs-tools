@@ -184,20 +184,30 @@ func (c *Client) MarkProjectHealthy(ctx context.Context, projectSysID, accountSy
 	}
 	committed = true
 
-	return c.getHealthStatusByProject(ctx, projectSysID)
+	return c.getHealthStatusByProject(ctx, projectSysID, accountSysID)
 }
 
 // RevertProjectHealth reverts a project's health status back to
 // "to_be_reviewed".
 func (c *Client) RevertProjectHealth(ctx context.Context, projectSysID, accountSysID string) (*HealthStatusRecord, error) {
-	_, err := c.db.ExecContext(ctx, `
+	result, err := c.db.ExecContext(ctx, `
 		UPDATE project_health_status
 		SET status = 'to_be_reviewed', reviewed_by_email = NULL, reviewed_on = NULL
 		WHERE project_sys_id = ? AND account_sys_id = ?`, projectSysID, accountSysID)
 	if err != nil {
 		return nil, fmt.Errorf("risk: reset project_health_status: %w", err)
 	}
-	return c.getHealthStatusByProject(ctx, projectSysID)
+	// A mismatched (projectSysID, accountSysID) pair updates zero rows --
+	// without this check the caller would otherwise get back whatever
+	// getHealthStatusByProject's own account scoping below still finds (or a
+	// misleading errRecordNotFound), instead of a clear signal that nothing
+	// was reverted.
+	if affected, err := result.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("risk: reset project_health_status: rows affected: %w", err)
+	} else if affected == 0 {
+		return nil, errRecordNotFound
+	}
+	return c.getHealthStatusByProject(ctx, projectSysID, accountSysID)
 }
 
 // GetAccountHealthStatus retrieves the health status for every project
@@ -481,9 +491,15 @@ func (c *Client) getRiskByID(ctx context.Context, riskID int) (*ProjectRisk, err
 	return &risk, nil
 }
 
-func (c *Client) getHealthStatusByProject(ctx context.Context, projectSysID string) (*HealthStatusRecord, error) {
+// getHealthStatusByProject reads the row MarkProjectHealthy/RevertProjectHealth
+// just wrote, scoped by the same (project_sys_id, account_sys_id) pair those
+// writes key on -- project_sys_id alone is not guaranteed unique if a project
+// is ever associated with more than one account's row, and reading unscoped
+// could otherwise return a different account's row for the same project.
+func (c *Client) getHealthStatusByProject(ctx context.Context, projectSysID, accountSysID string) (*HealthStatusRecord, error) {
 	row := c.db.QueryRowContext(ctx,
-		"SELECT "+healthStatusColumns+" FROM project_health_status WHERE project_sys_id = ?", projectSysID)
+		"SELECT "+healthStatusColumns+" FROM project_health_status WHERE project_sys_id = ? AND account_sys_id = ?",
+		projectSysID, accountSysID)
 	r, err := scanHealthStatusRow(row)
 	if err == sql.ErrNoRows {
 		return nil, errRecordNotFound

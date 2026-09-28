@@ -201,13 +201,18 @@ func main() {
 		// this backend's standing convention (see loadDashboards,
 		// loadDirectory) is that a broken required integration fails startup
 		// loudly rather than serving traffic it cannot actually handle.
-		// TEMPORARY, LOCAL-ONLY bypass: SPL_RISK_MYSQL_DSN (WSO2-internal MySQL,
-		// VPN-gated) is unreachable in this environment right now, which would
-		// otherwise hard-exit the whole backend and block testing every other
-		// SPL feature. MUST be reverted before committing.
-		riskClient, err := risk.NewClient(context.Background(), risk.Config{DSN: splCfg.riskMySQLDSN})
+		// risk.NewClient returns a typed-nil client on a failed ping if this
+		// were ignored, and NewCustomerHealthHandler would then store that
+		// nil client in its risk interface -- Customer Health routes would
+		// dispatch to a nil receiver instead of failing at startup where the
+		// cause is obvious. A 30s deadline bounds the ping so a hung network
+		// doesn't hang startup forever.
+		riskCtx, riskCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		riskClient, err := risk.NewClient(riskCtx, risk.Config{DSN: splCfg.riskMySQLDSN})
+		riskCancel()
 		if err != nil {
-			slog.Error("failed to connect to SPL_RISK_MYSQL_DSN, continuing without Customer Health (TEMPORARY LOCAL BYPASS)", "err", err)
+			slog.Error("failed to connect to SPL_RISK_MYSQL_DSN", "err", err)
+			os.Exit(1)
 		}
 
 		// SPL cases/comments now read from entity-service (Postgres) instead

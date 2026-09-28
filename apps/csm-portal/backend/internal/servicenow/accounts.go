@@ -398,7 +398,7 @@ func (c *Client) getAccountSysID(ctx context.Context, accountNumber string) (str
 		return "", fmt.Errorf("servicenow: decode account sys_id response: %w", err)
 	}
 	if len(data.Result) == 0 {
-		return "", fmt.Errorf("servicenow: unable to retrieve details for given account number: %s", accountNumber)
+		return "", ErrAccountNotFound
 	}
 	return data.Result[0].SysID, nil
 }
@@ -417,7 +417,7 @@ func (c *Client) getCaseSysIDByAccount(ctx context.Context, caseNumber, accountN
 		return "", fmt.Errorf("servicenow: decode case sys_id response: %w", err)
 	}
 	if len(data.Result) == 0 {
-		return "", fmt.Errorf("servicenow: unable to retrieve details for given case: %s for account: %s", caseNumber, accountNumber)
+		return "", ErrCaseNotFound
 	}
 	return data.Result[0].SysID, nil
 }

@@ -251,6 +251,10 @@ func (h *SplAccountHandler) EscalateCase(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusConflict, "Case has already been escalated.")
 			return
 		}
+		if errors.Is(err, servicenow.ErrAccountNotFound) || errors.Is(err, servicenow.ErrCaseNotFound) {
+			writeError(w, http.StatusNotFound, ErrMsgNotFound)
+			return
+		}
 		if isUnsafeQueryValue(err) {
 			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 			return
