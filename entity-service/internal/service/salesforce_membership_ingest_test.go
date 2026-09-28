@@ -818,6 +818,17 @@ func TestContactEvent_RenameAfterEarlierIngestIsApplied(t *testing.T) {
 	if len(h.repo.upserts) != 1 {
 		t.Errorf("replay of the same contact version must be skipped: upserts=%d", len(h.repo.upserts))
 	}
+
+	// With no parseable membership timestamp, the contact's alone drives the guard.
+	pc := sampleProjectContact("REGISTERED", "Portal user")
+	pc.LastModifiedDate = nil
+	h.se.projectContacts[testMembershipID] = pc
+	if err := h.svc.HandleEvent(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.repo.upserts) != 1 {
+		t.Errorf("contact timestamp must drive the guard when the membership's is missing: upserts=%d", len(h.repo.upserts))
+	}
 }
 
 func TestContactEvent_FirstErrorReturnedAfterProcessingAll(t *testing.T) {

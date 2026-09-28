@@ -141,8 +141,8 @@ func (s *salesforceEventService) ingestMembership(ctx context.Context, membershi
 	// DELETED event never counts: an undelete (RESTORED) keeps the record's
 	// LastModifiedDate, and the row must leave DEACTIVATED.
 	eventModifiedOn, hasModified := parseSalesforceLastModified(pc.LastModifiedDate)
-	if contactOn, ok := parseSalesforceLastModified(contactModified); ok && hasModified && contactOn.After(eventModifiedOn) {
-		eventModifiedOn = contactOn
+	if contactOn, ok := parseSalesforceLastModified(contactModified); ok && (!hasModified || contactOn.After(eventModifiedOn)) {
+		eventModifiedOn, hasModified = contactOn, true
 	}
 	if !hasModified {
 		slog.WarnContext(ctx, "salesforce: project contact has no parseable lastModifiedDate, skipping duplicate guard",
