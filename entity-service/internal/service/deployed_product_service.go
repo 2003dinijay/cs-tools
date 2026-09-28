@@ -103,7 +103,7 @@ func (s *deployedProductService) SearchDeployedProducts(ctx context.Context, req
 }
 
 // SearchProjectsByProductVersion implements DeployedProductService.
-// deployed_product.project_id (migration 000014) is a direct FK to project,
+// deployed_product.project_id (migration 0019) is a direct FK to project,
 // so unlike the ServiceNow implementation this doesn't need to page through
 // deployments platform-wide to resolve the join -- the repository does it
 // in one query. The same mandatoryExcludeClosureStates/
@@ -307,7 +307,7 @@ func (s *deployedProductService) resolveActorEmail(ctx context.Context) (string,
 }
 
 // SearchDeployedProductMetrics implements DeployedProductService, backed by
-// hourly_usage_summary (migration 000054) -- see DeployedProductRepository's own doc
+// hourly_usage_summary (migration 0054) -- see DeployedProductRepository's own doc
 // comment on resolveDeployedProductNodes for how a deployed product's
 // instances are resolved.
 func (s *deployedProductService) SearchDeployedProductMetrics(ctx context.Context, id string, req domain.DeployedProductMetricsRequest) (domain.DeployedProductMetricsResponse, error) {

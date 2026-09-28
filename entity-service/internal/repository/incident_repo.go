@@ -114,7 +114,7 @@ type IncidentRepository interface {
 	// incident creation (see incidentService.createIncidentSNFirst's own doc
 	// comment). Unlike CaseRepository.CreateCaseFromServiceNow, no wso2ID
 	// parameter exists here: work_item.wso2_id is only required (by the
-	// work_item_wso2_id_required_by_type CHECK constraint, migration 000016)
+	// work_item_wso2_id_required_by_type CHECK constraint, migration 0021)
 	// for CASE/SERVICE_REQUEST/ANNOUNCEMENT/ENGAGEMENT/
 	// SECURITY_REPORT_ANALYSIS -- INCIDENT is deliberately excluded from that
 	// list, and ServiceNow's own incident-create response
@@ -663,7 +663,7 @@ func (r *incidentRepo) SearchIncidentActivities(ctx context.Context, req domain.
 }
 
 // incidentContactTypeToEnum maps domain.IncidentContactType to
-// incident_contact_type_enum's real labels (migration 000058) -- identity
+// incident_contact_type_enum's real labels (migration 0058) -- identity
 // for every value except "Site 24/7", where the enum spells it
 // 'SITE_24_7' but domain.IncidentContactTypeSite247 spells it "SITE_247".
 func incidentContactTypeToEnum(c domain.IncidentContactType) string {

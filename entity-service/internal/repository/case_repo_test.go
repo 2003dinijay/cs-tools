@@ -48,13 +48,13 @@ func TestOnboardingStatusEnumLabels(t *testing.T) {
 // Every enum label onboardingStatusLabels can produce must exist in the
 // migration's onboarding_status_enum, or a valid filter would fail at query time.
 func TestOnboardingStatusLabelsMatchMigration(t *testing.T) {
-	raw, err := os.ReadFile("../../migrations/000009_projects_table.up.sql")
+	raw, err := os.ReadFile("../../migrations/0014_projects_table.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, label := range onboardingStatusLabels {
 		if !strings.Contains(string(raw), "'"+label+"'") {
-			t.Errorf("%s is not an onboarding_status_enum label in migration 000009", label)
+			t.Errorf("%s is not an onboarding_status_enum label in migration 0014", label)
 		}
 	}
 }

@@ -5013,7 +5013,7 @@ func snCaseStateLabelToEnum(state *snCaseState) (domain.CaseState, error) {
 // {"label": "Open"} for a fresh announcement, the same label case uses)
 // to announcement_state_enum's own literal values. Deliberately its own map
 // rather than reusing snCaseStateMap: announcement_state_enum only has two
-// values (OPEN/CLOSE, migration 000019) and spells the closed one CLOSE, not
+// values (OPEN/CLOSE, migration 0024) and spells the closed one CLOSE, not
 // CLOSED -- the same kind of label/enum spelling mismatch already handled
 // for case (CANCELLED->CANCELED) and incident (SITE_247->SITE_24_7), so this
 // is resolved by an explicit table instead of assumed to line up.
@@ -5068,7 +5068,7 @@ var snCaseLikeStateLabels = map[string]string{
 
 // snServiceRequestStateMap maps ServiceNow's raw state label (as returned on
 // its create-case response for a service_request-typed case) to
-// service_request_state_enum's own literal values (migration 000019) --
+// service_request_state_enum's own literal values (migration 0024) --
 // see snCaseLikeStateLabels's own doc comment for why this table is
 // identical to that one.
 var snServiceRequestStateMap = snCaseLikeStateLabels
@@ -5087,7 +5087,7 @@ func snServiceRequestStateToEnum(label string) (string, error) {
 }
 
 // snEngagementStateMap maps ServiceNow's raw state label to
-// engagement_state_enum's own literal values (migration 000019) -- see
+// engagement_state_enum's own literal values (migration 0024) -- see
 // snCaseLikeStateLabels's own doc comment for why this table is identical to
 // that one.
 var snEngagementStateMap = snCaseLikeStateLabels

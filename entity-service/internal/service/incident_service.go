@@ -28,7 +28,7 @@ import (
 )
 
 // incidentStateToEnum maps domain.IncidentState to incident_state_enum's
-// real labels (migration 000058) -- identity for every value except
+// real labels (migration 0058) -- identity for every value except
 // "canceled", which the enum spells with one L ('CANCELED') where
 // domain.IncidentStateCancelled has two ("CANCELLED").
 func incidentStateToEnum(s domain.IncidentState) string {
@@ -262,7 +262,7 @@ const incidentSystemActorEmail = "system-m2m@wso2.com"
 // Deliberately DIFFERENT from caseService.resolveActor in one respect: this
 // falls back to incidentSystemActorEmail instead of a 401 when no token is
 // forwarded, rather than requiring one unconditionally. comment.created_by
-// (migration 000037) is a free-text VARCHAR with no FK to a real user row
+// (migration 0040) is a free-text VARCHAR with no FK to a real user row
 // (see CreateIncidentComment's own doc comment) -- there is no schema reason
 // to require a resolvable platform user here. This matters concretely: the
 // M2M pipeline this whole UpdateIncident extension exists to unblock

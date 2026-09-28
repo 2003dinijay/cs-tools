@@ -117,7 +117,7 @@ func TestSLAPolicyResolver_Resolve_MatchesRealPolicyNames(t *testing.T) {
 }
 
 // TestSLAPolicyResolver_Resolve_P0FallsBackAcrossPlan is the whole reason
-// resolve() tries both plan labels: migration 000089 seeds P0 policies
+// resolve() tries both plan labels: migration 0136 seeds P0 policies
 // under "Managed Services" only (matching real ServiceNow data, which has
 // no Open Source P0 rows at all), so a CATASTROPHIC-severity case whose
 // derived plan guessed "Open Source" must still resolve via the fallback.
