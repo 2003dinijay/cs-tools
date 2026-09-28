@@ -203,6 +203,32 @@ describe("usePendingInvites", () => {
     expect(a.result.current.pending).toHaveLength(1);
   });
 
+  it("retries a processing invitation, and a retry of one that did commit ends as invited", async () => {
+    const send = vi.fn().mockResolvedValue("processing");
+    const refetchContacts = vi.fn().mockResolvedValue([]);
+    const { result, options } = setup({ send, refetchContacts });
+
+    await act(async () => {
+      result.current.invite(request("r@acme.com"));
+    });
+    const total = PENDING_INVITE_POLL_DELAYS_MS.reduce((a, b) => a + b, 0);
+    await act(async () => vi.advanceTimersByTimeAsync(total));
+    expect(result.current.pending[0].status).toBe("processing");
+
+    // The first request did commit after all: the retry is refused as a
+    // duplicate, and the list check turns that into success.
+    send.mockRejectedValueOnce(new Error("This address is already a contact on the project"));
+    refetchContacts.mockResolvedValue([contact("r@acme.com")]);
+    await act(async () => {
+      result.current.retry("r@acme.com");
+    });
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(result.current.pending).toEqual([]);
+    expect(options.onInvited).toHaveBeenCalledWith("r@acme.com");
+    expect(options.onFailed).not.toHaveBeenCalled();
+  });
+
   it("treats a failure as success when the contact turns out to exist", async () => {
     const { result, options } = setup({
       send: vi.fn().mockRejectedValue(new Error("upstream status 502")),

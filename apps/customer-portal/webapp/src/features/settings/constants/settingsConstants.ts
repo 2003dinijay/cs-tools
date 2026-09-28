@@ -196,7 +196,7 @@ export const SETTINGS_USER_PENDING_STATUS = {
 } as const;
 
 export const SETTINGS_USER_PENDING_PROCESSING_TOOLTIP =
-  "Still being processed. Refresh the page in a minute to see it.";
+  "Still being processed. If it does not appear in a minute, retry the invitation.";
 
 export const SETTINGS_USER_RETRY_TOOLTIP = "Retry invitation";
 

@@ -707,11 +707,16 @@ function PendingInviteRow({
           ))}
         </Box>
       </TableCell>
-      <TableCell>{statusChip}</TableCell>
+      <TableCell>
+        {/* Processing can arrive with no toast, so announce the change. */}
+        <Box component="span" role="status" aria-live="polite">
+          {statusChip}
+        </Box>
+      </TableCell>
       {showActions && (
         <TableCell align="right">
           <Box sx={{ display: "flex", gap: 0.5, justifyContent: "flex-end" }}>
-            {status === "failed" && (
+            {status !== "inviting" && (
               <Tooltip title={SETTINGS_USER_RETRY_TOOLTIP}>
                 <IconButton size="small" aria-label="Retry invitation" onClick={() => onRetry(email)}>
                   <RefreshCw size={16} />
