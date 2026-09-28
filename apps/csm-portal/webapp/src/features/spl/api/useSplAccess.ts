@@ -18,35 +18,56 @@
 // section at all — the "is this Sales/SA staff" audience gate, distinct
 // from useSplPermissions.ts's fine-grained action gates.
 //
-// DELIBERATE EXCEPTION, see useAsgardeoGroups.ts's own doc comment: reads
-// Asgardeo groups client-side rather than this app's usual backend-`roles`
-// pattern. Chosen explicitly for the SPL merge rather than extending
-// GET /users/me — see the merge plan for the trade-off.
+// Reads the "sales_solutions" portal role off `GET /users/me` (the same
+// server-authoritative `roles` array usePortalView reads it from — see
+// `internal/handler/access.go`'s `AccessConfig.SalesSolutions`), not a
+// client-side Asgardeo-groups decode: this used to be the one deliberate
+// exception to this app's backend-`roles` convention, but per the actual
+// Asgardeo role catalogue (roles are already returned by `/users/me`,
+// there's nothing left for the frontend to re-derive from IdP claims),
+// that exception is no longer warranted and has been removed.
 //
 // Real enforcement is server-side: every /spl/* route on the Go backend
-// re-checks SPL_ALLOWED_GROUPS from the JWT (internal/splauth). A caller
-// who reaches an SPL screen without the group sees a 403 from every call
-// it makes, same as any other tampered/stale-claim scenario in this app.
+// re-checks PermSPLAccess (internal/handler/access.go), granted only by
+// the sales_solutions role. A caller who reaches an SPL screen without
+// the role sees a 403 from every call it makes, same as any other
+// tampered/stale-claim scenario in this app.
 
-import { useAsgardeoGroups, hasAnyGroup } from "@hooks/useAsgardeoGroups";
+import { useMemo } from "react";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { devBypassAccessCheck } from "@config/devFlags";
 
 export interface SplAccess {
-  /** False until group membership has been resolved — hold gated UI until it clears. */
+  /** False until the signed-in user's profile has been resolved — hold gated UI until it clears. */
   ready: boolean;
   hasAccess: boolean;
 }
 
-function splAudienceGroups(): string[] {
-  return window.config?.CSM_PORTAL_SPL_AUDIENCE_GROUPS ?? [];
-}
+// Must stay byte-for-byte in sync with the backend's AccessGuard portalRoles
+// key (apps/csm-portal/backend/internal/handler/access.go) and the identical
+// literal usePortalView.ts checks to pick the SPL nav.
+const SALES_SOLUTIONS_ROLE = "sales_solutions";
 
 export function useSplAccess(): SplAccess {
-  const identity = useAsgardeoGroups();
-  // TEMPORARY / LOCAL DEV ONLY — see authConfig.ts's devBypassAccessCheck.
-  // Short-circuits SPL's own audience gate so the section shows up even
-  // when the real id_token carries no (or the wrong) Asgardeo groups.
-  if (devBypassAccessCheck) return { ready: true, hasAccess: true };
-  if (!identity.ready) return { ready: false, hasAccess: false };
-  return { ready: true, hasAccess: hasAnyGroup(identity.groups, splAudienceGroups()) };
+  let roles: string[] | undefined;
+  let isLoading = false;
+  try {
+    // useCurrentUser always runs its useContext before it can throw, so the
+    // hook order is identical on every render — same pattern as
+    // usePortalAccess/usePortalView, which this mirrors.
+    const ctx = useCurrentUser();
+    roles = ctx.user?.roles;
+    isLoading = ctx.isLoading;
+  } catch {
+    roles = undefined;
+  }
+
+  return useMemo<SplAccess>(() => {
+    // TEMPORARY / LOCAL DEV ONLY — see authConfig.ts's devBypassAccessCheck.
+    // Short-circuits SPL's own audience gate so the section shows up even
+    // when the signed-in account has no portal roles provisioned yet.
+    if (devBypassAccessCheck) return { ready: true, hasAccess: true };
+    if (isLoading) return { ready: false, hasAccess: false };
+    return { ready: true, hasAccess: (roles ?? []).includes(SALES_SOLUTIONS_ROLE) };
+  }, [roles, isLoading]);
 }

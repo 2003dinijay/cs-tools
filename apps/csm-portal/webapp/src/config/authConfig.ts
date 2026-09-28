@@ -101,25 +101,6 @@ declare global {
       CSM_PORTAL_MOBILE_APP_ANDROID_STORE_URL?: string;
       CSM_PORTAL_MOBILE_APP_INCLUDE_TABLETS?: boolean;
       /**
-       * Asgardeo group names identifying Sales/Solutions-Architecture staff
-       * — controls whether the SPL (Support Portal Lite) nav section is
-       * shown at all. See useSplAccess.ts for why this is a client-side
-       * Asgardeo-groups check rather than this app's usual backend-`roles`
-       * pattern (a deliberate, explicit exception, not an oversight).
-       * Empty/absent means nobody sees the SPL section.
-       */
-      CSM_PORTAL_SPL_AUDIENCE_GROUPS?: string[];
-      /**
-       * Fine-grained SPL action-permission group lists, independent of the
-       * audience gate above — see SplPermissionProvider.tsx. Empty/absent
-       * means nobody in that group; every /spl/* backend endpoint enforces
-       * its own copy of the same check server-side regardless of these.
-       */
-      CSM_PORTAL_SPL_ADD_WORKNOTE_GROUPS?: string[];
-      CSM_PORTAL_SPL_ADD_ESCALATION_GROUPS?: string[];
-      CSM_PORTAL_SPL_DOWNLOAD_ATTACHMENT_GROUPS?: string[];
-      CSM_PORTAL_SPL_USAGE_METRICS_GROUPS?: string[];
-      /**
        * Project key an announcement's "Send test" dry run creates its one
        * real test case in (mirrors the ServiceNow flow's hardcoded
        * `Project Key = DCPSUB` dry-run scoping). Optional — see

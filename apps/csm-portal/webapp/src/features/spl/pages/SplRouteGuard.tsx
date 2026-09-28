@@ -27,8 +27,7 @@ import { useSplAccess } from "@features/spl/api/useSplAccess";
  * actual enforcement for reaching the section at all. Same
  * "hold render open while resolving, fail closed on error/no-access"
  * shape as DashboardBuilderRouteGuard, this app's other client-side route
- * guard — but reading Asgardeo groups (useSplAccess), not backend `roles`;
- * see useAsgardeoGroups.ts for why that's a deliberate exception here.
+ * guard — see useSplAccess.ts for the underlying `roles` check.
  *
  * Also mounts SplPermissionProvider so every SPL screen below can call
  * useSplPermissions() for the four fine-grained action gates
