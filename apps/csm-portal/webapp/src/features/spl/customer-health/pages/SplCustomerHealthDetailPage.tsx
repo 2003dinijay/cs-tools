@@ -32,7 +32,9 @@ interface FilterPayload {
   email: string;
   phrase: string;
   risks: string;
-  region: string;
+  region: string[];
+  product: string;
+  abtTeam: string;
   healthStatus: string;
 }
 
@@ -69,9 +71,9 @@ export default function SplCustomerHealthDetailPage() {
         email: navState!.filterPayload.email,
         phrase: navState!.filterPayload.phrase,
         risks: navState!.filterPayload.risks,
-        region: navState!.filterPayload.region ? [navState!.filterPayload.region] : [],
-        product: "",
-        abtTeam: "",
+        region: navState!.filterPayload.region,
+        product: navState!.filterPayload.product,
+        abtTeam: navState!.filterPayload.abtTeam,
         healthStatus: navState!.filterPayload.healthStatus,
       };
       const result = await fetchCustomerHealthSummaryPage(backendApi, payload);

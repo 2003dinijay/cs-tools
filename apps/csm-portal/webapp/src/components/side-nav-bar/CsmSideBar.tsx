@@ -109,13 +109,17 @@ function pickActiveId(pathname: string): string {
 
 /**
  * Active id for the Sales/SA view's flat nav (see the "sales-sa" branch
- * below): the matched `spl.*` node, or "spl.cases" (that view's own landing
- * page — see RootLanding in App.tsx) for any route this nav has no entry
- * for.
+ * below): the matched `spl.*` node, or "spl.accounts" (that view's own
+ * landing page in this PR — see RootLanding in App.tsx) for any route this
+ * nav has no entry for. This PR (Customer Health, split out of the full SPL
+ * port to stay under CodeRabbit's 100-file limit) has no "spl.cases" nav
+ * node yet -- that lands in a sibling PR -- so falling back to it here would
+ * leave the rail with nothing highlighted, e.g. on
+ * /spl/projects/:id/sla-report/:sysId or the bare "/" redirect.
  */
 function pickSplActiveId(pathname: string): string {
   const match = navNodeMatchForPath(pathname);
-  return match?.node.id.startsWith("spl.") ? match.node.id : "spl.cases";
+  return match?.node.id.startsWith("spl.") ? match.node.id : "spl.accounts";
 }
 
 export default function CsmSideBar({
@@ -138,8 +142,8 @@ export default function CsmSideBar({
     // Last-section persistence is CS-nav-only bookkeeping (see
     // `pickActiveId`'s doc comment) — the Sales/SA view never falls back to
     // it (`pickSplActiveId` always resolves to a real `spl.*` id or its own
-    // "spl.cases" default), and persisting an `spl.*` id here would corrupt
-    // that fallback for the CS view the next time this session renders it.
+    // default), and persisting an `spl.*` id here would corrupt that
+    // fallback for the CS view the next time this session renders it.
     if (view === "sales-sa") return;
     // The persisted id is the fallback used for routes with no owning section
     // (see `pickActiveId`'s doc comment) -- it must stay a *section* id.

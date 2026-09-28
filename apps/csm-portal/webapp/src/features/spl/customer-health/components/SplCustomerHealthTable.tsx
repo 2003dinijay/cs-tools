@@ -85,6 +85,7 @@ export default function SplCustomerHealthTable(props: SplCustomerHealthTableProp
           risks: Array.isArray(props.riskIndicators) && props.riskIndicators.length > 0 ? props.riskIndicators.join(",") : "",
           region: Array.isArray(props.region) && props.region.length > 0 ? props.region : [],
           product: props.product || "",
+          abtTeam: props.abtTeam || "",
           healthStatus: props.healthStatus || "",
         },
       },
