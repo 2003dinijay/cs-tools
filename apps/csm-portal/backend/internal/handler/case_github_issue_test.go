@@ -105,6 +105,25 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		}
 	})
 
+	t.Run("writes the issue URL back onto the case", func(t *testing.T) {
+		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 42}}
+		var note []byte
+		entityClient := &mockEntityCaseClient{
+			createCaseCommentFn: func(_ context.Context, id string, body []byte) ([]byte, error) {
+				if id != caseID {
+					t.Errorf("work note case = %s, want %s", id, caseID)
+				}
+				note = body
+				return []byte(`{}`), nil
+			},
+		}
+		w := post(t, newHandler(eng, entityClient), "{"+base+"}")
+		assertStatus(t, w, http.StatusCreated)
+		if !strings.Contains(string(note), `"type":"work_note"`) || !strings.Contains(string(note), "https://github.com/example-org/alpha-repo/issues/42") {
+			t.Errorf("work note = %s", note)
+		}
+	})
+
 	t.Run("the owner and repo match the catalogue case-insensitively", func(t *testing.T) {
 		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
 		w := post(t, newHandler(eng, &mockEntityCaseClient{}), `{"title":"t","description":"d","repoOverride":{"owner":"EXAMPLE-ORG","repo":"Alpha-Repo"}}`)
