@@ -20,11 +20,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/dto"
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/middleware"
@@ -45,6 +48,24 @@ const entityWriteTimeout = 30 * time.Second
 // database not. Letting it finish is the safer outcome in every case.
 func entityWriteContext(r *http.Request) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(r.Context()), entityWriteTimeout)
+}
+
+// invitationOutcomeUnknown reports whether an invite failed in a way that
+// says nothing about whether entity-service committed it:
+//
+//   - The portal's own client stopped waiting (context.DeadlineExceeded).
+//   - The connection dropped before an answer arrived (EOF, reset).
+//   - A gateway in front of entity-service answered 502 or 504 because its
+//     backend went quiet. entity-service never answers either status
+//     itself; its own failures are 4xx, 500 or 503, which stay errors.
+func invitationOutcomeUnknown(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	var apiErr *apierror.Error
+	return errors.As(err, &apiErr) &&
+		(apiErr.StatusCode == http.StatusBadGateway || apiErr.StatusCode == http.StatusGatewayTimeout)
 }
 
 // invitationProcessingResponse is the 202 body CreateProjectContact returns
@@ -206,8 +227,8 @@ func (h *ContactHandler) CreateProjectContact(w http.ResponseWriter, r *http.Req
 		wctx, cancel := entityWriteContext(r)
 		defer cancel()
 		membership, err := h.memberships.CreateProjectMembership(wctx, projectID, dto.BuildCreateProjectMembershipRequest(req, user.Email))
-		if errors.Is(err, context.DeadlineExceeded) {
-			// The portal stopped waiting, not entity-service: it keeps going
+		if invitationOutcomeUnknown(err) {
+			// The answer was lost, not refused: entity-service keeps going
 			// and commits, so reporting a failure here would tell the admin
 			// an invitation failed when it is about to exist. A retry would
 			// then be refused as a duplicate. 202 tells the webapp to keep

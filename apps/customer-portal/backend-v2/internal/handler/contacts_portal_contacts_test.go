@@ -20,10 +20,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/apierror"
@@ -743,5 +745,40 @@ func TestCreateProjectContact_InviterComesFromTokenNotBody(t *testing.T) {
 	}
 	if f.memberships.create.InviterEmail != testCaller {
 		t.Errorf("inviterEmail = %q, want the signed-in user %q", f.memberships.create.InviterEmail, testCaller)
+	}
+}
+
+// TestCreateProjectContact_LostAnswerAnswers202: every failure that says
+// nothing about whether entity-service committed the invite is reported as
+// still processing, and every answer entity-service itself gives stays an
+// error.
+func TestCreateProjectContact_LostAnswerAnswers202(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"portal stopped waiting", fmt.Errorf("entity: %w", context.DeadlineExceeded), http.StatusAccepted},
+		{"connection dropped (EOF)", fmt.Errorf("entity: POST: %w", io.EOF), http.StatusAccepted},
+		{"connection dropped mid-body", fmt.Errorf("entity: %w", io.ErrUnexpectedEOF), http.StatusAccepted},
+		{"connection reset", fmt.Errorf("entity: %w", syscall.ECONNRESET), http.StatusAccepted},
+		{"gateway 502", apierror.NewUpstreamError(http.StatusBadGateway, nil), http.StatusAccepted},
+		{"gateway 504", apierror.NewUpstreamError(http.StatusGatewayTimeout, nil), http.StatusAccepted},
+		{"entity-service 409", apierror.NewUpstreamError(http.StatusConflict, []byte(`{"message":"already a contact"}`)), http.StatusConflict},
+		{"entity-service 403", apierror.NewUpstreamError(http.StatusForbidden, []byte(`{"message":"domain not allowed"}`)), http.StatusForbidden},
+		{"entity-service 500", apierror.NewUpstreamError(http.StatusInternalServerError, nil), http.StatusInternalServerError},
+		{"entity-service 503", apierror.NewUpstreamError(http.StatusServiceUnavailable, nil), http.StatusServiceUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux, f := newContactMux(true, true)
+			f.memberships.err = tt.err
+
+			rec := serveContact(mux, http.MethodPost, contactsPath(), inviteBody)
+
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d; body %s", rec.Code, tt.want, rec.Body)
+			}
+		})
 	}
 }
