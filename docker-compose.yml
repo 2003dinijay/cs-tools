@@ -64,9 +64,9 @@ services:
       timeout: 5s
       retries: 20
 
-  # One-shot: applies entity-service's and sre-alert-ingestion-service's raw
-  # SQL migrations (neither wires up a migration tool) and loads dummy seed
-  # data. Every service that reads from Postgres waits on this completing.
+  # One-shot: applies entity-service's raw SQL migrations (it doesn't wire
+  # up a migration tool) and loads dummy seed data. Every service that reads
+  # from Postgres waits on this completing.
   migrate:
     image: postgres:16-alpine
     depends_on:
@@ -78,10 +78,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: devpassword
       ENTITY_DB_NAME: csm_platform
-      SRE_ALERT_DB_NAME: sre_alerts
     volumes:
       - ./entity-service/migrations:/migrations/entity-service:ro
-      - ./integrations/sre-alert-ingestion-service/migrations:/migrations/sre-alert-ingestion-service:ro
       - ./scripts/csm-compose/seed-entity-service.sql:/migrations/seed-entity-service.sql:ro
       - ./scripts/csm-compose/migrate-and-seed.sh:/migrate.sh:ro
     entrypoint: ["sh", "/migrate.sh"]
@@ -517,41 +515,3 @@ services:
     ports:
       - "127.0.0.1:8086:8080"
       - "127.0.0.1:9096:9092"
-
-  sre-alert-ingestion-service:
-    build:
-      context: ./integrations/sre-alert-ingestion-service
-      dockerfile: ../../docker/local/sre-alert-ingestion-service.Dockerfile
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      csm-integration-service:
-        condition: service_started
-    environment:
-      # Discrete DB_* vars, not a single connection-string var — this
-      # service's cmd/server/main.go builds its own DSN from
-      # DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME/DB_SSLMODE (see its
-      # buildDatabaseDSN) and never reads a combined URL.
-      DB_HOST: postgres
-      DB_PORT: "5432"
-      DB_USER: postgres
-      DB_PASSWORD: devpassword
-      DB_NAME: sre_alerts
-      DB_SSLMODE: disable
-      CSM_INTEGRATION_BASE_URL: http://csm-integration-service:8080
-      CSM_INTEGRATION_TOKEN_URL: http://mock-oidc:9100/oauth2/token
-      CSM_INTEGRATION_CLIENT_ID: sre-alert-ingestion-dev-client
-      CSM_INTEGRATION_CLIENT_SECRET: dev-secret
-      SRE_ALERT_CALLER_ID: local-dev-sre-ingestion
-      # Required: this service authenticates POST /alerts itself via HTTP
-      # Basic Auth (see internal/middleware.BasicAuth) rather than trusting a
-      # gateway. "devuser:devpassword" bcrypt-hashed at bcrypt.DefaultCost,
-      # generated with this service's own cmd/gen-basic-auth-hash — a
-      # throwaway local-dev credential, not a real secret. Every literal "$"
-      # in the hash must be escaped as "$$" or Compose's own variable
-      # interpolation mangles it (confirmed empirically: unescaped, Compose
-      # reads "$XQZsg..." as an unset variable and silently blanks it out).
-      SRE_ALERT_AUTH_USERS: "devuser:$$2a$$10$$XQZsgUlDouJfvZ/PGMspiOE6scpOj1BaEsYbmSGT3tNleZx0tLAYy"
-      PORT: "8080"
-    ports:
-      - "127.0.0.1:8087:8080"

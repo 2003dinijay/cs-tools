@@ -266,8 +266,8 @@ const incidentSystemActorEmail = "system-m2m@wso2.com"
 // (see CreateIncidentComment's own doc comment) -- there is no schema reason
 // to require a resolvable platform user here. This matters concretely: the
 // M2M pipeline this whole UpdateIncident extension exists to unblock
-// (sre-alert-ingestion-service -> csm-integration-service, both M2M-only,
-// forwarding no end-user token by design) would otherwise trade the
+// (a machine client -> csm-integration-service, both M2M-only, forwarding
+// no end-user token by design) would otherwise trade the
 // original unconditional 503 for an unconditional 401 -- fixing nothing.
 // Case's comment endpoints are reached by real logged-in portal users, so a
 // hard requirement is correct there; this one is also reached by
