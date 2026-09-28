@@ -47,7 +47,7 @@ var slaClockTypeTarget = map[string]string{
 // slaClockTypeNameLabel is the title-case word sla_policy.name uses for
 // each target, e.g. "P1 - Response (Managed Services)" -- confirmed
 // against real production sla_policy names (see this package's own
-// CLAUDE.md task notes / the migration 000089 doc comment for the full
+// CLAUDE.md task notes / the migration 0136 doc comment for the full
 // set of examples this was checked against).
 var slaClockTypeNameLabel = map[string]string{
 	slaClockTypeResponse:   "Response",
@@ -102,7 +102,7 @@ const (
 // a given severity/clock-type/plan combination, replacing the old, deleted
 // sla_clocks design's hardcoded slaDurations map (internal/service/
 // sla_policy.go before commit 116d43522) with a lookup against the real
-// ServiceNow-synced policy data (migration 000051/000052) that map never
+// ServiceNow-synced policy data (migration 0047/0048) that map never
 // read at all.
 type slaPolicyResolver struct {
 	repo repository.SLAEngineRepository
@@ -118,7 +118,7 @@ func newSLAPolicyResolver(repo repository.SLAEngineRepository) *slaPolicyResolve
 // reasons: (1) resolveCasePlan's derivation is a best-effort heuristic with
 // no reliable underlying signal (see its own doc comment) -- a wrong guess
 // must not silently drop SLA tracking for a case entirely; (2) P0 policies
-// (migration 000089) are seeded ONLY under "Managed Services" (ServiceNow's
+// (migration 0136) are seeded ONLY under "Managed Services" (ServiceNow's
 // own real data has no Open Source P0 rows either -- P0 is WSO2's most
 // severe, paid-support-only tier), so a CATASTROPHIC-severity case whose
 // project looks like Open Source must still resolve to the real P0 policy

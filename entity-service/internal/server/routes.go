@@ -211,6 +211,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	accountRepo := repository.NewAccountRepository(db)
 	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
 
+	// teamHandler has no ServiceNow-backed counterpart to switch on — see
+	// TeamService's own doc comment for why this is a new capability, not a
+	// migrated one. Still gated on db != nil like every other Postgres-only
+	// handler above: NewPoolIfNeeded returns a nil pool for
+	// DATA_SOURCE=servicenow, and TeamRepository's queries would nil-pointer
+	// on the first request rather than being unregistered like the rest.
+	var teamHandler *handler.TeamHandler
+	if db != nil {
+		teamRepo := repository.NewTeamRepository(db)
+		teamHandler = handler.NewTeamHandler(service.NewTeamService(teamRepo))
+	}
+
 	var salesforceEventHandler *handler.SalesforceEventHandler
 	// membershipRegistrationHandler and projectContactSyncHandler both need
 	// the very same membership-ingest-enabled SalesforceEventService this
@@ -495,7 +507,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	// The CSM-native SLA engine (internal/service/sla_engine_service.go)
 	// writes its own source='CSM' rows into the "sla"/"sla_policy" tables
-	// the ServiceNow sync also populates (migration 000088) -- gated on db
+	// the ServiceNow sync also populates (migration 0134) -- gated on db
 	// the same way slaStatusHandler above is: nowhere to store a clock at
 	// all with no database configured. activeProjectSvc backs its
 	// plan-derivation heuristic (see sla_policy_resolver.go's
@@ -607,7 +619,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc, cfg.M2MTrustedActorEmails)
 
-	// customer_call (migration 000072) backs call requests on the Postgres
+	// customer_call (migration 0073) backs call requests on the Postgres
 	// data source, so these routes are registered for both data sources.
 	callRequestRepo := repository.NewCallRequestRepository(db)
 	var activeCallRequestSvc service.CallRequestService
@@ -640,7 +652,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		caseGithubIssueHandler = handler.NewCaseGithubIssueHandler(service.NewServiceNowCaseGithubIssueService(serviceNowIntegrationServiceClient, activeCaseSvc))
 	}
 
-	// case_escalation/case_escalation_notification_list (migration 000053)
+	// case_escalation/case_escalation_notification_list (migration 0054)
 	// now back SearchEscalations on Postgres for real -- CreateEscalation
 	// still isn't supported there (see EscalationRepository's own doc
 	// comment for why), so this supersedes an earlier unconditional
@@ -844,7 +856,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		))
 	}
 
-	// instance/usage tracking tables (migration 000054) -- see
+	// instance/usage tracking tables (migration 0054) -- see
 	// instance_repo.go's own doc comment for the caveats around resolving an
 	// instance's project/deployment/deployed-product references on this data
 	// source.
@@ -1020,6 +1032,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("GET /accounts/{id}", accountHandler.GetAccount)
 		mux.HandleFunc("POST /accounts/search", accountHandler.SearchAccounts)
 		mux.HandleFunc("PATCH /accounts/{id}", accountHandler.PatchAccountTeams)
+	}
+	if teamHandler != nil {
+		mux.HandleFunc("GET /teams/{id}/members", teamHandler.GetTeamMembers)
 	}
 	mux.HandleFunc("POST /accounts/{id}/contacts/search", accountContactHandler.SearchAccountContacts)
 	if opportunityHandler != nil {

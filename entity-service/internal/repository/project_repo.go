@@ -32,9 +32,9 @@ import (
 )
 
 // ProjectRepository defines the persistence operations for the project
-// table (migration 000009). domain.Project.SubscriptionType is populated
+// table (migration 0014). domain.Project.SubscriptionType is populated
 // from project.project_type_id's linked project_type.name (migrations
-// 000026/000027) -- the same ServiceNow project "type" reference field
+// 0031/0032) -- the same ServiceNow project "type" reference field
 // sn_project_service.go's own snTypeNameToSubscriptionType converts, mirrored
 // here as projectTypeNameToSubscriptionType for this data source (see that
 // function's own doc comment). ClosureStatus still has no corresponding
@@ -45,9 +45,8 @@ import (
 // match (account.ai_gen_response_enabled/
 // smart_knowledge_base_suggestions_enabled) despite the name difference and
 // are populated from them. domain.ProjectAccountRef.Tier is populated from
-// account.support_tier (migration 000092) -- see GetProjectByID's own
-// comment for the ServiceNow field-name mismatch that column's sync is
-// built on.
+// account.support_tier (migration 0101) -- see GetProjectByID's own
+// comment for the enum-scan cast this column needs.
 //
 // GetProjectByID also now populates ClosureState/OnboardingStatus (from
 // project.wso2_closure_state/onboarding_status, cast ::TEXT the same way
@@ -118,7 +117,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		argIdx++
 	}
 
-	// key (migration 000009) matches domain.SearchProjectsRequest.ExcludeProjectKeys
+	// key (migration 0014) matches domain.SearchProjectsRequest.ExcludeProjectKeys
 	// directly — same column SearchQuery's own ILIKE already matches against
 	// above. Exact, case-sensitive per that field's own doc comment.
 	if len(req.ExcludeProjectKeys) > 0 {
@@ -128,7 +127,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 	}
 
 	// wso2_closure_state_enum's values ('OPEN', 'READ_ONLY', 'CLOSED',
-	// 'RESTRICTED', 'SUSPENDED', migration 000009) are the same vocabulary as
+	// 'RESTRICTED', 'SUSPENDED', migration 0014) are the same vocabulary as
 	// ExcludeClosureStates' ServiceNow-sourced values ("Open"/"Suspended"/
 	// "Restricted"), just differently cased, so this upper-cases the caller's
 	// values rather than requiring them to match casing they have no way to
@@ -144,7 +143,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		argIdx++
 	}
 
-	// project_type.name (migrations 000026/000027, LEFT JOINed below via
+	// project_type.name (migrations 0031/0032, LEFT JOINed below via
 	// p.project_type_id) holds the raw ServiceNow project "type" label (e.g.
 	// "Cloud Support") -- normalized in SQL the same way
 	// snTypeNameToSubscriptionType normalizes it in Go
@@ -165,6 +164,17 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		}
 		where += fmt.Sprintf(" AND (pt.name IS NULL OR lower(replace(pt.name, ' ', '_')) <> ALL($%d::text[]))", argIdx)
 		filterArgs = append(filterArgs, types)
+		argIdx++
+	}
+
+	// AccountID was previously documented "ServiceNow data source only" even
+	// though project.account_id (migration 000009) is a plain FK already
+	// selected/returned by this same query below -- this is what actually
+	// applies it as a filter for the Postgres data source too. The service
+	// layer validates it's a UUID before this point (project_service.go).
+	if req.AccountID != "" {
+		where += fmt.Sprintf(" AND p.account_id = $%d::uuid", argIdx)
+		filterArgs = append(filterArgs, req.AccountID)
 		argIdx++
 	}
 
@@ -218,7 +228,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 			// reached this query -- same class of bug this guards against
 			// for pt.name too.
 			var projectTypeName *string
-			// sf_id is NOT NULL per migration 000009, but real data has since
+			// sf_id is NOT NULL per migration 0014, but real data has since
 			// proven that constraint isn't actually enforced (the same gap
 			// GetCaseByID's own InternalID doc comment describes for
 			// wso2_id) -- a non-pointer scan here panicked "cannot scan NULL
@@ -268,7 +278,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	// and treat a NULL column as false, not an error.
 	var agentEnabled, kbReferencesEnabled *bool
 	// account is a LEFT JOIN, not an INNER JOIN: project.account_id
-	// (migration 000009) is nullable and genuinely NULL on live data (14 of
+	// (migration 0014) is nullable and genuinely NULL on live data (14 of
 	// 1956 rows) -- an INNER JOIN here used to make every such project
 	// invisible (zero rows -> misreported as 404 "project not found"), the
 	// same class of false-404 GetCaseByID had for its own optional joins
@@ -278,10 +288,20 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	// so they tolerate NULL (whether from a real account or a LEFT JOIN
 	// producing no row at all) without a separate local var.
 	var aID, aName *string
-	// account.support_tier (migration 000092) is a nullable VARCHAR, but
-	// ProjectAccountRef.Tier is a plain (non-pointer) string -- scan into a
-	// *string local and default to "" via stringOrEmpty, same pattern as
-	// agentEnabled/kbReferencesEnabled above.
+	// aNumber is the same class of already-present-but-unselected gap
+	// account_repo.go's own comment describes for account.number -- kept as
+	// its own local var (rather than folded into aID/aName above) since only
+	// this one column needed the fix, not the whole account.* group.
+	var aNumber *string
+	// account.support_tier (migration 0101) is support_tier_enum, not a plain
+	// VARCHAR -- like every other enum column this repository package scans
+	// into a Go string (see e.g. this file's wso2_closure_state/
+	// onboarding_status casts above), it needs its own ::TEXT cast in the
+	// query below or the scan fails with no custom enum types registered in
+	// this connection's pgx type map. ProjectAccountRef.Tier is a plain
+	// (non-pointer) string, so this scans into a *string local and defaults
+	// to "" via stringOrEmpty, same pattern as agentEnabled/kbReferencesEnabled
+	// above.
 	var supportTier *string
 	// project_type is a LEFT JOIN for the same reason account is: a project
 	// with no project_type_id set (or one pointing at a deleted row) must
@@ -302,11 +322,11 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	err := r.db.QueryRow(ctx,
 		`SELECT p.id, p.sf_id, p.name, p.key,
 		        p.start_date, p.end_date, p.created_on, p.updated_on,
-		        a.id, a.name, a.activation_date, a.region,
+		        a.id, a.name, a.number, a.activation_date, a.region,
 		        a.ai_gen_response_enabled, a.smart_knowledge_base_suggestions_enabled,
-		        a.support_tier,
+		        a.support_tier::TEXT,
 		        pt.name,
-		        -- wso2_closure_state/onboarding_status (migration 000009) are stored
+		        -- wso2_closure_state/onboarding_status (migration 0014) are stored
 		        -- SCREAMING_SNAKE_CASE ('SUSPENDED', 'NOT_STARTED'), but the documented
 		        -- response vocabulary isn't -- and the two don't even share a separator:
 		        -- ClosureState is space-separated Title Case ("Suspended", "Read Only"),
@@ -335,7 +355,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		 FROM project p
 		 LEFT JOIN account a ON p.account_id = a.id
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
-		 -- account.technical_owner_id/account_manager_id (migration 000008) are UUID FKs
+		 -- account.technical_owner_id/account_manager_id (migration 0012) are UUID FKs
 		 -- into "user"(id); resolved to email here the same way deployment_repo.go/
 		 -- other repos in this file resolve a *_by column to a display value.
 		 -- ASSUMPTION, not confirmed against a live payload: account_manager_id is
@@ -352,7 +372,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	).Scan(
 		&v.ID, &v.SfID, &v.Name, &v.Key,
 		&v.StartDate, &v.EndDate, &v.CreatedOn, &v.UpdatedOn,
-		&aID, &aName, &v.Account.ActivationDate, &v.Account.Region,
+		&aID, &aName, &aNumber, &v.Account.ActivationDate, &v.Account.Region,
 		&agentEnabled, &kbReferencesEnabled,
 		&supportTier,
 		&projectTypeName,
@@ -363,10 +383,14 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		&v.TotalOnboardingHours, &v.ConsumedOnboardingHours, &v.RemainingOnboardingHours,
 		&v.Account.TechnicalOwnerEmail, &v.Account.OwnerEmail,
 	)
-	// v.Account.Tier is sourced from account.support_tier (migration 000092),
-	// itself synced from ServiceNow's u_support_timezone -- not u_support_tier
-	// -- due to a historical relabeling bug on the production tenant. See
-	// migration 000092's own comment.
+	// v.Account.Tier is sourced from account.support_tier (migration 0101).
+	// ServiceNow's own u_support_tier/u_support_timezone fields are swapped on
+	// the production tenant (a historical relabeling bug); the sync's own
+	// mapping already corrects that per-environment before the value ever
+	// reaches this column (source_by_env in
+	// operations/csm-sync-service/configs/mappings/customer_account.yaml), so
+	// this column holds the real tier by the time it's read here -- no
+	// swap-awareness needed on this side.
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProjectDetailsView{}, &apierror.NotFoundError{Msg: "project not found"}
 	}
@@ -378,6 +402,9 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	}
 	if aName != nil {
 		v.Account.Name = *aName
+	}
+	if aNumber != nil {
+		v.Account.Number = *aNumber
 	}
 	v.Account.AgentEnabled = agentEnabled != nil && *agentEnabled
 	v.Account.KbReferencesEnabled = kbReferencesEnabled != nil && *kbReferencesEnabled
@@ -415,7 +442,7 @@ func (r *projectRepo) UpdateProject(ctx context.Context, id string, req domain.P
 
 	// HasAgent/HasKbReferences map onto the linked account's
 	// ai_gen_response_enabled/smart_knowledge_base_suggestions_enabled
-	// columns (migration 000008), the same mapping GetProjectByID already
+	// columns (migration 0012), the same mapping GetProjectByID already
 	// reads from -- see this file's own doc comment. project.account_id is
 	// nullable (14 of 1956 rows on live data, per GetProjectByID's own doc
 	// comment), so a project with no linked account can't take these fields.
@@ -498,7 +525,7 @@ func (r *projectRepo) UpdateProject(ctx context.Context, id string, req domain.P
 }
 
 // projectTypeNameToSubscriptionType converts a project_type.name label (e.g.
-// "Cloud Support", migrations 000026/000027) to the domain SubscriptionType
+// "Cloud Support", migrations 0031/0032) to the domain SubscriptionType
 // enum (e.g. "cloud_support") -- the same transform
 // sn_project_service.go's snTypeNameToSubscriptionType applies to the same
 // underlying ServiceNow field, duplicated here rather than shared because

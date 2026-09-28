@@ -633,7 +633,7 @@ func mergeUnique(a, b []string) []string {
 
 // addAccountDefaultWatchers adds a just-created case's account's four named
 // stakeholders (customer_success_manager_id, technical_owner_id,
-// secondary_technical_owner_id, account_manager_id -- migration 000008) as
+// secondary_technical_owner_id, account_manager_id -- migration 0012) as
 // watchers, merged with requestedWatcherIDs (the caller's own
 // CreateCaseRequest.WatchList) -- see createCaseSNFirst's own call site
 // comment for why this exists, and updateCaseWatchList's own doc comment for
@@ -735,7 +735,7 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 	if req.Content == "" {
 		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "content is required"}
 	}
-	// comment.created_by (migration 000037) is a free-text VARCHAR, not a
+	// comment.created_by (migration 0040) is a free-text VARCHAR, not a
 	// UUID FK -- see CaseRepository.CreateCaseComment's own doc comment.
 	req.CreatedBy = actorEmail
 	c, err := s.repo.CreateCaseComment(ctx, req)
@@ -1261,7 +1261,7 @@ func (s *caseService) updateCaseWatchList(ctx context.Context, req domain.Update
 }
 
 // updateCaseAssignee implements UpdateCase's AssigneeEmail branch: resolving
-// the target user, writing work_item.assigned_to_id (migration 000036,
+// the target user, writing work_item.assigned_to_id (migration 0039,
 // already read by the assignedUserId search filter and GetCaseByID's own
 // AssignedEngineer), and echoing the assignee back on both AssignedTo
 // (ServiceNow-shaped) and AssignedToUser (the canonical reference, per that
@@ -1915,7 +1915,7 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	// see caseFieldPredicates/the SearchCases joins block.)
 	// state+in is supported here; state+notIn has no repository query support,
 	// and dropping an exclusion silently would widen the result set.
-	// parentId is also implemented (wi.parent_id, migration 000036 -- the
+	// parentId is also implemented (wi.parent_id, migration 0039 -- the
 	// "Linked Items" tab's child-case lookup), so it too is absent here.
 	if len(parsed.ExcludeStates) > 0 {
 		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "state" (notIn) is not supported by this data source`}
@@ -2210,7 +2210,7 @@ func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.Sear
 // Merges comments, complete attachments, and (when req.IncludeFieldChanges
 // is true) field-change entries into one feed -- see
 // CaseRepository.SearchCaseActivities's own doc comment for how
-// work_item_activity (migration 000056) backs the field-change branch.
+// work_item_activity (migration 0055) backs the field-change branch.
 func (s *caseService) SearchCaseActivities(ctx context.Context, req domain.SearchCaseActivitiesRequest) (domain.SearchCaseActivitiesResponse, error) {
 	if err := validateUUIDs("caseId", []string{req.CaseID}); err != nil {
 		return domain.SearchCaseActivitiesResponse{}, err
@@ -2266,7 +2266,7 @@ func (s *caseService) GetAttachment(_ context.Context, _ string) (domain.Attachm
 
 // AddCaseTag implements CaseService.
 //
-// Persists via tag/work_item_tag (migration 000021), added after this
+// Persists via tag/work_item_tag (migration 0026), added after this
 // method was written as a detection-only stub (see
 // detectPatchTagBillableOverride's own doc comment for that history) — it
 // now actually attaches label to caseID, idempotently (a repeat call for an
@@ -2327,7 +2327,7 @@ func (s *caseService) addCaseTagAs(ctx context.Context, caseID, label, actorEmai
 	//
 	// On success, the ServiceNow-side label_entry sys_id this mirror creates
 	// is persisted back onto this specific (caseID, tag.ID) attachment
-	// (migration 000088's work_item_tag.sn_sys_id) -- itself a second
+	// (migration 0135's work_item_tag.sn_sys_id) -- itself a second
 	// best-effort, asynchronous write: if it fails, the attachment simply has
 	// no ServiceNow mapping yet, the same "not yet mirrorable" state
 	// RemoveCaseTag's mirror already tolerates (see that method's own doc
@@ -2430,7 +2430,7 @@ func (s *caseService) detectPatchTagBillableOverride(ctx context.Context, caseID
 // Now mirrored to ServiceNow under DATA_SOURCE=postgres-servicenow-dual-write
 // (unlike its own prior state -- tagID here is the Postgres "tag" table's own
 // primary key, which has no relationship to ServiceNow's own label_entry
-// sys_id; migration 000088's work_item_tag.sn_sys_id closes that gap:
+// sys_id; migration 0135's work_item_tag.sn_sys_id closes that gap:
 // AddCaseTag's mirror success path now persists it per (caseID, tagID)
 // attachment -- see that method's own doc comment). ServiceNow's own
 // DELETE /cases/{id}/tags/{tagId} (snCaseService.RemoveCaseTag) genuinely
