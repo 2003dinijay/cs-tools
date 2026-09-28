@@ -25,7 +25,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
@@ -185,11 +184,11 @@ type ChangeRequestRepository interface {
 }
 
 type changeRequestRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
 // NewChangeRequestRepository constructs a ChangeRequestRepository backed by the given connection pool.
-func NewChangeRequestRepository(db *pgxpool.Pool) ChangeRequestRepository {
+func NewChangeRequestRepository(db *Scoped) ChangeRequestRepository {
 	return &changeRequestRepo{db: db}
 }
 
@@ -786,12 +785,24 @@ var changeRequestPatchCRFKField = map[string]string{
 
 // PatchChangeRequest implements ChangeRequestRepository.
 func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, req domain.PatchChangeRequestRequest, actorEmail string) (domain.ChangeRequest, error) {
-	tx, err := r.db.Begin(ctx)
+	var wiID string
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		var txErr error
+		wiID, txErr = patchChangeRequestTx(ctx, tx, id, req, actorEmail)
+		return txErr
+	})
 	if err != nil {
-		return domain.ChangeRequest{}, fmt.Errorf("patch change request: begin tx: %w", err)
+		return domain.ChangeRequest{}, err
 	}
-	defer tx.Rollback(ctx)
+	return r.GetChangeRequestByID(ctx, wiID)
+}
 
+// patchChangeRequestTx is PatchChangeRequest's body, extracted so it can run
+// inside r.db.InTx's closure (Scoped.InTx pulls caller identity from ctx and
+// sets it once for the whole transaction, same shape as
+// timeCardRepo.createTimeCardTx). Returns the change request's id (== the
+// work_item id) on success.
+func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.PatchChangeRequestRequest, actorEmail string) (string, error) {
 	wiSets := []string{"updated_on = NOW()", "updated_by = $1"}
 	wiArgs := []any{actorEmail}
 	wiIdx := 2
@@ -828,16 +839,16 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 	var wiID string
 	if err := tx.QueryRow(ctx, wiQuery, wiArgs...).Scan(&wiID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.ChangeRequest{}, &apierror.NotFoundError{Msg: "change request not found"}
+			return "", &apierror.NotFoundError{Msg: "change request not found"}
 		}
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {
 			field := changeRequestPatchFKField[pgErr.ConstraintName]
 			if field == "" {
 				field = "one or more referenced fields"
 			}
-			return domain.ChangeRequest{}, &apierror.ValidationError{Msg: field + " does not refer to an existing record"}
+			return "", &apierror.ValidationError{Msg: field + " does not refer to an existing record"}
 		}
-		return domain.ChangeRequest{}, fmt.Errorf("patch change request work_item: %w", err)
+		return "", fmt.Errorf("patch change request work_item: %w", err)
 	}
 
 	crSets := []string{}
@@ -880,7 +891,7 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 			// "model"/"site_reliability_ops" predate change_model
 			// (migration 000055) and have no real enum label there --
 			// see changeRequestChangeModelToType's own doc comment.
-			return domain.ChangeRequest{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
+			return "", &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
 		}
 		addCR("change_model = $%d::change_request_change_model_enum", enumValue)
 	}
@@ -916,23 +927,32 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 	if len(crSets) > 0 {
 		crArgs = append(crArgs, id)
 		crQuery := fmt.Sprintf(`UPDATE change_request SET %s WHERE id = $%d`, strings.Join(crSets, ", "), crIdx)
-		if _, err := tx.Exec(ctx, crQuery, crArgs...); err != nil {
+		ct, err := tx.Exec(ctx, crQuery, crArgs...)
+		if err != nil {
+			if IsRLSPolicyViolation(err) {
+				return "", &apierror.NotFoundError{Msg: "change request not found"}
+			}
 			if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {
 				field := changeRequestPatchCRFKField[pgErr.ConstraintName]
 				if field == "" {
 					field = "one or more referenced fields"
 				}
-				return domain.ChangeRequest{}, &apierror.ValidationError{Msg: field + " does not refer to an existing record"}
+				return "", &apierror.ValidationError{Msg: field + " does not refer to an existing record"}
 			}
-			return domain.ChangeRequest{}, fmt.Errorf("patch change request: %w", err)
+			return "", fmt.Errorf("patch change request: %w", err)
+		}
+		// change_request's RLS USING clause (migration 000097) silently
+		// excludes a row the caller isn't a project member of -- a plain
+		// Exec with no RETURNING never surfaces that as pgx.ErrNoRows the
+		// way the work_item UPDATE above does, so it must be checked
+		// explicitly here or a non-member caller would see a false
+		// "success" with nothing actually changed.
+		if ct.RowsAffected() == 0 {
+			return "", &apierror.NotFoundError{Msg: "change request not found"}
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return domain.ChangeRequest{}, fmt.Errorf("patch change request: commit tx: %w", err)
-	}
-
-	return r.GetChangeRequestByID(ctx, wiID)
+	return wiID, nil
 }
 
 // createChangeRequestFromServiceNowQuery inserts both halves of a change
@@ -1008,6 +1028,15 @@ func (r *changeRequestRepo) CreateChangeRequestFromServiceNow(ctx context.Contex
 		outID, outNumber, outSubject, outCreatedBy string
 		outCreatedOn, outUpdatedOn                 time.Time
 	)
+	// WithSystemIdentity: change_request's INSERT policy (migration 000097)
+	// is internal-only -- this insert never sets a project_id (see this
+	// file's own package doc comment on CreateChangeRequestFromServiceNow),
+	// so there is nothing to check project membership against regardless of
+	// who issued the original HTTP request, and the insert only ever runs
+	// after ServiceNow's own workflow has already accepted the create --
+	// treat it as the trusted, already-authorized system operation it is
+	// rather than inheriting whatever identity happened to be on ctx.
+	ctx = WithSystemIdentity(ctx)
 	err := r.db.QueryRow(ctx, createChangeRequestFromServiceNowQuery,
 		id, createdBy,
 		number, req.Subject, req.Description, req.AssignedEngineerID,
@@ -1282,7 +1311,7 @@ const decideChangeRequestApprovalQuery = `
 func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id, approverUserID, decision, actorEmail string) (string, error) {
 	var approvalID string
 	err := r.db.QueryRow(ctx, decideChangeRequestApprovalQuery, id, approverUserID, decision, actorEmail).Scan(&approvalID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) || IsRLSPolicyViolation(err) {
 		return "", &apierror.NotFoundError{Msg: "no pending approval found for this change request and caller"}
 	}
 	if err != nil {

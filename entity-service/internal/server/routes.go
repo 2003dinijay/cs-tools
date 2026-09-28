@@ -172,7 +172,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			}
 			// The outbound worker is started by cmd/api, which owns process
 			// lifetime; routes.go only builds what the HTTP surface needs.
-			githubSyncRepo = repository.NewGithubSyncRepository(db)
+			githubSyncRepo = repository.NewGithubSyncRepository(repository.NewScoped(db))
 			githubClient = github.NewClient(github.Config{
 				BaseURL: cfg.GithubBaseURL,
 				Token:   cfg.GithubToken,
@@ -180,7 +180,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			githubLabelSet = githubLabels
 			githubSyncSvc := service.NewGithubSyncServiceWriting(
 				githubSyncRepo,
-				repository.NewGithubMutationRepository(db),
+				repository.NewGithubMutationRepository(repository.NewScoped(db)),
 				githubClient,
 				cfg.GithubIntegrationLogin,
 				githubLabels,
@@ -655,7 +655,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	escalationHandler := handler.NewEscalationHandler(activeEscalationSvc)
 	caseEscalationHandler := handler.NewCaseEscalationHandler(service.NewCaseEscalationService(activeEscalationSvc, activeCaseSvc))
 
-	changeRequestRepo := repository.NewChangeRequestRepository(db)
+	changeRequestRepo := repository.NewChangeRequestRepository(repository.NewScoped(db))
 	var activeChangeRequestSvc service.ChangeRequestService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
