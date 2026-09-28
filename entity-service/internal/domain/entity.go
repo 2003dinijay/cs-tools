@@ -4572,7 +4572,7 @@ type ITService struct {
 	Class                 *string                `json:"class"`
 	BusinessCriticality   *BusinessCriticality   `json:"businessCriticality"`
 	ServiceClassification *ServiceClassification `json:"serviceClassification"`
-	SupportGroup          *EntityRef             `json:"supportGroup"`
+	AssignmentGroup       *EntityRef             `json:"assignmentGroup"`
 }
 
 // ConfigurationItem is a single CMDB configuration item returned in a search response.
