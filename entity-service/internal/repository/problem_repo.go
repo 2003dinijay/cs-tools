@@ -77,7 +77,7 @@ type ProblemRepository interface {
 	// problemService.createProblemSNFirst's own doc comment). Unlike
 	// CaseRepository.CreateCaseFromServiceNow, no wso2ID parameter exists
 	// here: work_item.wso2_id is only required (by the
-	// work_item_wso2_id_required_by_type CHECK constraint, migration 000016)
+	// work_item_wso2_id_required_by_type CHECK constraint, migration 0021)
 	// for CASE/SERVICE_REQUEST/ANNOUNCEMENT/ENGAGEMENT/
 	// SECURITY_REPORT_ANALYSIS -- PROBLEM is deliberately excluded from that
 	// list, and ServiceNow's own problem-create response

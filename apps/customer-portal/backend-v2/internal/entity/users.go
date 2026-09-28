@@ -39,3 +39,10 @@ func (c *Client) PatchMe(ctx context.Context, req PatchUserMeRequest) (PatchUser
 	err := c.patchJSON(ctx, "/users/me", req, &out)
 	return out, err
 }
+
+// SearchUsers calls POST /users/search.
+func (c *Client) SearchUsers(ctx context.Context, req SearchUsersRequest) (SearchUsersResponse, error) {
+	var out SearchUsersResponse
+	err := c.postJSON(ctx, "/users/search", req, &out)
+	return out, err
+}

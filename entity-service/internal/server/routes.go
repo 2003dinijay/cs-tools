@@ -207,9 +207,25 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// Constructed further below (once activeCaseSvc exists), not here —
 	// AutoPublish needs it for its own in-process case-creation fan-out.
 	var announcementRequestHandler *handler.AnnouncementRequestHandler
+	// Team Schedule is portal-native, like announcement_requests: it exists
+	// only in Postgres, so its routes are registered only when a pool is
+	// configured.
+	var scheduleHandler *handler.ScheduleHandler
 
 	accountRepo := repository.NewAccountRepository(db)
 	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
+
+	// teamHandler has no ServiceNow-backed counterpart to switch on — see
+	// TeamService's own doc comment for why this is a new capability, not a
+	// migrated one. Still gated on db != nil like every other Postgres-only
+	// handler above: NewPoolIfNeeded returns a nil pool for
+	// DATA_SOURCE=servicenow, and TeamRepository's queries would nil-pointer
+	// on the first request rather than being unregistered like the rest.
+	var teamHandler *handler.TeamHandler
+	if db != nil {
+		teamRepo := repository.NewTeamRepository(db)
+		teamHandler = handler.NewTeamHandler(service.NewTeamService(teamRepo))
+	}
 
 	var salesforceEventHandler *handler.SalesforceEventHandler
 	// membershipRegistrationHandler and projectContactSyncHandler both need
@@ -495,7 +511,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	// The CSM-native SLA engine (internal/service/sla_engine_service.go)
 	// writes its own source='CSM' rows into the "sla"/"sla_policy" tables
-	// the ServiceNow sync also populates (migration 000088) -- gated on db
+	// the ServiceNow sync also populates (migration 0134) -- gated on db
 	// the same way slaStatusHandler above is: nowhere to store a clock at
 	// all with no database configured. activeProjectSvc backs its
 	// plan-derivation heuristic (see sla_policy_resolver.go's
@@ -597,6 +613,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		announcementRequestHandler = handler.NewAnnouncementRequestHandler(
 			service.NewAnnouncementRequestService(repository.NewAnnouncementRequestRepository(db), activeCaseSvc, accessSvc),
 		)
+		scheduleHandler = handler.NewScheduleHandler(
+			service.NewScheduleService(repository.NewScheduleRepository(db), accessSvc),
+		)
 	}
 	// activeAttachmentSvc backs the case-attachment routes registered below
 	// (POST/GET/PATCH/DELETE /attachments...) — see caseAttachmentOverrideSvc's
@@ -607,7 +626,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc, cfg.M2MTrustedActorEmails)
 
-	// customer_call (migration 000072) backs call requests on the Postgres
+	// customer_call (migration 0073) backs call requests on the Postgres
 	// data source, so these routes are registered for both data sources.
 	callRequestRepo := repository.NewCallRequestRepository(db)
 	var activeCallRequestSvc service.CallRequestService
@@ -640,17 +659,29 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		caseGithubIssueHandler = handler.NewCaseGithubIssueHandler(service.NewServiceNowCaseGithubIssueService(serviceNowIntegrationServiceClient, activeCaseSvc))
 	}
 
-	// case_escalation/case_escalation_notification_list (migration 000053)
-	// now back SearchEscalations on Postgres for real -- CreateEscalation
-	// still isn't supported there (see EscalationRepository's own doc
-	// comment for why), so this supersedes an earlier unconditional
+	// case_escalation/case_escalation_notification_list (migration 0054)
+	// now back both SearchEscalations and CreateEscalation on Postgres for
+	// real -- see EscalationRepository.CreateEscalation's own doc comment
+	// for the level-transition/notification-recipient rule this
+	// approximates. This supersedes an earlier unconditional
 	// unavailableCaseEscalationService stand-in that predated the schema.
-	escalationRepo := repository.NewEscalationRepository(db)
+	escalationNotifyCfg := repository.EscalationNotificationConfig{
+		EL1AmericasTLGroupID:     cfg.EscalationEL1AmericasTLGroupID,
+		EL2AmericasTUGroupID:     cfg.EscalationEL2AmericasTUGroupID,
+		EL2ServiceProductGroupID: cfg.EscalationEL2ServiceProductGroupID,
+		EL2IdentityServerGroupID: cfg.EscalationEL2IdentityServerGroupID,
+		EL2DefaultProductGroupID: cfg.EscalationEL2DefaultProductGroupID,
+		EL3CREHeadGroupID:        cfg.EscalationEL3CREHeadGroupID,
+		EL4CCOGroupID:            cfg.EscalationEL4CCOGroupID,
+		EL4CROGroupID:            cfg.EscalationEL4CROGroupID,
+		EL5CEOGroupID:            cfg.EscalationEL5CEOGroupID,
+	}
+	escalationRepo := repository.NewEscalationRepository(db, escalationNotifyCfg)
 	var activeEscalationSvc service.EscalationService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeEscalationSvc = service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient)
 	} else {
-		activeEscalationSvc = service.NewEscalationService(escalationRepo)
+		activeEscalationSvc = service.NewEscalationService(escalationRepo, userRepo, caseRepo, accessSvc)
 	}
 	escalationHandler := handler.NewEscalationHandler(activeEscalationSvc)
 	caseEscalationHandler := handler.NewCaseEscalationHandler(service.NewCaseEscalationService(activeEscalationSvc, activeCaseSvc))
@@ -844,7 +875,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		))
 	}
 
-	// instance/usage tracking tables (migration 000054) -- see
+	// instance/usage tracking tables (migration 0054) -- see
 	// instance_repo.go's own doc comment for the caveats around resolving an
 	// instance's project/deployment/deployed-product references on this data
 	// source.
@@ -975,6 +1006,24 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /alert-incident-mappings", alertIncidentMappingHandler.CreateAlertIncidentMapping)
 		mux.HandleFunc("POST /alert-incident-mappings/lookup", alertIncidentMappingHandler.LookupAlertIncidentMappings)
 	}
+	if scheduleHandler != nil {
+		mux.HandleFunc("GET /team-schedule/catalogue", scheduleHandler.GetScheduleCatalogue)
+		mux.HandleFunc("POST /team-schedule/assignments/search", scheduleHandler.SearchScheduleAssignments)
+		mux.HandleFunc("POST /team-schedule/absences/search", scheduleHandler.SearchScheduleAbsences)
+		mux.HandleFunc("GET /team-schedule/on-duty", scheduleHandler.GetScheduleOnDuty)
+
+		// Lead edit. Own team only -- the service reads the team from the row
+		// being changed rather than from the request, so naming your own team
+		// does not let you edit somebody else's slot.
+		mux.HandleFunc("POST /team-schedule/assignments", scheduleHandler.CreateScheduleAssignment)
+		mux.HandleFunc("PATCH /team-schedule/assignments/{id}", scheduleHandler.UpdateScheduleAssignment)
+		mux.HandleFunc("DELETE /team-schedule/assignments/{id}", scheduleHandler.DeleteScheduleAssignment)
+		mux.HandleFunc("GET /team-schedule/activity", scheduleHandler.GetScheduleActivity)
+		mux.HandleFunc("GET /team-schedule/edit-markers", scheduleHandler.GetScheduleEditMarkers)
+		mux.HandleFunc("GET /team-schedule/my-lead-teams", scheduleHandler.GetMyLeadTeams)
+		mux.HandleFunc("POST /team-schedule/assignments/apply", scheduleHandler.ApplyScheduleRange)
+		mux.HandleFunc("POST /team-schedule/absences/apply", scheduleHandler.ApplyScheduleAbsence)
+	}
 	if announcementRequestHandler != nil {
 		mux.HandleFunc("POST /announcement-requests", announcementRequestHandler.CreateAnnouncementRequest)
 		mux.HandleFunc("GET /announcement-requests/{id}", announcementRequestHandler.GetAnnouncementRequest)
@@ -1020,6 +1069,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("GET /accounts/{id}", accountHandler.GetAccount)
 		mux.HandleFunc("POST /accounts/search", accountHandler.SearchAccounts)
 		mux.HandleFunc("PATCH /accounts/{id}", accountHandler.PatchAccountTeams)
+	}
+	if teamHandler != nil {
+		mux.HandleFunc("GET /teams/{id}/members", teamHandler.GetTeamMembers)
 	}
 	mux.HandleFunc("POST /accounts/{id}/contacts/search", accountContactHandler.SearchAccountContacts)
 	if opportunityHandler != nil {

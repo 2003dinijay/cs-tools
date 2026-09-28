@@ -174,7 +174,7 @@ type snCreateDeployedProductResponse struct {
 		// omission -- see snCreateDeploymentResponse's own doc comment) --
 		// it exists on this wire struct only for
 		// createDeployedProductSNFirstDetails' dual-write use: deployed_product.number
-		// is NOT NULL UNIQUE (migration 000014) and Postgres has no generator
+		// is NOT NULL UNIQUE (migration 0019) and Postgres has no generator
 		// for it, the same unresolved problem deployment.number had before
 		// createDeploymentSNFirstDetails. This mirrors deployment's shape
 		// (id/number/createdOn/createdBy) exactly, on the assumption the
