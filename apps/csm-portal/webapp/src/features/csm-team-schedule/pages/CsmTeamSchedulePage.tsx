@@ -1004,6 +1004,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               tz={tz}
               myAbsences={mineAbsences.data?.absences ?? []}
               absenceKinds={catalogue.data?.absenceKinds ?? []}
+              // A day card opens that day in "Who is working today".
+              onShowDay={(iso) => {
+                const [y, m, d] = iso.split("-").map(Number);
+                setAnchor(new Date(y, m - 1, d));
+                setTab("today");
+              }}
             />
           )}
         </div>

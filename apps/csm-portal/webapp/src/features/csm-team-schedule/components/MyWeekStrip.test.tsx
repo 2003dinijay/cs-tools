@@ -17,7 +17,7 @@
  */
 
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import MyWeekStrip from "./MyWeekStrip";
 import {
@@ -113,5 +113,22 @@ describe("MyWeekStrip: the open day's SRE escalation", () => {
     expect(tier(0, 1)).toHaveTextContent("John");
     expect(tier(1, 2)).toHaveTextContent("Ada");
     expect(tier(0, 2)).toHaveTextContent("Nobody rostered");
+  });
+});
+
+describe("MyWeekStrip: a day card opens that day's view", () => {
+  it("goes to the day when a card is clicked, and lists it in place from Who's on", () => {
+    const onShowDay = vi.fn();
+    const { container } = renderStrip({
+      onShowDay,
+      everyone: [assignment({ name: "Asela", rotaDate: "2026-09-23", shiftCode: EVENING.code })],
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Wed Sep 23 2026: open in Who is working today/ }));
+    expect(onShowDay).toHaveBeenCalledWith("2026-09-23");
+
+    onShowDay.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /Wed Sep 23 2026: show everyone on rotation/ }));
+    expect(onShowDay).not.toHaveBeenCalled();
+    expect(container.querySelector(".peekgrid")).toHaveTextContent("Asela");
   });
 });

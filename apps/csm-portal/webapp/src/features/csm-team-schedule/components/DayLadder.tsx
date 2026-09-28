@@ -50,6 +50,21 @@ const HOUR_PX = 38;
  */
 const MIN_COLUMN_PX = 148;
 
+/** A lane holding a single column of cards -- TZ3, whose one card is its
+ *  whole night -- still has to show an engineer's full name, so it gets a
+ *  floor of its own above one column's, and a little more than one column's
+ *  share of the width. */
+const SINGLE_LANE_MIN_PX = 220;
+const SINGLE_LANE_SHARE = 1.25;
+
+/** How wide a lane must be, and what share of the spare width it takes. */
+function laneSizing(columns: number): { minWidth: number; flexGrow: number } {
+  const n = Math.max(1, columns);
+  return n === 1
+    ? { minWidth: SINGLE_LANE_MIN_PX, flexGrow: SINGLE_LANE_SHARE }
+    : { minWidth: n * MIN_COLUMN_PX, flexGrow: n };
+}
+
 const px = (minutes: number): number => Math.round((minutes / 60) * HOUR_PX);
 
 export interface LadderLane {
@@ -363,7 +378,25 @@ export default function DayLadder({
         title: `Others in ${lane.name}`,
         hideTags: true,
       }));
-      return { ...lane, columns: [escalationCards(lane.name, tiered), others] };
+      // A zone whose regular hours are the same stretch as its escalation
+      // window -- TZ3, 21:00-06:00, with no middle of the day to cover -- is
+      // one card, not two side by side saying the same hours twice: the
+      // regular-hours people become a last section of the escalation card.
+      // TZ1 and TZ2 work regular hours wider than their escalation block, so
+      // theirs stay cards of their own.
+      const escalation = escalationCards(lane.name, tiered);
+      const apart = others.filter((o) => {
+        const same = escalation.find((e) => e.startMin === o.startMin && e.endMin === o.endMin);
+        if (!same) return true;
+        same.sections = [...(same.sections ?? []), { label: "Regular hours", list: o.rows }];
+        same.rows = [...same.rows, ...o.rows];
+        return false;
+      });
+      // An empty column is left out rather than drawn: a zone with nobody
+      // on ordinary hours that day should not hold half its width open for
+      // them, while the zones beside it cut their card titles short.
+      const columns = [escalation, apart].filter((c) => c.length > 0);
+      return { ...lane, columns: columns.length > 0 ? columns : [[]] };
     });
   }, [day, lanes, shifts, tz]);
 
@@ -391,7 +424,7 @@ export default function DayLadder({
   const ladderWidth = useMemo(
     () =>
       56 +
-      built.reduce((sum, lane) => sum + Math.max(1, lane.columns.length) * MIN_COLUMN_PX + 12, 0) +
+      built.reduce((sum, lane) => sum + laneSizing(lane.columns.length).minWidth + 12, 0) +
       (built.length === 1 ? OFF_ROTA_WIDE_PX : OFF_ROTA_PX),
     [built],
   );
@@ -475,10 +508,10 @@ export default function DayLadder({
             className="lnh"
             style={{
               ["--zc" as string]: lane.colour ?? "var(--faint)",
-              // The same floor its lane has. Without it the heading row and
-              // the lane row distribute their flex space differently and each
-              // heading sits a few pixels off the column it names.
-              minWidth: Math.max(1, lane.columns.length) * MIN_COLUMN_PX,
+              // The same floor and share its lane has. Without them the heading
+              // row and the lane row distribute their flex space differently
+              // and each heading sits off the column it names.
+              ...laneSizing(lane.columns.length),
             }}
           >
             <span className="zchip">{lane.name}</span>
@@ -515,7 +548,10 @@ export default function DayLadder({
                 className="lane"
                 style={{
                   ["--zc" as string]: lane.colour ?? "var(--faint)",
-                  minWidth: Math.max(1, lane.columns.length) * MIN_COLUMN_PX,
+                  // A share of the day's width per column of cards it holds,
+                  // not an equal share per zone: a zone with two cards side
+                  // by side needs twice the room of one with a single card.
+                  ...laneSizing(lane.columns.length),
                 }}
               >
                 <div className={`lncols${lane.columns.length < 2 ? " one" : ""}`}>

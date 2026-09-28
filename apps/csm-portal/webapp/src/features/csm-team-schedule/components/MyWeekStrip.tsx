@@ -52,6 +52,10 @@ interface MyWeekStripProps {
    *  nothing on it, which is the one thing it is not. */
   myAbsences?: ScheduleAbsence[];
   absenceKinds?: ScheduleAbsenceKind[];
+  /** Open a day in "Who is working today". Clicking a card does this when it
+   *  is given -- the reader wants that day's full view -- and the card's own
+   *  "Who's on" cue still lists the day in place. */
+  onShowDay?: (iso: string) => void;
 }
 
 /** How long the cursor must rest on a day before it opens, so sweeping across
@@ -79,6 +83,7 @@ export default function MyWeekStrip({
   tz,
   myAbsences = [],
   absenceKinds = [],
+  onShowDay,
 }: MyWeekStripProps): JSX.Element {
   const [openDay, setOpenDay] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
@@ -157,25 +162,43 @@ export default function MyWeekStrip({
               style={{ ["--rc" as string]: accentOf(shift?.colourToken ?? "lk") }}
               role="button"
               tabIndex={0}
-              aria-expanded={openDay === iso}
-              aria-controls="mywk-peek"
-              aria-label={`${d.toDateString()}: show everyone on rotation`}
+              aria-label={
+                onShowDay ? `${d.toDateString()}: open in Who is working today` : d.toDateString()
+              }
               onMouseEnter={() => hoverOpen(iso)}
               onMouseLeave={cancelHover}
               onFocus={() => setOpenDay(iso)}
-              onClick={() => setOpenDay(openDay === iso ? null : iso)}
+              // The card opens the day in "Who is working today", which is
+              // where a reader clicking a day wants to go. Without that view
+              // to go to, it lists the day in place as it always did.
+              onClick={() => (onShowDay ? onShowDay(iso) : setOpenDay(openDay === iso ? null : iso))}
               onKeyDown={(e) => {
+                if (e.target !== e.currentTarget) return;
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
-                  setOpenDay(openDay === iso ? null : iso);
+                  if (onShowDay) onShowDay(iso);
+                  else setOpenDay(openDay === iso ? null : iso);
                 }
               }}
             >
               {iso === todayIso ? <span className="daytag">Today</span> : null}
-              <span className="daysee" aria-hidden="true">
+              {/* The in-place list, on its own control now the card itself
+                  goes to the day view. It stops the click reaching the card. */}
+              <button
+                type="button"
+                className="daysee"
+                aria-expanded={openDay === iso}
+                aria-controls="mywk-peek"
+                aria-label={`${d.toDateString()}: show everyone on rotation`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  cancelHover();
+                  setOpenDay(openDay === iso ? null : iso);
+                }}
+              >
                 <Users size={11} />
                 <span className="dslabel">{openDay === iso ? "Hide" : "Who's on"}</span>
-              </span>
+              </button>
               <span className="dw">{shortDayName(d)}</span>
               <span className="dn tn">{d.getDate()}</span>
               {absence ? (
@@ -232,8 +255,10 @@ export default function MyWeekStrip({
         <div className="peek peekhint" id="mywk-peek">
           <Users size={16} />
           <span>
-            <b>See who's on rotation with you.</b> Hover over a day above, or tap it, to list
-            everyone rostered that day.
+            <b>See who's on rotation with you.</b>{" "}
+            {onShowDay
+              ? "Hover over a day above, or tap Who's on, to list everyone rostered that day. Click a day to open it in Who is working today."
+              : "Hover over a day above, or tap it, to list everyone rostered that day."}
           </span>
         </div>
       )}
@@ -243,7 +268,11 @@ export default function MyWeekStrip({
           <b>{rosteredCount}</b> of 7 days rostered this week · <b>{onRotaCount}</b> on rotation
         </span>
         {openDay ? (
-          <span className="grp hint">Click the open day again, or ×, to close it</span>
+          <span className="grp hint">
+            {onShowDay
+              ? "Who's on again, or ×, to close it · click a day to open it in Who is working today"
+              : "Click the open day again, or ×, to close it"}
+          </span>
         ) : null}
       </div>
     </>
