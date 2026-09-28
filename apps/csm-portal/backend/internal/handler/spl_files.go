@@ -36,19 +36,19 @@ type splDriveClient interface {
 // SplFilesHandler handles HTTP requests for SupportPortalLite's Google
 // Drive browsing endpoints (GET /spl/files, GET /spl/files/search).
 type SplFilesHandler struct {
-	drive         splDriveClient
-	allowedGroups []string
+	drive       splDriveClient
+	accessGuard *AccessGuard
 }
 
 // NewSplFilesHandler creates a SplFilesHandler backed by the given Drive
-// client. allowedGroups is SupportPortalLite's blanket access-gate group
-// list (SPL_ALLOWED_GROUPS) — these endpoints have no additional
-// fine-grained group check beyond it (confirmed by reading service.bal: the
+// client. accessGuard enforces PermSPLAccess, SupportPortalLite's blanket
+// audience gate — these endpoints have no additional fine-grained
+// permission check beyond it (confirmed by reading service.bal: the
 // `files`/`files/search` resource functions take no http:RequestContext and
 // never call authJWT/isUserAuthorized beyond the global request
 // interceptor).
-func NewSplFilesHandler(drive splDriveClient, allowedGroups []string) *SplFilesHandler {
-	return &SplFilesHandler{drive: drive, allowedGroups: allowedGroups}
+func NewSplFilesHandler(drive splDriveClient, accessGuard *AccessGuard) *SplFilesHandler {
+	return &SplFilesHandler{drive: drive, accessGuard: accessGuard}
 }
 
 // ListFiles handles GET /spl/files.
@@ -61,7 +61,7 @@ func NewSplFilesHandler(drive splDriveClient, allowedGroups []string) *SplFilesH
 // this is our own input-validation response, not a change to which external
 // endpoint is called or how.
 func (h *SplFilesHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -88,7 +88,7 @@ func (h *SplFilesHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 // returns 400 here rather than the Ballerina original's 500, matching this
 // backend's own input-validation convention.
 func (h *SplFilesHandler) SearchFolder(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}

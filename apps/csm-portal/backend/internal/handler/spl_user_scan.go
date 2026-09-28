@@ -183,16 +183,16 @@ var (
 // tool, cross-referencing the sales-side (Salesforce) and CS-side
 // (ServiceNow) entity services.
 type SplUserScanHandler struct {
-	sales         salesEntityClient
-	cs            csEntityClient
-	allowedGroups []string
+	sales       salesEntityClient
+	cs          csEntityClient
+	accessGuard *AccessGuard
 }
 
 // NewSplUserScanHandler creates a SplUserScanHandler backed by the given
-// sales-side and CS-side entity clients. allowedGroups is SupportPortalLite's
-// blanket access-gate group list (SPL_ALLOWED_GROUPS).
-func NewSplUserScanHandler(sales salesEntityClient, cs csEntityClient, allowedGroups []string) *SplUserScanHandler {
-	return &SplUserScanHandler{sales: sales, cs: cs, allowedGroups: allowedGroups}
+// sales-side and CS-side entity clients. accessGuard enforces PermSPLAccess,
+// SupportPortalLite's blanket audience gate.
+func NewSplUserScanHandler(sales salesEntityClient, cs csEntityClient, accessGuard *AccessGuard) *SplUserScanHandler {
+	return &SplUserScanHandler{sales: sales, cs: cs, accessGuard: accessGuard}
 }
 
 // ScanUser handles POST /spl/scan-user — ported verbatim (business logic,
@@ -200,7 +200,7 @@ func NewSplUserScanHandler(sales salesEntityClient, cs csEntityClient, allowedGr
 // `post scan\-user` resource function. See that function for the
 // authoritative behavior; comments below reference its structure.
 func (h *SplUserScanHandler) ScanUser(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}

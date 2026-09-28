@@ -34,7 +34,7 @@ func (m *mockSplCaseClient) GetAttachmentsInfo(ctx context.Context, caseNumber s
 }
 
 func TestSplGetAttachmentsInfo_MissingCaseIDIs400(t *testing.T) {
-	h := NewSplCaseHandler(&mockSplCaseClient{}, splAllowedGroups)
+	h := NewSplCaseHandler(&mockSplCaseClient{}, splAccessGuard)
 	r := withUser(httptest.NewRequest(http.MethodGet, "/spl/cases//attachments-info?offset=0&limit=10", nil))
 	w := httptest.NewRecorder()
 	h.GetAttachmentsInfo(w, r)

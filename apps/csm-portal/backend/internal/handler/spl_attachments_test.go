@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
 type mockSplAttachmentsClient struct {
@@ -41,7 +43,7 @@ func newAttachmentDownloadRequest(attachmentID string) *http.Request {
 
 func TestDownloadAttachment_Success(t *testing.T) {
 	mock := &mockSplAttachmentsClient{body: []byte("%PDF-1.4"), contentType: "application/pdf"}
-	h := NewSplAttachmentsHandler(mock, []string{"csm-agents"}, []string{"csm-agents"})
+	h := NewSplAttachmentsHandler(mock, splAccessGuard)
 	w := httptest.NewRecorder()
 
 	h.DownloadAttachment(w, newAttachmentDownloadRequest("att-1"))
@@ -58,7 +60,7 @@ func TestDownloadAttachment_Success(t *testing.T) {
 
 func TestDownloadAttachment_CoercesUnsafeContentType(t *testing.T) {
 	mock := &mockSplAttachmentsClient{body: []byte("<script>"), contentType: "text/html"}
-	h := NewSplAttachmentsHandler(mock, []string{"csm-agents"}, []string{"csm-agents"})
+	h := NewSplAttachmentsHandler(mock, splAccessGuard)
 	w := httptest.NewRecorder()
 
 	h.DownloadAttachment(w, newAttachmentDownloadRequest("att-1"))
@@ -66,17 +68,25 @@ func TestDownloadAttachment_CoercesUnsafeContentType(t *testing.T) {
 	assertContentType(t, w, "application/octet-stream")
 }
 
-func TestDownloadAttachment_RejectsSubGroupMismatch(t *testing.T) {
-	h := NewSplAttachmentsHandler(&mockSplAttachmentsClient{}, []string{"csm-agents"}, []string{"attachment-downloaders"})
+func TestDownloadAttachment_RejectsMissingDownloadPermission(t *testing.T) {
+	h := NewSplAttachmentsHandler(&mockSplAttachmentsClient{}, splAccessGuard)
+	// SPL access (sales_solutions) but no attachment_downloader/cs_engineer/
+	// admin — passes PermSPLAccess, fails the additional
+	// PermDownloadAttachment check.
+	req := httptest.NewRequest(http.MethodGet, "/attachments/att-1/download", nil)
+	req.SetPathValue("attachmentId", "att-1")
+	req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{
+		Email: "sales@example.com", UserID: "u-sales", Roles: []string{"test-sales-solutions"},
+	}))
 	w := httptest.NewRecorder()
 
-	h.DownloadAttachment(w, newAttachmentDownloadRequest("att-1"))
+	h.DownloadAttachment(w, req)
 
 	assertStatus(t, w, http.StatusForbidden)
 }
 
 func TestDownloadAttachment_RejectsEmptyID(t *testing.T) {
-	h := NewSplAttachmentsHandler(&mockSplAttachmentsClient{}, []string{"csm-agents"}, []string{"csm-agents"})
+	h := NewSplAttachmentsHandler(&mockSplAttachmentsClient{}, splAccessGuard)
 	req := withUser(httptest.NewRequest(http.MethodGet, "/attachments//download", nil))
 	req.SetPathValue("attachmentId", "")
 	w := httptest.NewRecorder()

@@ -51,14 +51,13 @@ type splAccountClient interface {
 // own doc comment). Reading and listing accounts/projects now goes through
 // CS Portal's own /accounts and /projects routes directly.
 type SplAccountHandler struct {
-	sn                  splAccountClient
-	allowedGroups       []string
-	addEscalationGroups []string
+	sn          splAccountClient
+	accessGuard *AccessGuard
 }
 
 // NewSplAccountHandler creates a SplAccountHandler.
-func NewSplAccountHandler(sn splAccountClient, allowedGroups, addEscalationGroups []string) *SplAccountHandler {
-	return &SplAccountHandler{sn: sn, allowedGroups: allowedGroups, addEscalationGroups: addEscalationGroups}
+func NewSplAccountHandler(sn splAccountClient, accessGuard *AccessGuard) *SplAccountHandler {
+	return &SplAccountHandler{sn: sn, accessGuard: accessGuard}
 }
 
 var escalationRequestSourceValues = map[string]bool{"Customer": true, "Internal": true}
@@ -97,7 +96,7 @@ func optionalQueryParam(r *http.Request, key string) *string {
 
 // GetAccountEscalations handles GET /spl/accounts/{accountId}/escalations.
 func (h *SplAccountHandler) GetAccountEscalations(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -131,11 +130,11 @@ func (h *SplAccountHandler) GetAccountEscalations(w http.ResponseWriter, r *http
 
 // EscalateCase handles POST /spl/accounts/{accountId}/cases/{caseId}/escalate.
 func (h *SplAccountHandler) EscalateCase(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
-	if !requireSPLSubGroups(w, user, h.addEscalationGroups) {
+	if !requireSPLPermission(w, user, h.accessGuard, PermEscalate) {
 		return
 	}
 

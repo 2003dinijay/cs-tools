@@ -33,17 +33,26 @@ import (
 
 // testUser is the authenticated user injected into request contexts. UserID is
 // the identity provider's user id carried on the gateway-validated token — it
-// is NOT the platform's own user record id (see testPlatformUserID).
+// is NOT the platform's own user record id (see testPlatformUserID). Roles
+// holds every test role testAccessConfig() (access_test.go) grants a
+// permission for, so testUser passes every /spl/* handler's gates by
+// default (PermSPLAccess plus every sub-permission) — a test needing to
+// exercise a denial builds its own narrower *middleware.UserInfo instead
+// (see e.g. spl_accounts_test.go's TestSplEscalateCase_RequiresEscalation).
 var testUser = &middleware.UserInfo{
 	Email:  "agent@example.com",
 	UserID: "f2d9bf5b-7067-43dc-8578-802c8623af5d",
-	// Groups is only consumed by the /spl/* (SupportPortalLite) handlers'
-	// requireSPLGroups — see middleware.UserInfo.Groups's own doc comment
-	// for why this app still carries it alongside the newer Roles-based
-	// model. Restored here after a merge with dev-app-csm-portal silently
-	// dropped it (dev's UserInfo had no Groups field at merge time).
-	Groups: []string{"csm-agents"},
+	Roles: []string{
+		"test-sales-solutions", "test-escalator", "test-attachment-downloader",
+		"test-usage-metrics-viewer", "test-viewer",
+	},
 }
+
+// splAccessGuard is the shared AccessGuard every /spl/* handler test wires
+// its handler with, built from the same testAccessConfig() (access_test.go)
+// every non-SPL handler test already uses — one guard, one set of test role
+// names, for the whole package.
+var splAccessGuard = NewAccessGuard(testAccessConfig())
 
 // testPlatformUserID is the id GET /users/me resolves for testUser: the
 // platform's own user record id, from a different id space than

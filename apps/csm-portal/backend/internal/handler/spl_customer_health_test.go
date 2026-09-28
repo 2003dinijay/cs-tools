@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/risk"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
@@ -129,7 +130,7 @@ func TestCustomerHealthHandler_GetSummary_NoFilterEnrichesFromRisk(t *testing.T)
 			return map[string]string{"acct-1": "at_risk", "acct-2": "healthy"}, nil
 		},
 	}
-	h := NewCustomerHealthHandler(rc, sn, []string{"csm-agents"})
+	h := NewCustomerHealthHandler(rc, sn, splAccessGuard)
 
 	req := withUser(httptest.NewRequest(http.MethodPost, "/spl/customer-health/summary", bytes.NewReader([]byte(`{}`))))
 	w := httptest.NewRecorder()
@@ -152,7 +153,7 @@ func TestCustomerHealthHandler_GetSummary_HealthStatusFilterEmptyMatchShortCircu
 		},
 	}
 	sn := &fakeSNCustomerHealthClient{} // must not be called
-	h := NewCustomerHealthHandler(rc, sn, []string{"csm-agents"})
+	h := NewCustomerHealthHandler(rc, sn, splAccessGuard)
 
 	body := []byte(`{"healthStatus":"at_risk"}`)
 	req := withUser(httptest.NewRequest(http.MethodPost, "/spl/customer-health/summary", bytes.NewReader(body)))
@@ -167,7 +168,7 @@ func TestCustomerHealthHandler_GetSummary_HealthStatusFilterEmptyMatchShortCircu
 }
 
 func TestCustomerHealthHandler_OpenRisk_RejectsMissingUser(t *testing.T) {
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, []string{"csm-agents"})
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, splAccessGuard)
 	req := httptest.NewRequest(http.MethodPost, "/spl/customer-health/projects/proj-1/risk", bytes.NewReader([]byte(`{}`)))
 	req.SetPathValue("projectSysId", "proj-1")
 	w := httptest.NewRecorder()
@@ -175,9 +176,11 @@ func TestCustomerHealthHandler_OpenRisk_RejectsMissingUser(t *testing.T) {
 	assertStatus(t, w, http.StatusUnauthorized)
 }
 
-func TestCustomerHealthHandler_OpenRisk_RejectsGroupMismatch(t *testing.T) {
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, []string{"other-group"})
-	req := withUser(httptest.NewRequest(http.MethodPost, "/spl/customer-health/projects/proj-1/risk", bytes.NewReader([]byte(`{}`))))
+func TestCustomerHealthHandler_OpenRisk_RejectsMissingSPLAccess(t *testing.T) {
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, splAccessGuard)
+	req := httptest.NewRequest(http.MethodPost, "/spl/customer-health/projects/proj-1/risk", bytes.NewReader([]byte(`{}`)))
+	// Authenticated but holds no role granting PermSPLAccess.
+	req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{Email: "nobody@example.com", UserID: "u-nobody"}))
 	req.SetPathValue("projectSysId", "proj-1")
 	w := httptest.NewRecorder()
 	h.OpenRisk(w, req)
@@ -190,7 +193,7 @@ func TestCustomerHealthHandler_CloseRisk_ValidationErrorMapsTo400(t *testing.T) 
 			return nil, &risk.ValidationError{Message: "Cannot close risk: 1 action item(s) are still open."}
 		},
 	}
-	h := NewCustomerHealthHandler(rc, &fakeSNCustomerHealthClient{}, []string{"csm-agents"})
+	h := NewCustomerHealthHandler(rc, &fakeSNCustomerHealthClient{}, splAccessGuard)
 
 	req := withUser(httptest.NewRequest(http.MethodPut, "/spl/customer-health/risks/7/close", bytes.NewReader([]byte(`{"comment":"done"}`))))
 	req.SetPathValue("riskId", "7")
@@ -202,7 +205,7 @@ func TestCustomerHealthHandler_CloseRisk_ValidationErrorMapsTo400(t *testing.T) 
 }
 
 func TestCustomerHealthHandler_CloseRisk_InvalidRiskIDIs400(t *testing.T) {
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, []string{"csm-agents"})
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, splAccessGuard)
 	req := withUser(httptest.NewRequest(http.MethodPut, "/spl/customer-health/risks/not-a-number/close", bytes.NewReader([]byte(`{}`))))
 	req.SetPathValue("riskId", "not-a-number")
 	w := httptest.NewRecorder()
@@ -216,7 +219,7 @@ func TestCustomerHealthHandler_GetAccountDetail_NotFoundMapsTo404(t *testing.T) 
 			return nil, servicenow.ErrAccountNotFound
 		},
 	}
-	h := NewCustomerHealthHandler(&fakeRiskClient{}, sn, []string{"csm-agents"})
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, sn, splAccessGuard)
 
 	req := withUser(httptest.NewRequest(http.MethodGet, "/spl/customer-health/accounts/acct-1", nil))
 	req.SetPathValue("accountId", "acct-1")
@@ -232,7 +235,7 @@ func TestCustomerHealthHandler_UpdateActionItemStatus_RequiresResolutionComment(
 			return nil, &risk.ValidationError{Message: "resolutionComment is required when status is 'resolved' or 'cancelled'"}
 		},
 	}
-	h := NewCustomerHealthHandler(rc, &fakeSNCustomerHealthClient{}, []string{"csm-agents"})
+	h := NewCustomerHealthHandler(rc, &fakeSNCustomerHealthClient{}, splAccessGuard)
 
 	req := withUser(httptest.NewRequest(http.MethodPut, "/spl/customer-health/action-items/5/status", bytes.NewReader([]byte(`{"status":"resolved"}`))))
 	req.SetPathValue("actionItemId", "5")
@@ -252,7 +255,7 @@ func TestCustomerHealthHandler_InitHealthTracking_Returns202(t *testing.T) {
 			return nil
 		},
 	}
-	h := NewCustomerHealthHandler(rc, &fakeSNCustomerHealthClient{}, []string{"csm-agents"})
+	h := NewCustomerHealthHandler(rc, &fakeSNCustomerHealthClient{}, splAccessGuard)
 
 	body := []byte(`{"projectSysIds":["proj-1","proj-2"]}`)
 	req := withUser(httptest.NewRequest(http.MethodPost, "/spl/customer-health/accounts/acct-1/init-health-tracking", bytes.NewReader(body)))

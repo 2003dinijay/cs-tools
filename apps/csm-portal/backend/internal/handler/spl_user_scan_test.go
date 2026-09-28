@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
 func splScanRequest(t *testing.T, payload SplUserScanRequest) *http.Request {
@@ -37,7 +38,7 @@ func splScanRequest(t *testing.T, payload SplUserScanRequest) *http.Request {
 }
 
 func TestSplScanUser_AuthGates(t *testing.T) {
-	h := NewSplUserScanHandler(&mockSalesEntityClient{}, &mockCSEntityClient{}, []string{"csm-agents"})
+	h := NewSplUserScanHandler(&mockSalesEntityClient{}, &mockCSEntityClient{}, splAccessGuard)
 
 	t.Run("requires authenticated user", func(t *testing.T) {
 		r := httptest.NewRequest(http.MethodPost, "/spl/scan-user", bytes.NewReader([]byte(`{}`)))
@@ -46,9 +47,15 @@ func TestSplScanUser_AuthGates(t *testing.T) {
 		assertStatus(t, w, http.StatusUnauthorized)
 	})
 
-	t.Run("rejects user outside allowedGroups", func(t *testing.T) {
-		h2 := NewSplUserScanHandler(&mockSalesEntityClient{}, &mockCSEntityClient{}, []string{"some-other-group"})
-		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com"})
+	t.Run("rejects a role that doesn't grant PermSPLAccess", func(t *testing.T) {
+		h2 := NewSplUserScanHandler(&mockSalesEntityClient{}, &mockCSEntityClient{}, splAccessGuard)
+		body, err := json.Marshal(SplUserScanRequest{Email: "a@b.com"})
+		if err != nil {
+			t.Fatalf("marshal payload: %v", err)
+		}
+		r := httptest.NewRequest(http.MethodPost, "/spl/scan-user", bytes.NewReader(body))
+		// Authenticated but holds no role granting PermSPLAccess.
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "nobody@example.com", UserID: "u-nobody"}))
 		w := httptest.NewRecorder()
 		h2.ScanUser(w, r)
 		assertStatus(t, w, http.StatusForbidden)
@@ -77,7 +84,7 @@ func TestSplScanUser_SalesforceSide(t *testing.T) {
 
 	t.Run("contact not found, subscription not found", func(t *testing.T) {
 		sales := &mockSalesEntityClient{}
-		h := NewSplUserScanHandler(sales, neutralCS, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, neutralCS, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "nobody@example.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -114,7 +121,7 @@ func TestSplScanUser_SalesforceSide(t *testing.T) {
 				return &entity.Subscription{ID: "sub-1", CustomerID: "acct-1"}, nil
 			},
 		}
-		h := NewSplUserScanHandler(sales, neutralCS, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, neutralCS, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -145,7 +152,7 @@ func TestSplScanUser_SalesforceSide(t *testing.T) {
 				return &entity.Subscription{ID: "sub-1", CustomerID: "acct-1"}, nil
 			},
 		}
-		h := NewSplUserScanHandler(sales, neutralCS, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, neutralCS, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1", IsPartner: false})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -173,7 +180,7 @@ func TestSplScanUser_SalesforceSide(t *testing.T) {
 				return &entity.Subscription{ID: "sub-1", CustomerID: "acct-1"}, nil
 			},
 		}
-		h := NewSplUserScanHandler(sales, neutralCS, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, neutralCS, splAccessGuard)
 		// isPartner=true but membership type is CUSTOMER -> invalid on a partner account.
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1", IsPartner: true})
 		w := httptest.NewRecorder()
@@ -205,7 +212,7 @@ func TestSplScanUser_SalesforceSide(t *testing.T) {
 				return &entity.Subscription{ID: "sub-1", CustomerID: "acct-1"}, nil
 			},
 		}
-		h := NewSplUserScanHandler(sales, neutralCS, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, neutralCS, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1", IsPartner: false})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -233,7 +240,7 @@ func TestSplScanUser_SalesforceSide(t *testing.T) {
 				return &entity.Subscription{ID: "sub-1", CustomerID: "acct-DIFFERENT"}, nil
 			},
 		}
-		h := NewSplUserScanHandler(sales, neutralCS, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, neutralCS, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1", IsPartner: false})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -254,7 +261,7 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 				return nil, nil
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, cs, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -280,7 +287,7 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 				return &entity.User{LockedOut: false}, nil
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, cs, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -304,7 +311,7 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 				return nil, nil
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, cs, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -327,7 +334,7 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 				return &entity.User{LockedOut: false}, nil
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, cs, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -352,7 +359,7 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 				return &entity.ProjectContact{InvitationURL: &url}, nil
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, cs, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -388,7 +395,7 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 				return nil, nil
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, cs, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -419,7 +426,7 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 				return &entity.ProjectContact{InvitationURL: nil}, nil
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, cs, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -441,7 +448,7 @@ func TestSplScanUser_UpstreamFailuresReturn500WithBespokeMessage(t *testing.T) {
 				return nil, context.DeadlineExceeded
 			},
 		}
-		h := NewSplUserScanHandler(sales, &mockCSEntityClient{}, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, &mockCSEntityClient{}, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)

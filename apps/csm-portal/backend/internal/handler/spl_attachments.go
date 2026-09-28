@@ -32,18 +32,16 @@ type splAttachmentsClient interface {
 // SplAttachmentsHandler handles HTTP requests for downloading a case
 // attachment, delegating to the ServiceNow service.
 type SplAttachmentsHandler struct {
-	servicenow               splAttachmentsClient
-	allowedGroups            []string
-	downloadAttachmentGroups []string
+	servicenow  splAttachmentsClient
+	accessGuard *AccessGuard
 }
 
 // NewSplAttachmentsHandler creates a SplAttachmentsHandler backed by the
-// given ServiceNow client. allowedGroups is SupportPortalLite's blanket
-// access-gate group list (SPL_ALLOWED_GROUPS); downloadAttachmentGroups is
-// the additional group list required to download an attachment
-// (SPL_DOWNLOAD_ATTACHMENT_GROUPS).
-func NewSplAttachmentsHandler(sn splAttachmentsClient, allowedGroups, downloadAttachmentGroups []string) *SplAttachmentsHandler {
-	return &SplAttachmentsHandler{servicenow: sn, allowedGroups: allowedGroups, downloadAttachmentGroups: downloadAttachmentGroups}
+// given ServiceNow client. accessGuard enforces PermSPLAccess,
+// SupportPortalLite's blanket audience gate, plus PermDownloadAttachment for
+// DownloadAttachment specifically.
+func NewSplAttachmentsHandler(sn splAttachmentsClient, accessGuard *AccessGuard) *SplAttachmentsHandler {
+	return &SplAttachmentsHandler{servicenow: sn, accessGuard: accessGuard}
 }
 
 // DownloadAttachment handles GET /attachments/{attachmentId}/download. Only
@@ -54,11 +52,11 @@ func NewSplAttachmentsHandler(sn splAttachmentsClient, allowedGroups, downloadAt
 // which never trusts an upstream Content-Type/Content-Disposition for
 // inline rendering.
 func (h *SplAttachmentsHandler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
-	if !requireSPLSubGroups(w, user, h.downloadAttachmentGroups) {
+	if !requireSPLPermission(w, user, h.accessGuard, PermDownloadAttachment) {
 		return
 	}
 

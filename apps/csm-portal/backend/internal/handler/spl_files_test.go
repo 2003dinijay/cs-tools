@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/googledrive"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
 // mockSplDriveClient is a test double for splDriveClient.
@@ -41,7 +42,7 @@ func (m *mockSplDriveClient) SearchFolder(ctx context.Context, folderName string
 
 func TestSplFilesHandler_ListFiles(t *testing.T) {
 	t.Run("requires authentication", func(t *testing.T) {
-		h := NewSplFilesHandler(&mockSplDriveClient{}, []string{"csm-agents"})
+		h := NewSplFilesHandler(&mockSplDriveClient{}, splAccessGuard)
 		r := httptest.NewRequest(http.MethodGet, "/spl/files?folderId=abc", nil)
 		w := httptest.NewRecorder()
 
@@ -50,10 +51,11 @@ func TestSplFilesHandler_ListFiles(t *testing.T) {
 		assertStatus(t, w, http.StatusUnauthorized)
 	})
 
-	t.Run("requires membership in allowedGroups", func(t *testing.T) {
-		h := NewSplFilesHandler(&mockSplDriveClient{}, []string{"spl-only-group"})
+	t.Run("requires a role granting PermSPLAccess", func(t *testing.T) {
+		h := NewSplFilesHandler(&mockSplDriveClient{}, splAccessGuard)
 		r := httptest.NewRequest(http.MethodGet, "/spl/files?folderId=abc", nil)
-		r = withUser(r) // testUser is in "csm-agents", not "spl-only-group"
+		// Authenticated but holds no role granting PermSPLAccess.
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "nobody@example.com", UserID: "u-nobody"}))
 		w := httptest.NewRecorder()
 
 		h.ListFiles(w, r)
@@ -62,7 +64,7 @@ func TestSplFilesHandler_ListFiles(t *testing.T) {
 	})
 
 	t.Run("rejects empty folderId with 400", func(t *testing.T) {
-		h := NewSplFilesHandler(&mockSplDriveClient{}, []string{"csm-agents"})
+		h := NewSplFilesHandler(&mockSplDriveClient{}, splAccessGuard)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/files?folderId=", nil))
 		w := httptest.NewRecorder()
 
@@ -80,7 +82,7 @@ func TestSplFilesHandler_ListFiles(t *testing.T) {
 				return want, nil
 			},
 		}
-		h := NewSplFilesHandler(mock, []string{"csm-agents"})
+		h := NewSplFilesHandler(mock, splAccessGuard)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/files?folderId=folder-1", nil))
 		w := httptest.NewRecorder()
 
@@ -102,7 +104,7 @@ func TestSplFilesHandler_ListFiles(t *testing.T) {
 				return nil, context.DeadlineExceeded
 			},
 		}
-		h := NewSplFilesHandler(mock, []string{"csm-agents"})
+		h := NewSplFilesHandler(mock, splAccessGuard)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/files?folderId=folder-1", nil))
 		w := httptest.NewRecorder()
 
@@ -114,7 +116,7 @@ func TestSplFilesHandler_ListFiles(t *testing.T) {
 
 func TestSplFilesHandler_SearchFolder(t *testing.T) {
 	t.Run("requires authentication", func(t *testing.T) {
-		h := NewSplFilesHandler(&mockSplDriveClient{}, []string{"csm-agents"})
+		h := NewSplFilesHandler(&mockSplDriveClient{}, splAccessGuard)
 		r := httptest.NewRequest(http.MethodGet, "/spl/files/search?folderName=Acme", nil)
 		w := httptest.NewRecorder()
 
@@ -124,7 +126,7 @@ func TestSplFilesHandler_SearchFolder(t *testing.T) {
 	})
 
 	t.Run("rejects empty folderName with 400", func(t *testing.T) {
-		h := NewSplFilesHandler(&mockSplDriveClient{}, []string{"csm-agents"})
+		h := NewSplFilesHandler(&mockSplDriveClient{}, splAccessGuard)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/files/search?folderName=", nil))
 		w := httptest.NewRecorder()
 
@@ -143,7 +145,7 @@ func TestSplFilesHandler_SearchFolder(t *testing.T) {
 				return want, nil
 			},
 		}
-		h := NewSplFilesHandler(mock, []string{"csm-agents"})
+		h := NewSplFilesHandler(mock, splAccessGuard)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/files/search?folderName=Acme+Corp", nil))
 		w := httptest.NewRecorder()
 
@@ -162,7 +164,7 @@ func TestSplFilesHandler_SearchFolder(t *testing.T) {
 				return nil, googledrive.ErrFolderNotFound
 			},
 		}
-		h := NewSplFilesHandler(mock, []string{"csm-agents"})
+		h := NewSplFilesHandler(mock, splAccessGuard)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/files/search?folderName=Nope", nil))
 		w := httptest.NewRecorder()
 

@@ -85,6 +85,22 @@ const (
 	// PermView, since this is deliberately narrower than the general case/
 	// product-data access PermView otherwise grants.
 	PermViewSecurityCenter
+	// PermSPLAccess is the blanket audience gate for every /spl/* route —
+	// SupportPortalLite (Sales/Solutions-Architecture) — replacing the old
+	// SPL_ALLOWED_GROUPS raw-Asgardeo-groups check (internal/splauth,
+	// removed). Held only by sales_solutions: unlike PermView, CS Portal's
+	// own roles do NOT imply this — a cs_engineer or admin is not
+	// automatically an SPL user, matching the audience boundary
+	// SPL_ALLOWED_GROUPS previously enforced.
+	PermSPLAccess
+	// PermUsageMetricsViewer is the SPL Usage Metrics domain
+	// (/spl/usage-metrics/*), layered on top of PermSPLAccess the same way
+	// PermEscalate/PermDownloadAttachment layer on top of PermView —
+	// replacing the old SPL_USAGE_METRICS_GROUPS sub-group check. Unlike
+	// AccessConfig.UsageMetricsViewer's original CS-Portal-side grant (View
+	// only, since this backend had no usage-metrics route of its own before
+	// SPL), this is the real permission those SPL routes now check.
+	PermUsageMetricsViewer
 )
 
 // AccessConfig names, per portal role, the role names on the token that grant
@@ -105,18 +121,16 @@ type AccessConfig struct {
 	Admin             []string
 	TimecardApprover  []string
 	DashboardDesigner []string
-	// SalesSolutions is primarily a marker role, not a capability: it exists
-	// so GET /users/me can report "sales_solutions" in its roles list, which
-	// the webapp's usePortalView reads to pick the Sales/Solutions-
-	// Architecture (SPL) nav over CS Portal's own — see that hook's doc
-	// comment. It grants exactly one real permission, PermView (see
-	// NewAccessGuard's own comment on that grant for why), and nothing
-	// else — a holder still needs one of the roles above to write,
-	// escalate, or administer anything in CS Portal. The handful of /spl/*
-	// routes with no entity-service equivalent to merge onto (account
-	// escalations, case attachments — see main.go's SPL route registration
-	// comment) still enforce their own, separate, group-based check
-	// (internal/splauth), unrelated to this role.
+	// SalesSolutions grants PermView (see NewAccessGuard's own comment on
+	// that grant for why) and PermSPLAccess -- every /spl/* route's blanket
+	// audience gate. It's also, independently, a marker role: GET /users/me
+	// reports "sales_solutions" in its roles list, which the webapp's
+	// usePortalView reads to pick the Sales/Solutions-Architecture (SPL) nav
+	// over CS Portal's own — see that hook's doc comment. A holder still
+	// needs one of the roles above to write, escalate, download an
+	// attachment, or administer anything — PermEscalate/
+	// PermDownloadAttachment/PermUsageMetricsViewer/PermWrite/PermAdmin etc.
+	// are unaffected by this role.
 	SalesSolutions []string
 }
 
@@ -155,10 +169,12 @@ type portalRole struct {
 // it acts on. PermViewSecurityCenter is the one further exception to "every
 // role implies View covers it": plain viewer/escalator/attachment_downloader/
 // usage_metrics_viewer/timecard_approver/dashboard_designer all hold PermView
-// but not this. sales_solutions is a separate exception: it implies View
-// (only) rather than being implied BY it — see AccessConfig.SalesSolutions's
-// own doc
-// comment.
+// but not this. sales_solutions is a separate exception: it implies View and
+// PermSPLAccess (only) rather than being implied BY them — see
+// AccessConfig.SalesSolutions's own doc comment. PermSPLAccess itself is
+// the one permission no CS Portal role implies (not even admin): it's an
+// audience boundary, not a capability level, so holding every CS Portal
+// capability doesn't make a caller an SPL user.
 func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	build := func(lists ...[]string) map[string]struct{} {
 		set := make(map[string]struct{})
@@ -182,17 +198,17 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			{"sales_solutions", build(cfg.SalesSolutions)},
 		},
 		allowed: map[Permission]map[string]struct{}{
-			// SalesSolutions is included here (only here) now that /accounts,
-			// /projects, /cases, and /teams/{id}/members read/search/comment
-			// requests come from Sales/SA callers too -- see main.go's SPL
-			// route registration comment for what merged onto these routes
-			// and why. This is not a new data exposure: SPL's own now-removed
-			// /spl/* routes already read this same entity-service data for
-			// exactly these callers, just through a second, parallel
-			// ServiceNow-shaped contract. sales_solutions grants nothing else
-			// here (see AccessConfig.SalesSolutions's own doc comment) --
-			// PermWrite/PermEscalate/PermAdmin etc. still require one of CS
-			// Portal's own roles, so a Sales/SA-only caller can read this
+			// SalesSolutions is included here (and in PermSPLAccess below,
+			// the only two grants it gets) now that /accounts, /projects,
+			// /cases, and /teams/{id}/members read/search/comment requests
+			// come from Sales/SA callers too -- see main.go's SPL route
+			// registration comment for what merged onto these routes and
+			// why. This is not a new data exposure: SPL's own /spl/* routes
+			// already read this same entity-service data for exactly these
+			// callers, just through a second, parallel ServiceNow-shaped
+			// contract (see AccessConfig.SalesSolutions's own doc comment)
+			// -- PermWrite/PermEscalate/PermAdmin etc. still require one of
+			// CS Portal's own roles, so a Sales/SA-only caller can read this
 			// data but cannot write, escalate, or administer through it.
 			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
 				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner,
@@ -206,6 +222,14 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			PermAdmin:               build(cfg.Admin),
 			PermViewSecurityCenter:  build(cfg.CsEngineer, cfg.Admin),
 			PermApproveTimeCard:     build(cfg.TimecardApprover, cfg.Admin),
+			// Deliberately SalesSolutions only -- see PermSPLAccess's own doc
+			// comment for why no CS Portal role implies this.
+			PermSPLAccess: build(cfg.SalesSolutions),
+			// Same population as PermEscalate/PermDownloadAttachment's own
+			// "the specialised role, or a CS Portal role that already
+			// dominates it" shape -- see PermUsageMetricsViewer's own doc
+			// comment.
+			PermUsageMetricsViewer: build(cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin),
 		},
 	}
 }

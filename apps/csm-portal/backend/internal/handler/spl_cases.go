@@ -45,18 +45,18 @@ type splCaseClient interface {
 // doc comment). Reading, searching, and commenting on cases now goes
 // through CS Portal's own /cases routes directly.
 type SplCaseHandler struct {
-	sn            splCaseClient
-	allowedGroups []string
+	sn          splCaseClient
+	accessGuard *AccessGuard
 }
 
 // NewSplCaseHandler creates a SplCaseHandler.
-func NewSplCaseHandler(sn splCaseClient, allowedGroups []string) *SplCaseHandler {
-	return &SplCaseHandler{sn: sn, allowedGroups: allowedGroups}
+func NewSplCaseHandler(sn splCaseClient, accessGuard *AccessGuard) *SplCaseHandler {
+	return &SplCaseHandler{sn: sn, accessGuard: accessGuard}
 }
 
 // GetAttachmentsInfo handles GET /spl/cases/{caseId}/attachments-info.
 func (h *SplCaseHandler) GetAttachmentsInfo(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}

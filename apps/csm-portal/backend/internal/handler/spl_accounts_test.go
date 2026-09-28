@@ -23,12 +23,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
-
-// testUser (helpers_test.go) is in group "csm-agents" — reused here as the
-// SPL allowed-groups membership for tests that should succeed.
-var splAllowedGroups = []string{"csm-agents"}
 
 type mockSplAccountClient struct {
 	getEscalationsByAccountFn func(ctx context.Context, accountNumber string, offset, limit int) ([]servicenow.EscalationDetail, error)
@@ -42,11 +39,16 @@ func (m *mockSplAccountClient) EscalateCase(ctx context.Context, accountNumber, 
 	return m.escalateCaseFn(ctx, accountNumber, caseNumber, request, submittedByEmail)
 }
 
-func TestSplEscalateCase_RequiresEscalationGroup(t *testing.T) {
-	h := NewSplAccountHandler(&mockSplAccountClient{}, splAllowedGroups, []string{"escalation-team"})
+func TestSplEscalateCase_RequiresEscalationPermission(t *testing.T) {
+	h := NewSplAccountHandler(&mockSplAccountClient{}, splAccessGuard)
 
 	body := `{"justification":"urgent","requestSource":"Customer","reason":"Inactivity","severity":"High Severity"}`
-	r := withUser(httptest.NewRequest(http.MethodPost, "/spl/accounts/ACC1/cases/CS1/escalate", strings.NewReader(body)))
+	r := httptest.NewRequest(http.MethodPost, "/spl/accounts/ACC1/cases/CS1/escalate", strings.NewReader(body))
+	// SPL access (sales_solutions) but no escalator/cs_engineer/admin — passes
+	// PermSPLAccess, fails the additional PermEscalate check.
+	r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{
+		Email: "sales@example.com", UserID: "u-sales", Roles: []string{"test-sales-solutions"},
+	}))
 	r.SetPathValue("accountId", "ACC1")
 	r.SetPathValue("caseId", "CS1")
 	w := httptest.NewRecorder()
@@ -55,7 +57,7 @@ func TestSplEscalateCase_RequiresEscalationGroup(t *testing.T) {
 }
 
 func TestSplEscalateCase_RejectsInvalidPayload(t *testing.T) {
-	h := NewSplAccountHandler(&mockSplAccountClient{}, splAllowedGroups, splAllowedGroups)
+	h := NewSplAccountHandler(&mockSplAccountClient{}, splAccessGuard)
 
 	tests := []string{
 		`{"justification":"","requestSource":"Customer","reason":"Inactivity","severity":"High Severity"}`,
@@ -80,7 +82,7 @@ func TestSplEscalateCase_Conflict(t *testing.T) {
 			return servicenow.EscalationResponse{}, servicenow.ErrEscalationConflict
 		},
 	}
-	h := NewSplAccountHandler(client, splAllowedGroups, splAllowedGroups)
+	h := NewSplAccountHandler(client, splAccessGuard)
 
 	body := `{"justification":"urgent","requestSource":"Customer","reason":"Inactivity","severity":"High Severity"}`
 	r := withUser(httptest.NewRequest(http.MethodPost, "/spl/accounts/ACC1/cases/CS1/escalate", strings.NewReader(body)))
