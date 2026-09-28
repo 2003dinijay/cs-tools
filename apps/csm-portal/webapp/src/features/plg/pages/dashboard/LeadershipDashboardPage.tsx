@@ -9,17 +9,30 @@ import { PeriodSelect } from "@features/plg/components/PeriodSelect";
 import { DEFAULT_RANGE_DAYS, isoDaysAgo } from "@features/plg/components/period";
 
 /**
- * The workspace dashboard: what the engineer working the queue should do next.
+ * The leadership dashboard: the standing picture of the portfolio.
  *
- * It leads with the two queue counts, and every tile is a link into the work.
- * The leadership view is a separate page — see LeadershipDashboardPage, which
- * shows the same standing picture without the to-do list.
+ * It answers "what shape is the funnel in" — how many customers there are, how
+ * many registrations, and how those spread across platforms, stages and
+ * subscription tiers.
  *
- * The period control scopes the cohort charts only. The queue counts ignore it
- * on purpose: a backlog that shrinks because someone changed a dropdown is a
- * backlog nobody clears.
+ * WHAT IT DELIBERATELY OMITS. The queue counts on the workspace dashboard are a
+ * to-do list: "12 awaiting acknowledgement" is an instruction to whoever owns
+ * the queue, and noise to anyone reading the shape of the business.
+ *
+ * WHY THIS IS ITS OWN FILE. It used to be the same component as the workspace
+ * dashboard, choosing between them by matching the last segment of its own URL.
+ * That is fragile in a way that had already bitten once: the merge moved the
+ * page and the check silently stopped matching, so this page rendered the
+ * workspace variant — queue tiles and all — with no error to notice. The path
+ * has since moved again, to `/plg/leadership-dashboard`, which under the old
+ * arrangement would have broken it a second time. A page should not have to
+ * work out what it is.
+ *
+ * It is also not sustainable. The two views are expected to diverge, and every
+ * divergence under one roof is another branch on a variant flag. Sharing the
+ * charts is the part that should be shared; the tiles are not.
  */
-export default function DashboardPage(): JSX.Element {
+export default function LeadershipDashboardPage(): JSX.Element {
   const navigate = useNavigate();
   const [days, setDays] = useState(DEFAULT_RANGE_DAYS);
   const { data, isPending, error } = useDashboard(isoDaysAgo(days));
@@ -32,8 +45,9 @@ export default function DashboardPage(): JSX.Element {
     // and an overflow:hidden card then clips instead of the page scrolling.
     <Box sx={{ display: "flex", flexDirection: "column" }}>
       <PageHeader
-        title="Dashboard"
-        subtitle="Registrations, lifecycle spread and the work in flight"
+        title="Leadership Dashboard"
+        subtitle="Registrations and lifecycle spread across the whole portfolio"
+        // Scopes the cohort charts only.
         actions={<PeriodSelect value={days} onChange={setDays} />}
       />
 
@@ -41,7 +55,7 @@ export default function DashboardPage(): JSX.Element {
         <LoadingBlock height={120} />
       ) : (
         <Grid container spacing={2} mb={3}>
-          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <Grid size={{ xs: 12, sm: 6, md: 6 }}>
             <StatTile
               label="Organisations"
               value={data.summary.totalOrganizations}
@@ -49,31 +63,12 @@ export default function DashboardPage(): JSX.Element {
               onClick={() => navigate("/plg/organizations")}
             />
           </Grid>
-          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <Grid size={{ xs: 12, sm: 6, md: 6 }}>
             <StatTile
               label="Registrations"
               value={data.summary.totalRegistrations}
               hint="One per organisation and platform"
               onClick={() => navigate("/plg/organizations")}
-            />
-          </Grid>
-          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <StatTile
-              label="Awaiting acknowledgement"
-              value={data.summary.newRegistrations}
-              hint="Nobody has picked these up yet"
-              color={data.summary.newRegistrations > 0 ? "warning.main" : "text.primary"}
-              onClick={() => navigate("/plg/new-registrations")}
-            />
-          </Grid>
-          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <StatTile
-              label="Pairings needing attention"
-              value={data.summary.pairingsNeedingAttention}
-              hint="Acknowledged, and not yet at an ending stage"
-              // mine=false, because this counts the whole team's queue. A tile
-              // should land you on a page showing the number it just showed you.
-              onClick={() => navigate("/plg/work-queue?mine=false")}
             />
           </Grid>
         </Grid>
