@@ -506,7 +506,7 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 				ProjectName:               p.ProjectName,
 				CaseNumber:                caseRef,
 				CaseTitle:                 p.CaseTitle,
-				CaseType:                  p.CaseType,
+				CaseType:                  emailCaseTypeLabel(p.CaseType),
 				Priority:                  emailSeverityLabel(p.Priority),
 				Product:                   p.Product,
 				CreatedAt:                 p.CreatedAt,
@@ -1056,6 +1056,29 @@ func emailSeverityLabel(severity string) string {
 		return label
 	}
 	return strings.TrimSpace(severity)
+}
+
+// caseTypeLabels maps entity-service's raw uppercase CaseType value (e.g.
+// "SECURITY_REPORT_ANALYSIS", as sent on CaseCreatedPayload.CaseType — see
+// that service's own strings.ToUpper(req.Type)) to the title-case wording
+// shown in the case-created email's "Case Type" row — same "don't show raw
+// enum casing to a reader" reasoning as emailSeverityLabels above.
+var caseTypeLabels = map[string]string{
+	"CASE":                     "Case",
+	"ENGAGEMENT":               "Engagement",
+	"SERVICE_REQUEST":          "Service Request",
+	"SECURITY_REPORT_ANALYSIS": "Security Report Analysis",
+	"ANNOUNCEMENT":             "Announcement",
+}
+
+// emailCaseTypeLabel resolves caseType to its email display label
+// (case/whitespace-insensitive) via caseTypeLabels, falling back to the raw
+// trimmed value for anything unrecognized rather than blanking it out.
+func emailCaseTypeLabel(caseType string) string {
+	if label, ok := caseTypeLabels[strings.ToUpper(strings.TrimSpace(caseType))]; ok {
+		return label
+	}
+	return strings.TrimSpace(caseType)
 }
 
 // maxChatTitleLength bounds truncateTitle's output — long enough to still

@@ -290,6 +290,49 @@ func TestDispatcher_Handle_CaseCreated_NonCaseTypesSkipChatButStillEmail(t *test
 	}
 }
 
+// TestDispatcher_Handle_CaseCreated_EmailShowsHumanReadableCaseType verifies
+// the "Case Type" row in the case-created email shows a reader-friendly
+// label (e.g. "Security Report Analysis"), not entity-service's raw
+// UPPER_SNAKE_CASE wire value — a real reported issue where a recipient saw
+// "SECURITY_REPORT_ANALYSIS" verbatim in their inbox.
+func TestDispatcher_Handle_CaseCreated_EmailShowsHumanReadableCaseType(t *testing.T) {
+	testCases := []struct {
+		wire  string
+		label string
+	}{
+		{"CASE", "Case"},
+		{"ENGAGEMENT", "Engagement"},
+		{"SERVICE_REQUEST", "Service Request"},
+		{"SECURITY_REPORT_ANALYSIS", "Security Report Analysis"},
+		{"ANNOUNCEMENT", "Announcement"},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.wire, func(t *testing.T) {
+			email := &mockEmailSender{}
+			d := newTestDispatcher(email, &mockGoogleChatSender{}, &mockCallSender{})
+
+			// entityId/caseId deliberately avoid the substring "CASE" (unlike
+			// this file's other fixtures), so the "no raw wire value" check
+			// below can't false-positive against it when tc.wire is "CASE".
+			record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"C-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"C-1","caseTitle":"Something broke","caseType":"` + tc.wire + `","priority":"","product":"api-manager","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+
+			if err := d.Handle(context.Background(), record); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+			if len(email.calls) != 1 {
+				t.Fatalf("expected 1 email sent, got %d", len(email.calls))
+			}
+			body := email.calls[0].htmlBody
+			if !strings.Contains(body, tc.label) {
+				t.Errorf("rendered email doesn't contain the human-readable label %q", tc.label)
+			}
+			if strings.Contains(body, tc.wire) {
+				t.Errorf("rendered email still contains the raw wire value %q", tc.wire)
+			}
+		})
+	}
+}
+
 // TestDispatcher_Handle_CaseCreated_ChatUsesDefaultProduct verifies
 // case.created's Chat alert falls back to Dispatcher.defaultChatProduct when
 // the payload omits product, the same fallback handleIncidentCreated uses.
