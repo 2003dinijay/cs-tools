@@ -14,6 +14,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+DROP POLICY IF EXISTS sla_delete ON sla;
 DROP POLICY IF EXISTS sla_update ON sla;
 DROP POLICY IF EXISTS sla_write ON sla;
 DROP POLICY IF EXISTS sla_visibility ON sla;

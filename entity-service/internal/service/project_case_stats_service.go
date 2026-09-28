@@ -106,8 +106,7 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 
 	// Scope before existence: the id is caller-controlled, so a project the
 	// caller may not see must be indistinguishable from one that is not there.
-	scope, err := authorizeProject(ctx, s.access, projectID)
-	if err != nil {
+	if _, err := authorizeProject(ctx, s.access, projectID); err != nil {
 		return domain.ProjectCaseStatsResponse{}, err
 	}
 
@@ -128,7 +127,6 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 		ProjectID: projectID,
 		Types:     types,
 		CreatedBy: createdBy,
-		Scope:     scope,
 	}
 
 	// The enum lookup and the six aggregations below share only the filter,

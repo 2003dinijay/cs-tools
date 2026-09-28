@@ -22,7 +22,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ProjectCaseStatsFilter narrows the aggregations below to one project, and
@@ -44,18 +43,6 @@ type ProjectCaseStatsFilter struct {
 	ProjectID string
 	Types     []string
 	CreatedBy string
-
-	// Scope is the caller's resolved AccessScope. StateSeverityCounts,
-	// StateEngagementTypeCounts, ResolvedBuckets and ClosedByCreatedWindow
-	// all read caseLikeStateColumn/caseLikeClosedOnColumn, which fold in
-	// announcement.state/closed_on through caseLikeJoins's LEFT JOIN to the
-	// RLS-protected `announcement` table (migration 000085) -- without the
-	// caller's identity set in the same transaction, a restricted
-	// announcement's columns come back NULL, which caseLikeStateColumn's
-	// COALESCE then reads as "no state", undercounting or misclassifying it.
-	// AverageResponseSeconds and CaseTypeCounts don't select any
-	// announcement column, so they're unaffected and don't consult Scope.
-	Scope SearchScope
 }
 
 // StateSeverityCount is one (state, severity) group of the main aggregation.
@@ -141,11 +128,15 @@ type ProjectCaseStatsRepository interface {
 }
 
 type projectCaseStatsRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
-// NewProjectCaseStatsRepository constructs a ProjectCaseStatsRepository backed by the given connection pool.
-func NewProjectCaseStatsRepository(db *pgxpool.Pool) ProjectCaseStatsRepository {
+// NewProjectCaseStatsRepository constructs a ProjectCaseStatsRepository
+// backed by the given Scoped connection -- announcement's RLS (migration
+// 000085) and sla's (migration 000094) are both enforced entirely by
+// Postgres now, reading the caller's identity from ctx automatically
+// instead of a filter field the caller had to remember to populate.
+func NewProjectCaseStatsRepository(db *Scoped) ProjectCaseStatsRepository {
 	return &projectCaseStatsRepo{db: db}
 }
 
@@ -191,7 +182,7 @@ func caseStatsWhere(f ProjectCaseStatsFilter, next int, includeTypes, includeCre
 func (r *projectCaseStatsRepo) StateSeverityCounts(ctx context.Context, f ProjectCaseStatsFilter) ([]StateSeverityCount, error) {
 	where, args := caseStatsWhere(f, 1, true, true)
 	var out []StateSeverityCount
-	err := runWithCallerIdentity(ctx, r.db, f.Scope, func(tx pgx.Tx) error {
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT `+caseLikeStateColumn+` AS state,
 			       COALESCE(c.severity::TEXT, '') AS severity,
@@ -225,7 +216,7 @@ func (r *projectCaseStatsRepo) StateSeverityCounts(ctx context.Context, f Projec
 func (r *projectCaseStatsRepo) StateEngagementTypeCounts(ctx context.Context, f ProjectCaseStatsFilter) ([]StateEngagementTypeCount, error) {
 	where, args := caseStatsWhere(f, 1, true, false)
 	var out []StateEngagementTypeCount
-	err := runWithCallerIdentity(ctx, r.db, f.Scope, func(tx pgx.Tx) error {
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT `+caseLikeStateColumn+` AS state,
 			       eng.type::TEXT,
@@ -266,7 +257,7 @@ func (r *projectCaseStatsRepo) ResolvedBuckets(ctx context.Context, f ProjectCas
 	// the month boundary is the UTC one the ServiceNow implementation uses
 	// (getYearUTC/getMonthUTC) rather than the database server's timezone.
 	var currentMonth, pastThirtyDays int
-	err := runWithCallerIdentity(ctx, r.db, f.Scope, func(tx pgx.Tx) error {
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
 			SELECT COUNT(*) FILTER (WHERE closed_on >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'),
 			       COUNT(*) FILTER (WHERE closed_on >= now() - INTERVAL '30 days')
@@ -290,7 +281,7 @@ func (r *projectCaseStatsRepo) ClosedByCreatedWindow(ctx context.Context, f Proj
 	statePlaceholder := fmt.Sprintf("$%d", len(args))
 
 	var current, previous int
-	err := runWithCallerIdentity(ctx, r.db, f.Scope, func(tx pgx.Tx) error {
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `
 			SELECT COUNT(*) FILTER (WHERE created_on >= now() - INTERVAL '30 days'),
 			       COUNT(*) FILTER (WHERE created_on >= now() - INTERVAL '60 days'

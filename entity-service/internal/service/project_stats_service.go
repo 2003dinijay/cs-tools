@@ -132,8 +132,7 @@ func (s *projectStatsService) requireProject(ctx context.Context, projectID stri
 // GetProjectStats implements ProjectStatsService -- ServiceNow's
 // getProjectStatistics.
 func (s *projectStatsService) GetProjectStats(ctx context.Context, projectID string) (domain.ProjectStatsResponse, error) {
-	scope, err := s.requireProject(ctx, projectID)
-	if err != nil {
+	if _, err := s.requireProject(ctx, projectID); err != nil {
 		return domain.ProjectStatsResponse{}, err
 	}
 
@@ -194,7 +193,7 @@ func (s *projectStatsService) GetProjectStats(ctx context.Context, projectID str
 	})
 	g.Go(func() error {
 		var err error
-		outstanding, err = s.repo.OutstandingCounts(gctx, scope, projectID, caseStatsOutstandingStates, crOutstandingStates)
+		outstanding, err = s.repo.OutstandingCounts(gctx, projectID, caseStatsOutstandingStates, crOutstandingStates)
 		return err
 	})
 	g.Go(func() error {

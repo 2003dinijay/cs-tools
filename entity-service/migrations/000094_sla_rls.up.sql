@@ -63,7 +63,11 @@ CREATE POLICY sla_update ON sla
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = work_item_id))
   );
--- No DELETE policy: nothing in this codebase deletes an sla row (rows are
--- transitioned to CANCELLED/ACHIEVED/BREACHED, never removed), so FORCE +
--- zero DELETE policy correctly blocks a command that should never run
--- rather than needing a policy nothing exercises.
+-- No production code path deletes an sla row (rows are transitioned to
+-- CANCELLED/ACHIEVED/BREACHED, never removed) -- but internal/admin tooling
+-- and test fixture cleanup legitimately do, so this is internal-only rather
+-- than omitted entirely: an external caller was never going to delete an
+-- sla row anyway, and FORCE + zero policy would have also blocked the one
+-- legitimate internal case.
+CREATE POLICY sla_delete ON sla
+  FOR DELETE USING (current_setting('app.is_internal', true) = 'true');

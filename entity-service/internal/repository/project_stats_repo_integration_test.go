@@ -36,10 +36,16 @@ const statsProjectID = "31111111-1111-1111-1111-111111111111"
 // something to return.
 func seedProjectStats(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	ctx := context.Background()
+	// WithSystemIdentity: time_card's RLS policies (migration 000096)
+	// require an identity on every statement now, including this seed's own
+	// writes. scoped, not just pool, backs mustExec below so every seed
+	// statement carries it uniformly (harmless for the non-RLS tables it
+	// also inserts into).
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
 
 	cleanup := func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM time_card WHERE created_by = 'stats-test'`)
+		_, _ = scoped.Exec(ctx, `DELETE FROM time_card WHERE created_by = 'stats-test'`)
 		_, _ = pool.Exec(ctx, `DELETE FROM work_item WHERE created_by = 'stats-test'`)
 		_, _ = pool.Exec(ctx, `DELETE FROM deployed_product WHERE created_by = 'stats-test'`)
 		_, _ = pool.Exec(ctx, `DELETE FROM deployment WHERE created_by = 'stats-test'`)
@@ -51,7 +57,7 @@ func seedProjectStats(t *testing.T, pool *pgxpool.Pool) {
 
 	mustExec := func(sql string, args ...any) {
 		t.Helper()
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := scoped.Exec(ctx, sql, args...); err != nil {
 			t.Fatalf("seed (%.60s): %v", sql, err)
 		}
 	}
@@ -95,8 +101,11 @@ func TestProjectStatsIntegration_Aggregations(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedProjectStats(t, pool)
 
-	ctx := context.Background()
-	repo := repository.NewProjectStatsRepository(pool)
+	// WithSystemIdentity: this fixture never seeds a project_contact for
+	// statsProjectID, so an internal identity is what makes its rows
+	// visible under time_card's/announcement's RLS policies.
+	ctx := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewProjectStatsRepository(repository.NewScoped(pool))
 
 	t.Run("TimeLoggedMinutes", func(t *testing.T) {
 		billable, nonBillable, err := repo.TimeLoggedMinutes(ctx, statsProjectID, "", "")
@@ -141,7 +150,7 @@ func TestProjectStatsIntegration_Aggregations(t *testing.T) {
 	})
 
 	t.Run("OutstandingCounts", func(t *testing.T) {
-		counts, err := repo.OutstandingCounts(ctx, repository.SearchScope{Unrestricted: true}, statsProjectID,
+		counts, err := repo.OutstandingCounts(ctx, statsProjectID,
 			[]string{"OPEN", "WORK_IN_PROGRESS", "AWAITING_INFO", "WAITING_ON_WSO2", "REOPENED", "SOLUTION_PROPOSED"},
 			[]string{"CUSTOMER_APPROVAL", "SCHEDULED", "IMPLEMENT", "REVIEW", "CUSTOMER_REVIEW"})
 		if err != nil {

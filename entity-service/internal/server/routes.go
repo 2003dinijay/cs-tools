@@ -416,9 +416,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// scope into their WHERE clause, the project id here comes from the
 		// path and needs an explicit check.
 		projectCaseStatsSvc = service.NewProjectCaseStatsService(
-			repository.NewProjectCaseStatsRepository(db), referenceDataRepo, accessSvc)
+			repository.NewProjectCaseStatsRepository(repository.NewScoped(db)), referenceDataRepo, accessSvc)
 		projectStatsSvc = service.NewProjectStatsService(
-			repository.NewProjectStatsRepository(db), referenceDataRepo, accessSvc,
+			repository.NewProjectStatsRepository(repository.NewScoped(db)), referenceDataRepo, accessSvc,
 			projectMetadataSvc, projectCaseStatsSvc)
 	}
 	projectMetadataHandler := handler.NewProjectMetadataHandler(projectMetadataSvc)
@@ -677,7 +677,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	changeRequestHandler := handler.NewChangeRequestHandler(activeChangeRequestSvc)
 
-	timeCardRepo := repository.NewTimeCardRepository(db)
+	timeCardRepo := repository.NewTimeCardRepository(repository.NewScoped(db))
 	var activeTimeCardSvc service.TimeCardService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:

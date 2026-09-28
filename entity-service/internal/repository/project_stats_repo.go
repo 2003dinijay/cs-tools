@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // StateCount is one state group of a stats aggregation. State is empty for a
@@ -86,13 +85,12 @@ type ProjectStatsRepository interface {
 	// OutstandingCounts returns the per-type counts of work items in an
 	// outstanding state: caseStates for the five case-like types, crStates
 	// for change requests (the two sets differ -- see the service's own
-	// constants). scope is the caller's resolved AccessScope -- the
-	// announcement count this returns comes from a query joining
-	// `announcement`, which RLS-restricts by caller identity (see
-	// runWithCallerIdentity), so scope must be the real caller's, not an
-	// unrestricted one, or the count would include announcements the caller
-	// cannot otherwise see.
-	OutstandingCounts(ctx context.Context, scope SearchScope, projectID string, caseStates, crStates []string) (map[string]int, error)
+	// constants). The announcement count this returns comes from a query
+	// joining `announcement`, which is RLS-protected (migration 000085) --
+	// Scoped carries the caller's real identity (from ctx) into that same
+	// transaction automatically, so the count only ever includes
+	// announcements the caller is otherwise entitled to see.
+	OutstandingCounts(ctx context.Context, projectID string, caseStates, crStates []string) (map[string]int, error)
 
 	// SLAStatusInputs evaluates the four projectSLAStatus conditions in one
 	// round trip rather than four.
@@ -113,11 +111,15 @@ type ProjectStatsRepository interface {
 }
 
 type projectStatsRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
-// NewProjectStatsRepository constructs a ProjectStatsRepository backed by the given connection pool.
-func NewProjectStatsRepository(db *pgxpool.Pool) ProjectStatsRepository {
+// NewProjectStatsRepository constructs a ProjectStatsRepository backed by
+// the given Scoped connection -- time_card's project-membership visibility
+// (migration 000096) and announcement's (migration 000085) are both
+// enforced entirely by Postgres RLS now, reading the caller's identity from
+// ctx automatically.
+func NewProjectStatsRepository(db *Scoped) ProjectStatsRepository {
 	return &projectStatsRepo{db: db}
 }
 
@@ -214,7 +216,7 @@ func (r *projectStatsRepo) LastDeploymentOn(ctx context.Context, projectID strin
 
 // OutstandingCounts implements ProjectStatsRepository. The returned map is
 // keyed by the lowercase domain type ("case", "change_request", ...).
-func (r *projectStatsRepo) OutstandingCounts(ctx context.Context, scope SearchScope, projectID string, caseStates, crStates []string) (map[string]int, error) {
+func (r *projectStatsRepo) OutstandingCounts(ctx context.Context, projectID string, caseStates, crStates []string) (map[string]int, error) {
 	out := make(map[string]int)
 
 	// caseLikeJoins LEFT JOINs announcement, which is RLS-protected (migration
@@ -223,7 +225,9 @@ func (r *projectStatsRepo) OutstandingCounts(ctx context.Context, scope SearchSc
 	// back NULL, and caseLikeStateColumn's CASE/COALESCE then excludes it from
 	// every state filter -- undercounting outstanding announcements for a
 	// caller who is otherwise entitled to see them via project membership.
-	err := runWithCallerIdentity(ctx, r.db, scope, func(tx pgx.Tx) error {
+	// Scoped.InTx sets that identity (read from ctx) once at the start of
+	// this transaction.
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			SELECT wi.type::TEXT, COUNT(*)
 			  FROM work_item wi
