@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 )
 
@@ -103,6 +104,37 @@ func TestWebhookPost_WireContract(t *testing.T) {
 	}
 	if got.body["timestamp"] != "2026-09-28T10:00:00Z" {
 		t.Errorf("timestamp: got %v", got.body["timestamp"])
+	}
+}
+
+// TestWebhookPost_TimestampKeepsMillisecondPrecision pins the one part of the
+// payload that is a format rather than a value.
+//
+// ServiceNow's body script passes `new Date()` through JSON.stringify, which
+// emits ISO-8601 UTC with exactly three decimal places. The port matched it to
+// the second at first, which no local test would ever have caught -- a
+// receiver with a strict parser rejects the shorter form, and a webhook
+// rejected for its format fails exactly as silently as one with a wrong name.
+func TestWebhookPost_TimestampKeepsMillisecondPrecision(t *testing.T) {
+	var seen []capturedRequest
+	srv := mockDashboard(t, http.StatusOK, &seen)
+	defer srv.Close()
+
+	hook, _ := NewWebhook(WebhookConfig{
+		BaseURLs: map[string]string{"devant": srv.URL},
+		Secrets:  map[string]string{defaultSecretKey: "s"},
+	})
+
+	const withMillis = "2026-09-28T07:49:34.725Z"
+	if err := hook.Post(context.Background(), "devant", "outage_begin", withMillis); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, _ := seen[0].body["timestamp"].(string)
+	if got != withMillis {
+		t.Errorf("timestamp = %q, want it passed through untouched as %q", got, withMillis)
+	}
+	if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`).MatchString(got) {
+		t.Errorf("timestamp %q does not match ServiceNow's ISO-8601-with-milliseconds shape", got)
 	}
 }
 

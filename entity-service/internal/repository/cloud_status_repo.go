@@ -93,6 +93,13 @@ func NewCloudStatusRepository(db *pgxpool.Pool) CloudStatusRepository {
 //
 // The ordinary case still produces both, in order, because the row is seen
 // twice: once while ongoing and again once ended.
+// THE TIMESTAMP FORMAT IS NOT A STYLE CHOICE. ServiceNow's body script passes
+// `new Date()` through JSON.stringify, which emits ISO-8601 UTC with exactly
+// three decimal places -- "2026-09-28T07:49:34.123Z". The dashboard has been
+// parsing that shape for as long as the flow has existed, so the port emits
+// it to the millisecond rather than to the second. A receiver with a strict
+// parser would reject the shorter form, and a webhook rejected for its format
+// fails exactly as silently as one with a wrong event name.
 const candidatesSQL = `
     SELECT o.id::text,
            COALESCE(o.number, ''),
@@ -101,7 +108,7 @@ const candidatesSQL = `
            to_char(
                CASE WHEN o.end_on IS NULL THEN o.start_on ELSE o.end_on END
                AT TIME ZONE 'UTC',
-               'YYYY-MM-DD"T"HH24:MI:SS"Z"'
+               'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
            ),
            COALESCE(o.type::text, '')
       FROM outage o
@@ -180,7 +187,7 @@ const pendingSQL = `
            to_char(
                CASE WHEN e.event = 'OUTAGE_BEGIN' THEN o.start_on ELSE o.end_on END
                AT TIME ZONE 'UTC',
-               'YYYY-MM-DD"T"HH24:MI:SS"Z"'
+               'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
            ),
            e.attempt_count,
            COALESCE(e.last_error, '')
