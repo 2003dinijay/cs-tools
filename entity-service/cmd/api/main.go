@@ -92,10 +92,14 @@ func main() {
 	// 000088) — see service.SLAEngineRecomputeWorker's own doc comment.
 	// Gated on pool the same way the GitHub outbound worker above is:
 	// nowhere to read/write a clock at all with no database configured.
-	slaEngineCtx, stopSLAEngine := context.WithCancel(context.Background())
+	// WithSystemIdentity: this worker runs on its own process-startup
+	// context, never an HTTP request, so there is no caller identity to
+	// inherit -- the sla table's write policies (migration 000094) require
+	// app.is_internal='true', which this worker genuinely is.
+	slaEngineCtx, stopSLAEngine := context.WithCancel(repository.WithSystemIdentity(context.Background()))
 	defer stopSLAEngine()
 	if pool != nil {
-		slaEngineWorker := service.NewSLAEngineRecomputeWorker(repository.NewSLAEngineRepository(pool), cfg.SLARecomputeInterval)
+		slaEngineWorker := service.NewSLAEngineRecomputeWorker(repository.NewSLAEngineRepository(repository.NewScoped(pool)), cfg.SLARecomputeInterval)
 		go slaEngineWorker.Run(slaEngineCtx)
 		log.Printf("sla engine recompute worker enabled (every %s)", cfg.SLARecomputeInterval)
 	}

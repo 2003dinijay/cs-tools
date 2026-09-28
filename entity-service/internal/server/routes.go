@@ -503,7 +503,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// regardless of DataSource.
 	var slaEngineSvc service.SLAEngineService
 	if db != nil {
-		slaEngineSvc = service.NewSLAEngineService(repository.NewSLAEngineRepository(db), activeProjectSvc)
+		slaEngineSvc = service.NewSLAEngineService(repository.NewSLAEngineRepository(repository.NewScoped(db)), activeProjectSvc)
 	}
 
 	caseRepo := repository.NewCaseRepository(db)
@@ -906,7 +906,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	commentHandler := handler.NewCommentHandler(activeCommentSvc)
 
-	taskSlaRepo := repository.NewTaskSlaRepository(db)
+	taskSlaRepo := repository.NewTaskSlaRepository(repository.NewScoped(db))
 	var activeTaskSlaSvc service.TaskSlaService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeTaskSlaSvc = service.NewServiceNowTaskSlaService(serviceNowIntegrationServiceClient)

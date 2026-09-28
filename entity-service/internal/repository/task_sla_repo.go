@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
@@ -56,11 +55,14 @@ type TaskSlaRepository interface {
 }
 
 type taskSlaRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
-// NewTaskSlaRepository constructs a TaskSlaRepository backed by the given connection pool.
-func NewTaskSlaRepository(db *pgxpool.Pool) TaskSlaRepository {
+// NewTaskSlaRepository constructs a TaskSlaRepository backed by the given
+// Scoped connection -- sla's project-membership visibility (migration
+// 000094) is enforced entirely by Postgres RLS now; this repository applies
+// no project filtering of its own.
+func NewTaskSlaRepository(db *Scoped) TaskSlaRepository {
 	return &taskSlaRepo{db: db}
 }
 
