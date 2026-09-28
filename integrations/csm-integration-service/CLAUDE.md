@@ -65,8 +65,9 @@ exact path against `wso2sndev` on 2026-09-20 succeeded with no 401, creating a
 real incident (`INC0096966`). So whether these two endpoints 401 depends on the
 target ServiceNow environment's M2M credential configuration — it is not an
 unconditional consequence of this service being M2M-only. Treat a 401 from
-either endpoint as a possible, retryable outcome, not as proof the endpoint is
-permanently broken.
+either endpoint as a possible outcome that depends on the environment's M2M
+ServiceNow credential: check that credential before retrying, and don't treat
+the 401 as proof the endpoint is permanently broken.
 
 **`POST /services/search` (`SearchITServices`) uses this exact same
 M2M-fallback mechanism** — it proxies a ServiceNow-backed entity-service CMDB
