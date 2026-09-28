@@ -235,3 +235,29 @@ func MapEntityProjectContacts(contacts []entity.ProjectContact) []Contact {
 	}
 	return out
 }
+
+// MapEntityValidatedInvitee renders the Salesforce contact an entity-service
+// invitation dry run says would be reused, in the same Contact shape the
+// pre-cutover validation returned as contactDetails. ID is the contact's
+// Salesforce Id, as it was there. The role flags stay false: they describe a
+// membership, and the invitation has not made one yet.
+func MapEntityValidatedInvitee(c entity.ValidatedInvitee) Contact {
+	out := Contact{
+		ID:                  c.ContactSfID,
+		Email:               c.Email,
+		LastName:            c.LastName,
+		IsCsAdmin:           c.IsCsAdmin,
+		IsCsIntegrationUser: c.IsCsIntegrationUser,
+	}
+	if c.FirstName != "" {
+		first := c.FirstName
+		out.FirstName = &first
+	}
+	if c.AccountSfID != nil || c.AccountClassification != nil || c.IsPartnerAccount != nil {
+		out.Account = &ContactAccount{ID: c.AccountSfID, IsPartner: c.IsPartnerAccount}
+		if c.AccountClassification != nil {
+			out.Account.Classification = *c.AccountClassification
+		}
+	}
+	return out
+}

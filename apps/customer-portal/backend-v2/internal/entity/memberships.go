@@ -121,6 +121,69 @@ func (c *Client) ResendProjectMembershipInvitation(ctx context.Context, projectI
 	return err
 }
 
+// ValidateProjectMembershipRequest is the body of
+// POST /projects/{id}/contacts/validate, the invitation's dry run.
+type ValidateProjectMembershipRequest struct {
+	Email string `json:"email"`
+	// InviterEmail is the signed-in user's address, exactly as on
+	// CreateProjectMembershipRequest: it turns on the checks about who may
+	// invite and starts the allowed domains from the inviter's account.
+	InviterEmail string `json:"inviterEmail,omitempty"`
+}
+
+// The reasons entity-service gives for refusing an invitation in a dry run.
+// Each names the status the invitation itself would have been refused with.
+const (
+	// MembershipValidationConflict: already an active contact on the
+	// project, or more than one Salesforce contact for the address (409).
+	MembershipValidationConflict = "CONFLICT"
+	// MembershipValidationForbidden: e.g. a public or unlisted email domain,
+	// or an inviter whose account neither owns nor partners the project (403).
+	MembershipValidationForbidden = "FORBIDDEN"
+	// MembershipValidationInvalid: e.g. no domain list defined for the
+	// account (400).
+	MembershipValidationInvalid = "INVALID"
+)
+
+// ProjectMembershipValidation is what POST /projects/{id}/contacts/validate
+// returns. A refused invitation is a 200 with Valid false, a Reason and a
+// Message written to be shown to the person inviting; an error status means
+// the check itself could not be made.
+type ProjectMembershipValidation struct {
+	Valid   bool   `json:"valid"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+	// ExistingMembershipState is set when the project already has a
+	// membership for the address; on a valid answer only DEACTIVATED.
+	ExistingMembershipState string `json:"existingMembershipState,omitempty"`
+	// ExistingContact is the Salesforce contact the invitation would adopt.
+	// Only on a valid answer.
+	ExistingContact *ValidatedInvitee `json:"existingContact,omitempty"`
+}
+
+// ValidatedInvitee is the existing Salesforce contact an invitation would
+// adopt rather than create.
+type ValidatedInvitee struct {
+	ContactSfID           string  `json:"contactSfId"`
+	Email                 string  `json:"email"`
+	FirstName             string  `json:"firstName,omitempty"`
+	LastName              string  `json:"lastName,omitempty"`
+	IsCsAdmin             bool    `json:"isCsAdmin"`
+	IsCsIntegrationUser   bool    `json:"isCsIntegrationUser"`
+	AccountSfID           *string `json:"accountSfId,omitempty"`
+	AccountClassification *string `json:"accountClassification,omitempty"`
+	IsPartnerAccount      *bool   `json:"isPartnerAccount,omitempty"`
+}
+
+// ValidateProjectMembership calls POST /projects/{id}/contacts/validate:
+// entity-service runs the same checks as the invitation and writes nothing.
+// Registered and gated exactly like CreateProjectMembership.
+func (c *Client) ValidateProjectMembership(ctx context.Context, projectID string, req ValidateProjectMembershipRequest) (ProjectMembershipValidation, error) {
+	var out ProjectMembershipValidation
+	err := c.postJSON(ctx, fmt.Sprintf("/projects/%s/contacts/validate", url.PathEscape(projectID)), req, &out)
+	return out, err
+}
+
 // projectContactsPageLimit is entity-service's own maximum page size for
 // POST /projects/{id}/contacts/search; a larger limit is rejected with 400.
 const projectContactsPageLimit = 50

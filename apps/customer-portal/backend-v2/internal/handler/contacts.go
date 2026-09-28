@@ -107,6 +107,9 @@ type membershipsClient interface {
 	UpdateProjectMembershipRoles(ctx context.Context, projectID, email string, req entity.UpdateProjectMembershipRolesRequest) (entity.ProjectMembership, error)
 	DeactivateProjectMembership(ctx context.Context, projectID, email string) error
 	ResendProjectMembershipInvitation(ctx context.Context, projectID, email string) error
+	// ValidateProjectMembership is the invitation's dry run: the same checks
+	// CreateProjectMembership makes, with nothing written.
+	ValidateProjectMembership(ctx context.Context, projectID string, req entity.ValidateProjectMembershipRequest) (entity.ProjectMembershipValidation, error)
 	ListProjectContacts(ctx context.Context, projectID string) ([]entity.ProjectContact, error)
 	// GetMe answers which account roles the caller holds, for the admin check.
 	GetMe(ctx context.Context) (entity.GetUserMeResponse, error)
@@ -373,7 +376,19 @@ func (h *ContactHandler) UpdateProjectContactRole(w http.ResponseWriter, r *http
 	writeJSONValue(w, http.StatusOK, dto.MapMembership(result))
 }
 
-// ValidateProjectContact handles POST /projects/{id}/contacts/validate.
+// ValidateProjectContact handles POST /projects/{id}/contacts/validate, which
+// the webapp calls before it shows the invite form.
+//
+// With CSM_MIGRATION_PORTAL_CONTACTS_ENABLED on it asks entity-service's
+// invitation dry run, which runs the very checks the invitation will (public
+// email domains, the account's domain list from Salesforce, duplicate
+// contacts, the inviter's account owning or partnering the project, and an
+// existing active membership). The admin check the pre-cutover service made
+// is requireProjectAdmin here, as for every write. Off, it asks the
+// pre-cutover onboarding service. Either way the webapp sees the same
+// contract: 200 with isContactValid and one of the dto.ContactValidationMsg*
+// messages, 409 for somebody already on the project, and any other refusal
+// as an error status whose message says why.
 func (h *ContactHandler) ValidateProjectContact(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -397,6 +412,30 @@ func (h *ContactHandler) ValidateProjectContact(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	if h.portalContactsEnabled {
+		email := strings.TrimSpace(req.ContactEmail)
+		if !dto.ValidContactEmail(email) {
+			writeError(w, http.StatusBadRequest, dto.ContactValidationMsgInvalidEmail)
+			return
+		}
+		if !h.requireProjectAdmin(w, r, user, projectID) {
+			return
+		}
+		// A read: nothing is written, so unlike the writes this runs on the
+		// request's own context and may be abandoned with it.
+		result, err := h.memberships.ValidateProjectMembership(r.Context(), projectID, entity.ValidateProjectMembershipRequest{
+			Email:        email,
+			InviterEmail: strings.TrimSpace(user.Email),
+		})
+		if err != nil {
+			slog.ErrorContext(r.Context(), "entity ValidateProjectMembership failed", "userID", user.UserID, "projectID", projectID, "err", summarizeErr(err))
+			mapUpstreamError(w, err, "Failed to validate project contact.")
+			return
+		}
+		writeEntityContactValidation(w, r, user, projectID, result)
+		return
+	}
+
 	project, err := h.entity.GetProject(r.Context(), projectID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity GetProject failed", "userID", user.UserID, "projectID", projectID, "err", summarizeErr(err))
@@ -410,7 +449,7 @@ func (h *ContactHandler) ValidateProjectContact(w http.ResponseWriter, r *http.R
 		AdminEmail:   user.Email,
 	})
 	if conflict {
-		writeError(w, http.StatusConflict, "Contact with the provided email already exists in the project!")
+		writeError(w, http.StatusConflict, dto.ContactValidationMsgConflict)
 		return
 	}
 	if err != nil {
@@ -423,7 +462,7 @@ func (h *ContactHandler) ValidateProjectContact(w http.ResponseWriter, r *http.R
 		mapped := dto.MapContact(*contact)
 		writeJSONValue(w, http.StatusOK, dto.ContactValidationResponse{
 			IsContactValid: true,
-			Message:        "Contact is valid but already exists in the project!",
+			Message:        dto.ContactValidationMsgExistingContact,
 			ContactDetails: &mapped,
 		})
 		return
@@ -431,8 +470,57 @@ func (h *ContactHandler) ValidateProjectContact(w http.ResponseWriter, r *http.R
 
 	writeJSONValue(w, http.StatusOK, dto.ContactValidationResponse{
 		IsContactValid: true,
-		Message:        "Project contact is valid and can be added to the project!",
+		Message:        dto.ContactValidationMsgNewContact,
 	})
+}
+
+// writeEntityContactValidation answers ValidateProjectContact from
+// entity-service's dry-run verdict, in the pre-cutover response contract:
+//
+//   - valid, with a contact to reuse: 200, contactDetails set, so the webapp
+//     prefills the name Salesforce already holds.
+//   - valid, new address: 200 with no contactDetails.
+//   - CONFLICT: 409 with the portal's fixed message, as before, whichever of
+//     the two conflicts it was.
+//   - FORBIDDEN / INVALID: 403 / 400 with entity-service's message. Those
+//     messages are the onboarding service's own user-facing wording, carried
+//     over for exactly this; an empty one falls back to a generic message.
+func writeEntityContactValidation(w http.ResponseWriter, r *http.Request, user *middleware.UserInfo, projectID string, v entity.ProjectMembershipValidation) {
+	if v.Valid {
+		if v.ExistingContact != nil {
+			details := dto.MapEntityValidatedInvitee(*v.ExistingContact)
+			writeJSONValue(w, http.StatusOK, dto.ContactValidationResponse{
+				IsContactValid: true,
+				Message:        dto.ContactValidationMsgExistingContact,
+				ContactDetails: &details,
+			})
+			return
+		}
+		writeJSONValue(w, http.StatusOK, dto.ContactValidationResponse{
+			IsContactValid: true,
+			Message:        dto.ContactValidationMsgNewContact,
+		})
+		return
+	}
+
+	slog.InfoContext(r.Context(), "project contact validation refused", "userID", user.UserID, "projectID", projectID, "reason", v.Reason)
+	msg := strings.TrimSpace(v.Message)
+	switch v.Reason {
+	case entity.MembershipValidationConflict:
+		writeError(w, http.StatusConflict, dto.ContactValidationMsgConflict)
+	case entity.MembershipValidationForbidden:
+		if msg == "" {
+			msg = ErrMsgForbidden
+		}
+		writeError(w, http.StatusForbidden, msg)
+	default:
+		// INVALID, and any reason this backend does not know yet: still a
+		// refusal, so still a 4xx the webapp shows, never a false "valid".
+		if msg == "" {
+			msg = "Failed to validate project contact."
+		}
+		writeError(w, http.StatusBadRequest, msg)
+	}
 }
 
 // ResendProjectContactInvitation handles

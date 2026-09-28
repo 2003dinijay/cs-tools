@@ -93,3 +93,44 @@ func TestListProjectContacts_StopsOnAShortPage(t *testing.T) {
 		t.Errorf("got %d contacts in %d calls, err %v; want 1 contact in 1 call", len(got), calls, err)
 	}
 }
+
+// TestValidateProjectMembership_PostsTheDryRun pins the wire contract of the
+// invitation's dry run: the path, the body, and a refusal decoded as an
+// answer rather than an error.
+func TestValidateProjectMembership_PostsTheDryRun(t *testing.T) {
+	const projectID = "11111111-2222-3333-4444-555555555555"
+	var gotPath string
+	var gotBody ValidateProjectMembershipRequest
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /token", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"t","token_type":"Bearer","expires_in":3600}`))
+	})
+	mux.HandleFunc("POST /projects/{id}/contacts/validate", func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"valid":false,"reason":"FORBIDDEN","message":"domain not allowed"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := NewClient(Config{BaseURL: srv.URL, TokenURL: srv.URL + "/token", ClientID: "c", ClientSecret: "s"})
+
+	got, err := c.ValidateProjectMembership(context.Background(), projectID,
+		ValidateProjectMembershipRequest{Email: "jane@acme.com", InviterEmail: "admin@acme.com"})
+
+	if err != nil {
+		t.Fatalf("ValidateProjectMembership: %v", err)
+	}
+	if gotPath != "/projects/"+projectID+"/contacts/validate" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if gotBody.Email != "jane@acme.com" || gotBody.InviterEmail != "admin@acme.com" {
+		t.Errorf("body = %+v", gotBody)
+	}
+	if got.Valid || got.Reason != MembershipValidationForbidden || got.Message != "domain not allowed" {
+		t.Errorf("answer = %+v", got)
+	}
+}

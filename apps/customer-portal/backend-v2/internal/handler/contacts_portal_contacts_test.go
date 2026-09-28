@@ -57,6 +57,16 @@ func (f *fakeProjectResolver) GetProject(context.Context, string) (entity.Projec
 type fakeLegacyContacts struct {
 	calls     []string
 	projectID string
+	// validation is what ValidateProjectContact answers with.
+	validation  legacyValidation
+	validateReq usermanagement.ValidationPayload
+}
+
+// legacyValidation is one answer of the pre-cutover validate call.
+type legacyValidation struct {
+	contact  *usermanagement.Contact
+	conflict bool
+	err      error
 }
 
 func (f *fakeLegacyContacts) GetProjectContacts(_ context.Context, projectID string) ([]usermanagement.Contact, error) {
@@ -83,8 +93,10 @@ func (f *fakeLegacyContacts) UpdateMembershipRole(_ context.Context, projectID, 
 	return usermanagement.Membership{}, nil
 }
 
-func (f *fakeLegacyContacts) ValidateProjectContact(context.Context, usermanagement.ValidationPayload) (*usermanagement.Contact, bool, error) {
-	return nil, false, nil
+func (f *fakeLegacyContacts) ValidateProjectContact(_ context.Context, req usermanagement.ValidationPayload) (*usermanagement.Contact, bool, error) {
+	f.calls = append(f.calls, "validate")
+	f.validateReq = req
+	return f.validation.contact, f.validation.conflict, f.validation.err
 }
 
 // fakeMemberships is entity-service's side. err, when set, is returned from
@@ -110,6 +122,11 @@ type fakeMemberships struct {
 	// roles are the caller's account roles as GET /users/me returns them.
 	roles []string
 	meErr error
+	// validation / validateErr answer ValidateProjectMembership; validateReq
+	// records what it was asked.
+	validation  entity.ProjectMembershipValidation
+	validateErr error
+	validateReq entity.ValidateProjectMembershipRequest
 }
 
 func (f *fakeMemberships) GetMe(context.Context) (entity.GetUserMeResponse, error) {
@@ -160,6 +177,12 @@ func (f *fakeMemberships) ResendProjectMembershipInvitation(ctx context.Context,
 	return f.err
 }
 
+func (f *fakeMemberships) ValidateProjectMembership(_ context.Context, projectID string, req entity.ValidateProjectMembershipRequest) (entity.ProjectMembershipValidation, error) {
+	f.calls = append(f.calls, "validate")
+	f.projectID, f.validateReq = projectID, req
+	return f.validation, f.validateErr
+}
+
 type contactFakes struct {
 	resolver    *fakeProjectResolver
 	legacy      *fakeLegacyContacts
@@ -195,6 +218,7 @@ func newContactMux(portalContacts, withClient bool) (*http.ServeMux, contactFake
 	mux.HandleFunc("DELETE /projects/{id}/contacts/{email}", h.RemoveProjectContact)
 	mux.HandleFunc("PATCH /projects/{id}/contacts/{email}", h.UpdateProjectContactRole)
 	mux.HandleFunc("POST /projects/{id}/contacts/{email}/resend-invitation", h.ResendProjectContactInvitation)
+	mux.HandleFunc("POST /projects/{id}/contacts/validate", h.ValidateProjectContact)
 	return mux, f
 }
 
