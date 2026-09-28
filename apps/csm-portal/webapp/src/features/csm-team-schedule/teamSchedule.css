@@ -1799,3 +1799,60 @@
   color: var(--faint);
   padding: 2px 0;
 }
+
+/* My Week's open day, SRE: a column per zone, each listing L1, L2 and L3
+   support top to bottom. Three across on a desktop; the columns wrap on a
+   narrow screen rather than squeezing. */
+.csm-ts .peekzones {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px 16px;
+  padding: 0 16px 14px;
+}
+.csm-ts .peekzones .pz {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.csm-ts .peekzones .pzh {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.csm-ts .peekzones .pzt + .pzt {
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+.csm-ts .peekzones .pzt h6 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  font-size: inherit;
+}
+.csm-ts .peekzones .count {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+/* The zone columns' name rows read the same as the cards'. */
+.csm-ts .peek .pz .nm {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 0;
+  font-size: 13px;
+}
+.csm-ts .peek .pz .nm .who {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

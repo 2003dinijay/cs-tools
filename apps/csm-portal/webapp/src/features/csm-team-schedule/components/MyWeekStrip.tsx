@@ -262,73 +262,92 @@ function PeekRows({
 }): JSX.Element {
   const teamColourOf = useTeamColour();
 
-  /** A card per window, except SRE escalation, which is a card per zone and
-   *  tier -- TZ1 L1, L2 and L3 support, then TZ2's, then TZ3's -- the same
-   *  way This week lays it out. Every tier of every zone worked that day gets
-   *  a card, empty ones included, so a tier nobody holds reads as a gap. */
-  const groups = useMemo(() => {
+  /** SRE escalation as a column per zone -- TZ1, TZ2, TZ3 across, and in
+   *  each, L1, L2 and L3 support down -- so "who is L2 in TZ2" is read off
+   *  one column rather than hunted for across a wrapped row of cards. Every
+   *  tier of every zone worked that day is listed, empty ones included, so a
+   *  tier nobody holds reads as a gap. Anything else on the rota that day
+   *  keeps a card per window below. */
+  const { zones, rest } = useMemo(() => {
     type Group = { key: string; label: string; token: string; list: ScheduleAssignment[]; sort: number };
-    const out: Group[] = [];
-    const sre = rows.some((r) => shifts.get(r.shiftCode)?.family === "SRE");
+    const zoneCols: { zoneCode: string; tiers: Group[] }[] = [];
     const byTurn = new Map<string, Group>();
-    if (sre) {
+    if (rows.some((r) => shifts.get(r.shiftCode)?.family === "SRE")) {
       const sreShifts = [...shifts.values()].filter((sh) => sh.family === "SRE");
-      escalationGrid(sreShifts, iso).forEach((row, zi) =>
-        row.tiers.forEach(({ tier }, ti) => {
-          const g: Group = {
-            key: `esc:${row.zoneCode}|${tier}`,
-            label: `${row.zoneCode} ${tier} support`,
-            token: tier,
-            list: [],
-            sort: zi * 10 + ti,
-          };
+      for (const row of escalationGrid(sreShifts, iso)) {
+        const tiers = row.tiers.map(({ tier }, ti) => {
+          const g: Group = { key: `esc:${row.zoneCode}|${tier}`, label: `${tier} support`, token: tier, list: [], sort: ti };
           byTurn.set(g.key, g);
-          out.push(g);
-        }),
-      );
+          return g;
+        });
+        zoneCols.push({ zoneCode: row.zoneCode, tiers });
+      }
     }
-    const rest: ScheduleAssignment[] = [];
+    const others: ScheduleAssignment[] = [];
     for (const r of rows) {
       const turn = escalationTurnOf(r, shifts);
       const g = turn ? byTurn.get(`esc:${turn.zoneCode}|${turn.tier}`) : undefined;
       if (g) g.list.push(r);
-      else rest.push(r);
+      else others.push(r);
     }
-    for (const [code, list] of groupBy(rest, (r) => r.shiftCode).entries()) {
-      const shift = shifts.get(code);
-      out.push({
-        key: code,
-        label: shift?.label ?? code,
-        token: shift?.colourToken ?? "",
-        list,
-        sort: 1000 + (shift?.sortOrder ?? 999),
-      });
-    }
-    return out.sort((a, b) => a.sort - b.sort);
+    const restGroups: Group[] = [...groupBy(others, (r) => r.shiftCode).entries()]
+      .map(([code, list]) => {
+        const shift = shifts.get(code);
+        return { key: code, label: shift?.label ?? code, token: shift?.colourToken ?? "", list, sort: shift?.sortOrder ?? 999 };
+      })
+      .sort((x, y) => x.sort - y.sort);
+    return { zones: zoneCols, rest: restGroups };
   }, [rows, shifts, iso]);
 
   if (rows.length === 0) {
     return <div className="offnone">Nobody is on the rota that day.</div>;
   }
 
+  const names = (list: ScheduleAssignment[]) =>
+    list.map((a) => (
+      <div className="nm" key={a.id}>
+        <span className="av" style={{ background: teamColourOf(a.teamKey) }}>{initialsOf(a.engineer.name)}</span>
+        <span className="who">{a.engineer.name}</span>
+        {a.engineer.isLead ? <span className="tag lead-t">Lead</span> : null}
+      </div>
+    ));
+
   return (
-    <div className="peekgrid">
-      {groups.map((g) => (
-        <div className={`pg${g.list.length === 0 ? " pgempty" : ""}`} key={g.key}>
-          <h5>
-            <span className={`chip sm ${g.token}`}>{g.label}</span>
-            <span className="count">{g.list.length}</span>
-          </h5>
-          {g.list.length === 0 ? <div className="pgnone">Nobody rostered</div> : null}
-          {g.list.map((a) => (
-            <div className="nm" key={a.id}>
-              <span className="av" style={{ background: teamColourOf(a.teamKey) }}>{initialsOf(a.engineer.name)}</span>
-              <span className="who">{a.engineer.name}</span>
-              {a.engineer.isLead ? <span className="tag lead-t">Lead</span> : null}
+    <>
+      {zones.length > 0 ? (
+        <div className="peekzones">
+          {zones.map((z) => (
+            <div className="pz" key={z.zoneCode}>
+              <h5 className="pzh">
+                <span className={`chip sm ${z.zoneCode}`}>{z.zoneCode}</span>
+                <span className="count">{z.tiers.reduce((n, t) => n + t.list.length, 0)}</span>
+              </h5>
+              {z.tiers.map((t) => (
+                <div className={`pzt${t.list.length === 0 ? " pgempty" : ""}`} key={t.key}>
+                  <h6>
+                    <span className={`chip sm ${t.token}`}>{t.label}</span>
+                    <span className="count">{t.list.length}</span>
+                  </h6>
+                  {t.list.length === 0 ? <div className="pgnone">Nobody rostered</div> : names(t.list)}
+                </div>
+              ))}
             </div>
           ))}
         </div>
-      ))}
-    </div>
+      ) : null}
+      {rest.length > 0 ? (
+        <div className="peekgrid">
+          {rest.map((g) => (
+            <div className="pg" key={g.key}>
+              <h5>
+                <span className={`chip sm ${g.token}`}>{g.label}</span>
+                <span className="count">{g.list.length}</span>
+              </h5>
+              {names(g.list)}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </>
   );
 }

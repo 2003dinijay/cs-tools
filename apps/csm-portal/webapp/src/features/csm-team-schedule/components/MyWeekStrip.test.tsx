@@ -86,7 +86,7 @@ describe("MyWeekStrip", () => {
 });
 
 describe("MyWeekStrip: the open day's SRE escalation", () => {
-  it("lists L1, L2 and L3 support for every zone, like This week", () => {
+  it("lays out a column per zone, each listing L1, L2 and L3 support", () => {
     const tiered = (name: string, shiftCode: string, zoneCode: string, tier: "L1" | "L2" | "L3") => ({
       ...assignment({ name, rotaDate: "2026-09-21", shiftCode, zoneCode }),
       tier,
@@ -100,14 +100,18 @@ describe("MyWeekStrip: the open day's SRE escalation", () => {
       ],
     });
     fireEvent.click(screen.getByRole("button", { name: /Mon Sep 21 2026: show everyone on rotation/ }));
-    const cards = [...container.querySelectorAll(".peekgrid .pg")];
-    expect(cards.map((c) => c.querySelector("h5 .chip")?.textContent)).toEqual([
-      "TZ1 L1 support", "TZ1 L2 support", "TZ1 L3 support",
-      "TZ2 L1 support", "TZ2 L2 support", "TZ2 L3 support",
-      "TZ3 L1 support", "TZ3 L2 support", "TZ3 L3 support",
-    ]);
-    expect(cards[1]).toHaveTextContent("John");
-    expect(cards[5]).toHaveTextContent("Ada");
-    expect(cards[2]).toHaveTextContent("Nobody rostered");
+    const columns = [...container.querySelectorAll(".peekzones .pz")];
+    expect(columns.map((c) => c.querySelector(".pzh .chip")?.textContent)).toEqual(["TZ1", "TZ2", "TZ3"]);
+    for (const c of columns) {
+      expect([...c.querySelectorAll(".pzt h6 .chip")].map((e) => e.textContent)).toEqual([
+        "L1 support",
+        "L2 support",
+        "L3 support",
+      ]);
+    }
+    const tier = (col: number, t: number) => columns[col].querySelectorAll(".pzt")[t];
+    expect(tier(0, 1)).toHaveTextContent("John");
+    expect(tier(1, 2)).toHaveTextContent("Ada");
+    expect(tier(0, 2)).toHaveTextContent("Nobody rostered");
   });
 });
