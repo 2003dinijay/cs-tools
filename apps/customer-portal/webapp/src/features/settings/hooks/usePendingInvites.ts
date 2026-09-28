@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import type { PostProjectContactOutcome } from "@features/settings/api/usePostProjectContact";
 import type {
   CreateProjectContactRequest,
@@ -48,10 +48,47 @@ const sameEmail = (a?: string | null, b?: string | null): boolean =>
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+// Pending invitations live here, keyed by project, rather than in component
+// state. An invitation keeps running when the admin leaves the page, and it
+// must still be showing, in its current state, when they come back: state
+// inside the component is thrown away on unmount and the background work
+// would have nowhere to report. A full page reload still clears it; the
+// contact list then shows the invitation once it has committed.
+const pendingByProject = new Map<string, PendingInvite[]>();
+const listeners = new Set<() => void>();
+const NONE: PendingInvite[] = [];
+
+function readPending(projectId: string): PendingInvite[] {
+  return pendingByProject.get(projectId) ?? NONE;
+}
+
+function writePending(
+  projectId: string,
+  next: (prev: PendingInvite[]) => PendingInvite[],
+): void {
+  pendingByProject.set(projectId, next(readPending(projectId)));
+  listeners.forEach((listener) => listener());
+}
+
+function subscribePending(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+/** Clears every project's pending invitations. For tests only. */
+export function resetPendingInvitesForTests(): void {
+  pendingByProject.clear();
+  listeners.forEach((listener) => listener());
+}
+
 export interface UsePendingInvitesOptions {
+  projectId: string;
   /** Sends one invitation; resolves with how it ended, rejects on failure. */
   send: (request: CreateProjectContactRequest) => Promise<PostProjectContactOutcome>;
-  /** Refetches the contact list and resolves with the fresh rows. */
+  /**
+   * Refetches the contact list and resolves with the fresh rows. Must keep
+   * working after the page has unmounted.
+   */
   refetchContacts: () => Promise<ProjectContact[] | undefined>;
   /** Called once an invitation is confirmed as a real row. */
   onInvited: (email: string) => void;
@@ -70,94 +107,98 @@ export interface UsePendingInvitesResult {
 /**
  * Tracks invitations the admin has sent but that are not yet rows in the
  * contact list, so the page never blocks on an invitation that takes several
- * seconds. Each invitation runs on its own, so several can be in flight.
+ * seconds. Each invitation runs on its own, so several can be in flight, and
+ * each survives the admin navigating away and back.
  *
- * @param {UsePendingInvitesOptions} options - How to send, refetch and report.
+ * @param {UsePendingInvitesOptions} options - Project, and how to send, refetch and report.
  * @returns {UsePendingInvitesResult} The pending rows and the actions on them.
  */
-export function usePendingInvites({
-  send,
-  refetchContacts,
-  onInvited,
-  onFailed,
-}: UsePendingInvitesOptions): UsePendingInvitesResult {
-  const [pending, setPending] = useState<PendingInvite[]>([]);
-  // Mirror of `pending` for the async flow, which must not act on a stale
-  // closure (a second invite started while the first is still running).
-  const pendingRef = useRef<PendingInvite[]>([]);
+export function usePendingInvites(options: UsePendingInvitesOptions): UsePendingInvitesResult {
+  const { projectId } = options;
+  // The latest callbacks, so work started on an earlier render reports
+  // through the current ones, and through the last ones after unmount.
+  const optionsRef = useRef(options);
+  useLayoutEffect(() => {
+    optionsRef.current = options;
+  });
 
-  const update = useCallback((next: (prev: PendingInvite[]) => PendingInvite[]) => {
-    pendingRef.current = next(pendingRef.current);
-    setPending(pendingRef.current);
-  }, []);
-
-  const setStatus = useCallback(
-    (email: string, status: PendingInviteStatus, error?: string) =>
-      update((prev) =>
-        prev.map((p) => (sameEmail(p.email, email) ? { ...p, status, error } : p)),
-      ),
-    [update],
+  const pending = useSyncExternalStore(
+    subscribePending,
+    () => readPending(projectId),
+    () => readPending(projectId),
   );
+
+  const setStatus = (email: string, status: PendingInviteStatus, error?: string) =>
+    writePending(projectId, (prev) =>
+      prev.map((p) => (sameEmail(p.email, email) ? { ...p, status, error } : p)),
+    );
 
   const remove = useCallback(
-    (email: string) => update((prev) => prev.filter((p) => !sameEmail(p.email, email))),
-    [update],
+    (email: string) =>
+      writePending(projectId, (prev) => prev.filter((p) => !sameEmail(p.email, email))),
+    [projectId],
   );
 
-  const run = useCallback(
-    async (request: CreateProjectContactRequest) => {
-      const email = request.contactEmail;
-      try {
-        const outcome = await send(request);
-        if (outcome === "created") {
-          await refetchContacts();
+  const contactExists = async (email: string): Promise<boolean> => {
+    const rows = await optionsRef.current.refetchContacts();
+    return !!rows?.some((c) => sameEmail(c.email, email));
+  };
+
+  const run = async (request: CreateProjectContactRequest) => {
+    const email = request.contactEmail;
+    try {
+      const outcome = await optionsRef.current.send(request);
+      if (outcome === "created") {
+        await optionsRef.current.refetchContacts();
+        remove(email);
+        optionsRef.current.onInvited(email);
+        return;
+      }
+      // Accepted but not finished: refresh until the contact appears.
+      for (const delay of PENDING_INVITE_POLL_DELAYS_MS) {
+        await sleep(delay);
+        if (await contactExists(email)) {
           remove(email);
-          onInvited(email);
+          optionsRef.current.onInvited(email);
           return;
         }
-        // Accepted but not finished: refresh until the contact appears.
-        for (const delay of PENDING_INVITE_POLL_DELAYS_MS) {
-          await sleep(delay);
-          const rows = await refetchContacts();
-          if (rows?.some((c) => sameEmail(c.email, email))) {
-            remove(email);
-            onInvited(email);
-            return;
-          }
-        }
-        setStatus(email, "processing");
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setStatus(email, "failed", message);
-        onFailed(email, message);
       }
-    },
-    [send, refetchContacts, remove, setStatus, onInvited, onFailed],
-  );
+      setStatus(email, "processing");
+    } catch (err) {
+      // A failure can still hide a committed invitation, when the answer was
+      // lost on the way back. Look once before reporting it.
+      try {
+        if (await contactExists(email)) {
+          remove(email);
+          optionsRef.current.onInvited(email);
+          return;
+        }
+      } catch {
+        // The list could not be read either; report the original failure.
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      setStatus(email, "failed", message);
+      optionsRef.current.onFailed(email, message);
+    }
+  };
 
-  const invite = useCallback(
-    (request: CreateProjectContactRequest): boolean => {
-      const running = pendingRef.current.find((p) => sameEmail(p.email, request.contactEmail));
-      if (running && running.status === "inviting") return false;
-      update((prev) => [
-        { email: request.contactEmail, request, status: "inviting" },
-        ...prev.filter((p) => !sameEmail(p.email, request.contactEmail)),
-      ]);
-      void run(request);
-      return true;
-    },
-    [update, run],
-  );
+  const invite = (request: CreateProjectContactRequest): boolean => {
+    const running = readPending(projectId).find((p) => sameEmail(p.email, request.contactEmail));
+    if (running && running.status === "inviting") return false;
+    writePending(projectId, (prev) => [
+      { email: request.contactEmail, request, status: "inviting" },
+      ...prev.filter((p) => !sameEmail(p.email, request.contactEmail)),
+    ]);
+    void run(request);
+    return true;
+  };
 
-  const retry = useCallback(
-    (email: string) => {
-      const item = pendingRef.current.find((p) => sameEmail(p.email, email));
-      if (!item || item.status === "inviting") return;
-      setStatus(email, "inviting");
-      void run(item.request);
-    },
-    [run, setStatus],
-  );
+  const retry = (email: string) => {
+    const item = readPending(projectId).find((p) => sameEmail(p.email, email));
+    if (!item || item.status === "inviting") return;
+    setStatus(email, "inviting");
+    void run(item.request);
+  };
 
   return { pending, invite, retry, dismiss: remove };
 }

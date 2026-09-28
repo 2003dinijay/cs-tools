@@ -15,6 +15,8 @@
 // under the License.
 
 import { useState, useMemo, useCallback, type JSX } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { ApiQueryKeys } from "@constants/apiConstants";
 import {
   Box,
   Button,
@@ -114,7 +116,6 @@ export default function SettingsUserManagement({
     data: contacts = [],
     isLoading,
     error,
-    refetch: refetchContacts,
   } = useGetProjectContacts(projectId);
   const postContact = usePostProjectContact(projectId);
   const deleteContact = useDeleteProjectContact(projectId);
@@ -140,11 +141,21 @@ export default function SettingsUserManagement({
   }, [contacts, searchQuery]);
 
 
+  const queryClient = useQueryClient();
   const pendingInvites = usePendingInvites({
+    projectId,
     // mutateAsync, not mutate: callbacks passed to mutate fire only for the
     // latest call, and several invitations may be in flight at once.
     send: postContact.mutateAsync,
-    refetchContacts: async () => (await refetchContacts()).data,
+    // Through the query client rather than this component's refetch, which
+    // stops working once the admin navigates away while an invitation is
+    // still running. type "all" refetches the list even when no page is
+    // showing it.
+    refetchContacts: async () => {
+      const queryKey = [ApiQueryKeys.PROJECT_CONTACTS, projectId];
+      await queryClient.refetchQueries({ queryKey, type: "all" });
+      return queryClient.getQueryData<ProjectContact[]>(queryKey);
+    },
     onInvited: (email) => showSuccess(`${SETTINGS_USER_INVITE_SUCCESS}: ${email}`),
     onFailed: (email, message) => showError(`${email}: ${message}`),
   });

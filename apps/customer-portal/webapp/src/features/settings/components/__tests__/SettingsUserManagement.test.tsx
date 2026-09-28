@@ -15,8 +15,19 @@
 // under the License.
 
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import SettingsUserManagement from "@features/settings/components/SettingsUserManagement";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import SettingsUserManagementComponent from "@features/settings/components/SettingsUserManagement";
+import { resetPendingInvitesForTests } from "@features/settings/hooks/usePendingInvites";
+
+// The page reads through the query client, so every render needs one.
+function SettingsUserManagement(props: { projectId: string }) {
+  return (
+    <QueryClientProvider client={new QueryClient()}>
+      <SettingsUserManagementComponent {...props} />
+    </QueryClientProvider>
+  );
+}
 
 vi.mock("@features/settings/api/useGetProjectContacts", () => ({
   default: () => ({
@@ -76,6 +87,8 @@ vi.mock("@features/settings/components/RemoveUserModal", () => ({
 }));
 
 describe("SettingsUserManagement", () => {
+  beforeEach(() => resetPendingInvitesForTests());
+
   it("renders contacts and opens add-user modal", () => {
     render(<SettingsUserManagement projectId="p-1" />);
     expect(screen.getByText("user@test.dev")).toBeInTheDocument();

@@ -18,6 +18,7 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PENDING_INVITE_POLL_DELAYS_MS,
+  resetPendingInvitesForTests,
   usePendingInvites,
 } from "@features/settings/hooks/usePendingInvites";
 import type { CreateProjectContactRequest, ProjectContact } from "@features/settings/types/users";
@@ -37,6 +38,7 @@ const contact = (email: string) => ({ id: email, email }) as ProjectContact;
 
 function setup(overrides: Partial<Parameters<typeof usePendingInvites>[0]> = {}) {
   const options = {
+    projectId: "p-1",
     send: vi.fn(),
     refetchContacts: vi.fn().mockResolvedValue([]),
     onInvited: vi.fn(),
@@ -48,7 +50,10 @@ function setup(overrides: Partial<Parameters<typeof usePendingInvites>[0]> = {})
 }
 
 describe("usePendingInvites", () => {
-  beforeEach(() => vi.useFakeTimers());
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetPendingInvitesForTests();
+  });
   afterEach(() => vi.useRealTimers());
 
   it("shows the invitation at once and drops it when it is created", async () => {
@@ -151,5 +156,79 @@ describe("usePendingInvites", () => {
     expect(duplicate).toBe(false);
     expect(options.send).toHaveBeenCalledTimes(2);
     expect(result.current.pending.map((p) => p.email)).toEqual(["f@acme.com", "e@acme.com"]);
+  });
+
+  it("keeps an invitation, and its outcome, when the page unmounts and comes back", async () => {
+    let resolveSend: (v: "created") => void = () => {};
+    const send = vi.fn(() => new Promise<"created">((r) => (resolveSend = r)));
+    const first = setup({ send });
+
+    act(() => {
+      first.result.current.invite(request("g@acme.com"));
+    });
+    first.unmount();
+
+    // Back on the page while the request is still running.
+    const second = setup({ send });
+    expect(second.result.current.pending).toEqual([
+      expect.objectContaining({ email: "g@acme.com", status: "inviting" }),
+    ]);
+
+    await act(async () => resolveSend("created"));
+    expect(second.result.current.pending).toEqual([]);
+    expect(first.options.onInvited).toHaveBeenCalledWith("g@acme.com");
+  });
+
+  it("finishes an invitation while the page is away, and shows nothing stale on return", async () => {
+    let resolveSend: (v: "created") => void = () => {};
+    const first = setup({ send: vi.fn(() => new Promise<"created">((r) => (resolveSend = r))) });
+    act(() => {
+      first.result.current.invite(request("h@acme.com"));
+    });
+    first.unmount();
+
+    await act(async () => resolveSend("created"));
+
+    const second = setup();
+    expect(second.result.current.pending).toEqual([]);
+  });
+
+  it("keeps each project's invitations to itself", () => {
+    const a = setup({ projectId: "p-1", send: vi.fn(() => new Promise<"created">(() => {})) });
+    act(() => {
+      a.result.current.invite(request("i@acme.com"));
+    });
+    const b = setup({ projectId: "p-2" });
+    expect(b.result.current.pending).toEqual([]);
+    expect(a.result.current.pending).toHaveLength(1);
+  });
+
+  it("treats a failure as success when the contact turns out to exist", async () => {
+    const { result, options } = setup({
+      send: vi.fn().mockRejectedValue(new Error("upstream status 502")),
+      refetchContacts: vi.fn().mockResolvedValue([contact("J@acme.com")]),
+    });
+
+    await act(async () => {
+      result.current.invite(request("j@acme.com"));
+    });
+
+    expect(result.current.pending).toEqual([]);
+    expect(options.onInvited).toHaveBeenCalledWith("j@acme.com");
+    expect(options.onFailed).not.toHaveBeenCalled();
+  });
+
+  it("reports the original failure when the list cannot be read either", async () => {
+    const { result, options } = setup({
+      send: vi.fn().mockRejectedValue(new Error("Salesforce rejected the contact")),
+      refetchContacts: vi.fn().mockRejectedValue(new Error("network down")),
+    });
+
+    await act(async () => {
+      result.current.invite(request("k@acme.com"));
+    });
+
+    expect(result.current.pending[0]).toMatchObject({ status: "failed", error: "Salesforce rejected the contact" });
+    expect(options.onFailed).toHaveBeenCalledWith("k@acme.com", "Salesforce rejected the contact");
   });
 });
