@@ -1609,3 +1609,26 @@
   justify-content: flex-end;
   gap: 6px;
 }
+
+/* The escalation card's tiers, L1 to L3, ruled off from one another so each
+   reads as its own rung of the ladder. */
+.csm-ts .ladder .zbp.tiers > .zsec + .zsec {
+  border-top: 1px solid var(--line-2);
+  margin-top: 6px;
+  padding-top: 6px;
+}
+.csm-ts .ladder .zbp.tiers .zsec > .gap {
+  color: var(--faint);
+  font-style: italic;
+}
+
+/* Off rota on a multi-lane day (SRE), widened by exactly the 80px the
+   ladder's minimum width also grew by (OFF_ROTA_PX in DayLadder.tsx), so the
+   zone lanes keep the width they had. The percentage is taken of the day as
+   it was before those 80px were added -- a plain 15% of the wider day would
+   grow off rota by a few pixels more than the day did, and the zones would
+   pay for them. */
+.csm-ts .ladder:not(.onelane) .lane.offlane,
+.csm-ts .ladhd:not(.onelane) .lnh.offhd {
+  flex: 0 0 clamp(248px, calc((100% - 80px) * 0.15 + 80px), 274px);
+}

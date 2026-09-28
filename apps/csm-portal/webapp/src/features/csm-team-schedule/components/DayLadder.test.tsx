@@ -26,6 +26,7 @@ import {
   REGULAR,
   REGULAR_IND,
   TZ,
+  TZ1,
   ZONES,
   absence,
   assignment,
@@ -166,5 +167,41 @@ describe("DayLadder: who is not on the rota", () => {
     );
     expect(screen.getByText("Annual leave")).toBeInTheDocument();
     expect(screen.getByText("Nuwan")).toBeInTheDocument();
+  });
+});
+
+describe("DayLadder: the escalation ladder", () => {
+  function tiered(name: string, tier: "L1" | "L2" | "L3") {
+    return { ...assignment({ name, rotaDate: ISO, shiftCode: TZ1.code, zoneCode: "TZ1" }), tier };
+  }
+
+  function renderZone(assignments: LadderLane["assignments"]) {
+    return render(
+      <DayLadder
+        day={WEDNESDAY}
+        tz={TZ}
+        zoneLabel="IST"
+        lanes={[{ name: "TZ1", assignments, layout: "zone" }]}
+        shifts={shiftMap(TZ1)}
+        zones={ZONES}
+        absences={[]}
+        absenceKinds={[ANNUAL_LEAVE]}
+        {...scopeControls()}
+      />,
+    );
+  }
+
+  it("shows L1, L2 and L3 in order, saying when a tier has nobody", () => {
+    const { container } = renderZone([tiered("Jane", "L1"), tiered("John", "L2")]);
+    const labels = [...container.querySelectorAll(".zbp.tiers .zsl")].map((el) => el.firstChild?.textContent);
+    expect(labels).toEqual(["L1 escalation", "L2 escalation", "L3 escalation"]);
+    expect(screen.getByText("Nobody rostered")).toBeInTheDocument();
+  });
+
+  it("names whoever holds L3 like any other tier", () => {
+    renderZone([tiered("Jane", "L1"), tiered("Ada", "L3")]);
+    expect(screen.getByText("Ada")).toBeInTheDocument();
+    // L2 is the empty one now.
+    expect(screen.getAllByText("Nobody rostered")).toHaveLength(1);
   });
 });
