@@ -52,6 +52,7 @@ type fakeScheduleRepo struct {
 	absenceByID domain.ScheduleAbsence
 	gotKindCode string
 	gotRange    domain.ApplyScheduleRangeRequest
+	adminTeams  []string
 }
 
 func (f *fakeScheduleRepo) AssignmentByID(context.Context, string) (domain.ScheduleAssignment, error) {
@@ -136,6 +137,16 @@ func (f *fakeScheduleRepo) LeadTeamsFor(context.Context, string) ([]string, erro
 		return []string{"castor"}, f.err
 	}
 	return []string{}, f.err
+}
+
+// adminTeams is what a rota admin holds. Nil by default, so every existing
+// test describes somebody who is a lead or nothing at all -- the behaviour
+// before the role existed.
+func (f *fakeScheduleRepo) RotaAdminTeamsFor(context.Context, string) ([]string, error) {
+	if f.adminTeams == nil {
+		return []string{}, f.err
+	}
+	return f.adminTeams, f.err
 }
 
 func (f *fakeScheduleRepo) Catalogue(context.Context) (domain.ScheduleCatalogue, error) {
@@ -431,6 +442,108 @@ func TestEditsAreLimitedToTheCallersOwnTeam(t *testing.T) {
 	}
 	if !repo.called {
 		t.Fatal("the write never reached the repository")
+	}
+}
+
+// A rota admin may edit a team they do not lead -- but only inside their own
+// family. Both halves matter: the first is the whole point of the role, and
+// the second is the only thing stopping it from being a key to everything.
+func TestRotaAdminMayEditTheirOwnFamilyAndNoOther(t *testing.T) {
+	// Leads nothing at all. Every permission this caller has comes from the
+	// role, which is exactly the case the role exists for.
+	repo := &leadOf{team: ""}
+	repo.adminTeams = []string{"castor", "draco", "vega"} // the CRE teams
+	repo.byID = domain.ScheduleAssignment{
+		ID:       "11111111-1111-1111-1111-111111111111",
+		TeamKey:  "draco",
+		Engineer: domain.ScheduleEngineer{UserID: "22222222-2222-2222-2222-222222222222"},
+	}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+	ctx := leadCtx("cre.rota.admin@example.com")
+
+	newUser := "33333333-3333-3333-3333-333333333333"
+	if _, err := svc.UpdateAssignment(ctx, repo.byID.ID, domain.UpdateScheduleAssignmentRequest{UserID: &newUser}); err != nil {
+		t.Fatalf("a CRE rota admin was refused a CRE team they do not lead: %v", err)
+	}
+	if !repo.called {
+		t.Fatal("the write never reached the repository")
+	}
+
+	// An SRE team is not theirs, and holding the CRE role says nothing about
+	// it. This is the refusal the family split is for.
+	repo.called = false
+	repo.byID.TeamKey = "apollo"
+	_, err := svc.UpdateAssignment(ctx, repo.byID.ID, domain.UpdateScheduleAssignmentRequest{UserID: &newUser})
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("want ForbiddenError editing the other family, got %v", err)
+	}
+	if repo.called {
+		t.Fatal("a CRE rota admin wrote to an SRE team")
+	}
+}
+
+// A team key arrives from a request body, where nothing lowercases it, while
+// the repository returns it as stored. An admin refused their own team over
+// capitalisation would be a maddening bug to report, and LeadsTeam already
+// folds case in SQL -- this check has to agree with it.
+func TestRotaAdminTeamMatchIgnoresCase(t *testing.T) {
+	repo := &leadOf{team: ""}
+	repo.adminTeams = []string{"castor"}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+
+	_, err := svc.CreateAssignment(leadCtx("cre.rota.admin@example.com"), domain.CreateScheduleAssignmentRequest{
+		UserID:    "22222222-2222-2222-2222-222222222222",
+		TeamKey:   "CASTOR",
+		ShiftCode: "CRE_EVENING",
+		RotaDate:  "2026-10-01",
+	})
+	if err != nil {
+		t.Fatalf("a rota admin was refused their own team over its spelling: %v", err)
+	}
+}
+
+// The engineer check is not waived for an admin. Their reach is over teams,
+// not over people: a row still belongs to the team it is filed under, and
+// ApplyRange's delete is scoped by team_key on the strength of that.
+func TestRotaAdminStillCannotWriteAgainstSomebodyElsesTeam(t *testing.T) {
+	repo := &leadOf{team: "", notOnTeam: true}
+	repo.adminTeams = []string{"castor"}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+
+	_, err := svc.ApplyRange(leadCtx("cre.rota.admin@example.com"), domain.ApplyScheduleRangeRequest{
+		UserID:    "22222222-2222-2222-2222-222222222222",
+		TeamKey:   "castor",
+		ShiftCode: "CRE_EVENING",
+		From:      "2026-10-01",
+		To:        "2026-10-03",
+	})
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("want ForbiddenError for an engineer not on the team, got %v", err)
+	}
+	if repo.called {
+		t.Fatal("a rota admin wrote a row against somebody not on the team")
+	}
+}
+
+// The endpoint the UI reads to decide which rows get an edit control has to
+// answer for both routes at once, or the page and the permission disagree --
+// an edit control that 403s, or a team quietly withheld from somebody who may
+// in fact edit it.
+func TestMyLeadTeamsCoversLeadingAndAdministering(t *testing.T) {
+	repo := &fakeScheduleRepo{leadsTeam: true} // LeadTeamsFor returns castor
+	repo.adminTeams = []string{"vega", "castor", "draco"}
+	svc := NewScheduleService(repo, alwaysUnrestrictedAccess{})
+
+	teams, err := svc.MyLeadTeams(leadCtx("cre.rota.admin@example.com"))
+	if err != nil {
+		t.Fatalf("MyLeadTeams: %v", err)
+	}
+	// castor is held both ways and must appear once, not twice.
+	want := []string{"castor", "draco", "vega"}
+	if !reflect.DeepEqual(teams, want) {
+		t.Fatalf("MyLeadTeams = %v, want %v", teams, want)
 	}
 }
 

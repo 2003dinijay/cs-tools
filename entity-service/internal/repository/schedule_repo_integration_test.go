@@ -40,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,12 +56,22 @@ const (
 	schedLeadID   = "5c8e0000-0000-4000-8000-000000000002"
 	schedMemberID = "5c8e0000-0000-4000-8000-000000000003"
 	schedOtherID  = "5c8e0000-0000-4000-8000-000000000004"
+	// A team in the other family, and somebody holding the CRE rota admin
+	// role, so the family split can be tested rather than assumed.
+	schedSreTeamID = "5c8e0000-0000-4000-8000-000000000005"
+	schedAdminID   = "5c8e0000-0000-4000-8000-000000000006"
+	// schedOtherTeam was only ever a string in a WHERE clause until 000101
+	// gave team_schedule_assignment.team_key a foreign key into team(key).
+	// It needs a real row now, or anything seeding a slot on it fails.
+	schedOtherTeamID = "5c8e0000-0000-4000-8000-000000000007"
 
 	schedLeadEmail   = "sched.lead@example.test"
 	schedMemberEmail = "sched.member@example.test"
 	schedOtherEmail  = "sched.other@example.test"
+	schedAdminEmail  = "sched.admin@example.test"
 	schedTeamKey     = "schedfixture"
 	schedOtherTeam   = "schedother"
+	schedSreTeamKey  = "schedsrefixture"
 
 	// A Monday, so the weekday/weekend arithmetic below reads plainly.
 	schedMonday = "2026-09-21"
@@ -97,13 +108,27 @@ func newScheduleIntegrationRepo(t *testing.T) (ScheduleRepository, *pgxpool.Pool
 	} {
 		mustExec(t, pool, stmt, schedTeamKey, schedOtherTeam)
 	}
-	mustExec(t, pool, `DELETE FROM team_member WHERE user_id IN ($1, $2, $3)`,
-		schedLeadID, schedMemberID, schedOtherID)
+	mustExec(t, pool, `DELETE FROM team_member WHERE user_id IN ($1, $2, $3, $4)`,
+		schedLeadID, schedMemberID, schedOtherID, schedAdminID)
+	mustExec(t, pool, `DELETE FROM user_role WHERE user_id = $1`, schedAdminID)
 
 	mustExec(t, pool, `
 		INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, key, type)
 		VALUES ($1, NOW(), NOW(), 'fixture', 'fixture', $2, $2, 'cre-abt')
 		ON CONFLICT (id) DO NOTHING`, schedTeamID, schedTeamKey)
+	// The same fixture in the other family. Without it, "a CRE admin does not
+	// reach SRE" could only be asserted against teams this file does not own,
+	// which is a test that passes for the wrong reason on an empty database.
+	mustExec(t, pool, `
+		INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, key, type)
+		VALUES ($1, NOW(), NOW(), 'fixture', 'fixture', $2, $2, 'sre-abt')
+		ON CONFLICT (id) DO NOTHING`, schedSreTeamID, schedSreTeamKey)
+	// The second CRE team, for the tests that check one team's edit does not
+	// reach another's rows.
+	mustExec(t, pool, `
+		INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, key, type)
+		VALUES ($1, NOW(), NOW(), 'fixture', 'fixture', $2, $2, 'cre-abt')
+		ON CONFLICT (id) DO NOTHING`, schedOtherTeamID, schedOtherTeam)
 
 	// Two of these deliberately share a display name. A rota can carry two
 	// people called the same thing, and the history has to survive it.
@@ -111,6 +136,7 @@ func newScheduleIntegrationRepo(t *testing.T) (ScheduleRepository, *pgxpool.Pool
 		{schedLeadID, schedLeadEmail, "Sched", "Lead"},
 		{schedMemberID, schedMemberEmail, "Chamara", "Perera"},
 		{schedOtherID, schedOtherEmail, "Chamara", "Perera"},
+		{schedAdminID, schedAdminEmail, "Sched", "Admin"},
 	} {
 		mustExec(t, pool, `
 			INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by,
@@ -126,10 +152,53 @@ func newScheduleIntegrationRepo(t *testing.T) (ScheduleRepository, *pgxpool.Pool
 		schedTeamID, schedLeadID)
 	mustExec(t, pool, `
 		INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, role)
-		VALUES (gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', $1, $2, 'member')`,
-		schedTeamID, schedMemberID)
+		VALUES (gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', $1, $2, $3)`,
+		schedTeamID, schedMemberID, ordinaryMemberRole(t, pool))
+
+	// The rota admin gets the role and NO team_member row at all -- that
+	// combination is the whole point of the grant, and a fixture that also
+	// made them a lead somewhere would not be testing it.
+	//
+	// The role row comes from migration 0156. Resolved by name rather than
+	// by a fixed id, because that migration creates it with gen_random_uuid()
+	// and the ServiceNow sync may have seeded its own under a different id.
+	mustExec(t, pool, `
+		INSERT INTO user_role (id, created_on, updated_on, created_by, updated_by, user_id, role_id)
+		SELECT gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', $1, r.id
+		  FROM role r WHERE r.name = 'cre_rota_admin'`, schedAdminID)
 
 	return NewScheduleRepository(pool), pool
+}
+
+// ordinaryMemberRole returns a team_member.role this database will accept for
+// somebody who is on a team but does not lead it.
+//
+// Asked rather than hardcoded because the vocabulary is being changed by work
+// in flight: 000029 constrains it to ('member', 'lead'), and the escalation
+// roster branch replaces 'member' with a rung set of its own
+// ('engineer', 'sub_lead', 'lead', 'cre_head', 'cs_head'). A fixture naming
+// either one fails outright against the other's schema -- and it fails in
+// setUp, so every test in this file goes red at once and none of them is
+// about team_member roles at all. 'lead' is the only value common to both,
+// and it is the one value this fixture must not use.
+//
+// Nothing here depends on which name comes back: these tests only ever assert
+// that a non-lead is not treated as a lead.
+func ordinaryMemberRole(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	var def string
+	err := pool.QueryRow(context.Background(), `
+		SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		 WHERE conname = 'team_member_role_check'`).Scan(&def)
+	if err != nil {
+		// No such constraint: nothing is restricting the column, so the
+		// original value is as good as any.
+		return "member"
+	}
+	if strings.Contains(def, `'member'`) {
+		return "member"
+	}
+	return "engineer"
 }
 
 // weekdayShift returns a shift code the catalogue actually has for the given
@@ -261,6 +330,72 @@ func TestScheduleIntegration_LeadTeamsForListsOnlyLedTeams(t *testing.T) {
 		if k == schedTeamKey {
 			t.Fatalf("a member was told they lead %s", k)
 		}
+	}
+}
+
+// A rota admin reaches every team in their own family and none in the other.
+//
+// Asserted by containment rather than by comparing the whole list: the query
+// answers for every rostered team in the database, so a seeded database
+// legitimately returns more than this file's own fixtures. What must hold is
+// that the CRE fixture is in and the SRE fixture is out.
+func TestScheduleIntegration_RotaAdminReachesOneFamilyOnly(t *testing.T) {
+	repo, _ := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+
+	teams, err := repo.RotaAdminTeamsFor(ctx, schedAdminEmail)
+	if err != nil {
+		t.Fatalf("RotaAdminTeamsFor: %v", err)
+	}
+	var sawCRE, sawSRE bool
+	for _, k := range teams {
+		switch k {
+		case schedTeamKey:
+			sawCRE = true
+		case schedSreTeamKey:
+			sawSRE = true
+		}
+	}
+	if !sawCRE {
+		t.Fatalf("a CRE rota admin did not reach the CRE fixture team; got %v", teams)
+	}
+	if sawSRE {
+		t.Fatalf("a CRE rota admin reached an SRE team; got %v", teams)
+	}
+
+	// Holding the role is the whole grant, so somebody without it reaches
+	// nothing this way -- including the lead, whose own access comes from
+	// team_member and must not leak into this answer.
+	lead, err := repo.RotaAdminTeamsFor(ctx, schedLeadEmail)
+	if err != nil {
+		t.Fatalf("RotaAdminTeamsFor(lead): %v", err)
+	}
+	if len(lead) != 0 {
+		t.Fatalf("a lead with no rota admin role was given %v", lead)
+	}
+}
+
+// A rota admin is not a lead. LeadsTeam answers about team_member alone, and
+// folding the role into it would have made the two indistinguishable -- which
+// is exactly what the service needs to keep apart to report a refusal
+// accurately.
+func TestScheduleIntegration_RotaAdminIsNotReportedAsALead(t *testing.T) {
+	repo, _ := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+
+	leads, err := repo.LeadsTeam(ctx, schedAdminEmail, schedTeamKey)
+	if err != nil {
+		t.Fatalf("LeadsTeam(admin): %v", err)
+	}
+	if leads {
+		t.Fatal("a rota admin was reported as leading the team")
+	}
+	teams, err := repo.LeadTeamsFor(ctx, schedAdminEmail)
+	if err != nil {
+		t.Fatalf("LeadTeamsFor(admin): %v", err)
+	}
+	if len(teams) != 0 {
+		t.Fatalf("a rota admin was listed as leading %v", teams)
 	}
 }
 

@@ -77,6 +77,9 @@ type ScheduleRepository interface {
 	// CreateAbsenceKind adds a kind to the shared catalogue under the given
 	// code. A code already taken is a ConflictError.
 	CreateAbsenceKind(ctx context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, actorEmail string) (domain.ScheduleAbsenceKind, error)
+	// RotaAdminTeamsFor is every team this caller may edit by virtue of
+	// holding a rota admin role, rather than by leading the team.
+	RotaAdminTeamsFor(ctx context.Context, userEmail string) ([]string, error)
 
 	// ApplyRange sets one engineer to one window across a span of days, which
 	// is how the roster's picker edits.
@@ -166,6 +169,21 @@ func scanAssignments(rows interface {
 	return out, nil
 }
 
+// Which teams the rota is run for, and which family each belongs to, both
+// derived from team.type -- the registry spells it CRE-ABT / SRE-ABT / CRE, so
+// the leading word is the group and an ABT is a team within it.
+//
+// Constants because two queries need them: the catalogue the roster colours
+// itself by, and the rota admin lookup that decides whose rota somebody may
+// edit. A second, drifted copy of the family test is precisely how an SRE
+// admin would quietly gain a CRE team, and it would not look like a bug in
+// either query on its own.
+const (
+	teamFamilyExpr    = `CASE WHEN lower(t.type) LIKE 'sre%' THEN 'SRE' ELSE 'CRE' END`
+	rosteredTeamWhere = `t.type IS NOT NULL AND lower(t.type) LIKE ANY (ARRAY['cre%', 'sre%'])`
+	teamDisplayOrder  = `(lower(t.type) LIKE '%abt') DESC, t.name`
+)
+
 // Catalogue returns the zones, windows and absence kinds in one read. The UI
 // needs all three to draw a single day, so serving them separately would only
 // cost round trips.
@@ -190,11 +208,11 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 	// team's sortOrder always matches where it actually appears.
 	teamRows, err := r.db.Query(ctx, `
 		SELECT t.key, t.name,
-		       CASE WHEN lower(t.type) LIKE 'sre%' THEN 'SRE' ELSE 'CRE' END,
-		       (row_number() OVER (ORDER BY (lower(t.type) LIKE '%abt') DESC, t.name))::int
+		       `+teamFamilyExpr+`,
+		       (row_number() OVER (ORDER BY `+teamDisplayOrder+`))::int
 		  FROM team t
-		 WHERE t.type IS NOT NULL AND lower(t.type) LIKE ANY (ARRAY['cre%', 'sre%'])
-		 ORDER BY (lower(t.type) LIKE '%abt') DESC, t.name`)
+		 WHERE `+rosteredTeamWhere+`
+		 ORDER BY `+teamDisplayOrder)
 	if err != nil {
 		return cat, fmt.Errorf("query schedule teams: %w", err)
 	}
@@ -757,6 +775,47 @@ func (r *scheduleRepository) LeadTeamsFor(ctx context.Context, userEmail string)
 		var k string
 		if err := rows.Scan(&k); err != nil {
 			return nil, fmt.Errorf("scan lead team: %w", err)
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// RotaAdminTeamsFor returns every team key the caller may edit because they
+// hold a rota admin role: every rostered team in that role's own family.
+//
+// Deliberately not folded into LeadTeamsFor, and deliberately not an OR inside
+// LeadsTeam. Leading a team and administering a family are two different
+// facts, and combining them into one permission is the service's job -- this
+// file's contract is plain data operations, and a permission expressed as a
+// join is a permission nobody reviewing the policy will ever read.
+//
+// A rota admin is not a member of the teams they may edit, so there is no
+// team_member row to go through; the grant is the role itself. Matched on
+// email and lowercased on both sides for the same reason LeadsTeam is -- an
+// identity provider is free to return a different case from the one stored.
+func (r *scheduleRepository) RotaAdminTeamsFor(ctx context.Context, userEmail string) ([]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT t.key
+		  FROM "user" u
+		  JOIN user_role ur ON ur.user_id = u.id
+		  JOIN role ro      ON ro.id = ur.role_id
+		  JOIN team t       ON `+rosteredTeamWhere+`
+		                   AND `+teamFamilyExpr+` =
+		                       CASE WHEN ro.name = 'sre_rota_admin' THEN 'SRE' ELSE 'CRE' END
+		 WHERE lower(u.email) = lower($1)
+		   AND ro.name IN ('cre_rota_admin', 'sre_rota_admin')
+		 ORDER BY 1`, userEmail)
+	if err != nil {
+		return nil, fmt.Errorf("query rota admin teams: %w", err)
+	}
+	defer rows.Close()
+
+	out := []string{}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("scan rota admin team: %w", err)
 		}
 		out = append(out, k)
 	}

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -199,17 +200,27 @@ func (s *scheduleService) OnDuty(ctx context.Context, at *time.Time) (domain.Sch
 
 // ── lead edit ───────────────────────────────────────────────────────────────
 
-// requireTeamLead is the whole of the edit permission: internal, and a lead of
-// the team the slot belongs to.
+// requireRotaWriter is the whole of the edit permission: internal, and either
+// a lead of the team the slot belongs to, or a rota admin for the family that
+// team belongs to.
 //
-// Own team only, by decision. A lead editing another ABT's rota is not a
-// capability anyone asked for, and the blast radius of getting it wrong -- one
-// team silently rewriting another's cover -- is worse than the inconvenience of
-// not having it.
+// Own team only used to be the whole rule, and the reasoning stands: the blast
+// radius of one team silently rewriting another's cover is worse than the
+// inconvenience of not being able to. What it did not account for is that a
+// rota then cannot be fixed at all while its lead is away -- not by a manager,
+// not by the head of CRE, not by anyone. The answer is a named grant somebody
+// has to be given and can be taken back, rather than widening what a lead
+// already holds: cre_rota_admin and sre_rota_admin (migration 0156), one per
+// family, because the two rotas are run by different people and neither group
+// has any business in the other's cover.
+//
+// Leading is checked first because it is the common case by a wide margin --
+// eleven leads against a handful of admins -- so the second read usually never
+// happens.
 //
 // The internal check comes first so a customer never learns whether a team key
 // exists by being told they do not lead it.
-func (s *scheduleService) requireTeamLead(ctx context.Context, teamKey string) error {
+func (s *scheduleService) requireRotaWriter(ctx context.Context, teamKey string) error {
 	if err := s.requireInternalCaller(ctx); err != nil {
 		return err
 	}
@@ -222,20 +233,51 @@ func (s *scheduleService) requireTeamLead(ctx context.Context, teamKey string) e
 		return err
 	}
 	if !ok {
-		return &apierror.ForbiddenError{Msg: fmt.Sprintf("only a lead of %s can change its rota", teamKey)}
+		admin, err := s.repo.RotaAdminTeamsFor(ctx, id.UserEmail)
+		if err != nil {
+			return err
+		}
+		ok = containsFold(admin, teamKey)
+	}
+	if !ok {
+		return &apierror.ForbiddenError{
+			Msg: fmt.Sprintf("changing %s's rota needs a lead of that team, or a rota admin for its family", teamKey),
+		}
 	}
 	return nil
 }
 
-// requireTeamLeadOver is the lead check plus the engineer being changed.
+// containsFold is a case-insensitive membership test over team keys.
 //
-// Leading a team says what a lead may change; it does not say whose rota they
-// may change it on. Without this second check a lead could name their own team
-// -- which they genuinely lead, so the first check passes -- and pass the id of
-// somebody on another team entirely, writing a row against a person they have
-// no say over. A team key in a request decides nothing on its own.
-func (s *scheduleService) requireTeamLeadOver(ctx context.Context, teamKey, userID string) error {
-	if err := s.requireTeamLead(ctx, teamKey); err != nil {
+// team.key is stored lowercase and both repository reads return it as stored,
+// but a team key also arrives from a caller's request body, where nothing
+// makes it lowercase -- LeadsTeam lowercases its own argument in SQL for
+// exactly that reason, and this comparison has to agree with it or an admin
+// would be refused a team they hold purely over capitalisation.
+func containsFold(keys []string, want string) bool {
+	for _, k := range keys {
+		if strings.EqualFold(k, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// requireRotaWriterOver is the team check plus the engineer being changed.
+//
+// Being allowed to edit a team says what the caller may change; it does not
+// say whose rota they may change it on. Without this second check a lead could
+// name their own team -- which they genuinely lead, so the first check passes
+// -- and pass the id of somebody on another team entirely, writing a row
+// against a person they have no say over. A team key in a request decides
+// nothing on its own.
+//
+// This applies to a rota admin unchanged. It is not a limit on their
+// authority -- they may edit every team in their family, and can simply name
+// the right one -- it is the rule that a row belongs to the team it is filed
+// under. ApplyRange's own delete is scoped by team_key on the strength of it.
+func (s *scheduleService) requireRotaWriterOver(ctx context.Context, teamKey, userID string) error {
+	if err := s.requireRotaWriter(ctx, teamKey); err != nil {
 		return err
 	}
 	member, err := s.repo.UserInTeam(ctx, userID, teamKey)
@@ -261,7 +303,7 @@ func (s *scheduleService) CreateAssignment(ctx context.Context, req domain.Creat
 	if _, err := time.Parse("2006-01-02", req.RotaDate); err != nil {
 		return domain.ScheduleAssignment{}, &apierror.ValidationError{Msg: "rotaDate must be YYYY-MM-DD"}
 	}
-	if err := s.requireTeamLeadOver(ctx, req.TeamKey, req.UserID); err != nil {
+	if err := s.requireRotaWriterOver(ctx, req.TeamKey, req.UserID); err != nil {
 		return domain.ScheduleAssignment{}, err
 	}
 	return s.repo.CreateAssignment(ctx, req, auth.IdentityFromContext(ctx).UserEmail)
@@ -307,7 +349,7 @@ func (s *scheduleService) assignmentForEdit(ctx context.Context, id string) (dom
 	if err != nil {
 		return domain.ScheduleAssignment{}, err
 	}
-	if err := s.requireTeamLead(ctx, existing.TeamKey); err != nil {
+	if err := s.requireRotaWriter(ctx, existing.TeamKey); err != nil {
 		return domain.ScheduleAssignment{}, err
 	}
 	return existing, nil
@@ -318,7 +360,7 @@ func (s *scheduleService) TeamActivity(ctx context.Context, teamKey, from, to st
 	if _, _, err := parseWindow(from, to); err != nil {
 		return nil, err
 	}
-	if err := s.requireTeamLead(ctx, teamKey); err != nil {
+	if err := s.requireRotaWriter(ctx, teamKey); err != nil {
 		return nil, err
 	}
 	return s.repo.ActivityForTeam(ctx, teamKey, from, to)
@@ -329,6 +371,15 @@ func (s *scheduleService) TeamActivity(ctx context.Context, teamKey, from, to st
 // No team argument and nothing to authorize beyond being internal: the answer
 // is about the caller, and an empty list is a perfectly good answer for
 // somebody who leads nothing.
+//
+// The name is older than what it returns, and is kept: this has always been
+// "which teams may I edit" (its own interface comment says so) rather than
+// "which teams do I lead", and the frontend uses it only to decide which rows
+// get an edit control. Widening it here is what makes a rota admin's extra
+// reach appear in the UI without the page changing at all -- and keeping the
+// two in step matters more than the name: a team offered an edit control that
+// then 403s, or withheld from somebody who may in fact edit it, are both worse
+// than a method whose name has aged.
 func (s *scheduleService) MyLeadTeams(ctx context.Context) ([]string, error) {
 	if err := s.requireInternalCaller(ctx); err != nil {
 		return nil, err
@@ -337,7 +388,38 @@ func (s *scheduleService) MyLeadTeams(ctx context.Context) ([]string, error) {
 	if email == "" {
 		return []string{}, nil
 	}
-	return s.repo.LeadTeamsFor(ctx, email)
+	led, err := s.repo.LeadTeamsFor(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	admin, err := s.repo.RotaAdminTeamsFor(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	return mergeTeamKeys(led, admin), nil
+}
+
+// mergeTeamKeys unions two team key lists, case-insensitively.
+//
+// A rota admin who also leads one of their own family's teams holds it by both
+// routes and would otherwise be handed it twice. Sorted so the result does not
+// depend on which list a key came from; both reads are already ordered, so
+// this only settles the join between them.
+func mergeTeamKeys(led, admin []string) []string {
+	out := make([]string, 0, len(led)+len(admin))
+	seen := make(map[string]bool, len(led)+len(admin))
+	for _, list := range [][]string{led, admin} {
+		for _, key := range list {
+			folded := strings.ToLower(key)
+			if seen[folded] {
+				continue
+			}
+			seen[folded] = true
+			out = append(out, key)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // ApplyRange implements ScheduleService.
@@ -376,7 +458,7 @@ func (s *scheduleService) ApplyRange(ctx context.Context, req domain.ApplySchedu
 			req.Tier = &t
 		}
 	}
-	if err := s.requireTeamLeadOver(ctx, req.TeamKey, req.UserID); err != nil {
+	if err := s.requireRotaWriterOver(ctx, req.TeamKey, req.UserID); err != nil {
 		return domain.ApplyScheduleRangeResponse{}, err
 	}
 	return s.repo.ApplyRange(ctx, req, auth.IdentityFromContext(ctx).UserEmail)
@@ -410,7 +492,7 @@ func (s *scheduleService) ApplyAbsence(ctx context.Context, req domain.ApplySche
 			req.AllocatedTo = &v
 		}
 	}
-	if err := s.requireTeamLeadOver(ctx, req.TeamKey, req.UserID); err != nil {
+	if err := s.requireRotaWriterOver(ctx, req.TeamKey, req.UserID); err != nil {
 		return domain.ApplyScheduleAbsenceResponse{}, err
 	}
 	return s.repo.ApplyAbsence(ctx, req, auth.IdentityFromContext(ctx).UserEmail)
@@ -433,8 +515,8 @@ func (s *scheduleService) DeleteAbsenceKind(ctx context.Context, code string) er
 }
 
 // requireAnyTeamLead is the gate for the shared tag catalogue: an internal
-// caller with a user token who leads at least one team. It returns the
-// caller's email for the history.
+// caller with a user token who may edit at least one rota -- a lead of a team,
+// or a rota admin for a family. It returns the caller's email for the history.
 func (s *scheduleService) requireAnyTeamLead(ctx context.Context, doing string) (string, error) {
 	if err := s.requireInternalCaller(ctx); err != nil {
 		return "", err
@@ -448,7 +530,14 @@ func (s *scheduleService) requireAnyTeamLead(ctx context.Context, doing string) 
 		return "", err
 	}
 	if len(teams) == 0 {
-		return "", &apierror.ForbiddenError{Msg: "only a team lead can change the tags"}
+		admin, err := s.repo.RotaAdminTeamsFor(ctx, email)
+		if err != nil {
+			return "", err
+		}
+		teams = admin
+	}
+	if len(teams) == 0 {
+		return "", &apierror.ForbiddenError{Msg: "only a team lead or a rota admin can change the tags"}
 	}
 	return email, nil
 }
@@ -471,7 +560,7 @@ func (s *scheduleService) DeleteAbsence(ctx context.Context, id string, note *st
 	if err != nil {
 		return err
 	}
-	if err := s.requireTeamLeadOver(ctx, existing.TeamKey, existing.Engineer.UserID); err != nil {
+	if err := s.requireRotaWriterOver(ctx, existing.TeamKey, existing.Engineer.UserID); err != nil {
 		return err
 	}
 	return s.repo.DeleteAbsence(ctx, existing.ID, auth.IdentityFromContext(ctx).UserEmail, note)

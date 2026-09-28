@@ -4,7 +4,7 @@ The CRE and SRE rota behind the CSM portal's Team Schedule: who is working,
 when, in which escalation tier, and who is away. Portal-native data with no
 ServiceNow equivalent, so these tables are the system of record, not a mirror.
 
-**Status:** code merged (#2032). Schema ships as migrations **0152–0155**.
+**Status:** code merged (#2032). Schema ships as migrations **0152–0157**.
 Nothing else needs configuring: the routes are registered whenever
 entity-service has a database.
 
@@ -216,7 +216,8 @@ one so a later `make migrate` skips it:
 ```bash
 psql "$DATABASE_URL" -c "CREATE TABLE IF NOT EXISTS csm_migration_applied_migration (filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
 for f in 0152_team_add_key.sql 0153_team_schedule_tables.sql \
-         0154_team_schedule_catalogue.sql 0155_team_schedule_audit.sql; do
+         0154_team_schedule_catalogue.sql 0155_team_schedule_audit.sql \
+         0156_team_schedule_rota_admin_roles.sql 0157_team_schedule_rota_admin_user_type.sql; do
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "migrations/$f" &&
   psql "$DATABASE_URL" -c "INSERT INTO csm_migration_applied_migration (filename) VALUES ('$f') ON CONFLICT DO NOTHING"
 done
@@ -226,8 +227,37 @@ done
 |---|---|---|
 | `0152_team_add_key.sql` | `team.key` + fill trigger + two unique constraints | **yes**: `team` |
 | `0153_team_schedule_tables.sql` | `btree_gist`, 5 enums, 7 tables, indexes, constraints, the matches-shift trigger | reads `team`, `"user"` (FKs only) |
-| `0154_team_schedule_catalogue.sql` | 3 zones, 19 windows, 16 kinds | no |
+| `0154_team_schedule_catalogue.sql` | 3 zones, 18 windows, 16 kinds | no |
 | `0155_team_schedule_audit.sql` | `team_schedule_audit`, its trigger on 5 tables, one BASELINE row per existing row | no |
+| `0156_team_schedule_rota_admin_roles.sql` | the `cre_rota_admin` / `sre_rota_admin` roles | **yes**: `role` (seeded by name, `ON CONFLICT (name)`) |
+| `0157_team_schedule_rota_admin_user_type.sql` | adds both roles to `recompute_user_type()`'s INTERNAL branch; backfills holders | **yes**: `recompute_user_type()`, `"user".user_type` |
+
+### Rota admins (0156, 0157)
+
+A lead edits their own team's rota only. A **rota admin** may edit every team
+of one group, so a rota can still be fixed while its lead is away. It is a
+role, `cre_rota_admin` or `sre_rota_admin`, one per group; someone who runs
+both is granted both. The write check is "a lead of this team, or a rota admin
+for its group" (`requireRotaWriter`), and a row still belongs to the team it
+is filed under.
+
+0157 rewrites `recompute_user_type()` (from 0011, verbatim but for the two
+names) so a holder resolves to `user_type = INTERNAL`. Without it the schedule
+refuses them before it asks about roles.
+
+In the portal a rota admin reads their own group's views as an engineer does,
+and the other group's Today only. The page learns the group from the teams
+they may edit, since the sign-in token does not carry these roles.
+
+**Granting is a deployment step, not a migration**: who runs each rota differs
+per environment. There is no role UI yet, so a grant is a row in `user_role`:
+
+```sql
+INSERT INTO user_role (id, created_on, updated_on, created_by, updated_by, user_id, role_id)
+SELECT gen_random_uuid(), now(), now(), 'admin', 'admin', u.id, r.id
+  FROM "user" u, role r
+ WHERE lower(u.email) = lower('jane.doe@example.com') AND r.name = 'cre_rota_admin';
+```
 
 ### A server that ran the old file names
 
@@ -244,7 +274,7 @@ exist, it refuses and changes nothing. The four old filenames left in
 ### Check it worked
 
 ```sql
--- 18 windows, 16 kinds (11 active), 3 zones
+-- 18 windows, 16 kinds (11 active), 3 zones; both rota admin roles present
 SELECT (SELECT count(*) FROM team_schedule_shift)                         AS shifts,
        (SELECT count(*) FROM team_schedule_absence_kind WHERE is_active)  AS active_kinds,
        (SELECT count(*) FROM team_schedule_zone)                          AS zones;

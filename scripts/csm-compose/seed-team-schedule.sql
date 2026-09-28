@@ -142,6 +142,73 @@ WHERE NOT EXISTS (SELECT 1 FROM user_role ur
                      AND ur.role_id = '00000000-0000-0000-0000-000000000101'::uuid)
 ON CONFLICT (id) DO NOTHING;
 
+-- ── a rota admin for each family ──────────────────────────────────────────
+-- One person who may edit any CRE rota, one who may edit any SRE rota, so the
+-- family scoping can actually be exercised: each should be refused the other
+-- family's teams, and a refusal nobody can reproduce locally is a refusal that
+-- gets broken quietly.
+--
+-- Neither is given the 'internal' role, on purpose. That is the assertion:
+-- migration 0157 adds the two rota admin names to recompute_user_type()'s
+-- own INTERNAL branch, so these two resolve to user_type INTERNAL from the
+-- rota admin role ALONE. If 0157 is ever reverted or mis-merged, these
+-- accounts stop being able to load the page at all -- a loud local failure
+-- rather than a 403 in an environment nobody is looking at.
+--
+-- Deliberately no team_member row either, for the same reason the manager
+-- above has none: a rota admin is not a member of the teams they may edit.
+-- Sign in as cre.rota.admin@example.com or sre.rota.admin@example.com.
+INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by,
+                    user_name, name, first_name, last_name, email, is_active, is_system_user)
+VALUES
+    (md5('seed-cre-rota-admin')::uuid, now(), now(), 'seed', 'seed',
+     'cre.rota.admin@example.com', 'Robin Rota', 'Robin', 'Rota',
+     'cre.rota.admin@example.com', TRUE, FALSE),
+    (md5('seed-sre-rota-admin')::uuid, now(), now(), 'seed', 'seed',
+     'sre.rota.admin@example.com', 'Sam Rota', 'Sam', 'Rota',
+     'sre.rota.admin@example.com', TRUE, FALSE)
+ON CONFLICT (id) DO NOTHING;
+
+-- Self-healing in the same shape as the internal grant above: a volume that
+-- took an earlier, wrong grant loses it on the next run instead of keeping it
+-- forever. Scoped to the two roles this block owns, so it can never disturb a
+-- grant made by hand for some other purpose.
+DELETE FROM user_role ur
+ USING role r
+ WHERE ur.role_id = r.id
+   AND ur.created_by = 'seed'
+   AND r.name IN ('cre_rota_admin', 'sre_rota_admin')
+   AND ur.user_id NOT IN (md5('seed-cre-rota-admin')::uuid, md5('seed-sre-rota-admin')::uuid);
+
+-- Resolved by name, never by a hardcoded id: migration 0156 creates these
+-- rows with gen_random_uuid(), and the ServiceNow sync may have seeded its own
+-- under a different id again. A missing row means 0156 has not been applied,
+-- and the join returning nothing is the right outcome -- the seed says nothing
+-- about a role that does not exist yet.
+INSERT INTO user_role (id, created_on, updated_on, created_by, updated_by, user_id, role_id)
+SELECT md5('seed-ur-'||a.user_id::text||'-'||a.role_name)::uuid, now(), now(), 'seed', 'seed',
+       a.user_id, r.id
+FROM (VALUES (md5('seed-cre-rota-admin')::uuid, 'cre_rota_admin'),
+             (md5('seed-sre-rota-admin')::uuid, 'sre_rota_admin')) AS a(user_id, role_name)
+JOIN role r ON r.name = a.role_name
+WHERE NOT EXISTS (SELECT 1 FROM user_role ur
+                   WHERE ur.user_id = a.user_id AND ur.role_id = r.id)
+ON CONFLICT (id) DO NOTHING;
+
+-- The non-lead role is asked for rather than named.
+--
+-- team_member.role's vocabulary is being changed by work in flight: 000029
+-- constrains it to ('member', 'lead'), and the escalation roster branch
+-- replaces 'member' with a rung set of its own ('engineer', 'sub_lead',
+-- 'lead', 'cre_head', 'cs_head'). Naming either one fails outright against
+-- the other's schema -- and it fails HERE, in the seed, which aborts the whole
+-- migrate step and leaves docker compose up running whatever containers were
+-- already there. The symptom is not a seed error anybody reads; it is a stack
+-- that silently keeps serving the previous build.
+--
+-- 'lead' is the only value common to both, and it is the one a non-lead must
+-- not have. Nothing downstream depends on which of the other names comes back:
+-- the rota only ever asks whether somebody is a lead.
 INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, role)
 SELECT md5('seed-tm-'||e.team_key||'-'||e.seq)::uuid, now(), now(), 'seed', 'seed',
        md5('seed-team-'||e.team_key)::uuid, e.id,
