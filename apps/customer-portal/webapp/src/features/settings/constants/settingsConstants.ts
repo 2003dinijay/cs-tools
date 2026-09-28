@@ -43,6 +43,16 @@ export const SETTINGS_NULL_PLACEHOLDER = NULL_PLACEHOLDER;
 /** Role that can see AI Assistant tab and User Management Add/Delete. */
 export const SETTINGS_CUSTOMER_ADMIN_ROLE = "sn_customerservice.customer_admin";
 
+/**
+ * Every spelling of the customer admin role entity-service reports: the
+ * ServiceNow form while it reads from ServiceNow, and the plain form once it
+ * reads from the CSM database after cutover. Both mean the same person.
+ */
+export const SETTINGS_CUSTOMER_ADMIN_ROLES: readonly string[] = [
+  SETTINGS_CUSTOMER_ADMIN_ROLE,
+  "customer_admin",
+];
+
 /** ServiceNow partner role — triggers list view in ProjectHub when >4 projects. */
 export const SETTINGS_PARTNER_ROLE = "sn_customerservice.partner";
 
