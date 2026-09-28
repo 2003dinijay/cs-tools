@@ -225,16 +225,25 @@ CREATE TABLE IF NOT EXISTS team_schedule_assignment (
     is_on_call          BOOLEAN NOT NULL DEFAULT FALSE,
     source              team_schedule_source_enum NOT NULL DEFAULT 'MANUAL',
     note                TEXT,
+    -- The window's own is_rotation, copied by the trigger below so the
+    -- no-overlap rule can apply to turns only. Never written by hand.
+    is_rotation         BOOLEAN NOT NULL DEFAULT TRUE,
     CONSTRAINT team_schedule_assignment_window_check CHECK (ends_at > starts_at),
     CONSTRAINT team_schedule_assignment_unique_slot UNIQUE (user_id, rota_date, shift_id),
     -- team_id is kept beside team_key so an engineer who moves team does not
     -- retroactively change who covered a past shift; the pair must agree.
     CONSTRAINT team_schedule_assignment_team_agrees
         FOREIGN KEY (team_id, team_key) REFERENCES team (id, key) ON UPDATE CASCADE,
-    -- Nobody is in two places at once. Over the resolved instants, half-open,
+    -- Nobody holds two turns at once. Over the resolved instants, half-open,
     -- so a window ending 18:00 and one starting 18:00 are a handover.
+    --
+    -- Turns only: a zone's regular hours are when somebody works, and an
+    -- engineer on TZ1's regular hours who is also TZ1 L1 for the morning is
+    -- doing both -- the turn is part of their working day, not a second place
+    -- to be. So regular hours may sit under a turn; two turns may not overlap.
     CONSTRAINT team_schedule_assignment_no_overlap
         EXCLUDE USING gist (user_id WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&)
+        WHERE (is_rotation)
 );
 
 COMMENT ON COLUMN team_schedule_assignment.team_key IS
@@ -252,18 +261,47 @@ CREATE INDEX IF NOT EXISTS idx_team_schedule_assignment_zone_tier_date
 CREATE INDEX IF NOT EXISTS idx_team_schedule_assignment_window
     ON team_schedule_assignment USING GIST (tstzrange(starts_at, ends_at, '[)'));
 
+-- A table built by the old chain has neither is_rotation nor the turns-only
+-- no-overlap rule. Bring it up to date: add the column, fill it from each
+-- row's window, and put the rule back with its WHERE. A no-op on a table
+-- this file created.
+ALTER TABLE team_schedule_assignment ADD COLUMN IF NOT EXISTS is_rotation BOOLEAN NOT NULL DEFAULT TRUE;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'team_schedule_assignment_no_overlap'
+           AND pg_get_constraintdef(oid) LIKE '%WHERE%is_rotation%'
+    ) THEN
+        ALTER TABLE team_schedule_assignment DROP CONSTRAINT IF EXISTS team_schedule_assignment_no_overlap;
+        UPDATE team_schedule_assignment a
+           SET is_rotation = s.is_rotation
+          FROM team_schedule_shift s
+         WHERE s.id = a.shift_id AND a.is_rotation IS DISTINCT FROM s.is_rotation;
+        ALTER TABLE team_schedule_assignment
+            ADD CONSTRAINT team_schedule_assignment_no_overlap
+            EXCLUDE USING gist (user_id WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&)
+            WHERE (is_rotation);
+    END IF;
+END $$;
+
 -- Where the shift fixes a zone or a tier, the assignment must match it;
 -- where it leaves one open, the assignment may fill it in. A CHECK cannot
--- reach another table, so this is a trigger.
+-- reach another table, so this is a trigger. It also copies the window's
+-- is_rotation onto the row, which the no-overlap rule reads.
 CREATE OR REPLACE FUNCTION team_schedule_assignment_matches_shift()
 RETURNS TRIGGER AS $$
 DECLARE
     shift_zone UUID;
     shift_tier team_schedule_tier_enum;
     shift_code TEXT;
+    shift_rotation BOOLEAN;
 BEGIN
-    SELECT s.zone_id, s.tier, s.code INTO shift_zone, shift_tier, shift_code
+    SELECT s.zone_id, s.tier, s.code, s.is_rotation
+      INTO shift_zone, shift_tier, shift_code, shift_rotation
       FROM team_schedule_shift s WHERE s.id = NEW.shift_id;
+
+    NEW.is_rotation := COALESCE(shift_rotation, TRUE);
 
     IF shift_zone IS NOT NULL AND NEW.zone_id IS DISTINCT FROM shift_zone THEN
         RAISE EXCEPTION

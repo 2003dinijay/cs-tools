@@ -55,7 +55,7 @@ block is Monday's, even though six of its hours fall on Tuesday.
 
 | Rule | How |
 |---|---|
-| Nobody is in two places at once | `team_schedule_assignment_no_overlap`: GiST exclusion on `(user_id, [starts_at, ends_at))`. Half-open, so 18:00 end and 18:00 start is a handover. |
+| Nobody holds two turns at once | `team_schedule_assignment_no_overlap`: GiST exclusion on `(user_id, [starts_at, ends_at))` for turns only (`WHERE is_rotation`, copied from the window by trigger). Half-open, so 18:00 end and 18:00 start is a handover. A zone's regular hours may sit under a turn. |
 | Nobody is away twice for two reasons | `team_schedule_absence_no_overlap`: exclusion on `(user_id, [starts_on, ends_on])`, closed at both ends |
 | Same person, day and window only once | `team_schedule_assignment_unique_slot (user_id, rota_date, shift_id)` |
 | An assignment cannot contradict its window | trigger `team_schedule_assignment_matches_shift`: where the shift fixes a zone or tier, the assignment must match it |
@@ -112,12 +112,18 @@ A lead edits their own team's rows in the Month roster's cell picker:
   escalation grid: every zone worked that day, with L1, L2 and L3 in each,
   not just the zone column that was clicked. The write is
   `POST /team-schedule/assignments/apply` with a `tier`.
-- **Turns in more than one zone on the same day.** One engineer can be TZ1
-  L1 in the morning and TZ2 L2 in the afternoon. A new escalation turn
-  displaces only what is in its own zone or overlaps it in time. A regular
-  window, or a CRE rotation, still replaces the whole day. Clearing one zone's
-  cell, when the person holds turns elsewhere that day, takes off that zone
-  only (`zoneCode` on apply).
+- **Turns in more than one zone, and a turn on regular hours.** One engineer
+  can be TZ1 L1 in the morning and TZ2 L2 in the afternoon, or on TZ1's
+  regular hours (SUP) and TZ1 L1 the same day. Each kind of write replaces
+  only its own kind:
+  - a new escalation turn displaces only the turns in its own zone or that
+    overlap it in time;
+  - a zone's regular hours replace only the regular hours held that day;
+  - a CRE window, or any window with no zone, still replaces the whole day.
+
+  The roster stacks a turn over whatever it sits on (SUP or an allocation).
+  Clearing a turn's cell, when the person holds anything else that day, takes
+  off that zone's turn only (`zoneCode` on apply).
 - **A tier is required on a zone's shared escalation window** (SRE_TZ1,
   SRE_TZ3, ...). A turn there with no tier is the zone's regular hours, which
   have their own window, and the views read any older tier-less turn that

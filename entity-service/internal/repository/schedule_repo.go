@@ -813,12 +813,15 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 	// The window's own day scope decides which days it can be worked.
 	var scope string
 	// What a write takes off the day before it lands:
-	//   day  -- everything the person holds that day on this team (a regular
-	//           window, a CRE rotation, or a clear of the whole day);
-	//   turn -- an escalation turn: only what is in the same zone or overlaps
-	//           it in time, so one engineer can be TZ1 L1 in the morning and
-	//           TZ2 L2 in the afternoon;
-	//   zone -- a clear of one zone's turn, leaving the rest of the day.
+	//   day      -- everything the person holds that day on this team (a CRE
+	//               window, any window with no zone, or a clear of the day);
+	//   turn     -- an escalation turn: only turns in the same zone or that
+	//               overlap it in time. A zone's regular hours stay -- an
+	//               engineer can be on TZ1's regular hours and TZ1 L1, or TZ1
+	//               L1 in the morning and TZ2 L2 in the afternoon;
+	//   standing -- a zone's regular hours: only the regular hours they held
+	//               that day, so their turns stay;
+	//   zone     -- a clear of one zone's turns, leaving the rest of the day.
 	displace := "day"
 	var zoneID *string
 	var isEscalation bool
@@ -838,6 +841,8 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 		}
 		if isEscalation && zoneID != nil {
 			displace = "turn"
+		} else if zoneID != nil {
+			displace = "standing"
 		}
 		// Said here rather than left to the trigger, whose message names ids
 		// rather than the choice the lead actually made.
@@ -881,8 +886,9 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 		rows, err := tx.Query(ctx, `SELECT `+assignmentColumns+assignmentFrom+`
 			WHERE a.user_id = $1::uuid AND a.rota_date = $2::date AND a.team_key = $3
 			  AND (   $4::text = 'day'
-			       OR ($4 = 'zone' AND a.zone_id = $5::uuid)
-			       OR ($4 = 'turn' AND (a.zone_id = $5::uuid OR EXISTS (
+			       OR ($4 = 'zone' AND a.zone_id = $5::uuid AND a.is_rotation)
+			       OR ($4 = 'standing' AND NOT a.is_rotation)
+			       OR ($4 = 'turn' AND a.is_rotation AND (a.zone_id = $5::uuid OR EXISTS (
 			              SELECT 1 FROM team_schedule_shift n
 			               WHERE n.code = $6
 			                 AND tstzrange(a.starts_at, a.ends_at, '[)') && tstzrange(

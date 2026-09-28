@@ -316,3 +316,21 @@ describe("MonthRoster: a zone's turn on an allocation day", () => {
     expect(zoneCells.some((td) => !td.querySelector(".duo") && td.textContent?.includes(RND.shortCode))).toBe(true);
   });
 });
+
+describe("MonthRoster: a turn on a zone's regular hours", () => {
+  it("stacks the turn over the regular hours in that zone", () => {
+    const TZ1_REG = { ...REGULAR, id: "r1", code: "SRE_TZ1_REGULAR", shortCode: "SUP", family: "SRE" as const, zoneCode: "TZ1" };
+    const { container } = renderRoster({
+      family: "SRE",
+      shifts: shiftMap(TZ1_REG, TZ1, TZ1_L1, TZ2, TZ1_WE, TZ2_WE),
+      assignments: [
+        assignment({ name: "Asela", rotaDate: "2026-09-21", shiftCode: TZ1_REG.code, zoneCode: "TZ1" }),
+        { ...assignment({ name: "Asela", rotaDate: "2026-09-21", shiftCode: TZ1_L1.code, zoneCode: "TZ1" }), tier: "L1" },
+      ],
+    } as never);
+    const duo = container.querySelector("td.c.z .duo");
+    expect(duo).not.toBeNull();
+    expect(duo).toHaveTextContent("L1");
+    expect(duo).toHaveTextContent("SUP");
+  });
+});

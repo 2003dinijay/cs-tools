@@ -430,17 +430,19 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  goes back to when a rotation is cleared is a fact about that engineer,
    *  not about their group, and guessing it would quietly move people onto
    *  the wrong clock. */
-  /** Does this engineer hold an escalation turn in another zone that day?
-   *  Then clearing the clicked zone takes off that zone's turn only, rather
-   *  than putting the whole day back on regular hours. */
+  /** Is the clicked cell an escalation turn, on a day the engineer holds
+   *  something else too -- a turn in another zone, or regular hours? Then
+   *  clearing takes off that zone's turn only, rather than putting the whole
+   *  day back on regular hours. */
   const holdsTurnElsewhere = (userId: string, rotaDate: string, zoneCode?: string, shiftCode?: string): boolean => {
     if (!zoneCode || !shiftCode || !shifts.get(shiftCode)?.isEscalation) return false;
     return rows.some(
       (a) =>
         a.engineer.userId === userId &&
         a.rotaDate === rotaDate &&
-        shifts.get(a.shiftCode)?.isEscalation &&
-        (a.zoneCode ?? shifts.get(a.shiftCode)?.zoneCode) !== zoneCode,
+        a.shiftCode !== shiftCode &&
+        (!shifts.get(a.shiftCode)?.isEscalation ||
+          (a.zoneCode ?? shifts.get(a.shiftCode)?.zoneCode) !== zoneCode),
     );
   };
 
@@ -633,7 +635,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           note: "cleared from the month roster",
         },
         {
-          onSuccess: () => recordChange(picker, from, to, `off ${picker.zoneCode}`),
+          onSuccess: () =>
+            recordChange(picker, from, to, `off ${picker.zoneCode}${picker.tier ? ` ${picker.tier}` : ""}`),
           onError: (err) => showError("That change to the rota was not saved. Nothing has moved.", err),
           onSettled: () => setPicker(null),
         },

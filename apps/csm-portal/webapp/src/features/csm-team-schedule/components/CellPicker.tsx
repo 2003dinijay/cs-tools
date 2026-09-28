@@ -38,8 +38,9 @@ export interface CellPickerTarget {
   shiftCode?: string;
   /** The tier they hold on it, where it is an escalation window. */
   tier?: ScheduleTier;
-  /** They hold a turn in another zone that day too, so clearing this cell
-   *  takes off this zone's turn only. */
+  /** The clicked cell is a turn and they hold something else that day too --
+   *  a turn in another zone, or regular hours -- so clearing takes off this
+   *  zone's turn only. */
   otherTurns?: boolean;
   /** The leave or allocation covering that day, if any, marked the same way. */
   absenceKindCode?: string;
@@ -652,7 +653,7 @@ export default function CellPicker({
               whatever the rota already had for them; a weekend has no standing
               window to fall back to at all. */}
           {target.otherTurns && target.zoneCode
-            ? `Clear — take off ${target.zoneCode} only`
+            ? `Clear — take off ${target.zoneCode}${target.tier ? ` ${target.tier}` : ""} only`
             : target.absenceKindCode && !target.shiftCode
             ? "Clear — back on the rota"
             : backTo

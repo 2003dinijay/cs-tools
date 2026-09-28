@@ -841,7 +841,7 @@ func TestScheduleIntegration_ApplyRangeKeepsTurnsInOtherZones(t *testing.T) {
 		rows, err := pool.Query(ctx, `
 			SELECT s.code || ':' || COALESCE(a.tier::text, '-') FROM team_schedule_assignment a
 			  JOIN team_schedule_shift s ON s.id = a.shift_id
-			 WHERE a.user_id = $1::uuid AND a.rota_date = $2::date ORDER BY a.starts_at`, schedMemberID, schedMonday)
+			 WHERE a.user_id = $1::uuid AND a.rota_date = $2::date ORDER BY s.code`, schedMemberID, schedMonday)
 		if err != nil {
 			t.Fatalf("read the day: %v", err)
 		}
@@ -875,8 +875,23 @@ func TestScheduleIntegration_ApplyRangeKeepsTurnsInOtherZones(t *testing.T) {
 	apply("", nil, &tz2)
 	want("clearing TZ2 only", "SRE_TZ1:L2")
 
+	// A zone's regular hours sit under the turns rather than replacing them:
+	// on TZ1's regular hours and TZ1 L2, both are true.
 	apply("SRE_TZ1_REGULAR", nil, nil)
-	want("regular hours replace the day", "SRE_TZ1_REGULAR:-")
+	want("regular hours keep the turn", "SRE_TZ1:L2", "SRE_TZ1_REGULAR:-")
+
+	// Clearing TZ1 takes its turn off and leaves the regular hours.
+	tz1 := "TZ1"
+	apply("", nil, &tz1)
+	want("clearing TZ1's turn", "SRE_TZ1_REGULAR:-")
+
+	// A turn added to a day of regular hours keeps them too.
+	apply("SRE_TZ1_L1", nil, nil)
+	want("a turn keeps the regular hours", "SRE_TZ1_L1:L1", "SRE_TZ1_REGULAR:-")
+
+	// Another zone's regular hours replace the first zone's, not the turn.
+	apply("SRE_TZ2_REGULAR", nil, nil)
+	want("one zone's regular hours at a time", "SRE_TZ1_L1:L1", "SRE_TZ2_REGULAR:-")
 }
 
 // ── reads ─────────────────────────────────────────────────────────────────

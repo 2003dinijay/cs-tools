@@ -238,13 +238,17 @@ export default function MonthRoster({
          *  the turn rather than over it: an engineer on RnD who is also L1
          *  for TZ1 that day is both, and the cell says both. */
         allocs: Map<string, Cell>;
+        /** A zone's regular hours on a day the engineer also holds a turn in
+         *  that zone, keyed like `zoned`. Kept under the turn, the same way an
+         *  allocation is, so the cell says both: TZ1 regular hours and L1. */
+        zonedBase: Map<string, Cell>;
       }
     >();
 
     const seat = (userId: string, name: string, email: string, teamKey: string) => {
       let row = people.get(userId);
       if (!row) {
-        row = { name, email, teamKey, days: new Map(), zoned: new Map(), allocs: new Map() };
+        row = { name, email, teamKey, days: new Map(), zoned: new Map(), allocs: new Map(), zonedBase: new Map() };
         people.set(userId, row);
       }
       return row;
@@ -276,7 +280,18 @@ export default function MonthRoster({
       if (zone) {
         const key = `${a.rotaDate}|${zone}`;
         const held = row.zoned.get(key);
-        if (!held || a.tier) row.zoned.set(key, made);
+        if (!held) {
+          row.zoned.set(key, made);
+        } else if (made.isRotation && !held.isRotation) {
+          // A turn arriving over the zone's regular hours: the turn is the
+          // cell, the regular hours sit under it.
+          row.zonedBase.set(key, held);
+          row.zoned.set(key, made);
+        } else if (!made.isRotation && held.isRotation) {
+          row.zonedBase.set(key, made);
+        } else if (a.tier) {
+          row.zoned.set(key, made);
+        }
         continue;
       }
       if (!existing || a.tier) row.days.set(a.rotaDate, made);
@@ -732,6 +747,9 @@ export default function MonthRoster({
                     // rest of the day shows the allocation that fills it.
                     const turn = row.zoned.get(`${iso}|${z}`);
                     const zc = turn ?? alloc;
+                    // Under a turn: the allocation the rest of the day is
+                    // given to, else the zone's regular hours.
+                    const under = turn && turn.isRotation ? (alloc ?? row.zonedBase.get(`${iso}|${z}`)) : alloc;
                     return (
                       <td
                         key={`${iso}|${z}`}
@@ -753,13 +771,13 @@ export default function MonthRoster({
                         }
                         onClick={editable ? (e) => openCell(e, row, iso, withAlloc(row.zoned.get(`${iso}|${z}`)), z) : undefined}
                       >
-                        {turn && alloc ? (
-                          // The zone's turn and the allocation the rest of the
-                          // day is given to, stacked: L1 in TZ1 is still an
-                          // RnD day, and the cell says both.
+                        {turn && under ? (
+                          // The zone's turn and what it sits on, stacked: L1
+                          // in TZ1 on an RnD day, or on TZ1's regular hours --
+                          // the cell says both.
                           <span className="duo">
                             <span className={`chip sm ${turn.token}`}>{turn.code}</span>
-                            <span className={`chip sm ${alloc.token}`}>{alloc.code}</span>
+                            <span className={`chip sm ${under.token}`}>{under.code}</span>
                           </span>
                         ) : zc ? (
                           <span className={`chip sm ${zc.token}`}>{zc.code}</span>
