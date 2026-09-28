@@ -112,6 +112,28 @@ func WithSystemIdentity(ctx context.Context) context.Context {
 // such sites), and a pgx.Tx is one physical connection, unsafe to share
 // across goroutines. One transaction per statement preserves that
 // concurrency untouched; a single ambient per-request transaction would not.
+//
+// pool is deliberately unexported: nothing outside this package can obtain
+// it directly, so the only way any code in this repository package reaches
+// Postgres for a protected table without going through the methods below is
+// by holding a SEPARATE reference to the same *pgxpool.Pool passed in
+// alongside Scoped (exactly the shape unprotected-table repos legitimately
+// use, and exactly what TestRLSBypassLint_NoRawPoolAgainstAProtectedTable
+// scans every non-test file in this package for). An earlier version of
+// this design considered a pgxpool.Config.PrepareConn hook as a second,
+// runtime-enforced backstop on top of that lint test -- rejecting any
+// connection acquire whose context lacks a marker Scoped sets. That was
+// deliberately NOT built: this package's protected and unprotected repos
+// share ONE pool (NewScoped(db) and e.g. NewProjectRepository(db) both
+// close over the same *pgxpool.Pool from cmd/api/main.go), so a PrepareConn
+// hook on it would reject every unprotected-table query too, not just a
+// bypass. Doing this safely would need a SECOND, dedicated pool for Scoped
+// alone -- and since most real customer traffic (cases, escalations, time
+// cards) runs through exactly that pool, getting its connection-limit
+// sizing wrong risks real customer-facing connection exhaustion under load,
+// a concrete regression traded for a narrow, already-covered residual risk.
+// Revisit only alongside a deliberate connection-budget re-tuning exercise,
+// not as a quick addition.
 type Scoped struct {
 	pool *pgxpool.Pool
 }
