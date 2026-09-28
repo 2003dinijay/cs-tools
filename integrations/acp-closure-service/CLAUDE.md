@@ -128,8 +128,25 @@ Suspend itself is **not** affected by any of this: `suspend`/`suspendInvoice`
 guard on their own per-dimension field (`EndDateClosureState`/
 `InvoiceDueDateClosureState`), fetched once from `proj` — these are
 genuinely independent per-reason dimensions, so one cascade's suspend can
-never be mistaken for the other's. Only the shared, rolled-up notify gate
-needed the same-run tracking.
+never be mistaken for the other's.
+
+**`suspensionProcessState` needs the same in-memory tracking.** Each
+cascade's record write (`recordNoticeSent` / `recordInvoiceNoticeSent`)
+replaces the *whole* object, keeping the other cascade's section as it
+finds it. Both used to build from `proj.SuspensionProcessState`, the
+start-of-run snapshot, so when both fired in one run the second write put
+the first cascade's section back to its pre-run value. This was seen on
+staging (project `81953721…`, 2026-09-28, reproduced deliberately): the
+invoice cascade recorded `suspend`, then the subscription cascade's
+`IGNORED` record reset `based_on_due_invoices` to `open`. ServiceNow then
+set the project's closure states back to `Open` (evidently re-deriving
+them from this history), and the next run suspended it and emailed the
+customer again, every day. `processProject` now keeps one `history` copy
+for the run and passes it to each cascade's `act`; each record write
+builds on it and updates it after a successful PATCH.
+`TestProcessProject_BothCascadesFireSameRun_HistoryWritesDoNotClobberEachOther`
+covers both orders. As with `alreadyClosed`, don't fix this with a live
+re-fetch: the backend isn't read-after-write consistent.
 
 ## isPartner does not gate the invoice cascade on its own
 

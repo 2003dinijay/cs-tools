@@ -88,8 +88,8 @@ func buildInvoiceCascade(ctx context.Context, reader entityReader, updater proje
 
 	return &cascadeDecision{
 		decision: decision,
-		act: func(ctx context.Context, alreadyClosed bool) error {
-			return actInvoice(ctx, reader, updater, ntf, proj, decision, resolvedForNotice, alreadyClosed)
+		act: func(ctx context.Context, alreadyClosed bool, history *json.RawMessage) error {
+			return actInvoice(ctx, reader, updater, ntf, proj, decision, resolvedForNotice, alreadyClosed, history)
 		},
 	}, nil
 }
@@ -100,7 +100,7 @@ func buildInvoiceCascade(ctx context.Context, reader entityReader, updater proje
 // of the subscription equivalents. alreadyClosed reflects every
 // higher-priority cascade's own decision.ShouldSuspend so far this run —
 // see processProject.
-func actInvoice(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, proj project, decision closure.Decision, invoice dueInvoice, alreadyClosed bool) error {
+func actInvoice(ctx context.Context, reader entityReader, updater projectUpdater, ntf notifier, proj project, decision closure.Decision, invoice dueInvoice, alreadyClosed bool, history *json.RawMessage) error {
 	if decision.ShouldNotify {
 		delivered := false
 		var err error
@@ -118,7 +118,7 @@ func actInvoice(ctx context.Context, reader entityReader, updater projectUpdater
 				return fmt.Errorf("sweep: notify invoice for project %s: %w", proj.ID, err)
 			}
 		}
-		if err := recordInvoiceNoticeSent(ctx, updater, proj, decision.Window, delivered); err != nil {
+		if err := recordInvoiceNoticeSent(ctx, updater, proj.ID, history, decision.Window, delivered); err != nil {
 			return fmt.Errorf("sweep: record invoice notice for project %s: %w", proj.ID, err)
 		}
 	}
@@ -155,13 +155,14 @@ func resolveHasPrimaryPartner(ctx context.Context, reader entityReader, accountI
 
 // recordInvoiceNoticeSent mirrors recordNoticeSent exactly, writing
 // based_on_due_invoices instead of based_on_subscription_end_date — its
-// own independent idempotency track.
-func recordInvoiceNoticeSent(ctx context.Context, updater projectUpdater, proj project, window closure.NoticeWindow, delivered bool) error {
+// own independent idempotency track — and building on the same in-memory
+// history.
+func recordInvoiceNoticeSent(ctx context.Context, updater projectUpdater, projectID string, history *json.RawMessage, window closure.NoticeWindow, delivered bool) error {
 	action := "IGNORED"
 	if delivered {
 		action = "SUCCESSFUL"
 	}
-	newState, err := suspensionstate.WithDueInvoicesState(proj.SuspensionProcessState, window, map[string]string{
+	newState, err := suspensionstate.WithDueInvoicesState(*history, window, map[string]string{
 		"actionSendEmailNotification": action,
 	})
 	if err != nil {
@@ -173,8 +174,11 @@ func recordInvoiceNoticeSent(ctx context.Context, updater projectUpdater, proj p
 		return fmt.Errorf("marshal update request: %w", err)
 	}
 
-	_, err = updater.UpdateProject(ctx, proj.ID, body)
-	return err
+	if _, err := updater.UpdateProject(ctx, projectID, body); err != nil {
+		return err
+	}
+	*history = newState
+	return nil
 }
 
 // suspendInvoice mirrors suspend exactly, writing/reading
