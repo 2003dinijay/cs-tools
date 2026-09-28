@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -36,6 +37,7 @@ type fakeCloudStatusRepo struct {
 
 	monitors       map[string][]string
 	affectedClouds map[string][]string
+	outbox         []repository.OutboxChange
 	monitorsErr    error
 	statusWrites   []statusWrite
 
@@ -51,6 +53,26 @@ type fakeCloudStatusRepo struct {
 
 func (f *fakeCloudStatusRepo) Candidates(_ context.Context, _ []string) ([]repository.CloudStatusCandidate, error) {
 	return f.candidates, f.candErr
+}
+
+func (f *fakeCloudStatusRepo) CandidatesByOutage(_ context.Context, _, outageIDs []string) ([]repository.CloudStatusCandidate, error) {
+	want := map[string]bool{}
+	for _, id := range outageIDs {
+		want[id] = true
+	}
+	var out []repository.CloudStatusCandidate
+	for _, c := range f.candidates {
+		if want[c.OutageID] {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeCloudStatusRepo) ClaimChanges(_ context.Context, _ []string, _ int) ([]repository.OutboxChange, error) {
+	claimed := f.outbox
+	f.outbox = nil
+	return claimed, nil
 }
 
 func (f *fakeCloudStatusRepo) Record(_ context.Context, c repository.CloudStatusCandidate) (bool, error) {
@@ -512,5 +534,132 @@ func TestCloudStatusSweep_ReachableOnlyViaAffectedCI(t *testing.T) {
 	}
 	if got.Recorded != 1 || repo.recorded[0].Cloud != "CHOREO" {
 		t.Errorf("recorded %+v, want one CHOREO event", repo.recorded)
+	}
+}
+
+// TestCloudStatusDrainer_ResolvesOutageFromEitherTable checks the one piece of
+// routing the drainer does: an `outage` row names the outage directly, an
+// `outage_affected_ci` row names the join row and carries the outage in its
+// snapshot.
+func TestCloudStatusDrainer_ResolvesOutageFromEitherTable(t *testing.T) {
+	repo := &fakeCloudStatusRepo{
+		candidates: []repository.CloudStatusCandidate{
+			{OutageID: "o1", Cloud: "CHOREO", Event: domain.CloudStatusEventOutageBegin, Type: "OUTAGE"},
+			{OutageID: "o2", Cloud: "DEVANT", Event: domain.CloudStatusEventOutageBegin, Type: "OUTAGE"},
+		},
+		outbox: []repository.OutboxChange{
+			{ID: 1, EntityType: "outage", EntityID: "o1"},
+			{ID: 2, EntityType: "outage_affected_ci", EntityID: "join-row-id",
+				Snapshot: map[string]any{"outage_id": "o2"}},
+			// The orphan the affected-CI mirror documents: a join row with no
+			// outage. Must be skipped, not crash the batch.
+			{ID: 3, EntityType: "outage_affected_ci", EntityID: "orphan",
+				Snapshot: map[string]any{}},
+		},
+	}
+	svc := NewCloudStatusService(repo, []string{testServiceID})
+	d := NewCloudStatusDrainer(repo, svc, time.Second)
+
+	n, err := d.drainOnce(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("claimed %d rows, want 3", n)
+	}
+	got := map[string]bool{}
+	for _, r := range repo.recorded {
+		got[r.OutageID] = true
+	}
+	if !got["o1"] || !got["o2"] {
+		t.Errorf("both outages should have been handled, got %v", got)
+	}
+}
+
+// TestCloudStatusDrainer_CollapsesRowsPerOutage: a batch routinely holds
+// several rows for one outage, and they all ask the same question.
+func TestCloudStatusDrainer_CollapsesRowsPerOutage(t *testing.T) {
+	repo := &fakeCloudStatusRepo{
+		candidates: []repository.CloudStatusCandidate{
+			{OutageID: "o1", Cloud: "CHOREO", Event: domain.CloudStatusEventOutageBegin, Type: "OUTAGE"},
+		},
+		outbox: []repository.OutboxChange{
+			{ID: 1, EntityType: "outage", EntityID: "o1"},
+			{ID: 2, EntityType: "outage", EntityID: "o1"},
+			{ID: 3, EntityType: "outage_affected_ci", EntityID: "j1", Snapshot: map[string]any{"outage_id": "o1"}},
+		},
+	}
+	svc := NewCloudStatusService(repo, []string{testServiceID})
+
+	if _, err := NewCloudStatusDrainer(repo, svc, time.Second).drainOnce(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// One transition, recorded once, despite three rows naming it.
+	if len(repo.recorded) != 1 {
+		t.Errorf("recorded %d times, want 1: %+v", len(repo.recorded), repo.recorded)
+	}
+}
+
+// TestCloudStatusDrainer_ShortOutageGetsBothEvents is why the trigger path
+// exists at all.
+//
+// An outage that begins and ends inside one sweep interval is only ever seen
+// finished by a sweep, so it produced an end event, no begin event, and never
+// appeared on the public status page. The trigger sees both writes, so the
+// begin is recorded when it happens and the end when it happens.
+func TestCloudStatusDrainer_ShortOutageGetsBothEvents(t *testing.T) {
+	repo := &fakeCloudStatusRepo{
+		candidates: []repository.CloudStatusCandidate{
+			{OutageID: "o1", Cloud: "CHOREO", Event: domain.CloudStatusEventOutageBegin, Type: "OUTAGE"},
+		},
+		outbox: []repository.OutboxChange{{ID: 1, EntityType: "outage", EntityID: "o1"}},
+	}
+	svc := NewCloudStatusService(repo, []string{testServiceID})
+	d := NewCloudStatusDrainer(repo, svc, time.Second)
+
+	// The declaration.
+	if _, err := d.drainOnce(context.Background()); err != nil {
+		t.Fatalf("begin pass: %v", err)
+	}
+
+	// The resolution, moments later — a second write, so a second outbox row.
+	repo.candidates = []repository.CloudStatusCandidate{
+		{OutageID: "o1", Cloud: "CHOREO", Event: domain.CloudStatusEventOutageEnd, Type: "OUTAGE"},
+	}
+	repo.outbox = []repository.OutboxChange{{ID: 2, EntityType: "outage", EntityID: "o1"}}
+	if _, err := d.drainOnce(context.Background()); err != nil {
+		t.Fatalf("end pass: %v", err)
+	}
+
+	var begins, ends int
+	for _, r := range repo.recorded {
+		switch r.Event {
+		case domain.CloudStatusEventOutageBegin:
+			begins++
+		case domain.CloudStatusEventOutageEnd:
+			ends++
+		}
+	}
+	if begins != 1 || ends != 1 {
+		t.Errorf("got %d begin and %d end events, want 1 of each — a sweep would have produced 0 and 1",
+			begins, ends)
+	}
+}
+
+// TestCloudStatusHandleOutages_NoScopeIsANoOp keeps the unconfigured case safe
+// on the trigger path too, not just the sweep.
+func TestCloudStatusHandleOutages_NoScopeIsANoOp(t *testing.T) {
+	repo := &fakeCloudStatusRepo{
+		candidates: []repository.CloudStatusCandidate{
+			{OutageID: "o1", Cloud: "CHOREO", Event: domain.CloudStatusEventOutageBegin},
+		},
+	}
+	svc := NewCloudStatusService(repo, nil)
+
+	if err := svc.HandleOutages(context.Background(), []string{"o1"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repo.recorded) != 0 {
+		t.Error("nothing may be recorded with no scope configured")
 	}
 }

@@ -1242,4 +1242,9 @@ type CloudStatusService interface {
 	// RecordDelivery stamps the outcome of one attempt. A ValidationError is
 	// returned when a failure is reported without an error message.
 	RecordDelivery(ctx context.Context, req domain.RecordCloudStatusDeliveryRequest) error
+
+	// HandleOutages re-derives the current transition for the named outages.
+	// The record-triggered counterpart to Sweep, reaching the same conclusions
+	// by the same code -- see CloudStatusDrainer.
+	HandleOutages(ctx context.Context, outageIDs []string) error
 }

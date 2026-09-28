@@ -141,6 +141,28 @@ func main() {
 		}
 	}
 
+	// Cloud status: the record-triggered path. Started whenever the scope is
+	// configured, because it is only useful when there is a scope to decide
+	// against -- and harmless without one, since HandleOutages returns early.
+	//
+	// Not gated on the delivery side's CLOUD_STATUS_ENABLED: this only
+	// RECORDS transitions and rewrites monitor status. Nothing leaves the
+	// estate until csm-scheduled-tasks posts it, and that is where the
+	// double-fire guard belongs.
+	if cfg.DataSource != config.DataSourceServiceNow && len(cfg.CloudStatusServiceIDs) > 0 {
+		cloudStatusCtx, stopCloudStatus := context.WithCancel(context.Background())
+		defer stopCloudStatus()
+		cloudStatusRepo := repository.NewCloudStatusRepository(pool)
+		cloudStatusDrainer := service.NewCloudStatusDrainer(
+			cloudStatusRepo,
+			service.NewCloudStatusService(cloudStatusRepo, cfg.CloudStatusServiceIDs),
+			cfg.CloudStatusPollInterval,
+		)
+		go cloudStatusDrainer.Run(cloudStatusCtx)
+		log.Printf("cloud status notices enabled: draining every %s across %d services",
+			cfg.CloudStatusPollInterval, len(cfg.CloudStatusServiceIDs))
+	}
+
 	// The health probe listens separately, on its own port, so that only its
 	// own route is reachable at the public visibility it is published with —
 	// see server.NewHealthServer and .choreo/component.yaml.

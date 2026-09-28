@@ -18,6 +18,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -47,6 +48,8 @@ type CloudStatusCandidate struct {
 // webhook, and records what was sent.
 type CloudStatusRepository interface {
 	Candidates(ctx context.Context, parentServiceIDs []string) ([]CloudStatusCandidate, error)
+	CandidatesByOutage(ctx context.Context, parentServiceIDs, outageIDs []string) ([]CloudStatusCandidate, error)
+	ClaimChanges(ctx context.Context, entityTypes []string, limit int) ([]OutboxChange, error)
 	Record(ctx context.Context, c CloudStatusCandidate) (bool, error)
 	AffectedMonitors(ctx context.Context, outageID string) ([]string, error)
 	AffectedClouds(ctx context.Context, outageID string, parentServiceIDs []string) ([]string, error)
@@ -116,7 +119,9 @@ func NewCloudStatusRepository(db *pgxpool.Pool) CloudStatusRepository {
 // it to the millisecond rather than to the second. A receiver with a strict
 // parser would reject the shorter form, and a webhook rejected for its format
 // fails exactly as silently as one with a wrong event name.
-const candidatesSQL = `
+// candidatesSQLSelect is the projection both the sweep and the
+// record-triggered path use. Shared as a constant so the two cannot drift.
+const candidatesSQLSelect = `
     SELECT o.id::text,
            COALESCE(o.number, ''),
            COALESCE(cm.cloud_offering::text, ''),
@@ -127,6 +132,9 @@ const candidatesSQL = `
                'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
            ),
            COALESCE(o.type::text, '')
+`
+
+const candidatesSQL = candidatesSQLSelect + `
       FROM outage o
       LEFT JOIN service_offering so ON so.id = o.service_offering_id
       LEFT JOIN cloud_monitor cm ON cm.service_offering_id = o.service_offering_id
@@ -420,4 +428,112 @@ func (r *cloudStatusRepository) AffectedClouds(ctx context.Context, outageID str
 		return nil, fmt.Errorf("iterate affected clouds: %w", err)
 	}
 	return out, nil
+}
+
+// candidatesByOutageSQL is candidatesSQL narrowed to named outages.
+//
+// The record-triggered path needs the same decision as the sweep for one
+// outage rather than all of them, and it must be the SAME decision -- so the
+// scope filter, the event derivation and the timestamp format are shared
+// verbatim with candidatesSQL above rather than restated. If the two ever
+// disagree, a change noticed by the trigger is handled differently from the
+// same change noticed by reconciliation, which is the worst kind of bug to
+// look for.
+const candidatesByOutageSQL = candidatesSQLSelect + `
+      FROM outage o
+      LEFT JOIN service_offering so ON so.id = o.service_offering_id
+      LEFT JOIN cloud_monitor cm ON cm.service_offering_id = o.service_offering_id
+     WHERE o.id = ANY($2::uuid[])
+       AND o.start_on IS NOT NULL
+       AND (
+             so.parent_id = ANY($1::uuid[])
+          OR EXISTS (
+                 SELECT 1
+                   FROM outage_affected_ci ac
+                   JOIN service_offering aso ON aso.id = ac.ci_id
+                  WHERE ac.outage_id = o.id
+                    AND aso.parent_id = ANY($1::uuid[])
+             )
+           )
+`
+
+// CandidatesByOutage returns the current transition for each named outage
+// that is still in scope. An outage that has fallen out of scope simply does
+// not come back, which is correct: there is nothing to tell anyone about it.
+func (r *cloudStatusRepository) CandidatesByOutage(ctx context.Context, parentServiceIDs, outageIDs []string) ([]CloudStatusCandidate, error) {
+	if len(outageIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := r.db.Query(ctx, candidatesByOutageSQL, parentServiceIDs, outageIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query cloud status candidates by outage: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CloudStatusCandidate
+	for rows.Next() {
+		var c CloudStatusCandidate
+		if err := rows.Scan(&c.OutageID, &c.Number, &c.Cloud, &c.Event, &c.Timestamp, &c.Type); err != nil {
+			return nil, fmt.Errorf("scan cloud status candidate: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// claimChangesSQL takes a batch of unpublished outbox rows and marks them
+// published in the same statement. Identical in shape to the change-request
+// drainer's, which is deliberate: event_outbox was built to be shared, and
+// "the drainer filters by type" is the contract.
+//
+// FOR UPDATE SKIP LOCKED is what makes more than one replica safe -- two
+// drainers racing for the same batch get disjoint sets rather than blocking
+// or double-delivering.
+//
+// Claiming at read time rather than after the work means a crash mid-batch
+// loses those notifications. For cloud status that is recoverable in a way it
+// is not for the CR notices: the reconciliation sweep re-derives the same
+// transitions from current state and records anything missed. The trigger is
+// the fast path; the sweep is the guarantee.
+const claimChangesSQL = `
+    WITH claimed AS (
+        SELECT id FROM event_outbox
+        WHERE published_on IS NULL
+          AND entity_type = ANY($1::text[])
+        ORDER BY id
+        LIMIT $2
+        FOR UPDATE SKIP LOCKED
+    )
+    UPDATE event_outbox o
+       SET published_on = NOW()
+      FROM claimed c
+     WHERE o.id = c.id
+    RETURNING o.id, o.entity_type, o.entity_id, o.changes, o.snapshot
+`
+
+// ClaimChanges takes up to limit unpublished outbox rows for the given entity
+// types, oldest first, and marks them published.
+func (r *cloudStatusRepository) ClaimChanges(ctx context.Context, entityTypes []string, limit int) ([]OutboxChange, error) {
+	rows, err := r.db.Query(ctx, claimChangesSQL, entityTypes, limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim cloud status outbox rows: %w", err)
+	}
+	defer rows.Close()
+
+	var out []OutboxChange
+	for rows.Next() {
+		var c OutboxChange
+		var changes, snapshot []byte
+		if err := rows.Scan(&c.ID, &c.EntityType, &c.EntityID, &changes, &snapshot); err != nil {
+			return nil, fmt.Errorf("scan cloud status outbox row: %w", err)
+		}
+		if err := json.Unmarshal(changes, &c.Changes); err != nil {
+			return nil, fmt.Errorf("decode outbox changes: %w", err)
+		}
+		if err := json.Unmarshal(snapshot, &c.Snapshot); err != nil {
+			return nil, fmt.Errorf("decode outbox snapshot: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }

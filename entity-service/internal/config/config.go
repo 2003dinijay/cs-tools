@@ -239,6 +239,17 @@ type Config struct {
 	// page rather than guessing a scope.
 	CloudStatusServiceIDs []string
 
+	// CloudStatusPollInterval is how often CloudStatusDrainer claims
+	// event_outbox rows for `outage` and `outage_affected_ci`
+	// (CLOUD_STATUS_POLL_INTERVAL). Same envDuration convention as
+	// CRNoticePollInterval.
+	//
+	// This is the FAST path. The reconciliation sweep in
+	// csm-scheduled-tasks reaches the same conclusions on its own schedule
+	// and is what makes a missed drain harmless, so this interval governs
+	// promptness, not correctness.
+	CloudStatusPollInterval time.Duration
+
 	AuthIssuer             string
 	AuthJWKSURL            string
 	AuthUserTokenAudiences []string
@@ -364,6 +375,7 @@ func Load() *Config {
 		CSEngineerRole:                                os.Getenv("CS_ENGINEER_ROLE"),
 		SLARecomputeInterval:                          envDuration("SLA_RECOMPUTE_INTERVAL", 45*time.Second),
 		CloudStatusServiceIDs:                         splitComma(os.Getenv("CLOUD_STATUS_SERVICE_IDS")),
+		CloudStatusPollInterval:                       envDuration("CLOUD_STATUS_POLL_INTERVAL", 10*time.Second),
 		SalesEntityBaseURL:                            os.Getenv("SALES_ENTITY_BASE_URL"),
 		SalesEntityTokenURL:                           os.Getenv("SALES_ENTITY_TOKEN_URL"),
 		SalesEntityClientID:                           os.Getenv("SALES_ENTITY_CLIENT_ID"),

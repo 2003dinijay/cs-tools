@@ -20,7 +20,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -281,5 +283,104 @@ func TestIntegrationCloudStatusOverHTTP(t *testing.T) {
 	}
 	if target == "" {
 		t.Fatal("the fixture produced no pending webhook")
+	}
+}
+
+// TestIntegrationCloudStatusTriggerPath proves the record-triggered path end
+// to end against a real database: a write fires the trigger, the trigger
+// writes event_outbox, the drainer claims it and the transition is recorded.
+//
+// The case it exists for is the SHORT OUTAGE — one that begins and ends
+// faster than the sweep interval. A sweep sees only the final state and
+// produces an end event with no begin event, so the outage never appears on
+// the public status page. The trigger sees both writes.
+func TestIntegrationCloudStatusTriggerPath(t *testing.T) {
+	pool := cloudStatusTestPool(t)
+	scope := os.Getenv(serviceIDsEnv)
+	if scope == "" {
+		t.Skip("no scope configured")
+	}
+	ctx := context.Background()
+	repo := repository.NewCloudStatusRepository(pool)
+	svc := NewCloudStatusService(repo, []string{scope})
+	drainer := NewCloudStatusDrainer(repo, svc, time.Second)
+
+	// Start from RESOLVED, so that declaring it is a genuine state change.
+	//
+	// This matters more than it looks. 0051's trigger function returns NULL
+	// when the diff is empty -- a sync pass that rewrote a row with identical
+	// values is not an event. So the fixture must actually move for the
+	// trigger to fire, and a test that re-asserted the existing state would
+	// see zero outbox rows and look like a broken trigger rather than a
+	// working guard.
+	resetFixture(t, pool, scenario{outageType: "OUTAGE", ended: true, inScope: true, affectedInScope: true})
+	if _, err := pool.Exec(ctx, `DELETE FROM event_outbox WHERE entity_type IN ('outage','outage_affected_ci')`); err != nil {
+		t.Fatalf("clear outbox: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM cloud_status_events WHERE outage_id = $1::uuid`, fixtureOutageID); err != nil {
+		t.Fatalf("clear events: %v", err)
+	}
+
+	// ── the declaration ────────────────────────────────────────────────
+	if _, err := pool.Exec(ctx,
+		`UPDATE outage SET end_on = NULL, updated_on = NOW() WHERE id = $1::uuid`,
+		fixtureOutageID); err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	n, err := drainer.drainOnce(ctx)
+	if err != nil {
+		t.Fatalf("drain after declare: %v", err)
+	}
+	t.Logf("declare: claimed %d outbox row(s)", n)
+	if n == 0 {
+		t.Fatal("the trigger did not produce an outbox row for the declaration")
+	}
+
+	// ── the resolution, immediately after ──────────────────────────────
+	// Far faster than any sweep interval. This is the case a sweep loses.
+	if _, err := pool.Exec(ctx,
+		`UPDATE outage SET end_on = NOW(), updated_on = NOW() WHERE id = $1::uuid`,
+		fixtureOutageID); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	n, err = drainer.drainOnce(ctx)
+	if err != nil {
+		t.Fatalf("drain after resolve: %v", err)
+	}
+	t.Logf("resolve: claimed %d outbox row(s)", n)
+
+	// ── both transitions must be on record ─────────────────────────────
+	rows, err := pool.Query(ctx,
+		`SELECT event::text, cloud FROM cloud_status_events WHERE outage_id = $1::uuid ORDER BY created_on`,
+		fixtureOutageID)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	defer rows.Close()
+	var events []string
+	for rows.Next() {
+		var e, c string
+		if err := rows.Scan(&e, &c); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		events = append(events, e+"/"+c)
+	}
+	t.Logf("recorded: %v", events)
+
+	var begins, ends int
+	for _, e := range events {
+		if strings.HasPrefix(e, "OUTAGE_BEGIN") {
+			begins++
+		}
+		if strings.HasPrefix(e, "OUTAGE_END") {
+			ends++
+		}
+	}
+	if begins == 0 {
+		t.Error("no begin event — the short outage was lost, which is the bug this path fixes")
+	}
+	if ends == 0 {
+		t.Error("no end event")
 	}
 }

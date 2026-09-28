@@ -104,10 +104,25 @@ func (s *cloudStatusService) Sweep(ctx context.Context) (domain.CloudStatusSweep
 	}
 
 	resp := domain.CloudStatusSweepResponse{Scanned: len(candidates)}
+	if err := s.process(ctx, candidates, &resp); err != nil {
+		return domain.CloudStatusSweepResponse{}, err
+	}
+	return resp, nil
+}
+
+// process records and applies every candidate's current transition.
+//
+// THE SWEEP AND THE TRIGGER PATH BOTH END HERE, and that is the point. One
+// notices changes quickly and the other notices them eventually; neither is
+// allowed its own opinion about what a change MEANS. If they diverged, a
+// transition handled by the trigger would behave differently from the same
+// transition handled by reconciliation, and the two are indistinguishable
+// after the fact.
+func (s *cloudStatusService) process(ctx context.Context, candidates []repository.CloudStatusCandidate, resp *domain.CloudStatusSweepResponse) error {
 	for _, c := range candidates {
 		clouds, err := s.cloudsFor(ctx, c)
 		if err != nil {
-			return domain.CloudStatusSweepResponse{}, err
+			return err
 		}
 		if len(clouds) == 0 {
 			// No cloud monitor on the outage's configuration item, or an
@@ -130,7 +145,7 @@ func (s *cloudStatusService) Sweep(ctx context.Context) (domain.CloudStatusSweep
 			rec.Cloud = cloud
 			recorded, err := s.repo.Record(ctx, rec)
 			if err != nil {
-				return domain.CloudStatusSweepResponse{}, err
+				return err
 			}
 			if recorded {
 				resp.Recorded++
@@ -151,14 +166,14 @@ func (s *cloudStatusService) Sweep(ctx context.Context) (domain.CloudStatusSweep
 		// steady state costs a read and no writes.
 		changed, unknownType, err := s.applyMonitorStatus(ctx, c)
 		if err != nil {
-			return domain.CloudStatusSweepResponse{}, err
+			return err
 		}
 		resp.MonitorsUpdated += changed
 		if unknownType {
 			resp.UnknownOutageType++
 		}
 	}
-	return resp, nil
+	return nil
 }
 
 // cloudsFor returns every cloud that must be told about this outage.
