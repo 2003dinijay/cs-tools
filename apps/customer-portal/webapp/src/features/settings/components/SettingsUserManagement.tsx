@@ -206,14 +206,28 @@ export default function SettingsUserManagement({
     [pendingInvites, showSuccess, showError],
   );
 
+  // Rows whose resend is still running. The mutation's own variables and
+  // mutate callbacks only follow the latest call, and an admin may resend to
+  // several rows at once, so each row is tracked here and awaited on its own.
+  const [resending, setResending] = useState<ReadonlySet<string>>(() => new Set());
+  const { mutateAsync: resendMutateAsync } = resendInvitation;
   const handleResendInvitation = useCallback(
-    (email: string) => {
-      resendInvitation.mutate(email, {
-        onSuccess: () => showSuccess(`${SETTINGS_USER_RESEND_SUCCESS} to ${email}`),
-        onError: (err) => showError(err?.message ?? SETTINGS_USER_RESEND_ERROR),
-      });
+    async (email: string) => {
+      setResending((prev) => new Set(prev).add(email));
+      try {
+        await resendMutateAsync(email);
+        showSuccess(`${SETTINGS_USER_RESEND_SUCCESS} to ${email}`);
+      } catch (err) {
+        showError(err instanceof Error && err.message ? err.message : SETTINGS_USER_RESEND_ERROR);
+      } finally {
+        setResending((prev) => {
+          const next = new Set(prev);
+          next.delete(email);
+          return next;
+        });
+      }
     },
-    [resendInvitation, showSuccess, showError],
+    [resendMutateAsync, showSuccess, showError],
   );
 
   const handleRemoveUser = useCallback(() => {
@@ -476,11 +490,8 @@ export default function SettingsUserManagement({
                               <IconButton
                                 size="small"
                                 aria-label="Resend invitation"
-                                disabled={
-                                  resendInvitation.isPending &&
-                                  resendInvitation.variables === contact.email
-                                }
-                                onClick={() => handleResendInvitation(contact.email)}
+                                disabled={resending.has(contact.email)}
+                                onClick={() => void handleResendInvitation(contact.email)}
                               >
                                 <Mail size={16} />
                               </IconButton>

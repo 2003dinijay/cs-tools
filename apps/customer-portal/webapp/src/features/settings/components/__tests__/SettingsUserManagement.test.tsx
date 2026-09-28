@@ -33,6 +33,7 @@ const DEFAULT_CONTACTS = [{ id: "1", email: "user@test.dev", membershipStatus: "
 // The contact list each test sees; tests replace it before rendering.
 const contactsState = vi.hoisted(() => ({ data: [] as unknown[] }));
 const resendMutate = vi.hoisted(() => vi.fn());
+const { showSuccess, showError } = vi.hoisted(() => ({ showSuccess: vi.fn(), showError: vi.fn() }));
 
 vi.mock("@features/settings/api/useGetProjectContacts", () => ({
   default: () => ({
@@ -51,16 +52,16 @@ vi.mock("@features/settings/api/useDeleteProjectContact", () => ({
   useDeleteProjectContact: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 vi.mock("@features/settings/api/useResendProjectContactInvitation", () => ({
-  useResendProjectContactInvitation: () => ({ mutate: resendMutate, isPending: false }),
+  useResendProjectContactInvitation: () => ({ mutateAsync: resendMutate, isPending: false }),
 }));
 vi.mock("@features/settings/api/usePatchProjectContact", () => ({
   usePatchProjectContact: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 vi.mock("@context/error-banner/ErrorBannerContext", () => ({
-  useErrorBanner: () => ({ showError: vi.fn() }),
+  useErrorBanner: () => ({ showError }),
 }));
 vi.mock("@context/success-banner/SuccessBannerContext", () => ({
-  useSuccessBanner: () => ({ showSuccess: vi.fn() }),
+  useSuccessBanner: () => ({ showSuccess }),
 }));
 vi.mock("@features/settings/components/AddUserModal", () => ({
   default: ({ open, onSubmit }: { open: boolean; onSubmit: (r: unknown) => void }) =>
@@ -157,7 +158,38 @@ describe("SettingsUserManagement", () => {
     const buttons = screen.getAllByRole("button", { name: "Resend invitation" });
     expect(buttons).toHaveLength(1);
     fireEvent.click(buttons[0]);
-    expect(resendMutate).toHaveBeenCalledWith("invited@acme.com", expect.any(Object));
+    expect(resendMutate).toHaveBeenCalledWith("invited@acme.com");
+  });
+
+  it("keeps each resend's button and outcome separate when two run at once", async () => {
+    contactsState.data = [
+      { id: "c-1", email: "a@acme.com", membershipStatus: "INVITED", canResendInvitation: true },
+      { id: "c-2", email: "b@acme.com", membershipStatus: "INVITED", canResendInvitation: true },
+    ];
+    let failA: (e: Error) => void = () => {};
+    let finishB: () => void = () => {};
+    resendMutate
+      .mockReturnValueOnce(new Promise<void>((_, reject) => { failA = reject; }))
+      .mockReturnValueOnce(new Promise<void>((resolve) => { finishB = resolve; }));
+    render(<SettingsUserManagement projectId="p-1" />);
+
+    const [buttonA, buttonB] = screen.getAllByRole("button", { name: "Resend invitation" });
+    await act(async () => {
+      fireEvent.click(buttonA);
+      fireEvent.click(buttonB);
+    });
+    // Starting B must not re-enable A while A is still running.
+    expect(buttonA).toBeDisabled();
+    expect(buttonB).toBeDisabled();
+
+    await act(async () => {
+      finishB();
+      failA(new Error("An invitation was sent a few minutes ago. Please try again later."));
+    });
+    expect(showSuccess).toHaveBeenCalledWith("Invitation resent to b@acme.com");
+    expect(showError).toHaveBeenCalledWith("An invitation was sent a few minutes ago. Please try again later.");
+    expect(buttonA).not.toBeDisabled();
+    expect(buttonB).not.toBeDisabled();
   });
 
   describe("pagination", () => {
