@@ -584,7 +584,7 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	// publish (that fires right after the ServiceNow POST, before this
 	// Postgres insert was even attempted) — same reasoning
 	// incidentService.createIncidentSNFirst already established.
-	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, req, c.ID)
+	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, req, c.ID)
 
 	responseState := ""
 	if c.State != nil {
@@ -604,8 +604,8 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 }
 
 // addAccountDefaultWatchers adds a just-created case's account's four named
-// stakeholders (customer_success_manager_id, technical_owner_id,
-// secondary_technical_owner_id, account_manager_id -- migration 0012) as
+// stakeholders (technical_owner_id, secondary_technical_owner_id,
+// account_manager_id, renewal_account_manager_id -- migration 0012) as
 // its initial watchers -- see createCaseSNFirst's own call site comment for
 // why this exists. A plain Postgres lookup keyed by projectID, independent
 // of req.WatchList and of ServiceNow entirely: no forwarding, no email/UUID
@@ -639,6 +639,11 @@ func (s *caseService) GetCaseByID(ctx context.Context, id string) (domain.CaseVi
 		return domain.CaseView{}, err
 	}
 	return s.repo.GetCaseByID(ctx, id, scope)
+}
+
+// ProjectContactEmailsByRole implements CaseService.
+func (s *caseService) ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error) {
+	return s.repo.ProjectContactEmailsByRole(ctx, projectID, role)
 }
 
 var validCommentType = map[domain.CommentType]bool{

@@ -63,6 +63,7 @@ type stubCaseRepo struct {
 	addCaseTag                    func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
 	setCaseWatchList              func(ctx context.Context, caseID string, userIDs []string, actorEmail string) ([]domain.WatchListUser, time.Time, error)
 	accountDefaultWatcherIDs      func(ctx context.Context, projectID string) ([]string, error)
+	projectContactEmailsByRole    func(ctx context.Context, projectID, role string) ([]string, error)
 	updateCaseAssignee            func(ctx context.Context, caseID string, userID *string, callerEmail string) (time.Time, bool, error)
 	acknowledgeCase               func(ctx context.Context, caseID, actorID, actorEmail string) (bool, domain.AssignedEngineerRef, string, time.Time, error)
 	updateCaseParent              func(ctx context.Context, caseID, parentID, callerEmail string) (time.Time, error)
@@ -194,6 +195,17 @@ func (s *stubCaseRepo) SetCaseWatchList(ctx context.Context, caseID string, user
 func (s *stubCaseRepo) AccountDefaultWatcherIDs(ctx context.Context, projectID string) ([]string, error) {
 	if s.accountDefaultWatcherIDs != nil {
 		return s.accountDefaultWatcherIDs(ctx, projectID)
+	}
+	return nil, nil
+}
+
+// ProjectContactEmailsByRole defaults to empty rather than panicking, same
+// reasoning as AccountDefaultWatcherIDs above: publishCaseCreatedEvent now
+// calls it for every announcement-type case create, and none of this stub's
+// existing test cases care about its contents.
+func (s *stubCaseRepo) ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error) {
+	if s.projectContactEmailsByRole != nil {
+		return s.projectContactEmailsByRole(ctx, projectID, role)
 	}
 	return nil, nil
 }
@@ -1208,16 +1220,24 @@ func TestCaseService_SearchCases_AnyOfReachesRepository(t *testing.T) {
 // CaseService with these left unset means such a call panics on a nil func).
 type stubMirrorCaseService struct {
 	CaseService
-	createCase              func(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error)
-	patchCaseFieldsFn       func(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool) (domain.UpdatedCase, error)
-	createBareCaseComment   func(ctx context.Context, caseID string, commentType domain.CommentType, content string) (domain.CaseCommentDetail, error)
-	addCaseTagAsFn          func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
-	removeCaseTagFn         func(ctx context.Context, caseID, tagID string) error
-	patchCaseWatchListFn    func(ctx context.Context, caseID string, userIDs []string) (domain.UpdatedCase, error)
-	patchCaseAssigneeFn     func(ctx context.Context, caseID string, assigneeEmail *string) error
-	patchCaseAcknowledgeFn  func(ctx context.Context, caseID string) error
-	patchCaseParentFn       func(ctx context.Context, caseID, parentID string) error
-	patchCaseFieldsBundleFn func(ctx context.Context, caseID string, req domain.UpdateCaseRequest) error
+	createCase                   func(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error)
+	patchCaseFieldsFn            func(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool) (domain.UpdatedCase, error)
+	createBareCaseComment        func(ctx context.Context, caseID string, commentType domain.CommentType, content string) (domain.CaseCommentDetail, error)
+	addCaseTagAsFn               func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
+	removeCaseTagFn              func(ctx context.Context, caseID, tagID string) error
+	patchCaseWatchListFn         func(ctx context.Context, caseID string, userIDs []string) (domain.UpdatedCase, error)
+	patchCaseAssigneeFn          func(ctx context.Context, caseID string, assigneeEmail *string) error
+	patchCaseAcknowledgeFn       func(ctx context.Context, caseID string) error
+	patchCaseParentFn            func(ctx context.Context, caseID, parentID string) error
+	patchCaseFieldsBundleFn      func(ctx context.Context, caseID string, req domain.UpdateCaseRequest) error
+	projectContactEmailsByRoleFn func(ctx context.Context, projectID, role string) ([]string, error)
+}
+
+func (s *stubMirrorCaseService) ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error) {
+	if s.projectContactEmailsByRoleFn != nil {
+		return s.projectContactEmailsByRoleFn(ctx, projectID, role)
+	}
+	return nil, nil
 }
 
 func (s *stubMirrorCaseService) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {

@@ -312,13 +312,25 @@ type CaseRepository interface {
 	// exist.
 	SetCaseWatchList(ctx context.Context, caseID string, userIDs []string, callerEmail string) ([]domain.WatchListUser, time.Time, error)
 	// AccountDefaultWatcherIDs returns the account owning projectID's four
-	// named stakeholder ids -- customer_success_manager_id, technical_owner_id,
-	// secondary_technical_owner_id, account_manager_id (migration 0012) --
-	// whichever are set, deduplicated, in that order. A project with no
-	// linked account, or a project id that does not exist, returns an empty
-	// slice rather than an error: this is a default watch list, not a
-	// requirement.
+	// named stakeholder ids -- technical_owner_id, secondary_technical_owner_id,
+	// account_manager_id, renewal_account_manager_id (migration 0012) --
+	// whichever are set, deduplicated, in that order. customer_success_manager_id
+	// is deliberately excluded: unlike the other four, the CSM is not meant to
+	// receive these default case notifications. A project with no linked
+	// account, or a project id that does not exist, returns an empty slice
+	// rather than an error: this is a default watch list, not a requirement.
 	AccountDefaultWatcherIDs(ctx context.Context, projectID string) ([]string, error)
+	// ProjectContactEmailsByRole returns the distinct project_contact.email
+	// addresses for projectID whose contact currently holds role (a
+	// project_role_enum label, e.g. "SECURITY_CONTACT" or "PORTAL_USER") via
+	// project_contact_group -> project_group -> project_group_role ->
+	// project_role. Excludes DEACTIVATED contacts; every other state
+	// (INVITED/REGISTERED/RE-INVITED/NULL) counts, since this is an email
+	// audience, not a case-access grant. Used to resolve an announcement
+	// case's recipients -- see publishCaseCreatedEvent's own doc comment. A
+	// project with no contact holding role returns an empty slice, not an
+	// error.
+	ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error)
 	// UpdateCaseAssignee sets work_item.assigned_to_id to userID -- already
 	// resolved and validated as a real "user" row by the caller (CaseService.
 	// updateCaseAssignee, via GetUserByEmail) -- and bumps updated_on/updated_by,
@@ -2188,14 +2200,14 @@ func (r *caseRepo) SetCaseWatchList(ctx context.Context, caseID string, userIDs 
 
 // AccountDefaultWatcherIDs implements CaseRepository.
 func (r *caseRepo) AccountDefaultWatcherIDs(ctx context.Context, projectID string) ([]string, error) {
-	var csmID, towID, stowID, amID *string
+	var towID, stowID, amID, ramID *string
 	err := r.db.QueryRow(ctx, `
-		SELECT a.customer_success_manager_id, a.technical_owner_id,
-		       a.secondary_technical_owner_id, a.account_manager_id
+		SELECT a.technical_owner_id, a.secondary_technical_owner_id,
+		       a.account_manager_id, a.renewal_account_manager_id
 		FROM project p
 		JOIN account a ON a.id = p.account_id
 		WHERE p.id = $1`, projectID,
-	).Scan(&csmID, &towID, &stowID, &amID)
+	).Scan(&towID, &stowID, &amID, &ramID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -2205,7 +2217,7 @@ func (r *caseRepo) AccountDefaultWatcherIDs(ctx context.Context, projectID strin
 
 	ids := make([]string, 0, 4)
 	seen := make(map[string]struct{}, 4)
-	for _, id := range []*string{csmID, towID, stowID, amID} {
+	for _, id := range []*string{towID, stowID, amID, ramID} {
 		if id == nil || *id == "" {
 			continue
 		}
@@ -2216,6 +2228,38 @@ func (r *caseRepo) AccountDefaultWatcherIDs(ctx context.Context, projectID strin
 		ids = append(ids, *id)
 	}
 	return ids, nil
+}
+
+// ProjectContactEmailsByRole implements CaseRepository.
+func (r *caseRepo) ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT pc.email
+		FROM project_contact pc
+		JOIN project_contact_group pcg ON pcg.project_contact_id = pc.id
+		JOIN project_group_role pgr ON pgr.project_group_id = pcg.project_group_id
+		JOIN project_role pr ON pr.id = pgr.project_role_id
+		WHERE pc.project_id = $1
+		  AND pr.role = $2::project_role_enum
+		  AND (pc.state IS NULL OR pc.state <> 'DEACTIVATED'::project_contact_state_enum)`,
+		projectID, role,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("project contact emails by role: %w", err)
+	}
+	defer rows.Close()
+
+	var emails []string
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return nil, fmt.Errorf("project contact emails by role: scan: %w", err)
+		}
+		emails = append(emails, email)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("project contact emails by role: %w", err)
+	}
+	return emails, nil
 }
 
 // updateCaseAssigneeQuery atomically applies the no-op check inside the

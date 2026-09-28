@@ -484,22 +484,53 @@ easy to wire up for real once both exist.
   carries only a few fields — see `snCreateCaseResponse`), it re-fetches the
   case via `GetCaseByID`, whose own SN response already resolves the
   reporter's display name, the project's name, and each watcher's email —
-  exactly what `events.CaseCreatedPayload` needs. `Recipients` is the
-  resolved watch list's emails only (an explicit, deliberate decision — this
-  service has no other notion of who should be emailed for a case); a case
-  created with no watchers is a normal state, not an error, so publishing is
-  silently skipped rather than sending a payload
+  exactly what `events.CaseCreatedPayload` needs. A case created with no
+  recipients (either way, see below) is a normal state, not an error, so
+  publishing is silently skipped rather than sending a payload
   `csm-notification-service`'s `events.Validate` would reject anyway for an
-  empty `recipients` list. The same skip applies when the case has no
-  severity: `CaseCreatedPayload.Priority` has no `omitempty` (a consumer
-  always expects a real value) and `""` is not a real priority. Since
-  severity is a required, validated field for `type: "case"`
-  (`validateCreateCaseRequest`), this only actually triggers for the other
+  empty `recipients` list.
+
+  **Only `type: "case"` requires a severity to publish at all.**
+  `CaseCreatedPayload.Priority` has no `omitempty` (a consumer always
+  expects a real value) and `""` is not a real priority, so a nil severity
+  used to skip the whole publish — but severity is a `"case"`-only column
+  (`validateCreateCaseRequest`), so that gate previously meant the other
   four types `publishCaseCreatedEvent` also serves —
-  `announcement`/`engagement`/`service_request`/`security_report_analysis`
-  have no severity concept at all (a `"case"`-only column) — so none of
-  those four ever publish `case.created`, by explicit request, not by
-  oversight.
+  `engagement`/`service_request`/`security_report_analysis`/`announcement`
+  — never published `case.created` at all. **Fixed at explicit request**:
+  the severity gate now only applies when `req.Type == "case"`; the other
+  four publish regardless, with `Priority` simply left `""`
+  (`csm-notification-service` already renders that gracefully — see its own
+  `CLAUDE.md`).
+
+  **`Recipients` depends on `req.Type`.** For `case`/`engagement`/
+  `service_request`/`security_report_analysis` it's still the case's own
+  resolved watch list emails only (this service has no other notion of who
+  should be emailed for these types) — which, on the Postgres/dual-write
+  data source, already includes the account's four default-watcher
+  stakeholders once `addAccountDefaultWatchers` has run (see
+  `CaseRepository.AccountDefaultWatcherIDs` below). For `announcement`,
+  `publishCaseCreatedEvent` instead resolves the audience via
+  `CaseService.ProjectContactEmailsByRole` — every `project_contact`
+  currently holding the `SECURITY_CONTACT` project role when
+  `req.IsSecurityAnnouncement` is true, else every contact holding
+  `PORTAL_USER` — bypassing the watch-list mechanism entirely, since a
+  project contact often has no matching `"user"` row to add as a
+  `work_item_watcher` (`work_item_watcher.user_id` is `NOT NULL`). Falls
+  back to the case's own watch-list emails (the account's default
+  watchers) when no contact holds the requested role for that project — a
+  project with nobody in the requested role must still notify someone, not
+  silently notify no one. `ProjectContactEmailsByRole` is Postgres-only
+  (`project_contact`/`project_role` have no ServiceNow equivalent); on
+  `snCaseService` it delegates to `pgFallback` when configured, else
+  returns empty (no error) — same "can't resolve, skip" posture as every
+  other Postgres-only gap in this file.
+
+  `csm-notification-service`'s own `handleCaseCreated` mirrors this split
+  on the Chat side: its Google Chat alert is skipped entirely for these
+  same four non-`"case"` types (an exclude-list keyed on
+  `CaseCreatedPayload.CaseType`) — those types notify by email only, per
+  the same explicit request. See that service's own `CLAUDE.md`.
 - **`snIncidentService.CreateIncident`** publishes `incident.created` via
   `publishIncidentCreated`, called the same way. No enrichment round trip is
   needed here: `req.Subject`/`req.AdditionalComments` already carry
@@ -1491,10 +1522,14 @@ changed.
 
   **Every case now gets its account's four named stakeholders as watchers,
   unconditionally, from a pure Postgres lookup — no ServiceNow involved.**
-  `account.customer_success_manager_id`/`technical_owner_id`/
-  `secondary_technical_owner_id`/`account_manager_id` (migration 0012)
+  `account.technical_owner_id`/`secondary_technical_owner_id`/
+  `account_manager_id`/`renewal_account_manager_id` (migration 0012)
   are already `"user"` ids, so there's no email/UUID ambiguity to resolve
-  at all. `createCaseSNFirst` calls `addAccountDefaultWatchers` right after
+  at all. `customer_success_manager_id` is deliberately excluded — unlike
+  the other four, the CSM is not meant to receive these default case
+  notifications (an earlier version of this lookup wrongly included it and
+  omitted `renewal_account_manager_id`; fixed at explicit request).
+  `createCaseSNFirst` calls `addAccountDefaultWatchers` right after
   `CreateCaseFromServiceNow` succeeds and before `publishCaseCreatedEvent`;
   it resolves those four ids for the case's project via
   `CaseRepository.AccountDefaultWatcherIDs` (a `project JOIN account`,

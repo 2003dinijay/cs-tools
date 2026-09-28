@@ -3010,6 +3010,11 @@ type CreateCaseRequest struct {
 	// For engagement type
 	EngagementType        EngagementType        `json:"engagementType"`
 	EngagementPaymentType EngagementPaymentType `json:"engagementPaymentType"`
+	// For announcement type only -- decides the case's default audience:
+	// true resolves to every project contact holding the SECURITY_CONTACT
+	// project role, false to every contact holding PORTAL_USER. Ignored for
+	// every other type. See publishCaseCreatedEvent's own doc comment.
+	IsSecurityAnnouncement bool `json:"isSecurityAnnouncement,omitempty"`
 }
 
 // CommentType classifies the type of a case comment.
