@@ -144,6 +144,7 @@ export default function CreateIncidentPage(): JSX.Element {
   const [contactType, setContactType] = useState<BeIncidentContactType | "">(UNSET);
   const [impact, setImpact] = useState<BeIncidentImpact | "">(UNSET);
   const [urgency, setUrgency] = useState<BeIncidentUrgency | "">(UNSET);
+  const [environment, setEnvironment] = useState("");
   const [callerId, setCallerId] = useState("");
   const [serviceId, setServiceId] = useState("");
   const [serviceOfferingId, setServiceOfferingId] = useState("");
@@ -254,6 +255,7 @@ export default function CreateIncidentPage(): JSX.Element {
     // No dedicated "description" field on the backend — the closest
     // equivalent is the customer-visible additionalComments journal field.
     if (description.trim()) payload.additionalComments = description.trim();
+    if (environment.trim()) payload.environment = environment.trim();
     if (serviceOfferingId) payload.serviceOfferingId = serviceOfferingId;
     if (configurationItemId) payload.configurationItemId = configurationItemId;
     if (assignmentGroupId) payload.assignmentGroupId = assignmentGroupId;
@@ -468,6 +470,20 @@ export default function CreateIncidentPage(): JSX.Element {
                 </Typography>
                 <Chip size="small" label="New" variant="outlined" />
               </Box>
+            </Box>
+          </Box>
+
+          <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+            <Box sx={{ flex: "1 1 220px" }}>
+              <TextField
+                label="Environment"
+                value={environment}
+                onChange={(e) => setEnvironment(e.target.value)}
+                fullWidth
+                size="small"
+                disabled={postIncident.isPending}
+                placeholder="e.g. Production, Staging"
+              />
             </Box>
           </Box>
 

@@ -901,6 +901,9 @@ export default function CsmIncidentDetailPage(): JSX.Element {
               <MetaCell label="Impact">
                 <Typography variant="body2">{incident.impact || "—"}</Typography>
               </MetaCell>
+              <MetaCell label="Environment">
+                <Typography variant="body2">{incident.environment || "—"}</Typography>
+              </MetaCell>
               <MetaCell label="Urgency">
                 <Typography variant="body2">{incident.urgency || "—"}</Typography>
               </MetaCell>

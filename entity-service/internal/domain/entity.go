@@ -5290,6 +5290,8 @@ type UpdateIncidentRequest struct {
 	AdditionalComments  *string                 `json:"additionalComments,omitempty"`
 	WorkNotes           *string                 `json:"workNotes,omitempty"`
 	WatchList           *[]string               `json:"watchList,omitempty"`
+	// Environment: see CreateIncidentRequest.Environment doc comment.
+	Environment *string `json:"environment,omitempty"`
 }
 
 // UpdateIncidentResponse is the output for PATCH /incidents/{id}.
@@ -5326,6 +5328,7 @@ type IncidentView struct {
 	ContactType        *string                 `json:"contactType"`
 	Impact             *string                 `json:"impact"`
 	Urgency            *string                 `json:"urgency"`
+	Environment        *string                 `json:"environment"`
 	ChangeRequest      *EntityRef              `json:"changeRequest"`
 	Problem            *EntityRef              `json:"problem"`
 	CausedBy           *EntityRef              `json:"causedBy"`
