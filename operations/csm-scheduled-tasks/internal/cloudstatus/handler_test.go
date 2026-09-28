@@ -66,7 +66,7 @@ func (f *fakePoster) Post(_ context.Context, cloud, event, timestamp string) err
 // TestDeliverDue_PostsAndReports is the ordinary path.
 func TestDeliverDue_PostsAndReports(t *testing.T) {
 	client := &fakeDecisionClient{pending: []PendingWebhook{
-		{ID: "w1", Number: "OUT001", Cloud: "choreo", Event: "outage_begin", Timestamp: "2026-09-28T10:00:00Z"},
+		{ID: "w1", Number: "OUT001", Cloud: "choreo", Event: "OUTAGE_BEGIN", WireEvent: "outage_begin", Timestamp: "2026-09-28T10:00:00Z"},
 	}}
 	hook := &fakePoster{known: map[string]bool{"choreo": true}}
 
@@ -87,7 +87,7 @@ func TestDeliverDue_SweepFailureStillDelivers(t *testing.T) {
 	client := &fakeDecisionClient{
 		sweepErr: errors.New("database is unhappy"),
 		pending: []PendingWebhook{
-			{ID: "w1", Cloud: "asgardeo", Event: "outage_end", Timestamp: "2026-09-28T12:00:00Z"},
+			{ID: "w1", Cloud: "asgardeo", Event: "OUTAGE_END", WireEvent: "outage_end", Timestamp: "2026-09-28T12:00:00Z"},
 		},
 	}
 	hook := &fakePoster{known: map[string]bool{"asgardeo": true}}
@@ -111,8 +111,8 @@ func TestDeliverDue_SweepFailureStillDelivers(t *testing.T) {
 // ServiceNow, where one failing action abandoned the whole execution.
 func TestDeliverDue_OneDashboardDownDoesNotStopAnother(t *testing.T) {
 	client := &fakeDecisionClient{pending: []PendingWebhook{
-		{ID: "w1", Cloud: "asgardeo", Event: "outage_begin"},
-		{ID: "w2", Cloud: "choreo", Event: "outage_begin"},
+		{ID: "w1", Cloud: "asgardeo", Event: "OUTAGE_BEGIN", WireEvent: "outage_begin"},
+		{ID: "w2", Cloud: "choreo", Event: "OUTAGE_BEGIN", WireEvent: "outage_begin"},
 	}}
 	hook := &fakePoster{
 		known: map[string]bool{"asgardeo": true, "choreo": true},
@@ -145,7 +145,7 @@ func TestDeliverDue_OneDashboardDownDoesNotStopAnother(t *testing.T) {
 // this must produce a visible, attempt-counted failure instead.
 func TestDeliverDue_UnconfiguredCloudIsReportedNotSilentlySkipped(t *testing.T) {
 	client := &fakeDecisionClient{pending: []PendingWebhook{
-		{ID: "w1", Number: "OUT009", Cloud: "choreo-eu", Event: "outage_begin"},
+		{ID: "w1", Number: "OUT009", Cloud: "choreo-eu", Event: "OUTAGE_BEGIN", WireEvent: "outage_begin"},
 	}}
 	hook := &fakePoster{known: map[string]bool{"choreo": true}}
 
@@ -168,7 +168,7 @@ func TestDeliverDue_UnconfiguredCloudIsReportedNotSilentlySkipped(t *testing.T) 
 // race: a duplicate event is better than a lost one.
 func TestDeliverDue_DeliveredButUnreportedIsRetried(t *testing.T) {
 	client := &fakeDecisionClient{
-		pending:   []PendingWebhook{{ID: "w1", Cloud: "choreo", Event: "outage_begin"}},
+		pending:   []PendingWebhook{{ID: "w1", Cloud: "choreo", Event: "OUTAGE_BEGIN", WireEvent: "outage_begin"}},
 		reportErr: errors.New("entity-service unreachable"),
 	}
 	hook := &fakePoster{known: map[string]bool{"choreo": true}}
@@ -192,5 +192,48 @@ func TestDeliverDue_NothingPendingIsQuiet(t *testing.T) {
 	}
 	if len(hook.posts) != 0 || len(client.reports) != 0 {
 		t.Errorf("a quiet tick must do nothing")
+	}
+}
+
+// TestDeliverDue_PostsTheWireEventNotTheEnumName is the regression guard for a
+// bug a live cross-service run caught and every fixture-based test missed.
+//
+// entity-service names the transition OUTAGE_BEGIN; the dashboard expects
+// "outage_begin". The delivering task must post the second. It missed for a
+// while because the stubs here already held the lowercase form in Event, so
+// the absent translation looked like a working one.
+func TestDeliverDue_PostsTheWireEventNotTheEnumName(t *testing.T) {
+	client := &fakeDecisionClient{pending: []PendingWebhook{
+		{ID: "w1", Cloud: "choreo", Event: "OUTAGE_BEGIN", WireEvent: "outage_begin"},
+	}}
+	hook := &fakePoster{known: map[string]bool{"choreo": true}}
+
+	if err := DeliverDue(client, hook)(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(hook.posts) != 1 {
+		t.Fatalf("posts: %v", hook.posts)
+	}
+	// posts are recorded as "cloud|event|timestamp"
+	if got := hook.posts[0]; got != "choreo|outage_begin|" {
+		t.Errorf("posted %q, want the wire literal outage_begin, never the enum name", got)
+	}
+}
+
+// TestDeliverDue_MissingWireEventIsNotPosted guards the version-skew case: an
+// entity-service too old to send wireEvent must not cause an empty event to go
+// out, which a dashboard would accept and ignore.
+func TestDeliverDue_MissingWireEventIsNotPosted(t *testing.T) {
+	client := &fakeDecisionClient{pending: []PendingWebhook{
+		{ID: "w1", Cloud: "choreo", Event: "OUTAGE_BEGIN", WireEvent: ""},
+	}}
+	hook := &fakePoster{known: map[string]bool{"choreo": true}}
+
+	err := DeliverDue(client, hook)(context.Background())
+	if err == nil {
+		t.Fatal("a missing wire value must surface as an error")
+	}
+	if len(hook.posts) != 0 {
+		t.Errorf("nothing must be posted, got %v", hook.posts)
 	}
 }

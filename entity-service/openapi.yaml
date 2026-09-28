@@ -18567,6 +18567,17 @@ components:
         event:
           type: string
           enum: [OUTAGE_BEGIN, OUTAGE_END]
+          description: >-
+            This service's own name for the transition, for logs and for the
+            operator reading a failure. NOT what the webhook body carries --
+            see wireEvent.
+        wireEvent:
+          type: string
+          description: >-
+            The literal the webhook body must carry, e.g. "outage_begin". Kept
+            separate from event because the two are different contracts: event
+            belongs to this API, wireEvent belongs to the status dashboard and
+            cannot change without coordinating with it.
         cloud:
           type: string
           description: >-
@@ -18583,7 +18594,7 @@ components:
           type: integer
         lastError:
           type: string
-      required: [id, outageId, number, event, cloud, timestamp, attemptCount]
+      required: [id, outageId, number, event, wireEvent, cloud, timestamp, attemptCount]
     PendingCloudStatusWebhooks:
       type: object
       properties:

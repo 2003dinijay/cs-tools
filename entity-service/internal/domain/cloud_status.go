@@ -184,9 +184,28 @@ type PendingCloudStatusWebhook struct {
 	OutageID string `json:"outageId"`
 	// Number is carried for logging and for the operator reading a failure.
 	// It is not part of the webhook body.
-	Number string           `json:"number"`
-	Event  CloudStatusEvent `json:"event"`
-	Cloud  string           `json:"cloud"`
+	Number string `json:"number"`
+	// Event is this service's own name for the transition. It is carried for
+	// logs, for the operator reading a failure, and for the API contract --
+	// NOT for the wire. Sending it would put "OUTAGE_BEGIN" in the webhook
+	// where the dashboard expects "outage_begin".
+	Event CloudStatusEvent `json:"event"`
+
+	// WireEvent is the literal the webhook body must carry.
+	//
+	// It exists as its own field, rather than Event being translated in
+	// place, because the two are different contracts that happen to look
+	// alike: Event belongs to this API and may be renamed freely; WireEvent
+	// belongs to the status dashboard and may not be touched without
+	// coordinating with it. Collapsing them invites a rename here from
+	// silently changing what a third party receives.
+	//
+	// A live cross-service run is what caught this: the delivering task was
+	// posting the enum name because nothing translated it, and every test
+	// missed it because their fixtures already held the lowercase form.
+	WireEvent string `json:"wireEvent"`
+
+	Cloud string `json:"cloud"`
 	// Timestamp is the outage's own begin or end instant -- whichever this
 	// event is about -- not the moment of sending.
 	//

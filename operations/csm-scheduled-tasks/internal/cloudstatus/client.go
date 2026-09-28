@@ -126,10 +126,16 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 
 // PendingWebhook is one webhook entity-service says is still owed.
 type PendingWebhook struct {
-	ID           string `json:"id"`
-	OutageID     string `json:"outageId"`
-	Number       string `json:"number"`
-	Event        string `json:"event"`
+	ID       string `json:"id"`
+	OutageID string `json:"outageId"`
+	Number   string `json:"number"`
+	// Event is entity-service's own name for the transition, for logging.
+	// It is NOT what goes on the wire -- see WireEvent.
+	Event string `json:"event"`
+	// WireEvent is the literal the dashboard expects in the body. Posting
+	// Event instead sends "OUTAGE_BEGIN" where "outage_begin" is required,
+	// which a dashboard accepts with a 200 and then ignores.
+	WireEvent    string `json:"wireEvent"`
 	Cloud        string `json:"cloud"`
 	Timestamp    string `json:"timestamp"`
 	AttemptCount int    `json:"attemptCount"`

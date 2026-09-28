@@ -90,6 +90,16 @@ func DeliverDue(client decisionClient, hook poster) func(ctx context.Context) er
 		}
 
 		for _, w := range pending {
+			if w.WireEvent == "" {
+				// entity-service withholds the wire value when it cannot map
+				// the event, so an empty one here means a version skew
+				// between the two services rather than bad data. Posting an
+				// empty event would be accepted and silently ignored.
+				msg := "entity-service sent no wire value for event " + w.Event
+				slog.ErrorContext(ctx, "cloudstatus: "+msg, "webhookId", w.ID)
+				errs = append(errs, fmt.Errorf("webhook %s: %s", w.ID, msg))
+				continue
+			}
 			if !hook.Knows(w.Cloud) {
 				// A recorded event for a dashboard this deployment has no URL
 				// for. Reported as a failed attempt rather than skipped, so it
@@ -104,7 +114,7 @@ func DeliverDue(client decisionClient, hook poster) func(ctx context.Context) er
 				continue
 			}
 
-			postErr := hook.Post(ctx, w.Cloud, w.Event, w.Timestamp)
+			postErr := hook.Post(ctx, w.Cloud, w.WireEvent, w.Timestamp)
 			if postErr != nil {
 				slog.WarnContext(ctx, "cloudstatus: webhook post failed",
 					"webhookId", w.ID, "number", w.Number, "cloud", w.Cloud,

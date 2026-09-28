@@ -216,7 +216,17 @@ func (s *cloudStatusService) PendingWebhooks(ctx context.Context) (domain.Pendin
 				"webhookId", w.ID, "cloudOffering", w.Cloud)
 			continue
 		}
+		wire := w.Event.WireValue()
+		if wire == "" {
+			// An event this build cannot put on the wire. Same reasoning as
+			// the unmappable cloud above: better to hold it back visibly than
+			// to post a literal the dashboard will not recognise.
+			slog.ErrorContext(ctx, "pending cloud status webhook has no wire value for its event; not dispatching",
+				"webhookId", w.ID, "event", string(w.Event))
+			continue
+		}
 		w.Cloud = slug
+		w.WireEvent = wire
 		out = append(out, w)
 	}
 	return domain.PendingCloudStatusWebhooksResponse{Count: len(out), Webhooks: out}, nil
