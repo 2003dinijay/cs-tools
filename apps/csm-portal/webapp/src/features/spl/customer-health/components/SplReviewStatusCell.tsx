@@ -80,8 +80,14 @@ export default function SplReviewStatusCell({
   const openRisk = healthStatus?.openRisk ?? null;
   const hasOpenItems = (openRisk?.actionItems ?? []).some((item) => item.status === "open" || item.status === "in_progress");
 
+  // Blocks the one input value that would make this risk indistinguishable
+  // from a healthy review in the history view below (see
+  // HEALTHY_REVIEW_COMMENT) -- an exact, case-sensitive match, since that's
+  // the same comparison the history view itself uses.
+  const atRiskCommentReserved = atRiskComment.trim() === HEALTHY_REVIEW_COMMENT;
+
   const handleMarkAtRisk = async () => {
-    if (!atRiskComment.trim()) return;
+    if (!atRiskComment.trim() || atRiskCommentReserved) return;
     try {
       await openRiskMutation.mutateAsync({ projectSysId: project.sysId, accountSysId, comment: atRiskComment });
       showSuccess(`${project.name} marked as at risk.`);
@@ -248,11 +254,22 @@ export default function SplReviewStatusCell({
       <Dialog open={markAtRiskOpen} onClose={() => setMarkAtRiskOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Mark {project.name} as At Risk</DialogTitle>
         <DialogContent>
-          <TextField fullWidth required multiline rows={4} placeholder="Add reason for marking at risk..." value={atRiskComment} onChange={(e) => setAtRiskComment(e.target.value)} sx={{ mt: 1 }} />
+          <TextField
+            fullWidth
+            required
+            multiline
+            rows={4}
+            placeholder="Add reason for marking at risk..."
+            value={atRiskComment}
+            onChange={(e) => setAtRiskComment(e.target.value)}
+            error={atRiskCommentReserved}
+            helperText={atRiskCommentReserved ? "This exact reason is reserved for healthy reviews -- please rephrase." : " "}
+            sx={{ mt: 1 }}
+          />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => { setMarkAtRiskOpen(false); setAtRiskComment(""); }}>Cancel</Button>
-          <Button onClick={handleMarkAtRisk} disabled={!atRiskComment.trim()} sx={{ color: "warning.main" }}>Confirm</Button>
+          <Button onClick={handleMarkAtRisk} disabled={!atRiskComment.trim() || atRiskCommentReserved} sx={{ color: "warning.main" }}>Confirm</Button>
         </DialogActions>
       </Dialog>
 
