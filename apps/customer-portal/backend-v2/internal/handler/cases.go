@@ -45,6 +45,7 @@ type entityCaseClient interface {
 	SearchEscalations(ctx context.Context, req entity.SearchEscalationsRequest) (entity.SearchEscalationsResponse, error)
 	SearchAttachments(ctx context.Context, req entity.SearchAttachmentsRequest) (entity.SearchAttachmentsResponse, error)
 	CreateAttachment(ctx context.Context, req entity.CreateAttachmentRequest) (entity.CreateAttachmentResponse, error)
+	SearchUsers(ctx context.Context, req entity.SearchUsersRequest) (entity.SearchUsersResponse, error)
 }
 
 // CaseHandler handles HTTP requests for case operations.
@@ -55,6 +56,49 @@ type CaseHandler struct {
 // NewCaseHandler creates a CaseHandler backed by the given entity client.
 func NewCaseHandler(entity entityCaseClient) *CaseHandler {
 	return &CaseHandler{entity: entity}
+}
+
+// resolveWatchListUserIDs translates a caller-supplied watch list — email
+// addresses, picked from the project-contact onboarding service (a Salesforce-backed
+// identity space, not entity-service's own) — into entity-service's own "user"
+// table ids, which is what CreateCase/UpdateCase's own WatchList field actually
+// requires (validated there as UUIDs). Without this, every watch-list write was
+// rejected outright with "watchList contains invalid UUID: <email>".
+//
+// A contact whose email doesn't resolve to any entity-service user (not yet a
+// registered platform user — a real, valid state for a project contact) is
+// dropped from the result rather than failing the whole request; logged so the
+// gap is visible without blocking every other watcher the caller did intend to
+// keep.
+func (h *CaseHandler) resolveWatchListUserIDs(ctx context.Context, emails []string) []string {
+	if len(emails) == 0 {
+		return nil
+	}
+
+	resp, err := h.entity.SearchUsers(ctx, entity.SearchUsersRequest{
+		Pagination: entity.Pagination{Limit: len(emails), Offset: 0},
+		Filters:    entity.SearchUsersFilters{Emails: emails},
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "entity SearchUsers failed while resolving watch-list emails", "err", summarizeErr(err))
+		return nil
+	}
+
+	byEmail := make(map[string]string, len(resp.Users))
+	for _, u := range resp.Users {
+		byEmail[strings.ToLower(u.Email)] = u.ID
+	}
+
+	ids := make([]string, 0, len(emails))
+	for _, email := range emails {
+		id, ok := byEmail[strings.ToLower(email)]
+		if !ok {
+			slog.WarnContext(ctx, "watch-list email did not resolve to a platform user, dropping from watch list", "email", email)
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // SearchCases handles POST /projects/{id}/cases/search.
@@ -263,6 +307,9 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 	// request body (the struct's json:"-" tag means a client-supplied value
 	// would be silently dropped anyway, but set it explicitly for clarity).
 	entityReq.CreatedBy = user.Email
+	// req.WatchList carries project-contact emails, not entity-service user
+	// ids — resolve before forwarding (see resolveWatchListUserIDs).
+	entityReq.WatchList = h.resolveWatchListUserIDs(r.Context(), req.WatchList)
 
 	result, err := h.entity.CreateCase(r.Context(), entityReq)
 	if err != nil {
@@ -322,6 +369,14 @@ func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 	if primaryFieldsSet != 1 {
 		writeError(w, http.StatusBadRequest, "Exactly one of stateKey or watchList must be provided.")
 		return
+	}
+
+	// req.WatchList carries project-contact emails, not entity-service user
+	// ids — resolve before forwarding (see resolveWatchListUserIDs). Only
+	// meaningful when WatchList is actually the field being set (StateKey is
+	// the other, mutually exclusive branch validated above).
+	if len(req.WatchList) > 0 {
+		req.WatchList = h.resolveWatchListUserIDs(r.Context(), req.WatchList)
 	}
 
 	result, err := h.entity.UpdateCase(r.Context(), id, dto.BuildEntityUpdateCaseRequest(id, req))
@@ -610,4 +665,3 @@ func isProjectSuspended(project entity.ProjectDetailsView) bool {
 	return project.ClosureState != nil &&
 		strings.EqualFold(strings.TrimSpace(*project.ClosureState), "suspended")
 }
-

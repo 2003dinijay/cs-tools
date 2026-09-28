@@ -48,6 +48,33 @@ type GetUserMeResponse struct {
 	Roles     []string `json:"roles"`
 }
 
+// SearchUsersFilters mirrors entity-service's own filter struct field-for-field,
+// but this backend only ever sets Emails — used to resolve a set of watch-list
+// email addresses (from the project-contact onboarding service, a different
+// identity space) to entity-service's own "user" table ids before they're
+// forwarded to CreateCase/UpdateCase, which require real UUIDs.
+type SearchUsersFilters struct {
+	Emails []string `json:"emails,omitempty"`
+}
+
+// SearchUsersRequest is the request body for POST /users/search.
+type SearchUsersRequest struct {
+	Pagination Pagination         `json:"pagination"`
+	Filters    SearchUsersFilters `json:"filters"`
+}
+
+// UserSummary is the subset of entity-service's user search result this
+// backend actually needs (id + email, for the watch-list resolution above).
+type UserSummary struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+}
+
+// SearchUsersResponse is entity-service's paginated response for POST /users/search.
+type SearchUsersResponse struct {
+	Users []UserSummary `json:"users"`
+}
+
 // PatchUserMeRequest is the request body for PATCH /users/me.
 type PatchUserMeRequest struct {
 	TimeZone string `json:"timeZone"`
