@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/github"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/handler"
@@ -260,6 +261,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			Accounts: accountRepo,
 			States:   repository.NewSalesforceIngestStateRepository(db),
 		}
+		// The Opportunity branch (sf_opportunity + derived line items) is
+		// attached to whichever service variant is built below; off, the
+		// envelopes are acknowledged and ignored.
+		withOpportunityIngest := func(svc service.SalesforceEventService) service.SalesforceEventService {
+			if !cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+				return svc
+			}
+			return service.WithOpportunityIngest(svc, service.OpportunityIngest{
+				Opportunities: repository.NewSalesforceOpportunityRepository(db),
+				SalesEntity:   salesEntityClient,
+			})
+		}
 		if cfg.CSMMigrationSalesforceMembershipIngestEnabled {
 			// The membership branch (Project_Contact__c / Contact envelopes)
 			// writes user/account_contact/project_contact rows and the
@@ -273,6 +286,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 					SalesEntity: salesEntityClient,
 					Publisher:   projectEventPublisher,
 				})
+			membershipIngestSvc = withOpportunityIngest(membershipIngestSvc)
 			salesforceEventHandler = handler.NewSalesforceEventHandler(membershipIngestSvc)
 
 			// The delayed-retry job re-runs memberships whose project or
@@ -287,11 +301,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 					panic("salesforce: membership ingest service does not implement MembershipReingester")
 				}
 				retryWorker := service.NewSalesforceIngestRetryWorker(stepRepo, retrier, ingestSupport.States, cfg.SalesforceIngestRetryInterval)
+				if opp, ok := membershipIngestSvc.(service.OpportunityReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityOpportunity] = opp.RetryOpportunityIngest
+				}
 				go retryWorker.Run(ingestRetryCtx)
 				log.Printf("salesforce ingest retry worker enabled (every %s)", cfg.SalesforceIngestRetryInterval)
 			}
 		} else {
-			salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient, ingestSupport))
+			salesforceEventHandler = handler.NewSalesforceEventHandler(withOpportunityIngest(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient, ingestSupport)))
 		}
 	}
 

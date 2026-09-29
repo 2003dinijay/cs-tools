@@ -541,6 +541,7 @@ const (
 	SalesforceEntityProjectContact    = "Project_Contact__c"
 	SalesforceEntityProjectContactAlt = "Project_Contact"
 	SalesforceEntityContact           = "Contact"
+	SalesforceEntityOpportunity       = "Opportunity"
 	SalesforceSyncActor               = "salesforce-sync"
 	// PortalMembershipWriteActor is created_by/updated_by for a membership
 	// written by a portal rather than by the Salesforce ingest, so the two
@@ -954,6 +955,10 @@ const (
 // of the Account family. Each family that records into the ledger adds its
 // own constant here, named after the CSM table it writes.
 const SalesforceIngestEntityAccount = "account"
+
+// SalesforceIngestEntityOpportunity is the salesforce_ingest_state.entity
+// value of the Opportunity family (table sf_opportunity).
+const SalesforceIngestEntityOpportunity = "opportunity"
 
 // SalesforceIngestState is one row of salesforce_ingest_state — see migration
 // 0169 for the column semantics. It is the ledger the duplicate guard reads
