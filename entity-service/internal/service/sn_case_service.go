@@ -3415,8 +3415,26 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 // traffic. At most one of state/severity/workState/markFixIssued is expected
 // non-nil at a time -- this method does not enforce that itself, the caller
 // already has.
-func (s *snCaseService) patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool) (domain.UpdatedCase, error) {
+func (s *snCaseService) patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields) (domain.UpdatedCase, error) {
 	payload := snUpdateCasePayload{}
+	if resolution != nil {
+		if resolution.Code != nil {
+			key, ok := snResolutionCodeKey[*resolution.Code]
+			if !ok {
+				return domain.UpdatedCase{}, &apierror.ValidationError{Msg: "resolutionCode contains invalid value: " + string(*resolution.Code)}
+			}
+			payload.ResolutionCode = &key
+		}
+		if resolution.Cause != nil {
+			key, ok := snCauseKey[*resolution.Cause]
+			if !ok {
+				return domain.UpdatedCase{}, &apierror.ValidationError{Msg: "cause contains invalid value: " + string(*resolution.Cause)}
+			}
+			val := strconv.Itoa(key)
+			payload.Cause = &val
+		}
+		payload.CloseNotes = resolution.CloseNotes
+	}
 	if state != nil {
 		if !validCaseState[*state] {
 			return domain.UpdatedCase{}, &apierror.ValidationError{Msg: "state contains invalid value: " + string(*state)}

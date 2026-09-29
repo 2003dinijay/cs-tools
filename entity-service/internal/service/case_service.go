@@ -70,6 +70,14 @@ type caseService struct {
 	snMirror    CaseService
 }
 
+// caseResolutionFields carries the resolution data that accompanies a
+// closed/solution_proposed transition to the ServiceNow mirror.
+type caseResolutionFields struct {
+	Code       *domain.CaseResolutionCode
+	Cause      *domain.CaseCause
+	CloseNotes *string
+}
+
 // snFieldPatcher is implemented by *snCaseService (see patchCaseFields's own
 // doc comment). A narrow interface — rather than adding patchCaseFields to
 // the full CaseService interface, which every implementer (including the
@@ -77,7 +85,7 @@ type caseService struct {
 // named exactly for what UpdateCase's mirror needs: a bare PATCH with none of
 // snCaseService.UpdateCase's own read-before-write behavior.
 type snFieldPatcher interface {
-	patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool) (domain.UpdatedCase, error)
+	patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields) (domain.UpdatedCase, error)
 }
 
 // snCommentMirror is implemented by *snCaseService (see
@@ -938,6 +946,16 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are only allowed when state is closed or solution_proposed"}
 		}
 	}
+	// Dual-write only: closed / solution_proposed require all three
+	// resolution fields. The mirrored data source enforces this too;
+	// enforcing it here keeps the stores from diverging (a Postgres-only
+	// close with no resolution data can never be mirrored). Plain Postgres
+	// mode keeps its current, looser behaviour.
+	if s.snWriteback != nil && req.State != nil && (*req.State == domain.CaseStateClosed || *req.State == domain.CaseStateSolutionProposed) {
+		if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
+		}
+	}
 
 	if req.WatchList != nil {
 		return s.updateCaseWatchList(ctx, req)
@@ -1095,10 +1113,20 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			switch {
 			case req.State != nil:
 				state := *req.State
+				// closed/solution_proposed must carry resolutionCode, cause
+				// and closeNotes to the mirror: the downstream data source
+				// rejects the transition without all three. Postgres has
+				// already stored them above.
+				var resolution *caseResolutionFields
+				payload := map[string]any{"id": req.ID, "state": state}
+				if req.ResolutionCode != nil || req.Cause != nil || req.CloseNotes != nil {
+					resolution = &caseResolutionFields{Code: req.ResolutionCode, Cause: req.Cause, CloseNotes: req.CloseNotes}
+					payload["resolutionCode"], payload["cause"], payload["closeNotes"] = req.ResolutionCode, req.Cause, req.CloseNotes
+				}
 				s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
-					map[string]any{"id": req.ID, "state": state},
+					payload,
 					func(writeCtx context.Context) error {
-						_, err := patcher.patchCaseFields(writeCtx, req.ID, &state, nil, nil, nil)
+						_, err := patcher.patchCaseFields(writeCtx, req.ID, &state, nil, nil, nil, resolution)
 						return err
 					},
 				)
@@ -1107,7 +1135,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 				s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
 					map[string]any{"id": req.ID, "severity": severity},
 					func(writeCtx context.Context) error {
-						_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, &severity, nil, nil)
+						_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, &severity, nil, nil, nil)
 						return err
 					},
 				)
@@ -1116,7 +1144,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 				s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
 					map[string]any{"id": req.ID, "workState": workState},
 					func(writeCtx context.Context) error {
-						_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, nil, &workState, nil)
+						_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, nil, &workState, nil, nil)
 						return err
 					},
 				)
@@ -1463,7 +1491,7 @@ func (s *caseService) updateCaseMarkFixIssued(ctx context.Context, req domain.Up
 			s.snWriteback.Dispatch(ctx, "case", req.ID, "update",
 				map[string]any{"id": req.ID, "markFixIssued": true},
 				func(writeCtx context.Context) error {
-					_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, nil, nil, &markFixIssued)
+					_, err := patcher.patchCaseFields(writeCtx, req.ID, nil, nil, nil, &markFixIssued, nil)
 					return err
 				},
 			)
