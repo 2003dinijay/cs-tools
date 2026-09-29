@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -170,5 +172,22 @@ func TestRegistry_OpenObserveKeepsOnlyCanonicalFields(t *testing.T) {
 	if a.UniqueIdentifier != "9f3a7c2e-4b1d-4e8a-9c3f-2b8d5e6f1a9c" || a.Source != "OpenObserve" ||
 		a.Description != "p99 latency has been above 2000ms for 5 minutes\n\nRaw payload: "+compactFile(t, "openobserve", "firing") {
 		t.Errorf("alert = %+v", a)
+	}
+}
+
+// TestComponentYAMLHasAnEndpointPerVendor keeps .choreo/component.yaml in step with the
+// registry: every vendor needs its own Choreo endpoint, and every endpoint a vendor.
+func TestComponentYAMLHasAnEndpointPerVendor(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".choreo", "component.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, m := range regexp.MustCompile(`basePath: /api/wso2/v1/sre_alert_api/(\S+)`).FindAllStringSubmatch(string(raw), -1) {
+		paths = append(paths, m[1])
+	}
+	slices.Sort(paths)
+	if names := newTestRegistry(t).Names(); !slices.Equal(paths, names) {
+		t.Errorf("component.yaml vendor endpoints = %v, registry = %v", paths, names)
 	}
 }
