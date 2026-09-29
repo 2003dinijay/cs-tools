@@ -103,6 +103,31 @@ describe("replaceInlineImageSrcs", () => {
     const html = '<img src="https://example.com/logo.png">';
     expect(replaceInlineImageSrcs(html, new Map(), undefined, true)).toBe(html);
   });
+
+  // Regression test: a regex-based "scan for src=" grammar can be fooled by
+  // src-shaped text inside a DIFFERENT attribute (e.g. alt) that appears
+  // earlier in the tag than the real src -- it would treat the alt text as
+  // the image's src, leaving the real src (and its real base64 payload)
+  // completely unexamined. DOMParser-based parsing (see parseImgElements's
+  // own doc comment) can't be confused this way: img.getAttribute("src") can
+  // only ever return the actual src attribute.
+  it("is not fooled by src-shaped text inside a different attribute (e.g. alt)", () => {
+    const html = `<img alt='look at this src="data:image/png;base64,DECOY"' src="data:image/png;base64,REALSECRET">`;
+    const out = replaceInlineImageSrcs(html, new Map(), undefined, true);
+    expect(out).not.toContain("REALSECRET");
+    expect(out).not.toContain("DECOY");
+    expect(out).not.toContain("<img");
+    expect(out).toContain('data-unresolved-reason="permission"');
+  });
+
+  it("the same alt-confusion input still resolves correctly for a .iix reference", () => {
+    const html = `<img alt='src="${SYSID}.iix"' src="${SYSID}.iix">`;
+    const out = replaceInlineImageSrcs(
+      html,
+      new Map([[SYSID, "data:image/png;base64,REAL"]]),
+    );
+    expect(out).toContain('src="data:image/png;base64,REAL"');
+  });
 });
 
 describe("isRawBase64ImageSrc", () => {
@@ -132,6 +157,12 @@ describe("extractIixAttachmentIds / extractInlineImageRefId", () => {
     expect(
       extractIixAttachmentIds('<img src="https://example.com/logo.png">'),
     ).toEqual([]);
+  });
+
+  it("extracts the real src's id even when a different attribute contains src-shaped text first", () => {
+    const other = "fedcba9876543210fedcba9876543210";
+    const html = `<img alt='src="${other}.iix"' src="${SYSID}.iix">`;
+    expect(extractIixAttachmentIds(html)).toEqual([SYSID]);
   });
 });
 
