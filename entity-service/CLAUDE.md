@@ -1261,21 +1261,89 @@ source, since nothing in this schema resolved a case to a team before this).
 `csm-notification-service`'s own SLA breach-alert Chat-audience routing** —
 the same team/onboarding/evaluation facts that service's own
 `internal/chataudience.Resolve` uses to route its Chat alerts, per explicit
-product direction: only
-SLA breach and (eventually) a customer-frustration-detector alert route by
-team/audience this way — every other Chat-sending event type
-(`case.created`/`case.acknowledged`/`case.severity_changed`/
-`incident.created`) routes by product, to a single configured default
-space. `ProjectOnboardingStatus` is `project.onboarding_status`'s raw enum
-label (e.g. `"IN_PROGRESS"`), `""` when the work item has no project or
-the column is unset. `IsEvaluationAccount` is true when the project's
-`project_type` matches the fixed `evaluationSubscriptionProjectTypeName`
-("Evaluation Subscription", matched by name — see that constant's own doc
-comment for why not a hardcoded id). Both are resolved via `LEFT JOIN`s
-added to `activeSLAStatusFromJoins` (`account`/`"group"` for `team`,
+product direction: only SLA breach and (eventually) a
+customer-frustration-detector alert route by real per-team/audience
+resolution this way — `case.created`/`case.acknowledged`/
+`case.severity_changed` all route to a single fixed
+`chataudience.IncidentMonitor` audience instead, with no team detection at
+all, and `incident.created` has no Chat reaction. `ProjectOnboardingStatus`
+is `project.onboarding_status`'s raw enum label (e.g. `"IN_PROGRESS"`), `""`
+when the work item has no project or the column is unset.
+`IsEvaluationAccount` is true when the project's `project_type` matches the
+fixed `evaluationSubscriptionProjectTypeName` ("Evaluation Subscription",
+matched by name — see that constant's own doc comment for why not a
+hardcoded id). Both are resolved via `LEFT JOIN`s added to
+`activeSLAStatusFromJoins` (`account`/`"group"` for `team`,
 `project`/`project_type` for the other two) — best-effort display/routing
 enrichment, not part of the SLA clock itself; a work item with no
 project/account simply reports the zero value for each.
+
+## CSM-native SLA clock engine
+
+`internal/service/sla_engine_service.go` (`SLAEngineService`) is what actually
+keeps the `sla` table populated for a case-like work item this deployment
+creates itself — real, durable `source='CSM'` rows, not a value ServiceNow's
+own sync computes. This exists specifically for the dual-write pilot (and,
+in principle, any future pure-Postgres mode): a case created there has no
+ServiceNow-synced `sla` row of its own to read `GET /sla-status` from, so
+without this engine it would simply never get SLA tracking at all,
+regardless of severity.
+
+- **Durations come from the real, ServiceNow-synced `sla_policy` table**
+  (`internal/service/sla_policy_resolver.go`), not a hardcoded map — the
+  now-deleted `sla_clocks` design's old approach (see "SLA status" above for
+  that history). `resolve` looks up `"<P0-P3|Query> - <Response|Workaround|
+  Resolution> (<Managed Services|Open Source>)"` by exact name, falling back
+  to the other plan label, then a loose pattern match — see its own doc
+  comment for why (in short: `resolveCasePlan`'s plan guess is a weak
+  heuristic with no reliable underlying signal, and P0 policies only exist
+  under "Managed Services" in ServiceNow's own real data, so a P0 case whose
+  plan guesses "Open Source" must still find them). **P0 (Catastrophic) had
+  no ServiceNow-synced policy at all** — migration `0136_csm_p0_sla_policies.sql`
+  seeds it directly, `source='CSM'`, durations mirroring the old deleted
+  `sla_clocks` map's own P0 entries and WSO2's published [support
+  policy](https://wso2.com/licenses/support-policy/6.0): Response 15m,
+  Workaround 4h, Resolution 48h.
+- **`internal/repository/sla_engine_repo.go`'s `RecomputeActive`** is what
+  actually advances `business_elapsed_percentage` for these rows over time —
+  flat wall-clock time since `start_on` (`(NOW() - start_on) / duration *
+  100`), no business-hours calendar, same crudeness the old deleted design
+  had. Run by `SLAEngineRecomputeWorker` (`sla_engine_recompute_worker.go`)
+  on its own ticker, default 45s — frequent enough that a 50/75/100%
+  crossing is visible well within `csm-notification-service`'s own
+  `SLA_TICK_INTERVAL` poll cadence.
+- **`RegisterCaseClocks`/`ReviseCaseClocks`/`CompleteResponseClock`/
+  `ApplyCaseStateEffects`** are all called directly, in-process, from
+  `snCaseService`'s own case-lifecycle hooks (create/severity-change/
+  qualifying-comment/state-change) — best-effort, same "must never fail the
+  actual mutation" reasoning `publishCaseCreatedEvent` follows.
+- **A real, fixed bug: SLA clock registration must run only after this
+  case's Postgres `work_item` row actually exists.** `sla.work_item_id` has
+  a hard, non-deferrable foreign key on `work_item(id)` (migration `0048`).
+  `snCaseService.CreateCase` calls `registerCaseSLAClocks` right after its
+  own ServiceNow POST succeeds — fine for plain `DATA_SOURCE=servicenow`,
+  since that path has no Postgres insert of its own to wait for at all. But
+  in dual-write mode, `caseService.createCaseSNFirst` reaches
+  `snCaseService.CreateCase` *as its mirror*, calling it **before**
+  `caseService`'s own `CreateCaseFromServiceNow` insert — so every
+  dual-write case creation tried to insert an `sla` row referencing a
+  `work_item_id` that didn't exist yet, failing with a foreign-key violation
+  (`SQLSTATE 23503`), logged (`"sla engine: register clock failed"`) and
+  silently dropped (best-effort, never retried, never surfaced) — meaning no
+  SLA breach alert ever fired for any dual-write-created case. Fixed the
+  same way this exact problem was already solved for the `case.created`
+  publish (see `publishCaseCreatedEvent`'s own doc comment): `routes.go`
+  constructs `snCaseMirrorSvc` with a **nil `slaEngine`**, so its own
+  embedded registration call is a no-op when reached via the mirror path
+  (mirroring its existing nil `publisher`), and `caseService` registers the
+  clocks itself — `registerCaseSLAClocksEvent` (`sn_case_service.go`,
+  factored out the same way `publishCaseCreatedEvent` was) — right after its
+  own insert succeeds. Any future change that gives `snCaseMirrorSvc` a
+  non-nil `slaEngine` again, or that adds another consumer of
+  `snCaseService.CreateCase` as a mirror/pass-through, needs the same
+  "does the referenced Postgres row exist yet at this call site"
+  check — see `TestCaseService_CreateCase_RegistersSLAClocksOnlyAfterPostgresSucceeds`
+  for the regression test.
 
 ## Customer-reply state transition
 

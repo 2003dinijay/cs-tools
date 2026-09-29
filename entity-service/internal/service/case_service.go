@@ -68,6 +68,13 @@ type caseService struct {
 	//     is SN-first while update/comment are Postgres-first.
 	snWriteback *SNWritebackDispatcher
 	snMirror    CaseService
+	// slaEngine registers CSM-native SLA clocks for createCaseSNFirst's own
+	// dual-write path — see registerCaseSLAClocksEvent's own doc comment for
+	// why this must run here (after this service's own Postgres insert)
+	// rather than inside snMirror's automatic registration. nil in every
+	// other mode (plain caseService never creates a case of its own that
+	// needs this — see NewCaseService).
+	slaEngine SLAEngineService
 }
 
 // caseResolutionFields carries the resolution data that accompanies a
@@ -160,12 +167,13 @@ func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepo
 // whose CreateCase/UpdateCase perform the real ServiceNow POST/PATCH. It is
 // never made the active CaseService here — reads always stay on Postgres in
 // this mode.
-func NewCaseServiceWithSNWriteback(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService, projectContactRepo repository.ProjectContactRepository, dispatcher *SNWritebackDispatcher, mirror CaseService) CaseService {
+func NewCaseServiceWithSNWriteback(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService, projectContactRepo repository.ProjectContactRepository, dispatcher *SNWritebackDispatcher, mirror CaseService, slaEngine SLAEngineService) CaseService {
 	return &caseService{
 		repo: repo, userRepo: userRepo, publisher: publisher, access: access,
 		projectContactRepo: projectContactRepo,
 		snWriteback:        dispatcher,
 		snMirror:           mirror,
+		slaEngine:          slaEngine,
 	}
 }
 
@@ -604,6 +612,22 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	// Postgres insert was even attempted) — same reasoning
 	// incidentService.createIncidentSNFirst already established.
 	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, req, c.ID)
+
+	// Same reasoning as the publish call above, for the exact same "not
+	// safe before this Postgres insert" reason: registerCaseSLAClocksEvent
+	// inserts into "sla", whose work_item_id has a hard foreign key against
+	// work_item(id) (migration 0048) — calling it any earlier (e.g. via
+	// snCaseMirrorSvc's own automatic registration right after the
+	// ServiceNow POST, which routes.go now disables by passing it a nil
+	// slaEngine) fails with a foreign-key violation every time, since this
+	// mode's own Postgres work_item row doesn't exist until the insert
+	// above succeeds. A real, live-observed bug this fixed: every dual-write
+	// case creation failed clock registration with SQLSTATE 23503, silently
+	// (best-effort, logged only) — see registerCaseSLAClocksEvent's own doc
+	// comment.
+	if req.Type == "case" {
+		registerCaseSLAClocksEvent(ctx, s.slaEngine, s.GetCaseByID, c.ID)
+	}
 
 	responseState := ""
 	if c.State != nil {
