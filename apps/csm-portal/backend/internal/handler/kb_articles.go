@@ -102,7 +102,9 @@ func (h *KBArticleHandler) CreateKBArticle(w http.ResponseWriter, r *http.Reques
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	// nil check as well as err: json.Valid accepts a bare "null", which
+	// unmarshals into a nil map without error -- writing to that panics.
+	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}
@@ -504,7 +506,9 @@ func (h *KBArticleHandler) PatchKBArticleContent(w http.ResponseWriter, r *http.
 	}
 
 	var contentPayload map[string]any
-	if err := json.Unmarshal(body, &contentPayload); err != nil {
+	// Same nil guard as CreateKBArticle: a bare "null" body unmarshals
+	// into a nil map without error, and writing to it panics.
+	if err := json.Unmarshal(body, &contentPayload); err != nil || contentPayload == nil {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}

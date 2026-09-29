@@ -650,6 +650,8 @@ export default function App(): JSX.Element {
                     <Route path="my-articles/:id/history" element={<CsmKBArticleHistoryDetailPage />} />
                     <Route path="to-review" element={<CsmKBReviewQueuePage />} />
                     <Route path="admin" element={<CsmKBAdminPage />} />
+                  </Route>
+
                   {/* Support Portal Lite — ported from the former standalone
                       apps/support-portal-lite/webapp. SplRouteGuard is the
                       real enforcement point (an audience-gate 403, not just
@@ -707,7 +709,6 @@ export default function App(): JSX.Element {
                     />
                   </Route>
                 </Route>
-              </Route>
 
               <Route
                 path="*"
