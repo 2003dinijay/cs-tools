@@ -23,7 +23,7 @@ export interface SlaReportParams {
   from: string;
   to: string;
   /** Query stays disabled until this flips true (the source app's own
-   * form-first / report-after-submit flow — see SplSlaReportPage). */
+   * form-first / report-after-submit flow — see SlaReportPage). */
   enabled: boolean;
 }
 

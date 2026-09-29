@@ -17,11 +17,11 @@
 import { useQuery, useMutation, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useBackendApi } from "@api/backend/client";
 import { BackendApiError } from "@api/backend/client";
-import type { AccountDetail, ProjectHealthStatus } from "./splCustomerHealthTypes";
+import type { AccountDetail, ProjectHealthStatus } from "./customerHealthTypes";
 
 // GET /customer-health/accounts/{accountId} — 404 (not the old
 // Ballerina backend's 500) on an unknown account. See
-// SplCustomerHealthDetailTable's own 404-check for why this matters.
+// CustomerHealthDetailTable's own 404-check for why this matters.
 export function useAccountHealthDetail(
   accountId: string | undefined,
 ): UseQueryResult<AccountDetail | null, Error> {
@@ -54,7 +54,7 @@ export function useAccountHealthStatus(
 
 // POST /customer-health/accounts/{accountSysId}/init-health-tracking —
 // idempotent (existing rows untouched), fired once the project list is
-// known. Confirmed against the Go handler (spl_customer_health.go's
+// known. Confirmed against the Go handler (customer_health.go's
 // InitHealthTracking): returns 202 Accepted with NO body at all — plain
 // `backendApi.post()` would throw trying to `.json()` an empty response, so
 // this calls `.post<..., unknown>()` and treats a JSON-parse failure on an
