@@ -162,33 +162,85 @@ func (c *postgresSplReportsClient) resolveProjectByNumber(ctx context.Context, p
 	return detail, nil
 }
 
-// GetTimeLogBreakdown implements splReportsClient. Caps at entity-service's
-// own hard limit of 50 cases (and 50 time cards per case) — confirmed
-// against a real running instance ("limit cannot exceed 50"). A project
-// with more cases than that will show a truncated breakdown rather than the
-// full history; ServiceNow's own version has no such cap. A documented
-// limitation, not a silent bug.
+// entitySearchPageLimit is entity-service's own hard cap on Pagination.Limit
+// per request ("limit cannot exceed 50", confirmed against a real running
+// instance) -- searchAllCases/searchAllTimeCards page through Total using
+// this as the page size, rather than reading a single page and stopping.
+const entitySearchPageLimit = 50
+
+// searchAllCases pages through entity-service's SearchCases using body as
+// the template request (its Pagination field is overwritten each page),
+// returning every case rather than just the first entitySearchPageLimit.
+func (c *postgresSplReportsClient) searchAllCases(ctx context.Context, filters entitySearchCasesFilters, sortBy entityCaseSort) ([]entitySearchCaseView, error) {
+	var all []entitySearchCaseView
+	for offset := 0; ; offset += entitySearchPageLimit {
+		body, err := json.Marshal(entitySearchCasesRequest{
+			Filters:    filters,
+			SortBy:     sortBy,
+			Pagination: entityPagination{Limit: entitySearchPageLimit, Offset: offset},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal entity-service cases-by-project request: %w", err)
+		}
+		raw, err := c.entity.SearchCases(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		var resp entitySearchCasesResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, fmt.Errorf("unmarshal entity-service cases-by-project response: %w", err)
+		}
+		all = append(all, resp.Cases...)
+		if len(all) >= resp.Total || len(resp.Cases) == 0 {
+			return all, nil
+		}
+	}
+}
+
+// searchAllTimeCards pages through entity-service's SearchTimeCards for a
+// single case, returning every time card rather than just the first
+// entitySearchPageLimit.
+func (c *postgresSplReportsClient) searchAllTimeCards(ctx context.Context, caseID string) ([]entityTimeCardView, error) {
+	var all []entityTimeCardView
+	for offset := 0; ; offset += entitySearchPageLimit {
+		body, err := json.Marshal(entitySearchTimeCardsRequest{
+			Pagination: entityPagination{Limit: entitySearchPageLimit, Offset: offset},
+			Filters:    entitySearchTimeCardsFilter{CaseID: caseID},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal entity-service time-cards request: %w", err)
+		}
+		raw, err := c.entity.SearchTimeCards(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		var resp entitySearchTimeCardsResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, fmt.Errorf("unmarshal entity-service time-cards response: %w", err)
+		}
+		all = append(all, resp.TimeCards...)
+		if len(all) >= resp.Total || len(resp.TimeCards) == 0 {
+			return all, nil
+		}
+	}
+}
+
+// GetTimeLogBreakdown implements splReportsClient, paging through every
+// case in the project and every time card per case (see
+// searchAllCases/searchAllTimeCards) rather than reading a single
+// entitySearchPageLimit-sized page and truncating the rest, which ServiceNow's
+// own version of this report never did either.
 func (c *postgresSplReportsClient) GetTimeLogBreakdown(ctx context.Context, projectID string) (servicenow.TimeLogBreakdownDetails, error) {
 	project, err := c.resolveProjectByNumber(ctx, projectID)
 	if err != nil {
 		return servicenow.TimeLogBreakdownDetails{}, err
 	}
 
-	casesBody, err := json.Marshal(entitySearchCasesRequest{
-		Filters:    entitySearchCasesFilters{Filters: []entityCaseFieldFilter{{Field: "projectId", Op: "in", Values: []string{project.ID}}}},
-		SortBy:     entityCaseSort{Field: "createdOn", Order: "desc"},
-		Pagination: entityPagination{Limit: 50, Offset: 0},
-	})
-	if err != nil {
-		return servicenow.TimeLogBreakdownDetails{}, fmt.Errorf("marshal entity-service cases-by-project request: %w", err)
-	}
-	casesRaw, err := c.entity.SearchCases(ctx, casesBody)
+	cases, err := c.searchAllCases(ctx,
+		entitySearchCasesFilters{Filters: []entityCaseFieldFilter{{Field: "projectId", Op: "in", Values: []string{project.ID}}}},
+		entityCaseSort{Field: "createdOn", Order: "desc"})
 	if err != nil {
 		return servicenow.TimeLogBreakdownDetails{}, err
-	}
-	var casesResp entitySearchCasesResponse
-	if err := json.Unmarshal(casesRaw, &casesResp); err != nil {
-		return servicenow.TimeLogBreakdownDetails{}, fmt.Errorf("unmarshal entity-service cases-by-project response: %w", err)
 	}
 
 	result := servicenow.TimeLogBreakdownDetails{
@@ -197,30 +249,19 @@ func (c *postgresSplReportsClient) GetTimeLogBreakdown(ctx context.Context, proj
 		ProjectType:         project.SubscriptionType,
 		RemainingQueryHours: hoursOrEmpty(project.RemainingQueryHours),
 		TotalQueryHours:     hoursOrEmpty(project.TotalQueryHours),
-		Cases:               make([]servicenow.TimeLogBreakdownCase, 0, len(casesResp.Cases)),
+		Cases:               make([]servicenow.TimeLogBreakdownCase, 0, len(cases)),
 	}
 
-	for _, cv := range casesResp.Cases {
+	for _, cv := range cases {
 		state := derefStr(cv.State)
 		displayState, ok := caseStateToDisplay[state]
 		if !ok {
 			displayState = state
 		}
 
-		tcBody, err := json.Marshal(entitySearchTimeCardsRequest{
-			Pagination: entityPagination{Limit: 50, Offset: 0},
-			Filters:    entitySearchTimeCardsFilter{CaseID: cv.ID},
-		})
-		if err != nil {
-			return servicenow.TimeLogBreakdownDetails{}, fmt.Errorf("marshal entity-service time-cards request: %w", err)
-		}
-		tcRaw, err := c.entity.SearchTimeCards(ctx, tcBody)
+		timeCards, err := c.searchAllTimeCards(ctx, cv.ID)
 		if err != nil {
 			return servicenow.TimeLogBreakdownDetails{}, err
-		}
-		var tcResp entitySearchTimeCardsResponse
-		if err := json.Unmarshal(tcRaw, &tcResp); err != nil {
-			return servicenow.TimeLogBreakdownDetails{}, fmt.Errorf("unmarshal entity-service time-cards response: %w", err)
 		}
 
 		caseResult := servicenow.TimeLogBreakdownCase{
@@ -228,11 +269,11 @@ func (c *postgresSplReportsClient) GetTimeLogBreakdown(ctx context.Context, proj
 			CaseID:           cv.InternalID,
 			ShortDescription: derefStr(cv.Subject),
 			State:            displayState,
-			TimeCards:        make([]servicenow.TimeCardDetails, 0, len(tcResp.TimeCards)),
+			TimeCards:        make([]servicenow.TimeCardDetails, 0, len(timeCards)),
 		}
 
 		var totalHours, consumedHours float64
-		for _, tc := range tcResp.TimeCards {
+		for _, tc := range timeCards {
 			totalHours += tc.TotalTime
 			tcState := derefStr(tc.State)
 			if tc.HasBillable && tcState == "approved" {
