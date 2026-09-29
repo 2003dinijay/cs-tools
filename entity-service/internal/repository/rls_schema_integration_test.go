@@ -35,7 +35,7 @@ import (
 )
 
 // rlsProtectedTables is every table this migration series (000085,
-// 0141-0151) put under FORCE ROW LEVEL SECURITY, gathered directly from
+// 0141-0151, minus sla/incident/incident_task/problem, dropped by 0153) put under FORCE ROW LEVEL SECURITY, gathered directly from
 // the migrations/ directory rather than hand-maintained from memory --
 // see this file's own test for how it's cross-checked against that
 // directory. Keep this list and the migrations in sync: a table added here
@@ -45,7 +45,6 @@ var rlsProtectedTables = []string{
 	"announcement",
 	"case_escalation",
 	"case_escalation_notification_list",
-	"sla",
 	"customer_call",
 	"time_card",
 	"time_card_approver",
@@ -61,9 +60,6 @@ var rlsProtectedTables = []string{
 	"work_item_tag",
 	"work_item_watcher",
 	"work_item_activity",
-	"incident",
-	"incident_task",
-	"problem",
 	"engagement",
 	"service_request",
 	"security_report_analysis",
