@@ -748,16 +748,21 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	catalogHandler := handler.NewCatalogHandler(activeCatalogSvc)
 
-	// Case feedback (CSAT submissions) is a ServiceNow-only entity -- no
-	// feedback table exists anywhere in migrations/ -- but the routes are
-	// registered for both data sources, same as tasks above: with no handler
-	// the mux answers a silent, undocumented 404, while the OpenAPI spec
-	// documents a 503 ErrorResponse for these paths. The Postgres stand-in
-	// supplies that 503.
+	// Case feedback (CSAT submissions): the ServiceNow data source reads it
+	// from the backing system; both Postgres data sources read
+	// work_item_feedback (migration 0102). Dual write deliberately does NOT
+	// read from the backing system -- like every other read in that mode it
+	// stays on Postgres -- and the CSM side never writes feedback, so there is
+	// no writeback wrapper here. Routes are registered for every data source;
+	// NewUnavailableFeedbackService remains only as the documented-503
+	// fallback for a source with no feedback store.
 	var activeFeedbackSvc service.FeedbackService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeFeedbackSvc = service.NewServiceNowFeedbackService(serviceNowIntegrationServiceClient)
-	} else {
+	case config.DataSourcePostgres, config.DataSourcePostgresServiceNowDualWrite:
+		activeFeedbackSvc = service.NewPostgresFeedbackService(repository.NewFeedbackRepository(db))
+	default:
 		activeFeedbackSvc = service.NewUnavailableFeedbackService()
 	}
 	feedbackHandler := handler.NewFeedbackHandler(activeFeedbackSvc)
