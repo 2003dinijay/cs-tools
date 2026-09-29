@@ -80,6 +80,7 @@ func TestServeCloudStatusHarness(t *testing.T) {
 	mux.HandleFunc("GET /cloud-status/incidents", dash.Incidents)
 	mux.HandleFunc("GET /cloud-status/availabilities", dash.Availabilities)
 	mux.HandleFunc("GET /cloud-status/availability-history", dash.AvailabilityHistory)
+	mux.HandleFunc("GET /cloud-status/incidents/{id}", dash.IncidentDetail)
 
 	mux.HandleFunc("POST /internal/cloud-status/sweep", h.Sweep)
 	mux.HandleFunc("GET /internal/cloud-status/pending", h.Pending)

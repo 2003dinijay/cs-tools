@@ -1327,6 +1327,73 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /cloud-status/incidents/{id}:
+    get:
+      summary: >-
+        One outage's public detail view. Replaces the ServiceNow Scripted
+        REST API `/incident/{sys_id}`.
+      description: >
+        *** THE 200 BODY HAS TWO SHAPES, AND THE SPARSE ONE IS THE COMMON
+        CASE. *** The ServiceNow script builds its payload from an incident
+        lookup gated on state, then assigns attachments onto whatever came
+        back. An outage with no linked incident — or one whose incident is
+        still New, On Hold or Canceled — therefore yields an object carrying
+        only `attachments`, with no id, begin or type. That is the majority
+        of outages. Reproduced rather than normalised, because the frontend
+        already handles it.
+
+
+        `comments` come from the outage's external communications, NOT from
+        the linked incident's comments. Postgres holds incident comments,
+        work notes and approval history; publishing those here would put
+        internal commentary on a public page, and ServiceNow does not.
+
+
+        `attachments` is always empty: nothing in Postgres stores outage
+        attachments, nothing writes any, and the dashboard frontend never
+        reads the field.
+      operationId: getCloudStatusIncidentDetail
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The outage id.
+        - name: cloud
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [asgardeo, choreo, bijira, devant, moesif, choreo-eu, agent-manager]
+      responses:
+        "200":
+          description: The outage's detail, or an attachments-only object.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CloudStatusIncidentDetail'
+                  - $ref: '#/components/schemas/CloudStatusIncidentAttachmentsOnly'
+        "400":
+          description: BadRequest — unknown cloud or missing id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No outage with that id belongs to that cloud.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /internal/cloud-status/sweep:
     post:
       summary: >-
@@ -21024,6 +21091,66 @@ components:
           items:
             $ref: '#/components/schemas/AvailabilityHistorySubgroup'
       required: [display_name, subgroups]
+    CloudStatusIncidentComment:
+      type: object
+      description: One entry from the outage's external communications.
+      properties:
+        comment:
+          type: string
+        created_on:
+          type: string
+          description: UTC, "YYYY-MM-DD HH:MM:SS".
+      required: [comment, created_on]
+    CloudStatusIncidentAttachment:
+      type: object
+      properties:
+        name:
+          type: string
+        id:
+          type: string
+      required: [name, id]
+    CloudStatusIncidentDetail:
+      type: object
+      description: The full detail view, when the outage's incident qualifies.
+      properties:
+        id:
+          type: string
+        begin:
+          type: string
+        end:
+          type: string
+          description: Empty string while the outage is ongoing.
+        type:
+          type: string
+          description: >-
+            Not the enum and not plain title case — degradation renders as
+            "Degraded" and planned as "Maintenance".
+          enum: [Outage, Degraded, Maintenance]
+        status:
+          type: string
+          enum: ["In Progress", "Resolved"]
+        short_description:
+          type: string
+        comments:
+          type: array
+          items:
+            $ref: '#/components/schemas/CloudStatusIncidentComment'
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/CloudStatusIncidentAttachment'
+      required: [id, begin, end, type, status, short_description, comments, attachments]
+    CloudStatusIncidentAttachmentsOnly:
+      type: object
+      description: >-
+        What the endpoint returns when the outage's incident does not
+        qualify — the majority case. Carries no incident fields at all.
+      properties:
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/CloudStatusIncidentAttachment'
+      required: [attachments]
     CloudStatusMonitorGroup:
       type: object
       properties:

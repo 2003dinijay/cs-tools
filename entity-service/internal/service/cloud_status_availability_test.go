@@ -41,6 +41,10 @@ type fakeDashboardRepo struct {
 	daily       []repository.DailyAvailabilityRow
 
 	dailyFrom, dailyTo, dailyTZ string
+
+	detail                      *repository.IncidentDetailRow
+	comments                    []repository.OutageCommentRow
+	gotDetailID, gotDetailCloud string
 }
 
 func (f *fakeDashboardRepo) Monitors(context.Context, string) ([]repository.MonitorRow, error) {
@@ -64,6 +68,13 @@ func (f *fakeDashboardRepo) DailyAvailability(_ context.Context, _ []string, tz,
 }
 func (f *fakeDashboardRepo) MonitorsForHistory(context.Context, string) ([]repository.MonitorRow, error) {
 	return f.history, nil
+}
+func (f *fakeDashboardRepo) IncidentDetail(_ context.Context, id, cloud string) (*repository.IncidentDetailRow, error) {
+	f.gotDetailID, f.gotDetailCloud = id, cloud
+	return f.detail, nil
+}
+func (f *fakeDashboardRepo) OutageComments(context.Context, string) ([]repository.OutageCommentRow, error) {
+	return f.comments, nil
 }
 
 // TestAvailabilityWeightsSumPerRegion is the invariant calculateAgentManager
@@ -358,4 +369,84 @@ func TestHistoryGroupsInRowOrder(t *testing.T) {
 	if len(groups[0].Subgroups) != 2 {
 		t.Errorf("Login has %d subgroups, want 2", len(groups[0].Subgroups))
 	}
+}
+
+// TestIncidentDetailShapes covers the two payloads and the gate between
+// them. The sparse one is the majority case on real data, so getting it
+// wrong would change most incident pages rather than an edge case.
+func TestIncidentDetailShapes(t *testing.T) {
+	base := &repository.IncidentDetailRow{
+		ID:               "79adad2d-1b45-fa10-0bb3-da47b04bcb46",
+		Begin:            "2025-11-06 09:54:17",
+		End:              "2025-11-10 04:49:30",
+		Type:             "DEGRADATION",
+		ShortDescription: "Asgardeo Login Flow Outage",
+		IncidentState:    "IN_PROGRESS",
+	}
+
+	t.Run("qualifying incident yields the full detail", func(t *testing.T) {
+		repo := &fakeDashboardRepo{detail: base, comments: []repository.OutageCommentRow{
+			{Comment: "newest", CreatedOn: "2025-11-07 02:36:44"},
+		}}
+		got, err := NewCloudStatusDashboardService(repo).
+			IncidentDetail(context.Background(), base.ID, "asgardeo")
+		if err != nil {
+			t.Fatalf("detail: %v", err)
+		}
+		d, ok := got.(domain.CloudStatusIncidentDetail)
+		if !ok {
+			t.Fatalf("got %T, want the full detail shape", got)
+		}
+		// Dashless on the wire -- the frontend puts this straight in a URL.
+		if d.ID != "79adad2d1b45fa100bb3da47b04bcb46" {
+			t.Errorf("id = %q, want the 32-hex sys_id form", d.ID)
+		}
+		// degradation renders as "Degraded", not "Degradation".
+		if d.Type != "Degraded" {
+			t.Errorf("type = %q, want %q", d.Type, "Degraded")
+		}
+		if d.Status != "Resolved" {
+			t.Errorf("status = %q, want Resolved (end is set)", d.Status)
+		}
+		if len(d.Comments) != 1 {
+			t.Errorf("got %d comments, want 1", len(d.Comments))
+		}
+		if d.Attachments == nil {
+			t.Error("attachments must be an array, not null")
+		}
+	})
+
+	for _, state := range []string{"", "NEW", "ON_HOLD", "CANCELED"} {
+		t.Run("state "+state+" yields attachments only", func(t *testing.T) {
+			row := *base
+			row.IncidentState = state
+			repo := &fakeDashboardRepo{detail: &row}
+			got, err := NewCloudStatusDashboardService(repo).
+				IncidentDetail(context.Background(), base.ID, "asgardeo")
+			if err != nil {
+				t.Fatalf("detail: %v", err)
+			}
+			if _, ok := got.(domain.CloudStatusIncidentAttachmentsOnly); !ok {
+				t.Errorf("got %T, want the attachments-only shape", got)
+			}
+		})
+	}
+
+	t.Run("a missing outage is nil, which the handler renders as 404", func(t *testing.T) {
+		got, err := NewCloudStatusDashboardService(&fakeDashboardRepo{}).
+			IncidentDetail(context.Background(), base.ID, "asgardeo")
+		if err != nil || got != nil {
+			t.Errorf("got (%v, %v), want (nil, nil)", got, err)
+		}
+	})
+
+	t.Run("a 32-hex id is accepted and converted for the query", func(t *testing.T) {
+		repo := &fakeDashboardRepo{}
+		_, _ = NewCloudStatusDashboardService(repo).
+			IncidentDetail(context.Background(), "79adad2d1b45fa100bb3da47b04bcb46", "asgardeo")
+		if repo.gotDetailID != "79adad2d-1b45-fa10-0bb3-da47b04bcb46" {
+			t.Errorf("queried with %q, want the dashed uuid -- links made before "+
+				"the cutover must still resolve", repo.gotDetailID)
+		}
+	})
 }

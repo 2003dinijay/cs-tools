@@ -206,7 +206,8 @@ func (s *cloudStatusDashboardService) Incidents(ctx context.Context, cloud strin
 			continue
 		}
 		month.Incidents = append(month.Incidents, domain.CloudStatusIncident{
-			ID:               r.ID,
+			// Dashless, as ServiceNow emitted it -- see domain.SysID.
+			ID:               domain.SysID(r.ID),
 			Begin:            r.Begin,
 			End:              r.End,
 			Type:             incidentTypeLabel(r.Type),
@@ -225,16 +226,27 @@ func incidentMonthKey(t time.Time) string {
 	return t.Format("2006") + "-" + strings.TrimPrefix(t.Format("01"), "0")
 }
 
-// incidentTypeLabel title-cases the stored enum for display: the live API
-// returns "Outage", not "OUTAGE".
+// incidentTypeLabel renders the stored enum the way the dashboard prints it.
+//
+// *** THESE ARE NOT TITLE-CASED ENUM NAMES, AND TWO OF THEM ARE RENAMED. ***
+//
+//	outage      -> Outage
+//	degradation -> Degraded      (NOT "Degradation")
+//	planned     -> Maintenance   (NOT "Planned")
+//
+// An earlier version of this function title-cased the enum, which is right
+// for the first and wrong for the other two. It went unnoticed because every
+// incident on the dev instance is of type outage, so a diff against the live
+// API exercised only the branch that happened to be correct. Both ServiceNow
+// resource scripts -- incidents.js and incident.js -- agree on the renames.
 func incidentTypeLabel(t string) string {
 	switch strings.ToUpper(t) {
 	case "OUTAGE":
 		return "Outage"
 	case "DEGRADATION":
-		return "Degradation"
+		return "Degraded"
 	case "PLANNED":
-		return "Planned"
+		return "Maintenance"
 	default:
 		return ""
 	}
@@ -473,4 +485,101 @@ func historyFor(points []domain.AvailabilityHistoryPoint, todayKey string) []dom
 		points = points[len(points)-domain.AvailabilityHistoryDays:]
 	}
 	return points
+}
+
+// ── /incident/{id} ─────────────────────────────────────────────────────
+
+// incidentDetailQualifyingStates is ServiceNow's `stateNOT IN 1,3,8` in
+// Postgres terms: everything except New (1), On Hold (3) and Canceled (8).
+//
+// An outage whose incident falls outside this set gets the attachments-only
+// payload, exactly as it does today.
+var incidentDetailExcludedStates = map[string]bool{
+	"NEW":      true,
+	"ON_HOLD":  true,
+	"CANCELED": true,
+}
+
+// IncidentDetail returns one outage's public detail view.
+//
+// Returns nil when no outage with that id belongs to that cloud, which the
+// handler renders as 404.
+func (s *cloudStatusDashboardService) IncidentDetail(ctx context.Context, id, cloud string) (any, error) {
+	if _, err := validateCloud(cloud); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, &apierror.ValidationError{Msg: "id is required"}
+	}
+
+	row, err := s.repo.IncidentDetail(ctx, domain.UUIDFromSysID(id), strings.ToLower(strings.TrimSpace(cloud)))
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return nil, nil
+	}
+
+	// *** THE ATTACHMENTS-ONLY PAYLOAD IS THE COMMON CASE, NOT AN ERROR. ***
+	// The script assigns attachments onto whatever its gated incident lookup
+	// returned, so an outage with no linked incident -- or one whose
+	// incident is still New, On Hold or Canceled -- yields an object with no
+	// id, no begin and no type. That is 449 of 637 outages today, plus 17
+	// more behind the state gate. Confirmed against the live API, which
+	// answers an asgardeo outage with no work item with exactly
+	// {"attachments":[]}.
+	if row.IncidentState == "" || incidentDetailExcludedStates[row.IncidentState] {
+		return domain.CloudStatusIncidentAttachmentsOnly{
+			Attachments: []domain.CloudStatusIncidentAttachment{},
+		}, nil
+	}
+
+	comments, err := s.repo.OutageComments(ctx, domain.UUIDFromSysID(id))
+	if err != nil {
+		return nil, err
+	}
+
+	return domain.CloudStatusIncidentDetail{
+		ID:               domain.SysID(row.ID),
+		Begin:            row.Begin,
+		End:              row.End,
+		Type:             incidentTypeLabel(row.Type),
+		Status:           domain.IncidentDetailStatus(row.End),
+		ShortDescription: row.ShortDescription,
+		Comments:         incidentComments(comments),
+
+		// *** ATTACHMENTS ARE ALWAYS EMPTY, AND THAT IS NOT A GAP. ***
+		// ServiceNow read PDFs off sys_attachment for the outage. Postgres
+		// holds no outage attachments, nothing writes any, and -- decisively
+		// -- the dashboard frontend never reads the field: it appears in no
+		// component. Emitting the empty array keeps the payload shape the
+		// contract promises without inventing a store for something with
+		// neither a producer nor a consumer.
+		Attachments: []domain.CloudStatusIncidentAttachment{},
+	}, nil
+}
+
+// incidentComments turns the stored updates into the list the frontend
+// iterates.
+//
+// *** THESE ARE THE OUTAGE'S EXTERNAL COMMUNICATIONS, NOT THE INCIDENT'S
+// COMMENTS, AND THE DIFFERENCE IS A DISCLOSURE BOUNDARY. *** ServiceNow
+// reads sys_journal_field for element `u_external_outage_communications`
+// against the OUTAGE; the line that once read the incident's `comments` is
+// commented out in the source. Postgres does hold incident comments -- 923
+// on outage-linked incidents, plus work notes and approval history -- and
+// serving those here would publish internal commentary on a public status
+// page. Both live-served incidents carry such comments and the live API
+// returns none of them.
+//
+// Always an array, never null: the frontend maps over it.
+func incidentComments(rows []repository.OutageCommentRow) []domain.CloudStatusIncidentComment {
+	out := make([]domain.CloudStatusIncidentComment, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, domain.CloudStatusIncidentComment{
+			Comment:   r.Comment,
+			CreatedOn: r.CreatedOn,
+		})
+	}
+	return out
 }

@@ -287,3 +287,98 @@ type CloudAvailabilityHistoryResponse map[string][]AvailabilityHistoryGroup
 
 // AvailabilityHistoryDays is the script's own cap: uniqueAvaialbility.slice(-90).
 const AvailabilityHistoryDays = 90
+
+// ── /incident/{id} ─────────────────────────────────────────────────────
+
+// CloudStatusIncidentComment is one entry from an outage's external
+// communications journal.
+type CloudStatusIncidentComment struct {
+	Comment   string `json:"comment"`
+	CreatedOn string `json:"created_on"`
+}
+
+// CloudStatusIncidentAttachment is one PDF attached to the outage. The
+// script filters to application/pdf and emits nothing else.
+type CloudStatusIncidentAttachment struct {
+	Name string `json:"name"`
+	ID   string `json:"id"`
+}
+
+// CloudStatusIncidentDetail is the full detail view of one outage.
+//
+// Note the type labels differ from the enum and from plain title case:
+// degradation renders as "Degraded" and planned as "Maintenance". See
+// incidentTypeLabel.
+type CloudStatusIncidentDetail struct {
+	ID               string                          `json:"id"`
+	Begin            string                          `json:"begin"`
+	End              string                          `json:"end"`
+	Type             string                          `json:"type"`
+	Status           string                          `json:"status"`
+	ShortDescription string                          `json:"short_description"`
+	Comments         []CloudStatusIncidentComment    `json:"comments"`
+	Attachments      []CloudStatusIncidentAttachment `json:"attachments"`
+}
+
+// CloudStatusIncidentAttachmentsOnly is what the endpoint returns when the
+// outage exists but its incident does not qualify.
+//
+// *** THIS ODD SHAPE IS THE SOURCE'S, AND IT IS THE COMMON CASE. *** The
+// ServiceNow script builds its payload from an incident lookup that is gated
+// on `stateNOT IN 1,3,8`, then assigns attachments onto whatever came back.
+// When the lookup matches nothing the payload is an empty object carrying
+// only attachments -- no id, no begin, no type. That happens whenever the
+// outage has no linked incident at all, which on the current data is 449 of
+// 637 outages, and again for the 17 whose incident is still New.
+//
+// Verified against the live API: an asgardeo outage with no work item
+// returns exactly {"attachments":[]}.
+type CloudStatusIncidentAttachmentsOnly struct {
+	Attachments []CloudStatusIncidentAttachment `json:"attachments"`
+}
+
+// incidentDetailTypeLabel is the DETAIL endpoint's own type mapping. It
+// agrees with the list endpoint's, and both are reproduced separately
+// because nothing guarantees they stay in step.
+//
+// IncidentDetailStatus renders the two states the detail view shows.
+func IncidentDetailStatus(end string) string {
+	if end != "" {
+		return "Resolved"
+	}
+	return "In Progress"
+}
+
+// ── outage ids on the wire ─────────────────────────────────────────────
+
+// SysID renders a Postgres UUID the way the dashboard has always seen it:
+// 32 hex characters with no dashes.
+//
+// *** THIS IS NOT COSMETIC. *** ServiceNow sys_ids have no dashes, and the
+// frontend puts this value straight into a URL — `/incidents/${id}` — and
+// matches it between the incident list and the detail page. Emitting the
+// dashed form changes every incident link on the site and breaks any
+// bookmarked one. Confirmed against the live API, which returns
+// "7af3a9683bab839091404c6aa5e45a10".
+func SysID(uuid string) string {
+	return strings.ReplaceAll(uuid, "-", "")
+}
+
+// UUIDFromSysID is the inverse, for ids arriving from the dashboard.
+//
+// Accepts either form: a 32-hex sys_id gets the 8-4-4-4-12 dashes put back,
+// and anything else is returned unchanged for Postgres to accept or reject.
+// Being liberal here means a link created before the cutover still resolves
+// after it.
+func UUIDFromSysID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) != 32 {
+		return id
+	}
+	for _, r := range id {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return id
+		}
+	}
+	return id[0:8] + "-" + id[8:12] + "-" + id[12:16] + "-" + id[16:20] + "-" + id[20:]
+}

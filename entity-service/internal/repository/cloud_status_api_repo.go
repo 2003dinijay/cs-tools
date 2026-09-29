@@ -18,9 +18,11 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -85,6 +87,12 @@ type CloudStatusDashboardRepository interface {
 	// MonitorsForHistory returns active monitors in the HISTORY endpoint's
 	// order, which is not the monitors endpoint's -- see the query.
 	MonitorsForHistory(ctx context.Context, cloud string) ([]MonitorRow, error)
+	// IncidentDetail returns one outage's detail view, or nil when no outage
+	// with that id belongs to that cloud.
+	IncidentDetail(ctx context.Context, id, cloud string) (*IncidentDetailRow, error)
+	// OutageComments returns one outage's customer-facing updates, newest
+	// first.
+	OutageComments(ctx context.Context, outageID string) ([]OutageCommentRow, error)
 }
 
 type cloudStatusDashboardRepository struct {
@@ -460,6 +468,111 @@ func (r *cloudStatusDashboardRepository) MonitorsForHistory(ctx context.Context,
 			return nil, fmt.Errorf("scan monitor for history: %w", err)
 		}
 		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ── /incident/{id} ─────────────────────────────────────────────────────
+
+// IncidentDetailRow is one outage's detail view, with the state of the
+// incident it links to.
+type IncidentDetailRow struct {
+	ID               string
+	Begin            string
+	End              string
+	Type             string
+	ShortDescription string
+	// IncidentState is the linked incident's state, or "" when the outage
+	// has no work item at all. The caller applies the qualifying gate.
+	IncidentState string
+}
+
+// OutageCommentRow is one customer-facing update on an outage.
+type OutageCommentRow struct {
+	Comment   string
+	CreatedOn string
+}
+
+// incidentDetailSQL reproduces incident.js's outage lookup:
+//
+//	'sys_id=' + sysId + '^cmdb_ci.ref_service_offering.parent.nameSTARTSWITH' + cloud
+//
+// plus the incident the payload is gated on:
+//
+//	incidentGr.addEncodedQuery('sys_id=' + task_number + '^stateNOT IN1,3,8')
+//
+// The join is LEFT because the two failure modes are different and the
+// caller must tell them apart: no outage for this cloud is a 404, whereas an
+// outage whose incident does not qualify is a 200 carrying attachments only.
+// An inner join would collapse both into "not found" and turn 449 of 637
+// outages into errors.
+//
+// The state gate itself is applied in the service rather than here, so the
+// SQL answers "what is there" and the Go answers "what does that mean".
+const incidentDetailSQL = `
+    SELECT o.id::text,
+           COALESCE(to_char(o.start_on AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), ''),
+           COALESCE(to_char(o.end_on   AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), ''),
+           COALESCE(o.type::text, ''),
+           COALESCE(o.name, ''),
+           COALESCE(i.state::text, '')
+      FROM outage o
+      JOIN service_offering so ON so.id = o.service_offering_id
+      JOIN service s ON s.id = so.parent_id
+      LEFT JOIN incident i ON i.id = o.work_item_id
+     WHERE o.id = $1::uuid
+       AND s.name ILIKE $2 || '%'
+`
+
+// IncidentDetail returns one outage for one cloud, or nil when there is none.
+func (r *cloudStatusDashboardRepository) IncidentDetail(ctx context.Context, id, cloud string) (*IncidentDetailRow, error) {
+	var d IncidentDetailRow
+	err := r.db.QueryRow(ctx, incidentDetailSQL, id, cloud).Scan(
+		&d.ID, &d.Begin, &d.End, &d.Type, &d.ShortDescription, &d.IncidentState)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query incident detail: %w", err)
+	}
+	return &d, nil
+}
+
+// outageCommentsSQL reproduces the journal read behind an incident's
+// comments:
+//
+//	journalFieldGr.addQuery('element_id', <the OUTAGE's sys_id>);
+//	journalFieldGr.addQuery('element', 'u_external_outage_communications');
+//	journalFieldGr.orderByDesc('sys_created_on');
+//
+// *** NOT THE INCIDENT'S COMMENTS. *** The line reading element 'comments'
+// is commented out in the ServiceNow source, and reinstating it here would
+// publish internal incident commentary -- Postgres holds 923 such comments
+// on outage-linked incidents, plus work notes and approval history -- on a
+// public status page. The live API returns none of them.
+const outageCommentsSQL = `
+    SELECT oc.comment,
+           COALESCE(to_char(oc.created_on AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), '')
+      FROM outage_communication oc
+     WHERE oc.outage_id = $1::uuid
+     ORDER BY oc.created_on DESC, oc.id
+`
+
+// OutageComments returns one outage's customer-facing updates, newest first.
+func (r *cloudStatusDashboardRepository) OutageComments(ctx context.Context, outageID string) ([]OutageCommentRow, error) {
+	rows, err := r.db.Query(ctx, outageCommentsSQL, outageID)
+	if err != nil {
+		return nil, fmt.Errorf("query outage comments: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]OutageCommentRow, 0)
+	for rows.Next() {
+		var c OutageCommentRow
+		if err := rows.Scan(&c.Comment, &c.CreatedOn); err != nil {
+			return nil, fmt.Errorf("scan outage comment: %w", err)
+		}
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }

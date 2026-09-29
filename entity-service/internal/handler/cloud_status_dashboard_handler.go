@@ -89,3 +89,24 @@ func (h *CloudStatusDashboardHandler) AvailabilityHistory(w http.ResponseWriter,
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// IncidentDetail handles GET /cloud-status/incidents/{id}?cloud=…
+//
+// 404 when no outage with that id belongs to that cloud, matching the
+// ServiceNow resource. The 200 body has one of two shapes; see the service.
+func (h *CloudStatusDashboardHandler) IncidentDetail(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.IncidentDetail(r.Context(), r.PathValue("id"), r.URL.Query().Get("cloud"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	if resp == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": "outage not found for this cloud"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}

@@ -1238,6 +1238,11 @@ type CloudStatusDashboardService interface {
 	// AvailabilityHistory returns the 90-day daily uptime chart, nested
 	// region -> group -> monitor: the port of the /history resource.
 	AvailabilityHistory(ctx context.Context, cloud string) (domain.CloudAvailabilityHistoryResponse, error)
+	// IncidentDetail returns one outage's public detail view, or nil when no
+	// outage with that id belongs to that cloud. The concrete type varies:
+	// a full detail object, or an attachments-only one when the outage's
+	// incident does not qualify -- both are the source's shapes.
+	IncidentDetail(ctx context.Context, id, cloud string) (any, error)
 }
 
 // CloudStatusService decides which outages owe the public status dashboard a
