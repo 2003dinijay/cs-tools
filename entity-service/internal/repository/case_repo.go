@@ -355,6 +355,17 @@ type CaseRepository interface {
 	// project with no contact holding role returns an empty slice, not an
 	// error.
 	ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error)
+	// ProjectAudienceFacts returns the two facts a case.created Chat alert's
+	// audience resolution (csm-notification-service) needs beyond the
+	// case's own CreTeam: projectID's project.onboarding_status (raw enum
+	// label, e.g. "IN_PROGRESS"; "" if the project has none or projectID
+	// doesn't resolve to one) and whether its project_type is Evaluation
+	// Subscription. Matched against the fixed
+	// evaluationSubscriptionProjectTypeName (confirmed directly against the
+	// project_type table). A projectID with no matching project row
+	// returns the zero value ("", false), not an error: this is
+	// best-effort Chat-routing enrichment, not a data-integrity check.
+	ProjectAudienceFacts(ctx context.Context, projectID string) (onboardingStatus string, isEvaluationSubscription bool, err error)
 	// UpdateCaseAssignee sets work_item.assigned_to_id to userID -- already
 	// resolved and validated as a real "user" row by the caller (CaseService.
 	// updateCaseAssignee, via GetUserByEmail) -- and bumps updated_on/updated_by,
@@ -2313,6 +2324,36 @@ func (r *caseRepo) ProjectContactEmailsByRole(ctx context.Context, projectID, ro
 		return nil, fmt.Errorf("project contact emails by role: %w", err)
 	}
 	return emails, nil
+}
+
+// evaluationSubscriptionProjectTypeName is project_type.name's exact value
+// for the "Evaluation Subscription" type -- confirmed directly against the
+// project_type table (a second, unrelated row, "Cloud Evaluation Support",
+// also exists, so an exact match is required, not a substring/ILIKE one).
+// Matched by name, not by a hardcoded id: project_type isn't seeded by this
+// repo's own migrations (it's populated by an external sync), so nothing
+// guarantees a given row's id is the same across environments -- name has
+// a UNIQUE constraint and is the stable, portable key here.
+const evaluationSubscriptionProjectTypeName = "Evaluation Subscription"
+
+// ProjectAudienceFacts implements CaseRepository.
+func (r *caseRepo) ProjectAudienceFacts(ctx context.Context, projectID string) (string, bool, error) {
+	var onboardingStatus *string
+	var isEvaluation bool
+	err := r.db.QueryRow(ctx, `
+		SELECT p.onboarding_status::TEXT, (pt.name = $2)
+		FROM project p
+		LEFT JOIN project_type pt ON pt.id = p.project_type_id
+		WHERE p.id = $1`,
+		projectID, evaluationSubscriptionProjectTypeName,
+	).Scan(&onboardingStatus, &isEvaluation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("project audience facts: %w", err)
+	}
+	return stringOrEmpty(onboardingStatus), isEvaluation, nil
 }
 
 // updateCaseAssigneeQuery atomically applies the no-op check inside the

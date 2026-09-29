@@ -532,6 +532,31 @@ easy to wire up for real once both exist.
   same four non-`"case"` types (an exclude-list keyed on
   `CaseCreatedPayload.CaseType`) — those types notify by email only, per
   the same explicit request. See that service's own `CLAUDE.md`.
+
+  **`CaseCreatedPayload` also carries two facts purely for
+  `csm-notification-service`'s own Chat-audience routing**, resolved via
+  `CaseService.ProjectAudienceFacts(ctx, projectID)`:
+  `ProjectOnboardingStatus` (the project's raw `onboarding_status` enum
+  label, e.g. `"IN_PROGRESS"`, `""` when the case has no project or the
+  column is unset) and `IsEvaluationAccount` (true when the project's
+  `project_type_id` matches the fixed Evaluation Subscription type).
+  Neither is required for publish — resolved best-effort, a lookup failure
+  is warn-logged and the publish continues with both left at their zero
+  value, same "can't confirm, don't block" posture as every other
+  Postgres-only enrichment here. `ProjectAudienceFacts` is Postgres-only
+  (`project.onboarding_status`/`project_type_id` have no ServiceNow
+  equivalent); on `snCaseService` it delegates to `pgFallback` when
+  configured, else returns `"", false, nil`. Which raw onboarding-status
+  values count as "still onboarding," and what happens with either flag,
+  is decided entirely in `csm-notification-service` (`dispatch.
+  onboardingChatAudienceStatuses`/`resolveChatAudiences`) — this service
+  only publishes the raw facts, never the routing policy. `Team` also
+  gained a second role alongside its existing display purpose: it's now
+  also `csm-notification-service`'s Chat-audience routing key for
+  `case.created`/`case.acknowledged`/`case.severity_changed` (a team with
+  no configured space of its own falls back to the standing "Incident
+  Monitor" audience). See `csm-notification-service`'s own `CLAUDE.md` for
+  the full audience-resolution rules.
 - **`snIncidentService.CreateIncident`** publishes `incident.created` via
   `publishIncidentCreated`, called the same way. No enrichment round trip is
   needed here: `req.Subject`/`req.AdditionalComments` already carry
@@ -667,17 +692,18 @@ service's own `CLAUDE.md`, `dispatch.subjectLine`).
   exclusive per request, so this and the status/assignee blocks never both
   fire for the same call). Unlike `case.acknowledged`, this has both an
   email reaction (`Recipients`, the same watch-list-emails audience as
-  `case.status_changed`/`case.assigned`) and a Chat alert (`Product`, same
-  `caseProductName(before)` reasoning as `publishCaseCreated`/
-  `publishCaseAcknowledged`) — `csm-notification-service`'s `dispatch`
-  package fans this one payload out to both channels. `OldSeverity` comes
-  from the pre-PATCH `GetCaseByID` enrichment (`before.Severity`);
-  `NewSeverity` from the PATCH response's own echoed severity
-  (`resp.Case.Severity`, only set when `snResp.Case.Severity != nil`) — no
-  second `GetCaseByID` needed the way `publishCaseAcknowledged` needs one,
-  since `UpdateCase`'s existing pre-PATCH enrichment already supplies
-  everything this payload needs (`CaseNumber`/`WSO2CaseID`/`CaseTitle`/
-  `Product`/`Recipients` all come from that same `before` `CaseView`). Same
+  `case.status_changed`/`case.assigned`) and a Chat alert, audience-routed
+  by `Team` (same `caseTeamName(before)` reasoning as `publishCaseCreated`/
+  `publishCaseAcknowledged` — see below) — `csm-notification-service`'s
+  `dispatch` package fans this one payload out to both channels.
+  `OldSeverity` comes from the pre-PATCH `GetCaseByID` enrichment
+  (`before.Severity`); `NewSeverity` from the PATCH response's own echoed
+  severity (`resp.Case.Severity`, only set when `snResp.Case.Severity !=
+  nil`) — no second `GetCaseByID` needed the way `publishCaseAcknowledged`
+  needs one, since `UpdateCase`'s existing pre-PATCH enrichment already
+  supplies everything this payload needs (`CaseNumber`/`WSO2CaseID`/
+  `CaseTitle`/`Team`/`Recipients` all come from that same `before`
+  `CaseView`). Same
   "empty `Recipients` list skips the whole publish" precedent as
   `publishCaseCreated` — including the Chat alert, since this event has no
   Chat-only path the way `case.acknowledged` does; a severity change with
@@ -685,25 +711,26 @@ service's own `CLAUDE.md`, `dispatch.subjectLine`).
 
 `caseProductName(cv)` (a small shared helper) resolves
 `cv.DeployedProductDetails.Product.Name` (e.g. `"WSO2 API Manager"`, `""`
-when the case has no deployed product) — used by `publishCaseCreated`,
-`publishCaseAcknowledged`, and `publishSeverityChanged` to populate their
-payloads' `Product` field.
-`CaseCreatedPayload.Product` was previously never populated at all ("this
-service has no data source for it yet"); now it doubles as both a display
-value in `csm-notification-service`'s redesigned `case.created` Chat card
-and that service's own Chat-space routing key (`GoogleChatConfig.Spaces`
-matches on it, falling back to `DEFAULT_CHAT_PRODUCT` when empty) — an
-operator's `GOOGLE_CHAT_SPACES` config needs a `Product` entry matching
-each deployed product's actual display name for per-product routing to
-take effect; until then, every case routes to `DEFAULT_CHAT_PRODUCT`'s
-space same as before this field was populated.
+when the case has no deployed product) — used only by `publishCaseCreated`
+now, to populate `CaseCreatedPayload.Product`, a purely-display value in
+`csm-notification-service`'s `case.created` Chat card (it plays no routing
+role there — `case.created` is audience-routed by `Team`, not
+product-routed; only `incident.created` still routes on product, via
+`GOOGLE_CHAT_SPACES`/`DEFAULT_CHAT_PRODUCT`). `publishCaseAcknowledged`/
+`publishSeverityChanged` no longer populate a `Product` field at all —
+`CaseAcknowledgedPayload`/`SeverityChangedPayload` dropped it once both
+moved to `Team`-based Chat-audience routing (see below).
 
 `caseTeamName(cv)` (same shared-helper pattern) resolves
 `cv.AccountDetails.CreTeam.Name` (e.g. `"Team Nova"`, `""` when the case
-has no account or the account has no CRE team) — used by the same three
-publishers to populate their payloads' `Team` field, a purely-display
-value in `csm-notification-service`'s Chat cards (unlike `Product`, it
-plays no role in routing). `cv.AccountDetails` (and its `CreTeam`) is
+has no account or the account has no CRE team) — used by all three
+publishers (`publishCaseCreated`/`publishCaseAcknowledged`/
+`publishSeverityChanged`) to populate their payloads' `Team` field. `Team`
+is both a display value in `csm-notification-service`'s Chat cards *and*
+that service's own Chat-audience routing key for all three of those event
+types (a team with no configured `GOOGLE_CHAT_AUDIENCE_SPACES` entry of
+its own falls back to the shared "Incident Monitor" audience — see that
+service's own `CLAUDE.md`). `cv.AccountDetails` (and its `CreTeam`) is
 resolved by `GetCaseByID` from the case's own embedded ServiceNow account
 object at no extra request cost — but as of this field's introduction,
 that embedded object's `creTeam`/`sreTeam` are documented in
@@ -712,21 +739,29 @@ the ServiceNow integration, even though the standalone accounts endpoint
 does return them. `Team` may therefore come back empty in practice until
 that catches up — not a bug in this service if so.
 
-**Known, accepted inconsistency**: `publishCaseAcknowledged` re-reads
-`caseProductName(cv)` from a fresh `GetCaseByID` at acknowledge time,
-rather than reusing whatever product `publishCaseCreated` read at create
-time — so if a case's deployed product genuinely changes between creation
-and acknowledgement, the two Chat alerts can route to different spaces.
-This service has no persisted state for a case at all (ServiceNow is the
-sole source of truth, no local DB row per case — the old `sla_clocks` table
-used to be the one exception, removed; see "SLA status" below), so "preserving the
-creation-time product" would mean adding new durable state purely to pin a
-routing decision, not a same-service code change. It's also arguably not
-even the more correct behavior: if a case's product association is
-corrected after creation, routing its acknowledgement to the *current*
-owning team's space is arguably more useful than a stale one. Left as
-current-product routing; revisit only if the same-space guarantee turns
-out to matter in practice.
+**Known, accepted inconsistency**: `publishCaseAcknowledged`/
+`publishSeverityChanged` each re-read `caseTeamName(cv)` (and re-resolve
+`ProjectAudienceFacts`) from a fresh `GetCaseByID` at their own event time,
+rather than reusing whatever facts `publishCaseCreated` read at create
+time — so if a case's team/onboarding status/evaluation flag genuinely
+changes between creation and a later event,
+`csm-notification-service`'s own `resolveChatAudiences` can resolve a
+different audience list for the follow-up than it did for `case.created`
+(see that service's own `CLAUDE.md` for the consequence — a follow-up sent
+to an audience `case.created` never reached posts as a fresh message
+there instead of a threaded reply). This service has no persisted state
+for a case at all (ServiceNow is the sole source of truth, no local DB row
+per case — the old `sla_clocks` table used to be the one exception,
+removed; see "SLA status" below), so "preserving the creation-time facts"
+would mean adding new durable state purely to pin a routing decision, not
+a same-service code change. It's also arguably not even the more correct
+behavior: if a case's team assignment is corrected after creation, routing
+a later event to the *current* owning team's space is arguably more
+useful than a stale one — and the same reasoning applies even more
+strongly to time-of-day-driven audiences (a coverage-window audience
+describes who's on duty *right now*, not who was on duty when the case was
+first created). Left as fresh-facts-per-event routing; revisit only if the
+same-space guarantee turns out to matter in practice.
 
 **`caseService.UpdateCase` (the Postgres data source) supports
 `Acknowledge`/`AssigneeEmail` too** — `caseService.acknowledgeCase`/
