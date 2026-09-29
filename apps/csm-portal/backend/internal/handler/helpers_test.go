@@ -107,6 +107,7 @@ type mockEntityCaseClient struct {
 	searchFeedbackFn           func(ctx context.Context, body []byte) ([]byte, error)
 	aggregateFeedbackFn        func(ctx context.Context, body []byte) ([]byte, error)
 	getCaseFn                  func(ctx context.Context, caseID string) ([]byte, error)
+	getProductRepoMappingFn    func(ctx context.Context, name string) ([]byte, error)
 	createCaseAttachmentFn     func(ctx context.Context, body []byte) ([]byte, error)
 	searchCaseAttachmentsFn    func(ctx context.Context, body []byte) ([]byte, error)
 	getCaseAttachmentContentFn func(ctx context.Context, attachmentID string) ([]byte, string, error)
@@ -235,6 +236,13 @@ func (m *mockEntityCaseClient) AggregateFeedback(ctx context.Context, body []byt
 func (m *mockEntityCaseClient) GetCase(ctx context.Context, caseID string) ([]byte, error) {
 	if m.getCaseFn != nil {
 		return m.getCaseFn(ctx, caseID)
+	}
+	return []byte(`{}`), nil
+}
+
+func (m *mockEntityCaseClient) GetProductRepoMapping(ctx context.Context, name string) ([]byte, error) {
+	if m.getProductRepoMappingFn != nil {
+		return m.getProductRepoMappingFn(ctx, name)
 	}
 	return []byte(`{}`), nil
 }
@@ -615,6 +623,7 @@ func (m *mockEntityOnboardingStepClient) SearchOnboardingSteps(ctx context.Conte
 type mockEntityProductClient struct {
 	searchProductsFn        func(ctx context.Context, body []byte) ([]byte, error)
 	searchProductVersionsFn func(ctx context.Context, productID string, body []byte) ([]byte, error)
+	getProductRepoMappingFn func(ctx context.Context, name string) ([]byte, error)
 }
 
 func (m *mockEntityProductClient) SearchProducts(ctx context.Context, body []byte) ([]byte, error) {
@@ -627,6 +636,13 @@ func (m *mockEntityProductClient) SearchProducts(ctx context.Context, body []byt
 func (m *mockEntityProductClient) SearchProductVersions(ctx context.Context, productID string, body []byte) ([]byte, error) {
 	if m.searchProductVersionsFn != nil {
 		return m.searchProductVersionsFn(ctx, productID, body)
+	}
+	return []byte(`{}`), nil
+}
+
+func (m *mockEntityProductClient) GetProductRepoMapping(ctx context.Context, name string) ([]byte, error) {
+	if m.getProductRepoMappingFn != nil {
+		return m.getProductRepoMappingFn(ctx, name)
 	}
 	return []byte(`{}`), nil
 }
