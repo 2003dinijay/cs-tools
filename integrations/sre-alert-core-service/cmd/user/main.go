@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -63,10 +64,11 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: user <create|list|enable|disable> [flags]")
-	fmt.Fprintln(os.Stderr, "  create  -username <name> [-secret <value>]   create or rotate a user")
-	fmt.Fprintln(os.Stderr, "  list                                         list all users")
-	fmt.Fprintln(os.Stderr, "  enable  -username <name>                     re-enable a user")
-	fmt.Fprintln(os.Stderr, "  disable -username <name>                     disable a user")
+	fmt.Fprintln(os.Stderr, "  create  -username <name> [-secret <value>] [-created-by <who>] [-ttl <duration>] [-clear-expiry]")
+	fmt.Fprintln(os.Stderr, "                                                 create a user, or rotate its secret if it already exists")
+	fmt.Fprintln(os.Stderr, "  list    [-username <name>]                    list all users, or show one user's full detail")
+	fmt.Fprintln(os.Stderr, "  enable  -username <name>                      re-enable a user")
+	fmt.Fprintln(os.Stderr, "  disable -username <name>                      disable a user")
 }
 
 // connect reads CASSANDRA_* env vars (same ones the server uses) and opens a session.
@@ -86,10 +88,23 @@ func runCreate(repo *auth.UserRepo, args []string) {
 	fs := flag.NewFlagSet("create", flag.ExitOnError)
 	username := fs.String("username", "", "internal user to create, e.g. webhook-integration-user (required)")
 	secret := fs.String("secret", "", "secret to set; if omitted, a random secret is generated and printed once")
+	createdBy := fs.String("created-by", "", "operator provisioning this user; defaults to $USER, falls back to \"unknown\"")
+	ttl := fs.Duration("ttl", 0, "if set, the secret expires this long from now, e.g. 720h")
+	clearExpiry := fs.Bool("clear-expiry", false, "clear any existing expiry, making the secret never expire")
 	fs.Parse(args)
 
 	if *username == "" {
 		log.Fatal("user create: -username is required")
+	}
+	if *ttl > 0 && *clearExpiry {
+		log.Fatal("user create: -ttl and -clear-expiry are mutually exclusive")
+	}
+
+	ctx := context.Background()
+	existing, err := repo.Get(ctx, *username)
+	isNew := errors.Is(err, auth.ErrUserNotFound)
+	if err != nil && !isNew {
+		log.Fatalf("user create: %v", err)
 	}
 
 	plainSecret := *secret
@@ -109,29 +124,81 @@ func runCreate(repo *auth.UserRepo, args []string) {
 	}
 	hash := auth.HashSecret(plainSecret, salt, auth.Iterations)
 
+	now := time.Now().UTC()
 	u := auth.User{
-		Username:   *username,
-		SecretHash: base64.StdEncoding.EncodeToString(hash),
-		Salt:       base64.StdEncoding.EncodeToString(salt),
-		Iterations: auth.Iterations,
-		Enabled:    true,
-		CreatedAt:  time.Now().UTC(),
+		Username:        *username,
+		SecretHash:      base64.StdEncoding.EncodeToString(hash),
+		Salt:            base64.StdEncoding.EncodeToString(salt),
+		Iterations:      auth.Iterations,
+		Enabled:         true,
+		CreatedAt:       now,
+		CreatedBy:       resolveCreatedBy(*createdBy),
+		UpdatedAt:       now,
+		SecretRotatedAt: now,
 	}
-	if err := repo.Upsert(context.Background(), u); err != nil {
+	if !isNew {
+		u.ID = existing.ID
+		u.CreatedAt = existing.CreatedAt
+		if *createdBy == "" {
+			u.CreatedBy = existing.CreatedBy
+		}
+		u.Enabled = existing.Enabled
+		u.ExpiresAt = existing.ExpiresAt
+	} else {
+		id, err := gocql.RandomUUID()
+		if err != nil {
+			log.Fatalf("user create: generate id: %v", err)
+		}
+		u.ID = id
+	}
+	switch {
+	case *clearExpiry:
+		u.ExpiresAt = time.Time{}
+	case *ttl > 0:
+		u.ExpiresAt = now.Add(*ttl)
+	}
+
+	if err := repo.Upsert(ctx, u); err != nil {
 		log.Fatalf("user create: upsert user: %v", err)
 	}
 
-	fmt.Printf("created internal user %q\n", *username)
+	verb := "created"
+	if !isNew {
+		verb = "rotated"
+	}
+	fmt.Printf("%s internal user %q\n", verb, *username)
 	if generated {
 		fmt.Printf("secret (shown once, store securely): %s\n", plainSecret)
 	}
 }
 
+// resolveCreatedBy prefers an explicit -created-by flag, then $USER, then "unknown".
+func resolveCreatedBy(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	return "unknown"
+}
+
 func runList(repo *auth.UserRepo, args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	username := fs.String("username", "", "show full detail for one user instead of the summary table")
 	fs.Parse(args)
 
-	users, err := repo.List(context.Background())
+	ctx := context.Background()
+	if *username != "" {
+		u, err := repo.Get(ctx, *username)
+		if err != nil {
+			log.Fatalf("user list: %v", err)
+		}
+		printUserDetail(u)
+		return
+	}
+
+	users, err := repo.List(ctx)
 	if err != nil {
 		log.Fatalf("user list: %v", err)
 	}
@@ -139,10 +206,32 @@ func runList(repo *auth.UserRepo, args []string) {
 		fmt.Println("no internal users found")
 		return
 	}
-	fmt.Printf("%-30s %-8s %-11s %s\n", "USERNAME", "ENABLED", "ITERATIONS", "CREATED_AT")
+	fmt.Printf("%-30s %-8s %-20s %s\n", "USERNAME", "ENABLED", "CREATED_BY", "EXPIRES_AT")
 	for _, u := range users {
-		fmt.Printf("%-30s %-8t %-11d %s\n", u.Username, u.Enabled, u.Iterations, u.CreatedAt.Format(time.RFC3339))
+		fmt.Printf("%-30s %-8t %-20s %s\n", u.Username, u.Enabled, u.CreatedBy, formatTime(u.ExpiresAt))
 	}
+}
+
+// printUserDetail prints every field of one user, one per line; never prints secret_hash/salt.
+func printUserDetail(u auth.User) {
+	fmt.Printf("username:           %s\n", u.Username)
+	fmt.Printf("id:                 %s\n", u.ID)
+	fmt.Printf("enabled:            %t\n", u.Enabled)
+	fmt.Printf("iterations:         %d\n", u.Iterations)
+	fmt.Printf("created_at:         %s\n", formatTime(u.CreatedAt))
+	fmt.Printf("created_by:         %s\n", u.CreatedBy)
+	fmt.Printf("updated_at:         %s\n", formatTime(u.UpdatedAt))
+	fmt.Printf("secret_rotated_at:  %s\n", formatTime(u.SecretRotatedAt))
+	fmt.Printf("last_used_at:       %s\n", formatTime(u.LastUsedAt))
+	fmt.Printf("expires_at:         %s\n", formatTime(u.ExpiresAt))
+}
+
+// formatTime renders a timestamp as RFC3339, or "-" for an unset (zero) one.
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.Format(time.RFC3339)
 }
 
 func runSetEnabled(repo *auth.UserRepo, args []string, enabled bool) {

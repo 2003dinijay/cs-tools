@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/gocql/gocql"
 	"github.com/scylladb/gocqlx/v2"
@@ -29,7 +30,10 @@ import (
 // ErrUserNotFound marks a lookup for a username with no row in integration_users.
 var ErrUserNotFound = errors.New("internal user not found")
 
-var userColumns = []string{"username", "secret_hash", "salt", "iterations", "enabled", "created_at"}
+var userColumns = []string{
+	"username", "id", "secret_hash", "salt", "iterations", "enabled",
+	"created_at", "created_by", "updated_at", "secret_rotated_at", "last_used_at", "expires_at",
+}
 
 // UserRepo owns the integration_users table.
 type UserRepo struct {
@@ -73,10 +77,10 @@ func (r *UserRepo) List(ctx context.Context) ([]User, error) {
 	return users, nil
 }
 
-// SetEnabled flips a user's enabled flag; used to disable/re-enable an account without deleting its row.
+// SetEnabled flips a user's enabled flag and bumps updated_at; used to disable/re-enable an account without deleting its row.
 func (r *UserRepo) SetEnabled(ctx context.Context, username string, enabled bool) error {
-	stmt, names := qb.Update("integration_users").Set("enabled").Where(qb.Eq("username")).ToCql()
-	if err := r.session.Query(stmt, names).WithContext(ctx).BindMap(qb.M{"username": username, "enabled": enabled}).ExecRelease(); err != nil {
+	stmt, names := qb.Update("integration_users").Set("enabled", "updated_at").Where(qb.Eq("username")).ToCql()
+	if err := r.session.Query(stmt, names).WithContext(ctx).BindMap(qb.M{"username": username, "enabled": enabled, "updated_at": time.Now().UTC()}).ExecRelease(); err != nil {
 		return fmt.Errorf("set enabled=%t for internal user %s: %w", enabled, username, err)
 	}
 	return nil

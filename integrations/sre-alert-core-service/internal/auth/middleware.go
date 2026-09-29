@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const bearerPrefix = "Bearer "
@@ -56,6 +57,12 @@ func RequireAuth(repo *UserRepo, logger *slog.Logger) func(http.Handler) http.Ha
 
 			if !VerifySecret(secret, u.Salt, u.SecretHash, u.Iterations) {
 				logger.Warn("auth: secret mismatch", "username", username)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			if u.IsExpired(time.Now()) {
+				logger.Warn("auth: secret expired", "username", username)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}

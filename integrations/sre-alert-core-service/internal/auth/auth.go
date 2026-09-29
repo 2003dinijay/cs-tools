@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gocql/gocql"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -37,14 +38,25 @@ const KeyLen = 32
 // SaltLen is the random salt length in bytes.
 const SaltLen = 16
 
-// User is one row of alertintegration.integration_users; SecretHash and Salt are base64-encoded.
+// User is one row of alertintegration.integration_users; SecretHash and Salt are base64-encoded. ID/CreatedAt/CreatedBy stay stable across secret rotations; ExpiresAt/LastUsedAt zero means unset (gocql marshals a zero time.Time as CQL NULL).
 type User struct {
-	Username   string    `db:"username"`
-	SecretHash string    `db:"secret_hash"`
-	Salt       string    `db:"salt"`
-	Iterations int       `db:"iterations"`
-	Enabled    bool      `db:"enabled"`
-	CreatedAt  time.Time `db:"created_at"`
+	ID              gocql.UUID `db:"id"`
+	Username        string     `db:"username"`
+	SecretHash      string     `db:"secret_hash"`
+	Salt            string     `db:"salt"`
+	Iterations      int        `db:"iterations"`
+	Enabled         bool       `db:"enabled"`
+	CreatedAt       time.Time  `db:"created_at"`
+	CreatedBy       string     `db:"created_by"`
+	UpdatedAt       time.Time  `db:"updated_at"`
+	SecretRotatedAt time.Time  `db:"secret_rotated_at"`
+	LastUsedAt      time.Time  `db:"last_used_at"`
+	ExpiresAt       time.Time  `db:"expires_at"`
+}
+
+// IsExpired reports whether ExpiresAt is set and in the past relative to now.
+func (u User) IsExpired(now time.Time) bool {
+	return !u.ExpiresAt.IsZero() && now.After(u.ExpiresAt)
 }
 
 // GenerateSalt returns SaltLen random bytes for a new user.
