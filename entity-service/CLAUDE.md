@@ -52,6 +52,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED` | no | `false` | Must be `"true"` for `POST /users/me/memberships/register` to be registered at all (see "Membership registration" below). Off = the route 404s and nothing on that path can write to Salesforce |
 | `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes (see "Salesforce membership ingest" below). The Account branch is unaffected |
 | `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Keep it off while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; `account_vertical` and `secondary_technical_owner_id` are kept when Salesforce sends none |
+| `SALESFORCE_INGEST_RETRY_INTERVAL` | no | `5m` | How often the Salesforce ingest retry worker re-runs memberships whose DATABASE step FAILED because their project or account was not in CSM yet, and how old such a failure must be before it is re-run (see "Salesforce ingest ledger and the delayed-retry job" below). `0` disables the job. Only runs when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true` |
 | `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `false` | Must be `"true"` to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
 
 \* `DB_USER`/`DB_PASSWORD`/`DB_NAME` are required when `DATA_SOURCE=postgres`
@@ -338,6 +339,53 @@ write was based on.
 - `POST /onboarding-steps/search` — `{filters: {projectId?, membershipSfIds?,
   statuses?}, pagination}` → `{steps, total, limit, offset}`, newest first,
   `normalizePagination` (limit 20, max 50).
+
+## Salesforce ingest ledger and the delayed-retry job
+
+`salesforce_ingest_state` (migration 0169) is the per-record ledger of the
+Salesforce ingest for every object that is not a membership (memberships keep
+using `onboarding_step`). One row per (`entity`, `sf_id`), where `entity` is the
+CSM table the record lands in (`domain.SalesforceIngestEntityAccount` = `account`,
+more to come per family); `status` ∈ SUCCEEDED / FAILED (CHECK constraint),
+`event_modified_on` = the Salesforce `LastModifiedDate` the last write was based on,
+`attempt_count` bumped on every write. `repository.SalesforceIngestStateRepository`
+(`Get`, `Upsert`, `ListFailed`) is generic over `entity`; a repository that writes
+its own rows in a transaction records the ledger in that same transaction through
+`upsertSalesforceIngestState(ctx, q querier, ...)`, like `upsertOnboardingStep`. The
+upsert only moves the outcome columns when the incoming version is at least as new,
+or the recorded row was stamped DELETED.
+
+`shouldSkipIngest` (`internal/service/salesforce_ingest_guard.go`) is the duplicate
+guard on that ledger, with `ingestMembership`'s three rules: skip when a SUCCEEDED
+row's `event_modified_on` is not before the incoming version; a missing or
+unparseable `LastModifiedDate` skips the guard (warning logged) and uses
+`time.Now().UTC()`; a row last written by DELETED never blocks. FAILED rows never block.
+
+`EnsureAccount(ctx, sfID)` on the Salesforce event service returns a parent
+account's CSM id for a child ingest: it reads `account.id` by `sf_id`
+(`SalesforceIngestSupport.Accounts`, wired regardless of flags); when absent and the
+Account ingest is on it runs the ordinary `upsertAccount` and reads again; when
+absent and the Account ingest is off it returns `NotFoundError` "account <sfId> not
+in CSM yet".
+
+**The delayed-retry job** (`SalesforceIngestRetryWorker`,
+`internal/service/salesforce_ingest_retry_worker.go`). Service Bus redelivers a
+failed envelope five times within seconds, but a new project reaches CSM through
+the ServiceNow sync up to five minutes later, so a membership on a brand-new project
+dead-letters before its project exists. Started from `routes.go` (it needs the
+membership-ingest-enabled service, publisher included) only when
+`CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true` and
+`SALESFORCE_INGEST_RETRY_INTERVAL` > 0; stopped by the `closePublishers` func
+`cmd/api/main.go` calls on shutdown, before the producers close. Every tick (the
+first one after one interval) it reads DATABASE steps with status FAILED, a
+`last_error` starting "project not found" / "account not found", `updated_on`
+older than the interval and `attempt_count` < 12
+(`OnboardingStepRepository.ListMissingParentFailures`), and re-runs
+`ingestMembership` for each as UPDATED (`RetryMembershipIngest`), 30s timeout each,
+at most 100 per tick. A failed re-run re-records the step with `attempt_count` + 1,
+so a parent that never arrives stops being retried after about an hour at the
+default. FAILED ledger rows are read the same way and handed to
+`EntityRetriers[entity]`; no family registers one yet, so they are only counted.
 
 ## Membership registration (`POST /users/me/memberships/register`)
 

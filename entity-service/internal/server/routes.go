@@ -233,6 +233,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// block builds, so all three are wired together rather than side by side.
 	var membershipIngestSvc service.SalesforceEventService
 	var salesEntityClient *salesentity.Client
+	// ingestRetryCtx stops the Salesforce ingest retry worker; closePublishers
+	// (returned to cmd/api/main.go) cancels it on shutdown.
+	ingestRetryCtx, stopIngestRetry := context.WithCancel(context.Background())
 	// PostgresAuthoritative, not DATA_SOURCE=postgres alone: the dual-write
 	// mode serves memberships from PostgreSQL too, and memberships reach
 	// ServiceNow from Salesforce directly, so nothing here needs its mirror.
@@ -249,21 +252,46 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		if cfg.CSMMigrationSalesforceAccountIngestEnabled {
 			accountIngestRepo = accountRepo
 		}
+		// The shared ingest support is flag-independent: the full account
+		// repository serves EnsureAccount's read even while the Account
+		// branch (the write side) is off, and the salesforce_ingest_state
+		// ledger is where every non-membership family records its version.
+		ingestSupport := service.SalesforceIngestSupport{
+			Accounts: accountRepo,
+			States:   repository.NewSalesforceIngestStateRepository(db),
+		}
 		if cfg.CSMMigrationSalesforceMembershipIngestEnabled {
 			// The membership branch (Project_Contact__c / Contact envelopes)
 			// writes user/account_contact/project_contact rows and the
 			// DATABASE onboarding step, and publishes project_contact.invited
 			// when eventPublisher is configured (nil is a no-op there).
+			stepRepo := repository.NewOnboardingStepRepository(db)
 			membershipIngestSvc = service.NewSalesforceEventServiceWithMembershipIngest(
-				accountIngestRepo, salesEntityClient, service.MembershipIngest{
+				accountIngestRepo, salesEntityClient, ingestSupport, service.MembershipIngest{
 					Memberships: repository.NewProjectMembershipRepository(db),
-					Steps:       repository.NewOnboardingStepRepository(db),
+					Steps:       stepRepo,
 					SalesEntity: salesEntityClient,
 					Publisher:   projectEventPublisher,
 				})
 			salesforceEventHandler = handler.NewSalesforceEventHandler(membershipIngestSvc)
+
+			// The delayed-retry job re-runs memberships whose project or
+			// account was not in CSM when their event arrived. It lives here
+			// rather than in cmd/api/main.go because it needs this very
+			// service (with its publisher, so a re-run invitation is still
+			// announced) and only makes sense when the membership ingest is
+			// on. SALESFORCE_INGEST_RETRY_INTERVAL=0 turns it off.
+			if cfg.SalesforceIngestRetryInterval > 0 {
+				retrier, ok := membershipIngestSvc.(service.MembershipReingester)
+				if !ok {
+					panic("salesforce: membership ingest service does not implement MembershipReingester")
+				}
+				retryWorker := service.NewSalesforceIngestRetryWorker(stepRepo, retrier, ingestSupport.States, cfg.SalesforceIngestRetryInterval)
+				go retryWorker.Run(ingestRetryCtx)
+				log.Printf("salesforce ingest retry worker enabled (every %s)", cfg.SalesforceIngestRetryInterval)
+			}
 		} else {
-			salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient))
+			salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient, ingestSupport))
 		}
 	}
 
@@ -1299,8 +1327,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	// Both producers are closed together: they are constructed under the
 	// same conditions and neither caller has any reason to outlive the
-	// other.
+	// other. The Salesforce ingest retry worker stops first, so a re-run in
+	// flight is not handed a publisher that has already gone away.
 	closePublishers := func() {
+		stopIngestRetry()
 		if eventPublisher != nil {
 			eventPublisher.Close()
 		}

@@ -18,6 +18,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"unicode/utf8"
@@ -60,23 +62,94 @@ func (m *MembershipIngest) enabled() bool {
 	return m != nil && m.Memberships != nil && m.Steps != nil && m.SalesEntity != nil
 }
 
+// errMembershipIngestDisabled is what a membership re-run returns when the
+// service was built without MembershipIngest; the retry job never asks in
+// that case, so seeing it means a wiring mistake.
+var errMembershipIngestDisabled = errors.New("salesforce: membership ingest is disabled")
+
+// AccountLookup resolves a CSM account id by Salesforce Account Id. It is a
+// read-only slice of repository.AccountRepository, kept separate so
+// EnsureAccount can read accounts even when the Account ingest — the write
+// side, s.repo — is off.
+type AccountLookup interface {
+	LookupAccountIDBySfID(ctx context.Context, sfID string) (*string, error)
+}
+
+// SalesforceIngestSupport bundles the dependencies every ingest family
+// shares regardless of which family flags are on: the account lookup behind
+// EnsureAccount and the salesforce_ingest_state ledger behind
+// shouldSkipIngest. Both may be nil; each caller that needs one says so.
+type SalesforceIngestSupport struct {
+	Accounts AccountLookup
+	States   repository.SalesforceIngestStateRepository
+}
+
 type salesforceEventService struct {
 	repo       repository.AccountRepository
 	se         SalesEntityCustomerClient
+	support    SalesforceIngestSupport
 	membership *MembershipIngest
 }
 
 // NewSalesforceEventService constructs a SalesforceEventService that ingests
 // Account events only; Project_Contact__c and Contact envelopes are
 // acknowledged and ignored. A nil repo turns the Account branch off too.
-func NewSalesforceEventService(repo repository.AccountRepository, se SalesEntityCustomerClient) SalesforceEventService {
-	return &salesforceEventService{repo: repo, se: se}
+func NewSalesforceEventService(repo repository.AccountRepository, se SalesEntityCustomerClient, support SalesforceIngestSupport) SalesforceEventService {
+	return &salesforceEventService{repo: repo, se: se, support: support}
 }
 
 // NewSalesforceEventServiceWithMembershipIngest additionally ingests
 // Project_Contact__c and Contact envelopes — see salesforce_membership_ingest.go.
-func NewSalesforceEventServiceWithMembershipIngest(repo repository.AccountRepository, se SalesEntityCustomerClient, ingest MembershipIngest) SalesforceEventService {
-	return &salesforceEventService{repo: repo, se: se, membership: &ingest}
+func NewSalesforceEventServiceWithMembershipIngest(repo repository.AccountRepository, se SalesEntityCustomerClient, support SalesforceIngestSupport, ingest MembershipIngest) SalesforceEventService {
+	return &salesforceEventService{repo: repo, se: se, support: support, membership: &ingest}
+}
+
+// EnsureAccount returns the CSM id of the account with this Salesforce Account
+// Id, for a child ingest (contact, project, opportunity) that needs its parent
+// row before it can write its own. The account is looked up by sf_id; when it
+// is absent and the Account ingest is on (s.repo != nil) the ordinary Account
+// upsert runs first — fetch from Sales Entity, write by natural key — and the
+// lookup is repeated. When it is absent and the Account ingest is off, the
+// account can only arrive through the ServiceNow sync, so the result is a
+// NotFoundError: the caller fails its event, Service Bus redelivers it, and
+// the delayed-retry job re-runs it once the parent has landed. Idempotent —
+// a second call for a present account is one SELECT.
+func (s *salesforceEventService) EnsureAccount(ctx context.Context, sfID string) (string, error) {
+	sfID = strings.TrimSpace(sfID)
+	if sfID == "" {
+		return "", &apierror.ValidationError{Msg: "account sfId is required"}
+	}
+	// The write-side repository can read too; support.Accounts is what
+	// keeps reads possible when the Account ingest is off.
+	lookup := s.support.Accounts
+	if lookup == nil && s.repo != nil {
+		lookup = s.repo
+	}
+	if lookup == nil {
+		return "", errors.New("salesforce: account lookup is not configured")
+	}
+	id, err := lookup.LookupAccountIDBySfID(ctx, sfID)
+	if err != nil {
+		return "", err
+	}
+	if id != nil {
+		return *id, nil
+	}
+	if s.repo == nil {
+		return "", &apierror.NotFoundError{Msg: "account " + sfID + " not in CSM yet"}
+	}
+	slog.InfoContext(ctx, "salesforce: parent account not in CSM yet, ingesting it first", "accountSfId", sfID)
+	if err := s.upsertAccount(ctx, sfID); err != nil {
+		return "", err
+	}
+	id, err = lookup.LookupAccountIDBySfID(ctx, sfID)
+	if err != nil {
+		return "", err
+	}
+	if id == nil {
+		return "", fmt.Errorf("salesforce: account %s was upserted but cannot be read back by sf_id", sfID)
+	}
+	return *id, nil
 }
 
 // HandleEvent implements SalesforceEventService.

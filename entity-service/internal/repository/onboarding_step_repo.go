@@ -19,6 +19,8 @@ package repository
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -40,6 +42,11 @@ type OnboardingStepRepository interface {
 	// Search returns a filtered, paginated slice of steps plus the total match
 	// count, newest first.
 	Search(ctx context.Context, req domain.SearchOnboardingStepsRequest) ([]domain.OnboardingStep, int, error)
+	// ListMissingParentFailures returns DATABASE steps that FAILED because the
+	// membership's project or account was not in CSM yet, were last written
+	// more than olderThan ago and have fewer than maxAttempts attempts, oldest
+	// first, at most limit of them. It is the delayed-retry job's read.
+	ListMissingParentFailures(ctx context.Context, olderThan time.Duration, maxAttempts, limit int) ([]domain.OnboardingStep, error)
 }
 
 type onboardingStepRepo struct {
@@ -203,6 +210,54 @@ func (r *onboardingStepRepo) Search(ctx context.Context, req domain.SearchOnboar
 		return nil, 0, err
 	}
 	return out, total, nil
+}
+
+// missingParentErrorPatterns are the last_error prefixes the membership upsert
+// writes when the project or the account the membership references is not in
+// CSM yet (project_membership_repo.go's two NotFoundErrors). They are the one
+// class of DATABASE failure that fixes itself with time — the parent arrives
+// through its own sync — so they are the only ones worth retrying blind.
+var missingParentErrorPatterns = []string{"project not found%", "account not found%"}
+
+// IsMissingParentError is missingParentErrorPatterns as a Go predicate, for
+// the salesforce_ingest_state rows the retry job filters in memory; keep the
+// two in step.
+func IsMissingParentError(lastError string) bool {
+	msg := strings.ToLower(strings.TrimSpace(lastError))
+	return strings.HasPrefix(msg, "project not found") || strings.HasPrefix(msg, "account not found")
+}
+
+// ListMissingParentFailures implements OnboardingStepRepository. The FAILED
+// partial index (idx_onboarding_step_failed) narrows the scan; the rest of
+// the predicate is cheap on what remains.
+func (r *onboardingStepRepo) ListMissingParentFailures(ctx context.Context, olderThan time.Duration, maxAttempts, limit int) ([]domain.OnboardingStep, error) {
+	rows, err := r.db.Query(ctx, `SELECT `+onboardingStepColumns+`
+		FROM onboarding_step
+		WHERE step = $1::onboarding_step_enum
+		  AND status = $2::onboarding_step_status_enum
+		  AND last_error ILIKE ANY($3::text[])
+		  AND updated_on < NOW() - make_interval(secs => $4::int)
+		  AND attempt_count < $5
+		ORDER BY updated_on, id
+		LIMIT $6`,
+		string(domain.OnboardingStepDatabase), string(domain.OnboardingStepFailed), missingParentErrorPatterns,
+		int(olderThan.Seconds()), maxAttempts, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query missing-parent onboarding step failures: %w", err)
+	}
+	defer rows.Close()
+	out := []domain.OnboardingStep{}
+	for rows.Next() {
+		s, err := scanOnboardingStep(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan onboarding step: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate onboarding steps: %w", err)
+	}
+	return out, nil
 }
 
 // querier is the subset of pgx shared by a pool and a transaction, so the

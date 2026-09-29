@@ -121,6 +121,7 @@ type fakeStepRepo struct {
 	existing []domain.OnboardingStep
 	upserts  []domain.UpsertOnboardingStepRequest
 	getErr   error
+	listErr  error
 }
 
 func (f *fakeStepRepo) Upsert(_ context.Context, req domain.UpsertOnboardingStepRequest) (domain.OnboardingStep, error) {
@@ -215,7 +216,7 @@ func newIngestHarness(pc salesentity.ProjectContact, contact salesentity.Contact
 		h.pub = &fakeInvitePublisher{}
 		ingest.Publisher = h.pub
 	}
-	h.svc = NewSalesforceEventServiceWithMembershipIngest(&stubSalesforceAccountRepo{}, &stubSalesEntityClient{}, ingest)
+	h.svc = NewSalesforceEventServiceWithMembershipIngest(&stubSalesforceAccountRepo{}, &stubSalesEntityClient{}, SalesforceIngestSupport{}, ingest)
 	return h
 }
 
@@ -727,7 +728,7 @@ func TestMembershipIngest_UnknownEntityAndDisabledAreNoOps(t *testing.T) {
 	}
 
 	// Constructed without the ingest (flag off): membership envelopes are acknowledged and ignored.
-	off := NewSalesforceEventService(&stubSalesforceAccountRepo{}, &stubSalesEntityClient{})
+	off := NewSalesforceEventService(&stubSalesforceAccountRepo{}, &stubSalesEntityClient{}, SalesforceIngestSupport{})
 	for _, entity := range []string{"Project_Contact__c", "Contact"} {
 		if err := off.HandleEvent(context.Background(), membershipEvent("UPDATED", entity)); err != nil {
 			t.Errorf("disabled %s: %v", entity, err)
@@ -880,4 +881,18 @@ func TestBuildMembershipUpsert_Fallbacks(t *testing.T) {
 	if _, _, err := buildMembershipUpsert(pc, c); err == nil {
 		t.Error("no email anywhere must be a ValidationError")
 	}
+}
+
+func (f *fakeStepRepo) ListMissingParentFailures(_ context.Context, _ time.Duration, maxAttempts, limit int) ([]domain.OnboardingStep, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	out := []domain.OnboardingStep{}
+	for _, s := range f.existing {
+		if s.Step == domain.OnboardingStepDatabase && s.Status == domain.OnboardingStepFailed &&
+			repository.IsMissingParentError(derefString(s.LastError)) && s.AttemptCount < maxAttempts && len(out) < limit {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }

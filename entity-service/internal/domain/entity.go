@@ -940,6 +940,50 @@ type GetOnboardingStepsResponse struct {
 	Steps []OnboardingStep `json:"steps"`
 }
 
+// SalesforceIngestStatus is salesforce_ingest_state.status: the outcome of the
+// last ingest of one Salesforce record. There is no SKIPPED — a duplicate
+// event is not written to the ledger at all.
+type SalesforceIngestStatus string
+
+const (
+	SalesforceIngestSucceeded SalesforceIngestStatus = "SUCCEEDED"
+	SalesforceIngestFailed    SalesforceIngestStatus = "FAILED"
+)
+
+// SalesforceIngestEntityAccount is the salesforce_ingest_state.entity value
+// of the Account family. Each family that records into the ledger adds its
+// own constant here, named after the CSM table it writes.
+const SalesforceIngestEntityAccount = "account"
+
+// SalesforceIngestState is one row of salesforce_ingest_state — see migration
+// 0169 for the column semantics. It is the ledger the duplicate guard reads
+// for every ingested object other than a membership (those use
+// OnboardingStep), and the failure record the delayed-retry job re-runs.
+type SalesforceIngestState struct {
+	Entity          string                 `json:"entity"`
+	SfID            string                 `json:"sfId"`
+	EventModifiedOn time.Time              `json:"eventModifiedOn"`
+	EventType       string                 `json:"eventType"`
+	Status          SalesforceIngestStatus `json:"status"`
+	LastError       *string                `json:"lastError"`
+	AttemptCount    int                    `json:"attemptCount"`
+	CreatedOn       time.Time              `json:"createdOn"`
+	UpdatedOn       time.Time              `json:"updatedOn"`
+}
+
+// UpsertSalesforceIngestStateRequest is what an ingest writes to the ledger
+// after (or alongside, in the same transaction) its row write. Repeating it
+// for the same (entity, sfId) updates the row and increments attemptCount.
+type UpsertSalesforceIngestStateRequest struct {
+	Entity          string
+	SfID            string
+	EventModifiedOn time.Time
+	EventType       string
+	Status          SalesforceIngestStatus
+	// LastError is the failure text for a FAILED write; nil for SUCCEEDED.
+	LastError *string
+}
+
 // SubscriptionType classifies the subscription type of a project.
 type SubscriptionType string
 

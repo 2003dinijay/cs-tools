@@ -90,6 +90,11 @@ type AccountRepository interface {
 	UpsertFromSalesforce(ctx context.Context, row domain.SalesforceAccountUpsert) error
 	SoftDeleteBySfID(ctx context.Context, sfID string) error
 	LookupUserIDByEmail(ctx context.Context, email string) (*string, error)
+	// LookupAccountIDBySfID returns the id of the account carrying this
+	// Salesforce id, or nil (no error) when there is none. sf_id is not
+	// unique (migration 0095); should more than one row carry it, the
+	// oldest wins, which is the row every earlier ingest already wrote to.
+	LookupAccountIDBySfID(ctx context.Context, sfID string) (*string, error)
 }
 
 type accountRepo struct {
@@ -407,6 +412,18 @@ func (r *accountRepo) LookupUserIDByEmail(ctx context.Context, email string) (*s
 	}
 	if err != nil {
 		return nil, fmt.Errorf("lookup user id by email: %w", err)
+	}
+	return &id, nil
+}
+
+func (r *accountRepo) LookupAccountIDBySfID(ctx context.Context, sfID string) (*string, error) {
+	var id string
+	err := r.db.QueryRow(ctx, `SELECT id::text FROM account WHERE sf_id = $1 ORDER BY created_on, id LIMIT 1`, sfID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup account id by sf_id: %w", err)
 	}
 	return &id, nil
 }

@@ -43,19 +43,31 @@ func (s *stubSalesEntityClient) GetCustomer(_ context.Context, id string) (sales
 
 type stubSalesforceAccountRepo struct {
 	repository.AccountRepository
-	upsertCalls  int
-	lastUpsert   domain.SalesforceAccountUpsert
-	upsertErr    error
-	deleteCalls  int
-	lastDeleteID string
-	deleteErr    error
-	lookup       map[string]string
-	lookupErr    error
+	upsertCalls       int
+	lastUpsert        domain.SalesforceAccountUpsert
+	upsertErr         error
+	deleteCalls       int
+	lastDeleteID      string
+	deleteErr         error
+	lookup            map[string]string
+	lookupErr         error
+	accountsBySfID    map[string]string
+	lookupBySfIDErr   error
+	lookupBySfIDCalls int
+	// registerOnUpsert, when set, makes UpsertFromSalesforce record the
+	// written account under this id so a later LookupAccountIDBySfID finds it.
+	registerOnUpsert string
 }
 
 func (s *stubSalesforceAccountRepo) UpsertFromSalesforce(_ context.Context, row domain.SalesforceAccountUpsert) error {
 	s.upsertCalls++
 	s.lastUpsert = row
+	if s.upsertErr == nil && s.registerOnUpsert != "" {
+		if s.accountsBySfID == nil {
+			s.accountsBySfID = map[string]string{}
+		}
+		s.accountsBySfID[row.SfID] = s.registerOnUpsert
+	}
 	return s.upsertErr
 }
 
@@ -100,7 +112,7 @@ func TestHandleEvent_CreatedUpdatedRestored(t *testing.T) {
 	repo := &stubSalesforceAccountRepo{lookup: map[string]string{
 		"owner@example.com": "user-1",
 	}}
-	svc := NewSalesforceEventService(repo, se)
+	svc := NewSalesforceEventService(repo, se, SalesforceIngestSupport{})
 
 	for _, eventType := range []string{
 		domain.SalesforceEventCreated,
@@ -147,7 +159,7 @@ func TestHandleEvent_CreatedUpdatedRestored(t *testing.T) {
 func TestHandleEvent_Deleted(t *testing.T) {
 	se := &stubSalesEntityClient{}
 	repo := &stubSalesforceAccountRepo{}
-	svc := NewSalesforceEventService(repo, se)
+	svc := NewSalesforceEventService(repo, se, SalesforceIngestSupport{})
 
 	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
 		EventType:   domain.SalesforceEventDeleted,
@@ -170,7 +182,7 @@ func TestHandleEvent_Deleted(t *testing.T) {
 func TestHandleEvent_CustomerWithoutIDIsRefused(t *testing.T) {
 	se := &stubSalesEntityClient{customer: salesentity.Customer{ID: "  ", Name: sampleStr("Acme")}}
 	repo := &stubSalesforceAccountRepo{}
-	svc := NewSalesforceEventService(repo, se)
+	svc := NewSalesforceEventService(repo, se, SalesforceIngestSupport{})
 
 	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
 		EventType: domain.SalesforceEventUpdated, Entity: "Account", ReferenceID: "001xx0000001",
@@ -188,7 +200,7 @@ func TestHandleEvent_CustomerWithoutIDIsRefused(t *testing.T) {
 // Account envelope is acknowledged without a Sales Entity read or a write.
 func TestHandleEvent_AccountIngestDisabledIgnoresAccountEvents(t *testing.T) {
 	se := &stubSalesEntityClient{}
-	svc := NewSalesforceEventService(nil, se)
+	svc := NewSalesforceEventService(nil, se, SalesforceIngestSupport{})
 
 	for _, eventType := range []string{
 		domain.SalesforceEventCreated,
@@ -213,7 +225,7 @@ func TestHandleEvent_AccountIngestDisabledIgnoresAccountEvents(t *testing.T) {
 func TestHandleEvent_UnknownEntityIgnored(t *testing.T) {
 	se := &stubSalesEntityClient{}
 	repo := &stubSalesforceAccountRepo{}
-	svc := NewSalesforceEventService(repo, se)
+	svc := NewSalesforceEventService(repo, se, SalesforceIngestSupport{})
 
 	for _, eventType := range []string{
 		domain.SalesforceEventCreated,
@@ -239,7 +251,7 @@ func TestHandleEvent_UnknownEntityIgnored(t *testing.T) {
 }
 
 func TestHandleEvent_UndefinedAndMissingFields(t *testing.T) {
-	svc := NewSalesforceEventService(&stubSalesforceAccountRepo{}, &stubSalesEntityClient{})
+	svc := NewSalesforceEventService(&stubSalesforceAccountRepo{}, &stubSalesEntityClient{}, SalesforceIngestSupport{})
 	cases := []struct {
 		name string
 		req  domain.SalesforceEventRequest
@@ -262,7 +274,7 @@ func TestHandleEvent_UndefinedAndMissingFields(t *testing.T) {
 
 func TestHandleEvent_EmptySearchIs503(t *testing.T) {
 	se := &stubSalesEntityClient{err: &apierror.ServiceUnavailableError{Msg: "salesentity: customer not found"}}
-	svc := NewSalesforceEventService(&stubSalesforceAccountRepo{}, se)
+	svc := NewSalesforceEventService(&stubSalesforceAccountRepo{}, se, SalesforceIngestSupport{})
 
 	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
 		EventType:   domain.SalesforceEventCreated,
@@ -279,7 +291,7 @@ func TestHandleEvent_MissingNameIs503(t *testing.T) {
 	cust := sampleCustomer()
 	cust.Name = sampleStr("  ")
 	se := &stubSalesEntityClient{customer: cust}
-	svc := NewSalesforceEventService(&stubSalesforceAccountRepo{}, se)
+	svc := NewSalesforceEventService(&stubSalesforceAccountRepo{}, se, SalesforceIngestSupport{})
 
 	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
 		EventType:   domain.SalesforceEventCreated,
@@ -295,7 +307,7 @@ func TestHandleEvent_MissingNameIs503(t *testing.T) {
 func TestHandleEvent_MissingOwnerLeavesFKNull(t *testing.T) {
 	se := &stubSalesEntityClient{customer: sampleCustomer()}
 	repo := &stubSalesforceAccountRepo{lookup: map[string]string{}}
-	svc := NewSalesforceEventService(repo, se)
+	svc := NewSalesforceEventService(repo, se, SalesforceIngestSupport{})
 
 	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
 		EventType:   domain.SalesforceEventUpdated,
@@ -330,7 +342,7 @@ func TestHandleEvent_OverlengthPhoneLeavesExisting(t *testing.T) {
 	cust.Phone = sampleStr("+49 40 123456789012345")
 	se := &stubSalesEntityClient{customer: cust}
 	repo := &stubSalesforceAccountRepo{}
-	svc := NewSalesforceEventService(repo, se)
+	svc := NewSalesforceEventService(repo, se, SalesforceIngestSupport{})
 
 	err := svc.HandleEvent(context.Background(), domain.SalesforceEventRequest{
 		EventType:   domain.SalesforceEventUpdated,
@@ -366,4 +378,15 @@ func asSvcUnavailable(err error, target **apierror.ServiceUnavailableError) bool
 		return true
 	}
 	return false
+}
+
+func (s *stubSalesforceAccountRepo) LookupAccountIDBySfID(_ context.Context, sfID string) (*string, error) {
+	s.lookupBySfIDCalls++
+	if s.lookupBySfIDErr != nil {
+		return nil, s.lookupBySfIDErr
+	}
+	if id, ok := s.accountsBySfID[sfID]; ok {
+		return &id, nil
+	}
+	return nil, nil
 }

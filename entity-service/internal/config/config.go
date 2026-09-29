@@ -219,6 +219,17 @@ type Config struct {
 	// envDuration convention as CRNoticePollInterval/GithubOutboundInterval
 	// above.
 	SLARecomputeInterval time.Duration
+	// SalesforceIngestRetryInterval is how often SalesforceIngestRetryWorker
+	// re-runs Salesforce ingests that FAILED because the record's parent
+	// (project, account) was not in CSM yet
+	// (internal/service/salesforce_ingest_retry_worker.go), and also how
+	// old a failure must be before it is re-run. From
+	// SALESFORCE_INGEST_RETRY_INTERVAL; defaults to 5m, the ServiceNow
+	// sync's own cadence. Unlike the other intervals, an explicit "0"
+	// disables the job (envDurationOrOff), because it makes outbound Sales
+	// Entity calls on its own initiative and an operator must be able to
+	// stop that without turning the ingest off.
+	SalesforceIngestRetryInterval time.Duration
 	// Auth* configure token validation (internal/auth), always on -- there is
 	// no config flag to disable it. AuthIssuer/AuthJWKSURL/
 	// AuthUserTokenAudiences are required (Validate rejects startup without
@@ -356,6 +367,7 @@ func Load() *Config {
 		CustomerRoles:                                 splitComma(os.Getenv("CUSTOMER_ROLES")),
 		CSEngineerRole:                                os.Getenv("CS_ENGINEER_ROLE"),
 		SLARecomputeInterval:                          envDuration("SLA_RECOMPUTE_INTERVAL", 45*time.Second),
+		SalesforceIngestRetryInterval:                 envDurationOrOff("SALESFORCE_INGEST_RETRY_INTERVAL", 5*time.Minute),
 		SalesEntityBaseURL:                            os.Getenv("SALES_ENTITY_BASE_URL"),
 		SalesEntityTokenURL:                           os.Getenv("SALES_ENTITY_TOKEN_URL"),
 		SalesEntityClientID:                           os.Getenv("SALES_ENTITY_CLIENT_ID"),
@@ -667,6 +679,21 @@ func envDuration(key string, def time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil || d <= 0 {
+		return def
+	}
+	return d
+}
+
+// envDurationOrOff is envDuration for an interval that can be switched off:
+// an explicit zero ("0", "0s", "0m") returns 0, which the caller reads as
+// "disabled". Unset, unparseable and negative values still fall back to def.
+func envDurationOrOff(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
 		return def
 	}
 	return d

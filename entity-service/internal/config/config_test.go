@@ -16,7 +16,10 @@
 
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // baseValidConfig returns a minimally valid postgres-backed Config so each
 // test only needs to override the field(s) under test.
@@ -576,6 +579,21 @@ func TestConfig_PostgresAuthoritative(t *testing.T) {
 		c := Config{DataSource: ds}
 		if got := c.PostgresAuthoritative(); got != want {
 			t.Errorf("DataSource %q: PostgresAuthoritative() = %v, want %v", ds, got, want)
+		}
+	}
+}
+
+// TestLoad_SalesforceIngestRetryInterval pins the one interval that can be
+// switched off: unset is the 5m default, an explicit zero disables the retry
+// job, and a typo or a negative value costs the override, not the default.
+func TestLoad_SalesforceIngestRetryInterval(t *testing.T) {
+	for value, want := range map[string]time.Duration{
+		"": 5 * time.Minute, "0": 0, "0s": 0, "0m": 0, "2m": 2 * time.Minute, "90s": 90 * time.Second,
+		"bogus": 5 * time.Minute, "-1m": 5 * time.Minute,
+	} {
+		t.Setenv("SALESFORCE_INGEST_RETRY_INTERVAL", value)
+		if got := Load().SalesforceIngestRetryInterval; got != want {
+			t.Errorf("SALESFORCE_INGEST_RETRY_INTERVAL=%q -> %v, want %v", value, got, want)
 		}
 	}
 }
