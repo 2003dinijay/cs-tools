@@ -596,6 +596,9 @@ func (h *CaseHandler) SearchCaseComments(w http.ResponseWriter, r *http.Request)
 		mapUpstreamErrorGeneric(w, err, "Failed to search case comments.")
 		return
 	}
+	if shouldRedactInlineImages(h.access, user.Roles) {
+		result = redactRawBase64Images(result)
+	}
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -637,6 +640,9 @@ func (h *CaseHandler) SearchCaseActivities(w http.ResponseWriter, r *http.Reques
 		slog.ErrorContext(r.Context(), "entity SearchCaseActivities failed", "userID", user.UserID, "caseID", caseID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to search case activities.")
 		return
+	}
+	if shouldRedactInlineImages(h.access, user.Roles) {
+		result = redactRawBase64Images(result)
 	}
 
 	writeJSON(w, http.StatusOK, result)
@@ -739,6 +745,9 @@ func (h *CaseHandler) SearchCases(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(r.Context(), "entity SearchCases failed", "userID", user.UserID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to search cases.")
 		return
+	}
+	if shouldRedactInlineImages(h.access, user.Roles) {
+		result = redactRawBase64Images(result)
 	}
 
 	writeJSON(w, http.StatusOK, result)
@@ -1563,6 +1572,9 @@ func (h *CaseHandler) GetCase(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(r.Context(), "failed to inject nextStates", "userID", user.UserID, "caseID", caseID, "err", err)
 		writeError(w, http.StatusInternalServerError, "Failed to process case details.")
 		return
+	}
+	if shouldRedactInlineImages(h.access, user.Roles) {
+		result = redactRawBase64Images(result)
 	}
 
 	writeJSON(w, http.StatusOK, result)
