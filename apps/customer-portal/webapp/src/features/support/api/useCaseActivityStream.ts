@@ -63,7 +63,6 @@ export function useCaseActivityStream(caseId: string | undefined): void {
     let source: EventSourcePolyfill | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
-    let hasConnected = false;
 
     const invalidateCaseQueries = (): void => {
       // Invalidated by key prefix rather than the queries' full keys, which
@@ -108,22 +107,12 @@ export function useCaseActivityStream(caseId: string | undefined): void {
       });
 
       source.addEventListener("open", () => {
-        // A successful connection resets the backoff — only *consecutive*
-        // failures should back off, not the cumulative count over the
-        // component's whole lifetime.
+        // Only *consecutive* failures should back off.
         attempt = 0;
 
-        // The stream only ever carries events published while a connection
-        // is registered — the service's hub hands a new subscriber a fresh
-        // channel and its consumer reads from the latest offset, so nothing
-        // missed during a drop is replayed. Refetch on every *re*connection
-        // to close that gap, which the deployment's own connection lifetime
-        // makes a routine occurrence rather than an edge case. Skipped on the
-        // first connection, where the queries have just loaded anyway.
-        if (hasConnected) {
-          invalidateCaseQueries();
-        }
-        hasConnected = true;
+        // Nothing published before the subscriber registers is replayed, so
+        // refetch on every connection to cover that window.
+        invalidateCaseQueries();
       });
 
       source.addEventListener("case_updated", invalidateCaseQueries);
