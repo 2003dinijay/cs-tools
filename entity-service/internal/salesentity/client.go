@@ -122,7 +122,7 @@ type ProjectContactSubscription struct {
 }
 
 // Contact is the subset of a REST sales/sales-entity-service Contact
-// (POST /contacts/search) the membership ingest needs.
+// (POST /contacts/search) the membership ingest and the Contact writer need.
 type Contact struct {
 	ID                  *string             `json:"id"`
 	Email               *string             `json:"email"`
@@ -135,6 +135,18 @@ type Contact struct {
 	Account             *ContactAccount     `json:"account"`
 	Memberships         []ContactMembership `json:"memberships"`
 	LastModifiedDate    *string             `json:"lastModifiedDate"`
+
+	// IsPrimaryContact is Contact.primary_contact__c, written to
+	// account_contact.is_primary_contact. Sales Entity always sends it; nil
+	// means a response without the key, and the stored value is then kept.
+	IsPrimaryContact *bool `json:"isPrimaryContact"`
+	// AccountID is the contact's parent account Id, exposed flat beside the
+	// nested account.id (the two carry the same value).
+	AccountID *string `json:"accountId"`
+	// UserActive is Contact.User_Active__c. It is decoded ahead of the Sales
+	// Entity release that exposes it and is not written anywhere yet; nil
+	// while Sales Entity does not send it.
+	UserActive *bool `json:"userActive"`
 }
 
 // ContactAccount is the parent account of a Contact.

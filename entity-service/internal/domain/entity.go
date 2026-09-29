@@ -643,10 +643,21 @@ type SalesforceMembershipUpsert struct {
 	ProjectSfID string
 	ProjectKey  string
 
+	// IsPrimaryContact is the contact's Salesforce primary_contact__c,
+	// written to account_contact.is_primary_contact on insert and update.
+	// nil (the portal writes, or a Sales Entity response without the key)
+	// inserts FALSE and leaves an existing row's value alone.
+	IsPrimaryContact *bool
+
 	// GlobalRoles are the role.name values the user must hold after the upsert
-	// (e.g. external, customer, customer_admin). Roles not listed here and not
-	// in ManagedAdminRoles are left untouched.
+	// (e.g. external, customer). Roles not listed here and not in
+	// ManagedGlobalRoles or ManagedAdminRoles are left untouched.
 	GlobalRoles []string
+	// ManagedGlobalRoles is the {customer, partner} pair when the contact's
+	// account classification is known: every role in it that GlobalRoles
+	// does not list is revoked, so a reclassified account flips the role
+	// instead of accumulating both. Empty revokes nothing.
+	ManagedGlobalRoles []string
 	// ManagedAdminRoles are the role.name values the ingest owns exclusively
 	// (customer_admin, partner_admin). Exactly one of them is granted when
 	// the user turns out to be an admin, and every one of them that is not
@@ -654,9 +665,9 @@ type SalesforceMembershipUpsert struct {
 	// alone.
 	ManagedAdminRoles []string
 	// AdminRoleName is which of ManagedAdminRoles this contact would hold if
-	// they are an admin: partner_admin for a PARTNER CONTACT, customer_admin
-	// otherwise, and empty for an integration user (which gets no global
-	// roles at all).
+	// they are an admin: partner_admin when the contact's account is
+	// classified Partner, customer_admin otherwise, and empty for an
+	// integration user (which gets no global roles at all).
 	//
 	// WHETHER they hold it is NOT decided from the membership being written.
 	// Admin is a project role now, and the account-level role is derived: the
@@ -695,6 +706,53 @@ type SalesforceMembershipUpsertResult struct {
 	// just applied: true when at least one of this user's live memberships
 	// carries the project ADMIN role (or the contact's Salesforce isCsAdmin
 	// flag is set), which is exactly when AdminRoleName is held.
+	IsAccountAdmin bool
+}
+
+// SalesforceContactUpsert is the Contact writer's input: one Salesforce
+// Contact, resolved to its CSM account, written to "user", account_contact
+// and the contact-derived part of user_role in one transaction. It exists so
+// a contact with no project membership (a commercial or billing contact) is
+// still represented in CSM, and so a contact edit is applied once rather
+// than once per membership.
+type SalesforceContactUpsert struct {
+	ContactSfID string
+	// Email is the contact's address, lower-cased; it resolves the user when
+	// no row carries ContactSfID yet.
+	Email     string
+	Name      string
+	FirstName string
+	LastName  string
+	// AccountID is the CSM id of the contact's account (EnsureAccount has
+	// already resolved or created it); AccountSfID is its Salesforce Id.
+	AccountID   string
+	AccountSfID string
+	// IsPrimaryContact is written to account_contact.is_primary_contact; nil
+	// keeps the stored value (FALSE on insert).
+	IsPrimaryContact    *bool
+	IsCsAdmin           bool
+	IsCsIntegrationUser bool
+
+	// The role fields mean what they mean on SalesforceMembershipUpsert.
+	GlobalRoles        []string
+	ManagedGlobalRoles []string
+	ManagedAdminRoles  []string
+	AdminRoleName      string
+}
+
+// SalesforceContactUpsertResult reports what the Contact writer resolved or
+// changed.
+type SalesforceContactUpsertResult struct {
+	UserID                string
+	AccountContactID      string
+	CreatedUser           bool
+	CreatedAccountContact bool
+	// DeactivatedAccountContacts counts the account_contact rows on other
+	// accounts that this write deactivated because the contact moved away
+	// from them.
+	DeactivatedAccountContacts int64
+	// IsAccountAdmin is the derived admin decision, as on
+	// SalesforceMembershipUpsertResult.
 	IsAccountAdmin bool
 }
 
@@ -954,6 +1012,11 @@ const (
 // of the Account family. Each family that records into the ledger adds its
 // own constant here, named after the CSM table it writes.
 const SalesforceIngestEntityAccount = "account"
+
+// SalesforceIngestEntityContact is the salesforce_ingest_state.entity value
+// of the Contact writer, which owns the "user" and account_contact rows of a
+// Salesforce Contact (two tables, so the ledger names the Salesforce concept).
+const SalesforceIngestEntityContact = "contact"
 
 // SalesforceIngestState is one row of salesforce_ingest_state — see migration
 // 0169 for the column semantics. It is the ledger the duplicate guard reads

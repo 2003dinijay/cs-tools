@@ -53,6 +53,10 @@ type MembershipIngest struct {
 	Memberships repository.ProjectMembershipRepository
 	Steps       repository.OnboardingStepRepository
 	SalesEntity SalesEntityMembershipClient
+	// Contacts is the Contact writer's store ("user" and account_contact of
+	// a Contact, with or without memberships). Contact events need it and
+	// SalesforceIngestSupport.States; Project_Contact__c events do not.
+	Contacts repository.SalesforceContactRepository
 	// Publisher may be nil (Event Hub unconfigured): project_contact.invited
 	// is then not published, the database write still happens.
 	Publisher EventPublisherService

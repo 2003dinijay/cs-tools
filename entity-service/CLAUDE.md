@@ -50,7 +50,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `SALES_ENTITY_CLIENT_SECRET` | no* | — | Choreo connection client secret |
 | `SALES_ENTITY_SCOPES` | no | — | Optional space-separated OAuth2 scopes for REST `sales/sales-entity-service` |
 | `CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED` | no | `false` | Must be `"true"` for `POST /users/me/memberships/register` to be registered at all (see "Membership registration" below). Off = the route 404s and nothing on that path can write to Salesforce |
-| `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes (see "Salesforce membership ingest" below). The Account branch is unaffected |
+| `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes, the Contact writer included (see "Salesforce membership ingest" and "The Contact writer" below). The Account branch is unaffected |
 | `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Keep it off while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; `account_vertical` and `secondary_technical_owner_id` are kept when Salesforce sends none |
 | `SALESFORCE_INGEST_RETRY_INTERVAL` | no | `5m` | How often the Salesforce ingest retry worker re-runs memberships whose DATABASE step FAILED because their project or account was not in CSM yet, and how old such a failure must be before it is re-run (see "Salesforce ingest ledger and the delayed-retry job" below). `0` disables the job. Only runs when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true` |
 | `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `false` | Must be `"true"` to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
@@ -201,7 +201,8 @@ The same `POST /salesforce/events` endpoint also ingests customer **memberships*
 acknowledges those entities with 204 and ignores them (the behaviour before this
 branch existed). On, it uses `NewSalesforceEventServiceWithMembershipIngest`
 with a `service.MembershipIngest` (membership repo, onboarding-step repo, the
-same `salesentity.Client`, and the optional `eventPublisher`). This is the
+same `salesentity.Client`, the Contact writer's `SalesforceContactRepository`,
+and the optional `eventPublisher`). This is the
 **only** writer of customer memberships into Postgres: the customer portal and
 the hourly reconcile job never write these tables themselves, they replay the
 envelope (`{eventType, entity: "Project_Contact__c", referenceId}`) to this
@@ -214,9 +215,9 @@ an alias of `Project_Contact__c`, and the raw value is logged):
 | Entity | Event | Action |
 |---|---|---|
 | `Project_Contact__c` | CREATED / UPDATED / RESTORED | `GetProjectContact` (REST `POST /project-contacts/search`) then `GetContact` (`POST /contacts/search`) → `ProjectMembershipRepository.Upsert` in one transaction → DATABASE step → publish `project_contact.invited` if the state is INVITED / RE-INVITED. It is published to **`PROJECT_EVENT_HUB_TOPIC`** (default `project-events`), not the shared `EVENT_HUB_TOPIC`: onboarding gets its own topic so a case-event backlog cannot delay an invitation, and its dead-letter queue can be watched on its own. Same broker and credentials, same failure recording — only the topic differs, and csm-notification-service consumes it with its own consumer group. |
-| `Project_Contact__c` | DELETED | `project_contact.state = DEACTIVATED` for that `sf_id`; unknown id is a no-op (still 204). Never `DELETE FROM` |
-| `Contact` | UPDATED | `GetContact`, then the CREATED/UPDATED path above for each of its `memberships` (name / email / `isCsAdmin` / `isCsIntegrationUser` changes propagate); every membership is attempted, the first error is returned |
-| `Contact` | CREATED / DELETED | no-op |
+| `Project_Contact__c` | DELETED | `project_contact.state = DEACTIVATED` for that `sf_id`, and in the same transaction the user's account-level admin role is re-derived (`syncDerivedAdminRole`; the contact is read for its classification and `isCsAdmin`, and an unreadable contact leaves the roles alone); unknown id is a no-op (still 204). Never `DELETE FROM` |
+| `Contact` | CREATED / UPDATED / RESTORED | The Contact writer (below): `GetContact` once, write `"user"` / `account_contact` / contact-derived roles + ledger, then the CREATED/UPDATED path above for each of its `memberships` **with the fetched contact** (no second read); every membership is attempted, the first error is returned |
+| `Contact` | DELETED | No fetch: `account_contact.is_active` and `"user".is_active` = FALSE by `sf_id`, ledger stamped DELETED. Never a hard delete |
 | anything else | any | 204, ignored |
 
 An empty sales-entity-service result is a 503 (the ASB event can arrive before
@@ -239,19 +240,30 @@ back-filled instead of duplicated:
 
 1. `project` by `key` (the Salesforce subscription key), then by `sf_id` → 404.
 2. `account` by `sf_id = contact.customerId`; a non-PARTNER membership falls
-   back to the project's own account → 404.
+   back to the project's own account → 404. (The Contact writer, which runs
+   first on a Contact event, ensures the contact's account with
+   `EnsureAccount`; this step does not.)
 3. `"user"` by `sf_id`, else by `LOWER(email)` — exactly one (`"user".email` is
    not unique; two matches are a 409 rather than a guess) — else inserted with
    `user_name = lower(email)`, `is_active = true`, `is_system_user =
    isCsIntegrationUser`. An existing row gets name / email / `is_system_user`
    refreshed, **never `user_name`** (it is the join key to `account_contact`).
-4. Global roles (`user_role`, `mapGlobalRoles`): always `external`; `partner`
-   for a PARTNER CONTACT else `customer`. Nothing is revoked here. An
-   integration user gets no global roles at all. A role name missing from the
-   `role` table is a 503 naming it — the ServiceNow sync seeds those rows.
-   The admin role is **not** decided at this step any more — see step 8.
+4. Global roles (`user_role`, `mapGlobalRoles`): always `external`, plus
+   `partner` when the **contact's account classification** is `Partner`
+   (case-insensitive) and `customer` otherwise — decision D1, the ServiceNow
+   script's basis; it used to follow the membership type (`PARTNER CONTACT`).
+   `{customer, partner}` is a managed pair (`ManagedGlobalRoles`): the other
+   half is revoked, so a reclassified account flips the role. When the
+   classification is unknown (a portal write that has just created the
+   contact) the contact is a customer and nothing is revoked. An integration
+   user gets no global roles at all and nothing is revoked. A role name
+   missing from the `role` table is a 503 naming it — the ServiceNow sync
+   seeds those rows. The admin role is **not** decided at this step — see
+   step 8.
 5. `account_contact` by (`sf_id`, account), else (account, `LOWER(user_name)`),
-   else inserted (`is_active = true`, `is_primary_contact = false`).
+   else inserted (`is_active = true`). `is_primary_contact` is Salesforce's
+   `isPrimaryContact` on insert and update; when Sales Entity sends none it is
+   FALSE on insert and left alone on update (the portal writes send none).
 6. `project_contact` by `sf_id`, else (project, account_contact), else
    inserted; `email` and `state` (`INVITED` / `REGISTERED` / `RE-INVITED` /
    `DEACTIVATED`, `normalizeMembershipState`; anything else is a 400) updated.
@@ -260,17 +272,25 @@ back-filled instead of duplicated:
    `Portal user` → `General Access`; `Security Contact` → `Security Only`;
    `Lead` additionally → `Lead User Group`; `Admin` additionally → `Admin`
    (the group carrying the `ADMIN` project role, migration 0128 — `Admin`
-   used to be global-only and recorded nothing per project); unknown roles are
-   logged as `ignoredRoles` and never fail the ingest. The row set is
-   replaced. A missing `project_group` row is a 503.
-8. The derived account-level admin roles (`syncDerivedAdminRole`), run
-   **after** step 7 so the membership just written counts: one aggregate over
-   every membership this user holds, deciding `customer_admin` and
-   `partner_admin` **separately** — each from the live ADMIN memberships that
-   can support it — then granting each role it earned and revoking each one it
-   did not. The contact's own `isCsAdmin` is an additional grant of the role
-   *this* membership maps to. See "Admin is a project role" below for the two
-   bugs this replaced.
+   used to be global-only and recorded nothing per project); `Business
+   Contact` additionally → `Business Contact  Group` (**two spaces**, the name
+   ServiceNow gave it and the one stored in `project_group`, matched exactly;
+   it carries the `BUSINESS_CONTACT` project role), so a contact can be, say,
+   Portal user + Business Contact. The six labels with no CSM group (Business
+   Owner / Promoter / Detractor, Technical Owner / Champion / Detractor) are
+   ignored by decision D2; they and any unknown label are logged once per
+   membership (`ignoredRoles` at info level, `unknownRoles` as a warning) and
+   never fail the ingest. The row set is replaced. A missing `project_group`
+   row is a 503. `salesforceRolesForGroups` maps the group back to `Business
+   Contact`, so a portal deactivation that writes the stored roles back to
+   Salesforce keeps it; the portal writes do not accept it as input.
+8. The derived account-level admin role (`syncDerivedAdminRole`), run
+   **after** step 7 so the membership just written counts: the user is an
+   admin when any of their live memberships carries the ADMIN project role or
+   the contact's `isCsAdmin` is set; the role is `partner_admin` for a
+   Partner-classified account and `customer_admin` otherwise (the same basis
+   as step 4), and the other one is always revoked. See "Admin is a project
+   role" below for the bugs this replaced.
 
 The DATABASE `onboarding_step` is written **inside the same transaction**
 (`upsertOnboardingStep` takes a `querier`, satisfied by both the pool and a
@@ -316,8 +336,65 @@ back.
 and `project_contact` come from the csm-sync migration 0076, which is not in
 this repo's `migrations/`; the ingest fails at the first `SELECT ... sf_id`
 without it. `role` must contain `external`, `customer`, `partner`,
-`customer_admin`, `partner_admin`; `project_group` must contain the four
-groups above.
+`customer_admin`, `partner_admin`; `project_group` must contain the groups
+above (`Business Contact  Group` included, for a membership carrying that
+label).
+
+### The Contact writer
+
+Before it, a Contact event only refreshed the contact's existing memberships,
+so a contact with no membership (how a commercial or billing contact is
+onboarded) wrote nothing to CSM. The Contact writer
+(`internal/service/salesforce_contact_ingest.go`,
+`repository.SalesforceContactRepository`) owns a contact's `"user"` and
+`account_contact` rows and the contact-derived part of `user_role`, under the
+same `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` flag; the membership
+upsert stays the only writer of `project_contact`.
+
+CREATED / UPDATED / RESTORED (`ingestContact`):
+
+1. `GetContact` once. Sales Entity fields read beyond the membership path's:
+   `isPrimaryContact`, `accountId` (else `account.id`), `account.classification`.
+   `userActive` is decoded ahead of the Sales Entity release that exposes it
+   and is not written yet.
+2. Duplicate guard: `shouldSkipIngest` on the ledger (entity
+   `domain.SalesforceIngestEntityContact` = `contact`) with the contact's
+   `lastModifiedDate`. A duplicate skips the contact write but **not** the
+   membership fan-out, so a membership that failed on the first delivery is
+   retried by the redelivery (each membership has its own guard).
+3. No account on the contact: logged, nothing written (account_contact needs
+   one), fan-out still runs. Otherwise `EnsureAccount` on the contact's
+   account; a failure (`NotFoundError` when the account is not in CSM and the
+   Account ingest is off) records the ledger FAILED and fails the event, so
+   Service Bus redelivers it. So does a contact with no email (400) or a
+   failed write.
+4. One transaction, under a transaction-scoped advisory lock on the contact
+   `sf_id`: `"user"` via `upsertMembershipUser` (by `sf_id`, then unique email;
+   `user_name` never renamed; a user this writer soft-deleted — ledger
+   DELETED — is reactivated, nobody else's `is_active` is touched); global
+   roles via `syncGlobalRoles` with the managed `{customer, partner}` pair;
+   `account_contact` via `upsertAccountContact` with `is_primary_contact`;
+   the account move — the contact's active `account_contact` rows on other
+   accounts go `is_active = FALSE`, **unless** the contact still holds a live
+   (non-DEACTIVATED) membership on a project of that account (a partner
+   contact legitimately keeps a row there); `syncDerivedAdminRole`; the ledger
+   row SUCCEEDED.
+5. Fan out to `contact.memberships` through `ingestMembership`, passing the
+   fetched contact (re-read only if it is not the membership's own contact).
+   The fan-out re-points each membership at the new account's
+   `account_contact`.
+
+Integration users keep the ingest's behaviour: a `"user"` with
+`is_system_user = TRUE` and an `account_contact`, no global roles, no admin
+decision.
+
+DELETED (`deactivateContact`): no fetch (Salesforce hides deleted records).
+`account_contact.is_active` and `"user".is_active` go FALSE by `sf_id`, and the
+ledger row is stamped DELETED, keeping its recorded version (or now, for a
+contact never ingested), so a later RESTORED is not skipped as a duplicate.
+Nothing is hard-deleted: `project_contact` and `onboarding_step` reference these
+rows. Roles are left alone (Salesforce deletes the memberships with their own
+events).
 
 **Onboarding steps API** (`onboarding_step`, migration 0118; Postgres-only,
 404 without a pool, like `scheduled_task_run`): one row per
@@ -346,7 +423,8 @@ write was based on.
 Salesforce ingest for every object that is not a membership (memberships keep
 using `onboarding_step`). One row per (`entity`, `sf_id`), where `entity` is the
 CSM table the record lands in (`domain.SalesforceIngestEntityAccount` = `account`,
-more to come per family); `status` ∈ SUCCEEDED / FAILED (CHECK constraint),
+`domain.SalesforceIngestEntityContact` = `contact` for the Contact writer, which
+writes two tables; more to come per family); `status` ∈ SUCCEEDED / FAILED (CHECK constraint),
 `event_modified_on` = the Salesforce `LastModifiedDate` the last write was based on,
 `attempt_count` bumped on every write. `repository.SalesforceIngestStateRepository`
 (`Get`, `Upsert`, `ListFailed`) is generic over `entity`; a repository that writes
@@ -386,6 +464,8 @@ at most 100 per tick. A failed re-run re-records the step with `attempt_count` +
 so a parent that never arrives stops being retried after about an hour at the
 default. FAILED ledger rows are read the same way and handed to
 `EntityRetriers[entity]`; no family registers one yet, so they are only counted.
+(The Contact writer's FAILED rows are not re-run by the job: `EnsureAccount`'s
+"account <sfId> not in CSM yet" does not match the missing-parent prefixes.)
 
 ## Membership registration (`POST /users/me/memberships/register`)
 
@@ -1177,27 +1257,27 @@ project under that account, and nothing outside it.
   `mapProjectGroups` maps Salesforce `Admin` → that group, alongside the
   existing PORTAL_USER / LEAD_USER / SECURITY_CONTACT mappings.
 - `mapGlobalRoles` no longer decides admin at all. It returns `external` plus
-  `customer`/`partner` exactly as before, and separately reports **which** of
-  the two admin roles this contact would hold
-  (`SalesforceMembershipUpsert.AdminRoleName`) — never whether they hold it.
+  `customer`/`partner` (from the contact's account classification, decision
+  D1), and separately reports **which** of the two admin roles this contact
+  would hold (`SalesforceMembershipUpsert.AdminRoleName`: `partner_admin` for
+  a Partner-classified account, else `customer_admin`) — never whether they
+  hold it.
 - `syncDerivedAdminRole` (step 8 of the upsert, after the project groups are
-  written) decides that, as **one query over the user's memberships** that
-  answers for both managed roles at once:
+  written; also the Contact writer, and the membership DELETED path) decides
+  that, as **one query over the user's memberships**:
 
   ```sql
-  SELECT
-    COALESCE(bool_or(ac.account_id  = p.account_id), FALSE),  -- earns customer_admin
-    COALESCE(bool_or(ac.account_id <> p.account_id), FALSE)   -- earns partner_admin
-  FROM "user" u
-  JOIN account_contact ac ON LOWER(ac.user_name) = LOWER(u.user_name)
-  JOIN project_contact pc ON pc.account_contact_id = ac.id
-  JOIN project p ON p.id = pc.project_id
-  JOIN project_contact_group pcg ON pcg.project_contact_id = pc.id
-  JOIN project_group_role pgr ON pgr.project_group_id = pcg.project_group_id
-  JOIN project_role pr ON pr.id = pgr.project_role_id
-  WHERE u.id = $1
-    AND pr.role = 'ADMIN'::project_role_enum
-    AND (pc.state IS NULL OR pc.state <> 'DEACTIVATED'::project_contact_state_enum)
+  SELECT EXISTS (
+    SELECT 1
+    FROM "user" u
+    JOIN account_contact ac ON LOWER(ac.user_name) = LOWER(u.user_name)
+    JOIN project_contact pc ON pc.account_contact_id = ac.id
+    JOIN project_contact_group pcg ON pcg.project_contact_id = pc.id
+    JOIN project_group_role pgr ON pgr.project_group_id = pcg.project_group_id
+    JOIN project_role pr ON pr.id = pgr.project_role_id
+    WHERE u.id = $1
+      AND pr.role = 'ADMIN'::project_role_enum
+      AND (pc.state IS NULL OR pc.state <> 'DEACTIVATED'::project_contact_state_enum))
   ```
 
   It binds only the user id — nothing about the membership in hand — which is
@@ -1206,26 +1286,29 @@ project under that account, and nothing outside it.
   the write rather than quietly deciding "not an admin", which would revoke a
   real admin's role on a transient error.
 
-  **Each role is decided on its own evidence**, and that split is the second
-  bug fixed here. A membership is a partner one exactly when the contact's
-  account is not the project's (`ac.account_id <> p.account_id`, the same test
-  `membershipByEmail` applies), so only an ADMIN membership of that kind can
-  support `partner_admin`, and only one of the other kind can support
-  `customer_admin`. An earlier version asked a single "is this user an admin
-  anywhere" question and then kept whichever role the membership in hand
-  mapped to: processing a **non-admin partner membership** for someone who was
-  a customer admin on their own account would grant them `partner_admin`, which
-  no ADMIN membership supported, and revoke the `customer_admin` they had
-  earned. The contact's own Salesforce `isCsAdmin` remains an additional grant
-  of the role this membership maps to, never a revocation condition.
+  **Which role is the contact's, not the membership's.** The admin role (like
+  `customer`/`partner`) follows the contact's account classification, so it
+  no longer matters which membership is in hand: every writer passes the same
+  `AdminRoleName` for the same contact, the user holds that one role when
+  they are an admin, and the other is revoked. An earlier version split the
+  answer by `ac.account_id <> p.account_id` per membership, which disagreed
+  with ServiceNow for a partner's employee on the partner's own project and
+  gave `partner_admin` to a related contact on another account's project;
+  before that, a single "admin anywhere" answer combined with the role of the
+  membership in hand let a non-admin partner membership trade one role for
+  the other. The contact's own Salesforce `isCsAdmin` is an additional grant,
+  never a revocation condition.
 
 A deactivated membership's `ADMIN` role does not count, which is how
 deactivating someone's last admin project drops their account-level role
-without erasing anything.
+without erasing anything. A membership DELETED in Salesforce re-derives the
+role in the same transaction as the deactivation.
 
 ### Account roles on the contacts search
 
-`POST /projects/{id}/contacts/search` now returns each contact's
+`POST /projects/{id}/contacts/search` lists only live memberships: DEACTIVATED
+rows (the ingest's soft delete; ServiceNow hard-deleted them, so no portal ever
+listed one) are left out of both the page and `total`. It returns each contact's
 **`accountRoles`** alongside their project `roles` — a separate list, never
 merged: `roles` is what they may do on *this* project, `accountRoles` what they
 are across the account. It is read from `user_role`/`role` (where
