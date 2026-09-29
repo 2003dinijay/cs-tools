@@ -63,7 +63,7 @@ const (
 	splScanSystemServicenow = "Servicenow"
 )
 
-// SplUserScanRequest is the request body for POST /spl/scan-user — mirrors
+// SplUserScanRequest is the request body for POST /scan-user — mirrors
 // Ballerina modules/types.bal's UserScanPayload.
 type SplUserScanRequest struct {
 	Email           string `json:"email"`
@@ -195,7 +195,7 @@ func NewSplUserScanHandler(sales salesEntityClient, cs csEntityClient, allowedGr
 	return &SplUserScanHandler{sales: sales, cs: cs, allowedGroups: allowedGroups}
 }
 
-// ScanUser handles POST /spl/scan-user — ported verbatim (business logic,
+// ScanUser handles POST /scan-user — ported verbatim (business logic,
 // copy text and documentation links included) from Ballerina service.bal's
 // `post scan\-user` resource function. See that function for the
 // authoritative behavior; comments below reference its structure.

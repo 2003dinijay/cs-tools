@@ -9188,12 +9188,15 @@ paths:
                 $ref: "#/components/schemas/ErrorPayload"
 
   # ---------------------------------------------------------------------
-  # SupportPortalLite (/spl/*) — ported from digiops-cs's
-  # apps/support-portal-lite Ballerina backend (being retired), serving the
-  # Sales/Solutions-Architecture audience. Every route lives under /spl/
-  # because this API already owns /cases, /accounts, and /projects for its
-  # own, differently-shaped case-management domain. Off by default
-  # (SPL_ENABLED); see cmd/server/main.go. Path parameters here are
+  # SupportPortalLite — ported from digiops-cs's apps/support-portal-lite
+  # Ballerina backend (being retired), serving the Sales/Solutions-Architecture
+  # audience. Most routes below are unprefixed: SPL and this API are the
+  # same backend now, so a route only keeps the /spl/ prefix where it would
+  # otherwise collide with a route this API's own, differently-shaped
+  # case-management domain already owns (/spl/accounts, /spl/projects,
+  # /spl/cases below still do, until they're consolidated the same way
+  # /accounts, /projects, and /cases search/detail already were). Off by
+  # default (SPL_ENABLED); see cmd/server/main.go. Path parameters here are
   # ServiceNow sys_ids or case/account/project numbers, not UUIDs.
   # ---------------------------------------------------------------------
 
@@ -9384,7 +9387,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/accounts/{accountId}/escalations:
+  /accounts/{accountId}/escalations:
     get:
       summary: List an account's escalations.
       operationId: splGetAccountEscalations
@@ -9446,7 +9449,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/accounts/{accountId}/cases/{caseId}/escalate:
+  /accounts/{accountId}/cases/{caseId}/escalate:
     post:
       summary: Escalate a case on this account.
       operationId: splEscalateCase
@@ -9927,7 +9930,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/cases/{caseId}/attachments-info:
+  /cases/{caseId}/attachments-info:
     get:
       summary: List metadata for a case's attachments.
       operationId: splGetAttachmentsInfo
@@ -9989,7 +9992,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/products:
+  /products:
     get:
       summary: List the distinct product names known to ServiceNow deployments.
       operationId: splGetProducts
@@ -10021,7 +10024,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/abt-teams:
+  /abt-teams:
     get:
       summary: List the distinct ABT team names.
       operationId: splGetABTTeams
@@ -10053,7 +10056,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/generate-sla-report:
+  /generate-sla-report:
     get:
       summary: Generate a project's SLA report for a date range.
       operationId: splGenerateSLAReport
@@ -10105,7 +10108,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/report-details:
+  /report-details:
     get:
       summary: Generate a project's detailed CS report for a date range.
       operationId: splGetReportDetails
@@ -10157,7 +10160,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/generate-timelogs-breakdown-report:
+  /generate-timelogs-breakdown-report:
     get:
       summary: Generate a project's time-log breakdown report.
       operationId: splGenerateTimelogsBreakdownReport
@@ -10205,7 +10208,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/attachments/{attachmentId}/download:
+  /attachments/{attachmentId}/download:
     get:
       summary: Download the binary content of a case attachment (ServiceNow-backed).
       operationId: splDownloadAttachment
@@ -10323,7 +10326,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/abt-team-schedule:
+  /abt-team-schedule:
     get:
       summary: Get an ABT team's schedule.
       operationId: splGetABTTeamSchedule
@@ -10380,7 +10383,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  # SupportPortalLite usage-metrics (/spl/usage-metrics/*) — every endpoint
+  # SupportPortalLite usage-metrics (/usage-metrics/*) — every endpoint
   # here forwards the request/response body close to verbatim to ServiceNow's
   # custom scoped-app API (raw passthrough, not reshaped by this backend), so
   # request/response schemas are intentionally left open (additionalProperties:
@@ -10389,7 +10392,7 @@ paths:
   # SPL_USAGE_METRICS_GROUPS membership on top of the blanket SPL_ALLOWED_GROUPS
   # gate.
 
-  /spl/usage-metrics/projects:
+  /usage-metrics/projects:
     get:
       summary: List projects for the usage-metrics dashboard, optionally filtered by name.
       operationId: splUsageMetricsGetProjects
@@ -10426,7 +10429,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/usage-metrics/instances/metrics/search:
+  /usage-metrics/instances/metrics/search:
     post:
       summary: Search instance-level product metrics (raw passthrough to ServiceNow's custom API).
       operationId: splSearchInstanceMetrics
@@ -10476,7 +10479,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/usage-metrics/instances/metrics/stats:
+  /usage-metrics/instances/metrics/stats:
     post:
       summary: Get aggregated instance metrics stats (raw passthrough to ServiceNow's custom API).
       operationId: splGetInstanceMetricsStats
@@ -10526,7 +10529,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/usage-metrics/instances/usages/search:
+  /usage-metrics/instances/usages/search:
     post:
       summary: Search instance-level usage records (raw passthrough to ServiceNow's custom API).
       operationId: splSearchInstanceUsages
@@ -10576,7 +10579,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/usage-metrics/instances/usages/stats:
+  /usage-metrics/instances/usages/stats:
     post:
       summary: Get aggregated instance usage stats (raw passthrough to ServiceNow's custom API).
       operationId: splGetInstanceUsagesStats
@@ -10626,7 +10629,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/usage-metrics/deployments/search:
+  /usage-metrics/deployments/search:
     post:
       summary: Search deployments (raw passthrough to ServiceNow's custom API).
       operationId: splSearchUsageMetricsDeployments
@@ -10676,7 +10679,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/usage-metrics/projects/search:
+  /usage-metrics/projects/search:
     post:
       summary: Search projects for the usage-metrics dashboard (raw passthrough to ServiceNow's custom API).
       operationId: splSearchUsageMetricsProjects
@@ -10726,7 +10729,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/usage-metrics/deployed-products/search:
+  /usage-metrics/deployed-products/search:
     post:
       summary: Search deployed products (raw passthrough to ServiceNow's custom API).
       operationId: splSearchUsageMetricsDeployedProducts
@@ -10776,7 +10779,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/usage-metrics/instances/search:
+  /usage-metrics/instances/search:
     post:
       summary: Search instances (raw passthrough to ServiceNow's custom API).
       operationId: splSearchUsageMetricsInstances
@@ -10826,7 +10829,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/usage-metrics/deployed-products/{id}/metrics/search:
+  /usage-metrics/deployed-products/{id}/metrics/search:
     post:
       summary: Get metrics for a deployed product over a date range (raw passthrough to ServiceNow's custom API).
       operationId: splGetDeployedProductMetrics
@@ -10889,7 +10892,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/usage-metrics/deployed-products/{id}/metrics/usage-counts/search:
+  /usage-metrics/deployed-products/{id}/metrics/usage-counts/search:
     post:
       summary: Get usage counts for a deployed product over a date range (raw passthrough to ServiceNow's custom API).
       operationId: splGetDeployedProductUsageCounts
@@ -10952,7 +10955,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/files:
+  /files:
     get:
       summary: List files in a Google Drive folder.
       operationId: splListFiles
@@ -10996,7 +10999,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/files/search:
+  /files/search:
     get:
       summary: Find a Google Drive folder by name.
       operationId: splSearchFolder
@@ -11044,7 +11047,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/summary:
+  /customer-health/summary:
     post:
       summary: Search account health summaries (ServiceNow account data enriched with MySQL-tracked review status).
       operationId: splGetCustomerHealthSummary
@@ -11092,7 +11095,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/accounts/{accountSysId}/init-health-tracking:
+  /customer-health/accounts/{accountSysId}/init-health-tracking:
     post:
       summary: Initialize MySQL health-tracking rows for an account's projects.
       operationId: splInitHealthTracking
@@ -11136,7 +11139,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/accounts/{accountId}:
+  /customer-health/accounts/{accountId}:
     get:
       summary: Get an account's detailed health breakdown (ServiceNow-backed; no MySQL involved).
       operationId: splGetCustomerHealthAccountDetail
@@ -11184,7 +11187,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/projects/{projectSysId}/risk:
+  /customer-health/projects/{projectSysId}/risk:
     post:
       summary: Open a new risk on a project.
       operationId: splOpenRisk
@@ -11232,7 +11235,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/risks/{riskId}/close:
+  /customer-health/risks/{riskId}/close:
     put:
       summary: Close an open risk.
       operationId: splCloseRisk
@@ -11280,7 +11283,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/projects/{projectSysId}/mark-healthy:
+  /customer-health/projects/{projectSysId}/mark-healthy:
     post:
       summary: Mark a project healthy.
       operationId: splMarkHealthy
@@ -11328,7 +11331,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/projects/{projectSysId}/revert-review:
+  /customer-health/projects/{projectSysId}/revert-review:
     post:
       summary: Revert a project's health review.
       operationId: splRevertReview
@@ -11376,7 +11379,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/accounts/{accountSysId}/health-status:
+  /customer-health/accounts/{accountSysId}/health-status:
     get:
       summary: List health status per project for an account.
       operationId: splGetAccountHealthStatus
@@ -11420,7 +11423,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/accounts/{accountSysId}/health-summary:
+  /customer-health/accounts/{accountSysId}/health-summary:
     get:
       summary: Get an account's overall health summary.
       operationId: splGetAccountHealthSummary
@@ -11462,7 +11465,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/projects/{projectSysId}/risk-history:
+  /customer-health/projects/{projectSysId}/risk-history:
     get:
       summary: List a project's risk history.
       operationId: splGetProjectRiskHistory
@@ -11506,7 +11509,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/risks/{riskId}/action-items:
+  /customer-health/risks/{riskId}/action-items:
     post:
       summary: Create an action item on a risk.
       operationId: splCreateActionItem
@@ -11601,7 +11604,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/action-items/{actionItemId}/status:
+  /customer-health/action-items/{actionItemId}/status:
     put:
       summary: Update an action item's status.
       operationId: splUpdateActionItemStatus
@@ -11649,7 +11652,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/action-items/{actionItemId}:
+  /customer-health/action-items/{actionItemId}:
     put:
       summary: Update an action item's fields.
       operationId: splUpdateActionItem
@@ -11697,7 +11700,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/accounts/{accountSysId}/action-items:
+  /customer-health/accounts/{accountSysId}/action-items:
     get:
       summary: List action items for an account, optionally filtered by project and/or status.
       operationId: splGetActionItemsByAccount
@@ -11751,7 +11754,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/customer-health/action-items/{actionItemId}/comments:
+  /customer-health/action-items/{actionItemId}/comments:
     post:
       summary: Post a comment on an action item.
       operationId: splCreateActionItemComment
@@ -11841,7 +11844,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/user-info:
+  /user-info:
     get:
       summary: Get the caller's own employee info, resolved from their JWT email.
       operationId: splGetUserInfo
@@ -11871,7 +11874,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
-  /spl/scan-user:
+  /scan-user:
     post:
       summary: >-
         Diagnostic tool cross-referencing the sales-side (Salesforce) and

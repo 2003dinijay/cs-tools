@@ -30,7 +30,7 @@ type employeeInfoClient interface {
 	GetEmployeeData(ctx context.Context, workEmail string) (*employeeinfo.Employee, error)
 }
 
-// SplUserInfoView is the portal response for GET /spl/user-info — mirrors
+// SplUserInfoView is the portal response for GET /user-info — mirrors
 // Ballerina modules/userinfo/types.bal's Employee.
 type SplUserInfoView struct {
 	FirstName         string  `json:"firstName"`
@@ -52,7 +52,7 @@ func NewSplUserInfoHandler(employeeInfo employeeInfoClient, allowedGroups []stri
 	return &SplUserInfoHandler{employeeInfo: employeeInfo, allowedGroups: allowedGroups}
 }
 
-// GetUserInfo handles GET /spl/user-info: returns the caller's own employee
+// GetUserInfo handles GET /user-info: returns the caller's own employee
 // info, resolved from their JWT email — mirrors Ballerina service.bal's
 // `get user\-info` resource function (userinfo:getEmployeeData(authUserCtx.email)).
 func (h *SplUserInfoHandler) GetUserInfo(w http.ResponseWriter, r *http.Request) {

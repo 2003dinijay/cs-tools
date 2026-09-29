@@ -25,7 +25,7 @@ import (
 )
 
 // CreateActionItem handles POST
-// /spl/customer-health/risks/{riskId}/action-items.
+// /customer-health/risks/{riskId}/action-items.
 func (h *CustomerHealthHandler) CreateActionItem(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {
@@ -56,7 +56,7 @@ func (h *CustomerHealthHandler) CreateActionItem(w http.ResponseWriter, r *http.
 }
 
 // UpdateActionItemStatus handles PUT
-// /spl/customer-health/action-items/{actionItemId}/status.
+// /customer-health/action-items/{actionItemId}/status.
 func (h *CustomerHealthHandler) UpdateActionItemStatus(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {
@@ -87,7 +87,7 @@ func (h *CustomerHealthHandler) UpdateActionItemStatus(w http.ResponseWriter, r 
 }
 
 // UpdateActionItem handles PUT
-// /spl/customer-health/action-items/{actionItemId}.
+// /customer-health/action-items/{actionItemId}.
 func (h *CustomerHealthHandler) UpdateActionItem(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {
@@ -118,7 +118,7 @@ func (h *CustomerHealthHandler) UpdateActionItem(w http.ResponseWriter, r *http.
 }
 
 // GetActionItemsByRisk handles GET
-// /spl/customer-health/risks/{riskId}/action-items.
+// /customer-health/risks/{riskId}/action-items.
 func (h *CustomerHealthHandler) GetActionItemsByRisk(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {
@@ -140,7 +140,7 @@ func (h *CustomerHealthHandler) GetActionItemsByRisk(w http.ResponseWriter, r *h
 }
 
 // GetActionItemsByAccount handles GET
-// /spl/customer-health/accounts/{accountSysId}/action-items.
+// /customer-health/accounts/{accountSysId}/action-items.
 func (h *CustomerHealthHandler) GetActionItemsByAccount(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {
@@ -164,7 +164,7 @@ func (h *CustomerHealthHandler) GetActionItemsByAccount(w http.ResponseWriter, r
 }
 
 // CreateActionItemComment handles POST
-// /spl/customer-health/action-items/{actionItemId}/comments.
+// /customer-health/action-items/{actionItemId}/comments.
 func (h *CustomerHealthHandler) CreateActionItemComment(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {
@@ -195,7 +195,7 @@ func (h *CustomerHealthHandler) CreateActionItemComment(w http.ResponseWriter, r
 }
 
 // GetActionItemComments handles GET
-// /spl/customer-health/action-items/{actionItemId}/comments.
+// /customer-health/action-items/{actionItemId}/comments.
 func (h *CustomerHealthHandler) GetActionItemComments(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {

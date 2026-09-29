@@ -34,7 +34,7 @@ type splDriveClient interface {
 }
 
 // SplFilesHandler handles HTTP requests for SupportPortalLite's Google
-// Drive browsing endpoints (GET /spl/files, GET /spl/files/search).
+// Drive browsing endpoints (GET /files, GET /files/search).
 type SplFilesHandler struct {
 	drive         splDriveClient
 	allowedGroups []string
@@ -51,7 +51,7 @@ func NewSplFilesHandler(drive splDriveClient, allowedGroups []string) *SplFilesH
 	return &SplFilesHandler{drive: drive, allowedGroups: allowedGroups}
 }
 
-// ListFiles handles GET /spl/files.
+// ListFiles handles GET /files.
 //
 // The Ballerina original responds with 500 for an empty folderId
 // (utils:getHTTPInternalServerErrorResponse), but this backend's own
@@ -82,7 +82,7 @@ func (h *SplFilesHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSONValue(w, http.StatusOK, files)
 }
 
-// SearchFolder handles GET /spl/files/search.
+// SearchFolder handles GET /files/search.
 //
 // See ListFiles's doc comment: the empty-folderName case deliberately
 // returns 400 here rather than the Ballerina original's 500, matching this

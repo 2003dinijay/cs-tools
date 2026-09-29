@@ -46,7 +46,7 @@ func NewSplReportsHandler(sn splReportsClient, allowedGroups []string) *SplRepor
 	return &SplReportsHandler{servicenow: sn, allowedGroups: allowedGroups}
 }
 
-// GenerateSLAReport handles GET /spl/generate-sla-report.
+// GenerateSLAReport handles GET /generate-sla-report.
 func (h *SplReportsHandler) GenerateSLAReport(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {
@@ -74,7 +74,7 @@ func (h *SplReportsHandler) GenerateSLAReport(w http.ResponseWriter, r *http.Req
 	writeJSONValue(w, http.StatusOK, report)
 }
 
-// GetReportDetails handles GET /spl/report-details.
+// GetReportDetails handles GET /report-details.
 func (h *SplReportsHandler) GetReportDetails(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {
@@ -102,7 +102,7 @@ func (h *SplReportsHandler) GetReportDetails(w http.ResponseWriter, r *http.Requ
 	writeJSONValue(w, http.StatusOK, report)
 }
 
-// GenerateTimelogsBreakdownReport handles GET /spl/generate-timelogs-breakdown-report.
+// GenerateTimelogsBreakdownReport handles GET /generate-timelogs-breakdown-report.
 func (h *SplReportsHandler) GenerateTimelogsBreakdownReport(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {

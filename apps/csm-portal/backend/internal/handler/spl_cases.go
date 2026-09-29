@@ -132,7 +132,7 @@ func (h *SplCaseHandler) GetCommentsAndWorknotes(w http.ResponseWriter, r *http.
 	writeJSONValue(w, http.StatusOK, result)
 }
 
-// GetAttachmentsInfo handles GET /spl/cases/{caseId}/attachments-info.
+// GetAttachmentsInfo handles GET /cases/{caseId}/attachments-info.
 func (h *SplCaseHandler) GetAttachmentsInfo(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {

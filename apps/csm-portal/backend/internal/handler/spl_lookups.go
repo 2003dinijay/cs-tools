@@ -43,7 +43,7 @@ func NewSplLookupsHandler(sn splLookupsClient, allowedGroups []string) *SplLooku
 	return &SplLookupsHandler{servicenow: sn, allowedGroups: allowedGroups}
 }
 
-// GetProducts handles GET /spl/products.
+// GetProducts handles GET /products.
 func (h *SplLookupsHandler) GetProducts(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {
@@ -60,7 +60,7 @@ func (h *SplLookupsHandler) GetProducts(w http.ResponseWriter, r *http.Request) 
 	writeJSONValue(w, http.StatusOK, products)
 }
 
-// GetABTTeams handles GET /spl/abt-teams.
+// GetABTTeams handles GET /abt-teams.
 func (h *SplLookupsHandler) GetABTTeams(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLGroups(w, r, h.allowedGroups)
 	if !ok {
