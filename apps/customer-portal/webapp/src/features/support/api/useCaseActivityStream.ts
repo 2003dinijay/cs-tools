@@ -40,41 +40,16 @@ function reconnectDelay(attempt: number): number {
 }
 
 /**
- * Opens a live Server-Sent Events connection to
- * customer-portal-activity-stream-service's
- * `GET /cases/{id}/activities/stream` and invalidates the case's comments and
- * details queries whenever it emits a `case_updated` event, so a new comment
- * or status change shows up without the viewer having to wait out those
- * queries' own staleTime or refresh manually.
+ * Refetches the case's comments and details whenever the activity stream
+ * reports the case changed. No-op unless both stream config keys are set.
  *
- * Uses `@sanity/eventsource` rather than the browser's native `EventSource`
- * because native EventSource cannot set custom headers — it only supports
- * cookies/query params for auth.
+ * Uses `@sanity/eventsource` because native `EventSource` cannot set headers.
+ * Sends the same headers as useAuthApiClient — the gateway injects
+ * `x-jwt-assertion` itself, so this doesn't set it.
  *
- * All three headers carry the Asgardeo ID token, and all three are load-bearing
- * (verified against the deployed staging endpoint):
- *   - `Authorization` is what gets past Choreo's gateway, which enforces its
- *     own OAuth2 check on this operation; without it the gateway answers 401
- *     `900901` before the request ever reaches the service.
- *   - `x-jwt-assertion` is what the service's own `middleware.Auth` reads and
- *     validates. The gateway forwards it untouched rather than minting its
- *     own, which is why the service validates it against Asgardeo directly.
- *   - `x-user-id-token` is forwarded upstream to entity-service for the
- *     per-case ACL check that authorizes the subscription.
- * This mirrors useAuthApiClient, which likewise sends the ID token as both
- * `Authorization` and `x-user-id-token` for every other backend call.
- *
- * Headers are fixed at construction time, so they can't be refreshed on the
- * library's own built-in reconnect — a token that expires mid-connection
- * would otherwise have the polyfill retry forever with the same stale header.
- * Instead, `error` closes the current connection and this hook opens a fresh
- * one with a newly-fetched token after an exponentially backed-off delay.
- *
- * A no-op when `caseId` is unset, `apiConfig.streamEnabled` is false (the
- * feature's master switch, `CUSTOMER_PORTAL_STREAM_ENABLED` — defaults off),
- * or `apiConfig.streamUrl` isn't configured (Event Hub — and therefore this
- * endpoint — is optional on the backend); callers fall back to the
- * comments/details queries' own staleTime.
+ * Reconnects by hand rather than letting the polyfill retry: its headers are
+ * fixed at construction, so a token expiring mid-connection would have it
+ * retry forever with the same stale one.
  */
 export function useCaseActivityStream(caseId: string | undefined): void {
   const queryClient = useQueryClient();
@@ -128,7 +103,6 @@ export function useCaseActivityStream(caseId: string | undefined): void {
       source = new EventSourcePolyfill(url, {
         headers: {
           Authorization: `Bearer ${idToken}`,
-          "x-jwt-assertion": idToken,
           "x-user-id-token": idToken,
         },
       });
