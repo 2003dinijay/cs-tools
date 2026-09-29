@@ -86,13 +86,12 @@ const MAX_RANGE_DAYS = 366;
 
 const DEBOUNCE_DELAY = 500;
 
-// Path prefix, not a full origin URL — useBackendApi() resolves this against
-// CSM_PORTAL_BACKEND_BASE_URL, the same backend every other page in this app
-// calls. (The source app's BASE was splBackendUrl, a full separate origin;
-// here it's just the /spl route prefix on this app's own backend.)
-const BASE = "/spl";
+// Paths below are relative to CSM_PORTAL_BACKEND_BASE_URL, the same backend
+// every other page in this app calls — useBackendApi() resolves them
+// against it. (The source app's usage-metrics calls went through
+// splBackendUrl, a full separate origin; this app has no such split.)
 const PROJECTS_PAGE_SIZE = 20;
-const PROJECTS_URL = BASE + "/usage-metrics/projects/search";
+const PROJECTS_URL = "/usage-metrics/projects/search";
 
 function todayStr(): string {
   return new Date().toISOString().split("T")[0];
@@ -192,7 +191,7 @@ export default function SplUsageMetricsPage(): JSX.Element {
 
   useEffect(() => {
     if (!selectedProjectId) return;
-    fetchDeployments({ filters: { projectIds: [selectedProjectId] }, pagination: { offset: 0, limit: 50 } }, BASE + "/usage-metrics/deployments/search");
+    fetchDeployments({ filters: { projectIds: [selectedProjectId] }, pagination: { offset: 0, limit: 50 } }, "/usage-metrics/deployments/search");
     setActiveEnv("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjectId]);
@@ -232,7 +231,7 @@ export default function SplUsageMetricsPage(): JSX.Element {
           pagination: { offset: 0, limit: 50 },
         },
       })),
-      BASE + "/usage-metrics/instances/search",
+      "/usage-metrics/instances/search",
       false,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -240,7 +239,7 @@ export default function SplUsageMetricsPage(): JSX.Element {
 
   useEffect(() => {
     if (!activeDepId) return;
-    fetchDeployedProducts({ filters: { deploymentIds: [activeDepId] }, pagination: { offset: 0, limit: 50 } }, BASE + "/usage-metrics/deployed-products/search");
+    fetchDeployedProducts({ filters: { deploymentIds: [activeDepId] }, pagination: { offset: 0, limit: 50 } }, "/usage-metrics/deployed-products/search");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDepId]);
 
@@ -254,12 +253,12 @@ export default function SplUsageMetricsPage(): JSX.Element {
     const payload = { deploymentId: activeDepId, startDate: dateFrom, endDate: dateTo };
     fetchProdMetricsStats(
       productIds.map((id) => ({ id, payload })),
-      (id: string) => BASE + `/usage-metrics/deployed-products/${id}/metrics/search`,
+      (id: string) => `/usage-metrics/deployed-products/${id}/metrics/search`,
       false,
     );
     fetchProdUsagesStats(
       productIds.map((id) => ({ id, payload })),
-      (id: string) => BASE + `/usage-metrics/deployed-products/${id}/metrics/usage-counts/search`,
+      (id: string) => `/usage-metrics/deployed-products/${id}/metrics/usage-counts/search`,
       false,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -330,7 +329,7 @@ export default function SplUsageMetricsPage(): JSX.Element {
               },
             },
           ],
-          BASE + "/usage-metrics/instances/search",
+          "/usage-metrics/instances/search",
           true,
         );
       }
