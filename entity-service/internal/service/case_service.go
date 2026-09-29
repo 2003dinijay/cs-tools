@@ -1901,34 +1901,33 @@ func validateCaseFieldValues(g domain.CaseFilterGroup) error {
 	return validateUUIDs("assignedUserId", g.AssignedUserIDs)
 }
 
-// SearchCases implements CaseService.
-func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesRequest) (domain.SearchCasesResponse, error) {
-	if err := normalizePagination(&req.Pagination); err != nil {
-		return domain.SearchCasesResponse{}, err
-	}
+// prepareCaseSearch validates and parses req's filters and applies the sort
+// defaults, returning the request with Parsed populated. SearchCases and
+// AggregateCases share it, so an aggregate rejects exactly what a search would.
+func (s *caseService) prepareCaseSearch(ctx context.Context, req domain.SearchCasesRequest) (domain.SearchCasesRequest, error) {
 	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
-		return domain.SearchCasesResponse{}, err
+		return domain.SearchCasesRequest{}, err
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
 	callerEmail, callerEmailErr := resolveCaseFilterCallerEmail(token)
 	parsed, err := ParseCaseFieldFilters(req.Filters.Filters, callerEmail, callerEmailErr, time.Now().UTC())
 	if err != nil {
-		return domain.SearchCasesResponse{}, err
+		return domain.SearchCasesRequest{}, err
 	}
 
 	if err := validateUUIDs("projectId", parsed.ExcludeProjectIDs); err != nil {
-		return domain.SearchCasesResponse{}, err
+		return domain.SearchCasesRequest{}, err
 	}
 	if err := validateUUIDs("creTeam", parsed.CreTeamIDs); err != nil {
-		return domain.SearchCasesResponse{}, err
+		return domain.SearchCasesRequest{}, err
 	}
 	if err := validateUUIDs("sreTeam", parsed.SreTeamIDs); err != nil {
-		return domain.SearchCasesResponse{}, err
+		return domain.SearchCasesRequest{}, err
 	}
 	if parsed.ParentID != nil {
 		if err := validateUUIDs("parentId", []string{*parsed.ParentID}); err != nil {
-			return domain.SearchCasesResponse{}, err
+			return domain.SearchCasesRequest{}, err
 		}
 	}
 	// The same checks apply to the top-level fields and to each anyOf branch, so
@@ -1939,18 +1938,18 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		WorkStates: parsed.WorkStates, ProjectIDs: parsed.ProjectIDs,
 		DeploymentIDs: parsed.DeploymentIDs, AssignedUserIDs: parsed.AssignedUserIDs,
 	}); err != nil {
-		return domain.SearchCasesResponse{}, err
+		return domain.SearchCasesRequest{}, err
 	}
 
 	// anyOf branches: parse into OR groups (only the ServiceNow adapter did this
 	// before) and validate each branch's values exactly like the top level.
 	orGroups, err := ParseCaseFieldFilterGroups(req.Filters.AnyOf)
 	if err != nil {
-		return domain.SearchCasesResponse{}, err
+		return domain.SearchCasesRequest{}, err
 	}
 	for _, g := range orGroups {
 		if err := validateCaseFieldValues(g); err != nil {
-			return domain.SearchCasesResponse{}, err
+			return domain.SearchCasesRequest{}, err
 		}
 	}
 	parsed.OrGroups = orGroups
@@ -1961,24 +1960,21 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 
 	if parsed.ClosedEndDate != nil && parsed.ClosedStartDate != nil &&
 		parsed.ClosedEndDate.Before(*parsed.ClosedStartDate) {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "closedOn: lte value must not be before gte value"}
+		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: "closedOn: lte value must not be before gte value"}
 	}
 	if parsed.EndCreatedDate != nil && parsed.StartCreatedDate != nil &&
 		parsed.EndCreatedDate.Before(*parsed.StartCreatedDate) {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "createdOn: lte value must not be before gte value"}
+		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: "createdOn: lte value must not be before gte value"}
 	}
 	if parsed.EndUpdatedDate != nil && parsed.StartUpdatedDate != nil &&
 		parsed.EndUpdatedDate.Before(*parsed.StartUpdatedDate) {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "updatedOn: lte value must not be before gte value"}
+		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: "updatedOn: lte value must not be before gte value"}
 	}
 	// resolvedOn has no backing column in the relational schema and
 	// caseRepo.SearchCases models no predicate for it, so accepting it here
 	// would drop the bound silently and answer 200 with every case rather
 	// than the resolved-in-range ones asked for. Reject, same as every other
 	// predicate this data source cannot express.
-	if parsed.ResolvedStartDate != nil || parsed.ResolvedEndDate != nil {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "resolvedOn" is not supported by this data source`}
-	}
 
 	// projectType dot-walks into a ServiceNow-specific concept that
 	// caseRepo.SearchCases has no query for today. Reject rather than
@@ -1991,24 +1987,18 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	// and dropping an exclusion silently would widen the result set.
 	// parentId is also implemented (wi.parent_id, migration 0039 -- the
 	// "Linked Items" tab's child-case lookup), so it too is absent here.
-	if len(parsed.ExcludeStates) > 0 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "state" (notIn) is not supported by this data source`}
-	}
-	if len(parsed.ProjectTypeNames) > 0 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "projectType" is not supported by this data source`}
-	}
 	// accountId+in has no repository query support today either (see
 	// domain.ParsedCaseFilters.AccountIDs); accountId+notIn is rejected the
 	// same way rather than silently dropping the exclusion and widening the
 	// result set.
 	if len(parsed.ExcludeAccountIDs) > 0 {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "accountId" (notIn) is not supported by this data source`}
+		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: `field "accountId" (notIn) is not supported by this data source`}
 	}
 	if parsed.Unassigned {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "assignedUserId" (isEmpty) is not supported by this data source`}
+		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: `field "assignedUserId" (isEmpty) is not supported by this data source`}
 	}
 	if parsed.ResolutionNotesEmpty {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "resolutionNotes" is not supported by this data source`}
+		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: `field "resolutionNotes" is not supported by this data source`}
 	}
 
 	// The slaBreached and account-escalation predicates and grouped counts are
@@ -2021,14 +2011,8 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	// Postgres deployment would drop the predicate and answer 200 with a wider
 	// result set than the caller asked for. These stay ServiceNow-only by design:
 	// reject loudly rather than implement them here.
-	if parsed.HasBreachedSLA != nil {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "slaBreached" is not supported by this data source`}
-	}
 	if parsed.HasActiveAccountEscalation != nil {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: `field "accountEscalationActive" is not supported by this data source`}
-	}
-	if req.GroupBy != "" {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "groupBy is not supported by this data source"}
+		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: `field "accountEscalationActive" is not supported by this data source`}
 	}
 
 	req.Parsed = parsed
@@ -2036,14 +2020,33 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	if req.SortBy.Field == "" {
 		req.SortBy.Field = domain.CaseSortFieldCreatedOn
 	} else if !validCaseSortField[req.SortBy.Field] {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "sortBy.field must be one of: createdOn, updatedOn, severity, state"}
+		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: "sortBy.field must be one of: createdOn, updatedOn, severity, state"}
 	}
 	if req.SortBy.Order == "" {
 		req.SortBy.Order = domain.CaseSortOrderDesc
 	} else if !validCaseSortOrder[req.SortBy.Order] {
-		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "sortBy.order must be one of: asc, desc"}
+		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: "sortBy.order must be one of: asc, desc"}
 	}
 
+	return req, nil
+}
+
+// SearchCases implements CaseService.
+func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesRequest) (domain.SearchCasesResponse, error) {
+	if err := normalizePagination(&req.Pagination); err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+	if req.GroupBy != "" {
+		values, ok := caseGroupByFieldValuesPG[req.GroupBy]
+		if !ok {
+			return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "groupBy must be one of: state, severity, type, engagementType, issueType, workState"}
+		}
+		return s.searchCasesGrouped(ctx, req, values)
+	}
+	req, err := s.prepareCaseSearch(ctx, req)
+	if err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
 	scope, err := s.access.ResolveScope(ctx)
 	if err != nil {
 		return domain.SearchCasesResponse{}, err
@@ -2062,8 +2065,86 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	}, nil
 }
 
-func (s *caseService) AggregateCases(_ context.Context, _ domain.AggregateCasesRequest) (domain.AggregateResponse, error) {
-	return domain.AggregateResponse{}, &apierror.ServiceUnavailableError{Msg: "groupBy is only supported for the ServiceNow data source"}
+// caseGroupByFieldValuesPG lists the buckets a grouped search returns for each
+// groupable field, in display order, so empty buckets are reported as zero
+// exactly as the ServiceNow-backed implementation does.
+var caseGroupByFieldValuesPG = map[string][]string{
+	"state":          {"open", "work_in_progress", "waiting_on_wso2", "awaiting_info", "reopened", "solution_proposed", "closed"},
+	"severity":       {"catastrophic", "critical", "high", "medium", "low"},
+	"type":           {"case", "service_request", "security_report_analysis", "announcement", "engagement"},
+	"engagementType": {"migration", "consultancy", "new_feature_improvement", "follow_up", "onboarding"},
+	"issueType":      {"error", "partial_outage", "performance_degradation", "question", "security_or_compliance", "total_outage"},
+	"workState":      {"ongoing", "paused"},
+}
+
+// searchCasesGrouped implements SearchCases' groupBy mode on this data source.
+func (s *caseService) searchCasesGrouped(ctx context.Context, req domain.SearchCasesRequest, values []string) (domain.SearchCasesResponse, error) {
+	groupBy := req.GroupBy
+	req.GroupBy = ""
+	req, err := s.prepareCaseSearch(ctx, req)
+	if err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+	buckets, err := s.repo.AggregateCases(ctx, req, groupBy, scope)
+	if err != nil {
+		return domain.SearchCasesResponse{}, err
+	}
+	counts := make(map[string]int, len(buckets))
+	for _, b := range buckets {
+		counts[b.Key] = b.Count
+	}
+	groups := make([]domain.CaseGroup, len(values))
+	total := 0
+	for i, v := range values {
+		groups[i] = domain.CaseGroup{Key: v, Count: counts[v]}
+		total += counts[v]
+	}
+	return domain.SearchCasesResponse{Groups: groups, Total: total, Limit: req.Pagination.Limit, Offset: req.Pagination.Offset}, nil
+}
+
+// defaultCaseAggregateMaxGroups applies when AggregateCasesRequest.MaxGroups is omitted.
+const defaultCaseAggregateMaxGroups = 10
+
+// AggregateCases implements CaseService.
+func (s *caseService) AggregateCases(ctx context.Context, req domain.AggregateCasesRequest) (domain.AggregateResponse, error) {
+	if req.GroupBy == "" {
+		return domain.AggregateResponse{}, &apierror.ValidationError{Msg: "groupBy is required"}
+	}
+	if !validCaseAggregateField[req.GroupBy] {
+		return domain.AggregateResponse{}, &apierror.ValidationError{Msg: "groupBy contains invalid value: " + req.GroupBy}
+	}
+	search, err := s.prepareCaseSearch(ctx, domain.SearchCasesRequest{Filters: req.Filters})
+	if err != nil {
+		return domain.AggregateResponse{}, err
+	}
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.AggregateResponse{}, err
+	}
+	buckets, err := s.repo.AggregateCases(ctx, search, req.GroupBy, scope)
+	if err != nil {
+		return domain.AggregateResponse{}, err
+	}
+	total := 0
+	for _, b := range buckets {
+		total += b.Count
+	}
+	maxGroups := req.MaxGroups
+	if maxGroups <= 0 {
+		maxGroups = defaultCaseAggregateMaxGroups
+	}
+	if maxGroups >= len(buckets) {
+		return domain.AggregateResponse{Groups: buckets, TotalRecords: total}, nil
+	}
+	others := 0
+	for _, b := range buckets[maxGroups:] {
+		others += b.Count
+	}
+	return domain.AggregateResponse{Groups: buckets[:maxGroups], OthersCount: others, TotalRecords: total}, nil
 }
 
 // resolveActor authenticates the caller from the x-user-id-token header

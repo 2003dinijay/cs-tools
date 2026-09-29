@@ -47,6 +47,7 @@ func (alwaysUnrestrictedAccess) ResolveScope(context.Context) (AccessScope, erro
 // an unsupported field happens before the Postgres backend ever reaches the
 // repository, not merely that the repository ignores the field.
 type stubCaseRepo struct {
+	aggregateCases                func(ctx context.Context, req domain.SearchCasesRequest, groupBy string) ([]domain.AggregateBucket, error)
 	searchCases                   func(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error)
 	createCaseAttachment          func(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error)
 	searchCaseAttachments         func(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error)
@@ -92,6 +93,12 @@ func (s *stubCaseRepo) GetCaseByID(ctx context.Context, id string, scope reposit
 		return s.getCaseByID(ctx, id, scope)
 	}
 	panic("not implemented")
+}
+func (s *stubCaseRepo) AggregateCases(ctx context.Context, req domain.SearchCasesRequest, groupBy string, _ repository.SearchScope) ([]domain.AggregateBucket, error) {
+	if s.aggregateCases != nil {
+		return s.aggregateCases(ctx, req, groupBy)
+	}
+	panic("AggregateCases called unexpectedly")
 }
 func (s *stubCaseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest, scope repository.SearchScope) ([]domain.SearchCaseView, int, error) {
 	if s.searchCases != nil {
@@ -330,11 +337,9 @@ func TestCaseService_SearchCases_RejectsUnsupportedPostgresFields(t *testing.T) 
 		name   string
 		filter domain.CaseFieldFilter
 	}{
-		{name: "projectType", filter: domain.CaseFieldFilter{Field: "projectType", Op: "in", Values: []string{"Subscription"}}},
+		{name: "accountEscalationActive", filter: domain.CaseFieldFilter{Field: "accountEscalationActive", Op: "eq", Values: []string{"true"}}},
 		{name: "assignedUserId isEmpty (Unassigned)", filter: domain.CaseFieldFilter{Field: "assignedUserId", Op: "isEmpty"}},
 		{name: "resolutionNotes isEmpty", filter: domain.CaseFieldFilter{Field: "resolutionNotes", Op: "isEmpty"}},
-		// state+in IS supported by this backend; only the exclusion is not.
-		{name: "state notIn", filter: domain.CaseFieldFilter{Field: "state", Op: "notIn", Values: []string{"closed"}}},
 	}
 
 	for _, tc := range cases {
@@ -382,6 +387,10 @@ func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.
 		{name: "taskSLABusinessElapsedPercent gte", filter: domain.CaseFieldFilter{Field: "taskSLABusinessElapsedPercent", Op: "gte", Values: []string{"80"}}},
 		{name: "taskSLABusinessElapsedPercent lte 0", filter: domain.CaseFieldFilter{Field: "taskSLABusinessElapsedPercent", Op: "lte", Values: []string{"0"}}},
 		{name: "parentId eq", filter: domain.CaseFieldFilter{Field: "parentId", Op: "eq", Values: []string{uuid1}}},
+		{name: "projectType in", filter: domain.CaseFieldFilter{Field: "projectType", Op: "in", Values: []string{"Subscription"}}},
+		{name: "state notIn", filter: domain.CaseFieldFilter{Field: "state", Op: "notIn", Values: []string{"closed"}}},
+		{name: "slaBreached eq", filter: domain.CaseFieldFilter{Field: "slaBreached", Op: "eq", Values: []string{"true"}}},
+		{name: "resolvedOn gte", filter: domain.CaseFieldFilter{Field: "resolvedOn", Op: "gte", Values: []string{"2026-01-01"}}},
 	}
 
 	for _, tc := range cases {
@@ -488,37 +497,11 @@ func TestCaseService_SearchCases_RejectsServiceNowOnlyOptions(t *testing.T) {
 		wantMsg string
 	}{
 		{
-			name: "slaBreached",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				Filters: []domain.CaseFieldFilter{{Field: "slaBreached", Op: "eq", Values: []string{"true"}}},
-			}},
-			wantMsg: `field "slaBreached" is not supported by this data source`,
-		},
-		{
 			name: "accountEscalationActive",
 			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
 				Filters: []domain.CaseFieldFilter{{Field: "accountEscalationActive", Op: "eq", Values: []string{"true"}}},
 			}},
 			wantMsg: `field "accountEscalationActive" is not supported by this data source`,
-		},
-		{
-			name: "resolvedOn gte",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				Filters: []domain.CaseFieldFilter{{Field: "resolvedOn", Op: "gte", Values: []string{"2026-01-01"}}},
-			}},
-			wantMsg: `field "resolvedOn" is not supported by this data source`,
-		},
-		{
-			name: "resolvedOn lte",
-			req: domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
-				Filters: []domain.CaseFieldFilter{{Field: "resolvedOn", Op: "lte", Values: []string{"2026-01-31"}}},
-			}},
-			wantMsg: `field "resolvedOn" is not supported by this data source`,
-		},
-		{
-			name:    "groupBy",
-			req:     domain.SearchCasesRequest{GroupBy: "state"},
-			wantMsg: "groupBy is not supported by this data source",
 		},
 	}
 
@@ -3759,4 +3742,26 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 			t.Fatal("mirror.patchCaseFields was never called")
 		}
 	})
+}
+
+func TestCaseService_AggregateCases_GroupsAndCapsBuckets(t *testing.T) {
+	repo := &stubCaseRepo{aggregateCases: func(_ context.Context, _ domain.SearchCasesRequest, groupBy string) ([]domain.AggregateBucket, error) {
+		if groupBy != "state" {
+			t.Errorf("groupBy = %q, want state", groupBy)
+		}
+		return []domain.AggregateBucket{{Key: "open", Label: "open", Count: 5}, {Key: "closed", Label: "closed", Count: 3}, {Key: "reopened", Label: "reopened", Count: 1}}, nil
+	}}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	resp, err := svc.AggregateCases(ctx, domain.AggregateCasesRequest{GroupBy: "state", MaxGroups: 2})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Groups) != 2 || resp.OthersCount != 1 || resp.TotalRecords != 9 {
+		t.Errorf("got groups=%d others=%d total=%d, want 2/1/9", len(resp.Groups), resp.OthersCount, resp.TotalRecords)
+	}
+	if _, err := svc.AggregateCases(ctx, domain.AggregateCasesRequest{GroupBy: "bogus"}); err == nil {
+		t.Error("expected a ValidationError for an unknown groupBy")
+	}
 }

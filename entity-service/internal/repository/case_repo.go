@@ -239,6 +239,11 @@ type CaseRepository interface {
 	// narrowed to scope regardless of what project filter req itself carries.
 	// COUNT and SELECT are executed concurrently on separate pool connections.
 	SearchCases(ctx context.Context, req domain.SearchCasesRequest, scope SearchScope) ([]domain.SearchCaseView, int, error)
+	// AggregateCases counts the cases matching req's filters per value of
+	// groupBy (state, severity, type, engagementType, issueType, workState,
+	// account), largest bucket first. Rows with no value for the field are
+	// not counted. The caller applies any top-N cap.
+	AggregateCases(ctx context.Context, req domain.SearchCasesRequest, groupBy string, scope SearchScope) ([]domain.AggregateBucket, error)
 	// CreateCaseComment inserts a new comment row for the given case.
 	CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error)
 	// SearchCaseComments returns a paginated slice of comments for the given case
@@ -1774,8 +1779,25 @@ func onboardingStatusEnumLabels(values []string) ([]string, error) {
 	return out, nil
 }
 
-// SearchCases implements CaseRepository.
-func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest, scope SearchScope) ([]domain.SearchCaseView, int, error) {
+// caseSearchJoins is the join set buildCaseSearchWhere's predicates refer to.
+const caseSearchJoins = `LEFT JOIN "case" c ON c.id = wi.id
+		 ` + caseLikeJoins + `
+		 LEFT JOIN project p ON p.id = wi.project_id
+		 LEFT JOIN account a ON a.id = wi.account_id
+		 LEFT JOIN "group" cre ON cre.id = a.cre_team_id
+		 LEFT JOIN "group" sre ON sre.id = a.sre_team_id
+		 LEFT JOIN deployment d ON d.id = wi.deployment_id
+		 LEFT JOIN deployed_product dp ON dp.id = wi.deployed_product_id
+		 LEFT JOIN product prod ON prod.id = dp.product_id
+		 LEFT JOIN product_version pv ON pv.id = dp.version_id
+		 LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id
+		 LEFT JOIN work_item pw ON pw.id = wi.parent_id
+		 LEFT JOIN "case" rc ON rc.id = c.related_case_id
+		 LEFT JOIN work_item rc_wi ON rc_wi.id = rc.id`
+
+// buildCaseSearchWhere renders the WHERE clause (and its bound arguments) shared by
+// SearchCases and AggregateCases. It expects the joins in caseSearchJoins.
+func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (string, []any, int, error) {
 	filterArgs := []any{}
 	argIdx := 1
 
@@ -1804,7 +1826,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		DefaultTypes: true,
 	}, argIdx)
 	if err != nil {
-		return nil, 0, err
+		return "", nil, argIdx, err
 	}
 	for _, pred := range fieldPreds {
 		where += " AND " + pred
@@ -1869,6 +1891,43 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		filterArgs = append(filterArgs, req.Parsed.ClosedEndDate)
 		argIdx++
 	}
+	// resolvedOn: "case".resolved_on (migration 0023). Case-only, like closedOn.
+	if req.Parsed.ResolvedStartDate != nil {
+		where += fmt.Sprintf(" AND c.resolved_on >= $%d", argIdx)
+		filterArgs = append(filterArgs, req.Parsed.ResolvedStartDate)
+		argIdx++
+	}
+	if req.Parsed.ResolvedEndDate != nil {
+		where += fmt.Sprintf(" AND c.resolved_on <= $%d", argIdx)
+		filterArgs = append(filterArgs, req.Parsed.ResolvedEndDate)
+		argIdx++
+	}
+	// state notIn: a row with no state satisfies it (the inverse of state in).
+	if len(req.Parsed.ExcludeStates) > 0 {
+		states := make([]string, len(req.Parsed.ExcludeStates))
+		for i, st := range req.Parsed.ExcludeStates {
+			states[i] = strings.ToUpper(string(st))
+		}
+		where += fmt.Sprintf(" AND ("+caseLikeStateColumn+" IS NULL OR "+caseLikeStateColumn+" <> ALL($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, states)
+		argIdx++
+	}
+	// projectType: matched on project_type.name (p is the LEFT JOIN above).
+	if len(req.Parsed.ProjectTypeNames) > 0 {
+		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM project_type pt WHERE pt.id = p.project_type_id AND pt.name = ANY($%d::text[]))", argIdx)
+		filterArgs = append(filterArgs, req.Parsed.ProjectTypeNames)
+		argIdx++
+	}
+	// slaBreached: at least one SLA row of the case has breached. NOTE: the
+	// ServiceNow side restricts this to ten named SLA definitions; this
+	// matches any breached row until that list is mapped onto sla_policy.
+	if req.Parsed.HasBreachedSLA != nil {
+		if *req.Parsed.HasBreachedSLA {
+			where += " AND EXISTS (SELECT 1 FROM sla bs WHERE bs.work_item_id = wi.id AND bs.has_breached IS TRUE)"
+		} else {
+			where += " AND NOT EXISTS (SELECT 1 FROM sla bs WHERE bs.work_item_id = wi.id AND bs.has_breached IS TRUE)"
+		}
+	}
 	if req.Parsed.StartCreatedDate != nil {
 		where += fmt.Sprintf(" AND wi.created_on >= $%d", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.StartCreatedDate)
@@ -1896,7 +1955,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	if len(req.Parsed.ProjectOnboardingStatuses) > 0 {
 		labels, err := onboardingStatusEnumLabels(req.Parsed.ProjectOnboardingStatuses)
 		if err != nil {
-			return nil, 0, err
+			return "", nil, argIdx, err
 		}
 		where += fmt.Sprintf(" AND p.onboarding_status = ANY($%d::text[]::onboarding_status_enum[])", argIdx)
 		filterArgs = append(filterArgs, labels)
@@ -1905,7 +1964,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	if len(req.Parsed.ExcludeProjectOnboardingStatuses) > 0 {
 		labels, err := onboardingStatusEnumLabels(req.Parsed.ExcludeProjectOnboardingStatuses)
 		if err != nil {
-			return nil, 0, err
+			return "", nil, argIdx, err
 		}
 		where += fmt.Sprintf(" AND (p.onboarding_status IS NULL OR p.onboarding_status <> ALL($%d::text[]::onboarding_status_enum[]))", argIdx)
 		filterArgs = append(filterArgs, labels)
@@ -1978,7 +2037,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		for _, g := range req.Parsed.OrGroups {
 			preds, branchArgs, next, err := caseFieldPredicates(caseFieldSetFromGroup(g), argIdx)
 			if err != nil {
-				return nil, 0, err
+				return "", nil, argIdx, err
 			}
 			filterArgs = append(filterArgs, branchArgs...)
 			argIdx = next
@@ -1999,6 +2058,16 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		argIdx++
 	}
 
+	return where, filterArgs, argIdx, nil
+}
+
+// SearchCases implements CaseRepository.
+func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest, scope SearchScope) ([]domain.SearchCaseView, int, error) {
+	where, filterArgs, argIdx, err := buildCaseSearchWhere(req, scope)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	sortCol := pgSortColMap[req.SortBy.Field]
 	sortDir := string(req.SortBy.Order)
 
@@ -2008,20 +2077,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	// and "announcement" rows have no deployment/deployed-product at all
 	// (see validateCreateCaseRequest) -- an INNER join would silently drop
 	// them from every search result.
-	joins := `LEFT JOIN "case" c ON c.id = wi.id
-		 ` + caseLikeJoins + `
-		 LEFT JOIN project p ON p.id = wi.project_id
-		 LEFT JOIN account a ON a.id = wi.account_id
-		 LEFT JOIN "group" cre ON cre.id = a.cre_team_id
-		 LEFT JOIN "group" sre ON sre.id = a.sre_team_id
-		 LEFT JOIN deployment d ON d.id = wi.deployment_id
-		 LEFT JOIN deployed_product dp ON dp.id = wi.deployed_product_id
-		 LEFT JOIN product prod ON prod.id = dp.product_id
-		 LEFT JOIN product_version pv ON pv.id = dp.version_id
-		 LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id
-		 LEFT JOIN work_item pw ON pw.id = wi.parent_id
-		 LEFT JOIN "case" rc ON rc.id = c.related_case_id
-		 LEFT JOIN work_item rc_wi ON rc_wi.id = rc.id`
+	joins := caseSearchJoins
 
 	countQuery := "SELECT COUNT(*) FROM work_item wi " + joins + " " + where
 
@@ -3059,4 +3115,74 @@ func (r *caseRepo) updateCaseEnforcingOneOngoing(ctx context.Context, req domain
 		return domain.Case{}, nil, fmt.Errorf("update case: commit tx: %w", err)
 	}
 	return c, c.Severity, nil
+}
+
+// caseAggregateColumns maps an aggregate/group-by field to the SQL expression
+// buckets are keyed on (over caseSearchJoins) and the expression the bucket
+// label is read from.
+var caseAggregateColumns = map[string]struct{ key, label string }{
+	"state":          {caseLikeStateColumn, caseLikeStateColumn},
+	"severity":       {"c.severity::TEXT", "c.severity::TEXT"},
+	"type":           {"wi.type::TEXT", "wi.type::TEXT"},
+	"engagementType": {"eng.type::TEXT", "eng.type::TEXT"},
+	"issueType":      {"c.issue_type::TEXT", "c.issue_type::TEXT"},
+	"workState":      {"c.work_state::TEXT", "c.work_state::TEXT"},
+	"account":        {"wi.account_id::TEXT", "a.name"},
+}
+
+// AggregateCases implements CaseRepository. It shares buildCaseSearchWhere with
+// SearchCases, so a bucket count always agrees with the same search's total.
+func (r *caseRepo) AggregateCases(ctx context.Context, req domain.SearchCasesRequest, groupBy string, scope SearchScope) ([]domain.AggregateBucket, error) {
+	col, ok := caseAggregateColumns[groupBy]
+	if !ok {
+		return nil, &apierror.ValidationError{Msg: "groupBy contains invalid value: " + groupBy}
+	}
+	where, args, _, err := buildCaseSearchWhere(req, scope)
+	if err != nil {
+		return nil, err
+	}
+	query := fmt.Sprintf(`
+		SELECT %s AS bucket_key, MAX(%s) AS bucket_label, COUNT(*) AS bucket_count
+		FROM work_item wi %s %s AND %s IS NOT NULL
+		GROUP BY bucket_key
+		ORDER BY bucket_count DESC, bucket_key`, col.key, col.label, caseSearchJoins, where, col.key)
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate cases: %w", err)
+	}
+	defer rows.Close()
+
+	buckets := []domain.AggregateBucket{}
+	for rows.Next() {
+		var key string
+		var label *string
+		var count int
+		if err := rows.Scan(&key, &label, &count); err != nil {
+			return nil, fmt.Errorf("scan case bucket: %w", err)
+		}
+		k, l := aggregateBucketKey(groupBy, key), stringOrEmpty(label)
+		if l == "" || groupBy != "account" {
+			l = k
+		}
+		buckets = append(buckets, domain.AggregateBucket{Key: k, Label: l, Count: count})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate case buckets: %w", err)
+	}
+	return buckets, nil
+}
+
+// aggregateBucketKey converts a stored enum label to the domain value the
+// case search contract uses (lower-case, severity via caseSeverityFromEnum);
+// account keys are UUIDs and pass through.
+func aggregateBucketKey(groupBy, raw string) string {
+	switch groupBy {
+	case "account":
+		return raw
+	case "severity":
+		if v, ok := caseSeverityFromEnum[raw]; ok {
+			return string(v)
+		}
+	}
+	return strings.ToLower(raw)
 }
