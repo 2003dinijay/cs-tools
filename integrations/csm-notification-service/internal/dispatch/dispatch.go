@@ -89,10 +89,11 @@ type identityProvisioner interface {
 // makes back to entity-service.
 type onboardingStepRecorder interface {
 	RecordOnboardingStep(ctx context.Context, req entity.OnboardingStepRequest) error
-	// EmailAlreadySent reports whether a SUCCEEDED EMAIL step is already on
-	// the ledger for the membership -- the durable "this invitation has
-	// already gone out" check.
-	EmailAlreadySent(ctx context.Context, membershipSfID string) (bool, error)
+	// SucceededEmailStep returns the SUCCEEDED EMAIL step on the ledger for
+	// the membership, or nil when there is none -- the durable "an
+	// invitation has already gone out, for this membership version" check
+	// (see Dispatcher.invitationAlreadySent).
+	SucceededEmailStep(ctx context.Context, membershipSfID string) (*entity.RecordedOnboardingStep, error)
 }
 
 // OnboardingConfig is everything handleProjectContactInvited needs beyond
@@ -1660,8 +1661,11 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 			return err
 		}
 
-		// Last check before sending: has an invitation for this membership
-		// already gone out? The other two guards cannot answer that. The
+		// Last check before sending: has an invitation for this version of
+		// the membership already gone out? (A re-invitation -- the
+		// membership moved back into INVITED or RE-INVITED, say after a
+		// deactivation -- is a newer version and must send again; see
+		// invitationAlreadySent.) The other two guards cannot answer that. The
 		// in-process claim above lives for one process, and the ingest's
 		// duplicate check only recognises an unchanged Salesforce version,
 		// so neither covers a redelivery after a restart, a replay from the
@@ -1698,10 +1702,9 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 		// keeps showing how many invitations actually went out.
 		if p.IsResend {
 			slog.InfoContext(ctx, "dispatch: resend requested; not checking the invitation ledger", logAttrs...)
-		} else if sent, err := d.onboarding.Steps.EmailAlreadySent(ctx, p.MembershipSfID); err != nil {
+		} else if sent, err := d.invitationAlreadySent(ctx, p, logAttrs); err != nil {
 			return fmt.Errorf("dispatch: check invitation already sent for membership %s: %w", p.MembershipSfID, err)
 		} else if sent {
-			slog.InfoContext(ctx, "dispatch: invitation already recorded as sent for this membership; not sending again", logAttrs...)
 			break
 		}
 
@@ -1752,6 +1755,69 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 	}
 
 	return nil
+}
+
+// invitationAlreadySent reports whether the ledger already records an
+// invitation sent for this version of the membership, logging why when it
+// does. It is the durable duplicate-invitation guard of
+// handleProjectContactInvited.
+//
+// The ledger keeps one EMAIL row per membership, so "is there a SUCCEEDED
+// EMAIL row" alone cannot tell a duplicate from a re-invitation: the first
+// invitation would block every later one forever. What tells them apart is
+// the membership version. Salesforce emits several UPDATED events per save
+// and events are redelivered, but all of those carry the same (or, for a
+// delayed delivery, an older) LastModifiedDate; a genuine re-invitation is a
+// new save and carries a newer one. So the invitation counts as already
+// sent only when the SUCCEEDED row's eventModifiedOn is not before the
+// event's -- the same "not older" rule entity-service's step upsert applies.
+//
+// When either timestamp is missing or unparseable the versions cannot be
+// compared, and this falls back to the conservative answer: any SUCCEEDED
+// row means sent. A lost re-invitation can be recovered with a resend; a
+// duplicate e-mail cannot be taken back.
+func (d *Dispatcher) invitationAlreadySent(ctx context.Context, p events.ProjectContactInvitedPayload, logAttrs []any) (bool, error) {
+	step, err := d.onboarding.Steps.SucceededEmailStep(ctx, p.MembershipSfID)
+	if err != nil {
+		return false, err
+	}
+	if step == nil {
+		return false, nil
+	}
+	recordedOn, recordedOK := parseLedgerTime(step.EventModifiedOn)
+	eventOn, eventOK := parseLedgerTime(p.EventModifiedOn)
+	if !recordedOK || !eventOK {
+		slog.WarnContext(ctx, "dispatch: cannot compare invitation versions (missing or unparseable eventModifiedOn); an invitation is already recorded as sent, so not sending again",
+			append(logAttrs, "eventModifiedOn", p.EventModifiedOn, "recordedEventModifiedOn", step.EventModifiedOn)...)
+		return true, nil
+	}
+	// Postgres keeps microseconds, so a timestamp with finer precision (only
+	// the processing-time fallback has one) comes back rounded; compare at
+	// the precision the ledger can actually hold, or a redelivery of that
+	// same event could look newer than its own record.
+	eventOn = eventOn.Truncate(time.Microsecond)
+	if recordedOn.Before(eventOn) {
+		slog.InfoContext(ctx, "dispatch: invitation recorded as sent for an older membership version; this is a re-invitation, sending",
+			append(logAttrs, "eventModifiedOn", eventOn, "recordedEventModifiedOn", recordedOn)...)
+		return false, nil
+	}
+	slog.InfoContext(ctx, "dispatch: invitation already recorded as sent for this membership version; not sending again",
+		append(logAttrs, "eventModifiedOn", eventOn, "recordedEventModifiedOn", recordedOn)...)
+	return true, nil
+}
+
+// parseLedgerTime parses an RFC 3339 eventModifiedOn. An empty, malformed or
+// zero value (entity-service marshals an unset time.Time as
+// 0001-01-01T00:00:00Z) is reported as absent.
+func parseLedgerTime(s string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, false
+	}
+	ts, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil || ts.IsZero() {
+		return time.Time{}, false
+	}
+	return ts.UTC(), true
 }
 
 // recordOnboardingStep writes one step's outcome to entity-service's

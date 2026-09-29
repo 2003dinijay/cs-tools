@@ -903,7 +903,14 @@ func (s *projectMembershipWriteService) publishInvited(ctx context.Context, m do
 		Roles:             m.Roles,
 		IsIntegrationUser: rec.IsIntegrationUser,
 		Type:              rec.Type,
-		Resend:            resend,
+		// The Salesforce record's LastModifiedDate after this write -- the
+		// same version the DATABASE step is stamped with. csm-notification-
+		// service compares it with the one on its recorded EMAIL step to
+		// tell a re-invitation (newer) from a duplicate (same or older);
+		// without it a portal re-invitation of a contact who was invited
+		// once before is indistinguishable from a duplicate and is dropped.
+		EventModifiedOn: rec.LastModifiedOn.UTC().Format(time.RFC3339Nano),
+		Resend:          resend,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "membership write: encode project_contact.invited payload", "membershipSfId", m.MembershipSfID, "err", err)

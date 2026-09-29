@@ -384,6 +384,12 @@ func TestMembershipWrite_InviteCreatesBothSides(t *testing.T) {
 	if payload.Email != writeEmail || payload.ProjectKey != "ACMEPROD" || payload.ProjectName != "Acme Prod" || payload.Resend {
 		t.Errorf("payload = %+v", payload)
 	}
+	// The event carries the version the DATABASE step was stamped with, so
+	// csm-notification-service can tell a later re-invitation (newer) from a
+	// duplicate of this one (same or older).
+	if want := h.repo.steps[0].EventModifiedOn.UTC().Format(time.RFC3339Nano); h.repo.steps[0].EventModifiedOn.IsZero() || payload.EventModifiedOn != want {
+		t.Errorf("payload eventModifiedOn = %q, want the DATABASE step's %q", payload.EventModifiedOn, want)
+	}
 }
 
 // TestMembershipWrite_InviteAdoptsExistingSalesforceContact is the
