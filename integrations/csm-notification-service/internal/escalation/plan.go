@@ -124,10 +124,27 @@ func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolic
 	// Stamp the rule before anything reads it: every log line, the chat card
 	// and the work note report it, and they must name the row the recipients
 	// actually came from.
+	//
+	// It also decides whether this ladder has a LEVEL_0 at all. That used to
+	// be HasNotificationLevel's own answer -- "rotation shifts only" -- which
+	// was the previous table's rule and is wrong for this one: every row of
+	// the updated table has a first rung, including the two LK rows whose
+	// LEVEL_0 is the ABT's alert-duty nominees. Left as it was, an incident
+	// during business hours skipped the fastest rung entirely and nothing
+	// said so.
+	var matched Rule
+	haveRule := false
 	if n, ok := r.(ruleNamer); ok {
-		if rule, matched := n.RuleFor(t.Routing); matched {
+		if rule, found := n.RuleFor(t.Routing); found {
+			matched, haveRule = rule, true
 			t.Routing.RuleID = rule.ID
 		}
+	}
+	// A resolver with no table of its own (RosterResolver, StaticResolver)
+	// keeps the old answer, since nothing else can tell it.
+	includeLevel0 := t.Routing.HasNotificationLevel()
+	if haveRule {
+		includeLevel0 = matched.Levels[Level0] != SourceNone
 	}
 	policy, ok := Lookup(policies, t.Priority)
 	if !ok {
@@ -137,7 +154,7 @@ func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolic
 	// Group the flat schedule by level, keeping levels in the order they open.
 	var order []Level
 	attemptsByLevel := map[Level][]Attempt{}
-	for _, a := range Schedule(policy, t.Routing.HasNotificationLevel()) {
+	for _, a := range Schedule(policy, includeLevel0) {
 		if _, seen := attemptsByLevel[a.Level]; !seen {
 			order = append(order, a.Level)
 		}
@@ -161,12 +178,16 @@ func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolic
 			continue
 		}
 
-		// A number is only required when a number is the only way to reach
-		// anybody. On a chat rung the card goes to a space, and a recipient
-		// the rota knows by e-mail alone is perfectly reachable -- "user" has
-		// no phone column at all, so requiring one here scheduled nothing
-		// whatsoever for a chat-only deployment.
-		needsPhone := !channel.Uses(ChannelChat)
+		// A number is only required when a number is how somebody is actually
+		// reached -- that is, when a call will be placed. On a chat rung the
+		// card goes to a space, and on a log rung nobody is contacted at all;
+		// a recipient the rota knows by e-mail alone is reachable either way.
+		// "user" has no phone column, so demanding one scheduled nothing
+		// whatsoever for a chat-only deployment, and then nothing again for a
+		// log-only one once that channel existed -- the same bug twice,
+		// because this asked which channels are NOT chat rather than which
+		// one dials.
+		needsPhone := channel == ChannelCall
 		reachable := make([]Recipient, 0, len(recipients))
 		for _, rec := range recipients {
 			if needsPhone && rec.Phone == "" {

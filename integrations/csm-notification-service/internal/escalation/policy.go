@@ -114,11 +114,11 @@ func (l Level) String() string {
 func (l Level) Role() string {
 	switch l {
 	case Level0:
-		return "On-call sub lead"
+		return "First responders"
 	case Level1:
-		return "ABT sub leads"
+		return "Team lead"
 	case Level2:
-		return "ABT lead"
+		return "Team leads"
 	case Level3:
 		return "CRE head"
 	case Level4:

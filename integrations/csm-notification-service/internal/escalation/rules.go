@@ -232,3 +232,50 @@ func (s LevelSource) valid() bool {
 	}
 	return false
 }
+
+// Describe names a rung's source in the words a reader of the chat card or the
+// work note would use.
+//
+// It comes from the same table the routing does, so a card can never describe
+// a rung the ladder did not actually call -- which is exactly what happened
+// while Level.Role() carried the previous model's names and the resolver had
+// moved on.
+func (s LevelSource) Describe() string {
+	switch s {
+	case SourceRotaMembers:
+		return "Rota members"
+	case SourceRotaPair:
+		return "Rota members (the team's own, and one other)"
+	case SourceAlertDutyOwnABT:
+		return "Alert duty (this ABT)"
+	case SourceAlertDutyEachABT:
+		return "Alert duty (one per ABT)"
+	case SourceAlertDutyAmericas:
+		return "Alert duty (Americas)"
+	case SourceRotaMemberAndAlertDutyAmericas:
+		return "Rota member and Americas alert duty"
+	case SourceTeamLead:
+		return "Team lead"
+	case SourceAllTeamLeads:
+		return "Team leads"
+	case SourceAmericasTeamLead:
+		return "Americas team lead"
+	case SourceCREHead:
+		return "CRE head"
+	case SourceCSHead:
+		return "CS head"
+	}
+	return ""
+}
+
+// RoleAt names this rule's rung, falling back to the generic label when the
+// rule has no source for it.
+func (r Rule) RoleAt(l Level) string {
+	if l < Level0 || l > Level4 {
+		return l.Role()
+	}
+	if name := r.Levels[l].Describe(); name != "" {
+		return name
+	}
+	return l.Role()
+}

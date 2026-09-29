@@ -374,7 +374,11 @@ func localChatClient(cfg config) *notifications.GoogleChatClient {
 func localResolver(to string) escalation.Resolver {
 	base := os.Getenv("CUSTOMER_ENTITY_BASE_URL")
 	if base == "" {
-		return escalation.NewRosterResolver(localRoster(to))
+		return ruleAwareRoster{
+			Resolver: escalation.NewRosterResolver(localRoster(to)),
+			rules:    escalation.DefaultRules,
+			teams:    localTeamKeys(),
+		}
 	}
 	fmt.Printf("resolving rungs from the Team Schedule at %s\n", base)
 	return escalation.NewTeamScheduleResolver(
@@ -385,9 +389,28 @@ func localResolver(to string) escalation.Resolver {
 			ClientSecret: os.Getenv("OAUTH2_CLIENT_SECRET"),
 			Scopes:       splitCommaEnv("CUSTOMER_ENTITY_SCOPES"),
 		}),
-		escalation.TeamKeys{Leadership: os.Getenv("INCIDENT_ESCALATION_LEADERSHIP_TEAM")},
+		localTeamKeys(),
 		nil,
 	)
+}
+
+// localTeamKeys mirrors the deployed configuration's own teams block, so a dry
+// run routes by the same rules a real incident would. Overridable from the
+// environment for a deployment whose ABTs differ.
+func localTeamKeys() escalation.TeamKeys {
+	abts := splitCommaEnv("INCIDENT_ESCALATION_ABT_TEAMS")
+	if len(abts) == 0 {
+		abts = []string{"apollo", "artemis", "atlas", "castor", "draco", "phoenix", "vega"}
+	}
+	americas := os.Getenv("INCIDENT_ESCALATION_AMERICAS_TEAM")
+	if americas == "" {
+		americas = "americas"
+	}
+	return escalation.TeamKeys{
+		ABTs:       abts,
+		Americas:   americas,
+		Leadership: os.Getenv("INCIDENT_ESCALATION_LEADERSHIP_TEAM"),
+	}
 }
 
 // splitCommaEnv reads an optional comma-separated list.
@@ -406,15 +429,45 @@ func localRoster(to string) escalation.Roster {
 	person := func(role string) escalation.Recipient {
 		return escalation.Recipient{Email: role + "@local.invalid", Name: role, Phone: to}
 	}
-	// Named as section 5.0's rule table names them, so the printed ladder is
-	// recognisable against the specification rather than against this file.
+	// Named as the updated rule table names them, so the printed ladder is
+	// recognisable against the spreadsheet rather than against this file.
+	// LEVEL_1 is the incident's own team lead and LEVEL_2 is every team lead
+	// — the reverse of the previous model, which is exactly the thing worth
+	// seeing spelled out in a dry run.
 	return escalation.Roster{Default: escalation.LevelRoster{
-		"LEVEL_0": {person("rotation-lead")},
-		"LEVEL_1": {person("abt-lead")},
-		"LEVEL_2": {person("abt-team-lead")},
-		"LEVEL_3": {person("head-of-bu")},
-		"LEVEL_4": {person("head-of-cre")},
+		"LEVEL_0": {person("first-responders")},
+		"LEVEL_1": {person("team-lead")},
+		"LEVEL_2": {person("team-leads")},
+		"LEVEL_3": {person("cre-head")},
+		"LEVEL_4": {person("cs-head")},
 	}}
+}
+
+// ruleAwareRoster answers rungs from the local roster but routes by the real
+// rule table.
+//
+// Without it a dry run silently skipped LEVEL_0 on every LK shift: the plan
+// asks the resolver which rule applies and falls back to the previous model's
+// "rotation shifts only" answer when it cannot say. The roster resolver could
+// not, so the harness disagreed with the deployed service about the shape of
+// the ladder — which is the one thing a harness must never do.
+type ruleAwareRoster struct {
+	escalation.Resolver
+	rules []escalation.Rule
+	teams escalation.TeamKeys
+}
+
+// RuleFor satisfies the same interface the Team Schedule resolver does.
+func (r ruleAwareRoster) RuleFor(rc escalation.RoutingContext) (escalation.Rule, bool) {
+	key := strings.ToLower(strings.TrimSpace(rc.AssignedCRETeam))
+	isABT := false
+	for _, k := range r.teams.ABTs {
+		if strings.ToLower(strings.TrimSpace(k)) == key {
+			isABT = true
+			break
+		}
+	}
+	return escalation.MatchRule(r.rules, rc.Shift, isABT, key != "")
 }
 
 // triggerTime picks an instant inside the requested shift, so the engine's own

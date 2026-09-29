@@ -444,3 +444,85 @@ func TestResolve_RotaPairSurvivesAHistoryFailure(t *testing.T) {
 		t.Errorf("recipients = %v, want the pair anyway", emails(got))
 	}
 }
+
+// Every rule in the updated table has a first rung, so every ladder must
+// schedule one -- including the two LK rows, whose LEVEL_0 is the ABT's
+// alert-duty nominees.
+//
+// This is a regression test with a real cause: the plan asked
+// HasNotificationLevel ("rotation shifts only"), which was the PREVIOUS
+// table's rule, so an incident during business hours silently skipped its
+// fastest rung. Found by running a ladder, not by a test, which is why there
+// is one now.
+func TestBuildPlan_EveryRuleSchedulesLevel0(t *testing.T) {
+	var members []teamMember
+	for _, team := range append(append([]string{}, testTeams.ABTs...), testTeams.Americas) {
+		members = append(members,
+			member(team, team+".t1@example.com", "engineer", "T1"),
+			member(team, team+".lead@example.com", roleLead, ""))
+	}
+	members = append(members,
+		member("cre-leadership", "cre.head@example.com", roleCREHead, ""),
+		member("cre-leadership", "cs.head@example.com", roleCSHead, ""))
+
+	onDuty := []onDutyAssignment{
+		onDutyFor("u1", "vega.on@example.com", "vega"),
+		onDutyFor("u2", "atlas.on@example.com", "atlas"),
+	}
+
+	for _, rule := range DefaultRules {
+		t.Run(rule.ID, func(t *testing.T) {
+			if rule.Levels[Level0] == SourceNone {
+				t.Skipf("%s has no LEVEL_0 source", rule.ID)
+			}
+			team := "vega"
+			if rule.ABT == ABTNo {
+				team = "not-an-abt"
+			}
+			r := testResolver(&stubScheduleReader{members: members, onDuty: onDuty})
+			trigger := Trigger{
+				IncidentID: "inc-1", Priority: "P1", At: time.Now(),
+				Kind: TriggerNewIncident,
+				Routing: RoutingContext{
+					Shift: rule.Shift, AssignedCRETeam: team, At: time.Now(),
+				},
+			}
+			plan, err := BuildPlan(context.Background(), trigger, DefaultPolicy, r, ChannelLog)
+			if err != nil {
+				t.Fatalf("BuildPlan: %v", err)
+			}
+			if plan.Trigger.Routing.RuleID != rule.ID {
+				t.Fatalf("routed by %s, wanted %s", plan.Trigger.Routing.RuleID, rule.ID)
+			}
+			var sawLevel0 bool
+			for _, c := range plan.Calls {
+				if c.Level == Level0 {
+					sawLevel0 = true
+					break
+				}
+			}
+			if !sawLevel0 {
+				t.Errorf("%s (%s) scheduled no LEVEL_0; its source is %s",
+					rule.ID, rule.Shift, rule.Levels[Level0])
+			}
+		})
+	}
+}
+
+// The rung label a card shows must come from the same table the routing does.
+func TestRule_RoleAtNamesTheRealRung(t *testing.T) {
+	r, ok := MatchRule(DefaultRules, ShiftUSA, true, true)
+	if !ok {
+		t.Fatal("no rule for the Americas shift")
+	}
+	if got, want := r.RoleAt(Level2), "Americas team lead"; got != want {
+		t.Errorf("R5 LEVEL_2 = %q, want %q", got, want)
+	}
+	lk, _ := MatchRule(DefaultRules, ShiftLK, true, true)
+	if got, want := lk.RoleAt(Level1), "Team lead"; got != want {
+		t.Errorf("R2 LEVEL_1 = %q, want %q", got, want)
+	}
+	if got, want := lk.RoleAt(Level2), "Team leads"; got != want {
+		t.Errorf("R2 LEVEL_2 = %q, want %q", got, want)
+	}
+}
