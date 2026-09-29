@@ -162,7 +162,7 @@ func (c *postgresSplProjectClient) GetProjects(ctx context.Context, phrase *stri
 // require the real UUID, not the number.
 func (c *postgresSplProjectClient) resolveProjectNumberToID(ctx context.Context, projectNumber string) (string, error) {
 	body, err := json.Marshal(entitySearchProjectsRequest{
-		Pagination:  entityPagination{Limit: 5, Offset: 0},
+		Pagination:  entityPagination{Limit: 50, Offset: 0},
 		SearchQuery: projectNumber,
 	})
 	if err != nil {

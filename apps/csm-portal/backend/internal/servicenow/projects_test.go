@@ -57,8 +57,8 @@ func TestGetProjectByID_NotFound(t *testing.T) {
 
 func TestGetProjectContacts_DefaultsMissingStateToDash(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("sysparm_query"); got != "customer_project.number%3DPRJ001" {
-			t.Errorf("sysparm_query = %q, want %q", got, "customer_project.number%3DPRJ001")
+		if got := r.URL.Query().Get("sysparm_query"); got != "customer_project.number=PRJ001" {
+			t.Errorf("sysparm_query = %q, want %q", got, "customer_project.number=PRJ001")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{

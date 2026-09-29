@@ -101,6 +101,7 @@ func TestCloseProjectRisk_RejectsWhenActionItemsStillOpen(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT (.+) FROM project_risk WHERE id = ?").
 		WithArgs(7).
 		WillReturnRows(sqlmock.NewRows(riskRowCols()).
@@ -108,6 +109,7 @@ func TestCloseProjectRisk_RejectsWhenActionItemsStillOpen(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM risk_action_item").
 		WithArgs(7).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+	mock.ExpectRollback()
 
 	_, err := c.CloseProjectRisk(ctx, 7, "resolved", "user@example.com")
 	var valErr *ValidationError
@@ -117,15 +119,20 @@ func TestCloseProjectRisk_RejectsWhenActionItemsStillOpen(t *testing.T) {
 	if valErr.Message != "Cannot close risk: 2 action item(s) are still open." {
 		t.Errorf("message = %q", valErr.Message)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (rollback not observed?): %v", err)
+	}
 }
 
 func TestCloseProjectRisk_MissingRiskIsValidationError(t *testing.T) {
 	c, mock := newTestClient(t)
 	ctx := context.Background()
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT (.+) FROM project_risk WHERE id = ?").
 		WithArgs(999).
 		WillReturnRows(sqlmock.NewRows(riskRowCols()))
+	mock.ExpectRollback()
 
 	_, err := c.CloseProjectRisk(ctx, 999, "resolved", "user@example.com")
 	var valErr *ValidationError
@@ -134,6 +141,34 @@ func TestCloseProjectRisk_MissingRiskIsValidationError(t *testing.T) {
 	}
 	if valErr.Message != "Risk not found: 999" {
 		t.Errorf("message = %q", valErr.Message)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (rollback not observed?): %v", err)
+	}
+}
+
+func TestCloseProjectRisk_RejectsWhenRiskNotOpen(t *testing.T) {
+	c, mock := newTestClient(t)
+	ctx := context.Background()
+	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT (.+) FROM project_risk WHERE id = ?").
+		WithArgs(7).
+		WillReturnRows(sqlmock.NewRows(riskRowCols()).
+			AddRow(7, "proj-1", "acct-1", "closed", "at risk", "user@example.com", now, "fixed", "user@example.com", now))
+	mock.ExpectRollback()
+
+	_, err := c.CloseProjectRisk(ctx, 7, "resolved", "user@example.com")
+	var valErr *ValidationError
+	if !errors.As(err, &valErr) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if valErr.Message != "Risk 7 is not open." {
+		t.Errorf("message = %q", valErr.Message)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (rollback not observed?): %v", err)
 	}
 }
 

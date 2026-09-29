@@ -274,7 +274,7 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		select {
 		case <-time.After(retryBackoff):
 		case <-req.Context().Done():
-			return resp, err
+			return nil, req.Context().Err()
 		}
 		resp, err = t.base.RoundTrip(req)
 	}

@@ -43,6 +43,11 @@ func (h *CustomerHealthHandler) CreateActionItem(w http.ResponseWriter, r *http.
 
 	result, err := h.risk.CreateActionItem(r.Context(), riskID, payload, user.Email)
 	if err != nil {
+		var valErr *risk.ValidationError
+		if errors.As(err, &valErr) {
+			writeError(w, http.StatusBadRequest, valErr.Message)
+			return
+		}
 		slog.ErrorContext(r.Context(), "risk CreateActionItem failed", "userID", user.UserID, "riskId", riskID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to create action item.")
 		return

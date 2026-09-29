@@ -156,7 +156,10 @@ func (c *postgresSplAccountClient) searchAccounts(ctx context.Context, req entit
 // ServiceNow's own default (no userType) behavior; a caller-specified
 // userType is accepted but not narrowed further, a documented simplification.
 func (c *postgresSplAccountClient) GetAccounts(ctx context.Context, email, userType, phrase *string, offset, limit int, active bool) ([]servicenow.AccountDetails, error) {
-	req := entitySearchAccountsRequest{Pagination: entityPagination{Limit: limit, Offset: offset}, Filters: entitySearchAccountsFilters{Active: &active}}
+	req := entitySearchAccountsRequest{Pagination: entityPagination{Limit: limit, Offset: offset}}
+	if active {
+		req.Filters.Active = &active
+	}
 	if email != nil {
 		req.Filters.OwnerEmail = *email
 	}
@@ -180,7 +183,7 @@ func (c *postgresSplAccountClient) GetAccounts(ctx context.Context, email, userT
 // postgresSplCaseClient.resolveCaseByNumber already uses for cases.
 func (c *postgresSplAccountClient) GetAccountByID(ctx context.Context, accountNumber string) (servicenow.AccountDetails, error) {
 	resp, err := c.searchAccounts(ctx, entitySearchAccountsRequest{
-		Pagination: entityPagination{Limit: 5, Offset: 0},
+		Pagination: entityPagination{Limit: 50, Offset: 0},
 		Filters:    entitySearchAccountsFilters{SearchQuery: accountNumber},
 	})
 	if err != nil {
@@ -201,7 +204,7 @@ func (c *postgresSplAccountClient) GetAccountByID(ctx context.Context, accountNu
 // wired in (see project_repo.go's own comment on this).
 func (c *postgresSplAccountClient) GetProjectsByAccount(ctx context.Context, accountNumber string, offset, limit int) ([]servicenow.ProjectDetails, error) {
 	accountResp, err := c.searchAccounts(ctx, entitySearchAccountsRequest{
-		Pagination: entityPagination{Limit: 5, Offset: 0},
+		Pagination: entityPagination{Limit: 50, Offset: 0},
 		Filters:    entitySearchAccountsFilters{SearchQuery: accountNumber},
 	})
 	if err != nil {

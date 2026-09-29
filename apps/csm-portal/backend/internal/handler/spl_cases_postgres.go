@@ -293,7 +293,7 @@ func toCaseDetails(v entitySearchCaseView) servicenow.CaseDetails {
 		OpenedAt:         toServiceNowTimestamp(v.CreatedOn),
 		AccountNumber:    accountNumber,
 		AccountName:      accountName,
-		ProjectNumber:    derefRefName(v.Project),
+		ProjectNumber:    derefStr(v.ProjectKey),
 		ProjectKey:       derefStr(v.ProjectKey),
 		ProductName:      derefRefName(v.Product),
 	}

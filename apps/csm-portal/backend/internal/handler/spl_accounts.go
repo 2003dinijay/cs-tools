@@ -161,6 +161,10 @@ func (h *SplAccountHandler) GetAccountProjects(w http.ResponseWriter, r *http.Re
 
 	result, err := h.sn.GetProjectsByAccount(r.Context(), accountID, offset, limit)
 	if err != nil {
+		if errors.Is(err, servicenow.ErrAccountNotFound) {
+			writeError(w, http.StatusNotFound, ErrMsgNotFound)
+			return
+		}
 		if isUnsafeQueryValue(err) {
 			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 			return

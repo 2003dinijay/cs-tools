@@ -45,14 +45,31 @@ func scanActionItemRow(row interface{ Scan(...any) error }) (actionItemRow, erro
 	return r, err
 }
 
-// CreateActionItem creates a new action item on the given risk.
+// CreateActionItem creates a new action item on the given risk. The action
+// item's project and account are taken from the risk row itself, not the
+// request body, so a caller can't attach an item to a risk while giving it a
+// different account/project (which would then surface under the wrong
+// account in GetActionItemsByAccount, and silently block CloseProjectRisk
+// for the real risk). Returns *ValidationError when the risk doesn't exist
+// or is no longer open.
 func (c *Client) CreateActionItem(ctx context.Context, riskID int, payload CreateActionItemRequest, email string) (*RiskActionItem, error) {
+	riskRow, err := c.getRiskRowByID(ctx, riskID)
+	if err != nil {
+		if err == errRecordNotFound {
+			return nil, &ValidationError{Message: fmt.Sprintf("Risk not found: %d", riskID)}
+		}
+		return nil, err
+	}
+	if riskRow.Status != "open" {
+		return nil, &ValidationError{Message: "Action items can only be added to open risks."}
+	}
+
 	execResult, err := c.db.ExecContext(ctx, `
 		INSERT INTO risk_action_item
 			(risk_id, project_sys_id, account_sys_id, title, description, priority, status,
 			 assigned_to_email, due_date, created_by_email)
 		VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
-		riskID, payload.ProjectSysID, payload.AccountSysID, payload.Title, nilableString(payload.Description),
+		riskID, riskRow.ProjectSysID, riskRow.AccountSysID, payload.Title, nilableString(payload.Description),
 		payload.Priority, nilableString(payload.AssignedToEmail), payload.DueDate, email)
 	if err != nil {
 		return nil, fmt.Errorf("risk: insert risk_action_item: %w", err)

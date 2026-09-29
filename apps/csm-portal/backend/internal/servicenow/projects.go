@@ -187,17 +187,17 @@ type snContactList struct {
 
 // GetProjectContacts retrieves the contacts for the project with the given
 // project ID, paginated. Mirrors Ballerina operations:getProjectContacts.
-// The "%3D" in the Ballerina sysparm_query (a URL-encoded "=") is preserved
-// exactly, since url.Values.Encode() would otherwise double-encode it if we
-// used a literal "=" here — this call builds the query string directly
-// rather than going through SanitizeQueryValue/BuildEncodedQuery, matching
-// the Ballerina original's own special-casing of this one query.
+// The sysparm_query value uses a literal "=" — url.Values.Encode() (used by
+// TableQuery) percent-encodes it to "%3D" on the wire, which is what
+// ServiceNow expects. A pre-encoded "%3D" here would itself get
+// percent-encoded a second time (to "%253D"), and ServiceNow would receive
+// the literal text "%3D" instead of the "=" operator.
 func (c *Client) GetProjectContacts(ctx context.Context, projectID string, offset, limit int) ([]Contact, error) {
 	if err := SanitizeQueryValue(projectID); err != nil {
 		return nil, err
 	}
 	raw, err := c.TableQuery(ctx, "project_contact", url.Values{
-		"sysparm_query":  {"customer_project.number%3D" + projectID},
+		"sysparm_query":  {"customer_project.number=" + projectID},
 		"sysparm_fields": {"customer_contact.name,u_email,u_state"},
 		"sysparm_limit":  {strconv.Itoa(limit)},
 		"sysparm_offset": {strconv.Itoa(offset)},

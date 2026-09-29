@@ -118,6 +118,10 @@ func (h *SplProjectHandler) GetProjectContacts(w http.ResponseWriter, r *http.Re
 
 	result, err := h.sn.GetProjectContacts(r.Context(), projectID, offset, limit)
 	if err != nil {
+		if errors.Is(err, servicenow.ErrProjectByIDNotFound) {
+			writeError(w, http.StatusNotFound, ErrMsgNotFound)
+			return
+		}
 		if isUnsafeQueryValue(err) {
 			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 			return
@@ -151,6 +155,10 @@ func (h *SplProjectHandler) GetProjectCases(w http.ResponseWriter, r *http.Reque
 
 	result, err := h.sn.GetCasesByProject(r.Context(), projectID, stateFilters, caseTypeFilters, offset, limit)
 	if err != nil {
+		if errors.Is(err, servicenow.ErrProjectByIDNotFound) {
+			writeError(w, http.StatusNotFound, ErrMsgNotFound)
+			return
+		}
 		if isUnsafeQueryValue(err) {
 			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 			return

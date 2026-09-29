@@ -83,29 +83,16 @@ func (c *Client) OpenProjectRisk(ctx context.Context, projectSysID, accountSysID
 }
 
 // CloseProjectRisk closes an open risk for a project. Fails with
-// *ValidationError if the risk doesn't exist or if any of its action items
-// are still open/in_progress — mirroring the Ballerina source's use of
-// SupportLiteBadRequest (not NotFound) for a missing risk here.
+// *ValidationError if the risk doesn't exist, is not currently open, or if
+// any of its action items are still open/in_progress — mirroring the
+// Ballerina source's use of SupportLiteBadRequest (not NotFound) for a
+// missing risk here. The risk row is locked (SELECT ... FOR UPDATE) and the
+// open-action-item count is taken inside the same transaction as the
+// close, so an action item created concurrently with this call can't leave
+// the risk closed with a still-open item, and closing an already-closed
+// risk can't overwrite its closed_* audit fields or wrongly reset the
+// project's health status.
 func (c *Client) CloseProjectRisk(ctx context.Context, riskID int, comment, email string) (*ProjectRisk, error) {
-	riskRow, err := c.getRiskRowByID(ctx, riskID)
-	if err != nil {
-		if err == errRecordNotFound {
-			return nil, &ValidationError{Message: fmt.Sprintf("Risk not found: %d", riskID)}
-		}
-		return nil, err
-	}
-
-	var openCount int
-	err = c.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM risk_action_item WHERE risk_id = ? AND status NOT IN ('resolved', 'cancelled')`,
-		riskID).Scan(&openCount)
-	if err != nil {
-		return nil, fmt.Errorf("risk: count open action items: %w", err)
-	}
-	if openCount > 0 {
-		return nil, &ValidationError{Message: fmt.Sprintf("Cannot close risk: %d action item(s) are still open.", openCount)}
-	}
-
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("risk: begin transaction: %w", err)
@@ -117,10 +104,33 @@ func (c *Client) CloseProjectRisk(ctx context.Context, riskID int, comment, emai
 		}
 	}()
 
+	row := tx.QueryRowContext(ctx, "SELECT "+projectRiskColumns+" FROM project_risk WHERE id = ? FOR UPDATE", riskID)
+	riskRow, err := scanProjectRiskRow(row)
+	if err == sql.ErrNoRows {
+		return nil, &ValidationError{Message: fmt.Sprintf("Risk not found: %d", riskID)}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("risk: query project_risk by id: %w", err)
+	}
+	if riskRow.Status != "open" {
+		return nil, &ValidationError{Message: fmt.Sprintf("Risk %d is not open.", riskID)}
+	}
+
+	var openCount int
+	err = tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM risk_action_item WHERE risk_id = ? AND status NOT IN ('resolved', 'cancelled')`,
+		riskID).Scan(&openCount)
+	if err != nil {
+		return nil, fmt.Errorf("risk: count open action items: %w", err)
+	}
+	if openCount > 0 {
+		return nil, &ValidationError{Message: fmt.Sprintf("Cannot close risk: %d action item(s) are still open.", openCount)}
+	}
+
 	_, err = tx.ExecContext(ctx, `
 		UPDATE project_risk
 		SET status = 'closed', closed_comment = ?, closed_by_email = ?, closed_on = NOW()
-		WHERE id = ?`, comment, email, riskID)
+		WHERE id = ? AND status = 'open'`, comment, email, riskID)
 	if err != nil {
 		return nil, fmt.Errorf("risk: close project_risk: %w", err)
 	}
@@ -238,7 +248,7 @@ func (c *Client) GetAccountHealthStatus(ctx context.Context, accountSysID string
 		var openRisk *ProjectRisk
 
 		if statusRow.Status == "at_risk" {
-			riskRow, err := c.queryOpenRiskForProject(ctx, statusRow.ProjectSysID)
+			riskRow, err := c.queryOpenRiskForProject(ctx, statusRow.ProjectSysID, statusRow.AccountSysID)
 			if err != nil {
 				return nil, err
 			}
@@ -261,10 +271,10 @@ func (c *Client) GetAccountHealthStatus(ctx context.Context, accountSysID string
 	return results, nil
 }
 
-func (c *Client) queryOpenRiskForProject(ctx context.Context, projectSysID string) (*projectRiskRow, error) {
+func (c *Client) queryOpenRiskForProject(ctx context.Context, projectSysID, accountSysID string) (*projectRiskRow, error) {
 	row := c.db.QueryRowContext(ctx,
-		"SELECT "+projectRiskColumns+" FROM project_risk WHERE project_sys_id = ? AND status = 'open' ORDER BY opened_on DESC LIMIT 1",
-		projectSysID)
+		"SELECT "+projectRiskColumns+" FROM project_risk WHERE project_sys_id = ? AND account_sys_id = ? AND status = 'open' ORDER BY opened_on DESC LIMIT 1",
+		projectSysID, accountSysID)
 	r, err := scanProjectRiskRow(row)
 	if err == sql.ErrNoRows {
 		return nil, nil

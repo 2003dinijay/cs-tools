@@ -307,12 +307,14 @@ func (c *Client) GetCommentsAndWorknotes(ctx context.Context, caseNumber string,
 	}
 
 	// Get total count first, mirroring the Ballerina original's separate
-	// sysparm_count=true call. "%5E" is the URL-encoded "^" ServiceNow's
-	// ORDERBY combinator needs here — preserved verbatim as in the
-	// Ballerina source rather than routed through BuildEncodedQuery, which
-	// would double-encode it.
+	// sysparm_count=true call. "^" is ServiceNow's ORDERBY combinator; it's
+	// passed here as a literal so url.Values.Encode() (used by
+	// TableQueryWithHeaders) percent-encodes it to "%5E" on the wire, which
+	// is what ServiceNow expects. A pre-encoded "%5E" would itself get
+	// percent-encoded a second time (to "%255E"), and ServiceNow would
+	// receive the literal text "%5E" instead of the "^" combinator.
 	_, countHeaders, err := c.TableQueryWithHeaders(ctx, "sys_journal_field", url.Values{
-		"sysparm_query":  {"element_id=" + caseSysID + "%5EORDERBYDESCsys_created_on"},
+		"sysparm_query":  {"element_id=" + caseSysID + "^ORDERBYDESCsys_created_on"},
 		"sysparm_fields": {"sys_id"},
 		"sysparm_count":  {"true"},
 	})
@@ -325,7 +327,7 @@ func (c *Client) GetCommentsAndWorknotes(ctx context.Context, caseNumber string,
 	}
 
 	raw, err := c.TableQuery(ctx, "sys_journal_field", url.Values{
-		"sysparm_query":  {"element_id=" + caseSysID + "%5EORDERBYDESCsys_created_on"},
+		"sysparm_query":  {"element_id=" + caseSysID + "^ORDERBYDESCsys_created_on"},
 		"sysparm_fields": {"sys_created_on,value,sys_created_by,element"},
 		"sysparm_limit":  {strconv.Itoa(limit)},
 		"sysparm_offset": {strconv.Itoa(offset)},
@@ -408,10 +410,7 @@ func (c *Client) GetAttachmentsInfo(ctx context.Context, caseNumber string, offs
 
 	results := make([]AttachmentInfo, 0, len(data.Result))
 	for _, item := range data.Result {
-		results = append(results, AttachmentInfo{
-			SysID: item.SysID, FileName: item.FileName, CreatedOn: item.CreatedOn, CreatedBy: item.CreatedBy,
-			UpdatedOn: item.UpdatedOn, UpdatedBy: item.UpdatedBy, ContentType: item.ContentType, State: item.State,
-		})
+		results = append(results, AttachmentInfo(item))
 	}
 	return results, nil
 }

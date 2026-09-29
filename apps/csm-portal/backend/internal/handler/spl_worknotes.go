@@ -19,6 +19,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -91,10 +92,10 @@ func (h *SplWorknotesHandler) PostWorkNote(w http.ResponseWriter, r *http.Reques
 
 	result, err := h.servicenow.PostWorkNote(r.Context(), caseID, payload.Worknote, user.Email)
 	if err != nil {
-		switch err {
-		case servicenow.ErrCaseSysIDNotFound:
+		switch {
+		case errors.Is(err, servicenow.ErrCaseSysIDNotFound), errors.Is(err, servicenow.ErrCaseNotFound):
 			writeError(w, http.StatusNotFound, ErrMsgNotFound)
-		case servicenow.ErrCaseClosed:
+		case errors.Is(err, servicenow.ErrCaseClosed):
 			writeError(w, http.StatusBadRequest, "Case is closed. Cannot add work notes.")
 		default:
 			slog.ErrorContext(r.Context(), "servicenow PostWorkNote failed", "userID", user.UserID, "caseID", caseID, "err", err)
