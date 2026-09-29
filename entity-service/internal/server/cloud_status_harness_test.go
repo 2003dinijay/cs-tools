@@ -73,6 +73,12 @@ func TestServeCloudStatusHarness(t *testing.T) {
 	)
 
 	mux := http.NewServeMux()
+	dash := handler.NewCloudStatusDashboardHandler(
+		service.NewCloudStatusDashboardService(repository.NewCloudStatusDashboardRepository(pool)),
+	)
+	mux.HandleFunc("GET /cloud-status/monitors", dash.Monitors)
+	mux.HandleFunc("GET /cloud-status/incidents", dash.Incidents)
+
 	mux.HandleFunc("POST /internal/cloud-status/sweep", h.Sweep)
 	mux.HandleFunc("GET /internal/cloud-status/pending", h.Pending)
 	mux.HandleFunc("POST /internal/cloud-status/{id}/delivery", h.RecordDelivery)

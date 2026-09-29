@@ -18,6 +18,7 @@ package cloudstatus
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"testing"
@@ -46,22 +47,45 @@ func TestLiveDelivery(t *testing.T) {
 		t.Skip("CLOUD_STATUS_LIVE_ENTITY_URL not set; skipping the live delivery run")
 	}
 
+	// Against the REAL dashboards when they are configured, a mock otherwise.
+	//
+	// The real run is opt-in and deliberately so: it posts a genuine event to
+	// a status backend outside this estate, and a status page is the one
+	// audience that notices a test.
 	var seen []capturedRequest
-	dash := mockDashboard(t, http.StatusOK, &seen)
-	defer dash.Close()
+	var cfg WebhookConfig
+	realURLs := os.Getenv("CLOUD_STATUS_WEBHOOK_URLS")
+
+	if realURLs != "" {
+		if err := json.Unmarshal([]byte(realURLs), &cfg.BaseURLs); err != nil {
+			t.Fatalf("CLOUD_STATUS_WEBHOOK_URLS is not valid JSON: %v", err)
+		}
+		if err := json.Unmarshal([]byte(os.Getenv("CLOUD_STATUS_WEBHOOK_SECRETS")), &cfg.Secrets); err != nil {
+			t.Fatalf("CLOUD_STATUS_WEBHOOK_SECRETS is not valid JSON: %v", err)
+		}
+		t.Logf("REAL RUN: posting to %d configured dashboards", len(cfg.BaseURLs))
+		for cloud, u := range cfg.BaseURLs {
+			t.Logf("  %-14s -> %s", cloud, u)
+		}
+	} else {
+		dash := mockDashboard(t, http.StatusOK, &seen)
+		defer dash.Close()
+		cfg = WebhookConfig{
+			BaseURLs: map[string]string{
+				"devant": dash.URL, "choreo": dash.URL, "asgardeo": dash.URL,
+				"bijira": dash.URL, "moesif": dash.URL,
+				"choreo-eu": dash.URL, "agent-manager": dash.URL,
+			},
+			Secrets: map[string]string{defaultSecretKey: "live-run-secret"},
+		}
+		t.Log("MOCK RUN: set CLOUD_STATUS_WEBHOOK_URLS to post for real")
+	}
 
 	client, err := newUnauthenticatedClient(entityURL)
 	if err != nil {
 		t.Fatalf("client: %v", err)
 	}
-	hook, err := NewWebhook(WebhookConfig{
-		BaseURLs: map[string]string{
-			"devant": dash.URL, "choreo": dash.URL, "asgardeo": dash.URL,
-			"bijira": dash.URL, "moesif": dash.URL,
-			"choreo-eu": dash.URL, "agent-manager": dash.URL,
-		},
-		Secrets: map[string]string{defaultSecretKey: "live-run-secret"},
-	})
+	hook, err := NewWebhook(cfg)
 	if err != nil {
 		t.Fatalf("webhook: %v", err)
 	}
@@ -69,6 +93,12 @@ func TestLiveDelivery(t *testing.T) {
 	// ── tick one: whatever the database currently owes ──────────────────
 	if err := DeliverDue(client, hook)(context.Background()); err != nil {
 		t.Fatalf("live tick: %v", err)
+	}
+	if realURLs != "" {
+		// A real dashboard records nothing here; the outcome that matters is
+		// whether DeliverDue returned an error, which is checked above.
+		t.Log("real post completed without error — check the dashboard and the events table")
+		return
 	}
 	if len(seen) == 0 {
 		t.Fatal("nothing was posted; the fixture should have left one webhook pending")

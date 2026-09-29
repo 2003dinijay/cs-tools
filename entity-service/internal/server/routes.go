@@ -871,6 +871,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// user-facing read, and routing it through ServiceNow would both reproduce
 	// the flow it is replacing and make the port depend on the system being
 	// decommissioned.
+	// The public status dashboard's reads, consumed by
+	// wso2-enterprise/uptime-dashboard via csm-integration-service. Registered
+	// unconditionally on Postgres: it replaces five ServiceNow Scripted REST
+	// APIs and has no ServiceNow-backed counterpart here.
+	cloudStatusDashboardHandler := handler.NewCloudStatusDashboardHandler(
+		service.NewCloudStatusDashboardService(repository.NewCloudStatusDashboardRepository(db)),
+	)
+
 	cloudStatusHandler := handler.NewCloudStatusHandler(
 		service.NewCloudStatusService(repository.NewCloudStatusRepository(db), cfg.CloudStatusServiceIDs),
 	)
@@ -1248,6 +1256,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 
 	// Cloud status webhooks: service-to-service, called by csm-scheduled-tasks.
+	mux.HandleFunc("GET /cloud-status/monitors", cloudStatusDashboardHandler.Monitors)
+	mux.HandleFunc("GET /cloud-status/incidents", cloudStatusDashboardHandler.Incidents)
 	mux.HandleFunc("POST /internal/cloud-status/sweep", cloudStatusHandler.Sweep)
 	mux.HandleFunc("GET /internal/cloud-status/pending", cloudStatusHandler.Pending)
 	mux.HandleFunc("POST /internal/cloud-status/{id}/delivery", cloudStatusHandler.RecordDelivery)

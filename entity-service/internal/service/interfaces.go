@@ -1223,6 +1223,17 @@ type OutageService interface {
 	GetOutageMetadata(ctx context.Context) (domain.OutageMetadataResponse, error)
 }
 
+// CloudStatusDashboardService serves what the public cloud status dashboard
+// renders, replacing five ServiceNow Scripted REST APIs with Postgres reads.
+// Read-only: the dashboard must never be able to change what it shows.
+type CloudStatusDashboardService interface {
+	// Monitors returns the per-region, per-group monitor view for one cloud.
+	Monitors(ctx context.Context, cloud string) (domain.CloudStatusMonitorsResponse, error)
+	// Incidents returns six months of incident history for one cloud, with
+	// every month key present whether or not it has incidents.
+	Incidents(ctx context.Context, cloud string) (domain.CloudStatusIncidentsResponse, error)
+}
+
 // CloudStatusService decides which outages owe the public status dashboard a
 // webhook, and records what was delivered.
 //
