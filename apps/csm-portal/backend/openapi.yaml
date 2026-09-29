@@ -21296,8 +21296,6 @@ components:
           type: string
         documentation:
           type: string
-        invitationUrl:
-          type: string
 
     SplScanResult:
       type: object

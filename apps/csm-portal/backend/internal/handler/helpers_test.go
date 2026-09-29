@@ -1193,7 +1193,7 @@ func (m *mockEntityTaskClient) UpdateTask(ctx context.Context, id string, body [
 	return []byte(`{"id":"11111111-1111-1111-1111-111111111111"}`), nil
 }
 
-// ----- mock sales/CS entity clients (user_scan.go) -----
+// ----- mock sales entity / entity-service scan clients (user_scan.go) -----
 
 type mockSalesEntityClient struct {
 	getContactByEmailFn    func(ctx context.Context, email string) (*entity.Contact, error)
@@ -1214,29 +1214,29 @@ func (m *mockSalesEntityClient) GetSubscriptionByKey(ctx context.Context, subscr
 	return nil, nil
 }
 
-type mockCSEntityClient struct {
-	getUserByEmailFn           func(ctx context.Context, email string) (*entity.User, error)
-	getProjectByProjectKeyFn   func(ctx context.Context, projectKey string) (*entity.Project, error)
-	getProjectContactByEmailFn func(ctx context.Context, email, projectID string) (*entity.ProjectContact, error)
+type mockEntityScanClient struct {
+	searchUsersFn                    func(ctx context.Context, body []byte) ([]byte, error)
+	searchProjectsFn                 func(ctx context.Context, body []byte) ([]byte, error)
+	resendProjectContactInvitationFn func(ctx context.Context, projectID, email string) ([]byte, error)
 }
 
-func (m *mockCSEntityClient) GetUserByEmail(ctx context.Context, email string) (*entity.User, error) {
-	if m.getUserByEmailFn != nil {
-		return m.getUserByEmailFn(ctx, email)
+func (m *mockEntityScanClient) SearchUsers(ctx context.Context, body []byte) ([]byte, error) {
+	if m.searchUsersFn != nil {
+		return m.searchUsersFn(ctx, body)
 	}
-	return nil, nil
+	return []byte(`{"users":[]}`), nil
 }
 
-func (m *mockCSEntityClient) GetProjectByProjectKey(ctx context.Context, projectKey string) (*entity.Project, error) {
-	if m.getProjectByProjectKeyFn != nil {
-		return m.getProjectByProjectKeyFn(ctx, projectKey)
+func (m *mockEntityScanClient) SearchProjects(ctx context.Context, body []byte) ([]byte, error) {
+	if m.searchProjectsFn != nil {
+		return m.searchProjectsFn(ctx, body)
 	}
-	return nil, nil
+	return []byte(`{"projects":[]}`), nil
 }
 
-func (m *mockCSEntityClient) GetProjectContactByEmail(ctx context.Context, email, projectID string) (*entity.ProjectContact, error) {
-	if m.getProjectContactByEmailFn != nil {
-		return m.getProjectContactByEmailFn(ctx, email, projectID)
+func (m *mockEntityScanClient) ResendProjectContactInvitation(ctx context.Context, projectID, email string) ([]byte, error) {
+	if m.resendProjectContactInvitationFn != nil {
+		return m.resendProjectContactInvitationFn(ctx, projectID, email)
 	}
 	return nil, nil
 }

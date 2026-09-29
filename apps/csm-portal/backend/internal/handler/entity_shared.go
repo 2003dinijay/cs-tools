@@ -19,9 +19,9 @@ package handler
 import "fmt"
 
 // entity-service wire types shared by the SPL Postgres clients that remain
-// (Reports, Usage Metrics, Lookups) after Accounts/Projects/Cases reads
-// merged onto CS Portal's own /accounts, /projects, and /cases routes --
-// this backend's own copy of entity-service's JSON contract, since
+// (Reports, Usage Metrics, Lookups, User Scan) after Accounts/Projects/Cases
+// reads merged onto CS Portal's own /accounts, /projects, and /cases routes
+// -- this backend's own copy of entity-service's JSON contract, since
 // entity-service is a separate Go module and its domain types can't be
 // imported directly (every existing entity-service caller in this codebase
 // already works this way, see internal/entity/customer.go). Field
@@ -99,6 +99,10 @@ type entityProjectView struct {
 	Key       string  `json:"key"`
 	StartDate *string `json:"startDate"`
 	EndDate   *string `json:"endDate"`
+	// ClosureState mirrors entity-service's own ProjectView (embedded
+	// ProjectClosureFields) -- project.wso2_closure_state, populated on
+	// both its data sources.
+	ClosureState *string `json:"closureState"`
 }
 
 type entitySearchProjectsRequest struct {

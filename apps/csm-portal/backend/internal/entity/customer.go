@@ -174,6 +174,16 @@ func (c *CustomerEntityClient) GetProjectContact(ctx context.Context, projectID,
 		url.PathEscape(projectID), url.PathEscape(contactID)), nil)
 }
 
+// ResendProjectContactInvitation calls
+// POST /projects/{id}/contacts/{email}/resend-invitation on the entity
+// service, sending a fresh invitation email to a project contact. No
+// request body; entity service returns 204 No Content on success, so the
+// []byte result is always empty -- callers care only about the error.
+func (c *CustomerEntityClient) ResendProjectContactInvitation(ctx context.Context, projectID, email string) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, fmt.Sprintf("/projects/%s/contacts/%s/resend-invitation",
+		url.PathEscape(projectID), url.PathEscape(email)), nil)
+}
+
 // GetUser calls GET /users/{id} on the entity service.
 // Response is returned as raw JSON.
 func (c *CustomerEntityClient) GetUser(ctx context.Context, id string) ([]byte, error) {

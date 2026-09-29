@@ -179,12 +179,6 @@ func main() {
 			ClientID:     oauth2ClientID,
 			ClientSecret: oauth2ClientSecret,
 		})
-		csEntityClient := entity.NewCSEntityClient(entity.CSEntityConfig{
-			BaseURL:      splCfg.csEntityBaseURL,
-			TokenURL:     oauth2TokenURL,
-			ClientID:     oauth2ClientID,
-			ClientSecret: oauth2ClientSecret,
-		})
 		snClient := servicenow.NewClient(servicenow.Config{
 			BaseURL:              splCfg.snHost,
 			Username:             splCfg.snUsername,
@@ -240,7 +234,7 @@ func main() {
 			files:          handler.NewSplFilesHandler(driveClient, accessGuard),
 			customerHealth: handler.NewCustomerHealthHandler(riskClient, snClient, accessGuard),
 			userInfo:       handler.NewSplUserInfoHandler(customerEntityClient, accessGuard),
-			userScan:       handler.NewSplUserScanHandler(salesEntityClient, csEntityClient, accessGuard),
+			userScan:       handler.NewSplUserScanHandler(salesEntityClient, customerEntityClient, accessGuard),
 			accountEsc:     handler.NewSplAccountHandler(snClient, accessGuard),
 		}
 		slog.Info("SPL_ENABLED is on: SupportPortalLite's /spl/* endpoints are active")
@@ -1293,7 +1287,6 @@ type splConfig struct {
 	driveRefreshToken      string
 	riskMySQLDSN           string
 	salesEntityBaseURL     string
-	csEntityBaseURL        string
 }
 
 // loadSPLConfig resolves SupportPortalLite's (/spl/*) configuration.
@@ -1311,7 +1304,7 @@ type splConfig struct {
 // respectively and default to empty. SERVICENOW_*, GOOGLE_DRIVE_*, and the
 // entity vars below have no SPL_ prefix even though they're only read when
 // SPL is on: they aren't SPL-specific concepts (ServiceNow, Google Drive,
-// and the Sales/CS entity services are just this feature's own upstreams)
+// and the sales-side entity service are just this feature's own upstreams)
 // so they follow this file's existing convention of naming a service's own
 // credentials after the service, not the caller -- SPL_RISK_MYSQL_DSN
 // below is the one exception, since "risk" isn't a distinct upstream
@@ -1345,7 +1338,6 @@ func loadSPLConfig() (bool, splConfig) {
 		driveRefreshToken:      mustEnv("GOOGLE_DRIVE_REFRESH_TOKEN"),
 		riskMySQLDSN:           mustEnv("SPL_RISK_MYSQL_DSN"),
 		salesEntityBaseURL:     mustHTTPSBaseURL("SALES_ENTITY_BASE_URL", mustEnv("SALES_ENTITY_BASE_URL")),
-		csEntityBaseURL:        mustHTTPSBaseURL("CS_ENTITY_BASE_URL", mustEnv("CS_ENTITY_BASE_URL")),
 	}
 }
 
