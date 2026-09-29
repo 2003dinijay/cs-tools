@@ -75,6 +75,43 @@ different mechanisms, because the feature isn't backed by its own exclusive rout
   directly by id. Closing that fully needs entity-service itself to resolve and enforce it (it has
   reliable type data on either data source), not this BFF layer.
 
+## Redacting raw base64 inline images (`internal/handler/inline_image_redact.go`)
+
+A pasted screenshot in a comment or case/incident/change-request description is normally extracted
+into a real, `PermDownloadAttachment`-gated attachment on the way in (see
+`internal/handler/inline_images.go`'s `InlineImageProcessor`, `SFTPGO_ATTACHMENT_STORAGE_ENABLED`
+only) and rewritten to a `.iix` reference. Content authored before that flag was on — or with it off
+— never goes through that extraction: the image stays as a raw `data:image/...;base64,...` `<img>`
+src embedded directly in the comment/description HTML itself, which every read response already
+returns to *any* caller holding `PermView` — there is no separate attachment resource for
+`PermDownloadAttachment` to gate. Found live: a `viewer`/`escalator` role, neither of which holds
+`canDownloadAttachment`, could see a pasted screenshot in a case comment despite the `.iix` mechanism
+being correctly gated.
+
+`redactRawBase64Images` strips the base64 payload out of raw response bytes (a compiled regex over
+`data:image/...;base64,<payload>`, replaced with a short inert placeholder that still starts with
+`data:image/` — the frontend's own `useResolvedInlineImageHtml` still recognizes and hides it, see
+`apps/csm-portal/webapp`'s own `CLAUDE.md`) for a caller who fails `shouldRedactInlineImages` (no
+`PermDownloadAttachment`, or `access == nil`, which fails closed the same way `CaseHandler`'s own
+Security Center check does). It operates on the raw `[]byte` response — comment/description HTML
+appears under different field names across endpoints (`content`, `bodyHtml`, `description`, ...) and
+this backend already treats these responses as raw passthrough (see "Response shape" below); a
+byte-level substitution keeps that convention and can't miss a field by name the way a typed reshape
+could.
+
+**Wired into every read response that can carry comment/description HTML**: `CaseHandler.SearchCases`/
+`SearchCaseComments`/`SearchCaseActivities`/`GetCase`, `IncidentHandler.SearchIncidents`/`GetIncident`/
+`SearchIncidentComments`/`SearchIncidentActivities`, `ChangeRequestHandler.SearchChangeRequests`/
+`GetChangeRequest`/`SearchChangeRequestComments` — each calls `WithAccessGuard` at construction (same
+pattern as `CaseHandler`'s own Security Center wiring) and checks `shouldRedactInlineImages(h.access,
+user.Roles)` immediately before its final `writeJSON`. A *create* endpoint (`CreateCaseComment` and
+its incident/change-request equivalents) is deliberately **not** redacted: the caller is the one who
+just submitted that exact content, so echoing it back leaks nothing new to them.
+
+This is the server-side half of a two-part fix — `apps/csm-portal/webapp`'s own `denyRawBase64`
+mitigation (added first, still in place) only ever hid the image *after* the bytes had already
+reached the browser; this is what stops them being sent at all to a caller who shouldn't see them.
+
 ## Health endpoints
 
 Two, registered directly on the mux in `cmd/server/main.go` (not through `route()`) and both exempt
