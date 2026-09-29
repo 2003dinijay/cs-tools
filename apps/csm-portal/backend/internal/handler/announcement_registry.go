@@ -263,6 +263,14 @@ func fetchAllPagesConcurrently[T any](
 	)
 	sem := make(chan struct{}, registryFetchConcurrency)
 	for page := 1; page < numPages; page++ {
+		// Stop dispatching new pages once an earlier one has already failed:
+		// each already-cancelled fetchCtx makes a still-context-aware fetch
+		// return almost immediately anyway, but this avoids spending pages
+		// (and real upstream calls, for a fetchPage that doesn't happen to
+		// check its context) on a result the caller is about to discard.
+		if fetchCtx.Err() != nil {
+			break
+		}
 		page := page
 		sem <- struct{}{}
 		wg.Add(1)
