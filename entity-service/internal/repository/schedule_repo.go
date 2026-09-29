@@ -220,9 +220,11 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 	defer teamRows.Close()
 	for teamRows.Next() {
 		var t domain.ScheduleTeam
-		if err := teamRows.Scan(&t.Key, &t.Name, &t.Family, &t.SortOrder); err != nil {
+		var key *string
+		if err := teamRows.Scan(&key, &t.Name, &t.Family, &t.SortOrder); err != nil {
 			return cat, fmt.Errorf("scan schedule team: %w", err)
 		}
+		t.Key = stringOrEmpty(key)
 		cat.Teams = append(cat.Teams, t)
 	}
 	if err := teamRows.Err(); err != nil {
@@ -780,11 +782,13 @@ func (r *scheduleRepository) LeadTeamsFor(ctx context.Context, userEmail string)
 
 	out := []string{}
 	for rows.Next() {
-		var k string
+		var k *string
 		if err := rows.Scan(&k); err != nil {
 			return nil, fmt.Errorf("scan lead team: %w", err)
 		}
-		out = append(out, k)
+		if k != nil {
+			out = append(out, *k)
+		}
 	}
 	return out, rows.Err()
 }
