@@ -318,5 +318,5 @@ type ProjectContactInvitedPayload struct {
 	// is what was actually asked for. Omitted on every ordinary invitation,
 	// so the wire shape is unchanged for them. Mirror any change here in
 	// csm-notification-service's own copy of this struct.
-	Resend bool `json:"resend,omitempty"`
+	Resend bool `json:"isResend,omitempty"`
 }
