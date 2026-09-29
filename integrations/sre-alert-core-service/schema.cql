@@ -83,3 +83,15 @@ CREATE TABLE IF NOT EXISTS alertintegration.processor_lease (
 ) WITH cosmosdb_cell_level_timestamp = true
   AND cosmosdb_cell_level_timestamp_tombstones = true
   AND cosmosdb_cell_level_timetolive = true;
+
+-- Internal service accounts (e.g. webhook-integration-user) that authenticate via Authorization: Bearer <username>.<secret>.
+CREATE TABLE IF NOT EXISTS alertintegration.integration_users (
+  username     text PRIMARY KEY,
+  secret_hash  text,      -- base64 PBKDF2-SHA256 derived key
+  salt         text,      -- base64 random salt, unique per user
+  iterations   int,       -- PBKDF2 iteration count used for this row
+  enabled      boolean,
+  created_at   timestamp
+) WITH cosmosdb_cell_level_timestamp = true
+  AND cosmosdb_cell_level_timestamp_tombstones = true
+  AND cosmosdb_cell_level_timetolive = true;
