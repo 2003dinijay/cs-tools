@@ -59,8 +59,8 @@ function toApiError(err: unknown): UsageMetricsApiError {
 
 /**
  * Imperative POST, matching the source app's usePostApi call shape exactly:
- * `postApiData(payload, path)` — path is `/spl/...`, forwarded straight to
- * useBackendApi().post.
+ * `postApiData(payload, path)` — path is relative to CSM_PORTAL_BACKEND_BASE_URL,
+ * forwarded straight to useBackendApi().post.
  */
 export function usePostApi<T>(): PostApiResponse<T> {
   const api = useBackendApi();

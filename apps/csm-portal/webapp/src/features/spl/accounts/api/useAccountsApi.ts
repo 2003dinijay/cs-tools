@@ -20,8 +20,10 @@
 // /accounts and /projects routes directly, since SPL's data source for them
 // is the exact same entity-service data those routes already serve raw --
 // see cs-tools' csm-portal-backend main.go SPL route registration comment.
-// Escalations (read and create) keep calling /accounts/*: no
-// entity-service equivalent exists for either (CreateEscalation is an
+// Escalations (read and create) and the Google Drive file listing also
+// dropped their /spl/ prefix (the backend routes they call moved off it
+// too), but keep calling their own dedicated routes: no entity-service
+// equivalent exists for either escalation operation (CreateEscalation is an
 // explicit stub there), so nothing to merge onto.
 import { useQuery, useMutation, type UseQueryResult } from "@tanstack/react-query";
 import { useBackendApi } from "@api/backend/client";
