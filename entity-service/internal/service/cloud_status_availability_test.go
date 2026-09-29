@@ -450,3 +450,24 @@ func TestIncidentDetailShapes(t *testing.T) {
 		}
 	})
 }
+
+// TestIncidentListStatusLabels pins the two labels the incident list uses.
+//
+// The ongoing one is "In Progress", matching ServiceNow and matching the
+// detail endpoint. It is pinned here because live data cannot check it: every
+// incident on the dev instance inside the window carries an end date, so a
+// diff only ever exercises the Resolved branch.
+func TestIncidentListStatusLabels(t *testing.T) {
+	if got := incidentStatus(""); got != "In Progress" {
+		t.Errorf("ongoing status = %q, want %q", got, "In Progress")
+	}
+	if got := incidentStatus("2026-09-22 09:26:53"); got != "Resolved" {
+		t.Errorf("ended status = %q, want %q", got, "Resolved")
+	}
+	// The list and the detail must agree; they are separate code paths
+	// rendering the same field.
+	if incidentStatus("") != domain.IncidentDetailStatus("") ||
+		incidentStatus("x") != domain.IncidentDetailStatus("x") {
+		t.Error("the list and detail endpoints disagree on the status label")
+	}
+}

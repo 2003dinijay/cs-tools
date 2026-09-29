@@ -253,9 +253,26 @@ func incidentTypeLabel(t string) string {
 }
 
 // incidentStatus is derived, not stored: an outage with an end is Resolved.
+// incidentStatus renders the two states the incident LIST shows.
+//
+// *** THE ONGOING LABEL IS "In Progress", NOT "Ongoing". *** Both ServiceNow
+// scripts set it the same way:
+//
+//	var state = 'In Progress';
+//	if (end) { state = 'Resolved'; }
+//
+// An earlier version returned "Ongoing", which reads naturally and is not
+// what the frontend receives. It survived every diff because every incident
+// on the dev instance inside the six-month window had an end date, so only
+// the Resolved branch was ever compared. It surfaced the moment an ongoing
+// outage was published to the history.
+//
+// That is the third bug of this shape in this port -- the others were the
+// type labels and the id format. The pattern is always the same: a branch
+// the live data never exercises is a branch the diff never checks.
 func incidentStatus(end string) string {
 	if end == "" {
-		return "Ongoing"
+		return "In Progress"
 	}
 	return "Resolved"
 }

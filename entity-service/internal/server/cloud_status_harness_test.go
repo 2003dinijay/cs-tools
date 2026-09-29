@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,7 +70,11 @@ func TestServeCloudStatusHarness(t *testing.T) {
 	defer pool.Close()
 
 	h := handler.NewCloudStatusHandler(
-		service.NewCloudStatusService(repository.NewCloudStatusRepository(pool), []string{scope}),
+		// Comma-separated, matching CLOUD_STATUS_SERVICE_IDS in the real
+		// config. A single-element slice would make the harness quietly
+		// narrower than production -- and the difference shows up exactly
+		// where it matters, on an outage in a region the scope omits.
+		service.NewCloudStatusService(repository.NewCloudStatusRepository(pool), splitScope(scope)),
 	)
 
 	mux := http.NewServeMux()
@@ -108,4 +113,17 @@ func TestServeCloudStatusHarness(t *testing.T) {
 	}
 	time.Sleep(window)
 	t.Logf("harness window elapsed; shutting down")
+}
+
+// splitScope parses CLOUD_STATUS_TEST_SERVICE_IDS the way the service parses
+// CLOUD_STATUS_SERVICE_IDS: comma-separated, blanks dropped.
+func splitScope(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
