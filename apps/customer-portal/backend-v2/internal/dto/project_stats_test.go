@@ -89,3 +89,26 @@ func TestMapProjectFilterOptions_NormalizesChangeRequestChoicesAndExcludesIntern
 		t.Errorf("ChangeRequestImpacts = %+v, want [{ID: \"1\", Label: \"High\"}]", got.ChangeRequestImpacts)
 	}
 }
+
+// The exclusion above must catch an internal state under either data
+// source's own shape: ServiceNow's real numeric id ("-3") with a
+// display-cased label, and Postgres's raw UPPER_SNAKE label with no
+// matching id. Missing either would let that one data source's internal
+// state leak into the customer-facing filter panel.
+func TestMapProjectFilterOptions_ExcludesInternalChangeRequestStatesByIDOrLabel(t *testing.T) {
+	resp := entity.ProjectMetadataResponse{
+		ChangeRequestStates: []entity.ChoiceListItem{
+			{ID: "-3", Label: "New"},        // ServiceNow: real numeric id, display-cased label
+			{ID: "-4", Label: "Assess"},      // ServiceNow
+			{ID: "-5", Label: "Authorize"},   // ServiceNow
+			{ID: "AUTHORIZE", Label: "AUTHORIZE"}, // Postgres: no id, UPPER_SNAKE label
+			{ID: "CLOSED", Label: "CLOSED"},
+		},
+	}
+
+	got := MapProjectFilterOptions(resp)
+
+	if len(got.ChangeRequestStates) != 1 || got.ChangeRequestStates[0].Label != "Closed" {
+		t.Fatalf("ChangeRequestStates = %+v, want exactly Closed", got.ChangeRequestStates)
+	}
+}

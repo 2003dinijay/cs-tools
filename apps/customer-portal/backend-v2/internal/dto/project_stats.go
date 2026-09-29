@@ -16,7 +16,11 @@
 
 package dto
 
-import "github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
+import (
+	"strings"
+
+	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
+)
 
 // ReferenceItem is a flattened {id, label, count?} view of entity-service's
 // ChoiceListItem/ReferenceTableItem — this API collapses both into one
@@ -56,23 +60,30 @@ func mapReferenceTableItems(items []entity.ReferenceTableItem) []ReferenceItem {
 	return out
 }
 
-// restrictedChangeRequestStateLabels are excluded from ProjectFilterOptions'
-// changeRequestStates — internal pre-approval workflow states (New, Assess,
-// Authorize) never meant to be offered as a customer-facing filter option;
-// the frontend's own ChangeRequestsFilters panel renders this list directly
-// (not through its resolveAllowedCrStateIds helper, which only narrows what
-// the search request itself sends), so these must be excluded here or they
-// show up as selectable checkboxes.
-//
-// Matched on the raw label rather than a data-source-specific id: this used
-// to check ServiceNow's own numeric ids ("-3"/"-4"/"-5") against s.ID after
-// mapChoiceListItems, which never matched on the Postgres data source at all
-// (its raw id is the enum label, e.g. "NEW", not a ServiceNow number) -- so
-// these three leaked into the response unfiltered there. crStateIDs (see
+// restrictedChangeRequestStateIDs are excluded from ProjectFilterOptions'
+// changeRequestStates — ServiceNow's own numeric ids for the three internal
+// pre-approval workflow states (New, Assess, Authorize).
+var restrictedChangeRequestStateIDs = map[string]bool{"-3": true, "-4": true, "-5": true}
+
+// restrictedChangeRequestStateLabels is the Postgres-mode equivalent: on
+// that data source ReferenceDataRepository.EnumLabels (entity-service)
+// returns the raw enum label as id, e.g. {"id":"NEW"}, never a ServiceNow
+// number, so the id check above never matches there and these three would
+// leak into the response unfiltered without this. crStateIDs (see
 // change_request_enum_mapping.go) also has no entries for them, by the same
 // "internal, never customer-facing" design, so they pass normalizeChoices
 // unchanged and keep their raw label -- matched here before that happens.
+//
+// Checked case-insensitively and kept alongside the id check above, not in
+// place of it: a Postgres-mode label is reliably UPPER_SNAKE, but this
+// endpoint also serves the ServiceNow data source, whose own raw label
+// casing isn't guaranteed to match — dropping the id check here would trade
+// one data source's gap for the other's.
 var restrictedChangeRequestStateLabels = map[string]bool{"NEW": true, "ASSESS": true, "AUTHORIZE": true}
+
+func isRestrictedChangeRequestState(s ReferenceItem) bool {
+	return restrictedChangeRequestStateIDs[s.ID] || restrictedChangeRequestStateLabels[strings.ToUpper(s.Label)]
+}
 
 // ProjectFilterOptions is the portal's response for GET /projects/{id}/filters
 // — a flattened, filter-dropdown-ready view of entity-service's project
@@ -101,7 +112,7 @@ type ProjectFilterOptions struct {
 func MapProjectFilterOptions(m entity.ProjectMetadataResponse) ProjectFilterOptions {
 	changeRequestStates := make([]ReferenceItem, 0, len(m.ChangeRequestStates))
 	for _, s := range mapChoiceListItems(m.ChangeRequestStates) {
-		if !restrictedChangeRequestStateLabels[s.Label] {
+		if !isRestrictedChangeRequestState(s) {
 			changeRequestStates = append(changeRequestStates, s)
 		}
 	}
