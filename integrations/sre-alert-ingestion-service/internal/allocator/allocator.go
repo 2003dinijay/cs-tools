@@ -159,6 +159,12 @@ type Allocator struct {
 
 	pendingMu sync.Mutex
 	pending   map[int64]struct{} // claimed ids whose row or filler isn't written yet
+
+	// Shutdown drain: once Close starts with a deadline, retries stop at stopAt and each
+	// unwritten id gets one filler attempt before the process exits.
+	drainCh   chan struct{}
+	drainOnce sync.Once
+	stopAt    atomic.Int64 // unix nanos; 0 until a drain deadline is set
 }
 
 // New starts the claimer goroutine. notifier and waker may be nil.
@@ -173,6 +179,7 @@ func New(logger *slog.Logger, store Store, notifier FailureNotifier, waker Waker
 		writeSem:    make(chan struct{}, cfg.WriteConcurrency),
 		claimerDone: make(chan struct{}),
 		pending:     map[int64]struct{}{},
+		drainCh:     make(chan struct{}),
 	}
 	go a.claimLoop()
 	return a
@@ -281,6 +288,13 @@ func (a *Allocator) Close(ctx context.Context) error {
 		close(a.queue)
 	}
 	a.mu.Unlock()
+	if dl, ok := ctx.Deadline(); ok {
+		// Leave time for one filler write per unwritten id.
+		a.drainOnce.Do(func() {
+			a.stopAt.Store(dl.Add(-2 * a.cfg.QueryTimeout).UnixNano())
+			close(a.drainCh)
+		})
+	}
 
 	select {
 	case <-a.claimerDone:
@@ -435,10 +449,10 @@ func (a *Allocator) claim(n int) (start int64, attempts int, err error) {
 		applied, seen, err := a.store.CompareAndSet(ctx, current, current+int64(n))
 		switch {
 		case cassandra.IsThrottled(err):
-			if time.Now().After(giveUp) {
+			if time.Now().After(giveUp) || a.shuttingDown() {
 				return 0, attempt, err
 			}
-			throttleSleep(err)
+			a.sleep(retryWait(err))
 			continue
 		case err != nil:
 			lastErr = err
@@ -462,10 +476,10 @@ func (a *Allocator) claim(n int) (start int64, attempts int, err error) {
 func (a *Allocator) readSeq(ctx context.Context, giveUp time.Time) (int64, error) {
 	for {
 		seq, err := a.store.ReadSeq(ctx)
-		if !cassandra.IsThrottled(err) || time.Now().After(giveUp) {
+		if !cassandra.IsThrottled(err) || time.Now().After(giveUp) || a.shuttingDown() {
 			return seq, err
 		}
-		throttleSleep(err)
+		a.sleep(retryWait(err))
 	}
 }
 
@@ -475,9 +489,31 @@ func (a *Allocator) pause() {
 	}
 }
 
-// throttleSleep waits the RetryAfter Cosmos DB asked for, plus jitter.
-func throttleSleep(err error) {
-	time.Sleep(cassandra.RetryAfter(err) + rand.N(throttleJitter))
+// retryWait is the RetryAfter Cosmos DB asked for, plus jitter.
+func retryWait(err error) time.Duration {
+	return cassandra.RetryAfter(err) + rand.N(throttleJitter)
+}
+
+// sleep waits d, cut short to the shutdown stop time once a drain starts.
+func (a *Allocator) sleep(d time.Duration) {
+	start := time.Now()
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return
+	case <-a.drainCh:
+	}
+	rest := min(d-time.Since(start), time.Until(time.Unix(0, a.stopAt.Load())))
+	if rest > 0 {
+		time.Sleep(rest)
+	}
+}
+
+// shuttingDown reports whether a shutdown drain has reached its stop time.
+func (a *Allocator) shuttingDown() bool {
+	at := a.stopAt.Load()
+	return at != 0 && time.Now().UnixNano() >= at
 }
 
 // batchStats is shared by one batch's writers for the "batch written" line.
@@ -598,8 +634,8 @@ func (a *Allocator) writeOne(job alertJob) (id string, ok bool) {
 	inserted := false
 	for {
 		if !inserted {
-			if time.Until(job.deadline) < 2*a.cfg.QueryTimeout {
-				return id, a.fail(job, id, alert, w.deadlineErr())
+			if time.Until(job.deadline) < 2*a.cfg.QueryTimeout || a.shuttingDown() {
+				return id, a.fail(job, id, alert, w.stopErr())
 			}
 			err := a.store.Insert(ctx, id, job.sub.vendor, string(body))
 			w.attempts++
@@ -621,8 +657,8 @@ func (a *Allocator) writeOne(job alertJob) (id string, ok bool) {
 			w.stored()
 			return id, true
 		case cassandra.IsThrottled(err):
-			if time.Now().After(job.deadline) {
-				return id, a.fail(job, id, alert, w.deadlineErr())
+			if time.Now().After(job.deadline) || a.shuttingDown() {
+				return id, a.fail(job, id, alert, w.stopErr())
 			}
 			w.throttled(err)
 			continue // read back again; the insert already went through
@@ -655,7 +691,7 @@ func (w *writeState) throttled(err error) {
 			"retry_after", cassandra.RetryAfter(err))
 	}
 	w.throttles++
-	throttleSleep(err)
+	w.a.sleep(retryWait(err))
 }
 
 // failed counts a non-throttle error, waits before the next attempt, and reports whether the
@@ -667,7 +703,7 @@ func (w *writeState) failed(err error, failures *int, delay *time.Duration) bool
 	if *failures >= w.a.cfg.InsertAttempts {
 		return true
 	}
-	time.Sleep(*delay)
+	w.a.sleep(*delay)
 	*delay *= 2
 	return false
 }
@@ -680,7 +716,10 @@ func (w *writeState) stored() {
 	}
 }
 
-func (w *writeState) deadlineErr() error {
+func (w *writeState) stopErr() error {
+	if w.a.shuttingDown() {
+		return errors.New("shutdown stopped retries before the alert was stored")
+	}
 	if w.throttles > 0 {
 		return errors.New("write deadline passed while Cosmos DB was throttling")
 	}
@@ -690,7 +729,8 @@ func (w *writeState) deadlineErr() error {
 // fail writes the filler row, reports the failure, and returns writeOne's ok. The filler never
 // overwrites a row: if the alert did land (a timed-out insert, or a read-back Cosmos missed),
 // it is kept and counted as stored. A throttled filler is retried until the write deadline
-// plus fillerGrace; other errors get InsertAttempts attempts.
+// plus fillerGrace; other errors get InsertAttempts attempts. During a shutdown drain it gets
+// one attempt.
 func (a *Allocator) fail(job alertJob, id string, alert model.Alert, cause error) bool {
 	filler := fillerPrefix + cause.Error()
 	fillerDeadline := job.deadline.Add(fillerGrace)
@@ -707,12 +747,15 @@ func (a *Allocator) fail(job alertJob, id string, alert model.Alert, cause error
 			}
 			break
 		}
+		if a.shuttingDown() {
+			break
+		}
 		if cassandra.IsThrottled(err) {
 			if time.Now().Add(cassandra.RetryAfter(err)).After(fillerDeadline) {
 				break
 			}
 			job.stats.throttled.Add(1)
-			throttleSleep(err)
+			a.sleep(retryWait(err))
 			continue
 		}
 		failures++
@@ -721,7 +764,7 @@ func (a *Allocator) fail(job alertJob, id string, alert model.Alert, cause error
 		if failures >= a.cfg.InsertAttempts {
 			break
 		}
-		time.Sleep(delay)
+		a.sleep(delay)
 		delay *= 2
 	}
 	if existing != "" && !strings.HasPrefix(existing, fillerPrefix) {

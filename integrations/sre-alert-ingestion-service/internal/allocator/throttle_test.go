@@ -277,3 +277,72 @@ func TestSizeOf_SharedDescriptionCountedOnce(t *testing.T) {
 		t.Errorf("sizeOf = %d, want %d (description counted once)", got, want)
 	}
 }
+
+func TestShutdownDrain_StopsThrottledRetriesAndWritesFiller(t *testing.T) {
+	store := newFakeStore()
+	store.throttleAllInserts = true
+	notifier := &recordingNotifier{}
+	cfg := testConfig()
+	cfg.WriteDeadline = time.Hour
+	cfg.QueryTimeout = 50 * time.Millisecond
+	a := New(slog.New(slog.NewTextHandler(io.Discard, nil)), store, notifier, nil, cfg)
+
+	type result struct {
+		ids []string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ids, err := a.Submit(context.Background(), "aws", "req", []model.Alert{alert("svc", "u")})
+		done <- result{ids, err}
+	}()
+	waitFor(t, func() bool { store.mu.Lock(); defer store.mu.Unlock(); return store.inserts[cassandra.FormatID(1)] > 2 })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if err := a.Close(ctx); err != nil {
+		t.Fatalf("Close = %v, want the throttled writer to finish before the drain deadline", err)
+	}
+	r := <-done
+	if !errors.Is(r.err, ErrStoreFailed) {
+		t.Fatalf("err = %v, want ErrStoreFailed", r.err)
+	}
+	row := store.rows[r.ids[0]]
+	if !strings.HasPrefix(row.alert, fillerPrefix) || !strings.Contains(row.alert, "shutdown") {
+		t.Errorf("row = %q, want a shutdown filler", row.alert)
+	}
+	if len(notifier.failures) != 1 || !notifier.failures[0].FillerWritten {
+		t.Errorf("failures = %+v, want one with FillerWritten", notifier.failures)
+	}
+}
+
+func TestShutdownDrain_OneFillerAttempt(t *testing.T) {
+	store := newFakeStore()
+	store.throttleAllInserts = true
+	store.failFillers = 100
+	cfg := testConfig()
+	cfg.WriteDeadline = time.Hour
+	cfg.QueryTimeout = 50 * time.Millisecond
+	cfg.InsertAttempts = 5
+	a := New(slog.New(slog.NewTextHandler(io.Discard, nil)), store, &recordingNotifier{}, nil, cfg)
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = a.Submit(context.Background(), "aws", "req", []model.Alert{alert("svc", "u")})
+		close(done)
+	}()
+	waitFor(t, func() bool { store.mu.Lock(); defer store.mu.Unlock(); return store.inserts[cassandra.FormatID(1)] > 2 })
+	store.mu.Lock()
+	before := store.failFillers
+	store.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = a.Close(ctx)
+	<-done
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if used := before - store.failFillers; used != 1 {
+		t.Errorf("filler attempts during the drain = %d, want 1", used)
+	}
+}
