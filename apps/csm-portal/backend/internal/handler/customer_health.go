@@ -209,16 +209,23 @@ func (h *CustomerHealthHandler) summaryFilteredByHealthStatus(ctx context.Contex
 	}
 
 	const batchSize = 200
+	// maxBatches bounds the loop even if ServiceNow's response is
+	// inconsistent (e.g. it ignores offset, or caps a page below batchSize
+	// while still reporting more remain) -- 500 batches is 100,000 accounts,
+	// far beyond any real account count, so hitting it means the upstream
+	// itself is behaving unexpectedly rather than this genuinely having
+	// that much data.
+	const maxBatches = 500
 	snOffset := 0
 	var allAccounts []servicenow.AccountSummary
-	for {
+	for i := 0; i < maxBatches; i++ {
 		batch, err := h.sn.GetCustomerHealthSummary(ctx, payload.Email, payload.Phrase, payload.Risks, payload.Region,
 			payload.Product, payload.AbtTeam, snOffset, batchSize)
 		if err != nil {
 			return accountSummaryResponse{}, err
 		}
 		allAccounts = append(allAccounts, batch.Data...)
-		if len(batch.Data) < batchSize {
+		if len(batch.Data) == 0 || len(batch.Data) < batchSize || len(allAccounts) >= batch.TotalCount {
 			break
 		}
 		snOffset += batchSize

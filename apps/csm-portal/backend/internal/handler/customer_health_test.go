@@ -167,6 +167,54 @@ func TestCustomerHealthHandler_GetSummary_HealthStatusFilterEmptyMatchShortCircu
 	}
 }
 
+// TestCustomerHealthHandler_GetSummary_HealthStatusFilterStopsOnTotalCount
+// guards the fix for the pagination loop that only stopped on a
+// short page: with ServiceNow's page size at exactly the loop's batchSize,
+// the old condition (len(batch.Data) < batchSize) never stops there,
+// requiring an extra round trip at best and looping forever at worst if
+// ServiceNow ignores offset and keeps returning a full page. The fix uses
+// the response's own TotalCount instead.
+func TestCustomerHealthHandler_GetSummary_HealthStatusFilterStopsOnTotalCount(t *testing.T) {
+	fullPage := make([]servicenow.AccountSummary, 200)
+	for i := range fullPage {
+		fullPage[i] = servicenow.AccountSummary{AccountSysID: "acct-at-risk"}
+	}
+	calls := 0
+	sn := &fakeSNCustomerHealthClient{
+		getCustomerHealthSummary: func(ctx context.Context, email, phrase, risks *string, region []string, product, abtTeam *string, offset, limit int) (*servicenow.AccountSummaryResponse, error) {
+			calls++
+			// Simulates ServiceNow ignoring offset (a real observed upstream
+			// quirk): every call returns the same full page, never a short
+			// one, and would keep this loop going indefinitely without the
+			// TotalCount-based stop condition this test guards.
+			return &servicenow.AccountSummaryResponse{Data: fullPage, TotalCount: 200}, nil
+		},
+	}
+	rc := &fakeRiskClient{
+		getAccountsByHealthStatus: func(ctx context.Context, healthStatus string) ([]string, error) {
+			return []string{"acct-at-risk"}, nil
+		},
+		getBatchHealthSummaries: func(ctx context.Context, accountSysIDs []string) (map[string]string, error) {
+			return map[string]string{}, nil
+		},
+	}
+	h := NewCustomerHealthHandler(rc, sn, splAccessGuard)
+
+	body := []byte(`{"healthStatus":"at_risk","limit":10}`)
+	req := withUser(httptest.NewRequest(http.MethodPost, "/spl/customer-health/summary", bytes.NewReader(body)))
+	w := httptest.NewRecorder()
+	h.GetSummary(w, req)
+
+	assertStatus(t, w, http.StatusOK)
+	if calls != 1 {
+		t.Fatalf("GetCustomerHealthSummary called %d times, want exactly 1 (TotalCount reached after the first full page)", calls)
+	}
+	resp := decodeJSON[accountSummaryResponse](t, w)
+	if resp.TotalCount != 200 {
+		t.Errorf("TotalCount = %d, want 200", resp.TotalCount)
+	}
+}
+
 func TestCustomerHealthHandler_OpenRisk_RejectsMissingUser(t *testing.T) {
 	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, splAccessGuard)
 	req := httptest.NewRequest(http.MethodPost, "/spl/customer-health/projects/proj-1/risk", bytes.NewReader([]byte(`{}`)))
