@@ -7091,9 +7091,26 @@ type SLAStatus struct {
 	CaseTitle  string `json:"caseTitle,omitempty"`
 	CaseType   string `json:"caseType,omitempty"`
 	Product    string `json:"product,omitempty"`
-	Team       string `json:"team,omitempty"`
-	Priority   string `json:"priority,omitempty"`
-	State      string `json:"state,omitempty"`
+	// Team is the case's account's CRE team display name (account.cre_team_id
+	// joined to "group") -- "" when the case has no account, or the account
+	// has no CRE team assigned.
+	Team     string `json:"team,omitempty"`
+	Priority string `json:"priority,omitempty"`
+	State    string `json:"state,omitempty"`
+	// ProjectOnboardingStatus/IsEvaluationAccount exist purely for
+	// csm-notification-service's own SLA breach-alert Chat-audience
+	// routing, the same team/onboarding/evaluation facts case.created's own
+	// Chat alert uses (see that payload's own doc comment on the
+	// csm-notification-service side). ProjectOnboardingStatus is the
+	// case's project.onboarding_status raw enum label (e.g. "IN_PROGRESS"),
+	// "" when the case has no project or the column is unset.
+	// IsEvaluationAccount is true when the project's project_type is
+	// "Evaluation Subscription" (matched by project_type.name, not a
+	// hardcoded id -- see evaluationSubscriptionProjectTypeName's own doc
+	// comment). Both are best-effort display/routing enrichment, not part
+	// of the SLA clock itself.
+	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
+	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
 }
 
 // SearchSLAStatusResponse is the response for GET /sla-status — every

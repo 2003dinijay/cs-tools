@@ -594,7 +594,7 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	// publish (that fires right after the ServiceNow POST, before this
 	// Postgres insert was even attempted) — same reasoning
 	// incidentService.createIncidentSNFirst already established.
-	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.ProjectAudienceFacts, req, c.ID)
+	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, req, c.ID)
 
 	responseState := ""
 	if c.State != nil {
@@ -686,11 +686,6 @@ func (s *caseService) GetCaseByID(ctx context.Context, id string) (domain.CaseVi
 // ProjectContactEmailsByRole implements CaseService.
 func (s *caseService) ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error) {
 	return s.repo.ProjectContactEmailsByRole(ctx, projectID, role)
-}
-
-// ProjectAudienceFacts implements CaseService.
-func (s *caseService) ProjectAudienceFacts(ctx context.Context, projectID string) (string, bool, error) {
-	return s.repo.ProjectAudienceFacts(ctx, projectID)
 }
 
 var validCommentType = map[domain.CommentType]bool{
@@ -1067,7 +1062,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 		if cv, err := s.GetCaseByID(ctx, req.ID); err != nil {
 			slog.ErrorContext(ctx, "update case: enrich case for case.severity_changed publish failed", "caseId", req.ID)
 		} else {
-			publishSeverityChangedEvent(ctx, s.publisher, s.ProjectAudienceFacts, req.ID, string(derefSeverity(oldSeverity)), string(*c.Severity), cv)
+			publishSeverityChangedEvent(ctx, s.publisher, req.ID, string(derefSeverity(oldSeverity)), string(*c.Severity), cv)
 		}
 	}
 
@@ -1613,28 +1608,14 @@ func (s *caseService) publishCaseAcknowledged(ctx context.Context, caseID, ackno
 		return
 	}
 
-	// cv.ProjectDetails is nilable on this data source — see
-	// publishCaseAssigned's own comment.
-	projectID := ""
-	if cv.ProjectDetails != nil {
-		projectID = cv.ProjectDetails.ID
-	}
-	// Best-effort — see publishCaseCreatedEvent's own comment for why a
-	// failed lookup doesn't block the publish.
-	onboardingStatus, isEvaluation, err := s.ProjectAudienceFacts(ctx, projectID)
-	if err != nil {
-		slog.WarnContext(ctx, "update case: resolving project audience facts failed", "caseId", caseID)
-	}
-
 	payload, err := json.Marshal(events.CaseAcknowledgedPayload{
-		CaseID:                  caseID,
-		CaseNumber:              cv.Number,
-		WSO2CaseID:              cv.InternalID,
-		Severity:                strings.ToUpper(string(derefSeverity(cv.Severity))),
-		Team:                    caseTeamName(cv),
-		ProjectOnboardingStatus: onboardingStatus,
-		IsEvaluationAccount:     isEvaluation,
-		AcknowledgerName:        acknowledgerName,
+		CaseID:           caseID,
+		CaseNumber:       cv.Number,
+		WSO2CaseID:       cv.InternalID,
+		Severity:         strings.ToUpper(string(derefSeverity(cv.Severity))),
+		Product:          caseProductName(cv),
+		Team:             caseTeamName(cv),
+		AcknowledgerName: acknowledgerName,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "update case: encode case.acknowledged payload failed", "caseId", caseID, "error", err)

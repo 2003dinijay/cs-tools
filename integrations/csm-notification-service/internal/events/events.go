@@ -180,26 +180,9 @@ type CaseCreatedPayload struct {
 	Priority   string `json:"priority"`
 	Product    string `json:"product,omitempty"`
 	// Team is the case's account's CRE team display name (e.g. "Castor") —
-	// displayed in Chat cards, and also this service's own Google Chat
-	// *audience* routing key (see dispatch.resolveChatAudiences): a team
-	// with no configured GOOGLE_CHAT_AUDIENCE_SPACES entry of its own
-	// falls back to the shared "Incident Monitor" audience.
-	Team string `json:"team,omitempty"`
-	// ProjectOnboardingStatus is entity-service's raw
-	// project.onboarding_status enum label (e.g. "IN_PROGRESS"), "" when
-	// the case has no project, the column is unset, or the publisher is a
-	// pure ServiceNow deployment with no Postgres access (see that
-	// service's own CaseRepository.ProjectAudienceFacts). Which raw values
-	// count as "still onboarding" is decided entirely here
-	// (dispatch.onboardingChatAudienceStatuses), not by entity-service, so
-	// that policy can change without a redeploy there.
-	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
-	// IsEvaluationAccount is true when the case's project is an Evaluation
-	// Subscription — entity-service's own fixed-id match (see that
-	// service's own CaseRepository.ProjectAudienceFacts doc comment).
-	// case.created only: routes exclusively to the "Evaluation" Chat
-	// audience, overriding every other audience rule.
-	IsEvaluationAccount       bool     `json:"isEvaluationAccount,omitempty"`
+	// displayed in Chat cards; purely a display value, no routing role
+	// (unlike Product).
+	Team                      string   `json:"team,omitempty"`
 	CreatedAt                 string   `json:"createdAt"`
 	Description               string   `json:"description"`
 	IncidentImpactDescription string   `json:"incidentImpactDescription,omitempty"`
@@ -279,64 +262,42 @@ type CaseAssignedPayload struct {
 // (see entity-service's own CaseAcknowledgedPayload doc comment). Severity
 // is the raw uppercase severity string (e.g. "CRITICAL"), the same value
 // CaseCreatedPayload.Priority carries — dispatch.severityDisplay maps it to
-// a display label/color for the Chat card. Routes exactly the same way
-// case.created does — Team/ProjectOnboardingStatus/IsEvaluationAccount
-// resolve a Chat-audience list via dispatch.resolveChatAudiences — so an
-// acknowledgment posts as a threaded reply in every one of the same
-// audience spaces the case's own case.created alert went to.
+// a display label/color for the Chat card. Product routes this alert to
+// the same Google Chat space as the case's own case.created alert, same
+// convention as CaseCreatedPayload.Product.
 type CaseAcknowledgedPayload struct {
 	CaseID     string `json:"caseId"`
 	CaseNumber string `json:"caseNumber,omitempty"`
 	// WSO2CaseID — see CaseCreatedPayload's own doc comment.
-	WSO2CaseID string `json:"wso2CaseId,omitempty"`
-	Severity   string `json:"severity,omitempty"`
-	Team       string `json:"team,omitempty"`
-	// ProjectOnboardingStatus/IsEvaluationAccount — see CaseCreatedPayload's
-	// own doc comments.
-	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
-	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
-	AcknowledgerName        string `json:"acknowledgerName"`
-	// Product is deprecated and unused — this payload moved off
-	// product-based Chat routing to Team-based audience routing (see
-	// dispatch.resolveChatAudiences), and this field never carried anything
-	// this card displayed either. Kept, accepting-but-ignoring the value,
-	// purely so events.Validate's strict decode doesn't reject a payload
-	// from an entity-service deployment that hasn't yet redeployed past
-	// this change — entity-service and csm-notification-service are
-	// separate deployables with no atomic joint-deploy guarantee. Remove
-	// once both services are known to have deployed past this change.
-	Product string `json:"product,omitempty"`
+	WSO2CaseID       string `json:"wso2CaseId,omitempty"`
+	Severity         string `json:"severity,omitempty"`
+	Product          string `json:"product,omitempty"`
+	Team             string `json:"team,omitempty"`
+	AcknowledgerName string `json:"acknowledgerName"`
 }
 
 // SeverityChangedPayload is TypeSeverityChanged's payload. Unlike
 // CaseAcknowledgedPayload, this carries Recipients — a severity change has
 // both an email reaction (same audience/link-resolution shape as
-// StatusChangedPayload/CaseAssignedPayload) and a Google Chat alert, so
+// StatusChangedPayload/CaseAssignedPayload) and a Google Chat alert
+// (Product, same routing convention as CaseCreatedPayload.Product), so
 // dispatch.handleSeverityChanged is a two-channel handler like
 // handleCaseCreated, not a one-channel handler like handleCaseAcknowledged.
-// The Chat alert is audience-routed the same way case.created/
-// case.acknowledged are. OldSeverity/NewSeverity are the raw uppercase
-// severity strings (e.g. "CRITICAL"), the same convention
-// CaseAcknowledgedPayload.Severity uses — dispatch.severityLabelAndColor
-// maps each to its own display label/color.
+// OldSeverity/NewSeverity are the raw uppercase severity strings (e.g.
+// "CRITICAL"), the same convention CaseAcknowledgedPayload.Severity uses —
+// dispatch.severityLabelAndColor maps each to its own display label/color.
 type SeverityChangedPayload struct {
 	ProjectID  string `json:"projectId"`
 	CaseID     string `json:"caseId"`
 	CaseNumber string `json:"caseNumber,omitempty"`
 	// WSO2CaseID — see CaseCreatedPayload's own doc comment.
-	WSO2CaseID  string `json:"wso2CaseId,omitempty"`
-	CaseTitle   string `json:"caseTitle,omitempty"`
-	OldSeverity string `json:"oldSeverity"`
-	NewSeverity string `json:"newSeverity"`
-	Team        string `json:"team,omitempty"`
-	// ProjectOnboardingStatus/IsEvaluationAccount — see CaseCreatedPayload's
-	// own doc comments.
-	ProjectOnboardingStatus string   `json:"projectOnboardingStatus,omitempty"`
-	IsEvaluationAccount     bool     `json:"isEvaluationAccount,omitempty"`
-	Recipients              []string `json:"recipients"`
-	// Product is deprecated and unused — see CaseAcknowledgedPayload's own
-	// doc comment for why this decode-compatibility field exists.
-	Product string `json:"product,omitempty"`
+	WSO2CaseID  string   `json:"wso2CaseId,omitempty"`
+	CaseTitle   string   `json:"caseTitle,omitempty"`
+	OldSeverity string   `json:"oldSeverity"`
+	NewSeverity string   `json:"newSeverity"`
+	Product     string   `json:"product,omitempty"`
+	Team        string   `json:"team,omitempty"`
+	Recipients  []string `json:"recipients"`
 }
 
 // IncidentCreatedPayload is TypeIncidentCreated's payload. Unlike the case.*

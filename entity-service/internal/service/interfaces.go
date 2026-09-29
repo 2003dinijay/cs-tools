@@ -635,17 +635,6 @@ type CaseService interface {
 	// case there simply falls back to the account's default watchers, same
 	// as an empty real result.
 	ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error)
-	// ProjectAudienceFacts returns projectID's onboarding_status (raw enum
-	// label) and whether its project type is Evaluation Subscription -- see
-	// CaseRepository.ProjectAudienceFacts' own doc comment for the full
-	// reasoning. Used by publishCaseCreatedEvent to populate
-	// events.CaseCreatedPayload.ProjectOnboardingStatus/IsEvaluationAccount
-	// for csm-notification-service's own case.created Chat audience
-	// resolution. A deployment with no Postgres access at all (a pure
-	// ServiceNow data source with no pgFallback configured) returns the
-	// zero value ("", false) and no error -- same "Postgres-only schema,
-	// degrade gracefully" posture as ProjectContactEmailsByRole above.
-	ProjectAudienceFacts(ctx context.Context, projectID string) (onboardingStatus string, isEvaluationSubscription bool, err error)
 	// SearchCases returns a paginated list of cases filtered by optional project IDs,
 	// deployment IDs, deployed product IDs, state keys, severity keys, and search query.
 	// A ValidationError is returned for invalid input; any other error indicates an
