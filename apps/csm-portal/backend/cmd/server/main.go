@@ -1330,7 +1330,7 @@ func loadSPLConfig() (bool, splConfig) {
 		addEscalationGroups:      splitComma(mustEnv("SPL_ADD_ESCALATION_GROUPS")),
 		downloadAttachmentGroups: splitComma(mustEnv("SPL_DOWNLOAD_ATTACHMENT_GROUPS")),
 		usageMetricsGroups:       splitComma(mustEnv("SPL_USAGE_METRICS_GROUPS")),
-		snHost:                   mustEnv("SPL_SERVICENOW_HOST"),
+		snHost:                   mustHTTPSBaseURL("SPL_SERVICENOW_HOST", mustEnv("SPL_SERVICENOW_HOST")),
 		snUsername:               mustEnv("SPL_SERVICENOW_USERNAME"),
 		snPassword:               mustEnv("SPL_SERVICENOW_PASSWORD"),
 		snEscalationTemplateID:   os.Getenv("SPL_SERVICENOW_ESCALATION_TEMPLATE_ID"),
@@ -1339,12 +1339,12 @@ func loadSPLConfig() (bool, splConfig) {
 		driveClientSecret:        mustEnv("SPL_GOOGLE_DRIVE_CLIENT_SECRET"),
 		driveRefreshToken:        mustEnv("SPL_GOOGLE_DRIVE_REFRESH_TOKEN"),
 		riskMySQLDSN:             mustEnv("SPL_RISK_MYSQL_DSN"),
-		salesEntityBaseURL:       mustEnv("SPL_SALES_ENTITY_BASE_URL"),
-		csEntityBaseURL:          mustEnv("SPL_CS_ENTITY_BASE_URL"),
-		entityTokenURL:           mustEnv("SPL_ENTITY_TOKEN_URL"),
+		salesEntityBaseURL:       mustHTTPSBaseURL("SPL_SALES_ENTITY_BASE_URL", mustEnv("SPL_SALES_ENTITY_BASE_URL")),
+		csEntityBaseURL:          mustHTTPSBaseURL("SPL_CS_ENTITY_BASE_URL", mustEnv("SPL_CS_ENTITY_BASE_URL")),
+		entityTokenURL:           mustHTTPSBaseURL("SPL_ENTITY_TOKEN_URL", mustEnv("SPL_ENTITY_TOKEN_URL")),
 		entityClientID:           mustEnv("SPL_ENTITY_CLIENT_ID"),
 		entityClientSecret:       mustEnv("SPL_ENTITY_CLIENT_SECRET"),
-		employeeInfoBaseURL:      mustEnv("SPL_EMPLOYEE_INFO_BASE_URL"),
+		employeeInfoBaseURL:      mustHTTPSBaseURL("SPL_EMPLOYEE_INFO_BASE_URL", mustEnv("SPL_EMPLOYEE_INFO_BASE_URL")),
 	}
 }
 

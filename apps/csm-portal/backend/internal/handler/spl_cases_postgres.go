@@ -424,15 +424,16 @@ func (c *postgresSplCaseClient) GetCommentsAndWorknotes(ctx context.Context, cas
 // comment on the case through entity-service (Postgres) — entity-service's
 // commentService.CreateComment already exists natively, so this is a
 // straight pass-through, the same shape as GetCommentsAndWorknotes' read
-// side. Unlike ServiceNow's PostWorkNote, entity-service's create-comment
-// path does not itself reject a closed case (no ErrCaseClosed equivalent
-// exists there yet) — a real, known gap: posting a work note on a closed
-// Postgres-sourced case currently succeeds where the old ServiceNow path
-// would have rejected it with "Case is closed."
+// side. Unlike entity-service's create-comment path (which has no
+// ErrCaseClosed equivalent of its own), this rejects a closed case itself,
+// matching the old ServiceNow path's "Case is closed" behavior.
 func (c *postgresSplCaseClient) PostWorkNote(ctx context.Context, caseNumber, worknote, _ string) (servicenow.WorkNoteResponse, error) {
 	v, err := c.resolveCaseByNumber(ctx, caseNumber)
 	if err != nil {
 		return servicenow.WorkNoteResponse{}, err
+	}
+	if derefStr(v.State) == "closed" {
+		return servicenow.WorkNoteResponse{}, servicenow.ErrCaseClosed
 	}
 
 	body, err := json.Marshal(entityCreateCommentRequest{

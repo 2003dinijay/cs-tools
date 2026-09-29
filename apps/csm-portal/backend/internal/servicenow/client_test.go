@@ -124,6 +124,39 @@ func TestRetryTransport_GivesUpAfterMaxRetries(t *testing.T) {
 	}
 }
 
+func TestGetBinary_AllowsResponseAtTheSizeLimit(t *testing.T) {
+	body := make([]byte, maxBinaryResponseBytes)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, Username: "u", Password: "p"})
+	got, _, _, err := c.GetBinary(context.Background(), "/api/now/attachment/x/file", nil)
+	if err != nil {
+		t.Fatalf("expected a response exactly at the limit to succeed, got error: %v", err)
+	}
+	if len(got) != maxBinaryResponseBytes {
+		t.Errorf("len(got) = %d, want %d", len(got), maxBinaryResponseBytes)
+	}
+}
+
+func TestGetBinary_RejectsResponseOverTheSizeLimit(t *testing.T) {
+	body := make([]byte, maxBinaryResponseBytes+1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, Username: "u", Password: "p"})
+	_, _, _, err := c.GetBinary(context.Background(), "/api/now/attachment/x/file", nil)
+	if err == nil {
+		t.Fatal("expected an error for a response over the size limit, got nil")
+	}
+}
+
 func TestSanitizeQueryValue(t *testing.T) {
 	tests := []struct {
 		name    string

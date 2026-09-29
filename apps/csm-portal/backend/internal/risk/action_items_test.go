@@ -31,6 +31,117 @@ func actionItemRowCols() []string {
 		"created_by_email", "created_on", "updated_on"}
 }
 
+func TestCreateActionItem_LocksRiskRowAndCommits(t *testing.T) {
+	c, mock := newTestClient(t)
+	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT (.+) FROM project_risk WHERE id = ?").
+		WithArgs(7).
+		WillReturnRows(sqlmock.NewRows(riskRowCols()).
+			AddRow(7, "proj-1", "acct-1", "open", "at risk", "user@example.com", now, nil, nil, nil))
+	mock.ExpectExec("INSERT INTO risk_action_item").
+		WithArgs(7, "proj-1", "acct-1", "Fix it", sqlmock.AnyArg(), "high", sqlmock.AnyArg(), sqlmock.AnyArg(), "user@example.com").
+		WillReturnResult(sqlmock.NewResult(5, 1))
+	mock.ExpectCommit()
+	mock.ExpectQuery("SELECT (.+) FROM risk_action_item WHERE id = ?").
+		WithArgs(5).
+		WillReturnRows(sqlmock.NewRows(actionItemRowCols()).
+			AddRow(5, 7, "proj-1", "acct-1", "Fix it", nil, "high", "open", "assignee@example.com", nil, nil, nil, nil, "user@example.com", now, now))
+
+	assignee := "assignee@example.com"
+	got, err := c.CreateActionItem(context.Background(), 7,
+		CreateActionItemRequest{Title: "Fix it", Priority: "high", AssignedToEmail: &assignee},
+		"user@example.com")
+	if err != nil {
+		t.Fatalf("CreateActionItem: %v", err)
+	}
+	if got.ID != 5 || got.ProjectSysID != "proj-1" || got.AccountSysID != "acct-1" {
+		t.Errorf("got = %+v, want the risk row's own project/account sys ids", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestCreateActionItem_RejectsWhenRiskNotOpen(t *testing.T) {
+	c, mock := newTestClient(t)
+	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT (.+) FROM project_risk WHERE id = ?").
+		WithArgs(7).
+		WillReturnRows(sqlmock.NewRows(riskRowCols()).
+			AddRow(7, "proj-1", "acct-1", "closed", "at risk", "user@example.com", now, "fixed", "user@example.com", now))
+	mock.ExpectRollback()
+
+	_, err := c.CreateActionItem(context.Background(), 7, CreateActionItemRequest{Title: "Fix it", Priority: "high"}, "user@example.com")
+	var valErr *ValidationError
+	if !errors.As(err, &valErr) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if valErr.Message != "Action items can only be added to open risks." {
+		t.Errorf("message = %q", valErr.Message)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (rollback not observed?): %v", err)
+	}
+}
+
+func TestCreateActionItem_MissingRiskIsValidationError(t *testing.T) {
+	c, mock := newTestClient(t)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT (.+) FROM project_risk WHERE id = ?").
+		WithArgs(999).
+		WillReturnRows(sqlmock.NewRows(riskRowCols()))
+	mock.ExpectRollback()
+
+	_, err := c.CreateActionItem(context.Background(), 999, CreateActionItemRequest{Title: "Fix it", Priority: "high"}, "user@example.com")
+	var valErr *ValidationError
+	if !errors.As(err, &valErr) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if valErr.Message != "Risk not found: 999" {
+		t.Errorf("message = %q", valErr.Message)
+	}
+}
+
+func TestUpdateActionItemStatus_RejectsInvalidStatus(t *testing.T) {
+	c, _ := newTestClient(t)
+	_, err := c.UpdateActionItemStatus(context.Background(), 5, "bogus", nil, "user@example.com")
+	var valErr *ValidationError
+	if !errors.As(err, &valErr) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if valErr.Message != "Invalid status: bogus" {
+		t.Errorf("message = %q", valErr.Message)
+	}
+}
+
+func TestUpdateActionItemStatus_RejectsReopeningOntoNonOpenRisk(t *testing.T) {
+	c, mock := newTestClient(t)
+	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
+
+	mock.ExpectQuery("SELECT (.+) FROM risk_action_item WHERE id = ?").
+		WithArgs(5).
+		WillReturnRows(sqlmock.NewRows(actionItemRowCols()).
+			AddRow(5, 42, "proj-1", "acct-1", "Fix it", nil, "high", "resolved", nil, nil, nil, nil, nil, "a@b.com", now, now))
+	mock.ExpectQuery("SELECT (.+) FROM project_risk WHERE id = ?").
+		WithArgs(42).
+		WillReturnRows(sqlmock.NewRows(riskRowCols()).
+			AddRow(42, "proj-1", "acct-1", "closed", "at risk", "user@example.com", now, "fixed", "user@example.com", now))
+
+	_, err := c.UpdateActionItemStatus(context.Background(), 5, "open", nil, "user@example.com")
+	var valErr *ValidationError
+	if !errors.As(err, &valErr) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if valErr.Message != "Cannot reopen an action item on a risk that is not open." {
+		t.Errorf("message = %q", valErr.Message)
+	}
+}
+
 func TestUpdateActionItemStatus_RequiresResolutionCommentWhenResolving(t *testing.T) {
 	c, mock := newTestClient(t)
 	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)

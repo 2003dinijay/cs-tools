@@ -258,6 +258,27 @@ func TestPostgresSplCaseClient_PostWorkNote_ResolvesNumberAndCreatesWorkNoteComm
 	}
 }
 
+func TestPostgresSplCaseClient_PostWorkNote_RejectsClosedCase(t *testing.T) {
+	closedState := "closed"
+	entity := &mockEntityCasesClient{
+		searchCasesFn: func(context.Context, []byte) ([]byte, error) {
+			return jsonBytes(t, entitySearchCasesResponse{
+				Total: 1,
+				Cases: []entitySearchCaseView{{ID: "uuid-10", Number: "CS0000010", State: &closedState}},
+			}), nil
+		},
+		createCaseCommentFn: func(context.Context, string, []byte) ([]byte, error) {
+			t.Fatal("CreateCaseComment should not be called for a closed case")
+			return nil, nil
+		},
+	}
+	c := NewPostgresSplCaseClient(entity, &mockAttachmentsInfoClient{})
+	_, err := c.PostWorkNote(context.Background(), "CS0000010", "checking on this", "jane.doe@example.com")
+	if !errors.Is(err, servicenow.ErrCaseClosed) {
+		t.Fatalf("err = %v, want servicenow.ErrCaseClosed", err)
+	}
+}
+
 func TestPostgresSplCaseClient_GetAttachmentsInfo_DelegatesToServiceNow(t *testing.T) {
 	sn := &mockAttachmentsInfoClient{
 		fn: func(_ context.Context, caseNumber string, _, _ int) ([]servicenow.AttachmentInfo, error) {

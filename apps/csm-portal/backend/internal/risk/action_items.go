@@ -52,19 +52,38 @@ func scanActionItemRow(row interface{ Scan(...any) error }) (actionItemRow, erro
 // account in GetActionItemsByAccount, and silently block CloseProjectRisk
 // for the real risk). Returns *ValidationError when the risk doesn't exist
 // or is no longer open.
+//
+// Runs in a transaction that locks the risk row (SELECT ... FOR UPDATE),
+// the same lock CloseProjectRisk takes: a plain, non-locking read here
+// would let this insert race a concurrent close (read "open" -> close
+// commits -> insert an "open" item onto the now-closed risk), which is
+// exactly the interleaving CloseProjectRisk's own locking is meant to rule
+// out.
 func (c *Client) CreateActionItem(ctx context.Context, riskID int, payload CreateActionItemRequest, email string) (*RiskActionItem, error) {
-	riskRow, err := c.getRiskRowByID(ctx, riskID)
+	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		if err == errRecordNotFound {
-			return nil, &ValidationError{Message: fmt.Sprintf("Risk not found: %d", riskID)}
+		return nil, fmt.Errorf("risk: begin transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
 		}
-		return nil, err
+	}()
+
+	riskRow, err := scanProjectRiskRow(tx.QueryRowContext(ctx,
+		"SELECT "+projectRiskColumns+" FROM project_risk WHERE id = ? FOR UPDATE", riskID))
+	if err == sql.ErrNoRows {
+		return nil, &ValidationError{Message: fmt.Sprintf("Risk not found: %d", riskID)}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("risk: query project_risk by id: %w", err)
 	}
 	if riskRow.Status != "open" {
 		return nil, &ValidationError{Message: "Action items can only be added to open risks."}
 	}
 
-	execResult, err := c.db.ExecContext(ctx, `
+	execResult, err := tx.ExecContext(ctx, `
 		INSERT INTO risk_action_item
 			(risk_id, project_sys_id, account_sys_id, title, description, priority, status,
 			 assigned_to_email, due_date, created_by_email)
@@ -78,15 +97,36 @@ func (c *Client) CreateActionItem(ctx context.Context, riskID int, payload Creat
 	if err != nil {
 		return nil, fmt.Errorf("risk: read inserted action item id: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("risk: commit transaction: %w", err)
+	}
+	committed = true
 	return c.getActionItemByID(ctx, int(itemID))
 }
 
 // UpdateActionItemStatus updates an action item's status. Returns
-// *ValidationError when resolutionComment is required (status "resolved"
-// or "cancelled") but missing/blank.
+// *ValidationError when newStatus isn't one of the four valid statuses,
+// when resolutionComment is required (status "resolved" or "cancelled")
+// but missing/blank, or when reopening the item ("open"/"in_progress")
+// would leave an active item on a risk that isn't open itself — the same
+// "closed risk with an open item" state CloseProjectRisk is designed to
+// prevent.
 func (c *Client) UpdateActionItemStatus(ctx context.Context, actionItemID int, newStatus string, resolutionComment *string, email string) (*RiskActionItem, error) {
-	if _, err := c.getActionItemRowByID(ctx, actionItemID); err != nil {
+	if newStatus != "open" && newStatus != "in_progress" && newStatus != "resolved" && newStatus != "cancelled" {
+		return nil, &ValidationError{Message: fmt.Sprintf("Invalid status: %s", newStatus)}
+	}
+	row, err := c.getActionItemRowByID(ctx, actionItemID)
+	if err != nil {
 		return nil, err
+	}
+	if newStatus == "open" || newStatus == "in_progress" {
+		riskRow, err := c.getRiskRowByID(ctx, row.RiskID)
+		if err != nil {
+			return nil, err
+		}
+		if riskRow.Status != "open" {
+			return nil, &ValidationError{Message: "Cannot reopen an action item on a risk that is not open."}
+		}
 	}
 
 	if newStatus == "resolved" || newStatus == "cancelled" {

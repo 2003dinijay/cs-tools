@@ -150,6 +150,13 @@ func (c *Client) CustomPut(ctx context.Context, path string, body []byte) ([]byt
 	return c.do(ctx, http.MethodPut, path, nil, body)
 }
 
+// maxBinaryResponseBytes bounds how much of a GetBinary response this
+// client will hold in memory at once (e.g. an attachment download) --
+// without it, a large or malicious upstream response could exhaust backend
+// memory. 25 MiB comfortably covers ordinary attachments (documents,
+// images) while still failing fast on anything unreasonably large.
+const maxBinaryResponseBytes = 25 << 20
+
 // GetBinary performs a GET and returns the raw response body together with
 // the upstream Content-Type and Content-Disposition headers, for endpoints
 // that return non-JSON binary content (e.g. attachment download).
@@ -160,9 +167,14 @@ func (c *Client) GetBinary(ctx context.Context, path string, params url.Values) 
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	// Read one byte past the limit so a response that's exactly at the cap
+	// isn't mistaken for one that exceeds it.
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBinaryResponseBytes+1))
 	if err != nil {
 		return nil, "", "", fmt.Errorf("servicenow: read response body: %w", err)
+	}
+	if len(respBody) > maxBinaryResponseBytes {
+		return nil, "", "", fmt.Errorf("servicenow: response body exceeds %d byte limit", maxBinaryResponseBytes)
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
@@ -264,18 +276,28 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if resp != nil {
 			_ = resp.Body.Close()
 		}
+		// RoundTripper's own contract (net/http.RoundTripper) says an
+		// implementation must not modify the request -- and a base
+		// transport may still hold internal references to it after
+		// returning, even with the body closed. Retrying via a fresh
+		// clone (with its own body from GetBody) rather than mutating and
+		// resubmitting the same *http.Request keeps this transport a
+		// well-behaved RoundTripper instead of relying on undefined
+		// behavior that happens to work with the current base transport.
+		next := req.Clone(req.Context())
 		if req.GetBody != nil {
 			body, gbErr := req.GetBody()
 			if gbErr != nil {
 				break
 			}
-			req.Body = body
+			next.Body = body
 		}
 		select {
 		case <-time.After(retryBackoff):
 		case <-req.Context().Done():
 			return nil, req.Context().Err()
 		}
+		req = next
 		resp, err = t.base.RoundTrip(req)
 	}
 	return resp, err
