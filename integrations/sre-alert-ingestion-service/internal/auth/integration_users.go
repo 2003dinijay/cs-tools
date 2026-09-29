@@ -76,10 +76,20 @@ func (a *IntegrationUsers) Authenticate(r *http.Request, _ string) error {
 	if !verifySecret(secret, u.Salt, u.SecretHash, u.Iterations) {
 		return ErrUnauthorized
 	}
-	if !u.ExpiresAt.IsZero() && time.Now().After(u.ExpiresAt) {
+	if isExpired(u.ExpiresAt, time.Now()) {
 		return ErrUnauthorized
 	}
 	return nil
+}
+
+// isExpired reports whether expiresAt is set and in the past. Cosmos DB for Cassandra
+// round-trips an unset (NULL) timestamp as the Unix epoch rather than Go's true zero time.Time,
+// so anything at or before the epoch is treated as unset too.
+func isExpired(expiresAt, now time.Time) bool {
+	if expiresAt.IsZero() || !expiresAt.After(time.Unix(0, 0)) {
+		return false
+	}
+	return now.After(expiresAt)
 }
 
 func (a *IntegrationUsers) get(ctx context.Context, username string) (integrationUser, error) {
