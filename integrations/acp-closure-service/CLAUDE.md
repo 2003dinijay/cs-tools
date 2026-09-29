@@ -40,9 +40,11 @@ session, ever, so that code path would be permanently dead here.
   signal (`closureStatus`) isn't a parameter this function receives at all;
   callers must check it themselves (`sweep.suspend` does).
 - `internal/recipients` — pure customer-contact and Account-Manager-email
-  resolution. `ResolveCustomerContact` implements the three-tier fallback
-  (business-contact-role Project Contact → account-level Primary Contact →
-  signal to nudge the Account Manager instead). `AccountManagerEmail`
+  resolution. `ResolveCustomerContacts` implements the three-tier fallback
+  (business-contact-role Project Contacts → account-level Primary Contacts →
+  signal to nudge the Account Manager instead). Each tier returns **every**
+  match, not the first — see "The customer notice goes to every customer
+  contact" below. `AccountManagerEmail`
   extracts an email from an already-fetched `PersonRef`, treating "no AM
   assigned" and "AM assigned but no email" both as legitimate absence
   (`""`), not errors — many real accounts have incomplete role assignments.
@@ -403,25 +405,63 @@ isn't lost or re-litigated:
   design.)
 - **`DryRunProjectUpdater` intentionally logs nothing** (`dryrun.go`) — per
   explicit user direction, the only log line that should exist for a dry
-  run is `notify.LoggingNotifier`'s `"notice"` line (the actual email
-  content: subject, body, recipients). A separate `"dry-run: would update
+  run is `notify.LoggingNotifier`'s `"notice"` line (which notice would
+  go out, and to how many recipients). A separate `"dry-run: would update
   project"` line describing the raw PATCH body used to exist here and was
   removed deliberately — it's noise once every window produces a real
   notice log, and stays noise once real email sending (Sajith's team, still
   pending) replaces `LoggingNotifier` as the thing this component
   ultimately integrates with. Don't re-add logging to this type without
   confirming that direction has changed.
-- **That `"notice"` line masks personal contact details** (`maskEmail`,
-  `maskName` in `notify.go`). Every email address keeps only its first
-  character and domain (`p********@wso2.com`), and the customer's name keeps
-  only initials. Staff names stay readable, since they're the point of the
-  dry-run review and already appear in the internal body. The
-  customer-facing body names no one, so log-only mode writes no customer
-  personal data at all. Real staging logs from before email sending was
-  enabled showed full addresses and names in this line; that was flagged in
-  the threat model's privacy review and closed by this masking. Don't log a
-  raw address here again. `EmailNotifier` already logs only recipient
-  counts.
+- **No log line carries personal data, in any mode.** Rashmika asked on PR
+  #2134 whether emails or other PII are logged on success or failure. The
+  answer now is no:
+  - The `"notice"` line (log-only mode) logs project details, the subject,
+    and `toCount`/`ccCount`/`customerCount`. No addresses, no names (staff
+    or customer) and no body. It used to log masked addresses
+    (`maskEmail`), customer initials (`maskName`), staff names in full and
+    the whole body, which names the Account Manager; masking was an
+    earlier fix after staging logs showed full addresses, and was replaced
+    by dropping the fields entirely.
+  - `EmailNotifier` logs only recipient counts, as before.
+  - The startup line logs `standingRecipientsCount`, not the addresses.
+  - `apierror.Error()` is `upstream returned <status>` only. The upstream
+    body excerpt stays in `Error.Body` for code, but isn't in the message,
+    because the message is what `"project failed"` logs, and an upstream
+    body can echo a recipient address.
+
+  The subject and project name are still logged: they name the project and
+  the customer company, not a person. `TestLoggingNotifier_Send_LogsNoPersonalData`
+  checks every attribute of the notice line, so a new attribute can't bring
+  personal data back unnoticed. Don't add a name, address or body to any log
+  line.
+
+## The customer notice goes to every customer contact
+
+`ResolveCustomerContacts` returns all business contacts on the project, or,
+when there are none, all Primary Contacts on the account. It doesn't return
+just the first. `notify.Recipients.Customers` is a list, and
+`EmailNotifier` puts every entry in `to` on one email (internal people stay
+in `cc`). Each address appears once, compared case-insensitively; contacts
+with no email are skipped, as before.
+
+Until 2026-09-29 it stopped at the first match, so a project with several
+business contacts told only one of them, chosen by API order. The rule came
+from our own design, not legacy: legacy picks recipients inside the
+ServiceNow Flow Designer subflow `acp_send_project_suspension_email_20`
+(called from `ACPActionModules.js`), which isn't in
+`docs/legacy-servicenow-reference/`. The user confirmed from real legacy
+emails that the ServiceNow system sends to several customer addresses. Real
+accounts can also have more than one Primary Contact (the staging ACP Test
+Partner Account has two).
+
+**Both contact searches are paged.** `/projects/{id}/contacts/search` and
+`/accounts/{id}/contacts/search` return 20 rows unless a limit is sent, 50 at
+most (51 is a 400), and report `total` but no `hasMore`, all confirmed
+against staging. `fetchContacts` used to send `{}` and read only the first
+page, which mattered little while one contact was picked but would drop
+recipients now. `pageContacts` sends `pagination` and stops on an empty page
+or once `offset` reaches `total`.
 
 ## Project Name links to Salesforce (internal notices only)
 
@@ -623,18 +663,27 @@ plain authenticated HTTP call.
   re-confirming that's changed.
 - **`FromAddress` is fixed at config level**, not a per-`Notice` value —
   `no-reply@wso2.com`.
-- **`EmailNotifier` maps `Recipients` onto to/cc**: when `Customer` is
-  present, the customer is the primary `to` and the three internal people
-  are `cc`'d; otherwise (internal-only notices, and the no-business-contact
+- **`EmailNotifier` maps `Recipients` onto to/cc**: when `Customers` is
+  non-empty, every customer is in `to` and the three internal people are
+  `cc`'d; otherwise (internal-only notices, and the no-business-contact
   notice) all populated internal recipients go in `to`. This is a design
   decision made in this codebase, not something Rashmika's API dictates —
   reconsider if it turns out wrong in practice.
-- **`StandingCC` (`STANDING_CC_RECIPIENTS`) cc's a fixed address list on
-  every notice**, uniformly — internal, customer-facing, and the
-  no-business-contact nudge alike, subscription and invoice cascades alike,
-  added in `Send` right after `recipientsToToCC` and before filtering. This
-  was a real gap in the initial port, caught late: every real legacy
-  reference email this project has (both internal and customer-facing) cc's
+- **`StandingRecipients` (`STANDING_CC_RECIPIENTS`) adds a fixed address
+  list to every notice**, subscription and invoice cascades alike, in
+  `Send` right after `recipientsToToCC` and before filtering. Where the
+  addresses go matches the ServiceNow system, as the user confirmed from
+  real legacy emails on 2026-09-29:
+
+  | Notice | `to` | `cc` |
+  |---|---|---|
+  | Internal, and the no-business-contact nudge | internal people + standing list | none |
+  | Customer-facing | customers + standing list | internal people + standing list |
+
+  Until then the list went in `cc` on every notice. The env var keeps its
+  original `_CC_` name because it is already in the deployment notes and
+  security documents. This was a real gap in the initial port, caught late:
+  every real legacy reference email carries
   `customer-lifecycle-notification@wso2.com` and `billing@wso2.com`, and
   this component never sent to either until this field existed. Deliberately
   env-configurable rather than a hardcoded constant like `wso2LogoURL` —
@@ -642,7 +691,7 @@ plain authenticated HTTP call.
   this empty for the same reason `EMAIL_SERVICE_ALLOW_NON_WSO2_RECIPIENTS`
   defaults false: real people/teams must not receive test traffic. Entries
   still pass through `filterRecipients` like any other recipient — this is
-  additive cc, not a bypass of the WSO2-only staging safeguard.
+  not a bypass of the WSO2-only staging safeguard.
 - **The WSO2-only staging safeguard is a hard requirement from Rashmika's
   team**, not a suggestion: "make sure emails aren't being sent in staging
   environment for any non-wso2 emails." `EMAIL_SERVICE_ALLOW_NON_WSO2_RECIPIENTS`
@@ -704,7 +753,7 @@ plain authenticated HTTP call.
   project/account) — this catches shape mismatches that a hand-written
   trivial fixture would silently paper over.
 - TDD throughout: red before green, one seam at a time. Seams under test:
-  `closure.Decide`, `recipients.ResolveCustomerContact` /
+  `closure.Decide`, `recipients.ResolveCustomerContacts` /
   `AccountManagerEmail`, `suspensionstate.LastNoticeWindow` /
   `WithSubscriptionEndDateState`, `sweep.processProject`, `sweep.Run`, the
   pure subject/body builders (`internalNoticeSubject`,
