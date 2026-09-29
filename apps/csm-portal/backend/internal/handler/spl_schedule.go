@@ -41,7 +41,7 @@ type SplScheduleHandler struct {
 // NewSplScheduleHandler creates a SplScheduleHandler backed by the given
 // ServiceNow client. accessGuard enforces PermSPLAccess, SupportPortalLite's
 // blanket audience gate; teamScheduleURL is the static URL echoed back in
-// every response (SPL_TEAM_SCHEDULE_URL).
+// every response (TEAM_SCHEDULE_URL).
 func NewSplScheduleHandler(sn splScheduleClient, accessGuard *AccessGuard, teamScheduleURL string) *SplScheduleHandler {
 	return &SplScheduleHandler{servicenow: sn, accessGuard: accessGuard, teamScheduleURL: teamScheduleURL}
 }
