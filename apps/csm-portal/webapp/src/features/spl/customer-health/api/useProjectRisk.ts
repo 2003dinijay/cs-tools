@@ -24,7 +24,7 @@ export function useOpenProjectRisk() {
   return useMutation<ProjectRisk, Error, { projectSysId: string; accountSysId: string; comment: string }>({
     mutationFn: ({ projectSysId, accountSysId, comment }) =>
       backendApi.post<{ accountSysId: string; comment: string }, ProjectRisk>(
-        `/customer-health/projects/${projectSysId}/risk`,
+        `/customer-health/projects/${encodeURIComponent(projectSysId)}/risk`,
         { accountSysId, comment },
       ),
   });
@@ -40,7 +40,7 @@ export function useMarkProjectHealthy() {
   >({
     mutationFn: ({ projectSysId, accountSysId, comment }) =>
       backendApi.post<{ accountSysId: string; comment: string }, unknown>(
-        `/customer-health/projects/${projectSysId}/mark-healthy`,
+        `/customer-health/projects/${encodeURIComponent(projectSysId)}/mark-healthy`,
         { accountSysId, comment },
       ),
   });
@@ -75,6 +75,8 @@ export function useProjectRiskHistory(
     queryKey: ["spl-customer-health-risk-history", projectSysId],
     enabled,
     queryFn: async () =>
-      (await backendApi.get<ProjectRisk[]>(`/customer-health/projects/${projectSysId}/risk-history`)) ?? [],
+      (await backendApi.get<ProjectRisk[]>(
+        `/customer-health/projects/${encodeURIComponent(projectSysId)}/risk-history`,
+      )) ?? [],
   });
 }

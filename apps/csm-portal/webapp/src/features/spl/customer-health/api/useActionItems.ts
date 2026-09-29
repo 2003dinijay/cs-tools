@@ -25,7 +25,9 @@ export function useAccountActionItems(accountId: string | undefined): UseQueryRe
     queryKey: ["spl-customer-health-action-items", accountId],
     enabled: Boolean(accountId),
     queryFn: async () =>
-      (await backendApi.get<RiskActionItem[]>(`/customer-health/accounts/${accountId}/action-items`)) ?? [],
+      (await backendApi.get<RiskActionItem[]>(
+        `/customer-health/accounts/${encodeURIComponent(accountId ?? "")}/action-items`,
+      )) ?? [],
   });
 }
 

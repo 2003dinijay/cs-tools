@@ -253,12 +253,12 @@ export default function SplUsageMetricsPage(): JSX.Element {
     const payload = { deploymentId: activeDepId, startDate: dateFrom, endDate: dateTo };
     fetchProdMetricsStats(
       productIds.map((id) => ({ id, payload })),
-      (id: string) => `/usage-metrics/deployed-products/${id}/metrics/search`,
+      (id: string) => `/usage-metrics/deployed-products/${encodeURIComponent(id)}/metrics/search`,
       false,
     );
     fetchProdUsagesStats(
       productIds.map((id) => ({ id, payload })),
-      (id: string) => `/usage-metrics/deployed-products/${id}/metrics/usage-counts/search`,
+      (id: string) => `/usage-metrics/deployed-products/${encodeURIComponent(id)}/metrics/usage-counts/search`,
       false,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps

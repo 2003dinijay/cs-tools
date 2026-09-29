@@ -29,7 +29,7 @@ export function useAccountHealthDetail(
   return useQuery<AccountDetail | null, Error>({
     queryKey: ["spl-customer-health-account-detail", accountId],
     enabled: Boolean(accountId),
-    queryFn: () => backendApi.get<AccountDetail>(`/customer-health/accounts/${accountId}`),
+    queryFn: () => backendApi.get<AccountDetail>(`/customer-health/accounts/${encodeURIComponent(accountId ?? "")}`),
   });
 }
 
@@ -47,7 +47,7 @@ export function useAccountHealthStatus(
     enabled: Boolean(accountId),
     queryFn: async () =>
       (await backendApi.get<ProjectHealthStatus[]>(
-        `/customer-health/accounts/${accountId}/health-status`,
+        `/customer-health/accounts/${encodeURIComponent(accountId ?? "")}/health-status`,
       )) ?? [],
   });
 }
@@ -69,7 +69,7 @@ export function useInitHealthTracking() {
     mutationFn: async ({ accountId, projectSysIds }) => {
       try {
         await backendApi.post<{ projectSysIds: string[] }, unknown>(
-          `/customer-health/accounts/${accountId}/init-health-tracking`,
+          `/customer-health/accounts/${encodeURIComponent(accountId)}/init-health-tracking`,
           { projectSysIds },
         );
       } catch (err) {
