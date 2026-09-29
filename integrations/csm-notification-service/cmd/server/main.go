@@ -474,15 +474,16 @@ func main() {
 		// because it looks like coverage.
 		roster, err := escalation.ParseRoster(os.Getenv("INCIDENT_ESCALATION_ROSTER"))
 		escalationChannel, channelErr := escalation.ParseChannel(os.Getenv("INCIDENT_ESCALATION_CHANNEL"))
+		startProblem := escalationStartProblem(err != nil, roster.IsEmpty(),
+			os.Getenv("INCIDENT_ESCALATION_RESOLVER") == "team-schedule",
+			os.Getenv("CUSTOMER_ENTITY_BASE_URL") != "")
 		switch {
-		case err != nil:
-			// Not logging err itself: a malformed roster's decode error can
-			// quote the surrounding JSON, which carries real phone numbers.
-			slog.Error("invalid INCIDENT_ESCALATION_ROSTER: failed to parse; incident call escalation is disabled")
+		case startProblem != "":
+			// Not logging a roster decode error itself: it can quote the
+			// surrounding JSON, which carries real phone numbers.
+			slog.Error(startProblem + "; incident call escalation is disabled")
 		case channelErr != nil:
 			slog.Error("invalid INCIDENT_ESCALATION_CHANNEL; incident call escalation is disabled", "err", channelErr)
-		case roster.IsEmpty():
-			slog.Warn("INCIDENT_ESCALATION_ROSTER is not set; incident call escalation is disabled")
 		default:
 			// Same entity-service and same shared OAuth2 app as the SLA
 			// engine's client above — a separate client only because this one
@@ -939,4 +940,27 @@ func deadLetterErrAttrs(err error) []any {
 		return []any{"errKind", "upstream", "status", apiErr.StatusCode}
 	}
 	return []any{"errKind", fmt.Sprintf("%T", err)}
+}
+
+// escalationStartProblem says why the escalation engine must not start, or ""
+// when it can: it needs somebody to resolve rungs from. That is the Team
+// Schedule when INCIDENT_ESCALATION_RESOLVER=team-schedule and entity-service
+// is configured, and the INCIDENT_ESCALATION_ROSTER otherwise -- the roster is
+// only required when it is what the ladder would actually read. A ladder that
+// can never call anyone is worse than none, because it looks like coverage.
+//
+// A roster that is set but does not parse always stops the engine, in either
+// mode: it is a configuration mistake, and starting anyway would hide it.
+func escalationStartProblem(rosterInvalid, rosterEmpty, teamSchedule, entityConfigured bool) string {
+	switch {
+	case rosterInvalid:
+		return "invalid INCIDENT_ESCALATION_ROSTER: failed to parse"
+	case teamSchedule && entityConfigured:
+		return ""
+	case teamSchedule && rosterEmpty:
+		return "INCIDENT_ESCALATION_RESOLVER=team-schedule needs CUSTOMER_ENTITY_BASE_URL, and there is no INCIDENT_ESCALATION_ROSTER to fall back to"
+	case rosterEmpty:
+		return "INCIDENT_ESCALATION_ROSTER is not set"
+	}
+	return ""
 }

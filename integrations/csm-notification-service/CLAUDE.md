@@ -266,9 +266,13 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   the root.
 
 **Wiring** (`cmd/server/main.go`): inside the Redis block, started only when
-`INCIDENT_ESCALATION_ROSTER` parses and is non-empty — a ladder that can
-never call anyone is worse than an absent one, because it looks like
-coverage. Shares `CALL_SENDING_ENABLED` with the dispatcher's call. Startup
+the ladder has somebody to resolve rungs from (`escalationStartProblem`): the
+Team Schedule, with `INCIDENT_ESCALATION_RESOLVER=team-schedule` and
+`CUSTOMER_ENTITY_BASE_URL` set, or else a non-empty
+`INCIDENT_ESCALATION_ROSTER` — a ladder that can never call anyone is worse
+than an absent one, because it looks like coverage. The roster is required
+only when it is what the ladder reads (it used to be required in both modes);
+one that is set but does not parse stops the engine either way. Shares `CALL_SENDING_ENABLED` with the dispatcher's call. Startup
 warns when `INCIDENT_DEFAULT_CALL_TO` is also set: the dispatcher's single
 immediate call predates the ladder and is **not** in the specification (its
 initial reaction is the Chat alert and an email); unset it once the ladder
