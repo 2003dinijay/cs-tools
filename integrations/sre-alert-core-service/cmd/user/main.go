@@ -96,6 +96,9 @@ func runCreate(repo *auth.UserRepo, args []string) {
 	if *username == "" {
 		log.Fatal("user create: -username is required")
 	}
+	if *ttl < 0 {
+		log.Fatal("user create: -ttl must not be negative")
+	}
 	if *ttl > 0 && *clearExpiry {
 		log.Fatal("user create: -ttl and -clear-expiry are mutually exclusive")
 	}

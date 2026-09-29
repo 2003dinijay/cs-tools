@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS alertintegration.processor_lease (
   AND cosmosdb_cell_level_timestamp_tombstones = true
   AND cosmosdb_cell_level_timetolive = true;
 
--- Internal service accounts (e.g. webhook-integration-user) that authenticate via Authorization: Bearer <username>.<secret>.
+-- Internal service accounts (e.g. webhook-integration-user) that authenticate via Authorization: Bearer base64("username:secret") or Basic auth.
 CREATE TABLE IF NOT EXISTS alertintegration.integration_users (
   username          text PRIMARY KEY,
   id                uuid,      -- stable identity id, generated once at creation

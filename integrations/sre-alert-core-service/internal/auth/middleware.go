@@ -27,6 +27,9 @@ import (
 
 const bearerPrefix = "Bearer "
 
+// dummySalt is used only to burn CPU time on an unknown-user auth attempt, never for real secret storage.
+var dummySalt = []byte("integration-users-timing-salt!!")
+
 // RequireAuth requires a valid Authorization header (Bearer base64("<username>:<secret>"), or Basic i.e. -u) naming an enabled integration_users row; every failure is a generic 401, and only the username is logged, never the secret.
 func RequireAuth(repo *UserRepo, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -44,6 +47,8 @@ func RequireAuth(repo *UserRepo, logger *slog.Logger) func(http.Handler) http.Ha
 					logger.Error("auth: lookup failed", "username", username, "error", err)
 				} else {
 					logger.Warn("auth: unknown user", "username", username)
+					// Burn comparable time to a real VerifySecret call so response timing can't be used to enumerate usernames.
+					HashSecret(secret, dummySalt, Iterations)
 				}
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return

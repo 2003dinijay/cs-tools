@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package auth manages internal service-account users (e.g. webhook-integration-user) authenticated via Authorization: Bearer <username>.<secret>, with secrets stored as PBKDF2-SHA256 hashes.
+// Package auth manages internal service-account users (e.g. webhook-integration-user) authenticated via Authorization: Bearer base64("<username>:<secret>") or Basic auth, with secrets stored as PBKDF2-SHA256 hashes.
 package auth
 
 import (
@@ -29,8 +29,8 @@ import (
 	"golang.org/x/crypto/pbkdf2"
 )
 
-// Iterations is the PBKDF2 round count used when provisioning new users.
-const Iterations = 10000
+// Iterations is the PBKDF2 round count used when provisioning new users. 600000 matches OWASP's current PBKDF2-HMAC-SHA256 recommendation; existing rows keep whatever iteration count they were created with (stored per-row), so raising this doesn't invalidate them.
+const Iterations = 600000
 
 // KeyLen is the derived key length in bytes.
 const KeyLen = 32
