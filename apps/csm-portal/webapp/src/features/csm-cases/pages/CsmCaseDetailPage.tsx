@@ -2741,11 +2741,15 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   feedback={caseFeedback ?? []}
                   callRequests={callRequests ?? []}
                   onDownloadAttachment={canDownloadAttachment ? onDownloadAttachment : undefined}
-                  preview={{
-                    onGetPreviewContent: getAttachmentPreviewContent,
-                    previewTarget,
-                    onPreviewTargetChange: setPreviewTarget,
-                  }}
+                  preview={
+                    canDownloadAttachment
+                      ? {
+                          onGetPreviewContent: getAttachmentPreviewContent,
+                          previewTarget,
+                          onPreviewTargetChange: setPreviewTarget,
+                        }
+                      : undefined
+                  }
                   onEditComment={onEditComment}
                   onDeleteComment={onDeleteComment}
                 />
@@ -3004,11 +3008,15 @@ export default function CsmCaseDetailPage(): JSX.Element {
             onDownload={canDownloadAttachment ? onDownloadAttachment : undefined}
             onDelete={canWrite ? setPendingDelete : undefined}
             deletingId={deleteAttachment.isPending ? pendingDelete?.id : null}
-            preview={{
-              onGetPreviewContent: getAttachmentPreviewContent,
-              previewTarget,
-              onPreviewTargetChange: setPreviewTarget,
-            }}
+            preview={
+              canDownloadAttachment
+                ? {
+                    onGetPreviewContent: getAttachmentPreviewContent,
+                    previewTarget,
+                    onPreviewTargetChange: setPreviewTarget,
+                  }
+                : undefined
+            }
           />
         </Box>
       )}

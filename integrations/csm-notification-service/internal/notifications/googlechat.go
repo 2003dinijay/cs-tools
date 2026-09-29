@@ -69,10 +69,38 @@ type GoogleChatSpace struct {
 // landing somewhere instead of being dropped/retried/dead-lettered).
 const defaultChatSpaceProduct = "default"
 
+// GoogleChatAudienceSpace maps a single audience key (e.g. a CRE team name
+// like "Castor", or one of the fixed standing audiences — "Incident
+// Monitor"/"Onboarding"/"Americas"/"Evaluation") to the Google Chat space
+// that should receive case.created/case.acknowledged/case.severity_changed
+// alerts for it. See dispatch.resolveChatAudiences for how an audience key
+// is derived from a case's own Team/onboarding/evaluation facts — this
+// type only maps an already-resolved key to where it's reachable.
+type GoogleChatAudienceSpace struct {
+	// Audience identifies the key this space is dedicated to. Matched
+	// whitespace-trimmed but *case-sensitively* — unlike GoogleChatSpace's
+	// Product, an audience key is either a real team's proper-cased display
+	// name (entity-service's own Team value, verbatim) or one of this
+	// service's own fixed constants, neither of which benefits from
+	// case-folding the way a short lowercase product code does, and
+	// case-folding two distinct real team names into one by accident would
+	// be a worse failure mode than requiring an exact match.
+	Audience string `json:"audience"`
+	// WebhookURL is that space's incoming webhook URL — see
+	// GoogleChatSpace.WebhookURL's own doc comment.
+	WebhookURL string `json:"webhookUrl"`
+}
+
 // GoogleChatConfig holds the configuration for the Google Chat notification
-// channel: one space per product, since each WSO2 product has its own space.
+// channel: one space per product (incident.created's own routing — see
+// GoogleChatSpace), plus a separate one space per audience (case.created's
+// own routing — see GoogleChatAudienceSpace). The two are deliberately
+// distinct config lists: an incident and a case route on unrelated
+// concepts (a product/deployment vs. a CS team/account), so a single
+// shared key space would conflate two independent routing decisions.
 type GoogleChatConfig struct {
-	Spaces []GoogleChatSpace
+	Spaces         []GoogleChatSpace
+	AudienceSpaces []GoogleChatAudienceSpace
 }
 
 // GoogleChatClient posts messages to a Google Chat space via an incoming
@@ -85,12 +113,14 @@ type GoogleChatConfig struct {
 // for a given deployment) — a missing or unmatched product only surfaces as
 // an error the first time SendIncidentAlert is called for it.
 type GoogleChatClient struct {
-	http                 *http.Client
-	webhookURLsByProduct map[string]string
+	http                  *http.Client
+	webhookURLsByProduct  map[string]string
+	webhookURLsByAudience map[string]string
 }
 
 // NewGoogleChatClient constructs a GoogleChatClient that routes alerts to the
-// webhook configured for each product in cfg.Spaces.
+// webhook configured for each product in cfg.Spaces, and case.created alerts
+// to the webhook configured for each audience in cfg.AudienceSpaces.
 func NewGoogleChatClient(cfg GoogleChatConfig) *GoogleChatClient {
 	webhookURLsByProduct := make(map[string]string, len(cfg.Spaces))
 	for _, space := range cfg.Spaces {
@@ -108,15 +138,41 @@ func NewGoogleChatClient(cfg GoogleChatConfig) *GoogleChatClient {
 		}
 		webhookURLsByProduct[product] = space.WebhookURL
 	}
+	webhookURLsByAudience := make(map[string]string, len(cfg.AudienceSpaces))
+	for _, space := range cfg.AudienceSpaces {
+		audience := strings.TrimSpace(space.Audience)
+		if audience == "" || strings.TrimSpace(space.WebhookURL) == "" {
+			continue
+		}
+		if _, exists := webhookURLsByAudience[audience]; exists {
+			webhookURLsByAudience[audience] = ""
+			continue
+		}
+		webhookURLsByAudience[audience] = space.WebhookURL
+	}
 	return &GoogleChatClient{
-		http:                 &http.Client{Timeout: 10 * time.Second},
-		webhookURLsByProduct: webhookURLsByProduct,
+		http:                  &http.Client{Timeout: 10 * time.Second},
+		webhookURLsByProduct:  webhookURLsByProduct,
+		webhookURLsByAudience: webhookURLsByAudience,
 	}
 }
 
 // normalizeProduct makes product matching case- and whitespace-insensitive.
 func normalizeProduct(product string) string {
 	return strings.ToLower(strings.TrimSpace(product))
+}
+
+// HasAudienceSpace reports whether audience has a real, configured Chat
+// webhook — used by dispatch.resolveChatAudiences to decide whether a
+// case's own CreTeam name is a recognized routing target (add it as its own
+// audience) or not (fall back to the shared "Incident Monitor" audience
+// instead). Deliberately a separate, exported query rather than folding
+// this into sendCardToAudience's own resolution: the caller needs the
+// answer *before* building the final audience list, not just when it's
+// time to send.
+func (c *GoogleChatClient) HasAudienceSpace(audience string) bool {
+	url, ok := c.webhookURLsByAudience[strings.TrimSpace(audience)]
+	return ok && url != ""
 }
 
 // redactURLError strips the request URL — which carries the webhook's secret
@@ -339,7 +395,12 @@ func teamPart(team string) string {
 // team/codename line above the header —
 // an earlier version of this alert had one, discarded per explicit
 // product decision; the case reference now leads instead.
-func (c *GoogleChatClient) SendCaseCreatedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
+// Routes on audience, not product -- case.created no longer has a
+// per-product Chat space; dispatch.resolveChatAudiences resolves a case's
+// own audience (its CreTeam, plus Onboarding/Americas/Evaluation as they
+// apply) before this is ever called. productName is still shown as a
+// display line in the card body; it plays no routing role here any more.
+func (c *GoogleChatClient) SendCaseCreatedAlert(ctx context.Context, audience, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
 	if caseNumber == "" {
 		return fmt.Errorf("notifications: caseNumber is required")
 	}
@@ -367,7 +428,7 @@ func (c *GoogleChatClient) SendCaseCreatedAlert(ctx context.Context, product, se
 		},
 		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
 	}
-	return c.sendCard(ctx, product, msg)
+	return c.sendCardToAudience(ctx, audience, msg)
 }
 
 // SendSecurityReportAnalysisAlert posts a card message announcing a newly
@@ -417,24 +478,29 @@ func (c *GoogleChatClient) SendSecurityReportAnalysisAlert(ctx context.Context, 
 }
 
 // SendCaseAcknowledgedAlert posts a three-line card message announcing
-// that a case was acknowledged, to the same Google Chat space as its
-// case.created alert — no header, no button, and deliberately no leading
-// icon/glyph on any line (see SendCaseCreatedAlert's own doc comment for
-// why): severity alone on its own line; "<caseNumber> · <wso2CaseID>" on
-// the next — the same "·" separator chatHeaderCaseRef uses for the case
-// reference on the other two cards, for a consistent look; then
-// "Ack by <name> · View case" on the final line. caseNumber is plain
-// text, not a link — an earlier version linked it directly, which read
-// inconsistently next to SendCaseCreatedAlert's/SendSeverityChangedAlert's
-// own explicit "View case" link text; "View case" now plays that same
-// role here too, this card's only navigation affordance
-// (there's no genuine action to take from an acknowledgment — see
-// SendCaseCreatedAlert's own doc comment for the fuller link-vs-button
-// reasoning). wso2CaseID is dropped from its line entirely when the
-// publisher didn't send one. Unlike SendCaseCreatedAlert/
-// SendSeverityChangedAlert, this card deliberately doesn't show team at
-// all — kept to exactly these three lines per explicit product direction.
-func (c *GoogleChatClient) SendCaseAcknowledgedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
+// that a case was acknowledged, to the same Chat audience space(s) as its
+// case.created alert — routes on audience, not product, same as
+// SendCaseCreatedAlert (see that function's own doc comment); the caller
+// (dispatch.handleCaseAcknowledged) resolves the same audience list
+// case.created did and posts once per audience, so this reply threads
+// under every one of that alert's own messages. No header, no button, and
+// deliberately no leading icon/glyph on any line (see SendCaseCreatedAlert's
+// own doc comment for why): severity alone on its own line;
+// "<caseNumber> · <wso2CaseID>" on the next — the same "·" separator
+// chatHeaderCaseRef uses for the case reference on the other two cards,
+// for a consistent look; then "Ack by <name> · View case" on the final
+// line. caseNumber is plain text, not a link — an earlier version linked
+// it directly, which read inconsistently next to
+// SendCaseCreatedAlert's/SendSeverityChangedAlert's own explicit
+// "View case" link text; "View case" now plays that same role here too,
+// this card's only navigation affordance (there's no genuine action to
+// take from an acknowledgment — see SendCaseCreatedAlert's own doc comment
+// for the fuller link-vs-button reasoning). wso2CaseID is dropped from its
+// line entirely when the publisher didn't send one. Unlike
+// SendCaseCreatedAlert/SendSeverityChangedAlert, this card deliberately
+// doesn't show team at all — kept to exactly these three lines per
+// explicit product direction.
+func (c *GoogleChatClient) SendCaseAcknowledgedAlert(ctx context.Context, audience, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
 	if caseNumber == "" || acknowledgerName == "" {
 		return fmt.Errorf("notifications: caseNumber and acknowledgerName are required")
 	}
@@ -459,27 +525,30 @@ func (c *GoogleChatClient) SendCaseAcknowledgedAlert(ctx context.Context, produc
 		},
 		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
 	}
-	return c.sendCard(ctx, product, msg)
+	return c.sendCardToAudience(ctx, audience, msg)
 }
 
 // SendSeverityChangedAlert posts a card message announcing a case's
-// severity changed, to the same Google Chat space as its case.created
-// alert. The case reference leads the header, same as every other case.*
-// card; the subtitle is title (the case subject) alone, unstyled — team
-// is not part of the header (see SendCaseCreatedAlert's own doc comment
-// for why: header fields can't carry team's own color, so it leads the
-// body as its own first line instead — the next most prominent position
-// — omitted entirely when empty). The rest of the body is up to two more
-// plain-text lines, deliberately with no leading icon/glyph on either
-// (see SendCaseCreatedAlert's own doc comment for why): old severity and
-// new severity — each colored by its own resolved color, not just the
-// new one, so a severity reads the same way here as it does on the other
-// two cards — separated by an arrow, on their own line; then a visible
-// "View case" link alone on the next. No button: there's no genuine
-// action to take from this card, only navigation, which the link already
-// covers — see SendCaseCreatedAlert's own doc comment for the fuller
-// button-vs-link reasoning.
-func (c *GoogleChatClient) SendSeverityChangedAlert(ctx context.Context, product, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error {
+// severity changed, to the same Chat audience space(s) as its case.created
+// alert — routes on audience, not product, same as SendCaseAcknowledgedAlert
+// above; the caller (dispatch.handleSeverityChanged) resolves the same
+// audience list case.created did and posts once per audience. The case
+// reference leads the header, same as every other case.* card; the
+// subtitle is title (the case subject) alone, unstyled — team is not part
+// of the header (see SendCaseCreatedAlert's own doc comment for why:
+// header fields can't carry team's own color, so it leads the body as its
+// own first line instead — the next most prominent position — omitted
+// entirely when empty). The rest of the body is up to two more plain-text
+// lines, deliberately with no leading icon/glyph on either (see
+// SendCaseCreatedAlert's own doc comment for why): old severity and new
+// severity — each colored by its own resolved color, not just the new one,
+// so a severity reads the same way here as it does on the other two cards
+// — separated by an arrow, on their own line; then a visible "View case"
+// link alone on the next. No button: there's no genuine action to take
+// from this card, only navigation, which the link already covers — see
+// SendCaseCreatedAlert's own doc comment for the fuller button-vs-link
+// reasoning.
+func (c *GoogleChatClient) SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error {
 	if caseNumber == "" {
 		return fmt.Errorf("notifications: caseNumber is required")
 	}
@@ -506,7 +575,7 @@ func (c *GoogleChatClient) SendSeverityChangedAlert(ctx context.Context, product
 			},
 		},
 	}
-	return c.sendCard(ctx, product, msg)
+	return c.sendCardToAudience(ctx, audience, msg)
 }
 
 // sendCard marshals msg and posts it to the webhook configured for
@@ -522,7 +591,30 @@ func (c *GoogleChatClient) sendCard(ctx context.Context, product string, msg cha
 		slog.WarnContext(ctx, "notifications: no google chat space configured for product; falling back to the default space", "product", product)
 		webhookURL = fallbackURL
 	}
+	return c.postCard(ctx, webhookURL, msg)
+}
 
+// sendCardToAudience posts msg to the webhook configured for audience —
+// used by every audience-routed case.* card (SendCaseCreatedAlert,
+// SendCaseAcknowledgedAlert, SendSeverityChangedAlert), entirely separate
+// from sendCard's product-keyed lookup above. An audience with no
+// configured webhook is treated as a known configuration gap, not a
+// failure: logged at warn and reported as a no-op success — a
+// not-yet-onboarded team must not block or retry the whole delivery
+// (email/other audiences still go out regardless).
+func (c *GoogleChatClient) sendCardToAudience(ctx context.Context, audience string, msg chatCardMessage) error {
+	webhookURL, ok := c.webhookURLsByAudience[strings.TrimSpace(audience)]
+	if !ok || webhookURL == "" {
+		slog.WarnContext(ctx, "notifications: no google chat space configured for audience; alert was not posted to it", "audience", audience)
+		return nil
+	}
+	return c.postCard(ctx, webhookURL, msg)
+}
+
+// postCard marshals msg and posts it to webhookURL — the actual HTTP
+// mechanics shared by sendCard/sendCardToAudience once each has resolved
+// its own webhook URL.
+func (c *GoogleChatClient) postCard(ctx context.Context, webhookURL string, msg chatCardMessage) error {
 	// A threaded message needs chatThreadReplyOption as a query parameter,
 	// not just msg.Thread's own body field -- see that constant's own doc
 	// comment for why the webhook endpoint otherwise ignores threadKey.

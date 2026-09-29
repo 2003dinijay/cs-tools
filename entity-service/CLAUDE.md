@@ -532,6 +532,31 @@ easy to wire up for real once both exist.
   same four non-`"case"` types (an exclude-list keyed on
   `CaseCreatedPayload.CaseType`) — those types notify by email only, per
   the same explicit request. See that service's own `CLAUDE.md`.
+
+  **`CaseCreatedPayload` also carries two facts purely for
+  `csm-notification-service`'s own Chat-audience routing**, resolved via
+  `CaseService.ProjectAudienceFacts(ctx, projectID)`:
+  `ProjectOnboardingStatus` (the project's raw `onboarding_status` enum
+  label, e.g. `"IN_PROGRESS"`, `""` when the case has no project or the
+  column is unset) and `IsEvaluationAccount` (true when the project's
+  `project_type_id` matches the fixed Evaluation Subscription type).
+  Neither is required for publish — resolved best-effort, a lookup failure
+  is warn-logged and the publish continues with both left at their zero
+  value, same "can't confirm, don't block" posture as every other
+  Postgres-only enrichment here. `ProjectAudienceFacts` is Postgres-only
+  (`project.onboarding_status`/`project_type_id` have no ServiceNow
+  equivalent); on `snCaseService` it delegates to `pgFallback` when
+  configured, else returns `"", false, nil`. Which raw onboarding-status
+  values count as "still onboarding," and what happens with either flag,
+  is decided entirely in `csm-notification-service` (`dispatch.
+  onboardingChatAudienceStatuses`/`resolveChatAudiences`) — this service
+  only publishes the raw facts, never the routing policy. `Team` also
+  gained a second role alongside its existing display purpose: it's now
+  also `csm-notification-service`'s Chat-audience routing key for
+  `case.created`/`case.acknowledged`/`case.severity_changed` (a team with
+  no configured space of its own falls back to the standing "Incident
+  Monitor" audience). See `csm-notification-service`'s own `CLAUDE.md` for
+  the full audience-resolution rules.
 - **`snIncidentService.CreateIncident`** publishes `incident.created` via
   `publishIncidentCreated`, called the same way. No enrichment round trip is
   needed here: `req.Subject`/`req.AdditionalComments` already carry
@@ -667,17 +692,18 @@ service's own `CLAUDE.md`, `dispatch.subjectLine`).
   exclusive per request, so this and the status/assignee blocks never both
   fire for the same call). Unlike `case.acknowledged`, this has both an
   email reaction (`Recipients`, the same watch-list-emails audience as
-  `case.status_changed`/`case.assigned`) and a Chat alert (`Product`, same
-  `caseProductName(before)` reasoning as `publishCaseCreated`/
-  `publishCaseAcknowledged`) — `csm-notification-service`'s `dispatch`
-  package fans this one payload out to both channels. `OldSeverity` comes
-  from the pre-PATCH `GetCaseByID` enrichment (`before.Severity`);
-  `NewSeverity` from the PATCH response's own echoed severity
-  (`resp.Case.Severity`, only set when `snResp.Case.Severity != nil`) — no
-  second `GetCaseByID` needed the way `publishCaseAcknowledged` needs one,
-  since `UpdateCase`'s existing pre-PATCH enrichment already supplies
-  everything this payload needs (`CaseNumber`/`WSO2CaseID`/`CaseTitle`/
-  `Product`/`Recipients` all come from that same `before` `CaseView`). Same
+  `case.status_changed`/`case.assigned`) and a Chat alert, audience-routed
+  by `Team` (same `caseTeamName(before)` reasoning as `publishCaseCreated`/
+  `publishCaseAcknowledged` — see below) — `csm-notification-service`'s
+  `dispatch` package fans this one payload out to both channels.
+  `OldSeverity` comes from the pre-PATCH `GetCaseByID` enrichment
+  (`before.Severity`); `NewSeverity` from the PATCH response's own echoed
+  severity (`resp.Case.Severity`, only set when `snResp.Case.Severity !=
+  nil`) — no second `GetCaseByID` needed the way `publishCaseAcknowledged`
+  needs one, since `UpdateCase`'s existing pre-PATCH enrichment already
+  supplies everything this payload needs (`CaseNumber`/`WSO2CaseID`/
+  `CaseTitle`/`Team`/`Recipients` all come from that same `before`
+  `CaseView`). Same
   "empty `Recipients` list skips the whole publish" precedent as
   `publishCaseCreated` — including the Chat alert, since this event has no
   Chat-only path the way `case.acknowledged` does; a severity change with
@@ -685,25 +711,26 @@ service's own `CLAUDE.md`, `dispatch.subjectLine`).
 
 `caseProductName(cv)` (a small shared helper) resolves
 `cv.DeployedProductDetails.Product.Name` (e.g. `"WSO2 API Manager"`, `""`
-when the case has no deployed product) — used by `publishCaseCreated`,
-`publishCaseAcknowledged`, and `publishSeverityChanged` to populate their
-payloads' `Product` field.
-`CaseCreatedPayload.Product` was previously never populated at all ("this
-service has no data source for it yet"); now it doubles as both a display
-value in `csm-notification-service`'s redesigned `case.created` Chat card
-and that service's own Chat-space routing key (`GoogleChatConfig.Spaces`
-matches on it, falling back to `DEFAULT_CHAT_PRODUCT` when empty) — an
-operator's `GOOGLE_CHAT_SPACES` config needs a `Product` entry matching
-each deployed product's actual display name for per-product routing to
-take effect; until then, every case routes to `DEFAULT_CHAT_PRODUCT`'s
-space same as before this field was populated.
+when the case has no deployed product) — used only by `publishCaseCreated`
+now, to populate `CaseCreatedPayload.Product`, a purely-display value in
+`csm-notification-service`'s `case.created` Chat card (it plays no routing
+role there — `case.created` is audience-routed by `Team`, not
+product-routed; only `incident.created` still routes on product, via
+`GOOGLE_CHAT_SPACES`/`DEFAULT_CHAT_PRODUCT`). `publishCaseAcknowledged`/
+`publishSeverityChanged` no longer populate a `Product` field at all —
+`CaseAcknowledgedPayload`/`SeverityChangedPayload` dropped it once both
+moved to `Team`-based Chat-audience routing (see below).
 
 `caseTeamName(cv)` (same shared-helper pattern) resolves
 `cv.AccountDetails.CreTeam.Name` (e.g. `"Team Nova"`, `""` when the case
-has no account or the account has no CRE team) — used by the same three
-publishers to populate their payloads' `Team` field, a purely-display
-value in `csm-notification-service`'s Chat cards (unlike `Product`, it
-plays no role in routing). `cv.AccountDetails` (and its `CreTeam`) is
+has no account or the account has no CRE team) — used by all three
+publishers (`publishCaseCreated`/`publishCaseAcknowledged`/
+`publishSeverityChanged`) to populate their payloads' `Team` field. `Team`
+is both a display value in `csm-notification-service`'s Chat cards *and*
+that service's own Chat-audience routing key for all three of those event
+types (a team with no configured `GOOGLE_CHAT_AUDIENCE_SPACES` entry of
+its own falls back to the shared "Incident Monitor" audience — see that
+service's own `CLAUDE.md`). `cv.AccountDetails` (and its `CreTeam`) is
 resolved by `GetCaseByID` from the case's own embedded ServiceNow account
 object at no extra request cost — but as of this field's introduction,
 that embedded object's `creTeam`/`sreTeam` are documented in
@@ -712,21 +739,29 @@ the ServiceNow integration, even though the standalone accounts endpoint
 does return them. `Team` may therefore come back empty in practice until
 that catches up — not a bug in this service if so.
 
-**Known, accepted inconsistency**: `publishCaseAcknowledged` re-reads
-`caseProductName(cv)` from a fresh `GetCaseByID` at acknowledge time,
-rather than reusing whatever product `publishCaseCreated` read at create
-time — so if a case's deployed product genuinely changes between creation
-and acknowledgement, the two Chat alerts can route to different spaces.
-This service has no persisted state for a case at all (ServiceNow is the
-sole source of truth, no local DB row per case — the old `sla_clocks` table
-used to be the one exception, removed; see "SLA status" below), so "preserving the
-creation-time product" would mean adding new durable state purely to pin a
-routing decision, not a same-service code change. It's also arguably not
-even the more correct behavior: if a case's product association is
-corrected after creation, routing its acknowledgement to the *current*
-owning team's space is arguably more useful than a stale one. Left as
-current-product routing; revisit only if the same-space guarantee turns
-out to matter in practice.
+**Known, accepted inconsistency**: `publishCaseAcknowledged`/
+`publishSeverityChanged` each re-read `caseTeamName(cv)` (and re-resolve
+`ProjectAudienceFacts`) from a fresh `GetCaseByID` at their own event time,
+rather than reusing whatever facts `publishCaseCreated` read at create
+time — so if a case's team/onboarding status/evaluation flag genuinely
+changes between creation and a later event,
+`csm-notification-service`'s own `resolveChatAudiences` can resolve a
+different audience list for the follow-up than it did for `case.created`
+(see that service's own `CLAUDE.md` for the consequence — a follow-up sent
+to an audience `case.created` never reached posts as a fresh message
+there instead of a threaded reply). This service has no persisted state
+for a case at all (ServiceNow is the sole source of truth, no local DB row
+per case — the old `sla_clocks` table used to be the one exception,
+removed; see "SLA status" below), so "preserving the creation-time facts"
+would mean adding new durable state purely to pin a routing decision, not
+a same-service code change. It's also arguably not even the more correct
+behavior: if a case's team assignment is corrected after creation, routing
+a later event to the *current* owning team's space is arguably more
+useful than a stale one — and the same reasoning applies even more
+strongly to time-of-day-driven audiences (a coverage-window audience
+describes who's on duty *right now*, not who was on duty when the case was
+first created). Left as fresh-facts-per-event routing; revisit only if the
+same-space guarantee turns out to matter in practice.
 
 **`caseService.UpdateCase` (the Postgres data source) supports
 `Acknowledge`/`AssigneeEmail` too** — `caseService.acknowledgeCase`/
@@ -1827,11 +1862,111 @@ tables exist in this schema at all); `Type`
 (`domain.ChangeRequestType` — standard/normal/emergency/... — has **no**
 relationship to `change_request.change_request_type`, whose real enum
 values are `INFRA`/`GENERAL`, a completely different classification, not a
-subset of the domain enum); `ApprovedBy`/`ApprovedOn`/`LegalNextStates` on
-`domain.ChangeRequest` (no approver/date columns for the first two;
-`LegalNextStates` is a ServiceNow workflow-engine computation with nothing
-to derive it from here). `Duration` (`cr.calendar_duration`, an `INTERVAL`)
-is also left unset — no confirmed display format to render it in.
+subset of the domain enum); `ApprovedBy`/`ApprovedOn` on
+`domain.ChangeRequest` (no approver/date columns exist). `Duration`
+(`cr.calendar_duration`, an `INTERVAL`) is also left unset — no confirmed
+display format to render it in.
+
+**`LegalNextStates` used to be on the list above too ("a ServiceNow
+workflow-engine computation with nothing to derive it from here") — it no
+longer is.** Its absence on this data source was reported live: a change
+request could be created (`DATA_SOURCE=postgres-servicenow-dual-write` is
+ServiceNow-first on create), but the CSM Portal's own lifecycle action bar
+(`ChangeRequestActionBar.tsx`) renders nothing at all when
+`legalNextStates` is empty — the reported symptom was "create works, but no
+way to promote it," for every change request on this data source, not just
+one. `changeRequestForwardNextStates`/`legalChangeRequestNextStates`
+(`change_request_repo.go`) now compute it: a forward-only graph
+(New→Assess→Authorize→{Scheduled, Customer Approval}→Implement→
+Review→{Closed, Customer Review}→Closed). Every edge except
+`CustomerApproval`'s and `CustomerReview`'s own outgoing move (see below)
+was read directly off a real change request sitting in that exact state
+on the live ServiceNow instance (its own `state` field's dropdown, which
+ServiceNow itself only ever populates with the choices it currently
+considers legal) — confirmed, not guessed. `"canceled"` is additionally
+offered alongside the forward move(s) from every non-terminal state, since
+the Cancel Change action was observed available on every reachable state.
+`Rollback`/`Closed`/`Canceled`
+return `nil` (terminal, no legal forward move), matching ServiceNow's own
+answer for a record with none.
+
+**Authorize and Review each have two confirmed forward moves, not one —
+found the hard way.** A first revision of this map picked a single "common
+case" edge for each (Authorize→Scheduled, Review→Closed), reasoning that
+`domain.ChangeRequest.HasCustomerApproved`/`HasCustomerReviewed`
+(`change_request.customer_approval`/`customer_review`) record whether the
+customer **has already** signed off, not whether a given change request
+**requires** that gate, so they can't be used to decide the branch — true,
+but it was resting on an unverified assumption that one branch was simply
+the common case. Checking several more real records directly disproved
+that: two Authorize-state records with no other visible difference in the
+fields this schema exposes (same type, both approval/review booleans
+false) had dropdowns offering `Scheduled` on one and `Customer Approval` on
+the other — and the identical split was found for Review (`Closed` on one
+record, `Customer Review` on another, again with no discriminating field
+found). Whatever ServiceNow actually keys this decision on is not visible
+anywhere in this schema, so both confirmed branches are now offered for
+each of these two states rather than guessing which one applies to a given
+record. This means an engineer can be offered an action ServiceNow's own
+workflow would consider illegal for that specific record — an accepted
+risk here, matching `PatchChangeRequest`'s own pre-existing lack of a
+legal-transition check on this data source (any enum value is accepted and
+written directly; this map doesn't change that) — the offered action still
+gets ServiceNow's own real rejection reason back on the attempt
+(`mapUpstreamError` surfaces it) rather than silently succeeding wrong.
+Revisit if the real gating field is ever identified.
+
+**This risk only actually reaches an engineer for the Review branch.** The
+webapp's own `ChangeRequestActionBar.tsx` hardcodes `"customer_approval"`
+into its `NEVER_OFFERED_TARGETS` list — reached only by ServiceNow's own
+approval process, never human-enterable there, per that list's own doc
+comment — and filters it out unconditionally regardless of what
+`legalNextStates` returns, so Authorize's `Customer Approval` entry is
+accurate data that never becomes a clickable button. `"customer_review"`
+carries no such exclusion, so Review's `Customer Review` entry does render
+as a real, selectable action.
+
+`CustomerApproval`/`CustomerReview`'s own **outgoing** edges (what a change
+request already sitting in one of those two states advances to) are a
+separate, smaller gap: no real change request was found sitting in either
+state despite specifically checking, so both are inferred by sequence
+position (`CustomerApproval` precedes `Scheduled`; `CustomerReview`
+precedes `Closed`) rather than confirmed live.
+
+**Change request creation now always sets `state = 'NEW'` explicitly** —
+`createChangeRequestFromServiceNowQuery` previously left `change_request.state`
+unset entirely (the column has no `NOT NULL`/`DEFAULT`), reasoned at the
+time as: ServiceNow's own create response carries no state field to
+confirm what its workflow engine actually assigned, so writing
+`req.State` straight through risked recording a value ServiceNow silently
+overrode. That reasoning was sound but produced a worse bug, reported
+live: a freshly created change request had `state = NULL`, and
+`legalChangeRequestNextStates(nil)` returns `nil` — so a brand new change
+request offered no promote action whatsoever, not even the one every
+change request always starts with. The org's own Change Management
+process flow resolves the original uncertainty directly: every change
+request begins at New unconditionally, with no branch or caller input that
+changes that — so `'NEW'` is not a guess at what ServiceNow decided, it is
+the one value ServiceNow's real workflow always assigns on create.
+`CreateChangeRequestRequest.State` is still accepted on the wire (it's
+shared with `PatchChangeRequestRequest`) but has no effect at creation and
+is intentionally ignored by this insert.
+
+**The New→Assess promote action had a second, related bug**: it sends
+`{requestApproval: true}` rather than `{state: "assess"}` (see
+`ChangeRequestActionBar.tsx`/`buildTransitionPatch` on the frontend), and
+`PatchChangeRequest`'s handling of `RequestApproval` only ever recorded
+`change_request.approval = 'REQUESTED'` — it never advanced `state`. Before
+`LegalNextStates` was populated at all, this was unreachable (the button
+never appeared for any state, New included), so the gap was invisible.
+Populating `LegalNextStates` made it reachable for the first time, and it
+became a real, visible dead end: clicking "Request Approval" got a
+successful response, but the record's own state (and therefore its next
+legal action) never left New, so the same button just reappeared.
+`PatchChangeRequest` now also sets `state = 'ASSESS'` when
+`RequestApproval` is true and `req.State` wasn't itself separately
+provided (the frontend only ever sends one or the other, never both, so
+this can't double-write the column).
 
 **Linking happens entirely through `PATCH`, never at creation** —
 `CreateChangeRequestRequest` has no project/case field at all;

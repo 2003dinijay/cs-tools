@@ -44,6 +44,9 @@ type entityScheduleClient interface {
 	GetMyLeadTeams(ctx context.Context) ([]byte, error)
 	ApplyScheduleRange(ctx context.Context, body []byte) ([]byte, error)
 	ApplyScheduleAbsence(ctx context.Context, body []byte) ([]byte, error)
+	DeleteScheduleAbsence(ctx context.Context, id, note string) ([]byte, error)
+	CreateScheduleAbsenceKind(ctx context.Context, body []byte) ([]byte, error)
+	DeleteScheduleAbsenceKind(ctx context.Context, code string) ([]byte, error)
 	GetScheduleEditMarkers(ctx context.Context, from, to string) ([]byte, error)
 }
 
@@ -284,6 +287,60 @@ func (h *ScheduleHandler) ApplyScheduleAbsence(w http.ResponseWriter, r *http.Re
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// DeleteScheduleAbsence handles DELETE /team-schedule/absences/{id} -- the
+// picker removing a whole span of leave or allocation in one click.
+func (h *ScheduleHandler) DeleteScheduleAbsence(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	if _, err := h.entity.DeleteScheduleAbsence(r.Context(), r.PathValue("id"), r.URL.Query().Get("note")); err != nil {
+		slog.ErrorContext(r.Context(), "entity DeleteScheduleAbsence failed", "userID", user.UserID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to remove that leave or allocation.")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// CreateScheduleAbsenceKind handles POST /team-schedule/absence-kinds -- a
+// lead adding a leave or allocation tag the catalogue does not have yet.
+func (h *ScheduleHandler) CreateScheduleAbsenceKind(w http.ResponseWriter, r *http.Request) {
+	body, userID, ok := readScheduleBody(w, r)
+	if !ok {
+		return
+	}
+
+	result, err := h.entity.CreateScheduleAbsenceKind(r.Context(), body)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity CreateScheduleAbsenceKind failed", "userID", userID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to add the tag.")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// DeleteScheduleAbsenceKind handles DELETE /team-schedule/absence-kinds/{code}
+// -- a lead deleting a tag a lead added, once nothing uses it.
+func (h *ScheduleHandler) DeleteScheduleAbsenceKind(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+
+	if _, err := h.entity.DeleteScheduleAbsenceKind(r.Context(), r.PathValue("code")); err != nil {
+		slog.ErrorContext(r.Context(), "entity DeleteScheduleAbsenceKind failed", "userID", user.UserID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to delete the tag.")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // GetScheduleEditMarkers handles GET /team-schedule/edit-markers.

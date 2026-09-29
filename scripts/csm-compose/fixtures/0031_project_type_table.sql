@@ -18,7 +18,7 @@
 --
 -- project_type is populated from ServiceNow in every real environment, so on a
 -- fresh local database the table is empty. Migration
--- 000085_project_type_feature_entitlement then backfills feature entitlements
+-- 0130_project_type_feature_entitlement then backfills feature entitlements
 -- onto named rows and RAISE EXCEPTIONs when it cannot find them -- which stops
 -- the migration run dead, taking every later migration with it.
 --

@@ -68,14 +68,25 @@ ON CONFLICT (code) DO NOTHING;
 -- code. The two enum labels that were renamed map explicitly.
 ALTER TABLE schedule_absence ADD COLUMN IF NOT EXISTS kind_id UUID REFERENCES schedule_absence_kind(id) ON DELETE RESTRICT;
 
-UPDATE schedule_absence a SET kind_id = k.id
-FROM schedule_absence_kind k
-WHERE a.kind_id IS NULL
-  AND k.code = CASE a.kind::text
-                 WHEN 'RND_ALLOCATION'      THEN 'RND'
-                 WHEN 'CUSTOMER_ALLOCATION' THEN 'CUSTOMER'
-                 ELSE a.kind::text
-               END;
+-- Guarded on the old column still existing: re-running this file after kind
+-- has already been migrated and dropped must not fail parsing a reference to
+-- a column that is gone by design, not by accident -- same shape of fix as
+-- 0151's is_security_announcement backfill.
+DO $$ BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'schedule_absence' AND column_name = 'kind'
+    ) THEN
+        UPDATE schedule_absence a SET kind_id = k.id
+        FROM schedule_absence_kind k
+        WHERE a.kind_id IS NULL
+          AND k.code = CASE a.kind::text
+                         WHEN 'RND_ALLOCATION'      THEN 'RND'
+                         WHEN 'CUSTOMER_ALLOCATION' THEN 'CUSTOMER'
+                         ELSE a.kind::text
+                       END;
+    END IF;
+END $$;
 
 ALTER TABLE schedule_absence ALTER COLUMN kind_id SET NOT NULL;
 ALTER TABLE schedule_absence DROP COLUMN IF EXISTS kind;

@@ -1,7 +1,7 @@
 -- One audit trail for everything the rota owns, written by the database
 -- rather than by the application.
 --
--- The two activity tables (000094, 000095) record what the service does, and
+-- The two activity tables (0158, 0159) record what the service does, and
 -- they stay: they are typed, indexed by team and date, and they are what the
 -- page reads to say who changed a cell. What they cannot do is record a write
 -- that never went through the service. The seed and the roster importer write
@@ -97,18 +97,23 @@ $$ LANGUAGE plpgsql;
 -- The five tables that hold state. The two activity tables are append-only
 -- history already; auditing them would record the same change twice and grow
 -- without bound.
+DROP TRIGGER IF EXISTS team_schedule_assignment_audit ON team_schedule_assignment;
 CREATE TRIGGER team_schedule_assignment_audit
     AFTER INSERT OR UPDATE OR DELETE ON team_schedule_assignment
     FOR EACH ROW EXECUTE FUNCTION team_schedule_audit_row();
+DROP TRIGGER IF EXISTS team_schedule_absence_audit ON team_schedule_absence;
 CREATE TRIGGER team_schedule_absence_audit
     AFTER INSERT OR UPDATE OR DELETE ON team_schedule_absence
     FOR EACH ROW EXECUTE FUNCTION team_schedule_audit_row();
+DROP TRIGGER IF EXISTS team_schedule_absence_kind_audit ON team_schedule_absence_kind;
 CREATE TRIGGER team_schedule_absence_kind_audit
     AFTER INSERT OR UPDATE OR DELETE ON team_schedule_absence_kind
     FOR EACH ROW EXECUTE FUNCTION team_schedule_audit_row();
+DROP TRIGGER IF EXISTS team_schedule_shift_audit ON team_schedule_shift;
 CREATE TRIGGER team_schedule_shift_audit
     AFTER INSERT OR UPDATE OR DELETE ON team_schedule_shift
     FOR EACH ROW EXECUTE FUNCTION team_schedule_audit_row();
+DROP TRIGGER IF EXISTS team_schedule_zone_audit ON team_schedule_zone;
 CREATE TRIGGER team_schedule_zone_audit
     AFTER INSERT OR UPDATE OR DELETE ON team_schedule_zone
     FOR EACH ROW EXECUTE FUNCTION team_schedule_audit_row();
