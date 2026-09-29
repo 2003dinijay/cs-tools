@@ -536,21 +536,20 @@ easy to wire up for real once both exist.
   `publishIncidentCreated`, called the same way. No enrichment round trip is
   needed here: `req.Subject`/`req.AdditionalComments` already carry
   everything the payload needs (`Title`/`ShortDescription`, the latter
-  falling back to `Subject` when `AdditionalComments` is absent). This
-  service does not build or send an `IncidentLink` at all — this stays
-  strictly a publisher of the fact that an incident was created, nothing
-  more; `csm-notification-service` builds its own "Open in Portal" link
-  from the event's `EntityID` (`recipientlinks.Resolver.IncidentLink`), the
-  same way it already builds `case.created`'s portal link rather than
-  trusting a caller-supplied one — see that service's own `CLAUDE.md`.
-  Likewise, neither `Product` (which Google Chat space) nor `CallTo`
-  (on-call number) is ever set from this service — per explicit decision,
-  all notification-routing resolution belongs entirely in
-  `csm-notification-service`, which substitutes its own configured defaults
-  (`DEFAULT_CHAT_PRODUCT`/`INCIDENT_DEFAULT_CALL_TO`) when either is absent
-  from the payload. Consuming events and sending emails/Chat alerts/calls is
-  never this service's job — only publishing the raw fact that something
-  happened is.
+  falling back to `Subject` when `AdditionalComments` is absent).
+  `incident.created` has exactly one reaction on the receiving side now — a
+  Twilio voice call — not a Google Chat alert: `csm-notification-service`
+  removed that reaction entirely, per explicit product direction (an
+  incident pages on-call directly; a separate Chat post was redundant with
+  that) — see that service's own `CLAUDE.md`. `CallTo` (on-call number) is
+  never set from this service either way — per explicit decision, all
+  notification-routing resolution belongs entirely in
+  `csm-notification-service`, which substitutes its own configured
+  `INCIDENT_DEFAULT_CALL_TO` when it's absent from the payload. `Product` is
+  still accepted on the wire (decode compatibility) but no longer read by
+  `csm-notification-service` at all. Consuming events and sending
+  emails/Chat alerts/calls is never this service's job — only publishing
+  the raw fact that something happened is.
 - **`snCaseService.CreateCaseComment`** publishes `case.comment_added` via
   `publishCommentAdded`, called after the SN comment-create call succeeds.
   Enriches via `GetCaseByID` for `ProjectID`/`CaseTitle`/`Recipients`, the
@@ -687,23 +686,25 @@ service's own `CLAUDE.md`, `dispatch.subjectLine`).
 `cv.DeployedProductDetails.Product.Name` (e.g. `"WSO2 API Manager"`, `""`
 when the case has no deployed product) — used by `publishCaseCreated`,
 `publishCaseAcknowledged`, and `publishSeverityChanged` to populate their
-payloads' `Product` field.
-`CaseCreatedPayload.Product` was previously never populated at all ("this
-service has no data source for it yet"); now it doubles as both a display
-value in `csm-notification-service`'s redesigned `case.created` Chat card
-and that service's own Chat-space routing key (`GoogleChatConfig.Spaces`
-matches on it, falling back to `DEFAULT_CHAT_PRODUCT` when empty) — an
-operator's `GOOGLE_CHAT_SPACES` config needs a `Product` entry matching
-each deployed product's actual display name for per-product routing to
-take effect; until then, every case routes to `DEFAULT_CHAT_PRODUCT`'s
-space same as before this field was populated.
+payloads' `Product` field, a purely-display value in
+`csm-notification-service`'s Chat cards. `CaseCreatedPayload.Product` was
+previously never populated at all ("this service has no data source for it
+yet"); it plays no role in Chat routing on the receiving side —
+`csm-notification-service` removed its earlier per-product Chat-space
+routing (`GoogleChatConfig.Spaces`, `DEFAULT_CHAT_PRODUCT`) once it became
+clear this deployment has no real per-product Chat space need:
+`case.created`/`case.acknowledged`/`case.severity_changed` now always route
+to a single fixed Chat audience regardless of `Product` — see that
+service's own `CLAUDE.md`.
 
 `caseTeamName(cv)` (same shared-helper pattern) resolves
 `cv.AccountDetails.CreTeam.Name` (e.g. `"Team Nova"`, `""` when the case
 has no account or the account has no CRE team) — used by the same three
-publishers to populate their payloads' `Team` field, a purely-display
-value in `csm-notification-service`'s Chat cards (unlike `Product`, it
-plays no role in routing). `cv.AccountDetails` (and its `CreTeam`) is
+publishers to populate their payloads' `Team` field, also purely display in
+`csm-notification-service`'s Chat cards for these three event types (SLA
+breach alerts are the one place a case's team genuinely drives Chat
+routing — see `csm-notification-service`'s own `CLAUDE.md`, "SLA
+breach-alerting engine"). `cv.AccountDetails` (and its `CreTeam`) is
 resolved by `GetCaseByID` from the case's own embedded ServiceNow account
 object at no extra request cost — but as of this field's introduction,
 that embedded object's `creTeam`/`sreTeam` are documented in
@@ -711,22 +712,6 @@ that embedded object's `creTeam`/`sreTeam` are documented in
 the ServiceNow integration, even though the standalone accounts endpoint
 does return them. `Team` may therefore come back empty in practice until
 that catches up — not a bug in this service if so.
-
-**Known, accepted inconsistency**: `publishCaseAcknowledged` re-reads
-`caseProductName(cv)` from a fresh `GetCaseByID` at acknowledge time,
-rather than reusing whatever product `publishCaseCreated` read at create
-time — so if a case's deployed product genuinely changes between creation
-and acknowledgement, the two Chat alerts can route to different spaces.
-This service has no persisted state for a case at all (ServiceNow is the
-sole source of truth, no local DB row per case — the old `sla_clocks` table
-used to be the one exception, removed; see "SLA status" below), so "preserving the
-creation-time product" would mean adding new durable state purely to pin a
-routing decision, not a same-service code change. It's also arguably not
-even the more correct behavior: if a case's product association is
-corrected after creation, routing its acknowledgement to the *current*
-owning team's space is arguably more useful than a stale one. Left as
-current-product routing; revisit only if the same-space guarantee turns
-out to matter in practice.
 
 **`caseService.UpdateCase` (the Postgres data source) supports
 `Acknowledge`/`AssigneeEmail` too** — `caseService.acknowledgeCase`/
