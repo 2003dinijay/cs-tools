@@ -10,23 +10,16 @@ info:
   version: 1.0.0
 security:
   - jwtAssertion: []
-servers:
-  - url: "{server}:{port}/"
-    description: SSE stream listener
-    variables:
-      server:
-        default: http://localhost
-      port:
-        default: "9092"
-  - url: "{server}:{port}/"
-    description: Health check listener
-    variables:
-      server:
-        default: http://localhost
-      port:
-        default: "8080"
 paths:
   /cases/{id}/activities/stream:
+    servers:
+      - url: "{server}:{port}/"
+        description: SSE stream listener
+        variables:
+          server:
+            default: http://localhost
+          port:
+            default: "9092"
     get:
       summary: Live case-activity updates.
       description: >
@@ -87,6 +80,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
   /health:
+    servers:
+      - url: "{server}:{port}/"
+        description: Health check listener
+        variables:
+          server:
+            default: http://localhost
+          port:
+            default: "8080"
     get:
       security: []
       summary: Health check.
