@@ -317,8 +317,8 @@ func MapProjectCaseStats(r entity.ProjectCaseStatsResponse) ProjectCaseStats {
 		OutstandingSeverityCount:       normalizeCaseSeverityChoices(mapChoiceListItems(r.OutstandingSeverityCount)),
 		CaseTypeCount:                  mapReferenceTableItems(r.CaseTypeCount),
 		CasesTrend:                     mapCasesTrend(r.CasesTrend),
-		EngagementTypeCount:            mapChoiceListItems(r.EngagementTypeCount),
-		OutstandingEngagementTypeCount: mapChoiceListItems(r.OutstandingEngagementTypeCount),
+		EngagementTypeCount:            normalizeCaseEngagementTypeChoices(mapChoiceListItems(r.EngagementTypeCount)),
+		OutstandingEngagementTypeCount: normalizeCaseEngagementTypeChoices(mapChoiceListItems(r.OutstandingEngagementTypeCount)),
 	}
 }
 
