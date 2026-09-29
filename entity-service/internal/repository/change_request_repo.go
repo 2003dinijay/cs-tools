@@ -1030,7 +1030,26 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 		// same button just reappeared. req.State is never also set for this
 		// same request (the frontend sends one or the other, never both),
 		// so this cannot conflict with the req.State branch above.
+		//
+		// Only a record actually sitting in New may advance this way: the
+		// crQuery below filters solely by id, so nothing stops this branch
+		// from writing ASSESS over a record already at, say, Implement or
+		// Closed if a stale/replayed {requestApproval: true} request arrived
+		// for it. Locking the row's current state here (in the same
+		// transaction as the update below) closes that gap; a concurrent
+		// second RequestApproval racing this one blocks on the lock rather
+		// than both reading New and both writing ASSESS.
 		if req.State == nil {
+			var currentState string
+			if err := tx.QueryRow(ctx, `SELECT state FROM change_request WHERE id = $1 FOR UPDATE`, id).Scan(&currentState); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return domain.ChangeRequest{}, &apierror.NotFoundError{Msg: "change request not found"}
+				}
+				return domain.ChangeRequest{}, fmt.Errorf("patch change request: check current state: %w", err)
+			}
+			if strings.ToLower(currentState) != string(domain.ChangeRequestStateNew) {
+				return domain.ChangeRequest{}, &apierror.ConflictError{Msg: "approval can only be requested while the change request is in New, not " + strings.ToLower(currentState)}
+			}
 			addCR("state = $%d::change_request_state_enum", "ASSESS")
 		}
 	}
