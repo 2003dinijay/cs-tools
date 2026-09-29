@@ -149,18 +149,42 @@ func identityArgs(scope SearchScope) (isInternal, viewerEmail string) {
 	return strconv.FormatBool(scope.Unrestricted), scope.ViewerEmail
 }
 
-// queueIdentity queues the two identity-setting statements onto batch, ahead
-// of whatever real statement the caller queues next -- never inlined into
-// that statement's own WHERE clause (see setCallerIdentity's own doc
-// comment for why: the planner can evaluate a non-leakproof function call
-// like set_config out of order under an index scan).
+// queueIdentity queues the identity-setting statements onto batch, ahead of
+// whatever real statement the caller queues next -- never inlined into that
+// statement's own WHERE clause (see setCallerIdentity's own doc comment for
+// why: the planner can evaluate a non-leakproof function call like
+// set_config out of order under an index scan).
+//
+// The third statement resolves and caches app.viewer_project_ids -- the
+// caller's own REGISTERED project ids, computed here in SQL from
+// viewerEmail alone (never computed or forwarded by Go: ResolveScope still
+// only ever produces Unrestricted/ViewerEmail, unchanged). is_project_member
+// (migration 0152) reads this GUC instead of running its own EXISTS query
+// against project_contact per row: a literal array the planner can match
+// against idx_work_item_project_id, rather than an opaque function call it
+// can only evaluate as an unindexed per-row filter. Confirmed empirically
+// (a 20k-row synthetic case load, real EXPLAIN ANALYZE): the per-row
+// function-call form forces a sequential scan of the entire work_item
+// table regardless of how selective the caller's own projects are, roughly
+// 2x-4x slower than this cached-array form for a single caller's paginated
+// case search. Unrestricted callers get a plain '{}' with no query at all,
+// since is_internal already short-circuits every policy before the array
+// is ever consulted.
 func queueIdentity(batch *pgx.Batch, scope SearchScope) {
 	isInternal, viewerEmail := identityArgs(scope)
 	batch.Queue("SELECT set_config('app.is_internal', $1, true)", isInternal)
 	batch.Queue("SELECT set_config('app.viewer_email', $1, true)", viewerEmail)
+	if scope.Unrestricted {
+		batch.Queue("SELECT set_config('app.viewer_project_ids', '{}', true)")
+	} else {
+		batch.Queue(`SELECT set_config('app.viewer_project_ids', COALESCE((
+			SELECT array_agg(pc.project_id)::text FROM project_contact pc
+			WHERE LOWER(pc.email) = LOWER($1) AND pc.state = 'REGISTERED'
+		), '{}'), true)`, viewerEmail)
+	}
 }
 
-// drainIdentity consumes the two queued identity-setting results ahead of
+// drainIdentity consumes the three queued identity-setting results ahead of
 // the caller's own statement result. On error it closes br itself (the
 // caller never got a result to be responsible for closing).
 func drainIdentity(br pgx.BatchResults) error {
@@ -171,6 +195,10 @@ func drainIdentity(br pgx.BatchResults) error {
 	if _, err := br.Exec(); err != nil {
 		_ = br.Close()
 		return fmt.Errorf("scoped: set viewer_email: %w", err)
+	}
+	if _, err := br.Exec(); err != nil {
+		_ = br.Close()
+		return fmt.Errorf("scoped: set viewer_project_ids: %w", err)
 	}
 	return nil
 }

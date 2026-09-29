@@ -57,6 +57,21 @@ func setCallerIdentity(ctx context.Context, tx pgx.Tx, scope SearchScope) error 
 	if _, err := tx.Exec(ctx, "SELECT set_config('app.viewer_email', $1, true)", scope.ViewerEmail); err != nil {
 		return fmt.Errorf("set caller identity: viewer_email: %w", err)
 	}
+	// app.viewer_project_ids: same reasoning as queueIdentity's identical
+	// third statement (scoped.go) -- is_project_member (migration 0152)
+	// reads this cached array instead of running its own per-row query.
+	if scope.Unrestricted {
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.viewer_project_ids', '{}', true)"); err != nil {
+			return fmt.Errorf("set caller identity: viewer_project_ids: %w", err)
+		}
+	} else {
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.viewer_project_ids', COALESCE((
+			SELECT array_agg(pc.project_id)::text FROM project_contact pc
+			WHERE LOWER(pc.email) = LOWER($1) AND pc.state = 'REGISTERED'
+		), '{}'), true)`, scope.ViewerEmail); err != nil {
+			return fmt.Errorf("set caller identity: viewer_project_ids: %w", err)
+		}
+	}
 	return nil
 }
 
