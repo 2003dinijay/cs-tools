@@ -2033,3 +2033,32 @@
   background: linear-gradient(color-mix(in srgb, var(--accent) 22%, transparent),
       color-mix(in srgb, var(--accent) 22%, transparent)), var(--surface-solid);
 }
+
+/* Your own row: fill alone, the same way today's column is marked.
+ *
+ * The 3px accent bar down the left of the name cell is gone; a stronger
+ * fill across the whole row carries it instead, name cell included, and the
+ * "You" tag still says whose row it is. The 1px rule on the name cell's right
+ * edge stays -- it is the edge of the pinned column, not part of the mark.
+ * The name cell keeps a solid layer, since the grid scrolls under it. Where
+ * the row crosses today or the picked day it is stronger again. */
+.csm-ts .tw.roster tbody tr.me > td {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.csm-ts .tw.roster tbody tr.me > th.lab {
+  box-shadow: 1px 0 0 var(--line);
+  background: linear-gradient(color-mix(in srgb, var(--accent) 12%, transparent),
+      color-mix(in srgb, var(--accent) 12%, transparent)), var(--surface-solid);
+}
+.csm-ts .tw.roster tbody tr.me:hover > td {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.csm-ts .tw.roster tbody tr.me:hover > th.lab {
+  background: linear-gradient(color-mix(in srgb, var(--accent) 16%, transparent),
+      color-mix(in srgb, var(--accent) 16%, transparent)), var(--surface-solid);
+}
+.csm-ts .tw.roster tbody tr.me > td.today,
+.csm-ts .tw.roster tbody tr.me > td.sel {
+  box-shadow: none;
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
