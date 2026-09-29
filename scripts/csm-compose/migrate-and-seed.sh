@@ -123,4 +123,11 @@ $PSQL -d "${ENTITY_DB_NAME}" -f /migrations/seed-entity-service.sql
 echo "[migrate] loading Team Schedule roster"
 $PSQL -d "${ENTITY_DB_NAME}" -f /migrations/seed-team-schedule.sql
 
+# Stand-in sub leads and the two escalation heads, so the call-escalation
+# ladder can resolve all five of its rungs locally. Separate from the roster
+# seed above because none of it is real: it exists only until the sub leads are
+# decided and the heads have a source. See the file's own header.
+echo "[migrate] loading assumed escalation roles"
+$PSQL -d "${ENTITY_DB_NAME}" -f /migrations/seed-escalation-roles.sql
+
 echo "[migrate] done"
