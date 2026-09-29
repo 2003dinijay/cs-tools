@@ -228,7 +228,7 @@ func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 		writeUnavailable(w, "ingestion not configured")
 		return
 	}
-	// Keep only the preview a 400 needs, so the full body can be freed while Submit waits.
+	// Only the preview is used after this, so the full body can be freed while Submit waits.
 	preview, size := s.preview(body), int64(len(body))
 	req := Request{
 		Vendor:      vendor,
@@ -238,7 +238,6 @@ func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 		ContentType: r.Header.Get("Content-Type"),
 		Body:        body,
 	}
-	body = nil
 	res := s.pipeline.Ingest(r.Context(), req)
 	info.altIDs, info.err = res.AltIDs, res.Error
 	switch res.Status {
