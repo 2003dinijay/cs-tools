@@ -474,10 +474,30 @@ func main() {
 		// because it looks like coverage.
 		roster, err := escalation.ParseRoster(os.Getenv("INCIDENT_ESCALATION_ROSTER"))
 		escalationChannel, channelErr := escalation.ParseChannel(os.Getenv("INCIDENT_ESCALATION_CHANNEL"))
+
+		// The configuration file governs behaviour; the environment still
+		// holds the secrets. With no file, every knob keeps its previous
+		// env-derived value, so an existing deployment behaves exactly as it
+		// did -- see loadEscalationConfig.
+		escalationCfg, cfgErr := loadEscalationConfig(escalationChannel)
+		creCfg, escalationRunning := escalationCfg.For(escalation.LadderKeyCRE)
+		if cfgErr == nil {
+			// The file wins over INCIDENT_ESCALATION_CHANNEL when there is
+			// one, so there is a single answer to "what will this dial".
+			escalationChannel = creCfg.Channel
+		}
+
 		startProblem := escalationStartProblem(err != nil, roster.IsEmpty(),
 			os.Getenv("INCIDENT_ESCALATION_RESOLVER") == "team-schedule",
 			os.Getenv("CUSTOMER_ENTITY_BASE_URL") != "")
 		switch {
+		case cfgErr != nil:
+			// Never a fall back to defaults: this file decides what gets
+			// dialled, so a broken one means nothing runs until it is fixed.
+			slog.Error("invalid escalation configuration; both ladders are disabled", "err", cfgErr)
+		case !escalationRunning:
+			slog.Warn("incident call escalation is disabled by configuration",
+				"configPath", os.Getenv("INCIDENT_ESCALATION_CONFIG"))
 		case startProblem != "":
 			// Not logging a roster decode error itself: it can quote the
 			// surrounding JSON, which carries real phone numbers.
@@ -564,6 +584,8 @@ func main() {
 					// ParseChannel for why silently downgrading a pager to a
 					// chat message would be the wrong default.
 					Channel: escalationChannel,
+					// Which incidents get a ladder, and what one may spend.
+					Ladder: creCfg,
 				},
 			)
 
@@ -963,4 +985,46 @@ func escalationStartProblem(rosterInvalid, rosterEmpty, teamSchedule, entityConf
 		return "INCIDENT_ESCALATION_ROSTER is not set"
 	}
 	return ""
+}
+
+// loadEscalationConfig reads the escalation configuration file, or synthesises
+// the pre-file behaviour when no path is set.
+//
+// The fallback is what keeps this change safe to deploy: a service with no
+// INCIDENT_ESCALATION_CONFIG behaves exactly as it did before the file
+// existed -- enabled, on whatever INCIDENT_ESCALATION_CHANNEL said, with no
+// trigger conditions and no spending caps. A deployment adopts the file when
+// it wants to narrow any of that, not because it was forced to all at once.
+//
+// INCIDENT_ESCALATION_ENABLED overrides the file's own master switch in both
+// directions, so an operator can stop every ladder by setting one variable,
+// without editing and shipping a file in the middle of an incident.
+func loadEscalationConfig(envChannel escalation.Channel) (escalation.Config, error) {
+	path := os.Getenv("INCIDENT_ESCALATION_CONFIG")
+
+	cfg := escalation.Config{
+		Enabled: true,
+		CRE:     escalation.LadderConfig{Enabled: true, Channel: envChannel},
+		SRE:     escalation.LadderConfig{Enabled: true, Channel: envChannel},
+	}
+	if path != "" {
+		loaded, err := escalation.LoadConfig(path)
+		if err != nil {
+			return loaded, err
+		}
+		cfg = loaded
+		slog.Info("escalation configuration loaded",
+			"configPath", path, "enabled", cfg.Enabled,
+			"creChannel", string(cfg.CRE.Channel), "sreChannel", string(cfg.SRE.Channel))
+	}
+
+	if raw := os.Getenv("INCIDENT_ESCALATION_ENABLED"); raw != "" {
+		on := raw == "true"
+		if on != cfg.Enabled {
+			slog.Warn("INCIDENT_ESCALATION_ENABLED overrides the configuration file's master switch",
+				"enabled", on, "fileSaid", cfg.Enabled)
+		}
+		cfg.Enabled = on
+	}
+	return cfg, nil
 }

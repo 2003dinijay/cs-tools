@@ -474,6 +474,8 @@ services:
         condition: service_completed_successfully
       entity-service:
         condition: service_started
+    volumes:
+      - ./scripts/csm-compose/escalation.yaml:/config/escalation.yaml:ro
     environment:
       EVENT_HUB_BROKER: kafka:9094
       EVENT_HUB_CONNECTION_STRING: local-dev-shared-secret
@@ -497,6 +499,12 @@ services:
       # chat, not call: CALL_SENDING_ENABLED above is false and there is no
       # telephony account here, so a voice rung would reach nobody and prove
       # nothing.
+      # The configuration file decides what actually gets dialled: which
+      # incidents escalate, how far, and over which channel. It ships set to
+      # `log`, so `docker compose up` runs the whole ladder for real and
+      # reaches nobody. INCIDENT_ESCALATION_CHANNEL below is the pre-file
+      # fallback and is ignored whenever this path is set.
+      INCIDENT_ESCALATION_CONFIG: /config/escalation.yaml
       INCIDENT_ESCALATION_CHANNEL: chat
       # Both of these are yours, not the repository's. GOOGLE_CHAT_SPACES
       # carries a webhook URL, which is a credential: anyone holding it can

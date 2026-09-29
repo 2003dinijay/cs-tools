@@ -69,6 +69,11 @@ type EngineConfig struct {
 	// calls — see ParseChannel for why silently downgrading a pager would be
 	// the wrong default.
 	Channel Channel
+	// Ladder is this ladder's section of the configuration file: which
+	// incidents get a ladder at all, and what one ladder may spend. The zero
+	// value has no opinion on either, which is what a deployment with no
+	// configuration file gets.
+	Ladder LadderConfig
 }
 
 // Engine runs the incident call-escalation ladder.
@@ -121,6 +126,14 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 	e := &Engine{policies: policies, resolver: resolver, store: store, cfg: cfg}
 	if notes != nil {
 		e.notes = notes
+	}
+	// ChannelLog needs no client and so can never be half-configured — there
+	// is no missingChannels case for it. It is also exclusive: Uses() reports
+	// false for both real channels here, so a ladder set to log wires this
+	// notifier and nothing else, which is the point. A log ladder that also
+	// dialled would be the worst of both.
+	if cfg.Channel == ChannelLog {
+		e.notifiers = append(e.notifiers, logNotifier{})
 	}
 	if cfg.Channel.Uses(ChannelCall) {
 		if calls == nil {
@@ -245,6 +258,18 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 		return nil
 	}
 
+	// The configuration file's own gate, checked before anything is planned or
+	// stored. Skipping is not an error: a deployment that has narrowed which
+	// incidents it escalates has said so deliberately, and erroring would
+	// dead-letter events it simply does not want to act on.
+	if ok, why := e.cfg.Ladder.Allows(t.Priority, t.Routing.AssignedCRETeam, string(t.Routing.Shift)); !ok {
+		slog.InfoContext(ctx, "escalation: configuration does not escalate this incident; skipping",
+			"incidentId", t.IncidentID, "priority", t.Priority,
+			"team", t.Routing.AssignedCRETeam, "shift", string(t.Routing.Shift),
+			"reason", why)
+		return nil
+	}
+
 	// USA_WEEKEND is the one shift whose LEVEL_0 depends on ABT eligibility
 	// (R10 has none, R12/R14 do — see RoutingContext.HasNotificationLevel).
 	// No publisher populates ABTEligible today: entity-service has no
@@ -267,6 +292,7 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 	if err != nil {
 		return fmt.Errorf("escalation: build plan for %s: %w", t.IncidentID, err)
 	}
+	e.applySafety(ctx, &plan)
 	for _, issue := range plan.Issues {
 		// Logged without the recipient's email — plan issues carry one in
 		// Detail for NO_NUMBER, and this repo does not log recipient
@@ -738,4 +764,71 @@ func reportedAt(raw string) time.Time {
 		return time.Now()
 	}
 	return t
+}
+
+// applySafety trims a freshly built plan to what the configuration file says
+// one ladder may spend. It runs before anything is stored, so a capped ladder
+// is capped for its whole life rather than only until the next restart.
+//
+// Each cap records a PlanIssue rather than silently shrinking the plan. A
+// ladder that reaches fewer people than the rules say it should is a fact
+// somebody needs on the work note, not a quiet saving.
+func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
+	s := e.cfg.Ladder.Safety
+
+	if top, capped := e.cfg.Ladder.CapLevel(); capped {
+		kept := plan.Calls[:0]
+		var dropped int
+		for _, c := range plan.Calls {
+			if c.Level <= top {
+				kept = append(kept, c)
+				continue
+			}
+			dropped++
+		}
+		if dropped > 0 {
+			plan.Calls = kept
+			plan.Issues = append(plan.Issues, PlanIssue{
+				Level:  top,
+				Reason: "LEVEL_CAPPED",
+			})
+			slog.WarnContext(ctx, "escalation: ladder capped by configuration; the rungs above it will never be reached",
+				"incidentId", plan.Trigger.IncidentID, "maxLevel", top.String(), "callsDropped", dropped)
+		}
+	}
+
+	// Numbers are filtered rather than the calls being left to fail: an
+	// unlisted recipient is not an error, it is a deployment saying "not this
+	// person". The number itself is never logged.
+	if len(s.AllowedNumbers) > 0 {
+		kept := plan.Calls[:0]
+		var dropped int
+		for _, c := range plan.Calls {
+			if e.cfg.Ladder.Dialable(c.Recipient.Phone) {
+				kept = append(kept, c)
+				continue
+			}
+			dropped++
+		}
+		if dropped > 0 {
+			plan.Calls = kept
+			plan.Issues = append(plan.Issues, PlanIssue{Reason: "NUMBER_NOT_ALLOWED"})
+			slog.WarnContext(ctx, "escalation: recipients dropped by safety.allowedNumbers",
+				"incidentId", plan.Trigger.IncidentID, "callsDropped", dropped)
+		}
+	}
+
+	// The call cap is deliberately last and deliberately truncating rather
+	// than refusing: by this point the earlier rungs are the ones worth
+	// keeping, and a ladder that reaches its first responders is better than
+	// one that reaches nobody because its top rung resolved to forty people.
+	if s.MaxCallsPerLadder > 0 && len(plan.Calls) > s.MaxCallsPerLadder {
+		dropped := len(plan.Calls) - s.MaxCallsPerLadder
+		plan.Calls = plan.Calls[:s.MaxCallsPerLadder]
+		plan.Issues = append(plan.Issues, PlanIssue{Reason: "CALL_CAP_REACHED"})
+		slog.WarnContext(ctx, "escalation: plan truncated by safety.maxCallsPerLadder; "+
+			"the rota may have grown, or the cap may be too low",
+			"incidentId", plan.Trigger.IncidentID,
+			"cap", s.MaxCallsPerLadder, "callsDropped", dropped)
+	}
 }

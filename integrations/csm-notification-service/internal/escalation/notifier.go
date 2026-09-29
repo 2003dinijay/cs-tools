@@ -19,6 +19,7 @@ package escalation
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -55,6 +56,20 @@ const (
 	// acceptable, since a duplicate card costs a glance and a missed page
 	// costs an incident.
 	ChannelBoth Channel = "both"
+	// ChannelLog writes what it would have done and does nothing else.
+	//
+	// It exists because the two channels that reach people both need an
+	// account: calls need Twilio and cost money per rung, and chat needs a
+	// webhook for a real room that real colleagues are sitting in. Neither is
+	// something to point at a test. Without a third option the only way to
+	// exercise the whole service — the consumer, the resolver, the Redis
+	// state, the wake loop — was to either spend money or interrupt people.
+	//
+	// It is a channel rather than a global dry-run flag so that it appears in
+	// the same place every other delivery decision does, and so a deployment
+	// cannot end up half-live: a ladder on this channel reaches nobody, and
+	// says so in a line per rung.
+	ChannelLog Channel = "log"
 )
 
 // ParseChannel resolves the configured channel, defaulting to calls.
@@ -71,12 +86,57 @@ func ParseChannel(raw string) (Channel, error) {
 		return ChannelChat, nil
 	case ChannelBoth:
 		return ChannelBoth, nil
+	case ChannelLog:
+		return ChannelLog, nil
 	}
-	return "", fmt.Errorf("escalation: unknown channel %q; use call, chat or both", raw)
+	return "", fmt.Errorf("escalation: unknown channel %q; use call, chat, both or log", raw)
 }
 
 // Uses reports whether this channel includes the given one.
-func (c Channel) Uses(other Channel) bool { return c == other || c == ChannelBoth }
+//
+// ChannelBoth means both of the channels that reach somebody — call and chat —
+// and deliberately not the log channel. A deployment wanting a written record
+// alongside real calls gets it from the execution summary, not from here, and
+// a live ladder that also emitted "would notify" lines would read like a dry
+// run in the middle of a real page.
+func (c Channel) Uses(other Channel) bool {
+	if other == ChannelLog {
+		return c == ChannelLog
+	}
+	return c == other || c == ChannelBoth
+}
+
+// Reaches reports whether this channel can actually reach a person. It is what
+// separates a ladder that pages from one that only writes down what it would
+// have done, and it is why BuildPlan does not demand a phone number under
+// ChannelLog any more than it does under ChannelChat.
+func (c Channel) Reaches() bool { return c != ChannelLog }
+
+// logNotifier is ChannelLog's delivery: one line per call, naming the rung and
+// who would have been reached.
+//
+// It logs the recipient's name and never their address or number. The name is
+// already on the chat card that a whole room can see; an address or a number is
+// neither, and a test channel is not a reason to start writing them to a log
+// that ships somewhere else.
+type logNotifier struct{}
+
+func (logNotifier) Channel() Channel { return ChannelLog }
+
+func (logNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) (Delivery, error) {
+	slog.InfoContext(ctx, "escalation: would notify (channel=log; nobody is being contacted)",
+		"incidentId", plan.Trigger.IncidentID,
+		"incident", plan.Trigger.Number,
+		"priority", plan.Trigger.Priority,
+		"rung", call.Level.String(),
+		"role", call.Level.Role(),
+		"attempt", call.Ordinal,
+		"name", call.Recipient.Name,
+		"shift", call.Recipient.ShiftCode,
+		"hasNumber", call.Recipient.Phone != "",
+	)
+	return Delivery{Channel: ChannelLog, Status: "logged, not sent"}, nil
+}
 
 // Delivery is what a notifier did, for the log line that follows it.
 type Delivery struct {

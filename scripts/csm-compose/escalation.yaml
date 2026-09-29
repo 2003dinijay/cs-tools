@@ -1,0 +1,74 @@
+# Incident call escalation — the local compose stack's configuration.
+#
+# Every knob here changes how many telephone calls a ladder places, which is
+# why it is a file rather than a set of environment variables: narrowing which
+# incidents escalate, capping a ladder's reach, or switching a deployment to
+# the log channel are all things somebody does between incidents, without
+# waiting for a build.
+#
+# Both ladders are configured here. They share an engine, a Twilio account,
+# and a bill.
+#
+# Point the service at this file with INCIDENT_ESCALATION_CONFIG. With no such
+# variable the service behaves as it did before this file existed: enabled, on
+# INCIDENT_ESCALATION_CHANNEL, with no conditions and no caps.
+
+enabled: true
+
+cre:
+  enabled: true
+
+  # log | chat | call | both
+  #
+  # `log` is the local default on purpose. It runs the whole ladder for real —
+  # the consumer, the resolver, the Redis state, the wake loop, the work note —
+  # and writes a line per rung saying who it would have reached, without a
+  # Twilio account and without posting into a room real colleagues are sitting
+  # in. Switch to `call` or `both` only against numbers you control.
+  channel: log
+
+  trigger:
+    # Which priorities get a ladder at all. Empty means every priority that
+    # has a policy row. The bluntest cost control there is.
+    priorities: []
+
+    # Assignment-group allowlist, and a stronger exclude list that wins over
+    # it. Empty means any team.
+    teams: []
+    excludeTeams: []
+
+    # Restrict to certain shifts, e.g. [LK_MORNING, LK] to leave the Americas
+    # night alone while a policy is being trialled.
+    shifts: []
+
+    # Refuse to start a ladder for an incident whose team cannot be resolved,
+    # rather than guessing. Left on here because guessing means falling
+    # through to the CRE ladder, which is how an SRE incident ends up waking
+    # CRE engineers.
+    requireKnownTeam: true
+
+  safety:
+    # The most calls one ladder may place across every rung. A plan larger
+    # than this is truncated and says so, so a rota that suddenly resolves to
+    # forty people fails loudly at planning time instead of arriving as a bill.
+    maxCallsPerLadder: 12
+
+    # The highest rung the ladder may climb, 0..4. Omit for no cap. Setting it
+    # to 2 keeps an escalation away from the heads while a policy is trialled.
+    # maxLevel: 2
+
+    # When set, the ONLY numbers that may be dialled; every other recipient is
+    # dropped before the call is placed. This is what makes a real ladder safe
+    # to exercise against a real Twilio account — the resolver still runs and
+    # the plan is still built from the real rota, but only these ring.
+    allowedNumbers: []
+
+sre:
+  enabled: true
+  channel: log
+  trigger:
+    priorities: []
+    requireKnownTeam: true
+  safety:
+    maxCallsPerLadder: 8
+    allowedNumbers: []

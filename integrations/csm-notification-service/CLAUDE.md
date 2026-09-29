@@ -242,11 +242,48 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   engine's — this engine's job is placing calls; the summary is a record.
   Loop-safe: a work-notes-only PATCH publishes no escalation signal, and
   `incident.comment_added` comes from a different endpoint this never calls.
+- **`config.go` — what a deployment may spend.** `INCIDENT_ESCALATION_CONFIG`
+  points at a YAML file governing **both** ladders (`cre:`/`sre:` sections):
+  an `enabled` master switch, a per-ladder `channel`, `trigger` conditions
+  (`priorities`/`teams`/`excludeTeams`/`shifts`/`requireKnownTeam`) deciding
+  which incidents get a ladder at all, and `safety` caps
+  (`maxCallsPerLadder`/`maxLevel`/`allowedNumbers`) capping what one ladder may
+  spend. It is a file rather than more environment variables because every
+  knob in it changes how many calls get placed, and therefore the bill — and
+  because the answer to "what will this deployment dial" should be one
+  readable thing, not eight variables assembled by hand from a container spec.
+  Rules worth keeping: an **unreadable or invalid file disables both ladders**
+  and logs it, never a silent fall back to defaults nobody chose; an
+  **unknown key is an error** (`KnownFields(true)`), because a misspelled
+  `maxCallsPerLadder` that is quietly dropped leaves an operator certain they
+  have capped the spend when they have not; `safety.maxLevel` is a **`*int`**
+  so absent and `0` are different — LEVEL_0 is a legitimate cap and the zero
+  value of the struct (what a deployment with no file, and every hand-built
+  `EngineConfig` in tests, gets) must mean *no* cap, not "truncate every ladder
+  to one rung". With **no `INCIDENT_ESCALATION_CONFIG` set at all** the service
+  behaves exactly as it did before the file existed, so adopting it is opt-in;
+  `INCIDENT_ESCALATION_ENABLED` overrides the file's master switch in both
+  directions, so a ladder can be stopped without editing and shipping a file
+  mid-incident. `Engine.applySafety` trims a freshly built plan to the caps
+  **before it is stored**, recording a `PlanIssue` (`LEVEL_CAPPED`,
+  `NUMBER_NOT_ALLOWED`, `CALL_CAP_REACHED`) for each, so a ladder reaching
+  fewer people than the rules say lands on the work note rather than being a
+  quiet saving.
 - **`notifier.go` - which channel a rung reaches people on.** The ladder's
   timing, routing and cancellation are channel-agnostic; only the last hop
   differs. `INCIDENT_ESCALATION_CHANNEL` picks `call` (the specification's
   own, and the default), `chat` (a card in the incident's Google Chat space
-  via `SendEscalationAlert`), or `both`. **A chat card does not wake anyone**
+  via `SendEscalationAlert`), `both`, or **`log`** — which runs the entire
+  ladder and writes a line per rung naming who it *would* have reached,
+  reaching nobody. `log` exists because the two channels that reach people
+  both need an account: calls cost money per rung, chat needs a webhook for a
+  room real colleagues sit in, and neither is something to point at a test.
+  It is a channel rather than a global dry-run flag so it appears where every
+  other delivery decision does, and it is **exclusive** — `Channel.Uses`
+  reports false for `log` against `both`, so a log ladder wires that notifier
+  and nothing else; a live ladder that also emitted "would notify" lines would
+  read like a dry run mid-page. It logs the recipient's **name only**, never
+  an address or a number. **A chat card does not wake anyone**
   - the initial Chat alert already exists and the ladder exists because it
   was not enough overnight - so `chat` alone is a real reduction in what the
   feature does. Where it earns its place is alongside the calls, giving the
