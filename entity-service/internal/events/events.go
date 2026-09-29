@@ -158,20 +158,27 @@ type CaseAssignedPayload struct {
 // there's no email reaction). Severity is the raw uppercase severity
 // string (e.g. "CRITICAL"), the same value CaseCreatedPayload.Priority
 // carries — csm-notification-service maps it to a display label/color for
-// the Chat card.
+// the Chat card. Routes the same way case.created does — Team +
+// ProjectOnboardingStatus + IsEvaluationAccount resolve a Chat-audience
+// list (see CaseCreatedPayload's own doc comments for each) — so an
+// acknowledgment lands as a threaded reply in every one of the same
+// audience spaces the case's own case.created alert posted to. There is
+// deliberately no Product field here (there was, until this payload moved
+// off product-based Chat routing): it never carried anything but a routing
+// key, and this card never displayed it either.
 type CaseAcknowledgedPayload struct {
 	CaseID     string `json:"caseId"`
 	CaseNumber string `json:"caseNumber,omitempty"`
 	// WSO2CaseID — see CommentAddedPayload's own doc comment.
 	WSO2CaseID string `json:"wso2CaseId,omitempty"`
 	Severity   string `json:"severity,omitempty"`
-	// Product — see CaseCreatedPayload's own doc comment. The acknowledged
-	// case's own product, so this alert routes to the same Google Chat
-	// space as its case.created alert did.
-	Product string `json:"product,omitempty"`
 	// Team — see CaseCreatedPayload's own doc comment.
-	Team             string `json:"team,omitempty"`
-	AcknowledgerName string `json:"acknowledgerName"`
+	Team string `json:"team,omitempty"`
+	// ProjectOnboardingStatus/IsEvaluationAccount — see CaseCreatedPayload's
+	// own doc comments; same Postgres-only, best-effort resolution.
+	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
+	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
+	AcknowledgerName        string `json:"acknowledgerName"`
 }
 
 // SeverityChangedPayload is the Payload shape for TypeSeverityChanged —
@@ -179,9 +186,10 @@ type CaseAcknowledgedPayload struct {
 // reasoning as CommentAddedPayload above. Unlike CaseAcknowledgedPayload,
 // this one does carry Recipients: a severity change has both an email
 // reaction (same audience as case.status_changed/case.assigned — the
-// case's watch list) and a Google Chat alert, so it needs both an audience
-// and a routing Product, same as CaseCreatedPayload's own doc comment for
-// why Product is here.
+// case's watch list) and a Google Chat alert. The Chat alert is
+// audience-routed, same as CaseCreatedPayload/CaseAcknowledgedPayload — see
+// CaseAcknowledgedPayload's own doc comment for why there's no Product
+// field.
 type SeverityChangedPayload struct {
 	ProjectID  string `json:"projectId"`
 	CaseID     string `json:"caseId"`
@@ -193,11 +201,13 @@ type SeverityChangedPayload struct {
 	// "CRITICAL"), the same convention as CaseAcknowledgedPayload.Severity.
 	OldSeverity string `json:"oldSeverity"`
 	NewSeverity string `json:"newSeverity"`
-	// Product — see CaseCreatedPayload's own doc comment.
-	Product string `json:"product,omitempty"`
 	// Team — see CaseCreatedPayload's own doc comment.
-	Team       string   `json:"team,omitempty"`
-	Recipients []string `json:"recipients"`
+	Team string `json:"team,omitempty"`
+	// ProjectOnboardingStatus/IsEvaluationAccount — see CaseCreatedPayload's
+	// own doc comments; same Postgres-only, best-effort resolution.
+	ProjectOnboardingStatus string   `json:"projectOnboardingStatus,omitempty"`
+	IsEvaluationAccount     bool     `json:"isEvaluationAccount,omitempty"`
+	Recipients              []string `json:"recipients"`
 }
 
 // CaseBillableStatusChangedPayload is the Payload shape for
@@ -253,14 +263,12 @@ type CaseCreatedPayload struct {
 	// Team is the case's account's CRE team display name (e.g. "Castor")
 	// — cv.AccountDetails.CreTeam.Name, "" when the case has no account or
 	// the account has no CRE team assigned. Displayed in
-	// csm-notification-service's Chat cards, and — for case.created only —
-	// also that service's own Google Chat *audience* routing key (a team
-	// with no configured Chat space of its own falls back to a shared
-	// "Incident Monitor" audience there, mirroring the reference
-	// ServiceNow CSNotificationRouter design this was ported from). Depends
-	// on ServiceNow's case-embedded account object actually carrying
-	// creTeam/sreTeam — see caseTeamName's own doc comment for the current
-	// caveat around that.
+	// csm-notification-service's Chat cards, and also that service's own
+	// Google Chat *audience* routing key (a team with no configured Chat
+	// space of its own falls back to a shared "Incident Monitor"
+	// audience there). Depends on ServiceNow's case-embedded account
+	// object actually carrying creTeam/sreTeam — see caseTeamName's own
+	// doc comment for the current caveat around that.
 	Team string `json:"team,omitempty"`
 	// ProjectOnboardingStatus is the case's project.onboarding_status raw
 	// enum label (e.g. "IN_PROGRESS"), "" when the case has no project or
@@ -282,7 +290,7 @@ type CaseCreatedPayload struct {
 	// project-type display name alone. case.created only — routes
 	// exclusively to csm-notification-service's own "Evaluation" Chat
 	// audience, overriding every other audience rule (team/onboarding/
-	// Americas), mirroring the reference ServiceNow design.
+	// Americas).
 	IsEvaluationAccount bool     `json:"isEvaluationAccount,omitempty"`
 	CreatedAt           string   `json:"createdAt"`
 	Description         string   `json:"description"`

@@ -361,13 +361,10 @@ type CaseRepository interface {
 	// label, e.g. "IN_PROGRESS"; "" if the project has none or projectID
 	// doesn't resolve to one) and whether its project_type is Evaluation
 	// Subscription. Matched against the fixed
-	// evaluationSubscriptionProjectTypeID (this row's real id, confirmed
-	// against the same value the reference ServiceNow CSNotificationRouter
-	// script hardcodes as its own PROJECT_TYPE_EVALUATION sys_id), not the
-	// type's display name -- a name is editable, this id is not. A
-	// projectID with no matching project row returns the zero value
-	// ("", false), not an error: this is best-effort Chat-routing
-	// enrichment, not a data-integrity check.
+	// evaluationSubscriptionProjectTypeName (confirmed directly against the
+	// project_type table). A projectID with no matching project row
+	// returns the zero value ("", false), not an error: this is
+	// best-effort Chat-routing enrichment, not a data-integrity check.
 	ProjectAudienceFacts(ctx context.Context, projectID string) (onboardingStatus string, isEvaluationSubscription bool, err error)
 	// UpdateCaseAssignee sets work_item.assigned_to_id to userID -- already
 	// resolved and validated as a real "user" row by the caller (CaseService.
@@ -2329,25 +2326,26 @@ func (r *caseRepo) ProjectContactEmailsByRole(ctx context.Context, projectID, ro
 	return emails, nil
 }
 
-// evaluationSubscriptionProjectTypeID is project_type's real row id for
-// "Evaluation Subscription" -- the same value the reference ServiceNow
-// CSNotificationRouter script hardcodes as its own PROJECT_TYPE_EVALUATION
-// sys_id (confirmed identical once converted between ServiceNow's 32-hex
-// sysid shape and this schema's UUID shape -- see internal/service/sn_id.go
-// for that conversion). Matching by id rather than by project_type.name:
-// a display name is editable and has no uniqueness guarantee this schema
-// enforces on its own meaning, this id does not change once assigned.
-const evaluationSubscriptionProjectTypeID = "cb0b88af-1bf4-f810-00ae-86acdd4bcbba"
+// evaluationSubscriptionProjectTypeName is project_type.name's exact value
+// for the "Evaluation Subscription" type -- confirmed directly against the
+// project_type table (a second, unrelated row, "Cloud Evaluation Support",
+// also exists, so an exact match is required, not a substring/ILIKE one).
+// Matched by name, not by a hardcoded id: project_type isn't seeded by this
+// repo's own migrations (it's populated by an external sync), so nothing
+// guarantees a given row's id is the same across environments -- name has
+// a UNIQUE constraint and is the stable, portable key here.
+const evaluationSubscriptionProjectTypeName = "Evaluation Subscription"
 
 // ProjectAudienceFacts implements CaseRepository.
 func (r *caseRepo) ProjectAudienceFacts(ctx context.Context, projectID string) (string, bool, error) {
 	var onboardingStatus *string
 	var isEvaluation bool
 	err := r.db.QueryRow(ctx, `
-		SELECT p.onboarding_status::TEXT, (p.project_type_id = $2::uuid)
+		SELECT p.onboarding_status::TEXT, (pt.name = $2)
 		FROM project p
+		LEFT JOIN project_type pt ON pt.id = p.project_type_id
 		WHERE p.id = $1`,
-		projectID, evaluationSubscriptionProjectTypeID,
+		projectID, evaluationSubscriptionProjectTypeName,
 	).Scan(&onboardingStatus, &isEvaluation)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil

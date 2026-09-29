@@ -1244,7 +1244,7 @@ func publishCaseCreatedEvent(
 	// not a reason to drop the whole publish.
 	onboardingStatus, isEvaluation, err := resolveProjectAudienceFacts(ctx, req.ProjectID)
 	if err != nil {
-		slog.WarnContext(ctx, "create case: resolving project audience facts failed", "caseId", caseID, "error", err)
+		slog.WarnContext(ctx, "create case: resolving project audience facts failed", "caseId", caseID)
 	}
 
 	payload, err := json.Marshal(events.CaseCreatedPayload{
@@ -1746,7 +1746,7 @@ func publishStatusChangedEvent(ctx context.Context, publisher EventPublisherServ
 // wrapper around publishSeverityChangedEvent — see that function's own doc
 // comment for why.
 func (s *snCaseService) publishSeverityChanged(ctx context.Context, caseID, oldSeverity, newSeverity string, before domain.CaseView) {
-	publishSeverityChangedEvent(ctx, s.publisher, caseID, oldSeverity, newSeverity, before)
+	publishSeverityChangedEvent(ctx, s.publisher, s.ProjectAudienceFacts, caseID, oldSeverity, newSeverity, before)
 }
 
 // publishSeverityChangedEvent is publishSeverityChanged's actual body,
@@ -1756,7 +1756,7 @@ func (s *snCaseService) publishSeverityChanged(ctx context.Context, caseID, oldS
 // plain severity strings (either case; upper-cased here) — the caller has
 // already confirmed they actually differ, not a caller re-PATCHing the
 // case's current severity.
-func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherService, caseID, oldSeverity, newSeverity string, before domain.CaseView) {
+func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherService, resolveProjectAudienceFacts func(context.Context, string) (string, bool, error), caseID, oldSeverity, newSeverity string, before domain.CaseView) {
 	if publisher == nil || newSeverity == "" {
 		return
 	}
@@ -1769,17 +1769,31 @@ func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherSe
 		return
 	}
 
+	// before.ProjectDetails is nilable on the Postgres data source (this
+	// function serves both) — see publishCaseAssigned's own comment.
+	projectID := ""
+	if before.ProjectDetails != nil {
+		projectID = before.ProjectDetails.ID
+	}
+	// Best-effort — see publishCaseCreatedEvent's own comment for why a
+	// failed lookup doesn't block the publish.
+	onboardingStatus, isEvaluation, err := resolveProjectAudienceFacts(ctx, projectID)
+	if err != nil {
+		slog.WarnContext(ctx, "update case: resolving project audience facts failed", "caseId", caseID)
+	}
+
 	payload, err := json.Marshal(events.SeverityChangedPayload{
-		ProjectID:   before.ProjectDetails.ID,
-		CaseID:      caseID,
-		CaseNumber:  before.Number,
-		WSO2CaseID:  before.InternalID,
-		CaseTitle:   before.Subject,
-		OldSeverity: strings.ToUpper(oldSeverity),
-		NewSeverity: strings.ToUpper(newSeverity),
-		Product:     caseProductName(before),
-		Team:        caseTeamName(before),
-		Recipients:  recipients,
+		ProjectID:               projectID,
+		CaseID:                  caseID,
+		CaseNumber:              before.Number,
+		WSO2CaseID:              before.InternalID,
+		CaseTitle:               before.Subject,
+		OldSeverity:             strings.ToUpper(oldSeverity),
+		NewSeverity:             strings.ToUpper(newSeverity),
+		Team:                    caseTeamName(before),
+		ProjectOnboardingStatus: onboardingStatus,
+		IsEvaluationAccount:     isEvaluation,
+		Recipients:              recipients,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "update case: encode case.severity_changed payload failed", "caseId", caseID, "error", err)
@@ -1877,16 +1891,27 @@ func (s *snCaseService) publishCaseAcknowledged(ctx context.Context, caseID, ack
 		slog.ErrorContext(ctx, "sn update case: enrich case for case.acknowledged publish failed", "caseId", caseID)
 		return
 	}
-	product := caseProductName(cv)
+
+	projectID := ""
+	if cv.ProjectDetails != nil {
+		projectID = cv.ProjectDetails.ID
+	}
+	// Best-effort — see publishCaseCreatedEvent's own comment for why a
+	// failed lookup doesn't block the publish.
+	onboardingStatus, isEvaluation, err := s.ProjectAudienceFacts(ctx, projectID)
+	if err != nil {
+		slog.WarnContext(ctx, "sn update case: resolving project audience facts failed", "caseId", caseID)
+	}
 
 	payload, err := json.Marshal(events.CaseAcknowledgedPayload{
-		CaseID:           caseID,
-		CaseNumber:       cv.Number,
-		WSO2CaseID:       cv.InternalID,
-		Severity:         strings.ToUpper(string(derefSeverity(cv.Severity))),
-		Product:          product,
-		Team:             caseTeamName(cv),
-		AcknowledgerName: acknowledgerName,
+		CaseID:                  caseID,
+		CaseNumber:              cv.Number,
+		WSO2CaseID:              cv.InternalID,
+		Severity:                strings.ToUpper(string(derefSeverity(cv.Severity))),
+		Team:                    caseTeamName(cv),
+		ProjectOnboardingStatus: onboardingStatus,
+		IsEvaluationAccount:     isEvaluation,
+		AcknowledgerName:        acknowledgerName,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "sn update case: encode case.acknowledged payload failed", "caseId", caseID, "error", err)

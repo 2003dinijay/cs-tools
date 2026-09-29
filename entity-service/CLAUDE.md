@@ -553,13 +553,10 @@ easy to wire up for real once both exist.
   only publishes the raw facts, never the routing policy. `Team` also
   gained a second role alongside its existing display purpose: it's now
   also `csm-notification-service`'s Chat-audience routing key for
-  `case.created` (a team with no configured space of its own falls back to
-  the standing "Incident Monitor" audience) — this design was ported from
-  a reference ServiceNow Script Include's own team/onboarding/evaluation
-  routing logic; only the design was ported, never any of that script's
-  own literal webhook URLs or tokens, which were never committed to this
-  codebase. See `csm-notification-service`'s own `CLAUDE.md` for the full
-  audience-resolution rules.
+  `case.created`/`case.acknowledged`/`case.severity_changed` (a team with
+  no configured space of its own falls back to the standing "Incident
+  Monitor" audience). See `csm-notification-service`'s own `CLAUDE.md` for
+  the full audience-resolution rules.
 - **`snIncidentService.CreateIncident`** publishes `incident.created` via
   `publishIncidentCreated`, called the same way. No enrichment round trip is
   needed here: `req.Subject`/`req.AdditionalComments` already carry

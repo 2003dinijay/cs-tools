@@ -185,13 +185,14 @@ type Dispatcher struct {
 	// Chat alert.
 	callSendingEnabled bool
 
-	// defaultChatProduct/defaultOnCallNumber are handleCaseCreated's and
-	// handleIncidentCreated's fallback values for their payload's own
-	// Product/CallTo when a publisher omits them — see handleIncidentCreated's
-	// doc comment for why a publisher (e.g. entity-service) might not know
-	// either value itself. defaultChatProduct applies to both event types'
-	// Google Chat alert (case.created has no call reaction, hence no
-	// case.created-specific default for defaultOnCallNumber).
+	// defaultChatProduct/defaultOnCallNumber are handleIncidentCreated's
+	// fallback values for its payload's own Product/CallTo when a publisher
+	// omits them — see that function's own doc comment for why a publisher
+	// (e.g. entity-service) might not know either value itself.
+	// defaultChatProduct no longer applies to any case.* type: case.created/
+	// case.acknowledged/case.severity_changed are all audience-routed (see
+	// resolveChatAudiences), not product-routed — incident.created is the
+	// only remaining product-routed Chat alert.
 	defaultChatProduct  string
 	defaultOnCallNumber string
 
@@ -454,42 +455,37 @@ func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {
 
 // handleCaseCreated has two independent reactions, like handleIncidentCreated
 // below: the case-created email (per resolved recipient link) and a Google
-// Chat alert to the shared internal Chat space, via the same
-// GoogleChatClient.SendIncidentAlert incident.created uses — its doc comment
-// already covers "a newly created incident/case" for exactly this reuse. The
-// Chat alert always targets the CSM portal's case link (links.CSMLink), not
-// a per-recipient link, since there's no per-recipient audience for a Chat
-// post the way there is for email. Product falls back to
-// Dispatcher.defaultChatProduct when the payload omits it, the same as
-// handleIncidentCreated's Product fallback — see that function's doc
-// comment. If the resolved product is still empty (payload and
-// DEFAULT_CHAT_PRODUCT both unset), the Chat alert is skipped (logged) the
-// same way handleIncidentCreated skips its own Chat alert in that case,
-// rather than calling SendIncidentAlert with an empty product — that would
-// return a real "no space configured" error and, without the idempotency
-// tracking described below, retry every already-succeeded email group
-// alongside the Chat attempt every time.
+// Chat alert, posted once per resolved audience (see resolveChatAudiences) —
+// audience-routed, not product-routed, unlike handleIncidentCreated's own
+// Chat alert. The Chat alert always targets the CSM portal's case link
+// (links.CSMLink), not a per-recipient link, since there's no per-recipient
+// audience for a Chat post the way there is for email — "audience" here
+// means which Chat space(s), not who the post is for. An audience with no
+// configured GOOGLE_CHAT_AUDIENCE_SPACES entry is skipped (logged) inside
+// GoogleChatClient.sendCardToAudience itself, not distinguishable here from
+// a genuine send — see resolveChatAudiences'/sendChatPerAudience's own doc
+// comments.
 //
-// Every reaction here — each email group and the Chat alert — has
-// per-record idempotency tracking, the same mechanism handleIncidentCreated
-// uses: a real-world failure mode this was missing until it actually
-// happened — a persistently-failing step (e.g. a misconfigured email OAuth2
-// client) means every one of eventbus.Consumer's 3 retries, and then the
-// DLQ consumer's own 3 retries, re-runs this whole function, so an
-// unguarded already-succeeded channel would repost/resend up to 6 times for
-// one event before the failing one is ever fixed. Email groups are tracked
-// inside sendPerGroup itself (see its own doc comment); chatKey is tracked
-// here directly, mirroring handleIncidentCreated's shape. Both kinds are
-// forgotten together, once the whole call succeeds (len(errs) == 0, so
-// Handle is about to return nil — no more retries coming) or
-// record.NoMoreRetries is true (no further retry coming at all, on this
-// topic or the dead-letter one — see its doc comment) — never on an
-// individual channel's own success alone, which would release it while
-// other channels in this same call are still failing and
-// eventbus.Consumer keeps retrying, immediately re-arming that channel to
-// resend on the very next attempt. Releasing is also ownership-gated for
-// both kinds — see forgetEmailGroups' doc comment for the live duplicate-
-// email bug that closed.
+// Every reaction here — each email group and each resolved audience's Chat
+// post — has per-record idempotency tracking, the same mechanism
+// handleIncidentCreated uses: a real-world failure mode this was missing
+// until it actually happened — a persistently-failing step (e.g. a
+// misconfigured email OAuth2 client) means every one of eventbus.Consumer's
+// 3 retries, and then the DLQ consumer's own 3 retries, re-runs this whole
+// function, so an unguarded already-succeeded channel would repost/resend
+// up to 6 times for one event before the failing one is ever fixed. Email
+// groups are tracked inside sendPerGroup itself (see its own doc comment);
+// each audience is tracked inside sendChatPerAudience, keyed per audience
+// (see its own doc comment). All of it is forgotten together, once the
+// whole call succeeds (len(errs) == 0, so Handle is about to return nil —
+// no more retries coming) or record.NoMoreRetries is true (no further retry
+// coming at all, on this topic or the dead-letter one — see its doc
+// comment) — never on an individual channel's/audience's own success
+// alone, which would release it while other reactions in this same call
+// are still failing and eventbus.Consumer keeps retrying, immediately
+// re-arming that one to resend on the very next attempt. Releasing is also
+// ownership-gated for both kinds — see forgetEmailGroups' doc comment for
+// the live duplicate-email bug that closed.
 func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Record, raw json.RawMessage) error {
 	var p events.CaseCreatedPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -788,74 +784,52 @@ func (d *Dispatcher) handleCaseAssigned(ctx context.Context, record eventbus.Rec
 // handleCaseAcknowledged has exactly one reaction, unlike every other
 // case.* handler above: a Google Chat alert only — see
 // events.CaseAcknowledgedPayload's own doc comment for why there's no
-// email/Recipients concept here at all. With only one channel, there's no
-// cross-channel release race to guard against the way beginRecord/endRecord
-// does for handleCaseCreated/handleIncidentCreated — this call's own
-// chatOwned already fully determines whether it's safe to release: true
-// means this call either just sent successfully or found nothing to do
-// (no configured product), either way a real, complete outcome; false
-// means it lost the claim race entirely and touched nothing, so it must
-// never release a key a different, still in-flight call might rely on.
+// email/Recipients concept here at all. Audience-routed the same way
+// handleCaseCreated is (see resolveChatAudiences) rather than product-routed
+// — a case with multiple resolved audiences gets an independent ack alert
+// in each one, threading under that same audience's own case.created
+// message. Despite being nominally one channel, multiple audiences create
+// the exact same cross-call ownership race multiple channels do — a losing
+// call for one audience must not release a different audience a still
+// in-flight sibling call genuinely owns — so this needs the same
+// beginRecord/endRecord refcounting handleCaseCreated uses for its own two
+// channels; see that function's own doc comment for the full reasoning.
 func (d *Dispatcher) handleCaseAcknowledged(ctx context.Context, record eventbus.Record, raw json.RawMessage) error {
 	var p events.CaseAcknowledgedPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return fmt.Errorf("dispatch: decode case.acknowledged payload: %w", err)
 	}
 
-	chatKey := recordBaseKey(record) + "/chat"
-	chatOwned := d.claim(chatKey)
-	var chatErr error
-	if chatOwned {
-		product := p.Product
-		if product == "" {
-			product = d.defaultChatProduct
-		}
-		if product == "" {
-			slog.WarnContext(ctx, "dispatch: no product for case.acknowledged (payload and DEFAULT_CHAT_PRODUCT both empty); skipping Google Chat alert")
-		} else {
-			severityLabel, severityColor := severityLabelAndColor(p.Severity)
-			caseLink := d.links.CSMLink(p.CaseID)
-			chatErr = d.googleChat.SendCaseAcknowledgedAlert(ctx, product, severityLabel, severityColor, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, caseLink, p.AcknowledgerName)
-			if chatErr != nil {
-				d.forget(chatKey)
-				chatOwned = false
-			}
-		}
-	}
+	baseKey := recordBaseKey(record)
+	endRecord := d.beginRecord(baseKey)
 
-	// Deliberately just chatOwned, not "|| record.NoMoreRetries" the way
-	// every multi-channel handler's release condition reads: NoMoreRetries
-	// force-releases there because a *different* concurrent call may have
-	// already claimed-and-succeeded a sibling channel and returned before
-	// this call even started, leaving nothing to eventually release it. That
-	// scenario can't happen here — there's only one channel/claim total, so
-	// whichever call actually owns it (chatOwned true) is the only call
-	// that will ever release it, either here on success/skip or inline on
-	// failure above. A losing call (chatOwned false) forgetting the key
-	// just because NoMoreRetries is also true would release a claim a
-	// different, still in-flight call (genuinely mid-SendCaseAcknowledgedAlert)
-	// relies on staying held — the same class of bug beginRecord/endRecord
-	// closed for handleCaseCreated/handleIncidentCreated, see those doc
-	// comments.
-	if chatOwned {
-		d.forget(chatKey)
+	audiences := resolveChatAudiences(p.Team, p.IsEvaluationAccount, p.ProjectOnboardingStatus, time.Now(), d.googleChat.HasAudienceSpace)
+	severityLabel, severityColor := severityLabelAndColor(p.Severity)
+	caseLink := d.links.CSMLink(p.CaseID)
+	_, chatErr := d.sendChatPerAudience(ctx, baseKey, audiences, func(audience string) error {
+		return d.googleChat.SendCaseAcknowledgedAlert(ctx, audience, severityLabel, severityColor, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, caseLink, p.AcknowledgerName)
+	})
+
+	// Same release reasoning as handleCaseCreated's own matching comment —
+	// see its doc comment for the full explanation of endRecord/
+	// record.NoMoreRetries.
+	safeToRelease := endRecord(chatErr != nil)
+	if record.NoMoreRetries || safeToRelease {
+		d.forgetChatAudiences(baseKey, audiences)
 	}
 	return chatErr
 }
 
 // handleSeverityChanged has two independent reactions, like handleCaseCreated
 // above: the severity-changed email (per resolved recipient link,
-// RenderSeverityChangedEmail) and a Google Chat alert to the same space as
-// the case's own case.created/case.acknowledged alerts
-// (SendSeverityChangedAlert). Unlike handleCaseAcknowledged (Chat-only, one
-// channel, no cross-channel release race — see its own doc comment), this
-// needs the same beginRecord/endRecord refcounting handleCaseCreated uses,
-// for the exact same reason: two channels means a losing call for one
-// channel must not release the other while a different, still in-flight
-// call genuinely owns it. Product falls back to Dispatcher.defaultChatProduct
-// when the payload omits it, and the Chat alert is skipped (logged) rather
-// than erroring when the resolved product is still empty — same reasoning
-// as handleCaseCreated's own Chat block.
+// RenderSeverityChangedEmail) and a Google Chat alert to the same audience
+// space(s) as the case's own case.created/case.acknowledged alerts
+// (SendSeverityChangedAlert) — audience-routed via resolveChatAudiences, the
+// same as handleCaseCreated/handleCaseAcknowledged, not product-routed. This
+// needs the same beginRecord/endRecord refcounting handleCaseCreated uses:
+// two channels (and, within the Chat channel, potentially several
+// audiences) means a losing call for one must not release another while a
+// different, still in-flight call genuinely owns it.
 func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.Record, raw json.RawMessage) error {
 	var p events.SeverityChangedPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -863,7 +837,6 @@ func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.
 	}
 
 	baseKey := recordBaseKey(record)
-	chatKey := baseKey + "/chat"
 	endRecord := d.beginRecord(baseKey)
 
 	var errs []error
@@ -901,22 +874,14 @@ func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.
 	// reasoning as handleIncidentCreated's own doc comment, and the same
 	// shape handleCaseCreated's own chat block uses (outside its email
 	// if/else, not nested inside the success branch).
-	chatOwned := d.claim(chatKey)
-	if chatOwned {
-		product := p.Product
-		if product == "" {
-			product = d.defaultChatProduct
-		}
-		if product == "" {
-			slog.WarnContext(ctx, "dispatch: no product for case.severity_changed (payload and DEFAULT_CHAT_PRODUCT both empty); skipping Google Chat alert")
-		} else {
-			caseLink := d.links.CSMLink(p.CaseID)
-			title := truncateTitle(p.CaseTitle, maxChatTitleLength)
-			if chatErr := d.googleChat.SendSeverityChangedAlert(ctx, product, oldLabel, oldColor, newLabel, newColor, caseRef, p.WSO2CaseID, title, p.Team, caseLink); chatErr != nil {
-				errs = append(errs, chatErr)
-				d.forget(chatKey)
-			}
-		}
+	audiences := resolveChatAudiences(p.Team, p.IsEvaluationAccount, p.ProjectOnboardingStatus, time.Now(), d.googleChat.HasAudienceSpace)
+	caseLink := d.links.CSMLink(p.CaseID)
+	title := truncateTitle(p.CaseTitle, maxChatTitleLength)
+	_, chatErr := d.sendChatPerAudience(ctx, baseKey, audiences, func(audience string) error {
+		return d.googleChat.SendSeverityChangedAlert(ctx, audience, oldLabel, oldColor, newLabel, newColor, caseRef, p.WSO2CaseID, title, p.Team, caseLink)
+	})
+	if chatErr != nil {
+		errs = append(errs, chatErr)
 	}
 
 	// Same release reasoning as handleCaseCreated's own matching comment —
@@ -924,7 +889,7 @@ func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.
 	// record.NoMoreRetries.
 	safeToRelease := endRecord(len(errs) > 0)
 	if record.NoMoreRetries || safeToRelease {
-		d.forget(chatKey)
+		d.forgetChatAudiences(baseKey, audiences)
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
 	}
 
@@ -1026,10 +991,9 @@ func isLowSeverity(severity string) bool {
 	return strings.EqualFold(strings.TrimSpace(severity), "LOW")
 }
 
-// Audience keys not tied to a specific CRE team name — mirrors the
-// reference ServiceNow CSNotificationRouter script's own non-ABT DIRECTORY
-// entries. "Migration" is deliberately not ported: that script's own
-// frustration-alert-only audience has no case.created equivalent here.
+// Audience keys not tied to a specific CRE team name — the standing,
+// always-available Chat audiences a case can resolve to on top of (or
+// instead of) its own team.
 const (
 	chatAudienceIncidentMonitor = "Incident Monitor"
 	chatAudienceOnboarding      = "Onboarding"
@@ -1041,8 +1005,7 @@ const (
 // project.onboarding_status raw values (see
 // events.CaseCreatedPayload.ProjectOnboardingStatus's own doc comment) that
 // add the "Onboarding" Chat audience on top of whichever audience the
-// case's own CreTeam resolves to — mirrors the reference script's own
-// ONBOARDING_STATUSES list. A policy decision kept here, not in
+// case's own CreTeam resolves to. A policy decision kept here, not in
 // entity-service, so it can change without a redeploy there.
 var onboardingChatAudienceStatuses = map[string]bool{
 	"IN_PROGRESS": true,
@@ -1050,14 +1013,11 @@ var onboardingChatAudienceStatuses = map[string]bool{
 }
 
 // istLocation is a fixed +5:30 offset with no DST — IST never observes one,
-// so a fixed zone is exact and needs no tzdata lookup, matching the
-// reference script's own manual UTC-offset arithmetic (_getISTClock).
+// so a fixed zone is exact and needs no tzdata lookup.
 var istLocation = time.FixedZone("IST", 5*3600+30*60)
 
 // The Americas overnight coverage window (9 PM–6 AM IST, wrapping past
-// midnight) and the weekend boundary (6 AM IST) — mirrors the reference
-// script's own AMERICAS_WINDOW_START_MINUTES/END_MINUTES/
-// WEEKEND_BOUNDARY_MINUTES.
+// midnight) and the weekend boundary (6 AM IST).
 const (
 	americasWindowStartMinutes = 21 * 60
 	americasWindowEndMinutes   = 6 * 60
@@ -1088,26 +1048,23 @@ func isWeekendCoverageWindow(ist time.Time) bool {
 	}
 }
 
-// resolveChatAudiences mirrors the reference ServiceNow
-// CSNotificationRouter script's own resolveAudiences — see that script's
-// doc comments for the full reasoning behind each rule. This implements
-// case.created's own subset (no Migration — see the audience-key constants'
-// own doc comment).
+// resolveChatAudiences decides which Chat audience(s) a case.created (or
+// case.acknowledged/case.severity_changed) alert should post to, from the
+// case's own team, evaluation-account status, project onboarding status,
+// and the current time.
 //
 // hasAudience answers "does this team have a configured Chat space" —
 // Dispatcher.googleChat.HasAudienceSpace in production. A team with no
 // space of its own falls back to the shared Incident Monitor audience, the
 // same as no team being assigned at all — both mean "there's nowhere
-// specific to send this," just for different reasons, mirroring the
-// reference script's own "not a recognized ABT" vs. "no team assigned"
-// cases collapsing to the identical fallback.
+// specific to send this," just for different reasons.
 //
 // now is passed in (not read via time.Now() internally) so tests can drive
 // a fixed clock.
 func resolveChatAudiences(team string, isEvaluationAccount bool, onboardingStatus string, now time.Time, hasAudience func(string) bool) []string {
 	// Evaluation Subscription cases belong to the Evaluation audience
 	// alone — none of the team/onboarding/Americas/weekend rules below
-	// apply, mirroring the reference script's own identical short-circuit.
+	// apply.
 	if isEvaluationAccount {
 		return []string{chatAudienceEvaluation}
 	}

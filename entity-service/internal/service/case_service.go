@@ -1067,7 +1067,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 		if cv, err := s.GetCaseByID(ctx, req.ID); err != nil {
 			slog.ErrorContext(ctx, "update case: enrich case for case.severity_changed publish failed", "caseId", req.ID)
 		} else {
-			publishSeverityChangedEvent(ctx, s.publisher, req.ID, string(derefSeverity(oldSeverity)), string(*c.Severity), cv)
+			publishSeverityChangedEvent(ctx, s.publisher, s.ProjectAudienceFacts, req.ID, string(derefSeverity(oldSeverity)), string(*c.Severity), cv)
 		}
 	}
 
@@ -1613,14 +1613,28 @@ func (s *caseService) publishCaseAcknowledged(ctx context.Context, caseID, ackno
 		return
 	}
 
+	// cv.ProjectDetails is nilable on this data source — see
+	// publishCaseAssigned's own comment.
+	projectID := ""
+	if cv.ProjectDetails != nil {
+		projectID = cv.ProjectDetails.ID
+	}
+	// Best-effort — see publishCaseCreatedEvent's own comment for why a
+	// failed lookup doesn't block the publish.
+	onboardingStatus, isEvaluation, err := s.ProjectAudienceFacts(ctx, projectID)
+	if err != nil {
+		slog.WarnContext(ctx, "update case: resolving project audience facts failed", "caseId", caseID)
+	}
+
 	payload, err := json.Marshal(events.CaseAcknowledgedPayload{
-		CaseID:           caseID,
-		CaseNumber:       cv.Number,
-		WSO2CaseID:       cv.InternalID,
-		Severity:         strings.ToUpper(string(derefSeverity(cv.Severity))),
-		Product:          caseProductName(cv),
-		Team:             caseTeamName(cv),
-		AcknowledgerName: acknowledgerName,
+		CaseID:                  caseID,
+		CaseNumber:              cv.Number,
+		WSO2CaseID:              cv.InternalID,
+		Severity:                strings.ToUpper(string(derefSeverity(cv.Severity))),
+		Team:                    caseTeamName(cv),
+		ProjectOnboardingStatus: onboardingStatus,
+		IsEvaluationAccount:     isEvaluation,
+		AcknowledgerName:        acknowledgerName,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "update case: encode case.acknowledged payload failed", "caseId", caseID, "error", err)
