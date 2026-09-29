@@ -2062,3 +2062,29 @@
   box-shadow: none;
   background: color-mix(in srgb, var(--accent) 26%, transparent);
 }
+
+/* One strength per day, whichever cell it is.
+ *
+ * The rules above lost to more specific ones in two places: a day's first
+ * zone column (TZ1, .zfirst) and the last row each had their own today rule,
+ * so on the SRE grid TZ1 and the bottom row stayed at today's 13% while TZ2
+ * and TZ3 took the picked day's 22%, and the column read as two shades. These
+ * restate the combined and own-row fills with at least that specificity. */
+.csm-ts .tw.roster.split tbody tr > td.today.sel.zfirst,
+.csm-ts .tw.roster.split tbody tr:last-child > td.today.sel,
+.csm-ts .tw.roster.split tbody tr:last-child > td.today.sel.zfirst,
+.csm-ts .tw.roster tbody tr:last-child > td.today.sel {
+  box-shadow: none;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.csm-ts .tw.roster.split tbody tr.me > td.today.zfirst,
+.csm-ts .tw.roster.split tbody tr.me > td.sel.zfirst,
+.csm-ts .tw.roster.split tbody tr.me > td.today.sel.zfirst,
+.csm-ts .tw.roster.split tbody tr.me:last-child > td.today,
+.csm-ts .tw.roster.split tbody tr.me:last-child > td.today.sel,
+.csm-ts .tw.roster.split tbody tr.me:last-child > td.today.sel.zfirst,
+.csm-ts .tw.roster tbody tr.me:last-child > td.today,
+.csm-ts .tw.roster tbody tr.me:last-child > td.today.sel {
+  box-shadow: none;
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
