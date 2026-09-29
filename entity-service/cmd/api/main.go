@@ -114,7 +114,10 @@ func main() {
 	// consumer read and discard every change-request record and vice versa —
 	// a separate topic is what isolates the two volumes, where a separate
 	// consumer group would only isolate the processing.
-	crNoticeCtx, stopCRNotices := context.WithCancel(context.Background())
+	// WithSystemIdentity: same reasoning as slaEngineCtx above -- this
+	// drainer runs on its own process-startup context, never an HTTP
+	// request, and CRNoticeRepository's writes are Scoped-wrapped now too.
+	crNoticeCtx, stopCRNotices := context.WithCancel(repository.WithSystemIdentity(context.Background()))
 	defer stopCRNotices()
 	var crPublisher service.EventPublisherService
 	if cfg.CRNoticesEnabled {

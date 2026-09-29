@@ -610,7 +610,12 @@ func createTimeCardTx(ctx context.Context, tx pgx.Tx, req domain.CreateTimeCardR
 			return "", &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
 		}
 		if IsRLSPolicyViolation(err) {
-			return "", &apierror.ValidationError{Msg: "case not found: " + req.CaseID}
+			// NotFoundError, not ValidationError, and no UUID echoed back --
+			// matching call_request_repo.go's identical RLS-violation
+			// mapping (and this whole PR's own convention throughout):
+			// existence of a case outside the caller's project is never
+			// revealed by the error's shape.
+			return "", &apierror.NotFoundError{Msg: "case not found"}
 		}
 		return "", fmt.Errorf("insert time card: %w", err)
 	}

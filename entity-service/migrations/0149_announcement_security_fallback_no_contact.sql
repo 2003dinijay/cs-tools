@@ -103,7 +103,19 @@ CREATE POLICY announcement_visibility ON announcement
       JOIN project_group_role pgr ON pgr.project_group_id = pcg.project_group_id
       JOIN project_role pr ON pr.id = pgr.project_role_id
       WHERE wi.id = announcement.id
-        AND pc.email = current_setting('app.viewer_email', true)
+        -- LOWER(...) both sides, and NULLIF guarding the bare column, not a
+        -- plain pc.email = current_setting(...) comparison -- migration
+        -- 000085's original policy (which this DROP POLICY/CREATE POLICY
+        -- replaces) used exactly this form, with its own supporting
+        -- expression index on LOWER(email); dropping the LOWER() here would
+        -- silently deny a legitimate viewer whose stored project_contact
+        -- email differs only in case from what the JWT carries, and would
+        -- stop using that index. NULLIF matches is_project_member's own
+        -- guard (migration 0141): current_setting(..., true) returns ''
+        -- (not NULL) once a transaction-local set_config reverts, and a
+        -- bare '' could in principle match a project_contact row with a
+        -- blank email.
+        AND LOWER(pc.email) = LOWER(NULLIF(current_setting('app.viewer_email', true), ''))
         AND (
           (NOT announcement_is_security(announcement.id, announcement.announcement_type) AND pr.role IN ('PORTAL_USER', 'LEAD_USER'))
           OR (announcement_is_security(announcement.id, announcement.announcement_type) AND pr.role = 'SECURITY_CONTACT')

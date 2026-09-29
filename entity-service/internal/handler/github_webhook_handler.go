@@ -83,7 +83,15 @@ func (h *GithubWebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outcome, err := h.svc.HandleWebhook(r.Context(), service.Delivery{
+	// WithSystemIdentity: GitHub's webhook carries no x-user-id-token, so
+	// callerIdentityMiddleware never attaches an identity to r.Context() --
+	// this endpoint's own HMAC signature check above is its authentication
+	// instead (see this handler's own doc comment). githubSyncSvc's repos
+	// are Scoped-wrapped now, and every one of their writes requires SOME
+	// identity on ctx regardless of table; without this, every real inbound
+	// webhook delivery would fail with ErrNoCallerIdentity, breaking the
+	// GitHub<->CR sync integration outright.
+	outcome, err := h.svc.HandleWebhook(repository.WithSystemIdentity(r.Context()), service.Delivery{
 		ID: deliveryID, Event: event, Payload: payload,
 	})
 	if err != nil {
