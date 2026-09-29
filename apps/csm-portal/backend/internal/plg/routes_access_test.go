@@ -62,6 +62,9 @@ var everydayRoutes = []struct{ method, path string }{
 	{http.MethodGet, "/plg/work-queue"},
 }
 
+// testAccessConfig mirrors the csm-portal handler package's own fixture: dummy
+// role names, never the real ones, since those are organisation vocabulary that
+// must not be committed.
 func testAccessConfig() csmhandler.AccessConfig {
 	return csmhandler.AccessConfig{
 		Viewer:               []string{"test-viewer"},
@@ -97,6 +100,9 @@ func plgMux(t *testing.T) *http.ServeMux {
 	return mux
 }
 
+// statusAs issues one request as a caller whose token carries roles, and
+// returns the status. The body is "{}" so a handler that reads one is not the
+// thing that fails — though with the stub identity in plgMux, none ever runs.
 func statusAs(t *testing.T, mux *http.ServeMux, method, path string, roles []string) int {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader("{}"))
@@ -106,6 +112,8 @@ func statusAs(t *testing.T, mux *http.ServeMux, method, path string, roles []str
 	return w.Code
 }
 
+// The main split: a CS engineer reaches all 20 everyday routes and is refused
+// on the four that author a playbook template.
 func TestRoutes_CsEngineerWorksTheQueueButCannotAuthorPlaybooks(t *testing.T) {
 	mux := plgMux(t)
 	engineer := []string{"test-cs-engineer"}
@@ -122,6 +130,7 @@ func TestRoutes_CsEngineerWorksTheQueueButCannotAuthorPlaybooks(t *testing.T) {
 	}
 }
 
+// Admin holds both permissions, so no PLG route is closed to it.
 func TestRoutes_AdminReachesEverything(t *testing.T) {
 	mux := plgMux(t)
 	admin := []string{"test-admin"}
@@ -152,6 +161,8 @@ func TestRoutes_ViewOnlyRolesAreShutOutEntirely(t *testing.T) {
 	}
 }
 
+// A token carrying no roles at all reaches nothing — the guard denies before
+// identity would have had a chance to resolve the caller.
 func TestRoutes_NoRolesReachesNothing(t *testing.T) {
 	mux := plgMux(t)
 	all := append(append([]struct{ method, path string }{}, everydayRoutes...), playbookManagementRoutes...)

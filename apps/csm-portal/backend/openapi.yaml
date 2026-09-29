@@ -8011,7 +8011,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8047,7 +8047,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8101,7 +8101,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8137,7 +8137,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8179,7 +8179,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8223,7 +8223,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8278,7 +8278,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8334,7 +8334,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8395,7 +8395,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8463,7 +8463,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8525,7 +8525,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8575,7 +8575,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8631,7 +8631,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8687,7 +8687,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8735,7 +8735,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8785,7 +8785,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8840,7 +8840,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8889,7 +8889,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — authoring a playbook template is admin only; a CS engineer may read and assign templates but not change one. Also returned when the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8939,7 +8939,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8994,7 +8994,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — authoring a playbook template is admin only; a CS engineer may read and assign templates but not change one. Also returned when the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -9039,7 +9039,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — authoring a playbook template is admin only; a CS engineer may read and assign templates but not change one. Also returned when the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -9101,7 +9101,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — authoring a playbook template is admin only; a CS engineer may read and assign templates but not change one. Also returned when the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -9158,7 +9158,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -9232,7 +9232,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
