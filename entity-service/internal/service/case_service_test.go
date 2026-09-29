@@ -3889,7 +3889,7 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 			},
 		}
 		dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
-		return NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, dispatcher, mirror)
+		return NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, dispatcher, mirror, nil)
 	}
 
 	t.Run("closed without resolution fields is rejected", func(t *testing.T) {
