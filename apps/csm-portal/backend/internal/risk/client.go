@@ -29,8 +29,22 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql" // MySQL driver, registered via side effect
+)
+
+// Connection pool bounds for the risk MySQL database. Without these,
+// database/sql's defaults are unlimited open connections and connections
+// that are never recycled, so a burst of requests can open far more
+// connections than the MySQL server allows and a connection can go stale
+// (e.g. outlive a load balancer's idle timeout) without ever being
+// refreshed. No env var for these: this is a bound on the pool's own
+// resource use, not a per-deployment tunable like the DSN itself.
+const (
+	riskMaxOpenConns    = 25
+	riskMaxIdleConns    = 5
+	riskConnMaxLifetime = 5 * time.Minute
 )
 
 // Config holds the configuration for the risk MySQL client.
@@ -59,6 +73,9 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("risk: open database: %w", err)
 	}
+	db.SetMaxOpenConns(riskMaxOpenConns)
+	db.SetMaxIdleConns(riskMaxIdleConns)
+	db.SetConnMaxLifetime(riskConnMaxLifetime)
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("risk: ping database: %w", err)
