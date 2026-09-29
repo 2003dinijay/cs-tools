@@ -17,13 +17,26 @@
 import { Button, Dialog, DialogActions, DialogContent, DialogTitle, Typography } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
 
+/** Outcome of the deployed-dashboard lookup, as far as the page knows it. */
+export type DeployedLookup = "exists" | "pending" | "failed" | "missing";
+
+const CONSEQUENCE: Record<DeployedLookup, string> = {
+  exists: "The dashboard will reset to the deployed version the next time it is opened.",
+  pending:
+    "The deployed version is still being checked, so what would be left after discarding is not known yet.",
+  failed:
+    "Could not check whether a deployed version exists, so discarding may leave nothing to restore.",
+  missing:
+    "There is no deployed version, so this draft is the only copy and discarding deletes it entirely.",
+};
+
 interface DiscardDraftDialogProps {
   open: boolean;
   /** Name shown in the body; the caller falls back to the draft id. */
   dashboardName: string;
-  /** True when the draft was opened from a deployed dashboard, so a discard
-   * only resets it; false when the draft is the only copy that exists. */
-  hasDeployedVersion: boolean;
+  /** Whether a deployed version is confirmed to exist. Only "exists" may
+   * promise a reset; the draft's origin alone does not prove one. */
+  deployedLookup: DeployedLookup;
   onCancel: () => void;
   onConfirm: () => void;
 }
@@ -32,7 +45,7 @@ interface DiscardDraftDialogProps {
 export default function DiscardDraftDialog({
   open,
   dashboardName,
-  hasDeployedVersion,
+  deployedLookup,
   onCancel,
   onConfirm,
 }: DiscardDraftDialogProps): JSX.Element {
@@ -42,9 +55,7 @@ export default function DiscardDraftDialog({
       <DialogContent>
         <Typography variant="body2">
           Your local edits to &quot;{dashboardName}&quot; will be lost and this cannot be undone.{" "}
-          {hasDeployedVersion
-            ? "The dashboard will reset to the deployed version the next time it is opened."
-            : "This dashboard exists only in this browser, so discarding it deletes it entirely."}
+          {CONSEQUENCE[deployedLookup]}
         </Typography>
       </DialogContent>
       <DialogActions>

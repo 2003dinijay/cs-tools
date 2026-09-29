@@ -17,16 +17,16 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import DiscardDraftDialog from "@features/csm-admin/dashboards/components/DiscardDraftDialog";
+import DiscardDraftDialog, { type DeployedLookup } from "@features/csm-admin/dashboards/components/DiscardDraftDialog";
 
-function renderDialog(hasDeployedVersion: boolean) {
+function renderDialog(deployedLookup: DeployedLookup) {
   const onCancel = vi.fn();
   const onConfirm = vi.fn();
   render(
     <DiscardDraftDialog
       open
       dashboardName="Engineer overview"
-      hasDeployedVersion={hasDeployedVersion}
+      deployedLookup={deployedLookup}
       onCancel={onCancel}
       onConfirm={onConfirm}
     />,
@@ -35,24 +35,28 @@ function renderDialog(hasDeployedVersion: boolean) {
 }
 
 describe("DiscardDraftDialog", () => {
-  it("names the dashboard and says the reset happens on next open when a deployed version exists", () => {
-    renderDialog(true);
+  it("promises a reset to the deployed version only when the lookup confirms it exists", () => {
+    renderDialog("exists");
     expect(screen.getByText("Discard local draft?")).toBeInTheDocument();
     expect(screen.getByText(/"Engineer overview"/)).toBeInTheDocument();
     expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
     expect(screen.getByText(/reset to the deployed version the next time it is opened/i)).toBeInTheDocument();
-    expect(screen.queryByText(/deletes it entirely/i)).not.toBeInTheDocument();
   });
 
-  it("says the dashboard is deleted entirely when it was never deployed", () => {
-    renderDialog(false);
-    expect(screen.getByText(/exists only in this browser/i)).toBeInTheDocument();
-    expect(screen.getByText(/deletes it entirely/i)).toBeInTheDocument();
-    expect(screen.queryByText(/deployed version/i)).not.toBeInTheDocument();
+  it.each([
+    ["pending", /still being checked/i],
+    ["failed", /could not check whether a deployed version exists/i],
+    ["missing", /deletes it entirely/i],
+  ] as const)("does not promise a reset when the lookup is %s", (lookup, copy) => {
+    renderDialog(lookup);
+    expect(screen.getByText(copy)).toBeInTheDocument();
+    expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
+    expect(screen.queryByText(/reset to the deployed version/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
   });
 
   it("wires Cancel and Discard to their own callbacks", () => {
-    const { onCancel, onConfirm } = renderDialog(true);
+    const { onCancel, onConfirm } = renderDialog("exists");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onConfirm).not.toHaveBeenCalled();

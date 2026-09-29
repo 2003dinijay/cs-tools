@@ -44,7 +44,9 @@ import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import DashboardWidgetGrid from "@features/csm-dashboard/components/DashboardWidgetGrid";
 import SectionCard from "@features/csm-dashboard/components/SectionCard";
 import { WIDGET_GRID_SX } from "@features/csm-dashboard/utils/dashboardWidgetGridLayout";
-import DiscardDraftDialog from "@features/csm-admin/dashboards/components/DiscardDraftDialog";
+import DiscardDraftDialog, {
+  type DeployedLookup,
+} from "@features/csm-admin/dashboards/components/DiscardDraftDialog";
 import WidgetEditorDialog from "@features/csm-admin/dashboards/components/WidgetEditorDialog";
 import {
   useDashboardFilterPresets,
@@ -392,6 +394,17 @@ export default function CsmDashboardBuilderEditorPage(): JSX.Element {
       // here; the admin can still read the JSON via devtools if needed.
     }
   };
+
+  // Same `live` query the drift check uses. `sourceDashboardId` only records
+  // where the draft came from; the dashboard may since have been removed, or
+  // the lookup may not have settled, so only a resolved hit promises a reset.
+  const deployedLookup: DeployedLookup = live.isLoading
+    ? "pending"
+    : live.isError
+      ? "failed"
+      : live.data
+        ? "exists"
+        : "missing";
 
   const handleDiscardDraft = () => {
     discardedRef.current = true;
@@ -897,7 +910,7 @@ export default function CsmDashboardBuilderEditorPage(): JSX.Element {
       <DiscardDraftDialog
         open={confirmingDiscard}
         dashboardName={working.displayName || working.id}
-        hasDeployedVersion={Boolean(working.sourceDashboardId)}
+        deployedLookup={deployedLookup}
         onCancel={() => setConfirmingDiscard(false)}
         onConfirm={handleDiscardDraft}
       />

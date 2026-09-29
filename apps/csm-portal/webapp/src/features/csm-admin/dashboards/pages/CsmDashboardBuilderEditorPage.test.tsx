@@ -434,14 +434,59 @@ describe("CsmDashboardBuilderEditorPage", () => {
       expect(screen.queryByText("Dashboard list page")).not.toBeInTheDocument();
     });
 
-    it("shows the deployed-reset copy for a draft opened from a deployed dashboard", async () => {
+    const sourcedDraft = {
+      id: "agents_pilot",
+      sourceDashboardId: "agents_pilot",
+      displayName: "Engineer overview",
+      isDefault: true,
+      isTeamBased: false,
+      widgets: [],
+      emptySections: [],
+    };
+
+    it("promises a deployed reset only once the lookup confirms the dashboard exists", async () => {
       getMock.mockResolvedValue(deployed);
       renderEditorWithList("/admin/dashboards/agents_pilot");
       await waitFor(() => expect(getDashboardDraft("agents_pilot")).toBeDefined());
+      await waitFor(() => expect(screen.getByLabelText("Dashboard display name")).toBeInTheDocument());
 
       await openDiscardDialog();
       expect(screen.getByText(/"Engineer overview"/)).toBeInTheDocument();
-      expect(screen.getByText(/reset to the deployed version/i)).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByText(/reset to the deployed version/i)).toBeInTheDocument());
+    });
+
+    it("does not promise a reset while the deployed lookup is still pending, and keeps Discard enabled", async () => {
+      saveDashboardDraft(sourcedDraft);
+      getMock.mockReturnValue(new Promise(() => {}));
+      renderEditorWithList("/admin/dashboards/agents_pilot");
+
+      await openDiscardDialog();
+      expect(screen.getByText(/still being checked/i)).toBeInTheDocument();
+      expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
+      expect(screen.queryByText(/reset to the deployed version/i)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
+    });
+
+    it("says it could not check when the deployed lookup failed, despite a sourceDashboardId", async () => {
+      saveDashboardDraft(sourcedDraft);
+      getMock.mockRejectedValue(new Error("network error"));
+      renderEditorWithList("/admin/dashboards/agents_pilot");
+      await waitFor(() => expect(screen.getByText(/couldn't check/i)).toBeInTheDocument());
+
+      await openDiscardDialog();
+      expect(screen.getByText(/could not check whether a deployed version exists/i)).toBeInTheDocument();
+      expect(screen.queryByText(/reset to the deployed version/i)).not.toBeInTheDocument();
+    });
+
+    it("says the draft is the only copy when the source dashboard is no longer deployed", async () => {
+      saveDashboardDraft(sourcedDraft);
+      getMock.mockResolvedValue(null);
+      renderEditorWithList("/admin/dashboards/agents_pilot");
+      await waitFor(() => expect(screen.getByText(/not yet deployed|never been deployed|differs/i)).toBeInTheDocument());
+
+      await openDiscardDialog();
+      expect(screen.getByText(/deletes it entirely/i)).toBeInTheDocument();
+      expect(screen.queryByText(/reset to the deployed version/i)).not.toBeInTheDocument();
     });
 
     it("shows the delete-entirely copy for a never-deployed dashboard", async () => {
