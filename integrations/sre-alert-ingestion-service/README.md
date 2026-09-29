@@ -9,7 +9,7 @@ alerts-core's own tables (`alert_cursor`, `incidents_*`, `processor_lease`).
 ```
 vendor ──POST──▶ ingestion (transform → allocator: CAS-claim ids → insert + read back) ──▶ alerts
                                            │                                               ▲
-                                           └── POST /alert (wake-up) ──▶ alerts-core ──reads┘
+                                           └── POST /alertz (wake-up) ──▶ alerts-core ──reads┘
 ```
 
 ## What it does
@@ -24,7 +24,7 @@ vendor ──POST──▶ ingestion (transform → allocator: CAS-claim ids →
   `VOID: <reason>` filler row is written (with the same retries) under the same id so alerts-core skips it immediately
   instead of waiting its 10-minute gap timeout, and a DB-failure Chat card is posted.
 - **Response**: `201` only after every alert in the request has been written and read back.
-- **Wake-up**: one `POST /alert` to alerts-core per written batch. Calls are coalesced so at most
+- **Wake-up**: one `POST /alertz` to alerts-core per written batch. Calls are coalesced so at most
   one is in flight. If it fails, alerts-core's own 10-second poll still picks the rows up.
 - **Chat cards** (Google Chat, cardsV2): a *rejected webhook* card (at most one per vendor + error
   class, and 10 in total, per `reject.window`) and a *DB failure* card (at most `fallback.cards_per_minute`, then one
@@ -41,6 +41,28 @@ vendor ──POST──▶ ingestion (transform → allocator: CAS-claim ids →
 
 Vendors: `aws`, `azure`, `datadog`, `elasticsearch`, `gcp`, `icinga`, `openobserve`,
 `opensearch`, `prometheus`, `site24x7`.
+
+## Authentication
+
+Every vendor POST requires an `Authorization` header naming an enabled, non-expired row in
+alerts-core's `alertintegration.integration_users` table (`internal/auth.IntegrationUsers`,
+selected via `auth.mode = "integration_users"`, the only mode). A credential isn't tied to a
+particular vendor: any account may authenticate any vendor route, and any number of accounts may
+exist. Provision one with alerts-core's `cmd/user` (see that repo's `cmd/user/PROVISION.md`), then
+send either header form:
+
+```bash
+# Basic
+curl -X POST "https://<host>/api/wso2/v1/sre_alert_api/elasticsearch" \
+  -u "<username>:<secret>" \
+  -H "Content-Type: application/json" -d '{...}'
+
+# Bearer, base64("username:secret")
+TOKEN=$(printf '%s:%s' <username> '<secret>' | base64 | tr -d '\n')
+curl -X POST "https://<host>/api/wso2/v1/sre_alert_api/elasticsearch" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{...}'
+```
 
 Responses:
 
@@ -97,7 +119,8 @@ docker run --rm -p 8080:8080 --env-file .env \
 | `CASSANDRA_KEY` | yes | Cosmos DB primary or secondary key (secret) |
 | `CASSANDRA_USERNAME` | no | Defaults to the account name (first DNS label of the contact point) |
 | `CASSANDRA_PORT` | no | Default `10350` |
-| `ALERT_CORE_WAKE_URL` | no | alerts-core's `POST /alert` URL. Empty: no wake-up, alerts-core's poll still works |
+| `ALERT_CORE_WAKE_URL` | no | alerts-core's `POST /alertz` URL. Empty: no wake-up, alerts-core's poll still works |
+| `ALERT_CORE_WAKE_USERNAME` / `ALERT_CORE_WAKE_SECRET` | no | `integration_users` credentials for the wake-up call (secret). Empty: call is sent unauthenticated, alerts-core 401s it, poll still works |
 | `FALLBACK_CHAT_WEBHOOK_URLS` | no | Comma-separated Google Chat webhook URLs (secret). Empty: no cards, only logs |
 | `<VENDOR>_ALERT_CONFIG` | no* | Per-vendor JSON overrides, same keys and shapes as the ServiceNow Edge API alert-config properties, e.g. `DATADOG_ALERT_CONFIG` |
 | `CONFIG_PATH` | no | Path to `config.toml`. Default `./config.toml`; a missing file means built-in defaults |
@@ -122,7 +145,7 @@ default and a comment. The main knobs:
 | `server.write_timeout` | `30s` | Connection write limit; must be at least 1s above `request_wait` |
 | `server.idle_timeout` | `60s` | Idle keep-alive connections are closed after this |
 | `server.max_body_bytes` | `1048576` | Larger bodies get `413` |
-| `auth.mode` | `none` | Hook for vendor authentication; only `none` exists today |
+| `auth.mode` | `integration_users` | Vendor-route auth hook; verifies against alerts-core's `integration_users` table (only mode) |
 | `allocator.queue_size` | `5000` | Queued submissions per replica before `503` |
 | `allocator.max_batch` | `200` | Most ids claimed in one compare-and-set |
 | `allocator.write_concurrency` | `64` | Parallel inserts per replica |
@@ -187,7 +210,9 @@ curl -sS -X POST "$BASE/site24x7" -H 'Content-Type: application/json' -d '{"STAT
    defaults.
 5. **Connecting to alerts-core**: add a connection from this component to the
    `sre-alert-core-service` component's endpoint (Project visibility is enough) and set
-   `ALERT_CORE_WAKE_URL` to that endpoint's URL plus `/alert`. Both components must use the same
+   `ALERT_CORE_WAKE_URL` to that endpoint's URL plus `/alertz`, plus
+   `ALERT_CORE_WAKE_USERNAME`/`ALERT_CORE_WAKE_SECRET` to an `integration_users` credential
+   provisioned there (see that repo's `cmd/user/PROVISION.md`). Both components must use the same
    `CASSANDRA_*` values: this service writes the `alerts` rows that alerts-core reads.
 6. **Replicas**: any number. Ids stay unique across replicas because every claim is a
    compare-and-set on `alert_seq`.
