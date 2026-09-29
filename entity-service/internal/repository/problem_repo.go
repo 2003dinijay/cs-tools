@@ -457,13 +457,13 @@ const createProblemFromServiceNowQuery = `
 	WITH inserted_work_item AS (
 		INSERT INTO work_item (
 			id, created_on, updated_on, created_by, updated_by,
-			number, subject, type, parent_id
+			number, subject, description, type, parent_id
 		)
 		VALUES (
 			$1, NOW(), NOW(), $2, $2,
-			$3, $4, 'PROBLEM'::work_item_type_enum, $5::uuid
+			$3, $4, $8, 'PROBLEM'::work_item_type_enum, $5::uuid
 		)
-		RETURNING id, number, subject, created_on, updated_on, created_by
+		RETURNING id, number, subject, description, created_on, updated_on, created_by
 	),
 	inserted_problem AS (
 		INSERT INTO problem (
@@ -474,7 +474,7 @@ const createProblemFromServiceNowQuery = `
 		)
 		RETURNING id
 	)
-	SELECT iwi.id, iwi.number, iwi.subject, iwi.created_on, iwi.updated_on, iwi.created_by
+	SELECT iwi.id, iwi.number, iwi.subject, iwi.description, iwi.created_on, iwi.updated_on, iwi.created_by
 	FROM inserted_work_item iwi
 	JOIN inserted_problem ip ON ip.id = iwi.id`
 
@@ -482,13 +482,14 @@ const createProblemFromServiceNowQuery = `
 func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string) (domain.ProblemDetail, error) {
 	var (
 		outID, outNumber, outSubject, outCreatedBy string
+		outDescription                             *string
 		outCreatedOn, outUpdatedOn                 time.Time
 	)
 	err := r.db.QueryRow(ctx, createProblemFromServiceNowQuery,
 		id, createdBy,
 		number, req.Subject, req.OriginCaseID,
-		state, req.PrimaryIncidentID,
-	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
+		state, req.PrimaryIncidentID, req.Description,
+	).Scan(&outID, &outNumber, &outSubject, &outDescription, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 			switch pgErr.Code {
@@ -506,10 +507,11 @@ func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domai
 	}
 
 	return domain.ProblemDetail{
-		ID:      &outID,
-		Number:  &outNumber,
-		Subject: &outSubject,
-		State:   state,
+		ID:          &outID,
+		Number:      &outNumber,
+		Subject:     &outSubject,
+		Description: outDescription,
+		State:       state,
 	}, nil
 }
 
