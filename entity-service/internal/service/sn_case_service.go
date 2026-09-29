@@ -1753,8 +1753,16 @@ func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherSe
 		return
 	}
 
+	// before.ProjectDetails is nilable on the Postgres data source (this
+	// function serves both, called directly from caseService.UpdateCase
+	// too) — see publishCaseAssigned's own comment.
+	projectID := ""
+	if before.ProjectDetails != nil {
+		projectID = before.ProjectDetails.ID
+	}
+
 	payload, err := json.Marshal(events.SeverityChangedPayload{
-		ProjectID:   before.ProjectDetails.ID,
+		ProjectID:   projectID,
 		CaseID:      caseID,
 		CaseNumber:  before.Number,
 		WSO2CaseID:  before.InternalID,

@@ -156,7 +156,7 @@ func (r *slaStatusRepo) SearchActiveSLAStatuses(ctx context.Context, pagination 
 		       wi.number, wi.wso2_id, wi.subject, wi.type::TEXT,
 		       prod.name || COALESCE(' ' || pv.version, ''), COALESCE(c.severity::TEXT, ''),
 		       ` + caseLikeStateColumn + `,
-		       cre.name, p.onboarding_status::TEXT, (pt.name = $3)
+		       cre.name, p.onboarding_status::TEXT, COALESCE(pt.name = $3, FALSE)
 		` + activeSLAStatusFromJoins + `
 		ORDER BY als.work_item_id, als.target
 		LIMIT $1 OFFSET $2`
