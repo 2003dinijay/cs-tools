@@ -73,7 +73,8 @@ func main() {
 	// Google Chat is likewise optional per deployment; a missing or malformed
 	// value logs a warning and yields no spaces rather than failing startup.
 	googleChatClient := notifications.NewGoogleChatClient(notifications.GoogleChatConfig{
-		Spaces: parseGoogleChatSpaces(os.Getenv("GOOGLE_CHAT_SPACES")),
+		Spaces:         parseGoogleChatSpaces(os.Getenv("GOOGLE_CHAT_SPACES")),
+		AudienceSpaces: parseGoogleChatAudienceSpaces(os.Getenv("GOOGLE_CHAT_AUDIENCE_SPACES")),
 	})
 
 	// Twilio (the call channel, used by incident.created) is likewise
@@ -745,6 +746,24 @@ func parseGoogleChatSpaces(raw string) []notifications.GoogleChatSpace {
 	var spaces []notifications.GoogleChatSpace
 	if err := json.Unmarshal([]byte(raw), &spaces); err != nil {
 		slog.Error("failed to parse GOOGLE_CHAT_SPACES; Google Chat alerts will be unavailable", "err", err)
+		return nil
+	}
+	return spaces
+}
+
+// parseGoogleChatAudienceSpaces decodes GOOGLE_CHAT_AUDIENCE_SPACES, a JSON
+// array of {"audience":"...","webhookUrl":"..."} objects — one per
+// case.created audience (a team's own space, or a standing audience like
+// "Incident Monitor"). Same parsing convention as parseGoogleChatSpaces: a
+// missing or malformed value logs a warning and yields no spaces rather than
+// failing startup.
+func parseGoogleChatAudienceSpaces(raw string) []notifications.GoogleChatAudienceSpace {
+	if raw == "" {
+		return nil
+	}
+	var spaces []notifications.GoogleChatAudienceSpace
+	if err := json.Unmarshal([]byte(raw), &spaces); err != nil {
+		slog.Error("failed to parse GOOGLE_CHAT_AUDIENCE_SPACES; case.created Chat alerts will be unavailable", "err", err)
 		return nil
 	}
 	return spaces

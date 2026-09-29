@@ -174,12 +174,34 @@ type CaseCreatedPayload struct {
 	// caseIdLabel). internal/dispatch's subjectLine uses this in the
 	// subject's first slot, falling back to CaseID only when a publisher
 	// hasn't sent it yet.
-	WSO2CaseID                string   `json:"wso2CaseId,omitempty"`
-	CaseTitle                 string   `json:"caseTitle"`
-	CaseType                  string   `json:"caseType"`
-	Priority                  string   `json:"priority"`
-	Product                   string   `json:"product,omitempty"`
-	Team                      string   `json:"team,omitempty"`
+	WSO2CaseID string `json:"wso2CaseId,omitempty"`
+	CaseTitle  string `json:"caseTitle"`
+	CaseType   string `json:"caseType"`
+	Priority   string `json:"priority"`
+	Product    string `json:"product,omitempty"`
+	// Team is the case's account's CRE team display name (e.g. "Castor") —
+	// displayed in Chat cards, and — case.created only — also this
+	// service's own Google Chat *audience* routing key (see
+	// dispatch.resolveChatAudiences): a team with no configured
+	// GOOGLE_CHAT_AUDIENCE_SPACES entry of its own falls back to the
+	// shared "Incident Monitor" audience, mirroring the reference
+	// ServiceNow CSNotificationRouter design this was ported from.
+	Team string `json:"team,omitempty"`
+	// ProjectOnboardingStatus is entity-service's raw
+	// project.onboarding_status enum label (e.g. "IN_PROGRESS"), "" when
+	// the case has no project, the column is unset, or the publisher is a
+	// pure ServiceNow deployment with no Postgres access (see that
+	// service's own CaseRepository.ProjectAudienceFacts). Which raw values
+	// count as "still onboarding" is decided entirely here
+	// (dispatch.onboardingChatAudienceStatuses), not by entity-service, so
+	// that policy can change without a redeploy there.
+	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
+	// IsEvaluationAccount is true when the case's project is an Evaluation
+	// Subscription — entity-service's own fixed-id match (see that
+	// service's own CaseRepository.ProjectAudienceFacts doc comment).
+	// case.created only: routes exclusively to the "Evaluation" Chat
+	// audience, overriding every other audience rule.
+	IsEvaluationAccount       bool     `json:"isEvaluationAccount,omitempty"`
 	CreatedAt                 string   `json:"createdAt"`
 	Description               string   `json:"description"`
 	IncidentImpactDescription string   `json:"incidentImpactDescription,omitempty"`

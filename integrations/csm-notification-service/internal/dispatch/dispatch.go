@@ -59,10 +59,18 @@ type emailSender interface {
 // googleChatSender abstracts notifications.GoogleChatClient for testability.
 type googleChatSender interface {
 	SendIncidentAlert(ctx context.Context, product, title, shortDescription, portalURL string) error
-	SendCaseCreatedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error
+	// SendCaseCreatedAlert's first parameter is an audience key (see
+	// resolveChatAudiences), not a product — case.created no longer routes
+	// on product.
+	SendCaseCreatedAlert(ctx context.Context, audience, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error
 	SendSecurityReportAnalysisAlert(ctx context.Context, product, caseNumber, wso2CaseID, productName, title, team, caseLink string) error
 	SendCaseAcknowledgedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error
 	SendSeverityChangedAlert(ctx context.Context, product, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error
+	// HasAudienceSpace reports whether audience has a configured Chat
+	// webhook — see notifications.GoogleChatClient.HasAudienceSpace's own
+	// doc comment; used by resolveChatAudiences to decide whether a case's
+	// CreTeam is a recognized routing target.
+	HasAudienceSpace(audience string) bool
 }
 
 // callSender abstracts notifications.TwilioClient's MakeCall for testability.
@@ -489,7 +497,6 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 	}
 
 	baseKey := recordBaseKey(record)
-	chatKey := baseKey + "/chat"
 	endRecord := d.beginRecord(baseKey)
 
 	var errs []error
@@ -539,28 +546,22 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 	// practice (the other four types never carry a severity at all, so
 	// p.Priority is always "" for them, never "LOW").
 	//
-	// chatKey is simply never claimed when skipped; forgetting an unclaimed
-	// key below is a harmless no-op (see Dispatcher.forget), so nothing
-	// else in this function needs to change.
+	// audiences stays nil when skipped; every helper below already treats a
+	// nil/empty audience list as a no-op, so nothing else needs to branch
+	// on the skip separately.
+	var audiences []string
 	if !isNonCaseCaseType(p.CaseType) && !isLowSeverity(p.Priority) {
-		chatOwned := d.claim(chatKey)
-		if chatOwned {
-			product := p.Product
-			if product == "" {
-				product = d.defaultChatProduct
-			}
-			if product == "" {
-				slog.WarnContext(ctx, "dispatch: no product for case.created (payload and DEFAULT_CHAT_PRODUCT both empty); skipping Google Chat alert")
-			} else {
-				caseLink := d.links.CSMLink(p.CaseID)
-				title := truncateTitle(p.CaseTitle, maxChatTitleLength)
-				severityLabel, severityColor := severityLabelAndColor(p.Priority)
-				chatErr := d.googleChat.SendCaseCreatedAlert(ctx, product, severityLabel, severityColor, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, p.Product, title, p.Team, caseLink)
-				if chatErr != nil {
-					errs = append(errs, chatErr)
-					d.forget(chatKey)
-				}
-			}
+		audiences = resolveChatAudiences(p.Team, p.IsEvaluationAccount, p.ProjectOnboardingStatus, time.Now(), d.googleChat.HasAudienceSpace)
+	}
+	if len(audiences) > 0 {
+		caseLink := d.links.CSMLink(p.CaseID)
+		title := truncateTitle(p.CaseTitle, maxChatTitleLength)
+		severityLabel, severityColor := severityLabelAndColor(p.Priority)
+		_, chatErr := d.sendChatPerAudience(ctx, baseKey, audiences, func(audience string) error {
+			return d.googleChat.SendCaseCreatedAlert(ctx, audience, severityLabel, severityColor, displayCaseRef(p.CaseNumber, p.CaseID), p.WSO2CaseID, p.Product, title, p.Team, caseLink)
+		})
+		if chatErr != nil {
+			errs = append(errs, chatErr)
 		}
 	}
 
@@ -578,24 +579,22 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 	// Otherwise, only release once endRecord reports it's safe to — i.e.
 	// this is the last call still in flight for baseKey, and neither it nor
 	// any sibling that ran concurrently with it ever hit an error. Gating
-	// on chatOwned && len(errs) == 0 alone (this function's own narrow
-	// view, checked before beginRecord existed) was a real bug: a call
-	// that lost the claim race for every email group attempts nothing for
-	// email, so its own errs stays nil regardless — that let a losing call
-	// release chatKey while a different, still in-flight call was
-	// genuinely mid-SendEmail for the very same record. See beginRecord's
-	// own doc comment for the full reasoning. Once endRecord confirms it's
-	// safe, every group in the original groups map is released directly
-	// (not just whatever this call itself happened to claim) — same
-	// reasoning as the NoMoreRetries branch: confirmed safe regardless of
-	// exact ownership.
+	// on a single call's own narrow view (checked before beginRecord
+	// existed) was a real bug: a call that lost every claim race attempts
+	// nothing, so its own errs stays nil regardless — that let a losing
+	// call release a key a different, still in-flight call genuinely
+	// owned. See beginRecord's own doc comment for the full reasoning.
+	// Once endRecord confirms it's safe, every audience/group originally
+	// resolved is released directly (not just whatever this call itself
+	// happened to claim) — same reasoning as the NoMoreRetries branch:
+	// confirmed safe regardless of exact ownership.
 	// endRecord must run exactly once per call — it decrements beginRecord's
 	// refcount — so it's called unconditionally here rather than only
 	// inside the else-if, even though its result is ignored on the
 	// NoMoreRetries branch.
 	safeToRelease := endRecord(len(errs) > 0)
 	if record.NoMoreRetries || safeToRelease {
-		d.forget(chatKey)
+		d.forgetChatAudiences(baseKey, audiences)
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
 	}
 
@@ -1025,6 +1024,161 @@ func isNonCaseCaseType(caseType string) bool {
 // its Google Chat alert on a LOW-severity "case".
 func isLowSeverity(severity string) bool {
 	return strings.EqualFold(strings.TrimSpace(severity), "LOW")
+}
+
+// Audience keys not tied to a specific CRE team name — mirrors the
+// reference ServiceNow CSNotificationRouter script's own non-ABT DIRECTORY
+// entries. "Migration" is deliberately not ported: that script's own
+// frustration-alert-only audience has no case.created equivalent here.
+const (
+	chatAudienceIncidentMonitor = "Incident Monitor"
+	chatAudienceOnboarding      = "Onboarding"
+	chatAudienceAmericas        = "Americas"
+	chatAudienceEvaluation      = "Evaluation"
+)
+
+// onboardingChatAudienceStatuses are the entity-service
+// project.onboarding_status raw values (see
+// events.CaseCreatedPayload.ProjectOnboardingStatus's own doc comment) that
+// add the "Onboarding" Chat audience on top of whichever audience the
+// case's own CreTeam resolves to — mirrors the reference script's own
+// ONBOARDING_STATUSES list. A policy decision kept here, not in
+// entity-service, so it can change without a redeploy there.
+var onboardingChatAudienceStatuses = map[string]bool{
+	"IN_PROGRESS": true,
+	"NOT_STARTED": true,
+}
+
+// istLocation is a fixed +5:30 offset with no DST — IST never observes one,
+// so a fixed zone is exact and needs no tzdata lookup, matching the
+// reference script's own manual UTC-offset arithmetic (_getISTClock).
+var istLocation = time.FixedZone("IST", 5*3600+30*60)
+
+// The Americas overnight coverage window (9 PM–6 AM IST, wrapping past
+// midnight) and the weekend boundary (6 AM IST) — mirrors the reference
+// script's own AMERICAS_WINDOW_START_MINUTES/END_MINUTES/
+// WEEKEND_BOUNDARY_MINUTES.
+const (
+	americasWindowStartMinutes = 21 * 60
+	americasWindowEndMinutes   = 6 * 60
+	weekendBoundaryMinutes     = 6 * 60
+)
+
+// isAmericasCoverageWindow reports whether ist (already converted to IST)
+// falls in the 9 PM–6 AM overnight window — an OR of two ranges, not a
+// single bounded one, since the window wraps past midnight.
+func isAmericasCoverageWindow(ist time.Time) bool {
+	minutesOfDay := ist.Hour()*60 + ist.Minute()
+	return minutesOfDay >= americasWindowStartMinutes || minutesOfDay < americasWindowEndMinutes
+}
+
+// isWeekendCoverageWindow reports whether ist falls between 6 AM IST
+// Saturday and 6 AM IST Monday.
+func isWeekendCoverageWindow(ist time.Time) bool {
+	minutesOfDay := ist.Hour()*60 + ist.Minute()
+	switch ist.Weekday() {
+	case time.Saturday:
+		return minutesOfDay >= weekendBoundaryMinutes
+	case time.Sunday:
+		return true
+	case time.Monday:
+		return minutesOfDay < weekendBoundaryMinutes
+	default:
+		return false
+	}
+}
+
+// resolveChatAudiences mirrors the reference ServiceNow
+// CSNotificationRouter script's own resolveAudiences — see that script's
+// doc comments for the full reasoning behind each rule. This implements
+// case.created's own subset (no Migration — see the audience-key constants'
+// own doc comment).
+//
+// hasAudience answers "does this team have a configured Chat space" —
+// Dispatcher.googleChat.HasAudienceSpace in production. A team with no
+// space of its own falls back to the shared Incident Monitor audience, the
+// same as no team being assigned at all — both mean "there's nowhere
+// specific to send this," just for different reasons, mirroring the
+// reference script's own "not a recognized ABT" vs. "no team assigned"
+// cases collapsing to the identical fallback.
+//
+// now is passed in (not read via time.Now() internally) so tests can drive
+// a fixed clock.
+func resolveChatAudiences(team string, isEvaluationAccount bool, onboardingStatus string, now time.Time, hasAudience func(string) bool) []string {
+	// Evaluation Subscription cases belong to the Evaluation audience
+	// alone — none of the team/onboarding/Americas/weekend rules below
+	// apply, mirroring the reference script's own identical short-circuit.
+	if isEvaluationAccount {
+		return []string{chatAudienceEvaluation}
+	}
+
+	var audiences []string
+	add := func(audience string) {
+		if !slices.Contains(audiences, audience) {
+			audiences = append(audiences, audience)
+		}
+	}
+
+	if team != "" && hasAudience(team) {
+		add(team)
+	} else {
+		add(chatAudienceIncidentMonitor)
+	}
+
+	if onboardingChatAudienceStatuses[strings.ToUpper(strings.TrimSpace(onboardingStatus))] {
+		add(chatAudienceOnboarding)
+	}
+
+	ist := now.In(istLocation)
+	if isAmericasCoverageWindow(ist) {
+		add(chatAudienceAmericas)
+	}
+	if isWeekendCoverageWindow(ist) {
+		add(chatAudienceIncidentMonitor)
+	}
+
+	return audiences
+}
+
+// sendChatPerAudience posts the same Chat card to every distinct audience
+// in audiences, tracking per-audience idempotency the same way sendPerGroup
+// tracks per-group email idempotency (see that function's own doc comment)
+// — a retry must only resend to audiences that haven't already succeeded.
+// send is called once per still-owed audience; an audience with no
+// configured webhook is handled inside send itself (GoogleChatClient.
+// sendCardToAudience logs and returns nil), so it's never distinguishable
+// here from a genuine send.
+func (d *Dispatcher) sendChatPerAudience(ctx context.Context, baseKey string, audiences []string, send func(audience string) error) ([]string, error) {
+	var errs []error
+	var owned []string
+	for _, audience := range audiences {
+		key := baseKey + "/chat/" + audience
+		if !d.claim(key) {
+			continue
+		}
+		if err := send(audience); err != nil {
+			errs = append(errs, err)
+			d.forget(key)
+			continue
+		}
+		owned = append(owned, audience)
+	}
+	return owned, errors.Join(errs...)
+}
+
+// forgetChatAudiences releases sendChatPerAudience's per-audience
+// idempotency tracking for every audience in audiences — see
+// forgetEmailGroups' own doc comment for the equivalent email-side
+// reasoning. handleCaseCreated releases the full originally-resolved
+// audience list on either of its two release conditions (not just this
+// call's own owned subset), since both are gated on endRecord's
+// whole-record guarantee — see handleCaseCreated's own release comment.
+// Ranging over a nil/empty audiences slice (Chat skipped entirely for this
+// event) is a safe no-op.
+func (d *Dispatcher) forgetChatAudiences(baseKey string, audiences []string) {
+	for _, audience := range audiences {
+		d.forget(baseKey + "/chat/" + audience)
+	}
 }
 
 // severityLabelAndColor resolves severity to its Chat display label/color

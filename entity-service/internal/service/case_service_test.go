@@ -64,6 +64,7 @@ type stubCaseRepo struct {
 	setCaseWatchList              func(ctx context.Context, caseID string, userIDs []string, actorEmail string) ([]domain.WatchListUser, time.Time, error)
 	accountDefaultWatcherIDs      func(ctx context.Context, projectID string) ([]string, error)
 	projectContactEmailsByRole    func(ctx context.Context, projectID, role string) ([]string, error)
+	projectAudienceFacts          func(ctx context.Context, projectID string) (string, bool, error)
 	updateCaseAssignee            func(ctx context.Context, caseID string, userID *string, callerEmail string) (time.Time, bool, error)
 	acknowledgeCase               func(ctx context.Context, caseID, actorID, actorEmail string) (bool, domain.AssignedEngineerRef, string, time.Time, error)
 	updateCaseParent              func(ctx context.Context, caseID, parentID, callerEmail string) (time.Time, error)
@@ -208,6 +209,17 @@ func (s *stubCaseRepo) ProjectContactEmailsByRole(ctx context.Context, projectID
 		return s.projectContactEmailsByRole(ctx, projectID, role)
 	}
 	return nil, nil
+}
+
+// ProjectAudienceFacts defaults to the zero value rather than panicking,
+// same reasoning as ProjectContactEmailsByRole above: publishCaseCreatedEvent
+// now calls it for every case create, and none of this stub's existing test
+// cases care about its contents.
+func (s *stubCaseRepo) ProjectAudienceFacts(ctx context.Context, projectID string) (string, bool, error) {
+	if s.projectAudienceFacts != nil {
+		return s.projectAudienceFacts(ctx, projectID)
+	}
+	return "", false, nil
 }
 func (s *stubCaseRepo) UpdateCaseAssignee(ctx context.Context, caseID string, userID *string, callerEmail string) (time.Time, bool, error) {
 	if s.updateCaseAssignee != nil {
@@ -1249,6 +1261,7 @@ type stubMirrorCaseService struct {
 	patchCaseParentFn            func(ctx context.Context, caseID, parentID string) error
 	patchCaseFieldsBundleFn      func(ctx context.Context, caseID string, req domain.UpdateCaseRequest) error
 	projectContactEmailsByRoleFn func(ctx context.Context, projectID, role string) ([]string, error)
+	projectAudienceFactsFn       func(ctx context.Context, projectID string) (string, bool, error)
 }
 
 func (s *stubMirrorCaseService) ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error) {
@@ -1256,6 +1269,13 @@ func (s *stubMirrorCaseService) ProjectContactEmailsByRole(ctx context.Context, 
 		return s.projectContactEmailsByRoleFn(ctx, projectID, role)
 	}
 	return nil, nil
+}
+
+func (s *stubMirrorCaseService) ProjectAudienceFacts(ctx context.Context, projectID string) (string, bool, error) {
+	if s.projectAudienceFactsFn != nil {
+		return s.projectAudienceFactsFn(ctx, projectID)
+	}
+	return "", false, nil
 }
 
 func (s *stubMirrorCaseService) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {

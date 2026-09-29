@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,6 +112,19 @@ type mockGoogleChatSender struct {
 	caseAcknowledgedCalls       []sentCaseAcknowledgedAlert
 	severityChangedCalls        []sentSeverityChangedAlert
 	securityReportAnalysisCalls []sentSecurityReportAnalysisAlert
+	// hasAudienceSpace, when set, backs HasAudienceSpace; nil means every
+	// audience is "unconfigured" (false), matching a deployment with no
+	// GOOGLE_CHAT_AUDIENCE_SPACES set at all — the default every existing
+	// test (none of which set a Team) already relies on, since
+	// resolveChatAudiences never even calls this for an empty team.
+	hasAudienceSpace func(audience string) bool
+}
+
+func (m *mockGoogleChatSender) HasAudienceSpace(audience string) bool {
+	if m.hasAudienceSpace != nil {
+		return m.hasAudienceSpace(audience)
+	}
+	return false
 }
 
 func (m *mockGoogleChatSender) SendIncidentAlert(ctx context.Context, product, title, shortDescription, portalURL string) error {
@@ -373,42 +387,199 @@ func TestDispatcher_Handle_CaseCreated_EmailShowsHumanReadableCaseType(t *testin
 // TestDispatcher_Handle_CaseCreated_ChatUsesDefaultProduct verifies
 // case.created's Chat alert falls back to Dispatcher.defaultChatProduct when
 // the payload omits product, the same fallback handleIncidentCreated uses.
-func TestDispatcher_Handle_CaseCreated_ChatUsesDefaultProduct(t *testing.T) {
-	chat := &mockGoogleChatSender{}
-	d := NewDispatcher(&mockEmailSender{}, chat, &mockCallSender{}, &mockLinkResolver{}, true, false, nil, true, "api-manager", "")
+// TestDispatcher_Handle_CaseCreated_ChatRoutesToTeamOrIncidentMonitor
+// verifies case.created's Chat audience: a team with a configured space
+// gets its own alert; a case with no team (or DEFAULT_CHAT_PRODUCT/product
+// entirely absent — case.created's Chat routing no longer depends on
+// either) falls back to the shared "Incident Monitor" audience rather than
+// being skipped.
+func TestDispatcher_Handle_CaseCreated_ChatRoutesToTeamOrIncidentMonitor(t *testing.T) {
+	t.Run("configured team gets its own alert", func(t *testing.T) {
+		chat := &mockGoogleChatSender{hasAudienceSpace: func(a string) bool { return a == "Castor" }}
+		d := newTestDispatcher(&mockEmailSender{}, chat, &mockCallSender{})
 
-	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"Incident","priority":"P3","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+		record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"CASE","priority":"HIGH","team":"Castor","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+
+		if err := d.Handle(context.Background(), record); err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+		if len(chat.caseCreatedCalls) != 1 || chat.caseCreatedCalls[0].product != "Castor" {
+			t.Fatalf("expected exactly 1 chat alert routed to audience %q, got %+v", "Castor", chat.caseCreatedCalls)
+		}
+	})
+
+	t.Run("no team falls back to Incident Monitor, not skipped", func(t *testing.T) {
+		mock := &mockEmailSender{}
+		chat := &mockGoogleChatSender{}
+		d := newTestDispatcher(mock, chat, &mockCallSender{})
+
+		record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"CASE","priority":"HIGH","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+
+		if err := d.Handle(context.Background(), record); err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+		if len(chat.caseCreatedCalls) != 1 || chat.caseCreatedCalls[0].product != chatAudienceIncidentMonitor {
+			t.Fatalf("expected exactly 1 chat alert routed to %q, got %+v", chatAudienceIncidentMonitor, chat.caseCreatedCalls)
+		}
+		if len(mock.calls) != 1 {
+			t.Errorf("expected the email to still be sent, got %d calls", len(mock.calls))
+		}
+	})
+
+	t.Run("an unconfigured team also falls back to Incident Monitor", func(t *testing.T) {
+		chat := &mockGoogleChatSender{} // hasAudienceSpace nil -> every audience unconfigured
+		d := newTestDispatcher(&mockEmailSender{}, chat, &mockCallSender{})
+
+		record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"CASE","priority":"HIGH","team":"Polaris","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+
+		if err := d.Handle(context.Background(), record); err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+		if len(chat.caseCreatedCalls) != 1 || chat.caseCreatedCalls[0].product != chatAudienceIncidentMonitor {
+			t.Fatalf("expected exactly 1 chat alert routed to %q for an unconfigured team, got %+v", chatAudienceIncidentMonitor, chat.caseCreatedCalls)
+		}
+	})
+}
+
+// TestDispatcher_Handle_CaseCreated_MultipleAudiencesEachGetTheirOwnAlert
+// verifies a case whose facts resolve to more than one audience (its own
+// team, plus Onboarding) sends one Chat alert per resolved audience, not
+// just one overall.
+func TestDispatcher_Handle_CaseCreated_MultipleAudiencesEachGetTheirOwnAlert(t *testing.T) {
+	chat := &mockGoogleChatSender{hasAudienceSpace: func(a string) bool { return a == "Castor" }}
+	d := newTestDispatcher(&mockEmailSender{}, chat, &mockCallSender{})
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"CASE","priority":"HIGH","team":"Castor","projectOnboardingStatus":"IN_PROGRESS","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
 
 	if err := d.Handle(context.Background(), record); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
-	if len(chat.caseCreatedCalls) != 1 || chat.caseCreatedCalls[0].product != "api-manager" {
-		t.Fatalf("expected the chat alert to use the default product, got %+v", chat.caseCreatedCalls)
+	if len(chat.caseCreatedCalls) != 2 {
+		t.Fatalf("expected 2 chat alerts (Castor + Onboarding), got %d: %+v", len(chat.caseCreatedCalls), chat.caseCreatedCalls)
+	}
+	var gotAudiences []string
+	for _, c := range chat.caseCreatedCalls {
+		gotAudiences = append(gotAudiences, c.product)
+	}
+	if !slices.Contains(gotAudiences, "Castor") || !slices.Contains(gotAudiences, chatAudienceOnboarding) {
+		t.Errorf("audiences = %v, want both Castor and %q", gotAudiences, chatAudienceOnboarding)
 	}
 }
 
-// TestDispatcher_Handle_CaseCreated_SkipsChatWhenNoProduct verifies that
-// when both the payload's product and DEFAULT_CHAT_PRODUCT are empty, the
-// Google Chat alert is skipped (not attempted with an empty product, which
-// would return a real "no space configured" error and, unlike
-// incident.created, cause the email to be resent on every retry too, since
-// case.created's email step has no idempotency tracking) while the email
-// still sends independently.
-func TestDispatcher_Handle_CaseCreated_SkipsChatWhenNoProduct(t *testing.T) {
-	mock := &mockEmailSender{}
-	chat := &mockGoogleChatSender{}
-	d := newTestDispatcher(mock, chat, &mockCallSender{})
+// TestDispatcher_Handle_CaseCreated_EvaluationOverridesEverything verifies
+// an Evaluation Subscription case routes exclusively to the "Evaluation"
+// audience, regardless of team.
+func TestDispatcher_Handle_CaseCreated_EvaluationOverridesEverything(t *testing.T) {
+	chat := &mockGoogleChatSender{hasAudienceSpace: func(a string) bool { return true }}
+	d := newTestDispatcher(&mockEmailSender{}, chat, &mockCallSender{})
 
-	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"Incident","priority":"P3","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"CASE","priority":"HIGH","team":"Castor","isEvaluationAccount":true,"projectOnboardingStatus":"IN_PROGRESS","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
 
 	if err := d.Handle(context.Background(), record); err != nil {
 		t.Fatalf("Handle() error = %v", err)
 	}
-	if len(chat.caseCreatedCalls) != 0 {
-		t.Errorf("expected no Google Chat alert with no product resolved, got %d calls", len(chat.caseCreatedCalls))
+	if len(chat.caseCreatedCalls) != 1 || chat.caseCreatedCalls[0].product != chatAudienceEvaluation {
+		t.Fatalf("expected exactly 1 chat alert routed to %q, got %+v", chatAudienceEvaluation, chat.caseCreatedCalls)
 	}
-	if len(mock.calls) != 1 {
-		t.Errorf("expected the email to still be sent independently, got %d calls", len(mock.calls))
+}
+
+// TestResolveChatAudiences is a table-driven unit test for the pure
+// resolution function — the Americas/weekend clock rules can't be
+// exercised deterministically through a full Handle() call (which reads
+// the real wall clock), so they're tested directly here instead.
+func TestResolveChatAudiences(t *testing.T) {
+	configuredTeam := func(a string) bool { return a == "Castor" }
+	noneConfigured := func(a string) bool { return false }
+
+	// A Monday at noon IST — outside both the Americas overnight window
+	// and the weekend window, so it isolates whichever rule each subtest
+	// is actually checking.
+	weekdayNoon := time.Date(2026, time.January, 5, 6, 30, 0, 0, time.UTC) // 12:00 IST
+
+	testCases := []struct {
+		name             string
+		team             string
+		isEvaluation     bool
+		onboardingStatus string
+		now              time.Time
+		hasAudience      func(string) bool
+		want             []string
+	}{
+		{"recognized team", "Castor", false, "", weekdayNoon, configuredTeam, []string{"Castor"}},
+		{"unrecognized team falls back", "Polaris", false, "", weekdayNoon, noneConfigured, []string{chatAudienceIncidentMonitor}},
+		{"no team falls back", "", false, "", weekdayNoon, noneConfigured, []string{chatAudienceIncidentMonitor}},
+		{"evaluation overrides team and onboarding", "Castor", true, "IN_PROGRESS", weekdayNoon, configuredTeam, []string{chatAudienceEvaluation}},
+		{"onboarding IN_PROGRESS adds Onboarding", "Castor", false, "IN_PROGRESS", weekdayNoon, configuredTeam, []string{"Castor", chatAudienceOnboarding}},
+		{"onboarding NOT_STARTED adds Onboarding", "Castor", false, "NOT_STARTED", weekdayNoon, configuredTeam, []string{"Castor", chatAudienceOnboarding}},
+		{"onboarding COMPLETED does not add Onboarding", "Castor", false, "COMPLETED", weekdayNoon, configuredTeam, []string{"Castor"}},
+		{
+			"9pm IST is inside the Americas window", "Castor", false, "",
+			time.Date(2026, time.January, 5, 15, 30, 0, 0, time.UTC), // 21:00 IST
+			configuredTeam, []string{"Castor", chatAudienceAmericas},
+		},
+		{
+			// Wednesday, not Monday: a pre-6am Monday instant also falls
+			// inside the weekend tail (see the deliberate-overlap case
+			// below) — this one isolates the Americas window alone.
+			"5:59am IST on a weekday is inside the Americas window", "Castor", false, "",
+			time.Date(2026, time.January, 7, 0, 29, 0, 0, time.UTC), // Wed 05:59 IST
+			configuredTeam, []string{"Castor", chatAudienceAmericas},
+		},
+		{
+			"6:00am IST is outside the Americas window", "Castor", false, "",
+			time.Date(2026, time.January, 5, 0, 30, 0, 0, time.UTC), // 06:00 IST
+			configuredTeam, []string{"Castor"},
+		},
+		{
+			"Saturday 6am IST starts the weekend window", "Castor", false, "",
+			time.Date(2026, time.January, 3, 0, 30, 0, 0, time.UTC), // Sat 06:00 IST
+			configuredTeam, []string{"Castor", chatAudienceIncidentMonitor},
+		},
+		{
+			// Any pre-6am instant also falls inside the Americas overnight
+			// window (it covers all of 00:00-06:00 IST as part of its own
+			// wraparound), so "not yet weekend" is isolated with a Friday
+			// evening instant instead, clear of both windows entirely.
+			"Friday evening is before both the Americas and weekend windows", "Castor", false, "",
+			time.Date(2026, time.January, 2, 14, 30, 0, 0, time.UTC), // Fri 20:00 IST
+			configuredTeam, []string{"Castor"},
+		},
+		{
+			"Sunday is inside the weekend window", "Castor", false, "",
+			time.Date(2026, time.January, 4, 6, 30, 0, 0, time.UTC), // Sun 12:00 IST
+			configuredTeam, []string{"Castor", chatAudienceIncidentMonitor},
+		},
+		{
+			// Deliberately exercises the genuine overlap between the two
+			// windows: a pre-6am Monday instant is simultaneously still
+			// inside the weekend tail AND inside the Americas overnight
+			// window (00:00-06:00 IST is common to both) — both audiences
+			// are correctly added, deduped against the Incident Monitor
+			// fallback (no configured team-of-its-own webhook contention
+			// here since Castor is configured).
+			"Monday before 6am IST overlaps the weekend and Americas windows", "Castor", false, "",
+			time.Date(2026, time.January, 5, 0, 0, 0, 0, time.UTC), // Mon 05:30 IST
+			configuredTeam, []string{"Castor", chatAudienceAmericas, chatAudienceIncidentMonitor},
+		},
+		{
+			"Monday 6am IST ends the weekend window", "Castor", false, "",
+			time.Date(2026, time.January, 5, 0, 30, 0, 0, time.UTC), // Mon 06:00 IST
+			configuredTeam, []string{"Castor"},
+		},
+		{
+			"no team during the weekend window dedupes to one Incident Monitor entry", "", false, "",
+			time.Date(2026, time.January, 4, 6, 30, 0, 0, time.UTC), // Sun 12:00 IST
+			noneConfigured, []string{chatAudienceIncidentMonitor},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveChatAudiences(tc.team, tc.isEvaluation, tc.onboardingStatus, tc.now, tc.hasAudience)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("resolveChatAudiences(...) = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -1543,6 +1714,10 @@ func (s *concurrencyProbeChatSender) SendSeverityChangedAlert(ctx context.Contex
 	return nil
 }
 
+func (s *concurrencyProbeChatSender) HasAudienceSpace(audience string) bool {
+	return false
+}
+
 // TestDispatcher_Handle_ConcurrentClaimNeverOverlaps is a regression test
 // for a real race in the old alreadyDone/markDone pattern: checking "not
 // done yet" and marking "done" were two separate lock acquisitions, so two
@@ -1610,6 +1785,10 @@ func (s *blockingCaseAcknowledgedChatSender) SendCaseAcknowledgedAlert(ctx conte
 
 func (s *blockingCaseAcknowledgedChatSender) SendSeverityChangedAlert(ctx context.Context, product, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error {
 	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) HasAudienceSpace(audience string) bool {
+	return false
 }
 
 // TestDispatcher_Handle_CaseAcknowledged_LosingConcurrentCallDoesNotReleaseWinnersClaim
@@ -1792,14 +1971,16 @@ func TestDispatcher_Handle_CaseCreated_ConcurrentBlockedEmailDoesNotDuplicateCha
 		t.Fatalf("chat sent %d times before the winner finished, want exactly 1", sentSoFar)
 	}
 
-	// The bug this guards against: the loser releasing chatKey here (having
-	// seen a "clean" record with no errors of its own) would let a later
-	// attempt reclaim and resend it while the winner is still working.
+	// The bug this guards against: the loser releasing the chat key here
+	// (having seen a "clean" record with no errors of its own) would let a
+	// later attempt reclaim and resend it while the winner is still
+	// working. With no team on this payload, the sole resolved audience is
+	// "Incident Monitor" (see resolveChatAudiences' own fallback).
 	d.doneMu.Lock()
-	chatStillClaimed := d.done[baseKey+"/chat"]
+	chatStillClaimed := d.done[baseKey+"/chat/"+chatAudienceIncidentMonitor]
 	d.doneMu.Unlock()
 	if !chatStillClaimed {
-		t.Fatal("chatKey was released while the winner was still mid-SendEmail")
+		t.Fatal("chat audience key was released while the winner was still mid-SendEmail")
 	}
 
 	close(email.proceed)

@@ -250,17 +250,43 @@ type CaseCreatedPayload struct {
 	// dispatch.Dispatcher falls back to DEFAULT_CHAT_PRODUCT, same as before
 	// this field was populated.
 	Product string `json:"product,omitempty"`
-	// Team is the case's account's CRE team display name (e.g. "Team Nova")
+	// Team is the case's account's CRE team display name (e.g. "Castor")
 	// — cv.AccountDetails.CreTeam.Name, "" when the case has no account or
-	// the account has no CRE team assigned. A purely-display value in
-	// csm-notification-service's Chat cards, same as Product; unlike
-	// Product, it plays no role in routing. Depends on ServiceNow's
-	// case-embedded account object actually carrying creTeam/sreTeam — see
-	// caseTeamName's own doc comment for the current caveat around that.
-	Team        string   `json:"team,omitempty"`
-	CreatedAt   string   `json:"createdAt"`
-	Description string   `json:"description"`
-	Recipients  []string `json:"recipients"`
+	// the account has no CRE team assigned. Displayed in
+	// csm-notification-service's Chat cards, and — for case.created only —
+	// also that service's own Google Chat *audience* routing key (a team
+	// with no configured Chat space of its own falls back to a shared
+	// "Incident Monitor" audience there, mirroring the reference
+	// ServiceNow CSNotificationRouter design this was ported from). Depends
+	// on ServiceNow's case-embedded account object actually carrying
+	// creTeam/sreTeam — see caseTeamName's own doc comment for the current
+	// caveat around that.
+	Team string `json:"team,omitempty"`
+	// ProjectOnboardingStatus is the case's project.onboarding_status raw
+	// enum label (e.g. "IN_PROGRESS"), "" when the case has no project or
+	// the column is unset. Postgres-only (see CaseService.
+	// ProjectAudienceFacts) — always "" on a pure ServiceNow deployment
+	// with no pgFallback configured. Which raw values count as "still
+	// onboarding" is a routing policy decision left entirely to
+	// csm-notification-service (case.created only, its own Chat "Onboarding"
+	// audience) — this field is deliberately the raw value, not a
+	// pre-computed bool, so that policy can change without a redeploy here.
+	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
+	// IsEvaluationAccount is true when the case's project.project_type_id
+	// is the fixed "Evaluation Subscription" project type — see
+	// CaseService.ProjectAudienceFacts' own doc comment for the hardcoded
+	// id this matches. Unlike ProjectOnboardingStatus this is a resolved
+	// bool, not a raw value: recognizing this one specific project type
+	// needs entity-service's own schema knowledge (a fixed id), not
+	// something csm-notification-service could reasonably re-derive from a
+	// project-type display name alone. case.created only — routes
+	// exclusively to csm-notification-service's own "Evaluation" Chat
+	// audience, overriding every other audience rule (team/onboarding/
+	// Americas), mirroring the reference ServiceNow design.
+	IsEvaluationAccount bool     `json:"isEvaluationAccount,omitempty"`
+	CreatedAt           string   `json:"createdAt"`
+	Description         string   `json:"description"`
+	Recipients          []string `json:"recipients"`
 }
 
 // IncidentCreatedPayload is the Payload shape for TypeIncidentCreated —

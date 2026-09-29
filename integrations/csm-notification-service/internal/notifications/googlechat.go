@@ -69,10 +69,41 @@ type GoogleChatSpace struct {
 // landing somewhere instead of being dropped/retried/dead-lettered).
 const defaultChatSpaceProduct = "default"
 
+// GoogleChatAudienceSpace maps a single audience key (e.g. a CRE team name
+// like "Castor", or one of the fixed standing audiences — "Incident
+// Monitor"/"Onboarding"/"Americas"/"Evaluation") to the Google Chat space
+// that should receive case.created alerts for it. See
+// dispatch.resolveChatAudiences for how an audience key is derived from a
+// case's own Team/onboarding/evaluation facts — this type only maps an
+// already-resolved key to where it's reachable, mirroring the reference
+// ServiceNow CSNotificationRouter script's own per-audience webhook
+// directory (this service has no per-*channel* split the way that script
+// does — case.created has exactly one Chat message shape).
+type GoogleChatAudienceSpace struct {
+	// Audience identifies the key this space is dedicated to. Matched
+	// whitespace-trimmed but *case-sensitively* — unlike GoogleChatSpace's
+	// Product, an audience key is either a real team's proper-cased display
+	// name (entity-service's own Team value, verbatim) or one of this
+	// service's own fixed constants, neither of which benefits from
+	// case-folding the way a short lowercase product code does, and
+	// case-folding two distinct real team names into one by accident would
+	// be a worse failure mode than requiring an exact match.
+	Audience string `json:"audience"`
+	// WebhookURL is that space's incoming webhook URL — see
+	// GoogleChatSpace.WebhookURL's own doc comment.
+	WebhookURL string `json:"webhookUrl"`
+}
+
 // GoogleChatConfig holds the configuration for the Google Chat notification
-// channel: one space per product, since each WSO2 product has its own space.
+// channel: one space per product (incident.created's own routing — see
+// GoogleChatSpace), plus a separate one space per audience (case.created's
+// own routing — see GoogleChatAudienceSpace). The two are deliberately
+// distinct config lists: an incident and a case route on unrelated
+// concepts (a product/deployment vs. a CS team/account), so a single
+// shared key space would conflate two independent routing decisions.
 type GoogleChatConfig struct {
-	Spaces []GoogleChatSpace
+	Spaces         []GoogleChatSpace
+	AudienceSpaces []GoogleChatAudienceSpace
 }
 
 // GoogleChatClient posts messages to a Google Chat space via an incoming
@@ -85,12 +116,14 @@ type GoogleChatConfig struct {
 // for a given deployment) — a missing or unmatched product only surfaces as
 // an error the first time SendIncidentAlert is called for it.
 type GoogleChatClient struct {
-	http                 *http.Client
-	webhookURLsByProduct map[string]string
+	http                  *http.Client
+	webhookURLsByProduct  map[string]string
+	webhookURLsByAudience map[string]string
 }
 
 // NewGoogleChatClient constructs a GoogleChatClient that routes alerts to the
-// webhook configured for each product in cfg.Spaces.
+// webhook configured for each product in cfg.Spaces, and case.created alerts
+// to the webhook configured for each audience in cfg.AudienceSpaces.
 func NewGoogleChatClient(cfg GoogleChatConfig) *GoogleChatClient {
 	webhookURLsByProduct := make(map[string]string, len(cfg.Spaces))
 	for _, space := range cfg.Spaces {
@@ -108,15 +141,42 @@ func NewGoogleChatClient(cfg GoogleChatConfig) *GoogleChatClient {
 		}
 		webhookURLsByProduct[product] = space.WebhookURL
 	}
+	webhookURLsByAudience := make(map[string]string, len(cfg.AudienceSpaces))
+	for _, space := range cfg.AudienceSpaces {
+		audience := strings.TrimSpace(space.Audience)
+		if audience == "" || strings.TrimSpace(space.WebhookURL) == "" {
+			continue
+		}
+		if _, exists := webhookURLsByAudience[audience]; exists {
+			webhookURLsByAudience[audience] = ""
+			continue
+		}
+		webhookURLsByAudience[audience] = space.WebhookURL
+	}
 	return &GoogleChatClient{
-		http:                 &http.Client{Timeout: 10 * time.Second},
-		webhookURLsByProduct: webhookURLsByProduct,
+		http:                  &http.Client{Timeout: 10 * time.Second},
+		webhookURLsByProduct:  webhookURLsByProduct,
+		webhookURLsByAudience: webhookURLsByAudience,
 	}
 }
 
 // normalizeProduct makes product matching case- and whitespace-insensitive.
 func normalizeProduct(product string) string {
 	return strings.ToLower(strings.TrimSpace(product))
+}
+
+// HasAudienceSpace reports whether audience has a real, configured Chat
+// webhook — used by dispatch.resolveChatAudiences to decide whether a
+// case's own CreTeam name is a recognized routing target (add it as its own
+// audience) or not (fall back to the shared "Incident Monitor" audience
+// instead), mirroring the reference ServiceNow script's own
+// "DIRECTORY.hasOwnProperty(teamName) && ...abt" check. Deliberately a
+// separate, exported query rather than folding this into
+// sendCardToAudience's own resolution: the caller needs the answer *before*
+// building the final audience list, not just when it's time to send.
+func (c *GoogleChatClient) HasAudienceSpace(audience string) bool {
+	url, ok := c.webhookURLsByAudience[strings.TrimSpace(audience)]
+	return ok && url != ""
 }
 
 // redactURLError strips the request URL — which carries the webhook's secret
@@ -339,7 +399,13 @@ func teamPart(team string) string {
 // team/codename line above the header —
 // an earlier version of this alert had one, discarded per explicit
 // product decision; the case reference now leads instead.
-func (c *GoogleChatClient) SendCaseCreatedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
+// Routes on audience, not product -- case.created no longer has a
+// per-product Chat space; dispatch.resolveChatAudiences resolves a case's
+// own audience (its CreTeam, plus Onboarding/Americas/Evaluation as they
+// apply) before this is ever called, mirroring the reference ServiceNow
+// CSNotificationRouter design. productName is still shown as a display
+// line in the card body; it plays no routing role here any more.
+func (c *GoogleChatClient) SendCaseCreatedAlert(ctx context.Context, audience, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
 	if caseNumber == "" {
 		return fmt.Errorf("notifications: caseNumber is required")
 	}
@@ -367,7 +433,7 @@ func (c *GoogleChatClient) SendCaseCreatedAlert(ctx context.Context, product, se
 		},
 		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
 	}
-	return c.sendCard(ctx, product, msg)
+	return c.sendCardToAudience(ctx, audience, msg)
 }
 
 // SendSecurityReportAnalysisAlert posts a card message announcing a newly
@@ -522,7 +588,31 @@ func (c *GoogleChatClient) sendCard(ctx context.Context, product string, msg cha
 		slog.WarnContext(ctx, "notifications: no google chat space configured for product; falling back to the default space", "product", product)
 		webhookURL = fallbackURL
 	}
+	return c.postCard(ctx, webhookURL, msg)
+}
 
+// sendCardToAudience posts msg to the webhook configured for audience —
+// SendCaseCreatedAlert's own routing, entirely separate from sendCard's
+// product-keyed lookup above. An audience with no configured webhook is
+// treated as a known configuration gap, not a failure: logged at warn and
+// reported as a no-op success, the same posture the reference ServiceNow
+// CSNotificationRouter script's own _postChat takes for a missing
+// per-channel webhook — a not-yet-onboarded team must not block or retry
+// the whole case.created delivery (email/other audiences still go out
+// regardless).
+func (c *GoogleChatClient) sendCardToAudience(ctx context.Context, audience string, msg chatCardMessage) error {
+	webhookURL, ok := c.webhookURLsByAudience[strings.TrimSpace(audience)]
+	if !ok || webhookURL == "" {
+		slog.WarnContext(ctx, "notifications: no google chat space configured for audience; case.created was not posted to it", "audience", audience)
+		return nil
+	}
+	return c.postCard(ctx, webhookURL, msg)
+}
+
+// postCard marshals msg and posts it to webhookURL — the actual HTTP
+// mechanics shared by sendCard/sendCardToAudience once each has resolved
+// its own webhook URL.
+func (c *GoogleChatClient) postCard(ctx context.Context, webhookURL string, msg chatCardMessage) error {
 	// A threaded message needs chatThreadReplyOption as a query parameter,
 	// not just msg.Thread's own body field -- see that constant's own doc
 	// comment for why the webhook endpoint otherwise ignores threadKey.

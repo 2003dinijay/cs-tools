@@ -288,9 +288,9 @@ func TestSendCaseCreatedAlert_SendsExpectedCard(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewGoogleChatClient(GoogleChatConfig{Spaces: []GoogleChatSpace{{Product: "api-manager", WebhookURL: srv.URL}}})
+	c := NewGoogleChatClient(GoogleChatConfig{AudienceSpaces: []GoogleChatAudienceSpace{{Audience: "Castor", WebhookURL: srv.URL}}})
 
-	err := c.SendCaseCreatedAlert(context.Background(), "api-manager",
+	err := c.SendCaseCreatedAlert(context.Background(), "Castor",
 		"Critical (P1)", "#DC2626", "CS0001001", "WSO2-1000", "WSO2 API Manager",
 		`Tom & Jerry <script>`, "Team Nova", "https://csm.example.com/cases/CASE-1")
 	if err != nil {
@@ -330,9 +330,9 @@ func TestSendCaseCreatedAlert_OmitsEmptyOptionalParts(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewGoogleChatClient(GoogleChatConfig{Spaces: []GoogleChatSpace{{Product: "api-manager", WebhookURL: srv.URL}}})
+	c := NewGoogleChatClient(GoogleChatConfig{AudienceSpaces: []GoogleChatAudienceSpace{{Audience: "Castor", WebhookURL: srv.URL}}})
 
-	err := c.SendCaseCreatedAlert(context.Background(), "api-manager",
+	err := c.SendCaseCreatedAlert(context.Background(), "Castor",
 		"", "", "CS0001001", "", "", "", "", "https://csm.example.com/cases/CASE-1")
 	if err != nil {
 		t.Fatalf("SendCaseCreatedAlert returned error: %v", err)
@@ -352,9 +352,55 @@ func TestSendCaseCreatedAlert_OmitsEmptyOptionalParts(t *testing.T) {
 }
 
 func TestSendCaseCreatedAlert_RejectsEmptyCaseNumber(t *testing.T) {
-	c := NewGoogleChatClient(GoogleChatConfig{Spaces: []GoogleChatSpace{{Product: "api-manager", WebhookURL: "https://example.com"}}})
-	if err := c.SendCaseCreatedAlert(context.Background(), "api-manager", "Critical (P1)", "#DC2626", "", "WSO2-1000", "WSO2 API Manager", "title", "Team Nova", "https://example.com/cases/1"); err == nil {
+	c := NewGoogleChatClient(GoogleChatConfig{AudienceSpaces: []GoogleChatAudienceSpace{{Audience: "Castor", WebhookURL: "https://example.com"}}})
+	if err := c.SendCaseCreatedAlert(context.Background(), "Castor", "Critical (P1)", "#DC2626", "", "WSO2-1000", "WSO2 API Manager", "title", "Team Nova", "https://example.com/cases/1"); err == nil {
 		t.Fatal("expected error for empty caseNumber, got nil")
+	}
+}
+
+// TestSendCaseCreatedAlert_UnconfiguredAudienceIsANoOpNotAnError verifies an
+// audience with no matching GOOGLE_CHAT_AUDIENCE_SPACES entry is treated as
+// a known configuration gap (logged, no HTTP request made) rather than an
+// error — mirroring the reference ServiceNow CSNotificationRouter script's
+// own "no webhook for this channel" posture: a not-yet-onboarded team must
+// not block or retry the whole case.created delivery. Unlike sendCard's
+// product routing, there is deliberately no "default" fallback space for
+// audiences — resolveChatAudiences' own Incident Monitor fallback already
+// covers the "nowhere specific to send this" case.
+func TestSendCaseCreatedAlert_UnconfiguredAudienceIsANoOpNotAnError(t *testing.T) {
+	requestMade := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestMade = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := NewGoogleChatClient(GoogleChatConfig{AudienceSpaces: []GoogleChatAudienceSpace{{Audience: "Castor", WebhookURL: srv.URL}}})
+
+	err := c.SendCaseCreatedAlert(context.Background(), "Polaris",
+		"Critical (P1)", "#DC2626", "CS0001001", "WSO2-1000", "WSO2 API Manager",
+		"title", "Team Nova", "https://csm.example.com/cases/CASE-1")
+	if err != nil {
+		t.Fatalf("SendCaseCreatedAlert returned error = %v, want nil for an unconfigured audience", err)
+	}
+	if requestMade {
+		t.Error("expected no HTTP request for an unconfigured audience")
+	}
+}
+
+func TestGoogleChatClient_HasAudienceSpace(t *testing.T) {
+	c := NewGoogleChatClient(GoogleChatConfig{AudienceSpaces: []GoogleChatAudienceSpace{{Audience: "Castor", WebhookURL: "https://example.com"}}})
+	if !c.HasAudienceSpace("Castor") {
+		t.Error("HasAudienceSpace(\"Castor\") = false, want true")
+	}
+	if !c.HasAudienceSpace(" Castor ") {
+		t.Error("HasAudienceSpace should trim whitespace, got false for \" Castor \"")
+	}
+	if c.HasAudienceSpace("castor") {
+		t.Error("HasAudienceSpace should be case-sensitive, got true for \"castor\"")
+	}
+	if c.HasAudienceSpace("Polaris") {
+		t.Error("HasAudienceSpace(\"Polaris\") = true, want false (not configured)")
 	}
 }
 

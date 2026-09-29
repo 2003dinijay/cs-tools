@@ -1102,7 +1102,7 @@ func (s *snCaseService) registerCaseSLAClocks(ctx context.Context, caseID string
 // reasoning — this is now a thin wrapper around it, same shape as
 // snIncidentService.publishIncidentCreated/publishIncidentCreatedEvent.
 func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.CreateCaseRequest, caseID string) {
-	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, req, caseID)
+	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.ProjectAudienceFacts, req, caseID)
 }
 
 // publishCaseCreatedEvent is publishCaseCreated's actual body, factored out
@@ -1117,7 +1117,13 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 // Postgres-backed for caseService) — this function is data-source-agnostic
 // beyond that. resolveProjectContactEmailsByRole is the caller's own
 // ProjectContactEmailsByRole method value, used only for req.Type ==
-// "announcement" (see below).
+// "announcement" (see below). resolveProjectAudienceFacts is the caller's
+// own ProjectAudienceFacts method value, used for every type to populate
+// ProjectOnboardingStatus/IsEvaluationAccount — csm-notification-service's
+// own case.created Chat audience resolution, not this service's concern; a
+// lookup failure here is logged and treated as "no additional facts"
+// rather than aborting the publish, since this is enrichment, not a
+// requirement.
 //
 // It re-fetches the case via getCaseByID rather than building the payload
 // from the create response/req alone: a create response carries only a
@@ -1177,6 +1183,7 @@ func publishCaseCreatedEvent(
 	publisher EventPublisherService,
 	getCaseByID func(context.Context, string) (domain.CaseView, error),
 	resolveProjectContactEmailsByRole func(context.Context, string, string) ([]string, error),
+	resolveProjectAudienceFacts func(context.Context, string) (string, bool, error),
 	req domain.CreateCaseRequest,
 	caseID string,
 ) {
@@ -1231,21 +1238,32 @@ func publishCaseCreatedEvent(
 	}
 	product := caseProductName(cv)
 
+	// Best-effort: a failed lookup just means this event goes out without
+	// the onboarding/evaluation audience facts (csm-notification-service's
+	// Chat routing falls back to whatever it can derive from Team alone),
+	// not a reason to drop the whole publish.
+	onboardingStatus, isEvaluation, err := resolveProjectAudienceFacts(ctx, req.ProjectID)
+	if err != nil {
+		slog.WarnContext(ctx, "create case: resolving project audience facts failed", "caseId", caseID, "error", err)
+	}
+
 	payload, err := json.Marshal(events.CaseCreatedPayload{
-		ReporterName: reporterName,
-		ProjectName:  cv.ProjectDetails.Name,
-		ProjectID:    cv.ProjectDetails.ID,
-		CaseID:       caseID,
-		CaseNumber:   cv.Number,
-		WSO2CaseID:   cv.InternalID,
-		CaseTitle:    cv.Subject,
-		CaseType:     strings.ToUpper(req.Type),
-		Priority:     strings.ToUpper(string(derefSeverity(cv.Severity))),
-		Product:      product,
-		Team:         caseTeamName(cv),
-		CreatedAt:    cv.CreatedOn.Format(time.RFC3339),
-		Description:  cv.Description,
-		Recipients:   recipients,
+		ReporterName:            reporterName,
+		ProjectName:             cv.ProjectDetails.Name,
+		ProjectID:               cv.ProjectDetails.ID,
+		CaseID:                  caseID,
+		CaseNumber:              cv.Number,
+		WSO2CaseID:              cv.InternalID,
+		CaseTitle:               cv.Subject,
+		CaseType:                strings.ToUpper(req.Type),
+		Priority:                strings.ToUpper(string(derefSeverity(cv.Severity))),
+		Product:                 product,
+		Team:                    caseTeamName(cv),
+		ProjectOnboardingStatus: onboardingStatus,
+		IsEvaluationAccount:     isEvaluation,
+		CreatedAt:               cv.CreatedOn.Format(time.RFC3339),
+		Description:             cv.Description,
+		Recipients:              recipients,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "create case: encode case.created payload failed", "caseId", caseID, "error", err)
@@ -1894,6 +1912,16 @@ func (s *snCaseService) ProjectContactEmailsByRole(ctx context.Context, projectI
 		return nil, nil
 	}
 	return s.pgFallback.ProjectContactEmailsByRole(ctx, projectID, role)
+}
+
+// ProjectAudienceFacts implements CaseService -- same Postgres-only
+// delegation as ProjectContactEmailsByRole above (project.onboarding_status/
+// project_type_id have no ServiceNow equivalent this service reads).
+func (s *snCaseService) ProjectAudienceFacts(ctx context.Context, projectID string) (string, bool, error) {
+	if s.pgFallback == nil {
+		return "", false, nil
+	}
+	return s.pgFallback.ProjectAudienceFacts(ctx, projectID)
 }
 
 func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {

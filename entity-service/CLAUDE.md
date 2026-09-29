@@ -532,6 +532,34 @@ easy to wire up for real once both exist.
   same four non-`"case"` types (an exclude-list keyed on
   `CaseCreatedPayload.CaseType`) — those types notify by email only, per
   the same explicit request. See that service's own `CLAUDE.md`.
+
+  **`CaseCreatedPayload` also carries two facts purely for
+  `csm-notification-service`'s own Chat-audience routing**, resolved via
+  `CaseService.ProjectAudienceFacts(ctx, projectID)`:
+  `ProjectOnboardingStatus` (the project's raw `onboarding_status` enum
+  label, e.g. `"IN_PROGRESS"`, `""` when the case has no project or the
+  column is unset) and `IsEvaluationAccount` (true when the project's
+  `project_type_id` matches the fixed Evaluation Subscription type).
+  Neither is required for publish — resolved best-effort, a lookup failure
+  is warn-logged and the publish continues with both left at their zero
+  value, same "can't confirm, don't block" posture as every other
+  Postgres-only enrichment here. `ProjectAudienceFacts` is Postgres-only
+  (`project.onboarding_status`/`project_type_id` have no ServiceNow
+  equivalent); on `snCaseService` it delegates to `pgFallback` when
+  configured, else returns `"", false, nil`. Which raw onboarding-status
+  values count as "still onboarding," and what happens with either flag,
+  is decided entirely in `csm-notification-service` (`dispatch.
+  onboardingChatAudienceStatuses`/`resolveChatAudiences`) — this service
+  only publishes the raw facts, never the routing policy. `Team` also
+  gained a second role alongside its existing display purpose: it's now
+  also `csm-notification-service`'s Chat-audience routing key for
+  `case.created` (a team with no configured space of its own falls back to
+  the standing "Incident Monitor" audience) — this design was ported from
+  a reference ServiceNow Script Include's own team/onboarding/evaluation
+  routing logic; only the design was ported, never any of that script's
+  own literal webhook URLs or tokens, which were never committed to this
+  codebase. See `csm-notification-service`'s own `CLAUDE.md` for the full
+  audience-resolution rules.
 - **`snIncidentService.CreateIncident`** publishes `incident.created` via
   `publishIncidentCreated`, called the same way. No enrichment round trip is
   needed here: `req.Subject`/`req.AdditionalComments` already carry
