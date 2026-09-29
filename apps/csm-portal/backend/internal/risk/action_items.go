@@ -111,18 +111,48 @@ func (c *Client) CreateActionItem(ctx context.Context, riskID int, payload Creat
 // would leave an active item on a risk that isn't open itself — the same
 // "closed risk with an open item" state CloseProjectRisk is designed to
 // prevent.
+//
+// The reopen check and the item update run in one transaction that locks
+// the risk row (SELECT ... FOR UPDATE), the same lock CloseProjectRisk
+// takes: without it, this could read the risk as "open", lose a race to a
+// concurrent CloseProjectRisk (which only counts items not already
+// resolved/cancelled), and then write "open" onto an item whose risk just
+// closed.
 func (c *Client) UpdateActionItemStatus(ctx context.Context, actionItemID int, newStatus string, resolutionComment *string, email string) (*RiskActionItem, error) {
 	if newStatus != "open" && newStatus != "in_progress" && newStatus != "resolved" && newStatus != "cancelled" {
 		return nil, &ValidationError{Message: fmt.Sprintf("Invalid status: %s", newStatus)}
 	}
-	row, err := c.getActionItemRowByID(ctx, actionItemID)
-	if err != nil {
-		return nil, err
+	if (newStatus == "resolved" || newStatus == "cancelled") && (resolutionComment == nil || strings.TrimSpace(*resolutionComment) == "") {
+		return nil, &ValidationError{Message: "resolutionComment is required when status is 'resolved' or 'cancelled'"}
 	}
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("risk: begin transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	row, err := scanActionItemRow(tx.QueryRowContext(ctx, "SELECT "+actionItemColumns+" FROM risk_action_item WHERE id = ?", actionItemID))
+	if err == sql.ErrNoRows {
+		return nil, errRecordNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("risk: query risk_action_item by id: %w", err)
+	}
+
 	if newStatus == "open" || newStatus == "in_progress" {
-		riskRow, err := c.getRiskRowByID(ctx, row.RiskID)
+		riskRow, err := scanProjectRiskRow(tx.QueryRowContext(ctx,
+			"SELECT "+projectRiskColumns+" FROM project_risk WHERE id = ? FOR UPDATE", row.RiskID))
+		if err == sql.ErrNoRows {
+			return nil, &ValidationError{Message: fmt.Sprintf("Risk not found: %d", row.RiskID)}
+		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("risk: query project_risk by id: %w", err)
 		}
 		if riskRow.Status != "open" {
 			return nil, &ValidationError{Message: "Cannot reopen an action item on a risk that is not open."}
@@ -130,10 +160,7 @@ func (c *Client) UpdateActionItemStatus(ctx context.Context, actionItemID int, n
 	}
 
 	if newStatus == "resolved" || newStatus == "cancelled" {
-		if resolutionComment == nil || strings.TrimSpace(*resolutionComment) == "" {
-			return nil, &ValidationError{Message: "resolutionComment is required when status is 'resolved' or 'cancelled'"}
-		}
-		_, err := c.db.ExecContext(ctx, `
+		_, err = tx.ExecContext(ctx, `
 			UPDATE risk_action_item
 			SET status = ?, resolution_comment = ?, resolved_by_email = ?, resolved_on = NOW()
 			WHERE id = ?`, newStatus, *resolutionComment, email, actionItemID)
@@ -141,11 +168,16 @@ func (c *Client) UpdateActionItemStatus(ctx context.Context, actionItemID int, n
 			return nil, fmt.Errorf("risk: resolve/cancel action item: %w", err)
 		}
 	} else {
-		_, err := c.db.ExecContext(ctx, `UPDATE risk_action_item SET status = ? WHERE id = ?`, newStatus, actionItemID)
+		_, err = tx.ExecContext(ctx, `UPDATE risk_action_item SET status = ? WHERE id = ?`, newStatus, actionItemID)
 		if err != nil {
 			return nil, fmt.Errorf("risk: update action item status: %w", err)
 		}
 	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("risk: commit transaction: %w", err)
+	}
+	committed = true
 
 	return c.getActionItemByID(ctx, actionItemID)
 }
