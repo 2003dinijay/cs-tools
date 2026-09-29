@@ -15,7 +15,7 @@
 // under the License.
 
 // Ported from apps/support-portal-lite/webapp's own
-// features/spl/cases/pages/SplCasesPage.tsx — an overview of six case-state
+// features/spl/cases/pages/CasesPage.tsx — an overview of six case-state
 // counts that drills into a per-state table. Six separate query hooks with
 // per-state offset/rowsPerPage state (rather than one query re-fetched on
 // filter change) is the source's own pattern, kept as-is: it's what avoids
@@ -29,11 +29,11 @@
 import { useState } from "react";
 import { Box, Grid, Paper, Typography } from "@wso2/oxygen-ui";
 import { useTheme, useColorScheme } from "@mui/material/styles";
-import { useGetSplCases } from "../api/useSplCases";
+import { useGetCases } from "../api/useCases";
 import Search from "../components/Search";
 import CaseStateCard from "../components/CaseStateCard";
 import CaseStateView from "../components/CaseStateView";
-import type { CaseDetailsWithCount } from "../api/splCaseTypes";
+import type { CaseDetailsWithCount } from "../api/caseTypes";
 
 const STATES = ["Open", "Work In Progress", "Awaiting Info", "Solution Proposed", "Waiting on WSO2", "Reopened"];
 // Per state, a {light, dark} pair rather than one static hex — the count's
@@ -56,11 +56,11 @@ const COLORS: { light: string; dark: string }[] = [
 function useCaseStateQuery(state: string) {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
-  const { data, isLoading, error } = useGetSplCases(state, page * rowsPerPage, rowsPerPage);
+  const { data, isLoading, error } = useGetCases(state, page * rowsPerPage, rowsPerPage);
   return { data, loading: isLoading, error, page, setPage, rowsPerPage, setRowsPerPage };
 }
 
-export default function SplCasesPage() {
+export default function CasesPage() {
   const [caseState, setCaseState] = useState("");
   const [showTable, setShowTable] = useState(true);
   const theme = useTheme();

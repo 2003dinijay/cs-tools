@@ -16,7 +16,7 @@
 
 // FLAG (fidelity trade-off, needs a follow-up decision): the source app's
 // worknote composer (apps/support-portal-lite/webapp's own
-// features/spl/cases/components/SplRichTextField.tsx) uses the
+// features/spl/cases/components/RichTextField.tsx) uses the
 // `react-quill-new` rich-text editor (bold/italic/underline/strike,
 // headers, lists). That package is NOT a dependency of this app
 // (csm-portal/webapp) and this port's directive explicitly disallows
@@ -35,7 +35,7 @@
 //      this pass.
 import { TextField } from "@wso2/oxygen-ui";
 
-export default function SplRichTextField({
+export default function RichTextField({
   value,
   onChange,
 }: {
@@ -43,9 +43,9 @@ export default function SplRichTextField({
   onChange: (html: string) => void;
 }) {
   // value/onChange still carry HTML (EMPTY_NOTE = "<p><br></p>", see
-  // SplCaseDetailPage.tsx) to keep this a drop-in swap for the real editor
+  // CaseDetailPage.tsx) to keep this a drop-in swap for the real editor
   // later — this plain field just treats it as opaque text for now, wrapped
-  // in a <p> on submit (see addWorkNote in SplCaseDetailPage.tsx).
+  // in a <p> on submit (see addWorkNote in CaseDetailPage.tsx).
   return (
     <TextField
       fullWidth

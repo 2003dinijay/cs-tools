@@ -20,7 +20,7 @@
 import { Card, CardActionArea, CardContent, CircularProgress, Typography } from "@wso2/oxygen-ui";
 import { alpha, useTheme, useColorScheme } from "@mui/material/styles";
 import { CircleAlertIcon } from "@wso2/oxygen-ui-icons-react";
-import type { CaseDetailsWithCount } from "../api/splCaseTypes";
+import type { CaseDetailsWithCount } from "../api/caseTypes";
 
 export default function CaseStateCard({
   state,
@@ -31,7 +31,7 @@ export default function CaseStateCard({
   setCaseState,
 }: {
   state: string;
-  /** A {light, dark} pair, not one static color — see SplCasesPage's COLORS
+  /** A {light, dark} pair, not one static color — see CasesPage's COLORS
    *  for why a single hex can't have good contrast against the card's own
    *  background in both modes. */
   color: { light: string; dark: string };

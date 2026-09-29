@@ -21,7 +21,7 @@ import { Card, Stack, Typography } from "@wso2/oxygen-ui";
 import { alpha, useColorScheme } from "@mui/material/styles";
 import { useNavigate } from "react-router";
 import { LinearLoadingPanel, NoResultsPanel } from "./StatePanels";
-import type { CaseDetails, CaseDetailsWithCount, AccountSummary, ProjectSummary } from "../api/splCaseTypes";
+import type { CaseDetails, CaseDetailsWithCount, AccountSummary, ProjectSummary } from "../api/caseTypes";
 
 type SearchOptions = "account" | "myAccount" | "case" | "project";
 

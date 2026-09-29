@@ -24,11 +24,11 @@
 // yet, so nothing to merge onto.
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useBackendApi, BackendApiError } from "@api/backend/client";
-import type { CaseCommentDetails, CaseDetails, CaseDetailsWithCount } from "./splCaseTypes";
+import type { CaseCommentDetails, CaseDetails, CaseDetailsWithCount } from "./caseTypes";
 
 // caseStateFromDisplay/caseStateToDisplay translate between the six display
 // labels SPL's UI has always used (ServiceNow's own state labels, e.g. "Work
-// In Progress" -- see CaseStateCard.tsx/SplCasesPage.tsx, which are NOT
+// In Progress" -- see CaseStateCard.tsx/CasesPage.tsx, which are NOT
 // changing as part of this) and entity-service's domain.CaseState wire
 // values (lowercase snake_case, e.g. "work_in_progress"). "closed" has no
 // SPL summary card and is deliberately not in caseStateFromDisplay -- SPL's
@@ -107,7 +107,7 @@ function toCaseDetails(v: EntitySearchCaseView): CaseDetails {
   };
 }
 
-export function useGetSplCases(
+export function useGetCases(
   stateFilter: string,
   offset: number,
   limit: number,
@@ -130,7 +130,7 @@ export function useGetSplCases(
   });
 }
 
-export function useGetSplCase(caseId: string): UseQueryResult<CaseDetails, Error> {
+export function useGetCase(caseId: string): UseQueryResult<CaseDetails, Error> {
   const api = useBackendApi();
   return useQuery<CaseDetails, Error>({
     queryKey: ["case", caseId],
@@ -160,7 +160,7 @@ interface CaseCommentsResponse {
 
 // commentTypeToDisplay maps entity-service's CommentType wire values to the
 // two labels SPL's UI has always used (see CaseCommentDetails.type in
-// splCaseTypes.ts) -- "activity" (system-generated field-change entries)
+// caseTypes.ts) -- "activity" (system-generated field-change entries)
 // has no SPL display bucket and is filtered out below, same as before.
 function commentTypeToDisplay(t: EntityCaseComment["type"]): "comments" | "work_notes" | null {
   if (t === "comment") return "comments";
@@ -168,7 +168,7 @@ function commentTypeToDisplay(t: EntityCaseComment["type"]): "comments" | "work_
   return null;
 }
 
-export function useGetSplCaseComments(
+export function useGetCaseComments(
   caseId: string,
   offset: number,
   limit: number,
@@ -200,7 +200,7 @@ export function useGetSplCaseComments(
   });
 }
 
-export function useGetSplCaseAttachments(caseId: string) {
+export function useGetCaseAttachments(caseId: string) {
   const api = useBackendApi();
   return useQuery({
     queryKey: ["spl-case-attachments", caseId],
@@ -216,7 +216,7 @@ interface EntityCreateCommentResponse {
   comment: { id: string; createdOn: string; createdBy: string };
 }
 
-export function usePostSplWorkNote(caseId: string) {
+export function usePostWorkNote(caseId: string) {
   const api = useBackendApi();
   const queryClient = useQueryClient();
   return useMutation<EntityCreateCommentResponse, Error, string>({

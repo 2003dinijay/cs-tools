@@ -16,17 +16,17 @@
 
 // Ported from apps/support-portal-lite/webapp's own
 // features/spl/cases/components/AttachmentBox.tsx — rewritten against
-// useGetSplCaseAttachments (React Query) instead of useSplApi's useGetApi.
+// useGetCaseAttachments (React Query) instead of useSplApi's useGetApi.
 import { Box, Stack, Tooltip, Typography } from "@wso2/oxygen-ui";
 import { CircleAlertIcon, ClockIcon } from "@wso2/oxygen-ui-icons-react";
 import { useSplPermissions } from "@features/spl/api/splPermissionsContext";
 import { useAttachmentDownload } from "../api/useAttachmentDownload";
-import { useGetSplCaseAttachments } from "../api/useSplCases";
-import type { AttachmentDetails } from "../api/splCaseTypes";
+import { useGetCaseAttachments } from "../api/useCases";
+import type { AttachmentDetails } from "../api/caseTypes";
 import { LinearLoadingPanel } from "./StatePanels";
 
 export function AttachmentBox({ caseId }: { caseId: string | undefined }) {
-  const { data, isLoading, error } = useGetSplCaseAttachments(caseId ?? "");
+  const { data, isLoading, error } = useGetCaseAttachments(caseId ?? "");
   const { canDownloadAttachments } = useSplPermissions();
   const { downloadAttachment } = useAttachmentDownload();
 

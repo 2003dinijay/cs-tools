@@ -17,7 +17,7 @@
 // Ported from apps/support-portal-lite/webapp's own
 // features/spl/cases/components/CaseBox.tsx — the comments/worknotes feed
 // shown under a case's work-note composer. Rewritten against
-// useGetSplCaseComments (React Query, keyed on [caseId, offset]) instead of
+// useGetCaseComments (React Query, keyed on [caseId, offset]) instead of
 // useSplApi's imperative getApiData(url); the "accumulate pages as offset
 // grows" client-side logic is otherwise unchanged from the source.
 import { useEffect, useState } from "react";
@@ -27,8 +27,8 @@ import { CircleAlertIcon, ClockIcon, StickyNoteIcon } from "@wso2/oxygen-ui-icon
 import DOMPurify from "dompurify";
 import { useSplPermissions } from "@features/spl/api/splPermissionsContext";
 import { useInlineAttachmentImages } from "../utils/useInlineAttachmentImages";
-import { useGetSplCaseComments } from "../api/useSplCases";
-import type { CaseCommentDetails } from "../api/splCaseTypes";
+import { useGetCaseComments } from "../api/useCases";
+import type { CaseCommentDetails } from "../api/caseTypes";
 import { LinearLoadingPanel } from "./StatePanels";
 
 function getCommentKey(comment: CaseCommentDetails): string {
@@ -67,11 +67,11 @@ export function CaseBox({ caseId, worknoteRsp }: { caseId: string | undefined; w
   const [endOfComments, setEndOfComments] = useState(false);
   const [allComments, setAllComments] = useState<CaseCommentDetails[]>([]);
 
-  const { data, isLoading, error } = useGetSplCaseComments(caseId ?? "", offset, 10);
+  const { data, isLoading, error } = useGetCaseComments(caseId ?? "", offset, 10);
 
   // Resets pagination whenever the case changes, or a worknote was just
   // submitted (worknoteRsp is a fresh {ts: Date.now()} object each time —
-  // see SplCaseDetailPage.tsx — so the feed picks up the new entry).
+  // see CaseDetailPage.tsx — so the feed picks up the new entry).
   useEffect(() => {
     setOffset(0);
     setEndOfComments(false);

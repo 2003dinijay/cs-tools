@@ -109,8 +109,8 @@ import CsmAnnouncementsPage from "@features/csm-announcements/pages/CsmAnnouncem
 import CsmAnnouncementCreatePage from "@features/csm-announcements/pages/CsmAnnouncementCreatePage";
 import HelpPage from "@features/help/pages/HelpPage";
 import RouteGuard from "@features/spl/pages/RouteGuard";
-import SplCasesPage from "@features/spl/cases/pages/SplCasesPage";
-import SplCaseDetailPage from "@features/spl/cases/pages/SplCaseDetailPage";
+import CasesPage from "@features/spl/cases/pages/CasesPage";
+import CaseDetailPage from "@features/spl/cases/pages/CaseDetailPage";
 import AccountsPage from "@features/spl/accounts/pages/AccountsPage";
 import AccountDetailPage from "@features/spl/accounts/pages/AccountDetailPage";
 import ProjectsPage from "@features/spl/projects/pages/ProjectsPage";
@@ -638,8 +638,8 @@ export default function App(): JSX.Element {
                       a hidden nav entry) and also mounts
                       PermissionProvider for every screen below it. */}
                   <Route path="spl" element={<RouteGuard />}>
-                    <Route path="cases" element={<SplCasesPage />} />
-                    <Route path="cases/:caseId" element={<SplCaseDetailPage />} />
+                    <Route path="cases" element={<CasesPage />} />
+                    <Route path="cases/:caseId" element={<CaseDetailPage />} />
 
                     {/* AccountsPage reads the path leaf itself to decide
                         all-accounts vs my-accounts — same component, two

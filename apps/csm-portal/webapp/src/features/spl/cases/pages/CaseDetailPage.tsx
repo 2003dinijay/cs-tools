@@ -15,8 +15,8 @@
 // under the License.
 
 // Ported from apps/support-portal-lite/webapp's own
-// features/spl/cases/pages/SplCaseDetailPage.tsx — rewritten against
-// useGetSplCase/usePostSplWorkNote (React Query) instead of useSplApi's
+// features/spl/cases/pages/CaseDetailPage.tsx — rewritten against
+// useGetCase/usePostWorkNote (React Query) instead of useSplApi's
 // useGetApi/usePostApi. No SplShell wrapper (SplRouteGuard in App.tsx
 // already gates the route tree and mounts SplPermissionProvider).
 import { useState, type ReactNode } from "react";
@@ -40,10 +40,10 @@ import { useSplPermissions } from "@features/spl/api/splPermissionsContext";
 import PathView from "../components/PathView";
 import { CaseBox } from "../components/CaseBox";
 import { AttachmentBox } from "../components/AttachmentBox";
-import SplRichTextField from "../components/SplRichTextField";
+import RichTextField from "../components/RichTextField";
 import { useCaseNotice } from "../utils/useCaseNotice";
-import { useGetSplCase, usePostSplWorkNote } from "../api/useSplCases";
-import { CASE_CLOSED_STATE } from "../api/splCaseTypes";
+import { useGetCase, usePostWorkNote } from "../api/useCases";
+import { CASE_CLOSED_STATE } from "../api/caseTypes";
 import { ErrorPanel, LinearLoadingPanel, NotFoundPanel } from "../components/StatePanels";
 import { BackendApiError } from "@api/backend/client";
 
@@ -62,7 +62,7 @@ const STATE_COLOR: Record<string, string> = {
   "Solution Proposed": "#4caf50",
 };
 
-export default function SplCaseDetailPage() {
+export default function CaseDetailPage() {
   const { caseId: rawCaseId } = useParams<{ caseId: string }>();
   const caseId = rawCaseId ? DOMPurify.sanitize(rawCaseId) : "";
 
@@ -72,13 +72,13 @@ export default function SplCaseDetailPage() {
   const authInfo = useSplPermissions();
   const { notice, showSuccess, showWarning, showError, clear } = useCaseNotice();
 
-  const { data, isLoading, error } = useGetSplCase(caseId);
-  const { mutateAsync: postWorkNote, isPending: submitting } = usePostSplWorkNote(caseId);
+  const { data, isLoading, error } = useGetCase(caseId);
+  const { mutateAsync: postWorkNote, isPending: submitting } = usePostWorkNote(caseId);
 
   const isStateClosed = data?.state === CASE_CLOSED_STATE;
 
   const addWorkNote = async () => {
-    // worknoteHtml is plain text from SplRichTextField now (see its own doc
+    // worknoteHtml is plain text from RichTextField now (see its own doc
     // comment on the react-quill-new gap) — EMPTY_NOTE ("<p><br></p>") only
     // still matters as the field's initial value; an emptied field is "".
     if (worknoteHtml === EMPTY_NOTE || worknoteHtml.trim().length === 0) {
@@ -186,7 +186,7 @@ export default function SplCaseDetailPage() {
               <Typography variant="body2" sx={{ mb: 1 }}>
                 Work Notes:
               </Typography>
-              <SplRichTextField value={worknoteHtml} onChange={setWorknoteHtml} />
+              <RichTextField value={worknoteHtml} onChange={setWorknoteHtml} />
               <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
                 <Button variant="contained" onClick={addWorkNote} disabled={submitting}>
                   Add Note

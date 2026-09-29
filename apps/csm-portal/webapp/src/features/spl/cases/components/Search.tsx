@@ -28,7 +28,7 @@ import { SearchIcon } from "@wso2/oxygen-ui-icons-react";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { useBackendApi } from "@api/backend/client";
 import { SearchResultBox } from "./SearchResultBox";
-import type { CaseDetailsWithCount, AccountSummary, ProjectSummary } from "../api/splCaseTypes";
+import type { CaseDetailsWithCount, AccountSummary, ProjectSummary } from "../api/caseTypes";
 
 type SearchOptions = "account" | "myAccount" | "case" | "project";
 type SearchResult = CaseDetailsWithCount | AccountSummary[] | ProjectSummary[];
@@ -36,7 +36,7 @@ type SearchResult = CaseDetailsWithCount | AccountSummary[] | ProjectSummary[];
 // Account/project/case search used to call this backend's own /spl/accounts,
 // /spl/projects, /spl/cases GET routes directly; all three now call CS
 // Portal's own POST /accounts/search, /projects/search, /cases/search --
-// see useSplAccountsApi.ts/useSplProjectsApi.ts/useSplCases.ts for the same
+// see useSplAccountsApi.ts/useSplProjectsApi.ts/useCases.ts for the same
 // merge, and cs-tools' csm-portal-backend main.go SPL route registration
 // comment for why. Kept as a raw fetch here (not those hooks' React Query
 // versions) since this is a debounced free-text search, not a cacheable

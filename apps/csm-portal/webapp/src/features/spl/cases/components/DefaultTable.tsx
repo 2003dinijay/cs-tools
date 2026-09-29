@@ -38,7 +38,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { alpha, useTheme, useColorScheme } from "@mui/material/styles";
 import { ChevronsLeftIcon, ChevronsRightIcon, ChevronLeftIcon, ChevronRightIcon } from "@wso2/oxygen-ui-icons-react";
-import type { CaseDetailsWithCount, DataStruct } from "../api/splCaseTypes";
+import type { CaseDetailsWithCount, DataStruct } from "../api/caseTypes";
 import { ErrorPanel, LinearLoadingPanel, NoDataPanel } from "./StatePanels";
 
 export interface TableDataProps {

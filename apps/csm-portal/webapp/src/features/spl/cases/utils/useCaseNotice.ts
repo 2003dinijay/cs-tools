@@ -21,7 +21,7 @@ import { useCallback, useState } from "react";
 // This app has no equivalent global context, and adding one is out of scope
 // for a single domain's port — this is a small local stand-in: a single
 // {severity, message} slot a page renders as a Snackbar+Alert at its own call
-// site (see SplCaseDetailPage.tsx). Good enough for the one worknote-submit
+// site (see CaseDetailPage.tsx). Good enough for the one worknote-submit
 // flow that needs it; not meant to become this app's real notification system.
 export interface CaseNotice {
   severity: "success" | "warning" | "error";

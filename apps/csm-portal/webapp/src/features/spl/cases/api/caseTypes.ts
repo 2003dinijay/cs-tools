@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Ported from apps/support-portal-lite/webapp's own features/spl/cases/api/splCaseTypes.ts
+// Ported from apps/support-portal-lite/webapp's own features/spl/cases/api/caseTypes.ts
 // (itself ported from the original SupportPortalLite app's data/utils/types.ts) —
 // case-domain slice only. Field names match the Go backend's
 // internal/servicenow.CaseDetails/CommentsResponse/AttachmentInfo JSON tags exactly

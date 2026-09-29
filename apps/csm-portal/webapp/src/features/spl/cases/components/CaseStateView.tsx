@@ -20,7 +20,7 @@
 import { Box, Button, Grid, Paper, Typography } from "@wso2/oxygen-ui";
 import { HomeIcon } from "@wso2/oxygen-ui-icons-react";
 import { useNavigate } from "react-router";
-import type { CaseDetails, CaseDetailsWithCount } from "../api/splCaseTypes";
+import type { CaseDetails, CaseDetailsWithCount } from "../api/caseTypes";
 import DefaultTable from "./DefaultTable";
 
 export default function CaseStateView({
