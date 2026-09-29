@@ -22,6 +22,7 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 -- runs into the next, and two blocks either share wall-clock time or they do
 -- not. Half-open at the end, so a window ending 18:00 and one starting 18:00
 -- are a handover, not a clash.
+ALTER TABLE schedule_assignment DROP CONSTRAINT IF EXISTS schedule_assignment_no_overlap;
 ALTER TABLE schedule_assignment
     ADD CONSTRAINT schedule_assignment_no_overlap
     EXCLUDE USING gist (
@@ -35,6 +36,7 @@ ALTER TABLE schedule_assignment
 -- customer allocation covering the same Tuesday -- and "why is this person
 -- off today" had no defined tiebreak. Closed at both ends, because a leave
 -- day is a whole day: 1st-3rd and 3rd-5th is a real clash, not a handover.
+ALTER TABLE schedule_absence DROP CONSTRAINT IF EXISTS schedule_absence_no_overlap;
 ALTER TABLE schedule_absence
     ADD CONSTRAINT schedule_absence_no_overlap
     EXCLUDE USING gist (
@@ -86,6 +88,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS schedule_assignment_matches_shift_trigger ON schedule_assignment;
 CREATE TRIGGER schedule_assignment_matches_shift_trigger
     BEFORE INSERT OR UPDATE OF shift_id, zone_id, tier ON schedule_assignment
     FOR EACH ROW EXECUTE FUNCTION schedule_assignment_matches_shift();

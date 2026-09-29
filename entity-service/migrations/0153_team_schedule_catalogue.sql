@@ -42,17 +42,28 @@ WHERE w.code = CASE z.code WHEN 'TZ1' THEN 'TZ1' WHEN 'TZ2' THEN 'TZ1' WHEN 'TZ3
   AND z.weekend_zone_id IS DISTINCT FROM w.id;
 
 -- ── CRE windows ───────────────────────────────────────────────────────────
+-- A plain ON CONFLICT DO NOTHING still builds the candidate row -- including
+-- columns this file never lists -- before deciding to discard it, so once a
+-- later migration (0154) makes one of those columns NOT NULL with no
+-- default, re-running this seed against an already-populated schema fails on
+-- that check before the conflict is ever evaluated. WHERE NOT EXISTS filters
+-- out an existing code before a row is built at all, which is what actually
+-- makes this idempotent.
 INSERT INTO schedule_shift
     (code, label, family, zone_id, tier, day_scope, start_minute, end_minute,
      is_on_call, is_escalation, sort_order, created_by, updated_by)
-VALUES
-    ('CRE_MORNING',    'Morning 6-9am',         'CRE', NULL, NULL, 'WEEKDAY',  360,  540, FALSE, FALSE, 10, 'migration', 'migration'),
-    ('CRE_MORNING_OC', 'Morning 6-9am on-call', 'CRE', NULL, NULL, 'WEEKDAY',  360,  540, TRUE,  FALSE, 20, 'migration', 'migration'),
-    ('CRE_REGULAR',    'Regular hours',         'CRE', NULL, NULL, 'WEEKDAY',  540, 1080, FALSE, FALSE, 30, 'migration', 'migration'),
-    ('CRE_EVENING',    'Evening 6-9pm',         'CRE', NULL, NULL, 'WEEKDAY', 1080, 1260, FALSE, FALSE, 40, 'migration', 'migration'),
-    ('CRE_AMERICAS',   'Americas cover',        'CRE', NULL, NULL, 'ANY',     1260, 1800, FALSE, FALSE, 50, 'migration', 'migration'),
-    ('CRE_WEEKEND',    'Weekend rotation',      'CRE', NULL, NULL, 'WEEKEND',  540, 1080, FALSE, FALSE, 60, 'migration', 'migration')
-ON CONFLICT (code) DO NOTHING;
+SELECT v.code, v.label, v.family::schedule_shift_family_enum, v.zone_id, v.tier,
+       v.day_scope::schedule_day_scope_enum, v.start_minute, v.end_minute,
+       v.is_on_call, v.is_escalation, v.sort_order, v.created_by, v.updated_by
+FROM (VALUES
+    ('CRE_MORNING',    'Morning 6-9am',         'CRE', NULL::UUID, NULL::schedule_tier_enum, 'WEEKDAY',  360,  540, FALSE, FALSE, 10, 'migration', 'migration'),
+    ('CRE_MORNING_OC', 'Morning 6-9am on-call', 'CRE', NULL,       NULL,                     'WEEKDAY',  360,  540, TRUE,  FALSE, 20, 'migration', 'migration'),
+    ('CRE_REGULAR',    'Regular hours',         'CRE', NULL,       NULL,                     'WEEKDAY',  540, 1080, FALSE, FALSE, 30, 'migration', 'migration'),
+    ('CRE_EVENING',    'Evening 6-9pm',         'CRE', NULL,       NULL,                     'WEEKDAY', 1080, 1260, FALSE, FALSE, 40, 'migration', 'migration'),
+    ('CRE_AMERICAS',   'Americas cover',        'CRE', NULL,       NULL,                     'ANY',     1260, 1800, FALSE, FALSE, 50, 'migration', 'migration'),
+    ('CRE_WEEKEND',    'Weekend rotation',      'CRE', NULL,       NULL,                     'WEEKEND',  540, 1080, FALSE, FALSE, 60, 'migration', 'migration')
+) AS v(code, label, family, zone_id, tier, day_scope, start_minute, end_minute, is_on_call, is_escalation, sort_order, created_by, updated_by)
+WHERE NOT EXISTS (SELECT 1 FROM schedule_shift s WHERE s.code = v.code);
 
 -- ── SRE windows ───────────────────────────────────────────────────────────
 -- TZ1 and TZ2 run a shorter L1 block than the rest of the zone, so the L1
@@ -76,7 +87,7 @@ FROM (VALUES
     ('SRE_WE_TZ2', 'Weekend TZ2',        'TZ2', NULL,  'WEEKEND', 1080, 1800, TRUE,  170)
 ) AS v(code, label, zone_code, tier, day_scope, start_minute, end_minute, is_escalation, sort_order)
 JOIN schedule_zone z ON z.code = v.zone_code
-ON CONFLICT (code) DO NOTHING;
+WHERE NOT EXISTS (SELECT 1 FROM schedule_shift s WHERE s.code = v.code);
 
 -- SRE engineers who are not holding an escalation tier that day work
 -- ordinary hours. The zone they belong to rides on the assignment, so this
@@ -84,6 +95,5 @@ ON CONFLICT (code) DO NOTHING;
 INSERT INTO schedule_shift
     (code, label, family, zone_id, tier, day_scope, start_minute, end_minute,
      is_on_call, is_escalation, sort_order, created_by, updated_by)
-VALUES
-    ('SRE_REGULAR', 'Regular hours', 'SRE', NULL, NULL, 'WEEKDAY', 540, 1080, FALSE, FALSE, 100, 'migration', 'migration')
-ON CONFLICT (code) DO NOTHING;
+SELECT 'SRE_REGULAR', 'Regular hours', 'SRE'::schedule_shift_family_enum, NULL, NULL, 'WEEKDAY'::schedule_day_scope_enum, 540, 1080, FALSE, FALSE, 100, 'migration', 'migration'
+WHERE NOT EXISTS (SELECT 1 FROM schedule_shift s WHERE s.code = 'SRE_REGULAR');

@@ -1,6 +1,6 @@
 -- What changed about who is away, who changed it, and what it was before.
 --
--- The same argument as schedule_assignment_activity (000094), for the other
+-- The same argument as schedule_assignment_activity (0158), for the other
 -- half of the rota: once a lead can mark leave from the roster, overwriting or
 -- trimming an absence destroys the only record that it was ever there. "Who
 -- cancelled my leave?" is the same question as "who took me off Tuesday?" and
@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS schedule_absence_activity (
     created_on      TIMESTAMPTZ NOT NULL,
     created_by      VARCHAR(255) NOT NULL,
 
-    -- Not a foreign key, for the reason 000094 gives: a delete is the change
+    -- Not a foreign key, for the reason 0158 gives: a delete is the change
     -- most worth keeping, and ON DELETE CASCADE would erase exactly that.
     absence_id      UUID NOT NULL,
 

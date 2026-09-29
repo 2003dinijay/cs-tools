@@ -22,7 +22,7 @@
 --                         the second person, backing them up
 --
 -- "Weekend on-call" said nothing about whose weekend, and it was also the name
--- 000096 gave the weekend-day on-call -- two windows, one name, printed side
+-- 0160 gave the weekend-day on-call -- two windows, one name, printed side
 -- by side on the day view. That one becomes "Weekend rotation on-call", which
 -- is what it is: on call for the weekend rotation.
 --

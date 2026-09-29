@@ -18,7 +18,7 @@
 -- an engineer at a customer's office is unreachable in a way one working from
 -- their desk is not, so a lead looking at cover needs to tell them apart.
 --
--- This is why absence kinds became a table in 000090. Splitting a category is
+-- This is why absence kinds became a table in 0154. Splitting a category is
 -- two inserts and a backfill; against the ENUM it replaced it would have been
 -- ALTER TYPE, a migration and a deploy.
 INSERT INTO schedule_absence_kind (code, short_code, label, bucket, colour_token, sort_order, created_by, updated_by)

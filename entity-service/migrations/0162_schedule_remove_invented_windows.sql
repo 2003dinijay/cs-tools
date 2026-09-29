@@ -14,9 +14,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Takes back what 000096 invented, and settles two names.
+-- Takes back what 0160 invented, and settles two names.
 --
--- 000096 added three on-call windows from codes that turn up a handful of
+-- 0160 added three on-call windows from codes that turn up a handful of
 -- times in the rota sheet -- "6-9pm -OC", "WE -OC", "NLK-OC". They are not
 -- shifts anyone is rostered to: the evening, the weekend rotation and the
 -- Americas cover each have one person, and there is no second on-call role
