@@ -23,6 +23,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
 // mockEntityScheduleClient stands in for entity-service, recording what the
@@ -38,12 +41,37 @@ type mockEntityScheduleClient struct {
 	deleteFn   func(ctx context.Context, id, note string) ([]byte, error)
 	activityFn func(ctx context.Context, teamKey, from, to string) ([]byte, error)
 	leadFn     func(ctx context.Context) ([]byte, error)
-	applyFn    func(ctx context.Context, body []byte) ([]byte, error)
-	absenceFn  func(ctx context.Context, body []byte) ([]byte, error)
+
+	deleteAbsenceFn func(ctx context.Context, id, note string) ([]byte, error)
+	createKindFn    func(ctx context.Context, body []byte) ([]byte, error)
+	deleteKindFn    func(ctx context.Context, code string) ([]byte, error)
+	applyFn         func(ctx context.Context, body []byte) ([]byte, error)
+	absenceFn       func(ctx context.Context, body []byte) ([]byte, error)
 }
 
 func (m *mockEntityScheduleClient) GetScheduleEditMarkers(context.Context, string, string) ([]byte, error) {
 	return nil, nil
+}
+
+func (m *mockEntityScheduleClient) DeleteScheduleAbsence(ctx context.Context, id, note string) ([]byte, error) {
+	if m.deleteAbsenceFn == nil {
+		return nil, nil
+	}
+	return m.deleteAbsenceFn(ctx, id, note)
+}
+
+func (m *mockEntityScheduleClient) DeleteScheduleAbsenceKind(ctx context.Context, code string) ([]byte, error) {
+	if m.deleteKindFn == nil {
+		return nil, nil
+	}
+	return m.deleteKindFn(ctx, code)
+}
+
+func (m *mockEntityScheduleClient) CreateScheduleAbsenceKind(ctx context.Context, body []byte) ([]byte, error) {
+	if m.createKindFn == nil {
+		return nil, nil
+	}
+	return m.createKindFn(ctx, body)
 }
 
 func (m *mockEntityScheduleClient) ApplyScheduleAbsence(ctx context.Context, body []byte) ([]byte, error) {
@@ -265,4 +293,174 @@ func TestSearchScheduleAbsences(t *testing.T) {
 			t.Fatalf("upstream response did not reach the caller: %s", w.Body.String())
 		}
 	})
+}
+
+func TestDeleteScheduleAbsence(t *testing.T) {
+	t.Run("requires an authenticated user", func(t *testing.T) {
+		h := NewScheduleHandler(&mockEntityScheduleClient{})
+		w := httptest.NewRecorder()
+		h.DeleteScheduleAbsence(w, httptest.NewRequest(http.MethodDelete, "/team-schedule/absences/a1", nil))
+		assertStatus(t, w, http.StatusUnauthorized)
+	})
+
+	t.Run("forwards the id and note, and answers 204", func(t *testing.T) {
+		var gotID, gotNote string
+		h := NewScheduleHandler(&mockEntityScheduleClient{
+			deleteAbsenceFn: func(_ context.Context, id, note string) ([]byte, error) {
+				gotID, gotNote = id, note
+				return nil, nil
+			},
+		})
+		r := withUser(httptest.NewRequest(http.MethodDelete, "/team-schedule/absences/a1?note=removed", nil))
+		r.SetPathValue("id", "a1")
+		w := httptest.NewRecorder()
+		h.DeleteScheduleAbsence(w, r)
+		assertStatus(t, w, http.StatusNoContent)
+		if gotID != "a1" || gotNote != "removed" {
+			t.Fatalf("forwarded id %q note %q, want a1 / removed", gotID, gotNote)
+		}
+	})
+
+	t.Run("a lead of another team gets the upstream 403", func(t *testing.T) {
+		h := NewScheduleHandler(&mockEntityScheduleClient{
+			deleteAbsenceFn: func(context.Context, string, string) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusForbidden}
+			},
+		})
+		r := withUser(httptest.NewRequest(http.MethodDelete, "/team-schedule/absences/a1", nil))
+		r.SetPathValue("id", "a1")
+		w := httptest.NewRecorder()
+		h.DeleteScheduleAbsence(w, r)
+		assertStatus(t, w, http.StatusForbidden)
+	})
+}
+
+func TestCreateScheduleAbsenceKind(t *testing.T) {
+	body := `{"shortCode":"Trn","label":"Training","bucket":"ALLOCATION","colourToken":"INT"}`
+
+	t.Run("forwards the body untouched and answers 201", func(t *testing.T) {
+		var got string
+		h := NewScheduleHandler(&mockEntityScheduleClient{
+			createKindFn: func(_ context.Context, b []byte) ([]byte, error) {
+				got = string(b)
+				return []byte(`{"code":"TRAINING"}`), nil
+			},
+		})
+		w := httptest.NewRecorder()
+		h.CreateScheduleAbsenceKind(w, withUser(httptest.NewRequest(http.MethodPost, "/team-schedule/absence-kinds", strings.NewReader(body))))
+		assertStatus(t, w, http.StatusCreated)
+		if got != body {
+			t.Fatalf("forwarded %s, want %s", got, body)
+		}
+	})
+
+	t.Run("a tag that already exists stays a 409", func(t *testing.T) {
+		h := NewScheduleHandler(&mockEntityScheduleClient{
+			createKindFn: func(context.Context, []byte) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusConflict}
+			},
+		})
+		w := httptest.NewRecorder()
+		h.CreateScheduleAbsenceKind(w, withUser(httptest.NewRequest(http.MethodPost, "/team-schedule/absence-kinds", strings.NewReader(body))))
+		assertStatus(t, w, http.StatusConflict)
+	})
+
+	t.Run("rejects a body that is not JSON before calling upstream", func(t *testing.T) {
+		called := false
+		h := NewScheduleHandler(&mockEntityScheduleClient{
+			createKindFn: func(context.Context, []byte) ([]byte, error) { called = true; return nil, nil },
+		})
+		w := httptest.NewRecorder()
+		h.CreateScheduleAbsenceKind(w, withUser(httptest.NewRequest(http.MethodPost, "/team-schedule/absence-kinds", strings.NewReader("{not json"))))
+		assertStatus(t, w, http.StatusBadRequest)
+		if called {
+			t.Fatal("an invalid body reached entity-service")
+		}
+	})
+}
+
+func TestDeleteScheduleAbsenceKind(t *testing.T) {
+	t.Run("forwards the code and answers 204", func(t *testing.T) {
+		var got string
+		h := NewScheduleHandler(&mockEntityScheduleClient{
+			deleteKindFn: func(_ context.Context, code string) ([]byte, error) { got = code; return nil, nil },
+		})
+		r := withUser(httptest.NewRequest(http.MethodDelete, "/team-schedule/absence-kinds/TRAINING", nil))
+		r.SetPathValue("code", "TRAINING")
+		w := httptest.NewRecorder()
+		h.DeleteScheduleAbsenceKind(w, r)
+		assertStatus(t, w, http.StatusNoContent)
+		if got != "TRAINING" {
+			t.Fatalf("forwarded %q, want TRAINING", got)
+		}
+	})
+
+	t.Run("a tag still in use stays a 409", func(t *testing.T) {
+		h := NewScheduleHandler(&mockEntityScheduleClient{
+			deleteKindFn: func(context.Context, string) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusConflict}
+			},
+		})
+		r := withUser(httptest.NewRequest(http.MethodDelete, "/team-schedule/absence-kinds/TRAINING", nil))
+		r.SetPathValue("code", "TRAINING")
+		w := httptest.NewRecorder()
+		h.DeleteScheduleAbsenceKind(w, r)
+		assertStatus(t, w, http.StatusConflict)
+	})
+}
+
+type mockSplScheduleClient struct {
+	schedule                                              servicenow.ABTTeamScheduleData
+	err                                                   error
+	gotFrom, gotDuration, gotTeamID, gotEventType, gotURL string
+}
+
+func (m *mockSplScheduleClient) GetABTTeamSchedule(ctx context.Context, from, duration, teamID, eventType, teamScheduleURL string) (servicenow.ABTTeamScheduleData, error) {
+	m.gotFrom, m.gotDuration, m.gotTeamID, m.gotEventType, m.gotURL = from, duration, teamID, eventType, teamScheduleURL
+	return m.schedule, m.err
+}
+
+func TestGetABTTeamSchedule_PassesParamsAndConfiguredURL(t *testing.T) {
+	mock := &mockSplScheduleClient{schedule: servicenow.ABTTeamScheduleData{SnURL: "https://sn.example.com"}}
+	h := NewSplScheduleHandler(mock, []string{"csm-agents"}, "https://sn.example.com")
+	req := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-schedule?from=2024-01-01&duration=7d&teamId=team-1&eventType=oncall", nil))
+	w := httptest.NewRecorder()
+
+	h.GetABTTeamSchedule(w, req)
+
+	assertStatus(t, w, http.StatusOK)
+	if mock.gotFrom != "2024-01-01" || mock.gotTeamID != "team-1" || mock.gotURL != "https://sn.example.com" {
+		t.Errorf("client called with from=%q teamID=%q url=%q", mock.gotFrom, mock.gotTeamID, mock.gotURL)
+	}
+}
+
+func TestGetABTTeamSchedule_AllParamsOptional(t *testing.T) {
+	mock := &mockSplScheduleClient{}
+	h := NewSplScheduleHandler(mock, []string{"csm-agents"}, "https://sn.example.com")
+	req := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-schedule", nil))
+	w := httptest.NewRecorder()
+
+	h.GetABTTeamSchedule(w, req)
+
+	assertStatus(t, w, http.StatusOK)
+}
+
+func TestGetABTTeamSchedule_RejectsUnsafeTeamID(t *testing.T) {
+	h := NewSplScheduleHandler(&mockSplScheduleClient{}, []string{"csm-agents"}, "")
+	req := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-schedule?teamId=team%5E1", nil))
+	w := httptest.NewRecorder()
+
+	h.GetABTTeamSchedule(w, req)
+
+	assertStatus(t, w, http.StatusBadRequest)
+}
+
+func TestGetABTTeamSchedule_RejectsUnauthorizedGroup(t *testing.T) {
+	h := NewSplScheduleHandler(&mockSplScheduleClient{}, []string{"other-group"}, "")
+	req := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-schedule", nil))
+	w := httptest.NewRecorder()
+
+	h.GetABTTeamSchedule(w, req)
+
+	assertStatus(t, w, http.StatusForbidden)
 }

@@ -384,6 +384,12 @@ func TestMembershipWrite_InviteCreatesBothSides(t *testing.T) {
 	if payload.Email != writeEmail || payload.ProjectKey != "ACMEPROD" || payload.ProjectName != "Acme Prod" || payload.Resend {
 		t.Errorf("payload = %+v", payload)
 	}
+	// The event carries the version the DATABASE step was stamped with, so
+	// csm-notification-service can tell a later re-invitation (newer) from a
+	// duplicate of this one (same or older).
+	if want := h.repo.steps[0].EventModifiedOn.UTC().Format(time.RFC3339Nano); h.repo.steps[0].EventModifiedOn.IsZero() || payload.EventModifiedOn != want {
+		t.Errorf("payload eventModifiedOn = %q, want the DATABASE step's %q", payload.EventModifiedOn, want)
+	}
 }
 
 // TestMembershipWrite_InviteAdoptsExistingSalesforceContact is the
@@ -575,6 +581,51 @@ func TestMembershipWrite_InviteReactivatesADeactivatedMembership(t *testing.T) {
 	}
 	if len(h.pub.published) != 1 {
 		t.Error("a re-invitation still sends the invitation e-mail")
+	}
+}
+
+// A re-invitation's PATCH lands but its re-read comes back empty, so the
+// record in hand still carries the pre-write LastModifiedDate. The version
+// stamped on the write and the event must still be strictly newer, or
+// csm-notification-service takes the re-invitation for a duplicate of the
+// earlier one and drops its email.
+func TestMembershipWrite_ReinviteVersionIsNewerThanThePreWriteOne(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		pre  string
+	}{
+		{"pre-write version in the past: now is used", "2026-09-18T06:37:07.000+0000"},
+		{"pre-write version ahead of the clock: one microsecond later", "2999-01-01T00:00:00.000+0000"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newInternalWriteHarness(t)
+			h.repo.existing = &domain.ProjectMembershipRow{
+				ProjectContactID: "pc-1", MembershipSfID: writeMembershipID, ContactSfID: writeContactSfID,
+				Email: writeEmail, State: domain.MembershipStateDeactivated,
+			}
+			h.se.contact = existingSalesforceContact()
+			pre := tt.pre
+			h.se.membership = &salesentity.ProjectContact{ID: writeMembershipID, LastModifiedDate: &pre}
+
+			if _, err := h.svc.Invite(context.Background(), writeProjectID, inviteReq("Portal user")); err != nil {
+				t.Fatalf("Invite: %v", err)
+			}
+			preTime, ok := parseSalesforceLastModified(&pre)
+			if !ok {
+				t.Fatal("bad fixture")
+			}
+			stamped := h.repo.steps[0].EventModifiedOn
+			if !stamped.After(preTime) || stamped.Sub(preTime) < time.Microsecond {
+				t.Errorf("stamped version %s must be at least 1µs after the pre-write %s", stamped, preTime)
+			}
+			var payload events.ProjectContactInvitedPayload
+			if err := json.Unmarshal(h.pub.published[0].Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.EventModifiedOn != stamped.UTC().Format(time.RFC3339Nano) {
+				t.Errorf("payload eventModifiedOn = %q, want the stamped %s", payload.EventModifiedOn, stamped)
+			}
+		})
 	}
 }
 

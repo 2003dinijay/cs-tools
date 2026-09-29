@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/employeeinfo"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/scim"
@@ -36,6 +37,12 @@ import (
 var testUser = &middleware.UserInfo{
 	Email:  "agent@example.com",
 	UserID: "f2d9bf5b-7067-43dc-8578-802c8623af5d",
+	// Groups is only consumed by the /spl/* (SupportPortalLite) handlers'
+	// requireSPLGroups — see middleware.UserInfo.Groups's own doc comment
+	// for why this app still carries it alongside the newer Roles-based
+	// model. Restored here after a merge with dev-app-csm-portal silently
+	// dropped it (dev's UserInfo had no Groups field at merge time).
+	Groups: []string{"csm-agents"},
 }
 
 // testPlatformUserID is the id GET /users/me resolves for testUser: the
@@ -1176,6 +1183,67 @@ func (m *mockEntityTaskClient) UpdateTask(ctx context.Context, id string, body [
 		return m.updateTaskFn(ctx, id, body)
 	}
 	return []byte(`{"id":"11111111-1111-1111-1111-111111111111"}`), nil
+}
+
+// ----- mock employee-info client (user_info.go, abt_team_members.go) -----
+
+type mockEmployeeInfoClient struct {
+	getEmployeeDataFn func(ctx context.Context, workEmail string) (*employeeinfo.Employee, error)
+}
+
+func (m *mockEmployeeInfoClient) GetEmployeeData(ctx context.Context, workEmail string) (*employeeinfo.Employee, error) {
+	if m.getEmployeeDataFn != nil {
+		return m.getEmployeeDataFn(ctx, workEmail)
+	}
+	return &employeeinfo.Employee{FirstName: "Test", LastName: "User"}, nil
+}
+
+// ----- mock sales/CS entity clients (user_scan.go) -----
+
+type mockSalesEntityClient struct {
+	getContactByEmailFn    func(ctx context.Context, email string) (*entity.Contact, error)
+	getSubscriptionByKeyFn func(ctx context.Context, subscriptionKey string) (*entity.Subscription, error)
+}
+
+func (m *mockSalesEntityClient) GetContactByEmail(ctx context.Context, email string) (*entity.Contact, error) {
+	if m.getContactByEmailFn != nil {
+		return m.getContactByEmailFn(ctx, email)
+	}
+	return nil, nil
+}
+
+func (m *mockSalesEntityClient) GetSubscriptionByKey(ctx context.Context, subscriptionKey string) (*entity.Subscription, error) {
+	if m.getSubscriptionByKeyFn != nil {
+		return m.getSubscriptionByKeyFn(ctx, subscriptionKey)
+	}
+	return nil, nil
+}
+
+type mockCSEntityClient struct {
+	getUserByEmailFn           func(ctx context.Context, email string) (*entity.User, error)
+	getProjectByProjectKeyFn   func(ctx context.Context, projectKey string) (*entity.Project, error)
+	getProjectContactByEmailFn func(ctx context.Context, email, projectID string) (*entity.ProjectContact, error)
+}
+
+func (m *mockCSEntityClient) GetUserByEmail(ctx context.Context, email string) (*entity.User, error) {
+	if m.getUserByEmailFn != nil {
+		return m.getUserByEmailFn(ctx, email)
+	}
+	return nil, nil
+}
+
+func (m *mockCSEntityClient) GetProjectByProjectKey(ctx context.Context, projectKey string) (*entity.Project, error) {
+	if m.getProjectByProjectKeyFn != nil {
+		return m.getProjectByProjectKeyFn(ctx, projectKey)
+	}
+	return nil, nil
+}
+
+func (m *mockCSEntityClient) GetProjectContactByEmail(ctx context.Context, email, projectID string) (*entity.ProjectContact, error) {
+	if m.getProjectContactByEmailFn != nil {
+		return m.getProjectContactByEmailFn(ctx, email, projectID)
+	}
+	return nil, nil
 }
 
 // ----- mock entity comment client -----

@@ -58,12 +58,15 @@ import (
 // ConfigurationItemID (no CMDB table exists at all in this schema); GroupID
 // and AssignedTeamID (distinct from CustomerGroupID -- these would need
 // work_item.assignment_group_id, migration 0075, which nothing in this
-// file joins or reads yet); ApprovedBy/ApprovedOn/LegalNextStates on
-// domain.ChangeRequest (there is a summary change_request.approval enum
-// but no approver/date columns, and LegalNextStates is a ServiceNow
-// workflow-engine computation with nothing to derive it from here);
-// Environments/DeploymentProducts/Labels/Deployments (no M2M join table
-// exists for any of the four).
+// file joins or reads yet); ApprovedBy/ApprovedOn on domain.ChangeRequest
+// (there is a summary change_request.approval enum but no approver/date
+// columns); Environments/DeploymentProducts/Labels/Deployments (no M2M join
+// table exists for any of the four).
+//
+// LegalNextStates is populated -- see legalChangeRequestNextStates's own
+// doc comment for how, and for the one branch it deliberately does not
+// attempt (Authorize/Review's conditional detour through Customer
+// Approval/Customer Review).
 //
 // CreateChangeRequest has no Postgres implementation at all: work_item.number
 // has no DB default and no backing sequence anywhere in migrations/, the
@@ -130,15 +133,27 @@ type ChangeRequestRepository interface {
 	// ServiceNow only just generated these, but is reported precisely
 	// rather than as an opaque infrastructure error if it ever does.
 	//
-	// change_request.state is deliberately left NULL (the column has no
-	// NOT NULL/DEFAULT, unlike incident_state_enum's NOT NULL DEFAULT
-	// 'NEW'): snCreateChangeRequestResponse carries no state field at all,
-	// so unlike req.Category/Priority/Risk/Impact (plain request-supplied
-	// values ServiceNow's create payload already forwards verbatim and this
-	// method can echo back with equal confidence), the state ServiceNow's
-	// workflow engine actually assigned after evaluating req.State (if any)
-	// is never confirmed by the response -- writing req.State straight
-	// through would risk recording a value ServiceNow silently overrode.
+	// change_request.state is hardcoded to NEW, never req.State -- an
+	// earlier revision of this method left it NULL entirely (see git
+	// history), reasoned as: snCreateChangeRequestResponse carries no state
+	// field at all, so unlike req.Category/Priority/Risk/Impact (plain
+	// request-supplied values ServiceNow's create payload already forwards
+	// verbatim and this method can echo back with equal confidence), the
+	// state ServiceNow's workflow engine actually assigned was never
+	// confirmed by the response -- writing req.State straight through would
+	// risk recording a value ServiceNow silently overrode. That caution was
+	// real but led to a worse bug: with no state at all, a freshly created
+	// change request offered no promote action whatsoever (see
+	// legalChangeRequestNextStates's nil case), not even the one every
+	// change request always starts with. The org's own Change Management
+	// process flow resolves the original uncertainty directly: creation
+	// always begins at New unconditionally, with no branch or caller input
+	// that changes that -- so New is not a guess at what ServiceNow decided,
+	// it is the one value ServiceNow's real workflow always assigns on
+	// create, confirmed independent of the response's own silence on the
+	// question. req.State is accepted on this request type only because
+	// PatchChangeRequestRequest shares its fields with CreateChangeRequestRequest;
+	// it has no legal effect at creation and is intentionally ignored here.
 	// See CreateProblemFromServiceNow's own doc comment for the contrasting
 	// case, where the response DOES return a confirmed, identity-matching
 	// state.
@@ -260,6 +275,98 @@ var changeRequestTypeToChangeModel = func() map[domain.ChangeRequestType]string 
 func ChangeRequestTypeSupported(t domain.ChangeRequestType) bool {
 	_, ok := changeRequestTypeToChangeModel[t]
 	return ok
+}
+
+// changeRequestForwardNextStates is the confirmed forward move(s) out of each
+// non-terminal change_request state. Values, not just keys, are
+// domain.ChangeRequestState so a typo here is a compile error, not a typo
+// that silently offers a nonexistent state.
+//
+// This is not a guess for most of these edges: each was read directly off a
+// real change_request in that exact state on the live wso2.service-now.com
+// instance, via its own "state" field's dropdown (which ServiceNow itself
+// populates with only the choices it currently considers legal for that
+// record) -- Assess only ever offered "Authorize", Scheduled only ever
+// offered "Implement", and so on. CustomerApproval's and CustomerReview's
+// own outgoing rows are the confirmed exception -- see the paragraph below.
+//
+// Authorize and Review are the two states with more than one confirmed
+// forward move, and this was found the hard way: an initial version of this
+// map picked a single "common case" edge for each (Authorize->Scheduled,
+// Review->Closed), reasoning that domain.ChangeRequest.HasCustomerApproved/
+// HasCustomerReviewed record whether the customer HAS already signed off,
+// not whether a given change request REQUIRES that gate, so they can't be
+// used to decide the branch. That reasoning about the two booleans still
+// holds, but checking several more real records directly disproved the
+// "there's one common case" assumption it was resting on: two Authorize-state
+// records with no other visible difference in the fields this schema exposes
+// (same type, similar customer/no-customer project, both approval/review
+// booleans false) had dropdowns offering Scheduled on one and Customer
+// Approval on the other -- and the identical split was found for Review
+// (Closed on one record, Customer Review on another, again with no
+// discriminating field found). Whatever ServiceNow actually keys this
+// decision on is not visible anywhere in this schema. Given that, both
+// confirmed branches are listed for each of these two states rather than
+// guessing which single one applies to a given record -- offering an option
+// ServiceNow's own workflow would consider illegal for that specific record
+// is a real, accepted risk here, matching PatchChangeRequest's own already-
+// existing lack of a legal-transition check on this data source (any enum
+// value is accepted and written directly); this map does not change that.
+//
+// In practice this risk only actually reaches an engineer for the Review
+// branch: the CSM Portal's own ChangeRequestActionBar.tsx hardcodes
+// "customer_approval" into its NEVER_OFFERED_TARGETS list (reached only by
+// ServiceNow's own approval process, never human-enterable there, per that
+// list's own doc comment) and filters it out unconditionally regardless of
+// what this function returns, so Authorize's Customer Approval entry here
+// is accurate data that never becomes a clickable button. "customer_review"
+// carries no such exclusion, so Review's Customer Review entry does render
+// as a real, selectable action.
+//
+// CustomerApproval/CustomerReview's own OUTGOING edges (what happens once a
+// change request now sitting in one of those two states itself advances) are
+// still not directly confirmed -- no change request was found sitting in
+// either state despite checking specifically. Both are inferred by sequence
+// position (CustomerApproval precedes Scheduled; CustomerReview precedes
+// Closed) rather than guessed at randomly, but this is a real, distinct gap
+// from the fully-confirmed edges above -- revisit if a real example of
+// either surfaces.
+var changeRequestForwardNextStates = map[domain.ChangeRequestState][]domain.ChangeRequestState{
+	domain.ChangeRequestStateNew:              {domain.ChangeRequestStateAssess},
+	domain.ChangeRequestStateAssess:           {domain.ChangeRequestStateAuthorize},
+	domain.ChangeRequestStateAuthorize:        {domain.ChangeRequestStateScheduled, domain.ChangeRequestStateCustomerApproval},
+	domain.ChangeRequestStateCustomerApproval: {domain.ChangeRequestStateScheduled},
+	domain.ChangeRequestStateScheduled:        {domain.ChangeRequestStateImplement},
+	domain.ChangeRequestStateImplement:        {domain.ChangeRequestStateReview},
+	domain.ChangeRequestStateReview:           {domain.ChangeRequestStateClosed, domain.ChangeRequestStateCustomerReview},
+	domain.ChangeRequestStateCustomerReview:   {domain.ChangeRequestStateClosed},
+}
+
+// legalChangeRequestNextStates computes domain.ChangeRequest.LegalNextStates
+// for the Postgres data source, which (unlike ServiceNow) has no workflow
+// engine of its own to compute this dynamically -- see
+// changeRequestForwardNextStates' own doc comment for how this graph was
+// derived, including the two states (Authorize, Review) with more than one
+// confirmed forward move.
+//
+// "canceled" is offered alongside the forward move(s) from every
+// non-terminal state: the Cancel Change action was available on every
+// reachable state checked live, with no exception found. Rollback/Closed/
+// Canceled are terminal -- nil, matching ServiceNow's own "no
+// legalNextStates at all" answer for a record with no legal forward move.
+func legalChangeRequestNextStates(state *string) []string {
+	if state == nil {
+		return nil
+	}
+	nexts, ok := changeRequestForwardNextStates[domain.ChangeRequestState(*state)]
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(nexts)+1)
+	for _, next := range nexts {
+		result = append(result, string(next))
+	}
+	return append(result, string(domain.ChangeRequestStateCanceled))
 }
 
 // scanChangeRequestView scans changeRequestSelectColumns into a
@@ -705,6 +812,7 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 	v.CreatedOn = createdOn.UTC().Format(time.RFC3339)
 	v.UpdatedOn = updatedOn.UTC().Format(time.RFC3339)
 	cr.SearchChangeRequestView = v
+	cr.LegalNextStates = legalChangeRequestNextStates(v.State)
 
 	cr.CreatedBy = createdBy
 	cr.Justification = justification
@@ -910,6 +1018,40 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 	}
 	if req.RequestApproval != nil && *req.RequestApproval {
 		addCR("approval = $%d::change_request_approval_enum", "REQUESTED")
+		// The New -> Assess promote action sends {requestApproval: true}
+		// rather than {state: "assess"} (see ChangeRequestActionBar.tsx /
+		// buildTransitionPatch on the frontend -- "assess" is the one target
+		// requested through the approval workflow, not a raw state PATCH).
+		// An earlier revision of this handler only recorded the approval
+		// request itself, never advancing state -- a real, reported bug:
+		// with legalChangeRequestNextStates now actually populated, clicking
+		// "Request Approval" got a 200 back but the record's own state (and
+		// therefore its own next legal action) never moved off New, so the
+		// same button just reappeared. req.State is never also set for this
+		// same request (the frontend sends one or the other, never both),
+		// so this cannot conflict with the req.State branch above.
+		//
+		// Only a record actually sitting in New may advance this way: the
+		// crQuery below filters solely by id, so nothing stops this branch
+		// from writing ASSESS over a record already at, say, Implement or
+		// Closed if a stale/replayed {requestApproval: true} request arrived
+		// for it. Locking the row's current state here (in the same
+		// transaction as the update below) closes that gap; a concurrent
+		// second RequestApproval racing this one blocks on the lock rather
+		// than both reading New and both writing ASSESS.
+		if req.State == nil {
+			var currentState string
+			if err := tx.QueryRow(ctx, `SELECT state FROM change_request WHERE id = $1 FOR UPDATE`, id).Scan(&currentState); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return domain.ChangeRequest{}, &apierror.NotFoundError{Msg: "change request not found"}
+				}
+				return domain.ChangeRequest{}, fmt.Errorf("patch change request: check current state: %w", err)
+			}
+			if strings.ToLower(currentState) != string(domain.ChangeRequestStateNew) {
+				return domain.ChangeRequest{}, &apierror.ConflictError{Msg: "approval can only be requested while the change request is in New, not " + strings.ToLower(currentState)}
+			}
+			addCR("state = $%d::change_request_state_enum", "ASSESS")
+		}
 	}
 	// Type has no real mapping -- see this file's own package doc comment.
 
@@ -942,9 +1084,19 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 // (id/number/createdBy) rather than generating any of it -- see
 // CreateChangeRequestFromServiceNow's own doc comment for why, and for which
 // req fields are deliberately left unwritten. type is hardcoded to
-// 'CHANGE_REQUEST'::work_item_type_enum. change_request.state is left NULL
-// -- see CreateChangeRequestFromServiceNow's own doc comment for why, unlike
-// incident's reliance on a NOT NULL DEFAULT column.
+// 'CHANGE_REQUEST'::work_item_type_enum.
+//
+// state is likewise hardcoded to 'NEW'::change_request_state_enum, not left
+// NULL as an earlier revision of this query did (see git history) -- a real
+// reported bug: with no state at all, legalChangeRequestNextStates(nil)
+// (this file) returns nil, so a freshly created change request offered no
+// promote action whatsoever, not even the one every change request always
+// starts with. The org's own Change Management process flow confirms every
+// created change request begins at New unconditionally (no branch at
+// creation decides otherwise), so this is a fixed value, not a field this
+// query needs to accept from the caller -- ServiceNow's own create response
+// carries no state field to pull one from anyway (see this method's own doc
+// comment).
 //
 // Column/output order matches the trailing SELECT exactly.
 const createChangeRequestFromServiceNowQuery = `
@@ -961,13 +1113,13 @@ const createChangeRequestFromServiceNowQuery = `
 	),
 	inserted_change_request AS (
 		INSERT INTO change_request (
-			id, service_id, service_offering_id, impact, risk, priority, change_model,
+			id, state, service_id, service_offering_id, impact, risk, priority, change_model,
 			justification, implementation_plan, risk_impact_analysis, backout_plan, test_plan,
 			start_on, end_on, requested_by_user_id, customer_group_id,
 			is_planning_visible_to_customers, affected_services, affected_component, rollback_duration
 		)
 		VALUES (
-			$1, $7::uuid, $8::uuid, $9::change_request_impact_enum, $10::change_request_risk_enum,
+			$1, 'NEW'::change_request_state_enum, $7::uuid, $8::uuid, $9::change_request_impact_enum, $10::change_request_risk_enum,
 			$11::change_request_priority_enum, $12::change_request_change_model_enum,
 			$13, $14, $15, $16, $17,
 			$18::text::timestamptz, $19::text::timestamptz, $20::uuid, $21::uuid,

@@ -400,3 +400,69 @@ func TestBuildChangeRequestApprovals_NoStages(t *testing.T) {
 		t.Errorf("got %d approvals, want 0", len(got.Approvals))
 	}
 }
+
+// TestLegalChangeRequestNextStates pins the empirically-derived forward
+// graph (see legalChangeRequestNextStates's own doc comment for how each
+// edge was confirmed against a live ServiceNow instance) -- a change to
+// this table changes what a caller is allowed to promote a change request
+// to, so a regression here would silently offer or withhold a real action.
+func TestLegalChangeRequestNextStates(t *testing.T) {
+	strPtr := func(s string) *string { return &s }
+
+	tests := []struct {
+		state string
+		want  []string
+	}{
+		{string(domain.ChangeRequestStateNew), []string{"assess", "canceled"}},
+		{string(domain.ChangeRequestStateAssess), []string{"authorize", "canceled"}},
+		// Authorize and Review each have two confirmed forward moves (see
+		// changeRequestForwardNextStates' own doc comment) -- checking
+		// several real records directly disproved the "one common case"
+		// assumption an earlier revision of this map made.
+		{string(domain.ChangeRequestStateAuthorize), []string{"scheduled", "customer_approval", "canceled"}},
+		{string(domain.ChangeRequestStateCustomerApproval), []string{"scheduled", "canceled"}},
+		{string(domain.ChangeRequestStateScheduled), []string{"implement", "canceled"}},
+		{string(domain.ChangeRequestStateImplement), []string{"review", "canceled"}},
+		{string(domain.ChangeRequestStateReview), []string{"closed", "customer_review", "canceled"}},
+		{string(domain.ChangeRequestStateCustomerReview), []string{"closed", "canceled"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.state, func(t *testing.T) {
+			got := legalChangeRequestNextStates(strPtr(tc.state))
+			if len(got) != len(tc.want) {
+				t.Fatalf("legalChangeRequestNextStates(%q) = %v, want %v", tc.state, got, tc.want)
+			}
+			for i, want := range tc.want {
+				if got[i] != want {
+					t.Errorf("legalChangeRequestNextStates(%q)[%d] = %q, want %q", tc.state, i, got[i], want)
+				}
+			}
+		})
+	}
+
+	t.Run("terminal states have no legal next state", func(t *testing.T) {
+		for _, terminal := range []domain.ChangeRequestState{
+			domain.ChangeRequestStateRollback,
+			domain.ChangeRequestStateClosed,
+			domain.ChangeRequestStateCanceled,
+		} {
+			s := string(terminal)
+			if got := legalChangeRequestNextStates(&s); got != nil {
+				t.Errorf("legalChangeRequestNextStates(%q) = %v, want nil (terminal)", s, got)
+			}
+		}
+	})
+
+	t.Run("nil state is nil", func(t *testing.T) {
+		if got := legalChangeRequestNextStates(nil); got != nil {
+			t.Errorf("legalChangeRequestNextStates(nil) = %v, want nil", got)
+		}
+	})
+
+	t.Run("unrecognized state is nil, not a guess", func(t *testing.T) {
+		s := "some_future_state_this_repo_does_not_know_about"
+		if got := legalChangeRequestNextStates(&s); got != nil {
+			t.Errorf("legalChangeRequestNextStates(%q) = %v, want nil", s, got)
+		}
+	})
+}

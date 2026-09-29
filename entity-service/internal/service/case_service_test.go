@@ -209,6 +209,7 @@ func (s *stubCaseRepo) ProjectContactEmailsByRole(ctx context.Context, projectID
 	}
 	return nil, nil
 }
+
 func (s *stubCaseRepo) UpdateCaseAssignee(ctx context.Context, caseID string, userID *string, callerEmail string) (time.Time, bool, error) {
 	if s.updateCaseAssignee != nil {
 		return s.updateCaseAssignee(ctx, caseID, userID, callerEmail)

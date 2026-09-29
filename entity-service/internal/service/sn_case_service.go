@@ -1115,9 +1115,7 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 // in this mode) cannot yet, or ever, return. getCaseByID is the caller's
 // own GetCaseByID method value (ServiceNow-backed for snCaseService,
 // Postgres-backed for caseService) — this function is data-source-agnostic
-// beyond that. resolveProjectContactEmailsByRole is the caller's own
-// ProjectContactEmailsByRole method value, used only for req.Type ==
-// "announcement" (see below).
+// beyond that.
 //
 // It re-fetches the case via getCaseByID rather than building the payload
 // from the create response/req alone: a create response carries only a
@@ -1125,6 +1123,10 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 // display name, the project's name, and each watcher's email — exactly
 // what events.CaseCreatedPayload needs and req/the create response don't
 // have.
+//
+// resolveProjectContactEmailsByRole is the caller's own
+// ProjectContactEmailsByRole method value, used only for req.Type ==
+// "announcement" (see below).
 //
 // Only type=="case" requires a severity to publish at all: a case with no
 // severity has no priority to report (CaseCreatedPayload.Priority has no
@@ -1751,8 +1753,16 @@ func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherSe
 		return
 	}
 
+	// before.ProjectDetails is nilable on the Postgres data source (this
+	// function serves both, called directly from caseService.UpdateCase
+	// too) — see publishCaseAssigned's own comment.
+	projectID := ""
+	if before.ProjectDetails != nil {
+		projectID = before.ProjectDetails.ID
+	}
+
 	payload, err := json.Marshal(events.SeverityChangedPayload{
-		ProjectID:   before.ProjectDetails.ID,
+		ProjectID:   projectID,
 		CaseID:      caseID,
 		CaseNumber:  before.Number,
 		WSO2CaseID:  before.InternalID,

@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -170,5 +172,36 @@ func TestRegistry_OpenObserveKeepsOnlyCanonicalFields(t *testing.T) {
 	if a.UniqueIdentifier != "9f3a7c2e-4b1d-4e8a-9c3f-2b8d5e6f1a9c" || a.Source != "OpenObserve" ||
 		a.Description != "p99 latency has been above 2000ms for 5 minutes\n\nRaw payload: "+compactFile(t, "openobserve", "firing") {
 		t.Errorf("alert = %+v", a)
+	}
+}
+
+// openapiVendorPath matches the vendor paths in openapi.yaml; commented-out lines don't match.
+var openapiVendorPath = regexp.MustCompile(`(?m)^  /([a-z0-9]+):[ \t]*$`)
+
+func vendorPaths(doc string) []string {
+	var paths []string
+	for _, m := range openapiVendorPath.FindAllStringSubmatch(doc, -1) {
+		paths = append(paths, m[1])
+	}
+	slices.Sort(paths)
+	return paths
+}
+
+func TestOpenAPIVendorPathIgnoresComments(t *testing.T) {
+	doc := "paths:\n  /aws:\n    post:\n#  /azure:\n  # /gcp:\n"
+	if got := vendorPaths(doc); !slices.Equal(got, []string{"aws"}) {
+		t.Errorf("matched %v, want only the active aws path", got)
+	}
+}
+
+// TestOpenAPIHasAPathPerVendor keeps openapi.yaml, which Choreo uses for the endpoint's
+// resources, in step with the registry: every vendor needs a path, and every path a vendor.
+func TestOpenAPIHasAPathPerVendor(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "openapi.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, names := vendorPaths(string(raw)), newTestRegistry(t).Names(); !slices.Equal(got, names) {
+		t.Errorf("openapi.yaml vendor paths = %v, registry = %v", got, names)
 	}
 }
