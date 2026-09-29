@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -230,10 +231,17 @@ var escalationRequestSourceValues = map[string]bool{"Customer": true, "Internal"
 var escalationReasonValues = map[string]bool{"Inactivity": true, "Lack Of Progress": true, "Customer Imposed Deadline": true}
 var escalationSeverityValues = map[string]bool{"High Severity": true, "Medium Severity": true}
 
+// maxPaginationLimit bounds "limit" on every SPL ServiceNow-paginated
+// route: these values flow straight into sysparm_limit on the upstream
+// ServiceNow request, so an unbounded value lets a caller force this
+// backend to buffer an arbitrarily large response in memory.
+const maxPaginationLimit = 100
+
 // parsePaginationParams parses required, non-negative "offset" and
-// positive "limit" query params, matching the Ballerina resource
-// functions' non-nilable int offset/'limit params (framework-rejected on
-// missing/invalid there; validated explicitly here for the same effect).
+// positive, maxPaginationLimit-bounded "limit" query params, matching the
+// Ballerina resource functions' non-nilable int offset/'limit params
+// (framework-rejected on missing/invalid there; validated explicitly here
+// for the same effect).
 func parsePaginationParams(w http.ResponseWriter, r *http.Request) (offset, limit int, ok bool) {
 	q := r.URL.Query()
 	offset, err := strconv.Atoi(q.Get("offset"))
@@ -242,8 +250,8 @@ func parsePaginationParams(w http.ResponseWriter, r *http.Request) (offset, limi
 		return 0, 0, false
 	}
 	limit, err = strconv.Atoi(q.Get("limit"))
-	if err != nil || limit < 1 {
-		writeError(w, http.StatusBadRequest, "limit must be a positive integer")
+	if err != nil || limit < 1 || limit > maxPaginationLimit {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("limit must be an integer between 1 and %d", maxPaginationLimit))
 		return 0, 0, false
 	}
 	return offset, limit, true

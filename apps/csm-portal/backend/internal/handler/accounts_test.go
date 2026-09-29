@@ -475,3 +475,40 @@ func TestSplEscalateCase_Conflict(t *testing.T) {
 	h.EscalateCase(w, r)
 	assertStatus(t, w, http.StatusConflict)
 }
+
+func TestParsePaginationParams(t *testing.T) {
+	tests := []struct {
+		name       string
+		query      string
+		wantOK     bool
+		wantOffset int
+		wantLimit  int
+	}{
+		{"valid", "offset=5&limit=20", true, 5, 20},
+		{"missing offset", "limit=20", false, 0, 0},
+		{"negative offset", "offset=-1&limit=20", false, 0, 0},
+		{"non-numeric offset", "offset=abc&limit=20", false, 0, 0},
+		{"missing limit", "offset=0", false, 0, 0},
+		{"zero limit", "offset=0&limit=0", false, 0, 0},
+		{"limit at the maximum", "offset=0&limit=100", true, 0, 100},
+		{"limit over the maximum", "offset=0&limit=101", false, 0, 0},
+		{"limit far over the maximum", "offset=0&limit=10000000", false, 0, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/x?"+tc.query, nil)
+			w := httptest.NewRecorder()
+			offset, limit, ok := parsePaginationParams(w, r)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !tc.wantOK {
+				assertStatus(t, w, http.StatusBadRequest)
+				return
+			}
+			if offset != tc.wantOffset || limit != tc.wantLimit {
+				t.Errorf("offset/limit = %d/%d, want %d/%d", offset, limit, tc.wantOffset, tc.wantLimit)
+			}
+		})
+	}
+}
