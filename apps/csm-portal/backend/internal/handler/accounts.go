@@ -195,26 +195,35 @@ func (h *AccountHandler) UpdateAccountTeams(w http.ResponseWriter, r *http.Reque
 }
 
 // splAccountClient abstracts the ServiceNow operations used by
-// SplAccountHandler.
+// SplAccountHandler. GetAccounts/GetAccountByID/GetProjectsByAccount used to
+// live here too, backed first by ServiceNow and later by a Postgres
+// translation layer -- both removed in favor of calling CS Portal's own
+// GET /accounts/{id}, POST /accounts/search, and POST /projects/search
+// (filtered by accountId) directly, now that SPL's data source for these
+// reads is the exact same entity-service Postgres data CS Portal's own
+// routes already serve, with no ServiceNow-shape translation left to
+// justify a second, parallel /spl/* contract for them. Escalation
+// create/read have no entity-service equivalent (CreateEscalation is an
+// explicit stub -- see entity-service's escalation_service.go), so those
+// two stay here, ServiceNow-backed, unmerged.
 type splAccountClient interface {
-	GetAccounts(ctx context.Context, email, userType, phrase *string, offset, limit int, active bool) ([]servicenow.AccountDetails, error)
-	GetAccountByID(ctx context.Context, accountNumber string) (servicenow.AccountDetails, error)
-	GetProjectsByAccount(ctx context.Context, accountNumber string, offset, limit int) ([]servicenow.ProjectDetails, error)
 	GetEscalationsByAccount(ctx context.Context, accountNumber string, offset, limit int) ([]servicenow.EscalationDetail, error)
 	EscalateCase(ctx context.Context, accountNumber, caseNumber string, request servicenow.EscalationRequest, submittedByEmail string) (servicenow.EscalationResponse, error)
 }
 
 // SplAccountHandler handles HTTP requests for SupportPortalLite's
-// ServiceNow-backed account endpoints.
+// account-escalation endpoints -- the one piece of the account domain with
+// no Postgres/entity-service equivalent to merge onto (see splAccountClient's
+// own doc comment). Reading and listing accounts/projects now goes through
+// CS Portal's own /accounts and /projects routes directly.
 type SplAccountHandler struct {
-	sn                  splAccountClient
-	allowedGroups       []string
-	addEscalationGroups []string
+	sn          splAccountClient
+	accessGuard *AccessGuard
 }
 
 // NewSplAccountHandler creates a SplAccountHandler.
-func NewSplAccountHandler(sn splAccountClient, allowedGroups, addEscalationGroups []string) *SplAccountHandler {
-	return &SplAccountHandler{sn: sn, allowedGroups: allowedGroups, addEscalationGroups: addEscalationGroups}
+func NewSplAccountHandler(sn splAccountClient, accessGuard *AccessGuard) *SplAccountHandler {
+	return &SplAccountHandler{sn: sn, accessGuard: accessGuard}
 }
 
 var escalationRequestSourceValues = map[string]bool{"Customer": true, "Internal": true}
@@ -251,100 +260,9 @@ func optionalQueryParam(r *http.Request, key string) *string {
 	return &v
 }
 
-// GetAccounts handles GET /spl/accounts.
-func (h *SplAccountHandler) GetAccounts(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
-	if !ok {
-		return
-	}
-
-	offset, limit, ok := parsePaginationParams(w, r)
-	if !ok {
-		return
-	}
-	q := r.URL.Query()
-	active, _ := strconv.ParseBool(q.Get("active"))
-
-	result, err := h.sn.GetAccounts(r.Context(), optionalQueryParam(r, "email"), optionalQueryParam(r, "userType"), optionalQueryParam(r, "phrase"), offset, limit, active)
-	if err != nil {
-		if isUnsafeQueryValue(err) {
-			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-			return
-		}
-		slog.ErrorContext(r.Context(), "servicenow GetAccounts failed", "userID", user.UserID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to retrieve accounts.")
-		return
-	}
-	writeJSONValue(w, http.StatusOK, result)
-}
-
-// GetAccountByID handles GET /spl/accounts/{accountId}.
-func (h *SplAccountHandler) GetAccountByID(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
-	if !ok {
-		return
-	}
-
-	accountID := r.PathValue("accountId")
-	if accountID == "" {
-		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-		return
-	}
-
-	result, err := h.sn.GetAccountByID(r.Context(), accountID)
-	if err != nil {
-		if errors.Is(err, servicenow.ErrAccountNotFound) {
-			writeError(w, http.StatusNotFound, ErrMsgNotFound)
-			return
-		}
-		if isUnsafeQueryValue(err) {
-			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-			return
-		}
-		slog.ErrorContext(r.Context(), "servicenow GetAccountByID failed", "userID", user.UserID, "accountID", accountID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to retrieve account.")
-		return
-	}
-	writeJSONValue(w, http.StatusOK, result)
-}
-
-// GetAccountProjects handles GET /spl/accounts/{accountId}/projects.
-func (h *SplAccountHandler) GetAccountProjects(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
-	if !ok {
-		return
-	}
-
-	accountID := r.PathValue("accountId")
-	if accountID == "" {
-		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-		return
-	}
-	offset, limit, ok := parsePaginationParams(w, r)
-	if !ok {
-		return
-	}
-
-	result, err := h.sn.GetProjectsByAccount(r.Context(), accountID, offset, limit)
-	if err != nil {
-		if errors.Is(err, servicenow.ErrAccountNotFound) {
-			writeError(w, http.StatusNotFound, ErrMsgNotFound)
-			return
-		}
-		if isUnsafeQueryValue(err) {
-			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-			return
-		}
-		slog.ErrorContext(r.Context(), "servicenow GetProjectsByAccount failed", "userID", user.UserID, "accountID", accountID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to retrieve account projects.")
-		return
-	}
-	writeJSONValue(w, http.StatusOK, result)
-}
-
 // GetAccountEscalations handles GET /accounts/{accountId}/escalations.
 func (h *SplAccountHandler) GetAccountEscalations(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -378,11 +296,11 @@ func (h *SplAccountHandler) GetAccountEscalations(w http.ResponseWriter, r *http
 
 // EscalateCase handles POST /accounts/{accountId}/cases/{caseId}/escalate.
 func (h *SplAccountHandler) EscalateCase(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
-	if !requireSPLSubGroups(w, user, h.addEscalationGroups) {
+	if !requireSPLPermission(w, user, h.accessGuard, PermEscalate) {
 		return
 	}
 
