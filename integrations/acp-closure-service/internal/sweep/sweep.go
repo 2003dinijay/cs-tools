@@ -417,7 +417,7 @@ func accountName(proj project) string {
 // their recipient list.
 //
 // For a customer-audience window, contact resolution (fetchContacts +
-// ResolveCustomerContact) happens BEFORE the internal notice sends, not
+// ResolveCustomerContacts) happens BEFORE the internal notice sends, not
 // after — deliberately. A transient fetchContacts failure must leave zero
 // notices sent, not an internal notice sent with no corresponding
 // suspensionProcessState record: the caller (processProject) skips
@@ -484,7 +484,7 @@ func notifyForWindow(
 	if err != nil {
 		return false, err
 	}
-	resolution := recipients.ResolveCustomerContact(projectContacts, accountContactsList)
+	resolution := recipients.ResolveCustomerContacts(projectContacts, accountContactsList)
 
 	internalDelivered, err := ntf.Send(ctx, internalNotice)
 	if err != nil {

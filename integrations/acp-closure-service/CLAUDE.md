@@ -40,7 +40,7 @@ session, ever, so that code path would be permanently dead here.
   signal (`closureStatus`) isn't a parameter this function receives at all;
   callers must check it themselves (`sweep.suspend` does).
 - `internal/recipients` — pure customer-contact and Account-Manager-email
-  resolution. `ResolveCustomerContact` implements the three-tier fallback
+  resolution. `ResolveCustomerContacts` implements the three-tier fallback
   (business-contact-role Project Contacts → account-level Primary Contacts →
   signal to nudge the Account Manager instead). Each tier returns **every**
   match, not the first — see "The customer notice goes to every customer
@@ -427,7 +427,7 @@ isn't lost or re-litigated:
 
 ## The customer notice goes to every customer contact
 
-`ResolveCustomerContact` returns all business contacts on the project, or,
+`ResolveCustomerContacts` returns all business contacts on the project, or,
 when there are none, all Primary Contacts on the account. It doesn't return
 just the first. `notify.Recipients.Customers` is a list, and
 `EmailNotifier` puts every entry in `to` on one email (internal people stay
@@ -652,18 +652,27 @@ plain authenticated HTTP call.
   re-confirming that's changed.
 - **`FromAddress` is fixed at config level**, not a per-`Notice` value —
   `no-reply@wso2.com`.
-- **`EmailNotifier` maps `Recipients` onto to/cc**: when `Customer` is
-  present, the customer is the primary `to` and the three internal people
-  are `cc`'d; otherwise (internal-only notices, and the no-business-contact
+- **`EmailNotifier` maps `Recipients` onto to/cc**: when `Customers` is
+  non-empty, every customer is in `to` and the three internal people are
+  `cc`'d; otherwise (internal-only notices, and the no-business-contact
   notice) all populated internal recipients go in `to`. This is a design
   decision made in this codebase, not something Rashmika's API dictates —
   reconsider if it turns out wrong in practice.
-- **`StandingCC` (`STANDING_CC_RECIPIENTS`) cc's a fixed address list on
-  every notice**, uniformly — internal, customer-facing, and the
-  no-business-contact nudge alike, subscription and invoice cascades alike,
-  added in `Send` right after `recipientsToToCC` and before filtering. This
-  was a real gap in the initial port, caught late: every real legacy
-  reference email this project has (both internal and customer-facing) cc's
+- **`StandingRecipients` (`STANDING_CC_RECIPIENTS`) adds a fixed address
+  list to every notice**, subscription and invoice cascades alike, in
+  `Send` right after `recipientsToToCC` and before filtering. Where the
+  addresses go matches the ServiceNow system, as the user confirmed from
+  real legacy emails on 2026-09-29:
+
+  | Notice | `to` | `cc` |
+  |---|---|---|
+  | Internal, and the no-business-contact nudge | internal people + standing list | none |
+  | Customer-facing | customers + standing list | internal people + standing list |
+
+  Until then the list went in `cc` on every notice. The env var keeps its
+  original `_CC_` name because it is already in the deployment notes and
+  security documents. This was a real gap in the initial port, caught late:
+  every real legacy reference email carries
   `customer-lifecycle-notification@wso2.com` and `billing@wso2.com`, and
   this component never sent to either until this field existed. Deliberately
   env-configurable rather than a hardcoded constant like `wso2LogoURL` —
@@ -671,7 +680,7 @@ plain authenticated HTTP call.
   this empty for the same reason `EMAIL_SERVICE_ALLOW_NON_WSO2_RECIPIENTS`
   defaults false: real people/teams must not receive test traffic. Entries
   still pass through `filterRecipients` like any other recipient — this is
-  additive cc, not a bypass of the WSO2-only staging safeguard.
+  not a bypass of the WSO2-only staging safeguard.
 - **The WSO2-only staging safeguard is a hard requirement from Rashmika's
   team**, not a suggestion: "make sure emails aren't being sent in staging
   environment for any non-wso2 emails." `EMAIL_SERVICE_ALLOW_NON_WSO2_RECIPIENTS`
@@ -733,7 +742,7 @@ plain authenticated HTTP call.
   project/account) — this catches shape mismatches that a hand-written
   trivial fixture would silently paper over.
 - TDD throughout: red before green, one seam at a time. Seams under test:
-  `closure.Decide`, `recipients.ResolveCustomerContact` /
+  `closure.Decide`, `recipients.ResolveCustomerContacts` /
   `AccountManagerEmail`, `suspensionstate.LastNoticeWindow` /
   `WithSubscriptionEndDateState`, `sweep.processProject`, `sweep.Run`, the
   pure subject/body builders (`internalNoticeSubject`,

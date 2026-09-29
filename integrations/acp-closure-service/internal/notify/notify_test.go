@@ -156,11 +156,11 @@ func TestLoggingNotifier_Send_LogsRecipientsIncludingCustomerWhenPresent(t *test
 	}
 }
 
-// TestLoggingNotifier_Send_OmitsCustomerAttributeWhenNil covers the
+// TestLoggingNotifier_Send_OmitsCustomerAttributeWhenEmpty covers the
 // internal-only (90/60/30) case: Recipients.Customers is empty, and the log
 // must not carry a misleading empty "customer" attribute implying a
 // customer was in scope for this notice at all.
-func TestLoggingNotifier_Send_OmitsCustomerAttributeWhenNil(t *testing.T) {
+func TestLoggingNotifier_Send_OmitsCustomerAttributeWhenEmpty(t *testing.T) {
 	h := &capturingHandler{}
 	n := &LoggingNotifier{Logger: slog.New(h)}
 

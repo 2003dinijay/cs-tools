@@ -230,7 +230,7 @@ func TestProcessProject_CustomerAudienceWindowNotifiesBusinessContact(t *testing
 
 	internal, customer := ntf.sent[0], ntf.sent[1]
 
-	if len(internal.Recipients.Customers) > 0 {
+	if internal.Recipients.IsCustomerFacing() {
 		t.Errorf("internal notice Recipients.Customers = %v, want none", internal.Recipients.Customers)
 	}
 	// The fixture project has an account with no Name set, so the subject
@@ -241,7 +241,7 @@ func TestProcessProject_CustomerAudienceWindowNotifiesBusinessContact(t *testing
 		t.Errorf("internal Subject = %q, want %q", internal.Subject, wantInternalSubject)
 	}
 
-	if len(customer.Recipients.Customers) == 0 {
+	if !customer.Recipients.IsCustomerFacing() {
 		t.Fatal("customer notice Recipients.Customers empty, want populated")
 	}
 	if customer.Recipients.Customers[0].Email != "bob@customer.example" {
@@ -281,10 +281,10 @@ func TestProcessProject_RecordsIgnoredWhenOnlyCustomerNoticeWasntDelivered(t *te
 	updater := &mockProjectUpdater{}
 	ntf := &mockNotifier{
 		sendFn: func(ctx context.Context, n notify.Notice) (bool, error) {
-			// Internal notice (no Customer) delivers; customer notice
-			// (Customer populated) gets filtered out — mirrors a real
+			// Internal notice (no customers) delivers; customer notice
+			// (customers listed) gets filtered out — mirrors a real
 			// non-WSO2 customer address in staging.
-			return len(n.Recipients.Customers) == 0, nil
+			return !n.Recipients.IsCustomerFacing(), nil
 		},
 	}
 
@@ -360,7 +360,7 @@ func TestProcessProject_CustomerAudienceWindowSendsNoBusinessContactNoticeWhenNo
 
 	internal, nudge := ntf.sent[0], ntf.sent[1]
 
-	if len(internal.Recipients.Customers) > 0 {
+	if internal.Recipients.IsCustomerFacing() {
 		t.Errorf("internal Recipients.Customers = %v, want none", internal.Recipients.Customers)
 	}
 	if internal.Recipients.AccountOwner.Email != "jordan.perera@wso2.example" {
@@ -380,7 +380,7 @@ func TestProcessProject_CustomerAudienceWindowSendsNoBusinessContactNoticeWhenNo
 	if nudge.Recipients.TechnicalOwner.Email != "alex.fernando@wso2.example" {
 		t.Errorf("nudge Recipients.TechnicalOwner.Email = %q, want %q", nudge.Recipients.TechnicalOwner.Email, "alex.fernando@wso2.example")
 	}
-	if len(nudge.Recipients.Customers) > 0 {
+	if nudge.Recipients.IsCustomerFacing() {
 		t.Errorf("nudge Recipients.Customers = %v, want none", nudge.Recipients.Customers)
 	}
 	if nudge.Body == "" {

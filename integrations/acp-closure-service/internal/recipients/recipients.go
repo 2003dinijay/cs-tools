@@ -70,7 +70,7 @@ type Resolution struct {
 	ResolvedVia      ResolvedVia
 }
 
-// ResolveCustomerContact implements the three-tier fallback: every Project
+// ResolveCustomerContacts implements the three-tier fallback: every Project
 // Contact with the business-contact role first, then every Primary Contact
 // on the account, then a signal to nudge the Account Manager instead. Each
 // tier returns all of its matches, not just the first: the ServiceNow system
@@ -82,7 +82,7 @@ type Resolution struct {
 // legitimate, unremarkable data state) is not a usable recipient, and a tier
 // with no usable contact falls through to the next. Each address is listed
 // once (compared case-insensitively), in the order the contacts came.
-func ResolveCustomerContact(projectContacts []ProjectContact, accountContacts []AccountContact) Resolution {
+func ResolveCustomerContacts(projectContacts []ProjectContact, accountContacts []AccountContact) Resolution {
 	var business []Contact
 	for _, c := range projectContacts {
 		if hasBusinessContactRole(c) {

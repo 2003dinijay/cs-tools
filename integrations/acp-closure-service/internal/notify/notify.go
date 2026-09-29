@@ -39,13 +39,20 @@ import (
 // convention (role assigned but no email on file, or no role assigned at
 // all), which is not an error state. Customers is empty except on a resolved
 // 15/7/0-window notice, where it holds every resolved customer contact
-// (see recipients.ResolveCustomerContact); it is also empty on the separate
+// (see recipients.ResolveCustomerContacts); it is also empty on the separate
 // no-business-contact notice.
 type Recipients struct {
 	AccountOwner   recipients.Contact
 	RenewalManager recipients.Contact
 	TechnicalOwner recipients.Contact
 	Customers      []recipients.Contact
+}
+
+// IsCustomerFacing reports whether r is for a customer-facing notice: one
+// with at least one customer contact. Internal notices and the
+// no-business-contact nudge have none.
+func (r Recipients) IsCustomerFacing() bool {
+	return len(r.Customers) > 0
 }
 
 // Notice is everything a Notifier needs to send (or, today, log) one ACP
@@ -94,7 +101,7 @@ type Notice struct {
 	Body       string
 	Recipients Recipients
 	// ResolvedVia records which tier of the three-tier customer-contact
-	// fallback was attempted (see recipients.ResolveCustomerContact). Left
+	// fallback was attempted (see recipients.ResolveCustomerContacts). Left
 	// at its zero value ("") only when the fallback was never attempted at
 	// all — an internal-only 90/60/30 notice. It IS set on the
 	// no-business-contact notice too, to recipients.ResolvedViaNone — the
@@ -134,7 +141,7 @@ func (n *LoggingNotifier) Send(ctx context.Context, notice Notice) (bool, error)
 		"technicalOwnerName", notice.Recipients.TechnicalOwner.Name,
 		"resolvedVia", notice.ResolvedVia,
 	}
-	if len(notice.Recipients.Customers) > 0 {
+	if notice.Recipients.IsCustomerFacing() {
 		emails := make([]string, len(notice.Recipients.Customers))
 		names := make([]string, len(notice.Recipients.Customers))
 		for i, c := range notice.Recipients.Customers {
