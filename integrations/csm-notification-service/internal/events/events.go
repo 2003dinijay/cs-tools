@@ -283,10 +283,7 @@ type CaseAssignedPayload struct {
 // case.created does — Team/ProjectOnboardingStatus/IsEvaluationAccount
 // resolve a Chat-audience list via dispatch.resolveChatAudiences — so an
 // acknowledgment posts as a threaded reply in every one of the same
-// audience spaces the case's own case.created alert went to. There is
-// deliberately no Product field (there was, before this payload moved off
-// product-based routing): it only ever carried a routing key, never
-// anything this card displayed.
+// audience spaces the case's own case.created alert went to.
 type CaseAcknowledgedPayload struct {
 	CaseID     string `json:"caseId"`
 	CaseNumber string `json:"caseNumber,omitempty"`
@@ -299,6 +296,16 @@ type CaseAcknowledgedPayload struct {
 	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
 	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
 	AcknowledgerName        string `json:"acknowledgerName"`
+	// Product is deprecated and unused — this payload moved off
+	// product-based Chat routing to Team-based audience routing (see
+	// dispatch.resolveChatAudiences), and this field never carried anything
+	// this card displayed either. Kept, accepting-but-ignoring the value,
+	// purely so events.Validate's strict decode doesn't reject a payload
+	// from an entity-service deployment that hasn't yet redeployed past
+	// this change — entity-service and csm-notification-service are
+	// separate deployables with no atomic joint-deploy guarantee. Remove
+	// once both services are known to have deployed past this change.
+	Product string `json:"product,omitempty"`
 }
 
 // SeverityChangedPayload is TypeSeverityChanged's payload. Unlike
@@ -308,9 +315,8 @@ type CaseAcknowledgedPayload struct {
 // dispatch.handleSeverityChanged is a two-channel handler like
 // handleCaseCreated, not a one-channel handler like handleCaseAcknowledged.
 // The Chat alert is audience-routed the same way case.created/
-// case.acknowledged are — see CaseAcknowledgedPayload's own doc comment for
-// why there's no Product field. OldSeverity/NewSeverity are the raw
-// uppercase severity strings (e.g. "CRITICAL"), the same convention
+// case.acknowledged are. OldSeverity/NewSeverity are the raw uppercase
+// severity strings (e.g. "CRITICAL"), the same convention
 // CaseAcknowledgedPayload.Severity uses — dispatch.severityLabelAndColor
 // maps each to its own display label/color.
 type SeverityChangedPayload struct {
@@ -328,6 +334,9 @@ type SeverityChangedPayload struct {
 	ProjectOnboardingStatus string   `json:"projectOnboardingStatus,omitempty"`
 	IsEvaluationAccount     bool     `json:"isEvaluationAccount,omitempty"`
 	Recipients              []string `json:"recipients"`
+	// Product is deprecated and unused — see CaseAcknowledgedPayload's own
+	// doc comment for why this decode-compatibility field exists.
+	Product string `json:"product,omitempty"`
 }
 
 // IncidentCreatedPayload is TypeIncidentCreated's payload. Unlike the case.*

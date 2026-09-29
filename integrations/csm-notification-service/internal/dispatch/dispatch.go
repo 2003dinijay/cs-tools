@@ -794,6 +794,26 @@ func (d *Dispatcher) handleCaseAssigned(ctx context.Context, record eventbus.Rec
 // in-flight sibling call genuinely owns — so this needs the same
 // beginRecord/endRecord refcounting handleCaseCreated uses for its own two
 // channels; see that function's own doc comment for the full reasoning.
+//
+// Known, accepted inconsistency: this re-resolves resolveChatAudiences
+// from the payload's own Team/ProjectOnboardingStatus/IsEvaluationAccount
+// (entity-service's own fresh-at-ack-time read — see that repo's own
+// CLAUDE.md) and time.Now() — it does NOT reuse whatever audience list
+// case.created itself resolved. Team/onboarding/evaluation drift between
+// the two events is intentional: routing an ack to the case's *current*
+// team is arguably more useful than a stale creation-time one. The
+// Americas/weekend time-of-day rules drift too, but for a different
+// reason — those describe who's covering *right now*, which is the
+// correct audience for a live event regardless of when the case was
+// created. The one real cost: an audience resolved now but not at
+// case.created has no matching thread to reply into, so
+// chatThreadKey/REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD falls back to a
+// fresh top-level post there instead of a threaded reply — cosmetic, not
+// a delivery failure. Persisting case.created's exact resolved audience
+// list (there's no case-scoped durable state in this service to hold it
+// — see Dispatcher.done's own doc comment on the accepted at-least-once/
+// in-memory trade-off elsewhere in this file) was considered and rejected
+// as disproportionate to that cost.
 func (d *Dispatcher) handleCaseAcknowledged(ctx context.Context, record eventbus.Record, raw json.RawMessage) error {
 	var p events.CaseAcknowledgedPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -825,11 +845,14 @@ func (d *Dispatcher) handleCaseAcknowledged(ctx context.Context, record eventbus
 // RenderSeverityChangedEmail) and a Google Chat alert to the same audience
 // space(s) as the case's own case.created/case.acknowledged alerts
 // (SendSeverityChangedAlert) — audience-routed via resolveChatAudiences, the
-// same as handleCaseCreated/handleCaseAcknowledged, not product-routed. This
-// needs the same beginRecord/endRecord refcounting handleCaseCreated uses:
-// two channels (and, within the Chat channel, potentially several
-// audiences) means a losing call for one must not release another while a
-// different, still in-flight call genuinely owns it.
+// same as handleCaseCreated/handleCaseAcknowledged, not product-routed, and
+// with the same fresh-facts-per-event drift from case.created's own
+// resolved list — see handleCaseAcknowledged's own doc comment for the
+// full "known, accepted inconsistency" reasoning. This needs the same
+// beginRecord/endRecord refcounting handleCaseCreated uses: two channels
+// (and, within the Chat channel, potentially several audiences) means a
+// losing call for one must not release another while a different, still
+// in-flight call genuinely owns it.
 func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.Record, raw json.RawMessage) error {
 	var p events.SeverityChangedPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
