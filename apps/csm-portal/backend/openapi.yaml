@@ -11229,6 +11229,12 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/SplScanResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "401":
           description: Unauthorized
           content:
@@ -11237,6 +11243,12 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
           description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
           content:
             application/json:
               schema:
