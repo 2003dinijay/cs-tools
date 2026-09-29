@@ -3544,6 +3544,8 @@ export interface BeProblemDetail {
   id: string;
   number?: string;
   subject?: string;
+  /** Free-text description of the problem. May be null/empty on many records — render blank gracefully, not as an awkward empty field. */
+  description?: string | null;
   state?: BeProblemState;
   priority?: string | null;
   /** May be null/empty on many records — render blank gracefully, not as an awkward empty field. */

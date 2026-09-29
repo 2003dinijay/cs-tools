@@ -16566,6 +16566,12 @@ components:
         - $ref: '#/components/schemas/Problem'
         - type: object
           properties:
+            description:
+              type: string
+              nullable: true
+              description: >-
+                Free-text description of the problem. May be null/empty on
+                many records.
             priority:
               type: string
               nullable: true
