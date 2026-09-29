@@ -333,11 +333,16 @@ export function useEngagementsPageState() {
 
   const engagementTypeOptions = useMemo(() => {
     if (!stats?.engagementTypeCount) return [];
+    // Must cover all 5 engagement types the backend can return (see
+    // backend-v2's caseEngagementTypeDisplayLabels) -- a type missing here
+    // isn't just unlabeled, the loop below drops it from the options list
+    // entirely, so it can never be filtered on.
     const DISPLAY_NAMES = [
       "Consultancy",
       "Onboarding",
       "Migration",
       "Follow Up",
+      "New Feature Improvement",
     ];
     const DISPLAY_BY_LOWER = new Map(
       DISPLAY_NAMES.map((n) => [n.toLowerCase(), n]),
