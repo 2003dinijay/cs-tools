@@ -1129,6 +1129,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	} else if productVersionHandler != nil {
 		mux.HandleFunc("POST /products/{id}/versions/search", productVersionHandler.SearchProductVersions)
 	}
+	// Always Postgres, including when products themselves are read from
+	// ServiceNow. The literal path does not collide with /products/{id}.
+	if db != nil {
+		productRepoMappingHandler := handler.NewProductRepoMappingHandler(
+			service.NewProductRepoMappingService(repository.NewProductRepoMappingRepository(db)))
+		mux.HandleFunc("GET /products/github-repo", productRepoMappingHandler.Get)
+	}
 	mux.HandleFunc("POST /deployments", deploymentHandler.CreateDeployment)
 	mux.HandleFunc("POST /deployments/search", deploymentHandler.SearchDeployments)
 	mux.HandleFunc("PATCH /deployments/{id}", deploymentHandler.PatchDeployment)
