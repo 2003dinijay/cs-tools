@@ -175,6 +175,22 @@ func TestRegistry_OpenObserveKeepsOnlyCanonicalFields(t *testing.T) {
 	}
 }
 
+// vendorBasePath matches active basePath lines only, so a commented-out endpoint isn't counted.
+var vendorBasePath = regexp.MustCompile(`(?m)^[ \t]*basePath:[ \t]*/api/wso2/v1/sre_alert_api/(\S+)[ \t]*$`)
+
+func TestVendorBasePathIgnoresComments(t *testing.T) {
+	yaml := "    service:\n      basePath: /api/wso2/v1/sre_alert_api/aws\n" +
+		"#      basePath: /api/wso2/v1/sre_alert_api/azure\n" +
+		"      # basePath: /api/wso2/v1/sre_alert_api/gcp\n"
+	var got []string
+	for _, m := range vendorBasePath.FindAllStringSubmatch(yaml, -1) {
+		got = append(got, m[1])
+	}
+	if !slices.Equal(got, []string{"aws"}) {
+		t.Errorf("matched %v, want only the active aws line", got)
+	}
+}
+
 // TestComponentYAMLHasAnEndpointPerVendor keeps .choreo/component.yaml in step with the
 // registry: every vendor needs its own Choreo endpoint, and every endpoint a vendor.
 func TestComponentYAMLHasAnEndpointPerVendor(t *testing.T) {
@@ -183,7 +199,7 @@ func TestComponentYAMLHasAnEndpointPerVendor(t *testing.T) {
 		t.Fatal(err)
 	}
 	var paths []string
-	for _, m := range regexp.MustCompile(`basePath: /api/wso2/v1/sre_alert_api/(\S+)`).FindAllStringSubmatch(string(raw), -1) {
+	for _, m := range vendorBasePath.FindAllStringSubmatch(string(raw), -1) {
 		paths = append(paths, m[1])
 	}
 	slices.Sort(paths)
