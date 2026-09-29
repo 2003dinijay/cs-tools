@@ -36,6 +36,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/dispatch"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/escalation"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
@@ -392,6 +393,7 @@ func main() {
 	// shard) rather than at this construction site.
 	var redisClient *redis.Client
 	var slaProducer *eventbus.Producer
+	var escalationConsumers []*eventbus.Consumer
 	redisURL := os.Getenv("REDIS_URL")
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisURL != "" || redisAddr != "" {
@@ -456,6 +458,144 @@ func main() {
 		// entity-service and Redis.
 		tickInterval := envDuration("SLA_TICK_INTERVAL", 5*time.Minute)
 		go slaEngine.RunTicker(ctx, tickInterval)
+
+		// The incident call-escalation ladder (internal/escalation) shares
+		// this same Redis — its own keys, its own ZSET — and its own consumer
+		// group on the same topic, exactly as the SLA engine does. It is
+		// nested inside the Redis block for the same reason: without durable
+		// state a ladder would forget everything it had scheduled on the
+		// first restart, mid-page.
+		//
+		// It needs one more thing than Redis, though: a roster to resolve
+		// levels to people (see escalation.RosterResolver for why that is
+		// configuration rather than a ServiceNow lookup today). With none
+		// configured, the engine is deliberately NOT started — a running
+		// ladder that can never call anyone is worse than an absent one,
+		// because it looks like coverage.
+		roster, err := escalation.ParseRoster(os.Getenv("INCIDENT_ESCALATION_ROSTER"))
+		escalationChannel, channelErr := escalation.ParseChannel(os.Getenv("INCIDENT_ESCALATION_CHANNEL"))
+		switch {
+		case err != nil:
+			// Not logging err itself: a malformed roster's decode error can
+			// quote the surrounding JSON, which carries real phone numbers.
+			slog.Error("invalid INCIDENT_ESCALATION_ROSTER: failed to parse; incident call escalation is disabled")
+		case channelErr != nil:
+			slog.Error("invalid INCIDENT_ESCALATION_CHANNEL; incident call escalation is disabled", "err", channelErr)
+		case roster.IsEmpty():
+			slog.Warn("INCIDENT_ESCALATION_ROSTER is not set; incident call escalation is disabled")
+		default:
+			// Same entity-service and same shared OAuth2 app as the SLA
+			// engine's client above — a separate client only because this one
+			// speaks to /incidents rather than the sla_clocks endpoints.
+			//
+			// Unlike that one, this is os.Getenv and genuinely optional. The
+			// SLA engine can do nothing at all without entity-service — its
+			// clocks live there. This engine's job is notifying people; the
+			// execution summary is a record of what it did. A deployment (or
+			// a laptop) without entity-service access should still be able to
+			// run a real ladder, with the summary logged instead of written
+			// back — see Engine.writeNote's nil handling.
+			var escalationNotes *escalation.EntityClient
+			if base := os.Getenv("CUSTOMER_ENTITY_BASE_URL"); base != "" {
+				escalationNotes = escalation.NewEntityClient(escalation.EntityConfig{
+					BaseURL:      base,
+					TokenURL:     os.Getenv("OAUTH2_TOKEN_URL"),
+					ClientID:     os.Getenv("OAUTH2_CLIENT_ID"),
+					ClientSecret: os.Getenv("OAUTH2_CLIENT_SECRET"),
+					Scopes:       splitComma(os.Getenv("CUSTOMER_ENTITY_SCOPES")),
+				})
+			} else {
+				slog.Warn("CUSTOMER_ENTITY_BASE_URL is not set; incident escalation will log its " +
+					"execution summary instead of writing it back to the incident")
+			}
+
+			// Who each rung reaches. The Team Schedule is the real answer -
+			// rota and rank, kept current by the people who own them - and the
+			// hand-maintained roster is the stopgap it replaces. Reading the
+			// schedule needs entity-service, so a deployment without it falls
+			// back rather than starting with a resolver that cannot answer.
+			//
+			// Off by default: the rung model the schedule resolver implements
+			// is still an assumption awaiting confirmation, and a deployment
+			// should opt into it knowingly rather than inherit it on upgrade.
+			var escalationResolver escalation.Resolver = escalation.NewRosterResolver(roster)
+			if os.Getenv("INCIDENT_ESCALATION_RESOLVER") == "team-schedule" {
+				if escalationNotes == nil {
+					slog.Error("INCIDENT_ESCALATION_RESOLVER=team-schedule needs CUSTOMER_ENTITY_BASE_URL; " +
+						"falling back to the configured roster")
+				} else {
+					escalationResolver = escalation.NewTeamScheduleResolver(
+						escalationNotes, os.Getenv("INCIDENT_ESCALATION_LEADERSHIP_TEAM"))
+					slog.Info("incident escalation resolves rungs from the Team Schedule")
+				}
+			}
+
+			escalationEngine := escalation.NewEngine(
+				escalation.DefaultPolicy,
+				escalationResolver,
+				twilioClient,
+				googleChatClient,
+				// The ladder builds its own incident link. recipientlinks
+				// lost IncidentLink when incident.created stopped posting a
+				// Chat alert and nothing else needed one; a rung's card still
+				// has to say where to go and look.
+				escalation.PortalLinks{CSMBaseURL: csmPortalBaseURL},
+				escalation.NewStore(redisClient),
+				escalationNotes,
+				// The audience a rung's card posts to when the incident names
+				// no product of its own. Its own variable rather than the
+				// dispatcher's old DEFAULT_CHAT_PRODUCT, which went away with
+				// the incident Chat alert -- the ladder's room is its own
+				// decision now.
+				os.Getenv("INCIDENT_ESCALATION_CHAT_AUDIENCE"),
+				escalation.EngineConfig{
+					// Shares CALL_SENDING_ENABLED with
+					// dispatch.handleIncidentCreated's single call: both are
+					// the same outbound channel to the same people, and
+					// splitting them would let a deployment silence one and
+					// not the other.
+					CallSendingEnabled: callSendingEnabled,
+					// SSML is opt-in rather than the default: it changes how
+					// every escalation call sounds, so a deployment should
+					// hear it (escalation-local --speak) before switching.
+					UseSSML: os.Getenv("INCIDENT_ESCALATION_SSML") == "true",
+					// call, chat or both. Defaults to call — see
+					// ParseChannel for why silently downgrading a pager to a
+					// chat message would be the wrong default.
+					Channel: escalationChannel,
+				},
+			)
+
+			escalationGroup := envOrDefault("INCIDENT_ESCALATION_CONSUMER_GROUP", "csm-notification-service-escalation")
+			escalationCount := envInt("INCIDENT_ESCALATION_CONSUMER_COUNT", 1)
+			escalationConsumers = startConsumers(ctx, "escalation", eventBusCfg, escalationGroup, escalationCount, escalationEngine.Handle, toDeadLetter)
+
+			// Ticks faster than the SLA engine's 15s: the shortest gap
+			// between two calls in section 7.0's table is one minute (P0), so
+			// a coarse tick would visibly smear a P0 ladder.
+			escalationTick := envDuration("INCIDENT_ESCALATION_TICK_INTERVAL", 5*time.Second)
+			go escalationEngine.RunTicker(ctx, escalationTick)
+
+			slog.Info("incident call escalation is enabled",
+				"channel", string(escalationChannel),
+				"ssml", os.Getenv("INCIDENT_ESCALATION_SSML") == "true",
+				"sending", callSendingEnabled)
+
+			// dispatch.handleIncidentCreated's own single, immediate call to
+			// INCIDENT_DEFAULT_CALL_TO predates the ladder and is NOT part of
+			// the escalation specification — section 3.0's initial reaction
+			// to a new incident is the Chat alert and an email, with calls
+			// starting only after the priority's initial wait. Left in place
+			// rather than removed, because a deployment with no roster still
+			// relies on it as its only page; unset INCIDENT_DEFAULT_CALL_TO
+			// to retire it once the ladder covers an environment. Logged so
+			// the overlap is visible at startup rather than discovered by
+			// being called twice.
+			if defaultOnCallNumber != "" {
+				slog.Warn("incident call escalation is enabled while INCIDENT_DEFAULT_CALL_TO is also set; " +
+					"a new incident will get both the single immediate call and the escalation ladder")
+			}
+		}
 	}
 
 	// timecardengine has no Redis/state dependency at all (unlike slaEngine
@@ -490,6 +630,9 @@ func main() {
 		c.Close()
 	}
 	for _, c := range projectDLQConsumers {
+		c.Close()
+	}
+	for _, c := range escalationConsumers {
 		c.Close()
 	}
 	for _, c := range timeCardConsumers {

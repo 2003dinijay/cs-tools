@@ -82,6 +82,7 @@ services:
       - ./entity-service/migrations:/migrations/entity-service:ro
       - ./scripts/csm-compose/seed-entity-service.sql:/migrations/seed-entity-service.sql:ro
       - ./scripts/csm-compose/seed-team-schedule.sql:/migrations/seed-team-schedule.sql:ro
+      - ./scripts/csm-compose/seed-escalation-roles.sql:/migrations/seed-escalation-roles.sql:ro
       - ./scripts/csm-compose/fixtures:/migrations/fixtures:ro
       - ./scripts/csm-compose/migrate-and-seed.sh:/migrate.sh:ro
     entrypoint: ["sh", "/migrate.sh"]
@@ -243,7 +244,12 @@ services:
       AUTH_ISSUER: http://localhost:9100/oauth2/token
       AUTH_JWKS_URL: http://mock-oidc:9100/oauth2/jwks
       AUTH_USER_TOKEN_AUDIENCES: csm-portal-webapp,customer-portal-webapp
-      AUTH_INTERNAL_CLIENT_IDS: csm-portal-backend-dev-client,csm-integration-service-dev-client
+      # csm-notification-service is here for the call-escalation ladder: it
+      # reads the rota and the ranks behind it to decide who each rung
+      # reaches, machine to machine, with no user to carry a token. Both
+      # of those reads are internal-staff-only, so without this every
+      # rung resolves to nobody and the ladder silently reaches no one.
+      AUTH_INTERNAL_CLIENT_IDS: csm-portal-backend-dev-client,csm-integration-service-dev-client,csm-notification-service-dev-client
     volumes:
       - csm-dev-certs:/certs:ro
     ports:
