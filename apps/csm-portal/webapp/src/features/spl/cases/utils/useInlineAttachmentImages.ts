@@ -27,7 +27,7 @@ const inFlightRequests = new Map<string, Promise<string | null>>();
 
 // Resolves ServiceNow inline-comment images (rendered as <img src=".../<id>.iix">) into
 // data: URLs by fetching each referenced attachment through the existing
-// /spl/attachments/{id}/download endpoint.
+// /attachments/{id}/download endpoint.
 export function useInlineAttachmentImages(html: string, isUserAllowedtoDownloadAttachments: boolean) {
   const { fetchAttachmentDataUrl } = useAttachmentDownload();
   const [, setVersion] = useState(0);

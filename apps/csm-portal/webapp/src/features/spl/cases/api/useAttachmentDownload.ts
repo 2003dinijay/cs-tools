@@ -36,7 +36,7 @@ export function useAttachmentDownload() {
 
   const downloadAttachment = useCallback(
     async (attachmentId: string, fileName: string) => {
-      const blob = await api.getBlob(`/spl/attachments/${encodeURIComponent(attachmentId)}/download`);
+      const blob = await api.getBlob(`/attachments/${encodeURIComponent(attachmentId)}/download`);
       const href = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = href;
@@ -51,7 +51,7 @@ export function useAttachmentDownload() {
 
   const fetchAttachmentDataUrl = useCallback(
     async (attachmentId: string): Promise<string> => {
-      const blob = await api.getBlob(`/spl/attachments/${encodeURIComponent(attachmentId)}/download`);
+      const blob = await api.getBlob(`/attachments/${encodeURIComponent(attachmentId)}/download`);
       const buffer = await blob.arrayBuffer();
       const contentType = blob.type || "application/octet-stream";
       return `data:${contentType};base64,${arrayBufferToBase64(buffer)}`;

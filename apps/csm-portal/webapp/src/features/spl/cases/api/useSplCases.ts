@@ -20,7 +20,7 @@
 // /cases routes directly, since SPL's data source for them is the exact
 // same entity-service data those routes already serve raw -- see cs-tools'
 // csm-portal-backend main.go SPL route registration comment. Attachments
-// keep calling /spl/cases/*: no entity-service storage/backfill path exists
+// keep calling /cases/*: no entity-service storage/backfill path exists
 // yet, so nothing to merge onto.
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { useBackendApi, BackendApiError } from "@api/backend/client";
@@ -206,7 +206,7 @@ export function useGetSplCaseAttachments(caseId: string) {
     queryKey: ["spl-case-attachments", caseId],
     enabled: Boolean(caseId),
     queryFn: async () => {
-      const data = await api.get(`/spl/cases/${encodeURIComponent(caseId)}/attachments-info?offset=0&limit=10`);
+      const data = await api.get(`/cases/${encodeURIComponent(caseId)}/attachments-info?offset=0&limit=10`);
       return data ?? [];
     },
   });
