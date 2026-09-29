@@ -529,16 +529,9 @@ func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domai
 // extension table uses). Same overall shape as
 // CaseRepository.UpdateCaseFields.
 func (r *problemRepo) UpdateProblemFields(ctx context.Context, req domain.UpdateProblemRequest, actorEmail string) (time.Time, error) {
-	var updatedOn time.Time
-	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
-		var txErr error
-		updatedOn, txErr = updateProblemFieldsTx(ctx, tx, req, actorEmail)
-		return txErr
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (time.Time, error) {
+		return updateProblemFieldsTx(ctx, tx, req, actorEmail)
 	})
-	if err != nil {
-		return time.Time{}, err
-	}
-	return updatedOn, nil
 }
 
 // updateProblemFieldsTx is UpdateProblemFields' body, extracted so it can

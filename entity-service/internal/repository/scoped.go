@@ -318,3 +318,28 @@ func (s *Scoped) InTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	}
 	return runWithCallerIdentity(ctx, s.pool, scope, fn)
 }
+
+// InTxReturning collapses the boilerplate every InTx call site whose closure
+// body is really just one delegate call to a Tx-suffixed helper function
+// repeated at (declare a result variable above the closure, assign it via a
+// second, inner error variable inside the closure, return that inner error,
+// then check the outer error and return the zero value on failure). fn's own
+// signature -- func(tx pgx.Tx) (T, error) -- is exactly what every one of
+// those Tx-suffixed helpers (createCaseTx, createEscalationTx, and similar)
+// already returns, so converting a call site to this is typically a direct
+// substitution: wrap the helper call in a closure over tx (ctx and any other
+// arguments are captured, not passed through InTxReturning itself) and
+// return its own two results straight through.
+func InTxReturning[T any](ctx context.Context, db *Scoped, fn func(tx pgx.Tx) (T, error)) (T, error) {
+	var result T
+	err := db.InTx(ctx, func(tx pgx.Tx) error {
+		var txErr error
+		result, txErr = fn(tx)
+		return txErr
+	})
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return result, nil
+}

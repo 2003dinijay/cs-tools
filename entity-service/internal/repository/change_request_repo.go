@@ -785,11 +785,8 @@ var changeRequestPatchCRFKField = map[string]string{
 
 // PatchChangeRequest implements ChangeRequestRepository.
 func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, req domain.PatchChangeRequestRequest, actorEmail string) (domain.ChangeRequest, error) {
-	var wiID string
-	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
-		var txErr error
-		wiID, txErr = patchChangeRequestTx(ctx, tx, id, req, actorEmail)
-		return txErr
+	wiID, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (string, error) {
+		return patchChangeRequestTx(ctx, tx, id, req, actorEmail)
 	})
 	if err != nil {
 		return domain.ChangeRequest{}, err

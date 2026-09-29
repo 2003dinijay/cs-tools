@@ -516,11 +516,8 @@ func (r *timeCardRepo) SearchCaseTimeCards(ctx context.Context, req domain.Searc
 
 // CreateTimeCard implements TimeCardRepository.
 func (r *timeCardRepo) CreateTimeCard(ctx context.Context, req domain.CreateTimeCardRequest, userID string) (domain.TimeCardView, error) {
-	var id string
-	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
-		var err error
-		id, err = createTimeCardTx(ctx, tx, req, userID)
-		return err
+	id, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (string, error) {
+		return createTimeCardTx(ctx, tx, req, userID)
 	})
 	if err != nil {
 		return domain.TimeCardView{}, err

@@ -137,6 +137,30 @@ var caseResolutionCodeFromEnum = map[string]domain.CaseResolutionCode{
 // through entirely different endpoints.
 const caseLikeWorkItemTypes = `'{CASE,ENGAGEMENT,SERVICE_REQUEST,SECURITY_REPORT_ANALYSIS,ANNOUNCEMENT}'::work_item_type_enum[]`
 
+// announcementVisibilityLeakGuard excludes an ANNOUNCEMENT-typed work_item
+// whose announcement extension row RLS hid from the caller (migration
+// 000085/0149's role/security-contact-based policy) -- without it, a
+// caller who can't see the announcement row would still see wi.subject/
+// wi.description (both live on the unprotected work_item table itself)
+// with only the announcement-specific fields absent: a partially-redacted
+// row leaking exactly the two fields the visibility policy exists to hide,
+// instead of the row disappearing entirely as it should.
+//
+// A self-contained NOT EXISTS, not a check against an already-joined "ann"
+// row's own id being NULL: the shape every one of this fragment's three
+// call sites happened to use before this constant existed. That form only
+// works when the query already carries a LEFT JOIN announcement ann ON
+// ann.id = wi.id with exactly that alias -- true for case_repo.go's own
+// two sites, never guaranteed for a future caller, and outright false for
+// global_search_repo.go's countQuery (no announcement join at all). This
+// form needs nothing but wi (aliased or not) to already be in scope, so
+// pasting it into a brand-new query is safe without also checking whether
+// an announcement join happens to already exist under the right alias --
+// exactly the kind of drift this shared constant exists to prevent, at the
+// cost of one extra (PK-indexed, cheap) EXISTS subquery in the two call
+// sites that used to reuse an existing join instead.
+const announcementVisibilityLeakGuard = `NOT (wi.type = 'ANNOUNCEMENT' AND NOT EXISTS (SELECT 1 FROM announcement rls_ann WHERE rls_ann.id = wi.id))`
+
 // caseLikeStateColumns COALESCEs state across every case-like work_item
 // extension table (aliased c/eng/sr/sra/ann) -- exactly one is non-null for
 // a given row, since each is a shared-PK extension keyed to a specific
@@ -434,16 +458,9 @@ func NewCaseRepository(db *Scoped) CaseRepository {
 // ServiceNow's still-running sync allocates from, so the two can never
 // collide.
 func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
-	var c domain.Case
-	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
-		var txErr error
-		c, txErr = createCaseTx(ctx, tx, req)
-		return txErr
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (domain.Case, error) {
+		return createCaseTx(ctx, tx, req)
 	})
-	if err != nil {
-		return domain.Case{}, err
-	}
-	return c, nil
 }
 
 // createCaseTx is CreateCase's body, extracted so it can run inside
@@ -940,13 +957,8 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		 LEFT JOIN work_item pw ON pw.id = wi.parent_id
 		 LEFT JOIN "case" rc ON rc.id = c.related_case_id
 		 LEFT JOIN work_item rc_wi ON rc_wi.id = rc.id
-		 -- The AND NOT (...) excludes an ANNOUNCEMENT row the caller can't
-		 -- see under migration 000085's RLS policy: without it, ann.* alone
-		 -- would come back null while wi.subject/wi.description (an
-		 -- unprotected, separate table) still leaked through. See
-		 -- SearchCases's identical condition for the fuller comment.
 		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)
-		   AND NOT (wi.type = 'ANNOUNCEMENT' AND ann.id IS NULL)`, scopeArgs...,
+		   AND `+announcementVisibilityLeakGuard+``, scopeArgs...,
 	).Scan(
 		&cv.ID, &cv.Number, &internalID, &caseType,
 		&description, &severity, &issueType, &workState,
@@ -1751,18 +1763,9 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	// regardless of what req.Parsed.ProjectIDs (below) additionally asks
 	// for.
 
-	// The announcement RLS policy (migration 000085) only hides ann.* --
-	// work_item itself (subject, description, existence) is a completely
-	// separate, unprotected table, so an ANNOUNCEMENT-typed work_item whose
-	// announcement row was filtered out would otherwise still surface here
-	// with those two fields intact and only its state/cause/close_notes/etc.
-	// nulled out. This excludes it from the result (and from the COUNT
-	// below, via the identical countQuery WHERE) entirely, rather than
-	// leaking a partially-redacted row. Every other case-like type is
-	// unaffected: none of them use a policy that could make ann.id (or
-	// their own extension row) legitimately absent for a row that should
-	// still be visible.
-	where += " AND NOT (wi.type = 'ANNOUNCEMENT' AND ann.id IS NULL)"
+	// See announcementVisibilityLeakGuard's own doc comment. Applies to the
+	// COUNT below too, via the identical countQuery WHERE.
+	where += " AND " + announcementVisibilityLeakGuard
 
 	// Fields shared with anyOf branches are built by one function so the two
 	// cannot drift apart (see caseFieldPredicates for the column notes).
@@ -2424,16 +2427,9 @@ func (r *caseRepo) AcknowledgeCase(ctx context.Context, caseID, actorID, actorEm
 // all -- if req names no "case" column, work_item's own UPDATE...WHERE
 // alone still correctly reports not-found via zero rows.
 func (r *caseRepo) UpdateCaseFields(ctx context.Context, req domain.UpdateCaseRequest, actorID, actorEmail string) (time.Time, error) {
-	var updatedOn time.Time
-	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
-		var txErr error
-		updatedOn, txErr = updateCaseFieldsTx(ctx, tx, req, actorID, actorEmail)
-		return txErr
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (time.Time, error) {
+		return updateCaseFieldsTx(ctx, tx, req, actorID, actorEmail)
 	})
-	if err != nil {
-		return time.Time{}, err
-	}
-	return updatedOn, nil
 }
 
 // updateCaseFieldsTx is UpdateCaseFields' body, extracted so it can run
@@ -2548,16 +2544,9 @@ func scanTag(row interface{ Scan(...any) error }) (domain.Tag, error) {
 
 // AddCaseTag implements CaseRepository.
 func (r *caseRepo) AddCaseTag(ctx context.Context, caseID, label, callerEmail string) (domain.Tag, error) {
-	var tag domain.Tag
-	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
-		var txErr error
-		tag, txErr = addCaseTagTx(ctx, tx, caseID, label, callerEmail)
-		return txErr
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (domain.Tag, error) {
+		return addCaseTagTx(ctx, tx, caseID, label, callerEmail)
 	})
-	if err != nil {
-		return domain.Tag{}, err
-	}
-	return tag, nil
 }
 
 // addCaseTagTx is AddCaseTag's body, extracted so it can run inside

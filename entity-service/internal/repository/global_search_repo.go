@@ -284,15 +284,9 @@ func (r *globalSearchRepo) SearchCases(ctx context.Context, scope SearchScope, q
 	// short-circuits the round trip for a scoped caller with zero
 	// registered projects; it's an optimization, not the enforcement.
 	//
-	// Without this, an ANNOUNCEMENT-typed row the caller can't see under
-	// migration 000085's RLS policy would still surface here with its
-	// subject/description intact (both live on the unprotected work_item
-	// table) and only its state nulled out -- the exact leak this repo's
-	// case_repo.go counterpart already guards against. A self-contained
-	// EXISTS, not "ann.id IS NULL" (case_repo.go's version): countSQL below
-	// has no announcement join at all to reference an ann alias against,
-	// unlike pageSQL, so this must work standalone in both.
-	f.where += ` AND NOT (wi.type = 'ANNOUNCEMENT' AND NOT EXISTS (SELECT 1 FROM announcement rls_ann WHERE rls_ann.id = wi.id))`
+	// See announcementVisibilityLeakGuard's own doc comment (case_repo.go).
+	// Applies to both countSQL and pageSQL below, via this same f.where.
+	f.where += " AND " + announcementVisibilityLeakGuard
 	if query != "" {
 		f.args = append(f.args, containsPattern(query))
 		n := len(f.args)

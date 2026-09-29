@@ -568,16 +568,9 @@ func (r *escalationRepo) resolveEscalationRecipients(ctx context.Context, q rows
 
 // CreateEscalation implements EscalationRepository.
 func (r *escalationRepo) CreateEscalation(ctx context.Context, caseID string, action domain.EscalationAction, reason *string, actorEmail string) (domain.CreatedEscalation, error) {
-	var result domain.CreatedEscalation
-	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
-		var txErr error
-		result, txErr = r.createEscalationTx(ctx, tx, caseID, action, reason, actorEmail)
-		return txErr
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (domain.CreatedEscalation, error) {
+		return r.createEscalationTx(ctx, tx, caseID, action, reason, actorEmail)
 	})
-	if err != nil {
-		return domain.CreatedEscalation{}, err
-	}
-	return result, nil
 }
 
 // createEscalationTx is CreateEscalation's body, extracted so it can run
