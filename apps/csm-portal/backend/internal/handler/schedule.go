@@ -372,23 +372,23 @@ type splScheduleClient interface {
 // delegating to the ServiceNow service.
 type SplScheduleHandler struct {
 	servicenow      splScheduleClient
-	allowedGroups   []string
+	accessGuard     *AccessGuard
 	teamScheduleURL string
 }
 
 // NewSplScheduleHandler creates a SplScheduleHandler backed by the given
-// ServiceNow client. allowedGroups is SupportPortalLite's blanket
-// access-gate group list (SPL_ALLOWED_GROUPS); teamScheduleURL is the
-// static URL echoed back in every response (TEAM_SCHEDULE_URL).
-func NewSplScheduleHandler(sn splScheduleClient, allowedGroups []string, teamScheduleURL string) *SplScheduleHandler {
-	return &SplScheduleHandler{servicenow: sn, allowedGroups: allowedGroups, teamScheduleURL: teamScheduleURL}
+// ServiceNow client. accessGuard enforces PermSPLAccess, SupportPortalLite's
+// blanket audience gate; teamScheduleURL is the static URL echoed back in
+// every response (TEAM_SCHEDULE_URL).
+func NewSplScheduleHandler(sn splScheduleClient, accessGuard *AccessGuard, teamScheduleURL string) *SplScheduleHandler {
+	return &SplScheduleHandler{servicenow: sn, accessGuard: accessGuard, teamScheduleURL: teamScheduleURL}
 }
 
 // GetABTTeamSchedule handles GET /abt-team-schedule. All query
 // parameters are optional, mirroring the Ballerina resource function's
 // `string?` parameters.
 func (h *SplScheduleHandler) GetABTTeamSchedule(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}

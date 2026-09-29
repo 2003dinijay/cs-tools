@@ -341,8 +341,19 @@ type snSysIDResultList struct {
 // already-active escalation for that account. Mirrors Ballerina
 // operations:escalateCase (its addEscalationGroups authorization check is
 // the caller's responsibility — see handler/auth.go's
-// requireSPLSubGroups). Returns ErrEscalationConflict when caseNumber is
+// requireSPLPermission). Returns ErrEscalationConflict when caseNumber is
 // already linked to the account's active escalation.
+//
+// The active-escalation read and the create-new-escalation write below are
+// serialized per accountSysID (see lockAccountEscalation): without it, two
+// concurrent calls for the same account (a double-click, or two agents
+// escalating cases on the same account together) can both read "no active
+// escalation" and each create their own, leaving two open escalations with
+// cases split between them and no fixed order for which one later lookups
+// attach to. This only protects a single process -- ServiceNow itself gives
+// no uniqueness guarantee here, so a multi-replica deployment would still
+// need either a re-query-after-create reconciliation step or a ServiceNow-
+// side uniqueness constraint to fully close this.
 func (c *Client) EscalateCase(ctx context.Context, accountNumber, caseNumber string, request EscalationRequest, submittedByEmail string) (EscalationResponse, error) {
 	if err := SanitizeQueryValue(accountNumber); err != nil {
 		return EscalationResponse{}, err
@@ -359,6 +370,9 @@ func (c *Client) EscalateCase(ctx context.Context, accountNumber, caseNumber str
 	if err != nil {
 		return EscalationResponse{}, err
 	}
+
+	unlock := c.lockAccountEscalation(accountSysID)
+	defer unlock()
 
 	activeEscalations, err := c.getActiveEscalationsForAccount(ctx, accountSysID)
 	if err != nil {
@@ -509,6 +523,13 @@ func (c *Client) createNewEscalation(ctx context.Context, accountSysID string, r
 	var data snSysIDResult
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return "", fmt.Errorf("servicenow: decode escalation create response: %w", err)
+	}
+	// A missing sys_id here (an unexpected response shape) would otherwise
+	// have EscalateCase silently link the case to no escalation at all --
+	// PATCHing active_account_escalation to empty and writing the "escalated"
+	// work note while returning 200, with nothing actually escalated.
+	if data.Result.SysID == "" {
+		return "", errors.New("servicenow: escalation create response missing sys_id")
 	}
 	return data.Result.SysID, nil
 }

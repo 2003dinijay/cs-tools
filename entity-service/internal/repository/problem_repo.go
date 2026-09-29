@@ -467,10 +467,13 @@ const createProblemFromServiceNowQuery = `
 	),
 	inserted_problem AS (
 		INSERT INTO problem (
-			id, state, incident_id, opened_on
+			id, state, incident_id, opened_on, category, subcategory_id
 		)
 		VALUES (
-			$1, $6::problem_state_enum, $7::uuid, NOW()
+			$1, $6::problem_state_enum, $7::uuid, NOW(), $9::problem_category_enum,
+			-- subcategory is matched on problem_subcategory.value (lower-case
+			-- free text) within the chosen category; an unmatched value stays NULL.
+			(SELECT id FROM problem_subcategory WHERE category = $9::problem_category_enum AND value = LOWER($10::text))
 		)
 		RETURNING id
 	)
@@ -480,6 +483,11 @@ const createProblemFromServiceNowQuery = `
 
 // CreateProblemFromServiceNow implements ProblemRepository.
 func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string) (domain.ProblemDetail, error) {
+	var category *string
+	if req.Category != nil && strings.TrimSpace(*req.Category) != "" {
+		v := strings.ToUpper(strings.TrimSpace(*req.Category))
+		category = &v
+	}
 	var (
 		outID, outNumber, outSubject, outCreatedBy string
 		outDescription                             *string
@@ -497,6 +505,8 @@ func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domai
 				return domain.ProblemDetail{}, &apierror.ConflictError{Msg: "a problem already exists for this ServiceNow id/number: " + pgErr.Detail}
 			case "22P02": // invalid_text_representation -- id (or state) was not a valid UUID/enum label
 				return domain.ProblemDetail{}, &apierror.ValidationError{Msg: "id is not a valid UUID, or state is not a valid problem state: " + id}
+			case "22001": // string_data_right_truncation -- e.g. subject over work_item.subject's VARCHAR(512)
+				return domain.ProblemDetail{}, &apierror.ValidationError{Msg: "a field value is too long: " + pgErr.Message}
 			case "23503": // foreign_key_violation -- one of the referenced IDs does not exist
 				return domain.ProblemDetail{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
 			case "P0001": // raise_exception from integrity triggers

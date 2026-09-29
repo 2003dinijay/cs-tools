@@ -19,9 +19,11 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 )
@@ -33,12 +35,42 @@ type salesEntityClient interface {
 	GetSubscriptionByKey(ctx context.Context, subscriptionKey string) (*entity.Subscription, error)
 }
 
-// csEntityClient abstracts the CS-side entity GraphQL operations used by
-// SplUserScanHandler.
-type csEntityClient interface {
-	GetUserByEmail(ctx context.Context, email string) (*entity.User, error)
-	GetProjectByProjectKey(ctx context.Context, projectKey string) (*entity.Project, error)
-	GetProjectContactByEmail(ctx context.Context, email, projectID string) (*entity.ProjectContact, error)
+// entityScanClient is the subset of internal/entity.CustomerEntityClient
+// SplUserScanHandler's ServiceNow-side checks need. Replaces the old CS-side
+// entity GraphQL service (internal/entity/cs.go, removed): that GraphQL
+// service turned out to be ServiceNow itself behind a second, parallel
+// integration, not an independent data source, so there was nothing to gain
+// from keeping it once this handler could resolve the same data through the
+// entity service every other CS Portal handler already uses.
+type entityScanClient interface {
+	SearchUsers(ctx context.Context, body []byte) ([]byte, error)
+	SearchProjects(ctx context.Context, body []byte) ([]byte, error)
+	ResendProjectContactInvitation(ctx context.Context, projectID, email string) ([]byte, error)
+}
+
+type entitySearchUsersFilters struct {
+	Emails []string `json:"emails"`
+}
+
+type entitySearchUsersRequest struct {
+	Pagination entityPagination         `json:"pagination"`
+	Filters    entitySearchUsersFilters `json:"filters"`
+}
+
+// entityScanUserView is the subset of entity-service's user-search result
+// this handler needs. LockedOut is populated only when entity-service's own
+// CUSTOMER_ENTITY_DATA_SOURCE is "servicenow" (its own first-party
+// ServiceNow integration, domain.SNUser) -- the "postgres" data source
+// (domain.User) has no such column, so LockedOut silently reads false
+// there. "servicenow" is this file's documented default (see
+// CUSTOMER_ENTITY_DATA_SOURCE's own .env.example comment).
+type entityScanUserView struct {
+	Email     string `json:"email"`
+	LockedOut bool   `json:"lockedOut"`
+}
+
+type entitySearchUsersResponse struct {
+	Users []entityScanUserView `json:"users"`
 }
 
 // The membership-type values a sales-side Contact's Memberships[i].Type may
@@ -78,7 +110,6 @@ type SplScanInformation struct {
 	Issue         string `json:"issue,omitempty"`
 	Solution      string `json:"solution,omitempty"`
 	Documentation string `json:"documentation,omitempty"`
-	InvitationURL string `json:"invitationUrl,omitempty"`
 }
 
 // SplScanResult is one row of a scan-user system's results — mirrors
@@ -180,19 +211,19 @@ var (
 )
 
 // SplUserScanHandler handles HTTP requests for the user-scan diagnostic
-// tool, cross-referencing the sales-side (Salesforce) and CS-side
-// (ServiceNow) entity services.
+// tool, cross-referencing the sales-side (Salesforce) entity service and
+// the entity service every other CS Portal handler already uses.
 type SplUserScanHandler struct {
-	sales         salesEntityClient
-	cs            csEntityClient
-	allowedGroups []string
+	sales       salesEntityClient
+	entity      entityScanClient
+	accessGuard *AccessGuard
 }
 
 // NewSplUserScanHandler creates a SplUserScanHandler backed by the given
-// sales-side and CS-side entity clients. allowedGroups is SupportPortalLite's
-// blanket access-gate group list (SPL_ALLOWED_GROUPS).
-func NewSplUserScanHandler(sales salesEntityClient, cs csEntityClient, allowedGroups []string) *SplUserScanHandler {
-	return &SplUserScanHandler{sales: sales, cs: cs, allowedGroups: allowedGroups}
+// sales-side and entity clients. accessGuard enforces PermSPLAccess,
+// SupportPortalLite's blanket audience gate.
+func NewSplUserScanHandler(sales salesEntityClient, entityClient entityScanClient, accessGuard *AccessGuard) *SplUserScanHandler {
+	return &SplUserScanHandler{sales: sales, entity: entityClient, accessGuard: accessGuard}
 }
 
 // ScanUser handles POST /scan-user — ported verbatim (business logic,
@@ -200,7 +231,7 @@ func NewSplUserScanHandler(sales salesEntityClient, cs csEntityClient, allowedGr
 // `post scan\-user` resource function. See that function for the
 // authoritative behavior; comments below reference its structure.
 func (h *SplUserScanHandler) ScanUser(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -218,6 +249,13 @@ func (h *SplUserScanHandler) ScanUser(w http.ResponseWriter, r *http.Request) {
 
 	var payload SplUserScanRequest
 	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	payload.Email = strings.TrimSpace(payload.Email)
+	payload.SubscriptionKey = strings.TrimSpace(payload.SubscriptionKey)
+	if payload.Email == "" || payload.SubscriptionKey == "" {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}
@@ -304,21 +342,21 @@ func (h *SplUserScanHandler) ScanUser(w http.ResponseWriter, r *http.Request) {
 
 	salesResponse := []SplScanResult{contactResult, subscriptionResult, membershipResult}
 
-	// ----- ServiceNow-side: user lock state / project closure state -----
+	// ----- entity-service side: user lock state / project closure state -----
 
 	userStateResult := SplScanResult{Order: 1, Label: "Accept the invitation"}
 	projectStateResult := SplScanResult{Order: 2, Label: "Project closure state"}
 
-	snUser, err := h.cs.GetUserByEmail(ctx, payload.Email)
+	entityUser, err := h.lookupScanUser(ctx, payload.Email)
 	if err != nil {
-		slog.ErrorContext(ctx, "cs entity GetUserByEmail failed", "userID", user.UserID, "err", err)
+		slog.ErrorContext(ctx, "entity SearchUsers failed", "userID", user.UserID, "err", err)
 		writeSplScanError(w, "Error occurred when retrieving user information")
 		return
 	}
 
-	project, err := h.cs.GetProjectByProjectKey(ctx, payload.SubscriptionKey)
+	project, err := h.lookupProjectByKey(ctx, payload.SubscriptionKey)
 	if err != nil {
-		slog.ErrorContext(ctx, "cs entity GetProjectByProjectKey failed", "userID", user.UserID, "err", err)
+		slog.ErrorContext(ctx, "entity SearchProjects failed", "userID", user.UserID, "err", err)
 		writeSplScanError(w, "Error occurred when retrieving project information")
 		return
 	}
@@ -329,10 +367,11 @@ func (h *SplUserScanHandler) ScanUser(w http.ResponseWriter, r *http.Request) {
 		userStateResult.State = false
 		userStateResult.Information = splInfoUserNotFoundInProject
 	} else {
-		projectID = project.ProjectID
-		if project.WSO2ClosureState != splProjectStateOpen {
+		projectID = project.ID
+		closureState := derefStr(project.ClosureState)
+		if closureState != splProjectStateOpen {
 			projectStateResult.Information = SplScanInformation{
-				Issue: "The project is not in open state. The project is in " + project.WSO2ClosureState +
+				Issue: "The project is not in open state. The project is in " + closureState +
 					" state. The project should be in the Open state.",
 				Solution: "Need to reopen this project for getting the uninterpreted support.",
 			}
@@ -340,42 +379,25 @@ func (h *SplUserScanHandler) ScanUser(w http.ResponseWriter, r *http.Request) {
 			projectStateResult.State = true
 		}
 
-		if snUser == nil {
+		if entityUser == nil {
 			userStateResult.Information = splInfoUserNotFound
-		} else if snUser.LockedOut {
-			// getProjectContactByEmail is called unconditionally here, mirroring
-			// the Ballerina source, which does not guard it on projectID being set.
-			var userInvitationURL string
-			projectContact, err := h.cs.GetProjectContactByEmail(ctx, payload.Email, projectID)
-			if err != nil {
-				slog.ErrorContext(ctx, "cs entity GetProjectContactByEmail failed", "userID", user.UserID, "err", err)
-				writeSplScanError(w, "Error occurred when retrieving project contact information")
-				return
+		} else if entityUser.LockedOut {
+			// Resending here is a deliberate side effect, not just a status
+			// read: re-running this diagnostic for the same still-locked-out
+			// user re-sends their invitation email every time, rather than
+			// showing a (no-longer-available, see entityScanClient's own doc
+			// comment) existing invitation link the way this handler used
+			// to.
+			info := SplScanInformation{
+				Issue:         "The user didn't accept the invitation.",
+				Documentation: splInfoUserLockedOutDocumentation,
 			}
-			if projectContact == nil {
-				userInvitationURL = "No invitation url found for the given email"
-			} else if projectContact.InvitationURL != nil {
-				userInvitationURL = *projectContact.InvitationURL
-			}
-			// else: InvitationURL is nil — userInvitationURL stays "", matching
-			// Ballerina's userInvitationUrl = projectContact?.invitationUrl (also nil
-			// in that case). NOTE: Ballerina's subsequent `if userInvitationUrl == ""`
-			// check is technically false when the value is nil rather than the
-			// literal empty string, so it falls into the "else" (non-empty) branch
-			// even though there is no URL to show — this looks like an unintentional
-			// quirk in the original rather than deliberate behavior. This port
-			// instead treats a nil/absent InvitationURL as equivalent to empty,
-			// taking the "empty" branch below, since that is what a reader would
-			// reasonably expect "no invitation URL" to do. Flagging this as a
-			// deliberate behavioral deviation from the literal Ballerina source.
-			info := SplScanInformation{Issue: "The user didn't accept the invitation."}
-			if userInvitationURL == "" {
-				info.Solution = "The user invitation is empty. You need to resend the invitation."
+			if _, err := h.entity.ResendProjectContactInvitation(ctx, projectID, payload.Email); err != nil {
+				slog.WarnContext(ctx, "entity ResendProjectContactInvitation failed", "userID", user.UserID, "memberEmail", payload.Email, "err", err)
+				info.Solution = "Could not resend the invitation automatically. Resend it manually from the project's Contacts tab."
 			} else {
-				info.Solution = "You need to inform the user to accept the invitation."
-				info.InvitationURL = userInvitationURL
+				info.Solution = "A fresh invitation email has been sent. Ask the user to check their inbox and accept it."
 			}
-			info.Documentation = splInfoUserLockedOutDocumentation
 			userStateResult.Information = info
 		} else {
 			userStateResult.State = true
@@ -388,4 +410,59 @@ func (h *SplUserScanHandler) ScanUser(w http.ResponseWriter, r *http.Request) {
 		{System: splScanSystemSalesforce, SystemResult: salesResponse},
 		{System: splScanSystemServicenow, SystemResult: csResponse},
 	})
+}
+
+// lookupScanUser resolves email to entity-service's user record via an
+// exact-email search filter. Returns (nil, nil) when no user matches.
+func (h *SplUserScanHandler) lookupScanUser(ctx context.Context, email string) (*entityScanUserView, error) {
+	body, err := json.Marshal(entitySearchUsersRequest{
+		Pagination: entityPagination{Limit: 1},
+		Filters:    entitySearchUsersFilters{Emails: []string{email}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal entity-service user search request: %w", err)
+	}
+	raw, err := h.entity.SearchUsers(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	var resp entitySearchUsersResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal entity-service user search response: %w", err)
+	}
+	if len(resp.Users) == 0 {
+		return nil, nil
+	}
+	return &resp.Users[0], nil
+}
+
+// lookupProjectByKey resolves projectKey to entity-service's project record.
+// SearchProjects' own searchQuery match is fuzzy (ILIKE against name/key/
+// subscription_type), so this filters the results for an exact key match
+// itself -- the same search-then-exact-match pattern used elsewhere in this
+// package for a caller-facing key/number rather than entity-service's
+// internal UUID (see e.g. reports_postgres.go's searchAllCases). Returns
+// (nil, nil) when no project's key matches exactly.
+func (h *SplUserScanHandler) lookupProjectByKey(ctx context.Context, projectKey string) (*entityProjectView, error) {
+	body, err := json.Marshal(entitySearchProjectsRequest{
+		Pagination:  entityPagination{Limit: 50},
+		SearchQuery: projectKey,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal entity-service project search request: %w", err)
+	}
+	raw, err := h.entity.SearchProjects(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	var resp entitySearchProjectsResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal entity-service project search response: %w", err)
+	}
+	for i := range resp.Projects {
+		if resp.Projects[i].Key == projectKey {
+			return &resp.Projects[i], nil
+		}
+	}
+	return nil, nil
 }

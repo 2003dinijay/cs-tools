@@ -23,7 +23,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
@@ -150,6 +152,96 @@ func TestEscalateCase_LinksExistingActiveEscalation(t *testing.T) {
 	}
 }
 
+// TestEscalateCase_SerializesConcurrentCallsForSameAccount guards the fix
+// for the race where two concurrent EscalateCase calls for the same account
+// (a double-click, or two agents escalating together) could both read "no
+// active escalation" and each create their own. It runs two concurrent
+// EscalateCase calls for the same account against a server that fails the
+// test if it ever sees the active-escalations read overlap with another
+// in-flight read/create, and asserts only one escalation is ever created.
+func TestEscalateCase_SerializesConcurrentCallsForSameAccount(t *testing.T) {
+	var mu sync.Mutex
+	var inCriticalSection, maxObservedConcurrency, createCalls int
+	var escalationExists bool
+
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/now/table/customer_account":
+			_, _ = w.Write([]byte(`{"result":[{"sys_id":"acct-sys-1"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/now/table/sn_customerservice_case":
+			if strings.Contains(r.URL.Query().Get("sysparm_query"), "active_account_escalation") {
+				_, _ = w.Write([]byte(`{"result":[]}`)) // isCaseEscalated: not yet linked
+				return
+			}
+			caseID := r.URL.Query().Get("sysparm_query")
+			// Two different cases, one per goroutine -- see caseNumbers below.
+			sysID := "case-sys-1"
+			if strings.Contains(caseID, "CS0002") {
+				sysID = "case-sys-2"
+			}
+			_, _ = w.Write([]byte(`{"result":[{"sys_id":"` + sysID + `"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/now/table/sn_customerservice_escalation":
+			mu.Lock()
+			inCriticalSection++
+			if inCriticalSection > maxObservedConcurrency {
+				maxObservedConcurrency = inCriticalSection
+			}
+			exists := escalationExists
+			mu.Unlock()
+
+			time.Sleep(10 * time.Millisecond) // widen the window a race would need to land in
+
+			mu.Lock()
+			inCriticalSection--
+			mu.Unlock()
+
+			if exists {
+				_, _ = w.Write([]byte(`{"result":[{"sys_id":"esc-sys-1"}]}`))
+			} else {
+				_, _ = w.Write([]byte(`{"result":[]}`))
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/api/now/table/sn_customerservice_escalation_severity":
+			_, _ = w.Write([]byte(`{"result":[{"sys_id":"sev-sys-1"}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/now/table/sn_customerservice_escalation":
+			mu.Lock()
+			createCalls++
+			escalationExists = true
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"result":{"sys_id":"esc-sys-1"}}`))
+		case r.Method == http.MethodPatch:
+			_, _ = w.Write([]byte(`{"result":{"number":"CS0001","sys_id":"case-sys-1"}}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	})
+
+	req := EscalationRequest{Justification: "urgent", RequestSource: "Customer", Reason: "Inactivity", Severity: "High Severity"}
+	caseNumbers := []string{"CS0001", "CS0002"}
+	var wg sync.WaitGroup
+	errs := make([]error, len(caseNumbers))
+	for i, caseNumber := range caseNumbers {
+		wg.Add(1)
+		go func(i int, caseNumber string) {
+			defer wg.Done()
+			_, errs[i] = c.EscalateCase(context.Background(), "ACC1", caseNumber, req, "agent@example.com")
+		}(i, caseNumber)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("EscalateCase(%q) returned error: %v", caseNumbers[i], err)
+		}
+	}
+	if maxObservedConcurrency > 1 {
+		t.Errorf("observed %d concurrent calls inside the escalation read -- the per-account lock did not serialize them", maxObservedConcurrency)
+	}
+	if createCalls != 1 {
+		t.Errorf("createNewEscalation called %d times, want exactly 1 (the second call should have linked to the first's escalation)", createCalls)
+	}
+}
+
 func TestEscalateCase_ConflictWhenAlreadyEscalated(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -171,5 +263,35 @@ func TestEscalateCase_ConflictWhenAlreadyEscalated(t *testing.T) {
 	_, err := c.EscalateCase(context.Background(), "ACC1", "CS0001", req, "agent@example.com")
 	if !errors.Is(err, ErrEscalationConflict) {
 		t.Fatalf("expected ErrEscalationConflict, got %v", err)
+	}
+}
+
+// TestEscalateCase_RejectsEmptySysIDFromEscalationCreate guards the fix for
+// silently linking a case to no escalation at all when ServiceNow's create
+// response is shaped unexpectedly (e.g. {"result":{}}), which decodes to an
+// empty sys_id rather than an error.
+func TestEscalateCase_RejectsEmptySysIDFromEscalationCreate(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/now/table/customer_account":
+			_, _ = w.Write([]byte(`{"result":[{"sys_id":"acct-sys-1"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/now/table/sn_customerservice_case":
+			_, _ = w.Write([]byte(`{"result":[{"sys_id":"case-sys-1"}]}`))
+		case r.URL.Path == "/api/now/table/sn_customerservice_escalation" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"result":[]}`)) // no active escalation
+		case r.URL.Path == "/api/now/table/sn_customerservice_escalation_severity":
+			_, _ = w.Write([]byte(`{"result":[{"sys_id":"sev-sys-1"}]}`))
+		case r.URL.Path == "/api/now/table/sn_customerservice_escalation" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"result":{}}`)) // malformed: no sys_id
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	})
+
+	req := EscalationRequest{Justification: "urgent", RequestSource: "Customer", Reason: "Inactivity", Severity: "High Severity"}
+	_, err := c.EscalateCase(context.Background(), "ACC1", "CS0001", req, "agent@example.com")
+	if err == nil {
+		t.Fatal("expected an error for a missing sys_id, got nil")
 	}
 }
