@@ -88,6 +88,7 @@ import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
 import AddUserModal from "./AddUserModal";
 import EditUserModal from "./EditUserModal";
 import RemoveUserModal from "./RemoveUserModal";
+import ResendInvitationModal from "./ResendInvitationModal";
 import {
   usePendingInvites,
   type PendingInvite,
@@ -119,6 +120,7 @@ export default function SettingsUserManagement({
   const [rowsPerPage, setRowsPerPage] = useState(SETTINGS_USER_PAGE_SIZE);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<ProjectContact | null>(null);
+  const [resendTarget, setResendTarget] = useState<ProjectContact | null>(null);
   const [editTarget, setEditTarget] = useState<ProjectContact | null>(null);
 
   const {
@@ -491,7 +493,7 @@ export default function SettingsUserManagement({
                                 size="small"
                                 aria-label="Resend invitation"
                                 disabled={resending.has(contact.email)}
-                                onClick={() => void handleResendInvitation(contact.email)}
+                                onClick={() => setResendTarget(contact)}
                               >
                                 <Mail size={16} />
                               </IconButton>
@@ -624,6 +626,17 @@ export default function SettingsUserManagement({
         isSubmitting={patchContact.isPending}
         onClose={() => setEditTarget(null)}
         onSubmit={handleEditUser}
+      />
+
+      <ResendInvitationModal
+        open={resendTarget !== null}
+        contact={resendTarget}
+        isResending={resendTarget !== null && resending.has(resendTarget.email)}
+        onClose={() => setResendTarget(null)}
+        onConfirm={() => {
+          if (!resendTarget) return;
+          void handleResendInvitation(resendTarget.email).then(() => setResendTarget(null));
+        }}
       />
 
       <RemoveUserModal
