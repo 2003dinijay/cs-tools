@@ -2004,3 +2004,32 @@
   box-shadow: none;
   background: color-mix(in srgb, var(--accent) 26%, transparent);
 }
+
+/* The same, on the SRE grid, where a day is several zone columns. Its own
+ * rules drew the picked day's left and right edges on the first and last zone
+ * cell and a rule under the last row; those are gone too, and the zone header
+ * row (TZ1 / TZ2 / TZ3) now carries the day's tint, so the column reads as one
+ * block from the date down. The rules between a day's zones, and the heavier
+ * rule at each day's edge, are the grid's own lines and stay. */
+.csm-ts .tw.roster.split tbody td.c.z.sel,
+.csm-ts .tw.roster.split tbody td.c.z.sel.zfirst,
+.csm-ts .tw.roster.split tbody td.c.z.sel.zlast,
+.csm-ts .tw.roster.split tbody tr:last-child td.c.z.sel.zfirst,
+.csm-ts .tw.roster.split tbody tr:last-child td.c.z.sel.zlast,
+.csm-ts .tw.roster.split tbody tr:last-child td.c.z.sel:not(.zfirst):not(.zlast),
+.csm-ts .tw.roster.split tbody td.c.zwhole.sel,
+.csm-ts .tw.roster.split tbody td.c.zwhole.today {
+  box-shadow: none;
+}
+.csm-ts .tw.roster.split thead tr.zrow th.zc.today {
+  background: linear-gradient(color-mix(in srgb, var(--today) 13%, transparent),
+      color-mix(in srgb, var(--today) 13%, transparent)), var(--surface-solid);
+}
+.csm-ts .tw.roster.split thead tr.zrow th.zc.sel {
+  background: linear-gradient(color-mix(in srgb, var(--accent) 16%, transparent),
+      color-mix(in srgb, var(--accent) 16%, transparent)), var(--surface-solid);
+}
+.csm-ts .tw.roster.split thead tr.zrow th.zc.sel.today {
+  background: linear-gradient(color-mix(in srgb, var(--accent) 22%, transparent),
+      color-mix(in srgb, var(--accent) 22%, transparent)), var(--surface-solid);
+}

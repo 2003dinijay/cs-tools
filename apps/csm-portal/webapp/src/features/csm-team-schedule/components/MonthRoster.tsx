@@ -685,7 +685,7 @@ export default function MonthRoster({
                       key={`${iso}|${z}`}
                       className={`zc ${i === 0 ? "zfirst" : ""} ${weekend ? "wknd" : ""}${
                         i === 0 && opensMonth(d) ? " mstart" : ""
-                      }`}
+                      }${toIsoDate(d) === todayIso ? " today" : ""}${toIsoDate(d) === selectedIso ? " sel" : ""}`}
                       scope="col"
                       title={zoneLabelOn(shifts, z, weekend) === z ? undefined : `${zoneLabelOn(shifts, z, weekend)}: TZ1 and TZ2 are one crew at the weekend`}
                     >
