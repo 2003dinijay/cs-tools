@@ -53,6 +53,32 @@ func (f *fakeIngestStateRepo) Upsert(_ context.Context, req domain.UpsertSalesfo
 	return domain.SalesforceIngestState{Entity: req.Entity, SfID: req.SfID, Status: req.Status, EventType: req.EventType, EventModifiedOn: req.EventModifiedOn}, nil
 }
 
+// apply records req the way upsertSalesforceIngestState does inside the
+// account transaction: the outcome moves only for an event at least as new as
+// the recorded one, or over a row stamped DELETED, and event_modified_on only
+// moves forward. A nil receiver ignores the write.
+func (f *fakeIngestStateRepo) apply(req domain.UpsertSalesforceIngestStateRequest) {
+	if f == nil {
+		return
+	}
+	if f.rows == nil {
+		f.rows = map[string]domain.SalesforceIngestState{}
+	}
+	key := req.Entity + "/" + req.SfID
+	cur, ok := f.rows[key]
+	if !ok || !req.EventModifiedOn.Before(cur.EventModifiedOn) || cur.EventType == domain.SalesforceEventDeleted {
+		modified := req.EventModifiedOn
+		if ok && cur.EventModifiedOn.After(modified) {
+			modified = cur.EventModifiedOn
+		}
+		cur = domain.SalesforceIngestState{
+			Entity: req.Entity, SfID: req.SfID, Status: req.Status, EventType: req.EventType,
+			EventModifiedOn: modified, LastError: req.LastError,
+		}
+	}
+	f.rows[key] = cur
+}
+
 func (f *fakeIngestStateRepo) ListFailed(_ context.Context, _ time.Duration, limit int) ([]domain.SalesforceIngestState, error) {
 	if f.listErr != nil {
 		return nil, f.listErr

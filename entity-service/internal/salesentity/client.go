@@ -80,6 +80,44 @@ type Customer struct {
 	// Salesforce: the CSM database has no copy, so invitation checks read it
 	// here at the moment they run.
 	DomainList *string `json:"domainList"`
+	// Address is the account's billing address; Owner is the Salesforce
+	// account owner (the CSM account manager).
+	Address *CustomerAddress `json:"address"`
+	Owner   *CustomerUser    `json:"owner"`
+	// ActivationDate and LostDate are Salesforce dates ("2006-01-02").
+	ActivationDate *string `json:"activationDate"`
+	LostDate       *string `json:"lostDate"`
+	LostReason     *string `json:"lostReason"`
+	// LastModifiedDate is the record version the Account ingest's duplicate
+	// guard compares; only the realtime path returns it.
+	LastModifiedDate *string `json:"lastModifiedDate"`
+
+	// The fields below arrive with the Sales Entity "customer fields" change
+	// (SE-1 in docs/customer-onboarding/SALESFORCE_SYNC_PLAN.md). Until it is
+	// deployed they are absent and decode as nil, and the Account ingest
+	// keeps the stored value of the columns they feed.
+	CsmEmail                *string       `json:"csmEmail"`
+	SecondaryTechnicalOwner *string       `json:"secondaryTechnicalOwner"`
+	RenewalManager          *CustomerUser `json:"renewalManager"`
+	AccountVertical         *string       `json:"accountVertical"`
+	LostReasonCategory      *string       `json:"lostReasonCategory"`
+	DeactivationDate        *string       `json:"deactivationDate"`
+	IsPartner               *bool         `json:"isPartner"`
+}
+
+// CustomerAddress is the billing part of a Customer's address.
+type CustomerAddress struct {
+	BillingStreet     *string `json:"billingStreet"`
+	BillingCity       *string `json:"billingCity"`
+	BillingState      *string `json:"billingState"`
+	BillingPostalCode *string `json:"billingPostalCode"`
+	BillingCountry    *string `json:"billingCountry"`
+}
+
+// CustomerUser is a Salesforce user referenced by a Customer (owner, renewal
+// manager). The ingest resolves it to a CSM user by email.
+type CustomerUser struct {
+	Email *string `json:"email"`
 }
 
 type customerSearchRequest struct {
