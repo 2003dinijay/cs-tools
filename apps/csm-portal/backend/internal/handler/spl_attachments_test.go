@@ -21,12 +21,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
 type mockSplAttachmentsClient struct {
-	body        []byte
-	contentType string
-	err         error
+	body                     []byte
+	contentType              string
+	err                      error
+	requireCaseAttachmentErr error
+}
+
+func (m *mockSplAttachmentsClient) RequireCaseAttachment(ctx context.Context, attachmentSysID string) error {
+	return m.requireCaseAttachmentErr
 }
 
 func (m *mockSplAttachmentsClient) DownloadAttachment(ctx context.Context, attachmentSysID string) ([]byte, string, string, error) {
@@ -64,6 +71,16 @@ func TestDownloadAttachment_CoercesUnsafeContentType(t *testing.T) {
 	h.DownloadAttachment(w, newAttachmentDownloadRequest("att-1"))
 
 	assertContentType(t, w, "application/octet-stream")
+}
+
+func TestDownloadAttachment_RejectsNonCaseAttachment(t *testing.T) {
+	mock := &mockSplAttachmentsClient{requireCaseAttachmentErr: servicenow.ErrAttachmentNotFound}
+	h := NewSplAttachmentsHandler(mock, []string{"csm-agents"}, []string{"csm-agents"})
+	w := httptest.NewRecorder()
+
+	h.DownloadAttachment(w, newAttachmentDownloadRequest("att-1"))
+
+	assertStatus(t, w, http.StatusNotFound)
 }
 
 func TestDownloadAttachment_RejectsSubGroupMismatch(t *testing.T) {

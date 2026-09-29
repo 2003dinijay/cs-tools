@@ -18,14 +18,22 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
 // splAttachmentsClient abstracts the ServiceNow attachment-download
 // operation used by SplAttachmentsHandler.
 type splAttachmentsClient interface {
+	// RequireCaseAttachment confirms attachmentSysID is attached to a case
+	// before DownloadAttachment is called with it -- see its own doc
+	// comment on servicenow.Client for why: DownloadAttachment's only
+	// input is the attachment's own sys_id, with no scoping of its own.
+	RequireCaseAttachment(ctx context.Context, attachmentSysID string) error
 	DownloadAttachment(ctx context.Context, attachmentSysID string) (body []byte, contentType string, contentDisposition string, err error)
 }
 
@@ -65,6 +73,20 @@ func (h *SplAttachmentsHandler) DownloadAttachment(w http.ResponseWriter, r *htt
 	attachmentID := r.PathValue("attachmentId")
 	if attachmentID == "" {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	if err := h.servicenow.RequireCaseAttachment(r.Context(), attachmentID); err != nil {
+		if errors.Is(err, servicenow.ErrAttachmentNotFound) {
+			writeError(w, http.StatusNotFound, ErrMsgNotFound)
+			return
+		}
+		if isUnsafeQueryValue(err) {
+			writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+			return
+		}
+		slog.ErrorContext(r.Context(), "servicenow RequireCaseAttachment failed", "userID", user.UserID, "attachmentID", attachmentID, "err", err)
+		mapUpstreamErrorGeneric(w, err, "Failed to retrieve attachment content.")
 		return
 	}
 

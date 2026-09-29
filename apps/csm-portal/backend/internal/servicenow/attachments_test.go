@@ -18,6 +18,8 @@ package servicenow
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -48,5 +50,65 @@ func TestDownloadAttachment_ReturnsBodyAndHeaders(t *testing.T) {
 	}
 	if cd == "" {
 		t.Error("contentDisposition should be forwarded from upstream")
+	}
+}
+
+func TestRequireCaseAttachment_AllowsCaseAttachment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/now/table/sys_attachment" {
+			t.Errorf("path = %q, want /api/now/table/sys_attachment", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("sysparm_query"); got != "sys_id=att-sys-id" {
+			t.Errorf("sysparm_query = %q, want %q", got, "sys_id=att-sys-id")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(snAttachmentTableRefList{
+			Result: []snAttachmentTableRef{{TableName: "sn_customerservice_case"}},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, Username: "u", Password: "p"})
+	if err := c.RequireCaseAttachment(context.Background(), "att-sys-id"); err != nil {
+		t.Fatalf("RequireCaseAttachment returned error: %v", err)
+	}
+}
+
+func TestRequireCaseAttachment_RejectsOtherTable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(snAttachmentTableRefList{
+			Result: []snAttachmentTableRef{{TableName: "incident"}},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, Username: "u", Password: "p"})
+	err := c.RequireCaseAttachment(context.Background(), "att-sys-id")
+	if !errors.Is(err, ErrAttachmentNotFound) {
+		t.Fatalf("err = %v, want ErrAttachmentNotFound", err)
+	}
+}
+
+func TestRequireCaseAttachment_RejectsMissingAttachment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(snAttachmentTableRefList{Result: nil})
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, Username: "u", Password: "p"})
+	err := c.RequireCaseAttachment(context.Background(), "att-sys-id")
+	if !errors.Is(err, ErrAttachmentNotFound) {
+		t.Fatalf("err = %v, want ErrAttachmentNotFound", err)
+	}
+}
+
+func TestRequireCaseAttachment_RejectsUnsafeID(t *testing.T) {
+	c := NewClient(Config{BaseURL: "http://example.invalid", Username: "u", Password: "p"})
+	err := c.RequireCaseAttachment(context.Background(), "att-1^OR active=true")
+	var unsafe *ErrUnsafeQueryValue
+	if !errors.As(err, &unsafe) {
+		t.Fatalf("err = %v, want *ErrUnsafeQueryValue", err)
 	}
 }
