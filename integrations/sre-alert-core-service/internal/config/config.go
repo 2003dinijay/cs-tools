@@ -28,7 +28,7 @@ import (
 // DefaultPath is used when CONFIG_PATH is unset; expected at the repo or deployment root.
 const DefaultPath = "config.toml"
 
-// Config groups every deployment tunable, previously hardcoded constants, by the subsystem it configures.
+// Config groups every deployment tunable, previously hardcoded constants, by the subsystem it configures. Security-sensitive constants (e.g. auth.Iterations, the PBKDF2 round count) intentionally stay as Go constants rather than config.toml fields, since they're not meant to vary per deployment.
 type Config struct {
 	Poll      PollConfig      `toml:"poll"`
 	Cassandra CassandraConfig `toml:"cassandra"`

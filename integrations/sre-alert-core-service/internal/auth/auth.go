@@ -29,8 +29,8 @@ import (
 	"golang.org/x/crypto/pbkdf2"
 )
 
-// Iterations is the PBKDF2 round count used when provisioning new users. 600000 matches OWASP's current PBKDF2-HMAC-SHA256 recommendation; existing rows keep whatever iteration count they were created with (stored per-row), so raising this doesn't invalidate them.
-const Iterations = 600000
+// Iterations is the PBKDF2 round count used when provisioning new users; a hardcoded constant (not a config.toml value) since it's a security parameter, not a deployment tunable. Existing rows keep whatever iteration count they were created with (stored per-row), so changing this doesn't invalidate them.
+const Iterations = 10000
 
 // KeyLen is the derived key length in bytes.
 const KeyLen = 32

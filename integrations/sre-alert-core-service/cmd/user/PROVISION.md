@@ -1,6 +1,6 @@
 # Internal API users
 
-`internal/auth` provides PBKDF2-hashed (600000 iterations, OWASP's current PBKDF2-HMAC-SHA256 recommendation, random salt) service-account credentials backed by the `alertintegration.integration_users` Cassandra table, plus an `auth.RequireAuth` middleware. It is not currently wired into any route: `/alertz` is reachable via a project-level exposure (gateway/network scoping) rather than a per-caller secret, so no route in this service enforces it today. Use `auth.RequireAuth` if a future endpoint needs per-caller authentication.
+`internal/auth` provides PBKDF2-hashed (10000 iterations, random salt) service-account credentials backed by the `alertintegration.integration_users` Cassandra table, plus an `auth.RequireAuth` middleware. It is not currently wired into any route: `/alertz` is reachable via a project-level exposure (gateway/network scoping) rather than a per-caller secret, so no route in this service enforces it today. Use `auth.RequireAuth` if a future endpoint needs per-caller authentication.
 
 Secrets are never stored in plaintext; only the PBKDF2 hash and salt live in Cassandra. Each row also tracks who provisioned it, when it was last modified, when its secret was last rotated, and an optional expiry, so accounts behave closer to real identity records rather than a bare credential pair. There's no admin API or startup seeding, so accounts are managed one at a time with `cmd/user`, run against the same Cassandra instance and `CASSANDRA_*` env vars the server itself uses.
 
@@ -81,7 +81,7 @@ go run ./cmd/user list -username webhook-integration-user
 username:           webhook-integration-user
 id:                 3f9c1e2a-...
 enabled:            true
-iterations:         600000
+iterations:         10000
 created_at:         2026-09-29T10:00:00Z
 created_by:         thevindu
 updated_at:         2026-09-29T10:00:00Z
