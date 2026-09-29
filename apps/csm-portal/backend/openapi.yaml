@@ -21275,9 +21275,6 @@ components:
           type: string
         lastName:
           type: string
-        employeeThumbnail:
-          type: string
-          nullable: true
 
     SplUserScanRequest:
       type: object
@@ -21325,15 +21322,3 @@ components:
           items:
             $ref: '#/components/schemas/SplScanResult'
 
-    SplABTTeamMemberView:
-      type: object
-      properties:
-        name:
-          type: string
-        email:
-          type: string
-        role:
-          type: string
-        employeeThumbnail:
-          type: string
-          nullable: true

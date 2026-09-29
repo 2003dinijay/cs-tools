@@ -22,13 +22,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/employeeinfo"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
 func TestSplGetUserInfo(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
-		h := NewSplUserInfoHandler(&mockEmployeeInfoClient{}, splAccessGuard)
+		h := NewSplUserInfoHandler(&mockEntityUserClient{}, splAccessGuard)
 		r := httptest.NewRequest(http.MethodGet, "/spl/user-info", nil)
 		w := httptest.NewRecorder()
 		h.GetUserInfo(w, r)
@@ -37,7 +36,7 @@ func TestSplGetUserInfo(t *testing.T) {
 	})
 
 	t.Run("rejects a role that doesn't grant PermSPLAccess", func(t *testing.T) {
-		h := NewSplUserInfoHandler(&mockEmployeeInfoClient{}, splAccessGuard)
+		h := NewSplUserInfoHandler(&mockEntityUserClient{}, splAccessGuard)
 		r := httptest.NewRequest(http.MethodGet, "/spl/user-info", nil)
 		// Authenticated but holds no role granting PermSPLAccess.
 		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "nobody@example.com", UserID: "u-nobody"}))
@@ -47,34 +46,30 @@ func TestSplGetUserInfo(t *testing.T) {
 		assertErrorMessage(t, w, ErrMsgForbidden)
 	})
 
-	t.Run("resolves employee data from the caller's own email", func(t *testing.T) {
-		var capturedEmail string
-		thumbnail := "https://example.com/thumb.png"
-		h := NewSplUserInfoHandler(&mockEmployeeInfoClient{
-			getEmployeeDataFn: func(ctx context.Context, workEmail string) (*employeeinfo.Employee, error) {
-				capturedEmail = workEmail
-				return &employeeinfo.Employee{FirstName: "Agent", LastName: "Example", EmployeeThumbnail: &thumbnail}, nil
+	t.Run("resolves the caller's own name from entity-service", func(t *testing.T) {
+		var called bool
+		h := NewSplUserInfoHandler(&mockEntityUserClient{
+			getUserMeFn: func(ctx context.Context) ([]byte, error) {
+				called = true
+				return []byte(`{"id":"u-1","email":"agent@example.com","firstName":"Agent","lastName":"Example"}`), nil
 			},
 		}, splAccessGuard)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/user-info", nil))
 		w := httptest.NewRecorder()
 		h.GetUserInfo(w, r)
 		assertStatus(t, w, http.StatusOK)
-		if capturedEmail != testUser.Email {
-			t.Errorf("captured email = %q, want %q", capturedEmail, testUser.Email)
+		if !called {
+			t.Error("entity GetUserMe was not called")
 		}
 		view := decodeJSON[SplUserInfoView](t, w)
 		if view.FirstName != "Agent" || view.LastName != "Example" {
 			t.Errorf("view = %+v, want FirstName=Agent LastName=Example", view)
 		}
-		if view.EmployeeThumbnail == nil || *view.EmployeeThumbnail != thumbnail {
-			t.Errorf("EmployeeThumbnail = %v, want %q", view.EmployeeThumbnail, thumbnail)
-		}
 	})
 
 	t.Run("maps upstream failure to a generic 500", func(t *testing.T) {
-		h := NewSplUserInfoHandler(&mockEmployeeInfoClient{
-			getEmployeeDataFn: func(ctx context.Context, workEmail string) (*employeeinfo.Employee, error) {
+		h := NewSplUserInfoHandler(&mockEntityUserClient{
+			getUserMeFn: func(ctx context.Context) ([]byte, error) {
 				return nil, context.DeadlineExceeded
 			},
 		}, splAccessGuard)

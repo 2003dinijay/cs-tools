@@ -24,7 +24,6 @@ import (
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/employeeinfo"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/scim"
@@ -1192,19 +1191,6 @@ func (m *mockEntityTaskClient) UpdateTask(ctx context.Context, id string, body [
 		return m.updateTaskFn(ctx, id, body)
 	}
 	return []byte(`{"id":"11111111-1111-1111-1111-111111111111"}`), nil
-}
-
-// ----- mock employee-info client (user_info.go, teams.go) -----
-
-type mockEmployeeInfoClient struct {
-	getEmployeeDataFn func(ctx context.Context, workEmail string) (*employeeinfo.Employee, error)
-}
-
-func (m *mockEmployeeInfoClient) GetEmployeeData(ctx context.Context, workEmail string) (*employeeinfo.Employee, error) {
-	if m.getEmployeeDataFn != nil {
-		return m.getEmployeeDataFn(ctx, workEmail)
-	}
-	return &employeeinfo.Employee{FirstName: "Test", LastName: "User"}, nil
 }
 
 // ----- mock sales/CS entity clients (user_scan.go) -----

@@ -37,7 +37,6 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/csmnotification"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/dashboard"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/employeeinfo"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/githubissue"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/googledrive"
@@ -109,11 +108,7 @@ func main() {
 	metadataHandler := handler.NewMetadataHandler()
 	accountHandler := handler.NewAccountHandler(customerEntityClient)
 	projectHandler := handler.NewProjectHandler(customerEntityClient)
-	// employeeInfo enrichment is attached below if/when SPL's own config is
-	// present (see WithEmployeeInfo) -- this route is a regular CS Portal
-	// route, not gated on SPL being enabled, so it's built here with every
-	// other unconditional handler, not inside the SPL block.
-	teamHandler := handler.NewTeamHandler(customerEntityClient, nil)
+	teamHandler := handler.NewTeamHandler(customerEntityClient)
 	announcementExcludedProjectKeys := loadAnnouncementExcludedProjectKeys()
 	validateAnnouncementDataSourceCompatibility(loadCustomerEntityDataSource(), announcementExcludedProjectKeys)
 	announcementHandler := handler.NewAnnouncementHandler(customerEntityClient, announcementExcludedProjectKeys)
@@ -190,12 +185,6 @@ func main() {
 			ClientID:     oauth2ClientID,
 			ClientSecret: oauth2ClientSecret,
 		})
-		employeeInfoClient := employeeinfo.NewClient(employeeinfo.Config{
-			BaseURL:      splCfg.employeeInfoBaseURL,
-			TokenURL:     oauth2TokenURL,
-			ClientID:     oauth2ClientID,
-			ClientSecret: oauth2ClientSecret,
-		})
 		snClient := servicenow.NewClient(servicenow.Config{
 			BaseURL:              splCfg.snHost,
 			Username:             splCfg.snUsername,
@@ -250,11 +239,10 @@ func main() {
 			usageMetrics:   handler.NewUsageMetricsHandler(splPostgresUsageMetrics, accessGuard),
 			files:          handler.NewSplFilesHandler(driveClient, accessGuard),
 			customerHealth: handler.NewCustomerHealthHandler(riskClient, snClient, accessGuard),
-			userInfo:       handler.NewSplUserInfoHandler(employeeInfoClient, accessGuard),
+			userInfo:       handler.NewSplUserInfoHandler(customerEntityClient, accessGuard),
 			userScan:       handler.NewSplUserScanHandler(salesEntityClient, csEntityClient, accessGuard),
 			accountEsc:     handler.NewSplAccountHandler(snClient, accessGuard),
 		}
-		teamHandler.WithEmployeeInfo(employeeInfoClient)
 		slog.Info("SPL_ENABLED is on: SupportPortalLite's /spl/* endpoints are active")
 	}
 
@@ -1306,7 +1294,6 @@ type splConfig struct {
 	riskMySQLDSN           string
 	salesEntityBaseURL     string
 	csEntityBaseURL        string
-	employeeInfoBaseURL    string
 }
 
 // loadSPLConfig resolves SupportPortalLite's (/spl/*) configuration.
@@ -1322,14 +1309,14 @@ type splConfig struct {
 // SERVICENOW_ESCALATION_TEMPLATE_ID and TEAM_SCHEDULE_URL, which are
 // only exercised by the escalation and ABT-team-schedule endpoints
 // respectively and default to empty. SERVICENOW_*, GOOGLE_DRIVE_*, and the
-// entity/employee-info vars below have no SPL_ prefix even though they're
-// only read when SPL is on: they aren't SPL-specific concepts (ServiceNow,
-// Google Drive, and the Sales/CS entity services are just this feature's
-// own upstreams) so they follow this file's existing convention of naming
-// a service's own credentials after the service, not the caller --
-// SPL_RISK_MYSQL_DSN below is the one exception, since "risk" isn't a
-// distinct upstream service name to key on. See .env.example for what each
-// variable configures.
+// entity vars below have no SPL_ prefix even though they're only read when
+// SPL is on: they aren't SPL-specific concepts (ServiceNow, Google Drive,
+// and the Sales/CS entity services are just this feature's own upstreams)
+// so they follow this file's existing convention of naming a service's own
+// credentials after the service, not the caller -- SPL_RISK_MYSQL_DSN
+// below is the one exception, since "risk" isn't a distinct upstream
+// service name to key on. See .env.example for what each variable
+// configures.
 //
 // Returns (false, zero splConfig) when the flag is off, so the caller never
 // touches the returned splConfig in that case.
@@ -1359,7 +1346,6 @@ func loadSPLConfig() (bool, splConfig) {
 		riskMySQLDSN:           mustEnv("SPL_RISK_MYSQL_DSN"),
 		salesEntityBaseURL:     mustHTTPSBaseURL("SALES_ENTITY_BASE_URL", mustEnv("SALES_ENTITY_BASE_URL")),
 		csEntityBaseURL:        mustHTTPSBaseURL("CS_ENTITY_BASE_URL", mustEnv("CS_ENTITY_BASE_URL")),
-		employeeInfoBaseURL:    mustHTTPSBaseURL("EMPLOYEE_INFO_BASE_URL", mustEnv("EMPLOYEE_INFO_BASE_URL")),
 	}
 }
 

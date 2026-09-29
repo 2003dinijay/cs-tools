@@ -47,43 +47,26 @@ type entityGetTeamMembersResponse struct {
 
 // TeamMemberView is one entry of the GET /teams/{id}/members response.
 type TeamMemberView struct {
-	Name              string  `json:"name"`
-	Email             string  `json:"email"`
-	Role              string  `json:"role"`
-	EmployeeThumbnail *string `json:"employeeThumbnail"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	Role  string `json:"role"`
 }
 
 // TeamHandler handles HTTP requests for a team's member roster (an
 // account's CRE/SRE team, not the internal WSO2-staff team registry
-// csm-admin's own /teams/search already covers), cross-referencing
-// entity-service (team membership, role) and the employee-info service
-// (thumbnail) — the thumbnail enrichment lives here rather than in the
-// entity client so it's not duplicated per data source. Originally
-// SPL-only (GET /spl/abt-team-members?teamId=...), merged into a plain,
-// unprefixed route once SPL's own data source for it became this exact
-// entity-service endpoint: there was no ServiceNow-shape translation left
-// to justify a second, parallel /spl/* contract for it.
+// csm-admin's own /teams/search already covers), backed by entity-service
+// (team membership, role). Originally SPL-only (GET
+// /spl/abt-team-members?teamId=...), merged into a plain, unprefixed route
+// once SPL's own data source for it became this exact entity-service
+// endpoint: there was no ServiceNow-shape translation left to justify a
+// second, parallel /spl/* contract for it.
 type TeamHandler struct {
-	entity       entityTeamsClient
-	employeeInfo employeeInfoClient
+	entity entityTeamsClient
 }
 
 // NewTeamHandler creates a TeamHandler backed by the given entity client.
-// employeeInfo is optional (nil when SupportPortalLite's own config isn't
-// present, see main.go): thumbnail enrichment is skipped entirely when
-// unset rather than failing the request, since the route itself is a
-// regular CS Portal route, not gated on SPL being enabled — see
-// WithEmployeeInfo.
-func NewTeamHandler(entity entityTeamsClient, employeeInfo employeeInfoClient) *TeamHandler {
-	return &TeamHandler{entity: entity, employeeInfo: employeeInfo}
-}
-
-// WithEmployeeInfo attaches the employee-info client once SupportPortalLite's
-// own config is available, enabling thumbnail enrichment on an already-
-// constructed handler built before that config was known.
-func (h *TeamHandler) WithEmployeeInfo(employeeInfo employeeInfoClient) *TeamHandler {
-	h.employeeInfo = employeeInfo
-	return h
+func NewTeamHandler(entity entityTeamsClient) *TeamHandler {
+	return &TeamHandler{entity: entity}
 }
 
 var hex32Pattern = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
@@ -104,10 +87,7 @@ func normalizeToUUID(id string) string {
 	return fmt.Sprintf("%s-%s-%s-%s-%s", lower[0:8], lower[8:12], lower[12:16], lower[16:20], lower[20:32])
 }
 
-// GetTeamMembers handles GET /teams/{id}/members. A per-member
-// employee-info or role lookup failure is logged and treated as
-// best-effort (leaving that field blank) rather than aborting the whole
-// request -- as is employeeInfo being unset entirely (see WithEmployeeInfo).
+// GetTeamMembers handles GET /teams/{id}/members.
 func (h *TeamHandler) GetTeamMembers(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -149,15 +129,6 @@ func (h *TeamHandler) GetTeamMembers(w http.ResponseWriter, r *http.Request) {
 		}
 		if m.Role != nil {
 			view.Role = *m.Role
-		}
-
-		if view.Email != "" && h.employeeInfo != nil {
-			if employee, err := h.employeeInfo.GetEmployeeData(ctx, view.Email); err != nil {
-				slog.WarnContext(ctx, "employeeinfo GetEmployeeData failed for team member; leaving thumbnail blank",
-					"userID", user.UserID, "memberEmail", view.Email, "err", err)
-			} else {
-				view.EmployeeThumbnail = employee.EmployeeThumbnail
-			}
 		}
 
 		views = append(views, view)

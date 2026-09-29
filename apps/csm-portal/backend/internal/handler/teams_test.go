@@ -21,8 +21,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/employeeinfo"
 )
 
 type mockEntityTeamsClient struct {
@@ -37,7 +35,7 @@ const testTeamUUID = "11111111-1111-1111-1111-111111111111"
 
 func TestGetTeamMembers(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
-		h := NewTeamHandler(&mockEntityTeamsClient{}, &mockEmployeeInfoClient{})
+		h := NewTeamHandler(&mockEntityTeamsClient{})
 		r := httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID+"/members", nil)
 		r.SetPathValue("id", testTeamUUID)
 		w := httptest.NewRecorder()
@@ -46,7 +44,7 @@ func TestGetTeamMembers(t *testing.T) {
 	})
 
 	t.Run("rejects a non-UUID id", func(t *testing.T) {
-		h := NewTeamHandler(&mockEntityTeamsClient{}, &mockEmployeeInfoClient{})
+		h := NewTeamHandler(&mockEntityTeamsClient{})
 		r := withUser(httptest.NewRequest(http.MethodGet, "/teams/not-a-uuid/members", nil))
 		r.SetPathValue("id", "not-a-uuid")
 		w := httptest.NewRecorder()
@@ -60,7 +58,7 @@ func TestGetTeamMembers(t *testing.T) {
 				return []byte(`{"members":[]}`), nil
 			},
 		}
-		h := NewTeamHandler(entity, &mockEmployeeInfoClient{})
+		h := NewTeamHandler(entity)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID+"/members", nil))
 		r.SetPathValue("id", testTeamUUID)
 		w := httptest.NewRecorder()
@@ -68,7 +66,7 @@ func TestGetTeamMembers(t *testing.T) {
 		assertStatus(t, w, http.StatusNotFound)
 	})
 
-	t.Run("merges member and thumbnail data", func(t *testing.T) {
+	t.Run("returns member name, email, and role from entity-service", func(t *testing.T) {
 		entity := &mockEntityTeamsClient{
 			fn: func(ctx context.Context, teamID string) ([]byte, error) {
 				if teamID != testTeamUUID {
@@ -77,13 +75,7 @@ func TestGetTeamMembers(t *testing.T) {
 				return []byte(`{"members":[{"id":"m1","name":"Jane Doe","email":"jane@example.com","role":"lead"}]}`), nil
 			},
 		}
-		thumb := "https://example.com/thumb.png"
-		ei := &mockEmployeeInfoClient{
-			getEmployeeDataFn: func(ctx context.Context, workEmail string) (*employeeinfo.Employee, error) {
-				return &employeeinfo.Employee{FirstName: "Jane", LastName: "Doe", EmployeeThumbnail: &thumb}, nil
-			},
-		}
-		h := NewTeamHandler(entity, ei)
+		h := NewTeamHandler(entity)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID+"/members", nil))
 		r.SetPathValue("id", testTeamUUID)
 		w := httptest.NewRecorder()
@@ -97,79 +89,23 @@ func TestGetTeamMembers(t *testing.T) {
 		if v.Name != "Jane Doe" || v.Email != "jane@example.com" || v.Role != "lead" {
 			t.Errorf("view = %+v, unexpected", v)
 		}
-		if v.EmployeeThumbnail == nil || *v.EmployeeThumbnail != thumb {
-			t.Errorf("EmployeeThumbnail = %v, want %q", v.EmployeeThumbnail, thumb)
-		}
 	})
 
-	t.Run("member row survives an employee-info lookup failure", func(t *testing.T) {
+	t.Run("a member with no role still comes back with a blank role rather than an error", func(t *testing.T) {
 		entity := &mockEntityTeamsClient{
 			fn: func(ctx context.Context, teamID string) ([]byte, error) {
 				return []byte(`{"members":[{"id":"m1","name":"Jane Doe","email":"jane@example.com"}]}`), nil
 			},
 		}
-		ei := &mockEmployeeInfoClient{
-			getEmployeeDataFn: func(ctx context.Context, workEmail string) (*employeeinfo.Employee, error) {
-				return nil, context.DeadlineExceeded
-			},
-		}
-		h := NewTeamHandler(entity, ei)
+		h := NewTeamHandler(entity)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID+"/members", nil))
 		r.SetPathValue("id", testTeamUUID)
 		w := httptest.NewRecorder()
 		h.GetTeamMembers(w, r)
 		assertStatus(t, w, http.StatusOK)
 		views := decodeJSON[[]TeamMemberView](t, w)
-		if len(views) != 1 {
-			t.Fatalf("got %d members, want 1", len(views))
-		}
-		if views[0].Role != "" || views[0].EmployeeThumbnail != nil {
-			t.Errorf("view = %+v, want blank role/thumbnail rather than an aborted request", views[0])
-		}
-	})
-
-	// Guards the fix for GET /teams/{id}/members 404ing whenever SPL is
-	// disabled: the route is a regular CS Portal route now, built with a
-	// nil employeeInfo client until/unless WithEmployeeInfo attaches one.
-	t.Run("works with no employee-info client at all", func(t *testing.T) {
-		entity := &mockEntityTeamsClient{
-			fn: func(ctx context.Context, teamID string) ([]byte, error) {
-				return []byte(`{"members":[{"id":"m1","name":"Jane Doe","email":"jane@example.com","role":"lead"}]}`), nil
-			},
-		}
-		h := NewTeamHandler(entity, nil)
-		r := withUser(httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID+"/members", nil))
-		r.SetPathValue("id", testTeamUUID)
-		w := httptest.NewRecorder()
-		h.GetTeamMembers(w, r)
-		assertStatus(t, w, http.StatusOK)
-		views := decodeJSON[[]TeamMemberView](t, w)
-		if len(views) != 1 || views[0].Name != "Jane Doe" || views[0].EmployeeThumbnail != nil {
-			t.Errorf("views = %+v, want 1 member with a blank thumbnail, not an error or panic", views)
-		}
-	})
-
-	t.Run("WithEmployeeInfo attaches enrichment to an already-built handler", func(t *testing.T) {
-		entity := &mockEntityTeamsClient{
-			fn: func(ctx context.Context, teamID string) ([]byte, error) {
-				return []byte(`{"members":[{"id":"m1","name":"Jane Doe","email":"jane@example.com"}]}`), nil
-			},
-		}
-		thumb := "https://example.com/thumb.png"
-		ei := &mockEmployeeInfoClient{
-			getEmployeeDataFn: func(ctx context.Context, workEmail string) (*employeeinfo.Employee, error) {
-				return &employeeinfo.Employee{EmployeeThumbnail: &thumb}, nil
-			},
-		}
-		h := NewTeamHandler(entity, nil).WithEmployeeInfo(ei)
-		r := withUser(httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID+"/members", nil))
-		r.SetPathValue("id", testTeamUUID)
-		w := httptest.NewRecorder()
-		h.GetTeamMembers(w, r)
-		assertStatus(t, w, http.StatusOK)
-		views := decodeJSON[[]TeamMemberView](t, w)
-		if len(views) != 1 || views[0].EmployeeThumbnail == nil || *views[0].EmployeeThumbnail != thumb {
-			t.Errorf("views = %+v, want the attached client's thumbnail", views)
+		if len(views) != 1 || views[0].Role != "" {
+			t.Errorf("view = %+v, want a blank role rather than an error", views)
 		}
 	})
 }
