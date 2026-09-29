@@ -37,8 +37,8 @@ import {
   LifeBuoy,
   Megaphone,
   RefreshCw,
+  Settings,
   Shield,
-  ShieldCheck,
   UserCog,
   UserSearch,
   Users,
@@ -261,7 +261,7 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     id: "admin",
     label: "Settings",
     href: "/admin",
-    icon: ShieldCheck,
+    icon: Settings,
     children: [
       {
         id: "admin.user-management",
