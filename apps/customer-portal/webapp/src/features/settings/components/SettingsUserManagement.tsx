@@ -41,6 +41,7 @@ import {
   useTheme,
 } from "@wso2/oxygen-ui";
 import {
+  Mail,
   PencilLine,
   Plus,
   RefreshCw,
@@ -53,6 +54,7 @@ import useGetProjectContacts from "@features/settings/api/useGetProjectContacts"
 import { usePostProjectContact } from "@features/settings/api/usePostProjectContact";
 import { useDeleteProjectContact } from "@features/settings/api/useDeleteProjectContact";
 import { usePatchProjectContact } from "@features/settings/api/usePatchProjectContact";
+import { useResendProjectContactInvitation } from "@features/settings/api/useResendProjectContactInvitation";
 import {
   NULL_PLACEHOLDER,
   ROLE_CONFIG,
@@ -69,6 +71,9 @@ import {
   SETTINGS_USER_REMOVE_ERROR,
   SETTINGS_USER_REMOVE_SUCCESS,
   SETTINGS_USER_REMOVE_TOOLTIP,
+  SETTINGS_USER_RESEND_ERROR,
+  SETTINGS_USER_RESEND_SUCCESS,
+  SETTINGS_USER_RESEND_TOOLTIP,
   SETTINGS_USER_RETRY_TOOLTIP,
   SETTINGS_USER_ROLE_PERMISSIONS_TITLE,
   SETTINGS_USER_SEARCH_PLACEHOLDER,
@@ -124,6 +129,7 @@ export default function SettingsUserManagement({
   const postContact = usePostProjectContact(projectId);
   const deleteContact = useDeleteProjectContact(projectId);
   const patchContact = usePatchProjectContact(projectId);
+  const resendInvitation = useResendProjectContactInvitation(projectId);
   const { showError } = useErrorBanner();
   const { showSuccess } = useSuccessBanner();
 
@@ -198,6 +204,30 @@ export default function SettingsUserManagement({
       showSuccess(`Inviting ${data.contactEmail}. ${SETTINGS_USER_INVITING_NOTICE}`);
     },
     [pendingInvites, showSuccess, showError],
+  );
+
+  // Rows whose resend is still running. The mutation's own variables and
+  // mutate callbacks only follow the latest call, and an admin may resend to
+  // several rows at once, so each row is tracked here and awaited on its own.
+  const [resending, setResending] = useState<ReadonlySet<string>>(() => new Set());
+  const { mutateAsync: resendMutateAsync } = resendInvitation;
+  const handleResendInvitation = useCallback(
+    async (email: string) => {
+      setResending((prev) => new Set(prev).add(email));
+      try {
+        await resendMutateAsync(email);
+        showSuccess(`${SETTINGS_USER_RESEND_SUCCESS} to ${email}`);
+      } catch (err) {
+        showError(err instanceof Error && err.message ? err.message : SETTINGS_USER_RESEND_ERROR);
+      } finally {
+        setResending((prev) => {
+          const next = new Set(prev);
+          next.delete(email);
+          return next;
+        });
+      }
+    },
+    [resendMutateAsync, showSuccess, showError],
   );
 
   const handleRemoveUser = useCallback(() => {
@@ -454,6 +484,20 @@ export default function SettingsUserManagement({
                           justifyContent: "flex-end",
                         }}
                       >
+                        {contact.canResendInvitation && (
+                          <Tooltip title={SETTINGS_USER_RESEND_TOOLTIP}>
+                            <span>
+                              <IconButton
+                                size="small"
+                                aria-label="Resend invitation"
+                                disabled={resending.has(contact.email)}
+                                onClick={() => void handleResendInvitation(contact.email)}
+                              >
+                                <Mail size={16} />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        )}
                         {!contact.isCsIntegrationUser && (
                           <Tooltip title={SETTINGS_USER_EDIT_TOOLTIP}>
                             <span>
