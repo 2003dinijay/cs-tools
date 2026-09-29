@@ -127,4 +127,49 @@ func TestGetTeamMembers(t *testing.T) {
 			t.Errorf("view = %+v, want blank role/thumbnail rather than an aborted request", views[0])
 		}
 	})
+
+	// Guards the fix for GET /teams/{id}/members 404ing whenever SPL is
+	// disabled: the route is a regular CS Portal route now, built with a
+	// nil employeeInfo client until/unless WithEmployeeInfo attaches one.
+	t.Run("works with no employee-info client at all", func(t *testing.T) {
+		entity := &mockEntityTeamsClient{
+			fn: func(ctx context.Context, teamID string) ([]byte, error) {
+				return []byte(`{"members":[{"id":"m1","name":"Jane Doe","email":"jane@example.com","role":"lead"}]}`), nil
+			},
+		}
+		h := NewTeamHandler(entity, nil)
+		r := withUser(httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID+"/members", nil))
+		r.SetPathValue("id", testTeamUUID)
+		w := httptest.NewRecorder()
+		h.GetTeamMembers(w, r)
+		assertStatus(t, w, http.StatusOK)
+		views := decodeJSON[[]TeamMemberView](t, w)
+		if len(views) != 1 || views[0].Name != "Jane Doe" || views[0].EmployeeThumbnail != nil {
+			t.Errorf("views = %+v, want 1 member with a blank thumbnail, not an error or panic", views)
+		}
+	})
+
+	t.Run("WithEmployeeInfo attaches enrichment to an already-built handler", func(t *testing.T) {
+		entity := &mockEntityTeamsClient{
+			fn: func(ctx context.Context, teamID string) ([]byte, error) {
+				return []byte(`{"members":[{"id":"m1","name":"Jane Doe","email":"jane@example.com"}]}`), nil
+			},
+		}
+		thumb := "https://example.com/thumb.png"
+		ei := &mockEmployeeInfoClient{
+			getEmployeeDataFn: func(ctx context.Context, workEmail string) (*employeeinfo.Employee, error) {
+				return &employeeinfo.Employee{EmployeeThumbnail: &thumb}, nil
+			},
+		}
+		h := NewTeamHandler(entity, nil).WithEmployeeInfo(ei)
+		r := withUser(httptest.NewRequest(http.MethodGet, "/teams/"+testTeamUUID+"/members", nil))
+		r.SetPathValue("id", testTeamUUID)
+		w := httptest.NewRecorder()
+		h.GetTeamMembers(w, r)
+		assertStatus(t, w, http.StatusOK)
+		views := decodeJSON[[]TeamMemberView](t, w)
+		if len(views) != 1 || views[0].EmployeeThumbnail == nil || *views[0].EmployeeThumbnail != thumb {
+			t.Errorf("views = %+v, want the attached client's thumbnail", views)
+		}
+	})
 }

@@ -101,6 +101,20 @@ const (
 	// only, since this backend had no usage-metrics route of its own before
 	// SPL), this is the real permission those SPL routes now check.
 	PermUsageMetricsViewer
+	// PermViewSharedEntity is read access to exactly the routes SupportPortalLite's
+	// merged accounts/projects/cases/team-members screens call: GET /accounts/{id},
+	// POST /accounts/search, GET /projects/{id}, POST /projects/search,
+	// POST /projects/{id}/contacts/search, POST /cases/search, GET /cases/{id},
+	// POST /cases/{id}/comments/search, and GET /teams/{id}/members — see
+	// main.go's own route registrations for the exact list. Deliberately its
+	// own permission rather than PermView itself: PermView is every read
+	// across the whole backend (users, deployments, tasks, SLAs, dashboards,
+	// schedules, announcements, ...), and sales_solutions must not gain all of
+	// that just because SPL's screens need this one narrow slice of it. Every
+	// existing PermView holder also holds this (nothing they could already
+	// read stops being readable); it exists only to grant sales_solutions
+	// this slice without the rest.
+	PermViewSharedEntity
 )
 
 // AccessConfig names, per portal role, the role names on the token that grant
@@ -121,8 +135,9 @@ type AccessConfig struct {
 	Admin             []string
 	TimecardApprover  []string
 	DashboardDesigner []string
-	// SalesSolutions grants PermView (see NewAccessGuard's own comment on
-	// that grant for why) and PermSPLAccess -- every SupportPortalLite
+	// SalesSolutions grants PermViewSharedEntity (see that permission's own
+	// doc comment for exactly which routes -- deliberately NOT all of
+	// PermView) and PermSPLAccess -- every SupportPortalLite
 	// route's blanket audience gate. It's also, independently, a marker
 	// role: GET /users/me reports "sales_solutions" in its roles list,
 	// which the webapp's usePortalView reads to pick the
@@ -167,15 +182,18 @@ type portalRole struct {
 // usage-metrics and dashboard-designer roles gate nothing here (this backend
 // has no route for those features) and grant only View. Every role implies
 // View, so a user granted only one specialised role can still open the pages
-// it acts on. PermViewSecurityCenter is the one further exception to "every
+// it acts on. Every View-implying role also holds PermViewSharedEntity, the
+// narrower slice of View that sales_solutions gets instead (see that
+// permission's own doc comment) -- nothing already readable stops being
+// readable. PermViewSecurityCenter is the one further exception to "every
 // role implies View covers it": plain viewer/escalator/attachment_downloader/
 // usage_metrics_viewer/timecard_approver/dashboard_designer all hold PermView
-// but not this. sales_solutions is a separate exception: it implies View and
-// PermSPLAccess (only) rather than being implied BY them — see
-// AccessConfig.SalesSolutions's own doc comment. PermSPLAccess itself is
-// the one permission no CS Portal role implies (not even admin): it's an
-// audience boundary, not a capability level, so holding every CS Portal
-// capability doesn't make a caller an SPL user.
+// but not this. sales_solutions is a separate exception again: it implies
+// PermViewSharedEntity and PermSPLAccess (only) rather than being implied BY
+// them — see AccessConfig.SalesSolutions's own doc comment. PermSPLAccess
+// itself is the one permission no CS Portal role implies (not even admin):
+// it's an audience boundary, not a capability level, so holding every CS
+// Portal capability doesn't make a caller an SPL user.
 func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	build := func(lists ...[]string) map[string]struct{} {
 		set := make(map[string]struct{})
@@ -199,21 +217,8 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			{"sales_solutions", build(cfg.SalesSolutions)},
 		},
 		allowed: map[Permission]map[string]struct{}{
-			// SalesSolutions is included here (and in PermSPLAccess below,
-			// the only two grants it gets) now that /accounts, /projects,
-			// /cases, and /teams/{id}/members read/search/comment requests
-			// come from Sales/SA callers too -- see main.go's SPL route
-			// registration comment for what merged onto these routes and
-			// why. This is not a new data exposure: SPL's own routes
-			// already read this same entity-service data for exactly these
-			// callers, just through a second, parallel ServiceNow-shaped
-			// contract (see AccessConfig.SalesSolutions's own doc comment)
-			// -- PermWrite/PermEscalate/PermAdmin etc. still require one of
-			// CS Portal's own roles, so a Sales/SA-only caller can read this
-			// data but cannot write, escalate, or administer through it.
 			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
-				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner,
-				cfg.SalesSolutions),
+				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner),
 			PermViewOperations:      build(cfg.CsEngineer, cfg.Admin),
 			PermTimeCardsAndUpdates: build(cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover),
 			PermEscalate:            build(cfg.Escalator, cfg.Admin),
@@ -226,6 +231,14 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			// Deliberately SalesSolutions only -- see PermSPLAccess's own doc
 			// comment for why no CS Portal role implies this.
 			PermSPLAccess: build(cfg.SalesSolutions),
+			// Every existing PermView holder, so nothing they could already
+			// read stops being readable, plus SalesSolutions for exactly the
+			// routes this permission is registered on -- see
+			// PermViewSharedEntity's own doc comment for why this is not
+			// just PermView with SalesSolutions folded in.
+			PermViewSharedEntity: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
+				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner,
+				cfg.SalesSolutions),
 			// Same population as PermEscalate/PermDownloadAttachment's own
 			// "the specialised role, or a CS Portal role that already
 			// dominates it" shape -- see PermUsageMetricsViewer's own doc

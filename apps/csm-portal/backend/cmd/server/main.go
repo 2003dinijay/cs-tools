@@ -109,6 +109,11 @@ func main() {
 	metadataHandler := handler.NewMetadataHandler()
 	accountHandler := handler.NewAccountHandler(customerEntityClient)
 	projectHandler := handler.NewProjectHandler(customerEntityClient)
+	// employeeInfo enrichment is attached below if/when SPL's own config is
+	// present (see WithEmployeeInfo) -- this route is a regular CS Portal
+	// route, not gated on SPL being enabled, so it's built here with every
+	// other unconditional handler, not inside the SPL block.
+	teamHandler := handler.NewTeamHandler(customerEntityClient, nil)
 	announcementExcludedProjectKeys := loadAnnouncementExcludedProjectKeys()
 	validateAnnouncementDataSourceCompatibility(loadCustomerEntityDataSource(), announcementExcludedProjectKeys)
 	announcementHandler := handler.NewAnnouncementHandler(customerEntityClient, announcementExcludedProjectKeys)
@@ -248,8 +253,8 @@ func main() {
 			userInfo:       handler.NewSplUserInfoHandler(employeeInfoClient, accessGuard),
 			userScan:       handler.NewSplUserScanHandler(salesEntityClient, csEntityClient, accessGuard),
 			accountEsc:     handler.NewSplAccountHandler(snClient, accessGuard),
-			teamMembers:    handler.NewTeamHandler(customerEntityClient, employeeInfoClient),
 		}
+		teamHandler.WithEmployeeInfo(employeeInfoClient)
 		slog.Info("SPL_ENABLED is on: SupportPortalLite's /spl/* endpoints are active")
 	}
 
@@ -345,12 +350,12 @@ func main() {
 	// HealthHandler's own doc comment for why the two are kept separate.
 	mux.HandleFunc("GET /health/dependencies", healthHandler.GetHealthDependencies)
 	route("POST /cases", handler.PermWrite, caseHandler.CreateCase)
-	route("GET /cases/{id}", handler.PermView, caseHandler.GetCase)
+	route("GET /cases/{id}", handler.PermViewSharedEntity, caseHandler.GetCase)
 	route("PATCH /cases/{id}", handler.PermWrite, caseHandler.PatchCase)
 	route("POST /cases/{id}/comments", handler.PermWrite, caseHandler.CreateCaseComment)
 	route("POST /cases/{id}/request-update", handler.PermWrite, caseHandler.RequestCaseUpdate)
 	route("GET /case-update-request-templates", handler.PermView, caseHandler.GetCaseUpdateRequestTemplates)
-	route("POST /cases/{id}/comments/search", handler.PermView, caseHandler.SearchCaseComments)
+	route("POST /cases/{id}/comments/search", handler.PermViewSharedEntity, caseHandler.SearchCaseComments)
 	// Generic comment edit/delete — applies to a comment by id regardless of
 	// which aggregate (case, change request, incident, ...) it was created
 	// under. Case, incident and change-request comments are PermWrite (see
@@ -390,7 +395,7 @@ func main() {
 	// (and CaseHandler.SearchTagsQuery) once every caller is on the POST.
 	//nolint:staticcheck // SA1019: intentional one-release compatibility route; remove with the handler.
 	route("GET /tags/search", handler.PermView, caseHandler.SearchTagsQuery)
-	route("POST /cases/search", handler.PermView, caseHandler.SearchCases)
+	route("POST /cases/search", handler.PermViewSharedEntity, caseHandler.SearchCases)
 	route("POST /cases/aggregate", handler.PermView, caseHandler.AggregateCases)
 	route("POST /cases/feedback/search", handler.PermView, caseHandler.SearchFeedback)
 	route("POST /cases/feedback/aggregate", handler.PermView, caseHandler.AggregateFeedback)
@@ -414,16 +419,17 @@ func main() {
 	route("POST /users", handler.PermAdmin, usersHandler.CreateUser)
 	route("POST /roles/search", handler.PermView, referenceHandler.SearchRoles)
 	route("POST /teams/search", handler.PermView, referenceHandler.SearchTeams)
-	route("GET /accounts/{id}", handler.PermView, accountHandler.GetAccount)
+	route("GET /teams/{id}/members", handler.PermViewSharedEntity, teamHandler.GetTeamMembers)
+	route("GET /accounts/{id}", handler.PermViewSharedEntity, accountHandler.GetAccount)
 	// Admin-only: CRE/SRE team is a temporary override of ServiceNow's own
 	// value (see AccountService.UpdateAccountTeams's doc comment) — no other
 	// staff role should be able to set it.
 	route("PATCH /accounts/{id}", handler.PermAdmin, accountHandler.UpdateAccountTeams)
-	route("POST /accounts/search", handler.PermView, accountHandler.SearchAccounts)
+	route("POST /accounts/search", handler.PermViewSharedEntity, accountHandler.SearchAccounts)
 	route("POST /accounts/{id}/contacts/search", handler.PermView, accountHandler.SearchAccountContacts)
-	route("GET /projects/{id}", handler.PermView, projectHandler.GetProject)
+	route("GET /projects/{id}", handler.PermViewSharedEntity, projectHandler.GetProject)
 	route("GET /projects/{id}/metadata", handler.PermView, projectHandler.GetProjectMetadata)
-	route("POST /projects/search", handler.PermView, projectHandler.SearchProjects)
+	route("POST /projects/search", handler.PermViewSharedEntity, projectHandler.SearchProjects)
 	route("POST /announcements/audience/search", handler.PermView, announcementHandler.SearchCustomerAnnouncementAudience)
 	route("GET /announcements/audience/excluded-project-keys", handler.PermView, announcementHandler.GetExcludedProjectKeys)
 	route("POST /announcement-requests", handler.PermWrite, announcementRequestHandler.CreateAnnouncementRequest)
@@ -440,7 +446,7 @@ func main() {
 	route("GET /announcement-requests/{id}/updates", handler.PermView, announcementRequestHandler.ListAnnouncementRequestUpdates)
 	route("POST /announcement-requests/{id}/deliveries", handler.PermWrite, announcementRequestHandler.RecordAnnouncementRequestDeliveries)
 	route("GET /announcement-requests/{id}/deliveries", handler.PermView, announcementRequestHandler.ListAnnouncementRequestDeliveries)
-	route("POST /projects/{id}/contacts/search", handler.PermView, projectHandler.SearchProjectContacts)
+	route("POST /projects/{id}/contacts/search", handler.PermViewSharedEntity, projectHandler.SearchProjectContacts)
 	route("GET /projects/{id}/contacts/{contactId}", handler.PermView, projectHandler.GetProjectContact)
 	// Customer-onboarding status per project contact — off by default (see
 	// loadOnboardingStatusEnabled). When off the handler is not constructed
@@ -555,15 +561,18 @@ func main() {
 	// case-management domain, and none of these routes do. Accounts,
 	// projects, and cases (read/search/comment) used to live under that
 	// prefix for exactly that reason — all three now go through the shared
-	// routes above (/accounts, /projects, /cases) instead, gated by PermView like
-	// every other caller of those routes now that sales_solutions holds it
-	// (see AccessConfig.SalesSolutions's own doc comment). Account
-	// escalations stay unmerged: CreateEscalation is an explicit stub on
-	// this data source (no entity-service equivalent at all, so nothing to
-	// merge onto), and the account-scoped read has no shared route either
-	// (CS Portal's own /cases/{id}/escalations is per-case, not
-	// per-account). Case attachments are unmerged for the same
-	// no-entity-service-equivalent reason.
+	// routes above (/accounts, /projects, /cases) instead, gated by
+	// PermViewSharedEntity like every other caller of those specific routes
+	// now that sales_solutions holds it (see PermViewSharedEntity's own doc
+	// comment) -- unlike GET /teams/{id}/members above, which is a genuinely
+	// unconditional CS Portal route (see teamHandler's own construction) and
+	// so is registered outside this block, not in here. Account escalations
+	// stay unmerged: CreateEscalation is an explicit stub on this data
+	// source (no entity-service equivalent at all, so nothing to merge
+	// onto), and the account-scoped read has no shared route either (CS
+	// Portal's own /cases/{id}/escalations is per-case, not per-account).
+	// Case attachments are unmerged for the same no-entity-service-equivalent
+	// reason.
 	//
 	// Every route below is registered with PermSPLAccess, the blanket SPL
 	// audience gate (formerly SPL_ALLOWED_GROUPS's raw-Asgardeo-groups
@@ -577,7 +586,6 @@ func main() {
 	// second check couldn't just move to route-level registration like
 	// every other route in this file.
 	if splHandlers != nil {
-		route("GET /teams/{id}/members", handler.PermView, splHandlers.teamMembers.GetTeamMembers)
 		route("GET /accounts/{accountId}/escalations", handler.PermSPLAccess, splHandlers.accountEsc.GetAccountEscalations)
 		route("POST /accounts/{accountId}/cases/{caseId}/escalate", handler.PermSPLAccess, splHandlers.accountEsc.EscalateCase)
 		route("GET /cases/{caseId}/attachments-info", handler.PermSPLAccess, splHandlers.cases.GetAttachmentsInfo)
@@ -1282,7 +1290,6 @@ type splHandlerSet struct {
 	userInfo       *handler.SplUserInfoHandler
 	userScan       *handler.SplUserScanHandler
 	accountEsc     *handler.SplAccountHandler
-	teamMembers    *handler.TeamHandler
 }
 
 // splConfig holds every environment value SupportPortalLite's /spl/*
