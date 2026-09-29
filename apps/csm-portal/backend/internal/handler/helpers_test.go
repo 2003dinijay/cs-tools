@@ -1185,7 +1185,7 @@ func (m *mockEntityTaskClient) UpdateTask(ctx context.Context, id string, body [
 	return []byte(`{"id":"11111111-1111-1111-1111-111111111111"}`), nil
 }
 
-// ----- mock employee-info client (spl_user_info.go, spl_abt_team_members.go) -----
+// ----- mock employee-info client (user_info.go, abt_team_members.go) -----
 
 type mockEmployeeInfoClient struct {
 	getEmployeeDataFn func(ctx context.Context, workEmail string) (*employeeinfo.Employee, error)
@@ -1198,7 +1198,7 @@ func (m *mockEmployeeInfoClient) GetEmployeeData(ctx context.Context, workEmail 
 	return &employeeinfo.Employee{FirstName: "Test", LastName: "User"}, nil
 }
 
-// ----- mock sales/CS entity clients (spl_user_scan.go) -----
+// ----- mock sales/CS entity clients (user_scan.go) -----
 
 type mockSalesEntityClient struct {
 	getContactByEmailFn    func(ctx context.Context, email string) (*entity.Contact, error)

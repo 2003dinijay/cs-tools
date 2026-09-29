@@ -406,7 +406,7 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 		// Ballerina: projectContact exists but invitationUrl is nil ->
 		// userInvitationUrl is nil, which is NOT equal to "", so this ALSO takes
 		// the non-empty branch with an empty invitationUrl value — the quirk
-		// documented in spl_user_scan.go's ScanUser. This port deliberately
+		// documented in user_scan.go's ScanUser. This port deliberately
 		// deviates and treats it as the empty case instead.
 		cs := &mockCSEntityClient{
 			getProjectByProjectKeyFn: func(ctx context.Context, projectKey string) (*entity.Project, error) {

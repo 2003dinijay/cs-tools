@@ -340,7 +340,7 @@ type snSysIDResultList struct {
 // EscalateCase escalates caseNumber under accountNumber, or links it to an
 // already-active escalation for that account. Mirrors Ballerina
 // operations:escalateCase (its addEscalationGroups authorization check is
-// the caller's responsibility — see handler/spl_auth.go's
+// the caller's responsibility — see handler/auth.go's
 // requireSPLSubGroups). Returns ErrEscalationConflict when caseNumber is
 // already linked to the account's active escalation.
 func (c *Client) EscalateCase(ctx context.Context, accountNumber, caseNumber string, request EscalationRequest, submittedByEmail string) (EscalationResponse, error) {

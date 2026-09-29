@@ -38,7 +38,7 @@ type entityCasesClient interface {
 
 // splAttachmentsInfoClient is the one splCaseClient method
 // postgresSplCaseClient does NOT implement itself — see its own doc comment
-// for why. Distinct from spl_attachments.go's splAttachmentsClient (that
+// for why. Distinct from attachments.go's splAttachmentsClient (that
 // one downloads attachment content; this one lists attachment metadata) —
 // same upstream, different operations, already separate interfaces before
 // this file existed.

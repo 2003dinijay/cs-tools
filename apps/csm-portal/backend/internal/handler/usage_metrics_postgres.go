@@ -154,7 +154,7 @@ type snProjectSearchRequest struct {
 
 // entityProjectsFullSearchResponse decodes entity-service's
 // POST /projects/search response, including Offset/Limit -- unlike
-// entitySearchProjectsResponse in spl_projects_postgres.go, which only
+// entitySearchProjectsResponse in projects_postgres.go, which only
 // captures Projects/Total since its own callers never needed pagination
 // echoed back.
 type entityProjectsFullSearchResponse struct {

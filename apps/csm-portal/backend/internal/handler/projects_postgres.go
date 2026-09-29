@@ -156,7 +156,7 @@ func (c *postgresSplProjectClient) GetProjects(ctx context.Context, phrase *stri
 // mirroring servicenow.Client.GetProjectByID's own "number=" TableQuery, not
 // a sys_id/UUID) to entity-service's internal project UUID. Search-then-
 // exact-match, the same pattern resolveProjectByNumber uses in
-// spl_reports_postgres.go. Every method below that receives a bare
+// reports_postgres.go. Every method below that receives a bare
 // projectID from the handler must resolve it through here first --
 // entity-service's GET /projects/{id} and case-search projectId filter both
 // require the real UUID, not the number.
