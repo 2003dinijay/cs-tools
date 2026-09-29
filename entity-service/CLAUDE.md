@@ -1840,39 +1840,98 @@ ServiceNow-first on create), but the CSM Portal's own lifecycle action bar
 (`ChangeRequestActionBar.tsx`) renders nothing at all when
 `legalNextStates` is empty — the reported symptom was "create works, but no
 way to promote it," for every change request on this data source, not just
-one. `changeRequestForwardNextState`/`legalChangeRequestNextStates`
-(`change_request_repo.go`) now compute it: a hardcoded forward-only graph
-(New→Assess→Authorize→Scheduled→Implement→Review→Closed, with
-CustomerApproval/CustomerReview slotted in as confirmed dead-ends back to
-Scheduled/Closed respectively), each edge read directly off a real change
-request sitting in that exact state on the live ServiceNow instance (its
-own `state` field's dropdown, which ServiceNow itself only ever populates
-with the choices it currently considers legal) — not guessed. `"canceled"`
-is additionally offered alongside the forward move from every non-terminal
-state, since the Cancel Change action was observed available on every
-reachable state. `Rollback`/`Closed`/`Canceled` return `nil` (terminal, no
-legal forward move), matching ServiceNow's own answer for a record with
-none.
+one. `changeRequestForwardNextStates`/`legalChangeRequestNextStates`
+(`change_request_repo.go`) now compute it: a forward-only graph
+(New→Assess→Authorize→{Scheduled, Customer Approval}→Implement→
+Review→{Closed, Customer Review}→Closed). Every edge except
+`CustomerApproval`'s and `CustomerReview`'s own outgoing move (see below)
+was read directly off a real change request sitting in that exact state
+on the live ServiceNow instance (its own `state` field's dropdown, which
+ServiceNow itself only ever populates with the choices it currently
+considers legal) — confirmed, not guessed. `"canceled"` is additionally
+offered alongside the forward move(s) from every non-terminal state, since
+the Cancel Change action was observed available on every reachable state.
+`Rollback`/`Closed`/`Canceled`
+return `nil` (terminal, no legal forward move), matching ServiceNow's own
+answer for a record with none.
 
-**One thing this deliberately does not attempt**: Authorize/Review's real
-conditional detour through Customer Approval/Customer Review for a change
-request whose type requires customer sign-off.
+**Authorize and Review each have two confirmed forward moves, not one —
+found the hard way.** A first revision of this map picked a single "common
+case" edge for each (Authorize→Scheduled, Review→Closed), reasoning that
 `domain.ChangeRequest.HasCustomerApproved`/`HasCustomerReviewed`
 (`change_request.customer_approval`/`customer_review`) record whether the
-customer **has already** signed off, not whether this particular change
-request **requires** that gate at all — branching on them would have the
-condition backwards, and nothing else in this schema records the actual
-requirement, so every change request's Authorize always offers Scheduled
-next (never Customer Approval) and every Review always offers Closed
-(never Customer Review). This is correct for the common case — the
-overwhelming majority of real change requests checked live skip both gates
-entirely (only one real change request, out of several thousand, was found
-sitting in Customer Review at the time this was checked; zero were in
-Customer Approval) — and merely incomplete, not wrong, for the rarer gated
-case: clicking the offered action on one of those still gets ServiceNow's
-own real rejection reason back (`mapUpstreamError` surfaces it), the same
-as before this change existed, not a new failure mode. Revisit if the real
-gating field is ever identified.
+customer **has already** signed off, not whether a given change request
+**requires** that gate, so they can't be used to decide the branch — true,
+but it was resting on an unverified assumption that one branch was simply
+the common case. Checking several more real records directly disproved
+that: two Authorize-state records with no other visible difference in the
+fields this schema exposes (same type, both approval/review booleans
+false) had dropdowns offering `Scheduled` on one and `Customer Approval` on
+the other — and the identical split was found for Review (`Closed` on one
+record, `Customer Review` on another, again with no discriminating field
+found). Whatever ServiceNow actually keys this decision on is not visible
+anywhere in this schema, so both confirmed branches are now offered for
+each of these two states rather than guessing which one applies to a given
+record. This means an engineer can be offered an action ServiceNow's own
+workflow would consider illegal for that specific record — an accepted
+risk here, matching `PatchChangeRequest`'s own pre-existing lack of a
+legal-transition check on this data source (any enum value is accepted and
+written directly; this map doesn't change that) — the offered action still
+gets ServiceNow's own real rejection reason back on the attempt
+(`mapUpstreamError` surfaces it) rather than silently succeeding wrong.
+Revisit if the real gating field is ever identified.
+
+**This risk only actually reaches an engineer for the Review branch.** The
+webapp's own `ChangeRequestActionBar.tsx` hardcodes `"customer_approval"`
+into its `NEVER_OFFERED_TARGETS` list — reached only by ServiceNow's own
+approval process, never human-enterable there, per that list's own doc
+comment — and filters it out unconditionally regardless of what
+`legalNextStates` returns, so Authorize's `Customer Approval` entry is
+accurate data that never becomes a clickable button. `"customer_review"`
+carries no such exclusion, so Review's `Customer Review` entry does render
+as a real, selectable action.
+
+`CustomerApproval`/`CustomerReview`'s own **outgoing** edges (what a change
+request already sitting in one of those two states advances to) are a
+separate, smaller gap: no real change request was found sitting in either
+state despite specifically checking, so both are inferred by sequence
+position (`CustomerApproval` precedes `Scheduled`; `CustomerReview`
+precedes `Closed`) rather than confirmed live.
+
+**Change request creation now always sets `state = 'NEW'` explicitly** —
+`createChangeRequestFromServiceNowQuery` previously left `change_request.state`
+unset entirely (the column has no `NOT NULL`/`DEFAULT`), reasoned at the
+time as: ServiceNow's own create response carries no state field to
+confirm what its workflow engine actually assigned, so writing
+`req.State` straight through risked recording a value ServiceNow silently
+overrode. That reasoning was sound but produced a worse bug, reported
+live: a freshly created change request had `state = NULL`, and
+`legalChangeRequestNextStates(nil)` returns `nil` — so a brand new change
+request offered no promote action whatsoever, not even the one every
+change request always starts with. The org's own Change Management
+process flow resolves the original uncertainty directly: every change
+request begins at New unconditionally, with no branch or caller input that
+changes that — so `'NEW'` is not a guess at what ServiceNow decided, it is
+the one value ServiceNow's real workflow always assigns on create.
+`CreateChangeRequestRequest.State` is still accepted on the wire (it's
+shared with `PatchChangeRequestRequest`) but has no effect at creation and
+is intentionally ignored by this insert.
+
+**The New→Assess promote action had a second, related bug**: it sends
+`{requestApproval: true}` rather than `{state: "assess"}` (see
+`ChangeRequestActionBar.tsx`/`buildTransitionPatch` on the frontend), and
+`PatchChangeRequest`'s handling of `RequestApproval` only ever recorded
+`change_request.approval = 'REQUESTED'` — it never advanced `state`. Before
+`LegalNextStates` was populated at all, this was unreachable (the button
+never appeared for any state, New included), so the gap was invisible.
+Populating `LegalNextStates` made it reachable for the first time, and it
+became a real, visible dead end: clicking "Request Approval" got a
+successful response, but the record's own state (and therefore its next
+legal action) never left New, so the same button just reappeared.
+`PatchChangeRequest` now also sets `state = 'ASSESS'` when
+`RequestApproval` is true and `req.State` wasn't itself separately
+provided (the frontend only ever sends one or the other, never both, so
+this can't double-write the column).
 
 **Linking happens entirely through `PATCH`, never at creation** —
 `CreateChangeRequestRequest` has no project/case field at all;

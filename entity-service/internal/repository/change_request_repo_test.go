@@ -415,11 +415,15 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 	}{
 		{string(domain.ChangeRequestStateNew), []string{"assess", "canceled"}},
 		{string(domain.ChangeRequestStateAssess), []string{"authorize", "canceled"}},
-		{string(domain.ChangeRequestStateAuthorize), []string{"scheduled", "canceled"}},
+		// Authorize and Review each have two confirmed forward moves (see
+		// changeRequestForwardNextStates' own doc comment) -- checking
+		// several real records directly disproved the "one common case"
+		// assumption an earlier revision of this map made.
+		{string(domain.ChangeRequestStateAuthorize), []string{"scheduled", "customer_approval", "canceled"}},
 		{string(domain.ChangeRequestStateCustomerApproval), []string{"scheduled", "canceled"}},
 		{string(domain.ChangeRequestStateScheduled), []string{"implement", "canceled"}},
 		{string(domain.ChangeRequestStateImplement), []string{"review", "canceled"}},
-		{string(domain.ChangeRequestStateReview), []string{"closed", "canceled"}},
+		{string(domain.ChangeRequestStateReview), []string{"closed", "customer_review", "canceled"}},
 		{string(domain.ChangeRequestStateCustomerReview), []string{"closed", "canceled"}},
 	}
 	for _, tc := range tests {
