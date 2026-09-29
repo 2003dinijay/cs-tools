@@ -88,6 +88,19 @@ export function useCaseActivityStream(caseId: string | undefined): void {
     let source: EventSourcePolyfill | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
+    let hasConnected = false;
+
+    const invalidateCaseQueries = (): void => {
+      // Invalidated by key prefix rather than the queries' full keys, which
+      // also carry the project id this hook isn't given — the same thing
+      // usePostComment already does after posting a comment.
+      void queryClient.invalidateQueries({
+        queryKey: [ApiQueryKeys.CASE_COMMENTS],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: [ApiQueryKeys.CASE_DETAILS],
+      });
+    };
 
     const scheduleReconnect = (): void => {
       const delay = reconnectDelay(attempt);
@@ -120,24 +133,26 @@ export function useCaseActivityStream(caseId: string | undefined): void {
         },
       });
 
-      // A successful connection resets the backoff — only *consecutive*
-      // failures should back off, not the cumulative count over the
-      // component's whole lifetime.
       source.addEventListener("open", () => {
+        // A successful connection resets the backoff — only *consecutive*
+        // failures should back off, not the cumulative count over the
+        // component's whole lifetime.
         attempt = 0;
+
+        // The stream only ever carries events published while a connection
+        // is registered — the service's hub hands a new subscriber a fresh
+        // channel and its consumer reads from the latest offset, so nothing
+        // missed during a drop is replayed. Refetch on every *re*connection
+        // to close that gap, which the deployment's own connection lifetime
+        // makes a routine occurrence rather than an edge case. Skipped on the
+        // first connection, where the queries have just loaded anyway.
+        if (hasConnected) {
+          invalidateCaseQueries();
+        }
+        hasConnected = true;
       });
 
-      // Invalidated by key prefix rather than the queries' full keys, which
-      // also carry the project id this hook isn't given — the same thing
-      // usePostComment already does after posting a comment.
-      source.addEventListener("case_updated", () => {
-        void queryClient.invalidateQueries({
-          queryKey: [ApiQueryKeys.CASE_COMMENTS],
-        });
-        void queryClient.invalidateQueries({
-          queryKey: [ApiQueryKeys.CASE_DETAILS],
-        });
-      });
+      source.addEventListener("case_updated", invalidateCaseQueries);
 
       source.addEventListener("error", () => {
         logger.debug("[case-activity-stream] connection error, reconnecting");
