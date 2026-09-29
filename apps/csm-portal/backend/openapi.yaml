@@ -4428,6 +4428,59 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /products/github-repo:
+    get:
+      summary: Look up the GitHub repository for a product.
+      description: |
+        Resolves a case product name to the repository an internal GitHub issue
+        is filed in. An exact product name wins, then an abbreviation, then the
+        longest product name that is a prefix of `name` followed by a space.
+      operationId: getProductGithubRepo
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: Catalogue product name, abbreviation, or versioned display name.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The repository mapped to the product.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductRepoMapping'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: No GitHub repository is mapped for this product.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /products/{id}/versions/search:
     post:
       summary: Search versions for a specific product.
@@ -12930,6 +12983,20 @@ components:
           type: integer
         hasMore:
           type: boolean
+
+    ProductRepoMapping:
+      type: object
+      properties:
+        productName:
+          type: string
+        abbreviation:
+          type: string
+        owner:
+          type: string
+        repository:
+          type: string
+        githubLabel:
+          type: string
 
     Product:
       description: >
