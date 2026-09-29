@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
 type mockSplLookupsClient struct {
@@ -38,7 +40,7 @@ func (m *mockSplLookupsClient) GetABTTeamList(ctx context.Context) ([]string, er
 
 func TestGetProducts_Success(t *testing.T) {
 	mock := &mockSplLookupsClient{products: []string{"A", "B"}}
-	h := NewSplLookupsHandler(mock, []string{"csm-agents"})
+	h := NewSplLookupsHandler(mock, splAccessGuard)
 	req := withUser(httptest.NewRequest(http.MethodGet, "/spl/products", nil))
 	w := httptest.NewRecorder()
 
@@ -51,9 +53,11 @@ func TestGetProducts_Success(t *testing.T) {
 	}
 }
 
-func TestGetABTTeams_RejectsUnauthorizedGroup(t *testing.T) {
-	h := NewSplLookupsHandler(&mockSplLookupsClient{}, []string{"other-group"})
-	req := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-teams", nil))
+func TestGetABTTeams_RejectsMissingSPLAccess(t *testing.T) {
+	h := NewSplLookupsHandler(&mockSplLookupsClient{}, splAccessGuard)
+	req := httptest.NewRequest(http.MethodGet, "/spl/abt-teams", nil)
+	// Authenticated but holds no role granting PermSPLAccess.
+	req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{Email: "nobody@example.com", UserID: "u-nobody"}))
 	w := httptest.NewRecorder()
 
 	h.GetABTTeams(w, req)

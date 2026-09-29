@@ -1194,7 +1194,7 @@ func (m *mockEntityTaskClient) UpdateTask(ctx context.Context, id string, body [
 	return []byte(`{"id":"11111111-1111-1111-1111-111111111111"}`), nil
 }
 
-// ----- mock employee-info client (user_info.go, abt_team_members.go) -----
+// ----- mock employee-info client (user_info.go, teams.go) -----
 
 type mockEmployeeInfoClient struct {
 	getEmployeeDataFn func(ctx context.Context, workEmail string) (*employeeinfo.Employee, error)

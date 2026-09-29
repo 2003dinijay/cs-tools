@@ -41,22 +41,22 @@ type SplUserInfoView struct {
 // SplUserInfoHandler handles HTTP requests for the caller's own employee
 // info, delegating to the employee-info service.
 type SplUserInfoHandler struct {
-	employeeInfo  employeeInfoClient
-	allowedGroups []string
+	employeeInfo employeeInfoClient
+	accessGuard  *AccessGuard
 }
 
 // NewSplUserInfoHandler creates a SplUserInfoHandler backed by the given
-// employee-info client. allowedGroups is SupportPortalLite's blanket
-// access-gate group list (SPL_ALLOWED_GROUPS).
-func NewSplUserInfoHandler(employeeInfo employeeInfoClient, allowedGroups []string) *SplUserInfoHandler {
-	return &SplUserInfoHandler{employeeInfo: employeeInfo, allowedGroups: allowedGroups}
+// employee-info client. accessGuard enforces PermSPLAccess, SupportPortalLite's
+// blanket audience gate.
+func NewSplUserInfoHandler(employeeInfo employeeInfoClient, accessGuard *AccessGuard) *SplUserInfoHandler {
+	return &SplUserInfoHandler{employeeInfo: employeeInfo, accessGuard: accessGuard}
 }
 
 // GetUserInfo handles GET /user-info: returns the caller's own employee
 // info, resolved from their JWT email — mirrors Ballerina service.bal's
 // `get user\-info` resource function (userinfo:getEmployeeData(authUserCtx.email)).
 func (h *SplUserInfoHandler) GetUserInfo(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}

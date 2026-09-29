@@ -23,11 +23,12 @@ import (
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/employeeinfo"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
 func TestSplGetUserInfo(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
-		h := NewSplUserInfoHandler(&mockEmployeeInfoClient{}, []string{"csm-agents"})
+		h := NewSplUserInfoHandler(&mockEmployeeInfoClient{}, splAccessGuard)
 		r := httptest.NewRequest(http.MethodGet, "/spl/user-info", nil)
 		w := httptest.NewRecorder()
 		h.GetUserInfo(w, r)
@@ -35,9 +36,11 @@ func TestSplGetUserInfo(t *testing.T) {
 		assertErrorMessage(t, w, ErrMsgUnauthorized)
 	})
 
-	t.Run("rejects user outside allowedGroups", func(t *testing.T) {
-		h := NewSplUserInfoHandler(&mockEmployeeInfoClient{}, []string{"some-other-group"})
-		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/user-info", nil))
+	t.Run("rejects a role that doesn't grant PermSPLAccess", func(t *testing.T) {
+		h := NewSplUserInfoHandler(&mockEmployeeInfoClient{}, splAccessGuard)
+		r := httptest.NewRequest(http.MethodGet, "/spl/user-info", nil)
+		// Authenticated but holds no role granting PermSPLAccess.
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "nobody@example.com", UserID: "u-nobody"}))
 		w := httptest.NewRecorder()
 		h.GetUserInfo(w, r)
 		assertStatus(t, w, http.StatusForbidden)
@@ -52,7 +55,7 @@ func TestSplGetUserInfo(t *testing.T) {
 				capturedEmail = workEmail
 				return &employeeinfo.Employee{FirstName: "Agent", LastName: "Example", EmployeeThumbnail: &thumbnail}, nil
 			},
-		}, []string{"csm-agents"})
+		}, splAccessGuard)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/user-info", nil))
 		w := httptest.NewRecorder()
 		h.GetUserInfo(w, r)
@@ -74,7 +77,7 @@ func TestSplGetUserInfo(t *testing.T) {
 			getEmployeeDataFn: func(ctx context.Context, workEmail string) (*employeeinfo.Employee, error) {
 				return nil, context.DeadlineExceeded
 			},
-		}, []string{"csm-agents"})
+		}, splAccessGuard)
 		r := withUser(httptest.NewRequest(http.MethodGet, "/spl/user-info", nil))
 		w := httptest.NewRecorder()
 		h.GetUserInfo(w, r)

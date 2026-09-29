@@ -18,6 +18,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -35,20 +36,20 @@ type splReportsClient interface {
 // SplReportsHandler handles HTTP requests for SupportPortalLite's
 // project-level reports, delegating to the ServiceNow service.
 type SplReportsHandler struct {
-	servicenow    splReportsClient
-	allowedGroups []string
+	servicenow  splReportsClient
+	accessGuard *AccessGuard
 }
 
 // NewSplReportsHandler creates a SplReportsHandler backed by the given
-// ServiceNow client. allowedGroups is SupportPortalLite's blanket
-// access-gate group list (SPL_ALLOWED_GROUPS).
-func NewSplReportsHandler(sn splReportsClient, allowedGroups []string) *SplReportsHandler {
-	return &SplReportsHandler{servicenow: sn, allowedGroups: allowedGroups}
+// ServiceNow client. accessGuard enforces PermSPLAccess, SupportPortalLite's
+// blanket audience gate.
+func NewSplReportsHandler(sn splReportsClient, accessGuard *AccessGuard) *SplReportsHandler {
+	return &SplReportsHandler{servicenow: sn, accessGuard: accessGuard}
 }
 
 // GenerateSLAReport handles GET /generate-sla-report.
 func (h *SplReportsHandler) GenerateSLAReport(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -76,7 +77,7 @@ func (h *SplReportsHandler) GenerateSLAReport(w http.ResponseWriter, r *http.Req
 
 // GetReportDetails handles GET /report-details.
 func (h *SplReportsHandler) GetReportDetails(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -104,7 +105,7 @@ func (h *SplReportsHandler) GetReportDetails(w http.ResponseWriter, r *http.Requ
 
 // GenerateTimelogsBreakdownReport handles GET /generate-timelogs-breakdown-report.
 func (h *SplReportsHandler) GenerateTimelogsBreakdownReport(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -121,7 +122,7 @@ func (h *SplReportsHandler) GenerateTimelogsBreakdownReport(w http.ResponseWrite
 
 	report, err := h.servicenow.GetTimeLogBreakdown(r.Context(), projectID)
 	if err != nil {
-		if err == servicenow.ErrProjectNotFound {
+		if errors.Is(err, servicenow.ErrProjectNotFound) {
 			writeError(w, http.StatusNotFound, ErrMsgNotFound)
 			return
 		}
