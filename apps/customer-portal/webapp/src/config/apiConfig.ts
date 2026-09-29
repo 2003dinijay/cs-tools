@@ -23,12 +23,29 @@ if (!BACKEND_BASE_URL) {
   );
 }
 
+// Base URL for the case-activity SSE stream (customer-portal-activity-stream-service,
+// its own Choreo component — not a path under backendUrl). Optional: that
+// service only stands the stream listener up when Event Hub is configured,
+// so useCaseActivityStream checks for this and no-ops rather than throwing,
+// unlike BACKEND_BASE_URL above.
+const STREAM_BASE_URL = window.config?.CUSTOMER_PORTAL_STREAM_BASE_URL;
+
+// Master on/off switch for the case-activity SSE stream, independent of
+// whether STREAM_BASE_URL is set. Strict `=== true` (rather than the usual
+// `?? false`) so only the literal boolean turns it on — any config predating
+// this key evaluates to false, which is what makes it safe by default.
+const STREAM_ENABLED = window.config?.CUSTOMER_PORTAL_STREAM_ENABLED === true;
+
 // Interface for the API configuration.
 interface ApiConfig {
   backendUrl: string;
+  streamUrl?: string;
+  streamEnabled: boolean;
 }
 
 // Configuration for the API service.
 export const apiConfig: ApiConfig = {
   backendUrl: BACKEND_BASE_URL,
+  streamUrl: STREAM_BASE_URL,
+  streamEnabled: STREAM_ENABLED,
 };
