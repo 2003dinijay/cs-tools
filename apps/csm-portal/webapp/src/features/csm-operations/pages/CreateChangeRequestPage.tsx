@@ -50,7 +50,6 @@ import { useSearchParentRecordsForSelect } from "@features/csm-operations/api/us
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
 import {
   changeRequestDraftKey,
-  changeRequestStateLabel,
   clearChangeRequestDraft,
   CLONE_SOURCE_GAP_MESSAGE,
   decodeParentRecordValue,
@@ -67,7 +66,6 @@ import type { CreateChangeRequestFromCaseNavState } from "@features/csm-cases/ty
 import type {
   BeChangeRequestImpact,
   BeChangeRequestPriority,
-  BeChangeRequestState,
   BeChangeRequestType,
   BeCreateChangeRequestPayload,
   BeGroup,
@@ -107,16 +105,6 @@ const PRIORITY_OPTIONS: Array<{ value: BeChangeRequestPriority; label: string }>
   { value: "moderate", label: "Moderate" },
   { value: "low", label: "Low" },
 ];
-
-// Only the pre-workflow states are selectable at creation. A new change
-// request must enter its lifecycle at the start (new/assess/authorize) and
-// move forward from there — creating one already Closed/Cancelled, or straight
-// into Implement, would skip its own assess → authorize → approval workflow.
-// Defaults to "new" — the state SN itself defaults a fresh CR to. Labels reuse
-// the same map the list/detail pages show, so they read consistently.
-const CREATE_STATE_VALUES: BeChangeRequestState[] = ["new", "assess", "authorize"];
-const STATE_OPTIONS: Array<{ value: BeChangeRequestState; label: string }> =
-  CREATE_STATE_VALUES.map((s) => ({ value: s, label: changeRequestStateLabel(s) }));
 
 // Option labels for this form's pickers. Each falls back down to the record id
 // rather than rendering blank, so an option is always selectable even when the
@@ -254,13 +242,6 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const [type, setType] = useState<string>(draft?.type ?? cloneState?.type ?? "normal");
   const [impact, setImpact] = useState<string>(draft?.impact ?? cloneState?.impact ?? "low");
   const [priority, setPriority] = useState<string>(draft?.priority ?? UNSET);
-  // Always "new" regardless of the source record's own state/schedule/
-  // approval — cloning must never carry an approval or a stale window
-  // across into the new change request. A restored draft is the one
-  // exception: it reflects wherever the user's own in-progress edit left this
-  // field (still just "new"/"assess"/"authorize" — the same options remain
-  // selectable either way), not the clone source's state.
-  const [state, setState] = useState<string>(draft?.state ?? "new");
   const [plannedStartDate, setPlannedStartDate] = useState(draft?.plannedStartDate ?? "");
   const [plannedEndDate, setPlannedEndDate] = useState(draft?.plannedEndDate ?? "");
   const [description, setDescription] = useState(draft?.description ?? cloneState?.description ?? "");
@@ -356,7 +337,6 @@ export default function CreateChangeRequestPage(): JSX.Element {
       type,
       impact,
       priority,
-      state,
       plannedStartDate,
       plannedEndDate,
       description,
@@ -377,7 +357,6 @@ export default function CreateChangeRequestPage(): JSX.Element {
     type,
     impact,
     priority,
-    state,
     plannedStartDate,
     plannedEndDate,
     description,
@@ -410,7 +389,10 @@ export default function CreateChangeRequestPage(): JSX.Element {
     if (type) payload.type = type as BeChangeRequestType;
     if (impact) payload.impact = impact as BeChangeRequestImpact;
     if (priority) payload.priority = priority as BeChangeRequestPriority;
-    if (state) payload.state = state as BeChangeRequestState;
+    // Every change request starts at New, unconditionally -- the org's own
+    // Change Management process flow confirms creation never branches to any
+    // other state, so this form has no state picker and never sends one; the
+    // backend enforces the same rule for any other API caller.
     if (plannedStartDate) payload.plannedStartDate = toBackendDateTime(plannedStartDate);
     if (plannedEndDate) payload.plannedEndDate = toBackendDateTime(plannedEndDate);
     // These six are rich-text HTML from Editor, not plain strings — an
@@ -695,9 +677,6 @@ export default function CreateChangeRequestPage(): JSX.Element {
             </Box>
             <Box sx={{ flex: "1 1 200px" }}>
               {renderSelect("cr-impact", "Impact", impact, setImpact, IMPACT_OPTIONS)}
-            </Box>
-            <Box sx={{ flex: "1 1 200px" }}>
-              {renderSelect("cr-state", "State", state, setState, STATE_OPTIONS)}
             </Box>
           </Box>
 

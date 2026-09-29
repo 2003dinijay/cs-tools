@@ -163,10 +163,10 @@ describe("CreateChangeRequestPage — Clone prefill", () => {
     expect(screen.getByText(/cloned from an existing change request/i)).toBeInTheDocument();
   });
 
-  it("always resets state to 'new' regardless of the clone source", () => {
+  it("never offers a state picker, even when cloning -- every change request starts at New", () => {
     locationState = { subject: "Upgrade the gateway cluster" };
     render(<CreateChangeRequestPage />);
-    expect(screen.getByText("New")).toBeInTheDocument();
+    expect(screen.queryByText("State")).not.toBeInTheDocument();
   });
 
   it("leaves the planned start/end schedule empty even when cloning", () => {
