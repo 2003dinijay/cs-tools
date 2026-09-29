@@ -68,7 +68,35 @@ func NewAccessService(repo repository.AccessRepository, internalClientIDs map[st
 }
 
 // ResolveScope implements AccessService.
+//
+// Checks repository.CallerIdentityFromContext first: callerIdentityMiddleware
+// (internal/server/identity_middleware.go) already calls this exact method
+// once per request and attaches its result to ctx for Scoped's benefit, so a
+// handler/service that calls ResolveScope again on that same ctx would
+// otherwise repeat the full resolution -- for an EXTERNAL caller, two more
+// database round trips (UsersByEmail + RegisteredProjectIDs) than the answer
+// needs, on every request to any of the several services that both rely on
+// Scoped AND call ResolveScope themselves (case_service.go, escalation_
+// service.go, global_service.go, project_service.go, schedule_service.go,
+// sla_status_service.go, onboarding_step_service.go, announcement_request_
+// service.go). Trusting the cached value is safe, not just faster: it can
+// only be present because the SAME request's identity already passed this
+// exact validation once, earlier in the same middleware chain, and nothing
+// downstream can change what auth.Middleware decided about this request's
+// identity out from under it. Falling through to the real resolution below
+// when nothing is cached also means this keeps working correctly for any
+// caller that never went through the middleware (tests, or a future
+// non-HTTP caller with its own explicit repository.WithSystemIdentity/
+// WithCallerIdentity stamp) -- for the latter, this cache-first check is
+// also a correctness fix, not just a speedup: a background job stamped
+// WithSystemIdentity has no HTTP request or auth.Identity to resolve from at
+// all, so this method would otherwise fail it with "no verified identity"
+// even though the caller already explicitly declared itself internal.
 func (s *accessService) ResolveScope(ctx context.Context) (AccessScope, error) {
+	if cached, ok := repository.CallerIdentityFromContext(ctx); ok {
+		return cached, nil
+	}
+
 	id := auth.IdentityFromContext(ctx)
 	if !id.Validated {
 		return AccessScope{}, &apierror.ServiceUnavailableError{Msg: "results cannot be scoped to the caller: no verified identity on this request"}
