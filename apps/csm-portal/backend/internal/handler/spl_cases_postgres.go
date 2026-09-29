@@ -78,12 +78,14 @@ func NewPostgresSplCaseClient(entity entityCasesClient, sn splAttachmentsInfoCli
 
 // caseStateToDisplay/caseStateFromDisplay translate between entity-service's
 // domain.CaseState wire values (lowercase snake_case, e.g. "work_in_progress")
-// and the six display labels SPL's UI has always used, which are exactly
+// and the seven display labels SPL's UI has always used, which are exactly
 // ServiceNow's own state labels (e.g. "Work In Progress") — see
 // CaseStateCard.tsx/SplCasesPage.tsx on the frontend, which are NOT changing
-// as part of this. entity-service's "closed" has no SPL summary card and is
-// deliberately not in caseStateFromDisplay (a caller can never ask to filter
-// by a label SPL's own UI never offers).
+// as part of this. "closed" has no SPL summary card, but caseStateFromDisplay
+// must still be the exact inverse of caseStateToDisplay: a case list already
+// returns closed cases with state "Closed" (via caseStateToDisplay), so
+// omitting it here silently broke filtering for a state callers can already
+// see in their own results.
 var caseStateToDisplay = map[string]string{
 	"open":              "Open",
 	"work_in_progress":  "Work In Progress",
@@ -101,6 +103,7 @@ var caseStateFromDisplay = map[string]string{
 	"Solution Proposed": "solution_proposed",
 	"Waiting on WSO2":   "waiting_on_wso2",
 	"Reopened":          "reopened",
+	"Closed":            "closed",
 }
 
 // --- entity-service wire types (this backend's own copy of the JSON

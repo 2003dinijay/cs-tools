@@ -128,6 +128,28 @@ func TestPostgresSplCaseClient_GetCases_MapsStateAndFieldsBothDirections(t *test
 	}
 }
 
+func TestPostgresSplCaseClient_GetCases_FiltersByClosed(t *testing.T) {
+	entity := &mockEntityCasesClient{
+		searchCasesFn: func(_ context.Context, body []byte) ([]byte, error) {
+			var req entitySearchCasesRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Fatalf("unmarshal request sent to entity-service: %v", err)
+			}
+			if len(req.Filters.Filters) != 1 || req.Filters.Filters[0].Field != "state" ||
+				req.Filters.Filters[0].Values[0] != "closed" {
+				t.Errorf("state filter sent to entity-service = %+v, want field=state values=[closed]", req.Filters.Filters)
+			}
+			return jsonBytes(t, entitySearchCasesResponse{Total: 0, Cases: []entitySearchCaseView{}}), nil
+		},
+	}
+
+	c := NewPostgresSplCaseClient(entity, &mockAttachmentsInfoClient{})
+	stateFilter := "Closed"
+	if _, err := c.GetCases(context.Background(), nil, &stateFilter, 0, 10); err != nil {
+		t.Fatalf("GetCases: %v", err)
+	}
+}
+
 func TestPostgresSplCaseClient_GetCases_UnknownStateFilterReturnsNoResultsNotEverything(t *testing.T) {
 	entity := &mockEntityCasesClient{
 		searchCasesFn: func(context.Context, []byte) ([]byte, error) {
