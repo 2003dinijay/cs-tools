@@ -22,6 +22,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 )
@@ -218,6 +219,12 @@ func (h *SplUserScanHandler) ScanUser(w http.ResponseWriter, r *http.Request) {
 
 	var payload SplUserScanRequest
 	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+	payload.Email = strings.TrimSpace(payload.Email)
+	payload.SubscriptionKey = strings.TrimSpace(payload.SubscriptionKey)
+	if payload.Email == "" || payload.SubscriptionKey == "" {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}

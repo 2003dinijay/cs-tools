@@ -67,6 +67,28 @@ func TestSplScanUser_AuthGates(t *testing.T) {
 		h.ScanUser(w, r)
 		assertStatus(t, w, http.StatusBadRequest)
 	})
+
+	t.Run("rejects an empty or whitespace-only email or subscriptionKey before any upstream lookup", func(t *testing.T) {
+		h2 := NewSplUserScanHandler(
+			&mockSalesEntityClient{
+				getContactByEmailFn: func(context.Context, string) (*entity.Contact, error) {
+					t.Fatal("sales entity should not be called when required fields are missing")
+					return nil, nil
+				},
+			},
+			&mockCSEntityClient{}, splAccessGuard)
+		tests := []SplUserScanRequest{
+			{Email: "", SubscriptionKey: "sub-1"},
+			{Email: "a@b.com", SubscriptionKey: ""},
+			{Email: "   ", SubscriptionKey: "sub-1"},
+			{Email: "a@b.com", SubscriptionKey: "  "},
+		}
+		for _, payload := range tests {
+			w := httptest.NewRecorder()
+			h2.ScanUser(w, splScanRequest(t, payload))
+			assertStatus(t, w, http.StatusBadRequest)
+		}
+	})
 }
 
 func TestSplScanUser_SalesforceSide(t *testing.T) {
@@ -449,7 +471,7 @@ func TestSplScanUser_UpstreamFailuresReturn500WithBespokeMessage(t *testing.T) {
 			},
 		}
 		h := NewSplUserScanHandler(sales, &mockCSEntityClient{}, splAccessGuard)
-		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com"})
+		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "sub-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
 		assertStatus(t, w, http.StatusInternalServerError)
