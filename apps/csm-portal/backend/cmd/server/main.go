@@ -642,7 +642,7 @@ func main() {
 		ClientID:     oauth2ClientID,
 		ClientSecret: oauth2ClientSecret,
 		Scope:        os.Getenv("CUSTOMER_ENTITY_SCOPES"),
-	}); err != nil {
+	}, accessGuard); err != nil {
 		slog.Error("failed to mount PLG", "err", err)
 		os.Exit(1)
 	}

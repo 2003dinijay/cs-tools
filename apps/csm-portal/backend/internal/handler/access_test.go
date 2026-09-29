@@ -62,8 +62,8 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 	// tested separately below -- escalating and approving a time card are
 	// each a dedicated responsibility cs_engineer does not share, the same
 	// way PermAdmin doesn't.
-	csEngineerPerms := []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermDownloadAttachment, PermWrite, PermViewSecurityCenter}
-	all := append(append([]Permission{}, csEngineerPerms...), PermAdmin, PermEscalate, PermApproveTimeCard)
+	csEngineerPerms := []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermDownloadAttachment, PermWrite, PermViewSecurityCenter, PermUsePlg}
+	all := append(append([]Permission{}, csEngineerPerms...), PermAdmin, PermEscalate, PermApproveTimeCard, PermManagePlaybooks)
 	tests := []struct {
 		name  string
 		roles []string
@@ -315,7 +315,7 @@ func TestAccessGuard_SecurityCenterIsForCsEngineersAndAdmins(t *testing.T) {
 
 func TestAccessGuard_UnconfiguredRolesAreHeldByNobody(t *testing.T) {
 	g := NewAccessGuard(AccessConfig{})
-	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermAdmin, PermViewSecurityCenter, PermApproveTimeCard} {
+	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermAdmin, PermViewSecurityCenter, PermApproveTimeCard, PermUsePlg, PermManagePlaybooks} {
 		if status, _ := serveWithRoles(g, perm, []string{"test-admin", "test-viewer", ""}); status != http.StatusForbidden {
 			t.Errorf("permission %d with no roles configured: status = %d, want 403", perm, status)
 		}
@@ -364,5 +364,49 @@ func TestAccessGuard_ApproveTimeCardIsForApproversAndAdminsOnly(t *testing.T) {
 		if status, _ := serveWithRoles(g, PermApproveTimeCard, []string{role}); status != http.StatusForbidden {
 			t.Errorf("%s: status = %d, want 403", role, status)
 		}
+	}
+}
+
+// TestAccessGuard_PlgIsForCsEngineersAndAdmins pins PermUsePlg as narrower than
+// PermView: every portal role holds PermView, but PLG is a worklist staff act
+// on, and a view-only role that could open it would meet a 403 on every control.
+func TestAccessGuard_PlgIsForCsEngineersAndAdmins(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	for _, role := range []string{"test-cs-engineer", "test-admin"} {
+		if status, _ := serveWithRoles(g, PermUsePlg, []string{role}); status != http.StatusNoContent {
+			t.Errorf("%s: status = %d, want 204", role, status)
+		}
+	}
+	for _, role := range []string{
+		"test-viewer", "test-escalator", "test-attachment-downloader",
+		"test-usage-metrics-viewer", "test-timecard-approver", "test-dashboard-designer",
+	} {
+		if status, _ := serveWithRoles(g, PermUsePlg, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s holds PermView but must not hold PermUsePlg: status = %d, want 403", role, status)
+		}
+	}
+}
+
+// TestAccessGuard_ManagePlaybooksIsAdminOnly pins the one split inside PLG: a CS
+// engineer works the queue and runs playbooks, but authoring a template is
+// admin's. It is separate from PermAdmin on purpose — see the constant's own
+// doc comment — so this asserts the CS engineer is denied rather than asserting
+// the two permissions are interchangeable.
+func TestAccessGuard_ManagePlaybooksIsAdminOnly(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	if status, _ := serveWithRoles(g, PermManagePlaybooks, []string{"test-admin"}); status != http.StatusNoContent {
+		t.Errorf("admin: status = %d, want 204", status)
+	}
+	for _, role := range []string{
+		"test-cs-engineer", "test-viewer", "test-escalator", "test-attachment-downloader",
+		"test-usage-metrics-viewer", "test-timecard-approver", "test-dashboard-designer",
+	} {
+		if status, _ := serveWithRoles(g, PermManagePlaybooks, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s must not manage playbooks: status = %d, want 403", role, status)
+		}
+	}
+	// The CS engineer keeps everything else in PLG, including running a playbook.
+	if status, _ := serveWithRoles(g, PermUsePlg, []string{"test-cs-engineer"}); status != http.StatusNoContent {
+		t.Errorf("cs engineer lost PermUsePlg: status = %d, want 204", status)
 	}
 }

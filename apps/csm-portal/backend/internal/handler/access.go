@@ -127,6 +127,36 @@ const (
 	// read stops being readable); it exists only to grant sales_solutions
 	// this slice without the rest.
 	PermViewSharedEntity
+	// PermUsePlg is the PLG Customer Success Portal: every one of its routes
+	// except playbook management. CS engineer and admin only, which is
+	// deliberately narrower than PermView — PLG is a worklist staff act on, not
+	// a record the portal's view-only roles have any use for, and a viewer who
+	// could open it would see a section where every control returns 403.
+	//
+	// There is no view/write split within it on purpose. PLG's queue is a shared
+	// worklist: an engineer who can see a pairing is expected to act on it, and a
+	// read-only PLG user would be someone who watches work pile up and cannot
+	// touch it. Playbook management is the one exception — see below.
+	//
+	// This does NOT replace PLG's identity middleware, which resolves the caller
+	// to the "user".id every PLG write records and refuses anyone who is not
+	// ACTIVE INTERNAL staff. The two answer different questions: this one asks
+	// what the token claims, that one asks whether the person is still an
+	// employee. See internal/plg/plg.go.
+	PermUsePlg
+	// PermManagePlaybooks is authoring a PLG playbook template: creating one,
+	// editing it, replacing its tasks, deleting it. Admin only.
+	//
+	// Separate from PermAdmin, which it currently matches exactly, because the
+	// two mean different things: PermAdmin is "actions no non-admin staff role
+	// should reach", and granting playbook authoring to some future PLG-admin
+	// role must not also hand out platform-user creation.
+	//
+	// READING playbooks is PermUsePlg, not this. A CS engineer browses templates
+	// and assigns them to a pairing; they just cannot change one. Assignment is
+	// POST /organizations/{id}/products/{product}/playbook-runs, a different path
+	// from the four this guards.
+	PermManagePlaybooks
 )
 
 // AccessConfig names, per portal role, the role names on the token that grant
@@ -199,7 +229,9 @@ type portalRole struct {
 // readable. PermViewSecurityCenter is the one further exception to "every
 // role implies View covers it": plain viewer/escalator/attachment_downloader/
 // usage_metrics_viewer/timecard_approver/dashboard_designer all hold PermView
-// but not this. sales_solutions is a separate exception again: it implies
+// but not this. PermUsePlg is narrower the same way — CS engineer and admin
+// only — and PermManagePlaybooks narrower again, admin alone.
+// sales_solutions is a separate exception again: it implies
 // PermViewSharedEntity (only) rather than being implied BY it — see
 // AccessConfig.SalesSolutions's own doc comment. PermSPLAccess is implied by
 // plain Viewer, not sales_solutions or cs_engineer specifically -- see
@@ -255,6 +287,8 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			// dominates it" shape -- see PermUsageMetricsViewer's own doc
 			// comment.
 			PermUsageMetricsViewer: build(cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin),
+			PermUsePlg:             build(cfg.CsEngineer, cfg.Admin),
+			PermManagePlaybooks:    build(cfg.Admin),
 		},
 	}
 }
