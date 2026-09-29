@@ -1755,7 +1755,8 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 
 	where := "WHERE 1=1"
 
-	// No Go-side project filter here any more -- work_item's own RLS policy
+	// No Go-side project AUTHORIZATION here any more (the viewerProjectHint
+	// below is a redundant planner hint, not a security check) -- work_item's own RLS policy
 	// (migration 0147) already applies the identical is_project_member check
 	// to every statement WithCallerIdentity stamps above, including this
 	// one. A scoped caller asking for a project outside their own access
@@ -1766,6 +1767,10 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	// See announcementVisibilityLeakGuard's own doc comment. Applies to the
 	// COUNT below too, via the identical countQuery WHERE.
 	where += " AND " + announcementVisibilityLeakGuard
+	// Planner hint for external callers only (see viewerProjectHint): lets
+	// Postgres use idx_work_item_project_id instead of scanning all of
+	// work_item; RLS above remains the authorization boundary.
+	where += viewerProjectHint("wi", scope)
 
 	// Fields shared with anyOf branches are built by one function so the two
 	// cannot drift apart (see caseFieldPredicates for the column notes).
