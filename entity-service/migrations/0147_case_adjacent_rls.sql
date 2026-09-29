@@ -32,14 +32,19 @@
 --
 -- service_request/engagement/security_report_analysis (the three other
 -- case-like work_item extension tables, alongside "case" and announcement)
--- deliberately get NO RLS of their own here: nothing in this codebase reads
--- any of them without also joining work_item in the same query (confirmed
--- by grep across the whole repository), so once work_item itself is
--- protected, a caller who can't see the work_item row can never reach
--- their extension row either -- the same reasoning that already excluded
--- project_contact/project_contact_group/project_group_role/project_role
--- from RLS (migration 0141's own comment): protecting them would only
--- risk infinite-recursion policy errors for zero additional safety.
+-- got NO RLS of their own in this migration -- CORRECTED by migration 0151.
+-- The reasoning originally written here borrowed project_contact's own
+-- exclusion justification (migration 0141: protecting it would recurse,
+-- since is_project_member() itself queries project_contact) and wrongly
+-- applied it to these three tables, which is_project_member() never
+-- queries at all -- they are structurally identical to "case"/comment/
+-- case_attachment below, which already use the exact same
+-- is_project_member-via-work_item-subquery shape with no recursion issue.
+-- Safe today only because nothing in this codebase reads or writes them
+-- without also going through a work_item-gated statement (confirmed by
+-- grep, not assumed) -- exactly the "safe by Go-code accident, not by
+-- database guarantee" gap this whole migration series exists to close.
+-- See 0151 for the real fix and the full reasoning.
 ALTER TABLE work_item ENABLE ROW LEVEL SECURITY;
 ALTER TABLE work_item FORCE ROW LEVEL SECURITY;
 
