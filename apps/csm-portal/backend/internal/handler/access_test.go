@@ -37,6 +37,7 @@ func testAccessConfig() AccessConfig {
 		Admin:                []string{"test-admin"},
 		TimecardApprover:     []string{"test-timecard-approver"},
 		DashboardDesigner:    []string{"test-dashboard-designer"},
+		SalesSolutions:       []string{"test-sales-solutions"},
 	}
 }
 
@@ -76,6 +77,7 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 		{"usage metrics viewer can view only", []string{"test-usage-metrics-viewer"}, []Permission{PermView}},
 		{"timecard approver can view, use time cards and updates, and approve", []string{"test-timecard-approver"}, []Permission{PermView, PermTimeCardsAndUpdates, PermApproveTimeCard}},
 		{"dashboard designer can view only", []string{"test-dashboard-designer"}, []Permission{PermView}},
+		{"sales solutions role alone grants no route permission at all, not even view", []string{"test-sales-solutions"}, nil},
 		{"roles combine", []string{"test-viewer", "test-escalator", "test-attachment-downloader"}, []Permission{PermView, PermEscalate, PermDownloadAttachment}},
 		{"unrelated roles grant nothing", []string{"wso2-everyone", "admin", "agent", "customer"}, nil},
 		{"no roles", nil, nil},
@@ -154,10 +156,11 @@ func TestAccessGuard_RolesFor(t *testing.T) {
 		{"every role", []string{
 			"test-viewer", "test-escalator", "test-attachment-downloader",
 			"test-cs-engineer", "test-usage-metrics-viewer", "test-timecard-approver",
-			"test-dashboard-designer", "test-admin",
-		}, []string{"viewer", "escalator", "attachment_downloader", "cs_engineer", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "admin"}},
+			"test-dashboard-designer", "test-admin", "test-sales-solutions",
+		}, []string{"viewer", "escalator", "attachment_downloader", "cs_engineer", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "admin", "sales_solutions"}},
 		{"unrelated roles are ignored", []string{"wso2-everyone", "agent"}, []string{}},
 		{"a duplicated held role is reported once", []string{"test-viewer", "test-viewer"}, []string{"viewer"}},
+		{"sales solutions is reported like any other portal role, alongside a real capability", []string{"test-viewer", "test-sales-solutions"}, []string{"viewer", "sales_solutions"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

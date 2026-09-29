@@ -37,14 +37,18 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/csmnotification"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/dashboard"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/employeeinfo"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/githubissue"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/googledrive"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/handler"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/notifications"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/plg"
 	plgconfig "github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/plg/config"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/risk"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/scim"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/sftpgo"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/updates"
 )
@@ -155,6 +159,94 @@ func main() {
 		// CaseHandler.WithInlineImageProcessor. SN-backed comment creation is
 		// unaffected: it never reaches this branch.
 		caseHandler.WithInlineImageProcessor(handler.NewInlineImageProcessor(customerEntityClient, sftpgoClientInst))
+	}
+
+	// SupportPortalLite (/spl/*) — off by default; see loadSPLConfig. Ported
+	// from digiops-cs/apps/support-portal-lite's Ballerina backend, which is
+	// being retired.
+	splEnabled, splCfg := loadSPLConfig()
+	var splHandlers *splHandlerSet
+	if splEnabled {
+		salesEntityClient := entity.NewSalesEntityClient(entity.SalesEntityConfig{
+			BaseURL:      splCfg.salesEntityBaseURL,
+			TokenURL:     splCfg.entityTokenURL,
+			ClientID:     splCfg.entityClientID,
+			ClientSecret: splCfg.entityClientSecret,
+		})
+		csEntityClient := entity.NewCSEntityClient(entity.CSEntityConfig{
+			BaseURL:      splCfg.csEntityBaseURL,
+			TokenURL:     splCfg.entityTokenURL,
+			ClientID:     splCfg.entityClientID,
+			ClientSecret: splCfg.entityClientSecret,
+		})
+		employeeInfoClient := employeeinfo.NewClient(employeeinfo.Config{
+			BaseURL:      splCfg.employeeInfoBaseURL,
+			TokenURL:     splCfg.entityTokenURL,
+			ClientID:     splCfg.entityClientID,
+			ClientSecret: splCfg.entityClientSecret,
+		})
+		snClient := servicenow.NewClient(servicenow.Config{
+			BaseURL:              splCfg.snHost,
+			Username:             splCfg.snUsername,
+			Password:             splCfg.snPassword,
+			EscalationTemplateID: splCfg.snEscalationTemplateID,
+			TeamScheduleURL:      splCfg.teamScheduleURL,
+		})
+		driveClient := googledrive.NewClient(googledrive.Config{
+			ClientID:     splCfg.driveClientID,
+			ClientSecret: splCfg.driveClientSecret,
+			RefreshToken: splCfg.driveRefreshToken,
+		})
+		// A live DB ping happens here, unlike every other client above —
+		// this backend's standing convention (see loadDashboards,
+		// loadDirectory) is that a broken required integration fails startup
+		// loudly rather than serving traffic it cannot actually handle.
+		// risk.NewClient returns a typed-nil client on a failed ping if this
+		// were ignored, and NewCustomerHealthHandler would then store that
+		// nil client in its risk interface -- Customer Health routes would
+		// dispatch to a nil receiver instead of failing at startup where the
+		// cause is obvious. A 30s deadline bounds the ping so a hung network
+		// doesn't hang startup forever.
+		riskCtx, riskCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		riskClient, err := risk.NewClient(riskCtx, risk.Config{DSN: splCfg.riskMySQLDSN})
+		riskCancel()
+		if err != nil {
+			slog.Error("failed to connect to SPL_RISK_MYSQL_DSN", "err", err)
+			os.Exit(1)
+		}
+
+		// SPL cases/comments now read from entity-service (Postgres) instead
+		// of ServiceNow directly — the ServiceNow-removal transition plan's
+		// "Layer 1", first slice. Attachments still route to snClient inside
+		// this wrapper — see postgresSplCaseClient's own doc comment for why.
+		// Reuses customerEntityClient, the same client every other CS Portal
+		// handler already calls: SPL's data is the same entity-service, not
+		// a separate one.
+		splPostgresCases := handler.NewPostgresSplCaseClient(customerEntityClient, snClient)
+		splPostgresLookups := handler.NewPostgresSplLookupsClient(customerEntityClient, snClient)
+		splPostgresAccounts := handler.NewPostgresSplAccountClient(customerEntityClient, customerEntityClient, snClient)
+		splPostgresProjects := handler.NewPostgresSplProjectClient(customerEntityClient, customerEntityClient)
+		splPostgresAbtTeamMembers := handler.NewPostgresSplAbtTeamMembersClient(customerEntityClient)
+		splPostgresReports := handler.NewPostgresSplReportsClient(customerEntityClient, snClient)
+		splPostgresUsageMetrics := handler.NewPostgresSplUsageMetricsClient(customerEntityClient)
+
+		splHandlers = &splHandlerSet{
+			accounts:       handler.NewSplAccountHandler(splPostgresAccounts, splCfg.allowedGroups, splCfg.addEscalationGroups),
+			projects:       handler.NewSplProjectHandler(splPostgresProjects, splCfg.allowedGroups),
+			cases:          handler.NewSplCaseHandler(splPostgresCases, splCfg.allowedGroups),
+			reports:        handler.NewSplReportsHandler(splPostgresReports, splCfg.allowedGroups),
+			schedule:       handler.NewSplScheduleHandler(snClient, splCfg.allowedGroups, splCfg.teamScheduleURL),
+			worknotes:      handler.NewSplWorknotesHandler(splPostgresCases, splCfg.allowedGroups, splCfg.addWorknoteGroups),
+			attachments:    handler.NewSplAttachmentsHandler(snClient, splCfg.allowedGroups, splCfg.downloadAttachmentGroups),
+			lookups:        handler.NewSplLookupsHandler(splPostgresLookups, splCfg.allowedGroups),
+			usageMetrics:   handler.NewUsageMetricsHandler(splPostgresUsageMetrics, splCfg.allowedGroups, splCfg.usageMetricsGroups),
+			files:          handler.NewSplFilesHandler(driveClient, splCfg.allowedGroups),
+			customerHealth: handler.NewCustomerHealthHandler(riskClient, snClient, splCfg.allowedGroups),
+			userInfo:       handler.NewSplUserInfoHandler(employeeInfoClient, splCfg.allowedGroups),
+			userScan:       handler.NewSplUserScanHandler(salesEntityClient, csEntityClient, splCfg.allowedGroups),
+			abtTeamMembers: handler.NewSplABTTeamMembersHandler(splPostgresAbtTeamMembers, employeeInfoClient, splCfg.allowedGroups),
+		}
+		slog.Info("SPL_ENABLED is on: SupportPortalLite's /spl/* endpoints are active")
 	}
 
 	updatesCfg := updates.Config{
@@ -454,6 +546,72 @@ func main() {
 	// Called manually today; not yet wired into real incident/case creation.
 	route("POST /notifications/google-chat/alerts", handler.PermWrite, notificationHandler.PostGoogleChatAlert)
 
+	// SupportPortalLite — see splHandlers above. Registered only when
+	// SPL_ENABLED is on, so an unconfigured deployment sees no new routes
+	// at all. Most of these routes are unprefixed: SPL and csm-portal are
+	// the same backend now, so a route only needs the /spl/ prefix where
+	// it would otherwise collide with a route csm-portal's own,
+	// differently-shaped case-management domain already owns — the
+	// accounts/projects/cases list/search/detail routes below still do,
+	// until they're consolidated the same way /accounts, /projects, and
+	// /cases search/detail already were.
+	if splHandlers != nil {
+		mux.HandleFunc("GET /spl/accounts", splHandlers.accounts.GetAccounts)
+		mux.HandleFunc("GET /spl/accounts/{accountId}", splHandlers.accounts.GetAccountByID)
+		mux.HandleFunc("GET /spl/accounts/{accountId}/projects", splHandlers.accounts.GetAccountProjects)
+		mux.HandleFunc("GET /accounts/{accountId}/escalations", splHandlers.accounts.GetAccountEscalations)
+		mux.HandleFunc("POST /accounts/{accountId}/cases/{caseId}/escalate", splHandlers.accounts.EscalateCase)
+		mux.HandleFunc("GET /spl/projects", splHandlers.projects.GetProjects)
+		mux.HandleFunc("GET /spl/projects/{projectId}", splHandlers.projects.GetProjectByID)
+		mux.HandleFunc("GET /spl/projects/{projectId}/contacts", splHandlers.projects.GetProjectContacts)
+		mux.HandleFunc("GET /spl/projects/{projectId}/cases", splHandlers.projects.GetProjectCases)
+		mux.HandleFunc("GET /spl/cases", splHandlers.cases.GetCases)
+		mux.HandleFunc("GET /spl/cases/{caseId}", splHandlers.cases.GetCaseByNumber)
+		mux.HandleFunc("GET /spl/cases/{caseId}/comments-and-worknotes", splHandlers.cases.GetCommentsAndWorknotes)
+		mux.HandleFunc("GET /cases/{caseId}/attachments-info", splHandlers.cases.GetAttachmentsInfo)
+		mux.HandleFunc("POST /spl/cases/{caseId}/worknote", splHandlers.worknotes.PostWorkNote)
+		mux.HandleFunc("GET /attachments/{attachmentId}/download", splHandlers.attachments.DownloadAttachment)
+		mux.HandleFunc("GET /products", splHandlers.lookups.GetProducts)
+		mux.HandleFunc("GET /abt-teams", splHandlers.lookups.GetABTTeams)
+		mux.HandleFunc("GET /generate-sla-report", splHandlers.reports.GenerateSLAReport)
+		mux.HandleFunc("GET /report-details", splHandlers.reports.GetReportDetails)
+		mux.HandleFunc("GET /generate-timelogs-breakdown-report", splHandlers.reports.GenerateTimelogsBreakdownReport)
+		mux.HandleFunc("GET /abt-team-schedule", splHandlers.schedule.GetABTTeamSchedule)
+		mux.HandleFunc("GET /spl/abt-team-members", splHandlers.abtTeamMembers.GetABTTeamMembers)
+		mux.HandleFunc("GET /user-info", splHandlers.userInfo.GetUserInfo)
+		mux.HandleFunc("POST /scan-user", splHandlers.userScan.ScanUser)
+		mux.HandleFunc("GET /files", splHandlers.files.ListFiles)
+		mux.HandleFunc("GET /files/search", splHandlers.files.SearchFolder)
+		mux.HandleFunc("GET /usage-metrics/projects", splHandlers.usageMetrics.GetProjects)
+		mux.HandleFunc("POST /usage-metrics/instances/metrics/search", splHandlers.usageMetrics.SearchInstanceMetrics)
+		mux.HandleFunc("POST /usage-metrics/instances/metrics/stats", splHandlers.usageMetrics.GetInstanceMetricsStats)
+		mux.HandleFunc("POST /usage-metrics/instances/usages/search", splHandlers.usageMetrics.SearchInstanceUsages)
+		mux.HandleFunc("POST /usage-metrics/instances/usages/stats", splHandlers.usageMetrics.GetInstanceUsagesStats)
+		mux.HandleFunc("POST /usage-metrics/deployments/search", splHandlers.usageMetrics.SearchDeployments)
+		mux.HandleFunc("POST /usage-metrics/projects/search", splHandlers.usageMetrics.SearchProjects)
+		mux.HandleFunc("POST /usage-metrics/deployed-products/search", splHandlers.usageMetrics.SearchDeployedProducts)
+		mux.HandleFunc("POST /usage-metrics/instances/search", splHandlers.usageMetrics.SearchInstances)
+		mux.HandleFunc("POST /usage-metrics/deployed-products/{id}/metrics/search", splHandlers.usageMetrics.GetDeployedProductMetrics)
+		mux.HandleFunc("POST /usage-metrics/deployed-products/{id}/metrics/usage-counts/search", splHandlers.usageMetrics.GetDeployedProductUsageCounts)
+		mux.HandleFunc("POST /customer-health/summary", splHandlers.customerHealth.GetSummary)
+		mux.HandleFunc("POST /customer-health/accounts/{accountSysId}/init-health-tracking", splHandlers.customerHealth.InitHealthTracking)
+		mux.HandleFunc("GET /customer-health/accounts/{accountId}", splHandlers.customerHealth.GetAccountDetail)
+		mux.HandleFunc("POST /customer-health/projects/{projectSysId}/risk", splHandlers.customerHealth.OpenRisk)
+		mux.HandleFunc("PUT /customer-health/risks/{riskId}/close", splHandlers.customerHealth.CloseRisk)
+		mux.HandleFunc("POST /customer-health/projects/{projectSysId}/mark-healthy", splHandlers.customerHealth.MarkHealthy)
+		mux.HandleFunc("POST /customer-health/projects/{projectSysId}/revert-review", splHandlers.customerHealth.RevertReview)
+		mux.HandleFunc("GET /customer-health/accounts/{accountSysId}/health-status", splHandlers.customerHealth.GetAccountHealthStatus)
+		mux.HandleFunc("GET /customer-health/accounts/{accountSysId}/health-summary", splHandlers.customerHealth.GetAccountHealthSummary)
+		mux.HandleFunc("GET /customer-health/projects/{projectSysId}/risk-history", splHandlers.customerHealth.GetProjectRiskHistory)
+		mux.HandleFunc("POST /customer-health/risks/{riskId}/action-items", splHandlers.customerHealth.CreateActionItem)
+		mux.HandleFunc("PUT /customer-health/action-items/{actionItemId}/status", splHandlers.customerHealth.UpdateActionItemStatus)
+		mux.HandleFunc("PUT /customer-health/action-items/{actionItemId}", splHandlers.customerHealth.UpdateActionItem)
+		mux.HandleFunc("GET /customer-health/risks/{riskId}/action-items", splHandlers.customerHealth.GetActionItemsByRisk)
+		mux.HandleFunc("GET /customer-health/accounts/{accountSysId}/action-items", splHandlers.customerHealth.GetActionItemsByAccount)
+		mux.HandleFunc("POST /customer-health/action-items/{actionItemId}/comments", splHandlers.customerHealth.CreateActionItemComment)
+		mux.HandleFunc("GET /customer-health/action-items/{actionItemId}/comments", splHandlers.customerHealth.GetActionItemComments)
+	}
+
 	// Built once and reused on both listeners below: Auth() does a real JWKS
 	// fetch (when TokenValidatorEnabled), so calling it a second time would
 	// duplicate that startup network round-trip and double the chance of a
@@ -704,7 +862,7 @@ func loadDirectory() *directory.Directory {
 //	AUTH_VIEWER_ROLES, AUTH_ESCALATOR_ROLES,
 //	AUTH_ATTACHMENT_DOWNLOADER_ROLES, AUTH_USAGE_METRICS_VIEWER_ROLES,
 //	AUTH_SUPPORT_ENGINEER_ROLES, AUTH_ADMIN_ROLES, AUTH_TIMECARD_APPROVER_ROLES,
-//	AUTH_DASHBOARD_DESIGNER_ROLES
+//	AUTH_DASHBOARD_DESIGNER_ROLES, AUTH_SALES_SOLUTIONS_ROLES
 //	    Each is a comma-separated list of role names; a caller whose token's
 //	    "roles" claim holds any one of them has that role.
 //
@@ -713,6 +871,12 @@ func loadDirectory() *directory.Directory {
 // lack of a default follows. A role whose variable is unset or empty is held by
 // nobody, and startup warns naming each one, since with none configured at all
 // nobody can use the portal.
+//
+// AUTH_SALES_SOLUTIONS_ROLES is unlike the rest: leaving it unset does not
+// warn, since a deployment that hasn't provisioned a Sales/Solutions-
+// Architecture role yet is a normal, expected state (CS Portal alone still
+// works fine) rather than a misconfiguration nobody can use the portal at
+// all without — see AccessConfig.SalesSolutions's own doc comment.
 func loadAccessConfig() handler.AccessConfig {
 	var unset []string
 	roles := func(name string) []string {
@@ -734,6 +898,11 @@ func loadAccessConfig() handler.AccessConfig {
 		Admin:             roles("AUTH_ADMIN_ROLES"),
 		TimecardApprover:  roles("AUTH_TIMECARD_APPROVER_ROLES"),
 		DashboardDesigner: roles("AUTH_DASHBOARD_DESIGNER_ROLES"),
+		// Unlike the roles above, an unset AUTH_SALES_SOLUTIONS_ROLES is a
+		// normal, supported state (CS Portal alone still works without it),
+		// so this deliberately bypasses the roles() helper to avoid adding
+		// it to the unset-variable warning below.
+		SalesSolutions: splitComma(os.Getenv("AUTH_SALES_SOLUTIONS_ROLES")),
 	}
 	if len(unset) > 0 {
 		slog.Warn("access-control role variables are unset, so no token role grants them", "variables", unset)
@@ -1086,6 +1255,112 @@ func splitComma(s string) []string {
 		}
 	}
 	return result
+}
+
+// splHandlerSet holds every SupportPortalLite (/spl/*) handler, constructed
+// only when SPL_ENABLED is on. See loadSPLConfig for the environment
+// variables backing each field.
+type splHandlerSet struct {
+	accounts       *handler.SplAccountHandler
+	projects       *handler.SplProjectHandler
+	cases          *handler.SplCaseHandler
+	reports        *handler.SplReportsHandler
+	schedule       *handler.SplScheduleHandler
+	worknotes      *handler.SplWorknotesHandler
+	attachments    *handler.SplAttachmentsHandler
+	lookups        *handler.SplLookupsHandler
+	usageMetrics   *handler.UsageMetricsHandler
+	files          *handler.SplFilesHandler
+	customerHealth *handler.CustomerHealthHandler
+	userInfo       *handler.SplUserInfoHandler
+	userScan       *handler.SplUserScanHandler
+	abtTeamMembers *handler.SplABTTeamMembersHandler
+}
+
+// splConfig holds every environment value SupportPortalLite's /spl/*
+// endpoints need, resolved by loadSPLConfig.
+type splConfig struct {
+	allowedGroups            []string
+	addWorknoteGroups        []string
+	addEscalationGroups      []string
+	downloadAttachmentGroups []string
+	usageMetricsGroups       []string
+	snHost                   string
+	snUsername               string
+	snPassword               string
+	snEscalationTemplateID   string
+	teamScheduleURL          string
+	driveClientID            string
+	driveClientSecret        string
+	driveRefreshToken        string
+	riskMySQLDSN             string
+	salesEntityBaseURL       string
+	csEntityBaseURL          string
+	entityTokenURL           string
+	entityClientID           string
+	entityClientSecret       string
+	employeeInfoBaseURL      string
+}
+
+// loadSPLConfig resolves SupportPortalLite's (/spl/*) configuration.
+//
+//	SPL_ENABLED  Any strconv.ParseBool-true value (1, t, T, TRUE, true,
+//	             True). Off by default — unset, empty, or any other value
+//	             keeps every /spl/* route unregistered and every other env
+//	             var below unread, mirroring SFTPGO_ATTACHMENT_STORAGE_ENABLED's
+//	             parsing convention. An unparseable non-empty value is a
+//	             warning, not fatal, and defaults to off.
+//
+// When on, every value below is required (mustEnv) except
+// SERVICENOW_ESCALATION_TEMPLATE_ID and TEAM_SCHEDULE_URL, which are
+// only exercised by the escalation and ABT-team-schedule endpoints
+// respectively and default to empty. SERVICENOW_* and the entity/
+// employee-info vars below have no SPL_ prefix even though they're only
+// read when SPL is on: they aren't SPL-specific concepts (ServiceNow and
+// the Sales/CS entity services are just this feature's own upstreams, the
+// same way SPL_GOOGLE_DRIVE_* and SPL_RISK_MYSQL_DSN are), so they follow
+// this file's existing convention of naming a service's own credentials
+// after the service, not the caller. See .env.example for what each
+// variable configures.
+//
+// Returns (false, zero splConfig) when the flag is off, so the caller never
+// touches the returned splConfig in that case.
+func loadSPLConfig() (bool, splConfig) {
+	enabled := false
+	if raw := strings.TrimSpace(os.Getenv("SPL_ENABLED")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			slog.Warn("SPL_ENABLED is not a boolean; treating it as false",
+				"value", raw, "expected", "1, t, T, TRUE, true, True, 0, f, F, FALSE, false, False")
+		}
+		enabled = parsed
+	}
+	if !enabled {
+		return false, splConfig{}
+	}
+
+	return true, splConfig{
+		allowedGroups:            splitComma(mustEnv("SPL_ALLOWED_GROUPS")),
+		addWorknoteGroups:        splitComma(mustEnv("SPL_ADD_WORKNOTE_GROUPS")),
+		addEscalationGroups:      splitComma(mustEnv("SPL_ADD_ESCALATION_GROUPS")),
+		downloadAttachmentGroups: splitComma(mustEnv("SPL_DOWNLOAD_ATTACHMENT_GROUPS")),
+		usageMetricsGroups:       splitComma(mustEnv("SPL_USAGE_METRICS_GROUPS")),
+		snHost:                   mustHTTPSBaseURL("SERVICENOW_HOST", mustEnv("SERVICENOW_HOST")),
+		snUsername:               mustEnv("SERVICENOW_USERNAME"),
+		snPassword:               mustEnv("SERVICENOW_PASSWORD"),
+		snEscalationTemplateID:   os.Getenv("SERVICENOW_ESCALATION_TEMPLATE_ID"),
+		teamScheduleURL:          os.Getenv("TEAM_SCHEDULE_URL"),
+		driveClientID:            mustEnv("SPL_GOOGLE_DRIVE_CLIENT_ID"),
+		driveClientSecret:        mustEnv("SPL_GOOGLE_DRIVE_CLIENT_SECRET"),
+		driveRefreshToken:        mustEnv("SPL_GOOGLE_DRIVE_REFRESH_TOKEN"),
+		riskMySQLDSN:             mustEnv("SPL_RISK_MYSQL_DSN"),
+		salesEntityBaseURL:       mustHTTPSBaseURL("SALES_ENTITY_BASE_URL", mustEnv("SALES_ENTITY_BASE_URL")),
+		csEntityBaseURL:          mustHTTPSBaseURL("CS_ENTITY_BASE_URL", mustEnv("CS_ENTITY_BASE_URL")),
+		entityTokenURL:           mustHTTPSBaseURL("ENTITY_TOKEN_URL", mustEnv("ENTITY_TOKEN_URL")),
+		entityClientID:           mustEnv("ENTITY_CLIENT_ID"),
+		entityClientSecret:       mustEnv("ENTITY_CLIENT_SECRET"),
+		employeeInfoBaseURL:      mustHTTPSBaseURL("EMPLOYEE_INFO_BASE_URL", mustEnv("EMPLOYEE_INFO_BASE_URL")),
+	}
 }
 
 func parseGoogleChatSpaces(raw string) []notifications.GoogleChatSpace {
