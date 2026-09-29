@@ -911,6 +911,57 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 	if req.RequestApproval != nil && *req.RequestApproval {
 		addCR("approval = $%d::change_request_approval_enum", "REQUESTED")
 	}
+	// **T fields: nil outer = omitted, non-nil outer with nil inner = explicit
+	// null (clear the column), otherwise set it.
+	addNullableText := func(col string, v **string) {
+		if v == nil {
+			return
+		}
+		if *v == nil {
+			crSets = append(crSets, col+" = NULL")
+			return
+		}
+		addCR(col+" = $%d", **v)
+	}
+	addNullableText("implementation_plan", req.ImplementationPlan)
+	addNullableText("affected_services", req.AffectedServicesText)
+	addNullableText("affected_component", req.AffectedComponentsText)
+	addNullableText("rollback_duration", req.RollbackDurationText)
+	if req.RequestedByID != nil {
+		if *req.RequestedByID == nil {
+			crSets = append(crSets, "requested_by_user_id = NULL")
+		} else {
+			addCR("requested_by_user_id = $%d::uuid", **req.RequestedByID)
+		}
+	}
+	if req.CustomerGroupID != nil {
+		if *req.CustomerGroupID == nil {
+			crSets = append(crSets, "customer_group_id = NULL")
+		} else {
+			addCR("customer_group_id = $%d::uuid", **req.CustomerGroupID)
+		}
+	}
+	if req.Priority != nil {
+		if *req.Priority == nil {
+			crSets = append(crSets, "priority = NULL")
+		} else {
+			addCR("priority = $%d::change_request_priority_enum", strings.ToUpper(string(**req.Priority)))
+		}
+	}
+	if req.Category != nil {
+		if *req.Category == nil {
+			crSets = append(crSets, "category = NULL")
+		} else {
+			label := strings.ToUpper(string(**req.Category))
+			if !changeRequestCategoryPGLabels[label] {
+				return domain.ChangeRequest{}, &apierror.ValidationError{Msg: fmt.Sprintf("category %q is not supported on the PostgreSQL data source", **req.Category)}
+			}
+			addCR("category = $%d::change_request_category_enum", label)
+		}
+	}
+	if req.IsPlanningVisibleToCustomers != nil {
+		addCR("is_planning_visible_to_customers = $%d", *req.IsPlanningVisibleToCustomers)
+	}
 	// Type has no real mapping -- see this file's own package doc comment.
 
 	if len(crSets) > 0 {
@@ -1289,4 +1340,12 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 		return "", fmt.Errorf("decide change request approval: %w", err)
 	}
 	return approvalID, nil
+}
+
+// changeRequestCategoryPGLabels is change_request_category_enum's label set
+// (migration 0043). The domain enum carries four more values (regular/hotfix
+// release cloud, devops, cloud computing) with no label here.
+var changeRequestCategoryPGLabels = map[string]bool{
+	"SOFTWARE": true, "NETWORK": true, "SERVICE": true, "TELECOM": true, "HARDWARE": true,
+	"SYSTEM_SOFTWARE": true, "DOCUMENTATION": true, "APPLICATIONS_SOFTWARE": true, "OTHER": true,
 }
