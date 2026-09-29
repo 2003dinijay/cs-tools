@@ -1440,6 +1440,37 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 		cause = string(*req.Cause)
 	}
 
+	// state=closed: a case cannot close while any child case (work_item.parent_id
+	// pointing at it; the case detail's "Child cases" list) is still open. The
+	// case detail's link dialog states this rule; nothing on this data source
+	// enforced it.
+	if state == "CLOSED" {
+		var openChild string
+		err := r.db.QueryRow(ctx, `
+			SELECT wi.number
+			FROM work_item wi
+			LEFT JOIN "case" c ON c.id = wi.id
+			`+caseLikeJoins+`
+			WHERE wi.parent_id = $1::uuid
+			  AND wi.type = ANY(`+caseLikeWorkItemTypes+`)
+			  AND COALESCE(`+caseLikeStateColumn+`, '') <> 'CLOSED'
+			LIMIT 1`, req.ID).Scan(&openChild)
+		if err == nil {
+			return domain.Case{}, nil, &apierror.ConflictError{Msg: "Cannot close this case while child case " + openChild + " is still open"}
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return domain.Case{}, nil, fmt.Errorf("update case: check open child cases: %w", err)
+		}
+	}
+
+	// workState=ongoing: an engineer may hold only one ONGOING case. The
+	// mirrored data source enforces the same rule, so accepting a second one
+	// here would only ever surface later as a failed mirror write. Checked in
+	// a transaction serialized per assignee.
+	if req.WorkState != nil && workState == "ONGOING" {
+		return r.updateCaseEnforcingOneOngoing(ctx, req, state, severity, workState, resolutionCode, cause)
+	}
+
 	// req.Severity == nil: severity can't change, so there's nothing to
 	// race on — skip the transaction/lock overhead entirely.
 	if req.Severity == nil {
@@ -2978,4 +3009,54 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 	}
 
 	return activity, total, nil
+}
+
+// updateCaseEnforcingOneOngoing is UpdateCase's workState=ONGOING path. It
+// takes a transaction-scoped advisory lock keyed on the case's assignee (two
+// concurrent requests for two different cases of the same engineer share no
+// row to lock), rejects the update with a ConflictError naming the engineer's
+// other ONGOING case, then runs the normal update in the same transaction.
+// An unassigned case has no engineer to conflict with and proceeds.
+func (r *caseRepo) updateCaseEnforcingOneOngoing(ctx context.Context, req domain.UpdateCaseRequest, state, severity, workState, resolutionCode, cause string) (domain.Case, *domain.CaseSeverity, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return domain.Case{}, nil, fmt.Errorf("update case: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var assignee *string
+	err = tx.QueryRow(ctx, `SELECT assigned_to_id::TEXT FROM work_item WHERE id = $1 AND type = 'CASE'`, req.ID).Scan(&assignee)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+	}
+	if err != nil {
+		return domain.Case{}, nil, fmt.Errorf("update case: read assignee: %w", err)
+	}
+	if assignee != nil {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('case-ongoing:' || $1::TEXT, 0))`, *assignee); err != nil {
+			return domain.Case{}, nil, fmt.Errorf("update case: lock assignee: %w", err)
+		}
+		var otherNumber string
+		err := tx.QueryRow(ctx, `
+			SELECT wi.number
+			FROM work_item wi JOIN "case" c ON c.id = wi.id
+			WHERE wi.assigned_to_id = $1::uuid AND wi.id <> $2::uuid
+			  AND c.work_state = 'ONGOING' AND c.state <> 'CLOSED'
+			ORDER BY wi.updated_on DESC LIMIT 1`, *assignee, req.ID).Scan(&otherNumber)
+		if err == nil {
+			return domain.Case{}, nil, &apierror.ConflictError{Msg: "Cannot set work state to Ongoing: the assigned engineer already has an Ongoing case: " + otherNumber}
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return domain.Case{}, nil, fmt.Errorf("update case: check ongoing cases: %w", err)
+		}
+	}
+
+	c, err := scanUpdatedCase(tx.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes))
+	if err != nil {
+		return domain.Case{}, nil, fmt.Errorf("update case: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Case{}, nil, fmt.Errorf("update case: commit tx: %w", err)
+	}
+	return c, c.Severity, nil
 }
