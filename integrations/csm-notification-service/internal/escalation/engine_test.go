@@ -44,6 +44,26 @@ type memStore struct {
 	states   map[string]LadderState
 	wakes    map[string]time.Time
 	failSave bool
+	// called records the round-robin history the evening pairing reads.
+	called map[string]time.Time
+}
+
+func (m *memStore) MarkCalled(_ context.Context, email string, at time.Time) error {
+	if m.called == nil {
+		m.called = map[string]time.Time{}
+	}
+	m.called[email] = at
+	return nil
+}
+
+func (m *memStore) LastCalled(_ context.Context, emails []string) (map[string]time.Time, error) {
+	out := map[string]time.Time{}
+	for _, e := range emails {
+		if at, ok := m.called[e]; ok {
+			out[e] = at
+		}
+	}
+	return out, nil
 }
 
 func newMemStore() *memStore {

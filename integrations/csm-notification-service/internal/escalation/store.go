@@ -237,3 +237,64 @@ func parseWakeMember(member string) (incidentID string, index int, ok bool) {
 	}
 	return member[:sep], index, true
 }
+
+// lastCalledKey is a hash of recipient -> the last time this engine called
+// them, across every ladder.
+//
+// It exists for one rule: the evening pairing calls the incident's own ABT
+// member plus "one other member of that rota", and who that is must be the
+// person who has gone longest without a call. Spreading that load is the point
+// of the rule -- picking the first name in a stable sort would put the same
+// person on every out-of-hours incident.
+//
+// Keyed by email because that is what a Recipient is identified by everywhere
+// else in this package. It never leaves Redis and is never logged.
+const lastCalledKey = "incident:escalation:lastcalled"
+
+// lastCalledTTL expires the whole hash if the engine stops running. Long
+// enough that a quiet fortnight does not reset everyone's history, short
+// enough that a decommissioned deployment does not leave it behind forever.
+const lastCalledTTL = 90 * 24 * time.Hour
+
+// MarkCalled records that somebody was called, for the fairness rule above.
+//
+// Best-effort by contract: the caller logs and carries on. Losing one entry
+// makes the next pairing slightly less fair, which is not worth failing a page
+// over.
+func (s *Store) MarkCalled(ctx context.Context, email string, at time.Time) error {
+	if email == "" {
+		return nil
+	}
+	if err := s.rdb.HSet(ctx, lastCalledKey, email, at.UTC().Format(time.RFC3339)).Err(); err != nil {
+		return err
+	}
+	return s.rdb.Expire(ctx, lastCalledKey, lastCalledTTL).Err()
+}
+
+// LastCalled answers when each of these people was last called. Somebody with
+// no entry is absent from the map, which the caller reads as "never", and
+// therefore as the longest wait of all.
+func (s *Store) LastCalled(ctx context.Context, emails []string) (map[string]time.Time, error) {
+	if len(emails) == 0 {
+		return nil, nil
+	}
+	vals, err := s.rdb.HMGet(ctx, lastCalledKey, emails...).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]time.Time, len(emails))
+	for i, v := range vals {
+		raw, ok := v.(string)
+		if !ok || raw == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			// A malformed entry is treated as no entry: the person simply
+			// sorts as never called, which is the safe direction.
+			continue
+		}
+		out[emails[i]] = t
+	}
+	return out, nil
+}

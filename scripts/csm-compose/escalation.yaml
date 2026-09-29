@@ -47,10 +47,32 @@ cre:
     # CRE engineers.
     requireKnownTeam: true
 
+  # The teams the rules refer to by role rather than by name. These are
+  # deployment facts -- there are seven ABTs today and there will not always
+  # be -- and they are what answers the rule table's "is this incident
+  # assigned to an ABT team" column. Get one wrong and that rule silently
+  # routes the other way, so they are configuration, not a constant.
+  teams:
+    abts: [apollo, artemis, atlas, castor, draco, phoenix, vega]
+    americas: americas
+    leadership: cre-leadership
+
+  # rules: the R1-R6 table. Omitted here, which uses the shipped
+  # transcription of the spreadsheet (see internal/escalation/rules.go).
+  # Override a row only to correct it ahead of a release; the shape is
+  #   - id: R2
+  #     shift: LK
+  #     assignedToABT: yes
+  #     levels: [alert_duty_own_abt, team_lead, all_team_leads, cre_head, cs_head]
+  #     expectedCalls: [3, 1, 3, 1, 1]
+
   safety:
     # The most calls one ladder may place across every rung. A plan larger
     # than this is truncated and says so, so a rota that suddenly resolves to
     # forty people fails loudly at planning time instead of arriving as a bill.
+    #
+    # R3 is the rule to watch: an incident assigned to no ABT reaches one
+    # nominee in EVERY ABT, which is seven calls at LEVEL_0 alone.
     maxCallsPerLadder: 12
 
     # The highest rung the ladder may climb, 0..4. Omit for no cap. Setting it

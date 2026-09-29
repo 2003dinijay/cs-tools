@@ -31,7 +31,11 @@ type TeamMemberEntry struct {
 	// render state and priority, so a role added by a migration reaches a
 	// caller without this service needing to learn about it first.
 	Role   string `json:"role"`
-	UserID string `json:"userId"`
+	// AlertTier is the standing alert-duty nomination (T1/T2/T3), empty when
+	// this member holds none. A different axis from Role -- see migration
+	// 0171 -- and the input the ladder's first rung resolves from.
+	AlertTier string `json:"alertTier,omitempty"`
+	UserID    string `json:"userId"`
 	Name   string `json:"name"`
 	Email  string `json:"email"`
 }

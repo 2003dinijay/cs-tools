@@ -58,6 +58,13 @@ type LadderConfig struct {
 	Channel Channel   `yaml:"channel"`
 	Start   StartWhen `yaml:"trigger"`
 	Safety  Safety    `yaml:"safety"`
+	// Teams names the teams the rules refer to by role rather than by name --
+	// the ABTs, the Americas team, the leadership team.
+	Teams TeamKeys `yaml:"teams"`
+	// Rules is the escalation rule table. Empty uses DefaultRules, which is
+	// the shipped transcription of the spreadsheet; a deployment overrides a
+	// row here rather than waiting for a release.
+	Rules []Rule `yaml:"rules"`
 }
 
 // StartWhen decides which incidents get a ladder at all.
@@ -181,6 +188,13 @@ func (l *LadderConfig) validate(name string) error {
 	}
 	if l.Safety.MaxCallsPerLadder < 0 {
 		return fmt.Errorf("%s: safety.maxCallsPerLadder is negative", name)
+	}
+	// Only a table that was actually supplied is validated: an empty one means
+	// "use the shipped rules", which are validated by their own test.
+	if len(l.Rules) > 0 {
+		if err := Validate(l.Rules); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
 	}
 	return nil
 }

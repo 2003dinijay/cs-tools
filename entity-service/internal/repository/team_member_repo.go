@@ -36,7 +36,7 @@ type TeamMemberRepository interface {
 	// stable response.
 	//
 	// roles filters when non-empty; an empty slice means every role.
-	MembersByTeamKeys(ctx context.Context, teamKeys, roles []string) ([]domain.TeamMemberEntry, error)
+	MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers []string) ([]domain.TeamMemberEntry, error)
 }
 
 type teamMemberRepository struct{ db *pgxpool.Pool }
@@ -54,22 +54,26 @@ func NewTeamMemberRepository(db *pgxpool.Pool) TeamMemberRepository {
 // the whole lookup. An empty email is the caller's problem to notice, not a
 // reason to return nothing.
 const teamMemberQuery = `
-SELECT t.key, m.role, u.id::text, COALESCE(u.name, ''), COALESCE(u.email, '')
+SELECT t.key, m.role, COALESCE(m.alert_tier, ''), u.id::text, COALESCE(u.name, ''), COALESCE(u.email, '')
   FROM team_member m
   JOIN team t ON t.id = m.team_id
   JOIN "user" u ON u.id = m.user_id
  WHERE t.key = ANY($1)
    AND (cardinality($2::text[]) = 0 OR m.role = ANY($2))
- ORDER BY t.key, m.role, COALESCE(u.email, '')`
+   AND (cardinality($3::text[]) = 0 OR m.alert_tier = ANY($3))
+ ORDER BY t.key, m.role, COALESCE(m.alert_tier, ''), COALESCE(u.email, '')`
 
-func (r *teamMemberRepository) MembersByTeamKeys(ctx context.Context, teamKeys, roles []string) ([]domain.TeamMemberEntry, error) {
+func (r *teamMemberRepository) MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers []string) ([]domain.TeamMemberEntry, error) {
 	if len(teamKeys) == 0 {
 		return nil, nil
 	}
 	if roles == nil {
 		roles = []string{}
 	}
-	rows, err := r.db.Query(ctx, teamMemberQuery, teamKeys, roles)
+	if alertTiers == nil {
+		alertTiers = []string{}
+	}
+	rows, err := r.db.Query(ctx, teamMemberQuery, teamKeys, roles, alertTiers)
 	if err != nil {
 		return nil, fmt.Errorf("query team members: %w", err)
 	}
@@ -78,7 +82,7 @@ func (r *teamMemberRepository) MembersByTeamKeys(ctx context.Context, teamKeys, 
 	var out []domain.TeamMemberEntry
 	for rows.Next() {
 		var e domain.TeamMemberEntry
-		if err := rows.Scan(&e.TeamKey, &e.Role, &e.UserID, &e.Name, &e.Email); err != nil {
+		if err := rows.Scan(&e.TeamKey, &e.Role, &e.AlertTier, &e.UserID, &e.Name, &e.Email); err != nil {
 			return nil, fmt.Errorf("scan team member: %w", err)
 		}
 		out = append(out, e)

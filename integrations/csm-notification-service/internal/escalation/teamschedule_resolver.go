@@ -19,6 +19,8 @@ package escalation
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sort"
 	"strings"
 	"time"
 )
@@ -46,6 +48,20 @@ import (
 // already renders.
 type TeamScheduleResolver struct {
 	entity teamScheduleReader
+	// rules is the table this resolver routes by. Held rather than read from a
+	// package variable so a deployment can correct a row without a release.
+	rules []Rule
+	// abtTeamKeys are the ABTs, in the order a "one from each" rung walks
+	// them. Also what answers the rule table's "is assigned to an ABT team"
+	// column -- a question the old table needed a publisher-supplied flag for,
+	// and which nobody ever populated.
+	abtTeamKeys []string
+	// americasTeamKey is the team covering the night shift.
+	americasTeamKey string
+	// history answers when somebody was last called, for the evening
+	// pairing's "one other member" rule. Optional: without it the pairing
+	// falls back to a stable order, which is deterministic but not fair.
+	history callHistory
 	// leadershipTeamKey is the team the two heads belong to. They sit outside
 	// every ABT on purpose, so that a head still resolves to no ABT for
 	// /users/me -- the absence the Team Schedule page reads as "belongs to
@@ -56,20 +72,67 @@ type TeamScheduleResolver struct {
 // teamScheduleReader is the slice of EntityClient this needs, named so tests
 // can stand in for it without an HTTP server.
 type teamScheduleReader interface {
-	TeamMembers(ctx context.Context, teamKeys, roles []string) ([]teamMember, error)
+	TeamMembers(ctx context.Context, teamKeys, roles, alertTiers []string) ([]teamMember, error)
 	OnDutyAt(ctx context.Context, at time.Time) ([]onDutyAssignment, error)
 }
 
-func NewTeamScheduleResolver(entity teamScheduleReader, leadershipTeamKey string) TeamScheduleResolver {
-	if strings.TrimSpace(leadershipTeamKey) == "" {
-		leadershipTeamKey = defaultLeadershipTeamKey
+// callHistory answers when each of these people was last called. Satisfied by
+// *Store; nil is a valid value and means "no history to go on".
+type callHistory interface {
+	LastCalled(ctx context.Context, emails []string) (map[string]time.Time, error)
+}
+
+// WithCallHistory returns a copy that spreads the evening pairing's second
+// call across the rota by who has gone longest without one.
+func (r TeamScheduleResolver) WithCallHistory(h callHistory) TeamScheduleResolver {
+	r.history = h
+	return r
+}
+
+func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []Rule) TeamScheduleResolver {
+	if strings.TrimSpace(teams.Leadership) == "" {
+		teams.Leadership = defaultLeadershipTeamKey
 	}
-	return TeamScheduleResolver{entity: entity, leadershipTeamKey: leadershipTeamKey}
+	if len(rules) == 0 {
+		rules = DefaultRules
+	}
+	keys := make([]string, 0, len(teams.ABTs))
+	for _, k := range teams.ABTs {
+		if k = teamKeyFor(k); k != "" {
+			keys = append(keys, k)
+		}
+	}
+	return TeamScheduleResolver{
+		entity:            entity,
+		rules:             rules,
+		abtTeamKeys:       keys,
+		americasTeamKey:   teamKeyFor(teams.Americas),
+		leadershipTeamKey: teams.Leadership,
+	}
+}
+
+// TeamKeys names the teams the rule table refers to by role rather than by
+// name. They are configuration because they are deployment facts -- there are
+// seven ABTs today and there will not always be -- and because a rung that
+// silently reaches nobody because a team was renamed is the failure this whole
+// resolver exists to avoid.
+type TeamKeys struct {
+	// ABTs are the ABT team keys.
+	ABTs []string `yaml:"abts"`
+	// Americas is the team covering the night shift.
+	Americas string `yaml:"americas"`
+	// Leadership is the team the two heads belong to.
+	Leadership string `yaml:"leadership"`
 }
 
 const defaultLeadershipTeamKey = "cre-leadership"
 
-// Role names, as migration 000106 constrains team_member.role.
+// Role names, as migration 0170 constrains team_member.role.
+//
+// roleSubLead is no longer a rung: the updated rules make LEVEL_1 the team's
+// one lead and LEVEL_2 every lead, so nothing resolves to a sub lead any more.
+// The value stays in the schema and here because rows still carry it, and
+// removing it would be a data migration for no gain.
 const (
 	roleSubLead = "sub_lead"
 	roleLead    = "lead"
@@ -77,77 +140,300 @@ const (
 	roleCSHead  = "cs_head"
 )
 
-// Resolve implements Resolver.
+// Resolve implements Resolver by looking the incident's rule up and asking
+// that rule's source for the rung.
 //
 // An empty slice is a valid answer everywhere below: a rung that reaches
 // nobody is logged and climbed past, never an error. An error is reserved for
 // not being able to ask at all -- entity-service unreachable, or refusing.
 func (r TeamScheduleResolver) Resolve(ctx context.Context, level Level, rc RoutingContext) ([]Recipient, error) {
-	switch level {
-	case Level0:
-		return r.onCallSubLead(ctx, rc.At)
-	case Level1:
-		return r.abtMembers(ctx, rc.AssignedCRETeam, roleSubLead)
-	case Level2:
-		return r.abtMembers(ctx, rc.AssignedCRETeam, roleLead)
-	case Level3:
-		return r.head(ctx, roleCREHead)
-	case Level4:
-		return r.head(ctx, roleCSHead)
+	if level < Level0 || level > Level4 {
+		return nil, fmt.Errorf("escalation: no rung %s", level)
 	}
-	return nil, fmt.Errorf("escalation: no rung %s", level)
+	rule, ok := r.RuleFor(rc)
+	if !ok {
+		// No row covers this shift. Not an error: the ladder reports the miss
+		// and climbs, which is the same shape as a rung with nobody on it.
+		return nil, nil
+	}
+	return r.fromSource(ctx, rule.Levels[level], rc)
 }
 
-// onCallSubLead intersects who is rostered at that instant with who is a sub
-// lead.
+// RuleFor is which row of the table an incident routes by.
 //
-// The intersection is done here rather than by asking entity-service for it
-// because the two facts live in different places and neither endpoint owns
-// both. The cost is one extra round trip per ladder, paid once when the plan
-// is built rather than per attempt.
-func (r TeamScheduleResolver) onCallSubLead(ctx context.Context, at time.Time) ([]Recipient, error) {
+// "Is assigned to an ABT team" is answered from the configured ABT keys, not
+// from a flag on the payload. The old table needed a publisher to say, no
+// publisher ever did, and every incident routed as UNKNOWN_ABT as a result.
+// The question is answerable from data already in hand, so it is answered.
+func (r TeamScheduleResolver) RuleFor(rc RoutingContext) (Rule, bool) {
+	key := teamKeyFor(rc.AssignedCRETeam)
+	return MatchRule(r.rules, rc.Shift, r.isABT(key), key != "")
+}
+
+func (r TeamScheduleResolver) isABT(teamKey string) bool {
+	for _, k := range r.abtTeamKeys {
+		if k == teamKey {
+			return true
+		}
+	}
+	return false
+}
+
+// fromSource answers one rung.
+func (r TeamScheduleResolver) fromSource(ctx context.Context, src LevelSource, rc RoutingContext) ([]Recipient, error) {
+	switch src {
+	case SourceNone:
+		return nil, nil
+
+	case SourceRotaMembers:
+		return r.rotaMembers(ctx, rc.At)
+
+	case SourceRotaPair:
+		return r.rotaPair(ctx, rc.At, teamKeyFor(rc.AssignedCRETeam))
+
+	case SourceAlertDutyOwnABT:
+		key := teamKeyFor(rc.AssignedCRETeam)
+		if key == "" {
+			return nil, nil
+		}
+		return r.alertDuty(ctx, []string{key})
+
+	case SourceAlertDutyEachABT:
+		return r.oneNomineePerTeam(ctx, r.abtTeamKeys)
+
+	case SourceAlertDutyAmericas:
+		return r.alertDuty(ctx, r.americasKeys())
+
+	case SourceRotaMemberAndAlertDutyAmericas:
+		rota, err := r.rotaMembers(ctx, rc.At)
+		if err != nil {
+			return nil, err
+		}
+		nominees, err := r.alertDuty(ctx, r.americasKeys())
+		if err != nil {
+			return nil, err
+		}
+		// One rota member, as the sheet's own count says, plus the nominees.
+		if len(rota) > 1 {
+			rota = rota[:1]
+		}
+		return dedupeRecipients(append(rota, nominees...)), nil
+
+	case SourceTeamLead:
+		return r.abtMembers(ctx, rc.AssignedCRETeam, roleLead)
+
+	case SourceAllTeamLeads:
+		return r.leadsOf(ctx, r.abtTeamKeys)
+
+	case SourceAmericasTeamLead:
+		return r.leadsOf(ctx, r.americasKeys())
+
+	case SourceCREHead:
+		return r.head(ctx, roleCREHead)
+
+	case SourceCSHead:
+		return r.head(ctx, roleCSHead)
+	}
+	return nil, fmt.Errorf("escalation: unknown level source %q", src)
+}
+
+func (r TeamScheduleResolver) americasKeys() []string {
+	if r.americasTeamKey == "" {
+		return nil
+	}
+	return []string{r.americasTeamKey}
+}
+
+// alertTiers is every nomination, in the order the sheet writes them.
+var alertTiers = []string{"T1", "T2", "T3"}
+
+// rotaMembers is everybody rostered at that instant, in a stable order.
+func (r TeamScheduleResolver) rotaMembers(ctx context.Context, at time.Time) ([]Recipient, error) {
 	onDuty, err := r.entity.OnDutyAt(ctx, at)
 	if err != nil {
 		return nil, err
 	}
-	if len(onDuty) == 0 {
-		return nil, nil
-	}
-
-	teams := make([]string, 0, len(onDuty))
-	seenTeam := map[string]bool{}
-	for _, a := range onDuty {
-		if a.TeamKey != "" && !seenTeam[a.TeamKey] {
-			seenTeam[a.TeamKey] = true
-			teams = append(teams, a.TeamKey)
-		}
-	}
-	subLeads, err := r.entity.TeamMembers(ctx, teams, []string{roleSubLead})
-	if err != nil {
-		return nil, err
-	}
-
-	// Keyed by user rather than by (user, team): a sub lead rostered under one
-	// team is still a sub lead, and the rota's team_id is nullable for a
-	// registry-only team, so pairing on it would silently drop people.
-	isSubLead := make(map[string]bool, len(subLeads))
-	for _, m := range subLeads {
-		isSubLead[m.UserID] = true
-	}
-
 	var out []Recipient
-	seenUser := map[string]bool{}
+	seen := map[string]bool{}
 	for _, a := range onDuty {
-		id := a.Engineer.UserID
-		if !isSubLead[id] || seenUser[id] {
+		if a.Engineer.UserID == "" || seen[a.Engineer.UserID] {
 			continue
 		}
-		seenUser[id] = true
+		seen[a.Engineer.UserID] = true
 		out = append(out, Recipient{
 			Email: a.Engineer.Email, Name: a.Engineer.Name, ShiftCode: a.ShiftCode,
 		})
 	}
+	sortRecipients(out)
 	return out, nil
+}
+
+// rotaPair is the evening rule: the rostered member from the incident's own
+// team, and one other member of the same rota.
+//
+// "One other" is deliberately deterministic -- the next member in the rota's
+// stable order -- so the same incident always calls the same two people. An
+// arbitrary pick would make a retry reach somebody different from the first
+// attempt and make the rung untestable.
+func (r TeamScheduleResolver) rotaPair(ctx context.Context, at time.Time, teamKey string) ([]Recipient, error) {
+	onDuty, err := r.entity.OnDutyAt(ctx, at)
+	if err != nil {
+		return nil, err
+	}
+
+	var own, others []Recipient
+	seen := map[string]bool{}
+	for _, a := range onDuty {
+		if a.Engineer.UserID == "" || seen[a.Engineer.UserID] {
+			continue
+		}
+		seen[a.Engineer.UserID] = true
+		rec := Recipient{Email: a.Engineer.Email, Name: a.Engineer.Name, ShiftCode: a.ShiftCode}
+		if teamKey != "" && teamKeyFor(a.TeamKey) == teamKey {
+			own = append(own, rec)
+			continue
+		}
+		others = append(others, rec)
+	}
+	sortRecipients(own)
+	sortRecipients(others)
+
+	var out []Recipient
+	if len(own) > 0 {
+		out = append(out, own[0])
+	}
+	pool := others
+	if len(pool) == 0 && len(own) > 1 {
+		// Nobody from another team is on: a second member of the same team is
+		// still a second pair of eyes, which is what the rule is for.
+		pool = own[1:]
+	}
+	if second, ok := r.longestSinceCalled(ctx, pool); ok {
+		out = append(out, second)
+	}
+	return out, nil
+}
+
+// longestSinceCalled picks whoever has gone longest without a call, so the
+// evening's second call rotates around the rota instead of always landing on
+// the same person.
+//
+// Never called counts as the longest wait of all, which is what brings
+// somebody new into the rotation the first time. Ties -- including the case
+// where there is no history at all -- break on email, so the answer stays
+// deterministic and a retry reaches the same person as the first attempt.
+func (r TeamScheduleResolver) longestSinceCalled(ctx context.Context, pool []Recipient) (Recipient, bool) {
+	if len(pool) == 0 {
+		return Recipient{}, false
+	}
+	if r.history == nil {
+		return pool[0], true
+	}
+
+	emails := make([]string, 0, len(pool))
+	for _, p := range pool {
+		emails = append(emails, p.Email)
+	}
+	seen, err := r.history.LastCalled(ctx, emails)
+	if err != nil {
+		// Fairness is not worth failing a rung over: fall back to the stable
+		// order, which is still deterministic.
+		slog.WarnContext(ctx, "escalation: could not read call history; pairing falls back to a stable order",
+			"err", err)
+		return pool[0], true
+	}
+
+	best := pool[0]
+	bestAt, bestKnown := seen[best.Email]
+	for _, cand := range pool[1:] {
+		at, known := seen[cand.Email]
+		switch {
+		case !known && bestKnown:
+			best, bestAt, bestKnown = cand, at, false
+		case known && bestKnown && at.Before(bestAt):
+			best, bestAt = cand, at
+		}
+	}
+	return best, true
+}
+
+// alertDuty is every nominee of the named teams.
+func (r TeamScheduleResolver) alertDuty(ctx context.Context, teamKeys []string) ([]Recipient, error) {
+	if len(teamKeys) == 0 {
+		return nil, nil
+	}
+	members, err := r.entity.TeamMembers(ctx, teamKeys, nil, alertTiers)
+	if err != nil {
+		return nil, err
+	}
+	out := recipientsOf(members)
+	sortRecipients(out)
+	return out, nil
+}
+
+// oneNomineePerTeam takes a single nominee from each team, lowest tier first.
+//
+// This is R3: an incident assigned to no ABT reaches one person in every ABT,
+// so whichever team it turns out to belong to has somebody already looking.
+// With seven ABTs that is seven calls -- more than the sheet's own count for
+// that row, which is recorded on the rule and checked against.
+func (r TeamScheduleResolver) oneNomineePerTeam(ctx context.Context, teamKeys []string) ([]Recipient, error) {
+	if len(teamKeys) == 0 {
+		return nil, nil
+	}
+	members, err := r.entity.TeamMembers(ctx, teamKeys, nil, alertTiers)
+	if err != nil {
+		return nil, err
+	}
+
+	// Lowest tier wins, then email, so the choice is stable across calls.
+	byTeam := map[string]teamMember{}
+	for _, m := range members {
+		cur, seen := byTeam[m.TeamKey]
+		if !seen || m.AlertTier < cur.AlertTier ||
+			(m.AlertTier == cur.AlertTier && m.Email < cur.Email) {
+			byTeam[m.TeamKey] = m
+		}
+	}
+
+	var out []Recipient
+	for _, key := range teamKeys {
+		if m, ok := byTeam[key]; ok {
+			out = append(out, Recipient{Email: m.Email, Name: m.Name})
+		}
+	}
+	return out, nil
+}
+
+// leadsOf is the lead of each named team.
+func (r TeamScheduleResolver) leadsOf(ctx context.Context, teamKeys []string) ([]Recipient, error) {
+	if len(teamKeys) == 0 {
+		return nil, nil
+	}
+	members, err := r.entity.TeamMembers(ctx, teamKeys, []string{roleLead}, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := recipientsOf(members)
+	sortRecipients(out)
+	return out, nil
+}
+
+func sortRecipients(rs []Recipient) {
+	sort.Slice(rs, func(i, j int) bool { return rs[i].Email < rs[j].Email })
+}
+
+func dedupeRecipients(rs []Recipient) []Recipient {
+	seen := map[string]bool{}
+	out := rs[:0]
+	for _, r := range rs {
+		if r.Email == "" || seen[r.Email] {
+			continue
+		}
+		seen[r.Email] = true
+		out = append(out, r)
+	}
+	return out
 }
 
 func (r TeamScheduleResolver) abtMembers(ctx context.Context, team, role string) ([]Recipient, error) {
@@ -158,7 +444,7 @@ func (r TeamScheduleResolver) abtMembers(ctx context.Context, team, role string)
 		// read here yet, so this rung reaches nobody and the ladder climbs.
 		return nil, nil
 	}
-	members, err := r.entity.TeamMembers(ctx, []string{key}, []string{role})
+	members, err := r.entity.TeamMembers(ctx, []string{key}, []string{role}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +452,7 @@ func (r TeamScheduleResolver) abtMembers(ctx context.Context, team, role string)
 }
 
 func (r TeamScheduleResolver) head(ctx context.Context, role string) ([]Recipient, error) {
-	members, err := r.entity.TeamMembers(ctx, []string{r.leadershipTeamKey}, []string{role})
+	members, err := r.entity.TeamMembers(ctx, []string{r.leadershipTeamKey}, []string{role}, nil)
 	if err != nil {
 		return nil, err
 	}

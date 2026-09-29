@@ -385,7 +385,8 @@ func localResolver(to string) escalation.Resolver {
 			ClientSecret: os.Getenv("OAUTH2_CLIENT_SECRET"),
 			Scopes:       splitCommaEnv("CUSTOMER_ENTITY_SCOPES"),
 		}),
-		os.Getenv("INCIDENT_ESCALATION_LEADERSHIP_TEAM"),
+		escalation.TeamKeys{Leadership: os.Getenv("INCIDENT_ESCALATION_LEADERSHIP_TEAM")},
+		nil,
 	)
 }
 

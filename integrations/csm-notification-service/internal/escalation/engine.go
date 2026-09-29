@@ -46,6 +46,9 @@ type ladderStore interface {
 	AddWake(ctx context.Context, member string, at time.Time) error
 	RemoveWakes(ctx context.Context, members ...string) error
 	DueMembers(ctx context.Context, now time.Time) ([]string, error)
+	// MarkCalled records who was reached, for the evening pairing's
+	// round-robin. Best-effort at every call site.
+	MarkCalled(ctx context.Context, email string, at time.Time) error
 }
 
 // incidentNotes abstracts the entity-service client that writes the execution
@@ -574,6 +577,19 @@ func (e *Engine) place(ctx context.Context, plan Plan, call PlannedCall) error {
 			"recipient", call.Recipient.Name, "to", maskPhone(call.Recipient.Phone),
 			"channel", string(delivered.Channel), "ref", delivered.Ref,
 			"status", delivered.Status)
+	}
+
+	// Record the call for the evening pairing's fairness rule, whatever the
+	// channel was -- somebody reached by a card has been reached. Best-effort
+	// on purpose: an unrecorded call makes the next pairing slightly less
+	// fair, which is not worth failing a page over, and the error is a log
+	// line rather than an entry in errs so it can never cause a retry that
+	// dials somebody a second time.
+	if e.store != nil && call.Recipient.Email != "" {
+		if err := e.store.MarkCalled(ctx, call.Recipient.Email, time.Now()); err != nil {
+			slog.WarnContext(ctx, "escalation: could not record who was called; the next pairing may repeat somebody",
+				"incidentId", t.IncidentID, "err", err)
+		}
 	}
 	return errors.Join(errs...)
 }

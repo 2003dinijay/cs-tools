@@ -546,7 +546,7 @@ func main() {
 						"falling back to the configured roster")
 				} else {
 					escalationResolver = escalation.NewTeamScheduleResolver(
-						escalationNotes, os.Getenv("INCIDENT_ESCALATION_LEADERSHIP_TEAM"))
+						escalationNotes, creCfg.Teams, creCfg.Rules)
 					slog.Info("incident escalation resolves rungs from the Team Schedule")
 				}
 			}

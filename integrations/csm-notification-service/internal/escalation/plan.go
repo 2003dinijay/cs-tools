@@ -114,7 +114,21 @@ type Plan struct {
 // line -- but only when the channel actually needs a number. A chat rung
 // reaches a space, not a handset, so on chat the same recipient is scheduled
 // and the issue is not raised.
+// ruleNamer is implemented by a Resolver that routes off a rule table and can
+// therefore say which row it used. RosterResolver and StaticResolver do not.
+type ruleNamer interface {
+	RuleFor(rc RoutingContext) (Rule, bool)
+}
+
 func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolicy, r Resolver, channel Channel) (Plan, error) {
+	// Stamp the rule before anything reads it: every log line, the chat card
+	// and the work note report it, and they must name the row the recipients
+	// actually came from.
+	if n, ok := r.(ruleNamer); ok {
+		if rule, matched := n.RuleFor(t.Routing); matched {
+			t.Routing.RuleID = rule.ID
+		}
+	}
 	policy, ok := Lookup(policies, t.Priority)
 	if !ok {
 		return Plan{}, fmt.Errorf("escalation: no policy for priority %q", t.Priority)

@@ -74,6 +74,11 @@ type RoutingContext struct {
 	// AssignedCRETeam is the CS team on the incident; empty when unassigned,
 	// which rules R3 and R4 route on (and section 12.0 also flags).
 	AssignedCRETeam string
+	// RuleID is which row of the escalation table this incident routed by,
+	// stamped by BuildPlan once the resolver has matched it. Reported on every
+	// call, both endings and the work note, so a reader can check what the
+	// ladder did against the sheet.
+	RuleID string
 	// Shift is the effective shift when the incident was reported.
 	Shift Shift
 	// At is the instant the ladder is measured from: when the incident was
@@ -176,6 +181,14 @@ func (rc RoutingContext) ABTEligibility() string {
 // shift yields "UNKNOWN" rather than a guess: the table has no row for one,
 // and quietly reporting the wrong path is worse than admitting there is none.
 func (rc RoutingContext) Rule() string {
+	// Set by BuildPlan when the resolver knows the current table. The
+	// derivation below is the OLD fourteen-row table, kept only for the
+	// resolvers that have no table of their own (RosterResolver,
+	// StaticResolver) -- reporting a rule the ladder did not actually route by
+	// is worse than reporting none, so a known id always wins.
+	if rc.RuleID != "" {
+		return rc.RuleID
+	}
 	lkRotation := rc.Shift == ShiftLKMorning || rc.Shift == ShiftLKEvening || rc.Shift == ShiftLKWeekend
 
 	// No product at all — section 12.0 treats this as an erroneous scenario

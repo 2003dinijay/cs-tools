@@ -39,7 +39,7 @@ func NewTeamMemberHandler(svc service.TeamMemberService) *TeamMemberHandler {
 //
 // A GET with query parameters rather than a POST /search: every other read in
 // this module is shaped that way (on-duty, catalogue, my-lead-teams), the
-// lookup has two scalar filters and no body worth speaking of, and the
+// lookup has three scalar filters and no body worth speaking of, and the
 // escalation resolver calls it once per rung on a hot path where a cacheable
 // GET is worth having.
 func (h *TeamMemberHandler) GetTeamMembers(w http.ResponseWriter, r *http.Request) {
@@ -47,6 +47,10 @@ func (h *TeamMemberHandler) GetTeamMembers(w http.ResponseWriter, r *http.Reques
 		r.Context(),
 		splitCommaList(r.URL.Query().Get("teamKeys")),
 		splitCommaList(r.URL.Query().Get("roles")),
+		// alertTiers narrows to the alert-duty nominees (T1/T2/T3), which is
+		// what the ladder's first rung asks for. Empty means "any", so an
+		// existing caller is unaffected.
+		splitCommaList(r.URL.Query().Get("alertTiers")),
 	)
 	if err != nil {
 		writeServiceError(w, r, err)

@@ -117,9 +117,14 @@ func (c *EntityClient) AppendWorkNote(ctx context.Context, incidentID, note stri
 type teamMember struct {
 	TeamKey string `json:"teamKey"`
 	Role    string `json:"role"`
-	UserID  string `json:"userId"`
-	Name    string `json:"name"`
-	Email   string `json:"email"`
+	// AlertTier is the standing alert-duty nomination (T1/T2/T3), empty when
+	// this member holds none. A different axis from Role -- see entity-service
+	// migration 0171 -- and what the ladder's first rung resolves from on the
+	// rules whose Level 0 is a nominated set rather than the rota.
+	AlertTier string `json:"alertTier,omitempty"`
+	UserID    string `json:"userId"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
 }
 
 type teamMembersResponse struct {
@@ -130,7 +135,7 @@ type teamMembersResponse struct {
 //
 // An empty result is not an error: a team with nobody at that rank is a rung
 // that reaches nobody, which the ladder logs and climbs past.
-func (c *EntityClient) TeamMembers(ctx context.Context, teamKeys, roles []string) ([]teamMember, error) {
+func (c *EntityClient) TeamMembers(ctx context.Context, teamKeys, roles, alertTiers []string) ([]teamMember, error) {
 	if len(teamKeys) == 0 {
 		return nil, nil
 	}
@@ -138,6 +143,9 @@ func (c *EntityClient) TeamMembers(ctx context.Context, teamKeys, roles []string
 	q.Set("teamKeys", strings.Join(teamKeys, ","))
 	if len(roles) > 0 {
 		q.Set("roles", strings.Join(roles, ","))
+	}
+	if len(alertTiers) > 0 {
+		q.Set("alertTiers", strings.Join(alertTiers, ","))
 	}
 	raw, err := c.do(ctx, http.MethodGet, "/team-schedule/members?"+q.Encode(), nil)
 	if err != nil {

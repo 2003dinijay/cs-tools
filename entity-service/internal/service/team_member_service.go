@@ -36,7 +36,7 @@ import (
 // because folding rank into the rota response would change a shape the Team
 // Schedule page already renders.
 type TeamMemberService interface {
-	MembersByTeamKeys(ctx context.Context, teamKeys, roles []string) (domain.TeamMembersResponse, error)
+	MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers []string) (domain.TeamMembersResponse, error)
 }
 
 type teamMemberService struct {
@@ -78,7 +78,7 @@ var validTeamMemberRole = map[string]bool{
 	"cs_head":  true,
 }
 
-func (s *teamMemberService) MembersByTeamKeys(ctx context.Context, teamKeys, roles []string) (domain.TeamMembersResponse, error) {
+func (s *teamMemberService) MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers []string) (domain.TeamMembersResponse, error) {
 	if err := s.requireInternalCaller(ctx); err != nil {
 		return domain.TeamMembersResponse{}, err
 	}
@@ -95,7 +95,7 @@ func (s *teamMemberService) MembersByTeamKeys(ctx context.Context, teamKeys, rol
 		}
 	}
 
-	members, err := s.repo.MembersByTeamKeys(ctx, teamKeys, roles)
+	members, err := s.repo.MembersByTeamKeys(ctx, teamKeys, roles, alertTiers)
 	if err != nil {
 		return domain.TeamMembersResponse{}, err
 	}
