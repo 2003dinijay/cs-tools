@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,15 +36,65 @@ import (
 type fakePolicyLookupRepo struct {
 	policies map[string]repository.SLAPolicyRef
 	calls    []string
+	// errOnName, if set, makes FindPolicyByName fail with a real (non-
+	// NotFoundError) error for that exact name -- used to simulate a
+	// transient lookup failure (as opposed to a genuinely absent policy)
+	// for one specific clock type, leaving every other name unaffected.
+	errOnName string
+	// patternPolicies backs FindPolicyByPattern -- keyed the same way as
+	// policies (name|target) but looked up by substring match on
+	// prefix/label rather than an exact name, simulating a policy whose
+	// real name doesn't follow the "prefix - label (plan)" convention
+	// FindPolicyByName expects.
+	patternPolicies map[string]repository.SLAPolicyRef
+	patternCalls    []string
 }
 
 func (f *fakePolicyLookupRepo) FindPolicyByName(_ context.Context, name, target string) (repository.SLAPolicyRef, error) {
 	f.calls = append(f.calls, name+"|"+target)
+	if f.errOnName != "" && name == f.errOnName {
+		return repository.SLAPolicyRef{}, errors.New("db unavailable")
+	}
 	ref, ok := f.policies[name+"|"+target]
 	if !ok {
 		return repository.SLAPolicyRef{}, &apierror.NotFoundError{Msg: "no sla_policy found named " + name}
 	}
 	return ref, nil
+}
+
+// FindPolicyByPattern mirrors the real repository's ordering rule: among
+// every candidate matching prefix/label/target, a name containing
+// derivedPlan always wins over one that doesn't, and the shortest name wins
+// within that group -- deterministic, unlike ranging over patternPolicies
+// (a Go map) directly, which is what the real bug (plain length(name)
+// ordering ignoring plan) would have masked in a test that just returned
+// the first match found.
+func (f *fakePolicyLookupRepo) FindPolicyByPattern(_ context.Context, prefix, label, target, derivedPlan string) (repository.SLAPolicyRef, error) {
+	f.patternCalls = append(f.patternCalls, prefix+"|"+label+"|"+target+"|"+derivedPlan)
+	var best repository.SLAPolicyRef
+	bestName := ""
+	found := false
+	for name, ref := range f.patternPolicies {
+		if !strings.HasPrefix(name, prefix+" - ") || !strings.Contains(name, label) || ref.Target != target {
+			continue
+		}
+		if !found {
+			best, bestName, found = ref, name, true
+			continue
+		}
+		bestMatchesPlan := strings.Contains(bestName, derivedPlan)
+		candidateMatchesPlan := strings.Contains(name, derivedPlan)
+		switch {
+		case candidateMatchesPlan && !bestMatchesPlan:
+			best, bestName = ref, name
+		case candidateMatchesPlan == bestMatchesPlan && len(name) < len(bestName):
+			best, bestName = ref, name
+		}
+	}
+	if !found {
+		return repository.SLAPolicyRef{}, &apierror.NotFoundError{Msg: "no sla_policy found matching " + prefix + "/" + label + "/" + target}
+	}
+	return best, nil
 }
 
 func (f *fakePolicyLookupRepo) RegisterClock(context.Context, string, repository.SLAPolicyRef) (bool, error) {
@@ -56,6 +107,9 @@ func (f *fakePolicyLookupRepo) SetPaused(context.Context, string, string, bool) 
 	panic("not implemented")
 }
 func (f *fakePolicyLookupRepo) RecomputeActive(context.Context) (int, error) {
+	panic("not implemented")
+}
+func (f *fakePolicyLookupRepo) ReviseClocks(context.Context, string, []repository.SLAPolicyRef) (int, error) {
 	panic("not implemented")
 }
 
@@ -91,7 +145,10 @@ func TestSLAPolicyResolver_Resolve_MatchesRealPolicyNames(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newFakePolicyLookupRepo()
 			r := newSLAPolicyResolver(repo)
-			got, ok := r.resolve(context.Background(), tt.severity, tt.clockType, tt.plan)
+			got, ok, err := r.resolve(context.Background(), tt.severity, tt.clockType, tt.plan)
+			if err != nil {
+				t.Fatalf("resolve() error = %v, want nil", err)
+			}
 			if !ok {
 				t.Fatalf("resolve() ok = false, want true")
 			}
@@ -103,7 +160,7 @@ func TestSLAPolicyResolver_Resolve_MatchesRealPolicyNames(t *testing.T) {
 }
 
 // TestSLAPolicyResolver_Resolve_P0FallsBackAcrossPlan is the whole reason
-// resolve() tries both plan labels: migration 000089 seeds P0 policies
+// resolve() tries both plan labels: migration 0136 seeds P0 policies
 // under "Managed Services" only (matching real ServiceNow data, which has
 // no Open Source P0 rows at all), so a CATASTROPHIC-severity case whose
 // derived plan guessed "Open Source" must still resolve via the fallback.
@@ -111,7 +168,10 @@ func TestSLAPolicyResolver_Resolve_P0FallsBackAcrossPlan(t *testing.T) {
 	repo := newFakePolicyLookupRepo()
 	r := newSLAPolicyResolver(repo)
 
-	got, ok := r.resolve(context.Background(), domain.CaseSeverityCatastrophic, slaClockTypeWorkaround, slaPlanOpenSource)
+	got, ok, err := r.resolve(context.Background(), domain.CaseSeverityCatastrophic, slaClockTypeWorkaround, slaPlanOpenSource)
+	if err != nil {
+		t.Fatalf("resolve() error = %v, want nil", err)
+	}
 	if !ok {
 		t.Fatalf("resolve() ok = false, want true (should have fallen back to Managed Services)")
 	}
@@ -132,9 +192,85 @@ func TestSLAPolicyResolver_Resolve_NoPolicyEitherPlan(t *testing.T) {
 	repo := newFakePolicyLookupRepo()
 	r := newSLAPolicyResolver(repo)
 
-	_, ok := r.resolve(context.Background(), domain.CaseSeverityLow, slaClockTypeWorkaround, slaPlanOpenSource)
+	_, ok, err := r.resolve(context.Background(), domain.CaseSeverityLow, slaClockTypeWorkaround, slaPlanOpenSource)
+	if err != nil {
+		t.Fatalf("resolve() error = %v, want nil -- a genuinely absent policy is not a lookup failure", err)
+	}
 	if ok {
 		t.Fatalf("resolve() ok = true, want false: no Query workaround policy is seeded/faked at all")
+	}
+}
+
+// TestSLAPolicyResolver_Resolve_FallsBackToLoosePattern reproduces the real
+// gap found on wso2sndev.service-now.com's synced data: no exact
+// "P2 - Resolution (Open Source)" row exists, only a differently-qualified
+// "P2 - IR - Resolution (Open Source)" one. resolve() must still find it via
+// FindPolicyByPattern rather than returning ok=false.
+func TestSLAPolicyResolver_Resolve_FallsBackToLoosePattern(t *testing.T) {
+	repo := newFakePolicyLookupRepo()
+	repo.patternPolicies = map[string]repository.SLAPolicyRef{
+		"P2 - IR - Resolution (Open Source)": {ID: "p2-ir-res-os", Target: "RESOLUTION", Duration: 6 * time.Hour},
+	}
+
+	r := newSLAPolicyResolver(repo)
+	ref, ok, err := r.resolve(context.Background(), domain.CaseSeverityHigh, slaClockTypeResolution, slaPlanOpenSource)
+	if err != nil {
+		t.Fatalf("resolve() error = %v, want nil", err)
+	}
+	if !ok {
+		t.Fatalf("resolve() ok = false, want true via the pattern fallback")
+	}
+	if ref.ID != "p2-ir-res-os" {
+		t.Fatalf("resolve() ID = %q, want the pattern-matched policy", ref.ID)
+	}
+	// Both exact-name plan attempts must still have been tried first --
+	// the pattern fallback is a last resort, not a shortcut.
+	if len(repo.calls) != 2 {
+		t.Fatalf("FindPolicyByName calls = %v, want exactly 2 (both plans tried before falling back)", repo.calls)
+	}
+}
+
+// TestSLAPolicyResolver_Resolve_NoPolicyEvenWithPattern confirms the pattern
+// fallback is genuinely last-resort: when nothing matches even loosely,
+// resolve() still returns ok=false, err=nil -- not a fabricated policy.
+func TestSLAPolicyResolver_Resolve_NoPolicyEvenWithPattern(t *testing.T) {
+	repo := newFakePolicyLookupRepo()
+	r := newSLAPolicyResolver(repo)
+
+	_, ok, err := r.resolve(context.Background(), domain.CaseSeverityHigh, slaClockTypeResolution, slaPlanOpenSource)
+	if err != nil {
+		t.Fatalf("resolve() error = %v, want nil", err)
+	}
+	if ok {
+		t.Fatalf("resolve() ok = true, want false: no P2 resolution policy is seeded/faked under any name")
+	}
+}
+
+// TestSLAPolicyResolver_Resolve_PatternFallbackPrefersDerivedPlan is the
+// regression case CodeRabbit flagged on this fallback's first version:
+// plain shortest-name ordering, with no plan awareness at all, would pick
+// "P2 - IR - Resolution (Open Source)" over "P2 - IR - Resolution (Managed
+// Services)" purely because it's shorter -- silently returning the wrong
+// plan's duration even though the derived plan's own qualified policy
+// exists. The fallback must rank a name containing derivedPlan ahead of
+// one that doesn't, regardless of length.
+func TestSLAPolicyResolver_Resolve_PatternFallbackPrefersDerivedPlan(t *testing.T) {
+	repo := newFakePolicyLookupRepo()
+	repo.patternPolicies = map[string]repository.SLAPolicyRef{
+		"P2 - IR - Resolution (Open Source)":      {ID: "wrong-plan-shorter", Target: "RESOLUTION", Duration: 6 * time.Hour},
+		"P2 - IR - Resolution (Managed Services)": {ID: "right-plan-longer", Target: "RESOLUTION", Duration: 8 * time.Hour},
+	}
+
+	r := newSLAPolicyResolver(repo)
+	ref, ok, err := r.resolve(context.Background(), domain.CaseSeverityHigh, slaClockTypeResolution, slaPlanManagedServices)
+	if err != nil {
+		t.Fatalf("resolve() error = %v, want nil", err)
+	}
+	if !ok {
+		t.Fatalf("resolve() ok = false, want true")
+	}
+	if ref.ID != "right-plan-longer" {
+		t.Fatalf("resolve() ID = %q, want the derived plan's own policy despite the shorter name existing under the other plan", ref.ID)
 	}
 }
 
@@ -142,7 +278,10 @@ func TestSLAPolicyResolver_Resolve_UnknownClockType(t *testing.T) {
 	repo := newFakePolicyLookupRepo()
 	r := newSLAPolicyResolver(repo)
 
-	_, ok := r.resolve(context.Background(), domain.CaseSeverityCritical, "bogus", slaPlanOpenSource)
+	_, ok, err := r.resolve(context.Background(), domain.CaseSeverityCritical, "bogus", slaPlanOpenSource)
+	if err != nil {
+		t.Fatalf("resolve() error = %v, want nil", err)
+	}
 	if ok {
 		t.Fatalf("resolve() ok = true, want false for an unrecognized clock type")
 	}
@@ -157,11 +296,20 @@ func (f *erroringPolicyLookupRepo) FindPolicyByName(context.Context, string, str
 	return repository.SLAPolicyRef{}, errors.New("db unavailable")
 }
 
+// TestSLAPolicyResolver_Resolve_InfrastructureErrorDoesNotFallBack confirms
+// resolve() both refuses to fall back to the other plan on a real lookup
+// failure (a genuinely-absent policy and a failed lookup must not be
+// treated the same -- see resolve's own doc comment) AND propagates the
+// error rather than swallowing it, so callers like resolveApplicablePolicies
+// can tell "not configured" apart from "couldn't check right now."
 func TestSLAPolicyResolver_Resolve_InfrastructureErrorDoesNotFallBack(t *testing.T) {
 	repo := &erroringPolicyLookupRepo{}
 	r := newSLAPolicyResolver(repo)
 
-	_, ok := r.resolve(context.Background(), domain.CaseSeverityCritical, slaClockTypeResponse, slaPlanOpenSource)
+	_, ok, err := r.resolve(context.Background(), domain.CaseSeverityCritical, slaClockTypeResponse, slaPlanOpenSource)
+	if err == nil {
+		t.Fatalf("resolve() error = nil, want the repository's error propagated")
+	}
 	if ok {
 		t.Fatalf("resolve() ok = true, want false when the repository call itself fails")
 	}

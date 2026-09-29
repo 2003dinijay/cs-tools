@@ -1102,7 +1102,7 @@ func (s *snCaseService) registerCaseSLAClocks(ctx context.Context, caseID string
 // reasoning — this is now a thin wrapper around it, same shape as
 // snIncidentService.publishIncidentCreated/publishIncidentCreatedEvent.
 func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.CreateCaseRequest, caseID string) {
-	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, req, caseID)
+	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, req, caseID)
 }
 
 // publishCaseCreatedEvent is publishCaseCreated's actual body, factored out
@@ -1115,7 +1115,9 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 // in this mode) cannot yet, or ever, return. getCaseByID is the caller's
 // own GetCaseByID method value (ServiceNow-backed for snCaseService,
 // Postgres-backed for caseService) — this function is data-source-agnostic
-// beyond that.
+// beyond that. resolveProjectContactEmailsByRole is the caller's own
+// ProjectContactEmailsByRole method value, used only for req.Type ==
+// "announcement" (see below).
 //
 // It re-fetches the case via getCaseByID rather than building the payload
 // from the create response/req alone: a create response carries only a
@@ -1124,15 +1126,41 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 // what events.CaseCreatedPayload needs and req/the create response don't
 // have.
 //
-// Recipients is the case's WatchList emails only (per explicit decision —
-// this service has no other notion of "who should be emailed" for a case).
-// A case created with no watchers is a real, expected state (watchers are
-// often added after creation), not an error — publishing is silently skipped
-// rather than sending a payload csm-notification-service's events.Validate
-// would reject anyway for an empty recipients list. On the Postgres data
-// source this is the common case for a case moments old: nothing has had a
-// chance to add a watcher yet, same as a freshly-created ServiceNow case
-// before anyone does.
+// Only type=="case" requires a severity to publish at all: a case with no
+// severity has no priority to report (CaseCreatedPayload.Priority has no
+// omitempty -- a consumer always expects a real value, and "" is not a real
+// priority, just derefSeverity's zero value standing in for "unset"), and
+// severity is a "case"-only field (case_service.go) that the other four
+// types never have. Those four types (engagement/service_request/
+// security_report_analysis/announcement) publish regardless of severity —
+// see "Recipients" below for how each resolves an audience with no
+// watch-list-based severity concept to gate on.
+//
+// Recipients depends on req.Type:
+//   - "case"/"engagement"/"service_request"/"security_report_analysis": the
+//     case's own WatchList emails (per explicit decision — this service has
+//     no other notion of "who should be emailed" for these types), which
+//     already includes the account's four default-watcher stakeholders (see
+//     CaseRepository.AccountDefaultWatcherIDs) once addAccountDefaultWatchers
+//     has run for the case (Postgres/dual-write data source only — see that
+//     function's own doc comment).
+//   - "announcement": every project_contact holding the SECURITY_CONTACT
+//     project role (req.IsSecurityAnnouncement true) or PORTAL_USER (false),
+//     via resolveProjectContactEmailsByRole — bypassing the watch-list
+//     mechanism entirely, since a project contact often has no matching
+//     "user" row to add as a work_item_watcher (work_item_watcher.user_id is
+//     NOT NULL). Falls back to the case's own WatchList emails (the account's
+//     default watchers) when no contact holds the requested role for that
+//     project — a project with no security contacts must still notify
+//     someone for a security announcement, not silently notify no one.
+//
+// A case created with no recipients either way is a real, expected state
+// (watchers/contacts are often added or invited after creation), not an
+// error — publishing is silently skipped rather than sending a payload
+// csm-notification-service's events.Validate would reject anyway for an
+// empty recipients list. On the Postgres data source this is the common case
+// for a case moments old: nothing has had a chance to add a watcher yet,
+// same as a freshly-created ServiceNow case before anyone does.
 //
 // Runs synchronously (not detached/async like apps/csm-portal/backend's own
 // publishAsync) so no goroutine-draining hook is needed on this service's
@@ -1144,7 +1172,14 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 // publisher may be nil (e.g. the dual-write mirror instance is constructed
 // with publisher=nil specifically so its own CreateCase never
 // double-publishes — see routes.go's case DataSource wiring).
-func publishCaseCreatedEvent(ctx context.Context, publisher EventPublisherService, getCaseByID func(context.Context, string) (domain.CaseView, error), req domain.CreateCaseRequest, caseID string) {
+func publishCaseCreatedEvent(
+	ctx context.Context,
+	publisher EventPublisherService,
+	getCaseByID func(context.Context, string) (domain.CaseView, error),
+	resolveProjectContactEmailsByRole func(context.Context, string, string) ([]string, error),
+	req domain.CreateCaseRequest,
+	caseID string,
+) {
 	if publisher == nil {
 		return
 	}
@@ -1161,20 +1196,30 @@ func publishCaseCreatedEvent(ctx context.Context, publisher EventPublisherServic
 		return
 	}
 
-	// A case with no severity has no priority to report -- CaseCreatedPayload.
-	// Priority has no omitempty (a consumer always expects a real value), and
-	// "" is not a real priority, just derefSeverity's zero value standing in
-	// for "unset". Applies to every type this function serves (case/
-	// engagement/service_request/security_report_analysis/announcement): the
-	// four non-case types never have a severity at all (case_service.go's
-	// own "case"-only field), so this also means those never publish
-	// case.created -- explicit, requested behavior, not an oversight.
-	if cv.Severity == nil {
+	if req.Type == "case" && cv.Severity == nil {
 		slog.InfoContext(ctx, "create case: case.created not published, case has no severity", "caseId", caseID)
 		return
 	}
 
-	recipients := watchListUserEmails(cv.WatchList)
+	var recipients []string
+	if req.Type == "announcement" {
+		role := "PORTAL_USER"
+		if req.IsSecurityAnnouncement {
+			role = "SECURITY_CONTACT"
+		}
+		recipients, err = resolveProjectContactEmailsByRole(ctx, req.ProjectID, role)
+		if err != nil {
+			slog.ErrorContext(ctx, "create case: resolving announcement recipients failed", "caseId", caseID, "error", err)
+			return
+		}
+		if len(recipients) == 0 {
+			// No project contact holds the requested role -- fall back to
+			// the account's default watchers rather than notifying no one.
+			recipients = watchListUserEmails(cv.WatchList)
+		}
+	} else {
+		recipients = watchListUserEmails(cv.WatchList)
+	}
 	if len(recipients) == 0 {
 		slog.InfoContext(ctx, "create case: case.created not published, case has no watchers to email", "caseId", caseID)
 		return
@@ -1481,6 +1526,22 @@ func (s *snCaseService) applyCaseStateSLAEffects(ctx context.Context, caseID str
 	ctx, cancel := context.WithTimeout(ctx, applyCaseStateSLATimeout)
 	defer cancel()
 	s.slaEngine.ApplyCaseStateEffects(ctx, caseID, state)
+}
+
+// reviseCaseSLAClocks best-effort cancels the CSM-native SLA engine's
+// existing clocks and registers an entirely fresh set for an EXISTING
+// case's new severity (see SLAEngineService.ReviseCaseClocks' own doc
+// comment for the exact cancel-then-register-from-zero behavior this
+// triggers). A pure in-process DB operation, deliberately independent of
+// s.publisher --
+// see this method's own call site in UpdateCase for why. Skipped entirely
+// when s.slaEngine is nil (no database configured -- see
+// snCaseService.slaEngine's own doc comment); that guard lives at the call
+// site, not here, matching applyCaseStateSLAEffects.
+func (s *snCaseService) reviseCaseSLAClocks(ctx context.Context, caseID string, severity *domain.CaseSeverity, projectID string) {
+	ctx, cancel := context.WithTimeout(ctx, applyCaseStateSLATimeout)
+	defer cancel()
+	s.slaEngine.ReviseCaseClocks(ctx, caseID, severity, projectID)
 }
 
 // Same role-lookup mechanism as applyResponseSLAOnComment (this service has
@@ -1818,6 +1879,21 @@ func (s *snCaseService) publishCaseAcknowledged(ctx context.Context, caseID, ack
 		// line for why.
 		slog.ErrorContext(ctx, "sn update case: publish case.acknowledged failed", "caseId", caseID)
 	}
+}
+
+// ProjectContactEmailsByRole implements CaseService. project_contact/
+// project_role are Postgres-only concepts (populated by the Salesforce
+// membership ingest, independent of DATA_SOURCE) with no ServiceNow
+// equivalent, so this delegates to pgFallback when one is configured; a pure
+// ServiceNow deployment with no Postgres pool at all (pgFallback nil) has
+// nothing to query and returns an empty slice, no error -- same "can't
+// resolve, fall back" posture as every other Postgres-only gap in this
+// service.
+func (s *snCaseService) ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error) {
+	if s.pgFallback == nil {
+		return nil, nil
+	}
+	return s.pgFallback.ProjectContactEmailsByRole(ctx, projectID, role)
 }
 
 func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
@@ -3052,23 +3128,55 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	// Same reasoning as the state-change block above, applied to severity
 	// instead: a caller re-PATCHing the case's current severity (a no-op as
 	// far as ServiceNow is concerned) must not send every watcher a false
-	// "severity changed" notification. req.State and req.Severity are
+	// "severity changed" notification, nor spuriously revise SLA clock
+	// policies that didn't actually change. req.State and req.Severity are
 	// mutually exclusive per request (see exclusiveCount above), so this and
 	// the block above never both fire for the same call.
+	//
+	// Gated on (s.publisher != nil || s.slaEngine != nil), NOT s.publisher
+	// alone: this same "did severity genuinely change" detection now also
+	// feeds reviseCaseSLAClocks below, and SLAEngineService's own doc
+	// comment is explicit that SLA tracking must never be gated on Event
+	// Hub/publisher being configured -- a deployment with s.slaEngine set
+	// but s.publisher nil (Event Hub simply not enabled -- see
+	// cfg.EventPublishingEnabled's own "safe by default kill switch" doc
+	// comment in routes.go) must still get its clocks revised. severityChanged
+	// itself carries no publisher-configured assumption; the actual publish
+	// call below still checks s.publisher != nil on its own.
 	var caseBeforeSeverity domain.CaseView
-	publishSeverityChange := false
-	if req.Severity != nil && s.publisher != nil {
-		enrichCtx, cancel := context.WithTimeout(ctx, publishSeverityChangedTimeout)
-		cv, err := s.GetCaseByID(enrichCtx, req.ID)
-		cancel()
+	severityChanged := false
+	if req.Severity != nil && (s.publisher != nil || s.slaEngine != nil) {
+		// Bounded retry (2 attempts total, each on its own fresh timeout,
+		// with a short pause between): a single transient failure here
+		// (e.g. a DB blip) would otherwise silently skip reviseCaseSLAClocks
+		// below even though the PATCH itself goes on to succeed, leaving
+		// the case's SLA clocks on its old severity with nothing to
+		// reconcile them later. This narrows, but does not eliminate, that
+		// gap -- a sustained outage still falls through to the same
+		// accepted best-effort logging. Each attempt gets half of the
+		// original single-attempt budget so the worst case (both attempts
+		// failing) doesn't double the latency this blocking call already
+		// added to the PATCH response.
+		var cv domain.CaseView
+		var err error
+		for attempt := 1; attempt <= 2; attempt++ {
+			enrichCtx, cancel := context.WithTimeout(ctx, publishSeverityChangedTimeout/2)
+			cv, err = s.GetCaseByID(enrichCtx, req.ID)
+			cancel()
+			if err == nil || attempt == 2 {
+				break
+			}
+			slog.WarnContext(ctx, "sn update case: enrich case for case.severity_changed effects failed, retrying once", "caseId", req.ID, "err", err)
+			time.Sleep(200 * time.Millisecond)
+		}
 		switch {
 		case err != nil:
-			slog.ErrorContext(ctx, "sn update case: enrich case for case.severity_changed publish failed", "caseId", req.ID)
+			slog.ErrorContext(ctx, "sn update case: enrich case for case.severity_changed effects failed after retry", "caseId", req.ID)
 		case derefSeverity(cv.Severity) == *req.Severity:
-			slog.InfoContext(ctx, "sn update case: case.severity_changed not published, severity is unchanged", "caseId", req.ID)
+			slog.InfoContext(ctx, "sn update case: case.severity_changed effects skipped, severity is unchanged", "caseId", req.ID)
 		default:
 			caseBeforeSeverity = cv
-			publishSeverityChange = true
+			severityChanged = true
 		}
 	}
 
@@ -3259,15 +3367,31 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 		s.publishCaseAcknowledged(ctx, req.ID, resp.Case.AcknowledgedBy.Name)
 	}
 	// resp.Case.Severity != caseBeforeSeverity.Severity is a second guard on
-	// top of publishSeverityChange itself: that flag only confirms the
-	// PATCH *request* asked for a different severity than the pre-PATCH
+	// top of severityChanged itself: that flag only confirms the PATCH
+	// *request* asked for a different severity than the pre-PATCH
 	// GetCaseByID observed — it says nothing about what the PATCH response
 	// actually echoes back. If ServiceNow's response reports the
-	// pre-update severity (e.g. a stale echo), publishing anyway would
-	// send a false case.severity_changed event with identical old/new
+	// pre-update severity (e.g. a stale echo), acting on it anyway would
+	// fire a false case.severity_changed event, or revise SLA clocks to a
+	// policy the case was never actually moved to, with identical old/new
 	// values.
-	if publishSeverityChange && resp.Case.Severity != nil && derefSeverity(resp.Case.Severity) != derefSeverity(caseBeforeSeverity.Severity) {
+	severityGenuinelyChanged := severityChanged && resp.Case.Severity != nil && derefSeverity(resp.Case.Severity) != derefSeverity(caseBeforeSeverity.Severity)
+	if severityGenuinelyChanged && s.publisher != nil {
 		s.publishSeverityChanged(ctx, req.ID, string(derefSeverity(caseBeforeSeverity.Severity)), string(derefSeverity(resp.Case.Severity)), caseBeforeSeverity)
+	}
+	// Deliberately a separate guard from the publish above (s.slaEngine != nil,
+	// not s.publisher != nil) -- see severityChanged's own doc comment above
+	// for why revising SLA clocks must not depend on Event Hub being
+	// configured. projectID mirrors registerCaseSLAClocks' own
+	// cv.ProjectDetails-derived lookup, sourced from caseBeforeSeverity (the
+	// same pre-PATCH GetCaseByID this block already fetched) since UpdateCase
+	// has no other project id in scope for an existing case.
+	if severityGenuinelyChanged && s.slaEngine != nil {
+		projectID := ""
+		if caseBeforeSeverity.ProjectDetails != nil {
+			projectID = caseBeforeSeverity.ProjectDetails.ID
+		}
+		s.reviseCaseSLAClocks(ctx, req.ID, resp.Case.Severity, projectID)
 	}
 
 	return resp, nil
@@ -4949,7 +5073,7 @@ func snCaseStateLabelToEnum(state *snCaseState) (domain.CaseState, error) {
 // {"label": "Open"} for a fresh announcement, the same label case uses)
 // to announcement_state_enum's own literal values. Deliberately its own map
 // rather than reusing snCaseStateMap: announcement_state_enum only has two
-// values (OPEN/CLOSE, migration 000019) and spells the closed one CLOSE, not
+// values (OPEN/CLOSE, migration 0024) and spells the closed one CLOSE, not
 // CLOSED -- the same kind of label/enum spelling mismatch already handled
 // for case (CANCELLED->CANCELED) and incident (SITE_247->SITE_24_7), so this
 // is resolved by an explicit table instead of assumed to line up.
@@ -5004,7 +5128,7 @@ var snCaseLikeStateLabels = map[string]string{
 
 // snServiceRequestStateMap maps ServiceNow's raw state label (as returned on
 // its create-case response for a service_request-typed case) to
-// service_request_state_enum's own literal values (migration 000019) --
+// service_request_state_enum's own literal values (migration 0024) --
 // see snCaseLikeStateLabels's own doc comment for why this table is
 // identical to that one.
 var snServiceRequestStateMap = snCaseLikeStateLabels
@@ -5023,7 +5147,7 @@ func snServiceRequestStateToEnum(label string) (string, error) {
 }
 
 // snEngagementStateMap maps ServiceNow's raw state label to
-// engagement_state_enum's own literal values (migration 000019) -- see
+// engagement_state_enum's own literal values (migration 0024) -- see
 // snCaseLikeStateLabels's own doc comment for why this table is identical to
 // that one.
 var snEngagementStateMap = snCaseLikeStateLabels

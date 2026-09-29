@@ -616,6 +616,8 @@ export interface BeAnnouncementCreatePayload {
   projectId: string;
   subject: string;
   description: string;
+  /** Decides the case's default email audience on the backend: SECURITY_CONTACT project-role contacts when true, PORTAL_USER contacts otherwise. */
+  isSecurityAnnouncement: boolean;
 }
 
 /**
@@ -2378,8 +2380,10 @@ export interface BeCreateCaseGithubIssuePayload {
   hotFixRequired?: boolean;
   /** Issue-type label to apply on GitHub (e.g. "Type/Patch", "Type/Incident"). */
   issueTypeLabel?: string;
-  /** Priority label, applied only when `issueTypeLabel` is "Type/Incident". */
+  /** Priority label, applied when the type is Discussion. */
   priorityLevel?: string;
+  /** Project onboarding status is In-Progress. Adds Onboarding/affected. */
+  onboardingInProgress?: boolean;
 }
 
 /** `POST /cases/{id}/github-issues` response. */
@@ -3223,6 +3227,8 @@ export interface BeIncidentWatchListItem {
  * comments, and the watch list).
  */
 export interface BeIncidentDetail extends BeIncident {
+  /** ServiceNow's incident.description field — the full free-text body, separate from the shorter Subject. */
+  description?: string | null;
   subcategory?: BeIncidentSubcategory | null;
   service?: BeEntityRef | null;
   serviceOffering?: BeEntityRef | null;
@@ -3230,6 +3236,7 @@ export interface BeIncidentDetail extends BeIncident {
   contactType?: BeIncidentContactType | null;
   impact?: BeIncidentImpact | null;
   urgency?: BeIncidentUrgency | null;
+  environment?: string | null;
   changeRequest?: BeEntityRef | null;
   problem?: BeEntityRef | null;
   causedBy?: BeEntityRef | null;
@@ -3280,6 +3287,7 @@ export interface BeCreateIncidentPayload {
   changeRequestId?: string;
   problemId?: string;
   causedById?: string;
+  environment?: string;
 }
 
 /** `POST /incidents` response — the created identifiers. */
@@ -3349,6 +3357,7 @@ export interface BeUpdateIncidentPayload {
   changeRequestId?: string | null;
   problemId?: string | null;
   causedById?: string | null;
+  environment?: string | null;
 }
 
 /** `PATCH /incidents/{id}` response — the full updated incident. */
@@ -3535,6 +3544,8 @@ export interface BeProblemDetail {
   id: string;
   number?: string;
   subject?: string;
+  /** Free-text description of the problem. May be null/empty on many records — render blank gracefully, not as an awkward empty field. */
+  description?: string | null;
   state?: BeProblemState;
   priority?: string | null;
   /** May be null/empty on many records — render blank gracefully, not as an awkward empty field. */
@@ -3670,6 +3681,10 @@ export interface BeIncidentTaskSearchResponse {
  */
 export interface BeCreateProblemPayload {
   subject: string;
+  // Sanitized rich-text HTML (see sanitizeRichTextHtml), same convention as
+  // BeCreateCaseRequest.description. Not yet forwarded to ServiceNow — see
+  // entity-service's own CreateProblem doc comment.
+  description?: string;
   category?: string;
   subcategory?: string;
   originCaseId?: string;

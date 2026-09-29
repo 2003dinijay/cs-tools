@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 )
@@ -34,6 +35,17 @@ import (
 // registered the clock, or a state-transition hook firing after the case
 // was already closed and its resolution clock completed).
 const slaEngineActiveStageFilter = `NOT IN ('ACHIEVED', 'BREACHED', 'CANCELLED', 'COMPLETED')`
+
+// slaEngineTerminalOutcomeFilter names the stages that represent a real,
+// meaningful outcome already reached for a clock -- deliberately narrower
+// than "not active" (slaEngineActiveStageFilter's complement, which also
+// includes CANCELLED): CANCELLED means "this clock was deliberately retired
+// and its slot is free for a fresh one" (see ReviseClocks), while ACHIEVED/
+// BREACHED/COMPLETED mean "this clock type already ran its course for this
+// case" and must never be silently re-registered as a brand new running
+// clock just because a later severity change (or any other RegisterClock
+// caller) finds no ACTIVE row to collide with.
+const slaEngineTerminalOutcomeFilter = `IN ('ACHIEVED', 'BREACHED', 'COMPLETED')`
 
 // SLAPolicyRef is the subset of an sla_policy row the engine's resolver
 // needs: enough to register a new "sla" row against it, nothing this
@@ -49,25 +61,50 @@ type SLAPolicyRef struct {
 // SLAEngineRepository defines the read/write operations backing the
 // CSM-native SLA engine (internal/service/sla_policy_resolver.go,
 // sla_engine_service.go) -- every write here is scoped to source='CSM' rows
-// only (migration 000088): source='SERVICENOW' rows are exclusively owned
+// only (migration 0134): source='SERVICENOW' rows are exclusively owned
 // by the ServiceNow sync and this repository never mutates one. Read-side
 // consumers of "sla" (GET /sla-status, POST /task-slas/search) need no
 // changes at all -- both source values look identical to them, which is the
-// entire point of sharing the table (see migration 000088's own comment).
+// entire point of sharing the table (see migration 0134's own comment).
 type SLAEngineRepository interface {
 	// FindPolicyByName resolves the single active sla_policy row matching
 	// name/target, preferring a source='SERVICENOW' row (the real
 	// ServiceNow-synced policy) but falling back to a source='CSM' row (a
 	// gap-filling policy this engine itself seeded, e.g. the P0 rows added
-	// by migration 000089) when no synced row exists under that exact name.
+	// by migration 0136) when no synced row exists under that exact name.
 	// Returns apierror.NotFoundError if neither exists.
 	FindPolicyByName(ctx context.Context, name, target string) (SLAPolicyRef, error)
+
+	// FindPolicyByPattern is sla_policy_resolver.go's last-resort fallback,
+	// tried only once FindPolicyByName has failed under both plan labels --
+	// see resolve's own doc comment for why. Real ServiceNow tenants outside
+	// prod (confirmed on wso2sndev.service-now.com's synced data) don't all
+	// follow the "P{n} - {Type} ({Plan})" naming convention prod's policies
+	// were verified against, e.g. "P2 - IR - Resolution (Open Source)"
+	// instead of "P2 - Resolution (Open Source)" -- an exact-name lookup
+	// finds nothing there even though a policy for that severity/clockType
+	// clearly exists. Matches any name that starts with "<prefix> - " and
+	// contains <label> anywhere after that, for the given target, preferring
+	// the shortest matching name (closest to the canonical form) when more
+	// than one qualifies. Returns apierror.NotFoundError if none match --
+	// callers treat that exactly like FindPolicyByName's own NotFoundError.
+	// derivedPlan is a preference, not a filter: a matching name containing
+	// it is ranked first, but a policy that doesn't mention any plan at all
+	// is still returned rather than treated as absent -- see this method's
+	// own implementation doc comment for the full ordering rule.
+	FindPolicyByPattern(ctx context.Context, prefix, label, target, derivedPlan string) (SLAPolicyRef, error)
 
 	// RegisterClock inserts a new source='CSM' "sla" row for
 	// (workItemID, policy.Target) and starts it running now, UNLESS an
 	// active (see slaEngineActiveStageFilter) source='CSM' row already
 	// exists for that (work_item, target) pair -- idempotent, so a retried
-	// case-create hook never double-registers. Returns whether a row was
+	// case-create hook never double-registers -- OR a row already exists in
+	// a genuine terminal outcome stage (see slaEngineTerminalOutcomeFilter):
+	// a clock type that already reached ACHIEVED/BREACHED/COMPLETED must
+	// never be silently resurrected as a fresh running clock just because no
+	// ACTIVE row remains to block it. A CANCELLED row does NOT block a fresh
+	// insert -- cancellation deliberately frees that clock type up for a
+	// genuinely new one (see ReviseClocks). Returns whether a row was
 	// actually inserted.
 	RegisterClock(ctx context.Context, workItemID string, policy SLAPolicyRef) (bool, error)
 
@@ -91,6 +128,30 @@ type SLAEngineRepository interface {
 	// and stage to BREACHED once elapsed time reaches the policy duration,
 	// and returns how many rows were touched.
 	RecomputeActive(ctx context.Context) (int, error)
+
+	// ReviseClocks marks every active (see slaEngineActiveStageFilter)
+	// source='CSM' clock for workItemID CANCELLED, then registers a fresh
+	// row for each given policy (same insert shape and terminal-outcome
+	// guard as RegisterClock) -- both in ONE database transaction. Used
+	// when a case's severity changes: per explicit product direction, the
+	// old severity's clocks must not be revised or carried forward in any
+	// way, they run into a terminal CANCELLED state, and the new severity's
+	// clocks start completely fresh with no relation to the old numbers
+	// (see SLAEngineService.ReviseCaseClocks).
+	//
+	// The whole operation is one transaction, not two independent
+	// statements, specifically so a failure partway through registering the
+	// new clocks rolls back the cancellation too -- the case is left with
+	// its OLD clocks exactly as they were, never with the old ones
+	// cancelled and no replacement in their place. A clock already in a
+	// terminal outcome stage (see slaEngineTerminalOutcomeFilter, e.g. a
+	// response clock CompleteResponseClock already marked ACHIEVED) is left
+	// untouched by the cancellation step (it is not "active") and never
+	// resurrected by the registration step either (RegisterClock's own
+	// terminal-outcome guard applies here too). policies may be empty (e.g.
+	// a nil/unresolvable severity) -- the cancellation still runs, nothing
+	// gets registered. Returns how many rows were cancelled.
+	ReviseClocks(ctx context.Context, workItemID string, policies []SLAPolicyRef) (int, error)
 }
 
 type slaEngineRepo struct {
@@ -110,7 +171,7 @@ func NewSLAEngineRepository(db *pgxpool.Pool) SLAEngineRepository {
 // both a SERVICENOW and a CSM row happen to share a name -- which should
 // never actually happen (this engine only ever seeds names ServiceNow's
 // own real policy set is confirmed NOT to define, e.g. the P0 rows from
-// migration 000089), but preferring the synced row costs nothing and
+// migration 0136), but preferring the synced row costs nothing and
 // removes any doubt about which one wins if it ever did.
 func (r *slaEngineRepo) FindPolicyByName(ctx context.Context, name, target string) (SLAPolicyRef, error) {
 	// EXTRACT(EPOCH FROM duration) rather than scanning the INTERVAL column
@@ -142,31 +203,104 @@ func (r *slaEngineRepo) FindPolicyByName(ctx context.Context, name, target strin
 	return ref, nil
 }
 
-// RegisterClock implements SLAEngineRepository.
-func (r *slaEngineRepo) RegisterClock(ctx context.Context, workItemID string, policy SLAPolicyRef) (bool, error) {
+// FindPolicyByPattern implements SLAEngineRepository.
+//
+// ORDER BY a plan-match rank first, then length(name), then source: a row
+// whose name contains derivedPlan always sorts ahead of one that doesn't,
+// regardless of length -- CodeRabbit correctly flagged that plain
+// length(name) ordering alone can pick the wrong plan, e.g. preferring a
+// shorter "P2 - IR - Resolution (Open Source)" over the derived plan's own
+// "P2 - IR - Resolution (Managed Services)" purely because it's shorter.
+// Within the same plan-match rank, shortest name first still prefers a
+// plain "<prefix> - <label> (<plan>)" row over a longer, more qualified
+// variant like "<prefix> - IR - <label> (<plan>)"; source is the final
+// tiebreaker for the same reason FindPolicyByName uses it. derivedPlan is
+// still only ever a preference, never a filter -- a policy that doesn't
+// mention it at all is still returned (matching resolve()'s own two-plan
+// fallback philosophy: a guessed-wrong plan must not silently drop SLA
+// tracking).
+func (r *slaEngineRepo) FindPolicyByPattern(ctx context.Context, prefix, label, target, derivedPlan string) (SLAPolicyRef, error) {
 	const query = `
-		INSERT INTO sla (
-			id, created_on, updated_on, created_by, updated_by,
-			work_item_id, sla_policy_id, is_active, stage, start_on,
-			duration, business_elapsed_percentage, has_breached, source
-		)
-		SELECT gen_random_uuid(), NOW(), NOW(), $3, $3,
-		       $1::uuid, $2::uuid, TRUE, 'IN_PROGRESS'::sla_stage_enum, NOW(),
-		       $4::interval, 0, FALSE, 'CSM'::sla_source_enum
-		WHERE NOT EXISTS (
-			SELECT 1 FROM sla s
-			JOIN sla_policy sp ON sp.id = s.sla_policy_id
-			WHERE s.work_item_id = $1::uuid
-			  AND s.source = 'CSM'
-			  AND sp.target::TEXT = $5
-			  AND s.stage::TEXT ` + slaEngineActiveStageFilter + `
-		)`
+		SELECT id, name, target::TEXT, EXTRACT(EPOCH FROM duration)
+		FROM sla_policy
+		WHERE name ILIKE $1 || ' - %'
+		  AND name ILIKE '%' || $2 || '%'
+		  AND target = $3::sla_policy_target_enum
+		  AND source IN ('SERVICENOW', 'CSM')
+		  AND (is_active IS NULL OR is_active)
+		  AND duration IS NOT NULL
+		ORDER BY (CASE WHEN name ILIKE '%' || $4 || '%' THEN 0 ELSE 1 END), length(name), source
+		LIMIT 1`
 
-	tag, err := r.db.Exec(ctx, query, workItemID, policy.ID, sqlActorLiteral, formatIntervalLiteral(policy.Duration), policy.Target)
+	var ref SLAPolicyRef
+	var durationSeconds float64
+	err := r.db.QueryRow(ctx, query, prefix, label, target, derivedPlan).Scan(&ref.ID, &ref.Name, &ref.Target, &durationSeconds)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SLAPolicyRef{}, &apierror.NotFoundError{Msg: "no sla_policy found matching " + prefix + "/" + label + "/" + target}
+	}
+	if err != nil {
+		return SLAPolicyRef{}, fmt.Errorf("find sla policy by pattern: %w", err)
+	}
+	ref.Duration = time.Duration(durationSeconds * float64(time.Second))
+	return ref, nil
+}
+
+// slaEngineRegisterClockQuery inserts a new source='CSM' "sla" row for
+// ($1=workItemID, $5=policy.Target) unless an existing row for that pair is
+// either still active or already reached a genuine terminal outcome (see
+// slaEngineActiveStageFilter/slaEngineTerminalOutcomeFilter) -- a CANCELLED
+// row blocks neither, deliberately, since cancellation is what frees a
+// clock type up for a fresh registration (see SLAEngineRepository.
+// ReviseClocks). Shared, identical SQL text between RegisterClock (run
+// against the pool directly) and ReviseClocks (run inside its own
+// transaction) -- sqlExecutor is satisfied by both *pgxpool.Pool and pgx.Tx.
+const slaEngineRegisterClockQuery = `
+	INSERT INTO sla (
+		id, created_on, updated_on, created_by, updated_by,
+		work_item_id, sla_policy_id, is_active, stage, start_on,
+		duration, business_elapsed_percentage, has_breached, source
+	)
+	SELECT gen_random_uuid(), NOW(), NOW(), $3, $3,
+	       $1::uuid, $2::uuid, TRUE, 'IN_PROGRESS'::sla_stage_enum, NOW(),
+	       $4::interval, 0, FALSE, 'CSM'::sla_source_enum
+	WHERE NOT EXISTS (
+		SELECT 1 FROM sla s
+		JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid
+		  AND s.source = 'CSM'
+		  AND sp.target::TEXT = $5
+		  AND s.stage::TEXT ` + slaEngineActiveStageFilter + `
+	)
+	AND NOT EXISTS (
+		SELECT 1 FROM sla s
+		JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid
+		  AND s.source = 'CSM'
+		  AND sp.target::TEXT = $5
+		  AND s.stage::TEXT ` + slaEngineTerminalOutcomeFilter + `
+	)`
+
+// sqlExecutor is the subset of *pgxpool.Pool/pgx.Tx this file's queries
+// need -- lets slaEngineRegisterClockQuery run identically against either.
+type sqlExecutor interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// registerClockExec runs slaEngineRegisterClockQuery against any sqlExecutor
+// -- the pool directly for RegisterClock's own standalone call, or a
+// transaction for ReviseClocks, so both share one query and one insert
+// decision instead of two copies that could drift apart.
+func registerClockExec(ctx context.Context, exec sqlExecutor, workItemID string, policy SLAPolicyRef) (bool, error) {
+	tag, err := exec.Exec(ctx, slaEngineRegisterClockQuery, workItemID, policy.ID, sqlActorLiteral, formatIntervalLiteral(policy.Duration), policy.Target)
 	if err != nil {
 		return false, fmt.Errorf("register csm sla clock: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// RegisterClock implements SLAEngineRepository.
+func (r *slaEngineRepo) RegisterClock(ctx context.Context, workItemID string, policy SLAPolicyRef) (bool, error) {
+	return registerClockExec(ctx, r.db, workItemID, policy)
 }
 
 // CompleteClock implements SLAEngineRepository.
@@ -249,6 +383,40 @@ func (r *slaEngineRepo) RecomputeActive(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("recompute csm sla clocks: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// ReviseClocks implements SLAEngineRepository.
+func (r *slaEngineRepo) ReviseClocks(ctx context.Context, workItemID string, policies []SLAPolicyRef) (int, error) {
+	const cancelQuery = `
+		UPDATE sla
+		SET stage = 'CANCELLED'::sla_stage_enum,
+		    updated_on = NOW(), updated_by = $2
+		WHERE work_item_id = $1::uuid
+		  AND source = 'CSM'
+		  AND stage::TEXT ` + slaEngineActiveStageFilter
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("revise csm sla clocks: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, cancelQuery, workItemID, sqlActorLiteral)
+	if err != nil {
+		return 0, fmt.Errorf("revise csm sla clocks: cancel active: %w", err)
+	}
+	cancelled := int(tag.RowsAffected())
+
+	for _, policy := range policies {
+		if _, err := registerClockExec(ctx, tx, workItemID, policy); err != nil {
+			return 0, fmt.Errorf("revise csm sla clocks: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("revise csm sla clocks: commit: %w", err)
+	}
+	return cancelled, nil
 }
 
 // sqlActorLiteral is created_by/updated_by for every row this repository

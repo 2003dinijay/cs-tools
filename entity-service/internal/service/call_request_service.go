@@ -54,7 +54,7 @@ type callRequestService struct {
 }
 
 // NewCallRequestService constructs a CallRequestService backed by Postgres
-// (customer_call, migration 000072).
+// (customer_call, migration 0073).
 func NewCallRequestService(repo repository.CallRequestRepository, userRepo repository.UserRepository) CallRequestService {
 	return &callRequestService{repo: repo, userRepo: userRepo}
 }
@@ -123,7 +123,7 @@ func (s *callRequestService) CreateCallRequest(ctx context.Context, req domain.C
 	// only (snWriteback/snMirror are both nil otherwise -- see
 	// callRequestService's own doc comment). Postgres has already committed
 	// by this point. On success, the ServiceNow-side id this mirror creates
-	// is persisted back onto the Postgres row (migration 000088's
+	// is persisted back onto the Postgres row (migration 0135's
 	// customer_call.sn_sys_id) -- itself a second best-effort, asynchronous
 	// write: if it fails, the row simply has no id yet, the same "not yet
 	// mirrorable" state UpdateCallRequest's mirror already tolerates. This
@@ -195,7 +195,7 @@ func (s *callRequestService) SearchAllCallRequests(ctx context.Context, req doma
 	}
 	// The parent case's assignment team has no column on this data source
 	// (work_item carries only assigned_to_id, and customer_call's own
-	// assignment_group was deliberately skipped in migration 000072), so this
+	// assignment_group was deliberately skipped in migration 0073), so this
 	// filter cannot be honored. Reject it rather than silently ignore it: an
 	// ignored filter would widen the result set.
 	if len(req.Filters.AssignmentTeamIDs) > 0 {

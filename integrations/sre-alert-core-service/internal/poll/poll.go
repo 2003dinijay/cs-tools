@@ -56,7 +56,9 @@ type Settings struct {
 	MaxWindow int
 	// NotifySweepInterval is the retry cadence for unconfirmed CSM/Chat notifications, independent of and concurrent-safe with the alert cycle.
 	NotifySweepInterval time.Duration
-	// GapTimeout bounds how long a missing alert id blocks all following ids before being skipped; zero disables the bound.
+	// GapTimeout is how long an alert id may stay missing, measured from when the current leader
+	// first saw it missing, before it's skipped. Every missing id in the window ages at once, so a
+	// whole gap is skipped together after one GapTimeout; zero disables skipping.
 	GapTimeout time.Duration
 }
 
@@ -71,8 +73,8 @@ type Poller struct {
 	sweeping atomic.Bool
 	// wg tracks in-flight sweep goroutines so Run doesn't return, and callers don't see it drained, mid-sweep.
 	wg sync.WaitGroup
-	// stuck backs GapTimeout; only touched from the single goroutine running cycle, so it needs no lock.
-	stuck stuckTracker
+	// gaps backs GapTimeout; only touched from the single goroutine running cycle, so it needs no lock.
+	gaps gapTracker
 }
 
 // New seeds alert_seq and cursor rows so a fresh deployment's first cycle doesn't fail with "not found" forever.
@@ -90,6 +92,7 @@ func New(logger *slog.Logger, session *gocql.Session, e *engine.Engine, leader L
 		leader:   leader,
 		settings: settings,
 		wake:     make(chan struct{}, 1),
+		gaps:     gapTracker{},
 	}, nil
 }
 
@@ -135,6 +138,7 @@ func (p *Poller) Run(ctx context.Context) {
 // cycle drains alert ids from cursor to latest in bounded windows, advancing the durable cursor after each completed prefix.
 func (p *Poller) cycle(ctx context.Context) {
 	if !p.leader.IsLeader() {
+		clear(p.gaps) // timers only mean something for the leader that saw the ids missing
 		return
 	}
 
@@ -152,9 +156,11 @@ func (p *Poller) cycle(ctx context.Context) {
 	for cursor < latest {
 		if !p.leader.IsLeader() {
 			p.logger.Warn("lost leadership mid-cycle, stopping", "cursor", cursor)
+			clear(p.gaps)
 			return
 		}
 		next := p.processWindow(ctx, cursor, latest)
+		p.gaps.pruneThrough(max(next, cursor))
 		if next <= cursor {
 			// No progress: window head not visible yet, or cursor moved elsewhere; wait for next tick/ping.
 			return
@@ -172,33 +178,15 @@ func (p *Poller) processWindow(ctx context.Context, cursor, latest int64) int64 
 	// Stage 1: read + normalize every id in the window concurrently, into disjoint slots.
 	slots := p.readWindow(ctx, base, n)
 
-	// Ready prefix stops at first unvisible id (Retry); a normalize failure (Failed) is skipped, retried next cycle.
-	outcomes := make([]engine.Outcome, n)
-	readStop := n
-	for i := range n {
-		if slots[i].ready {
-			continue
-		}
-		if slots[i].outcome == engine.Retry {
-			readStop = i
-			break
-		}
-		outcomes[i] = slots[i].outcome // Failed: terminal, skip past it
+	// Stage 2: decide per id. Ready ids are handled; terminal ids and ids missing for GapTimeout
+	// are skipped; the walk stops at a newer missing id or a read error (never skipped).
+	d := decideWindow(slots, base, time.Now(), p.settings.GapTimeout, p.gaps)
+	if len(d.skipped) > 0 {
+		p.logSkipped(d.skipped)
 	}
-	// Window head is stuck only when not-visible-yet (replication lag), not on read errors which must block indefinitely to avoid silent alert drops.
-	headNotFound := n > 0 && readStop == 0 && slots[0].notFound
-	for i := readStop; i < n; i++ {
-		outcomes[i] = engine.Retry // deferred to the next cycle
-	}
+	outcomes := d.outcomes
 
-	// A missing row at the window head blocks everything after it indefinitely; GapTimeout bounds the wait before skipping it.
-	if n > 0 && p.stuck.observe(base, headNotFound, time.Now(), p.settings.GapTimeout) {
-		id := cassandra.FormatSeq(alertIDPrefix, alertIDWidth, base)
-		p.logger.Error("alert id stuck beyond gap timeout, skipping to unblock the pipeline", "alert_id", id, "gap_timeout", p.settings.GapTimeout)
-		outcomes[0] = engine.Failed
-	}
-
-	p.handleSharded(ctx, base, slots, outcomes, readStop)
+	p.handleSharded(ctx, base, slots, outcomes, d.readStop)
 
 	// Advance across the leading run of completed ids (Processed/Failed), stopping at the first Retry.
 	completed := contiguousCompleted(outcomes)
@@ -218,6 +206,22 @@ func (p *Poller) processWindow(ctx context.Context, cursor, latest int64) int64 
 	}
 	p.logger.Info("processed alert window", "from", base, "to", target, "count", completed)
 	return target
+}
+
+// maxLoggedSkips bounds the id list in the skipped-gap log line.
+const maxLoggedSkips = 50
+
+// logSkipped reports one window's skipped ids in a single line.
+func (p *Poller) logSkipped(skipped []int64) {
+	ids := make([]string, 0, min(len(skipped), maxLoggedSkips))
+	for _, seq := range skipped[:min(len(skipped), maxLoggedSkips)] {
+		ids = append(ids, cassandra.FormatSeq(alertIDPrefix, alertIDWidth, seq))
+	}
+	p.logger.Error("alert ids missing beyond gap timeout, skipping to unblock the pipeline",
+		"count", len(skipped),
+		"first_id", cassandra.FormatSeq(alertIDPrefix, alertIDWidth, skipped[0]),
+		"last_id", cassandra.FormatSeq(alertIDPrefix, alertIDWidth, skipped[len(skipped)-1]),
+		"ids", ids, "gap_timeout", p.settings.GapTimeout)
 }
 
 // prepared holds the result of reading and normalizing one alert id; notFound is only meaningful when !ready.

@@ -91,8 +91,8 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		// Requiring it unconditionally used to reject case.created outright
 		// for every one of those types, before it ever reached dispatch's
 		// own CaseType branching — no email or Chat alert ever went out for
-		// them as a result. RenderCaseCreatedEmail already renders an empty
-		// Priority as a blank value with no ill effect, and
+		// them as a result. RenderCaseCreatedEmail drops its Priority row
+		// entirely (not just blank) when it's empty, and
 		// SendSecurityReportAnalysisAlert/SendCaseCreatedAlert both already
 		// omit their severity-derived line entirely when it's empty.
 		if p.ReporterName == "" || p.ProjectName == "" || p.ProjectID == "" || p.CaseID == "" || p.CaseTitle == "" ||

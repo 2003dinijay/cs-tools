@@ -114,7 +114,7 @@ type IncidentRepository interface {
 	// incident creation (see incidentService.createIncidentSNFirst's own doc
 	// comment). Unlike CaseRepository.CreateCaseFromServiceNow, no wso2ID
 	// parameter exists here: work_item.wso2_id is only required (by the
-	// work_item_wso2_id_required_by_type CHECK constraint, migration 000016)
+	// work_item_wso2_id_required_by_type CHECK constraint, migration 0021)
 	// for CASE/SERVICE_REQUEST/ANNOUNCEMENT/ENGAGEMENT/
 	// SECURITY_REPORT_ANALYSIS -- INCIDENT is deliberately excluded from that
 	// list, and ServiceNow's own incident-create response
@@ -136,11 +136,12 @@ type IncidentRepository interface {
 	// "DOS/ DDOS"), which has no established mapping back from
 	// domain.IncidentSubcategory's enum spelling (e.g. IP_ADDRESS,
 	// DOS_DDOS) anywhere in this codebase yet -- same class of gap as
-	// incidentWhereClause's already-documented assignmentGroupId/productName
-	// "accepted but not applied" fields. req.ConfigurationItemID and
-	// req.AssignmentGroupID are also not applied, for the same
-	// no-backing-column reason UpdateIncident's own doc comment already
-	// gives.
+	// incidentWhereClause's already-documented productName "accepted but
+	// not applied" field. req.ConfigurationItemID is also not applied, for
+	// the same no-backing-column reason UpdateIncident's own doc comment
+	// already gives. req.AssignmentGroupID, by contrast, DOES have a
+	// backing column (work_item.assignment_group_id, migration 0075) and
+	// IS written here.
 	CreateIncidentFromServiceNow(ctx context.Context, req domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error)
 }
 
@@ -439,7 +440,7 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 		       caused_by_cr.id, caused_by_wi.number,
 		       inc.resolution_code::TEXT, inc.close_notes,
 		       rb.id, COALESCE(rb.name, NULLIF(TRIM(CONCAT_WS(' ', rb.first_name, rb.last_name)), '')),
-		       inc.resolved_on, inc.incident_report,
+		       inc.resolved_on, inc.incident_report, wi.description,
 		       wi.created_on, wi.created_by, wi.updated_on, wi.updated_by
 		` + incidentFromJoins + `
 		WHERE wi.id = $1 AND wi.type = 'INCIDENT'`
@@ -461,6 +462,7 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 		rbID, rbName                       *string
 		resolvedOn                         *time.Time
 		incidentReport                     *string
+		description                        *string
 		createdOn, updatedOn               time.Time
 		createdBy, updatedBy               string
 	)
@@ -478,7 +480,7 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 		&causedByID, &causedByNumber,
 		&resolutionCode, &closeNotes,
 		&rbID, &rbName,
-		&resolvedOn, &incidentReport,
+		&resolvedOn, &incidentReport, &description,
 		&createdOn, &createdBy, &updatedOn, &updatedBy,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -493,6 +495,7 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 		Priority: priority, State: state, Category: category, Subcategory: subcatL,
 		ContactType: contactType, Impact: impact, Urgency: urgency,
 		ResolutionCode: resolutionCode, ResolutionNotes: closeNotes, IncidentReport: incidentReport,
+		Description:           description,
 		WatchList:             []domain.IncidentWatchListItem{},
 		LinkedServiceRequests: []domain.LinkedServiceRequestRef{},
 		CreatedOn:             createdOn.UTC().Format(time.RFC3339), CreatedBy: createdBy,
@@ -663,7 +666,7 @@ func (r *incidentRepo) SearchIncidentActivities(ctx context.Context, req domain.
 }
 
 // incidentContactTypeToEnum maps domain.IncidentContactType to
-// incident_contact_type_enum's real labels (migration 000058) -- identity
+// incident_contact_type_enum's real labels (migration 0058) -- identity
 // for every value except "Site 24/7", where the enum spells it
 // 'SITE_24_7' but domain.IncidentContactTypeSite247 spells it "SITE_247".
 func incidentContactTypeToEnum(c domain.IncidentContactType) string {
@@ -739,11 +742,11 @@ const createIncidentFromServiceNowQuery = `
 	WITH inserted_work_item AS (
 		INSERT INTO work_item (
 			id, created_on, updated_on, created_by, updated_by,
-			number, subject, type, parent_id
+			number, subject, type, parent_id, assignment_group_id
 		)
 		VALUES (
 			$1, NOW(), NOW(), $2, $2,
-			$3, $4, 'INCIDENT'::work_item_type_enum, $5::uuid
+			$3, $4, 'INCIDENT'::work_item_type_enum, $5::uuid, $6::uuid
 		)
 		RETURNING id, number, subject, created_on, updated_on, created_by
 	),
@@ -752,13 +755,13 @@ const createIncidentFromServiceNowQuery = `
 			id, caller_id, category, impact, urgency,
 			service_id, service_offering_id, contact_type,
 			change_request_id, caused_by_id, parent_incident_id, problem_id,
-			opened_on, correlation_id
+			opened_on, correlation_id, environment
 		)
 		VALUES (
-			$1, $6::uuid, $7::incident_category_enum, $8::incident_impact_enum, $9::incident_urgency_enum,
-			$10::uuid, $11::uuid, $12::incident_contact_type_enum,
-			$13::uuid, $14::uuid, $15::uuid, $16::uuid,
-			NOW(), $17
+			$1, $7::uuid, $8::incident_category_enum, $9::incident_impact_enum, $10::incident_urgency_enum,
+			$11::uuid, $12::uuid, $13::incident_contact_type_enum,
+			$14::uuid, $15::uuid, $16::uuid, $17::uuid,
+			NOW(), $18, $19
 		)
 		RETURNING id
 	)
@@ -780,11 +783,11 @@ func (r *incidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req dom
 	)
 	err := r.db.QueryRow(ctx, createIncidentFromServiceNowQuery,
 		id, createdBy,
-		number, req.Subject, req.ParentID,
+		number, req.Subject, req.ParentID, req.AssignmentGroupID,
 		req.CallerID, string(req.Category), string(req.Impact), string(req.Urgency),
 		req.ServiceID, req.ServiceOfferingID, contactType,
 		req.ChangeRequestID, req.CausedByID, req.ParentIncidentID, req.ProblemID,
-		req.CorrelationID,
+		req.CorrelationID, req.Environment,
 	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
