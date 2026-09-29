@@ -1,6 +1,6 @@
 openapi: 3.0.1
 info:
-  title: Customer Portal Activity Stream Service Health
+  title: Customer Portal Case Activity Stream
   description: Health check endpoint for customer-portal-activity-stream-service.
   version: 1.0.0
 servers:

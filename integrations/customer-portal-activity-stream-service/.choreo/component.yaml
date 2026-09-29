@@ -23,7 +23,7 @@ endpoints:
   # CORS + CorrelationID + Logger middleware; Auth is NOT applied to
   # /health (see middleware.Auth).
   - name: customer-portal-activity-stream-service-health
-    displayName: Customer Portal Activity Stream Service Health
+    displayName: Customer Portal Case Activity Stream
     service:
       basePath: /
       port: 8080
