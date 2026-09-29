@@ -1084,8 +1084,8 @@ func (s *snCaseService) registerCaseSLAClocks(ctx context.Context, caseID string
 
 // registerCaseSLAClocksEvent is registerCaseSLAClocks's actual body,
 // factored out to a package-level function so caseService.createCaseSNFirst
-// (DATA_SOURCE=postgres-servicenow-dual-write) can call it too, AFTER its
-// own Postgres insert succeeds — same reasoning publishCaseCreatedEvent's
+// (the dual-write pilot) can call it too, AFTER its own Postgres insert
+// succeeds — same reasoning publishCaseCreatedEvent's
 // own doc comment gives for the publish call, and for the identical
 // underlying problem: registering a clock here inserts into "sla", whose
 // work_item_id has a hard foreign key against work_item(id) (migration

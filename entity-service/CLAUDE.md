@@ -1283,11 +1283,11 @@ project/account simply reports the zero value for each.
 `internal/service/sla_engine_service.go` (`SLAEngineService`) is what actually
 keeps the `sla` table populated for a case-like work item this deployment
 creates itself — real, durable `source='CSM'` rows, not a value ServiceNow's
-own sync computes. This exists specifically for
-`DATA_SOURCE=postgres-servicenow-dual-write` (and, in principle,
-`DATA_SOURCE=postgres`): a case created there has no ServiceNow-synced `sla`
-row of its own to read `GET /sla-status` from, so without this engine it
-would simply never get SLA tracking at all, regardless of severity.
+own sync computes. This exists specifically for the dual-write pilot (and,
+in principle, any future pure-Postgres mode): a case created there has no
+ServiceNow-synced `sla` row of its own to read `GET /sla-status` from, so
+without this engine it would simply never get SLA tracking at all,
+regardless of severity.
 
 - **Durations come from the real, ServiceNow-synced `sla_policy` table**
   (`internal/service/sla_policy_resolver.go`), not a hardcoded map — the
