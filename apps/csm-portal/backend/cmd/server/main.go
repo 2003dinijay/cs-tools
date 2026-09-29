@@ -316,6 +316,10 @@ func main() {
 	route("DELETE /users/me/saved-filter-views", handler.PermAuthenticated, usersHandler.DeleteSavedFilterView)
 	route("POST /users/me/saved-filter-views/reorder", handler.PermAuthenticated, usersHandler.ReorderSavedFilterView)
 	route("POST /users/search", handler.PermView, usersHandler.SearchUsers)
+	// Batch id-to-name lookup for the KB article lists (author and
+	// reviewer columns). Not /users/search with an id filter: that filter
+	// is ServiceNow-only and 400s against Postgres.
+	route("POST /users/by-ids", handler.PermView, usersHandler.GetUsersByIDs)
 	route("GET /users/{id}", handler.PermView, usersHandler.GetUser)
 	route("POST /users", handler.PermAdmin, usersHandler.CreateUser)
 	route("POST /roles/search", handler.PermView, referenceHandler.SearchRoles)
