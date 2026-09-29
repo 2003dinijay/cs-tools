@@ -31,10 +31,10 @@ vi.mock("@features/csm-cases/api/useGetProductRepoMapping", () => ({
 const mockUseGetProductRepoMapping = vi.mocked(useGetProductRepoMapping);
 
 const MAPPING_FIXTURE = {
-  productName: "Asgardeo",
-  owner: "wso2-enterprise",
-  repository: "wso2-iam-internal",
-  githubLabel: "Asgardeo",
+  productName: "Alpha",
+  owner: "example-org",
+  repository: "example-repo",
+  githubLabel: "Alpha",
 };
 
 beforeEach(() => {
@@ -69,7 +69,7 @@ describe("CreateGithubIssueDialog — required fields gate submission", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         onClose={() => {}}
@@ -98,7 +98,7 @@ describe("CreateGithubIssueDialog — per-type field rules", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         onClose={() => {}}
@@ -116,7 +116,7 @@ describe("CreateGithubIssueDialog — per-type field rules", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         onClose={() => {}}
@@ -142,7 +142,7 @@ describe("CreateGithubIssueDialog — per-type field rules", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         onClose={() => {}}
@@ -178,7 +178,7 @@ describe("CreateGithubIssueDialog — stale per-type fields don't leak into the 
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         onClose={() => {}}
@@ -212,7 +212,7 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         showRepoField
@@ -225,7 +225,7 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
     fireEvent.click(screen.getByRole("button", { name: /file issue/i }));
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        repoOverride: { owner: "wso2-enterprise", repo: "wso2-iam-internal" },
+        repoOverride: { owner: "example-org", repo: "example-repo" },
       }),
     );
   });
@@ -234,7 +234,7 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         showRepoField
@@ -248,7 +248,7 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
       name: /file this github issue/i,
     });
     expect(
-      within(confirmDialog).getByText(/wso2-enterprise\/wso2-iam-internal \(Asgardeo\)/),
+      within(confirmDialog).getByText(/example-org\/example-repo \(Alpha\)/),
     ).toBeInTheDocument();
   });
 
@@ -261,7 +261,7 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         showRepoField
@@ -284,7 +284,7 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         showRepoField
@@ -308,7 +308,7 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         showRepoField
@@ -345,10 +345,10 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
   it("shows the repository the lookup returned", () => {
     mockUseGetProductRepoMapping.mockReturnValue({
       data: {
-        productName: "Bijira",
-        owner: "wso2-enterprise",
-        repository: "wso2-apim-internal",
-        githubLabel: "Bijira",
+        productName: "Beta",
+        owner: "example-org",
+        repository: "other-repo",
+        githubLabel: "Beta",
       },
       isLoading: false,
       isError: false,
@@ -357,7 +357,7 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Bijira"
+        productName="Beta"
         submitting={false}
         error={null}
         onClose={() => {}}
@@ -365,7 +365,7 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
       />,
     );
     expect(
-      screen.getByText(/wso2-enterprise\/wso2-apim-internal \(Bijira\)/),
+      screen.getByText(/example-org\/other-repo \(Beta\)/),
     ).toBeInTheDocument();
   });
 
@@ -373,7 +373,7 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         projectStatusPending
         submitting={false}
         error={null}
@@ -391,7 +391,7 @@ describe("CreateGithubIssueDialog — repo options (showRepoField)", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         projectStatusFailed
         onRetryProjectStatus={onRetryProjectStatus}
         submitting={false}
@@ -416,7 +416,7 @@ describe("CreateGithubIssueDialog — confirm step before filing a real issue", 
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         onClose={() => {}}
@@ -436,7 +436,7 @@ describe("CreateGithubIssueDialog — confirm step before filing a real issue", 
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         onClose={() => {}}
@@ -453,7 +453,7 @@ describe("CreateGithubIssueDialog — confirm step before filing a real issue", 
         description: "Latency spiked after the last deploy.",
         issueTypeLabel: "Type/Discussion",
         priorityLevel: "Priority/Critical",
-        repoOverride: { owner: "wso2-enterprise", repo: "wso2-iam-internal" },
+        repoOverride: { owner: "example-org", repo: "example-repo" },
       }),
     );
   });
@@ -463,7 +463,7 @@ describe("CreateGithubIssueDialog — confirm step before filing a real issue", 
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         onClose={() => {}}
@@ -489,7 +489,7 @@ describe("CreateGithubIssueDialog — confirm step before filing a real issue", 
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error="Something went wrong filing the issue."
         onClose={() => {}}
@@ -511,7 +511,7 @@ describe("CreateGithubIssueDialog — confirm step before filing a real issue", 
     const { rerender } = render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         onClose={() => {}}
@@ -524,7 +524,7 @@ describe("CreateGithubIssueDialog — confirm step before filing a real issue", 
     rerender(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting
         error={null}
         onClose={() => {}}
@@ -545,12 +545,12 @@ describe("CreateGithubIssueDialog — success view", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         createdIssue={{
           message: "Issue created.",
-          issue: { url: "https://github.com/wso2-enterprise/example/issues/42", number: 42, repo: "example" },
+          issue: { url: "https://github.com/example-org/example/issues/42", number: 42, repo: "example" },
         }}
         onClose={onClose}
         onSubmit={() => {}}
@@ -562,7 +562,7 @@ describe("CreateGithubIssueDialog — success view", () => {
     const link = screen.getByRole("link", { name: /example#42/i });
     expect(link).toHaveAttribute(
       "href",
-      "https://github.com/wso2-enterprise/example/issues/42",
+      "https://github.com/example-org/example/issues/42",
     );
     expect(onClose).not.toHaveBeenCalled();
 
@@ -574,7 +574,7 @@ describe("CreateGithubIssueDialog — success view", () => {
     render(
       <CreateGithubIssueDialog
         open
-        productName="Asgardeo"
+        productName="Alpha"
         submitting={false}
         error={null}
         createdIssue={{ message: "Filed, awaiting SN sync." }}
