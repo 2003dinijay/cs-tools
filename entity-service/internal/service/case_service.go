@@ -1165,29 +1165,32 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 }
 
 // validateWatchListProjectMembership rejects a watch-list update wholesale
-// (never partially applied) if any of userIDs is not an active project_contact
-// on the case's own project. Watchers are customer-side users
-// (project_contact models exactly that — the customer's own users scoped to
-// a project), unlike an assignee, which is normally a WSO2 support engineer
-// with no project_contact row at all; this check deliberately covers
-// updateCaseWatchList only, not updateCaseAssignee, for that reason (checked
-// live: 2856 of 2860 real assignees are not project contacts on their case's
-// project).
+// (never partially applied) if any of userIDs is neither an INTERNAL user
+// (WSO2 staff, who watch cases across every project) nor a REGISTERED
+// project_contact on the case's own project (the customer's own users, scoped
+// to a project). Unlike an assignee, which is normally an internal engineer
+// with no project_contact row at all, a watcher can be either kind; this check
+// deliberately covers updateCaseWatchList only, not updateCaseAssignee.
+//
+// The project-contact lookup runs first because it is the common case for
+// customer watchers; the user lookup (for the INTERNAL check) only runs for
+// ids that are not a registered contact. A rejection names the user by email,
+// else display name -- never by raw id -- and a user id that resolves to no
+// user at all gets a generic message.
 //
 // Takes the case's already-fetched CaseView rather than fetching it again --
 // updateCaseWatchList needs the same fetch for the mandatory-stakeholder
 // merge right after this call, and a case's project can't change between the
-// two. A case with no project linked (ProjectDetails is nil — a documented,
+// two. A case with no project linked (ProjectDetails is nil -- a documented,
 // real state, not an error) has nothing to validate watchers against, so the
 // check is skipped rather than rejecting every watch-list update on such a
 // case.
 //
 // Deliberately never applied to the account's four named stakeholders that
 // updateCaseWatchList merges in afterward: those are WSO2-internal roles
-// (customer success manager, technical owner, ...), not customer-side
-// project contacts, so validating them here would reject the very watchers
-// this system itself always adds, on most real accounts. Only userIDs -- the
-// caller's own requested subset, before that merge -- is ever checked.
+// (customer success manager, technical owner, ...), so they are exempt by
+// construction. Only userIDs -- the caller's own requested subset, before that
+// merge -- is ever checked.
 func (s *caseService) validateWatchListProjectMembership(ctx context.Context, cv domain.CaseView, userIDs []string) error {
 	if len(userIDs) == 0 {
 		return nil
@@ -1197,22 +1200,39 @@ func (s *caseService) validateWatchListProjectMembership(ctx context.Context, cv
 	}
 	for _, userID := range userIDs {
 		contact, err := s.projectContactRepo.GetProjectContactByUserID(ctx, cv.ProjectDetails.ID, userID, "")
-		if err != nil {
-			var notFound *apierror.NotFoundError
-			if errors.As(err, &notFound) {
-				return &apierror.ValidationError{Msg: fmt.Sprintf("user %s is not a contact on this case's project", userID)}
-			}
+		if err == nil && contact.RegistrationState == "REGISTERED" {
+			// A row existing isn't enough -- INVITED/RE-INVITED hasn't been
+			// accepted yet and DEACTIVATED no longer applies. Same
+			// REGISTERED-only bar AccessService.ResolveScope and
+			// user_repo.go's own GrantsCaseAccess already apply (see
+			// access_repo.go's registeredContactState).
+			continue
+		}
+		var notFound *apierror.NotFoundError
+		if err != nil && !errors.As(err, &notFound) {
 			return err
 		}
-		// A row existing isn't enough -- INVITED/RE-INVITED hasn't been
-		// accepted yet and DEACTIVATED no longer applies, so neither
-		// actually represents someone who belongs on this project today.
-		// Same REGISTERED-only bar AccessService.ResolveScope and
-		// user_repo.go's own GrantsCaseAccess already apply for the
-		// identical concept (see access_repo.go's registeredContactState).
-		if contact.RegistrationState != "REGISTERED" {
-			return &apierror.ValidationError{Msg: fmt.Sprintf("user %s is not a registered contact on this case's project", userID)}
+
+		// Not a registered contact of this project: acceptable only if the
+		// user is internal staff.
+		user, uerr := s.userRepo.GetUserDetail(ctx, userID)
+		if uerr != nil {
+			if errors.As(uerr, &notFound) {
+				return &apierror.ValidationError{Msg: "one or more watch list users do not exist"}
+			}
+			return uerr
 		}
+		if user.UserType == domain.UserTypeInternal {
+			continue
+		}
+		who := user.Email
+		if who == "" {
+			who = user.Name
+		}
+		if who == "" {
+			who = "a requested watcher"
+		}
+		return &apierror.ValidationError{Msg: fmt.Sprintf("%s is neither an internal user nor a registered contact on this case's project", who)}
 	}
 	return nil
 }

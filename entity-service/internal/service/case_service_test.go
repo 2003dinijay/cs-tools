@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3429,7 +3430,9 @@ func TestCaseService_UpdateCase_WatchList_RejectsNonProjectMember(t *testing.T) 
 			return repository.ProjectContactRow{Email: "member@example.com", RegistrationState: "REGISTERED"}, nil
 		},
 	}
-	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, contactRepo)
+	svc := NewCaseService(repo, stubUserRepo{getUserDetail: func(context.Context, string) (domain.UserDetail, error) {
+		return domain.UserDetail{UserType: domain.UserTypeExternal, Email: "outsider@example.com"}, nil
+	}}, nil, alwaysUnrestrictedAccess{}, contactRepo)
 
 	req := domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &userIDs}
 	_, err := svc.UpdateCase(context.Background(), req)
@@ -3469,7 +3472,9 @@ func TestCaseService_UpdateCase_WatchList_RejectsUnregisteredContact(t *testing.
 			return repository.ProjectContactRow{Email: "invited@example.com", RegistrationState: "INVITED"}, nil
 		},
 	}
-	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, contactRepo)
+	svc := NewCaseService(repo, stubUserRepo{getUserDetail: func(context.Context, string) (domain.UserDetail, error) {
+		return domain.UserDetail{UserType: domain.UserTypeExternal, Email: "outsider@example.com"}, nil
+	}}, nil, alwaysUnrestrictedAccess{}, contactRepo)
 
 	req := domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &userIDs}
 	_, err := svc.UpdateCase(context.Background(), req)
@@ -3513,6 +3518,118 @@ func TestCaseService_UpdateCase_WatchList_AcceptsProjectMembers(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// watchListTestService builds a Postgres-backed caseService whose case lives on
+// a project, with contactState/userDetail controlling how the two watcher
+// lookups answer for every id. contactState "" means no project_contact row.
+func watchListTestService(contactState string, user domain.UserDetail) (CaseService, *bool) {
+	const projectID = "6fa0b42d-1bfa-a694-a002-c9d3604bcb77"
+	written := false
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ProjectDetails: &domain.EntityRef{ID: projectID}}, nil
+		},
+		setCaseWatchList: func(context.Context, string, []string, string) ([]domain.WatchListUser, time.Time, error) {
+			written = true
+			return nil, time.Now(), nil
+		},
+	}
+	contactRepo := &stubProjectContactRepo{
+		getProjectContactByUserID: func(context.Context, string, string, string) (repository.ProjectContactRow, error) {
+			if contactState == "" {
+				return repository.ProjectContactRow{}, &apierror.NotFoundError{Msg: "contact not found on this project"}
+			}
+			return repository.ProjectContactRow{Email: "jane.doe@example.com", RegistrationState: contactState}, nil
+		},
+	}
+	users := stubUserRepo{
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testDeploymentUUID, Email: "actor@example.com"}, nil
+		},
+		getUserDetail: func(context.Context, string) (domain.UserDetail, error) { return user, nil },
+	}
+	return NewCaseService(repo, users, nil, alwaysUnrestrictedAccess{}, contactRepo), &written
+}
+
+func TestCaseService_UpdateCase_WatchList_AcceptsInternalUserWithoutContactRow(t *testing.T) {
+	svc, written := watchListTestService("", domain.UserDetail{UserType: domain.UserTypeInternal, Email: "jane.doe@example.com"})
+	ids := []string{"00000000-0000-0000-0000-000000000001"}
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "actor@example.com"))
+	if _, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &ids}); err != nil {
+		t.Fatalf("internal user must be accepted as a watcher, got %v", err)
+	}
+	if !*written {
+		t.Error("SetCaseWatchList was not called for an accepted internal watcher")
+	}
+}
+
+func TestCaseService_UpdateCase_WatchList_AcceptsRegisteredContactWithoutUserLookup(t *testing.T) {
+	// getUserDetail panics if reached: a registered contact must short-circuit.
+	svc, _ := watchListTestService("REGISTERED", domain.UserDetail{})
+	svc.(*caseService).userRepo = stubUserRepo{getUserByEmail: func(context.Context, string) (domain.User, error) {
+		return domain.User{ID: testDeploymentUUID, Email: "actor@example.com"}, nil
+	}}
+	ids := []string{"00000000-0000-0000-0000-000000000002"}
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "actor@example.com"))
+	if _, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &ids}); err != nil {
+		t.Fatalf("registered contact must be accepted as a watcher, got %v", err)
+	}
+}
+
+func TestCaseService_UpdateCase_WatchList_RejectsExternalNonContactWithoutUUIDInMessage(t *testing.T) {
+	const id = "00000000-0000-0000-0000-000000000003"
+	cases := map[string]domain.UserDetail{
+		"by email": {UserType: domain.UserTypeExternal, Email: "jane.doe@example.com", Name: "Jane Doe"},
+		"by name":  {UserType: domain.UserTypeExternal, Name: "Jane Doe"},
+		"no data":  {UserType: domain.UserTypeExternal},
+	}
+	for name, user := range cases {
+		t.Run(name, func(t *testing.T) {
+			svc, written := watchListTestService("INVITED", user)
+			ids := []string{id}
+			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "actor@example.com"))
+			_, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &ids})
+			var ve *apierror.ValidationError
+			if !asValidationError(err, &ve) {
+				t.Fatalf("expected a ValidationError, got %v", err)
+			}
+			if strings.Contains(ve.Msg, id) || uuidInMessageRE.MatchString(ve.Msg) {
+				t.Errorf("message must not contain a raw UUID, got %q", ve.Msg)
+			}
+			if user.Email != "" && !strings.Contains(ve.Msg, user.Email) {
+				t.Errorf("message should name the user by email, got %q", ve.Msg)
+			}
+			if *written {
+				t.Error("SetCaseWatchList was called despite a rejected watcher")
+			}
+		})
+	}
+}
+
+func TestCaseService_UpdateCase_WatchList_UnknownUserMessageHasNoUUID(t *testing.T) {
+	const id = "00000000-0000-0000-0000-000000000004"
+	svc, _ := watchListTestService("", domain.UserDetail{})
+	svc.(*caseService).userRepo = stubUserRepo{
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testDeploymentUUID, Email: "actor@example.com"}, nil
+		},
+		getUserDetail: func(_ context.Context, got string) (domain.UserDetail, error) {
+			return domain.UserDetail{}, &apierror.NotFoundError{Msg: "no user found with id: " + got}
+		},
+	}
+	ids := []string{id}
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "actor@example.com"))
+	_, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, WatchList: &ids})
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) {
+		t.Fatalf("expected a ValidationError, got %v", err)
+	}
+	if uuidInMessageRE.MatchString(ve.Msg) {
+		t.Errorf("message must not contain a raw UUID, got %q", ve.Msg)
+	}
+}
+
+var uuidInMessageRE = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
 // TestCaseService_UpdateCase_WatchList_KeepsAccountDefaultsEvenWhenOmitted is
 // the regression test for the "4 mandatory stakeholders can never be
