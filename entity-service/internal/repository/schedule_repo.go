@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -312,8 +313,15 @@ func (r *scheduleRepository) SearchAssignments(ctx context.Context, req domain.S
 		// not > the UTC midnight of the day it plainly runs into, and dropped
 		// out of that day's view. Every other date boundary in this feature
 		// already goes through authoring_time_zone; this one did not.
+		//
+		// Only the day before can run into $1: a window starts before
+		// midnight of its own rota day and lasts at most 24 hours
+		// (team_schedule_shift_end_minute_check), and every assignment's
+		// instants are resolved from its shift, which cannot change once used.
+		// Naming that one day, rather than every earlier one, keeps this on
+		// the rota_date index instead of scanning the whole history.
 		where = `WHERE (a.rota_date BETWEEN $1::date AND $2::date
-		          OR (a.rota_date < $1::date
+		          OR (a.rota_date = $1::date - 1
 		              AND a.ends_at > ($1::date::timestamp AT TIME ZONE s.authoring_time_zone)))`
 	}
 	if len(req.TeamKeys) > 0 {
@@ -794,6 +802,13 @@ func (r *scheduleRepository) LeadTeamsFor(ctx context.Context, userEmail string)
 // team_member row to go through; the grant is the role itself. Matched on
 // email and lowercased on both sides for the same reason LeadsTeam is -- an
 // identity provider is free to return a different case from the one stored.
+//
+// Only an INTERNAL holder counts. The role is a schedule permission for staff
+// who are already internal; it never makes anyone internal (user_type is
+// derived from the admin/internal roles alone), and a holder who is not
+// internal -- a customer granted it by mistake -- is simply no rota admin.
+// The service refuses a non-internal caller before it asks this at all; this
+// holds the same line here so the answer can never be used without it.
 func (r *scheduleRepository) RotaAdminTeamsFor(ctx context.Context, userEmail string) ([]string, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT DISTINCT t.key
@@ -804,6 +819,7 @@ func (r *scheduleRepository) RotaAdminTeamsFor(ctx context.Context, userEmail st
 		                   AND `+teamFamilyExpr+` =
 		                       CASE WHEN ro.name = 'sre_rota_admin' THEN 'SRE' ELSE 'CRE' END
 		 WHERE lower(u.email) = lower($1)
+		   AND u.user_type = 'INTERNAL'::user_type_enum
 		   AND ro.name IN ('cre_rota_admin', 'sre_rota_admin')
 		 ORDER BY 1`, userEmail)
 	if err != nil {
@@ -1406,9 +1422,11 @@ func (r *scheduleRepository) CreateAbsenceKind(ctx context.Context, code string,
 		RETURNING id::text, sort_order`,
 		code, req.ShortCode, req.Label, req.Bucket, req.ColourToken, actorEmail).Scan(&k.ID, &k.SortOrder)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.ScheduleAbsenceKind{}, &apierror.ConflictError{
-			Msg: fmt.Sprintf("a tag called %q already exists", req.Label),
-		}
+		// The clash is on code, which is derived from the label (normalised
+		// and cut to length), so two different labels can land on one code.
+		// Name the tag that actually holds it: quoting the caller's own label
+		// back would claim a tag by that name exists when it may not.
+		return domain.ScheduleAbsenceKind{}, r.absenceKindCodeTaken(ctx, tx, code, req.Label)
 	}
 	if err != nil {
 		return domain.ScheduleAbsenceKind{}, fmt.Errorf("insert absence kind: %w", err)
@@ -1417,6 +1435,30 @@ func (r *scheduleRepository) CreateAbsenceKind(ctx context.Context, code string,
 		return domain.ScheduleAbsenceKind{}, fmt.Errorf("commit create absence kind: %w", err)
 	}
 	return k, nil
+}
+
+// absenceKindCodeTaken explains a create refused because its derived code is
+// already in use, naming the kind that holds it.
+func (r *scheduleRepository) absenceKindCodeTaken(ctx context.Context, tx pgx.Tx, code, label string) error {
+	var existing string
+	var active bool
+	err := tx.QueryRow(ctx,
+		`SELECT label, is_active FROM team_schedule_absence_kind WHERE code = $1`, code).Scan(&existing, &active)
+	if err != nil {
+		// Gone between the insert and this read, or unreadable: say what is
+		// known without guessing at a name.
+		return &apierror.ConflictError{Msg: fmt.Sprintf("a tag like %q already exists; choose a more distinct name", label)}
+	}
+	retired := ""
+	if !active {
+		retired = " (retired)"
+	}
+	if strings.EqualFold(strings.TrimSpace(existing), strings.TrimSpace(label)) {
+		return &apierror.ConflictError{Msg: fmt.Sprintf("a tag called %q already exists%s", existing, retired)}
+	}
+	return &apierror.ConflictError{
+		Msg: fmt.Sprintf("%q is too close to the existing tag %q%s; choose a more distinct name", label, existing, retired),
+	}
 }
 
 // EditMarkers implements ScheduleRepository.

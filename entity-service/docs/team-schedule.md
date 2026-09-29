@@ -4,7 +4,7 @@ The CRE and SRE rota behind the CSM portal's Team Schedule: who is working,
 when, in which escalation tier, and who is away. Portal-native data with no
 ServiceNow equivalent, so these tables are the system of record, not a mirror.
 
-**Status:** code merged (#2032). Schema ships as migrations **0152–0157**.
+**Status:** code merged (#2032). Schema ships as migrations **0152–0156**.
 Nothing else needs configuring: the routes are registered whenever
 entity-service has a database.
 
@@ -63,6 +63,9 @@ block is Monday's, even though six of its hours fall on Tuesday.
 | Only SRE windows have a zone; escalation windows must | two CHECKs on `team_schedule_shift` |
 | An assignment's `team_id` and `team_key` agree | composite FK to `team (id, key)` |
 | A kind in use cannot be deleted | `kind_id … ON DELETE RESTRICT`. Retire a kind with `is_active = FALSE`. |
+| Nobody works two sets of regular hours at once | `team_schedule_assignment_no_overlap_regular`: the same exclusion for regular hours (`WHERE NOT is_rotation`). TZ1's and TZ2's regular hours overlap, and CRE's regular and India-region windows are the same hours, so holding two would put one engineer in two places. A turn over regular hours is still allowed. |
+| Deleting a user does not erase their rota | `user_id … ON DELETE RESTRICT` on assignments and absences. Users are deactivated, not deleted; a delete of someone with rota history is refused. |
+| A used window's meaning cannot change under its rows | trigger `team_schedule_shift_guard_used`: while any assignment uses a shift, its hours, zone, tier, family and turn/regular flag are frozen (label, short code, colour, sort order, day scope and `is_active` stay editable). A correction is a new shift code, and the old one is retired. A migration that recomputes the rows itself may `SET LOCAL team_schedule.allow_shift_rewrite = 'on'`, as 0154 does. |
 
 ## 2. The catalogue (0154)
 
@@ -210,14 +213,22 @@ yet in `csm_migration_applied_migration`:
 make migrate
 ```
 
-Or apply them by hand, with plain autocommit (never `psql -1`), and record each
-one so a later `make migrate` skips it:
+Each file is its own transaction (`BEGIN` … `COMMIT`, like 0106 and 0114), so a
+failure part-way leaves nothing behind, and sets `lock_timeout = '5s'`, so a
+table another writer holds makes it fail fast instead of queuing that writer's
+next statements behind it. 0152 matters most here: `team` is written by the
+ServiceNow sync while it runs. After a lock timeout, re-run the file when the
+table is quiet; it is safe to re-run.
+
+Or apply them by hand, one `psql -f` per file (never `psql -1`, since each
+file opens its own transaction), and record each one so a later
+`make migrate` skips it:
 
 ```bash
 psql "$DATABASE_URL" -c "CREATE TABLE IF NOT EXISTS csm_migration_applied_migration (filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
 for f in 0152_team_add_key.sql 0153_team_schedule_tables.sql \
          0154_team_schedule_catalogue.sql 0155_team_schedule_audit.sql \
-         0156_team_schedule_rota_admin_roles.sql 0157_team_schedule_rota_admin_user_type.sql; do
+         0156_team_schedule_rota_admin_roles.sql; do
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "migrations/$f" &&
   psql "$DATABASE_URL" -c "INSERT INTO csm_migration_applied_migration (filename) VALUES ('$f') ON CONFLICT DO NOTHING"
 done
@@ -226,13 +237,12 @@ done
 | File | Creates / changes | Touches shared tables |
 |---|---|---|
 | `0152_team_add_key.sql` | `team.key` + fill trigger + two unique constraints | **yes**: `team` |
-| `0153_team_schedule_tables.sql` | `btree_gist`, 5 enums, 7 tables, indexes, constraints, the matches-shift trigger | reads `team`, `"user"` (FKs only) |
+| `0153_team_schedule_tables.sql` | `btree_gist`, 5 enums, 7 tables, indexes, constraints, the matches-shift and used-shift triggers | reads `team`, `"user"` (FKs only) |
 | `0154_team_schedule_catalogue.sql` | 3 zones, 18 windows, 16 kinds | no |
 | `0155_team_schedule_audit.sql` | `team_schedule_audit`, its trigger on 5 tables, one BASELINE row per existing row | no |
 | `0156_team_schedule_rota_admin_roles.sql` | the `cre_rota_admin` / `sre_rota_admin` roles | **yes**: `role` (seeded by name, `ON CONFLICT (name)`) |
-| `0157_team_schedule_rota_admin_user_type.sql` | adds both roles to `recompute_user_type()`'s INTERNAL branch; backfills holders | **yes**: `recompute_user_type()`, `"user".user_type` |
 
-### Rota admins (0156, 0157)
+### Rota admins (0156)
 
 A lead edits their own team's rota only. A **rota admin** may edit every team
 of one group, so a rota can still be fixed while its lead is away. It is a
@@ -241,16 +251,21 @@ both is granted both. The write check is "a lead of this team, or a rota admin
 for its group" (`requireRotaWriter`), and a row still belongs to the team it
 is filed under.
 
-0157 rewrites `recompute_user_type()` (from 0011, verbatim but for the two
-names) so a holder resolves to `user_type = INTERNAL`. Without it the schedule
-refuses them before it asks about roles.
+**A rota admin is internal staff first.** The role is a schedule permission,
+not a way to become internal: `recompute_user_type()` is untouched, so it
+still derives `user_type = INTERNAL` from the `admin` and `internal` roles
+alone. The schedule refuses any caller who is not INTERNAL, and counts the
+rota admin role only on an INTERNAL holder, so granting it to anyone else
+(a customer, by mistake) does nothing at all. It never widens what they can
+reach elsewhere on the platform.
 
 In the portal a rota admin reads their own group's views as an engineer does,
 and the other group's Today only. The page learns the group from the teams
 they may edit, since the sign-in token does not carry these roles.
 
 **Granting is a deployment step, not a migration**: who runs each rota differs
-per environment. There is no role UI yet, so a grant is a row in `user_role`:
+per environment. There is no role UI yet, so a grant is a row in `user_role`,
+given to someone who already holds `internal` or `admin`:
 
 ```sql
 INSERT INTO user_role (id, created_on, updated_on, created_by, updated_by, user_id, role_id)
@@ -299,27 +314,18 @@ DROP TABLE IF EXISTS team_schedule_audit, team_schedule_assignment_activity,
   team_schedule_shift, team_schedule_absence_kind, team_schedule_zone CASCADE;
 DROP TYPE IF EXISTS team_schedule_shift_family_enum, team_schedule_tier_enum,
   team_schedule_day_scope_enum, team_schedule_source_enum, team_schedule_absence_bucket_enum;
-DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_audit_row();
+DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_shift_guard_used(),
+  team_schedule_audit_row();
 -- team.key is shared; leave it unless nothing else has started using it.
 ```
 
 ## 5. Known gaps
 
-- **Why 0152–0157.** 0141–0150 are claimed by the open RLS work in #2094, and
+- **Why 0152–0156.** 0141–0150 are claimed by the open RLS work in #2094, and
   upstream's 0151 already sits after that range, so these follow it. The
   numbers have not been checked against `operations/csm-sync-service`, which
-  owns `team`, `role` and `recompute_user_type()`; confirm 0152, 0156 and 0157
-  are free there before production.
-- **0157 replaces a function the sync service also defines.**
-  `recompute_user_type()` comes from 0011, which mirrors the sync service's own
-  migrations. If the sync service ever runs its own `CREATE OR REPLACE` of it,
-  the two rota admin names are dropped without any error. Rota admins then
-  resolve to `NOT_AVAILABLE` and the schedule refuses them with a 403 that
-  says nothing about roles. Either mirror 0157 into the sync service, or re-run
-  0157 after any sync-service change to that function. Check it with:
-  ```sql
-  SELECT prosrc LIKE '%cre_rota_admin%' FROM pg_proc WHERE proname = 'recompute_user_type';  -- expect t
-  ```
+  owns `team` and `role`; confirm 0152 and 0156 are free there before
+  production.
 - **The sync must never need to change `team.key`.** It cannot today, because
   it does not know the column exists. If it ever writes `key`, that value wins
   over the trigger.
@@ -339,3 +345,9 @@ DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_
   `family`; Allo-INT and Allo-EXT are offered again, and the customer
   allocations and Onboarding are retired. 0153 and 0154 bring an older
   database to both, and re-running them changes nothing.
+- **Review of #2109.** The rota admin role no longer makes anyone INTERNAL: the
+  migration that added it to `recompute_user_type()` is gone, and only an
+  INTERNAL holder counts. Each file is one transaction with a 5s lock timeout.
+  Rota history survives a user delete (`RESTRICT`), regular hours cannot
+  overlap, and a used shift's meaning is frozen. The day view's overnight
+  lookup reads only the day before, on the `rota_date` index.

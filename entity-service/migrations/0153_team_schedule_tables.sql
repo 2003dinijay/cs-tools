@@ -45,6 +45,12 @@
 -- names, so they are dropped and rebuilt below rather than carried forward.
 -- Anything that is NOT catalogue -- a single assignment or absence -- means
 -- real data, and stops the migration instead of dropping it.
+-- One transaction, so a failure part-way leaves nothing behind, and a short
+-- lock timeout, so a table another writer holds makes this fail fast instead
+-- of queuing every later writer behind it. Re-running after either is safe.
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
 DO $$
 BEGIN
     IF to_regclass('team_schedule_shift') IS NULL AND to_regclass('schedule_shift') IS NOT NULL THEN
@@ -222,7 +228,10 @@ CREATE TABLE IF NOT EXISTS team_schedule_assignment (
     updated_on          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_by          VARCHAR(255),
     updated_by          VARCHAR(255),
-    user_id             UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+    -- RESTRICT, not CASCADE: the roster is a record of who was responsible,
+    -- and deleting a user must not erase it. Users are deactivated, not
+    -- deleted; this makes that assumption fail loudly if it is ever broken.
+    user_id             UUID NOT NULL REFERENCES "user"(id) ON DELETE RESTRICT,
     team_id             UUID REFERENCES team(id) ON DELETE SET NULL,
     team_key            VARCHAR(64) NOT NULL REFERENCES team(key) ON UPDATE CASCADE,
     shift_id            UUID NOT NULL REFERENCES team_schedule_shift(id) ON DELETE RESTRICT,
@@ -252,7 +261,18 @@ CREATE TABLE IF NOT EXISTS team_schedule_assignment (
     -- to be. So regular hours may sit under a turn; two turns may not overlap.
     CONSTRAINT team_schedule_assignment_no_overlap
         EXCLUDE USING gist (user_id WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&)
-        WHERE (is_rotation)
+        WHERE (is_rotation),
+    -- Nobody works two sets of regular hours at once either. Regular hours
+    -- are one window per day: TZ1's and TZ2's overlap (06:00-15:00 and
+    -- 12:00-21:00), and CRE's regular and India-region windows are the same
+    -- hours, so holding two would say an engineer is in two places for the
+    -- same hours. Setting a zone's regular hours already replaces the day's
+    -- other regular hours; this makes the database say so too. Turns are
+    -- still allowed over regular hours -- only like overlapping like is ruled
+    -- out.
+    CONSTRAINT team_schedule_assignment_no_overlap_regular
+        EXCLUDE USING gist (user_id WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&)
+        WHERE (NOT is_rotation)
 );
 
 COMMENT ON COLUMN team_schedule_assignment.team_key IS
@@ -292,6 +312,54 @@ BEGIN
             EXCLUDE USING gist (user_id WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&)
             WHERE (is_rotation);
     END IF;
+END $$;
+
+-- The regular-hours rule, on a table built before it existed. Refuse with a
+-- count and the fix rather than a bare constraint error: the rows that
+-- overlap are real rota data, and which of each pair to keep is a lead's call.
+DO $$
+DECLARE clashes BIGINT;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'team_schedule_assignment_no_overlap_regular') THEN
+        SELECT count(*) INTO clashes
+          FROM team_schedule_assignment a
+          JOIN team_schedule_assignment b
+            ON b.user_id = a.user_id AND b.id > a.id
+           AND NOT a.is_rotation AND NOT b.is_rotation
+           AND tstzrange(a.starts_at, a.ends_at, '[)') && tstzrange(b.starts_at, b.ends_at, '[)');
+        IF clashes > 0 THEN
+            RAISE EXCEPTION
+                '% pair(s) of team_schedule_assignment regular-hours rows overlap for the same engineer. Remove one of each pair (keep the one the lead meant), then re-run this migration.',
+                clashes;
+        END IF;
+        ALTER TABLE team_schedule_assignment
+            ADD CONSTRAINT team_schedule_assignment_no_overlap_regular
+            EXCLUDE USING gist (user_id WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&)
+            WHERE (NOT is_rotation);
+    END IF;
+END $$;
+
+-- An older table's user_id cascades on delete. Move both facts tables to
+-- RESTRICT: found by what the constraint does, not by its name, so a
+-- differently-named constraint on some server is handled too.
+DO $$
+DECLARE c RECORD;
+BEGIN
+    FOR c IN
+        SELECT con.conname, cl.relname
+          FROM pg_constraint con
+          JOIN pg_class cl ON cl.oid = con.conrelid
+          JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = ANY (con.conkey)
+         WHERE con.contype = 'f'
+           AND con.confrelid = '"user"'::regclass
+           AND con.confdeltype = 'c'
+           AND cl.relname IN ('team_schedule_assignment', 'team_schedule_absence')
+           AND att.attname = 'user_id'
+    LOOP
+        EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', c.relname, c.conname);
+        EXECUTE format('ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY (user_id) REFERENCES "user"(id) ON DELETE RESTRICT',
+                       c.relname, c.conname);
+    END LOOP;
 END $$;
 
 -- Where the shift fixes a zone or a tier, the assignment must match it;
@@ -335,6 +403,49 @@ CREATE TRIGGER team_schedule_assignment_matches_shift_trigger
     BEFORE INSERT OR UPDATE OF shift_id, zone_id, tier ON team_schedule_assignment
     FOR EACH ROW EXECUTE FUNCTION team_schedule_assignment_matches_shift();
 
+-- The reverse direction. The trigger above holds an assignment to its shift
+-- when the assignment is written; nothing held the shift to the assignments
+-- already written against it. Changing a used shift's hours, zone, tier,
+-- family or turn/regular flag would leave every existing row saying something
+-- the shift no longer does -- starts_at/ends_at resolved from the old hours,
+-- is_rotation copied from the old flag -- with no error. So a shift that any
+-- assignment uses is frozen in those respects: a correction is a new shift
+-- code, and the old one is retired (is_active FALSE). Label, short code,
+-- colour, sort order, day scope and is_active stay editable; none of them is
+-- copied onto an assignment.
+--
+-- A migration that corrects the catalogue and recomputes the affected rows in
+-- the same transaction may say so with
+--   SET LOCAL team_schedule.allow_shift_rewrite = 'on';
+-- 0154 does, for its own upgrade of an older database's weekend.
+CREATE OR REPLACE FUNCTION team_schedule_shift_guard_used()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF (NEW.zone_id, NEW.tier, NEW.family, NEW.is_rotation,
+        NEW.start_minute, NEW.end_minute, NEW.authoring_time_zone)
+       IS NOT DISTINCT FROM
+       (OLD.zone_id, OLD.tier, OLD.family, OLD.is_rotation,
+        OLD.start_minute, OLD.end_minute, OLD.authoring_time_zone) THEN
+        RETURN NEW;
+    END IF;
+    IF current_setting('team_schedule.allow_shift_rewrite', true) = 'on' THEN
+        RETURN NEW;
+    END IF;
+    IF EXISTS (SELECT 1 FROM team_schedule_assignment WHERE shift_id = OLD.id) THEN
+        RAISE EXCEPTION
+            'shift % is used by existing assignments, so its hours, zone, tier, family and turn/regular flag cannot change. Add a new shift code and retire this one instead.',
+            OLD.code
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS team_schedule_shift_guard_used_trigger ON team_schedule_shift;
+CREATE TRIGGER team_schedule_shift_guard_used_trigger
+    BEFORE UPDATE ON team_schedule_shift
+    FOR EACH ROW EXECUTE FUNCTION team_schedule_shift_guard_used();
+
 -- Whole days an engineer is not available to the rota: leave, or time given
 -- to R&D or to a customer. A range, because that is how it is granted -- one
 -- row for "12-19 March", not eight. ends_on NULL is open-ended ("allocated
@@ -346,7 +457,8 @@ CREATE TABLE IF NOT EXISTS team_schedule_absence (
     updated_on          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_by          VARCHAR(255),
     updated_by          VARCHAR(255),
-    user_id             UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+    -- RESTRICT, for the same reason as the assignment's user_id.
+    user_id             UUID NOT NULL REFERENCES "user"(id) ON DELETE RESTRICT,
     team_key            VARCHAR(64) NOT NULL REFERENCES team(key) ON UPDATE CASCADE,
     starts_on           DATE NOT NULL,
     ends_on             DATE,
@@ -440,3 +552,5 @@ CREATE INDEX IF NOT EXISTS idx_team_schedule_absence_activity_user
     ON team_schedule_absence_activity (user_id, starts_on);
 CREATE INDEX IF NOT EXISTS idx_team_schedule_absence_activity_team
     ON team_schedule_absence_activity (team_key, starts_on);
+
+COMMIT;

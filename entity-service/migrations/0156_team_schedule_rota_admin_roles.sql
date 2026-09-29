@@ -32,6 +32,12 @@
 -- a deployment may already have a row under a different id. Matching the name
 -- is what makes re-running safe -- the same reasoning migration 0128 used to
 -- seed the ADMIN project role.
+-- One transaction, so a failure part-way leaves nothing behind, and a short
+-- lock timeout, so a table another writer holds makes this fail fast instead
+-- of queuing every later writer behind it. Re-running after either is safe.
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
 INSERT INTO role (id, created_on, updated_on, created_by, updated_by, name, description)
 VALUES
     (gen_random_uuid(), now(), now(), 'migration', 'migration',
@@ -45,6 +51,11 @@ ON CONFLICT (name) DO NOTHING;
 -- There is no role-assignment UI yet (see the CSM portal webapp's own note on
 -- AddUserDialog), so until there is, a grant is an INSERT into user_role.
 --
--- Grant the role BEFORE relying on it: 0157 is what makes a holder resolve
--- to user_type INTERNAL, and without INTERNAL the schedule refuses the caller
--- before the new permission is ever consulted.
+-- Grant it only to internal staff. Holding a rota admin role never makes
+-- anyone internal: recompute_user_type() is untouched, and the schedule both
+-- refuses a caller who is not INTERNAL and, for a rota admin, asks again that
+-- the holder is INTERNAL before counting the role. So a grant to somebody who
+-- is not already internal staff (holding the admin or internal role) does
+-- nothing at all, rather than widening what they can reach elsewhere.
+
+COMMIT;

@@ -22,6 +22,12 @@
 -- Numbered after the catalogue (0154) on purpose: the rows that already exist
 -- when this runs get a BASELINE entry rather than an INSERT one.
 
+-- One transaction, so a failure part-way leaves nothing behind, and a short
+-- lock timeout, so a table another writer holds makes this fail fast instead
+-- of queuing every later writer behind it. Re-running after either is safe.
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
 CREATE TABLE IF NOT EXISTS team_schedule_audit (
     id              BIGSERIAL PRIMARY KEY,
     changed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -137,3 +143,5 @@ SELECT now(), t.table_name, t.row_id, 'BASELINE', t.actor, t.new_row
  WHERE NOT EXISTS (
         SELECT 1 FROM team_schedule_audit x
          WHERE x.table_name = t.table_name AND x.row_id = t.row_id);
+
+COMMIT;

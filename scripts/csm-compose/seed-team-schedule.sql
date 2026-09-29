@@ -148,12 +148,10 @@ ON CONFLICT (id) DO NOTHING;
 -- family's teams, and a refusal nobody can reproduce locally is a refusal that
 -- gets broken quietly.
 --
--- Neither is given the 'internal' role, on purpose. That is the assertion:
--- migration 0157 adds the two rota admin names to recompute_user_type()'s
--- own INTERNAL branch, so these two resolve to user_type INTERNAL from the
--- rota admin role ALONE. If 0157 is ever reverted or mis-merged, these
--- accounts stop being able to load the page at all -- a loud local failure
--- rather than a 403 in an environment nobody is looking at.
+-- Both are internal staff first, so both get the 'internal' role too. The
+-- rota admin role is a schedule permission for someone who is already
+-- internal; it never makes anyone internal (recompute_user_type() reads only
+-- admin/internal), and the schedule ignores it on anyone who is not.
 --
 -- Deliberately no team_member row either, for the same reason the manager
 -- above has none: a rota admin is not a member of the teams they may edit.
@@ -179,6 +177,16 @@ DELETE FROM user_role ur
    AND ur.created_by = 'seed'
    AND r.name IN ('cre_rota_admin', 'sre_rota_admin')
    AND ur.user_id NOT IN (md5('seed-cre-rota-admin')::uuid, md5('seed-sre-rota-admin')::uuid);
+
+-- The internal grant, the same role the engineers above get.
+INSERT INTO user_role (id, created_on, updated_on, created_by, updated_by, user_id, role_id)
+SELECT md5('seed-ur-internal-'||a.user_id::text)::uuid, now(), now(), 'seed', 'seed',
+       a.user_id, '00000000-0000-0000-0000-000000000101'::uuid
+FROM (VALUES (md5('seed-cre-rota-admin')::uuid), (md5('seed-sre-rota-admin')::uuid)) AS a(user_id)
+WHERE NOT EXISTS (SELECT 1 FROM user_role ur
+                   WHERE ur.user_id = a.user_id
+                     AND ur.role_id = '00000000-0000-0000-0000-000000000101'::uuid)
+ON CONFLICT (id) DO NOTHING;
 
 -- Resolved by name, never by a hardcoded id: migration 0156 creates these
 -- rows with gen_random_uuid(), and the ServiceNow sync may have seeded its own

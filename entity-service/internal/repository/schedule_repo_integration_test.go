@@ -64,14 +64,18 @@ const (
 	// gave team_schedule_assignment.team_key a foreign key into team(key).
 	// It needs a real row now, or anything seeding a slot on it fails.
 	schedOtherTeamID = "5c8e0000-0000-4000-8000-000000000007"
+	// Holds the CRE rota admin role but is not internal staff, so it can be
+	// shown that the role alone grants nothing.
+	schedOutsiderID = "5c8e0000-0000-4000-8000-000000000008"
 
-	schedLeadEmail   = "sched.lead@example.test"
-	schedMemberEmail = "sched.member@example.test"
-	schedOtherEmail  = "sched.other@example.test"
-	schedAdminEmail  = "sched.admin@example.test"
-	schedTeamKey     = "schedfixture"
-	schedOtherTeam   = "schedother"
-	schedSreTeamKey  = "schedsrefixture"
+	schedLeadEmail     = "sched.lead@example.test"
+	schedMemberEmail   = "sched.member@example.test"
+	schedOtherEmail    = "sched.other@example.test"
+	schedAdminEmail    = "sched.admin@example.test"
+	schedOutsiderEmail = "sched.outsider@example.test"
+	schedTeamKey       = "schedfixture"
+	schedOtherTeam     = "schedother"
+	schedSreTeamKey    = "schedsrefixture"
 
 	// A Monday, so the weekday/weekend arithmetic below reads plainly.
 	schedMonday = "2026-09-21"
@@ -110,7 +114,7 @@ func newScheduleIntegrationRepo(t *testing.T) (ScheduleRepository, *pgxpool.Pool
 	}
 	mustExec(t, pool, `DELETE FROM team_member WHERE user_id IN ($1, $2, $3, $4)`,
 		schedLeadID, schedMemberID, schedOtherID, schedAdminID)
-	mustExec(t, pool, `DELETE FROM user_role WHERE user_id = $1`, schedAdminID)
+	mustExec(t, pool, `DELETE FROM user_role WHERE user_id IN ($1, $2)`, schedAdminID, schedOutsiderID)
 
 	mustExec(t, pool, `
 		INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, key, type)
@@ -137,6 +141,7 @@ func newScheduleIntegrationRepo(t *testing.T) (ScheduleRepository, *pgxpool.Pool
 		{schedMemberID, schedMemberEmail, "Chamara", "Perera"},
 		{schedOtherID, schedOtherEmail, "Chamara", "Perera"},
 		{schedAdminID, schedAdminEmail, "Sched", "Admin"},
+		{schedOutsiderID, schedOutsiderEmail, "Sched", "Outsider"},
 	} {
 		mustExec(t, pool, `
 			INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by,
@@ -162,10 +167,24 @@ func newScheduleIntegrationRepo(t *testing.T) (ScheduleRepository, *pgxpool.Pool
 	// The role row comes from migration 0156. Resolved by name rather than
 	// by a fixed id, because that migration creates it with gen_random_uuid()
 	// and the ServiceNow sync may have seeded its own under a different id.
+	//
+	// A rota admin is internal staff first: the role is a schedule permission
+	// for someone who already is, and never makes anyone internal. So the
+	// admin also gets 'internal', which a database built from migrations alone
+	// does not have -- the ServiceNow sync seeds it -- hence the insert.
+	// The outsider gets the rota admin role and nothing else.
+	mustExec(t, pool, `
+		INSERT INTO role (id, created_on, updated_on, created_by, updated_by, name, description)
+		VALUES (gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', 'internal', 'Internal staff')
+		ON CONFLICT (name) DO NOTHING`)
 	mustExec(t, pool, `
 		INSERT INTO user_role (id, created_on, updated_on, created_by, updated_by, user_id, role_id)
 		SELECT gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', $1, r.id
-		  FROM role r WHERE r.name = 'cre_rota_admin'`, schedAdminID)
+		  FROM role r WHERE r.name IN ('cre_rota_admin', 'internal')`, schedAdminID)
+	mustExec(t, pool, `
+		INSERT INTO user_role (id, created_on, updated_on, created_by, updated_by, user_id, role_id)
+		SELECT gen_random_uuid(), NOW(), NOW(), 'fixture', 'fixture', $1, r.id
+		  FROM role r WHERE r.name = 'cre_rota_admin'`, schedOutsiderID)
 
 	return NewScheduleRepository(pool), pool
 }
@@ -174,7 +193,7 @@ func newScheduleIntegrationRepo(t *testing.T) (ScheduleRepository, *pgxpool.Pool
 // somebody who is on a team but does not lead it.
 //
 // Asked rather than hardcoded because the vocabulary is being changed by work
-// in flight: 000029 constrains it to ('member', 'lead'), and the escalation
+// in flight: 0034 constrains it to ('member', 'lead'), and the escalation
 // roster branch replaces 'member' with a rung set of its own
 // ('engineer', 'sub_lead', 'lead', 'cre_head', 'cs_head'). A fixture naming
 // either one fails outright against the other's schema -- and it fails in
@@ -1382,5 +1401,198 @@ func TestScheduleIntegration_CatalogueKindsCarryFamilyAndRetired(t *testing.T) {
 	if byCode["ALLO_INT"].ShortCode != "Allo-INT" || byCode["ALLO_EXT"].ShortCode != "Allo-EXT" {
 		t.Errorf("short codes = %q, %q, want Allo-INT, Allo-EXT",
 			byCode["ALLO_INT"].ShortCode, byCode["ALLO_EXT"].ShortCode)
+	}
+}
+
+// The rota admin role is a schedule permission for internal staff, not a way
+// to become internal. Somebody holding it without already being INTERNAL is no
+// rota admin, and holding it does not change their user_type.
+func TestScheduleIntegration_RotaAdminRoleAloneGrantsNothing(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+
+	teams, err := repo.RotaAdminTeamsFor(ctx, schedOutsiderEmail)
+	if err != nil {
+		t.Fatalf("RotaAdminTeamsFor: %v", err)
+	}
+	if len(teams) != 0 {
+		t.Fatalf("a non-internal holder of the rota admin role was given %v", teams)
+	}
+	var userType *string
+	if err := pool.QueryRow(ctx, `SELECT user_type::text FROM "user" WHERE id = $1`, schedOutsiderID).Scan(&userType); err != nil {
+		t.Fatalf("read user_type: %v", err)
+	}
+	if userType != nil && *userType == "INTERNAL" {
+		t.Fatal("holding cre_rota_admin alone made the user INTERNAL")
+	}
+}
+
+// Deleting a user must not erase their rota. The roster is a record of who was
+// responsible, so the database refuses the delete rather than cascading it.
+func TestScheduleIntegration_DeletingAUserWithRotaHistoryIsRefused(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	code := shiftWithScope(t, pool, "CRE", "WEEKDAY")
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: code, From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("ApplyRange: %v", err)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, schedMemberID)
+	if err == nil {
+		t.Fatal("deleting a user with rota history succeeded; the history would be gone")
+	}
+	if !strings.Contains(err.Error(), "23503") && !strings.Contains(err.Error(), "foreign key") {
+		t.Fatalf("delete failed for another reason: %v", err)
+	}
+}
+
+// Two sets of regular hours for one engineer at the same time are refused, the
+// same way two overlapping turns are. A turn over regular hours still is not.
+func TestScheduleIntegration_OverlappingRegularHoursAreRefused(t *testing.T) {
+	_, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	place := func(code string) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO team_schedule_assignment
+			  (user_id, team_id, team_key, shift_id, zone_id, tier, rota_date, starts_at, ends_at, created_by, updated_by)
+			SELECT $1::uuid, $2::uuid, $3, s.id, s.zone_id, s.tier, $4::date,
+			       ($4::date::timestamp + make_interval(mins => s.start_minute)) AT TIME ZONE s.authoring_time_zone,
+			       ($4::date::timestamp + make_interval(mins => s.end_minute))   AT TIME ZONE s.authoring_time_zone,
+			       'fixture', 'fixture'
+			  FROM team_schedule_shift s WHERE s.code = $5`,
+			schedMemberID, schedTeamID, schedTeamKey, schedMonday, code)
+		return err
+	}
+	if err := place("SRE_TZ1_REGULAR"); err != nil {
+		t.Fatalf("first regular hours: %v", err)
+	}
+	if err := place("SRE_TZ1_L1"); err != nil {
+		t.Fatalf("a turn over regular hours was refused: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "SAVEPOINT regular_clash"); err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+	err = place("SRE_TZ2_REGULAR") // 12:00-21:00, overlapping TZ1's 06:00-15:00
+	if err == nil {
+		t.Fatal("two overlapping sets of regular hours were accepted")
+	}
+	if !strings.Contains(err.Error(), "no_overlap_regular") {
+		t.Fatalf("refused for another reason: %v", err)
+	}
+}
+
+// A shift that assignments already use cannot have its hours changed out from
+// under them; a label edit is fine, and a migration that recomputes the rows
+// itself may say so explicitly.
+func TestScheduleIntegration_AUsedShiftsHoursAreFrozen(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	code := shiftWithScope(t, pool, "CRE", "WEEKDAY")
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: code, From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("ApplyRange: %v", err)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `UPDATE team_schedule_shift SET label = label || ' (renamed)' WHERE code = $1`, code); err != nil {
+		t.Fatalf("a label edit on a used shift was refused: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "SAVEPOINT hours"); err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+	_, err = tx.Exec(ctx, `UPDATE team_schedule_shift SET end_minute = end_minute - 30 WHERE code = $1`, code)
+	if err == nil {
+		t.Fatal("the hours of a used shift changed; its assignments now disagree with it")
+	}
+	if !strings.Contains(err.Error(), "used by existing assignments") {
+		t.Fatalf("refused for another reason: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT hours"); err != nil {
+		t.Fatalf("rollback to savepoint: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL team_schedule.allow_shift_rewrite = 'on'`); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE team_schedule_shift SET end_minute = end_minute - 30 WHERE code = $1`, code); err != nil {
+		t.Fatalf("an explicitly allowed rewrite was refused: %v", err)
+	}
+}
+
+// A tag whose derived code is already taken is refused naming the tag that
+// actually holds it, not the caller's own label.
+func TestScheduleIntegration_CreateAbsenceKindConflictNamesTheExistingTag(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM team_schedule_absence_kind WHERE code = 'INTEGRATION_CLASH_TAG'`)
+	})
+	_, _ = pool.Exec(ctx, `DELETE FROM team_schedule_absence_kind WHERE code = 'INTEGRATION_CLASH_TAG'`)
+
+	first := domain.CreateScheduleAbsenceKindRequest{Label: "Integration clash tag", ShortCode: "ICT1", Bucket: "ALLOCATION", ColourToken: "INT"}
+	if _, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_CLASH_TAG", first, schedLeadEmail); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	second := domain.CreateScheduleAbsenceKindRequest{Label: "Integration-clash tag!", ShortCode: "ICT2", Bucket: "ALLOCATION", ColourToken: "INT"}
+	_, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_CLASH_TAG", second, schedLeadEmail)
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("want a ConflictError, got %v", err)
+	}
+	if !strings.Contains(conflict.Msg, "Integration clash tag") || !strings.Contains(conflict.Msg, "too close") {
+		t.Fatalf("the message should name the existing tag: %q", conflict.Msg)
+	}
+}
+
+// With IncludeOvernight a day's view carries the night block rostered for the
+// day before -- it is still running this morning -- and nothing from earlier,
+// since no window lasts past the day after its own. Pins the narrowed
+// `rota_date = From - 1` to the behaviour it replaced.
+func TestScheduleIntegration_OvernightViewCarriesOnlyTheNightBefore(t *testing.T) {
+	repo, _ := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	// SRE_TZ3_REGULAR runs 21:00-06:00, so Monday's block ends on Tuesday.
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedTeamKey, ShiftCode: "SRE_TZ3_REGULAR", From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("ApplyRange: %v", err)
+	}
+	found := func(day string) bool {
+		rows, err := repo.SearchAssignments(ctx, domain.SearchScheduleAssignmentsRequest{
+			From: day, To: day, TeamKeys: []string{schedTeamKey}, UserID: schedMemberID, IncludeOvernight: true,
+		})
+		if err != nil {
+			t.Fatalf("SearchAssignments(%s): %v", day, err)
+		}
+		for _, a := range rows {
+			if a.RotaDate == schedMonday && a.ShiftCode == "SRE_TZ3_REGULAR" {
+				return true
+			}
+		}
+		return false
+	}
+	if !found("2026-09-22") {
+		t.Fatal("Tuesday's view dropped Monday's night block, which runs until 06:00 Tuesday")
+	}
+	if found("2026-09-23") {
+		t.Fatal("Wednesday's view carried Monday's block, which ended on Tuesday")
 	}
 }

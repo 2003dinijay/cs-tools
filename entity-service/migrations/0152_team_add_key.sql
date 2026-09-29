@@ -37,6 +37,15 @@
 --
 -- Safe to re-run: every step is guarded, and the backfill only fills blanks.
 
+-- One transaction, and a short lock timeout. team is written by the ServiceNow
+-- sync while this runs, and the column, the NOT NULL, the two constraints and
+-- the trigger each need an exclusive lock on it: waiting indefinitely would
+-- queue every sync write behind this migration, so it gives up after 5s
+-- instead. Nothing is left half-done either way; re-run it when the table is
+-- quiet.
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE team ADD COLUMN IF NOT EXISTS key VARCHAR(64);
 
 CREATE OR REPLACE FUNCTION team_fill_key() RETURNS TRIGGER AS $$
@@ -107,3 +116,5 @@ END $$;
 
 COMMENT ON COLUMN team.key IS
     'Stable lower-case handle the Team Schedule refers to this team by. Filled from the name on insert when a writer leaves it out; never rewritten after that.';
+
+COMMIT;

@@ -27,6 +27,12 @@
 -- lead has since edited.
 
 -- ── SRE time zones ────────────────────────────────────────────────────────
+-- One transaction, so a failure part-way leaves nothing behind, and a short
+-- lock timeout, so a table another writer holds makes this fail fast instead
+-- of queuing every later writer behind it. Re-running after either is safe.
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
 INSERT INTO team_schedule_zone (code, label, sort_order, created_by, updated_by)
 VALUES
     ('TZ1', 'Time zone 1', 1, 'migration', 'migration'),
@@ -173,6 +179,13 @@ UPDATE team_schedule_absence a
 -- 06:00-18:00 and a weekend TZ2 window (18:00-06:00) standing in for TZ3.
 -- Bring such a database to the weekend above. Each step only acts on the old
 -- shape, so on a database this file built it changes nothing.
+--
+-- Weekend TZ1's hours change below while assignments still use it, which the
+-- used-shift guard in 0153 refuses. It is allowed here, for this transaction
+-- only, because the same block recomputes every one of those assignments
+-- from the new hours before it commits -- the guard exists to stop exactly
+-- the edit that does NOT do that.
+SET LOCAL team_schedule.allow_shift_rewrite = 'on';
 
 -- TZ3's escalation window runs every day.
 UPDATE team_schedule_shift SET day_scope = 'ANY', updated_on = NOW(), updated_by = 'migration'
@@ -213,3 +226,5 @@ UPDATE team_schedule_assignment a
 -- TZ3 is its own zone at the weekend.
 UPDATE team_schedule_zone z SET weekend_zone_id = z.id, updated_on = NOW(), updated_by = 'migration'
  WHERE z.code = 'TZ3' AND z.weekend_zone_id IS DISTINCT FROM z.id;
+
+COMMIT;
