@@ -357,6 +357,7 @@ func main() {
 	}
 	route("PATCH /projects/{id}", handler.PermWrite, projectHandler.UpdateProject)
 	route("POST /products/search", handler.PermView, productHandler.SearchProducts)
+	route("GET /products/github-repo", handler.PermView, productHandler.GetProductRepoMapping)
 	route("POST /products/{id}/versions/search", handler.PermView, productHandler.SearchProductVersions)
 	route("POST /deployments", handler.PermWrite, deploymentHandler.PostDeployment)
 	route("POST /deployments/search", handler.PermView, deploymentHandler.SearchDeployments)
