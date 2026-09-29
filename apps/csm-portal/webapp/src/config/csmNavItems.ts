@@ -37,8 +37,8 @@ import {
   LifeBuoy,
   Megaphone,
   RefreshCw,
-  Settings,
   Shield,
+  ShieldCheck,
   UserCog,
   UserSearch,
   Users,
@@ -126,15 +126,6 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     icon: Headset,
   },
   {
-    id: "team-schedule",
-    label: "Team Schedule",
-    href: "/team-schedule",
-    // No `requires`: the rota is readable by everyone who can open the portal.
-    // Editing it is a lead's job and will gate on its own flag when the write
-    // routes land.
-    icon: CalendarDays,
-  },
-  {
     id: "operations",
     label: "Operations",
     href: "/operations",
@@ -190,6 +181,12 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     icon: Briefcase,
   },
   {
+    id: "announcements",
+    label: "Announcements",
+    href: "/announcements",
+    icon: Megaphone,
+  },
+  {
     id: "security-center",
     label: "Security Center",
     href: "/security-center",
@@ -215,26 +212,6 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     ],
   },
   {
-    id: "updates",
-    label: "Updates",
-    href: "/updates",
-    requires: "canUseTimeCardsAndUpdates",
-    icon: RefreshCw,
-  },
-  {
-    id: "time-cards",
-    label: "Time cards",
-    href: "/time-cards",
-    requires: "canUseTimeCardsAndUpdates",
-    icon: Clock,
-  },
-  {
-    id: "announcements",
-    label: "Announcements",
-    href: "/announcements",
-    icon: Megaphone,
-  },
-  {
     id: "customers",
     label: "Customers",
     href: "/customers",
@@ -252,11 +229,39 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
       },
     ],
   },
+  // PLG Customer Success Portal. Declared in
+  // features/plg/config/plgNavItems so a change to PLG's pages does not
+  // touch this file. Hide the whole section with
+  // CSM_PORTAL_FEATURE_OVERRIDES: { "plg": "hidden" }.
+  PLG_NAV_SECTION,
+  {
+    id: "updates",
+    label: "Updates",
+    href: "/updates",
+    requires: "canUseTimeCardsAndUpdates",
+    icon: RefreshCw,
+  },
+  {
+    id: "time-cards",
+    label: "Time cards",
+    href: "/time-cards",
+    requires: "canUseTimeCardsAndUpdates",
+    icon: Clock,
+  },
+  {
+    id: "team-schedule",
+    label: "Team Schedule",
+    href: "/team-schedule",
+    // No `requires`: the rota is readable by everyone who can open the portal.
+    // Editing it is a lead's job and will gate on its own flag when the write
+    // routes land.
+    icon: CalendarDays,
+  },
   {
     id: "admin",
     label: "Settings",
     href: "/admin",
-    icon: Settings,
+    icon: ShieldCheck,
     children: [
       {
         id: "admin.user-management",
@@ -427,11 +432,6 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
       },
     ],
   },
-  // PLG Customer Success Portal. Declared in
-  // features/plg/config/plgNavItems so a change to PLG's pages does not
-  // touch this file. Hide the whole section with
-  // CSM_PORTAL_FEATURE_OVERRIDES: { "plg": "hidden" }.
-  PLG_NAV_SECTION,
 ];
 
 /** The pathname part of `href`, dropping any query string or hash. */
