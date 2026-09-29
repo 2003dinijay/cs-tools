@@ -4739,9 +4739,10 @@ paths:
       description: |
         By default the request is forwarded to the entity service (ServiceNow data source only).
         When the backend is configured with an engineering entity service, the issue is filed
-        through it instead: `repoOverride` is then required and must be one of the configured
-        repository options (otherwise `400`), `reason` is ignored, and the case's work notes are
-        not updated.
+        through it. The repository and product label are resolved from the case product via
+        product_repo_mapping (`GET /products/github-repo`). A product with no mapping returns
+        `400`. `repoOverride` is ignored. `reason` "migration" adds the Affected/Migration label,
+        and a work note with the issue URL is written on the case.
       operationId: createCaseGithubIssue
       security:
         - bearerAuth: []
