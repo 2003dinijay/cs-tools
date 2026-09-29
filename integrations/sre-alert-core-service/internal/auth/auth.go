@@ -29,7 +29,7 @@ import (
 	"golang.org/x/crypto/pbkdf2"
 )
 
-// Iterations is the PBKDF2 round count used when provisioning new users; a hardcoded constant (not a config.toml value) since it's a security parameter, not a deployment tunable. Existing rows keep whatever iteration count they were created with (stored per-row), so changing this doesn't invalidate them.
+// Iterations is the PBKDF2 round count for new users; hardcoded, not a config.toml value, since it's a security parameter. Existing rows keep their own stored count, so changing this doesn't invalidate them.
 const Iterations = 10000
 
 // KeyLen is the derived key length in bytes.
