@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
@@ -64,6 +65,10 @@ type Client struct {
 	password             string
 	escalationTemplateID string
 	teamScheduleURL      string
+	// escalationLocks serializes EscalateCase's read-then-write per
+	// accountSysID within this process -- see EscalateCase's own doc
+	// comment for why.
+	escalationLocks sync.Map // accountSysID (string) -> *sync.Mutex
 }
 
 // NewClient constructs a ServiceNow Client. Requests are retried up to twice
@@ -81,6 +86,15 @@ func NewClient(cfg Config) *Client {
 		escalationTemplateID: cfg.EscalationTemplateID,
 		teamScheduleURL:      cfg.TeamScheduleURL,
 	}
+}
+
+// lockAccountEscalation returns an unlock func for accountSysID's escalation
+// lock, blocking until it's held. Callers must defer the returned func.
+func (c *Client) lockAccountEscalation(accountSysID string) func() {
+	m, _ := c.escalationLocks.LoadOrStore(accountSysID, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // TableQuery performs a GET against the ServiceNow Table API for the given
