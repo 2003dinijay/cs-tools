@@ -16,7 +16,7 @@ endpoints:
     type: REST
     networkVisibilities:
       - Public
-    schemaFilePath: openapi-stream.yaml
+    schemaFilePath: openapi.yaml
 
   # Health check endpoint on the same process but separate listener on
   # port 8080. Choreo's liveness probe targets this. SecurityHeaders +
