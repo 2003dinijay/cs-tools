@@ -302,3 +302,29 @@ func TestLoadConfig_ExplicitZeroMaxLevelCaps(t *testing.T) {
 		t.Errorf("CapLevel() = %v,%v; want LEVEL_0,true", got, capped)
 	}
 }
+
+// The example file the compose stack mounts must actually load. It is the
+// first thing anybody copies, and KnownFields(true) means a stray key in it
+// would disable both ladders on a developer's first run with no clue why.
+func TestLoadConfig_ShippedExampleIsValid(t *testing.T) {
+	const path = "../../../../scripts/csm-compose/escalation.yaml"
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("example config not reachable from here: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("the shipped example config does not load: %v", err)
+	}
+	cre, running := cfg.For(LadderKeyCRE)
+	if !running {
+		t.Error("the example should come up running, or it teaches the wrong thing")
+	}
+	// It must ship reaching nobody: a first `docker compose up` that dialled
+	// real numbers would be the worst possible default.
+	if cre.Channel != ChannelLog {
+		t.Errorf("example CRE channel = %q; it must ship as log", cre.Channel)
+	}
+	if sre, _ := cfg.For(LadderKeySRE); sre.Channel != ChannelLog {
+		t.Errorf("example SRE channel = %q; it must ship as log", sre.Channel)
+	}
+}

@@ -474,8 +474,6 @@ services:
         condition: service_completed_successfully
       entity-service:
         condition: service_started
-    volumes:
-      - ./scripts/csm-compose/escalation.yaml:/config/escalation.yaml:ro
     environment:
       EVENT_HUB_BROKER: kafka:9094
       EVENT_HUB_CONNECTION_STRING: local-dev-shared-secret
@@ -516,6 +514,7 @@ services:
       PORT: "8080"
     volumes:
       - csm-dev-certs:/certs:ro
+      - ./scripts/csm-compose/escalation.yaml:/config/escalation.yaml:ro
     ports:
       - "127.0.0.1:8083:8080"
 
