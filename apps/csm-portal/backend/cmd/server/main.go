@@ -180,21 +180,21 @@ func main() {
 	if splEnabled {
 		salesEntityClient := entity.NewSalesEntityClient(entity.SalesEntityConfig{
 			BaseURL:      splCfg.salesEntityBaseURL,
-			TokenURL:     splCfg.entityTokenURL,
-			ClientID:     splCfg.entityClientID,
-			ClientSecret: splCfg.entityClientSecret,
+			TokenURL:     oauth2TokenURL,
+			ClientID:     oauth2ClientID,
+			ClientSecret: oauth2ClientSecret,
 		})
 		csEntityClient := entity.NewCSEntityClient(entity.CSEntityConfig{
 			BaseURL:      splCfg.csEntityBaseURL,
-			TokenURL:     splCfg.entityTokenURL,
-			ClientID:     splCfg.entityClientID,
-			ClientSecret: splCfg.entityClientSecret,
+			TokenURL:     oauth2TokenURL,
+			ClientID:     oauth2ClientID,
+			ClientSecret: oauth2ClientSecret,
 		})
 		employeeInfoClient := employeeinfo.NewClient(employeeinfo.Config{
 			BaseURL:      splCfg.employeeInfoBaseURL,
-			TokenURL:     splCfg.entityTokenURL,
-			ClientID:     splCfg.entityClientID,
-			ClientSecret: splCfg.entityClientSecret,
+			TokenURL:     oauth2TokenURL,
+			ClientID:     oauth2ClientID,
+			ClientSecret: oauth2ClientSecret,
 		})
 		snClient := servicenow.NewClient(servicenow.Config{
 			BaseURL:              splCfg.snHost,
@@ -1306,9 +1306,6 @@ type splConfig struct {
 	riskMySQLDSN           string
 	salesEntityBaseURL     string
 	csEntityBaseURL        string
-	entityTokenURL         string
-	entityClientID         string
-	entityClientSecret     string
 	employeeInfoBaseURL    string
 }
 
@@ -1324,13 +1321,14 @@ type splConfig struct {
 // When on, every value below is required (mustEnv) except
 // SERVICENOW_ESCALATION_TEMPLATE_ID and TEAM_SCHEDULE_URL, which are
 // only exercised by the escalation and ABT-team-schedule endpoints
-// respectively and default to empty. SERVICENOW_* and the entity/
-// employee-info vars below have no SPL_ prefix even though they're only
-// read when SPL is on: they aren't SPL-specific concepts (ServiceNow and
-// the Sales/CS entity services are just this feature's own upstreams, the
-// same way SPL_GOOGLE_DRIVE_* and SPL_RISK_MYSQL_DSN are), so they follow
-// this file's existing convention of naming a service's own credentials
-// after the service, not the caller. See .env.example for what each
+// respectively and default to empty. SERVICENOW_*, GOOGLE_DRIVE_*, and the
+// entity/employee-info vars below have no SPL_ prefix even though they're
+// only read when SPL is on: they aren't SPL-specific concepts (ServiceNow,
+// Google Drive, and the Sales/CS entity services are just this feature's
+// own upstreams) so they follow this file's existing convention of naming
+// a service's own credentials after the service, not the caller --
+// SPL_RISK_MYSQL_DSN below is the one exception, since "risk" isn't a
+// distinct upstream service name to key on. See .env.example for what each
 // variable configures.
 //
 // Returns (false, zero splConfig) when the flag is off, so the caller never
@@ -1355,15 +1353,12 @@ func loadSPLConfig() (bool, splConfig) {
 		snPassword:             mustEnv("SERVICENOW_PASSWORD"),
 		snEscalationTemplateID: os.Getenv("SERVICENOW_ESCALATION_TEMPLATE_ID"),
 		teamScheduleURL:        os.Getenv("TEAM_SCHEDULE_URL"),
-		driveClientID:          mustEnv("SPL_GOOGLE_DRIVE_CLIENT_ID"),
-		driveClientSecret:      mustEnv("SPL_GOOGLE_DRIVE_CLIENT_SECRET"),
-		driveRefreshToken:      mustEnv("SPL_GOOGLE_DRIVE_REFRESH_TOKEN"),
+		driveClientID:          mustEnv("GOOGLE_DRIVE_CLIENT_ID"),
+		driveClientSecret:      mustEnv("GOOGLE_DRIVE_CLIENT_SECRET"),
+		driveRefreshToken:      mustEnv("GOOGLE_DRIVE_REFRESH_TOKEN"),
 		riskMySQLDSN:           mustEnv("SPL_RISK_MYSQL_DSN"),
 		salesEntityBaseURL:     mustHTTPSBaseURL("SALES_ENTITY_BASE_URL", mustEnv("SALES_ENTITY_BASE_URL")),
 		csEntityBaseURL:        mustHTTPSBaseURL("CS_ENTITY_BASE_URL", mustEnv("CS_ENTITY_BASE_URL")),
-		entityTokenURL:         mustHTTPSBaseURL("ENTITY_TOKEN_URL", mustEnv("ENTITY_TOKEN_URL")),
-		entityClientID:         mustEnv("ENTITY_CLIENT_ID"),
-		entityClientSecret:     mustEnv("ENTITY_CLIENT_SECRET"),
 		employeeInfoBaseURL:    mustHTTPSBaseURL("EMPLOYEE_INFO_BASE_URL", mustEnv("EMPLOYEE_INFO_BASE_URL")),
 	}
 }
