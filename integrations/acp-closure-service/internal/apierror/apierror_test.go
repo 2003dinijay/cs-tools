@@ -14,22 +14,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package apierror defines a typed error returned by the entity client when
-// csm-integration-service responds with a non-2xx status.
 package apierror
 
-import "fmt"
+import "testing"
 
-// Error is returned when csm-integration-service responds with a non-2xx status.
-type Error struct {
-	StatusCode int
-	// Body is an excerpt of the upstream error response, for code that
-	// needs it. It is deliberately left out of Error(): the error text ends
-	// up in the logs, and an upstream body can echo personal data (e.g. a
-	// rejected recipient address).
-	Body string
-}
+// TestError_MessageLeavesOutTheBody: the error text is what ends up in the
+// logs ("project failed ... err=..."), and an upstream error body can echo
+// personal data (e.g. "invalid recipient bob@customer.com"). The message
+// carries only the status code; Body stays available to code, never logged.
+func TestError_MessageLeavesOutTheBody(t *testing.T) {
+	err := &Error{StatusCode: 400, Body: `{"error":"invalid recipient bob@customer.com"}`}
 
-func (e *Error) Error() string {
-	return fmt.Sprintf("upstream returned %d", e.StatusCode)
+	if got, want := err.Error(), "upstream returned 400"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
 }

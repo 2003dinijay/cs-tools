@@ -68,7 +68,7 @@ func main() {
 		"isEmailSendEnabled", isEmailSendEnabled,
 		"testProjectID", testProjectID,
 		"excludedProjectIDs", sortedKeys(excludedProjectIDs),
-		"standingRecipients", standingRecipients,
+		"standingRecipientsCount", len(standingRecipients),
 	)
 
 	if isWeekend(time.Now()) {

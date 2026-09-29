@@ -24,9 +24,7 @@ package notify
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/closure"
 	"github.com/wso2-open-operations/cs-tools/integrations/acp-closure-service/internal/recipients"
@@ -111,12 +109,12 @@ type Notice struct {
 	ResolvedVia recipients.ResolvedVia
 }
 
-// LoggingNotifier logs what would have been sent instead of sending it.
-// The log shows the full notice (subject, body, who it's for) so a dry run
-// can be reviewed, but every email address and the customer's name are
-// masked (maskEmail/maskName): log-only mode must never write a customer's
-// personal details, or any full address, to the logs. The customer-facing
-// body itself names no one.
+// LoggingNotifier logs that a notice would have been sent instead of
+// sending it. The log names the project and says how many recipients the
+// notice has, never who they are: no email address, no name (staff or
+// customer) and no body, masked or not, since logs must hold no personal
+// data in any mode (Rashmika's review of PR #2134). The subject stays: it
+// names only the project and the customer company.
 type LoggingNotifier struct {
 	Logger *slog.Logger
 }
@@ -125,7 +123,8 @@ type LoggingNotifier struct {
 // — it only logs what would have been sent, it never actually delivers a
 // notice to anyone.
 func (n *LoggingNotifier) Send(ctx context.Context, notice Notice) (bool, error) {
-	attrs := []any{
+	to, cc := recipientsToToCC(notice.Recipients)
+	n.Logger.InfoContext(ctx, "notice",
 		"subject", notice.Subject,
 		"window", notice.Window,
 		"projectID", notice.ProjectID,
@@ -133,53 +132,10 @@ func (n *LoggingNotifier) Send(ctx context.Context, notice Notice) (bool, error)
 		"projectKey", notice.ProjectKey,
 		"startDate", notice.StartDate,
 		"endDate", notice.EndDate,
-		"accountOwner", maskEmail(notice.Recipients.AccountOwner.Email),
-		"accountOwnerName", notice.Recipients.AccountOwner.Name,
-		"renewalManager", maskEmail(notice.Recipients.RenewalManager.Email),
-		"renewalManagerName", notice.Recipients.RenewalManager.Name,
-		"technicalOwner", maskEmail(notice.Recipients.TechnicalOwner.Email),
-		"technicalOwnerName", notice.Recipients.TechnicalOwner.Name,
+		"toCount", len(to),
+		"ccCount", len(cc),
+		"customerCount", len(notice.Recipients.Customers),
 		"resolvedVia", notice.ResolvedVia,
-	}
-	if notice.Recipients.IsCustomerFacing() {
-		emails := make([]string, len(notice.Recipients.Customers))
-		names := make([]string, len(notice.Recipients.Customers))
-		for i, c := range notice.Recipients.Customers {
-			emails[i] = maskEmail(c.Email)
-			names[i] = maskName(c.Name)
-		}
-		attrs = append(attrs, "customer", strings.Join(emails, ", "), "customerName", strings.Join(names, ", "))
-	}
-	if notice.Body != "" {
-		attrs = append(attrs, "body", notice.Body)
-	}
-
-	n.Logger.InfoContext(ctx, "notice", attrs...)
+	)
 	return false, nil
-}
-
-// maskEmail keeps an address's first character and its domain and stars the
-// rest of the local part ("paraparan@wso2.com" -> "p********@wso2.com"), so
-// the log still shows whether a recipient is internal or external without
-// revealing who. Anything that isn't a plain local@domain (exactly one "@",
-// something on both sides) is starred entirely: with more than one "@",
-// keeping everything after the first would leak an embedded address.
-func maskEmail(email string) string {
-	local, domain, ok := strings.Cut(email, "@")
-	if !ok || strings.Count(email, "@") != 1 || local == "" || domain == "" {
-		return strings.Repeat("*", utf8.RuneCountInString(email))
-	}
-	first, size := utf8.DecodeRuneInString(local)
-	return string(first) + strings.Repeat("*", utf8.RuneCountInString(local[size:])) + "@" + domain
-}
-
-// maskName keeps the first letter of each word and stars the rest
-// ("Jordan Perera" -> "J***** P*****").
-func maskName(name string) string {
-	words := strings.Fields(name)
-	for i, w := range words {
-		first, size := utf8.DecodeRuneInString(w)
-		words[i] = string(first) + strings.Repeat("*", utf8.RuneCountInString(w[size:]))
-	}
-	return strings.Join(words, " ")
 }

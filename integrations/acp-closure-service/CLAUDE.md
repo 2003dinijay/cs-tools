@@ -405,25 +405,36 @@ isn't lost or re-litigated:
   design.)
 - **`DryRunProjectUpdater` intentionally logs nothing** (`dryrun.go`) — per
   explicit user direction, the only log line that should exist for a dry
-  run is `notify.LoggingNotifier`'s `"notice"` line (the actual email
-  content: subject, body, recipients). A separate `"dry-run: would update
+  run is `notify.LoggingNotifier`'s `"notice"` line (which notice would
+  go out, and to how many recipients). A separate `"dry-run: would update
   project"` line describing the raw PATCH body used to exist here and was
   removed deliberately — it's noise once every window produces a real
   notice log, and stays noise once real email sending (Sajith's team, still
   pending) replaces `LoggingNotifier` as the thing this component
   ultimately integrates with. Don't re-add logging to this type without
   confirming that direction has changed.
-- **That `"notice"` line masks personal contact details** (`maskEmail`,
-  `maskName` in `notify.go`). Every email address keeps only its first
-  character and domain (`p********@wso2.com`), and the customer's name keeps
-  only initials. Staff names stay readable, since they're the point of the
-  dry-run review and already appear in the internal body. The
-  customer-facing body names no one, so log-only mode writes no customer
-  personal data at all. Real staging logs from before email sending was
-  enabled showed full addresses and names in this line; that was flagged in
-  the threat model's privacy review and closed by this masking. Don't log a
-  raw address here again. `EmailNotifier` already logs only recipient
-  counts.
+- **No log line carries personal data, in any mode.** Rashmika asked on PR
+  #2134 whether emails or other PII are logged on success or failure. The
+  answer now is no:
+  - The `"notice"` line (log-only mode) logs project details, the subject,
+    and `toCount`/`ccCount`/`customerCount`. No addresses, no names (staff
+    or customer) and no body. It used to log masked addresses
+    (`maskEmail`), customer initials (`maskName`), staff names in full and
+    the whole body, which names the Account Manager; masking was an
+    earlier fix after staging logs showed full addresses, and was replaced
+    by dropping the fields entirely.
+  - `EmailNotifier` logs only recipient counts, as before.
+  - The startup line logs `standingRecipientsCount`, not the addresses.
+  - `apierror.Error()` is `upstream returned <status>` only. The upstream
+    body excerpt stays in `Error.Body` for code, but isn't in the message,
+    because the message is what `"project failed"` logs, and an upstream
+    body can echo a recipient address.
+
+  The subject and project name are still logged: they name the project and
+  the customer company, not a person. `TestLoggingNotifier_Send_LogsNoPersonalData`
+  checks every attribute of the notice line, so a new attribute can't bring
+  personal data back unnoticed. Don't add a name, address or body to any log
+  line.
 
 ## The customer notice goes to every customer contact
 
