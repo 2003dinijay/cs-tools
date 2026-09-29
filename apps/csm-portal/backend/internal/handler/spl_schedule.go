@@ -41,7 +41,7 @@ type SplScheduleHandler struct {
 // NewSplScheduleHandler creates a SplScheduleHandler backed by the given
 // ServiceNow client. allowedGroups is SupportPortalLite's blanket
 // access-gate group list (SPL_ALLOWED_GROUPS); teamScheduleURL is the
-// static URL echoed back in every response (SPL_TEAM_SCHEDULE_URL).
+// static URL echoed back in every response (TEAM_SCHEDULE_URL).
 func NewSplScheduleHandler(sn splScheduleClient, allowedGroups []string, teamScheduleURL string) *SplScheduleHandler {
 	return &SplScheduleHandler{servicenow: sn, allowedGroups: allowedGroups, teamScheduleURL: teamScheduleURL}
 }
