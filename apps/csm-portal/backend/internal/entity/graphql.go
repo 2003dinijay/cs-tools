@@ -48,8 +48,8 @@ type graphqlEnvelope[T any] struct {
 
 // doGraphQL executes a GraphQL query against baseURL using httpClient
 // (expected to already carry OAuth2 client-credentials auth, as built by
-// clientcredentials.Config.Client — see SalesEntityClient/CSEntityClient)
-// and decodes the response's "data" field into T.
+// clientcredentials.Config.Client — see SalesEntityClient) and decodes the
+// response's "data" field into T.
 //
 // A non-2xx HTTP status is reported as an *apierror.Error carrying the real
 // status code, exactly like this package's REST clients. A 200 OK response

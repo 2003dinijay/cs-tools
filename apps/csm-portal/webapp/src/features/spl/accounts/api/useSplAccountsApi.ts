@@ -20,7 +20,7 @@
 // /accounts and /projects routes directly, since SPL's data source for them
 // is the exact same entity-service data those routes already serve raw --
 // see cs-tools' csm-portal-backend main.go SPL route registration comment.
-// Escalations (read and create) keep calling /spl/accounts/*: no
+// Escalations (read and create) keep calling /accounts/*: no
 // entity-service equivalent exists for either (CreateEscalation is an
 // explicit stub there), so nothing to merge onto.
 import { useQuery, useMutation, type UseQueryResult } from "@tanstack/react-query";
@@ -102,7 +102,7 @@ function toAccountDetails(a: EntityAccountView): AccountDetails {
     customerSuccessManager: a.customerSuccessManager?.name ?? "",
     rating: "",
     driveLocation: a.driveLocation ?? "",
-    // integrationCSTeam* mirrors the field names the OLD /spl/accounts/{id}
+    // integrationCSTeam* mirrors the field names the OLD /accounts/{id}
     // response used (see ListAccountDetail.tsx/TeamMembersDrawer.tsx, which
     // read these through AccountDetails' DataStruct index signature) so
     // those components need no changes -- only the source of the value
@@ -211,7 +211,7 @@ export function useGetAccountEscalations(
     queryFn: () =>
       api
         .get<EscalationDetails[]>(
-          `/spl/accounts/${encodeURIComponent(accountId)}/escalations?offset=${offset}&limit=${limit}`,
+          `/accounts/${encodeURIComponent(accountId)}/escalations?offset=${offset}&limit=${limit}`,
         )
         .then((r) => r ?? []),
     enabled: Boolean(accountId),
@@ -225,13 +225,13 @@ export interface EscalateCaseRequest {
   severity: string;
 }
 
-/** POST /spl/accounts/{accountId}/cases/{caseId}/escalate. */
+/** POST /accounts/{accountId}/cases/{caseId}/escalate. */
 export function useEscalateCase(accountId: string, caseId: string) {
   const api = useBackendApi();
   return useMutation<unknown, Error, EscalateCaseRequest>({
     mutationFn: (body) =>
       api.post(
-        `/spl/accounts/${encodeURIComponent(accountId)}/cases/${encodeURIComponent(caseId)}/escalate`,
+        `/accounts/${encodeURIComponent(accountId)}/cases/${encodeURIComponent(caseId)}/escalate`,
         body,
       ),
   });
@@ -252,13 +252,13 @@ export interface DriveFile {
   mimeType: string;
 }
 
-/** GET /spl/files?folderId=... (Google Drive folder listing). */
+/** GET /files?folderId=... (Google Drive folder listing). */
 export function useGetDriveFiles(folderId: string): UseQueryResult<DriveFile[], Error> {
   const api = useBackendApi();
   return useQuery<DriveFile[], Error>({
     queryKey: ["spl-drive-files", folderId],
     queryFn: () =>
-      api.get<DriveFile[]>(`/spl/files?folderId=${encodeURIComponent(folderId)}`).then((r) => r ?? []),
+      api.get<DriveFile[]>(`/files?folderId=${encodeURIComponent(folderId)}`).then((r) => r ?? []),
     enabled: Boolean(folderId),
   });
 }

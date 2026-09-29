@@ -20,11 +20,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
 func splScanRequest(t *testing.T, payload SplUserScanRequest) *http.Request {
@@ -36,8 +38,19 @@ func splScanRequest(t *testing.T, payload SplUserScanRequest) *http.Request {
 	return withUser(httptest.NewRequest(http.MethodPost, "/spl/scan-user", bytes.NewReader(body)))
 }
 
+// scanUsersResponse builds a SearchUsers response body with a single user.
+func scanUsersResponse(email string, lockedOut bool) []byte {
+	return []byte(fmt.Sprintf(`{"users":[{"email":%q,"lockedOut":%t}]}`, email, lockedOut))
+}
+
+// scanProjectsResponse builds a SearchProjects response body with a single
+// project, keyed so lookupProjectByKey's exact-match filter finds it.
+func scanProjectsResponse(id, key, closureState string) []byte {
+	return []byte(fmt.Sprintf(`{"projects":[{"id":%q,"key":%q,"closureState":%q}]}`, id, key, closureState))
+}
+
 func TestSplScanUser_AuthGates(t *testing.T) {
-	h := NewSplUserScanHandler(&mockSalesEntityClient{}, &mockCSEntityClient{}, []string{"csm-agents"})
+	h := NewSplUserScanHandler(&mockSalesEntityClient{}, &mockEntityScanClient{}, splAccessGuard)
 
 	t.Run("requires authenticated user", func(t *testing.T) {
 		r := httptest.NewRequest(http.MethodPost, "/spl/scan-user", bytes.NewReader([]byte(`{}`)))
@@ -46,9 +59,15 @@ func TestSplScanUser_AuthGates(t *testing.T) {
 		assertStatus(t, w, http.StatusUnauthorized)
 	})
 
-	t.Run("rejects user outside allowedGroups", func(t *testing.T) {
-		h2 := NewSplUserScanHandler(&mockSalesEntityClient{}, &mockCSEntityClient{}, []string{"some-other-group"})
-		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com"})
+	t.Run("rejects a role that doesn't grant PermSPLAccess", func(t *testing.T) {
+		h2 := NewSplUserScanHandler(&mockSalesEntityClient{}, &mockEntityScanClient{}, splAccessGuard)
+		body, err := json.Marshal(SplUserScanRequest{Email: "a@b.com"})
+		if err != nil {
+			t.Fatalf("marshal payload: %v", err)
+		}
+		r := httptest.NewRequest(http.MethodPost, "/spl/scan-user", bytes.NewReader(body))
+		// Authenticated but holds no role granting PermSPLAccess.
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "nobody@example.com", UserID: "u-nobody"}))
 		w := httptest.NewRecorder()
 		h2.ScanUser(w, r)
 		assertStatus(t, w, http.StatusForbidden)
@@ -60,24 +79,46 @@ func TestSplScanUser_AuthGates(t *testing.T) {
 		h.ScanUser(w, r)
 		assertStatus(t, w, http.StatusBadRequest)
 	})
+
+	t.Run("rejects an empty or whitespace-only email or subscriptionKey before any upstream lookup", func(t *testing.T) {
+		h2 := NewSplUserScanHandler(
+			&mockSalesEntityClient{
+				getContactByEmailFn: func(context.Context, string) (*entity.Contact, error) {
+					t.Fatal("sales entity should not be called when required fields are missing")
+					return nil, nil
+				},
+			},
+			&mockEntityScanClient{}, splAccessGuard)
+		tests := []SplUserScanRequest{
+			{Email: "", SubscriptionKey: "sub-1"},
+			{Email: "a@b.com", SubscriptionKey: ""},
+			{Email: "   ", SubscriptionKey: "sub-1"},
+			{Email: "a@b.com", SubscriptionKey: "  "},
+		}
+		for _, payload := range tests {
+			w := httptest.NewRecorder()
+			h2.ScanUser(w, splScanRequest(t, payload))
+			assertStatus(t, w, http.StatusBadRequest)
+		}
+	})
 }
 
 func TestSplScanUser_SalesforceSide(t *testing.T) {
-	// Every sub-test only exercises the Salesforce branches; the ServiceNow
-	// side is given a "found, active, open" shape throughout so its results
-	// are constant and don't obscure what's under test.
-	neutralCS := &mockCSEntityClient{
-		getUserByEmailFn: func(ctx context.Context, email string) (*entity.User, error) {
-			return &entity.User{LockedOut: false, UserID: "sys-1"}, nil
+	// Every sub-test only exercises the Salesforce branches; the entity-
+	// service side is given a "found, active, open" shape throughout so its
+	// results are constant and don't obscure what's under test.
+	neutralEntity := &mockEntityScanClient{
+		searchUsersFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			return scanUsersResponse("a@b.com", false), nil
 		},
-		getProjectByProjectKeyFn: func(ctx context.Context, projectKey string) (*entity.Project, error) {
-			return &entity.Project{ProjectID: "proj-1", WSO2ClosureState: "Open"}, nil
+		searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+			return scanProjectsResponse("proj-1", "key-1", "Open"), nil
 		},
 	}
 
 	t.Run("contact not found, subscription not found", func(t *testing.T) {
 		sales := &mockSalesEntityClient{}
-		h := NewSplUserScanHandler(sales, neutralCS, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, neutralEntity, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "nobody@example.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -114,7 +155,7 @@ func TestSplScanUser_SalesforceSide(t *testing.T) {
 				return &entity.Subscription{ID: "sub-1", CustomerID: "acct-1"}, nil
 			},
 		}
-		h := NewSplUserScanHandler(sales, neutralCS, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, neutralEntity, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -145,7 +186,7 @@ func TestSplScanUser_SalesforceSide(t *testing.T) {
 				return &entity.Subscription{ID: "sub-1", CustomerID: "acct-1"}, nil
 			},
 		}
-		h := NewSplUserScanHandler(sales, neutralCS, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, neutralEntity, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1", IsPartner: false})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -173,7 +214,7 @@ func TestSplScanUser_SalesforceSide(t *testing.T) {
 				return &entity.Subscription{ID: "sub-1", CustomerID: "acct-1"}, nil
 			},
 		}
-		h := NewSplUserScanHandler(sales, neutralCS, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, neutralEntity, splAccessGuard)
 		// isPartner=true but membership type is CUSTOMER -> invalid on a partner account.
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1", IsPartner: true})
 		w := httptest.NewRecorder()
@@ -205,7 +246,7 @@ func TestSplScanUser_SalesforceSide(t *testing.T) {
 				return &entity.Subscription{ID: "sub-1", CustomerID: "acct-1"}, nil
 			},
 		}
-		h := NewSplUserScanHandler(sales, neutralCS, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, neutralEntity, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1", IsPartner: false})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -233,7 +274,7 @@ func TestSplScanUser_SalesforceSide(t *testing.T) {
 				return &entity.Subscription{ID: "sub-1", CustomerID: "acct-DIFFERENT"}, nil
 			},
 		}
-		h := NewSplUserScanHandler(sales, neutralCS, []string{"csm-agents"})
+		h := NewSplUserScanHandler(sales, neutralEntity, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1", IsPartner: false})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -245,16 +286,16 @@ func TestSplScanUser_SalesforceSide(t *testing.T) {
 	})
 }
 
-func TestSplScanUser_ServiceNowSide(t *testing.T) {
+func TestSplScanUser_EntityServiceSide(t *testing.T) {
 	neutralSales := &mockSalesEntityClient{}
 
 	t.Run("project not found", func(t *testing.T) {
-		cs := &mockCSEntityClient{
-			getProjectByProjectKeyFn: func(ctx context.Context, projectKey string) (*entity.Project, error) {
-				return nil, nil
+		ent := &mockEntityScanClient{
+			searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return []byte(`{"projects":[]}`), nil
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, ent, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -271,16 +312,35 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 		}
 	})
 
-	t.Run("project not open", func(t *testing.T) {
-		cs := &mockCSEntityClient{
-			getProjectByProjectKeyFn: func(ctx context.Context, projectKey string) (*entity.Project, error) {
-				return &entity.Project{ProjectID: "proj-1", WSO2ClosureState: "Closed"}, nil
-			},
-			getUserByEmailFn: func(ctx context.Context, email string) (*entity.User, error) {
-				return &entity.User{LockedOut: false}, nil
+	t.Run("project found by fuzzy search but key doesn't match exactly is treated as not found", func(t *testing.T) {
+		ent := &mockEntityScanClient{
+			searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				// SearchProjects' own match is fuzzy (ILIKE); this project's key
+				// only contains "key-1" as a substring, so lookupProjectByKey's
+				// exact-match filter must reject it.
+				return scanProjectsResponse("proj-1", "other-key-1-suffix", "Open"), nil
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, ent, splAccessGuard)
+		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
+		w := httptest.NewRecorder()
+		h.ScanUser(w, r)
+		resp := decodeJSON[[]SplScanResponse](t, w)
+		if resp[1].SystemResult[1].Information != splInfoProjectNotFound {
+			t.Errorf("project information = %+v, want ProjectNotFound", resp[1].SystemResult[1].Information)
+		}
+	})
+
+	t.Run("project not open", func(t *testing.T) {
+		ent := &mockEntityScanClient{
+			searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return scanProjectsResponse("proj-1", "key-1", "Closed"), nil
+			},
+			searchUsersFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return scanUsersResponse("a@b.com", false), nil
+			},
+		}
+		h := NewSplUserScanHandler(neutralSales, ent, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -296,15 +356,15 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 	})
 
 	t.Run("user not found in an existing open project", func(t *testing.T) {
-		cs := &mockCSEntityClient{
-			getProjectByProjectKeyFn: func(ctx context.Context, projectKey string) (*entity.Project, error) {
-				return &entity.Project{ProjectID: "proj-1", WSO2ClosureState: "Open"}, nil
+		ent := &mockEntityScanClient{
+			searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return scanProjectsResponse("proj-1", "key-1", "Open"), nil
 			},
-			getUserByEmailFn: func(ctx context.Context, email string) (*entity.User, error) {
-				return nil, nil
+			searchUsersFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return []byte(`{"users":[]}`), nil
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, ent, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -319,15 +379,15 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 	})
 
 	t.Run("active user succeeds", func(t *testing.T) {
-		cs := &mockCSEntityClient{
-			getProjectByProjectKeyFn: func(ctx context.Context, projectKey string) (*entity.Project, error) {
-				return &entity.Project{ProjectID: "proj-1", WSO2ClosureState: "Open"}, nil
+		ent := &mockEntityScanClient{
+			searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return scanProjectsResponse("proj-1", "key-1", "Open"), nil
 			},
-			getUserByEmailFn: func(ctx context.Context, email string) (*entity.User, error) {
-				return &entity.User{LockedOut: false}, nil
+			searchUsersFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return scanUsersResponse("a@b.com", false), nil
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, ent, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -337,22 +397,21 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 		}
 	})
 
-	t.Run("locked-out user with an invitation URL", func(t *testing.T) {
-		var capturedProjectID string
-		cs := &mockCSEntityClient{
-			getProjectByProjectKeyFn: func(ctx context.Context, projectKey string) (*entity.Project, error) {
-				return &entity.Project{ProjectID: "proj-1", WSO2ClosureState: "Open"}, nil
+	t.Run("locked-out user: resend succeeds", func(t *testing.T) {
+		var capturedProjectID, capturedEmail string
+		ent := &mockEntityScanClient{
+			searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return scanProjectsResponse("proj-1", "key-1", "Open"), nil
 			},
-			getUserByEmailFn: func(ctx context.Context, email string) (*entity.User, error) {
-				return &entity.User{LockedOut: true}, nil
+			searchUsersFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return scanUsersResponse("a@b.com", true), nil
 			},
-			getProjectContactByEmailFn: func(ctx context.Context, email, projectID string) (*entity.ProjectContact, error) {
-				capturedProjectID = projectID
-				url := "https://example.com/invite/abc"
-				return &entity.ProjectContact{InvitationURL: &url}, nil
+			resendProjectContactInvitationFn: func(ctx context.Context, projectID, email string) ([]byte, error) {
+				capturedProjectID, capturedEmail = projectID, email
+				return nil, nil
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, ent, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
@@ -361,75 +420,35 @@ func TestSplScanUser_ServiceNowSide(t *testing.T) {
 		if userResult.State {
 			t.Error("locked-out user result should not be success")
 		}
-		if userResult.Information.InvitationURL != "https://example.com/invite/abc" {
-			t.Errorf("invitationUrl = %q, want the invitation link", userResult.Information.InvitationURL)
-		}
-		if userResult.Information.Solution != "You need to inform the user to accept the invitation." {
+		if userResult.Information.Solution != "A fresh invitation email has been sent. Ask the user to check their inbox and accept it." {
 			t.Errorf("solution = %q, unexpected", userResult.Information.Solution)
 		}
-		if capturedProjectID != "proj-1" {
-			t.Errorf("projectID passed to GetProjectContactByEmail = %q, want proj-1", capturedProjectID)
+		if capturedProjectID != "proj-1" || capturedEmail != "a@b.com" {
+			t.Errorf("ResendProjectContactInvitation called with (%q, %q), want (proj-1, a@b.com)", capturedProjectID, capturedEmail)
 		}
 	})
 
-	t.Run("locked-out user with no project contact found", func(t *testing.T) {
-		// Ballerina: projectContact is () -> userInvitationUrl is the literal
-		// "No invitation url found for the given email" (not empty), so this
-		// takes the non-empty branch and that literal string is surfaced as the
-		// invitationUrl — verified against service.bal's scan-user resource.
-		cs := &mockCSEntityClient{
-			getProjectByProjectKeyFn: func(ctx context.Context, projectKey string) (*entity.Project, error) {
-				return &entity.Project{ProjectID: "proj-1", WSO2ClosureState: "Open"}, nil
+	t.Run("locked-out user: resend fails", func(t *testing.T) {
+		ent := &mockEntityScanClient{
+			searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return scanProjectsResponse("proj-1", "key-1", "Open"), nil
 			},
-			getUserByEmailFn: func(ctx context.Context, email string) (*entity.User, error) {
-				return &entity.User{LockedOut: true}, nil
+			searchUsersFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return scanUsersResponse("a@b.com", true), nil
 			},
-			getProjectContactByEmailFn: func(ctx context.Context, email, projectID string) (*entity.ProjectContact, error) {
-				return nil, nil
+			resendProjectContactInvitationFn: func(ctx context.Context, projectID, email string) ([]byte, error) {
+				return nil, context.DeadlineExceeded
 			},
 		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
+		h := NewSplUserScanHandler(neutralSales, ent, splAccessGuard)
 		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
+		assertStatus(t, w, http.StatusOK)
 		resp := decodeJSON[[]SplScanResponse](t, w)
 		userResult := resp[1].SystemResult[0]
-		if userResult.Information.Solution != "You need to inform the user to accept the invitation." {
+		if userResult.Information.Solution != "Could not resend the invitation automatically. Resend it manually from the project's Contacts tab." {
 			t.Errorf("solution = %q, unexpected", userResult.Information.Solution)
-		}
-		if userResult.Information.InvitationURL != "No invitation url found for the given email" {
-			t.Errorf("invitationUrl = %q, want the literal not-found message", userResult.Information.InvitationURL)
-		}
-	})
-
-	t.Run("locked-out user whose project contact has no invitation URL set", func(t *testing.T) {
-		// Ballerina: projectContact exists but invitationUrl is nil ->
-		// userInvitationUrl is nil, which is NOT equal to "", so this ALSO takes
-		// the non-empty branch with an empty invitationUrl value — the quirk
-		// documented in user_scan.go's ScanUser. This port deliberately
-		// deviates and treats it as the empty case instead.
-		cs := &mockCSEntityClient{
-			getProjectByProjectKeyFn: func(ctx context.Context, projectKey string) (*entity.Project, error) {
-				return &entity.Project{ProjectID: "proj-1", WSO2ClosureState: "Open"}, nil
-			},
-			getUserByEmailFn: func(ctx context.Context, email string) (*entity.User, error) {
-				return &entity.User{LockedOut: true}, nil
-			},
-			getProjectContactByEmailFn: func(ctx context.Context, email, projectID string) (*entity.ProjectContact, error) {
-				return &entity.ProjectContact{InvitationURL: nil}, nil
-			},
-		}
-		h := NewSplUserScanHandler(neutralSales, cs, []string{"csm-agents"})
-		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "key-1"})
-		w := httptest.NewRecorder()
-		h.ScanUser(w, r)
-		resp := decodeJSON[[]SplScanResponse](t, w)
-		userResult := resp[1].SystemResult[0]
-		if userResult.Information.Solution != "The user invitation is empty. You need to resend the invitation." {
-			t.Errorf("solution = %q, want the empty-invitation solution", userResult.Information.Solution)
-		}
-		if userResult.Information.InvitationURL != "" {
-			t.Errorf("invitationUrl = %q, want empty", userResult.Information.InvitationURL)
 		}
 	})
 }
@@ -441,11 +460,39 @@ func TestSplScanUser_UpstreamFailuresReturn500WithBespokeMessage(t *testing.T) {
 				return nil, context.DeadlineExceeded
 			},
 		}
-		h := NewSplUserScanHandler(sales, &mockCSEntityClient{}, []string{"csm-agents"})
-		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com"})
+		h := NewSplUserScanHandler(sales, &mockEntityScanClient{}, splAccessGuard)
+		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "sub-1"})
 		w := httptest.NewRecorder()
 		h.ScanUser(w, r)
 		assertStatus(t, w, http.StatusInternalServerError)
 		assertErrorMessage(t, w, "Error occurred when retrieving contact information")
+	})
+
+	t.Run("entity user search failure", func(t *testing.T) {
+		ent := &mockEntityScanClient{
+			searchUsersFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return nil, context.DeadlineExceeded
+			},
+		}
+		h := NewSplUserScanHandler(&mockSalesEntityClient{}, ent, splAccessGuard)
+		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "sub-1"})
+		w := httptest.NewRecorder()
+		h.ScanUser(w, r)
+		assertStatus(t, w, http.StatusInternalServerError)
+		assertErrorMessage(t, w, "Error occurred when retrieving user information")
+	})
+
+	t.Run("entity project search failure", func(t *testing.T) {
+		ent := &mockEntityScanClient{
+			searchProjectsFn: func(ctx context.Context, body []byte) ([]byte, error) {
+				return nil, context.DeadlineExceeded
+			},
+		}
+		h := NewSplUserScanHandler(&mockSalesEntityClient{}, ent, splAccessGuard)
+		r := splScanRequest(t, SplUserScanRequest{Email: "a@b.com", SubscriptionKey: "sub-1"})
+		w := httptest.NewRecorder()
+		h.ScanUser(w, r)
+		assertStatus(t, w, http.StatusInternalServerError)
+		assertErrorMessage(t, w, "Error occurred when retrieving project information")
 	})
 }
