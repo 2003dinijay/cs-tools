@@ -41,8 +41,10 @@ session, ever, so that code path would be permanently dead here.
   callers must check it themselves (`sweep.suspend` does).
 - `internal/recipients` — pure customer-contact and Account-Manager-email
   resolution. `ResolveCustomerContact` implements the three-tier fallback
-  (business-contact-role Project Contact → account-level Primary Contact →
-  signal to nudge the Account Manager instead). `AccountManagerEmail`
+  (business-contact-role Project Contacts → account-level Primary Contacts →
+  signal to nudge the Account Manager instead). Each tier returns **every**
+  match, not the first — see "The customer notice goes to every customer
+  contact" below. `AccountManagerEmail`
   extracts an email from an already-fetched `PersonRef`, treating "no AM
   assigned" and "AM assigned but no email" both as legitimate absence
   (`""`), not errors — many real accounts have incomplete role assignments.
@@ -422,6 +424,33 @@ isn't lost or re-litigated:
   the threat model's privacy review and closed by this masking. Don't log a
   raw address here again. `EmailNotifier` already logs only recipient
   counts.
+
+## The customer notice goes to every customer contact
+
+`ResolveCustomerContact` returns all business contacts on the project, or,
+when there are none, all Primary Contacts on the account. It doesn't return
+just the first. `notify.Recipients.Customers` is a list, and
+`EmailNotifier` puts every entry in `to` on one email (internal people stay
+in `cc`). Each address appears once, compared case-insensitively; contacts
+with no email are skipped, as before.
+
+Until 2026-09-29 it stopped at the first match, so a project with several
+business contacts told only one of them, chosen by API order. The rule came
+from our own design, not legacy: legacy picks recipients inside the
+ServiceNow Flow Designer subflow `acp_send_project_suspension_email_20`
+(called from `ACPActionModules.js`), which isn't in
+`docs/legacy-servicenow-reference/`. The user confirmed from real legacy
+emails that the ServiceNow system sends to several customer addresses. Real
+accounts can also have more than one Primary Contact (the staging ACP Test
+Partner Account has two).
+
+**Both contact searches are paged.** `/projects/{id}/contacts/search` and
+`/accounts/{id}/contacts/search` return 20 rows unless a limit is sent, 50 at
+most (51 is a 400), and report `total` but no `hasMore`, all confirmed
+against staging. `fetchContacts` used to send `{}` and read only the first
+page, which mattered little while one contact was picked but would drop
+recipients now. `pageContacts` sends `pagination` and stops on an empty page
+or once `offset` reaches `total`.
 
 ## Project Name links to Salesforce (internal notices only)
 

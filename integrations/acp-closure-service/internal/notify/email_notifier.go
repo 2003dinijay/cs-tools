@@ -260,7 +260,7 @@ func (n *EmailNotifier) Send(ctx context.Context, notice Notice) (bool, error) {
 	// cause of a real symptom seen in a live test: the trailing "WSO2
 	// Team" signature line visually missing in the received email.
 	htmlBody := renderInternalEmailHTML(notice.Body, notice.ProjectSfID, notice.InvoiceSfIDs)
-	if notice.Recipients.Customer != nil {
+	if len(notice.Recipients.Customers) > 0 {
 		htmlBody = renderEmailHTML(notice.Body)
 	}
 
@@ -279,8 +279,10 @@ func (n *EmailNotifier) Send(ctx context.Context, notice Notice) (bool, error) {
 // state per recipients.AccountManagerEmail's existing contract) are
 // dropped rather than sent through as blank strings.
 func recipientsToToCC(r Recipients) (to, cc []string) {
-	if r.Customer != nil {
-		to = appendIfNonEmpty(to, r.Customer.Email)
+	if len(r.Customers) > 0 {
+		for _, c := range r.Customers {
+			to = appendIfNonEmpty(to, c.Email)
+		}
 		cc = appendIfNonEmpty(cc, r.AccountOwner.Email, r.RenewalManager.Email, r.TechnicalOwner.Email)
 		return to, cc
 	}
@@ -316,7 +318,7 @@ func (n *EmailNotifier) filterRecipients(emails []string) []string {
 // renderEmailHTML wraps a notice's plain-text Body in the customer-facing
 // branded WSO2 email shell (emailHTMLTemplate) — logo, orange accent
 // border, footer disclaimer — matching real customer-facing notice
-// examples. Used by Send only when notice.Recipients.Customer is non-nil.
+// examples. Used by Send only when notice.Recipients.Customers is non-empty.
 func renderEmailHTML(body string) string {
 	return fmt.Sprintf(emailHTMLTemplate, wso2LogoURL, plainTextToHTML(body))
 }

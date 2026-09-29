@@ -37,14 +37,15 @@ import (
 // always populated for a day-count reminder — an individual Contact's Email
 // may legitimately be "" per recipients.AccountManagerEmail's existing
 // convention (role assigned but no email on file, or no role assigned at
-// all), which is not an error state. Customer is nil except on a resolved
-// 15/7/0-window notice; it is also nil (not a zero-value Contact) on the
-// separate no-business-contact notice, which names only an Account Owner.
+// all), which is not an error state. Customers is empty except on a resolved
+// 15/7/0-window notice, where it holds every resolved customer contact
+// (see recipients.ResolveCustomerContact); it is also empty on the separate
+// no-business-contact notice.
 type Recipients struct {
 	AccountOwner   recipients.Contact
 	RenewalManager recipients.Contact
 	TechnicalOwner recipients.Contact
-	Customer       *recipients.Contact
+	Customers      []recipients.Contact
 }
 
 // Notice is everything a Notifier needs to send (or, today, log) one ACP
@@ -133,8 +134,14 @@ func (n *LoggingNotifier) Send(ctx context.Context, notice Notice) (bool, error)
 		"technicalOwnerName", notice.Recipients.TechnicalOwner.Name,
 		"resolvedVia", notice.ResolvedVia,
 	}
-	if notice.Recipients.Customer != nil {
-		attrs = append(attrs, "customer", maskEmail(notice.Recipients.Customer.Email), "customerName", maskName(notice.Recipients.Customer.Name))
+	if len(notice.Recipients.Customers) > 0 {
+		emails := make([]string, len(notice.Recipients.Customers))
+		names := make([]string, len(notice.Recipients.Customers))
+		for i, c := range notice.Recipients.Customers {
+			emails[i] = maskEmail(c.Email)
+			names[i] = maskName(c.Name)
+		}
+		attrs = append(attrs, "customer", strings.Join(emails, ", "), "customerName", strings.Join(names, ", "))
 	}
 	if notice.Body != "" {
 		attrs = append(attrs, "body", notice.Body)

@@ -16,7 +16,10 @@
 
 package recipients
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestAccountManagerEmail_ReturnsEmailWhenPopulated(t *testing.T) {
 	email := "am@wso2.example"
@@ -58,8 +61,8 @@ func TestResolveCustomerContact_PrefersBusinessContact(t *testing.T) {
 	if got.ResolvedVia != ResolvedViaBusinessContact {
 		t.Errorf("ResolvedVia = %v, want %v", got.ResolvedVia, ResolvedViaBusinessContact)
 	}
-	if got.CustomerContact == nil || got.CustomerContact.Email != "bob@customer.example" {
-		t.Errorf("CustomerContact = %+v, want Bob", got.CustomerContact)
+	if len(got.CustomerContacts) != 1 || got.CustomerContacts[0].Email != "bob@customer.example" {
+		t.Errorf("CustomerContacts = %+v, want Bob", got.CustomerContacts)
 	}
 }
 
@@ -80,8 +83,8 @@ func TestResolveCustomerContact_FallsBackToPrimaryContact(t *testing.T) {
 	if got.ResolvedVia != ResolvedViaPrimaryContact {
 		t.Errorf("ResolvedVia = %v, want %v", got.ResolvedVia, ResolvedViaPrimaryContact)
 	}
-	if got.CustomerContact == nil || got.CustomerContact.Email != "carol@customer.example" {
-		t.Errorf("CustomerContact = %+v, want Carol", got.CustomerContact)
+	if len(got.CustomerContacts) != 1 || got.CustomerContacts[0].Email != "carol@customer.example" {
+		t.Errorf("CustomerContacts = %+v, want Carol", got.CustomerContacts)
 	}
 }
 
@@ -106,8 +109,8 @@ func TestResolveCustomerContact_SkipsBusinessContactWithEmptyEmail(t *testing.T)
 	if got.ResolvedVia != ResolvedViaPrimaryContact {
 		t.Errorf("ResolvedVia = %v, want %v", got.ResolvedVia, ResolvedViaPrimaryContact)
 	}
-	if got.CustomerContact == nil || got.CustomerContact.Email != "carol@customer.example" {
-		t.Errorf("CustomerContact = %+v, want Carol", got.CustomerContact)
+	if len(got.CustomerContacts) != 1 || got.CustomerContacts[0].Email != "carol@customer.example" {
+		t.Errorf("CustomerContacts = %+v, want Carol", got.CustomerContacts)
 	}
 }
 
@@ -128,8 +131,8 @@ func TestResolveCustomerContact_NudgesAccountManagerWhenOnlyContactsHaveEmptyEma
 	if !got.NeedsAMNudge {
 		t.Fatalf("NeedsAMNudge = false, want true")
 	}
-	if got.CustomerContact != nil {
-		t.Errorf("CustomerContact = %+v, want nil", got.CustomerContact)
+	if len(got.CustomerContacts) != 0 {
+		t.Errorf("CustomerContacts = %+v, want none", got.CustomerContacts)
 	}
 	if got.ResolvedVia != ResolvedViaNone {
 		t.Errorf("ResolvedVia = %v, want %v", got.ResolvedVia, ResolvedViaNone)
@@ -149,8 +152,8 @@ func TestResolveCustomerContact_NudgesAccountManagerWhenNoContactFound(t *testin
 	if !got.NeedsAMNudge {
 		t.Fatalf("NeedsAMNudge = false, want true")
 	}
-	if got.CustomerContact != nil {
-		t.Errorf("CustomerContact = %+v, want nil", got.CustomerContact)
+	if len(got.CustomerContacts) != 0 {
+		t.Errorf("CustomerContacts = %+v, want none", got.CustomerContacts)
 	}
 	if got.ResolvedVia != ResolvedViaNone {
 		t.Errorf("ResolvedVia = %v, want %v", got.ResolvedVia, ResolvedViaNone)
@@ -163,10 +166,82 @@ func TestResolveCustomerContact_NudgesAccountManagerWhenNoContactsAtAll(t *testi
 	if !got.NeedsAMNudge {
 		t.Fatalf("NeedsAMNudge = false, want true")
 	}
-	if got.CustomerContact != nil {
-		t.Errorf("CustomerContact = %+v, want nil", got.CustomerContact)
+	if len(got.CustomerContacts) != 0 {
+		t.Errorf("CustomerContacts = %+v, want none", got.CustomerContacts)
 	}
 	if got.ResolvedVia != ResolvedViaNone {
 		t.Errorf("ResolvedVia = %v, want %v", got.ResolvedVia, ResolvedViaNone)
+	}
+}
+
+// TestResolveCustomerContact_ReturnsEveryBusinessContact: the customer
+// notice goes to every business contact on the project, as the ServiceNow
+// system does (confirmed by the user from real legacy emails with several
+// customer addresses), not just the first one found. Contacts without an
+// email, or without the role, are left out; order is kept.
+func TestResolveCustomerContact_ReturnsEveryBusinessContact(t *testing.T) {
+	projectContacts := []ProjectContact{
+		{Name: "Bob", Email: "bob@customer.example", Roles: []string{businessContactRole}},
+		{Name: "Alice", Email: "alice@customer.example", Roles: []string{"developer"}},
+		{Name: "Eve", Email: "", Roles: []string{businessContactRole}},
+		{Name: "Frank", Email: "frank@customer.example", Roles: []string{"developer", businessContactRole}},
+	}
+	accountContacts := []AccountContact{
+		{Name: "Carol", Email: "carol@customer.example", IsPrimary: true},
+	}
+
+	got := ResolveCustomerContact(projectContacts, accountContacts)
+
+	if got.ResolvedVia != ResolvedViaBusinessContact {
+		t.Errorf("ResolvedVia = %v, want %v", got.ResolvedVia, ResolvedViaBusinessContact)
+	}
+	want := []Contact{
+		{Name: "Bob", Email: "bob@customer.example"},
+		{Name: "Frank", Email: "frank@customer.example"},
+	}
+	if !slices.Equal(got.CustomerContacts, want) {
+		t.Errorf("CustomerContacts = %+v, want %+v", got.CustomerContacts, want)
+	}
+}
+
+// TestResolveCustomerContact_ReturnsEveryPrimaryContact: with no business
+// contact, every Primary Contact on the account gets the notice. Real
+// accounts can have more than one (the staging ACP Test Partner Account
+// has two).
+func TestResolveCustomerContact_ReturnsEveryPrimaryContact(t *testing.T) {
+	accountContacts := []AccountContact{
+		{Name: "Carol", Email: "carol@customer.example", IsPrimary: true},
+		{Name: "Dana", Email: "dana@customer.example", IsPrimary: false},
+		{Name: "Gina", Email: "gina@customer.example", IsPrimary: true},
+	}
+
+	got := ResolveCustomerContact(nil, accountContacts)
+
+	if got.ResolvedVia != ResolvedViaPrimaryContact {
+		t.Errorf("ResolvedVia = %v, want %v", got.ResolvedVia, ResolvedViaPrimaryContact)
+	}
+	want := []Contact{
+		{Name: "Carol", Email: "carol@customer.example"},
+		{Name: "Gina", Email: "gina@customer.example"},
+	}
+	if !slices.Equal(got.CustomerContacts, want) {
+		t.Errorf("CustomerContacts = %+v, want %+v", got.CustomerContacts, want)
+	}
+}
+
+// TestResolveCustomerContact_ListsEachEmailOnce: the same address appearing
+// twice (differing only in case) is one recipient, not two copies of the
+// same email.
+func TestResolveCustomerContact_ListsEachEmailOnce(t *testing.T) {
+	projectContacts := []ProjectContact{
+		{Name: "Bob", Email: "bob@customer.example", Roles: []string{businessContactRole}},
+		{Name: "Bob Again", Email: "Bob@Customer.example", Roles: []string{businessContactRole}},
+	}
+
+	got := ResolveCustomerContact(projectContacts, nil)
+
+	want := []Contact{{Name: "Bob", Email: "bob@customer.example"}}
+	if !slices.Equal(got.CustomerContacts, want) {
+		t.Errorf("CustomerContacts = %+v, want %+v", got.CustomerContacts, want)
 	}
 }

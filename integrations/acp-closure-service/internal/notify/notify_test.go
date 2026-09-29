@@ -122,7 +122,7 @@ func TestLoggingNotifier_Send_LogsRecipientsIncludingCustomerWhenPresent(t *test
 			AccountOwner:   recipients.Contact{Name: "Jordan Perera", Email: "jordan.perera@wso2.example"},
 			RenewalManager: recipients.Contact{Name: "Sam Jayasuriya", Email: "sam.jayasuriya@wso2.example"},
 			TechnicalOwner: recipients.Contact{Name: "Alex Fernando", Email: "alex.fernando@wso2.example"},
-			Customer:       &recipients.Contact{Name: "Bob", Email: "bob@customer.example"},
+			Customers:      []recipients.Contact{{Name: "Bob", Email: "bob@customer.example"}},
 		},
 		ResolvedVia: recipients.ResolvedViaBusinessContact,
 	})
@@ -157,7 +157,7 @@ func TestLoggingNotifier_Send_LogsRecipientsIncludingCustomerWhenPresent(t *test
 }
 
 // TestLoggingNotifier_Send_OmitsCustomerAttributeWhenNil covers the
-// internal-only (90/60/30) case: Recipients.Customer is nil, and the log
+// internal-only (90/60/30) case: Recipients.Customers is empty, and the log
 // must not carry a misleading empty "customer" attribute implying a
 // customer was in scope for this notice at all.
 func TestLoggingNotifier_Send_OmitsCustomerAttributeWhenNil(t *testing.T) {
@@ -179,10 +179,10 @@ func TestLoggingNotifier_Send_OmitsCustomerAttributeWhenNil(t *testing.T) {
 	}
 
 	if _, found := attrValue(t, h.records[0], "customer"); found {
-		t.Error("customer attribute present in log record, want absent when Recipients.Customer is nil")
+		t.Error("customer attribute present in log record, want absent when Recipients.Customers is empty")
 	}
 	if _, found := attrValue(t, h.records[0], "customerName"); found {
-		t.Error("customerName attribute present in log record, want absent when Recipients.Customer is nil")
+		t.Error("customerName attribute present in log record, want absent when Recipients.Customers is empty")
 	}
 }
 
@@ -252,6 +252,32 @@ func TestMaskName(t *testing.T) {
 	for _, tt := range tests {
 		if got := maskName(tt.in); got != tt.want {
 			t.Errorf("maskName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestLoggingNotifier_Send_MasksEveryCustomer: with several customer
+// contacts, the log lists each one, every address and name masked.
+func TestLoggingNotifier_Send_MasksEveryCustomer(t *testing.T) {
+	h := &capturingHandler{}
+	n := &LoggingNotifier{Logger: slog.New(h)}
+
+	_, err := n.Send(context.Background(), Notice{
+		Recipients: Recipients{Customers: []recipients.Contact{
+			{Name: "Bob", Email: "bob@customer.example"},
+			{Name: "Frank Silva", Email: "frank@customer.example"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	for key, want := range map[string]string{
+		"customer":     "b**@customer.example, f****@customer.example",
+		"customerName": "B**, F**** S****",
+	} {
+		got, found := attrValue(t, h.records[0], key)
+		if !found || got != want {
+			t.Errorf("%s = %q (found %v), want %q", key, got, found, want)
 		}
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 
@@ -99,7 +100,7 @@ func TestEmailNotifier_Send_CustomerGoesToToInternalGoesToCC(t *testing.T) {
 			AccountOwner:   recipients.Contact{Email: "am@wso2.com"},
 			RenewalManager: recipients.Contact{Email: "rm@wso2.com"},
 			TechnicalOwner: recipients.Contact{Email: "to@wso2.com"},
-			Customer:       &recipients.Contact{Email: "customer@wso2.com"},
+			Customers:      []recipients.Contact{{Email: "customer@wso2.com"}},
 		},
 	})
 	if err != nil {
@@ -170,7 +171,7 @@ func TestEmailNotifier_Send_StandingCCAppliesToCustomerFacingNoticeToo(t *testin
 		Body:    "body",
 		Recipients: Recipients{
 			AccountOwner: recipients.Contact{Email: "am@wso2.com"},
-			Customer:     &recipients.Contact{Email: "customer@wso2.com"},
+			Customers:    []recipients.Contact{{Email: "customer@wso2.com"}},
 		},
 	})
 	if err != nil {
@@ -283,7 +284,7 @@ func TestEmailNotifier_Send_AllowsNonWSO2RecipientsWhenExplicitlyEnabled(t *test
 		Subject: "subject",
 		Body:    "body",
 		Recipients: Recipients{
-			Customer: &recipients.Contact{Email: "customer@external.example"},
+			Customers: []recipients.Contact{{Email: "customer@external.example"}},
 		},
 	})
 	if err != nil {
@@ -309,7 +310,7 @@ func TestEmailNotifier_Send_SkipsWhenNoValidRecipientsRemain(t *testing.T) {
 		Subject: "subject",
 		Body:    "body",
 		Recipients: Recipients{
-			Customer: &recipients.Contact{Email: "customer@external.example"},
+			Customers: []recipients.Contact{{Email: "customer@external.example"}},
 		},
 	})
 	if err != nil {
@@ -446,7 +447,7 @@ func TestEmailNotifier_Send_CustomerNoticeGetsBrandedTemplate(t *testing.T) {
 		Body:    "body text",
 		Recipients: Recipients{
 			AccountOwner: recipients.Contact{Email: "am@wso2.com"},
-			Customer:     &recipients.Contact{Email: "customer@wso2.com"},
+			Customers:    []recipients.Contact{{Email: "customer@wso2.com"}},
 		},
 	})
 	if err != nil {
@@ -485,7 +486,7 @@ func TestEmailNotifier_Send_DoesNotLogRawRecipientAddresses(t *testing.T) {
 		Body:    "body",
 		Recipients: Recipients{
 			AccountOwner: recipients.Contact{Email: ccAddr},
-			Customer:     &recipients.Contact{Email: toAddr},
+			Customers:    []recipients.Contact{{Email: toAddr}},
 		},
 	})
 	if err != nil {
@@ -562,7 +563,7 @@ func TestEmailNotifier_Send_ReportsDeliveredFalseWhenSkipped(t *testing.T) {
 	delivered, err := n.Send(context.Background(), Notice{
 		Subject:    "subject",
 		Body:       "body",
-		Recipients: Recipients{Customer: &recipients.Contact{Email: "customer@external.example"}},
+		Recipients: Recipients{Customers: []recipients.Contact{{Email: "customer@external.example"}}},
 	})
 	if err != nil {
 		t.Fatalf("Send() error = %v, want nil", err)
@@ -572,5 +573,38 @@ func TestEmailNotifier_Send_ReportsDeliveredFalseWhenSkipped(t *testing.T) {
 	}
 	if len(sender.calls) != 0 {
 		t.Errorf("SendEmail calls = %d, want 0", len(sender.calls))
+	}
+}
+
+// TestEmailNotifier_Send_EveryCustomerGoesToTo: a customer notice resolved
+// to several customer contacts sends one email with all of them in "to",
+// and the internal people still in "cc".
+func TestEmailNotifier_Send_EveryCustomerGoesToTo(t *testing.T) {
+	sender := &mockEmailSender{}
+	n := &EmailNotifier{Sender: sender, Logger: discardLogger(), AllowNonWSO2Recipients: true}
+
+	_, err := n.Send(context.Background(), Notice{
+		Subject: "subject",
+		Body:    "body",
+		Recipients: Recipients{
+			AccountOwner: recipients.Contact{Email: "am@wso2.com"},
+			Customers: []recipients.Contact{
+				{Email: "bob@customer.example"},
+				{Email: "frank@customer.example"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Send() error = %v, want nil", err)
+	}
+	if len(sender.calls) != 1 {
+		t.Fatalf("SendEmail calls = %d, want 1", len(sender.calls))
+	}
+	call := sender.calls[0]
+	if !slices.Equal(call.to, []string{"bob@customer.example", "frank@customer.example"}) {
+		t.Errorf("to = %v, want [bob@customer.example frank@customer.example]", call.to)
+	}
+	if !slices.Equal(call.cc, []string{"am@wso2.com"}) {
+		t.Errorf("cc = %v, want [am@wso2.com]", call.cc)
 	}
 }
