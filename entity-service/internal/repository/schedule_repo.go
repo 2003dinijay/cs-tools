@@ -833,11 +833,19 @@ func (r *scheduleRepository) RotaAdminTeamsFor(ctx context.Context, userEmail st
 
 	out := []string{}
 	for rows.Next() {
-		var k string
+		// team.key is nullable (0169_team_key_nullable) -- same NULL-scan
+		// panic risk this file's own LeadTeamsFor/SearchScheduleCatalogue
+		// already fix for the identical `SELECT DISTINCT t.key` shape, missed
+		// here. A keyless team is dropped from the result entirely rather
+		// than included as "", the same choice LeadTeamsFor already made:
+		// an empty string isn't a real registry key a caller could filter by.
+		var k *string
 		if err := rows.Scan(&k); err != nil {
 			return nil, fmt.Errorf("scan rota admin team: %w", err)
 		}
-		out = append(out, k)
+		if k != nil {
+			out = append(out, *k)
+		}
 	}
 	return out, rows.Err()
 }

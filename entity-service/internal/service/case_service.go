@@ -289,6 +289,7 @@ var validCaseCause = map[domain.CaseCause]bool{
 	domain.CaseCauseInfrastructureProxy:           true,
 	domain.CaseCauseInfrastructureOther:           true,
 	domain.CaseCauseUnknown:                       true,
+	domain.CaseCauseUserMistake:                   true,
 }
 
 var validCaseWorkState = map[domain.CaseWorkState]bool{
