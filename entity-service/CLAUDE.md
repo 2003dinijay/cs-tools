@@ -1827,11 +1827,52 @@ tables exist in this schema at all); `Type`
 (`domain.ChangeRequestType` — standard/normal/emergency/... — has **no**
 relationship to `change_request.change_request_type`, whose real enum
 values are `INFRA`/`GENERAL`, a completely different classification, not a
-subset of the domain enum); `ApprovedBy`/`ApprovedOn`/`LegalNextStates` on
-`domain.ChangeRequest` (no approver/date columns for the first two;
-`LegalNextStates` is a ServiceNow workflow-engine computation with nothing
-to derive it from here). `Duration` (`cr.calendar_duration`, an `INTERVAL`)
-is also left unset — no confirmed display format to render it in.
+subset of the domain enum); `ApprovedBy`/`ApprovedOn` on
+`domain.ChangeRequest` (no approver/date columns exist). `Duration`
+(`cr.calendar_duration`, an `INTERVAL`) is also left unset — no confirmed
+display format to render it in.
+
+**`LegalNextStates` used to be on the list above too ("a ServiceNow
+workflow-engine computation with nothing to derive it from here") — it no
+longer is.** Its absence on this data source was reported live: a change
+request could be created (`DATA_SOURCE=postgres-servicenow-dual-write` is
+ServiceNow-first on create), but the CSM Portal's own lifecycle action bar
+(`ChangeRequestActionBar.tsx`) renders nothing at all when
+`legalNextStates` is empty — the reported symptom was "create works, but no
+way to promote it," for every change request on this data source, not just
+one. `changeRequestForwardNextState`/`legalChangeRequestNextStates`
+(`change_request_repo.go`) now compute it: a hardcoded forward-only graph
+(New→Assess→Authorize→Scheduled→Implement→Review→Closed, with
+CustomerApproval/CustomerReview slotted in as confirmed dead-ends back to
+Scheduled/Closed respectively), each edge read directly off a real change
+request sitting in that exact state on the live ServiceNow instance (its
+own `state` field's dropdown, which ServiceNow itself only ever populates
+with the choices it currently considers legal) — not guessed. `"canceled"`
+is additionally offered alongside the forward move from every non-terminal
+state, since the Cancel Change action was observed available on every
+reachable state. `Rollback`/`Closed`/`Canceled` return `nil` (terminal, no
+legal forward move), matching ServiceNow's own answer for a record with
+none.
+
+**One thing this deliberately does not attempt**: Authorize/Review's real
+conditional detour through Customer Approval/Customer Review for a change
+request whose type requires customer sign-off.
+`domain.ChangeRequest.HasCustomerApproved`/`HasCustomerReviewed`
+(`change_request.customer_approval`/`customer_review`) record whether the
+customer **has already** signed off, not whether this particular change
+request **requires** that gate at all — branching on them would have the
+condition backwards, and nothing else in this schema records the actual
+requirement, so every change request's Authorize always offers Scheduled
+next (never Customer Approval) and every Review always offers Closed
+(never Customer Review). This is correct for the common case — the
+overwhelming majority of real change requests checked live skip both gates
+entirely (only one real change request, out of several thousand, was found
+sitting in Customer Review at the time this was checked; zero were in
+Customer Approval) — and merely incomplete, not wrong, for the rarer gated
+case: clicking the offered action on one of those still gets ServiceNow's
+own real rejection reason back (`mapUpstreamError` surfaces it), the same
+as before this change existed, not a new failure mode. Revisit if the real
+gating field is ever identified.
 
 **Linking happens entirely through `PATCH`, never at creation** —
 `CreateChangeRequestRequest` has no project/case field at all;

@@ -58,12 +58,15 @@ import (
 // ConfigurationItemID (no CMDB table exists at all in this schema); GroupID
 // and AssignedTeamID (distinct from CustomerGroupID -- these would need
 // work_item.assignment_group_id, migration 0075, which nothing in this
-// file joins or reads yet); ApprovedBy/ApprovedOn/LegalNextStates on
-// domain.ChangeRequest (there is a summary change_request.approval enum
-// but no approver/date columns, and LegalNextStates is a ServiceNow
-// workflow-engine computation with nothing to derive it from here);
-// Environments/DeploymentProducts/Labels/Deployments (no M2M join table
-// exists for any of the four).
+// file joins or reads yet); ApprovedBy/ApprovedOn on domain.ChangeRequest
+// (there is a summary change_request.approval enum but no approver/date
+// columns); Environments/DeploymentProducts/Labels/Deployments (no M2M join
+// table exists for any of the four).
+//
+// LegalNextStates is populated -- see legalChangeRequestNextStates's own
+// doc comment for how, and for the one branch it deliberately does not
+// attempt (Authorize/Review's conditional detour through Customer
+// Approval/Customer Review).
 //
 // CreateChangeRequest has no Postgres implementation at all: work_item.number
 // has no DB default and no backing sequence anywhere in migrations/, the
@@ -260,6 +263,71 @@ var changeRequestTypeToChangeModel = func() map[domain.ChangeRequestType]string 
 func ChangeRequestTypeSupported(t domain.ChangeRequestType) bool {
 	_, ok := changeRequestTypeToChangeModel[t]
 	return ok
+}
+
+// changeRequestForwardNextState is the single confirmed forward move out of
+// each non-terminal change_request state. Values, not just keys, are
+// domain.ChangeRequestState so a typo here is a compile error, not a typo
+// that silently offers a nonexistent state.
+//
+// This is not a guess: each edge was read directly off a real change_request
+// in that exact state on the live wso2.service-now.com instance, via its own
+// "state" field's dropdown (which ServiceNow itself populates with only the
+// choices it currently considers legal for that record) -- Assess only ever
+// offered "Authorize", Scheduled only ever offered "Implement", and so on.
+// CustomerApproval/CustomerReview's own outgoing edges are the two
+// exceptions: no change request was sitting in either state at the time
+// this was written, so both are inferred by symmetry with the confirmed
+// Review->Closed/CustomerReview->Closed pair (both immediately precede
+// Scheduled/Closed respectively in the lifecycle's own sequence order) --
+// revisit if that turns out to be wrong once a real example exists.
+var changeRequestForwardNextState = map[domain.ChangeRequestState]domain.ChangeRequestState{
+	domain.ChangeRequestStateNew:              domain.ChangeRequestStateAssess,
+	domain.ChangeRequestStateAssess:           domain.ChangeRequestStateAuthorize,
+	domain.ChangeRequestStateAuthorize:        domain.ChangeRequestStateScheduled,
+	domain.ChangeRequestStateCustomerApproval: domain.ChangeRequestStateScheduled,
+	domain.ChangeRequestStateScheduled:        domain.ChangeRequestStateImplement,
+	domain.ChangeRequestStateImplement:        domain.ChangeRequestStateReview,
+	domain.ChangeRequestStateReview:           domain.ChangeRequestStateClosed,
+	domain.ChangeRequestStateCustomerReview:   domain.ChangeRequestStateClosed,
+}
+
+// legalChangeRequestNextStates computes domain.ChangeRequest.LegalNextStates
+// for the Postgres data source, which (unlike ServiceNow) has no workflow
+// engine of its own to compute this dynamically -- see
+// changeRequestForwardNextState's own doc comment for how this graph was
+// derived, and this function's own limitation below.
+//
+// Deliberately NOT modeled: Authorize/Review's real conditional detour
+// through Customer Approval/Customer Review for a change request that
+// requires customer sign-off. change_request.customer_approval/
+// customer_review (domain.ChangeRequest.HasCustomerApproved/HasCustomerReviewed)
+// record whether the customer HAS already signed off, not whether this
+// particular change request requires that gate at all -- using them to
+// decide the branch would have it backwards, and nothing else in this
+// schema records the actual requirement. Every change request's Authorize
+// therefore always offers Scheduled next (never Customer Approval), and
+// every Review always offers Closed (never Customer Review) -- correct for
+// the common case (the overwhelming majority of real change requests
+// checked skip both gates entirely), and merely incomplete rather than
+// wrong for the rarer gated case: clicking the offered action there still
+// gets ServiceNow's own real rejection reason (see mapUpstreamError),
+// exactly the same as before this function existed, not a new failure mode.
+//
+// "canceled" is offered alongside the forward move from every non-terminal
+// state: the Cancel Change action was available on every reachable state
+// checked live, with no exception found. Rollback/Closed/Canceled are
+// terminal -- nil, matching ServiceNow's own "no legalNextStates at all"
+// answer for a record with no legal forward move.
+func legalChangeRequestNextStates(state *string) []string {
+	if state == nil {
+		return nil
+	}
+	next, ok := changeRequestForwardNextState[domain.ChangeRequestState(*state)]
+	if !ok {
+		return nil
+	}
+	return []string{string(next), string(domain.ChangeRequestStateCanceled)}
 }
 
 // scanChangeRequestView scans changeRequestSelectColumns into a
@@ -705,6 +773,7 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 	v.CreatedOn = createdOn.UTC().Format(time.RFC3339)
 	v.UpdatedOn = updatedOn.UTC().Format(time.RFC3339)
 	cr.SearchChangeRequestView = v
+	cr.LegalNextStates = legalChangeRequestNextStates(v.State)
 
 	cr.CreatedBy = createdBy
 	cr.Justification = justification
