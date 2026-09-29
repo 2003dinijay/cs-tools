@@ -2420,6 +2420,15 @@ export interface BeGithubIssueRepoOption {
   githubLabel: string;
 }
 
+/** `GET /products/github-repo` — the repository an issue for this product is filed in. */
+export interface BeProductRepoMapping {
+  productName: string;
+  abbreviation?: string;
+  owner: string;
+  repository: string;
+  githubLabel: string;
+}
+
 /**
  * `GET /metadata` response: a single growable bag of reference/config data
  * the webapp fetches once, rather than a dedicated endpoint per field.
