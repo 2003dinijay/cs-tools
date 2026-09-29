@@ -20,6 +20,8 @@ import type {
   BeWidgetResourceType,
 } from "@api/backend/types";
 
+import { usesCaseFieldFilterDsl } from "./widgetQueryConditions";
+
 type Query = Record<string, unknown>;
 
 /**
@@ -85,16 +87,6 @@ function presetFragment(
   return byName.get(ref.preset);
 }
 
-/** Mirrors the backend's `caseTableResourceTypes`: the resource types that
- * share the case-search endpoint and so get an implied `type` filter. */
-const CASE_TABLE_RESOURCE_TYPES: ReadonlySet<BeWidgetResourceType> = new Set([
-  "case",
-  "service_request",
-  "security_report_analysis",
-  "announcement",
-  "engagement",
-]);
-
 /**
  * Mirrors the backend's `injectTypeFilter`: guarantees `query.filters`
  * carries a `type` predicate, appending `{ field: "type", op: "in", values:
@@ -109,7 +101,7 @@ export function withImpliedTypeFilter(
   query: Query | null | undefined,
   resourceType: BeWidgetResourceType,
 ): Query | null | undefined {
-  if (!CASE_TABLE_RESOURCE_TYPES.has(resourceType)) return query;
+  if (!usesCaseFieldFilterDsl(resourceType)) return query;
   const filters = Array.isArray(query?.filters) ? query.filters : [];
   const hasType = filters.some(
     (e) => e !== null && typeof e === "object" && (e as Query).field === "type",
