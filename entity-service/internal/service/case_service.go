@@ -1990,23 +1990,12 @@ func (s *caseService) prepareCaseSearch(ctx context.Context, req domain.SearchCa
 		parsed.EndUpdatedDate.Before(*parsed.StartUpdatedDate) {
 		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: "updatedOn: lte value must not be before gte value"}
 	}
-	// resolvedOn has no backing column in the relational schema and
-	// caseRepo.SearchCases models no predicate for it, so accepting it here
-	// would drop the bound silently and answer 200 with every case rather
-	// than the resolved-in-range ones asked for. Reject, same as every other
-	// predicate this data source cannot express.
-
-	// projectType dot-walks into a ServiceNow-specific concept that
-	// caseRepo.SearchCases has no query for today. Reject rather than
-	// silently drop the predicate and widen the result set. (tag,
-	// projectOnboardingStatus and taskSLABusinessElapsedPercent are
-	// implemented there, so are absent here; product and creTeam/sreTeam
-	// used to be too, but the repository already joins account and "group" --
-	// see caseFieldPredicates/the SearchCases joins block.)
-	// state+in is supported here; state+notIn has no repository query support,
-	// and dropping an exclusion silently would widen the result set.
-	// parentId is also implemented (wi.parent_id, migration 0039 -- the
-	// "Linked Items" tab's child-case lookup), so it too is absent here.
+	// Predicates the repository does not express are rejected below rather
+	// than dropped silently, which would widen the result set. resolvedOn,
+	// state (in and notIn), projectType, slaBreached and the tag,
+	// projectOnboardingStatus, taskSLABusinessElapsedPercent, parentId, product
+	// and creTeam/sreTeam predicates are implemented by caseRepo.SearchCases
+	// and are absent from these guards.
 	// accountId+in has no repository query support today either (see
 	// domain.ParsedCaseFilters.AccountIDs); accountId+notIn is rejected the
 	// same way rather than silently dropping the exclusion and widening the
@@ -2021,16 +2010,13 @@ func (s *caseService) prepareCaseSearch(ctx context.Context, req domain.SearchCa
 		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: `field "resolutionNotes" is not supported by this data source`}
 	}
 
-	// The slaBreached and account-escalation predicates and grouped counts are
-	// implemented only in the ServiceNow case service (snCaseService.SearchCases);
-	// caseRepo.SearchCases models none of them (tag, projectOnboardingStatus,
-	// taskSLABusinessElapsedPercent, escalationLevel, escalation and anyOf, by
-	// contrast, are implemented there and so are deliberately absent from these
-	// guards). ParseCaseFieldFilters accepts them
-	// because it is shared by both data sources, so without these guards a
-	// Postgres deployment would drop the predicate and answer 200 with a wider
-	// result set than the caller asked for. These stay ServiceNow-only by design:
-	// reject loudly rather than implement them here.
+	// The account-escalation predicate is implemented only in the ServiceNow
+	// case service (snCaseService.SearchCases); the relational schema has no
+	// account-level escalation state. ParseCaseFieldFilters accepts it because
+	// it is shared by both data sources, so without this guard a Postgres
+	// deployment would drop the predicate and answer 200 with a wider result
+	// set than the caller asked for. It stays ServiceNow-only by design: reject
+	// loudly rather than implement it here.
 	if parsed.HasActiveAccountEscalation != nil {
 		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: `field "accountEscalationActive" is not supported by this data source`}
 	}
