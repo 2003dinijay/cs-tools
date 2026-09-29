@@ -691,6 +691,10 @@ type salesforceWriteRecord struct {
 // have succeeded. A by-id read that fails for any reason falls back to the
 // address search, so every self-healing path this had before still works.
 func (s *projectMembershipWriteService) writeSalesforce(ctx context.Context, wc repository.MembershipWriteContext, intent salesforceWriteIntent) (domain.SalesforceMembershipUpsert, salesforceWriteRecord, error) {
+	// preWriteModified and patched let the version stamped on this write be
+	// kept strictly newer than the record's version before the PATCH.
+	var preWriteModified time.Time
+	var patched bool
 	var rec salesforceWriteRecord
 
 	var contact salesentity.Contact
@@ -771,6 +775,8 @@ func (s *projectMembershipWriteService) writeSalesforce(ctx context.Context, wc 
 			roles = &r
 		}
 		if state != nil || roles != nil {
+			preWriteModified, _ = parseSalesforceLastModified(membership.LastModifiedDate)
+			patched = true
 			// PATCH answers with the record it re-read, or 200 with an empty
 			// body when only that re-read failed. An empty body is a zero
 			// value, not an error: the write landed either way, so the id we
@@ -790,9 +796,18 @@ func (s *projectMembershipWriteService) writeSalesforce(ctx context.Context, wc 
 	}
 	rec.State = intent.State
 	rec.Roles = intent.Roles
-	if modified, ok := parseSalesforceLastModified(membership.LastModifiedDate); ok {
+	modified, ok := parseSalesforceLastModified(membership.LastModifiedDate)
+	switch {
+	case patched && (!ok || !modified.After(preWriteModified)):
+		// The PATCH landed but its re-read was empty or stale, so the record
+		// in hand still carries the pre-write version. This write must be
+		// strictly newer than that version, at the ledger's microsecond
+		// precision, or csm-notification-service reads a re-invitation as a
+		// duplicate of the last one and drops its email.
+		rec.LastModifiedOn = laterOf(time.Now().UTC(), preWriteModified.Add(time.Microsecond))
+	case ok:
 		rec.LastModifiedOn = modified
-	} else {
+	default:
 		rec.LastModifiedOn = time.Now().UTC()
 	}
 
@@ -1032,4 +1047,12 @@ func canonicalSalesforceRoles(raw []string) ([]string, error) {
 		out = append(out, label)
 	}
 	return out, nil
+}
+
+// laterOf returns the later of two instants.
+func laterOf(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
