@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractIixAttachmentIds,
   extractInlineImageRefId,
+  isRawBase64ImageSrc,
   replaceInlineImageSrcs,
   sysidToUuid,
 } from "@features/csm-cases/utils/inlineImages";
@@ -72,6 +73,47 @@ describe("replaceInlineImageSrcs", () => {
     );
     expect(out).toContain('src="data:image/png;base64,AAAA"');
     expect(out).toContain('data-unresolved-reason="permission"');
+  });
+
+  it("leaves a raw base64 image untouched when denyRawBase64 is not set", () => {
+    const html = '<img src="data:image/png;base64,AAAA">';
+    expect(replaceInlineImageSrcs(html, new Map())).toBe(html);
+  });
+
+  it("hides a raw base64 image behind the permission placeholder when denyRawBase64 is true", () => {
+    const html = '<p>see <img src="data:image/png;base64,AAAA"></p>';
+    const out = replaceInlineImageSrcs(html, new Map(), undefined, true);
+    expect(out).not.toContain("<img");
+    expect(out).toContain('data-unresolved-reason="permission"');
+    expect(out).toContain("You don't have permission to view this image");
+  });
+
+  it("denyRawBase64 does not affect a .iix reference the caller can resolve", () => {
+    const html = `<img src="${SYSID}.iix">`;
+    const out = replaceInlineImageSrcs(
+      html,
+      new Map([[SYSID, "data:image/png;base64,AAAA"]]),
+      new Set(),
+      true,
+    );
+    expect(out).toContain('src="data:image/png;base64,AAAA"');
+  });
+
+  it("denyRawBase64 does not touch a non-image, non-.iix src", () => {
+    const html = '<img src="https://example.com/logo.png">';
+    expect(replaceInlineImageSrcs(html, new Map(), undefined, true)).toBe(html);
+  });
+});
+
+describe("isRawBase64ImageSrc", () => {
+  it("matches a base64-embedded image src", () => {
+    expect(isRawBase64ImageSrc("data:image/png;base64,AAAA")).toBe(true);
+  });
+
+  it("rejects a .iix reference, a real URL, and a non-image data URI", () => {
+    expect(isRawBase64ImageSrc(`${SYSID}.iix`)).toBe(false);
+    expect(isRawBase64ImageSrc("https://example.com/logo.png")).toBe(false);
+    expect(isRawBase64ImageSrc("data:text/plain;base64,AAAA")).toBe(false);
   });
 });
 

@@ -53,6 +53,21 @@ export function sysidToUuid(id: string): string {
   return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20, 32)}`;
 }
 
+/**
+ * Whether `src` is a raw base64-embedded image (`data:image/...;base64,...`)
+ * rather than a real, separately-stored attachment. Content authored before
+ * `SFTPGO_ATTACHMENT_STORAGE_ENABLED` was on (or created while it's off) never
+ * gets extracted into a `.iix`-referenced attachment at all — the pixels stay
+ * embedded directly in the comment/description HTML the backend already sends
+ * to anyone holding `PermView`, with no separate attachment resource for
+ * `PermDownloadAttachment` to gate. See {@link replaceInlineImageSrcs}'s own
+ * `denyRawBase64` parameter for why this still needs hiding client-side even
+ * though it's a different mechanism from the `.iix` case.
+ */
+export function isRawBase64ImageSrc(src: string): boolean {
+  return /^data:image\//i.test(src.trim());
+}
+
 /** Extracts every attachment id referenced by a `.iix` `<img>` src within an HTML string. */
 export function extractIixAttachmentIds(html: string): string[] {
   const ids: string[] = [];
@@ -96,17 +111,33 @@ function unresolvedImagePlaceholder(reason: "permission" | "error"): string {
  * loaded, unsupported type, a non-permission failure) gets a generic
  * "unavailable" placeholder — never left pointing at an auth-gated URL the
  * browser cannot fetch, and never silently blank.
+ *
+ * `denyRawBase64`, when true, additionally replaces every raw base64-embedded
+ * image (see {@link isRawBase64ImageSrc}) with the same "no permission"
+ * placeholder — pass `!canDownloadAttachment` here. Unlike a `.iix`
+ * reference, this content has already been sent to the browser in full (it's
+ * part of the comment/description HTML itself, gated only by `PermView`), so
+ * this is a display-only mitigation, not a real confidentiality boundary —
+ * the complete fix is server-side redaction before the response is ever
+ * sent, not yet built. Still worth doing: it stops the image actually
+ * rendering on screen for a caller who shouldn't be looking at it.
  */
 export function replaceInlineImageSrcs(
   html: string,
   dataUrls: Map<string, string>,
   deniedIds?: Set<string>,
+  denyRawBase64?: boolean,
 ): string {
   return html.replace(
     IMG_TAG_SRC,
     (fullMatch, before, doubleSrc, singleSrc, bareSrc, after) => {
       const src = (doubleSrc ?? singleSrc ?? bareSrc ?? "") as string;
-      if (!src.includes(".iix")) return fullMatch;
+      if (!src.includes(".iix")) {
+        if (denyRawBase64 && isRawBase64ImageSrc(src)) {
+          return unresolvedImagePlaceholder("permission");
+        }
+        return fullMatch;
+      }
       const refId = extractInlineImageRefId(src);
       const dataUrl = dataUrls.get(refId);
       if (!dataUrl) {
