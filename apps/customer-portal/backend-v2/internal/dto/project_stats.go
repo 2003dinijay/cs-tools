@@ -56,10 +56,23 @@ func mapReferenceTableItems(items []entity.ReferenceTableItem) []ReferenceItem {
 	return out
 }
 
-// restrictedChangeRequestStateIDs are excluded from ProjectFilterOptions'
-// changeRequestStates — internal ServiceNow workflow states never meant to
-// be offered as a customer-facing filter option.
-var restrictedChangeRequestStateIDs = map[string]bool{"-3": true, "-4": true, "-5": true}
+// restrictedChangeRequestStateLabels are excluded from ProjectFilterOptions'
+// changeRequestStates — internal pre-approval workflow states (New, Assess,
+// Authorize) never meant to be offered as a customer-facing filter option;
+// the frontend's own ChangeRequestsFilters panel renders this list directly
+// (not through its resolveAllowedCrStateIds helper, which only narrows what
+// the search request itself sends), so these must be excluded here or they
+// show up as selectable checkboxes.
+//
+// Matched on the raw label rather than a data-source-specific id: this used
+// to check ServiceNow's own numeric ids ("-3"/"-4"/"-5") against s.ID after
+// mapChoiceListItems, which never matched on the Postgres data source at all
+// (its raw id is the enum label, e.g. "NEW", not a ServiceNow number) -- so
+// these three leaked into the response unfiltered there. crStateIDs (see
+// change_request_enum_mapping.go) also has no entries for them, by the same
+// "internal, never customer-facing" design, so they pass normalizeChoices
+// unchanged and keep their raw label -- matched here before that happens.
+var restrictedChangeRequestStateLabels = map[string]bool{"NEW": true, "ASSESS": true, "AUTHORIZE": true}
 
 // ProjectFilterOptions is the portal's response for GET /projects/{id}/filters
 // — a flattened, filter-dropdown-ready view of entity-service's project
@@ -88,7 +101,7 @@ type ProjectFilterOptions struct {
 func MapProjectFilterOptions(m entity.ProjectMetadataResponse) ProjectFilterOptions {
 	changeRequestStates := make([]ReferenceItem, 0, len(m.ChangeRequestStates))
 	for _, s := range mapChoiceListItems(m.ChangeRequestStates) {
-		if !restrictedChangeRequestStateIDs[s.ID] {
+		if !restrictedChangeRequestStateLabels[s.Label] {
 			changeRequestStates = append(changeRequestStates, s)
 		}
 	}
@@ -99,8 +112,8 @@ func MapProjectFilterOptions(m entity.ProjectMetadataResponse) ProjectFilterOpti
 		IssueTypes:                  normalizeCaseIssueTypeChoices(mapChoiceListItems(m.IssueTypes)),
 		DeploymentTypes:             normalizeDeploymentTypeChoices(mapChoiceListItems(m.DeploymentTypes)),
 		CallRequestStates:           mapChoiceListItems(m.CallRequestStates),
-		ChangeRequestStates:         changeRequestStates,
-		ChangeRequestImpacts:        mapChoiceListItems(m.ChangeRequestImpacts),
+		ChangeRequestStates:         normalizeChangeRequestStateChoices(changeRequestStates),
+		ChangeRequestImpacts:        normalizeChangeRequestImpactChoices(mapChoiceListItems(m.ChangeRequestImpacts)),
 		ConversationStates:          mapChoiceListItems(m.ConversationStates),
 		CaseTypes:                   mapReferenceTableItems(m.CaseTypes),
 		TimeCardStates:              mapChoiceListItems(m.TimeCardStates),

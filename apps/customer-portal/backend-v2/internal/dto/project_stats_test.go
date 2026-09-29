@@ -49,3 +49,43 @@ func TestMapProjectCaseStats_NormalizesEngagementTypeChoices(t *testing.T) {
 		t.Fatalf("OutstandingEngagementTypeCount not normalized: %+v", got.OutstandingEngagementTypeCount)
 	}
 }
+
+// GET /projects/{id}/filters' changeRequestStates/changeRequestImpacts fed
+// ChangeRequestsPage.tsx's State/Impact filter dropdowns directly. On the
+// Postgres data source these carried the raw enum label as id
+// (e.g. {"id":"ROLLBACK"}), never run through the normalizer every sibling
+// field on this same response already uses -- so filters.stateIds?.map(Number)
+// converted every selection to NaN, which reached the search request as
+// null instead of a real state key. Also verifies the three internal
+// pre-approval states (New/Assess/Authorize) are excluded from the list
+// entirely, matching what ChangeRequestsPage.tsx's own filter panel renders
+// unfiltered from this same response.
+func TestMapProjectFilterOptions_NormalizesChangeRequestChoicesAndExcludesInternalStates(t *testing.T) {
+	resp := entity.ProjectMetadataResponse{
+		ChangeRequestStates: []entity.ChoiceListItem{
+			{ID: "NEW", Label: "NEW"},
+			{ID: "ASSESS", Label: "ASSESS"},
+			{ID: "AUTHORIZE", Label: "AUTHORIZE"},
+			{ID: "ROLLBACK", Label: "ROLLBACK"},
+			{ID: "CLOSED", Label: "CLOSED"},
+		},
+		ChangeRequestImpacts: []entity.ChoiceListItem{
+			{ID: "HIGH", Label: "HIGH"},
+		},
+	}
+
+	got := MapProjectFilterOptions(resp)
+
+	if len(got.ChangeRequestStates) != 2 {
+		t.Fatalf("ChangeRequestStates = %+v, want exactly Rollback and Closed (New/Assess/Authorize excluded)", got.ChangeRequestStates)
+	}
+	if got.ChangeRequestStates[0].ID != "2" || got.ChangeRequestStates[0].Label != "Rollback" {
+		t.Errorf("ChangeRequestStates[0] = %+v, want {ID: \"2\", Label: \"Rollback\"}", got.ChangeRequestStates[0])
+	}
+	if got.ChangeRequestStates[1].ID != "3" || got.ChangeRequestStates[1].Label != "Closed" {
+		t.Errorf("ChangeRequestStates[1] = %+v, want {ID: \"3\", Label: \"Closed\"}", got.ChangeRequestStates[1])
+	}
+	if len(got.ChangeRequestImpacts) != 1 || got.ChangeRequestImpacts[0].ID != "1" || got.ChangeRequestImpacts[0].Label != "High" {
+		t.Errorf("ChangeRequestImpacts = %+v, want [{ID: \"1\", Label: \"High\"}]", got.ChangeRequestImpacts)
+	}
+}
