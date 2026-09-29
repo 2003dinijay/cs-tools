@@ -60,7 +60,7 @@ type splCustomerHealthSNClient interface {
 }
 
 // CustomerHealthHandler handles HTTP requests for SupportPortalLite's
-// customer-health/risk-tracking endpoints (/spl/customer-health/*),
+// customer-health/risk-tracking endpoints (/customer-health/*),
 // delegating to MySQL (risk-tracking state) and ServiceNow (account/project
 // summary data) as each endpoint requires.
 type CustomerHealthHandler struct {
@@ -80,7 +80,7 @@ func NewCustomerHealthHandler(riskClient splRiskClient, sn splCustomerHealthSNCl
 }
 
 // customerHealthSummaryRequest is the payload for POST
-// /spl/customer-health/summary — mirrors Ballerina
+// /customer-health/summary — mirrors Ballerina
 // types:CustomerHealthSummaryRequest.
 type customerHealthSummaryRequest struct {
 	Email        *string  `json:"email"`
@@ -95,7 +95,7 @@ type customerHealthSummaryRequest struct {
 }
 
 // accountSummaryResponse is the enriched, portal-shaped response for POST
-// /spl/customer-health/summary — mirrors Ballerina types:AccountSummaryResponse
+// /customer-health/summary — mirrors Ballerina types:AccountSummaryResponse
 // after the resource function's health-status enrichment pass.
 type accountSummaryResponse struct {
 	Data       []accountSummary `json:"data"`
@@ -115,7 +115,7 @@ type accountSummary struct {
 	HealthStatus           *string                 `json:"healthStatus"`
 }
 
-// GetSummary handles POST /spl/customer-health/summary.
+// GetSummary handles POST /customer-health/summary.
 //
 // When payload.HealthStatus names a status, this first resolves the
 // matching account sys_ids from MySQL, then paginates ServiceNow in batches
@@ -279,13 +279,13 @@ func enrichAccountSummaries(accounts []servicenow.AccountSummary, reviewStatuses
 }
 
 // initHealthTrackingRequest is the payload for POST
-// /spl/customer-health/accounts/{accountSysId}/init-health-tracking.
+// /customer-health/accounts/{accountSysId}/init-health-tracking.
 type initHealthTrackingRequest struct {
 	ProjectSysIDs []string `json:"projectSysIds"`
 }
 
 // InitHealthTracking handles POST
-// /spl/customer-health/accounts/{accountSysId}/init-health-tracking.
+// /customer-health/accounts/{accountSysId}/init-health-tracking.
 func (h *CustomerHealthHandler) InitHealthTracking(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
@@ -310,7 +310,7 @@ func (h *CustomerHealthHandler) InitHealthTracking(w http.ResponseWriter, r *htt
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// GetAccountDetail handles GET /spl/customer-health/accounts/{accountId}.
+// GetAccountDetail handles GET /customer-health/accounts/{accountId}.
 func (h *CustomerHealthHandler) GetAccountDetail(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
@@ -335,7 +335,7 @@ func (h *CustomerHealthHandler) GetAccountDetail(w http.ResponseWriter, r *http.
 	writeJSONValue(w, http.StatusOK, detail)
 }
 
-// OpenRisk handles POST /spl/customer-health/projects/{projectSysId}/risk.
+// OpenRisk handles POST /customer-health/projects/{projectSysId}/risk.
 func (h *CustomerHealthHandler) OpenRisk(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
@@ -361,7 +361,7 @@ func (h *CustomerHealthHandler) OpenRisk(w http.ResponseWriter, r *http.Request)
 	writeJSONValue(w, http.StatusOK, result)
 }
 
-// CloseRisk handles PUT /spl/customer-health/risks/{riskId}/close.
+// CloseRisk handles PUT /customer-health/risks/{riskId}/close.
 func (h *CustomerHealthHandler) CloseRisk(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
@@ -392,7 +392,7 @@ func (h *CustomerHealthHandler) CloseRisk(w http.ResponseWriter, r *http.Request
 }
 
 // MarkHealthy handles POST
-// /spl/customer-health/projects/{projectSysId}/mark-healthy.
+// /customer-health/projects/{projectSysId}/mark-healthy.
 func (h *CustomerHealthHandler) MarkHealthy(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
@@ -419,7 +419,7 @@ func (h *CustomerHealthHandler) MarkHealthy(w http.ResponseWriter, r *http.Reque
 }
 
 // RevertReview handles POST
-// /spl/customer-health/projects/{projectSysId}/revert-review.
+// /customer-health/projects/{projectSysId}/revert-review.
 func (h *CustomerHealthHandler) RevertReview(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
@@ -446,7 +446,7 @@ func (h *CustomerHealthHandler) RevertReview(w http.ResponseWriter, r *http.Requ
 }
 
 // GetAccountHealthStatus handles GET
-// /spl/customer-health/accounts/{accountSysId}/health-status.
+// /customer-health/accounts/{accountSysId}/health-status.
 func (h *CustomerHealthHandler) GetAccountHealthStatus(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
@@ -468,7 +468,7 @@ func (h *CustomerHealthHandler) GetAccountHealthStatus(w http.ResponseWriter, r 
 }
 
 // GetAccountHealthSummary handles GET
-// /spl/customer-health/accounts/{accountSysId}/health-summary.
+// /customer-health/accounts/{accountSysId}/health-summary.
 func (h *CustomerHealthHandler) GetAccountHealthSummary(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
@@ -490,7 +490,7 @@ func (h *CustomerHealthHandler) GetAccountHealthSummary(w http.ResponseWriter, r
 }
 
 // GetProjectRiskHistory handles GET
-// /spl/customer-health/projects/{projectSysId}/risk-history.
+// /customer-health/projects/{projectSysId}/risk-history.
 func (h *CustomerHealthHandler) GetProjectRiskHistory(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {

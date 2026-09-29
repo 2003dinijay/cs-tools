@@ -94,7 +94,7 @@ func optionalQueryParam(r *http.Request, key string) *string {
 	return &v
 }
 
-// GetAccountEscalations handles GET /spl/accounts/{accountId}/escalations.
+// GetAccountEscalations handles GET /accounts/{accountId}/escalations.
 func (h *SplAccountHandler) GetAccountEscalations(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
@@ -128,7 +128,7 @@ func (h *SplAccountHandler) GetAccountEscalations(w http.ResponseWriter, r *http
 	writeJSONValue(w, http.StatusOK, result)
 }
 
-// EscalateCase handles POST /spl/accounts/{accountId}/cases/{caseId}/escalate.
+// EscalateCase handles POST /accounts/{accountId}/cases/{caseId}/escalate.
 func (h *SplAccountHandler) EscalateCase(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {

@@ -54,7 +54,7 @@ func NewSplCaseHandler(sn splCaseClient, accessGuard *AccessGuard) *SplCaseHandl
 	return &SplCaseHandler{sn: sn, accessGuard: accessGuard}
 }
 
-// GetAttachmentsInfo handles GET /spl/cases/{caseId}/attachments-info.
+// GetAttachmentsInfo handles GET /cases/{caseId}/attachments-info.
 func (h *SplCaseHandler) GetAttachmentsInfo(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {

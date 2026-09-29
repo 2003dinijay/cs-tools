@@ -22,8 +22,8 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
-// requireSPLAccess is the first call in every /spl/* handler: it replaces
-// the plain UserInfoFromContext nil-check every other handler in this
+// requireSPLAccess is the first call in every SupportPortalLite handler: it
+// replaces the plain UserInfoFromContext nil-check every other handler in this
 // package starts with, additionally enforcing SupportPortalLite's blanket
 // PermSPLAccess audience gate (mirrors Ballerina authJWT.imposeGlobalRules,
 // which ran before every SupportPortalLite request, and previously

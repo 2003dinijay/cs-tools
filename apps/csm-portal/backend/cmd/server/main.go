@@ -167,7 +167,7 @@ func main() {
 	// it too.
 	accessGuard := handler.NewAccessGuard(loadAccessConfig())
 
-	// SupportPortalLite (/spl/*) — off by default; see loadSPLConfig. Ported
+	// SupportPortalLite — off by default; see loadSPLConfig. Ported
 	// from digiops-cs/apps/support-portal-lite's Ballerina backend, which is
 	// being retired.
 	splEnabled, splCfg := loadSPLConfig()
@@ -548,21 +548,20 @@ func main() {
 	route("POST /notifications/google-chat/alerts", handler.PermWrite, notificationHandler.PostGoogleChatAlert)
 
 	// SupportPortalLite — see splHandlers above. Registered only when
-	// SPL_ENABLED is on, so an unconfigured deployment sees no new routes
-	// at all. Most of these routes are unprefixed: SPL and csm-portal are
-	// the same backend now, so a route only needs the /spl/ prefix where
-	// it would otherwise collide with a route csm-portal's own,
-	// differently-shaped case-management domain already owns. Accounts,
-	// projects, and cases (read/search/comment) used to live under this
-	// prefix too — all three now go through the shared routes above
-	// (/accounts, /projects, /cases) instead, gated by PermView like every
-	// other caller of those routes now that sales_solutions holds it (see
-	// AccessConfig.SalesSolutions's own doc comment) rather than SPL's
-	// separate group-based check. Account escalations keep their own
-	// group-based gate here, unmerged: CreateEscalation is an explicit stub
-	// on this data source (no entity-service equivalent at all, so nothing
-	// to merge onto), and the account-scoped read has no shared route
-	// either (CS Portal's own /cases/{id}/escalations is per-case, not
+	// SPL_ENABLED is on, so an unconfigured deployment sees no new routes at
+	// all. None of the routes below carry a /spl/ prefix: SPL and
+	// csm-portal are the same backend, so the prefix only ever existed to
+	// avoid colliding with csm-portal's own, differently-shaped
+	// case-management domain, and none of these routes do. Accounts,
+	// projects, and cases (read/search/comment) used to live under that
+	// prefix for exactly that reason — all three now go through the shared
+	// routes above (/accounts, /projects, /cases) instead, gated by PermView like
+	// every other caller of those routes now that sales_solutions holds it
+	// (see AccessConfig.SalesSolutions's own doc comment). Account
+	// escalations stay unmerged: CreateEscalation is an explicit stub on
+	// this data source (no entity-service equivalent at all, so nothing to
+	// merge onto), and the account-scoped read has no shared route either
+	// (CS Portal's own /cases/{id}/escalations is per-case, not
 	// per-account). Case attachments are unmerged for the same
 	// no-entity-service-equivalent reason.
 	//
@@ -1268,7 +1267,7 @@ func splitComma(s string) []string {
 	return result
 }
 
-// splHandlerSet holds every SupportPortalLite (/spl/*) handler, constructed
+// splHandlerSet holds every SupportPortalLite handler, constructed
 // only when SPL_ENABLED is on. See loadSPLConfig for the environment
 // variables backing each field.
 type splHandlerSet struct {

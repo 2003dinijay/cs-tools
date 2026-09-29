@@ -47,7 +47,7 @@ func NewSplReportsHandler(sn splReportsClient, accessGuard *AccessGuard) *SplRep
 	return &SplReportsHandler{servicenow: sn, accessGuard: accessGuard}
 }
 
-// GenerateSLAReport handles GET /spl/generate-sla-report.
+// GenerateSLAReport handles GET /generate-sla-report.
 func (h *SplReportsHandler) GenerateSLAReport(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
@@ -75,7 +75,7 @@ func (h *SplReportsHandler) GenerateSLAReport(w http.ResponseWriter, r *http.Req
 	writeJSONValue(w, http.StatusOK, report)
 }
 
-// GetReportDetails handles GET /spl/report-details.
+// GetReportDetails handles GET /report-details.
 func (h *SplReportsHandler) GetReportDetails(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
@@ -103,7 +103,7 @@ func (h *SplReportsHandler) GetReportDetails(w http.ResponseWriter, r *http.Requ
 	writeJSONValue(w, http.StatusOK, report)
 }
 
-// GenerateTimelogsBreakdownReport handles GET /spl/generate-timelogs-breakdown-report.
+// GenerateTimelogsBreakdownReport handles GET /generate-timelogs-breakdown-report.
 func (h *SplReportsHandler) GenerateTimelogsBreakdownReport(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {

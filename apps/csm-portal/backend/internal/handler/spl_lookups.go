@@ -43,7 +43,7 @@ func NewSplLookupsHandler(sn splLookupsClient, accessGuard *AccessGuard) *SplLoo
 	return &SplLookupsHandler{servicenow: sn, accessGuard: accessGuard}
 }
 
-// GetProducts handles GET /spl/products.
+// GetProducts handles GET /products.
 func (h *SplLookupsHandler) GetProducts(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
@@ -60,7 +60,7 @@ func (h *SplLookupsHandler) GetProducts(w http.ResponseWriter, r *http.Request) 
 	writeJSONValue(w, http.StatusOK, products)
 }
 
-// GetABTTeams handles GET /spl/abt-teams.
+// GetABTTeams handles GET /abt-teams.
 func (h *SplLookupsHandler) GetABTTeams(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {

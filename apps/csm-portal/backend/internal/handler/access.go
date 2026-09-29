@@ -85,8 +85,8 @@ const (
 	// PermView, since this is deliberately narrower than the general case/
 	// product-data access PermView otherwise grants.
 	PermViewSecurityCenter
-	// PermSPLAccess is the blanket audience gate for every /spl/* route —
-	// SupportPortalLite (Sales/Solutions-Architecture) — replacing the old
+	// PermSPLAccess is the blanket audience gate for every SupportPortalLite
+	// (Sales/Solutions-Architecture) route — replacing the old
 	// SPL_ALLOWED_GROUPS raw-Asgardeo-groups check (internal/splauth,
 	// removed). Held only by sales_solutions: unlike PermView, CS Portal's
 	// own roles do NOT imply this — a cs_engineer or admin is not
@@ -94,7 +94,7 @@ const (
 	// SPL_ALLOWED_GROUPS previously enforced.
 	PermSPLAccess
 	// PermUsageMetricsViewer is the SPL Usage Metrics domain
-	// (/spl/usage-metrics/*), layered on top of PermSPLAccess the same way
+	// (/usage-metrics/*), layered on top of PermSPLAccess the same way
 	// PermEscalate/PermDownloadAttachment layer on top of PermView —
 	// replacing the old SPL_USAGE_METRICS_GROUPS sub-group check. Unlike
 	// AccessConfig.UsageMetricsViewer's original CS-Portal-side grant (View
@@ -122,10 +122,11 @@ type AccessConfig struct {
 	TimecardApprover  []string
 	DashboardDesigner []string
 	// SalesSolutions grants PermView (see NewAccessGuard's own comment on
-	// that grant for why) and PermSPLAccess -- every /spl/* route's blanket
-	// audience gate. It's also, independently, a marker role: GET /users/me
-	// reports "sales_solutions" in its roles list, which the webapp's
-	// usePortalView reads to pick the Sales/Solutions-Architecture (SPL) nav
+	// that grant for why) and PermSPLAccess -- every SupportPortalLite
+	// route's blanket audience gate. It's also, independently, a marker
+	// role: GET /users/me reports "sales_solutions" in its roles list,
+	// which the webapp's usePortalView reads to pick the
+	// Sales/Solutions-Architecture (SPL) nav
 	// over CS Portal's own — see that hook's doc comment. A holder still
 	// needs one of the roles above to write, escalate, download an
 	// attachment, or administer anything — PermEscalate/
@@ -203,7 +204,7 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			// /cases, and /teams/{id}/members read/search/comment requests
 			// come from Sales/SA callers too -- see main.go's SPL route
 			// registration comment for what merged onto these routes and
-			// why. This is not a new data exposure: SPL's own /spl/* routes
+			// why. This is not a new data exposure: SPL's own routes
 			// already read this same entity-service data for exactly these
 			// callers, just through a second, parallel ServiceNow-shaped
 			// contract (see AccessConfig.SalesSolutions's own doc comment)

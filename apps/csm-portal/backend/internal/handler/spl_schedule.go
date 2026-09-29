@@ -46,7 +46,7 @@ func NewSplScheduleHandler(sn splScheduleClient, accessGuard *AccessGuard, teamS
 	return &SplScheduleHandler{servicenow: sn, accessGuard: accessGuard, teamScheduleURL: teamScheduleURL}
 }
 
-// GetABTTeamSchedule handles GET /spl/abt-team-schedule. All query
+// GetABTTeamSchedule handles GET /abt-team-schedule. All query
 // parameters are optional, mirroring the Ballerina resource function's
 // `string?` parameters.
 func (h *SplScheduleHandler) GetABTTeamSchedule(w http.ResponseWriter, r *http.Request) {

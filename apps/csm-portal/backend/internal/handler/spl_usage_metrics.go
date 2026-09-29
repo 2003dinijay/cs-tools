@@ -43,7 +43,7 @@ type usageMetricsServiceNowClient interface {
 }
 
 // UsageMetricsHandler handles HTTP requests for the SupportPortalLite
-// usage-metrics domain (/spl/usage-metrics/*), delegating to ServiceNow's
+// usage-metrics domain (/usage-metrics/*), delegating to ServiceNow's
 // custom scoped-app API. Every endpoint in this domain requires both the
 // blanket PermSPLAccess gate and the narrower PermUsageMetricsViewer gate —
 // mirrors Ballerina operations:checkUsageMetricsAccess, which every
@@ -90,7 +90,7 @@ func readUsageMetricsBody(w http.ResponseWriter, r *http.Request) (body []byte, 
 	return body, true
 }
 
-// GetProjects handles GET /spl/usage-metrics/projects.
+// GetProjects handles GET /usage-metrics/projects.
 func (h *UsageMetricsHandler) GetProjects(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
 		return
@@ -111,7 +111,7 @@ func (h *UsageMetricsHandler) GetProjects(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, result)
 }
 
-// SearchInstanceMetrics handles POST /spl/usage-metrics/instances/metrics/search.
+// SearchInstanceMetrics handles POST /usage-metrics/instances/metrics/search.
 func (h *UsageMetricsHandler) SearchInstanceMetrics(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
 		return
@@ -129,7 +129,7 @@ func (h *UsageMetricsHandler) SearchInstanceMetrics(w http.ResponseWriter, r *ht
 	writeJSON(w, http.StatusOK, result)
 }
 
-// GetInstanceMetricsStats handles POST /spl/usage-metrics/instances/metrics/stats.
+// GetInstanceMetricsStats handles POST /usage-metrics/instances/metrics/stats.
 func (h *UsageMetricsHandler) GetInstanceMetricsStats(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
 		return
@@ -147,7 +147,7 @@ func (h *UsageMetricsHandler) GetInstanceMetricsStats(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, result)
 }
 
-// SearchInstanceUsages handles POST /spl/usage-metrics/instances/usages/search.
+// SearchInstanceUsages handles POST /usage-metrics/instances/usages/search.
 func (h *UsageMetricsHandler) SearchInstanceUsages(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
 		return
@@ -165,7 +165,7 @@ func (h *UsageMetricsHandler) SearchInstanceUsages(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, result)
 }
 
-// GetInstanceUsagesStats handles POST /spl/usage-metrics/instances/usages/stats.
+// GetInstanceUsagesStats handles POST /usage-metrics/instances/usages/stats.
 func (h *UsageMetricsHandler) GetInstanceUsagesStats(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
 		return
@@ -183,7 +183,7 @@ func (h *UsageMetricsHandler) GetInstanceUsagesStats(w http.ResponseWriter, r *h
 	writeJSON(w, http.StatusOK, result)
 }
 
-// SearchDeployments handles POST /spl/usage-metrics/deployments/search.
+// SearchDeployments handles POST /usage-metrics/deployments/search.
 func (h *UsageMetricsHandler) SearchDeployments(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
 		return
@@ -201,7 +201,7 @@ func (h *UsageMetricsHandler) SearchDeployments(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, result)
 }
 
-// SearchProjects handles POST /spl/usage-metrics/projects/search.
+// SearchProjects handles POST /usage-metrics/projects/search.
 func (h *UsageMetricsHandler) SearchProjects(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
 		return
@@ -219,7 +219,7 @@ func (h *UsageMetricsHandler) SearchProjects(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, result)
 }
 
-// SearchDeployedProducts handles POST /spl/usage-metrics/deployed-products/search.
+// SearchDeployedProducts handles POST /usage-metrics/deployed-products/search.
 func (h *UsageMetricsHandler) SearchDeployedProducts(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
 		return
@@ -237,7 +237,7 @@ func (h *UsageMetricsHandler) SearchDeployedProducts(w http.ResponseWriter, r *h
 	writeJSON(w, http.StatusOK, result)
 }
 
-// SearchInstances handles POST /spl/usage-metrics/instances/search.
+// SearchInstances handles POST /usage-metrics/instances/search.
 func (h *UsageMetricsHandler) SearchInstances(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
 		return
@@ -280,7 +280,7 @@ func validateDeployedProductDateRange(w http.ResponseWriter, body []byte) bool {
 	return true
 }
 
-// GetDeployedProductMetrics handles POST /spl/usage-metrics/deployed-products/{id}/metrics/search.
+// GetDeployedProductMetrics handles POST /usage-metrics/deployed-products/{id}/metrics/search.
 func (h *UsageMetricsHandler) GetDeployedProductMetrics(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
 		return
@@ -306,7 +306,7 @@ func (h *UsageMetricsHandler) GetDeployedProductMetrics(w http.ResponseWriter, r
 	writeJSON(w, http.StatusOK, result)
 }
 
-// GetDeployedProductUsageCounts handles POST /spl/usage-metrics/deployed-products/{id}/metrics/usage-counts/search.
+// GetDeployedProductUsageCounts handles POST /usage-metrics/deployed-products/{id}/metrics/usage-counts/search.
 func (h *UsageMetricsHandler) GetDeployedProductUsageCounts(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
 		return
