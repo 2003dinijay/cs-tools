@@ -49,11 +49,14 @@ export const PLG_NAV_SECTION: CsmNavSection = {
   icon: Rocket,
   children: [
     {
-      id: "plg.leadership-dashboard",
-      tab: "leadership_dashboard",
-      label: "Leadership Dashboard",
-      href: `${PLG_BASE}/leadership-dashboard`,
-      routes: [`${PLG_BASE}/leadership-dashboard`],
+      // Labelled Overview, but this is the leadership view — see
+      // LeadershipDashboardPage. The label is what leadership calls the page;
+      // the component name is what it shows.
+      id: "plg.overview",
+      tab: "overview",
+      label: "Overview",
+      href: `${PLG_BASE}/overview`,
+      routes: [`${PLG_BASE}/overview`],
       icon: Gauge,
     },
     {

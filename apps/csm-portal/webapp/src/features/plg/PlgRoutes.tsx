@@ -53,7 +53,7 @@ export function plgRoutes() {
           leadership view carries no queue counts, because those are a to-do
           list. They were one component reading its own URL to decide which it
           was, which broke silently when the merge moved the path. */}
-      <Route path="leadership-dashboard" element={<LeadershipDashboardPage />} />
+      <Route path="overview" element={<LeadershipDashboardPage />} />
     </Route>
   );
 }

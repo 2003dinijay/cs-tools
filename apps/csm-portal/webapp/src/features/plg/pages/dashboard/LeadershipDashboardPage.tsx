@@ -24,9 +24,10 @@ import { DEFAULT_RANGE_DAYS, isoDaysAgo } from "@features/plg/components/period"
  * That is fragile in a way that had already bitten once: the merge moved the
  * page and the check silently stopped matching, so this page rendered the
  * workspace variant — queue tiles and all — with no error to notice. The path
- * has since moved again, to `/plg/leadership-dashboard`, which under the old
- * arrangement would have broken it a second time. A page should not have to
- * work out what it is.
+ * is `/plg/overview` and the nav calls it Overview, but neither is something
+ * this file reads: the route decides which page renders, so a future rename
+ * cannot silently turn this into the other dashboard. A page should not have
+ * to work out what it is.
  *
  * It is also not sustainable. The two views are expected to diverge, and every
  * divergence under one roof is another branch on a variant flag. Sharing the
@@ -45,7 +46,7 @@ export default function LeadershipDashboardPage(): JSX.Element {
     // and an overflow:hidden card then clips instead of the page scrolling.
     <Box sx={{ display: "flex", flexDirection: "column" }}>
       <PageHeader
-        title="Leadership Dashboard"
+        title="PLG Overview"
         subtitle="Registrations and lifecycle spread across the whole portfolio"
         // Scopes the cohort charts only.
         actions={<PeriodSelect value={days} onChange={setDays} />}
