@@ -41,7 +41,12 @@ func scanHealthStatusRow(row interface{ Scan(...any) error }) (healthStatusRow, 
 }
 
 // OpenProjectRisk opens a new risk record for a project and sets the
-// project's health status to "at_risk", in one transaction.
+// project's health status to "at_risk", in one transaction. Fails with
+// *ValidationError if the project already has an open risk -- the existing
+// open row (if any) is locked with SELECT ... FOR UPDATE before the insert,
+// so two concurrent calls (or a double click) can't both open a risk for the
+// same project: the second call's lookup blocks until the first's
+// transaction commits, then sees the row it just inserted.
 func (c *Client) OpenProjectRisk(ctx context.Context, projectSysID, accountSysID, comment, email string) (*ProjectRisk, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -53,6 +58,17 @@ func (c *Client) OpenProjectRisk(ctx context.Context, projectSysID, accountSysID
 			_ = tx.Rollback()
 		}
 	}()
+
+	var existingID int
+	err = tx.QueryRowContext(ctx,
+		"SELECT id FROM project_risk WHERE project_sys_id = ? AND account_sys_id = ? AND status = 'open' FOR UPDATE",
+		projectSysID, accountSysID).Scan(&existingID)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("risk: check existing open risk: %w", err)
+	}
+	if err == nil {
+		return nil, &ValidationError{Message: fmt.Sprintf("Project already has an open risk: %d", existingID)}
+	}
 
 	execResult, err := tx.ExecContext(ctx, `
 		INSERT INTO project_risk (project_sys_id, account_sys_id, status, opened_comment, opened_by_email, opened_on)

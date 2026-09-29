@@ -18,6 +18,7 @@ package risk
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -46,6 +47,9 @@ func TestOpenProjectRisk_CommitsTransaction(t *testing.T) {
 	now := time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC)
 
 	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id FROM project_risk WHERE project_sys_id = \\? AND account_sys_id = \\? AND status = 'open' FOR UPDATE").
+		WithArgs("proj-1", "acct-1").
+		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO project_risk").
 		WithArgs("proj-1", "acct-1", "at risk", "user@example.com").
 		WillReturnResult(sqlmock.NewResult(42, 1))
@@ -80,6 +84,9 @@ func TestOpenProjectRisk_RollsBackOnSecondInsertFailure(t *testing.T) {
 	ctx := context.Background()
 
 	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id FROM project_risk WHERE project_sys_id = \\? AND account_sys_id = \\? AND status = 'open' FOR UPDATE").
+		WithArgs("proj-1", "acct-1").
+		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO project_risk").
 		WithArgs("proj-1", "acct-1", "at risk", "user@example.com").
 		WillReturnResult(sqlmock.NewResult(42, 1))
@@ -90,6 +97,29 @@ func TestOpenProjectRisk_RollsBackOnSecondInsertFailure(t *testing.T) {
 	_, err := c.OpenProjectRisk(ctx, "proj-1", "acct-1", "at risk", "user@example.com")
 	if err == nil {
 		t.Fatal("expected an error, got nil")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (rollback not observed?): %v", err)
+	}
+}
+
+func TestOpenProjectRisk_RejectsWhenAlreadyOpen(t *testing.T) {
+	c, mock := newTestClient(t)
+	ctx := context.Background()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id FROM project_risk WHERE project_sys_id = \\? AND account_sys_id = \\? AND status = 'open' FOR UPDATE").
+		WithArgs("proj-1", "acct-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
+	mock.ExpectRollback()
+
+	_, err := c.OpenProjectRisk(ctx, "proj-1", "acct-1", "at risk", "user@example.com")
+	var valErr *ValidationError
+	if !errors.As(err, &valErr) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if valErr.Message != "Project already has an open risk: 7" {
+		t.Errorf("message = %q", valErr.Message)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations (rollback not observed?): %v", err)
