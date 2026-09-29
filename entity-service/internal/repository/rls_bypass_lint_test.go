@@ -39,10 +39,28 @@
 // the rule this test actually enforces is narrower and more precise than
 // the plan's literal wording: any internal/repository/*.go file (other
 // than rls.go/scoped.go themselves) that imports pgxpool directly AND
-// contains a string literal referencing one of rlsProtectedTables (see
-// rls_schema_integration_test.go) is a violation -- it is either a
-// not-yet-converted file that needs to move to Scoped, or a regression in
-// an already-converted one.
+// contains a string literal (or an identifier resolving to a string
+// declared anywhere else in the package -- see packageStringConstants)
+// referencing one of rlsProtectedTables (see rls_schema_integration_test.go)
+// is a violation -- it is either a not-yet-converted file that needs to
+// move to Scoped, or a regression in an already-converted one. A separate,
+// pgxpool-import-independent rule flags any file other than scoped.go
+// itself that accesses a selector named "pool" at all, closing the gap
+// where Scoped's own unexported field could be reached from within this
+// same package without ever needing a pgxpool import in the accessing file.
+//
+// Three known blind spots were identified in review (issue #2127). Two are
+// closed by the checks just described (a shared package-level constant
+// referenced only by identifier -- packageStringConstants; a raw .pool
+// field access needing no pgxpool import of its own -- the selector check).
+// The third remains open, deliberately: a table name assembled at runtime
+// via fmt.Sprintf (e.g. fmt.Sprintf("...%s", "case_escalation")) has no
+// single string literal containing both a SQL keyword and the table name
+// for the AST walk to match, and reliably distinguishing that shape from
+// unrelated Sprintf calls without a real parser tracking value flow across
+// variables would add real complexity for a pattern that does not exist
+// anywhere in this codebase today (confirmed by grep) -- FORCE ROW LEVEL
+// SECURITY remains the actual, database-level backstop under all three.
 package repository_test
 
 import (
@@ -90,13 +108,86 @@ func rlsTableNameMatchers() map[string]*regexp.Regexp {
 	return out
 }
 
+// packageStringConstants parses every non-test .go file in repoDir and
+// returns a name -> value map of every top-level `const NAME = "literal"` /
+// `var NAME = "literal"` single-string-literal declaration in the whole
+// package (every file, not just the one currently being checked for a
+// violation) -- closes blind spot #2 (see this file's own package doc
+// comment): a query built from a shared constant like case_repo.go's
+// caseLikeJoins, referenced only by identifier in the file that actually
+// runs the query, previously had no matching string literal for the AST
+// walk below to find IN THAT FILE at all. Deliberately narrow: only a
+// declaration whose entire initializer is one BasicLit string is resolved
+// (exactly the shape every real shared query-fragment constant in this
+// package already uses -- see e.g. caseLikeJoins/taskSlaViewJoins/
+// accountFromJoins). A declaration built from concatenation or a function
+// call is silently skipped rather than guessed at; that's a strictly
+// narrower net than before this function existed, never a wider one.
+func packageStringConstants(t *testing.T, repoDir string, fset *token.FileSet) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+
+	entries, err := os.ReadDir(repoDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", repoDir, err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		path := filepath.Join(repoDir, name)
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		file, err := parser.ParseFile(fset, path, src, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for _, decl := range file.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || (gd.Tok != token.CONST && gd.Tok != token.VAR) {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok || len(vs.Names) != 1 || len(vs.Values) != 1 {
+					continue
+				}
+				lit, ok := vs.Values[0].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				out[vs.Names[0].Name] = stringLitValue(lit.Value)
+			}
+		}
+	}
+	return out
+}
+
 // TestRLSBypassLint_NoRawPoolAgainstAProtectedTable walks every
 // internal/repository/*.go source file (not _test.go: test fixtures
 // legitimately seed through a raw pool for tables that have no RLS-aware
 // helper of their own, e.g. project/account/user in this session's own
-// integration test fixtures) and fails if a non-exempt file both imports
-// pgxpool directly and contains a string literal mentioning one of
-// rlsProtectedTables.
+// integration test fixtures) and fails if:
+//
+//   - a non-exempt file both imports pgxpool directly and contains a string
+//     literal (or an identifier resolving, via packageStringConstants, to a
+//     string declared anywhere else in the package) mentioning one of
+//     rlsProtectedTables, or
+//   - ANY non-exempt file (regardless of pgxpool import -- this specific
+//     check needs none) accesses a selector literally named "pool". Scoped's
+//     own pool field (scoped.go) is unexported, so the only way another file
+//     in this same package could ever reach it directly is by writing
+//     someValue.pool -- confirmed by grep to occur nowhere in this package
+//     outside scoped.go itself today, so this rule has no known
+//     false-positive risk against the current codebase. Closes blind spot
+//     #1: unlike a raw *pgxpool.Pool, reaching this field needs no pgxpool
+//     import in the accessing file at all (Go only requires the import in
+//     whichever file first names the type; a value already typed via
+//     another file's struct definition needs no import to call methods on
+//     it), so the file-level importsPgxpool gate alone could never catch it.
 func TestRLSBypassLint_NoRawPoolAgainstAProtectedTable(t *testing.T) {
 	const repoDir = "."
 	entries, err := os.ReadDir(repoDir)
@@ -106,6 +197,17 @@ func TestRLSBypassLint_NoRawPoolAgainstAProtectedTable(t *testing.T) {
 
 	matchers := rlsTableNameMatchers()
 	fset := token.NewFileSet()
+	sharedConstants := packageStringConstants(t, repoDir, fset)
+
+	matchesProtectedTable := func(text string) []string {
+		var hits []string
+		for table, re := range matchers {
+			if re.MatchString(text) {
+				hits = append(hits, table)
+			}
+		}
+		return hits
+	}
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -127,20 +229,35 @@ func TestRLSBypassLint_NoRawPoolAgainstAProtectedTable(t *testing.T) {
 			t.Fatalf("parse %s: %v", path, err)
 		}
 
+		// The .pool selector check applies to every non-exempt file, with
+		// or without a pgxpool import -- see this test's own doc comment.
+		ast.Inspect(file, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if ok && sel.Sel.Name == "pool" {
+				t.Errorf(
+					"%s accesses a selector named %q -- Scoped's own pool field is unexported specifically so "+
+						"nothing outside scoped.go can reach Postgres without going through Scoped's identity-setting "+
+						"methods; this file must not reference it directly",
+					name, sel.Sel.Name,
+				)
+			}
+			return true
+		})
+
 		if !importsPgxpool(file) {
 			continue
 		}
 
 		var violations []string
 		ast.Inspect(file, func(n ast.Node) bool {
-			lit, ok := n.(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				return true
-			}
-			text := stringLitValue(lit.Value)
-			for table, re := range matchers {
-				if re.MatchString(text) {
-					violations = append(violations, table)
+			switch v := n.(type) {
+			case *ast.BasicLit:
+				if v.Kind == token.STRING {
+					violations = append(violations, matchesProtectedTable(stringLitValue(v.Value))...)
+				}
+			case *ast.Ident:
+				if resolved, ok := sharedConstants[v.Name]; ok {
+					violations = append(violations, matchesProtectedTable(resolved)...)
 				}
 			}
 			return true
@@ -148,9 +265,10 @@ func TestRLSBypassLint_NoRawPoolAgainstAProtectedTable(t *testing.T) {
 
 		if len(violations) > 0 {
 			t.Errorf(
-				"%s imports pgxpool directly AND references RLS-protected table(s) %v in a string literal -- "+
-					"this file must take a *repository.Scoped instead of a raw *pgxpool.Pool, the same conversion "+
-					"already done for every other repository backing one of these tables",
+				"%s imports pgxpool directly AND references RLS-protected table(s) %v (directly or via a shared "+
+					"package-level string constant) -- this file must take a *repository.Scoped instead of a raw "+
+					"*pgxpool.Pool, the same conversion already done for every other repository backing one of "+
+					"these tables",
 				name, uniqueSorted(violations),
 			)
 		}
