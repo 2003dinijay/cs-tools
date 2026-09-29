@@ -1960,3 +1960,47 @@
 .csm-ts .spanseg button {
   white-space: nowrap;
 }
+
+/* Today and the picked day are marked by fill alone, no outline.
+ *
+ * The thin side lines on the column, the extra rule under its last row and
+ * the box on your own row's cell all fought with the week band's edges and
+ * the chips for attention, and read as a grid line more than as "this day".
+ * A stronger fill says it plainly and leaves lines to mean edges. The header
+ * keeps a solid layer underneath, so rows scrolling behind it never show
+ * through. Today and the picked day together are stronger still. */
+.csm-ts .tw.roster tbody td.today,
+.csm-ts .tw.roster.split tbody td.today,
+.csm-ts .tw.roster.split tbody td.today.zfirst,
+.csm-ts .tw.roster tbody tr:last-child td.today {
+  box-shadow: none;
+  background: color-mix(in srgb, var(--today) 13%, transparent);
+}
+.csm-ts .tw.roster thead th.today {
+  box-shadow: none;
+  background: linear-gradient(color-mix(in srgb, var(--today) 13%, transparent),
+      color-mix(in srgb, var(--today) 13%, transparent)), var(--surface-solid);
+}
+.csm-ts .roster td.sel,
+.csm-ts .roster tbody tr:last-child td.sel {
+  box-shadow: none;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.csm-ts .tw.roster thead th.day.sel,
+.csm-ts .roster th.day.sel {
+  box-shadow: none;
+  background: linear-gradient(color-mix(in srgb, var(--accent) 16%, transparent),
+      color-mix(in srgb, var(--accent) 16%, transparent)), var(--surface-solid);
+}
+.csm-ts .tw.roster tbody td.today.sel {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.csm-ts .tw.roster thead th.day.sel.today {
+  background: linear-gradient(color-mix(in srgb, var(--accent) 22%, transparent),
+      color-mix(in srgb, var(--accent) 22%, transparent)), var(--surface-solid);
+}
+/* Your own row where it crosses today: the row's own fill, stronger, no box. */
+.csm-ts .tw.roster tbody tr.me > td.today {
+  box-shadow: none;
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
