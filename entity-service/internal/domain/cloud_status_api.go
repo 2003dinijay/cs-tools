@@ -16,6 +16,14 @@
 
 package domain
 
+import (
+	"encoding/json"
+	"math"
+	"math/big"
+	"strconv"
+	"strings"
+)
+
 // The public cloud status dashboard's read API.
 //
 // These types are the Postgres-backed replacement for five ServiceNow Scripted
@@ -142,3 +150,140 @@ func MessageAgreesWithStatus(status int, outageType string) bool {
 	want, ok := outageTypeForStatus[status]
 	return ok && want == outageType
 }
+
+// ── /availabilities ────────────────────────────────────────────────────
+
+// AvailabilityFigure is one weighted uptime figure for one window.
+//
+// *** THE WIRE TYPE DIFFERS BY CLOUD, AND THAT IS NOT A MISTAKE. *** In the
+// ServiceNow script every calculateX ends
+//
+//	return parseFloat(running_count).toFixed(precision)   // a STRING
+//
+// while the unweighted `calculate` ends
+//
+//	return parseFloat( (...).toFixed(precision) )         // a NUMBER
+//
+// so the live API really does emit "100.000" for six clouds and 100 for
+// asgardeo. Confirmed against it on 2026-09-29. Typing this float64 would
+// quietly restyle six clouds' payloads, so the distinction is carried here.
+type AvailabilityFigure struct {
+	// Value is the already-rounded decimal text, e.g. "100.000" or "99.822".
+	Value string
+	// Number emits Value as a bare JSON number instead of a string.
+	Number bool
+}
+
+// MarshalJSON writes the figure as ServiceNow would.
+func (f AvailabilityFigure) MarshalJSON() ([]byte, error) {
+	if f.Number {
+		// Already a valid JSON number; emitting it raw preserves the exact
+		// digits, which json.Marshal of a float64 would not.
+		return []byte(f.Value), nil
+	}
+	return json.Marshal(f.Value)
+}
+
+// CloudAvailabilityWindow is one {availability, duration} pair.
+type CloudAvailabilityWindow struct {
+	Availability AvailabilityFigure `json:"availability"`
+	Duration     string             `json:"duration"`
+}
+
+// CloudAvailabilitiesResponse is keyed by region -- "cp", "us - dp" -- each
+// carrying exactly four windows in the script's own order.
+type CloudAvailabilitiesResponse map[string][]CloudAvailabilityWindow
+
+// AvailabilityWindows are the four windows, in the order the script emits
+// them. The labels are rendered verbatim by the frontend.
+var AvailabilityWindows = []struct {
+	Enum  string
+	Label string
+}{
+	{"LAST_7_DAYS", "Last 7 days"},
+	{"LAST_30_DAYS", "Last 30 days"},
+	{"LAST_90_DAYS", "Last 90 days"},
+	{"LAST_12_MONTHS", "Last 12 months"},
+}
+
+// AvailabilityPrecision is the script's hardcoded `var precision = 3`.
+const AvailabilityPrecision = 3
+
+// JSToFixed formats x exactly as JavaScript's Number.prototype.toFixed does.
+//
+// Go's strconv rounds halves to even; ECMA-262 §21.1.3.3 says "let n be an
+// integer for which n / 10^f - x is as close to zero as possible; if there
+// are two such n, pick the LARGER n" -- half away from zero for positives.
+// The two disagree only on an exact tie, which is rare here and would show up
+// as a published uptime one thousandth out. big.Rat makes the comparison
+// exact rather than approximately right.
+func JSToFixed(x float64, prec int) string {
+	if math.IsNaN(x) || math.IsInf(x, 0) {
+		// The script would emit "NaN"; callers guard before reaching here.
+		return strconv.FormatFloat(x, 'f', prec, 64)
+	}
+	neg := math.Signbit(x)
+	r := new(big.Rat).SetFloat64(math.Abs(x))
+
+	pow := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(prec)), nil)
+	scaled := new(big.Rat).Mul(r, new(big.Rat).SetInt(pow))
+	// n = floor(scaled + 1/2), which resolves ties upward.
+	scaled.Add(scaled, big.NewRat(1, 2))
+	n := new(big.Int).Quo(scaled.Num(), scaled.Denom())
+
+	digits := n.String()
+	if prec > 0 {
+		for len(digits) <= prec {
+			digits = "0" + digits
+		}
+		digits = digits[:len(digits)-prec] + "." + digits[len(digits)-prec:]
+	}
+	if neg && n.Sign() != 0 {
+		digits = "-" + digits
+	}
+	return digits
+}
+
+// TrimJSNumber renders a fixed-decimal string the way JSON.stringify renders
+// the number parseFloat() would produce from it: trailing zeros gone, and a
+// bare integer where the fraction vanishes entirely.
+//
+// This is what makes asgardeo's 100.000 arrive as 100 rather than "100.000".
+func TrimJSNumber(fixed string) string {
+	if !strings.Contains(fixed, ".") {
+		return fixed
+	}
+	fixed = strings.TrimRight(fixed, "0")
+	return strings.TrimSuffix(fixed, ".")
+}
+
+// ── /history ───────────────────────────────────────────────────────────
+
+// AvailabilityHistoryPoint is one day's uptime.
+//
+// Availability is a plain number here for EVERY cloud -- the history script
+// uses parseFloat and never toFixed. Two endpoints, two conventions, both
+// published; see the discovery notes.
+type AvailabilityHistoryPoint struct {
+	Availability float64 `json:"availability"`
+	Date         string  `json:"date"`
+}
+
+// AvailabilityHistorySubgroup is one monitored component's 90-day history.
+type AvailabilityHistorySubgroup struct {
+	DisplayName string                     `json:"display_name"`
+	History     []AvailabilityHistoryPoint `json:"history"`
+}
+
+// AvailabilityHistoryGroup is one named group within a region.
+type AvailabilityHistoryGroup struct {
+	DisplayName string                        `json:"display_name"`
+	Subgroups   []AvailabilityHistorySubgroup `json:"subgroups"`
+}
+
+// CloudAvailabilityHistoryResponse is keyed by region, as the dashboard
+// groups its columns.
+type CloudAvailabilityHistoryResponse map[string][]AvailabilityHistoryGroup
+
+// AvailabilityHistoryDays is the script's own cap: uniqueAvaialbility.slice(-90).
+const AvailabilityHistoryDays = 90

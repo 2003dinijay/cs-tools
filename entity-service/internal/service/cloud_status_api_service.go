@@ -247,3 +247,230 @@ func incidentStatus(end string) string {
 	}
 	return "Resolved"
 }
+
+// ── /availabilities ────────────────────────────────────────────────────
+
+// Availabilities assembles one cloud's weighted uptime, region by region.
+//
+// One query per parent service, which is exactly the granularity ServiceNow
+// works at: its query() is called once per parent and each calculateX only
+// ever sees that parent's offerings. Doing it in one batched query and
+// slicing in Go would be fewer round trips and would reproduce the same
+// numbers -- but it would also hide the one structural fact that makes the
+// weights mean anything, so the shape is kept.
+func (s *cloudStatusDashboardService) Availabilities(ctx context.Context, cloud string) (domain.CloudAvailabilitiesResponse, error) {
+	if _, err := validateCloud(cloud); err != nil {
+		return nil, err
+	}
+	slug := strings.ToLower(strings.TrimSpace(cloud))
+	plan, ok := domain.CloudAvailabilityPlans[slug]
+	if !ok {
+		// validateCloud accepts exactly the seven the plans cover, so this is
+		// unreachable unless the two lists drift apart.
+		return nil, &apierror.ValidationError{Msg: "no availability plan configured for cloud " + slug}
+	}
+
+	resp := domain.CloudAvailabilitiesResponse{}
+	for _, region := range plan.Regions {
+		rows, err := s.repo.ParentAvailabilities(ctx, region.ParentID)
+		if err != nil {
+			return nil, err
+		}
+
+		byWindow := map[string][]repository.ParentAvailabilityRow{}
+		for _, r := range rows {
+			byWindow[r.Window] = append(byWindow[r.Window], r)
+		}
+
+		windows := make([]domain.CloudAvailabilityWindow, 0, len(domain.AvailabilityWindows))
+		for _, w := range domain.AvailabilityWindows {
+			windows = append(windows, domain.CloudAvailabilityWindow{
+				Availability: figureFor(plan, byWindow[w.Enum]),
+				Duration:     w.Label,
+			})
+		}
+		resp[region.Key] = windows
+	}
+	return resp, nil
+}
+
+// figureFor computes one window's figure for one region.
+//
+// Two paths, because ServiceNow has two: a weighted sum for six clouds and a
+// plain mean for asgardeo, differing in their wire type as well as their
+// arithmetic. See domain.AvailabilityFigure.
+func figureFor(plan domain.CloudAvailabilityPlan, rows []repository.ParentAvailabilityRow) domain.AvailabilityFigure {
+	if !plan.Weighted() {
+		// `calculate`: arr.reduce(...) / arr.length, then parseFloat of the
+		// fixed string -- so a NUMBER, with trailing zeros dropped.
+		//
+		// Its 100 -> 99.9999 clamp is COMMENTED OUT in the deployed script,
+		// unlike the monitors endpoint where the same clamp for the same
+		// cloud is live. Not reproduced here, deliberately: both figures are
+		// published and they genuinely differ.
+		if len(rows) == 0 {
+			// The script's own default before any branch runs.
+			return domain.AvailabilityFigure{Value: "100", Number: true}
+		}
+		var sum float64
+		for _, r := range rows {
+			sum += r.Availability
+		}
+		fixed := domain.JSToFixed(sum/float64(len(rows)), domain.AvailabilityPrecision)
+		return domain.AvailabilityFigure{Value: domain.TrimJSNumber(fixed), Number: true}
+	}
+
+	// calculateX: running_count += availability * weight / 100, then toFixed
+	// -- so a STRING, trailing zeros kept.
+	//
+	// *** UNMAPPED OFFERINGS ARE SKIPPED, NOT PROPAGATED. *** In JavaScript
+	// map_weights[sno] on an absent key is undefined, availability *
+	// undefined is NaN, and running_count stays NaN for good: ONE unweighted
+	// offering silently turns that whole region's published uptime into the
+	// string "NaN". Verified 2026-09-29 that no offering under any of the 18
+	// parents is currently unmapped, so this path changes nothing today --
+	// it stops a future offering from blanking a customer-facing page.
+	var total float64
+	for _, r := range rows {
+		weight, ok := plan.Weights[r.ServiceOfferingID]
+		if !ok {
+			continue
+		}
+		total += r.Availability * weight / 100
+	}
+	return domain.AvailabilityFigure{
+		Value: domain.JSToFixed(total, domain.AvailabilityPrecision),
+	}
+}
+
+// ── /history ───────────────────────────────────────────────────────────
+
+// availabilityHistoryTZ is the timezone the daily buckets are labelled in.
+//
+// ServiceNow renders each date with getDate().getDisplayValue(), which uses
+// the CALLING USER's timezone, so the published dates depend on who asks.
+// What that resolves to in practice was MEASURED, not assumed, and the
+// decisive row is this one:
+//
+//	start_on 2026-09-26 18:30:00+00   ->  UTC 09-26,  Colombo 09-27
+//
+// The live API publishes it as 2026-09-27. Colombo it is -- which is also
+// exactly where the buckets are cut, 18:30Z being its midnight.
+//
+// This was briefly switched to UTC on the strength of one wrong inference
+// (that the oldest published point implied UTC labelling); the real cause
+// was the window bound below, and the boundary row above settles it.
+const availabilityHistoryTZ = "Asia/Colombo"
+
+// AvailabilityHistory assembles one cloud's 90-day daily uptime chart.
+func (s *cloudStatusDashboardService) AvailabilityHistory(ctx context.Context, cloud string) (domain.CloudAvailabilityHistoryResponse, error) {
+	enum, err := validateCloud(cloud)
+	if err != nil {
+		return nil, err
+	}
+
+	// The history script orders by group then name, and NOT by
+	// group_priority, which the monitors script does. Reproduced as written:
+	// the row order decides the order of groups on the page.
+	monitors, err := s.repo.MonitorsForHistory(ctx, enum)
+	if err != nil {
+		return nil, err
+	}
+
+	offerings := make([]string, 0, len(monitors))
+	seen := map[string]bool{}
+	for _, m := range monitors {
+		if m.ServiceOfferingID != "" && !seen[m.ServiceOfferingID] {
+			seen[m.ServiceOfferingID] = true
+			offerings = append(offerings, m.ServiceOfferingID)
+		}
+	}
+
+	loc, err := time.LoadLocation(availabilityHistoryTZ)
+	if err != nil {
+		return nil, err
+	}
+	today := s.now().In(loc)
+	todayKey := today.Format("2006-01-02")
+	// *** THE WINDOW IS 92 CALENDAR DAYS, NOT 90, AND THAT WAS MEASURED. ***
+	// gs.beginningOfLast90Days() does not mean "90 days back": diffed against
+	// the live API on 2026-09-29, every monitor carried a point dated
+	// 2026-06-30, which is today minus 91. Deriving the bound from the
+	// function's NAME would have silently clipped the oldest two days off
+	// every chart on the page.
+	from := today.AddDate(0, 0, -(domain.AvailabilityHistoryDays + 1)).Format("2006-01-02")
+
+	rows, err := s.repo.DailyAvailability(ctx, offerings, availabilityHistoryTZ, from, todayKey)
+	if err != nil {
+		return nil, err
+	}
+	byOffering := map[string][]domain.AvailabilityHistoryPoint{}
+	for _, r := range rows {
+		byOffering[r.ServiceOfferingID] = append(byOffering[r.ServiceOfferingID],
+			domain.AvailabilityHistoryPoint{Availability: r.Availability, Date: r.Date})
+	}
+
+	resp := domain.CloudAvailabilityHistoryResponse{}
+	groupIndex := map[string]map[string]int{}
+
+	for _, m := range monitors {
+		history := historyFor(byOffering[m.ServiceOfferingID], todayKey)
+		sub := domain.AvailabilityHistorySubgroup{DisplayName: m.Name, History: history}
+
+		if _, ok := groupIndex[m.Region]; !ok {
+			groupIndex[m.Region] = map[string]int{}
+		}
+		if idx, ok := groupIndex[m.Region][m.Group]; ok {
+			resp[m.Region][idx].Subgroups = append(resp[m.Region][idx].Subgroups, sub)
+			continue
+		}
+		resp[m.Region] = append(resp[m.Region], domain.AvailabilityHistoryGroup{
+			DisplayName: m.Group,
+			Subgroups:   []domain.AvailabilityHistorySubgroup{sub},
+		})
+		groupIndex[m.Region][m.Group] = len(resp[m.Region]) - 1
+	}
+	return resp, nil
+}
+
+// historyFor applies the script's today-fill and its 90-point cap.
+func historyFor(points []domain.AvailabilityHistoryPoint, todayKey string) []domain.AvailabilityHistoryPoint {
+	if points == nil {
+		// The script emits an array the frontend iterates; a null would
+		// render as nothing at best.
+		points = []domain.AvailabilityHistoryPoint{}
+	}
+
+	// *** THE TODAY-FILL. *** The script pushes {availability: 100, date:
+	// today} when the LAST row it saw is not today, then dedups keeping the
+	// first occurrence -- so the synthetic point survives only when today has
+	// no real row. Its own comment calls it "a workaround to handle the
+	// missing data". Reproduced: a chart that stops yesterday reads as an
+	// outage today, which is the bug the workaround exists to avoid.
+	//
+	// Note it fires only when at least one real row exists. A monitor with no
+	// daily data at all gets an empty history, not a fabricated 100.
+	if len(points) > 0 {
+		hasToday := false
+		for _, p := range points {
+			if p.Date == todayKey {
+				hasToday = true
+				break
+			}
+		}
+		if !hasToday {
+			points = append(points, domain.AvailabilityHistoryPoint{Availability: 100, Date: todayKey})
+		}
+	}
+
+	// uniqueAvaialbility.slice(-90). The repository returns oldest first, so
+	// this keeps the most recent 90 -- which is what slice(-90) means on a
+	// chronological array, and what the chart is for. ServiceNow slices an
+	// arbitrarily ordered array and therefore drops arbitrary days; 14
+	// offerings currently carry 92 distinct days and lose two of them to
+	// that. Ordering first makes the cap mean what it reads like.
+	if len(points) > domain.AvailabilityHistoryDays {
+		points = points[len(points)-domain.AvailabilityHistoryDays:]
+	}
+	return points
+}

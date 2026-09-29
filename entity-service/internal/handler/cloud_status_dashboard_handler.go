@@ -60,3 +60,32 @@ func (h *CloudStatusDashboardHandler) Incidents(w http.ResponseWriter, r *http.R
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// Availabilities handles GET /cloud-status/availabilities?cloud=…
+func (h *CloudStatusDashboardHandler) Availabilities(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.Availabilities(r.Context(), r.URL.Query().Get("cloud"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// AvailabilityHistory handles GET /cloud-status/availability-history?cloud=…
+//
+// The ServiceNow resource is at /history; the name here says what it returns
+// rather than inheriting a path that reads as a generic history endpoint.
+// The dashboard's own route is /api/v1/history/availabilities, so neither
+// side is renaming the other.
+func (h *CloudStatusDashboardHandler) AvailabilityHistory(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.AvailabilityHistory(r.Context(), r.URL.Query().Get("cloud"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}

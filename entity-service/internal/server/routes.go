@@ -1258,6 +1258,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// Cloud status webhooks: service-to-service, called by csm-scheduled-tasks.
 	mux.HandleFunc("GET /cloud-status/monitors", cloudStatusDashboardHandler.Monitors)
 	mux.HandleFunc("GET /cloud-status/incidents", cloudStatusDashboardHandler.Incidents)
+	mux.HandleFunc("GET /cloud-status/availabilities", cloudStatusDashboardHandler.Availabilities)
+	mux.HandleFunc("GET /cloud-status/availability-history", cloudStatusDashboardHandler.AvailabilityHistory)
 	mux.HandleFunc("POST /internal/cloud-status/sweep", cloudStatusHandler.Sweep)
 	mux.HandleFunc("GET /internal/cloud-status/pending", cloudStatusHandler.Pending)
 	mux.HandleFunc("POST /internal/cloud-status/{id}/delivery", cloudStatusHandler.RecordDelivery)

@@ -1232,6 +1232,12 @@ type CloudStatusDashboardService interface {
 	// Incidents returns six months of incident history for one cloud, with
 	// every month key present whether or not it has incidents.
 	Incidents(ctx context.Context, cloud string) (domain.CloudStatusIncidentsResponse, error)
+	// Availabilities returns one weighted uptime figure per region per
+	// window: the port of the /availabilities resource.
+	Availabilities(ctx context.Context, cloud string) (domain.CloudAvailabilitiesResponse, error)
+	// AvailabilityHistory returns the 90-day daily uptime chart, nested
+	// region -> group -> monitor: the port of the /history resource.
+	AvailabilityHistory(ctx context.Context, cloud string) (domain.CloudAvailabilityHistoryResponse, error)
 }
 
 // CloudStatusService decides which outages owe the public status dashboard a

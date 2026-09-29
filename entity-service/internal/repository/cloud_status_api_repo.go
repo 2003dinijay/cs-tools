@@ -76,6 +76,15 @@ type CloudStatusDashboardRepository interface {
 	Availabilities(ctx context.Context, offeringIDs []string) ([]AvailabilityRow, error)
 	OngoingOutages(ctx context.Context, offeringIDs []string) ([]OngoingOutageRow, error)
 	Incidents(ctx context.Context, cloud string, since time.Time) ([]IncidentRow, error)
+	// ParentAvailabilities returns the four window figures for every offering
+	// under one parent service -- the slice the weighting is applied over.
+	ParentAvailabilities(ctx context.Context, parentID string) ([]ParentAvailabilityRow, error)
+	// DailyAvailability returns one figure per offering per local day across
+	// the given window, bucketed in the named timezone.
+	DailyAvailability(ctx context.Context, offeringIDs []string, tz, from, to string) ([]DailyAvailabilityRow, error)
+	// MonitorsForHistory returns active monitors in the HISTORY endpoint's
+	// order, which is not the monitors endpoint's -- see the query.
+	MonitorsForHistory(ctx context.Context, cloud string) ([]MonitorRow, error)
 }
 
 type cloudStatusDashboardRepository struct {
@@ -283,6 +292,174 @@ func (r *cloudStatusDashboardRepository) Incidents(ctx context.Context, cloud st
 			return nil, fmt.Errorf("scan cloud status incident: %w", err)
 		}
 		out = append(out, i)
+	}
+	return out, rows.Err()
+}
+
+// ── /availabilities ────────────────────────────────────────────────────
+
+// ParentAvailabilityRow is one offering's uptime for one window, under one
+// parent service.
+type ParentAvailabilityRow struct {
+	ServiceOfferingID string
+	Window            string
+	Availability      float64
+}
+
+// parentAvailabilitiesSQL reproduces the availabilities script's query:
+//
+//	'service_offering.parent.sys_id=' + offeringParentSysId +
+//	'^type=last12months^ORtype=last7days^ORtype=last30days^ORtype=last90days'
+//
+// *** THE DISTINCT ON IS NOT OPTIONAL, AND IT IS NOT COSMETIC. *** The mirror
+// holds exactly TWO rows per (offering, window) -- the same figure computed on
+// consecutive days, e.g. windows 08-27..09-26 and 08-28..09-27. The script
+// sums availMap without deduplicating, so on this data it would count every
+// offering's weight twice and publish ~200%. The live API returns 100.000, so
+// ServiceNow itself sees one row per pair and the second is an artifact of how
+// csm-sync-service mirrors the table. Checked 2026-09-29: 584 pairs, two rows
+// each, and ZERO disagree on absolute_availability -- so which one wins cannot
+// change a published figure, only how many times it is added.
+//
+// Newest window wins, matching "the figure ServiceNow currently shows".
+const parentAvailabilitiesSQL = `
+    SELECT DISTINCT ON (sa.service_offering_id, sa.type)
+           sa.service_offering_id::text,
+           sa.type::text,
+           COALESCE(sa.absolute_availability, 0)::float8
+      FROM service_availability sa
+      JOIN service_offering so ON so.id = sa.service_offering_id
+     WHERE so.parent_id = $1::uuid
+       AND sa.type IN ('LAST_7_DAYS', 'LAST_30_DAYS', 'LAST_90_DAYS', 'LAST_12_MONTHS')
+     ORDER BY sa.service_offering_id, sa.type, sa.end_on DESC NULLS LAST, sa.id
+`
+
+// ParentAvailabilities returns every offering's four window figures for one
+// parent service -- the unit the weighting is applied over.
+func (r *cloudStatusDashboardRepository) ParentAvailabilities(ctx context.Context, parentID string) ([]ParentAvailabilityRow, error) {
+	rows, err := r.db.Query(ctx, parentAvailabilitiesSQL, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("query parent availabilities: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ParentAvailabilityRow, 0)
+	for rows.Next() {
+		var a ParentAvailabilityRow
+		if err := rows.Scan(&a.ServiceOfferingID, &a.Window, &a.Availability); err != nil {
+			return nil, fmt.Errorf("scan parent availability: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ── /history ───────────────────────────────────────────────────────────
+
+// DailyAvailabilityRow is one day's uptime for one offering.
+type DailyAvailabilityRow struct {
+	ServiceOfferingID string
+	Date              string
+	Availability      float64
+}
+
+// dailyAvailabilitySQL reproduces the history script's per-monitor query:
+//
+//	'service_offering.sys_id=' + serviceOffering +
+//	'^typeINdaily^startONLast 90 days@gs.beginningOfLast90Days()@gs.endOfLast90Days()'
+//
+// Batched over every offering rather than issued once per monitor, the same
+// way the monitors port batches its inner lookups.
+//
+// *** THE DAY IS THE INSTANCE'S LOCAL DAY, NOT UTC. *** The script renders
+// each row with getDate().getDisplayValue(), which is the calling user's
+// timezone. The stored buckets confirm it: start_on values sit at 18:30:00Z,
+// i.e. exactly midnight Asia/Colombo. Bucketing by UTC date would shift every
+// point across the +05:30 boundary and silently relabel the whole chart.
+//
+// *** DEDUP: A DELIBERATE DIVERGENCE, BECAUSE THE SOURCE HAS NO RULE. *** The
+// script's query carries no ORDER BY and its dedup keeps whichever row the
+// database happened to return first -- so on the 15 (offering, day) pairs
+// whose duplicate rows DISAGREE on availability, which value is published is
+// genuinely arbitrary in ServiceNow. That cannot be reproduced; it can only be
+// replaced with a rule. Newest computation wins, which is the same rule the
+// window query above uses.
+const dailyAvailabilitySQL = `
+    SELECT DISTINCT ON (sa.service_offering_id, (sa.start_on AT TIME ZONE $2)::date)
+           sa.service_offering_id::text,
+           to_char((sa.start_on AT TIME ZONE $2)::date, 'YYYY-MM-DD'),
+           COALESCE(sa.absolute_availability, 0)::float8
+      FROM service_availability sa
+     WHERE sa.service_offering_id = ANY($1::uuid[])
+       AND sa.type = 'DAILY'
+       AND (sa.start_on AT TIME ZONE $2)::date >= $3::date
+       AND (sa.start_on AT TIME ZONE $2)::date <= $4::date
+     ORDER BY sa.service_offering_id,
+              (sa.start_on AT TIME ZONE $2)::date,
+              sa.created_on DESC NULLS LAST,
+              sa.id
+`
+
+// DailyAvailability returns one uptime figure per offering per local day
+// across the window, ordered oldest first within each offering.
+func (r *cloudStatusDashboardRepository) DailyAvailability(ctx context.Context, offeringIDs []string, tz, from, to string) ([]DailyAvailabilityRow, error) {
+	if len(offeringIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := r.db.Query(ctx, dailyAvailabilitySQL, offeringIDs, tz, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("query daily availability: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]DailyAvailabilityRow, 0)
+	for rows.Next() {
+		var d DailyAvailabilityRow
+		if err := rows.Scan(&d.ServiceOfferingID, &d.Date, &d.Availability); err != nil {
+			return nil, fmt.Errorf("scan daily availability: %w", err)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// monitorsForHistorySQL is the history script's own monitor query:
+//
+//	gr.addEncodedQuery('u_cloud_offering=' + cloud + '^u_active=true');
+//	gr.orderBy('u_group');
+//	gr.orderBy('u_name');
+//
+// *** IT DOES NOT ORDER BY u_group_priority, AND THE MONITORS SCRIPT DOES. ***
+// Two endpoints over the same table with different orderings is the sort of
+// difference that looks like an oversight and is nonetheless what runs, so
+// both are reproduced separately rather than sharing one query. Collapsing
+// them would reorder the groups on one of the two pages.
+const monitorsForHistorySQL = `
+    SELECT LOWER(COALESCE(cm.region, '')),
+           COALESCE(cm."group", ''),
+           COALESCE(cm.name, ''),
+           COALESCE(cm.service_offering_id::text, '')
+      FROM cloud_monitor cm
+     WHERE cm.cloud_offering = $1::cloud_monitor_cloud_offering_enum
+       AND cm.is_active IS TRUE
+     ORDER BY cm."group", cm.name
+`
+
+// MonitorsForHistory returns active monitors in the history endpoint's order.
+func (r *cloudStatusDashboardRepository) MonitorsForHistory(ctx context.Context, cloud string) ([]MonitorRow, error) {
+	rows, err := r.db.Query(ctx, monitorsForHistorySQL, cloud)
+	if err != nil {
+		return nil, fmt.Errorf("query monitors for history: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]MonitorRow, 0)
+	for rows.Next() {
+		var m MonitorRow
+		if err := rows.Scan(&m.Region, &m.Group, &m.Name, &m.ServiceOfferingID); err != nil {
+			return nil, fmt.Errorf("scan monitor for history: %w", err)
+		}
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }
