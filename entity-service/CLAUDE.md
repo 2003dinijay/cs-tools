@@ -3548,6 +3548,18 @@ above) and always registers both routes unconditionally — a real, documented
 503 instead of an undocumented 404 callers can't distinguish from a
 genuinely missing resource.
 
+**Update:** the "no feedback table" premise above is stale. Migration `0102`
+added `work_item_feedback`, and `pgFeedbackService`
+(`pg_feedback_service.go`, over `feedback_repo.go`) now serves `POST
+/cases/feedback/search` and `/aggregate` for both the `postgres` and
+`postgres-servicenow-dual-write` data sources (dual write reads Postgres, never
+the backing system). `unavailableFeedbackService` is now only the fallback for
+a data source with no feedback store. Known gaps: the table stores no
+per-rating reason chips, so every `reasons_*` bucket returns an empty result;
+`GET`/`POST /cases/{id}/feedback` (the emoji submission contract) is still a
+503 on Postgres because `work_item_feedback` has no emoji id, chip ids or
+assessment id to serve it from.
+
 ## Adding a new entity
 
 Follow these steps in order:
