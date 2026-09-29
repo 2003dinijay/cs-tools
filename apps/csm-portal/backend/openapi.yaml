@@ -9371,6 +9371,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -9482,6 +9488,12 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
           description: Forbidden — caller lacks SPL_ADD_ESCALATION_GROUPS membership.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
           content:
             application/json:
               schema:
@@ -9653,6 +9665,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -9725,6 +9743,12 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
           description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
           content:
             application/json:
               schema:
@@ -10218,6 +10242,12 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
           description: Forbidden — caller lacks SPL_DOWNLOAD_ATTACHMENT_GROUPS membership.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: NotFound
           content:
             application/json:
               schema:
