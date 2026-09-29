@@ -33,115 +33,59 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
 )
 
-// GoogleChatSpace maps a single product to the Google Chat space that should
-// receive its incident alerts.
-type GoogleChatSpace struct {
-	// Product identifies the product this space is dedicated to (e.g.
-	// "api-manager", "identity-server"). Matched case-insensitively against
-	// the product passed to SendIncidentAlert. The reserved value
-	// "default" (see defaultChatSpaceProduct) opts a space in as sendCard's
-	// fallback for any product with no space of its own.
-	Product string `json:"product"`
+// GoogleChatAudienceSpace maps a single audience key (e.g. a CRE team name
+// like "Castor", or one of the fixed standing audiences — "Incident
+// Monitor"/"Onboarding"/"Americas"/"Evaluation") to the Google Chat space
+// that should receive alerts for it. This is now the *only* Google Chat
+// routing mechanism in this service — there is no product-based
+// alternative any more (removed once it became clear this deployment has
+// no real per-product Chat space need). case.created/case.acknowledged/
+// case.severity_changed all resolve to the single fixed
+// chataudience.IncidentMonitor audience (see internal/dispatch); SLA
+// breach alerts (internal/slaengine.Engine) resolve a real per-team
+// audience via internal/chataudience.Resolve. incident.created has no
+// Chat reaction at all (see SendIncidentAlert's own history — removed,
+// see git history for the prior product-routed card).
+type GoogleChatAudienceSpace struct {
+	// Audience identifies the key this space is dedicated to. Matched
+	// whitespace-trimmed but *case-sensitively* — an audience key is either
+	// a real team's proper-cased display name (entity-service's own Team
+	// value, verbatim) or one of this service's own fixed constants,
+	// neither of which benefits from case-folding, and case-folding two
+	// distinct real team names into one by accident would be a worse
+	// failure mode than requiring an exact match.
+	Audience string `json:"audience"`
 	// WebhookURL is that space's incoming webhook URL (Space settings > Apps
 	// & integrations > Webhooks). It already carries its own key/token query
 	// parameters, so no separate auth flow is needed.
 	WebhookURL string `json:"webhookUrl"`
 }
 
-// defaultChatSpaceProduct is the reserved GoogleChatSpace.Product value
-// (matched the same case/whitespace-insensitive way as any other product)
-// that sendCard falls back to when the resolved product has no matching
-// configured space at all, instead of erroring. Configure it by adding a
-// {"product":"default","webhookUrl":"..."} entry to GOOGLE_CHAT_SPACES —
-// entirely optional; with no such entry, an unmatched product still errors
-// exactly as before.
-//
-// This is distinct from Dispatcher.defaultChatProduct
-// (internal/dispatch), which only kicks in when a payload's own Product
-// field is empty in the first place — that's a business-logic fallback for
-// "the publisher didn't say," resolved before this client is ever called.
-// defaultChatSpaceProduct instead covers a non-empty, real product that
-// simply has no GOOGLE_CHAT_SPACES entry of its own (e.g. entity-service's
-// case.created now sends a deployed product's actual display name, which
-// won't match an operator's existing short config keys — like
-// "api-manager" — until GOOGLE_CHAT_SPACES is updated to match; until it
-// is, this fallback keeps every case.created/case.acknowledged alert
-// landing somewhere instead of being dropped/retried/dead-lettered).
-const defaultChatSpaceProduct = "default"
-
-// GoogleChatAudienceSpace maps a single audience key (e.g. a CRE team name
-// like "Castor", or one of the fixed standing audiences — "Incident
-// Monitor"/"Onboarding"/"Americas"/"Evaluation") to the Google Chat space
-// that should receive SLA breach alerts for it (internal/slaengine.Engine —
-// see SendSLABreachAlert's own doc comment for why this routes by
-// team/audience while every other case.*/incident.* Chat card still
-// routes by product). See internal/chataudience.Resolve for how an
-// audience key is derived from a case's own Team/onboarding/evaluation
-// facts — this type only maps an already-resolved key to where it's
-// reachable.
-type GoogleChatAudienceSpace struct {
-	// Audience identifies the key this space is dedicated to. Matched
-	// whitespace-trimmed but *case-sensitively* — unlike GoogleChatSpace's
-	// Product, an audience key is either a real team's proper-cased display
-	// name (entity-service's own Team value, verbatim) or one of this
-	// service's own fixed constants, neither of which benefits from
-	// case-folding the way a short lowercase product code does, and
-	// case-folding two distinct real team names into one by accident would
-	// be a worse failure mode than requiring an exact match.
-	Audience string `json:"audience"`
-	// WebhookURL is that space's incoming webhook URL — see
-	// GoogleChatSpace.WebhookURL's own doc comment.
-	WebhookURL string `json:"webhookUrl"`
-}
-
 // GoogleChatConfig holds the configuration for the Google Chat notification
-// channel: one space per product (every case.*/incident.created card's own
-// routing — see GoogleChatSpace), plus a separate one space per audience
-// (SLA breach alerts' own routing — see GoogleChatAudienceSpace). The two
-// are deliberately distinct config lists: a case/incident and an SLA
-// breach route on unrelated concepts (a product/deployment vs. a CS
-// team/account), so a single shared key space would conflate two
-// independent routing decisions.
+// channel: one space per audience (see GoogleChatAudienceSpace's own doc
+// comment for what "audience" covers, now that this is the only routing
+// mechanism).
 type GoogleChatConfig struct {
-	Spaces         []GoogleChatSpace
 	AudienceSpaces []GoogleChatAudienceSpace
 }
 
 // GoogleChatClient posts messages to a Google Chat space via an incoming
-// webhook, routing each alert to the space configured for the case's
-// product. Unlike the OAuth2-authenticated clients in this package, a
-// webhook URL is the only credential required.
+// webhook, routing each alert to the space configured for its audience.
+// Unlike the OAuth2-authenticated clients in this package, a webhook URL is
+// the only credential required.
 //
 // NewGoogleChatClient never fails, so it is safe to construct with a
 // zero-value GoogleChatConfig (e.g. when this channel is not yet configured
-// for a given deployment) — a missing or unmatched product only surfaces as
-// an error the first time SendIncidentAlert is called for it.
+// for a given deployment) — an unconfigured audience only surfaces as a
+// logged no-op the first time it's needed (see sendCardToAudience).
 type GoogleChatClient struct {
 	http                  *http.Client
-	webhookURLsByProduct  map[string]string
 	webhookURLsByAudience map[string]string
 }
 
 // NewGoogleChatClient constructs a GoogleChatClient that routes alerts to the
-// webhook configured for each product in cfg.Spaces, and SLA breach alerts
-// to the webhook configured for each audience in cfg.AudienceSpaces.
+// webhook configured for each audience in cfg.AudienceSpaces.
 func NewGoogleChatClient(cfg GoogleChatConfig) *GoogleChatClient {
-	webhookURLsByProduct := make(map[string]string, len(cfg.Spaces))
-	for _, space := range cfg.Spaces {
-		product := normalizeProduct(space.Product)
-		if product == "" || strings.TrimSpace(space.WebhookURL) == "" {
-			continue
-		}
-		// A second space normalizing to the same product (e.g. "API-Manager"
-		// and " api-manager ") is a configuration mistake — mark it
-		// unconfigured rather than silently routing to whichever URL came
-		// last.
-		if _, exists := webhookURLsByProduct[product]; exists {
-			webhookURLsByProduct[product] = ""
-			continue
-		}
-		webhookURLsByProduct[product] = space.WebhookURL
-	}
 	webhookURLsByAudience := make(map[string]string, len(cfg.AudienceSpaces))
 	for _, space := range cfg.AudienceSpaces {
 		audience := strings.TrimSpace(space.Audience)
@@ -156,14 +100,8 @@ func NewGoogleChatClient(cfg GoogleChatConfig) *GoogleChatClient {
 	}
 	return &GoogleChatClient{
 		http:                  &http.Client{Timeout: 10 * time.Second},
-		webhookURLsByProduct:  webhookURLsByProduct,
 		webhookURLsByAudience: webhookURLsByAudience,
 	}
-}
-
-// normalizeProduct makes product matching case- and whitespace-insensitive.
-func normalizeProduct(product string) string {
-	return strings.ToLower(strings.TrimSpace(product))
 }
 
 // HasAudienceSpace reports whether audience has a real, configured Chat
@@ -281,48 +219,6 @@ type chatOpenLink struct {
 	URL string `json:"url"`
 }
 
-// SendIncidentAlert posts a card message announcing a newly created
-// incident/case, with a button linking back to the case in the CSM portal,
-// to the Google Chat space configured for the given product.
-func (c *GoogleChatClient) SendIncidentAlert(ctx context.Context, product, title, shortDescription, portalURL string) error {
-	if title == "" {
-		return fmt.Errorf("notifications: title is required")
-	}
-	msg := chatCardMessage{
-		CardsV2: []chatCardWrapper{
-			{
-				CardID: "incident-alert",
-				Card: chatCard{
-					Header: &chatCardHeader{Title: title},
-					Sections: []chatCardSection{
-						{
-							Header: "Short Description",
-							Widgets: []chatCardWidget{
-								{TextParagraph: &chatTextParagraph{Text: shortDescription}},
-							},
-						},
-						{
-							Widgets: []chatCardWidget{
-								{
-									ButtonList: &chatButtonList{
-										Buttons: []chatButton{
-											{
-												Text:    "Open in CSM Portal",
-												OnClick: chatOnClick{OpenLink: chatOpenLink{URL: portalURL}},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	return c.sendCard(ctx, product, msg)
-}
-
 // caseAlertLine builds one <br>-joined line of a case.created/
 // case.acknowledged Chat card's single TextParagraph, HTML-escaping label
 // (the dynamic value) but not the markup surrounding it — mirrors
@@ -364,7 +260,10 @@ func teamPart(team string) string {
 }
 
 // SendCaseCreatedAlert posts a card message announcing a newly created
-// case, to the Google Chat space configured for product. The case's own
+// case, to the Google Chat space configured for audience — dispatch.go
+// always resolves this to the fixed chataudience.IncidentMonitor audience
+// for this event type today (see handleCaseCreated), not a per-team space.
+// The case's own
 // identifiers (caseNumber/wso2CaseID) lead the card as the header title,
 // prefixed with a "🆕" marker — the one thing that distinguishes this
 // alert from SendCaseAcknowledgedAlert/SendSeverityChangedAlert's cards,
@@ -400,7 +299,7 @@ func teamPart(team string) string {
 // team/codename line above the header —
 // an earlier version of this alert had one, discarded per explicit
 // product decision; the case reference now leads instead.
-func (c *GoogleChatClient) SendCaseCreatedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
+func (c *GoogleChatClient) SendCaseCreatedAlert(ctx context.Context, audience, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
 	if caseNumber == "" {
 		return fmt.Errorf("notifications: caseNumber is required")
 	}
@@ -428,12 +327,12 @@ func (c *GoogleChatClient) SendCaseCreatedAlert(ctx context.Context, product, se
 		},
 		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
 	}
-	return c.sendCard(ctx, product, msg)
+	return c.sendCardToAudience(ctx, audience, msg)
 }
 
 // SendSecurityReportAnalysisAlert posts a card message announcing a newly
 // created case of type "security_report_analysis", to the Google Chat
-// space configured for product. A dedicated card rather than a variant of
+// space configured for audience. A dedicated card rather than a variant of
 // SendCaseCreatedAlert: that card's severity line only makes sense for
 // type=="case" (severity is only ever set for that type — see
 // entity-service's own validateCreateCaseRequest/sla_policy.go), so this
@@ -443,7 +342,7 @@ func (c *GoogleChatClient) SendCaseCreatedAlert(ctx context.Context, product, se
 // a button and not an "acknowledge" action — matching the product
 // decision behind SendCaseCreatedAlert's own single consistent link (see
 // that function's own doc comment).
-func (c *GoogleChatClient) SendSecurityReportAnalysisAlert(ctx context.Context, product, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
+func (c *GoogleChatClient) SendSecurityReportAnalysisAlert(ctx context.Context, audience, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
 	if caseNumber == "" {
 		return fmt.Errorf("notifications: caseNumber is required")
 	}
@@ -474,7 +373,7 @@ func (c *GoogleChatClient) SendSecurityReportAnalysisAlert(ctx context.Context, 
 		// SendCaseCreatedAlert's own Thread field documents.
 		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
 	}
-	return c.sendCard(ctx, product, msg)
+	return c.sendCardToAudience(ctx, audience, msg)
 }
 
 // SendCaseAcknowledgedAlert posts a three-line card message announcing
@@ -495,7 +394,7 @@ func (c *GoogleChatClient) SendSecurityReportAnalysisAlert(ctx context.Context, 
 // publisher didn't send one. Unlike SendCaseCreatedAlert/
 // SendSeverityChangedAlert, this card deliberately doesn't show team at
 // all — kept to exactly these three lines per explicit product direction.
-func (c *GoogleChatClient) SendCaseAcknowledgedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
+func (c *GoogleChatClient) SendCaseAcknowledgedAlert(ctx context.Context, audience, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
 	if caseNumber == "" || acknowledgerName == "" {
 		return fmt.Errorf("notifications: caseNumber and acknowledgerName are required")
 	}
@@ -520,7 +419,7 @@ func (c *GoogleChatClient) SendCaseAcknowledgedAlert(ctx context.Context, produc
 		},
 		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
 	}
-	return c.sendCard(ctx, product, msg)
+	return c.sendCardToAudience(ctx, audience, msg)
 }
 
 // SendSeverityChangedAlert posts a card message announcing a case's
@@ -540,7 +439,7 @@ func (c *GoogleChatClient) SendCaseAcknowledgedAlert(ctx context.Context, produc
 // action to take from this card, only navigation, which the link already
 // covers — see SendCaseCreatedAlert's own doc comment for the fuller
 // button-vs-link reasoning.
-func (c *GoogleChatClient) SendSeverityChangedAlert(ctx context.Context, product, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error {
+func (c *GoogleChatClient) SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error {
 	if caseNumber == "" {
 		return fmt.Errorf("notifications: caseNumber is required")
 	}
@@ -567,33 +466,15 @@ func (c *GoogleChatClient) SendSeverityChangedAlert(ctx context.Context, product
 			},
 		},
 	}
-	return c.sendCard(ctx, product, msg)
+	return c.sendCardToAudience(ctx, audience, msg)
 }
 
-// sendCard marshals msg and posts it to the webhook configured for
-// product, shared by SendIncidentAlert/SendCaseCreatedAlert/
-// SendCaseAcknowledgedAlert/SendSeverityChangedAlert.
-func (c *GoogleChatClient) sendCard(ctx context.Context, product string, msg chatCardMessage) error {
-	webhookURL, ok := c.webhookURLsByProduct[normalizeProduct(product)]
-	if !ok || webhookURL == "" {
-		fallbackURL, fbOK := c.webhookURLsByProduct[defaultChatSpaceProduct]
-		if !fbOK || fallbackURL == "" {
-			return fmt.Errorf("notifications: no google chat space configured for product %q", product)
-		}
-		slog.WarnContext(ctx, "notifications: no google chat space configured for product; falling back to the default space", "product", product)
-		webhookURL = fallbackURL
-	}
-	return c.postCard(ctx, webhookURL, msg)
-}
-
-// sendCardToAudience posts msg to the webhook configured for audience —
-// used by SendSLABreachAlert (googlechat_sla.go), entirely separate from
-// sendCard's product-keyed lookup above; every case.*/incident.* card in
-// this file still routes through sendCard. An audience with no configured
-// webhook is treated as a known configuration gap, not a failure: logged
-// at warn and reported as a no-op success — a not-yet-onboarded team must
-// not block or retry the whole delivery (other audiences still go out
-// regardless).
+// sendCardToAudience posts msg to the webhook configured for audience — the
+// only Chat-send path in this file now (see GoogleChatAudienceSpace's own
+// doc comment for why). An audience with no configured webhook is treated
+// as a known configuration gap, not a failure: logged at warn and reported
+// as a no-op success — a not-yet-onboarded team must not block or retry
+// the whole delivery (other audiences still go out regardless).
 func (c *GoogleChatClient) sendCardToAudience(ctx context.Context, audience string, msg chatCardMessage) error {
 	webhookURL, ok := c.webhookURLsByAudience[strings.TrimSpace(audience)]
 	if !ok || webhookURL == "" {
