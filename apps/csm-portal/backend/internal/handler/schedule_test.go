@@ -23,6 +23,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
 // mockEntityScheduleClient stands in for entity-service, recording what the
@@ -265,4 +267,60 @@ func TestSearchScheduleAbsences(t *testing.T) {
 			t.Fatalf("upstream response did not reach the caller: %s", w.Body.String())
 		}
 	})
+}
+
+type mockSplScheduleClient struct {
+	schedule                                              servicenow.ABTTeamScheduleData
+	err                                                   error
+	gotFrom, gotDuration, gotTeamID, gotEventType, gotURL string
+}
+
+func (m *mockSplScheduleClient) GetABTTeamSchedule(ctx context.Context, from, duration, teamID, eventType, teamScheduleURL string) (servicenow.ABTTeamScheduleData, error) {
+	m.gotFrom, m.gotDuration, m.gotTeamID, m.gotEventType, m.gotURL = from, duration, teamID, eventType, teamScheduleURL
+	return m.schedule, m.err
+}
+
+func TestGetABTTeamSchedule_PassesParamsAndConfiguredURL(t *testing.T) {
+	mock := &mockSplScheduleClient{schedule: servicenow.ABTTeamScheduleData{SnURL: "https://sn.example.com"}}
+	h := NewSplScheduleHandler(mock, []string{"csm-agents"}, "https://sn.example.com")
+	req := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-schedule?from=2024-01-01&duration=7d&teamId=team-1&eventType=oncall", nil))
+	w := httptest.NewRecorder()
+
+	h.GetABTTeamSchedule(w, req)
+
+	assertStatus(t, w, http.StatusOK)
+	if mock.gotFrom != "2024-01-01" || mock.gotTeamID != "team-1" || mock.gotURL != "https://sn.example.com" {
+		t.Errorf("client called with from=%q teamID=%q url=%q", mock.gotFrom, mock.gotTeamID, mock.gotURL)
+	}
+}
+
+func TestGetABTTeamSchedule_AllParamsOptional(t *testing.T) {
+	mock := &mockSplScheduleClient{}
+	h := NewSplScheduleHandler(mock, []string{"csm-agents"}, "https://sn.example.com")
+	req := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-schedule", nil))
+	w := httptest.NewRecorder()
+
+	h.GetABTTeamSchedule(w, req)
+
+	assertStatus(t, w, http.StatusOK)
+}
+
+func TestGetABTTeamSchedule_RejectsUnsafeTeamID(t *testing.T) {
+	h := NewSplScheduleHandler(&mockSplScheduleClient{}, []string{"csm-agents"}, "")
+	req := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-schedule?teamId=team%5E1", nil))
+	w := httptest.NewRecorder()
+
+	h.GetABTTeamSchedule(w, req)
+
+	assertStatus(t, w, http.StatusBadRequest)
+}
+
+func TestGetABTTeamSchedule_RejectsUnauthorizedGroup(t *testing.T) {
+	h := NewSplScheduleHandler(&mockSplScheduleClient{}, []string{"other-group"}, "")
+	req := withUser(httptest.NewRequest(http.MethodGet, "/spl/abt-team-schedule", nil))
+	w := httptest.NewRecorder()
+
+	h.GetABTTeamSchedule(w, req)
+
+	assertStatus(t, w, http.StatusForbidden)
 }
