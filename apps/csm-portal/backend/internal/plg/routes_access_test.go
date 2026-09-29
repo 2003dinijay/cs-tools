@@ -19,6 +19,9 @@ package plg
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -80,15 +83,25 @@ func testAccessConfig() csmhandler.AccessConfig {
 
 // plgMux registers PLG's real route table against a stub identity middleware.
 //
-// The stub answers 204 INSTEAD OF calling the handler, which is what makes this
-// test possible without a running entity-service: a request that reaches it has
-// passed the guard, and no PLG handler ever runs. It also pins the middleware
-// ORDER — the guard is outside identity, so a caller whose roles are wrong is
-// rejected before the (upstream-calling) identity resolver is entered. If those
-// two were ever swapped, every denied case below would come back 204.
+// The route callback is deliberately IDENTICAL to csm-portal's own route() in
+// cmd/server/main.go — `mux.HandleFunc(pattern, guard.Require(perm, h))` — so
+// what this exercises is the composition production uses, not a test-only
+// arrangement that happens to agree with it.
+//
+// The stub identity answers 204 INSTEAD OF calling the handler, which is what
+// makes this test possible without a running entity-service: a request that
+// reaches it has passed the guard, and no PLG handler ever runs. It also pins
+// the middleware ORDER — the guard is outside identity, so a caller whose roles
+// are wrong is rejected before the (upstream-calling) identity resolver is
+// entered. If those two were ever swapped, every denied case below would come
+// back 204.
 func plgMux(t *testing.T) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
+	guard := csmhandler.NewAccessGuard(testAccessConfig())
+	route := func(pattern string, perm csmhandler.Permission, h http.HandlerFunc) {
+		mux.HandleFunc(pattern, guard.Require(perm, h))
+	}
 	stubIdentity := func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
@@ -96,7 +109,7 @@ func plgMux(t *testing.T) *http.ServeMux {
 	}
 	// Handlers is never invoked — the stub above stands in for it — so the zero
 	// value is enough, and avoids building five services with no upstream.
-	register(mux, &plghandler.Handlers{}, stubIdentity, csmhandler.NewAccessGuard(testAccessConfig()))
+	register(&plghandler.Handlers{}, stubIdentity, route)
 	return mux
 }
 
@@ -193,12 +206,62 @@ func TestRoutes_EngineerCanStillReadPlaybooks(t *testing.T) {
 	}
 }
 
-// The route table and this file's two lists must not drift apart. There is no
-// way to enumerate a ServeMux's patterns, so this asserts the count instead —
-// a new route added without a test here trips it.
+// registeredPattern matches one route registration in plg.go's own source.
+var registeredPattern = regexp.MustCompile(`add\("([A-Z]+ /[^"]*)"`)
+
+// TestRoutes_EveryRouteIsCovered pins this file's two lists against the route
+// table itself, in both directions.
+//
+// THE PREVIOUS VERSION OF THIS TEST DID NOT WORK. It asserted that the two
+// lists totalled a hand-written constant of 24 — but both sides lived here, so
+// they could only disagree if someone edited a list and forgot the constant. A
+// route added to plg.go was invisible to it, and the comment claiming otherwise
+// was simply wrong. Verified: adding a route to register() and running the
+// suite passed.
+//
+// This version reads the patterns register() actually mounts, and resolves each
+// test entry through the real mux — `(*ServeMux).Handler` reports which pattern
+// a request matched, which is the enumeration the old comment assumed did not
+// exist. Two failures are therefore possible:
+//
+//   - a pattern in plg.go that no test entry reaches: a new route went in
+//     without anyone deciding what its permission tests should say;
+//   - a test entry matching no pattern at all: a typo, or a path that moved,
+//     leaving an assertion that silently proved nothing.
 func TestRoutes_EveryRouteIsCovered(t *testing.T) {
-	const registered = 24
-	if got := len(everydayRoutes) + len(playbookManagementRoutes); got != registered {
-		t.Errorf("this file covers %d routes, register() mounts %d — add the new route to one of the two lists", got, registered)
+	src, err := os.ReadFile("plg.go")
+	if err != nil {
+		t.Fatalf("read plg.go: %v", err)
+	}
+	registered := map[string]bool{}
+	for _, m := range registeredPattern.FindAllStringSubmatch(string(src), -1) {
+		registered[m[1]] = true
+	}
+	if len(registered) == 0 {
+		t.Fatal("found no routes in plg.go — the regexp is wrong, not the route table")
+	}
+
+	mux := plgMux(t)
+	covered := map[string]bool{}
+	for _, r := range append(append([]struct{ method, path string }{}, everydayRoutes...), playbookManagementRoutes...) {
+		req := httptest.NewRequest(r.method, r.path, nil)
+		_, pattern := mux.Handler(req)
+		if pattern == "" {
+			t.Errorf("%s %s in this file matches no route in plg.go — every assertion using it proves nothing",
+				r.method, r.path)
+			continue
+		}
+		covered[pattern] = true
+	}
+
+	missing := make([]string, 0, len(registered))
+	for pattern := range registered {
+		if !covered[pattern] {
+			missing = append(missing, pattern)
+		}
+	}
+	sort.Strings(missing)
+	for _, pattern := range missing {
+		t.Errorf("%s is registered in plg.go but no entry in this file reaches it — add one to everydayRoutes or playbookManagementRoutes", pattern)
 	}
 }

@@ -54,24 +54,40 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/plg/service"
 )
 
-// Mount wires PLG onto mux.
+// RouteFunc registers one route with the permission its caller must hold.
+//
+// This is csm-portal's own route() helper (cmd/server/main.go) seen from the
+// inside: PLG is handed the ability to register a guarded route without being
+// handed the guard. It therefore knows which permission each of its routes
+// requires — a PLG decision — and nothing about how that permission is checked,
+// which is csm-portal's.
+//
+// The one thing this type does NOT capture is middleware ordering, and it
+// matters: whatever the caller wraps around h ends up OUTSIDE anything PLG
+// wraps. That is what keeps the cheap roles check ahead of the identity
+// resolver's entity-service call. See register().
+type RouteFunc func(pattern string, perm csmhandler.Permission, h http.HandlerFunc)
+
+// Mount wires PLG onto csm-portal's router.
 //
 // cfgPath points at PLG's own config.json — or nothing, in which case every
 // setting comes from the PLG_* environment variables. Choreo deploys from
 // environment alone, so the file is optional by design.
 //
-// guard is csm-portal's own AccessGuard, not a second one: PLG's routes are
-// authorised by the same roles claim and the same policy object as every other
-// route in this backend. See register() for which permission each route takes.
+// route is csm-portal's own route() helper from cmd/server/main.go, passed in
+// rather than reimplemented. Every route in this backend goes through it, PLG's
+// included, so there is one place where a pattern is bound to the permission it
+// requires. PLG therefore takes no mux and holds no AccessGuard: it declares
+// what each route needs and lets the caller enforce it. See register() for the
+// permissions and for why the identity middleware is nested inside.
 //
 // It returns no shutdown function because it starts nothing: PLG is a set of
 // handlers on csm-portal's mux and owns no goroutine. It did own one, for the
 // queue poller, until registrations moved to the webhook-queue service.
 func Mount(
-	mux *http.ServeMux,
 	cfgPath string,
 	entityDefaults config.EntityDefaults,
-	guard *csmhandler.AccessGuard,
+	route RouteFunc,
 ) error {
 	cfg, err := config.LoadWith(cfgPath, entityDefaults)
 	if err != nil {
@@ -105,7 +121,7 @@ func Mount(
 	// resolver, which turns the validated caller into the "user".id every PLG
 	// write records. It wraps only this subtree — csm-portal's routes neither
 	// need it nor pay for it.
-	register(mux, handlers, plgmw.ResolveIdentity(entity), guard)
+	register(handlers, plgmw.ResolveIdentity(entity), route)
 
 	slog.Info("plg: mounted", "entityBaseURL", cfg.Entity.BaseURL)
 	return nil
@@ -148,15 +164,19 @@ func Mount(
 // caller: registrations reach the database through the webhook-queue service
 // posting to entity-service, never through this backend.
 func register(
-	mux *http.ServeMux,
 	h *handler.Handlers,
 	identity func(http.Handler) http.Handler,
-	guard *csmhandler.AccessGuard,
+	route RouteFunc,
 ) {
-	// perm is a required argument with no default, matching csm-portal's own
-	// route() — a new PLG route cannot go live without someone choosing one.
+	// perm is a required argument with no default, exactly as in csm-portal's
+	// own route() — a new PLG route cannot go live without someone choosing one.
+	//
+	// identity is applied HERE, inside what route() will wrap, so the composed
+	// order stays guard-then-identity: route() puts accessGuard.Require on the
+	// outside, and a caller whose roles are wrong is refused before the identity
+	// resolver makes its entity-service call.
 	add := func(pattern string, perm csmhandler.Permission, fn http.HandlerFunc) {
-		mux.Handle(pattern, guard.Require(perm, identity(fn).ServeHTTP))
+		route(pattern, perm, identity(fn).ServeHTTP)
 	}
 
 	// Reference data.
