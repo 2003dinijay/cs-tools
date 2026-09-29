@@ -439,7 +439,7 @@ func main() {
 		// exists.
 		slaProducer = eventbus.NewProducer(eventBusCfg)
 
-		slaEngine := slaengine.NewEngine(slaEntityClient, slaengine.NewTierStore(redisClient), slaProducer, googleChatClient, linkResolver, defaultChatProduct)
+		slaEngine := slaengine.NewEngine(slaEntityClient, slaengine.NewTierStore(redisClient), slaProducer, googleChatClient, linkResolver)
 
 		// SLA_TICK_INTERVAL defaults far above the old wake-index engine's
 		// 15s: that interval made sense for firing a precomputed due date
@@ -752,18 +752,18 @@ func parseGoogleChatSpaces(raw string) []notifications.GoogleChatSpace {
 }
 
 // parseGoogleChatAudienceSpaces decodes GOOGLE_CHAT_AUDIENCE_SPACES, a JSON
-// array of {"audience":"...","webhookUrl":"..."} objects — one per
-// case.created audience (a team's own space, or a standing audience like
-// "Incident Monitor"). Same parsing convention as parseGoogleChatSpaces: a
-// missing or malformed value logs a warning and yields no spaces rather than
-// failing startup.
+// array of {"audience":"...","webhookUrl":"..."} objects — one per SLA
+// breach-alert audience (a team's own space, or a standing audience like
+// "Incident Monitor"; see internal/chataudience). Same parsing convention
+// as parseGoogleChatSpaces: a missing or malformed value logs a warning
+// and yields no spaces rather than failing startup.
 func parseGoogleChatAudienceSpaces(raw string) []notifications.GoogleChatAudienceSpace {
 	if raw == "" {
 		return nil
 	}
 	var spaces []notifications.GoogleChatAudienceSpace
 	if err := json.Unmarshal([]byte(raw), &spaces); err != nil {
-		slog.Error("failed to parse GOOGLE_CHAT_AUDIENCE_SPACES; case.created Chat alerts will be unavailable", "err", err)
+		slog.Error("failed to parse GOOGLE_CHAT_AUDIENCE_SPACES; sla breach Chat alerts will be unavailable", "err", err)
 		return nil
 	}
 	return spaces

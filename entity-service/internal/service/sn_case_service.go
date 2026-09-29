@@ -1102,7 +1102,7 @@ func (s *snCaseService) registerCaseSLAClocks(ctx context.Context, caseID string
 // reasoning — this is now a thin wrapper around it, same shape as
 // snIncidentService.publishIncidentCreated/publishIncidentCreatedEvent.
 func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.CreateCaseRequest, caseID string) {
-	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.ProjectAudienceFacts, req, caseID)
+	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, req, caseID)
 }
 
 // publishCaseCreatedEvent is publishCaseCreated's actual body, factored out
@@ -1115,15 +1115,7 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 // in this mode) cannot yet, or ever, return. getCaseByID is the caller's
 // own GetCaseByID method value (ServiceNow-backed for snCaseService,
 // Postgres-backed for caseService) — this function is data-source-agnostic
-// beyond that. resolveProjectContactEmailsByRole is the caller's own
-// ProjectContactEmailsByRole method value, used only for req.Type ==
-// "announcement" (see below). resolveProjectAudienceFacts is the caller's
-// own ProjectAudienceFacts method value, used for every type to populate
-// ProjectOnboardingStatus/IsEvaluationAccount — csm-notification-service's
-// own case.created Chat audience resolution, not this service's concern; a
-// lookup failure here is logged and treated as "no additional facts"
-// rather than aborting the publish, since this is enrichment, not a
-// requirement.
+// beyond that.
 //
 // It re-fetches the case via getCaseByID rather than building the payload
 // from the create response/req alone: a create response carries only a
@@ -1131,6 +1123,10 @@ func (s *snCaseService) publishCaseCreated(ctx context.Context, req domain.Creat
 // display name, the project's name, and each watcher's email — exactly
 // what events.CaseCreatedPayload needs and req/the create response don't
 // have.
+//
+// resolveProjectContactEmailsByRole is the caller's own
+// ProjectContactEmailsByRole method value, used only for req.Type ==
+// "announcement" (see below).
 //
 // Only type=="case" requires a severity to publish at all: a case with no
 // severity has no priority to report (CaseCreatedPayload.Priority has no
@@ -1183,7 +1179,6 @@ func publishCaseCreatedEvent(
 	publisher EventPublisherService,
 	getCaseByID func(context.Context, string) (domain.CaseView, error),
 	resolveProjectContactEmailsByRole func(context.Context, string, string) ([]string, error),
-	resolveProjectAudienceFacts func(context.Context, string) (string, bool, error),
 	req domain.CreateCaseRequest,
 	caseID string,
 ) {
@@ -1238,32 +1233,21 @@ func publishCaseCreatedEvent(
 	}
 	product := caseProductName(cv)
 
-	// Best-effort: a failed lookup just means this event goes out without
-	// the onboarding/evaluation audience facts (csm-notification-service's
-	// Chat routing falls back to whatever it can derive from Team alone),
-	// not a reason to drop the whole publish.
-	onboardingStatus, isEvaluation, err := resolveProjectAudienceFacts(ctx, req.ProjectID)
-	if err != nil {
-		slog.WarnContext(ctx, "create case: resolving project audience facts failed", "caseId", caseID)
-	}
-
 	payload, err := json.Marshal(events.CaseCreatedPayload{
-		ReporterName:            reporterName,
-		ProjectName:             cv.ProjectDetails.Name,
-		ProjectID:               cv.ProjectDetails.ID,
-		CaseID:                  caseID,
-		CaseNumber:              cv.Number,
-		WSO2CaseID:              cv.InternalID,
-		CaseTitle:               cv.Subject,
-		CaseType:                strings.ToUpper(req.Type),
-		Priority:                strings.ToUpper(string(derefSeverity(cv.Severity))),
-		Product:                 product,
-		Team:                    caseTeamName(cv),
-		ProjectOnboardingStatus: onboardingStatus,
-		IsEvaluationAccount:     isEvaluation,
-		CreatedAt:               cv.CreatedOn.Format(time.RFC3339),
-		Description:             cv.Description,
-		Recipients:              recipients,
+		ReporterName: reporterName,
+		ProjectName:  cv.ProjectDetails.Name,
+		ProjectID:    cv.ProjectDetails.ID,
+		CaseID:       caseID,
+		CaseNumber:   cv.Number,
+		WSO2CaseID:   cv.InternalID,
+		CaseTitle:    cv.Subject,
+		CaseType:     strings.ToUpper(req.Type),
+		Priority:     strings.ToUpper(string(derefSeverity(cv.Severity))),
+		Product:      product,
+		Team:         caseTeamName(cv),
+		CreatedAt:    cv.CreatedOn.Format(time.RFC3339),
+		Description:  cv.Description,
+		Recipients:   recipients,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "create case: encode case.created payload failed", "caseId", caseID, "error", err)
@@ -1746,7 +1730,7 @@ func publishStatusChangedEvent(ctx context.Context, publisher EventPublisherServ
 // wrapper around publishSeverityChangedEvent — see that function's own doc
 // comment for why.
 func (s *snCaseService) publishSeverityChanged(ctx context.Context, caseID, oldSeverity, newSeverity string, before domain.CaseView) {
-	publishSeverityChangedEvent(ctx, s.publisher, s.ProjectAudienceFacts, caseID, oldSeverity, newSeverity, before)
+	publishSeverityChangedEvent(ctx, s.publisher, caseID, oldSeverity, newSeverity, before)
 }
 
 // publishSeverityChangedEvent is publishSeverityChanged's actual body,
@@ -1756,7 +1740,7 @@ func (s *snCaseService) publishSeverityChanged(ctx context.Context, caseID, oldS
 // plain severity strings (either case; upper-cased here) — the caller has
 // already confirmed they actually differ, not a caller re-PATCHing the
 // case's current severity.
-func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherService, resolveProjectAudienceFacts func(context.Context, string) (string, bool, error), caseID, oldSeverity, newSeverity string, before domain.CaseView) {
+func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherService, caseID, oldSeverity, newSeverity string, before domain.CaseView) {
 	if publisher == nil || newSeverity == "" {
 		return
 	}
@@ -1770,30 +1754,24 @@ func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherSe
 	}
 
 	// before.ProjectDetails is nilable on the Postgres data source (this
-	// function serves both) — see publishCaseAssigned's own comment.
+	// function serves both, called directly from caseService.UpdateCase
+	// too) — see publishCaseAssigned's own comment.
 	projectID := ""
 	if before.ProjectDetails != nil {
 		projectID = before.ProjectDetails.ID
 	}
-	// Best-effort — see publishCaseCreatedEvent's own comment for why a
-	// failed lookup doesn't block the publish.
-	onboardingStatus, isEvaluation, err := resolveProjectAudienceFacts(ctx, projectID)
-	if err != nil {
-		slog.WarnContext(ctx, "update case: resolving project audience facts failed", "caseId", caseID)
-	}
 
 	payload, err := json.Marshal(events.SeverityChangedPayload{
-		ProjectID:               projectID,
-		CaseID:                  caseID,
-		CaseNumber:              before.Number,
-		WSO2CaseID:              before.InternalID,
-		CaseTitle:               before.Subject,
-		OldSeverity:             strings.ToUpper(oldSeverity),
-		NewSeverity:             strings.ToUpper(newSeverity),
-		Team:                    caseTeamName(before),
-		ProjectOnboardingStatus: onboardingStatus,
-		IsEvaluationAccount:     isEvaluation,
-		Recipients:              recipients,
+		ProjectID:   projectID,
+		CaseID:      caseID,
+		CaseNumber:  before.Number,
+		WSO2CaseID:  before.InternalID,
+		CaseTitle:   before.Subject,
+		OldSeverity: strings.ToUpper(oldSeverity),
+		NewSeverity: strings.ToUpper(newSeverity),
+		Product:     caseProductName(before),
+		Team:        caseTeamName(before),
+		Recipients:  recipients,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "update case: encode case.severity_changed payload failed", "caseId", caseID, "error", err)
@@ -1891,27 +1869,16 @@ func (s *snCaseService) publishCaseAcknowledged(ctx context.Context, caseID, ack
 		slog.ErrorContext(ctx, "sn update case: enrich case for case.acknowledged publish failed", "caseId", caseID)
 		return
 	}
-
-	projectID := ""
-	if cv.ProjectDetails != nil {
-		projectID = cv.ProjectDetails.ID
-	}
-	// Best-effort — see publishCaseCreatedEvent's own comment for why a
-	// failed lookup doesn't block the publish.
-	onboardingStatus, isEvaluation, err := s.ProjectAudienceFacts(ctx, projectID)
-	if err != nil {
-		slog.WarnContext(ctx, "sn update case: resolving project audience facts failed", "caseId", caseID)
-	}
+	product := caseProductName(cv)
 
 	payload, err := json.Marshal(events.CaseAcknowledgedPayload{
-		CaseID:                  caseID,
-		CaseNumber:              cv.Number,
-		WSO2CaseID:              cv.InternalID,
-		Severity:                strings.ToUpper(string(derefSeverity(cv.Severity))),
-		Team:                    caseTeamName(cv),
-		ProjectOnboardingStatus: onboardingStatus,
-		IsEvaluationAccount:     isEvaluation,
-		AcknowledgerName:        acknowledgerName,
+		CaseID:           caseID,
+		CaseNumber:       cv.Number,
+		WSO2CaseID:       cv.InternalID,
+		Severity:         strings.ToUpper(string(derefSeverity(cv.Severity))),
+		Product:          product,
+		Team:             caseTeamName(cv),
+		AcknowledgerName: acknowledgerName,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "sn update case: encode case.acknowledged payload failed", "caseId", caseID, "error", err)
@@ -1937,16 +1904,6 @@ func (s *snCaseService) ProjectContactEmailsByRole(ctx context.Context, projectI
 		return nil, nil
 	}
 	return s.pgFallback.ProjectContactEmailsByRole(ctx, projectID, role)
-}
-
-// ProjectAudienceFacts implements CaseService -- same Postgres-only
-// delegation as ProjectContactEmailsByRole above (project.onboarding_status/
-// project_type_id have no ServiceNow equivalent this service reads).
-func (s *snCaseService) ProjectAudienceFacts(ctx context.Context, projectID string) (string, bool, error) {
-	if s.pgFallback == nil {
-		return "", false, nil
-	}
-	return s.pgFallback.ProjectAudienceFacts(ctx, projectID)
 }
 
 func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
