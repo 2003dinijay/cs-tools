@@ -24,11 +24,11 @@ import (
 
 func sampleMappings() []domain.ProductRepoMapping {
 	return []domain.ProductRepoMapping{
-		{ProductName: "WSO2 Identity Server", Owner: "wso2-enterprise", Repository: "wso2-iam-internal", GithubLabel: "IS"},
-		{ProductName: "WSO2 Identity Server Analytics", Owner: "wso2-enterprise", Repository: "wso2-iam-internal", GithubLabel: "IS-Analytics"},
-		{ProductName: "WSO2 API Manager", Abbreviation: strPtr("wso2am"), Owner: "wso2-enterprise", Repository: "wso2-apim-internal", GithubLabel: "APIM"},
-		{ProductName: "BI", Owner: "wso2-enterprise", Repository: "wso2-integration-internal", GithubLabel: "BI"},
-		{ProductName: "Bijira", Owner: "wso2-enterprise", Repository: "wso2-apim-internal", GithubLabel: "Bijira"},
+		{ProductName: "Acme Server", GithubLabel: "server"},
+		{ProductName: "Acme Server Analytics", GithubLabel: "server-analytics"},
+		{ProductName: "Acme Gateway", Abbreviation: strPtr("acmegw"), GithubLabel: "gateway"},
+		{ProductName: "Kit", GithubLabel: "kit"},
+		{ProductName: "Kite", GithubLabel: "kite"},
 	}
 }
 
@@ -40,12 +40,12 @@ func TestMatchProductRepo(t *testing.T) {
 		want    string
 		wantHit bool
 	}{
-		{name: "exact product name", query: "WSO2 Identity Server", want: "IS", wantHit: true},
-		{name: "exact abbreviation", query: "wso2am", want: "APIM", wantHit: true},
-		{name: "versioned name matches the product prefix", query: "WSO2 Identity Server 6.0.0", want: "IS", wantHit: true},
-		{name: "longer prefix wins over the shorter one", query: "WSO2 Identity Server Analytics 1.2.0", want: "IS-Analytics", wantHit: true},
-		{name: "bijira is not bi", query: "Bijira", want: "Bijira", wantHit: true},
-		{name: "short name is not a prefix of the catalogue name", query: "Identity Server", wantHit: false},
+		{name: "exact product name", query: "Acme Server", want: "server", wantHit: true},
+		{name: "exact abbreviation", query: "acmegw", want: "gateway", wantHit: true},
+		{name: "versioned name matches the product prefix", query: "Acme Server 6.0.0", want: "server", wantHit: true},
+		{name: "longer prefix wins over the shorter one", query: "Acme Server Analytics 1.2.0", want: "server-analytics", wantHit: true},
+		{name: "a name is not matched by a shorter name it starts with", query: "Kite", want: "kite", wantHit: true},
+		{name: "short name is not a prefix of the catalogue name", query: "Server", wantHit: false},
 		{name: "unknown product", query: "Not A Product", wantHit: false},
 		{name: "blank", query: "  ", wantHit: false},
 	}
