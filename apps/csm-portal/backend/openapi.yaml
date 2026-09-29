@@ -1858,6 +1858,63 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /teams/{id}/members:
+    get:
+      summary: Get a team's member roster.
+      description: >
+        Backed by entity-service — the team's CRE/SRE membership, not the internal
+        WSO2-staff team registry POST /teams/search covers. id is a UUID (the team
+        registry's own creGroupId/sreGroupId, e.g. an account's creTeam.id) rather
+        than the registry's stable team key.
+      operationId: getTeamsIdMembers
+      parameters:
+        - name: id
+          in: path
+          description: UUID of the team (backing CRE/SRE group).
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The team's members.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TeamMember'
+        "400":
+          description: Bad request (e.g. malformed UUID).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Team not found, or has no members.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /users:
     post:
       summary: Create a new user.
@@ -14821,6 +14878,17 @@ components:
           type: integer
         limit:
           type: integer
+
+    TeamMember:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
 
     UserGroupRef:
       type: object
