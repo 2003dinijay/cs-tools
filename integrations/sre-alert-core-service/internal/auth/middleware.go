@@ -17,6 +17,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -25,10 +26,7 @@ import (
 
 const bearerPrefix = "Bearer "
 
-// RequireAuth wraps next so a request must carry a valid Authorization header naming an enabled
-// integration_users row before next is invoked. Both `-H "Authorization: Bearer <username>.<secret>"`
-// and `-u <username>:<secret>` (sent as `Authorization: Basic base64(username:secret)`) are accepted.
-// Every failure returns a generic 401; only the username (never the secret) is logged.
+// RequireAuth requires a valid Authorization header (Bearer base64("<username>:<secret>"), or Basic i.e. -u) naming an enabled integration_users row; every failure is a generic 401, and only the username is logged, never the secret.
 func RequireAuth(repo *UserRepo, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -67,12 +65,15 @@ func RequireAuth(repo *UserRepo, logger *slog.Logger) func(http.Handler) http.Ha
 	}
 }
 
-// parseCredentials extracts username/secret from either scheme: Bearer "<username>.<secret>",
-// or Basic "<username>:<secret>" (what -u sends via net/http's BasicAuth decoding).
+// parseCredentials extracts username/secret from either Bearer base64("<username>:<secret>") or Basic (what -u sends, decoded via net/http's BasicAuth).
 func parseCredentials(r *http.Request) (username, secret string, ok bool) {
 	if header := r.Header.Get("Authorization"); strings.HasPrefix(header, bearerPrefix) {
 		token := strings.TrimPrefix(header, bearerPrefix)
-		username, secret, found := strings.Cut(token, ".")
+		decoded, err := base64.StdEncoding.DecodeString(token)
+		if err != nil {
+			return "", "", false
+		}
+		username, secret, found := strings.Cut(string(decoded), ":")
 		if !found || username == "" || secret == "" {
 			return "", "", false
 		}

@@ -62,3 +62,22 @@ func (r *UserRepo) Upsert(ctx context.Context, u User) error {
 	}
 	return nil
 }
+
+// List reads every row in integration_users; the table is small (service accounts only), so a full scan is fine.
+func (r *UserRepo) List(ctx context.Context) ([]User, error) {
+	stmt, names := qb.Select("integration_users").Columns(userColumns...).ToCql()
+	var users []User
+	if err := r.session.Query(stmt, names).WithContext(ctx).SelectRelease(&users); err != nil {
+		return nil, fmt.Errorf("list internal users: %w", err)
+	}
+	return users, nil
+}
+
+// SetEnabled flips a user's enabled flag; used to disable/re-enable an account without deleting its row.
+func (r *UserRepo) SetEnabled(ctx context.Context, username string, enabled bool) error {
+	stmt, names := qb.Update("integration_users").Set("enabled").Where(qb.Eq("username")).ToCql()
+	if err := r.session.Query(stmt, names).WithContext(ctx).BindMap(qb.M{"username": username, "enabled": enabled}).ExecRelease(); err != nil {
+		return fmt.Errorf("set enabled=%t for internal user %s: %w", enabled, username, err)
+	}
+	return nil
+}

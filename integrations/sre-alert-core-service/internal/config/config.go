@@ -46,7 +46,7 @@ type EngineConfig struct {
 
 // PollConfig tunes the alert poller's cadence, concurrency, and per-cycle alert id limits.
 type PollConfig struct {
-	// Interval is the backstop cadence; POST /alert drives real-time pickup, so this only bounds how long a dropped ping goes unnoticed.
+	// Interval is the backstop cadence; POST /alertz drives real-time pickup, so this only bounds how long a dropped ping goes unnoticed.
 	Interval Duration `toml:"interval"`
 	// Concurrency is fingerprint-sharded worker count; same-fingerprint alerts stay serialized on one worker.
 	Concurrency int `toml:"concurrency"`

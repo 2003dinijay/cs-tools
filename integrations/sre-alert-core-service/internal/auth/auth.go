@@ -61,8 +61,7 @@ func HashSecret(secret string, salt []byte, iterations int) []byte {
 	return pbkdf2.Key([]byte(secret), salt, iterations, KeyLen, sha256.New)
 }
 
-// VerifySecret recomputes the PBKDF2 hash for secret against the stored base64 salt/hash and
-// compares in constant time, so response timing can't leak how much of the hash matched.
+// VerifySecret recomputes the PBKDF2 hash for secret against the stored base64 salt/hash and compares in constant time, so response timing can't leak how much of the hash matched.
 func VerifySecret(secret, saltB64, hashB64 string, iterations int) bool {
 	salt, err := base64.StdEncoding.DecodeString(saltB64)
 	if err != nil {
