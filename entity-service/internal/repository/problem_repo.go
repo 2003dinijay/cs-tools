@@ -497,6 +497,7 @@ func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domai
 		id, createdBy,
 		number, req.Subject, req.OriginCaseID,
 		state, req.PrimaryIncidentID, req.Description,
+		category, req.Subcategory,
 	).Scan(&outID, &outNumber, &outSubject, &outDescription, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
