@@ -132,6 +132,14 @@ type Config struct {
 	// from ServiceNow, an ingest-created row would make its insert fail on
 	// project.key forever. Turn on at cutover, when csm-sync-service stops.
 	CSMMigrationSalesforceProjectInsertEnabled bool
+	// CSMMigrationSalesforcePartnerIngestEnabled turns on the partner-link
+	// refresh (account_relationship "Is Partner Of" / "Is Customer Of") that
+	// runs after Account events, after partner-contact membership events and
+	// from POST /salesforce/accounts/{sfId}/refresh-partners, from
+	// CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true. Defaults to false:
+	// nothing refreshes partners and the route is not registered, because
+	// csm-sync-service still copies account_relationship from ServiceNow.
+	CSMMigrationSalesforcePartnerIngestEnabled bool
 	// CSMMigrationMembershipRegistrationEnabled turns on POST /users/me/memberships/register,
 	// which marks the signed-in user's still-INVITED memberships as
 	// REGISTERED in Salesforce (see membership_registration_service.go). Defaults to
@@ -413,6 +421,7 @@ func Load() *Config {
 	cfg.CSMMigrationSalesforceOpportunityIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED") == "true"
 	cfg.CSMMigrationSalesforceProjectIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED") == "true"
 	cfg.CSMMigrationSalesforceProjectInsertEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED") == "true"
+	cfg.CSMMigrationSalesforcePartnerIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED") == "true"
 	return cfg
 }
 

@@ -192,7 +192,8 @@ func (s *salesforceEventService) ingestOpportunity(ctx context.Context, sfID, ev
 // deleteOpportunity is DELETED: a hard delete by sf_id, as ServiceNow plus
 // csm-sync-service do today. The foreign keys cascade the line items and the
 // project links and null out the invoices. There is nothing to fetch — the
-// record is gone from Salesforce — so the ledger version is the current time.
+// record is gone from Salesforce — so the ledger version is the current time,
+// or the recorded version when that is later (deletedEventVersion).
 //
 // The ingest stores the 18-character Id Sales Entity returns, so a
 // 15-character referenceId is widened to that form first: the delete, the
@@ -200,10 +201,14 @@ func (s *salesforceEventService) ingestOpportunity(ctx context.Context, sfID, ev
 // ingest used, instead of the delete matching no row and being acknowledged.
 func (s *salesforceEventService) deleteOpportunity(ctx context.Context, sfID string) error {
 	sfID = salesforceID18(sfID)
+	modifiedOn, err := s.deletedEventVersion(ctx, domain.SalesforceIngestEntityOpportunity, sfID)
+	if err != nil {
+		return err
+	}
 	state := domain.UpsertSalesforceIngestStateRequest{
 		Entity:          domain.SalesforceIngestEntityOpportunity,
 		SfID:            sfID,
-		EventModifiedOn: time.Now().UTC(),
+		EventModifiedOn: modifiedOn,
 		EventType:       domain.SalesforceEventDeleted,
 		Status:          domain.SalesforceIngestSucceeded,
 	}

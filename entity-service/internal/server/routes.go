@@ -230,6 +230,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 
 	var salesforceEventHandler *handler.SalesforceEventHandler
+	// salesforcePartnerHandler is set when the partner refresh is on.
+	var salesforcePartnerHandler *handler.SalesforcePartnerHandler
 	// membershipRegistrationHandler and projectContactSyncHandler both need
 	// the very same membership-ingest-enabled SalesforceEventService this
 	// block builds, so all three are wired together rather than side by side.
@@ -292,10 +294,39 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				SalesEntity:   salesEntityClient,
 			})
 			// Linked_Opportunity__c belongs to the Opportunity family.
-			return service.WithLinkedOpportunityIngest(svc, service.LinkedOpportunityIngest{
+			svc = service.WithLinkedOpportunityIngest(svc, service.LinkedOpportunityIngest{
 				Links:       repository.NewSalesforceOpportunityLinkRepository(db),
 				SalesEntity: salesEntityClient,
 			})
+			// Invoice__c events ride on the same flag: an invoice needs its
+			// opportunity, which the Opportunity branch ingests inline.
+			opportunityLookup := repository.NewSalesforceOpportunityLookup(db)
+			svc = service.WithInvoiceIngest(svc, service.InvoiceIngest{
+				Invoices:      repository.NewSalesforceInvoiceRepository(db),
+				Opportunities: opportunityLookup,
+				SalesEntity:   salesEntityClient,
+			})
+			// So do standalone OpportunityLineItem events.
+			return service.WithOpportunityLineItemIngest(svc, service.OpportunityLineItemIngest{
+				LineItems:     repository.NewSalesforceOpportunityLineItemRepository(db),
+				Opportunities: opportunityLookup,
+				SalesEntity:   salesEntityClient,
+			})
+		}
+		// The partner-link refresh is attached the same way; off, nothing
+		// refreshes partners and the internal route is not registered.
+		withPartnerIngest := func(svc service.SalesforceEventService) service.SalesforceEventService {
+			if !cfg.CSMMigrationSalesforcePartnerIngestEnabled {
+				return svc
+			}
+			svc = service.WithPartnerIngest(svc, service.PartnerIngest{
+				Partners:    repository.NewAccountPartnerWriteRepository(db),
+				SalesEntity: salesEntityClient,
+			})
+			if refresher, ok := svc.(service.PartnerRefresher); ok {
+				salesforcePartnerHandler = handler.NewSalesforcePartnerHandler(service.NewPartnerRefreshService(refresher, accessSvc))
+			}
+			return svc
 		}
 		if cfg.CSMMigrationSalesforceMembershipIngestEnabled {
 			// The membership branch (Project_Contact__c / Contact envelopes)
@@ -313,7 +344,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 					Contacts:    repository.NewSalesforceContactRepository(db),
 					Publisher:   projectEventPublisher,
 				})
-			membershipIngestSvc = withOpportunityIngest(membershipIngestSvc)
+			membershipIngestSvc = withPartnerIngest(withOpportunityIngest(membershipIngestSvc))
 			salesforceEventHandler = handler.NewSalesforceEventHandler(membershipIngestSvc)
 
 			// The delayed-retry job re-runs memberships whose project or
@@ -337,6 +368,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				if project, ok := membershipIngestSvc.(service.ProjectReingester); ok && cfg.CSMMigrationSalesforceProjectIngestEnabled {
 					retryWorker.EntityRetriers[domain.SalesforceIngestEntityProject] = project.RetryProjectIngest
 				}
+				if inv, ok := membershipIngestSvc.(service.InvoiceReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityInvoice] = inv.RetryInvoiceIngest
+				}
+				if li, ok := membershipIngestSvc.(service.OpportunityLineItemReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityOpportunityLineItem] = li.RetryOpportunityLineItemIngest
+				}
+				if partners, ok := membershipIngestSvc.(service.PartnerReingester); ok && cfg.CSMMigrationSalesforcePartnerIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityAccountPartners] = partners.RetryPartnerRefresh
+				}
 				// The Contact writer runs under the membership ingest, which is
 				// on whenever this job runs, so its retrier needs no extra flag.
 				if contact, ok := membershipIngestSvc.(service.ContactReingester); ok {
@@ -350,7 +390,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				log.Printf("salesforce ingest retry worker enabled (every %s)", cfg.SalesforceIngestRetryInterval)
 			}
 		} else {
-			salesforceEventHandler = handler.NewSalesforceEventHandler(withOpportunityIngest(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient, ingestSupport)))
+			salesforceEventHandler = handler.NewSalesforceEventHandler(withPartnerIngest(withOpportunityIngest(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient, ingestSupport))))
 		}
 	}
 
@@ -1083,6 +1123,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	if salesforceEventHandler != nil {
 		mux.HandleFunc("POST /salesforce/events", salesforceEventHandler.HandleEvent)
+	}
+	if salesforcePartnerHandler != nil {
+		mux.HandleFunc("POST /salesforce/accounts/{sfId}/refresh-partners", salesforcePartnerHandler.RefreshPartners)
 	}
 	if onboardingStepHandler != nil {
 		mux.HandleFunc("PUT /onboarding-steps/{membershipSfId}/{step}", onboardingStepHandler.UpsertOnboardingStep)
