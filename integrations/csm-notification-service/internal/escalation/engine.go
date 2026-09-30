@@ -299,6 +299,12 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 	if err != nil {
 		return fmt.Errorf("escalation: build plan for %s: %w", t.IncidentID, err)
 	}
+	// BuildPlan takes the trigger by value and stamps the matched rule onto
+	// its own copy, so the local one here still reports the old fourteen-row
+	// derivation -- an LK incident logged rule=R1, a row that shift cannot
+	// reach. Adopt the stamped copy so every line below names the row the
+	// recipients actually came from.
+	t = plan.Trigger
 	e.applySafety(ctx, &plan)
 	for _, issue := range plan.Issues {
 		// Logged without the recipient's email — plan issues carry one in
