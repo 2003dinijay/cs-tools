@@ -90,16 +90,20 @@ const (
 	// SPL_ALLOWED_GROUPS raw-Asgardeo-groups check (internal/splauth,
 	// removed).
 	//
-	// TEMPORARY: granted to plain Viewer, not SalesSolutions, per explicit
-	// request -- Sales/SA staff are provisioned with Viewer today, and
-	// SalesSolutions isn't reliably assigned yet. This is deliberately not
-	// the long-term answer: CS engineers are slated to also hold Viewer
-	// once cs_engineer itself is retired in favor of composable roles, at
-	// which point this grant would let them into SPL too, which defeats
-	// the audience boundary this permission exists for. Needs a real
-	// SPL-vs-CS-Portal differentiation signal before that happens (e.g. a
-	// dedicated, reliably-provisioned role again, just not necessarily
-	// SalesSolutions) -- flagged, not solved, here.
+	// Granted to plain Viewer, unconditionally -- including callers who
+	// also hold CsEngineer. That's deliberate: this permission answers
+	// "can this caller reach SPL's API at all," which is a broader
+	// question than "which portal's nav should a caller land in by
+	// default." The latter is a webapp-only routing choice
+	// (usePortalView.ts), where CsEngineer takes precedence over Viewer so
+	// CS/ABT staff default to the CSM Portal nav even once they also carry
+	// Viewer (the baseline read role most staff role sets compose in).
+	// PermSPLAccess itself stays a plain Viewer-implies-access check with
+	// no CsEngineer exclusion, so a CS engineer who navigates to an SPL
+	// URL directly isn't hard-blocked by the backend -- only steered away
+	// from it by default in the webapp's own nav. See usePortalView.ts and
+	// useSplAccess.ts for the matching frontend halves of this split;
+	// keep all three in sync on which role each one checks.
 	PermSPLAccess
 	// PermUsageMetricsViewer is the SPL Usage Metrics domain
 	// (/usage-metrics/*), layered on top of PermSPLAccess the same way
@@ -146,11 +150,11 @@ type AccessConfig struct {
 	// SalesSolutions grants PermViewSharedEntity (see that permission's own
 	// doc comment for exactly which routes -- deliberately NOT all of
 	// PermView). It's also, independently, a marker role: GET /users/me
-	// reports "sales_solutions" in its roles list. It does NOT currently
-	// grant PermSPLAccess or drive the webapp's SPL-vs-CS-Portal nav
-	// choice -- see PermSPLAccess's own doc comment for why (TEMPORARY,
-	// pending a real differentiation signal). A holder still needs one of
-	// the roles above to write, escalate, download an attachment, or
+	// reports "sales_solutions" in its roles list. It does NOT grant
+	// PermSPLAccess or drive the webapp's SPL-vs-CS-Portal nav choice --
+	// that's Viewer's and CsEngineer's job respectively (see
+	// PermSPLAccess's own doc comment). A holder still needs one of the
+	// roles above to write, escalate, download an attachment, or
 	// administer anything — PermEscalate/PermDownloadAttachment/
 	// PermUsageMetricsViewer/PermWrite/PermAdmin etc. are unaffected by
 	// this role.
@@ -197,12 +201,10 @@ type portalRole struct {
 // usage_metrics_viewer/timecard_approver/dashboard_designer all hold PermView
 // but not this. sales_solutions is a separate exception again: it implies
 // PermViewSharedEntity (only) rather than being implied BY it — see
-// AccessConfig.SalesSolutions's own doc comment. PermSPLAccess is currently
-// implied by plain Viewer instead (TEMPORARY -- see PermSPLAccess's own doc
-// comment), not sales_solutions; it was originally meant to be the one
-// permission no CS Portal role implies, an audience boundary rather than a
-// capability level, but that design is on hold pending a real
-// differentiation signal.
+// AccessConfig.SalesSolutions's own doc comment. PermSPLAccess is implied by
+// plain Viewer, not sales_solutions or cs_engineer specifically -- see
+// PermSPLAccess's own doc comment for why that's a deliberately broader
+// audience check than the webapp's CsEngineer-first portal-nav choice.
 func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	build := func(lists ...[]string) map[string]struct{} {
 		set := make(map[string]struct{})
@@ -237,8 +239,8 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			PermAdmin:               build(cfg.Admin),
 			PermViewSecurityCenter:  build(cfg.CsEngineer, cfg.Admin),
 			PermApproveTimeCard:     build(cfg.TimecardApprover, cfg.Admin),
-			// TEMPORARY: Viewer, not SalesSolutions -- see PermSPLAccess's own
-			// doc comment for why, and for the follow-up this needs.
+			// Viewer, unconditionally (no cs_engineer exclusion) -- see
+			// PermSPLAccess's own doc comment for why.
 			PermSPLAccess: build(cfg.Viewer),
 			// Every existing PermView holder, so nothing they could already
 			// read stops being readable, plus SalesSolutions for exactly the

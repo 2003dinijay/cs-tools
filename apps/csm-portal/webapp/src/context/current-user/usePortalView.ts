@@ -39,16 +39,30 @@ export type PortalView = "cs-abt" | "sales-sa";
  * not a client-side Asgardeo-groups decode — so this can never disagree
  * with what the backend itself thinks the caller is.
  *
- * TEMPORARY: checks plain "viewer", not "sales_solutions", per explicit
- * request — Sales/SA staff are provisioned with Viewer today, and
- * sales_solutions isn't reliably assigned yet. This is NOT the long-term
- * answer: CS engineers are slated to also hold Viewer once cs_engineer
- * itself is retired in favor of composable roles, at which point everyone
- * would resolve to "sales-sa" and this stops differentiating anything.
- * Needs a real SPL-vs-CS-Portal signal before that happens — see
- * `useSplAccess.ts` and `internal/handler/access.go`'s `PermSPLAccess`,
- * which carry the identical, byte-for-byte-in-sync check and the same
- * TEMPORARY flag; keep all three in lockstep.
+ * The routing rule: "cs_engineer" is CS/ABT staff's own portal-selector
+ * role and always wins when present; "viewer" is Sales/SA staff's, and
+ * only decides the view when cs_engineer is absent. This precedence is the
+ * point, not a stopgap — CS engineers are expected to also hold Viewer
+ * (it's the baseline read role composed into most staff role sets), so a
+ * plain "does the caller hold viewer" check would misroute them into the
+ * SPL nav the moment that happens. Checking cs_engineer first is what keeps
+ * CS/ABT staff landing on "cs-abt" by default regardless of which other
+ * read-capability roles (viewer, escalator, attachment-downloader,
+ * usage-metrics-viewer, ...) they also carry — those are orthogonal
+ * capability grants, not portal selectors, and apply the same way inside
+ * whichever portal a user lands in (see `access.go`'s `PermEscalate`,
+ * `PermDownloadAttachment`, `PermUsageMetricsViewer`, none of which are
+ * gated by cs_engineer or viewer specifically).
+ *
+ * This governs the *default landing nav only* — it is not a hard audience
+ * block. See `useSplAccess.ts` and `internal/handler/access.go`'s
+ * `PermSPLAccess` for the actual SPL audience gate: it grants access on
+ * "viewer" alone, unconditionally, with no cs_engineer exclusion, so a CS
+ * engineer who also holds viewer still lands on "cs-abt" here but isn't
+ * blocked from an SPL screen reached directly. There's no in-app nav
+ * control yet for a CS engineer to deliberately switch into the SPL view —
+ * worth adding once SPL itself is further along; Sales/SA staff getting a
+ * working SPL is the current priority.
  *
  * `devViewOverride` (authConfig.ts) lets local testing force either view
  * regardless of the signed-in account's real roles — set
@@ -68,5 +82,6 @@ export function usePortalView(): PortalView {
   }
   if (devViewOverride) return devViewOverride;
   if (devBypassAccessCheck) return "cs-abt";
+  if (roles?.includes("cs_engineer")) return "cs-abt";
   return roles?.includes("viewer") ? "sales-sa" : "cs-abt";
 }

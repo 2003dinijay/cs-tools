@@ -176,14 +176,13 @@ function AuthorizedAppShell(): JSX.Element {
   // profile that failed to parse, which must not lock anyone out.
   //
   // No separate "sales_solutions" exemption here (there used to be one):
-  // usePortalView/useSplAccess now gate the Sales/SA (SPL) nav on plain
-  // "viewer" instead (TEMPORARY -- see usePortalView.ts), and "viewer" is
-  // already one of getPortalAccess's own 8 checked roles, so a Sales/SA
-  // user holding it already passes via hasAnyRole below with no special
-  // case needed. A caller holding ONLY "sales_solutions" (no viewer, no
-  // other portal role) now correctly fails this gate: under the current
-  // audience check they can't reach SPL either, so there's nowhere left
-  // for them to land.
+  // usePortalView/useSplAccess gate the Sales/SA (SPL) audience on plain
+  // "viewer" instead (see usePortalView.ts), and "viewer" is already one of
+  // getPortalAccess's own 8 checked roles, so a Sales/SA user holding it
+  // already passes via hasAnyRole below with no special case needed. A
+  // caller holding ONLY "sales_solutions" (no viewer, no other portal
+  // role) correctly fails this gate: under the current audience check they
+  // can't reach SPL either, so there's nowhere left for them to land.
   const holdsNoPortalRole =
     !!user && Array.isArray(user.roles) && !getPortalAccess(user.roles).hasAnyRole;
   // TEMPORARY / LOCAL DEV ONLY — see authConfig.ts's devBypassAccessCheck.

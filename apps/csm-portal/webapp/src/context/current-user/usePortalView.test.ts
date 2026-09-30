@@ -64,8 +64,6 @@ describe("usePortalView", () => {
     expect(result.current).toBe("cs-abt");
   });
 
-  // TEMPORARY: checks plain "viewer", not "sales_solutions" -- see this
-  // hook's own doc comment for why and for the follow-up still needed.
   it("resolves to sales-sa when the caller holds the viewer role", () => {
     mockRoles = ["viewer"];
     const { result } = renderHook(() => usePortalView());
@@ -78,8 +76,20 @@ describe("usePortalView", () => {
     expect(result.current).toBe("sales-sa");
   });
 
-  it("sales_solutions alone, without viewer, does not resolve to sales-sa (temporary gate)", () => {
+  it("sales_solutions alone, without viewer, does not resolve to sales-sa", () => {
     mockRoles = ["sales_solutions"];
+    const { result } = renderHook(() => usePortalView());
+    expect(result.current).toBe("cs-abt");
+  });
+
+  it("cs_engineer takes precedence over viewer, resolving to cs-abt", () => {
+    mockRoles = ["cs_engineer", "viewer"];
+    const { result } = renderHook(() => usePortalView());
+    expect(result.current).toBe("cs-abt");
+  });
+
+  it("cs_engineer alone (no viewer) resolves to cs-abt", () => {
+    mockRoles = ["cs_engineer"];
     const { result } = renderHook(() => usePortalView());
     expect(result.current).toBe("cs-abt");
   });

@@ -15,23 +15,25 @@
 // under the License.
 
 // Whether the signed-in user should see the SPL (Support Portal Lite)
-// section at all — the "is this Sales/SA staff" audience gate, distinct
-// from useSplPermissions.ts's fine-grained action gates.
+// section at all — the "can this caller reach SPL" audience gate, distinct
+// from useSplPermissions.ts's fine-grained action gates and from
+// usePortalView.ts's "which nav lands by default" choice.
 //
 // Reads a portal role off `GET /users/me` (the same server-authoritative
 // `roles` array usePortalView reads it from — see
 // `internal/handler/access.go`'s `AccessConfig`), not a client-side
 // Asgardeo-groups decode.
 //
-// TEMPORARY: checks plain "viewer", not "sales_solutions", per explicit
-// request — Sales/SA staff are provisioned with Viewer today, and
-// sales_solutions isn't reliably assigned yet. This is NOT the long-term
-// answer: CS engineers are slated to also hold Viewer once cs_engineer
-// itself is retired in favor of composable roles, at which point they'd
-// pass this gate too. Needs a real SPL-vs-CS-Portal signal before that
-// happens — see usePortalView.ts and internal/handler/access.go's
-// PermSPLAccess, which carry the identical, byte-for-byte-in-sync check
-// and the same TEMPORARY flag; keep all three in lockstep.
+// Checks plain "viewer", unconditionally — it does NOT exclude callers who
+// also hold cs_engineer. This is deliberately broader than
+// usePortalView.ts's routing choice: a CS engineer who also holds viewer
+// still *defaults* to the CS/ABT nav (see usePortalView.ts's cs_engineer
+// precedence), but isn't hard-blocked from an SPL screen reached directly.
+// The audience question here — does this caller have any business in SPL
+// at all — and the nav-default question there are answered separately on
+// purpose; keep them that way rather than merging the two checks. See
+// internal/handler/access.go's PermSPLAccess for the matching backend
+// grant, which must stay in sync with this hook's role check.
 //
 // Real enforcement is server-side: every /spl/* route on the Go backend
 // re-checks PermSPLAccess (internal/handler/access.go), currently granted
@@ -50,9 +52,9 @@ export interface SplAccess {
 }
 
 // Must stay byte-for-byte in sync with the backend's AccessGuard portalRoles
-// key (apps/csm-portal/backend/internal/handler/access.go) and the identical
-// literal usePortalView.ts check to pick the SPL nav. TEMPORARY -- see this
-// file's own top-of-file comment.
+// key (apps/csm-portal/backend/internal/handler/access.go) -- see this
+// file's own top-of-file comment for why this check is unconditional
+// (no cs_engineer exclusion) unlike usePortalView.ts's nav-default choice.
 const SPL_AUDIENCE_ROLE = "viewer";
 
 export function useSplAccess(): SplAccess {

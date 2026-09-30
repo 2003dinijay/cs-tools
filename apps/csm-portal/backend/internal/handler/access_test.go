@@ -130,18 +130,29 @@ func TestAccessGuard_PermViewSharedEntityScope(t *testing.T) {
 		if status, _ := serveWithRoles(g, PermView, roles); status != http.StatusForbidden {
 			t.Errorf("PermView: status = %d, want 403 -- sales_solutions must not gain every PermView route", status)
 		}
-		// TEMPORARY: PermSPLAccess is Viewer-gated right now, not
-		// sales_solutions -- see PermSPLAccess's own doc comment.
+		// PermSPLAccess is Viewer-gated, not sales_solutions -- see
+		// PermSPLAccess's own doc comment.
 		if status, _ := serveWithRoles(g, PermSPLAccess, roles); status != http.StatusForbidden {
-			t.Errorf("PermSPLAccess: status = %d, want 403 (temporarily Viewer-gated, not sales_solutions)", status)
+			t.Errorf("PermSPLAccess: status = %d, want 403 (Viewer-gated, not sales_solutions)", status)
 		}
 	})
 
-	// TEMPORARY: guards the interim PermSPLAccess grant (Viewer, not
-	// sales_solutions) -- see PermSPLAccess's own doc comment for why, and
-	// for the real differentiation signal this still needs.
-	t.Run("plain viewer holds PermSPLAccess (temporary)", func(t *testing.T) {
+	// Guards PermSPLAccess's grant (Viewer, unconditionally) -- see
+	// PermSPLAccess's own doc comment for why.
+	t.Run("plain viewer holds PermSPLAccess", func(t *testing.T) {
 		if status, _ := serveWithRoles(g, PermSPLAccess, []string{"test-viewer"}); status != http.StatusNoContent {
+			t.Errorf("PermSPLAccess: status = %d, want 204", status)
+		}
+	})
+
+	// PermSPLAccess is the audience check, not the nav-default choice --
+	// a caller holding both viewer and cs_engineer still passes it, even
+	// though usePortalView.ts's cs_engineer-first precedence means they'd
+	// default to the CS/ABT nav in the webapp. See PermSPLAccess's own doc
+	// comment for why the backend deliberately doesn't exclude cs_engineer
+	// here.
+	t.Run("viewer alongside cs_engineer still holds PermSPLAccess", func(t *testing.T) {
+		if status, _ := serveWithRoles(g, PermSPLAccess, []string{"test-viewer", "test-cs-engineer"}); status != http.StatusNoContent {
 			t.Errorf("PermSPLAccess: status = %d, want 204", status)
 		}
 	})

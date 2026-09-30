@@ -305,10 +305,10 @@ describe("AuthGuard's response to a /users/me failure once signed in", () => {
     ).toBeInTheDocument();
   });
 
-  // TEMPORARY: the Sales/SA (SPL) audience gate now checks plain "viewer",
-  // not "sales_solutions" (see usePortalView.ts's own doc comment) --
-  // "viewer" is already one of getPortalAccess's 8 checked roles, so a
-  // Sales/SA user holding it passes with no special case needed, and a
+  // The Sales/SA (SPL) audience gate checks plain "viewer", not
+  // "sales_solutions" (see usePortalView.ts's own doc comment) -- "viewer"
+  // is already one of getPortalAccess's 8 checked roles, so a Sales/SA
+  // user holding it passes with no special case needed, and a
   // sales_solutions-only user (holding neither) has nowhere left to land.
   it("does NOT show the not-authorized page for a viewer-only user — they're headed for the Sales/SA nav", async () => {
     currentUserState.user = { roles: ["viewer"] };
