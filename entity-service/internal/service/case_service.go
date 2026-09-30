@@ -1193,6 +1193,21 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 					projectID = cv.ProjectDetails.ID
 				}
 				s.slaEngine.ReviseCaseClocks(ctx, req.ID, c.Severity, projectID)
+				// ReviseCaseClocks' own replacement clocks always start
+				// IN_PROGRESS, with no awareness of the case's current
+				// state -- a case already paused (Awaiting Info/Solution
+				// Proposed) at the moment its severity changes would
+				// otherwise get fresh workaround/resolution clocks that
+				// immediately start counting down unpaused, producing a
+				// false breach later. Re-applying ApplyCaseStateEffects
+				// against the case's already-known current state (State is
+				// mutually exclusive with Severity on one request, so cv's
+				// State here is unaffected by this update) re-pauses them
+				// to match reality; a harmless no-op when the case isn't
+				// currently paused.
+				if cv.State != nil {
+					s.slaEngine.ApplyCaseStateEffects(ctx, req.ID, *cv.State)
+				}
 			}
 		}
 	}
