@@ -115,7 +115,7 @@ func (s *salesforceEventService) RefreshPartners(ctx context.Context, customerSf
 
 	returnedID, partners, err := s.partners.SalesEntity.GetCustomerPartners(ctx, customerSfID)
 	if err != nil {
-		s.recordPartnersFailed(ctx, state, err)
+		s.recordIngestFailed(ctx, state, err)
 		return res, err
 	}
 	if id := strings.TrimSpace(returnedID); id != "" && id != customerSfID {
@@ -125,7 +125,7 @@ func (s *salesforceEventService) RefreshPartners(ctx context.Context, customerSf
 
 	customerID, err := s.EnsureAccount(ctx, customerSfID)
 	if err != nil {
-		s.recordPartnersFailed(ctx, state, err)
+		s.recordIngestFailed(ctx, state, err)
 		return res, err
 	}
 	partnerIDs := make([]string, 0, len(partners))
@@ -149,7 +149,7 @@ func (s *salesforceEventService) RefreshPartners(ctx context.Context, customerSf
 			if !errors.As(err, &nf) {
 				err = fmt.Errorf("partner %s of %s: %w", pid, customerSfID, err)
 			}
-			s.recordPartnersFailed(ctx, state, err)
+			s.recordIngestFailed(ctx, state, err)
 			return res, err
 		}
 		partnerIDs = append(partnerIDs, accountID)
@@ -158,7 +158,7 @@ func (s *salesforceEventService) RefreshPartners(ctx context.Context, customerSf
 
 	res.Added, res.Removed, err = s.partners.Partners.ReplacePartners(ctx, customerSfID, customerID, partnerIDs, state)
 	if err != nil {
-		s.recordPartnersFailed(ctx, state, err)
+		s.recordIngestFailed(ctx, state, err)
 		return res, err
 	}
 	slog.InfoContext(ctx, "salesforce: account partners refreshed",
@@ -238,22 +238,6 @@ func (s *salesforceEventService) refreshPartnersForMembership(ctx context.Contex
 	if _, err := s.RefreshPartners(ctx, projectAccount); err != nil {
 		slog.WarnContext(ctx, "salesforce: partner refresh after a partner-contact membership failed",
 			"membershipSfId", membershipSfID, "accountSfId", projectAccount, "contactAccountSfId", contactAccount, "err", err)
-	}
-}
-
-// recordPartnersFailed writes a FAILED ledger row best-effort, outside the
-// rolled-back transaction, like recordOpportunityFailed.
-func (s *salesforceEventService) recordPartnersFailed(ctx context.Context, state domain.UpsertSalesforceIngestStateRequest, cause error) {
-	if s.support.States == nil {
-		return
-	}
-	msg := truncateOnboardingStepError(cause.Error())
-	state.Status = domain.SalesforceIngestFailed
-	state.LastError = &msg
-	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-	defer cancel()
-	if _, err := s.support.States.Upsert(recordCtx, state); err != nil {
-		slog.ErrorContext(ctx, "salesforce: recording FAILED partner refresh state also failed", "accountSfId", state.SfID, "err", err)
 	}
 }
 

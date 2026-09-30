@@ -52,7 +52,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED` | no | `false` | Must be `"true"` for `POST /users/me/memberships/register` to be registered at all (see "Membership registration" below). Off = the route 404s and nothing on that path can write to Salesforce |
 | `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes, the Contact writer included (see "Salesforce membership ingest" and "The Contact writer" below). The Account branch is unaffected |
 | `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Keep it off while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; the SE-1 columns are kept when Salesforce sends none; see "Salesforce Account ingest" for the full column set |
-| `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Opportunity` envelopes (`sf_opportunity` plus its `sf_opportunity_product` line items, see "Salesforce Opportunity ingest" below); off, they are acknowledged and ignored. Keep it off while csm-sync-service still copies these tables from ServiceNow: the two writers use different row ids and `sf_id` is not unique, so both on means duplicate rows |
+| `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Opportunity` envelopes (`sf_opportunity` plus its `sf_opportunity_product` line items, see "Salesforce Opportunity ingest" below) and `Invoice__c` envelopes (`sf_invoice`); off, they are acknowledged and ignored. Keep it off while csm-sync-service still copies these tables from ServiceNow: the two writers use different row ids and `sf_id` is not unique, so both on means duplicate rows |
 | `CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED` | no | `false` | Must be `"true"` for the partner-link refresh (`account_relationship` "Is Partner Of" / "Is Customer Of") to run after Account events and partner-contact membership events, and for `POST /salesforce/accounts/{sfId}/refresh-partners` to be registered (see "Salesforce partner relationships" below). Keep it off while csm-sync-service still copies `account_relationship` from ServiceNow |
 | `SALESFORCE_INGEST_RETRY_INTERVAL` | no | `5m` | How often the Salesforce ingest retry worker re-runs memberships whose DATABASE step FAILED because their project or account was not in CSM yet, and how old such a failure must be before it is re-run (see "Salesforce ingest ledger and the delayed-retry job" below). `0` disables the job, and so does an unparseable or negative value (logged as a warning; it fails closed rather than falling back to `5m`). Only runs when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true` |
 | `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `false` | Must be `"true"` to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
@@ -517,8 +517,8 @@ hour at the default. FAILED ledger rows are read the same way
 (`SalesforceIngestStateRepository.ListMissingParentFailures`, which applies the
 registered-retrier, missing-parent and attempt-cap filters in SQL before the batch
 limit, so a backlog of rows the job would skip cannot starve eligible ones) and handed to
-`EntityRetriers[entity]`; `opportunity` registers one (`RetryOpportunityIngest`) when
-`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true`, and `contact` always
+`EntityRetriers[entity]`; `opportunity` and `invoice` register one each (`RetryOpportunityIngest`,
+`RetryInvoiceIngest`) when `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true`, and `contact` always
 registers one (`RetryContactIngest`: the whole Contact writer as UPDATED, fan-out
 included; it runs under the membership flag the job already requires), and
 `account_partners` registers one (`RetryPartnerRefresh`) when
@@ -572,6 +572,35 @@ acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest
 - **Duplicate guard:** the REST Sales Entity does not return `lastModifiedDate` for
   opportunities yet, so today the guard is skipped with a warning and the idempotent
   upsert runs on every event; it starts working once Sales Entity sends the field.
+
+### Invoice__c (same flag)
+
+`Invoice__c` (also accepted as `Invoice`) envelopes are handled under
+`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` too. Code:
+`internal/service/salesforce_invoice_ingest.go` (`WithInvoiceIngest`),
+`internal/repository/sf_invoice_repo.go`, `GetInvoice` in `internal/salesentity/invoice.go`,
+and `ensureOpportunity` in `internal/service/salesforce_opportunity_ensure.go`.
+
+- **CREATED / UPDATED / RESTORED:** `POST /invoices/search {id, limit: 1}` (empty =
+  retryable), guard on entity `invoice` (Sales Entity sends `lastModifiedDate`), then
+  `ensureOpportunity(opportunityId)` — look up `sf_opportunity` by `sf_id`, and when
+  missing run the Opportunity branch inline (which ensures the account) — then one
+  transaction under `"sf-invoice:"+sfId`: update every `sf_invoice` row with the `sf_id`,
+  else insert, plus the SUCCEEDED ledger row. Every data column is written (`name`,
+  `description`, `classification` — VARCHAR(40), truncated with a warning —
+  `opportunity_id`, `invoiced_amount`, `invoice_date`, `invoiced_due_date`,
+  `original_invoice_due_date` = `originalInvoiceDueDate ?? dueDate`, `invoiced_paid_date`,
+  `service_start_date`, `service_end_date`, `sync_time_stamp`). An invoice with no
+  `opportunityId` is written with a NULL `opportunity_id` and a warning. Auto-created
+  invoices are included (the standalone search does not filter them).
+- **DELETED:** hard delete by `sf_id` (widened to 18 characters) plus a DELETED ledger
+  row; a never-ingested invoice is acknowledged.
+- **Never from the Opportunity event:** the invoices embedded in an Opportunity lack the
+  invoice date, the parent id and the original due date, and leave out auto-created
+  invoices, so they are ignored (plan §7).
+- **Retry:** `invoice` registers `RetryInvoiceIngest` with the delayed-retry job when the
+  flag is on; a missing account under the inline Opportunity ingest fails with the
+  "account not found ..." prefix it matches.
 
 ## Salesforce partner relationships
 

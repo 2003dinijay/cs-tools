@@ -274,8 +274,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			if !cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
 				return svc
 			}
-			return service.WithOpportunityIngest(svc, service.OpportunityIngest{
+			svc = service.WithOpportunityIngest(svc, service.OpportunityIngest{
 				Opportunities: repository.NewSalesforceOpportunityRepository(db),
+				SalesEntity:   salesEntityClient,
+			})
+			// Invoice__c events ride on the same flag: an invoice needs its
+			// opportunity, which the Opportunity branch ingests inline.
+			return service.WithInvoiceIngest(svc, service.InvoiceIngest{
+				Invoices:      repository.NewSalesforceInvoiceRepository(db),
+				Opportunities: repository.NewSalesforceOpportunityLookup(db),
 				SalesEntity:   salesEntityClient,
 			})
 		}
@@ -327,6 +334,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				retryWorker := service.NewSalesforceIngestRetryWorker(stepRepo, retrier, ingestSupport.States, cfg.SalesforceIngestRetryInterval)
 				if opp, ok := membershipIngestSvc.(service.OpportunityReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
 					retryWorker.EntityRetriers[domain.SalesforceIngestEntityOpportunity] = opp.RetryOpportunityIngest
+				}
+				if inv, ok := membershipIngestSvc.(service.InvoiceReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityInvoice] = inv.RetryInvoiceIngest
 				}
 				if partners, ok := membershipIngestSvc.(service.PartnerReingester); ok && cfg.CSMMigrationSalesforcePartnerIngestEnabled {
 					retryWorker.EntityRetriers[domain.SalesforceIngestEntityAccountPartners] = partners.RetryPartnerRefresh
