@@ -72,9 +72,14 @@ func main() {
 
 	// Google Chat is likewise optional per deployment; a missing or malformed
 	// value logs a warning and yields no spaces rather than failing startup.
+	// GOOGLE_CHAT_SPACES is audience-keyed (team name, or a standing
+	// audience like "Incident Monitor") — the only Chat routing config this
+	// service has; there is no product-based alternative any more.
+	if os.Getenv("GOOGLE_CHAT_AUDIENCE_SPACES") != "" {
+		slog.Warn("GOOGLE_CHAT_AUDIENCE_SPACES is set but no longer read; it was renamed to GOOGLE_CHAT_SPACES, which is now the only Google Chat routing config")
+	}
 	googleChatClient := notifications.NewGoogleChatClient(notifications.GoogleChatConfig{
-		Spaces:         parseGoogleChatSpaces(os.Getenv("GOOGLE_CHAT_SPACES")),
-		AudienceSpaces: parseGoogleChatAudienceSpaces(os.Getenv("GOOGLE_CHAT_AUDIENCE_SPACES")),
+		AudienceSpaces: parseGoogleChatAudienceSpaces(os.Getenv("GOOGLE_CHAT_SPACES")),
 	})
 
 	// Twilio (the call channel, used by incident.created) is likewise
@@ -259,15 +264,13 @@ func main() {
 		slog.Warn("CALL_SENDING_ENABLED=false; incident.created calls will be logged, not placed")
 	}
 
-	// Fallback Google Chat product (case.created and incident.created alike)
-	// and on-call number (incident.created's call only) for when a publisher
-	// (e.g. entity-service) can't determine which Chat space or on-call
-	// number applies and omits them from the payload — see
-	// dispatch.Dispatcher.defaultChatProduct/defaultOnCallNumber.
-	defaultChatProduct := os.Getenv("DEFAULT_CHAT_PRODUCT")
+	// Fallback on-call number (incident.created's call only) for when a
+	// publisher (e.g. entity-service) can't determine which on-call number
+	// applies and omits it from the payload — see
+	// dispatch.Dispatcher.defaultOnCallNumber.
 	defaultOnCallNumber := os.Getenv("INCIDENT_DEFAULT_CALL_TO")
 
-	dispatcher := dispatch.NewDispatcher(emailClient, googleChatClient, twilioClient, linkResolver, emailSendingEnabled, emailDebugMode, emailDebugRecipients, callSendingEnabled, defaultChatProduct, defaultOnCallNumber).
+	dispatcher := dispatch.NewDispatcher(emailClient, googleChatClient, twilioClient, linkResolver, emailSendingEnabled, emailDebugMode, emailDebugRecipients, callSendingEnabled, defaultOnCallNumber).
 		WithOnboarding(loadOnboardingConfig(customerEntityClient, emailClient))
 
 	// The main consumer's OnExhausted: publish the exhausted record to the
@@ -734,37 +737,39 @@ func splitComma(s string) []string {
 	return result
 }
 
-// parseGoogleChatSpaces decodes GOOGLE_CHAT_SPACES, a JSON array of
-// {"product":"...","webhookUrl":"..."} objects — one per Google Chat space.
-// A missing or malformed value logs a warning and yields no spaces rather
-// than failing startup, since this channel is not required for every
-// deployment.
-func parseGoogleChatSpaces(raw string) []notifications.GoogleChatSpace {
-	if raw == "" {
-		return nil
-	}
-	var spaces []notifications.GoogleChatSpace
-	if err := json.Unmarshal([]byte(raw), &spaces); err != nil {
-		slog.Error("failed to parse GOOGLE_CHAT_SPACES; Google Chat alerts will be unavailable", "err", err)
-		return nil
-	}
-	return spaces
-}
-
-// parseGoogleChatAudienceSpaces decodes GOOGLE_CHAT_AUDIENCE_SPACES, a JSON
-// array of {"audience":"...","webhookUrl":"..."} objects — one per SLA
-// breach-alert audience (a team's own space, or a standing audience like
-// "Incident Monitor"; see internal/chataudience). Same parsing convention
-// as parseGoogleChatSpaces: a missing or malformed value logs a warning
-// and yields no spaces rather than failing startup.
+// parseGoogleChatAudienceSpaces decodes GOOGLE_CHAT_SPACES, a JSON array of
+// {"audience":"...","webhookUrl":"..."} objects — one per Chat audience (a
+// team's own space, or a standing audience like "Incident Monitor"; see
+// internal/chataudience). This is the only Google Chat routing config this
+// service has — there is no product-based alternative. A missing or
+// malformed value logs a warning and yields no spaces rather than failing
+// startup, since this channel is not required for every deployment.
+//
+// Decodes with DisallowUnknownFields specifically so a deployment that
+// still carries the old product-keyed shape ({"product","webhookUrl"})
+// fails loudly here instead of silently: a plain json.Unmarshal would
+// ignore the unknown "product" key, decode every entry with an empty
+// Audience, and NewGoogleChatClient would then silently drop every one of
+// them (see its own doc comment) — dropping every Chat alert with nothing
+// but a per-send warning, and no indication at startup that the rename
+// needs a config change. An entry that decodes fine but still has an empty
+// audience (e.g. a hand-edited config missing the field) gets its own
+// explicit error log for the same reason.
 func parseGoogleChatAudienceSpaces(raw string) []notifications.GoogleChatAudienceSpace {
 	if raw == "" {
 		return nil
 	}
 	var spaces []notifications.GoogleChatAudienceSpace
-	if err := json.Unmarshal([]byte(raw), &spaces); err != nil {
-		slog.Error("failed to parse GOOGLE_CHAT_AUDIENCE_SPACES; sla breach Chat alerts will be unavailable", "err", err)
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&spaces); err != nil {
+		slog.Error("failed to parse GOOGLE_CHAT_SPACES; Google Chat alerts will be unavailable", "err", err)
 		return nil
+	}
+	for i, s := range spaces {
+		if strings.TrimSpace(s.Audience) == "" {
+			slog.Error("GOOGLE_CHAT_SPACES entry has no audience and will be skipped", "index", i)
+		}
 	}
 	return spaces
 }

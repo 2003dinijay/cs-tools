@@ -32,20 +32,20 @@ type splLookupsClient interface {
 // SplLookupsHandler handles HTTP requests for SupportPortalLite's small
 // standalone dropdown lookups, delegating to the ServiceNow service.
 type SplLookupsHandler struct {
-	servicenow    splLookupsClient
-	allowedGroups []string
+	servicenow  splLookupsClient
+	accessGuard *AccessGuard
 }
 
 // NewSplLookupsHandler creates a SplLookupsHandler backed by the given
-// ServiceNow client. allowedGroups is SupportPortalLite's blanket
-// access-gate group list (SPL_ALLOWED_GROUPS).
-func NewSplLookupsHandler(sn splLookupsClient, allowedGroups []string) *SplLookupsHandler {
-	return &SplLookupsHandler{servicenow: sn, allowedGroups: allowedGroups}
+// ServiceNow client. accessGuard enforces PermSPLAccess, SupportPortalLite's
+// blanket audience gate.
+func NewSplLookupsHandler(sn splLookupsClient, accessGuard *AccessGuard) *SplLookupsHandler {
+	return &SplLookupsHandler{servicenow: sn, accessGuard: accessGuard}
 }
 
 // GetProducts handles GET /products.
 func (h *SplLookupsHandler) GetProducts(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -62,7 +62,7 @@ func (h *SplLookupsHandler) GetProducts(w http.ResponseWriter, r *http.Request) 
 
 // GetABTTeams handles GET /abt-teams.
 func (h *SplLookupsHandler) GetABTTeams(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}

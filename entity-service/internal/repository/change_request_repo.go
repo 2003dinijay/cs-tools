@@ -1053,6 +1053,57 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 			addCR("state = $%d::change_request_state_enum", "ASSESS")
 		}
 	}
+	// **T fields: nil outer = omitted, non-nil outer with nil inner = explicit
+	// null (clear the column), otherwise set it.
+	addNullableText := func(col string, v **string) {
+		if v == nil {
+			return
+		}
+		if *v == nil {
+			crSets = append(crSets, col+" = NULL")
+			return
+		}
+		addCR(col+" = $%d", **v)
+	}
+	addNullableText("implementation_plan", req.ImplementationPlan)
+	addNullableText("affected_services", req.AffectedServicesText)
+	addNullableText("affected_component", req.AffectedComponentsText)
+	addNullableText("rollback_duration", req.RollbackDurationText)
+	if req.RequestedByID != nil {
+		if *req.RequestedByID == nil {
+			crSets = append(crSets, "requested_by_user_id = NULL")
+		} else {
+			addCR("requested_by_user_id = $%d::uuid", **req.RequestedByID)
+		}
+	}
+	if req.CustomerGroupID != nil {
+		if *req.CustomerGroupID == nil {
+			crSets = append(crSets, "customer_group_id = NULL")
+		} else {
+			addCR("customer_group_id = $%d::uuid", **req.CustomerGroupID)
+		}
+	}
+	if req.Priority != nil {
+		if *req.Priority == nil {
+			crSets = append(crSets, "priority = NULL")
+		} else {
+			addCR("priority = $%d::change_request_priority_enum", strings.ToUpper(string(**req.Priority)))
+		}
+	}
+	if req.Category != nil {
+		if *req.Category == nil {
+			crSets = append(crSets, "category = NULL")
+		} else {
+			label := strings.ToUpper(string(**req.Category))
+			if !changeRequestCategoryPGLabels[label] {
+				return domain.ChangeRequest{}, &apierror.ValidationError{Msg: fmt.Sprintf("category %q is not supported on the PostgreSQL data source", **req.Category)}
+			}
+			addCR("category = $%d::change_request_category_enum", label)
+		}
+	}
+	if req.IsPlanningVisibleToCustomers != nil {
+		addCR("is_planning_visible_to_customers = $%d", *req.IsPlanningVisibleToCustomers)
+	}
 	// Type has no real mapping -- see this file's own package doc comment.
 
 	if len(crSets) > 0 {
@@ -1214,8 +1265,19 @@ const changeRequestApprovalStagesQuery = `
 // onto approval_stage_approver, migration 0089's own comment on why)
 // rather than joining through approval_stage, same reasoning as that
 // column's own comment.
+//
+// u.id is selected alongside asa.id because domain.ChangeRequestApprover.ID
+// must be the approver's own user id, not this junction row's id -- the
+// ServiceNow-backed GetChangeRequestApprovals (sn_change_request_service.go)
+// already returns sysidToUUID(the approver's own sys_id) there, and the CSM
+// webapp's isMyPendingApproval compares this field against the signed-in
+// caller's own /users/me id to decide whether to render Approve/Reject at
+// all. A real, reported bug: this query used to select only asa.id, so
+// every approver here carried the junction row's own id instead -- nobody
+// could ever approve/reject their own pending approval through the portal
+// on this data source, since that id could never equal any real user's id.
 const changeRequestApprovalApproversQuery = `
-	SELECT asa.id, asa.stage_id,
+	SELECT asa.id, asa.stage_id, u.id,
 	       COALESCE(NULLIF(TRIM(u.name), ''), NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS approver_name,
 	       asa.status, asa.updated_on
 	FROM approval_stage_approver asa
@@ -1233,13 +1295,16 @@ type changeRequestApprovalStageRow struct {
 // changeRequestApprovalApproversQuery. rawStatus/stageID are nullable
 // pointers because both approval_stage_approver.status and .stage_id are
 // (migration 0089's own comment on nullable FKs throughout, plus status
-// having no NOT NULL/DEFAULT).
+// having no NOT NULL/DEFAULT). approverUserID is nullable because the LEFT
+// JOIN to "user" leaves it null whenever approver_user_id itself is null or
+// points to a since-deleted user row.
 type changeRequestApprovalApproverRow struct {
-	id           string
-	stageID      *string
-	approverName string
-	rawStatus    *string
-	updatedOn    time.Time
+	id             string
+	stageID        *string
+	approverUserID *string
+	approverName   string
+	rawStatus      *string
+	updatedOn      time.Time
 }
 
 // GetChangeRequestApprovals implements ChangeRequestRepository.
@@ -1269,7 +1334,7 @@ func (r *changeRequestRepo) GetChangeRequestApprovals(ctx context.Context, id st
 	var approvers []changeRequestApprovalApproverRow
 	for approverRows.Next() {
 		var ap changeRequestApprovalApproverRow
-		if err := approverRows.Scan(&ap.id, &ap.stageID, &ap.approverName, &ap.rawStatus, &ap.updatedOn); err != nil {
+		if err := approverRows.Scan(&ap.id, &ap.stageID, &ap.approverUserID, &ap.approverName, &ap.rawStatus, &ap.updatedOn); err != nil {
 			approverRows.Close()
 			return domain.ChangeRequestApprovals{}, fmt.Errorf("get change request approvals: scan approver: %w", err)
 		}
@@ -1388,8 +1453,19 @@ func buildChangeRequestApprovals(stages []changeRequestApprovalStageRow, approve
 				respondedOn = &s
 			}
 
+			// Falls back to the junction row's own id only when the
+			// approver's user can't be resolved (approver_user_id null, or
+			// pointing at a since-deleted user) -- purely so this approver
+			// still has a stable, non-empty id to key a list on; it can
+			// never equal a real caller's own id, so isMyPendingApproval
+			// (webapp) correctly never offers Approve/Reject for it either.
+			approverID := ap.id
+			if ap.approverUserID != nil {
+				approverID = *ap.approverUserID
+			}
+
 			domainApprovers = append(domainApprovers, domain.ChangeRequestApprover{
-				ID:          ap.id,
+				ID:          approverID,
 				Name:        ap.approverName,
 				Status:      status,
 				RespondedOn: respondedOn,
@@ -1441,4 +1517,12 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 		return "", fmt.Errorf("decide change request approval: %w", err)
 	}
 	return approvalID, nil
+}
+
+// changeRequestCategoryPGLabels is change_request_category_enum's label set
+// (migration 0043). The domain enum carries four more values (regular/hotfix
+// release cloud, devops, cloud computing) with no label here.
+var changeRequestCategoryPGLabels = map[string]bool{
+	"SOFTWARE": true, "NETWORK": true, "SERVICE": true, "TELECOM": true, "HARDWARE": true,
+	"SYSTEM_SOFTWARE": true, "DOCUMENTATION": true, "APPLICATIONS_SOFTWARE": true, "OTHER": true,
 }

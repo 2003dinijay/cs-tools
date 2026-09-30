@@ -3632,8 +3632,7 @@ paths:
   /cases/feedback/search:
     post:
       summary: >-
-        Search case-feedback (satisfaction rating) records across cases
-        (ServiceNow data source only).
+        Search case-feedback (satisfaction rating) records across cases.
       description: >-
         Backs the case-feedback dashboard's list view. Distinct from any
         single-case feedback lookup: this is filterable by case, accounts,
@@ -3687,11 +3686,15 @@ paths:
     post:
       summary: >-
         Date-bucketed rating aggregation of case-feedback records across
-        cases (ServiceNow data source only).
+        cases.
       description: >-
         Backs the case-feedback dashboard's rating-trend chart. This is the
         many-cases trend endpoint, not scoped to one case, so filters.caseId
         is not accepted here (unlike POST /cases/feedback/search).
+
+        Postgres: the reasons_* buckets return an empty result (the stored
+        feedback carries no per-rating reason selections), and pageSize is
+        capped at 50 on search.
       operationId: aggregateCaseFeedback
       requestBody:
         required: true

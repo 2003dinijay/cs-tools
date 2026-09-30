@@ -18,59 +18,63 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
-
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/employeeinfo"
 )
 
-// employeeInfoClient abstracts the employee-info service operations used by
-// SplUserInfoHandler and SplABTTeamMembersHandler.
-type employeeInfoClient interface {
-	GetEmployeeData(ctx context.Context, workEmail string) (*employeeinfo.Employee, error)
+// entityUserMeClient is the subset of internal/entity.CustomerEntityClient
+// this file needs.
+type entityUserMeClient interface {
+	GetUserMe(ctx context.Context) ([]byte, error)
 }
 
-// SplUserInfoView is the portal response for GET /user-info — mirrors
-// Ballerina modules/userinfo/types.bal's Employee.
+// SplUserInfoView is the portal response for GET /user-info.
 type SplUserInfoView struct {
-	FirstName         string  `json:"firstName"`
-	LastName          string  `json:"lastName"`
-	EmployeeThumbnail *string `json:"employeeThumbnail"`
+	FirstName string `json:"firstName"`
+	LastName  string `json:"lastName"`
 }
 
-// SplUserInfoHandler handles HTTP requests for the caller's own employee
-// info, delegating to the employee-info service.
+// SplUserInfoHandler handles HTTP requests for the caller's own name,
+// delegating to entity-service — the same GET /users/me call UsersHandler.GetMe
+// already makes, since first/last name already live on entity-service's own
+// user table (no separate employee-info lookup needed for them).
 type SplUserInfoHandler struct {
-	employeeInfo  employeeInfoClient
-	allowedGroups []string
+	entity      entityUserMeClient
+	accessGuard *AccessGuard
 }
 
 // NewSplUserInfoHandler creates a SplUserInfoHandler backed by the given
-// employee-info client. allowedGroups is SupportPortalLite's blanket
-// access-gate group list (SPL_ALLOWED_GROUPS).
-func NewSplUserInfoHandler(employeeInfo employeeInfoClient, allowedGroups []string) *SplUserInfoHandler {
-	return &SplUserInfoHandler{employeeInfo: employeeInfo, allowedGroups: allowedGroups}
+// entity client. accessGuard enforces PermSPLAccess, SupportPortalLite's
+// blanket audience gate.
+func NewSplUserInfoHandler(entity entityUserMeClient, accessGuard *AccessGuard) *SplUserInfoHandler {
+	return &SplUserInfoHandler{entity: entity, accessGuard: accessGuard}
 }
 
-// GetUserInfo handles GET /user-info: returns the caller's own employee
-// info, resolved from their JWT email — mirrors Ballerina service.bal's
-// `get user\-info` resource function (userinfo:getEmployeeData(authUserCtx.email)).
+// GetUserInfo handles GET /user-info: returns the caller's own first/last
+// name, resolved from entity-service.
 func (h *SplUserInfoHandler) GetUserInfo(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
 
-	employee, err := h.employeeInfo.GetEmployeeData(r.Context(), user.Email)
+	raw, err := h.entity.GetUserMe(r.Context())
 	if err != nil {
-		slog.ErrorContext(r.Context(), "employeeinfo GetEmployeeData failed", "userID", user.UserID, "err", err)
+		slog.ErrorContext(r.Context(), "entity GetUserMe failed", "userID", user.UserID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to retrieve user info.")
 		return
 	}
 
+	var resp entityUserMeResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		slog.ErrorContext(r.Context(), "entity GetUserMe: parse response failed", "userID", user.UserID, "err", err)
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+
 	writeJSONValue(w, http.StatusOK, SplUserInfoView{
-		FirstName:         employee.FirstName,
-		LastName:          employee.LastName,
-		EmployeeThumbnail: employee.EmployeeThumbnail,
+		FirstName: derefStr(resp.FirstName),
+		LastName:  resp.LastName,
 	})
 }

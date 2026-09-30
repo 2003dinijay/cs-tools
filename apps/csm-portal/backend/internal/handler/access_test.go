@@ -77,7 +77,7 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 		{"usage metrics viewer can view only", []string{"test-usage-metrics-viewer"}, []Permission{PermView}},
 		{"timecard approver can view, use time cards and updates, and approve", []string{"test-timecard-approver"}, []Permission{PermView, PermTimeCardsAndUpdates, PermApproveTimeCard}},
 		{"dashboard designer can view only", []string{"test-dashboard-designer"}, []Permission{PermView}},
-		{"sales solutions role alone grants no route permission at all, not even view", []string{"test-sales-solutions"}, nil},
+		{"sales solutions role alone grants none of these -- it holds PermViewSharedEntity/PermSPLAccess instead, tested separately", []string{"test-sales-solutions"}, nil},
 		{"roles combine", []string{"test-viewer", "test-escalator", "test-attachment-downloader"}, []Permission{PermView, PermEscalate, PermDownloadAttachment}},
 		{"unrelated roles grant nothing", []string{"wso2-everyone", "admin", "agent", "customer"}, nil},
 		{"no roles", nil, nil},
@@ -100,6 +100,40 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAccessGuard_PermViewSharedEntityScope guards the fix for the finding
+// that granting sales_solutions PermView directly widened it to every
+// PermView-gated route in the backend (users, deployments, tasks, SLAs,
+// dashboards, ...), not just the accounts/projects/cases/team-members routes
+// SPL's screens actually call. PermViewSharedEntity is the narrower
+// permission those specific routes are registered with instead.
+func TestAccessGuard_PermViewSharedEntityScope(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+
+	t.Run("every PermView holder also holds PermViewSharedEntity", func(t *testing.T) {
+		for _, roles := range [][]string{
+			{"test-viewer"}, {"test-escalator"}, {"test-attachment-downloader"}, {"test-cs-engineer"},
+			{"test-admin"}, {"test-usage-metrics-viewer"}, {"test-timecard-approver"}, {"test-dashboard-designer"},
+		} {
+			if status, _ := serveWithRoles(g, PermViewSharedEntity, roles); status != http.StatusNoContent {
+				t.Errorf("roles %v: status = %d, want 204 (PermView implies PermViewSharedEntity)", roles, status)
+			}
+		}
+	})
+
+	t.Run("sales_solutions holds PermViewSharedEntity and PermSPLAccess but not plain PermView", func(t *testing.T) {
+		roles := []string{"test-sales-solutions"}
+		if status, _ := serveWithRoles(g, PermViewSharedEntity, roles); status != http.StatusNoContent {
+			t.Errorf("PermViewSharedEntity: status = %d, want 204", status)
+		}
+		if status, _ := serveWithRoles(g, PermSPLAccess, roles); status != http.StatusNoContent {
+			t.Errorf("PermSPLAccess: status = %d, want 204", status)
+		}
+		if status, _ := serveWithRoles(g, PermView, roles); status != http.StatusForbidden {
+			t.Errorf("PermView: status = %d, want 403 -- sales_solutions must not gain every PermView route", status)
+		}
+	})
 }
 
 func TestAccessGuard_UsesConfiguredRoleNames(t *testing.T) {

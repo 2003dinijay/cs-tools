@@ -2205,6 +2205,12 @@ const (
 	CaseCauseInfrastructureProxy           CaseCause = "INFRASTRUCTURE_PROXY"
 	CaseCauseInfrastructureOther           CaseCause = "INFRASTRUCTURE_OTHER"
 	CaseCauseUnknown                       CaseCause = "UNKNOWN"
+	// CaseCauseUserMistake (case_cause_enum, migration 0108) has no
+	// ServiceNow numeric choice-value counterpart in snCauseKey -- a
+	// dual-write UpdateCase setting this cause gets a clean ValidationError
+	// from that map's own existence check rather than a wrong/silent write,
+	// so this is safe to allow on the Postgres-generic path without it.
+	CaseCauseUserMistake CaseCause = "USER_MISTAKE"
 )
 
 // EngagementType classifies the type of an engagement case.
@@ -5816,11 +5822,10 @@ type ProblemDetail struct {
 // Description, Category, Subcategory, OriginCaseID, and PrimaryIncidentID are optional.
 // OriginCaseID and PrimaryIncidentID are UUIDs from the caller's perspective.
 //
-// Description is accepted and validated but, for the ServiceNow data source, not yet
-// forwarded anywhere -- see ProblemService.CreateProblem's ServiceNow implementation
-// (sn_problem_service.go) for why: the Choreo integration's POST /problems payload has
-// no description field to receive it. It is silently dropped after validation until
-// that integration adds one; do not assume it round-trips to a created problem.
+// Description round-trips on both data sources: the Postgres path persists it on
+// work_item.description, and the ServiceNow path forwards it to the Choreo
+// integration's POST /problems payload (see ProblemService.CreateProblem's
+// ServiceNow implementation, sn_problem_service.go).
 type CreateProblemRequest struct {
 	Subject           string  `json:"subject"`
 	Description       *string `json:"description,omitempty"`

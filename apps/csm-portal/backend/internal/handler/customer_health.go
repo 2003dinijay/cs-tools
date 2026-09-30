@@ -64,19 +64,19 @@ type splCustomerHealthSNClient interface {
 // delegating to MySQL (risk-tracking state) and ServiceNow (account/project
 // summary data) as each endpoint requires.
 type CustomerHealthHandler struct {
-	risk          splRiskClient
-	sn            splCustomerHealthSNClient
-	allowedGroups []string
+	risk        splRiskClient
+	sn          splCustomerHealthSNClient
+	accessGuard *AccessGuard
 }
 
-// NewCustomerHealthHandler creates a CustomerHealthHandler. allowedGroups is
-// SupportPortalLite's blanket access-gate group list (SPL_ALLOWED_GROUPS) —
-// no endpoint in this domain has an additional fine-grained group check
+// NewCustomerHealthHandler creates a CustomerHealthHandler. accessGuard
+// enforces PermSPLAccess, SupportPortalLite's blanket audience gate — no
+// endpoint in this domain has an additional fine-grained permission check
 // beyond it (confirmed by reading every customer-health resource function in
 // service.bal: none call a group list beyond the global request
 // interceptor).
-func NewCustomerHealthHandler(riskClient splRiskClient, sn splCustomerHealthSNClient, allowedGroups []string) *CustomerHealthHandler {
-	return &CustomerHealthHandler{risk: riskClient, sn: sn, allowedGroups: allowedGroups}
+func NewCustomerHealthHandler(riskClient splRiskClient, sn splCustomerHealthSNClient, accessGuard *AccessGuard) *CustomerHealthHandler {
+	return &CustomerHealthHandler{risk: riskClient, sn: sn, accessGuard: accessGuard}
 }
 
 // customerHealthSummaryRequest is the payload for POST
@@ -126,7 +126,7 @@ type accountSummary struct {
 // Without a health-status filter, it fetches one page from ServiceNow
 // directly and enriches it with health-status values from MySQL.
 func (h *CustomerHealthHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -209,16 +209,23 @@ func (h *CustomerHealthHandler) summaryFilteredByHealthStatus(ctx context.Contex
 	}
 
 	const batchSize = 200
+	// maxBatches bounds the loop even if ServiceNow's response is
+	// inconsistent (e.g. it ignores offset, or caps a page below batchSize
+	// while still reporting more remain) -- 500 batches is 100,000 accounts,
+	// far beyond any real account count, so hitting it means the upstream
+	// itself is behaving unexpectedly rather than this genuinely having
+	// that much data.
+	const maxBatches = 500
 	snOffset := 0
 	var allAccounts []servicenow.AccountSummary
-	for {
+	for i := 0; i < maxBatches; i++ {
 		batch, err := h.sn.GetCustomerHealthSummary(ctx, payload.Email, payload.Phrase, payload.Risks, payload.Region,
 			payload.Product, payload.AbtTeam, snOffset, batchSize)
 		if err != nil {
 			return accountSummaryResponse{}, err
 		}
 		allAccounts = append(allAccounts, batch.Data...)
-		if len(batch.Data) < batchSize {
+		if len(batch.Data) == 0 || len(batch.Data) < batchSize || len(allAccounts) >= batch.TotalCount {
 			break
 		}
 		snOffset += batchSize
@@ -287,7 +294,7 @@ type initHealthTrackingRequest struct {
 // InitHealthTracking handles POST
 // /customer-health/accounts/{accountSysId}/init-health-tracking.
 func (h *CustomerHealthHandler) InitHealthTracking(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -312,7 +319,7 @@ func (h *CustomerHealthHandler) InitHealthTracking(w http.ResponseWriter, r *htt
 
 // GetAccountDetail handles GET /customer-health/accounts/{accountId}.
 func (h *CustomerHealthHandler) GetAccountDetail(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -337,7 +344,7 @@ func (h *CustomerHealthHandler) GetAccountDetail(w http.ResponseWriter, r *http.
 
 // OpenRisk handles POST /customer-health/projects/{projectSysId}/risk.
 func (h *CustomerHealthHandler) OpenRisk(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -363,7 +370,7 @@ func (h *CustomerHealthHandler) OpenRisk(w http.ResponseWriter, r *http.Request)
 
 // CloseRisk handles PUT /customer-health/risks/{riskId}/close.
 func (h *CustomerHealthHandler) CloseRisk(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -394,7 +401,7 @@ func (h *CustomerHealthHandler) CloseRisk(w http.ResponseWriter, r *http.Request
 // MarkHealthy handles POST
 // /customer-health/projects/{projectSysId}/mark-healthy.
 func (h *CustomerHealthHandler) MarkHealthy(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -421,7 +428,7 @@ func (h *CustomerHealthHandler) MarkHealthy(w http.ResponseWriter, r *http.Reque
 // RevertReview handles POST
 // /customer-health/projects/{projectSysId}/revert-review.
 func (h *CustomerHealthHandler) RevertReview(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -448,7 +455,7 @@ func (h *CustomerHealthHandler) RevertReview(w http.ResponseWriter, r *http.Requ
 // GetAccountHealthStatus handles GET
 // /customer-health/accounts/{accountSysId}/health-status.
 func (h *CustomerHealthHandler) GetAccountHealthStatus(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -470,7 +477,7 @@ func (h *CustomerHealthHandler) GetAccountHealthStatus(w http.ResponseWriter, r 
 // GetAccountHealthSummary handles GET
 // /customer-health/accounts/{accountSysId}/health-summary.
 func (h *CustomerHealthHandler) GetAccountHealthSummary(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
@@ -492,7 +499,7 @@ func (h *CustomerHealthHandler) GetAccountHealthSummary(w http.ResponseWriter, r
 // GetProjectRiskHistory handles GET
 // /customer-health/projects/{projectSysId}/risk-history.
 func (h *CustomerHealthHandler) GetProjectRiskHistory(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLGroups(w, r, h.allowedGroups)
+	user, ok := requireSPLAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}
