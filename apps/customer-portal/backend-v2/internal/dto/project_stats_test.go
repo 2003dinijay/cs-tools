@@ -112,3 +112,41 @@ func TestMapProjectFilterOptions_ExcludesInternalChangeRequestStatesByIDOrLabel(
 		t.Fatalf("ChangeRequestStates = %+v, want exactly Closed", got.ChangeRequestStates)
 	}
 }
+
+// GET /projects/{id}/stats/change-requests feeds the Operations page's
+// Upcoming Changes / Action Required Changes cards, which find their counts by
+// display label ("Scheduled", "Customer Approval", "Customer Review"). The
+// Postgres data source returns the raw enum as both id and label, so without
+// normalization "SCHEDULED" never matched and the card showed "--" while the
+// change-request list beside it showed four Scheduled changes.
+func TestMapProjectChangeRequestStats_NormalizesStateCountLabels(t *testing.T) {
+	four, zero := 4, 0
+	resp := entity.ProjectChangeRequestStatsResponse{
+		TotalCount: 134,
+		StateCount: []entity.ChoiceListItem{
+			{ID: "CUSTOMER_APPROVAL", Label: "CUSTOMER_APPROVAL", Count: &zero},
+			{ID: "SCHEDULED", Label: "SCHEDULED", Count: &four},
+			{ID: "CUSTOMER_REVIEW", Label: "CUSTOMER_REVIEW", Count: &zero},
+		},
+	}
+
+	got := MapProjectChangeRequestStats(resp)
+
+	want := []struct{ id, label string }{
+		{"5", "Customer Approval"},
+		{"-2", "Scheduled"},
+		{"1", "Customer Review"},
+	}
+	if len(got.StateCount) != len(want) {
+		t.Fatalf("StateCount = %+v, want %d entries", got.StateCount, len(want))
+	}
+	for i, w := range want {
+		if got.StateCount[i].ID != w.id || got.StateCount[i].Label != w.label {
+			t.Errorf("StateCount[%d] = {%q, %q}, want {%q, %q}",
+				i, got.StateCount[i].ID, got.StateCount[i].Label, w.id, w.label)
+		}
+	}
+	if got.StateCount[1].Count == nil || *got.StateCount[1].Count != 4 {
+		t.Errorf("Scheduled count = %v, want 4 (counts must survive normalization)", got.StateCount[1].Count)
+	}
+}
