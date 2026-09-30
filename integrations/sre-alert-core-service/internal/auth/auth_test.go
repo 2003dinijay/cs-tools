@@ -114,9 +114,7 @@ func TestParseCredentials(t *testing.T) {
 		}
 	})
 
-	// RFC 7235 makes the scheme case-insensitive, and net/http's BasicAuth already
-	// treats "basic" that way. A proxy that normalises header casing must not turn
-	// a valid credential into a 401.
+	// RFC 7235 makes the scheme case-insensitive, so a proxy normalising header casing must not turn a valid credential into a 401.
 	t.Run("scheme is case-insensitive", func(t *testing.T) {
 		token := base64.StdEncoding.EncodeToString([]byte("alice:s3cr3t"))
 		for _, scheme := range []string{"Bearer ", "bearer ", "BEARER ", "BeArEr "} {
