@@ -15,7 +15,8 @@
 // under the License.
 // Package snsconfirm handles AWS SNS subscription confirmations the way the ServiceNow AWS Alert
 // API did (AWSSNSNotificationUtils): confirm the subscription by fetching its SubscribeURL, then
-// email the team named by the webhook's ?team= query parameter. No alert is stored.
+// email the team named by the webhook's ?team= query parameter. No alert is stored. Unlike
+// ServiceNow, the SNS signature is verified first; an unsigned or forged confirmation is ignored.
 package snsconfirm
 
 import (
@@ -68,13 +69,16 @@ type Handler struct {
 	http   *http.Client
 	// allowURL guards the confirmation fetch; only SNS's own endpoints by default.
 	allowURL func(*url.URL) bool
+	verifier *verifier
 	sends    sync.WaitGroup
 }
 
 // New returns a Handler. mailer may be nil.
 func New(logger *slog.Logger, cfg Config, mailer Mailer, timeout time.Duration) *Handler {
-	return &Handler{logger: logger, teams: cfg.Teams, mailer: mailer,
-		http: &http.Client{Timeout: timeout}, allowURL: isSNSURL}
+	h := &Handler{logger: logger, teams: cfg.Teams, mailer: mailer,
+		http: &http.Client{Timeout: timeout, CheckRedirect: noRedirects}, allowURL: isSNSURL}
+	h.verifier = &verifier{http: h.http, allowURL: func(u *url.URL) bool { return h.allowURL(u) }}
+	return h
 }
 
 var snsHost = regexp.MustCompile(`^sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$`)
@@ -85,25 +89,34 @@ func isSNSURL(u *url.URL) bool {
 	return u.Scheme == "https" && snsHost.MatchString(u.Hostname())
 }
 
+// noRedirects keeps every fetch on the SNS host that was checked.
+func noRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
 // HandleIfConfirmation handles raw if it is an SNS SubscriptionConfirmation and reports whether
 // it was one. Any other payload is left for the AWS transform.
 func (h *Handler) HandleIfConfirmation(raw []byte, team string) bool {
-	var msg struct {
-		Type         string `json:"Type"`
-		SubscribeURL string `json:"SubscribeURL"`
-		TopicArn     string `json:"TopicArn"`
-	}
+	var msg message
 	if json.Unmarshal(raw, &msg) != nil || msg.Type != "SubscriptionConfirmation" {
 		return false
 	}
 	if team == "" {
 		team = DefaultTeam
 	}
+	if err := h.verifier.verify(msg); err != nil {
+		h.logger.Warn("SNS subscription confirmation failed signature check; ignored",
+			"team", team, "topic_arn", msg.TopicArn, "error", err)
+		return true
+	}
 	if msg.SubscribeURL == "" {
 		h.logger.Error("SNS subscription confirmation has no SubscribeURL", "team", team, "topic_arn", msg.TopicArn)
 		return true
 	}
 
+	if u, err := url.Parse(msg.SubscribeURL); err != nil || !h.allowURL(u) {
+		h.logger.Error("SNS SubscribeURL is not an AWS SNS https URL; not fetched or emailed",
+			"team", team, "topic_arn", msg.TopicArn, "subscribe_url", msg.SubscribeURL)
+		return true
+	}
 	confirmed := h.confirm(msg.SubscribeURL)
 	if !confirmed {
 		h.logger.Warn("SNS subscription auto-confirm failed; sending the manual-action email", "team", team, "topic_arn", msg.TopicArn)

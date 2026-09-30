@@ -76,8 +76,12 @@ func New(cfg Config, timeout time.Duration) (*Client, error) {
 		return nil, errors.New("email config: EMAIL_CLIENT_ID, EMAIL_CLIENT_SECRET and EMAIL_FROM_ADDRESS are required")
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
-	return &Client{cfg: cfg, http: &http.Client{Timeout: timeout}}, nil
+	return &Client{cfg: cfg, http: &http.Client{Timeout: timeout, CheckRedirect: noRedirects}}, nil
 }
+
+// noRedirects stops the client following any redirect: a redirect could replay the client
+// secret or bearer token to another origin, or downgrade it to plain http.
+func noRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 func requireHTTPS(name, raw string) error {
 	u, err := url.Parse(raw)

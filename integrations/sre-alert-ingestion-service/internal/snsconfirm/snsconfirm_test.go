@@ -18,8 +18,16 @@ package snsconfirm
 import (
 	"bytes"
 	"context"
-	"io"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -44,24 +52,85 @@ func (m *fakeMailer) Send(_ context.Context, to []string, subject, html string) 
 	return nil
 }
 
-// newTest returns a Handler whose SNS endpoint is a local server answering status.
-func newTest(t *testing.T, status int, teams map[string]string, mailer Mailer) (*Handler, string, *atomic.Int32, *bytes.Buffer) {
-	t.Helper()
-	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		w.WriteHeader(status)
-	}))
-	t.Cleanup(srv.Close)
-	var logs bytes.Buffer
-	h := New(slog.New(slog.NewTextHandler(&logs, nil)), Config{Teams: teams}, mailer, time.Second)
-	h.allowURL = func(u *url.URL) bool { return "http://"+u.Host == srv.URL }
-	return h, srv.URL + "/?Action=ConfirmSubscription&Token=abc", &hits, &logs
+// fakeAWS plays SNS: it serves the signing certificate and the SubscribeURL, and signs messages.
+type fakeAWS struct {
+	srv      *httptest.Server
+	key      *rsa.PrivateKey
+	roots    *x509.CertPool
+	confirms atomic.Int32
+	status   int
 }
 
-func confirmation(subscribeURL string) []byte {
-	return []byte(`{"Type":"SubscriptionConfirmation","TopicArn":"arn:aws:sns:us-east-1:000000000000:example",` +
-		`"Message":"You have chosen to subscribe to the topic","SubscribeURL":"` + subscribeURL + `"}`)
+func newFakeAWS(t *testing.T, status int) *fakeAWS {
+	t.Helper()
+	caKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	caTmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	caDER, _ := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	ca, _ := x509.ParseCertificate(caDER)
+	leafKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	leafTmpl := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "sns.amazonaws.com"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature}
+	leafDER, _ := x509.CreateCertificate(rand.Reader, leafTmpl, ca, &leafKey.PublicKey, caKey)
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})
+
+	f := &fakeAWS{key: leafKey, roots: x509.NewCertPool(), status: status}
+	f.roots.AddCert(ca)
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".pem") {
+			_, _ = w.Write(pemBytes)
+			return
+		}
+		f.confirms.Add(1)
+		w.WriteHeader(f.status)
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeAWS) subscribeURL() string {
+	return f.srv.URL + "/?Action=ConfirmSubscription&Token=abc"
+}
+
+// signed builds a SubscriptionConfirmation signed by the fake AWS key.
+func (f *fakeAWS) signed(t *testing.T, version, subscribeURL string) []byte {
+	t.Helper()
+	m := message{Type: "SubscriptionConfirmation", MessageID: "m-1", Token: "abc",
+		TopicArn: "arn:aws:sns:us-east-1:000000000000:example", Message: "You have chosen to subscribe",
+		SubscribeURL: subscribeURL, Timestamp: "2026-09-30T06:00:00.000Z",
+		SignatureVersion: version, SigningCertURL: f.srv.URL + "/SimpleNotificationService-test.pem"}
+	hash := map[string]crypto.Hash{"1": crypto.SHA1, "2": crypto.SHA256}[version]
+	h := hash.New()
+	h.Write([]byte(m.stringToSign()))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, f.key, hash, h.Sum(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Signature = base64.StdEncoding.EncodeToString(sig)
+	raw, _ := json.Marshal(m)
+	return raw
+}
+
+// handlerFor returns a Handler that trusts the fake AWS host and CA.
+func handlerFor(f *fakeAWS, teams map[string]string, mailer Mailer) (*Handler, *bytes.Buffer) {
+	var logs bytes.Buffer
+	var mu sync.Mutex
+	h := New(slog.New(slog.NewTextHandler(&lockedWriter{w: &logs, mu: &mu}, nil)), Config{Teams: teams}, mailer, time.Second)
+	h.allowURL = func(u *url.URL) bool { return "http://"+u.Host == f.srv.URL }
+	h.verifier.roots = f.roots
+	return h, &logs
+}
+
+type lockedWriter struct {
+	w  *bytes.Buffer
+	mu *sync.Mutex
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 func waitMail(t *testing.T, h *Handler) {
@@ -72,40 +141,93 @@ func waitMail(t *testing.T, h *Handler) {
 }
 
 func TestNotConfirmation_LeftForTransform(t *testing.T) {
-	h, _, hits, _ := newTest(t, 200, nil, nil)
+	f := newFakeAWS(t, 200)
+	h, _ := handlerFor(f, nil, nil)
 	for _, raw := range []string{`{"Type":"Notification","Message":"{}"}`, `not json`, `{}`} {
 		if h.HandleIfConfirmation([]byte(raw), "") {
 			t.Errorf("%s: handled as a confirmation", raw)
 		}
 	}
-	if hits.Load() != 0 {
-		t.Error("nothing should be fetched")
+}
+
+func TestSignedConfirmation_ConfirmedAndEmailed(t *testing.T) {
+	for _, version := range []string{"1", "2"} {
+		f := newFakeAWS(t, 200)
+		mailer := &fakeMailer{}
+		h, _ := handlerFor(f, map[string]string{"ManagedCloud": "managed-cloud@example.com", "Default": "sre@example.com"}, mailer)
+		if !h.HandleIfConfirmation(f.signed(t, version, f.subscribeURL()), "ManagedCloud") {
+			t.Fatal("confirmation not handled")
+		}
+		waitMail(t, h)
+		if f.confirms.Load() != 1 {
+			t.Errorf("v%s: SubscribeURL fetched %d times, want 1", version, f.confirms.Load())
+		}
+		if len(mailer.sent) != 1 || mailer.sent[0].to != "managed-cloud@example.com" ||
+			mailer.sent[0].subject != "AWS SNS Subscription [Auto-Confirmed]" {
+			t.Errorf("v%s: sent = %+v", version, mailer.sent)
+		}
 	}
 }
 
-func TestConfirmed_EmailsTheTeam(t *testing.T) {
-	mailer := &fakeMailer{}
-	teams := map[string]string{"ManagedCloud": "managed-cloud@example.com", "Default": "sre@example.com"}
-	h, subURL, hits, _ := newTest(t, 200, teams, mailer)
+func TestUnsignedOrForged_NoFetchNoEmail(t *testing.T) {
+	f := newFakeAWS(t, 200)
+	valid := f.signed(t, "2", f.subscribeURL())
+	var tampered map[string]any
+	_ = json.Unmarshal(valid, &tampered)
+	tampered["SubscribeURL"] = f.srv.URL + "/?Action=ConfirmSubscription&Token=attacker"
+	forged, _ := json.Marshal(tampered)
 
-	if !h.HandleIfConfirmation(confirmation(subURL), "ManagedCloud") {
-		t.Fatal("confirmation not handled")
+	cases := map[string][]byte{
+		"unsigned": []byte(`{"Type":"SubscriptionConfirmation","SubscribeURL":"` + f.subscribeURL() + `"}`),
+		"forged":   forged,
 	}
+	for name, raw := range cases {
+		mailer := &fakeMailer{}
+		h, logs := handlerFor(f, map[string]string{"Default": "sre@example.com"}, mailer)
+		if !h.HandleIfConfirmation(raw, "") {
+			t.Fatalf("%s: want handled (answer 200, store nothing)", name)
+		}
+		waitMail(t, h)
+		if f.confirms.Load() != 0 || len(mailer.sent) != 0 {
+			t.Errorf("%s: fetched %d, emailed %d; want neither", name, f.confirms.Load(), len(mailer.sent))
+		}
+		if !strings.Contains(logs.String(), "failed signature check") {
+			t.Errorf("%s: want a signature warning, got:\n%s", name, logs.String())
+		}
+	}
+}
+
+func TestUntrustedCertificate_Rejected(t *testing.T) {
+	f := newFakeAWS(t, 200)
+	other := newFakeAWS(t, 200)
+	mailer := &fakeMailer{}
+	h, _ := handlerFor(f, map[string]string{"Default": "sre@example.com"}, mailer)
+	h.verifier.roots = other.roots // f's certificate doesn't chain to these
+	h.HandleIfConfirmation(f.signed(t, "2", f.subscribeURL()), "")
 	waitMail(t, h)
-	if hits.Load() != 1 {
-		t.Errorf("SubscribeURL fetched %d times, want 1", hits.Load())
+	if f.confirms.Load() != 0 || len(mailer.sent) != 0 {
+		t.Error("an untrusted signing certificate must not lead to a fetch or email")
 	}
-	if len(mailer.sent) != 1 || mailer.sent[0].to != "managed-cloud@example.com" ||
-		mailer.sent[0].subject != "AWS SNS Subscription [Auto-Confirmed]" || !strings.Contains(mailer.sent[0].body, "Successfully Confirmed") {
-		t.Errorf("sent = %+v", mailer.sent)
+}
+
+func TestCertificateFromNonSNSHost_Rejected(t *testing.T) {
+	f := newFakeAWS(t, 200)
+	mailer := &fakeMailer{}
+	h, _ := handlerFor(f, map[string]string{"Default": "sre@example.com"}, mailer)
+	h.allowURL = isSNSURL // the fake AWS host is plain http on localhost, so not SNS
+	h.HandleIfConfirmation(f.signed(t, "2", f.subscribeURL()), "")
+	waitMail(t, h)
+	if f.confirms.Load() != 0 || len(mailer.sent) != 0 {
+		t.Error("a certificate from a non-SNS host must be rejected")
 	}
 }
 
 func TestTeamFallsBackToDefault(t *testing.T) {
 	for _, team := range []string{"", "Unknown"} {
+		f := newFakeAWS(t, 200)
 		mailer := &fakeMailer{}
-		h, subURL, _, _ := newTest(t, 200, map[string]string{"Default": "sre@example.com"}, mailer)
-		h.HandleIfConfirmation(confirmation(subURL), team)
+		h, _ := handlerFor(f, map[string]string{"Default": "sre@example.com"}, mailer)
+		h.HandleIfConfirmation(f.signed(t, "2", f.subscribeURL()), team)
 		waitMail(t, h)
 		if len(mailer.sent) != 1 || mailer.sent[0].to != "sre@example.com" {
 			t.Errorf("team %q: sent = %+v, want the Default address", team, mailer.sent)
@@ -114,9 +236,10 @@ func TestTeamFallsBackToDefault(t *testing.T) {
 }
 
 func TestConfirmFails_ActionRequiredEmail(t *testing.T) {
+	f := newFakeAWS(t, 500)
 	mailer := &fakeMailer{}
-	h, subURL, _, _ := newTest(t, 500, map[string]string{"Default": "sre@example.com"}, mailer)
-	h.HandleIfConfirmation(confirmation(subURL), "")
+	h, _ := handlerFor(f, map[string]string{"Default": "sre@example.com"}, mailer)
+	h.HandleIfConfirmation(f.signed(t, "2", f.subscribeURL()), "")
 	waitMail(t, h)
 	if len(mailer.sent) != 1 || mailer.sent[0].subject != "AWS SNS Subscription [ACTION REQUIRED]" ||
 		!strings.Contains(mailer.sent[0].body, "ConfirmSubscription") {
@@ -124,37 +247,26 @@ func TestConfirmFails_ActionRequiredEmail(t *testing.T) {
 	}
 }
 
-func TestNonSNSURL_NotFetched(t *testing.T) {
+func TestSignedButNonSNSSubscribeURL_NotFetchedOrEmailed(t *testing.T) {
+	f := newFakeAWS(t, 200)
 	mailer := &fakeMailer{}
-	var hits atomic.Int32
-	evil := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
-	defer evil.Close()
-	h := New(slog.New(slog.NewTextHandler(io.Discard, nil)), Config{Teams: map[string]string{"Default": "sre@example.com"}}, mailer, time.Second)
-
-	if !h.HandleIfConfirmation(confirmation(evil.URL+"/steal"), "") {
-		t.Fatal("confirmation not handled")
-	}
+	h, logs := handlerFor(f, map[string]string{"Default": "sre@example.com"}, mailer)
+	h.HandleIfConfirmation(f.signed(t, "2", "https://attacker.example/phish"), "")
 	waitMail(t, h)
-	if hits.Load() != 0 {
-		t.Error("a non-SNS SubscribeURL must not be fetched")
+	if f.confirms.Load() != 0 || len(mailer.sent) != 0 {
+		t.Errorf("fetched %d, emailed %+v; want neither", f.confirms.Load(), mailer.sent)
 	}
-	if len(mailer.sent) != 1 || !strings.Contains(mailer.sent[0].subject, "ACTION REQUIRED") {
-		t.Errorf("sent = %+v", mailer.sent)
+	if !strings.Contains(logs.String(), "not fetched or emailed") {
+		t.Errorf("want the not-SNS log, got:\n%s", logs.String())
 	}
 }
 
 func TestNoEmailAndConfirmFailed_LogsCritical(t *testing.T) {
-	h, subURL, _, logs := newTest(t, 500, nil, nil)
-	h.HandleIfConfirmation(confirmation(subURL), "Choreo")
+	f := newFakeAWS(t, 500)
+	h, logs := handlerFor(f, nil, nil)
+	h.HandleIfConfirmation(f.signed(t, "2", f.subscribeURL()), "Choreo")
 	if !strings.Contains(logs.String(), "CRITICAL") {
 		t.Errorf("want a CRITICAL log, got:\n%s", logs.String())
-	}
-}
-
-func TestMissingSubscribeURL_HandledWithoutFetch(t *testing.T) {
-	h, _, hits, _ := newTest(t, 200, nil, nil)
-	if !h.HandleIfConfirmation([]byte(`{"Type":"SubscriptionConfirmation"}`), "") || hits.Load() != 0 {
-		t.Error("want handled (no alert) and nothing fetched")
 	}
 }
 
