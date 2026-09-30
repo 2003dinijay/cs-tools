@@ -29,7 +29,6 @@ import (
 	"testing"
 	"time"
 
-	"sre-alert-ingestion-service/internal/auth"
 	"sre-alert-ingestion-service/internal/model"
 	"sre-alert-ingestion-service/internal/vendors"
 )
@@ -80,7 +79,7 @@ func newIngestServer(t *testing.T, sub Submitter, rejects RejectNotifier) *Serve
 	}
 	return New(Options{
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Auth:         auth.None{},
+		Auth:         allowAll{},
 		Pipeline:     NewIngestor(reg, sub, time.Second),
 		Rejects:      rejects,
 		Vendors:      reg.Names(),
