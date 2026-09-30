@@ -3694,6 +3694,49 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /products/github-repo:
+    get:
+      summary: Get the GitHub repository mapped to a product.
+      description: >
+        Resolves a case product name against the active product_repo_mapping
+        rows: an exact product name first, then an exact abbreviation, then the
+        longest product name followed by a space (so a versioned name such as
+        "<product> 6.0.0" resolves to "<product>"). Matching is case-insensitive.
+        Registered only when DATA_SOURCE is postgres.
+      operationId: getProductRepoMapping
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Product name from the case, with or without a version.
+      responses:
+        "200":
+          description: The mapped repository.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductRepoMapping'
+        "400":
+          description: name is missing or blank.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No GitHub repository is mapped for this product.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /deployments:
     post:
       summary: Create a new deployment.
@@ -12083,6 +12126,24 @@ components:
           type: integer
         hasMore:
           type: boolean
+
+    ProductRepoMapping:
+      type: object
+      required: [productName, owner, repository, githubLabel]
+      properties:
+        productName:
+          type: string
+        abbreviation:
+          type: string
+          description: Short code the case payload may use instead of the product name. Omitted when unset.
+        owner:
+          type: string
+          description: GitHub organisation that owns the repository.
+        repository:
+          type: string
+        githubLabel:
+          type: string
+          description: Product label applied to issues filed in this repository.
 
     SNProduct:
       description: Product returned by the ServiceNow data source. Timestamp fields are absent; class is a ServiceNow label (e.g. "Software Model").
