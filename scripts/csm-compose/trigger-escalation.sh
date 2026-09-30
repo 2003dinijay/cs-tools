@@ -110,8 +110,21 @@ export INCIDENT_ESCALATION_ROSTER
 echo "==> making sure redis and the notification service are up to date"
 docker compose up -d redis >/dev/null
 docker compose up -d --build csm-notification-service >/dev/null
-docker compose logs csm-notification-service --tail 50 2>/dev/null \
-  | grep -q 'incident call escalation is enabled' \
+# Poll rather than read once. `up -d` returns when the container has been
+# STARTED, not when the service inside it is ready, and on a cold start the
+# engine's line lands a few seconds later -- so a single read reported "did not
+# start" for a service that was starting perfectly well, and the whole run had
+# to be repeated. Thirty seconds is well past a warm start and still short
+# enough to fail quickly when the engine really is disabled.
+for _ in $(seq 1 30); do
+  if docker compose logs csm-notification-service --tail 200 2>/dev/null \
+       | grep -q 'incident call escalation is enabled'; then
+    escalation_up=1
+    break
+  fi
+  sleep 1
+done
+[[ -n "${escalation_up:-}" ]] \
   || { echo "the escalation engine did not start; check REDIS_ADDR and the roster" >&2; exit 1; }
 
 echo "==> building the publisher (entity-service's own event struct)"

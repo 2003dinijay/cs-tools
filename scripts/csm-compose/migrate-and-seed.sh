@@ -65,6 +65,30 @@ ensure_migrations_table() {
     "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
 }
 
+# Whether a migration may be wrapped in a single transaction.
+#
+# Almost every file may, and should: a half-applied migration recorded as
+# applied is the worst outcome here. Two statements cannot be, though --
+# CREATE INDEX CONCURRENTLY and ALTER TYPE ... ADD VALUE both refuse to run
+# inside a transaction block -- and Postgres rejects the whole file with
+# "cannot run inside a transaction block", which under ON_ERROR_STOP=1 exits 3
+# and takes every migration queued behind it down too.
+#
+# entity-service's own Makefile `migrate` target applies each file with a
+# plain `psql -f` and no --single-transaction, which is why those migrations
+# work there and failed only here; 0152_work_item_type_updated_on_index.sql
+# says so in its own header. Rather than drop the wrapper for everything and
+# lose atomicity for the other ~170 files, drop it only for the files that
+# cannot take it. They are single-statement by convention for this reason, so
+# there is no partial state for the wrapper to have protected.
+transaction_flag() {
+  if grep -qiE 'CONCURRENTLY|ALTER[[:space:]]+TYPE[^;]*ADD[[:space:]]+VALUE' "$1"; then
+    echo ""
+  else
+    echo "-1"
+  fi
+}
+
 apply_pending_migrations() {
   db="$1"; dir="$2"
   ensure_migrations_table "$db"
@@ -76,7 +100,7 @@ apply_pending_migrations() {
       tmp="$(mktemp)"
       cat "$f" > "$tmp"
       printf "\nINSERT INTO schema_migrations (version) VALUES ('%s');\n" "$version" >> "$tmp"
-      $PSQL -d "$db" -1 -f "$tmp"
+      $PSQL -d "$db" $(transaction_flag "$f") -f "$tmp"
       rm -f "$tmp"
     fi
 
