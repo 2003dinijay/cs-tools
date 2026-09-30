@@ -19,9 +19,9 @@ package repository
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
@@ -66,10 +66,15 @@ func NewSalesforceContactRepository(db *pgxpool.Pool) SalesforceContactRepositor
 // lockSalesforceContact serialises writers of one Salesforce Contact for the
 // life of the transaction. sf_id is not unique on "user" or account_contact
 // (migration 0095), so two concurrent events for a new contact would
-// otherwise both miss the lookup and both insert.
-func lockSalesforceContact(ctx context.Context, tx pgx.Tx, contactSfID string) error {
+// otherwise both miss the lookup and both insert. Both the Contact writer and
+// the membership upsert take it before resolving "user" and account_contact.
+// A blank id takes no lock: there is no contact to serialise on.
+func lockSalesforceContact(ctx context.Context, tx querier, contactSfID string) error {
+	if strings.TrimSpace(contactSfID) == "" {
+		return nil
+	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0::bigint))`, "salesforce-contact|"+contactSfID); err != nil {
-		return fmt.Errorf("upsert contact: lock contact: %w", err)
+		return fmt.Errorf("lock salesforce contact: %w", err)
 	}
 	return nil
 }

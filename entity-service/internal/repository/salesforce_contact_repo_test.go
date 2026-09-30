@@ -369,3 +369,56 @@ func TestSearchProjectContactsExcludesDeactivated(t *testing.T) {
 		t.Errorf("contacts search must leave out DEACTIVATED rows: %s", searchProjectContactsBaseWhere)
 	}
 }
+
+// scriptedTx lets upsertMembershipTx, which takes a pgx.Tx, run against a
+// scriptedQuerier; only the three querier methods are ever called.
+type scriptedTx struct {
+	pgx.Tx
+	q *scriptedQuerier
+}
+
+func (tx scriptedTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return tx.q.Exec(ctx, sql, args...)
+}
+
+func (tx scriptedTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return tx.q.Query(ctx, sql, args...)
+}
+
+func (tx scriptedTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return tx.q.QueryRow(ctx, sql, args...)
+}
+
+// TestUpsertMembershipTx_TakesContactLock: the membership upsert takes the
+// Contact writer's advisory lock before it reads anything, so it cannot race
+// a Contact event for the same new contact into a duplicate "user" row.
+func TestUpsertMembershipTx_TakesContactLock(t *testing.T) {
+	q := &scriptedQuerier{t: t, script: []scriptStep{
+		{match: "FROM project", row: noRows},
+	}}
+	_, err := upsertMembershipTx(context.Background(), scriptedTx{q: q}, domain.SalesforceMembershipUpsert{
+		ContactSfID: "003000000000001AAA", ContactEmail: "jane@acme.com", ProjectKey: "ACME",
+	})
+	if err == nil {
+		t.Fatal("want the scripted project-not-found error")
+	}
+	if len(q.execs) == 0 || !strings.Contains(q.execs[0].sql, "pg_advisory_xact_lock") ||
+		q.execs[0].args[0] != "salesforce-contact|003000000000001AAA" {
+		t.Fatalf("first statement = %+v, want the salesforce-contact lock", q.execs)
+	}
+	if len(q.queries) != 1 {
+		t.Errorf("queries = %d, want the lock to come before the project read", len(q.queries))
+	}
+}
+
+// TestLockSalesforceContact_BlankIDTakesNoLock: without a contact id there is
+// nothing to serialise on, and one shared key would serialise every such write.
+func TestLockSalesforceContact_BlankIDTakesNoLock(t *testing.T) {
+	q := &scriptedQuerier{t: t}
+	if err := lockSalesforceContact(context.Background(), q, "  "); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(q.execs) != 0 {
+		t.Errorf("execs = %+v, want none", q.execs)
+	}
+}

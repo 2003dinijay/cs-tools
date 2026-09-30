@@ -193,7 +193,13 @@ func (s *salesforceEventService) ingestOpportunity(ctx context.Context, sfID, ev
 // csm-sync-service do today. The foreign keys cascade the line items and the
 // project links and null out the invoices. There is nothing to fetch — the
 // record is gone from Salesforce — so the ledger version is the current time.
+//
+// The ingest stores the 18-character Id Sales Entity returns, so a
+// 15-character referenceId is widened to that form first: the delete, the
+// advisory lock and the ledger row are then all keyed on the same Id the
+// ingest used, instead of the delete matching no row and being acknowledged.
 func (s *salesforceEventService) deleteOpportunity(ctx context.Context, sfID string) error {
+	sfID = salesforceID18(sfID)
 	state := domain.UpsertSalesforceIngestStateRequest{
 		Entity:          domain.SalesforceIngestEntityOpportunity,
 		SfID:            sfID,
@@ -212,6 +218,35 @@ func (s *salesforceEventService) deleteOpportunity(ctx context.Context, sfID str
 	}
 	slog.InfoContext(ctx, "salesforce: opportunity deleted", "opportunitySfId", sfID, "rows", n)
 	return nil
+}
+
+// salesforceID18 returns the 18-character, case-insensitive form of a
+// 15-character Salesforce record Id: the three extra characters encode which
+// of the 15 are upper case, five per character, as Salesforce computes them.
+// Anything that is not a 15-character alphanumeric Id is returned trimmed and
+// otherwise unchanged.
+func salesforceID18(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) != 15 {
+		return id
+	}
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+	suffix := make([]byte, 3)
+	for chunk := 0; chunk < 3; chunk++ {
+		bits := 0
+		for i := 0; i < 5; i++ {
+			c := id[chunk*5+i]
+			switch {
+			case c >= 'A' && c <= 'Z':
+				bits |= 1 << i
+			case (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'):
+			default:
+				return id
+			}
+		}
+		suffix[chunk] = alphabet[bits]
+	}
+	return id + string(suffix)
 }
 
 // recordOpportunityFailed writes a FAILED ledger row best-effort, outside the

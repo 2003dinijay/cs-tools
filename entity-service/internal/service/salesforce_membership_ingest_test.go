@@ -310,8 +310,8 @@ func TestSplitIgnoredRoles(t *testing.T) {
 
 // TestMapGlobalRoles pins decision D1: customer or partner follows the
 // contact's account classification (it used to follow the membership type),
-// and {customer, partner} is a managed pair whenever the classification is
-// known.
+// and {customer, partner} is a managed pair only when the classification is
+// known (non-blank).
 func TestMapGlobalRoles(t *testing.T) {
 	sorted := func(s []string) []string { c := append([]string{}, s...); sort.Strings(c); return c }
 	account := func(classification *string) *salesentity.ContactAccount {
@@ -329,7 +329,8 @@ func TestMapGlobalRoles(t *testing.T) {
 		{"customer account", account(sampleStr("Customer")), false, []string{"customer", "external"}, "customer_admin", true, true},
 		{"partner account", account(sampleStr("Partner")), false, []string{"external", "partner"}, "partner_admin", true, true},
 		{"classification is case-insensitive", account(sampleStr(" partner ")), false, []string{"external", "partner"}, "partner_admin", true, true},
-		{"no classification is a customer", account(nil), false, []string{"customer", "external"}, "customer_admin", true, true},
+		{"no classification: customer, pair not managed", account(nil), false, []string{"customer", "external"}, "customer_admin", true, false},
+		{"blank classification: customer, pair not managed", account(sampleStr("  ")), false, []string{"customer", "external"}, "customer_admin", true, false},
 		{"unknown account: customer, pair not managed", nil, false, []string{"customer", "external"}, "customer_admin", true, false},
 		{"integration user gets nothing", account(sampleStr("Partner")), true, nil, "", false, false},
 	}

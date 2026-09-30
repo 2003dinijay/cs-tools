@@ -221,10 +221,12 @@ type contactRoleMapping struct {
 // customer_admin. The Contact writer, the membership ingest and the portal
 // writes all call this, so they agree.
 //
-// account nil means the classification is unknown (a portal write that has
-// just created the contact, whose create response carries no account): the
-// contact is treated as a customer, as before, but ManagedGlobal is nil so a
-// partner role the user already holds is not revoked on missing evidence.
+// account nil, or an account with a blank classification, means the
+// classification is unknown (a portal write that has just created the
+// contact, whose create response carries no account; an account Sales Entity
+// sent without a classification): the contact is treated as a customer, as
+// before, but ManagedGlobal is nil so a partner role the user already holds
+// is not revoked on missing evidence.
 //
 // An integration user gets no global roles at all (it never signs in), and
 // none are revoked either.
@@ -233,7 +235,7 @@ func mapGlobalRoles(account *salesentity.ContactAccount, isIntegrationUser bool)
 		return contactRoleMapping{}
 	}
 	m := contactRoleMapping{Grant: []string{globalRoleExternal}, ManagedAdmin: managedAdminRoles}
-	if account != nil {
+	if account != nil && strings.TrimSpace(derefString(account.Classification)) != "" {
 		m.ManagedGlobal = managedOrgRoles
 	}
 	if isPartnerAccount(account) {

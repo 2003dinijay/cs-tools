@@ -405,6 +405,39 @@ func TestOpportunityIngest_Deleted(t *testing.T) {
 	}
 }
 
+// TestOpportunityIngest_DeletedWidens15CharID: a 15-character referenceId is
+// deleted, locked and recorded under the 18-character Id the ingest stored.
+func TestOpportunityIngest_DeletedWidens15CharID(t *testing.T) {
+	repo := &fakeOpportunityRepo{deleteRows: 1}
+	svc := newOpportunityService(&fakeOpportunitySalesEntity{}, repo, &fakeIngestStateRepo{}, nil)
+	req := opportunityEvent("DELETED")
+	req.ReferenceID = testOpportunitySfID[:15]
+	if err := svc.HandleEvent(context.Background(), req); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(repo.deletes) != 1 || repo.deletes[0] != testOpportunitySfID {
+		t.Errorf("deletes = %v, want [%s]", repo.deletes, testOpportunitySfID)
+	}
+	if repo.deleteState[0].SfID != testOpportunitySfID {
+		t.Errorf("ledger sfId = %q, want %q", repo.deleteState[0].SfID, testOpportunitySfID)
+	}
+}
+
+func TestSalesforceID18(t *testing.T) {
+	for in, want := range map[string]string{
+		"001A0000006Vm9r":    "001A0000006Vm9rIAC",
+		"006E200000aIb6Z":    "006E200000aIb6ZIAS",
+		" 006E200000aIb6Z ":  "006E200000aIb6ZIAS",
+		"006E200000aIb6ZIAS": "006E200000aIb6ZIAS", // already 18
+		"006E200000aIb6-":    "006E200000aIb6-",    // not an Id
+		"":                   "",
+	} {
+		if got := salesforceID18(in); got != want {
+			t.Errorf("salesforceID18(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestRetryOpportunityIngest_ReRunsAsUpdated(t *testing.T) {
 	repo := &fakeOpportunityRepo{}
 	svc := newOpportunityService(&fakeOpportunitySalesEntity{opp: sampleOpportunity()}, repo, &fakeIngestStateRepo{}, map[string]string{testOppAccountSfID: testOppAccountRowID})

@@ -454,6 +454,13 @@ func membershipByEmail(ctx context.Context, q querier, projectID, email string) 
 // upsertMembershipTx runs the resolution/write steps inside tx.
 func upsertMembershipTx(ctx context.Context, tx pgx.Tx, in domain.SalesforceMembershipUpsert) (domain.SalesforceMembershipUpsertResult, error) {
 	var res domain.SalesforceMembershipUpsertResult
+	// The Contact writer's lock, so this and a concurrent Contact event for
+	// the same new contact cannot both miss the "user" lookup and both insert.
+	// UpsertWithin already holds its (project, email) key here; nothing takes
+	// the two in the other order, so the nesting cannot deadlock.
+	if err := lockSalesforceContact(ctx, tx, in.ContactSfID); err != nil {
+		return res, err
+	}
 	actor := in.Actor
 	if actor == "" {
 		actor = domain.SalesforceSyncActor
