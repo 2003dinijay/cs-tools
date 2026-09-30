@@ -25,6 +25,8 @@
 -- The existing outage.external_outage_communications column is deliberately
 -- left in place. Dropping a column something else may still write is a
 -- separate decision from adding the one this endpoint reads.
+BEGIN;
+
 CREATE TABLE IF NOT EXISTS outage_communication (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     outage_id UUID NOT NULL REFERENCES outage(id) ON DELETE CASCADE,
@@ -39,3 +41,5 @@ CREATE TABLE IF NOT EXISTS outage_communication (
 -- The endpoint's only access path: one outage, newest first.
 CREATE INDEX IF NOT EXISTS idx_outage_communication_outage
     ON outage_communication (outage_id, created_on DESC);
+
+COMMIT;

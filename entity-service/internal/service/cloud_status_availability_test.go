@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -469,5 +470,97 @@ func TestIncidentListStatusLabels(t *testing.T) {
 	if incidentStatus("") != domain.IncidentDetailStatus("") ||
 		incidentStatus("x") != domain.IncidentDetailStatus("x") {
 		t.Error("the list and detail endpoints disagree on the status label")
+	}
+}
+
+// TestIncidentMonthKeysOnEveryDayOfTheYear guards the rollover CodeRabbit
+// found: seeding from today rather than the first of the month makes
+// AddDate normalise a day the target month does not have, so on the 29th,
+// 30th and 31st the response carried fewer than six keys and silently lost
+// a month of incidents from the public page.
+func TestIncidentMonthKeysOnEveryDayOfTheYear(t *testing.T) {
+	repo := &fakeDashboardRepo{}
+	svc := NewCloudStatusDashboardService(repo).(*cloudStatusDashboardService)
+
+	day := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	for ; day.Year() == 2026; day = day.AddDate(0, 0, 1) {
+		d := day
+		svc.now = func() time.Time { return d }
+
+		resp, err := svc.Incidents(context.Background(), "choreo")
+		if err != nil {
+			t.Fatalf("%s: %v", d.Format("2006-01-02"), err)
+		}
+		if len(resp) != incidentMonths {
+			t.Fatalf("%s: got %d month keys, want %d -- keys: %v",
+				d.Format("2006-01-02"), len(resp), incidentMonths, keysOf(resp))
+		}
+		// And they must be the six consecutive months ending with this one.
+		want := map[string]bool{}
+		first := time.Date(d.Year(), d.Month(), 1, 0, 0, 0, 0, time.UTC)
+		for i := 0; i < incidentMonths; i++ {
+			want[incidentMonthKey(first.AddDate(0, -i, 0))] = true
+		}
+		for k := range resp {
+			if !want[k] {
+				t.Fatalf("%s: unexpected key %q; want %v",
+					d.Format("2006-01-02"), k, keysOf2(want))
+			}
+		}
+	}
+}
+
+func keysOf(m domain.CloudStatusIncidentsResponse) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func keysOf2(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestIncidentDetailRejectsMalformedID covers the 500-vs-404 problem: an id
+// that cannot name a row reached Postgres as $1::uuid and raised "invalid
+// input syntax", which surfaced as a server error on a public endpoint.
+func TestIncidentDetailRejectsMalformedID(t *testing.T) {
+	for _, id := range []string{"abc", "not-a-uuid", "../../etc/passwd",
+		"79adad2d1b45fa100bb3da47b04bcb4", "zzzzzzzz-1b45-fa10-0bb3-da47b04bcb46"} {
+		repo := &fakeDashboardRepo{}
+		got, err := NewCloudStatusDashboardService(repo).
+			IncidentDetail(context.Background(), id, "asgardeo")
+		if err != nil {
+			t.Errorf("id %q returned an error (%v); a malformed id is a 404, not a 500", id, err)
+		}
+		if got != nil {
+			t.Errorf("id %q returned %v, want nil so the handler renders 404", id, got)
+		}
+		if repo.gotDetailID != "" {
+			t.Errorf("id %q reached the database as %q; it should be rejected first",
+				id, repo.gotDetailID)
+		}
+	}
+
+	// Both well-formed spellings must still get through.
+	for _, id := range []string{
+		"79adad2d-1b45-fa10-0bb3-da47b04bcb46",
+		"79adad2d1b45fa100bb3da47b04bcb46",
+	} {
+		repo := &fakeDashboardRepo{}
+		if _, err := NewCloudStatusDashboardService(repo).
+			IncidentDetail(context.Background(), id, "asgardeo"); err != nil {
+			t.Errorf("id %q: %v", id, err)
+		}
+		if repo.gotDetailID != "79adad2d-1b45-fa10-0bb3-da47b04bcb46" {
+			t.Errorf("id %q queried as %q, want the dashed uuid", id, repo.gotDetailID)
+		}
 	}
 }

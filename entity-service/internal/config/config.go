@@ -266,6 +266,18 @@ type Config struct {
 	// page rather than guessing a scope.
 	CloudStatusServiceIDs []string
 
+	// CloudStatusDrainerEnabled turns on the background drainer that records
+	// outage transitions AND rewrites cloud_monitor.status
+	// (CLOUD_STATUS_DRAINER_ENABLED, default false).
+	//
+	// *** OFF BY DEFAULT BECAUSE OF THE STATUS WRITE. *** While
+	// csm-sync-service's one-time bulk migration is still running, both it and
+	// this drainer can write cloud_monitor.status. Clearing
+	// CLOUD_STATUS_SERVICE_IDS would stop the drainer but also disable the
+	// sweep endpoint and the dashboard reads, so the write needs a switch of
+	// its own.
+	CloudStatusDrainerEnabled bool
+
 	// CloudStatusPollInterval is how often CloudStatusDrainer claims
 	// event_outbox rows for `outage` and `outage_affected_ci`
 	// (CLOUD_STATUS_POLL_INTERVAL). Same envDuration convention as
@@ -403,6 +415,7 @@ func Load() *Config {
 		CSEngineerRole:                                os.Getenv("CS_ENGINEER_ROLE"),
 		SLARecomputeInterval:                          envDuration("SLA_RECOMPUTE_INTERVAL", 45*time.Second),
 		CloudStatusServiceIDs:                         splitComma(os.Getenv("CLOUD_STATUS_SERVICE_IDS")),
+		CloudStatusDrainerEnabled:                     os.Getenv("CLOUD_STATUS_DRAINER_ENABLED") == "true",
 		CloudStatusPollInterval:                       envDuration("CLOUD_STATUS_POLL_INTERVAL", 10*time.Second),
 		SalesforceIngestRetryInterval:                 envDurationOrOff("SALESFORCE_INGEST_RETRY_INTERVAL", 5*time.Minute),
 		SalesEntityBaseURL:                            os.Getenv("SALES_ENTITY_BASE_URL"),

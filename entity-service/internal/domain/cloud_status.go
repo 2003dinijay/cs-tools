@@ -24,9 +24,17 @@ import "strings"
 // outage against one of the monitored cloud services begins or ends, the
 // public status dashboard is told over a webhook.
 //
-// Only the webhook half is ported here. The flow also rewrote cloud monitor
-// status for every affected configuration item; a separate service owns that,
-// so nothing in this package writes cloud_monitor.
+// The webhook AND the status writes are both ported. The flow rewrote
+// cloud_monitor.status for the outage's own CI and for every affected one,
+// and cloudStatusService.applyMonitorStatus does the same through
+// SetMonitorStatus.
+//
+// *** THAT WRITE SHARES A COLUMN WITH csm-sync-service. *** While the
+// one-time bulk migration is still running, both can write
+// cloud_monitor.status. It is not a conflict after cutover -- the sync stops
+// existing and outages are written directly to Postgres -- but until then
+// the drainer is gated behind CLOUD_STATUS_DRAINER_ENABLED so the write can
+// be held back without also disabling the sweep endpoint.
 
 // CloudStatusEvent is the `event` string the webhook body carries.
 type CloudStatusEvent string

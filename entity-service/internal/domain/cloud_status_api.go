@@ -364,6 +364,33 @@ func SysID(uuid string) string {
 	return strings.ReplaceAll(uuid, "-", "")
 }
 
+// LooksLikeUUID reports whether s has the 8-4-4-4-12 hex shape Postgres will
+// accept as a uuid.
+//
+// Checked in Go rather than left to the database because the alternative is
+// letting a malformed public URL become "invalid input syntax for type uuid",
+// which surfaces as a 500 and an internal error log. A caller cannot tell a
+// bad id from a broken service, and a scanner walking the URL space fills the
+// logs with neither.
+func LooksLikeUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // UUIDFromSysID is the inverse, for ids arriving from the dashboard.
 //
 // Accepts either form: a 32-hex sys_id gets the 8-4-4-4-12 dashes put back,

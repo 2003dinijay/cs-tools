@@ -145,11 +145,18 @@ func main() {
 	// configured, because it is only useful when there is a scope to decide
 	// against -- and harmless without one, since HandleOutages returns early.
 	//
-	// Not gated on the delivery side's CLOUD_STATUS_ENABLED: this only
-	// RECORDS transitions and rewrites monitor status. Nothing leaves the
-	// estate until csm-scheduled-tasks posts it, and that is where the
+	// Not gated on the delivery side's CLOUD_STATUS_ENABLED: nothing leaves
+	// the estate until csm-scheduled-tasks posts it, and that is where the
 	// double-fire guard belongs.
-	if cfg.DataSource != config.DataSourceServiceNow && len(cfg.CloudStatusServiceIDs) > 0 {
+	//
+	// It IS gated on its own CLOUD_STATUS_DRAINER_ENABLED, off by default,
+	// because this drainer rewrites cloud_monitor.status -- a column
+	// csm-sync-service also writes while its one-time bulk migration is
+	// still running. Clearing CLOUD_STATUS_SERVICE_IDS would stop the
+	// drainer but take the sweep endpoint and the dashboard reads with it,
+	// so the write needs a switch that does not.
+	if cfg.CloudStatusDrainerEnabled && cfg.DataSource != config.DataSourceServiceNow &&
+		len(cfg.CloudStatusServiceIDs) > 0 {
 		cloudStatusCtx, stopCloudStatus := context.WithCancel(context.Background())
 		defer stopCloudStatus()
 		cloudStatusRepo := repository.NewCloudStatusRepository(pool)

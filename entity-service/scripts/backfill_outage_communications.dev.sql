@@ -15,6 +15,15 @@
 -- column: PASS 17 measured 17 entries across 7 outages, 4 of which carry
 -- more than one and one of which carries five. A single column cannot hold
 -- a list, and the endpoint publishes them newest-first with timestamps.
+-- *** ONE TRANSACTION, BECAUSE THE FIRST STATEMENT IS A DELETE. *** Every
+-- INSERT below references an outage through a foreign key. Without a
+-- transaction, one missing outage fails its INSERT after the DELETE has
+-- already committed, leaving the table empty or half filled -- and the
+-- migration's own comment calls this table first-class data after cutover.
+-- Run against the wrong database and an unwrapped script wipes real
+-- customer-facing updates with no way back.
+BEGIN;
+
 DELETE FROM outage_communication;
 
 INSERT INTO outage_communication (outage_id, comment, created_on, created_by) VALUES ('26a2917a-1bc5-b210-0bb3-da47b04bcb0f'::uuid, '[code]<p><strong>Investigating</strong></p>
@@ -64,3 +73,5 @@ INSERT INTO outage_communication (outage_id, comment, created_on, created_by) VA
 INSERT INTO outage_communication (outage_id, comment, created_on, created_by) VALUES ('b8ff285f-1b41-b610-0bb3-da47b04bcbe2'::uuid, '[code]<p>This is an external communication</p>[/code]', '2025-11-20 05:15:08'::timestamptz, 'athiththan@wso2.com');
 INSERT INTO outage_communication (outage_id, comment, created_on, created_by) VALUES ('f2805136-1bc5-b210-0bb3-da47b04bcb23'::uuid, '[code]<p><strong>Investigating</strong></p>
 <p><span style="color: rgb(0, 0, 0); font-family: ''Open Sans'', Arial, sans-serif; font-size: 14px; text-align: justify; white-space: normal; background-color: rgb(255, 255, 255); float: none; display: inline;">It is a long established fact that a reader will be distracted by the readable content of a page when looking at its layout. The point of using Lorem Ipsum is that it has a more-or-less normal distribution of letters, as opposed to using ''Content here, content here'', making it look like readable English. Many desktop publishing packages and web page editors now use Lorem Ipsum as their default model text, and a search for ''lorem ipsum'' will uncover many web sites still in their infancy. Various versions have evolved over the years, sometimes by accident, sometimes on purpose (injected humour and the like).</span></p>[/code]', '2025-11-10 05:04:14'::timestamptz, 'athiththan@wso2.com');
+
+COMMIT;

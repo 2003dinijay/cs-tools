@@ -18,7 +18,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -65,7 +64,10 @@ func TestIntegrationCloudStatusScenarios(t *testing.T) {
 	pool := cloudStatusTestPool(t)
 	scope := os.Getenv(serviceIDsEnv)
 	if scope == "" {
-		t.Fatalf("%s must be set", serviceIDsEnv)
+		// Skip, not fail: the sibling integration tests skip in this case,
+		// and a CI job that sets only the DSN should not have one of the
+		// three turn red while the others quietly pass.
+		t.Skipf("%s not set; skipping the live cloud status scenarios", serviceIDsEnv)
 	}
 	ctx := context.Background()
 	repo := repository.NewCloudStatusRepository(pool)
@@ -245,7 +247,6 @@ func resetFixture(t *testing.T, pool *pgxpool.Pool, sc scenario) {
                       'aaea339f-1b0c-b290-a002-c9d3604bcbee')`); err != nil {
 		t.Fatalf("reset monitors: %v", err)
 	}
-	_ = fmt.Sprint()
 }
 
 // TestIntegrationCloudStatusOverHTTP exercises the handler layer against the

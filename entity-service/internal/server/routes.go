@@ -955,16 +955,27 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// the flow it is replacing and make the port depend on the system being
 	// decommissioned.
 	// The public status dashboard's reads, consumed by
-	// wso2-enterprise/uptime-dashboard via csm-integration-service. Registered
-	// unconditionally on Postgres: it replaces five ServiceNow Scripted REST
-	// APIs and has no ServiceNow-backed counterpart here.
-	cloudStatusDashboardHandler := handler.NewCloudStatusDashboardHandler(
-		service.NewCloudStatusDashboardService(repository.NewCloudStatusDashboardRepository(db)),
-	)
-
-	cloudStatusHandler := handler.NewCloudStatusHandler(
-		service.NewCloudStatusService(repository.NewCloudStatusRepository(db), cfg.CloudStatusServiceIDs),
-	)
+	// wso2-enterprise/uptime-dashboard via csm-integration-service. They
+	// replace five ServiceNow Scripted REST APIs and have no
+	// ServiceNow-backed counterpart here.
+	//
+	// *** GATED ON db != nil LIKE EVERY OTHER POSTGRES-ONLY HANDLER. *** An
+	// earlier version built these unconditionally. With
+	// DATA_SOURCE=servicenow the pool is nil, so the first request to any
+	// /cloud-status or /internal/cloud-status route dereferenced nil --
+	// Recovery caught the panic and returned a 500, which is a confusing
+	// answer to a route that simply is not available in that mode. Leaving
+	// them unregistered gives an honest 404 instead.
+	var cloudStatusDashboardHandler *handler.CloudStatusDashboardHandler
+	var cloudStatusHandler *handler.CloudStatusHandler
+	if db != nil {
+		cloudStatusDashboardHandler = handler.NewCloudStatusDashboardHandler(
+			service.NewCloudStatusDashboardService(repository.NewCloudStatusDashboardRepository(db)),
+		)
+		cloudStatusHandler = handler.NewCloudStatusHandler(
+			service.NewCloudStatusService(repository.NewCloudStatusRepository(db), cfg.CloudStatusServiceIDs),
+		)
+	}
 	// globalHandler is wired for both data sources now: GetSystemMetadata has
 	// a Postgres-backed implementation (globalService, reusing
 	// referenceDataRepo above); GlobalSearch does not yet, and returns a
@@ -1345,14 +1356,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 
 	// Cloud status webhooks: service-to-service, called by csm-scheduled-tasks.
-	mux.HandleFunc("GET /cloud-status/monitors", cloudStatusDashboardHandler.Monitors)
-	mux.HandleFunc("GET /cloud-status/incidents", cloudStatusDashboardHandler.Incidents)
-	mux.HandleFunc("GET /cloud-status/availabilities", cloudStatusDashboardHandler.Availabilities)
-	mux.HandleFunc("GET /cloud-status/availability-history", cloudStatusDashboardHandler.AvailabilityHistory)
-	mux.HandleFunc("GET /cloud-status/incidents/{id}", cloudStatusDashboardHandler.IncidentDetail)
-	mux.HandleFunc("POST /internal/cloud-status/sweep", cloudStatusHandler.Sweep)
-	mux.HandleFunc("GET /internal/cloud-status/pending", cloudStatusHandler.Pending)
-	mux.HandleFunc("POST /internal/cloud-status/{id}/delivery", cloudStatusHandler.RecordDelivery)
+	if cloudStatusDashboardHandler != nil {
+		mux.HandleFunc("GET /cloud-status/monitors", cloudStatusDashboardHandler.Monitors)
+		mux.HandleFunc("GET /cloud-status/incidents", cloudStatusDashboardHandler.Incidents)
+		mux.HandleFunc("GET /cloud-status/availabilities", cloudStatusDashboardHandler.Availabilities)
+		mux.HandleFunc("GET /cloud-status/availability-history", cloudStatusDashboardHandler.AvailabilityHistory)
+		mux.HandleFunc("GET /cloud-status/incidents/{id}", cloudStatusDashboardHandler.IncidentDetail)
+	}
+	if cloudStatusHandler != nil {
+		mux.HandleFunc("POST /internal/cloud-status/sweep", cloudStatusHandler.Sweep)
+		mux.HandleFunc("GET /internal/cloud-status/pending", cloudStatusHandler.Pending)
+		mux.HandleFunc("POST /internal/cloud-status/{id}/delivery", cloudStatusHandler.RecordDelivery)
+	}
 
 	mux.HandleFunc("POST /problems", problemHandler.CreateProblem)
 	mux.HandleFunc("POST /problems/search", problemHandler.SearchProblems)

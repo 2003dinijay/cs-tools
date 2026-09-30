@@ -144,9 +144,34 @@ func main() {
 			slog.Error("failed to construct entity-service cloud-status client", "err", err)
 			os.Exit(1)
 		}
+		// *** A BAD MAP MUST STOP STARTUP, NOT BURN THE RETRY BUDGET. ***
+		// parseStringMap returns nil on malformed JSON, and NewWebhook
+		// accepts an empty map. With the feature enabled that combination
+		// records every pending webhook as a "no dashboard URL" failure, and
+		// after cloudStatusMaxAttempts entity-service stops handing the
+		// event out -- so one config typo loses every outage event
+		// permanently, silently, and unrecoverably. Exiting is the only
+		// honest response: the component is being told to publish to a
+		// public status page and cannot.
+		cloudStatusURLs := parseStringMap("CLOUD_STATUS_WEBHOOK_URLS", os.Getenv("CLOUD_STATUS_WEBHOOK_URLS"))
+		if len(cloudStatusURLs) == 0 {
+			slog.Error("CLOUD_STATUS_ENABLED is true but CLOUD_STATUS_WEBHOOK_URLS is empty or unparseable",
+				"hint", "expected a JSON object of cloud slug to base URL")
+			os.Exit(1)
+		}
+		cloudStatusSecrets := parseStringMap("CLOUD_STATUS_WEBHOOK_SECRETS", os.Getenv("CLOUD_STATUS_WEBHOOK_SECRETS"))
+		if len(cloudStatusSecrets) == 0 {
+			// Unsigned posts are rejected with 401 by the dashboard, so an
+			// empty secret map is the same permanent-loss failure as an
+			// empty URL map.
+			slog.Error("CLOUD_STATUS_ENABLED is true but CLOUD_STATUS_WEBHOOK_SECRETS is empty or unparseable",
+				"hint", `expected a JSON object, e.g. {"default":"Secret <token>"}`)
+			os.Exit(1)
+		}
+
 		cloudStatusWebhook, err = cloudstatus.NewWebhook(cloudstatus.WebhookConfig{
-			BaseURLs: parseStringMap("CLOUD_STATUS_WEBHOOK_URLS", os.Getenv("CLOUD_STATUS_WEBHOOK_URLS")),
-			Secrets:  parseStringMap("CLOUD_STATUS_WEBHOOK_SECRETS", os.Getenv("CLOUD_STATUS_WEBHOOK_SECRETS")),
+			BaseURLs: cloudStatusURLs,
+			Secrets:  cloudStatusSecrets,
 		})
 		if err != nil {
 			// Unlike the parse helpers, a bad URL here is fatal. The component

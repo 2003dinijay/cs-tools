@@ -137,7 +137,23 @@ const candidatesSQLSelect = `
 const candidatesSQL = candidatesSQLSelect + `
       FROM outage o
       LEFT JOIN service_offering so ON so.id = o.service_offering_id
-      LEFT JOIN cloud_monitor cm ON cm.service_offering_id = o.service_offering_id
+      -- *** ONE MONITOR PER OUTAGE, DETERMINISTICALLY. *** A plain join on
+      -- service_offering_id returns a row per monitor, so an offering with
+      -- two monitors made the sweep count the same outage twice: Scanned,
+      -- SkippedNoCloud and UnknownOutageType all inflated, and
+      -- AffectedMonitors ran more than once for it. The unique key on
+      -- cloud_status_events protected the recorded events, so only the
+      -- metrics lied -- which is the kind of wrong that goes unnoticed.
+      --
+      -- LIMIT 1 also matches the source: ServiceNow's monitor lookup is
+      -- configured "Return only the first record".
+      LEFT JOIN LATERAL (
+          SELECT cmx.cloud_offering
+            FROM cloud_monitor cmx
+           WHERE cmx.service_offering_id = o.service_offering_id
+           ORDER BY cmx.id
+           LIMIT 1
+      ) cm ON TRUE
      WHERE o.start_on IS NOT NULL
        AND (
              so.parent_id = ANY($1::uuid[])
@@ -442,7 +458,23 @@ func (r *cloudStatusRepository) AffectedClouds(ctx context.Context, outageID str
 const candidatesByOutageSQL = candidatesSQLSelect + `
       FROM outage o
       LEFT JOIN service_offering so ON so.id = o.service_offering_id
-      LEFT JOIN cloud_monitor cm ON cm.service_offering_id = o.service_offering_id
+      -- *** ONE MONITOR PER OUTAGE, DETERMINISTICALLY. *** A plain join on
+      -- service_offering_id returns a row per monitor, so an offering with
+      -- two monitors made the sweep count the same outage twice: Scanned,
+      -- SkippedNoCloud and UnknownOutageType all inflated, and
+      -- AffectedMonitors ran more than once for it. The unique key on
+      -- cloud_status_events protected the recorded events, so only the
+      -- metrics lied -- which is the kind of wrong that goes unnoticed.
+      --
+      -- LIMIT 1 also matches the source: ServiceNow's monitor lookup is
+      -- configured "Return only the first record".
+      LEFT JOIN LATERAL (
+          SELECT cmx.cloud_offering
+            FROM cloud_monitor cmx
+           WHERE cmx.service_offering_id = o.service_offering_id
+           ORDER BY cmx.id
+           LIMIT 1
+      ) cm ON TRUE
      WHERE o.id = ANY($2::uuid[])
        AND o.start_on IS NOT NULL
        AND (

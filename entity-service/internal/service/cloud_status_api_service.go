@@ -173,10 +173,19 @@ func (s *cloudStatusDashboardService) Incidents(ctx context.Context, cloud strin
 	}
 
 	now := s.now().UTC()
+
+	// *** SEED FROM THE FIRST OF THE MONTH, NOT FROM TODAY. ***
+	// now.AddDate(0, -i, 0) normalises a day that the target month does not
+	// have: on 2026-03-31, i=1 asks for 2026-02-31 and Go returns
+	// 2026-03-03. The key "2026-3" is then written twice, "2026-2" is never
+	// created, and every incident from February is dropped at the lookup
+	// below -- so on the 29th, 30th and 31st the public page silently loses
+	// a month and shows fewer than six rows. Anchoring to day 1 makes the
+	// arithmetic exact for every month.
+	firstOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	resp := domain.CloudStatusIncidentsResponse{}
 	for i := 0; i < incidentMonths; i++ {
-		m := now.AddDate(0, -i, 0)
-		resp[incidentMonthKey(m)] = domain.CloudStatusIncidentMonth{
+		resp[incidentMonthKey(firstOfMonth.AddDate(0, -i, 0))] = domain.CloudStatusIncidentMonth{
 			Incidents: []domain.CloudStatusIncident{},
 		}
 	}
@@ -184,8 +193,7 @@ func (s *cloudStatusDashboardService) Incidents(ctx context.Context, cloud strin
 	// The script's window is gs.beginningOfLast2Quarters(). Six months back
 	// from the first of the current month covers the same span and matches
 	// the six keys above, which the quarter boundary does not always do.
-	since := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).
-		AddDate(0, -(incidentMonths - 1), 0)
+	since := firstOfMonth.AddDate(0, -(incidentMonths - 1), 0)
 
 	rows, err := s.repo.Incidents(ctx, strings.ToLower(strings.TrimSpace(cloud)), since)
 	if err != nil {
@@ -529,7 +537,19 @@ func (s *cloudStatusDashboardService) IncidentDetail(ctx context.Context, id, cl
 		return nil, &apierror.ValidationError{Msg: "id is required"}
 	}
 
-	row, err := s.repo.IncidentDetail(ctx, domain.UUIDFromSysID(id), strings.ToLower(strings.TrimSpace(cloud)))
+	// *** A MALFORMED ID IS A 404, NOT A 500. *** UUIDFromSysID returns
+	// anything that is not 32 hex characters unchanged, so /incidents/abc
+	// reached Postgres as $1::uuid and raised "invalid input syntax for type
+	// uuid" -- which writeServiceError maps to 500 and logs as an internal
+	// error. On a public endpoint that means every stale link and every
+	// scanner probe is recorded as a server fault. An id that cannot name a
+	// row is simply not found.
+	outageID := domain.UUIDFromSysID(id)
+	if !domain.LooksLikeUUID(outageID) {
+		return nil, nil
+	}
+
+	row, err := s.repo.IncidentDetail(ctx, outageID, strings.ToLower(strings.TrimSpace(cloud)))
 	if err != nil {
 		return nil, err
 	}
@@ -551,7 +571,7 @@ func (s *cloudStatusDashboardService) IncidentDetail(ctx context.Context, id, cl
 		}, nil
 	}
 
-	comments, err := s.repo.OutageComments(ctx, domain.UUIDFromSysID(id))
+	comments, err := s.repo.OutageComments(ctx, outageID)
 	if err != nil {
 		return nil, err
 	}
