@@ -475,13 +475,24 @@ func (c *GoogleChatClient) SendSeverityChangedAlert(ctx context.Context, audienc
 // as a known configuration gap, not a failure: logged at warn and reported
 // as a no-op success — a not-yet-onboarded team must not block or retry
 // the whole delivery (other audiences still go out regardless).
+//
+// Every real attempt (webhook configured) logs its own outcome — success or
+// failure — at this single choke point, so "did a Chat alert actually go
+// out" is answerable directly from this service's own logs instead of only
+// inferring it from a caller's generic retry/dead-letter log further up the
+// call stack, which doesn't say which channel failed or why.
 func (c *GoogleChatClient) sendCardToAudience(ctx context.Context, audience string, msg chatCardMessage) error {
 	webhookURL, ok := c.webhookURLsByAudience[strings.TrimSpace(audience)]
 	if !ok || webhookURL == "" {
 		slog.WarnContext(ctx, "notifications: no google chat space configured for audience; alert was not posted to it", "audience", audience)
 		return nil
 	}
-	return c.postCard(ctx, webhookURL, msg)
+	if err := c.postCard(ctx, webhookURL, msg); err != nil {
+		slog.ErrorContext(ctx, "notifications: google chat alert failed to send", "audience", audience, "err", err)
+		return err
+	}
+	slog.InfoContext(ctx, "notifications: google chat alert sent", "audience", audience)
+	return nil
 }
 
 // postCard marshals msg and posts it to webhookURL — the actual HTTP
