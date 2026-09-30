@@ -2725,7 +2725,9 @@ export interface BeChangeRequestApprover {
   id: string;
   name?: string | null;
   status: string;
+  createdOn?: string | null;
   respondedOn?: string | null;
+  comments?: string | null;
 }
 
 /** One approval stage on a change request, with its individual approvers. */

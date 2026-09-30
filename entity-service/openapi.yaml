@@ -15248,9 +15248,23 @@ components:
           description: >-
             Approver response status. Open string set (e.g. APPROVED, NOT_REQUIRED,
             REQUESTED, REJECTED, CANCELLED, NO_CONSENSUS); not a fixed enum.
+        createdOn:
+          type: string
+          nullable: true
+          description: >-
+            When this approval was requested. Always present on the Postgres data
+            source; always null on the ServiceNow-backed one (the Choreo
+            GET /change-requests/{id}/approvals response carries no equivalent
+            field).
         respondedOn:
           type: string
           nullable: true
+        comments:
+          type: string
+          nullable: true
+          description: >-
+            The approver's own comment on their decision, if any. Always null on
+            the ServiceNow-backed data source, same reason as createdOn above.
 
     ChangeRequestApproval:
       type: object

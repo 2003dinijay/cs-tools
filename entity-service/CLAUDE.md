@@ -2337,12 +2337,29 @@ v5 can't scan a binary-format timestamptz into a `*string`
 (`it_service_repo.go`/`service_offering_repo.go`) backing `POST /services/
 search` and `POST /service-offerings/search`, previously ServiceNow-only.
 
+**`AssignedTeamID` is now read** — `work_item.assignment_group_id` (migration
+0075, a FK into `group`), via `changeRequestFromJoins`' own `"group" ag`
+join, back as `domain.ChangeRequest.AssignedTeam`. A real, reported bug: the
+CSM Portal's own action bar requires `assignedTeam` to be set before it will
+let a change request advance to Assess at all, and since this was never
+read, *no* change request could ever be promoted past New through the
+portal on this data source — confirmed live against a real change request
+with a genuine ServiceNow Assignment group ("Devops"), whose `AssignedEngineer`
+synced and displayed correctly while `AssignedTeam` always showed empty.
+This proved `csm-sync-service` already populates
+`work_item.assignment_group_id` for change requests the same way it does
+for every other `work_item` type, so the fix is read-only — no create/patch
+write-path changes were needed alongside it. Writing it (create's `GroupID`,
+or `PatchChangeRequestRequest.AssignedTeamID`) and filtering search results
+by it (the parsed filter array's `assignmentGroupId`) both remain unwired,
+deliberately out of scope for this fix — see `ChangeRequestRepository`'s own
+doc comment.
+
 **Fields still with no real column anywhere, left unset rather than
 guessed at** (see `ChangeRequestRepository`'s own doc comment for the full
-list): `ConfigurationItemID`, `GroupID`, and `AssignedTeamID` (no CMDB/group
-tables exist in this schema at all); `Type`
-(`domain.ChangeRequestType` — standard/normal/emergency/... — has **no**
-relationship to `change_request.change_request_type`, whose real enum
+list): `ConfigurationItemID` (no CMDB table exists in this schema at all);
+`Type` (`domain.ChangeRequestType` — standard/normal/emergency/... — has
+**no** relationship to `change_request.change_request_type`, whose real enum
 values are `INFRA`/`GENERAL`, a completely different classification, not a
 subset of the domain enum); `ApprovedBy`/`ApprovedOn` on
 `domain.ChangeRequest` (no approver/date columns exist). `Duration`
@@ -2434,21 +2451,66 @@ the one value ServiceNow's real workflow always assigns on create.
 shared with `PatchChangeRequestRequest`) but has no effect at creation and
 is intentionally ignored by this insert.
 
-**The New→Assess promote action had a second, related bug**: it sends
-`{requestApproval: true}` rather than `{state: "assess"}` (see
-`ChangeRequestActionBar.tsx`/`buildTransitionPatch` on the frontend), and
-`PatchChangeRequest`'s handling of `RequestApproval` only ever recorded
-`change_request.approval = 'REQUESTED'` — it never advanced `state`. Before
-`LegalNextStates` was populated at all, this was unreachable (the button
-never appeared for any state, New included), so the gap was invisible.
-Populating `LegalNextStates` made it reachable for the first time, and it
-became a real, visible dead end: clicking "Request Approval" got a
-successful response, but the record's own state (and therefore its next
-legal action) never left New, so the same button just reappeared.
-`PatchChangeRequest` now also sets `state = 'ASSESS'` when
-`RequestApproval` is true and `req.State` wasn't itself separately
-provided (the frontend only ever sends one or the other, never both, so
-this can't double-write the column).
+**New→Assess is a plain, ungated state change — `RequestApproval` has
+nothing to do with it.** An earlier revision of this section documented the
+New→Assess promote action as sending `{requestApproval: true}` (see
+`ChangeRequestActionBar.tsx`/`buildTransitionPatch` on the frontend) rather
+than `{state: "assess"}`, and had `PatchChangeRequest` locally force
+`state = 'ASSESS'` whenever `RequestApproval` was true and `req.State`
+wasn't itself separately provided — modeling New→Assess as a special
+"request approval" ceremony, gated on the record actually being in New
+(rejecting with a `ConflictError` otherwise). **Checked against the real
+ServiceNow instance and confirmed wrong**: New→Assess is a plain, direct,
+ungated state change — like picking a new value from a dropdown — with no
+relationship to approval at all. The frontend now sends a plain
+`{state: "assess"}` for this transition, exactly like every other one, and
+`PatchChangeRequest` handles it generically via its existing
+`if req.State != nil { ... }` branch, with no special casing for New→Assess.
+
+`RequestApproval` is now a pure bookkeeping flag: `{requestApproval: true}`
+still sets `change_request.approval = 'REQUESTED'` (other code/displays may
+still care about that field), but has **no state-transition side effect at
+all**, and is no longer gated on the caller's current state — it can be sent
+against a change request in any state and only ever touches `approval`.
+
+The one real approval-gated transition remains **Assess→Authorize**, handled
+entirely by the separate `POST /change-requests/{id}/approvals/decision`
+endpoint (`DecideChangeRequestApproval`) — unrelated to `RequestApproval` and
+unchanged by any of this.
+
+**That cascade did not actually exist when this section was first written.**
+An earlier revision of this same fix claimed `DecideChangeRequestApproval`
+"already cascades `change_request.state` forward on approval" — that claim
+was false, based on a misread of an unrelated earlier test, and was never
+actually verified. Live testing (after the direct "Change state -> Authorize"
+button was removed, leaving the Approvers section the only path to Authorize)
+showed approving did nothing at all to `change_request.state`. Fixed
+properly: `DecideChangeRequestApproval` now applies the same
+first-responder-wins quorum rule `buildChangeRequestApprovals` uses at read
+time — a single approval, provided nobody on the same stage has rejected,
+both (1) advances `change_request.state` from Assess to Authorize and (2)
+cancels every other still-`requested` approver on that same stage, matching
+real ServiceNow's own observed behavior on a genuine multi-approver group
+(confirmed live: only the 1-2 who actually responded were left
+Approved/Rejected, every other pending approver on the same group was moved
+to Cancelled, not left sitting at Requested indefinitely). A rejection never
+does either. Still deliberately scoped to Assess→Authorize only — a decision
+on an Authorize-stage approver still cancels its own siblings, but has no
+state-cascade effect yet.
+
+`domain.ChangeRequestApprover` also gained `CreatedOn`/`Comments` (both
+`*string`, both read from `approval_stage_approver.created_on`/`.comments`
+via `changeRequestApprovalApproversQuery`) to support a full UI redesign:
+the CSM Portal's own Approvers list used to nest approvers under a
+collapsible per-stage accordion card — reported live as confusing (an
+approver looking for their own pending decision gained nothing from first
+finding "their" stage card and expanding it) — and now renders as one flat
+table (State/Approver/Assignment group/Comments/Created/Approved on),
+matching real ServiceNow's own Approvers list layout exactly, with every
+approver from every stage shown together rather than grouped. Both new
+fields are always null on the ServiceNow-backed data source: the Choreo
+`GET /change-requests/{id}/approvals` response has no equivalent fields to
+populate them from.
 
 **Linking happens entirely through `PATCH`, never at creation** —
 `CreateChangeRequestRequest` has no project/case field at all;
