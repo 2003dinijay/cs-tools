@@ -28,6 +28,12 @@ vendor ──POST──▶ ingestion (transform → allocator: CAS-claim ids →
   After the deadline, or `store.insert_attempts` other failures, a `VOID: <reason>` filler row is
   written under the same id so alerts-core skips it immediately instead of waiting its gap
   timeout, and a DB-failure Chat card is posted.
+- **AWS SNS subscriptions**: when an SNS topic subscribes the AWS URL, SNS first sends a
+  `SubscriptionConfirmation`. The service confirms it (fetching its `SubscribeURL`, only from
+  `sns.<region>.amazonaws.com`), emails the team named by `?team=` on the URL (default `Default`,
+  from `AWS_SNS_SUBSCRIPTION_NOTIFICATION_CONFIG`), and answers `200` without storing an alert,
+  as the ServiceNow AWS Alert API did. With no email configured and a failed confirmation it
+  logs a CRITICAL error.
 - **Memory**: everything accepted but not finished is capped at `allocator.queue_max_bytes`; past
   it, new webhooks get `503` at once.
 - **Response**: `201` only after every alert in the request has been written and read back.
@@ -106,6 +112,8 @@ docker run --rm -p 8080:8080 --env-file .env \
 | `CASSANDRA_PORT` | no | Default `10350` |
 | `ALERT_CORE_WAKE_URL` | no | alerts-core's `POST /alert` URL. Empty: no wake-up, alerts-core's poll still works |
 | `FALLBACK_CHAT_WEBHOOK_URLS` | no | Comma-separated Google Chat webhook URLs (secret). Empty: no cards, only logs |
+| `AWS_SNS_SUBSCRIPTION_NOTIFICATION_CONFIG` | no | `{"teams":{"<team>":"<email>","Default":"<email>"}}`: who is emailed about SNS subscription confirmations, by the AWS URL's `?team=` |
+| `EMAIL_BASE_URL`, `EMAIL_TOKEN_URL`, `EMAIL_CLIENT_ID`, `EMAIL_CLIENT_SECRET`, `EMAIL_FROM_ADDRESS` | no | WSO2 email notification service (OAuth2 client credentials) for those emails. `EMAIL_CLIENT_SECRET` is a secret. Empty `EMAIL_BASE_URL` disables email |
 | `<VENDOR>_ALERT_CONFIG` | no* | Per-vendor JSON overrides, same keys and shapes as the ServiceNow Edge API alert-config properties, e.g. `DATADOG_ALERT_CONFIG` |
 | `CONFIG_PATH` | no | Path to `config.toml`. Default `./config.toml`; a missing file means built-in defaults |
 | `PORT` | no | Default `8080` |
@@ -195,7 +203,7 @@ curl -sS -X POST "$BASE/site24x7" -H 'Content-Type: application/json' -d '{"STAT
    - `healthz`, Public; use `/healthz` as the readiness probe.
    - `livez`, Project; use `/livez` as the liveness probe.
 3. **Environment variables**: set everything from [Environment variables](#environment-variables).
-   Mark `CASSANDRA_KEY` and `FALLBACK_CHAT_WEBHOOK_URLS` as secrets.
+   Mark `CASSANDRA_KEY`, `FALLBACK_CHAT_WEBHOOK_URLS` and `EMAIL_CLIENT_SECRET` as secrets.
 4. **config.toml file mount**: to change any default, add a *file mount* under
    Configs & Secrets with mount path `/etc/sre-alert-ingestion-service/config.toml` and the contents
    of your edited `config.toml.example`, then set

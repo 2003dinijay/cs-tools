@@ -37,7 +37,9 @@ import (
 	"sre-alert-ingestion-service/internal/chat"
 	"sre-alert-ingestion-service/internal/config"
 	"sre-alert-ingestion-service/internal/corewake"
+	"sre-alert-ingestion-service/internal/email"
 	"sre-alert-ingestion-service/internal/server"
+	"sre-alert-ingestion-service/internal/snsconfirm"
 	"sre-alert-ingestion-service/internal/vendors"
 )
 
@@ -49,6 +51,12 @@ const chatTimeout = 10 * time.Second
 
 // dbFailureInterval is the window fallback.cards_per_minute applies to.
 const dbFailureInterval = time.Minute
+
+// snsConfirmTimeout bounds the SubscribeURL fetch; emailTimeout bounds each email-service call.
+const (
+	snsConfirmTimeout = 10 * time.Second
+	emailTimeout      = 15 * time.Second
+)
 
 func main() {
 	base := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("app", "sre-alert-ingestion-service")
@@ -112,6 +120,12 @@ func main() {
 	})
 	waker := corewake.New(base.With("component", "corewake"), envCfg.WakeURL, cfg.Wake.Timeout.Duration())
 
+	sns, err := newSNSConfirmer(base.With("component", "snsconfirm"))
+	if err != nil {
+		logger.Error("failed to configure SNS subscription handling", "error", err)
+		os.Exit(1)
+	}
+
 	alloc := allocator.New(base.With("component", "allocator"), store, cards, waker, allocator.Config{
 		QueueSize:        cfg.Allocator.QueueSize,
 		QueueMaxBytes:    cfg.Allocator.QueueMaxBytes,
@@ -128,7 +142,7 @@ func main() {
 	srv := server.New(server.Options{
 		Logger:       base.With("component", "server"),
 		Auth:         authn,
-		Pipeline:     server.NewIngestor(registry, alloc, cfg.Server.RequestWait.Duration()),
+		Pipeline:     server.NewIngestor(registry, alloc, cfg.Server.RequestWait.Duration()).WithSNSConfirmer(sns),
 		Rejects:      cards,
 		Vendors:      registry.Names(),
 		MaxBodyBytes: cfg.Server.MaxBodyBytes,
@@ -164,8 +178,32 @@ func main() {
 			DrainDelay:     cfg.Server.DrainDelay.Duration(),
 			RequestWait:    cfg.Server.RequestWait.Duration(),
 			AllocatorDrain: cfg.Server.AllocatorDrain.Duration(),
-		}, waker.Wait, cards.Close)
+		}, waker.Wait, sns.Wait, cards.Close)
 	}
+}
+
+// newSNSConfirmer builds the AWS SNS subscription handler. Email is optional: without
+// EMAIL_BASE_URL, confirmations are still auto-confirmed and logged.
+func newSNSConfirmer(logger *slog.Logger) (*snsconfirm.Handler, error) {
+	teams, err := snsconfirm.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	emailCfg, err := email.ConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	var mailer snsconfirm.Mailer
+	if emailCfg.Enabled() {
+		client, err := email.New(emailCfg, emailTimeout)
+		if err != nil {
+			return nil, err
+		}
+		mailer = client
+	} else {
+		logger.Warn("EMAIL_BASE_URL not set; SNS subscription emails are disabled")
+	}
+	return snsconfirm.New(logger, teams, mailer, snsConfirmTimeout), nil
 }
 
 // connectWithRetry retries with exponential backoff so a transient startup outage doesn't
