@@ -732,9 +732,11 @@ func dueByTime(cfg config, elapsed time.Duration) bool {
 func gestureName(by string) string {
 	switch by {
 	case "status":
-		return "a move out of NEW (one gesture only -- the ladder keeps climbing)"
+		return "a move out of NEW"
 	case "comment":
-		return "a public comment (one gesture only -- the ladder keeps climbing)"
+		return "a public comment"
+	case "assign":
+		return "an engineer assigned"
 	default:
 		return "a move out of NEW AND a public comment"
 	}
@@ -761,7 +763,11 @@ func runTicks(ctx context.Context, cfg config, engine *escalation.Engine, rdb *r
 	defer ticker.Stop()
 
 	realStart := time.Now()
-	cancelled := false
+	// sent is whether the acknowledgement gesture has gone to the engine;
+	// cancelled is whether the engine actually stopped because of it. They
+	// differ on purpose: a public comment does not stop an SRE ladder, and
+	// on a CRE one it is only half of the two gestures.
+	sent, cancelled := false, false
 	var cancelledAtLadderTime *time.Time
 	// The engine deletes a ladder's state the moment it finishes or is
 	// acknowledged, so the placed flags have to be kept as they are observed —
@@ -784,19 +790,28 @@ func runTicks(ctx context.Context, cfg config, engine *escalation.Engine, rdb *r
 			// Ladder time, expanded back out from the compressed real clock.
 			now := trigger.Add(time.Duration(float64(elapsed) / float64(cfg.minute) * float64(time.Minute)))
 
-			if !cancelled && (dueByTime(cfg, elapsed) || reachedCancelLevel) {
-				cancelled = true
-				at := now
-				cancelledAtLadderTime = &at
-				fmt.Printf("  [%7s] ACKNOWLEDGED by %s — the engine should stop calling\n",
-					short(elapsed), gestureName(cfg.cancelBy))
+			if !sent && (dueByTime(cfg, elapsed) || reachedCancelLevel) {
+				sent = true
+				fmt.Printf("  [%7s] SENT %s to the engine\n", short(elapsed), gestureName(cfg.cancelBy))
 				// Each gesture is a separate event, exactly as entity-service
-				// publishes them, so the engine's own both-gestures rule is
-				// what decides whether this stops the ladder.
+				// publishes them, so the engine's own rules decide whether
+				// this stops the ladder -- both gestures for CRE, an assignee
+				// or a move out of NEW for SRE.
 				for _, r := range cancelRecords(cfg) {
 					if err := engine.Handle(ctx, r); err != nil {
 						return fmt.Errorf("acknowledging: %w", err)
 					}
+				}
+				// Report what the engine did with it, not what it was expected
+				// to do: the state is gone, or marked cancelled, only when the
+				// gesture really stopped the ladder.
+				if st, found, err := store.Get(ctx, cfg.incidentID); err == nil && (!found || st.Cancelled != nil) {
+					cancelled = true
+					at := now
+					cancelledAtLadderTime = &at
+					fmt.Printf("  [%7s] STOPPED — the engine cancelled the ladder\n", short(elapsed))
+				} else if err == nil {
+					fmt.Printf("  [%7s] NOT STOPPED — the engine keeps climbing; this gesture does not acknowledge this ladder\n", short(elapsed))
 				}
 			}
 

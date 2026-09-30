@@ -50,8 +50,13 @@
 #                  chat: cards posted to your space, names masked       (default log)
 #   -l  ladder     auto: the team's own ladder; cre, sre, or both --
 #                  sre on a CRE team only runs at a P0                   (default auto)
-#   -c  seconds    assign an engineer this far into each run, which stops
-#                  an SRE ladder; 0 lets it climb every rung            (default 0)
+#   -c  seconds    acknowledge this far into each run; 0 lets it climb
+#                  every rung                                           (default 0)
+#   -a  gesture    how -c acknowledges: assign (an engineer assigned),
+#                  status (a move out of NEW) or comment (a public
+#                  comment -- which must NOT stop an SRE ladder)        (default assign)
+#   -k  kind       what starts the ladder: new (incident.created) or
+#                  elevated (incident.priority_elevated to -p)          (default new)
 #   -m  duration   how long one ladder minute lasts                     (default 1s)
 #   -4             include the SRE ladder's unconfirmed L4 support rung
 #
@@ -67,12 +72,14 @@ SHIFT=LK
 OUTPUT=log
 LADDER=auto
 CANCEL_AFTER=0
+CANCEL_BY=assign
+KIND=new
 MINUTE=1s
 L4=false
 
 usage() { sed -n '/^# Usage:/,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//;$d'; exit "${1:-0}"; }
 
-while getopts ":t:p:s:o:l:c:m:4h" opt; do
+while getopts ":t:p:s:o:l:c:a:k:m:4h" opt; do
   case $opt in
     t) TEAM=$OPTARG ;;
     p) PRIORITIES=$OPTARG ;;
@@ -80,6 +87,8 @@ while getopts ":t:p:s:o:l:c:m:4h" opt; do
     o) OUTPUT=$OPTARG ;;
     l) LADDER=$OPTARG ;;
     c) CANCEL_AFTER=$OPTARG ;;
+    a) CANCEL_BY=$OPTARG ;;
+    k) KIND=$OPTARG ;;
     m) MINUTE=$OPTARG ;;
     4) L4=true ;;
     h) usage 0 ;;
@@ -89,6 +98,8 @@ done
 [[ "$PRIORITIES" == all ]] && PRIORITIES=P0,P1,P2,P3,P4
 case "$OUTPUT" in log|chat) ;; *) echo "-o is log or chat" >&2; exit 1 ;; esac
 case "$LADDER" in auto|cre|sre|both) ;; *) echo "-l is auto, cre, sre or both" >&2; exit 1 ;; esac
+case "$CANCEL_BY" in assign|status|comment) ;; *) echo "-a is assign, status or comment" >&2; exit 1 ;; esac
+case "$KIND" in new|elevated) ;; *) echo "-k is new or elevated" >&2; exit 1 ;; esac
 
 cd "$(dirname "$0")/../.."
 ROOT="$(pwd)"
@@ -168,7 +179,8 @@ if [[ "$OUTPUT" == log ]]; then
 else
   ARGS+=(-channel chat)
 fi
-[[ "$CANCEL_AFTER" != "0" ]] && ARGS+=(-cancel-after "${CANCEL_AFTER}s" -cancel-by assign)
+[[ "$CANCEL_AFTER" != "0" ]] && ARGS+=(-cancel-after "${CANCEL_AFTER}s" -cancel-by "$CANCEL_BY")
+ARGS+=(-kind "$KIND")
 [[ "$L4" == true ]] && ARGS+=(-sre-l4)
 
 # Every variable the harness would otherwise take from a .env is set here, even
