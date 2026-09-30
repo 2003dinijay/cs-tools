@@ -111,13 +111,10 @@ type ProblemRepository interface {
 	// precisely rather than as an opaque infrastructure error if it ever
 	// does.
 	//
-	// Only fields with an unambiguous, already-established column mapping
-	// are written: req.Category/req.Subcategory are deliberately NOT
-	// resolved to problem.category/problem.subcategory_id here, for the
-	// same reason IncidentRepository.CreateIncidentFromServiceNow's own doc
-	// comment already gives for incident's Subcategory -- ServiceNow's own
-	// free-text choice-list spelling has no established mapping back to
-	// problem_category_enum or problem_subcategory's lookup rows.
+	// req.Category is normalized to uppercase and written to
+	// problem.category. req.Subcategory is matched case-insensitively against
+	// problem_subcategory.value within that category; unmatched values remain
+	// NULL.
 	CreateProblemFromServiceNow(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string) (domain.ProblemDetail, error)
 
 	// UpdateProblemFields writes any subset of the PATCH /problems/{id}
