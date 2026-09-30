@@ -17,8 +17,8 @@
 // Ported from apps/support-portal-lite/webapp's own
 // features/spl/cases/pages/CaseDetailPage.tsx — rewritten against
 // useGetCase/usePostWorkNote (React Query) instead of useSplApi's
-// useGetApi/usePostApi. No SplShell wrapper (SplRouteGuard in App.tsx
-// already gates the route tree and mounts SplPermissionProvider).
+// useGetApi/usePostApi. No SplShell wrapper (RouteGuard in App.tsx
+// already gates the route tree and mounts PermissionProvider).
 import { useState, type ReactNode } from "react";
 import { useParams } from "react-router";
 import DOMPurify from "dompurify";
@@ -36,7 +36,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { UserIcon, CalendarDaysIcon, PackageIcon, ListTodoIcon, ServerIcon, ListChecksIcon, FilePlusIcon } from "@wso2/oxygen-ui-icons-react";
-import { useSplPermissions } from "@features/spl/api/splPermissionsContext";
+import { usePermissions } from "@features/spl/api/permissionsContext";
 import PathView from "../components/PathView";
 import { CaseBox } from "../components/CaseBox";
 import { AttachmentBox } from "../components/AttachmentBox";
@@ -69,7 +69,7 @@ export default function CaseDetailPage() {
   const [worknoteHtml, setWorknoteHtml] = useState(EMPTY_NOTE);
   const [worknoteResponse, setWorknoteResponse] = useState<unknown>();
   const [showAddWorkNotes, setShowAddWorkNotes] = useState(false);
-  const authInfo = useSplPermissions();
+  const authInfo = usePermissions();
   const { notice, showSuccess, showWarning, showError, clear } = useCaseNotice();
 
   const { data, isLoading, error } = useGetCase(caseId);

@@ -22,9 +22,9 @@
 // a pagination change on one state's table re-triggering every other
 // state's count card.
 //
-// No SplShell wrapper here (unlike the source): SplRouteGuard (App.tsx)
+// No SplShell wrapper here (unlike the source): RouteGuard (App.tsx)
 // already gates the whole /spl/* route tree and mounts
-// SplPermissionProvider above this page. No PageHeader either (this app has
+// PermissionProvider above this page. No PageHeader either (this app has
 // no equivalent helper) — a plain Typography stands in.
 import { useState } from "react";
 import { Box, Grid, Paper, Typography } from "@wso2/oxygen-ui";
