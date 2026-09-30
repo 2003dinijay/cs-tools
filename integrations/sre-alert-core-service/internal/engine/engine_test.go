@@ -126,103 +126,109 @@ func (f *fakeIncidents) Upsert(_ context.Context, alertID string, a model.Alert,
 		existing.PendingNotes = nil
 		existing.StateCheckedAt = time.Time{}
 	}
+	existing.Version++
 	f.byFP[fp] = existing
 	return existing, false, nil
 }
 
-func (f *fakeIncidents) RecordAlertID(_ context.Context, existing model.Incident, alertID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	inc := f.byFP[existing.Fingerprint]
-	for _, seen := range inc.AlertIDs {
-		if seen == alertID {
-			return nil
-		}
+// casUpdate mirrors store.IncidentRepo.casUpdate's contract: mutate only if existing.Version still
+// matches what's stored, bump the stored version, and report store.ErrStaleWrite otherwise. Callers
+// must hold f.mu.
+func (f *fakeIncidents) casUpdate(existing model.Incident, mutate func(*model.Incident)) (int64, error) {
+	inc, ok := f.byFP[existing.Fingerprint]
+	if !ok || inc.Version != existing.Version {
+		return existing.Version, store.ErrStaleWrite
 	}
-	inc.AlertIDs = append(inc.AlertIDs, alertID)
+	mutate(&inc)
+	inc.Version++
 	f.byFP[existing.Fingerprint] = inc
-	return nil
+	return inc.Version, nil
 }
 
-func (f *fakeIncidents) RecordCSMIncident(_ context.Context, fingerprint, incidentID, incidentNumber string) error {
+func (f *fakeIncidents) RecordAlertID(_ context.Context, existing model.Incident, alertID string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, seen := range existing.AlertIDs {
+		if seen == alertID {
+			return existing.Version, nil
+		}
+	}
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.AlertIDs = append(inc.AlertIDs, alertID)
+	})
+}
+
+func (f *fakeIncidents) RecordCSMIncident(_ context.Context, existing model.Incident, incidentID, incidentNumber string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.recordCSMIncidentErr != nil {
-		return f.recordCSMIncidentErr
+		return existing.Version, f.recordCSMIncidentErr
 	}
-	inc := f.byFP[fingerprint]
-	inc.IncidentID = incidentID
-	inc.IncidentNumber = incidentNumber
-	inc.CSMConfirmed = true
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.IncidentID = incidentID
+		inc.IncidentNumber = incidentNumber
+		inc.CSMConfirmed = true
+	})
 }
 
-func (f *fakeIncidents) RecordCSMAttemptStarted(_ context.Context, fingerprint string, attempts int) error {
+func (f *fakeIncidents) RecordCSMAttemptStarted(_ context.Context, existing model.Incident, attempts int) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[fingerprint]
-	inc.CSMAttempts = attempts
-	inc.CSMLastAttemptAt = time.Now()
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.CSMAttempts = attempts
+		inc.CSMLastAttemptAt = time.Now()
+	})
 }
 
-func (f *fakeIncidents) RecordCSMAttemptFailure(_ context.Context, fingerprint string, attempts, maxAttempts int, permanent bool) error {
+func (f *fakeIncidents) RecordCSMAttemptFailure(_ context.Context, existing model.Incident, attempts, maxAttempts int, permanent bool) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[fingerprint]
-	inc.CSMAttempts = attempts
-	inc.CSMPermanentlyFailed = permanent || attempts >= maxAttempts
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.CSMAttempts = attempts
+		inc.CSMPermanentlyFailed = permanent || attempts >= maxAttempts
+	})
 }
 
-func (f *fakeIncidents) SyncStatus(_ context.Context, fingerprint, status string, checkedAt time.Time) error {
+func (f *fakeIncidents) SyncStatus(_ context.Context, existing model.Incident, status string, checkedAt time.Time) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[fingerprint]
-	inc.Status = status
-	inc.StateCheckedAt = checkedAt
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.Status = status
+		inc.StateCheckedAt = checkedAt
+	})
 }
 
-func (f *fakeIncidents) RecordStateChecked(_ context.Context, fingerprint string, checkedAt time.Time) error {
+func (f *fakeIncidents) RecordStateChecked(_ context.Context, existing model.Incident, checkedAt time.Time) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[fingerprint]
-	inc.StateCheckedAt = checkedAt
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.StateCheckedAt = checkedAt
+	})
 }
 
-func (f *fakeIncidents) AppendWorkNote(_ context.Context, existing model.Incident, note string) error {
+func (f *fakeIncidents) AppendWorkNote(_ context.Context, existing model.Incident, note string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[existing.Fingerprint]
-	inc.WorkNotes = append(inc.WorkNotes, note)
-	inc.PendingNotes = append(inc.PendingNotes, note)
-	f.byFP[existing.Fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.WorkNotes = append(inc.WorkNotes, note)
+		inc.PendingNotes = append(inc.PendingNotes, note)
+	})
 }
 
-func (f *fakeIncidents) ClearPendingNotes(_ context.Context, fingerprint string, remaining []string) error {
+func (f *fakeIncidents) ClearPendingNotes(_ context.Context, existing model.Incident, remaining []string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[fingerprint]
-	inc.PendingNotes = remaining
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.PendingNotes = remaining
+	})
 }
 
-func (f *fakeIncidents) MarkFallbackNotified(_ context.Context, fingerprint string) error {
+func (f *fakeIncidents) MarkFallbackNotified(_ context.Context, existing model.Incident) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[fingerprint]
-	inc.Fallback = true
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.Fallback = true
+	})
 }
 
 func (f *fakeIncidents) ListPending(_ context.Context) ([]model.Incident, error) {

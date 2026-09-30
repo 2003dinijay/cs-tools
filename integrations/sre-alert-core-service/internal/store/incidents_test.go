@@ -16,7 +16,52 @@
 
 package store
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/scylladb/gocqlx/v2/qb"
+)
+
+// TestCasUpdate_QueryShape locks down the exact CQL shape casUpdate relies on: version is bound
+// under two distinct names (new_version for the SET, expected_version for the IF), and the IF
+// clause is a plain equality check. This repo has no Cassandra test harness to exercise casUpdate
+// against a live session, but a positional/name collision between the SET and IF sides of "version"
+// -- or accidentally using Lt/LtOrEq instead of Eq -- is exactly the kind of mistake that only shows
+// up against Cosmos DB's Cassandra API, whose LWT conditions support equality only (see casUpdate's
+// doc comment). Building the same qb chain here and asserting on it catches that class of mistake
+// without needing a live connection.
+func TestCasUpdate_QueryShape(t *testing.T) {
+	stmt, names := qb.Update("incidents_processed").
+		Set("alert_count").
+		SetNamed("version", "new_version").
+		Where(qb.Eq("fingerprint")).
+		If(qb.EqNamed("version", "expected_version")).
+		ToCql()
+
+	if !strings.Contains(stmt, "IF version=?") {
+		t.Fatalf("expected an equality-only IF clause on version (Cosmos LWT supports no other comparator), got: %s", stmt)
+	}
+	if strings.Contains(stmt, "IF version<") || strings.Contains(stmt, "IF version>") {
+		t.Fatalf("IF clause must be equality-only, got: %s", stmt)
+	}
+
+	wantNames := []string{"alert_count", "new_version", "fingerprint", "expected_version"}
+	if len(names) != len(wantNames) {
+		t.Fatalf("bound names = %v, want %v", names, wantNames)
+	}
+	for i, n := range wantNames {
+		if names[i] != n {
+			t.Fatalf("bound names = %v, want %v", names, wantNames)
+		}
+	}
+	// The SET side and the IF side must bind under different names -- both touch the same
+	// "version" column, so reusing one name would silently force the new value to equal the
+	// old one (or vice versa) instead of letting expectedVersion and expectedVersion+1 differ.
+	if names[1] == names[3] {
+		t.Fatalf("SET and IF sides of version must bind under distinct names, both got %q", names[1])
+	}
+}
 
 func TestIsPending(t *testing.T) {
 	tests := []struct {

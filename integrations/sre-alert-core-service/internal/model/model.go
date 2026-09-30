@@ -75,6 +75,9 @@ type Incident struct {
 	CSMPermanentlyFailed bool `json:"csm_permanently_failed" db:"csm_permanently_failed"`
 	// CSMLastAttemptAt backs CSMRetryDue's exponential backoff, so RetrySweep doesn't hit CSM every sweep during an outage.
 	CSMLastAttemptAt time.Time `json:"csm_last_attempt_at" db:"csm_last_attempt_at"`
+	// Version fences mutating writes so a replica whose lease expired mid-operation can't silently
+	// overwrite a newer leader's update; every mutating store call is a compare-and-set on this field.
+	Version int64 `json:"-" db:"version"`
 }
 
 // CSMRetryDue reports whether enough time has passed since the last CSM attempt to try again,
