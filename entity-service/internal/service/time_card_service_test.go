@@ -29,12 +29,12 @@ import (
 // unconfigured methods panic if called -- same convention as
 // stubCallRequestRepo (call_request_service_test.go).
 type stubTimeCardRepo struct {
-	createTimeCard          func(ctx context.Context, req domain.CreateTimeCardRequest, userID string) (domain.TimeCardView, error)
-	updateTimeCardFields    func(ctx context.Context, req domain.UpdateTimeCardRequest, actorID string) (domain.TimeCardView, error)
+	createTimeCard        func(ctx context.Context, req domain.CreateTimeCardRequest, userID string) (domain.TimeCardView, error)
+	updateTimeCardFields  func(ctx context.Context, req domain.UpdateTimeCardRequest, actorID string) (domain.TimeCardView, error)
 	transitionTimeCardState func(ctx context.Context, id string, state domain.TimeCardState, leadComment *string, actorID string) (domain.TimeCardView, error)
-	deleteTimeCard          func(ctx context.Context, id, submitterID string) error
-	setTimeCardSNSysID      func(ctx context.Context, id, snSysID string) error
-	getTimeCardSNSysID      func(ctx context.Context, id string) (*string, error)
+	deleteTimeCard        func(ctx context.Context, id, submitterID string) error
+	setTimeCardSNSysID    func(ctx context.Context, id, snSysID string) error
+	getTimeCardSNSysID    func(ctx context.Context, id string) (*string, error)
 }
 
 func (s *stubTimeCardRepo) SearchTimeCards(context.Context, domain.SearchTimeCardsRequest, string) ([]domain.TimeCardView, int, error) {
@@ -131,9 +131,7 @@ func TestTimeCardService_CreateTimeCard_MirrorsToServiceNow(t *testing.T) {
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) {
-			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
-		},
+		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
 	}, dispatcher, mirror)
 
 	if _, err := svc.CreateTimeCard(ctx, req); err != nil {
@@ -174,9 +172,7 @@ func TestTimeCardService_CreateTimeCard_MirrorFailureRecordsWritebackFailure(t *
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) {
-			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
-		},
+		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
 	}, dispatcher, mirror)
 
 	if _, err := svc.CreateTimeCard(ctx, req); err != nil {
@@ -213,9 +209,7 @@ func TestTimeCardService_CreateTimeCard_MirrorSuccessPersistsSNSysID(t *testing.
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) {
-			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
-		},
+		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
 	}, dispatcher, mirror)
 
 	if _, err := svc.CreateTimeCard(ctx, req); err != nil {
@@ -262,9 +256,7 @@ func TestTimeCardService_UpdateTimeCard_MirrorsWithStoredSNSysID(t *testing.T) {
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) {
-			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
-		},
+		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
 	}, dispatcher, mirror)
 
 	if _, err := svc.UpdateTimeCard(ctx, req); err != nil {
@@ -309,9 +301,7 @@ func TestTimeCardService_UpdateTimeCard_SkipsMirrorWhenNoSNSysIDStored(t *testin
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) {
-			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
-		},
+		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
 	}, dispatcher, mirror)
 
 	if _, err := svc.UpdateTimeCard(ctx, req); err != nil {
@@ -353,9 +343,7 @@ func TestTimeCardService_DeleteTimeCard_MirrorsWithStoredSNSysID(t *testing.T) {
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) {
-			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
-		},
+		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
 	}, dispatcher, mirror)
 
 	if _, err := svc.DeleteTimeCard(ctx, req); err != nil {
@@ -398,9 +386,7 @@ func TestTimeCardService_DeleteTimeCard_SkipsMirrorWhenNoSNSysIDStored(t *testin
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) {
-			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
-		},
+		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
 	}, dispatcher, mirror)
 
 	if _, err := svc.DeleteTimeCard(ctx, req); err != nil {
@@ -447,9 +433,7 @@ func TestTimeCardService_DeleteTimeCard_RecordsSNWritebackFailureOnLookupError(t
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) {
-			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
-		},
+		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
 	}, dispatcher, mirror)
 
 	if _, err := svc.DeleteTimeCard(ctx, req); err != nil {
