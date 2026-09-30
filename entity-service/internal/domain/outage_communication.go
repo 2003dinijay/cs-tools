@@ -52,12 +52,25 @@ type OutageForCommunication struct {
 	// "Declare Outage" hides that completely.
 	Type string `json:"type"`
 
-	ShortDescription string     `json:"shortDescription,omitempty"`
-	Impact           string     `json:"impact,omitempty"`
-	State            string     `json:"state,omitempty"`
-	StartOn          *time.Time `json:"startOn,omitempty"`
-	EndOn            *time.Time `json:"endOn,omitempty"`
-	Duration         string     `json:"duration,omitempty"`
+	ShortDescription string `json:"shortDescription,omitempty"`
+
+	// *** Impact AND State ARE NEVER POPULATED. *** ServiceNow's email body
+	// prints "Impact:" and "Current Status:" from cmdb_ci_outage's impact
+	// and state, and NEITHER is mirrored onto the Postgres `outage` table --
+	// verified against the live schema, not assumed. They stay on the struct
+	// because the rendered email has those lines and dropping them would
+	// change the message shape; they render blank until digiops-cs maps
+	// them.
+	//
+	// Do not "fix" this by sourcing them from a nearby column. An earlier
+	// revision filled Impact from `message`, which is the outage's own
+	// message -- a plausible-looking wrong value in every email, and harder
+	// to notice than a blank.
+	Impact   string     `json:"impact,omitempty"`
+	State    string     `json:"state,omitempty"`
+	StartOn  *time.Time `json:"startOn,omitempty"`
+	EndOn    *time.Time `json:"endOn,omitempty"`
+	Duration string     `json:"duration,omitempty"`
 
 	// OptedIn is ServiceNow's u_outage_communication. It gates both waits and
 	// is NEVER written back by the flow — a human sets it once and it stays

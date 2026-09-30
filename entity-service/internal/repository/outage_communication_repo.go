@@ -67,6 +67,17 @@ func NewOutageCommunicationRepository(db *pgxpool.Pool) OutageCommunicationRepos
 // outage alone would read another flow's traffic as ours; the type filter
 // is not optional.
 //
+// *** TWO FIELDS THE EMAIL RENDERS ARE NOT MIRRORED AT ALL. *** ServiceNow's
+// body prints "Impact:" and "Current Status:", which come from cmdb_ci_outage's
+// impact and state. NEITHER EXISTS on the Postgres `outage` table, under that
+// name or any other -- checked against the live schema, not assumed.
+//
+// They are therefore left empty rather than filled from a nearby column. An
+// earlier revision of this query mapped Impact to `o.message`, which is the
+// outage's own message and a different field entirely: it would have rendered
+// a plausible-looking wrong value in every email, which is worse than a blank.
+// Add them to the digiops-cs mapping if the blanks matter.
+//
 // `opted_in` is outage.outage_communication, which csm-sync-service does not
 // mirror yet. Until it does, this query fails with undefined_column and the
 // caller degrades to "nothing to send" — see PendingOutages.
@@ -74,8 +85,9 @@ const pendingOutageCommunicationsSQL = `
 SELECT o.id::text,
        COALESCE(o.number, ''),
        COALESCE(o.type::text, ''),
+       -- ServiceNow's Title/Description is short_description, which the
+       -- mirror lands in the name column.
        COALESCE(o.name, ''),
-       COALESCE(o.message, ''),
        o.start_on,
        o.end_on,
        COALESCE(o.duration::text, ''),
@@ -123,7 +135,7 @@ func (r *outageCommunicationRepo) PendingOutages(ctx context.Context, limit int)
 	for rows.Next() {
 		var o domain.OutageForCommunication
 		if err := rows.Scan(
-			&o.OutageID, &o.Number, &o.Type, &o.ShortDescription, &o.Impact,
+			&o.OutageID, &o.Number, &o.Type, &o.ShortDescription,
 			&o.StartOn, &o.EndOn, &o.Duration,
 			&o.OptedIn, &o.AlreadyDeclared, &o.AlreadyResolved, &o.DeclaredSubject,
 		); err != nil {
