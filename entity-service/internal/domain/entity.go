@@ -563,6 +563,14 @@ const (
 	SLAEngineActor = "sla-engine"
 )
 
+// SalesforceEntityLinkedOpportunity is the Linked_Opportunity__c custom
+// object (a project's link to an opportunity). The Alt spelling is accepted
+// defensively, as SalesforceEntityProjectContactAlt is.
+const (
+	SalesforceEntityLinkedOpportunity    = "Linked_Opportunity__c"
+	SalesforceEntityLinkedOpportunityAlt = "Linked_Opportunity"
+)
+
 // SalesforceEventRequest is the ASB envelope POSTed to /salesforce/events.
 type SalesforceEventRequest struct {
 	EventType   string `json:"eventType"`
@@ -1047,6 +1055,10 @@ const SalesforceIngestEntityContact = "contact"
 // SalesforceIngestEntityProject is the salesforce_ingest_state.entity value
 // of the Project family (table project).
 const SalesforceIngestEntityProject = "project"
+
+// SalesforceIngestEntityLinkedOpportunity is the salesforce_ingest_state.entity
+// value of the Linked_Opportunity__c family (table sf_opportunity_link).
+const SalesforceIngestEntityLinkedOpportunity = "linked_opportunity"
 
 // SalesforceIngestState is one row of salesforce_ingest_state — see migration
 // 0170 for the column semantics. It is the ledger the duplicate guard reads

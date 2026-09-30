@@ -57,16 +57,40 @@ func TestGetProject_PostsIDSearchAndDecodes(t *testing.T) {
 	}
 }
 
-// TestGetProject_EmptyOrMismatchedIs503: an empty or foreign result
+func TestGetLinkedOpportunity_PostsIDSearchAndDecodes(t *testing.T) {
+	client := newMembershipTestClient(t, func(mux *http.ServeMux) {
+		mux.HandleFunc("/linked-opportunities/search", func(w http.ResponseWriter, r *http.Request) {
+			var req idSearchRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("parse body: %v", err)
+			}
+			if r.Method != http.MethodPost || req.ID != "a3UE2000008btovMAA" || req.Limit != 1 {
+				t.Errorf("method=%s request=%+v", r.Method, req)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"id": "a3UE2000008btovMAA", "name": "LO-26-09-N-00034824", "projectId": "a0dE200000RgyJZIAZ",
+				"opportunityId": "006E200000aIb6ZIAS", "lastModifiedDate": "2026-09-29T09:28:21.000+0000"}]`))
+		})
+	})
+	got, err := client.GetLinkedOpportunity(context.Background(), "a3UE2000008btovMAA")
+	if err != nil {
+		t.Fatalf("GetLinkedOpportunity: %v", err)
+	}
+	if deref(got.Name) != "LO-26-09-N-00034824" || deref(got.ProjectID) != "a0dE200000RgyJZIAZ" || deref(got.OpportunityID) != "006E200000aIb6ZIAS" || deref(got.LastModifiedDate) == "" {
+		t.Errorf("linked opportunity = %+v", got)
+	}
+}
+
+// TestGetProjectAndLink_EmptyOrMismatchedIs503: an empty or foreign result
 // is retryable, because the event can arrive before Salesforce commits.
-func TestGetProject_EmptyOrMismatchedIs503(t *testing.T) {
+func TestGetProjectAndLink_EmptyOrMismatchedIs503(t *testing.T) {
 	for name, rows := range map[string]string{
 		"empty":      `[]`,
 		"mismatched": `[{"id":"a0dE200000RgxAbXXX"}]`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			client := newMembershipTestClient(t, func(mux *http.ServeMux) {
-				for _, path := range []string{"/projects/search"} {
+				for _, path := range []string{"/projects/search", "/linked-opportunities/search"} {
 					mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 						w.Header().Set("Content-Type", "application/json")
 						_, _ = w.Write([]byte(rows))
@@ -76,6 +100,9 @@ func TestGetProject_EmptyOrMismatchedIs503(t *testing.T) {
 			var sue *apierror.ServiceUnavailableError
 			if _, err := client.GetProject(context.Background(), "a0dE200000RgxAbIAJ"); !errors.As(err, &sue) {
 				t.Errorf("GetProject err = %v, want ServiceUnavailableError", err)
+			}
+			if _, err := client.GetLinkedOpportunity(context.Background(), "a0dE200000RgxAbIAJ"); !errors.As(err, &sue) {
+				t.Errorf("GetLinkedOpportunity err = %v, want ServiceUnavailableError", err)
 			}
 		})
 	}

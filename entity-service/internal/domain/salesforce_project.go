@@ -58,3 +58,12 @@ type SalesforceProjectUpsertResult struct {
 	Created     bool
 	Reactivated bool
 }
+
+// SalesforceOpportunityLinkUpsert is one Salesforce Linked_Opportunity__c
+// mapped onto sf_opportunity_link, with both parents already resolved.
+type SalesforceOpportunityLinkUpsert struct {
+	LinkSfID      string
+	Number        *string
+	OpportunityID string
+	ProjectID     string
+}

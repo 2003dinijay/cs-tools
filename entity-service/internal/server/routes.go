@@ -287,9 +287,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			if !cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
 				return svc
 			}
-			return service.WithOpportunityIngest(svc, service.OpportunityIngest{
+			svc = service.WithOpportunityIngest(svc, service.OpportunityIngest{
 				Opportunities: repository.NewSalesforceOpportunityRepository(db),
 				SalesEntity:   salesEntityClient,
+			})
+			// Linked_Opportunity__c belongs to the Opportunity family.
+			return service.WithLinkedOpportunityIngest(svc, service.LinkedOpportunityIngest{
+				Links:       repository.NewSalesforceOpportunityLinkRepository(db),
+				SalesEntity: salesEntityClient,
 			})
 		}
 		if cfg.CSMMigrationSalesforceMembershipIngestEnabled {
@@ -325,6 +330,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				retryWorker := service.NewSalesforceIngestRetryWorker(stepRepo, retrier, ingestSupport.States, cfg.SalesforceIngestRetryInterval)
 				if opp, ok := membershipIngestSvc.(service.OpportunityReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
 					retryWorker.EntityRetriers[domain.SalesforceIngestEntityOpportunity] = opp.RetryOpportunityIngest
+				}
+				if link, ok := membershipIngestSvc.(service.LinkedOpportunityReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityLinkedOpportunity] = link.RetryLinkedOpportunityIngest
 				}
 				if project, ok := membershipIngestSvc.(service.ProjectReingester); ok && cfg.CSMMigrationSalesforceProjectIngestEnabled {
 					retryWorker.EntityRetriers[domain.SalesforceIngestEntityProject] = project.RetryProjectIngest

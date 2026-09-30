@@ -519,7 +519,7 @@ hour at the default. FAILED ledger rows are read the same way
 registered-retrier, missing-parent and attempt-cap filters in SQL before the batch
 limit, so a backlog of rows the job would skip cannot starve eligible ones) and handed to
 `EntityRetriers[entity]`; `opportunity` registers one (`RetryOpportunityIngest`) when
-`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true`, `project` one
+`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true` (and `linked_opportunity`, `RetryLinkedOpportunityIngest`, under the same flag), `project` one
 (`RetryProjectIngest`) when `CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED=true`, and `contact` always
 registers one (`RetryContactIngest`: the whole Contact writer as UPDATED, fan-out
 included; it runs under the membership flag the job already requires). Other
@@ -572,6 +572,18 @@ acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest
 - **Duplicate guard:** the REST Sales Entity does not return `lastModifiedDate` for
   opportunities yet, so today the guard is skipped with a warning and the idempotent
   upsert runs on every event; it starts working once Sales Entity sends the field.
+- **`Linked_Opportunity__c`** (also `Linked_Opportunity`), same flag:
+  `internal/service/salesforce_linked_opportunity_ingest.go` (`WithLinkedOpportunityIngest`),
+  `internal/repository/sf_opportunity_link_repo.go`, `GetLinkedOpportunity` on
+  `POST /linked-opportunities/search`. CREATED/UPDATED/RESTORED: guard with entity
+  `linked_opportunity`, resolve the opportunity by `sf_id` (the Opportunity ingest runs
+  inline when it is missing, the script's `_initOpportunity`), the project through
+  `EnsureProject` (missing project with inserts off = `NotFoundError`, re-run by the retry
+  job, which registers `RetryLinkedOpportunityIngest`), then upsert `sf_opportunity_link` by
+  `link_sf_id` under lock `"sf-opportunity-link:"+id`: `number` (= Name), `opportunity_id`,
+  `project_id`, `sync_time_stamp`. A link without a project or opportunity id is recorded
+  FAILED and acknowledged. DELETED: hard delete by the 18-character `link_sf_id` plus a
+  DELETED ledger row; a never-ingested link is acknowledged.
 
 ## Salesforce Project ingest
 
