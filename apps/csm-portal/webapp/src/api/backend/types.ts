@@ -616,6 +616,8 @@ export interface BeAnnouncementCreatePayload {
   projectId: string;
   subject: string;
   description: string;
+  /** Decides the case's default email audience on the backend: SECURITY_CONTACT project-role contacts when true, PORTAL_USER contacts otherwise. */
+  isSecurityAnnouncement: boolean;
 }
 
 /**
@@ -3225,6 +3227,8 @@ export interface BeIncidentWatchListItem {
  * comments, and the watch list).
  */
 export interface BeIncidentDetail extends BeIncident {
+  /** ServiceNow's incident.description field — the full free-text body, separate from the shorter Subject. */
+  description?: string | null;
   subcategory?: BeIncidentSubcategory | null;
   service?: BeEntityRef | null;
   serviceOffering?: BeEntityRef | null;
@@ -3540,6 +3544,8 @@ export interface BeProblemDetail {
   id: string;
   number?: string;
   subject?: string;
+  /** Free-text description of the problem. May be null/empty on many records — render blank gracefully, not as an awkward empty field. */
+  description?: string | null;
   state?: BeProblemState;
   priority?: string | null;
   /** May be null/empty on many records — render blank gracefully, not as an awkward empty field. */
@@ -3675,6 +3681,10 @@ export interface BeIncidentTaskSearchResponse {
  */
 export interface BeCreateProblemPayload {
   subject: string;
+  // Sanitized rich-text HTML (see sanitizeRichTextHtml), same convention as
+  // BeCreateCaseRequest.description. Not yet forwarded to ServiceNow — see
+  // entity-service's own CreateProblem doc comment.
+  description?: string;
   category?: string;
   subcategory?: string;
   originCaseId?: string;

@@ -282,17 +282,22 @@ func (r *projectMembershipRepo) ResolveWriteContext(ctx context.Context, project
 }
 
 // resolveWriteTarget reads the project a portal write names and the account
-// behind it. A project with no account is a NotFoundError rather than a
-// half-resolved target: every Salesforce contact is created under an account,
-// so there is nothing this write could do without one.
+// behind it.
+//
+// A missing Salesforce id -- project.sf_id is nullable, and so is the
+// project's account or that account's sf_id -- is NOT an error here: it comes
+// back as an empty field, and the service's requireSalesforceLinks refuses the
+// write with a caller-safe message and logs which id was missing. Scanning a
+// NULL sf_id straight into a string used to fail the whole read with a raw
+// driver error, which surfaced as a bare 500.
 func resolveWriteTarget(ctx context.Context, q querier, projectID string) (domain.MembershipWriteTarget, error) {
 	var t domain.MembershipWriteTarget
-	var name, accountID, accountSfID *string
+	var name, projectSfID, accountID, accountSfID *string
 	err := q.QueryRow(ctx, `
 		SELECT p.id, p.key, p.name, p.sf_id, a.id, a.sf_id
 		FROM project p
 		LEFT JOIN account a ON a.id = p.account_id
-		WHERE p.id = $1`, projectID).Scan(&t.ProjectID, &t.ProjectKey, &name, &t.ProjectSfID, &accountID, &accountSfID)
+		WHERE p.id = $1`, projectID).Scan(&t.ProjectID, &t.ProjectKey, &name, &projectSfID, &accountID, &accountSfID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.MembershipWriteTarget{}, &apierror.NotFoundError{Msg: "project not found"}
 	}
@@ -302,10 +307,15 @@ func resolveWriteTarget(ctx context.Context, q querier, projectID string) (domai
 	if name != nil {
 		t.ProjectName = *name
 	}
-	if accountID == nil || accountSfID == nil || strings.TrimSpace(*accountSfID) == "" {
-		return domain.MembershipWriteTarget{}, &apierror.NotFoundError{Msg: "project has no Salesforce account to add a contact to"}
+	if projectSfID != nil {
+		t.ProjectSfID = strings.TrimSpace(*projectSfID)
 	}
-	t.AccountID, t.AccountSfID = *accountID, *accountSfID
+	if accountID != nil {
+		t.AccountID = *accountID
+	}
+	if accountSfID != nil {
+		t.AccountSfID = strings.TrimSpace(*accountSfID)
+	}
 	return t, nil
 }
 

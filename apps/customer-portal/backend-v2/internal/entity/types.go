@@ -742,6 +742,12 @@ type WatchListUser struct {
 	UserName string `json:"userName"`
 	Name     string `json:"name,omitempty"`
 	Email    string `json:"email,omitempty"`
+	// Locked mirrors entity-service's own domain.WatchListUser.Locked: true
+	// when this watcher is one of the case's account's four named
+	// stakeholders, which entity-service always re-adds on the next write
+	// regardless of what a caller submits -- see dto.CaseWatchListUser.Locked
+	// for what the frontend does with this.
+	Locked bool `json:"locked"`
 }
 
 // UpdatedCase carries the case fields entity-service returns after a
@@ -870,6 +876,10 @@ type CaseView struct {
 	Duration        *string `json:"duration"`
 	EscalationLevel *string `json:"escalationLevel"`
 	IsEscalated     *bool   `json:"isEscalated"`
+	// AnnouncementType is only meaningful when Type is "announcement" --
+	// "GENERAL" or "SECURITY" (entity-service's announcement.announcement_type
+	// column). Nil for every other case-like type.
+	AnnouncementType *string `json:"announcementType"`
 }
 
 // --- deployments ---

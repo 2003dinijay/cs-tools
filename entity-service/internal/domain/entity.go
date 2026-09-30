@@ -2073,6 +2073,12 @@ const (
 	CaseCauseInfrastructureProxy           CaseCause = "INFRASTRUCTURE_PROXY"
 	CaseCauseInfrastructureOther           CaseCause = "INFRASTRUCTURE_OTHER"
 	CaseCauseUnknown                       CaseCause = "UNKNOWN"
+	// CaseCauseUserMistake (case_cause_enum, migration 0108) has no
+	// ServiceNow numeric choice-value counterpart in snCauseKey -- a
+	// dual-write UpdateCase setting this cause gets a clean ValidationError
+	// from that map's own existence check rather than a wrong/silent write,
+	// so this is safe to allow on the Postgres-generic path without it.
+	CaseCauseUserMistake CaseCause = "USER_MISTAKE"
 )
 
 // EngagementType classifies the type of an engagement case.
@@ -2313,15 +2319,23 @@ type CaseView struct {
 	// Severity/IssueType/State are null in practice for a large share of
 	// real cases -- see domain.Case's own doc comment for the confirmed
 	// production null rates.
-	Severity       *CaseSeverity  `json:"severity"`
-	IssueType      *CaseIssueType `json:"issueType"`
-	State          *CaseState     `json:"state"`
-	WorkState      *CaseWorkState `json:"workState"`
-	Type           *string        `json:"type"`
-	EngagementType *string        `json:"engagementType"`
-	CreatedOn      time.Time      `json:"createdOn"`
-	UpdatedOn      time.Time      `json:"updatedOn"`
-	ClosedOn       *time.Time     `json:"closedOn"`
+	Severity  *CaseSeverity  `json:"severity"`
+	IssueType *CaseIssueType `json:"issueType"`
+	State     *CaseState     `json:"state"`
+	WorkState *CaseWorkState `json:"workState"`
+	Type      *string        `json:"type"`
+	// AnnouncementType is only meaningful when Type is "announcement" -- the
+	// real ServiceNow classification (u_announcement_type, migrated into
+	// Postgres' own announcement.announcement_type column) of "GENERAL" vs
+	// "SECURITY", set at creation time from CreateCaseRequest.IsSecurityAnnouncement
+	// (which already exists for a different purpose -- see that field's own
+	// doc comment -- reused here rather than adding a second flag for the
+	// same underlying yes/no). Nil for every other case-like type.
+	AnnouncementType *string    `json:"announcementType,omitempty"`
+	EngagementType   *string    `json:"engagementType"`
+	CreatedOn        time.Time  `json:"createdOn"`
+	UpdatedOn        time.Time  `json:"updatedOn"`
+	ClosedOn         *time.Time `json:"closedOn"`
 	// CreatedBy is the canonical user reference for the case creator. Its id is
 	// populated only where the backing data source already supplies one, and
 	// null otherwise: see UserReference.
@@ -3010,6 +3024,21 @@ type WatchListUser struct {
 	UserName string `json:"userName"`
 	Name     string `json:"name,omitempty"`
 	Email    string `json:"email,omitempty"`
+	// Locked is true when this watcher is currently one of the case's
+	// project's account's four named stakeholders (customer success manager,
+	// technical owner, secondary technical owner, account manager --
+	// CaseRepository.AccountDefaultWatcherIDs). A caller cannot remove a
+	// locked watcher via UpdateCase's WatchList field -- see
+	// caseService.updateCaseWatchList's own doc comment -- so a UI should
+	// disable the remove control for these specifically, rather than let the
+	// removal silently fail to stick. Computed live from the account's
+	// current stakeholder columns, not stamped at the time the watcher was
+	// added, so it tracks a later stakeholder change (e.g. a reassigned CSM)
+	// automatically rather than going stale. Postgres-data-source only --
+	// this concept has no ServiceNow-side equivalent, so a ServiceNow-backed
+	// watcher is always Locked: false, which is accurate for that data
+	// source (nothing there enforces this rule).
+	Locked bool `json:"locked"`
 	// User is the canonical user reference for this watcher, a sibling of the
 	// flat id/userName/name/email fields. Its id is always null: a watch-list
 	// entry is not guaranteed to point at a user record (the list collapses
@@ -3079,6 +3108,11 @@ type CreateCaseRequest struct {
 	// For engagement type
 	EngagementType        EngagementType        `json:"engagementType"`
 	EngagementPaymentType EngagementPaymentType `json:"engagementPaymentType"`
+	// For announcement type only -- decides the case's default audience:
+	// true resolves to every project contact holding the SECURITY_CONTACT
+	// project role, false to every contact holding PORTAL_USER. Ignored for
+	// every other type. See publishCaseCreatedEvent's own doc comment.
+	IsSecurityAnnouncement bool `json:"isSecurityAnnouncement,omitempty"`
 }
 
 // CommentType classifies the type of a case comment.
@@ -5447,6 +5481,10 @@ type IncidentView struct {
 	ResolvedBy      *string `json:"resolvedBy"`
 	ResolvedOn      *string `json:"resolvedOn"`
 	IncidentReport  *string `json:"incidentReport"`
+	// Description is ServiceNow's incident.description field (separate from Subject, which
+	// maps to the shorter short_description), read from work_item.description -- the same
+	// column every other work_item type already uses for its own long-form description.
+	Description *string `json:"description"`
 	// SpecialistHandoff is the derived summary of a specialist-group handoff, null when the
 	// incident has never been handed off. Nothing is persisted for it: the backing data
 	// source recomputes it at read time, so a handoff performed through its own native UI
@@ -5628,6 +5666,7 @@ type ProblemDetail struct {
 	ID                  *string         `json:"id"`
 	Number              *string         `json:"number"`
 	Subject             *string         `json:"subject"`
+	Description         *string         `json:"description"`
 	State               *string         `json:"state"`
 	Priority            *string         `json:"priority"`
 	Category            *string         `json:"category"`
@@ -5648,10 +5687,16 @@ type ProblemDetail struct {
 }
 
 // CreateProblemRequest is the request body for POST /problems. Subject is required;
-// Category, Subcategory, OriginCaseID, and PrimaryIncidentID are optional. OriginCaseID
-// and PrimaryIncidentID are UUIDs from the caller's perspective.
+// Description, Category, Subcategory, OriginCaseID, and PrimaryIncidentID are optional.
+// OriginCaseID and PrimaryIncidentID are UUIDs from the caller's perspective.
+//
+// Description round-trips on both data sources: the Postgres path persists it on
+// work_item.description, and the ServiceNow path forwards it to the Choreo
+// integration's POST /problems payload (see ProblemService.CreateProblem's
+// ServiceNow implementation, sn_problem_service.go).
 type CreateProblemRequest struct {
 	Subject           string  `json:"subject"`
+	Description       *string `json:"description,omitempty"`
 	Category          *string `json:"category,omitempty"`
 	Subcategory       *string `json:"subcategory,omitempty"`
 	OriginCaseID      *string `json:"originCaseId,omitempty"`
@@ -7051,9 +7096,26 @@ type SLAStatus struct {
 	CaseTitle  string `json:"caseTitle,omitempty"`
 	CaseType   string `json:"caseType,omitempty"`
 	Product    string `json:"product,omitempty"`
-	Team       string `json:"team,omitempty"`
-	Priority   string `json:"priority,omitempty"`
-	State      string `json:"state,omitempty"`
+	// Team is the case's account's CRE team display name (account.cre_team_id
+	// joined to "group") -- "" when the case has no account, or the account
+	// has no CRE team assigned.
+	Team     string `json:"team,omitempty"`
+	Priority string `json:"priority,omitempty"`
+	State    string `json:"state,omitempty"`
+	// ProjectOnboardingStatus/IsEvaluationAccount exist purely for
+	// csm-notification-service's own SLA breach-alert Chat-audience
+	// routing, the same team/onboarding/evaluation facts case.created's own
+	// Chat alert uses (see that payload's own doc comment on the
+	// csm-notification-service side). ProjectOnboardingStatus is the
+	// case's project.onboarding_status raw enum label (e.g. "IN_PROGRESS"),
+	// "" when the case has no project or the column is unset.
+	// IsEvaluationAccount is true when the project's project_type is
+	// "Evaluation Subscription" (matched by project_type.name, not a
+	// hardcoded id -- see evaluationSubscriptionProjectTypeName's own doc
+	// comment). Both are best-effort display/routing enrichment, not part
+	// of the SLA clock itself.
+	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
+	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
 }
 
 // SearchSLAStatusResponse is the response for GET /sla-status — every

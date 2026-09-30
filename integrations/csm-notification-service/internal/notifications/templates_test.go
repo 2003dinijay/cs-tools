@@ -376,6 +376,50 @@ func TestRenderInternalNoteEmail_NoReplyStrapAndUsesWorkNoteWording(t *testing.T
 	}
 }
 
+// TestRenderCaseCreatedEmail_OmitsPriorityAndProductRowsWhenEmpty verifies
+// the Priority/Product rows are dropped entirely (not just rendered blank)
+// when their data is empty — the real state for every case type but "case"
+// (Priority) and for "announcement" specifically (Product, since neither
+// concept applies there — see entity-service's own validateCreateCaseRequest).
+// A populated case (the "case" type's own shape) must still show both.
+func TestRenderCaseCreatedEmail_OmitsPriorityAndProductRowsWhenEmpty(t *testing.T) {
+	base := CaseCreatedEmailData{
+		ReporterName: "Jane Doe",
+		ProjectName:  "Project Zeta",
+		CaseNumber:   "CS0023001",
+		CaseTitle:    "Something broke",
+		CaseType:     "ANNOUNCEMENT",
+		CreatedAt:    "2026-01-02",
+		Description:  "d",
+		CaseLink:     "https://x/case",
+		CommentLink:  "https://x/comment",
+	}
+
+	t.Run("both empty: neither row renders", func(t *testing.T) {
+		out, _ := RenderCaseCreatedEmail(base)
+		if strings.Contains(out, ">Priority<") {
+			t.Error("rendered email still has a Priority row with no priority data")
+		}
+		if strings.Contains(out, ">Product<") {
+			t.Error("rendered email still has a Product row with no product data")
+		}
+	})
+
+	t.Run("both set: both rows render", func(t *testing.T) {
+		withData := base
+		withData.CaseType = "CASE"
+		withData.Priority = "High (S2)"
+		withData.Product = "WSO2 API Manager"
+		out, _ := RenderCaseCreatedEmail(withData)
+		if !strings.Contains(out, ">Priority<") || !strings.Contains(out, "High (S2)") {
+			t.Error("rendered email is missing the Priority row/value")
+		}
+		if !strings.Contains(out, ">Product<") || !strings.Contains(out, "WSO2 API Manager") {
+			t.Error("rendered email is missing the Product row/value")
+		}
+	})
+}
+
 // TestRenderSeverityChangedEmail_ContainsOldAndNewSeverity verifies both
 // severities render, distinctly, in the output — a real bug the analogous
 // RenderCommentAddedEmail test above caught for a different placeholder,
@@ -594,7 +638,7 @@ func TestRenderProjectContactInvitedEmail_SignInButton(t *testing.T) {
 		"reminder": RenderProjectContactInvitedReminderEmail,
 	} {
 		got := render(ProjectContactInvitedEmailData{DisplayName: "jane", Email: "jane@acme.com", ProjectName: "Acme Cloud", ProjectKey: "ACMECLOUD", PortalURL: portal})
-		for _, want := range []string{`bgcolor="#c2410c"`, "border-radius:999px", "Sign in to the Support Portal", "Button not working? Paste this link into your browser:"} {
+		for _, want := range []string{`bgcolor="#ff7300"`, "border-radius:999px", "Sign in to the Support Portal", "Button not working? Paste this link into your browser:"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("%s: rendered email does not contain %q", name, want)
 			}

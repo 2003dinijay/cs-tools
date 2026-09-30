@@ -125,6 +125,88 @@ func (s *projectMembershipWriteService) requireInternalCaller(ctx context.Contex
 	return RequireInternalCaller(ctx, s.deps.Access, "membership writes are only available to internal services")
 }
 
+// Membership write operation names. They key the caller-facing message a
+// missing Salesforce link produces and label the server-side log lines.
+const (
+	membershipOpInvite      = "invite"
+	membershipOpUpdateRoles = "update-roles"
+	membershipOpDeactivate  = "deactivate"
+	membershipOpResend      = "resend-invitation"
+)
+
+// membershipNotLinkedMessages is what the caller is told when a write cannot
+// go ahead because a row it depends on carries no Salesforce id. It is
+// deliberately generic: the missing id is a data-migration gap on our side,
+// the person clicking the button can do nothing about it, and naming the
+// table or the column would only leak how the system is put together. The
+// real cause is logged with the ids (see requireSalesforceLinks).
+var membershipNotLinkedMessages = map[string]string{
+	membershipOpInvite:      "This contact can't be added to the project right now. Please contact WSO2 support.",
+	membershipOpUpdateRoles: "This contact can't be updated right now. Please contact WSO2 support.",
+	membershipOpDeactivate:  "This contact can't be removed right now. Please contact WSO2 support.",
+	membershipOpResend:      "This invitation can't be re-sent right now. Please contact WSO2 support.",
+}
+
+// membershipNotLinkedError logs why a membership write was refused for a
+// missing Salesforce id and returns the caller-safe 409 for it.
+//
+// 409 rather than 400, 404 or 503: the request itself is well-formed (not
+// 400), the project and the membership do exist (not 404), and retrying will
+// not help until the data is fixed (not 503, whose message writeServiceError
+// replaces with "try again later"). What stands in the way is the current
+// state of the rows, which is what 409 means -- and ConflictError's message
+// reaches the caller verbatim, which the portals already pass through.
+//
+// The address is not logged: the ids identify the row without putting a
+// person's e-mail in the log.
+func membershipNotLinkedError(ctx context.Context, operation, projectID string, missing []string, ids ...any) error {
+	args := append([]any{"operation", operation, "projectId", projectID, "missing", missing}, ids...)
+	slog.ErrorContext(ctx, "membership write refused: a row it depends on has no Salesforce id", args...)
+	msg, ok := membershipNotLinkedMessages[operation]
+	if !ok {
+		msg = membershipNotLinkedMessages[membershipOpUpdateRoles]
+	}
+	return &apierror.ConflictError{Msg: msg}
+}
+
+// requireSalesforceLinks refuses a write whose project, account or existing
+// membership is missing a Salesforce id it needs, BEFORE any Salesforce call.
+//
+// Without it the write does not fail cleanly. A project with an empty sf_id
+// reaches Salesforce and is refused there with an internal validation
+// message, possibly after a Contact has already been created. An existing
+// membership with no sf_id is looked up by (project, contact) instead, and
+// when that misses a brand new Project_Contact__c is created -- for a
+// deactivation, a new DEACTIVATED record beside the real one. An existing
+// membership whose Contact id is missing falls back to the address search
+// and can end in a second Contact. Every one of those is a data-migration
+// gap that a support engineer has to fix; none is something the write
+// should paper over.
+func requireSalesforceLinks(ctx context.Context, operation string, wc repository.MembershipWriteContext) error {
+	var missing []string
+	if strings.TrimSpace(wc.Target.ProjectSfID) == "" {
+		missing = append(missing, "project.sf_id")
+	}
+	if strings.TrimSpace(wc.Target.AccountID) == "" || strings.TrimSpace(wc.Target.AccountSfID) == "" {
+		missing = append(missing, "account.sf_id")
+	}
+	ids := []any{"projectSfId", wc.Target.ProjectSfID, "accountId", wc.Target.AccountID, "accountSfId", wc.Target.AccountSfID}
+	if wc.Existing != nil {
+		if strings.TrimSpace(wc.Existing.MembershipSfID) == "" {
+			missing = append(missing, "project_contact.sf_id")
+		}
+		if strings.TrimSpace(wc.Existing.ContactSfID) == "" {
+			missing = append(missing, "account_contact.sf_id")
+		}
+		ids = append(ids, "projectContactId", wc.Existing.ProjectContactID,
+			"membershipSfId", wc.Existing.MembershipSfID, "contactSfId", wc.Existing.ContactSfID)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return membershipNotLinkedError(ctx, operation, wc.Target.ProjectID, missing, ids...)
+}
+
 // Invite implements ProjectMembershipWriteService.
 func (s *projectMembershipWriteService) Invite(ctx context.Context, projectID string, req domain.CreateProjectMembershipRequest) (domain.ProjectMembership, error) {
 	if err := s.requireInternalCaller(ctx); err != nil {
@@ -161,6 +243,9 @@ func (s *projectMembershipWriteService) Invite(ctx context.Context, projectID st
 			// is a distinct Salesforce state and a distinct email.
 			state = domain.MembershipStateReInvited
 		}
+		if err := requireSalesforceLinks(ctx, membershipOpInvite, wc); err != nil {
+			return domain.SalesforceMembershipUpsert{}, domain.UpsertOnboardingStepRequest{}, err
+		}
 		if s.deps.Invitations != nil {
 			// Before any Salesforce write: a refused invitation must leave
 			// both systems exactly as they were.
@@ -185,7 +270,7 @@ func (s *projectMembershipWriteService) Invite(ctx context.Context, projectID st
 		return in, membershipStep(in, rec), nil
 	})
 	if err != nil {
-		return domain.ProjectMembership{}, s.handleWriteError(ctx, "invite", projectID, email, written, err)
+		return domain.ProjectMembership{}, s.handleWriteError(ctx, membershipOpInvite, projectID, email, written, err)
 	}
 
 	membership := domain.ProjectMembership{
@@ -245,6 +330,16 @@ func (s *projectMembershipWriteService) ValidateInvitation(ctx context.Context, 
 			return refusedInvitation(&apierror.ConflictError{Msg: msgAlreadyProjectContact})
 		}
 		result.ExistingMembershipState = wc.Existing.State
+	}
+	// Same guard as Invite, before the validator reads Salesforce with these
+	// ids. Answered as an INVALID refusal (not CONFLICT, which callers show as
+	// "already a contact"), carrying Invite's generic support message.
+	if err := requireSalesforceLinks(ctx, membershipOpInvite, wc); err != nil {
+		var conflict *apierror.ConflictError
+		if errors.As(err, &conflict) {
+			return domain.ProjectMembershipValidation{Reason: domain.MembershipValidationInvalid, Message: conflict.Msg}, nil
+		}
+		return domain.ProjectMembershipValidation{}, err
 	}
 	if s.deps.Invitations != nil {
 		if err := s.deps.Invitations.Validate(ctx, wc.Target, email, req.InviterEmail); err != nil {
@@ -342,6 +437,9 @@ func (s *projectMembershipWriteService) UpdateRoles(ctx context.Context, project
 			return domain.SalesforceMembershipUpsert{}, domain.UpsertOnboardingStepRequest{},
 				&apierror.NotFoundError{Msg: "contact not found on this project"}
 		}
+		if err := requireSalesforceLinks(ctx, membershipOpUpdateRoles, wc); err != nil {
+			return domain.SalesforceMembershipUpsert{}, domain.UpsertOnboardingStepRequest{}, err
+		}
 		state := wc.Existing.State
 		if strings.TrimSpace(state) == "" {
 			state = domain.MembershipStateInvited
@@ -359,7 +457,7 @@ func (s *projectMembershipWriteService) UpdateRoles(ctx context.Context, project
 		return in, membershipStep(in, rec), nil
 	})
 	if err != nil {
-		return domain.ProjectMembership{}, s.handleWriteError(ctx, "update-roles", projectID, normalized, written, err)
+		return domain.ProjectMembership{}, s.handleWriteError(ctx, membershipOpUpdateRoles, projectID, normalized, written, err)
 	}
 	return domain.ProjectMembership{
 		ProjectID:        res.ProjectID,
@@ -392,6 +490,9 @@ func (s *projectMembershipWriteService) Deactivate(ctx context.Context, projectI
 			return domain.SalesforceMembershipUpsert{}, domain.UpsertOnboardingStepRequest{},
 				&apierror.NotFoundError{Msg: "contact not found on this project"}
 		}
+		if err := requireSalesforceLinks(ctx, membershipOpDeactivate, wc); err != nil {
+			return domain.SalesforceMembershipUpsert{}, domain.UpsertOnboardingStepRequest{}, err
+		}
 		// Deactivate, never delete: DEACTIVATED is a real value of the
 		// Salesforce State__c picklist and of project_contact_state_enum,
 		// and it is what the portal does today. The roles are left exactly
@@ -412,7 +513,7 @@ func (s *projectMembershipWriteService) Deactivate(ctx context.Context, projectI
 		return in, membershipStep(in, rec), nil
 	})
 	if err != nil {
-		return s.handleWriteError(ctx, "deactivate", projectID, normalized, written, err)
+		return s.handleWriteError(ctx, membershipOpDeactivate, projectID, normalized, written, err)
 	}
 	return nil
 }
@@ -448,8 +549,19 @@ func (s *projectMembershipWriteService) ResendInvitation(ctx context.Context, pr
 		!strings.EqualFold(row.State, domain.MembershipStateReInvited) {
 		return &apierror.ConflictError{Msg: "only a contact in state INVITED or RE-INVITED can have their invitation re-sent"}
 	}
+	// The membership id keys the event and the cooldown, and the contact id
+	// is what csm-notification-service provisions the identity against: a
+	// resend without either would queue an e-mail nobody can act on.
+	var missing []string
 	if strings.TrimSpace(row.MembershipSfID) == "" {
-		return &apierror.ConflictError{Msg: "this contact has no Salesforce membership to re-send an invitation for"}
+		missing = append(missing, "project_contact.sf_id")
+	}
+	if strings.TrimSpace(row.ContactSfID) == "" {
+		missing = append(missing, "account_contact.sf_id")
+	}
+	if len(missing) > 0 {
+		return membershipNotLinkedError(ctx, membershipOpResend, projectID, missing,
+			"projectContactId", row.ProjectContactID, "membershipSfId", row.MembershipSfID, "contactSfId", row.ContactSfID)
 	}
 	if err := s.enforceResendCooldown(ctx, row.MembershipSfID); err != nil {
 		return err
@@ -572,6 +684,10 @@ type salesforceWriteRecord struct {
 // have succeeded. A by-id read that fails for any reason falls back to the
 // address search, so every self-healing path this had before still works.
 func (s *projectMembershipWriteService) writeSalesforce(ctx context.Context, wc repository.MembershipWriteContext, intent salesforceWriteIntent) (domain.SalesforceMembershipUpsert, salesforceWriteRecord, error) {
+	// preWriteModified and patched let the version stamped on this write be
+	// kept strictly newer than the record's version before the PATCH.
+	var preWriteModified time.Time
+	var patched bool
 	var rec salesforceWriteRecord
 
 	var contact salesentity.Contact
@@ -652,6 +768,8 @@ func (s *projectMembershipWriteService) writeSalesforce(ctx context.Context, wc 
 			roles = &r
 		}
 		if state != nil || roles != nil {
+			preWriteModified, _ = parseSalesforceLastModified(membership.LastModifiedDate)
+			patched = true
 			// PATCH answers with the record it re-read, or 200 with an empty
 			// body when only that re-read failed. An empty body is a zero
 			// value, not an error: the write landed either way, so the id we
@@ -671,9 +789,18 @@ func (s *projectMembershipWriteService) writeSalesforce(ctx context.Context, wc 
 	}
 	rec.State = intent.State
 	rec.Roles = intent.Roles
-	if modified, ok := parseSalesforceLastModified(membership.LastModifiedDate); ok {
+	modified, ok := parseSalesforceLastModified(membership.LastModifiedDate)
+	switch {
+	case patched && (!ok || !modified.After(preWriteModified)):
+		// The PATCH landed but its re-read was empty or stale, so the record
+		// in hand still carries the pre-write version. This write must be
+		// strictly newer than that version, at the ledger's microsecond
+		// precision, or csm-notification-service reads a re-invitation as a
+		// duplicate of the last one and drops its email.
+		rec.LastModifiedOn = laterOf(time.Now().UTC(), preWriteModified.Add(time.Microsecond))
+	case ok:
 		rec.LastModifiedOn = modified
-	} else {
+	default:
 		rec.LastModifiedOn = time.Now().UTC()
 	}
 
@@ -784,7 +911,14 @@ func (s *projectMembershipWriteService) publishInvited(ctx context.Context, m do
 		Roles:             m.Roles,
 		IsIntegrationUser: rec.IsIntegrationUser,
 		Type:              rec.Type,
-		Resend:            resend,
+		// The Salesforce record's LastModifiedDate after this write -- the
+		// same version the DATABASE step is stamped with. csm-notification-
+		// service compares it with the one on its recorded EMAIL step to
+		// tell a re-invitation (newer) from a duplicate (same or older);
+		// without it a portal re-invitation of a contact who was invited
+		// once before is indistinguishable from a duplicate and is dropped.
+		EventModifiedOn: rec.LastModifiedOn.UTC().Format(time.RFC3339Nano),
+		Resend:          resend,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "membership write: encode project_contact.invited payload", "membershipSfId", m.MembershipSfID, "err", err)
@@ -906,4 +1040,12 @@ func canonicalSalesforceRoles(raw []string) ([]string, error) {
 		out = append(out, label)
 	}
 	return out, nil
+}
+
+// laterOf returns the later of two instants.
+func laterOf(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
