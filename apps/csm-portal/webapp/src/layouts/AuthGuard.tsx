@@ -176,7 +176,7 @@ function AuthorizedAppShell(): JSX.Element {
   // profile that failed to parse, which must not lock anyone out.
   //
   // No separate "sales_solutions" exemption here (there used to be one):
-  // usePortalView/useSplAccess gate the Sales/SA (SPL) audience on plain
+  // usePortalView/useAccess gate the Sales/SA (SPL) audience on plain
   // "viewer" instead (see usePortalView.ts), and "viewer" is already one of
   // getPortalAccess's own 8 checked roles, so a Sales/SA user holding it
   // already passes via hasAnyRole below with no special case needed. A

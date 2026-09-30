@@ -16,7 +16,7 @@
 
 import { useMutation, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useBackendApi } from "@api/backend/client";
-import type { ActionItemComment, RiskActionItem } from "./splCustomerHealthTypes";
+import type { ActionItemComment, RiskActionItem } from "./customerHealthTypes";
 
 // GET /customer-health/accounts/{accountSysId}/action-items
 export function useAccountActionItems(accountId: string | undefined): UseQueryResult<RiskActionItem[], Error> {
