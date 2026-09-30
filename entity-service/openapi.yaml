@@ -86,6 +86,65 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /salesforce/accounts/{sfId}/refresh-partners:
+    post:
+      summary: >-
+        Re-read one account's partners from Salesforce (REST sales-entity-service
+        POST /customer-search with includePartners) and make its stored partner
+        links in account_relationship equal to them: a forward "Is Partner Of"
+        row (partner to customer) and its reverse "Is Customer Of" mirror per
+        partner, missing partner accounts ingested first, rows of every other
+        label untouched. The same refresh runs after Account events and after
+        partner-contact membership events. Internal callers only
+        (AUTH_INTERNAL_CLIENT_IDS). Registered only when
+        CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true, DATA_SOURCE=postgres
+        and REST sales-entity-service config is present; 404 otherwise.
+      operationId: refreshSalesforceAccountPartners
+      parameters:
+        - name: sfId
+          in: path
+          required: true
+          description: Salesforce Account Id of the customer (15 or 18 characters).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The partner set now stored for the account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalesforcePartnerRefreshResult'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found (a partner or the account is not in CSM and the Account ingest is off).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Salesforce is temporarily unavailable, or sales-entity-service did not return the partner list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /onboarding-steps/search:
     post:
       summary: >-
@@ -16976,6 +17035,25 @@ components:
           type: string
           pattern: '.*\S.*'
           description: Salesforce record Id.
+
+    SalesforcePartnerRefreshResult:
+      type: object
+      required: [customerSfId, partnerSfIds, added, removed]
+      properties:
+        customerSfId:
+          type: string
+          description: The customer's Salesforce Account Id as Salesforce spells it (18 characters).
+        partnerSfIds:
+          type: array
+          items:
+            type: string
+          description: The partner accounts Salesforce lists now, and so the ones stored.
+        added:
+          type: integer
+          description: account_relationship rows inserted (a new partner is two rows, forward and reverse).
+        removed:
+          type: integer
+          description: account_relationship rows deleted.
 
     ErrorResponse:
       type: object

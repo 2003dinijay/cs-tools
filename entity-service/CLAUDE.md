@@ -53,6 +53,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes, the Contact writer included (see "Salesforce membership ingest" and "The Contact writer" below). The Account branch is unaffected |
 | `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Keep it off while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; the SE-1 columns are kept when Salesforce sends none; see "Salesforce Account ingest" for the full column set |
 | `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Opportunity` envelopes (`sf_opportunity` plus its `sf_opportunity_product` line items, see "Salesforce Opportunity ingest" below); off, they are acknowledged and ignored. Keep it off while csm-sync-service still copies these tables from ServiceNow: the two writers use different row ids and `sf_id` is not unique, so both on means duplicate rows |
+| `CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED` | no | `false` | Must be `"true"` for the partner-link refresh (`account_relationship` "Is Partner Of" / "Is Customer Of") to run after Account events and partner-contact membership events, and for `POST /salesforce/accounts/{sfId}/refresh-partners` to be registered (see "Salesforce partner relationships" below). Keep it off while csm-sync-service still copies `account_relationship` from ServiceNow |
 | `SALESFORCE_INGEST_RETRY_INTERVAL` | no | `5m` | How often the Salesforce ingest retry worker re-runs memberships whose DATABASE step FAILED because their project or account was not in CSM yet, and how old such a failure must be before it is re-run (see "Salesforce ingest ledger and the delayed-retry job" below). `0` disables the job, and so does an unparseable or negative value (logged as a warning; it fails closed rather than falling back to `5m`). Only runs when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true` |
 | `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `false` | Must be `"true"` to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
 
@@ -519,7 +520,9 @@ limit, so a backlog of rows the job would skip cannot starve eligible ones) and 
 `EntityRetriers[entity]`; `opportunity` registers one (`RetryOpportunityIngest`) when
 `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true`, and `contact` always
 registers one (`RetryContactIngest`: the whole Contact writer as UPDATED, fan-out
-included; it runs under the membership flag the job already requires). Other
+included; it runs under the membership flag the job already requires), and
+`account_partners` registers one (`RetryPartnerRefresh`) when
+`CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true`. Other
 entities are only counted (the Account ingest records FAILED rows but has no parent to wait for, so it
 registers none).
 
@@ -569,6 +572,40 @@ acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest
 - **Duplicate guard:** the REST Sales Entity does not return `lastModifiedDate` for
   opportunities yet, so today the guard is skipped with a warning and the idempotent
   upsert runs on every event; it starts working once Sales Entity sends the field.
+
+## Salesforce partner relationships
+
+The partner links in `account_relationship` ("partner **Is Partner Of** customer",
+read by the invitation validator through `AccountPartnerRepository`) are refreshed
+from Salesforce when `CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true` (off by
+default). Code: `RefreshPartners` in `internal/service/salesforce_partner_ingest.go`
+(attached with `WithPartnerIngest` in `routes.go`),
+`internal/repository/account_partner_write_repo.go`, `GetCustomerPartners` in
+`internal/salesentity/partners.go`. Plan: `docs/customer-onboarding/SALESFORCE_SYNC_PLAN.md`
+§4 and decision D8 (store a copy).
+
+- **Read:** `POST /customer-search {ids: [id], isRealTime: true, includePartners: true}`.
+  A response without the `partners` key (or with `null`) is a `ServiceUnavailableError`,
+  never "no partners": an older Sales Entity build must not wipe the stored links.
+- **Write:** `EnsureAccount` for the customer and every partner first (a missing one is
+  ingested when the Account ingest is on, else the refresh fails with "account not
+  found ..." before writing anything), then one transaction under the advisory lock
+  `"account-partners:"+customerSfId`: insert each missing forward row (`from` = partner,
+  `to` = customer, `Is Partner Of` / `Is Customer Of`, `is_reverse_relationship = false`)
+  and its mirror (`from` = customer, `to` = partner, labels swapped, `true`), delete the
+  forward and reverse partner rows whose partner left the set, and record a SUCCEEDED
+  ledger row with entity `account_partners` (sf_id = the customer). Rows of any other
+  label are never touched; `relationship_type_id` stays NULL (the reader matches labels).
+- **Callers, all behind the one flag:** every Account CREATED/UPDATED/RESTORED after the
+  upsert, including a replay the duplicate guard skipped (a partner change does not move
+  the account's `LastModifiedDate`; a failure fails the event so Service Bus redelivers
+  it); every membership event whose contact's account differs from the project's account
+  (best effort: logged and recorded FAILED, never failing the membership); the internal
+  route `POST /salesforce/accounts/{sfId}/refresh-partners` (internal callers only,
+  registered only with the flag on; answers the stored set); and the delayed-retry job
+  (`RetryPartnerRefresh` under `account_partners`).
+- **Not built yet:** the nightly sweep over every account (TODO in `RefreshPartners`); it
+  is the only way to catch a partner added in Salesforce with no related save.
 
 ## Membership registration (`POST /users/me/memberships/register`)
 

@@ -124,6 +124,8 @@ type salesforceEventService struct {
 	membership *MembershipIngest
 	// opportunity is set by WithOpportunityIngest (salesforce_opportunity_ingest.go).
 	opportunity *OpportunityIngest
+	// partners is set by WithPartnerIngest (salesforce_partner_ingest.go).
+	partners *PartnerIngest
 }
 
 // NewSalesforceEventService constructs a SalesforceEventService that ingests
@@ -232,7 +234,10 @@ func (s *salesforceEventService) HandleEvent(ctx context.Context, req domain.Sal
 
 	switch req.EventType {
 	case domain.SalesforceEventCreated, domain.SalesforceEventUpdated, domain.SalesforceEventRestored:
-		return s.upsertAccount(ctx, req.ReferenceID, req.EventType, true)
+		if err := s.upsertAccount(ctx, req.ReferenceID, req.EventType, true); err != nil {
+			return err
+		}
+		return s.refreshPartnersAfterAccountEvent(ctx, req.ReferenceID)
 	case domain.SalesforceEventDeleted:
 		return s.softDeleteAccount(ctx, req.ReferenceID)
 	default:
