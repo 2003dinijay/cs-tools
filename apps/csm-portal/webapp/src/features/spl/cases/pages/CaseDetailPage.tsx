@@ -16,10 +16,14 @@
 
 // Ported from apps/support-portal-lite/webapp's own
 // features/spl/cases/pages/CaseDetailPage.tsx — rewritten against
-// useGetCase/usePostWorkNote (React Query) instead of useSplApi's
-// useGetApi/usePostApi. No SplShell wrapper (RouteGuard in App.tsx
-// already gates the route tree and mounts PermissionProvider).
-import { useState, type ReactNode } from "react";
+// useGetCase (React Query) instead of useSplApi's useGetApi. No SplShell
+// wrapper (RouteGuard in App.tsx already gates the route tree and mounts
+// PermissionProvider). The add-work-note composer the source app had here
+// is gone: no SPL-side role ever grants canAddWorkNotes (permanently false,
+// see PermissionProvider.tsx) and the backend endpoint it posted to
+// requires PermWrite regardless, so the form and its POST were unreachable
+// dead code.
+import { type ReactNode } from "react";
 import { useParams } from "react-router";
 import DOMPurify from "dompurify";
 import {
@@ -36,18 +40,14 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { UserIcon, CalendarDaysIcon, PackageIcon, ListTodoIcon, ServerIcon, ListChecksIcon, FilePlusIcon } from "@wso2/oxygen-ui-icons-react";
-import { usePermissions } from "@features/spl/api/permissionsContext";
 import PathView from "../components/PathView";
 import { CaseBox } from "../components/CaseBox";
 import { AttachmentBox } from "../components/AttachmentBox";
-import RichTextField from "../components/RichTextField";
 import { useCaseNotice } from "../utils/useCaseNotice";
-import { useGetCase, usePostWorkNote } from "../api/useCases";
+import { useGetCase } from "../api/useCases";
 import { CASE_CLOSED_STATE } from "../api/caseTypes";
 import { ErrorPanel, LinearLoadingPanel, NotFoundPanel } from "../components/StatePanels";
 import { BackendApiError } from "@api/backend/client";
-
-const EMPTY_NOTE = "<p><br></p>";
 
 const PRIORITY_COLOR: Record<string, string> = {
   "Critical (P1)": "#bf2600",
@@ -66,40 +66,11 @@ export default function CaseDetailPage() {
   const { caseId: rawCaseId } = useParams<{ caseId: string }>();
   const caseId = rawCaseId ? DOMPurify.sanitize(rawCaseId) : "";
 
-  const [worknoteHtml, setWorknoteHtml] = useState(EMPTY_NOTE);
-  const [worknoteResponse, setWorknoteResponse] = useState<unknown>();
-  const [showAddWorkNotes, setShowAddWorkNotes] = useState(false);
-  const authInfo = usePermissions();
-  const { notice, showSuccess, showWarning, showError, clear } = useCaseNotice();
+  const { notice, clear } = useCaseNotice();
 
   const { data, isLoading, error } = useGetCase(caseId);
-  const { mutateAsync: postWorkNote, isPending: submitting } = usePostWorkNote(caseId);
 
   const isStateClosed = data?.state === CASE_CLOSED_STATE;
-
-  const addWorkNote = async () => {
-    // worknoteHtml is plain text from RichTextField now (see its own doc
-    // comment on the react-quill-new gap) — EMPTY_NOTE ("<p><br></p>") only
-    // still matters as the field's initial value; an emptied field is "".
-    if (worknoteHtml === EMPTY_NOTE || worknoteHtml.trim().length === 0) {
-      showWarning("Worknote cannot be empty.");
-      return;
-    }
-    setShowAddWorkNotes(false);
-    // Wrapped in <p> so the backend still receives HTML-shaped content,
-    // same as every other worknote this endpoint has ever stored.
-    const sanitizedInput = DOMPurify.sanitize(`<p>${worknoteHtml}</p>`);
-    if (sanitizedInput.length === 0) return;
-
-    try {
-      await postWorkNote(sanitizedInput);
-      showSuccess("Worknote added successfully.");
-      setWorknoteResponse({ ts: Date.now() });
-      setWorknoteHtml(EMPTY_NOTE);
-    } catch {
-      showError("Worknote submission unsuccessful.");
-    }
-  };
 
   if (isLoading) return <LinearLoadingPanel />;
   if (error) return error instanceof BackendApiError && error.status === 404 ? <NotFoundPanel /> : <ErrorPanel />;
@@ -167,11 +138,12 @@ export default function CaseDetailPage() {
                 </Button>
               </span>
             </Tooltip>
-          ) : !showAddWorkNotes && authInfo.canAddWorkNotes ? (
-            <Button variant="outlined" startIcon={<FilePlusIcon size={16} />} onClick={() => setShowAddWorkNotes(true)}>
-              New Work Note
-            </Button>
-          ) : !showAddWorkNotes && !authInfo.canAddWorkNotes ? (
+          ) : (
+            // Backend enforcement (PermWrite, cs_engineer/admin only) has no
+            // SPL-side role that grants it -- see PermissionProvider.tsx's
+            // canAddWorkNotes, permanently false. This button stays
+            // permanently disabled until a role exists that can actually
+            // reach POST /cases/{id}/comments.
             <Tooltip title="You don't have the permission">
               <span>
                 <Button variant="contained" disabled startIcon={<FilePlusIcon size={16} />}>
@@ -179,27 +151,10 @@ export default function CaseDetailPage() {
                 </Button>
               </span>
             </Tooltip>
-          ) : null}
-
-          {showAddWorkNotes && (
-            <Box sx={{ mt: 2 }}>
-              <Typography variant="body2" sx={{ mb: 1 }}>
-                Work Notes:
-              </Typography>
-              <RichTextField value={worknoteHtml} onChange={setWorknoteHtml} />
-              <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
-                <Button variant="contained" onClick={addWorkNote} disabled={submitting}>
-                  Add Note
-                </Button>
-                <Button variant="outlined" onClick={() => setShowAddWorkNotes(false)}>
-                  Cancel
-                </Button>
-              </Stack>
-            </Box>
           )}
 
           <Box sx={{ mt: 2 }}>
-            <CaseBox caseId={caseId} worknoteRsp={worknoteResponse} />
+            <CaseBox caseId={caseId} />
           </Box>
         </Grid>
 

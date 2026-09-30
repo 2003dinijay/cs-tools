@@ -22,7 +22,7 @@
 // csm-portal-backend main.go SPL route registration comment. Attachments
 // keep calling /cases/*: no entity-service storage/backfill path exists
 // yet, so nothing to merge onto.
-import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useBackendApi, BackendApiError } from "@api/backend/client";
 import type { CaseCommentDetails, CaseDetails, CaseDetailsWithCount } from "./caseTypes";
 
@@ -214,21 +214,8 @@ export function useGetCaseAttachments(caseId: string) {
   });
 }
 
-interface EntityCreateCommentResponse {
-  comment: { id: string; createdOn: string; createdBy: string };
-}
-
-export function usePostWorkNote(caseId: string) {
-  const api = useBackendApi();
-  const queryClient = useQueryClient();
-  return useMutation<EntityCreateCommentResponse, Error, string>({
-    mutationFn: (worknote: string) =>
-      api.post<{ type: string; content: string }, EntityCreateCommentResponse>(
-        `/cases/${encodeURIComponent(caseId)}/comments`,
-        { type: "work_note", content: worknote },
-      ),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["case-comments", caseId] });
-    },
-  });
-}
+// usePostWorkNote (POST /cases/{id}/comments) was removed along with its
+// only caller, CaseDetailPage.tsx's add-work-note composer: no SPL-side
+// role grants canAddWorkNotes (permanently false, see PermissionProvider.tsx)
+// and the endpoint requires PermWrite regardless, so the form and this
+// mutation were unreachable dead code.

@@ -61,7 +61,7 @@ function getTimeDifference(createdOn: string): string {
   return `${diffYears} year${diffYears === 1 ? "" : "s"} ago`;
 }
 
-export function CaseBox({ caseId, worknoteRsp }: { caseId: string | undefined; worknoteRsp: unknown }) {
+export function CaseBox({ caseId }: { caseId: string | undefined }) {
   const theme = useTheme();
   const [offset, setOffset] = useState(0);
   const [endOfComments, setEndOfComments] = useState(false);
@@ -69,14 +69,12 @@ export function CaseBox({ caseId, worknoteRsp }: { caseId: string | undefined; w
 
   const { data, isLoading, isFetching, error } = useGetCaseComments(caseId ?? "", offset, 10);
 
-  // Resets pagination whenever the case changes, or a worknote was just
-  // submitted (worknoteRsp is a fresh {ts: Date.now()} object each time —
-  // see CaseDetailPage.tsx — so the feed picks up the new entry).
+  // Resets pagination whenever the case changes.
   useEffect(() => {
     setOffset(0);
     setEndOfComments(false);
     setAllComments([]);
-  }, [caseId, worknoteRsp]);
+  }, [caseId]);
 
   useEffect(() => {
     if (!data?.comments) return;
