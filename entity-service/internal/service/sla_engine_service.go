@@ -71,13 +71,29 @@ type SLAEngineService interface {
 	// if the case had just been created at the new severity. This also
 	// means a clock type no longer applicable after a severity DOWNGRADE
 	// (e.g. Catastrophic -> Low losing "workaround"/"resolution") is
-	// cancelled along with every other active clock, not left running --
-	// unlike RegisterCaseClocks alone, the cancellation touches every clock
-	// type on the case, not just the ones the new severity resolves. A
-	// clock already in a genuine terminal outcome (e.g. a response clock
-	// CompleteResponseClock already marked ACHIEVED) is untouched by the
-	// cancellation (it is not "active") and never resurrected by the
-	// registration that follows either (see slaEngineTerminalOutcomeFilter).
+	// cancelled along with every other clock, not left running -- unlike
+	// RegisterCaseClocks alone, the cancellation touches every clock type on
+	// the case, not just the ones the new severity resolves.
+	//
+	// A WORKAROUND/RESOLUTION clock that had merely BREACHED under the old
+	// severity (ran out the wall clock without ever being satisfied) IS
+	// cancelled and replaced by a fresh one here, same as a still-running
+	// IN_PROGRESS/PAUSED clock -- a real, reported bug had this treated the
+	// same as a genuine completion, leaving a case's workaround/resolution
+	// tracking permanently stuck on a stale, timed-out clock from the OLD
+	// severity instead of starting over under the new one. RESPONSE is the
+	// one deliberate exception, per explicit product direction: "did a
+	// support engineer reply at all" is a fact about the past a severity
+	// change cannot undo either way, so a RESPONSE clock already BREACHED
+	// (the first-reply window closed unanswered) is treated the same as one
+	// already ACHIEVED (a reply came in) -- neither is cancelled or
+	// resurrected by a later severity change (see repository.
+	// SLAEngineRepository's own slaEngineRevisionBlockStages doc comment for
+	// the exact per-target rule). A clock already in a GENUINE completion
+	// outcome (e.g. a workaround CompleteWorkaroundClock already provided)
+	// is likewise always left untouched -- that outcome already happened and
+	// a later severity change must not undo it.
+	//
 	// Because cancellation and registration run in one transaction, a
 	// failure partway through never leaves the case with its old clocks
 	// cancelled and no replacement -- either the whole revision applies, or

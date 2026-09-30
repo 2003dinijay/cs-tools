@@ -67,7 +67,7 @@ func seedSLAEngineWorkItem(t *testing.T, pool *pgxpool.Pool) {
 // outcome, e.g. via CompleteClock once a reply went out) must NOT be
 // resurrected as a brand-new IN_PROGRESS clock just because a later
 // severity change calls ReviseClocks again with the same RESPONSE policy --
-// RegisterClock's terminal-outcome guard (slaEngineTerminalOutcomeFilter)
+// RegisterClock's per-target blocking guard (slaEngineRevisionBlockStages)
 // is what prevents this, verified here against real Postgres because the
 // bug can only manifest through the real NOT EXISTS filtering on real enum
 // values.
@@ -162,5 +162,105 @@ func TestSLAEngineIntegration_ReviseClocksDoesNotResurrectTerminalClock(t *testi
 		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'RESOLUTION' AND s.stage = 'IN_PROGRESS'`)
 	if resolutionActive != 1 {
 		t.Errorf("RESOLUTION active rows = %d, want 1 -- a previously-CANCELLED clock must still be replaced by a fresh registration", resolutionActive)
+	}
+}
+
+// TestSLAEngineIntegration_ReviseClocksReplacesBreachedClock is the
+// regression test for a real, reported bug: a WORKAROUND/RESOLUTION clock
+// that had merely BREACHED under the OLD severity (ran out the wall clock
+// without ever being satisfied by an explicit completion) was being treated
+// the same as a genuine ACHIEVED outcome -- neither cancelled nor replaced
+// by a later severity change, leaving the case's SLA tracking permanently
+// stuck on a stale, timed-out clock from the old severity instead of
+// starting over under the new one. ReviseClocks must cancel a BREACHED
+// WORKAROUND/RESOLUTION clock and register a fresh IN_PROGRESS one in its
+// place, exactly as it already does for a still-active IN_PROGRESS/PAUSED
+// clock. RESPONSE deliberately does NOT follow this rule -- see
+// TestSLAEngineIntegration_ReviseClocksPreservesBreachedResponseClock below.
+func TestSLAEngineIntegration_ReviseClocksReplacesBreachedClock(t *testing.T) {
+	pool := caseStatsPool(t)
+	seedSLAEngineWorkItem(t, pool)
+	ctx := context.Background()
+	repo := repository.NewSLAEngineRepository(pool)
+
+	workaroundPolicy, err := repo.FindPolicyByName(ctx, "P0 - Workaround (Managed Services)", "WORKAROUND")
+	if err != nil {
+		t.Fatalf("FindPolicyByName(workaround): %v", err)
+	}
+
+	if _, err := repo.RegisterClock(ctx, slaEngineIntegrationWorkItemID, workaroundPolicy); err != nil {
+		t.Fatalf("RegisterClock(workaround) setup: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE sla SET stage = 'BREACHED', has_breached = TRUE WHERE work_item_id = $1::uuid AND sla_policy_id = $2::uuid`,
+		slaEngineIntegrationWorkItemID, workaroundPolicy.ID); err != nil {
+		t.Fatalf("force WORKAROUND to BREACHED setup: %v", err)
+	}
+
+	if _, err := repo.ReviseClocks(ctx, slaEngineIntegrationWorkItemID, []repository.SLAPolicyRef{workaroundPolicy}); err != nil {
+		t.Fatalf("ReviseClocks: %v", err)
+	}
+
+	var cancelled, active int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'WORKAROUND' AND s.stage = 'CANCELLED'`,
+		slaEngineIntegrationWorkItemID).Scan(&cancelled); err != nil {
+		t.Fatalf("count cancelled: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'WORKAROUND' AND s.stage = 'IN_PROGRESS'`,
+		slaEngineIntegrationWorkItemID).Scan(&active); err != nil {
+		t.Fatalf("count active: %v", err)
+	}
+	if cancelled != 1 || active != 1 {
+		t.Errorf("WORKAROUND cancelled = %d, active = %d, want 1/1 -- a BREACHED clock must be cancelled and replaced by a severity revision, not left stuck", cancelled, active)
+	}
+}
+
+// TestSLAEngineIntegration_ReviseClocksPreservesBreachedResponseClock is the
+// RESPONSE-specific counterpart to the test above: per explicit product
+// direction, "did a support engineer reply at all" is a fact about the past
+// that a severity change cannot undo either way, so a RESPONSE clock already
+// BREACHED (the first-reply window closed unanswered) must be treated the
+// same as one already ACHIEVED -- neither cancelled nor resurrected by a
+// later severity change. Unlike WORKAROUND/RESOLUTION, RESPONSE's BREACHED
+// stage is a permanent record, not a stale clock to restart.
+func TestSLAEngineIntegration_ReviseClocksPreservesBreachedResponseClock(t *testing.T) {
+	pool := caseStatsPool(t)
+	seedSLAEngineWorkItem(t, pool)
+	ctx := context.Background()
+	repo := repository.NewSLAEngineRepository(pool)
+
+	responsePolicy, err := repo.FindPolicyByName(ctx, "P0 - Response (Managed Services)", "RESPONSE")
+	if err != nil {
+		t.Fatalf("FindPolicyByName(response): %v", err)
+	}
+
+	if _, err := repo.RegisterClock(ctx, slaEngineIntegrationWorkItemID, responsePolicy); err != nil {
+		t.Fatalf("RegisterClock(response) setup: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE sla SET stage = 'BREACHED', has_breached = TRUE WHERE work_item_id = $1::uuid AND sla_policy_id = $2::uuid`,
+		slaEngineIntegrationWorkItemID, responsePolicy.ID); err != nil {
+		t.Fatalf("force RESPONSE to BREACHED setup: %v", err)
+	}
+
+	if _, err := repo.ReviseClocks(ctx, slaEngineIntegrationWorkItemID, []repository.SLAPolicyRef{responsePolicy}); err != nil {
+		t.Fatalf("ReviseClocks: %v", err)
+	}
+
+	var total, breached int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'RESPONSE'`,
+		slaEngineIntegrationWorkItemID).Scan(&total); err != nil {
+		t.Fatalf("count total: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'RESPONSE' AND s.stage = 'BREACHED'`,
+		slaEngineIntegrationWorkItemID).Scan(&breached); err != nil {
+		t.Fatalf("count breached: %v", err)
+	}
+	if total != 1 || breached != 1 {
+		t.Errorf("RESPONSE rows = %d (breached = %d), want exactly 1 row still BREACHED -- a severity change must not cancel or resurrect a RESPONSE clock that already ran out unanswered", total, breached)
 	}
 }
