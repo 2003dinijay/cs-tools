@@ -286,11 +286,14 @@ export default function ServiceRequestsPage(): JSX.Element {
   };
 
   useEffect(() => {
-    if (!projectDetailsReady) {
+    // permissions.hasDeployments defaults to false (restrictivePermissions())
+    // while projectFeatures is still loading, even after project details
+    // themselves are ready -- clearing on that transient state would drop a
+    // perfectly valid persisted selection before the real answer arrives.
+    if (!projectDetailsReady || projectFeatures === undefined) {
       return;
     }
     if (
-      projectDetailsReady &&
       !permissions.hasDeployments &&
       filters.deploymentIds?.length
     ) {
@@ -298,6 +301,7 @@ export default function ServiceRequestsPage(): JSX.Element {
     }
   }, [
     projectDetailsReady,
+    projectFeatures,
     permissions.hasDeployments,
     filters.deploymentIds,
     setFilters,
