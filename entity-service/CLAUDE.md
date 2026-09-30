@@ -1396,7 +1396,10 @@ role in the same transaction as the deactivation.
 
 `POST /projects/{id}/contacts/search` lists only live memberships: DEACTIVATED
 rows (the ingest's soft delete; ServiceNow hard-deleted them, so no portal ever
-listed one) are left out of both the page and `total`. It returns each contact's
+listed one) are left out of both the page and `total`. The change-request notice
+recipients (`cr_notice_repo.go` `ProjectContactEmails`) and the SLA-status
+customer-admin check (`project_stats_repo.go` `hasCustomerAdminContactExists`)
+leave them out the same way. It returns each contact's
 **`accountRoles`** alongside their project `roles` — a separate list, never
 merged: `roles` is what they may do on *this* project, `accountRoles` what they
 are across the account. It is read from `user_role`/`role` (where
