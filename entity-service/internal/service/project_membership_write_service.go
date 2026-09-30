@@ -836,7 +836,11 @@ func (s *projectMembershipWriteService) writeSalesforce(ctx context.Context, wc 
 	if rec.CreatedContact && contact.IsCsIntegrationUser == nil {
 		isIntegrationUser = intent.IsCsIntegrationUser
 	}
-	globalRoles, managed, adminRole := mapGlobalRoles(membershipType, isIntegrationUser)
+	// customer/partner follow the contact's account classification, as in
+	// the ingest. A contact this call just created carries no account in
+	// the create response; mapGlobalRoles then treats it as a customer
+	// without revoking anything.
+	globalRoles := mapGlobalRoles(contact.Account, isIntegrationUser)
 
 	first, last := strings.TrimSpace(derefString(contact.FirstName)), strings.TrimSpace(derefString(contact.LastName))
 	if first == "" && last == "" {
@@ -869,9 +873,10 @@ func (s *projectMembershipWriteService) writeSalesforce(ctx context.Context, wc 
 		IsCsIntegrationUser: isIntegrationUser,
 		ProjectSfID:         wc.Target.ProjectSfID,
 		ProjectKey:          wc.Target.ProjectKey,
-		GlobalRoles:         globalRoles,
-		ManagedAdminRoles:   managed,
-		AdminRoleName:       adminRole,
+		GlobalRoles:         globalRoles.Grant,
+		ManagedGlobalRoles:  globalRoles.ManagedGlobal,
+		ManagedAdminRoles:   globalRoles.ManagedAdmin,
+		AdminRoleName:       globalRoles.AdminRole,
 		ProjectGroups:       groups,
 	}, rec, nil
 }

@@ -174,7 +174,7 @@ func (f *fakeWriteMembershipRepo) Upsert(context.Context, domain.SalesforceMembe
 	return domain.SalesforceMembershipUpsertResult{}, errors.New("the portal writes use UpsertWithin")
 }
 
-func (f *fakeWriteMembershipRepo) DeactivateBySfID(context.Context, string) (bool, error) {
+func (f *fakeWriteMembershipRepo) DeactivateBySfID(context.Context, string, repository.AdminRoleBasisFunc) (bool, error) {
 	return false, errors.New("not used by the portal writes")
 }
 

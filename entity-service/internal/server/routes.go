@@ -277,13 +277,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			// The membership branch (Project_Contact__c / Contact envelopes)
 			// writes user/account_contact/project_contact rows and the
 			// DATABASE onboarding step, and publishes project_contact.invited
-			// when eventPublisher is configured (nil is a no-op there).
+			// when eventPublisher is configured (nil is a no-op there). Its
+			// Contact writer writes a contact's user/account_contact rows
+			// even without a membership, recording the ledger.
 			stepRepo := repository.NewOnboardingStepRepository(db)
 			membershipIngestSvc = service.NewSalesforceEventServiceWithMembershipIngest(
 				accountIngestRepo, salesEntityClient, ingestSupport, service.MembershipIngest{
 					Memberships: repository.NewProjectMembershipRepository(db),
 					Steps:       stepRepo,
 					SalesEntity: salesEntityClient,
+					Contacts:    repository.NewSalesforceContactRepository(db),
 					Publisher:   projectEventPublisher,
 				})
 			membershipIngestSvc = withOpportunityIngest(membershipIngestSvc)
