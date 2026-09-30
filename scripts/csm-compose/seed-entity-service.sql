@@ -47,9 +47,12 @@ INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, n
   ('00000000-0000-0000-0000-000000000301', now(), now(), 'seed', 'seed', 'Example Corp', 'ACC-0001', 'SF-0001', '00000000-0000-0000-0000-000000000001', 'United States', 'Mountain View', 'https://drive.example.com/example-corp')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO project (id, created_on, updated_on, created_by, updated_by, key, sf_id, name, account_id, is_active) VALUES
-  ('00000000-0000-0000-0000-000000000401', now(), now(), 'seed', 'seed', 'EXCORP-PROJ-1', 'SF-PROJ-0001', 'Example Corp Production', '00000000-0000-0000-0000-000000000301', true)
-ON CONFLICT (id) DO NOTHING;
+-- project_type_id is set (a3 = "Subscription", from the project_type fixture) because the
+-- customer portal treats a project with no type as "type not loaded" and then offers no
+-- deployments in the create-case form.
+INSERT INTO project (id, created_on, updated_on, created_by, updated_by, key, sf_id, name, account_id, is_active, project_type_id) VALUES
+  ('00000000-0000-0000-0000-000000000401', now(), now(), 'seed', 'seed', 'EXCORP-PROJ-1', 'SF-PROJ-0001', 'Example Corp Production', '00000000-0000-0000-0000-000000000301', true, '00000000-0000-0000-0000-0000000000a3')
+ON CONFLICT (id) DO UPDATE SET project_type_id = COALESCE(project.project_type_id, EXCLUDED.project_type_id);
 
 INSERT INTO deployment (id, created_on, updated_on, created_by, updated_by, number, name, type, is_active, project_id) VALUES
   ('00000000-0000-0000-0000-000000000501', now(), now(), 'seed', 'seed', 'DEP-0001', 'Production', 'PRIMARY_PRODUCTION', true, '00000000-0000-0000-0000-000000000401')
