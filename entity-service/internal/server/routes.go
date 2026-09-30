@@ -1545,8 +1545,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			middleware.Logger(
 				middleware.UserIDToken(
 					auth.Middleware(tokenValidator)(
-						callerIdentityMiddleware(accessSvc)(
-							middleware.Timeout(30 * time.Second)(mux),
+						// Timeout wraps the identity lookup too: for an external caller
+						// with no cached identity, ResolveScope runs two database
+						// queries on the request context, and they must share the
+						// same 30s deadline as the handler instead of running unbounded.
+						middleware.Timeout(30 * time.Second)(
+							callerIdentityMiddleware(accessSvc)(mux),
 						),
 					),
 				),

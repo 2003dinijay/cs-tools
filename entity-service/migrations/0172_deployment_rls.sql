@@ -48,6 +48,13 @@
 -- node ids and are read by the instances endpoints. They returned no rows for
 -- a foreign project in testing, but they have no RLS of their own yet.
 
+-- One transaction: `make migrate` runs each file with `psql -f` and no
+-- --single-transaction, so without this a failing CREATE POLICY would leave
+-- FORCE ROW LEVEL SECURITY on a table with only some of its policies (every
+-- missing one denies, so the table would silently stop working) and a retry
+-- would then fail on "policy already exists". All or nothing instead.
+BEGIN;
+
 ALTER TABLE deployment ENABLE ROW LEVEL SECURITY;
 ALTER TABLE deployment FORCE ROW LEVEL SECURITY;
 
@@ -169,3 +176,5 @@ CREATE POLICY deployed_product_update ON deployed_product
 CREATE POLICY deployed_product_delete_internal_only ON deployed_product
   FOR DELETE
   USING ((SELECT current_setting('app.is_internal', true) = 'true'));
+
+COMMIT;
