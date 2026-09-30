@@ -8011,7 +8011,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8047,7 +8047,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8101,7 +8101,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8137,7 +8137,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8179,7 +8179,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8223,7 +8223,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8278,7 +8278,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8334,7 +8334,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8395,7 +8395,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8463,7 +8463,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8525,7 +8525,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8575,7 +8575,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8631,7 +8631,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8687,7 +8687,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8735,7 +8735,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8785,7 +8785,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8840,7 +8840,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8854,7 +8854,7 @@ paths:
   /plg/products/{product}/playbooks:
     post:
       summary: Author a playbook template.
-      description: "`playbookType` and `lifecycleStage` are both required and neither is defaulted: the most common answer is exactly what makes a default dangerous, since forgetting to choose would publish a plausible playbook at the wrong stage. The two reserved bookend tasks are added automatically."
+      description: "`playbookType` and `lifecycleStage` are both required and neither is defaulted: the most common answer is exactly what makes a default dangerous, since forgetting to choose would publish a plausible playbook at the wrong stage. The two reserved bookend tasks are added automatically. Admin only: authoring a playbook template is `PermManagePlaybooks`, held by the admin role alone. A CS engineer may read templates and assign them to a pairing, but not create, change or delete one."
       operationId: plgCreatePlaybook
       parameters:
         - name: product
@@ -8889,7 +8889,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — authoring a playbook template is admin only; a CS engineer may read and assign templates but not change one. Also returned when the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8939,7 +8939,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -8958,7 +8958,7 @@ paths:
                 $ref: "#/components/schemas/ErrorPayload"
     patch:
       summary: Rename, restage, retype or deactivate a template.
-      description: Deactivating withdraws the template from every pairing that has not already attached it; runs already under way are unaffected.
+      description: "Deactivating withdraws the template from every pairing that has not already attached it; runs already under way are unaffected. Admin only: authoring a playbook template is `PermManagePlaybooks`, held by the admin role alone. A CS engineer may read templates and assign them to a pairing, but not create, change or delete one."
       operationId: plgPatchPlaybook
       parameters:
         - name: playbookId
@@ -8994,7 +8994,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — authoring a playbook template is admin only; a CS engineer may read and assign templates but not change one. Also returned when the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -9013,7 +9013,7 @@ paths:
                 $ref: "#/components/schemas/ErrorPayload"
     delete:
       summary: Delete a playbook template.
-      description: Refused while any pairing has a run attached to it — deactivate it instead.
+      description: "Refused while any pairing has a run attached to it — deactivate it instead. Admin only: authoring a playbook template is `PermManagePlaybooks`, held by the admin role alone. A CS engineer may read templates and assign them to a pairing, but not create, change or delete one."
       operationId: plgDeletePlaybook
       parameters:
         - name: playbookId
@@ -9039,7 +9039,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — authoring a playbook template is admin only; a CS engineer may read and assign templates but not change one. Also returned when the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -9065,7 +9065,7 @@ paths:
   /plg/playbooks/{playbookId}/tasks:
     put:
       summary: "Replace a template's task list."
-      description: "A whole-list replace rather than per-task edits, so the order the author sees is the order stored. The two reserved bookend tasks cannot be removed or retyped. `CHECKLIST` and `SINGLE_SELECT` tasks must carry `options`; no other type may."
+      description: "A whole-list replace rather than per-task edits, so the order the author sees is the order stored. The two reserved bookend tasks cannot be removed or retyped. `CHECKLIST` and `SINGLE_SELECT` tasks must carry `options`; no other type may. Admin only: authoring a playbook template is `PermManagePlaybooks`, held by the admin role alone. A CS engineer may read templates and assign them to a pairing, but not create, change or delete one."
       operationId: plgReplacePlaybookTasks
       parameters:
         - name: playbookId
@@ -9101,7 +9101,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — authoring a playbook template is admin only; a CS engineer may read and assign templates but not change one. Also returned when the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -9158,7 +9158,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
@@ -9232,7 +9232,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorPayload"
         "403":
-          description: Forbidden — the caller is authenticated but is not PLG CS staff.
+          description: "Forbidden — the caller's token carries no role granting PLG access, or the caller is not an active internal PLG CS user."
           content:
             application/json:
               schema:
