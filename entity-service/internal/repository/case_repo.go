@@ -1731,11 +1731,17 @@ func (r *caseRepo) UpdateCaseAttachmentName(ctx context.Context, id, name, updat
 }
 
 // pgSortColMap maps domain CaseSortField values to Postgres column expressions.
+// State uses caseLikeStateColumn, not a bare "case" column, for the same
+// reason the state filter does (see that const's own doc comment): "case" is
+// a LEFT JOIN here, so a service_request/engagement/security_report_analysis/
+// announcement row's own c.state is always NULL, and sorting on it left every
+// non-CASE row unsorted by state. Severity stays c.severity -- it's genuinely
+// case-only, unlike state.
 var pgSortColMap = map[domain.CaseSortField]string{
 	domain.CaseSortFieldCreatedOn: "wi.created_on",
 	domain.CaseSortFieldUpdatedOn: "wi.updated_on",
 	domain.CaseSortFieldSeverity:  "c.severity",
-	domain.CaseSortFieldState:     "c.state",
+	domain.CaseSortFieldState:     caseLikeStateColumn,
 }
 
 // onboardingStatusLabels maps a projectOnboardingStatus filter value (keyed by
