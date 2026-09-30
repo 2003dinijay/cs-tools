@@ -330,11 +330,20 @@ func TestBuildChangeRequestApprovals_PositionalLabelsAndFirstResponderWinsStatus
 	}
 	updatedOn := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 	approvers := []changeRequestApprovalApproverRow{
-		{id: "appr-1", stageID: strPtrApproval("stage-1"), approverName: "Alice", rawStatus: strPtrApproval("approved"), updatedOn: updatedOn},
-		{id: "appr-2", stageID: strPtrApproval("stage-2"), approverName: "Bob", rawStatus: strPtrApproval("requested"), updatedOn: updatedOn},
-		{id: "appr-3", stageID: strPtrApproval("stage-2"), approverName: "Carol", rawStatus: strPtrApproval("rejected"), updatedOn: updatedOn},
+		// appr-1's approverUserID ("user-1") must end up as the domain
+		// approver's own ID -- not "appr-1" itself (the junction row's own
+		// id) -- see changeRequestApprovalApproversQuery's own doc comment
+		// for the real bug this guards against: isMyPendingApproval
+		// (webapp) can only ever match a real user id, never a junction
+		// row's id.
+		{id: "appr-1", stageID: strPtrApproval("stage-1"), approverUserID: strPtrApproval("user-1"), approverName: "Alice", rawStatus: strPtrApproval("approved"), updatedOn: updatedOn},
+		{id: "appr-2", stageID: strPtrApproval("stage-2"), approverUserID: strPtrApproval("user-2"), approverName: "Bob", rawStatus: strPtrApproval("requested"), updatedOn: updatedOn},
+		// approverUserID nil (approver_user_id null, or a since-deleted
+		// user) -- must fall back to the junction row's own id rather than
+		// an empty string.
+		{id: "appr-3", stageID: strPtrApproval("stage-2"), approverUserID: nil, approverName: "Carol", rawStatus: strPtrApproval("rejected"), updatedOn: updatedOn},
 		// stage_id NULL -- must be dropped, not attached to any stage.
-		{id: "appr-4", stageID: nil, approverName: "Orphan", rawStatus: strPtrApproval("requested"), updatedOn: updatedOn},
+		{id: "appr-4", stageID: nil, approverUserID: strPtrApproval("user-4"), approverName: "Orphan", rawStatus: strPtrApproval("requested"), updatedOn: updatedOn},
 	}
 
 	got := buildChangeRequestApprovals(stages, approvers)
@@ -356,6 +365,9 @@ func TestBuildChangeRequestApprovals_PositionalLabelsAndFirstResponderWinsStatus
 	if len(a0.Approvers) != 1 || a0.Approvers[0].RespondedOn == nil {
 		t.Errorf("stage 0 approvers = %+v, want 1 approver with a non-nil RespondedOn", a0.Approvers)
 	}
+	if got := a0.Approvers[0].ID; got != "user-1" {
+		t.Errorf("stage 0 approver ID = %q, want the resolved user id %q, not the junction row's own id", got, "user-1")
+	}
 
 	a1 := got.Approvals[1]
 	if a1.Stage != "Authorize" || a1.ApproverType != domain.ChangeRequestApproverTypeStaticGroup {
@@ -372,6 +384,18 @@ func TestBuildChangeRequestApprovals_PositionalLabelsAndFirstResponderWinsStatus
 	for _, ap := range a1.Approvers {
 		if ap.Status == "REQUESTED" && ap.RespondedOn != nil {
 			t.Errorf("REQUESTED approver %q has non-nil RespondedOn %v, want nil", ap.Name, *ap.RespondedOn)
+		}
+		switch ap.Name {
+		case "Bob":
+			if ap.ID != "user-2" {
+				t.Errorf("Bob's ID = %q, want the resolved user id %q", ap.ID, "user-2")
+			}
+		case "Carol":
+			// approverUserID was nil for this row -- falls back to the
+			// junction row's own id ("appr-3"), never an empty string.
+			if ap.ID != "appr-3" {
+				t.Errorf("Carol's ID = %q, want the junction row's own id %q (approverUserID was nil)", ap.ID, "appr-3")
+			}
 		}
 	}
 

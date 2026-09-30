@@ -169,10 +169,10 @@ describe("CreateChangeRequestPage — Clone prefill", () => {
     expect(screen.getByText(/cloned from an existing change request/i)).toBeInTheDocument();
   });
 
-  it("always resets state to 'new' regardless of the clone source", () => {
+  it("never offers a state picker, even when cloning -- every change request starts at New", () => {
     locationState = { subject: "Upgrade the gateway cluster" };
     render(<CreateChangeRequestPage />);
-    expect(screen.getByText("New")).toBeInTheDocument();
+    expect(screen.queryByText("State")).not.toBeInTheDocument();
   });
 
   it("leaves the planned start/end schedule empty even when cloning", () => {
@@ -640,7 +640,6 @@ describe("CreateChangeRequestPage — planned dates are sent as UTC", () => {
       type: "normal",
       impact: "low",
       priority: "",
-      state: "new",
       plannedStartDate: "2030-03-01T15:30",
       plannedEndDate: "2030-03-01T17:30",
       description: "",
@@ -675,7 +674,6 @@ describe("CreateChangeRequestPage — the 'in the past' hint follows the profile
       type: "normal",
       impact: "low",
       priority: "",
-      state: "new",
       plannedStartDate,
       plannedEndDate,
       description: "",
