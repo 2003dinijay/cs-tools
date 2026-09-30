@@ -164,3 +164,54 @@ func TestSLAEngineIntegration_ReviseClocksDoesNotResurrectTerminalClock(t *testi
 		t.Errorf("RESOLUTION active rows = %d, want 1 -- a previously-CANCELLED clock must still be replaced by a fresh registration", resolutionActive)
 	}
 }
+
+// TestSLAEngineIntegration_ReviseClocksReplacesBreachedClock is the
+// regression test for a real, reported bug: a workaround/response/
+// resolution clock that had merely BREACHED under the OLD severity (ran out
+// the wall clock without ever being satisfied by an explicit completion)
+// was being treated the same as a genuine ACHIEVED outcome -- neither
+// cancelled nor replaced by a later severity change, leaving the case's SLA
+// tracking permanently stuck on a stale, timed-out clock from the old
+// severity instead of starting over under the new one. ReviseClocks must
+// cancel a BREACHED clock and register a fresh IN_PROGRESS one in its
+// place, exactly as it already does for a still-active IN_PROGRESS/PAUSED
+// clock.
+func TestSLAEngineIntegration_ReviseClocksReplacesBreachedClock(t *testing.T) {
+	pool := caseStatsPool(t)
+	seedSLAEngineWorkItem(t, pool)
+	ctx := context.Background()
+	repo := repository.NewSLAEngineRepository(pool)
+
+	workaroundPolicy, err := repo.FindPolicyByName(ctx, "P0 - Workaround (Managed Services)", "WORKAROUND")
+	if err != nil {
+		t.Fatalf("FindPolicyByName(workaround): %v", err)
+	}
+
+	if _, err := repo.RegisterClock(ctx, slaEngineIntegrationWorkItemID, workaroundPolicy); err != nil {
+		t.Fatalf("RegisterClock(workaround) setup: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE sla SET stage = 'BREACHED', has_breached = TRUE WHERE work_item_id = $1::uuid AND sla_policy_id = $2::uuid`,
+		slaEngineIntegrationWorkItemID, workaroundPolicy.ID); err != nil {
+		t.Fatalf("force WORKAROUND to BREACHED setup: %v", err)
+	}
+
+	if _, err := repo.ReviseClocks(ctx, slaEngineIntegrationWorkItemID, []repository.SLAPolicyRef{workaroundPolicy}); err != nil {
+		t.Fatalf("ReviseClocks: %v", err)
+	}
+
+	var cancelled, active int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'WORKAROUND' AND s.stage = 'CANCELLED'`,
+		slaEngineIntegrationWorkItemID).Scan(&cancelled); err != nil {
+		t.Fatalf("count cancelled: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'WORKAROUND' AND s.stage = 'IN_PROGRESS'`,
+		slaEngineIntegrationWorkItemID).Scan(&active); err != nil {
+		t.Fatalf("count active: %v", err)
+	}
+	if cancelled != 1 || active != 1 {
+		t.Errorf("WORKAROUND cancelled = %d, active = %d, want 1/1 -- a BREACHED clock must be cancelled and replaced by a severity revision, not left stuck", cancelled, active)
+	}
+}

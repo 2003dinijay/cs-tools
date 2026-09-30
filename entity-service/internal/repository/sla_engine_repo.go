@@ -36,16 +36,26 @@ import (
 // was already closed and its resolution clock completed).
 const slaEngineActiveStageFilter = `NOT IN ('ACHIEVED', 'BREACHED', 'CANCELLED', 'COMPLETED')`
 
-// slaEngineTerminalOutcomeFilter names the stages that represent a real,
-// meaningful outcome already reached for a clock -- deliberately narrower
-// than "not active" (slaEngineActiveStageFilter's complement, which also
-// includes CANCELLED): CANCELLED means "this clock was deliberately retired
-// and its slot is free for a fresh one" (see ReviseClocks), while ACHIEVED/
-// BREACHED/COMPLETED mean "this clock type already ran its course for this
-// case" and must never be silently re-registered as a brand new running
-// clock just because a later severity change (or any other RegisterClock
-// caller) finds no ACTIVE row to collide with.
-const slaEngineTerminalOutcomeFilter = `IN ('ACHIEVED', 'BREACHED', 'COMPLETED')`
+// slaEngineTerminalOutcomeFilter names the stages that represent a clock
+// GENUINELY satisfied by an explicit completion signal -- CompleteClock
+// (a support-engineer reply, a workaround provided, a case closed) --
+// deliberately NOT the same set as "not active"
+// (slaEngineActiveStageFilter's complement): BREACHED is excluded here on
+// purpose. A clock that merely ran out the wall clock without ever being
+// satisfied has not "reached a real, meaningful outcome" the way ACHIEVED
+// has -- a real, reported bug had ReviseClocks (severity change) refuse to
+// register a fresh workaround/response/resolution clock whenever the
+// PREVIOUS severity's clock had already breached, leaving the case's SLA
+// tracking permanently stuck on a stale, timed-out clock instead of
+// starting over under the new severity's own duration, exactly as
+// RegisterCaseClocks would for a brand-new case. Only ACHIEVED/COMPLETED
+// (a clock this engine, or a future consumer, marked as a real outcome
+// via CompleteClock) must never be silently re-registered as a fresh
+// running clock just because a later severity change finds no ACTIVE row
+// to collide with -- CANCELLED means "this clock was deliberately retired
+// and its slot is free for a fresh one" (see ReviseClocks) and BREACHED
+// now means the same thing for exactly this reason.
+const slaEngineTerminalOutcomeFilter = `IN ('ACHIEVED', 'COMPLETED')`
 
 // SLAPolicyRef is the subset of an sla_policy row the engine's resolver
 // needs: enough to register a new "sla" row against it, nothing this
@@ -260,11 +270,12 @@ const slaEngineRegisterClockQuery = `
 	INSERT INTO sla (
 		id, created_on, updated_on, created_by, updated_by,
 		work_item_id, sla_policy_id, is_active, stage, start_on,
-		duration, business_elapsed_percentage, has_breached, source
+		duration, business_elapsed_percentage, business_duration,
+		remaining_business_duration, has_breached, source
 	)
 	SELECT gen_random_uuid(), NOW(), NOW(), $3, $3,
 	       $1::uuid, $2::uuid, TRUE, 'IN_PROGRESS'::sla_stage_enum, NOW(),
-	       $4::interval, 0, FALSE, 'CSM'::sla_source_enum
+	       $4::interval, 0, INTERVAL '0', $4::interval, FALSE, 'CSM'::sla_source_enum
 	WHERE NOT EXISTS (
 		SELECT 1 FROM sla s
 		JOIN sla_policy sp ON sp.id = s.sla_policy_id
@@ -307,20 +318,27 @@ func (r *slaEngineRepo) RegisterClock(ctx context.Context, workItemID string, po
 
 // CompleteClock implements SLAEngineRepository.
 //
-// business_elapsed_percentage is set to the clock's REAL elapsed percentage
-// at completion time (same flat wall-clock formula RecomputeActive uses),
-// not a hardcoded 100 -- an earlier version of this query always wrote 100
-// regardless of how much of the clock's duration had actually passed, which
-// made a response answered within minutes look identical, on read, to one
-// that ran the entire window and barely made it. That false 100% had a
-// real, live-observed downstream effect beyond just a misleading UI number:
-// csm-notification-service's SLA-breach poller (internal/slaengine.
-// tierForStatus) treats businessElapsedPercent >= 100 as tier 100 on its
-// own, with no regard for stage -- so a same-clock ACHIEVED reading at a
-// fabricated 100% was indistinguishable from a genuine breach, and fired a
-// spurious "Response SLA Violation" Chat alert for a case answered well
-// within its window. Computing the real percentage here means an early
-// completion reads (and alerts) as what it actually was.
+// business_elapsed_percentage, business_duration and remaining_business_duration
+// are all set from the clock's REAL elapsed time at completion (same flat
+// wall-clock formula RecomputeActive uses), not a hardcoded 100%/zeroed-out
+// pair -- an earlier version of this query always wrote
+// business_elapsed_percentage=100 regardless of how much of the clock's
+// duration had actually passed, which made a response answered within
+// minutes look identical, on read, to one that ran the entire window and
+// barely made it. That false 100% had a real, live-observed downstream
+// effect beyond just a misleading UI number: csm-notification-service's
+// SLA-breach poller (internal/slaengine.tierForStatus) treats
+// businessElapsedPercent >= 100 as tier 100 on its own, with no regard for
+// stage -- so a same-clock ACHIEVED reading at a fabricated 100% was
+// indistinguishable from a genuine breach, and fired a spurious "Response
+// SLA Violation" Chat alert for a case answered well within its window.
+// business_duration/remaining_business_duration were never written by this
+// query at all before -- both columns stayed NULL forever for every
+// source='CSM' row, which task_sla_repo.go's read renders as an absent
+// "Business elapsed time"/"Business time left" ("--" in the webapp) even
+// for a clock that has since completed. Computing all three here means an
+// early completion reads (and alerts) as what it actually was, on every
+// column the UI shows.
 func (r *slaEngineRepo) CompleteClock(ctx context.Context, workItemID, target string) (bool, error) {
 	const query = `
 		UPDATE sla s
@@ -328,6 +346,8 @@ func (r *slaEngineRepo) CompleteClock(ctx context.Context, workItemID, target st
 		    business_elapsed_percentage = LEAST(100, GREATEST(0,
 		        EXTRACT(EPOCH FROM (NOW() - s.start_on)) / NULLIF(EXTRACT(EPOCH FROM s.duration), 0) * 100
 		    )),
+		    business_duration = NOW() - s.start_on,
+		    remaining_business_duration = GREATEST(s.duration - (NOW() - s.start_on), INTERVAL '0'),
 		    updated_on = NOW(), updated_by = $3
 		FROM sla_policy sp
 		WHERE s.sla_policy_id = sp.id
@@ -386,6 +406,8 @@ func (r *slaEngineRepo) RecomputeActive(ctx context.Context) (int, error) {
 		SET business_elapsed_percentage = LEAST(100, GREATEST(0,
 		        EXTRACT(EPOCH FROM (NOW() - start_on)) / NULLIF(EXTRACT(EPOCH FROM duration), 0) * 100
 		    )),
+		    business_duration = NOW() - start_on,
+		    remaining_business_duration = GREATEST(duration - (NOW() - start_on), INTERVAL '0'),
 		    has_breached = has_breached OR (EXTRACT(EPOCH FROM (NOW() - start_on)) >= EXTRACT(EPOCH FROM duration)),
 		    stage = CASE
 		        WHEN EXTRACT(EPOCH FROM (NOW() - start_on)) >= EXTRACT(EPOCH FROM duration)
@@ -406,6 +428,21 @@ func (r *slaEngineRepo) RecomputeActive(ctx context.Context) (int, error) {
 }
 
 // ReviseClocks implements SLAEngineRepository.
+//
+// Cancels every clock NOT already a genuine completion (ACHIEVED/COMPLETED,
+// see slaEngineTerminalOutcomeFilter's own doc comment) -- deliberately
+// wider than slaEngineActiveStageFilter, which excludes BREACHED. A
+// severity change means every clock type starts over "as if the case had
+// just been created at the new severity" (see SLAEngineService.
+// ReviseCaseClocks's own doc comment); a workaround/response/resolution
+// clock that had merely run out the wall clock under the OLD severity's
+// (shorter) duration must not be left stuck BREACHED forever just because
+// it was never "active" by that narrower definition -- it gets cancelled
+// and replaced by a fresh clock under the new severity's own duration, the
+// same as one still genuinely IN_PROGRESS/PAUSED. Only a clock this engine
+// already marked ACHIEVED via an explicit completion signal (a reply, a
+// workaround provided, a close) is left untouched either way -- that
+// outcome is real and a later severity change must not undo it.
 func (r *slaEngineRepo) ReviseClocks(ctx context.Context, workItemID string, policies []SLAPolicyRef) (int, error) {
 	const cancelQuery = `
 		UPDATE sla
@@ -413,7 +450,7 @@ func (r *slaEngineRepo) ReviseClocks(ctx context.Context, workItemID string, pol
 		    updated_on = NOW(), updated_by = $2
 		WHERE work_item_id = $1::uuid
 		  AND source = 'CSM'
-		  AND stage::TEXT ` + slaEngineActiveStageFilter
+		  AND stage::TEXT NOT IN ('CANCELLED', 'ACHIEVED', 'COMPLETED')`
 
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
