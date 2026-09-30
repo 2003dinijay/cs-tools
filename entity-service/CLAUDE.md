@@ -1219,9 +1219,17 @@ by the ingest's duplicate guard.
   it apart from a failed check; a valid answer carries the Salesforce contact
   the invitation would adopt, if any. The Customer Portal calls it before
   showing the invite form.
-- **Change roles** replaces the Salesforce `Role__c` picklist and, with it,
-  the membership's project groups. The state is untouched (the PATCH sends
-  only `role`). An empty list is accepted and removes every group.
+- **Change roles** replaces the portal-managed labels of the Salesforce
+  `Role__c` picklist (Portal user, Security Contact, Lead, Admin) and, with
+  them, the membership's project groups. `Role__c` is PATCHed as a whole list,
+  so `mergePortalManagedRoles` keeps every other label already on the fetched
+  Salesforce membership (Business Contact, the six D2 labels, anything
+  unknown) after the requested ones; the groups are derived from that merged
+  list, so a Business Contact keeps `Business Contact  Group`. When the fetched
+  membership carries neither `roles` nor `role`, the write fails (503) rather
+  than overwrite blind. A re-invitation PATCHes roles the same way. The state is
+  untouched (the PATCH sends only `role`). An empty list is accepted and removes
+  every portal-managed role.
 - **Deactivate** sets `DEACTIVATED` in both systems. Never a delete:
   DEACTIVATED is a real value of both the Salesforce picklist and
   `project_contact_state_enum`, and it is what the portal does today. The
