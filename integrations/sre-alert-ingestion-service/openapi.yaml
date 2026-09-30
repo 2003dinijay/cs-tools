@@ -209,6 +209,28 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /servicenow:
+    post:
+      tags: [alerts]
+      operationId: postServicenowAlert
+      summary: Receive an alert ServiceNow has already transformed (temporary)
+      description: >-
+        Temporary route for the parallel run. The body is one canonical alert object, or an
+        array of them, with the eight fields ServiceNow's AlertCoreUtils.init receives.
+      requestBody:
+        $ref: '#/components/requestBodies/VendorPayload'
+      responses:
+        '201':
+          $ref: '#/components/responses/Stored'
+        '400':
+          $ref: '#/components/responses/Rejected'
+        '401':
+          $ref: '#/components/responses/Rejected'
+        '413':
+          $ref: '#/components/responses/Rejected'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
   /site24x7:
     post:
       tags: [alerts]

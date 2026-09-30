@@ -55,6 +55,16 @@ vendor ──POST──▶ ingestion (transform → allocator: CAS-claim ids →
 Vendors: `aws`, `azure`, `datadog`, `elasticsearch`, `gcp`, `icinga`, `openobserve`,
 `opensearch`, `prometheus`, `site24x7`.
 
+`servicenow` is temporary, for the parallel run: ServiceNow forwards the alerts it has already
+transformed, so the body is the canonical alert itself (one object, or an array), with no mapping
+or defaults applied. The original vendor stays in `source`. Remove the route once the vendors
+point here directly.
+
+```json
+{"service":"svc","metric_name":"HighCPU","severity":"Critical","category":"cat",
+ "environment":"production","source":"AWS","unique_identifier":"id-1","description":"..."}
+```
+
 Responses:
 
 ```json
