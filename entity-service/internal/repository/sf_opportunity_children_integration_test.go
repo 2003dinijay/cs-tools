@@ -36,6 +36,7 @@ const (
 	ociOppRow     = "5fb00000-0000-4000-8000-000000000001"
 	ociOppSfID    = "006OCITEST0000001A"
 	ociInvoiceSfI = "a0IOCITEST0000001A"
+	ociLineSfID   = "00kOCITEST0000001A"
 )
 
 func newOpportunityChildIntegrationPool(t *testing.T) *pgxpool.Pool {
@@ -53,6 +54,7 @@ func newOpportunityChildIntegrationPool(t *testing.T) *pgxpool.Pool {
 	clean := func() {
 		for _, stmt := range []string{
 			`DELETE FROM sf_invoice WHERE sf_id = '` + ociInvoiceSfI + `'`,
+			`DELETE FROM sf_opportunity_product WHERE line_item_sf_id = '` + ociLineSfID + `'`,
 			`DELETE FROM sf_opportunity WHERE id = '` + ociOppRow + `'`,
 			`DELETE FROM salesforce_ingest_state WHERE sf_id LIKE '%OCITEST%'`,
 		} {
@@ -114,6 +116,47 @@ func TestSfInvoiceIntegration_UpsertAndDelete(t *testing.T) {
 	var eventType string
 	if err := pool.QueryRow(ctx, `SELECT event_type FROM salesforce_ingest_state WHERE entity = 'invoice' AND sf_id = $1`, ociInvoiceSfI).Scan(&eventType); err != nil || eventType != "DELETED" {
 		t.Errorf("ledger event_type = %q err = %v", eventType, err)
+	}
+}
+
+// The standalone line item write leaves the two ServiceNow-side columns
+// alone and deletes by line_item_sf_id.
+func TestSfOpportunityLineItemIntegration_UpsertKeepsServiceNowColumnsAndDeletes(t *testing.T) {
+	pool := newOpportunityChildIntegrationPool(t)
+	ctx := context.Background()
+	repo := NewSalesforceOpportunityLineItemRepository(pool)
+	qty, price := 3.0, 1200.5
+	li := domain.SalesforceOpportunityLineItemUpsert{LineItemSfID: ociLineSfID, Name: ociPtr("Line"), ProductName: ociPtr("Development Support - 40 hours"),
+		Quantity: &qty, TotalPrice: &price}
+	state := func(et string) domain.UpsertSalesforceIngestStateRequest {
+		return ociState(domain.SalesforceIngestEntityOpportunityLineItem, ociLineSfID, et)
+	}
+	if created, err := repo.UpsertFromSalesforce(ctx, ociOppSfID, ociOppRow, li, state("CREATED")); err != nil || !created {
+		t.Fatalf("insert created=%v err=%v", created, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE sf_opportunity_product SET development_support_hours = 40, engagement_code = 'ENG-7' WHERE line_item_sf_id = $1`, ociLineSfID); err != nil {
+		t.Fatalf("set ServiceNow columns: %v", err)
+	}
+	qty = 5
+	if created, err := repo.UpsertFromSalesforce(ctx, ociOppSfID, ociOppRow, li, state("UPDATED")); err != nil || created {
+		t.Fatalf("update created=%v err=%v", created, err)
+	}
+	var n int
+	var gotQty float64
+	var hours *float64
+	var eng *string
+	if err := pool.QueryRow(ctx, `SELECT count(*) OVER (), quantity::float8, development_support_hours::float8, engagement_code
+		FROM sf_opportunity_product WHERE line_item_sf_id = $1 AND opportunity_id = $2`, ociLineSfID, ociOppRow).Scan(&n, &gotQty, &hours, &eng); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if n != 1 || gotQty != 5 || hours == nil || *hours != 40 || eng == nil || *eng != "ENG-7" {
+		t.Errorf("rows=%d quantity=%v hours=%v engagement=%v", n, gotQty, hours, eng)
+	}
+	if deleted, err := repo.DeleteByLineItemSfID(ctx, ociLineSfID, state("DELETED")); err != nil || deleted != 1 {
+		t.Fatalf("delete n=%d err=%v", deleted, err)
+	}
+	if deleted, err := repo.DeleteByLineItemSfID(ctx, ociLineSfID, state("DELETED")); err != nil || deleted != 0 {
+		t.Fatalf("second delete n=%d err=%v, want 0", deleted, err)
 	}
 }
 

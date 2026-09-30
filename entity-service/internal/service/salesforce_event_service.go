@@ -128,6 +128,9 @@ type salesforceEventService struct {
 	partners *PartnerIngest
 	// invoices is set by WithInvoiceIngest (salesforce_invoice_ingest.go).
 	invoices *InvoiceIngest
+	// lineItems is set by WithOpportunityLineItemIngest
+	// (salesforce_opportunity_line_item_ingest.go).
+	lineItems *OpportunityLineItemIngest
 }
 
 // NewSalesforceEventService constructs a SalesforceEventService that ingests
@@ -223,6 +226,8 @@ func (s *salesforceEventService) HandleEvent(ctx context.Context, req domain.Sal
 	case strings.EqualFold(req.Entity, domain.SalesforceEntityInvoice),
 		strings.EqualFold(req.Entity, domain.SalesforceEntityInvoiceAlt):
 		return s.handleInvoiceEvent(ctx, req)
+	case strings.EqualFold(req.Entity, domain.SalesforceEntityOpportunityLineItem):
+		return s.handleOpportunityLineItemEvent(ctx, req)
 	default:
 		// Other Salesforce objects are acknowledged and ignored: a 400 would
 		// make ASB retry the envelope forever.

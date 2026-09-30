@@ -280,9 +280,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			})
 			// Invoice__c events ride on the same flag: an invoice needs its
 			// opportunity, which the Opportunity branch ingests inline.
-			return service.WithInvoiceIngest(svc, service.InvoiceIngest{
+			opportunityLookup := repository.NewSalesforceOpportunityLookup(db)
+			svc = service.WithInvoiceIngest(svc, service.InvoiceIngest{
 				Invoices:      repository.NewSalesforceInvoiceRepository(db),
-				Opportunities: repository.NewSalesforceOpportunityLookup(db),
+				Opportunities: opportunityLookup,
+				SalesEntity:   salesEntityClient,
+			})
+			// So do standalone OpportunityLineItem events.
+			return service.WithOpportunityLineItemIngest(svc, service.OpportunityLineItemIngest{
+				LineItems:     repository.NewSalesforceOpportunityLineItemRepository(db),
+				Opportunities: opportunityLookup,
 				SalesEntity:   salesEntityClient,
 			})
 		}
@@ -337,6 +344,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				}
 				if inv, ok := membershipIngestSvc.(service.InvoiceReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
 					retryWorker.EntityRetriers[domain.SalesforceIngestEntityInvoice] = inv.RetryInvoiceIngest
+				}
+				if li, ok := membershipIngestSvc.(service.OpportunityLineItemReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityOpportunityLineItem] = li.RetryOpportunityLineItemIngest
 				}
 				if partners, ok := membershipIngestSvc.(service.PartnerReingester); ok && cfg.CSMMigrationSalesforcePartnerIngestEnabled {
 					retryWorker.EntityRetriers[domain.SalesforceIngestEntityAccountPartners] = partners.RetryPartnerRefresh

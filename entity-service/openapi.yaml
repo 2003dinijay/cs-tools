@@ -44,6 +44,9 @@ paths:
         CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true: CREATED/UPDATED/RESTORED
         fetch the invoice (POST /invoices/search), ingest its opportunity first when
         missing, and upsert sf_invoice by sf_id; DELETED hard-deletes by sf_id.
+        Entity OpportunityLineItem, under the same flag, does the same for one
+        sf_opportunity_product row (POST /opportunity-line-items/search, keyed on
+        line_item_sf_id).
         Every other entity is acknowledged with 204 and ignored. A replay whose
         Salesforce lastModifiedDate is not newer than the recorded DATABASE step
         is a 204 no-op, so the customer portal and the reconcile job can replay
