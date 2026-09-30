@@ -90,7 +90,12 @@ SELECT o.id::text,
        COALESCE(o.name, ''),
        o.start_on,
        o.end_on,
-       COALESCE(o.duration::text, ''),
+       -- Seconds, not interval text. Casting the interval to text renders
+       -- as 00:31:25.634362 -- six decimal places of microseconds, which is
+       -- what a raw Postgres interval prints and is not something anyone
+       -- wants in an email. Formatting belongs in the service layer where
+       -- it is testable, so the repository hands over a number.
+       COALESCE(EXTRACT(EPOCH FROM o.duration)::bigint, 0),
        COALESCE(o.outage_communication, FALSE),
        EXISTS (SELECT 1 FROM outage_communication_log l
                 WHERE l.outage_number = o.number
@@ -136,7 +141,7 @@ func (r *outageCommunicationRepo) PendingOutages(ctx context.Context, limit int)
 		var o domain.OutageForCommunication
 		if err := rows.Scan(
 			&o.OutageID, &o.Number, &o.Type, &o.ShortDescription,
-			&o.StartOn, &o.EndOn, &o.Duration,
+			&o.StartOn, &o.EndOn, &o.DurationSeconds,
 			&o.OptedIn, &o.AlreadyDeclared, &o.AlreadyResolved, &o.DeclaredSubject,
 		); err != nil {
 			return nil, fmt.Errorf("scanning outage pending communication: %w", err)

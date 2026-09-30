@@ -219,12 +219,12 @@ func TestRenderOutageCommunication_MatchesTheOriginalWording(t *testing.T) {
 
 	o.AlreadyDeclared = true
 	o.EndOn = commAt("2026-09-30T10:00:00Z")
-	o.Duration = "02:00:00"
+	o.DurationSeconds = 2 * 60 * 60
 	res := decideOutageCommunication(o)
 	for _, frag := range []string{
 		"Hi Team,",
 		"fully resolved",
-		"Outage Duration: 02:00:00",
+		"Outage Duration: 2h",
 		"End Time: 2026-09-30T10:00:00Z",
 		"Root Cause Analysis (RCA)", // a promise no active flow keeps
 		"[Team Name]",
@@ -239,5 +239,53 @@ func TestRenderOutageCommunication_MatchesTheOriginalWording(t *testing.T) {
 func TestFormatOutageInstant_NilIsEmptyNotZeroTime(t *testing.T) {
 	if got := formatOutageInstant(nil); got != "" {
 		t.Fatalf("formatOutageInstant(nil) = %q, want empty", got)
+	}
+}
+
+// *** THE MICROSECONDS BUG, PINNED. ***
+//
+// The first live send rendered "Outage Duration: 00:31:25.634362" — a raw
+// Postgres interval cast to text. No unit test caught it because the tests
+// asserted against a hand-written string and so only agreed with themselves;
+// it took a real message in a real inbox.
+//
+// These cases assert on the formatter directly, so the next change to it
+// cannot quietly reintroduce a machine-shaped value.
+func TestFormatOutageDuration(t *testing.T) {
+	tests := []struct {
+		name    string
+		seconds int64
+		want    string
+	}{
+		{"the outage that exposed this, rounded", 31*60 + 25, "31m 25s"},
+		{"seconds only", 45, "45s"},
+		{"exact minute drops the seconds", 120, "2m"},
+		{"exact hour", 2 * 60 * 60, "2h"},
+		// Trailing seconds are noise once hours are involved, and actively
+		// unhelpful once days are.
+		{"hours suppress seconds", 2*60*60 + 5*60 + 12, "2h 5m"},
+		{"days suppress seconds", 2*24*60*60 + 3*60*60 + 4*60 + 9, "2d 3h 4m"},
+		{"a day exactly", 24 * 60 * 60, "1d"},
+		// Not ended: blank, never "0s", which would assert the outage
+		// ended instantly rather than that its length is unknown.
+		{"zero is blank", 0, ""},
+		{"negative is blank", -5, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatOutageDuration(tc.seconds); got != tc.want {
+				t.Fatalf("formatOutageDuration(%d) = %q, want %q", tc.seconds, got, tc.want)
+			}
+		})
+	}
+}
+
+// And the regression itself: no rendered duration may ever carry a decimal
+// point, which is what a Postgres interval brings with it.
+func TestFormatOutageDuration_NeverCarriesFractionalSeconds(t *testing.T) {
+	for _, s := range []int64{1, 59, 61, 3599, 3601, 86399, 86401, 999999} {
+		if got := formatOutageDuration(s); strings.Contains(got, ".") {
+			t.Errorf("formatOutageDuration(%d) = %q — contains a decimal point", s, got)
+		}
 	}
 }

@@ -66,11 +66,15 @@ type OutageForCommunication struct {
 	// revision filled Impact from `message`, which is the outage's own
 	// message -- a plausible-looking wrong value in every email, and harder
 	// to notice than a blank.
-	Impact   string     `json:"impact,omitempty"`
-	State    string     `json:"state,omitempty"`
-	StartOn  *time.Time `json:"startOn,omitempty"`
-	EndOn    *time.Time `json:"endOn,omitempty"`
-	Duration string     `json:"duration,omitempty"`
+	Impact  string     `json:"impact,omitempty"`
+	State   string     `json:"state,omitempty"`
+	StartOn *time.Time `json:"startOn,omitempty"`
+	EndOn   *time.Time `json:"endOn,omitempty"`
+	// DurationSeconds is whole seconds, because the alternative is what
+	// Postgres prints for an interval: 00:31:25.634362 -- six decimal
+	// places of microseconds. ServiceNow renders a glide_duration as a
+	// human string, so the port formats too; see formatOutageDuration.
+	DurationSeconds int64 `json:"durationSeconds,omitempty"`
 
 	// OptedIn is ServiceNow's u_outage_communication. It gates both waits and
 	// is NEVER written back by the flow — a human sets it once and it stays

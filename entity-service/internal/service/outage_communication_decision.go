@@ -173,7 +173,7 @@ func renderOutageResolution(o domain.OutageForCommunication) (subject, body stri
 	b.WriteString("Resolution Summary:\n")
 	fmt.Fprintf(&b, "  Incident Number : %s\n", o.Number)
 	fmt.Fprintf(&b, "  Title : %s\n", o.ShortDescription)
-	fmt.Fprintf(&b, "  Outage Duration: %s\n", o.Duration)
+	fmt.Fprintf(&b, "  Outage Duration: %s\n", formatOutageDuration(o.DurationSeconds))
 	fmt.Fprintf(&b, "  Start Time: %s\n", formatOutageInstant(o.StartOn))
 	fmt.Fprintf(&b, "  End Time: %s\n", formatOutageInstant(o.EndOn))
 	fmt.Fprintf(&b, "  Overall Impact: %s\n", o.Impact)
