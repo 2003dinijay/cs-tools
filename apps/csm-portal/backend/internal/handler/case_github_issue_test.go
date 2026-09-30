@@ -27,7 +27,6 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/githubissue"
 )
 
 type createIssueCall struct {
@@ -48,10 +47,6 @@ func (m *mockEngineeringClient) CreateGitIssue(_ context.Context, orgName, owner
 
 func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 	const caseID = "11111111-1111-1111-1111-111111111111"
-	githubissue.SetActive([]githubissue.RepoOption{
-		{Value: "alpha", DisplayLabel: "Alpha", Owner: "example-org", Repo: "alpha-repo", GithubLabel: "Alpha"},
-	})
-	t.Cleanup(func() { githubissue.SetActive(nil) })
 
 	post := func(t *testing.T, h *CaseHandler, body string) *httptest.ResponseRecorder {
 		t.Helper()
