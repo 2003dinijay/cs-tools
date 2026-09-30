@@ -209,7 +209,11 @@ type ChangeRequestRepository interface {
 	// all in the one WHERE clause (mirrors ServiceNow's decideApproval
 	// restriction that only the caller's own PENDING approval can be acted
 	// on -- see sn_change_request_service.go's DecideChangeRequestApproval
-	// doc comment).
+	// doc comment). Also cascades change_request.state from Assess to
+	// Authorize when this decision is the one that resolves that stage's own
+	// approval (first-responder-wins, same quorum rule as
+	// buildChangeRequestApprovals) -- see this method's own doc comment for
+	// the full reasoning and its deliberately narrow scope.
 	DecideChangeRequestApproval(ctx context.Context, id, approverUserID, decision, actorEmail string) (string, error)
 }
 
@@ -1525,22 +1529,80 @@ func buildChangeRequestApprovals(stages []changeRequestApprovalStageRow, approve
 // decideChangeRequestApprovalQuery backs DecideChangeRequestApproval. The
 // WHERE clause's status = 'requested' is the entire enforcement of "only the
 // caller's own PENDING approval can be decided" -- see that method's own
-// doc comment.
+// doc comment. stage_id is also returned (nullable, same as everywhere else
+// in this file) so the caller can re-check that stage's own overall outcome
+// for the Assess->Authorize cascade below.
 const decideChangeRequestApprovalQuery = `
 	UPDATE approval_stage_approver
 	SET status = $3, updated_on = NOW(), updated_by = $4
 	WHERE work_item_id = $1 AND approver_user_id = $2 AND status = 'requested'
-	RETURNING id`
+	RETURNING id, stage_id`
 
 // DecideChangeRequestApproval implements ChangeRequestRepository.
+//
+// A real, reported gap: this used to only flip the one approval_stage_approver
+// row and stop there -- change_request.state never moved, which left
+// Authorize permanently unreachable once the direct "Change state ->
+// Authorize" button was removed (see ChangeRequestActionBar.tsx's
+// NEVER_OFFERED_TARGETS): approving correctly recorded the decision, but
+// nothing in the system ever advanced the record past Assess. Confirmed live
+// against a real approval on this data source before this fix.
+//
+// The cascade below applies the exact same first-responder-wins quorum rule
+// buildChangeRequestApprovals already uses at read time (a single approval
+// resolves a stage, unless another approver on it has already rejected) --
+// this is that same rule's write-time mirror, closing the loop the read side
+// alone can't: once this decision resolves the stage as approved, and the
+// change request is currently sitting in Assess, state advances to
+// Authorize. A rejection never advances anything (there is no confirmed
+// target for a rejected Assess stage in this schema -- see
+// changeRequestForwardNextStates' own doc comment on what is and isn't
+// modeled), and neither does an approval that arrives after the record has
+// already moved on (the currentState check simply no longer matches).
+//
+// Deliberately scoped to Assess->Authorize only. Authorize's own outgoing
+// approval gate (into Scheduled or Customer Approval) is a separate,
+// deferred piece of work -- this does not attempt it, and a decision on an
+// Authorize-stage approver here has no cascade effect at all yet.
 func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id, approverUserID, decision, actorEmail string) (string, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("decide change request approval: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	var approvalID string
-	err := r.db.QueryRow(ctx, decideChangeRequestApprovalQuery, id, approverUserID, decision, actorEmail).Scan(&approvalID)
+	var stageID *string
+	err = tx.QueryRow(ctx, decideChangeRequestApprovalQuery, id, approverUserID, decision, actorEmail).Scan(&approvalID, &stageID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", &apierror.NotFoundError{Msg: "no pending approval found for this change request and caller"}
 	}
 	if err != nil {
 		return "", fmt.Errorf("decide change request approval: %w", err)
+	}
+
+	if decision == "approved" && stageID != nil {
+		var currentState string
+		if err := tx.QueryRow(ctx, `SELECT state FROM change_request WHERE id = $1 FOR UPDATE`, id).Scan(&currentState); err != nil {
+			return "", fmt.Errorf("decide change request approval: check current state: %w", err)
+		}
+		if currentState == "ASSESS" {
+			var hasRejection bool
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND status = 'rejected')`,
+				*stageID).Scan(&hasRejection); err != nil {
+				return "", fmt.Errorf("decide change request approval: check stage rejections: %w", err)
+			}
+			if !hasRejection {
+				if _, err := tx.Exec(ctx, `UPDATE change_request SET state = 'AUTHORIZE' WHERE id = $1`, id); err != nil {
+					return "", fmt.Errorf("decide change request approval: advance state: %w", err)
+				}
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("decide change request approval: commit tx: %w", err)
 	}
 	return approvalID, nil
 }
