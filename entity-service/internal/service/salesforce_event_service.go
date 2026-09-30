@@ -115,6 +115,9 @@ type AccountLookup interface {
 type SalesforceIngestSupport struct {
 	Accounts AccountLookup
 	States   repository.SalesforceIngestStateRepository
+	// Projects is the read side of EnsureProject, flag-independent like
+	// Accounts (salesforce_project_ingest.go).
+	Projects ProjectLookup
 }
 
 type salesforceEventService struct {
@@ -124,6 +127,11 @@ type salesforceEventService struct {
 	membership *MembershipIngest
 	// opportunity is set by WithOpportunityIngest (salesforce_opportunity_ingest.go).
 	opportunity *OpportunityIngest
+	// project is set by WithProjectIngest (salesforce_project_ingest.go).
+	project *ProjectIngest
+	// linkedOpportunity is set by WithLinkedOpportunityIngest
+	// (salesforce_linked_opportunity_ingest.go).
+	linkedOpportunity *LinkedOpportunityIngest
 }
 
 // NewSalesforceEventService constructs a SalesforceEventService that ingests
@@ -216,6 +224,11 @@ func (s *salesforceEventService) HandleEvent(ctx context.Context, req domain.Sal
 		return s.handleContactEvent(ctx, req)
 	case strings.EqualFold(req.Entity, domain.SalesforceEntityOpportunity):
 		return s.handleOpportunityEvent(ctx, req)
+	case strings.EqualFold(req.Entity, domain.SalesforceEntityProject):
+		return s.handleProjectEvent(ctx, req)
+	case strings.EqualFold(req.Entity, domain.SalesforceEntityLinkedOpportunity),
+		strings.EqualFold(req.Entity, domain.SalesforceEntityLinkedOpportunityAlt):
+		return s.handleLinkedOpportunityEvent(ctx, req)
 	default:
 		// Other Salesforce objects are acknowledged and ignored: a 400 would
 		// make ASB retry the envelope forever.

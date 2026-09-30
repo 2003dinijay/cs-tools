@@ -205,6 +205,9 @@ func (s *salesforceEventService) ingestMembership(ctx context.Context, membershi
 		UpdatedBy:       domain.SalesforceSyncActor,
 	}
 	res, err := s.membership.Memberships.Upsert(ctx, in, step)
+	if err != nil && s.ensureMissingProjectForMembership(ctx, err, membershipSfID, in.ProjectSfID) {
+		res, err = s.membership.Memberships.Upsert(ctx, in, step)
+	}
 	if err != nil {
 		s.recordDatabaseStepFailed(ctx, step, err)
 		return err
