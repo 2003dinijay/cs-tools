@@ -7638,10 +7638,10 @@ type KBArticle struct {
 	// a NEW row linked back to the FIRST row in its lineage via
 	// BaseVersionID (nil on that first row itself), with exactly one row
 	// per lineage having Latest=true -- see kb-tables.sql's doc comment.
-	BaseVersionID *string   `json:"baseVersionId,omitempty"`
-	Latest        bool      `json:"latest"`
-	CreatedOn     time.Time `json:"createdOn"`
-	UpdatedOn     time.Time `json:"updatedOn"`
+	BaseVersionID *string    `json:"baseVersionId,omitempty"`
+	Latest        bool       `json:"latest"`
+	CreatedOn     time.Time  `json:"createdOn"`
+	UpdatedOn     time.Time  `json:"updatedOn"`
 	PublishedOn   *time.Time `json:"publishedOn"`
 	RetiredOn     *time.Time `json:"retiredOn"`
 	// ScheduledPublishOn/GeneratedWithAI/AIGeneratedBy/HelpfulCount/
@@ -7661,6 +7661,8 @@ type UpdateKBArticleStateRequest struct {
 	State            KBArticleState `json:"state"`
 	RejectionComment *string        `json:"rejectionComment,omitempty"`
 	UpdatedBy        string         `json:"updatedBy"`
+	// CurrentState is set by the service layer for optimistic locking.
+	CurrentState KBArticleState `json:"-"`
 }
 
 type SearchKBArticlesRequest struct {

@@ -709,6 +709,7 @@ export default function App(): JSX.Element {
                     />
                   </Route>
                 </Route>
+              </Route>
 
               <Route
                 path="*"

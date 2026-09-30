@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -240,17 +241,20 @@ func (r *kbArticleRepo) UpdateKBArticleState(ctx context.Context, id string, req
 		    updated_on = NOW(),
 		    published_on = CASE WHEN $2::text = 'published' THEN NOW() ELSE published_on END,
 		    retired_on   = CASE WHEN $2::text = 'retired'   THEN NOW() ELSE retired_on   END
-		WHERE id = $1
+		WHERE id = $1 AND state = $5::text
 		RETURNING %s`, kbArticleColumns)
 
 	var a domain.KBArticle
-	err = scanKBArticle(tx.QueryRow(ctx, query, id, string(req.State), req.RejectionComment, req.UpdatedBy), &a)
+	err = scanKBArticle(tx.QueryRow(ctx, query, id, string(req.State), req.RejectionComment, req.UpdatedBy, string(req.CurrentState)), &a)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 			switch pgErr.Code {
 			case "P0001", "23514":
 				return domain.KBArticle{}, &apierror.ValidationError{Msg: pgErr.Message}
 			}
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.KBArticle{}, &apierror.ConflictError{Msg: "article state was modified by another request"}
 		}
 		return domain.KBArticle{}, fmt.Errorf("update kb article state: %w", err)
 	}
