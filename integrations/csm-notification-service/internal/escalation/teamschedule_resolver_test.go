@@ -526,3 +526,60 @@ func TestRule_RoleAtNamesTheRealRung(t *testing.T) {
 		t.Errorf("R2 LEVEL_2 = %q, want %q", got, want)
 	}
 }
+
+// "Team leads" spans every ABT by default, and exactly the named teams when
+// configuration names some -- which is how the resolver is made to agree with
+// the spreadsheet's count of three without a release.
+func TestResolve_TeamLeadsSpanIsConfigurable(t *testing.T) {
+	var members []teamMember
+	for _, team := range testTeams.ABTs {
+		members = append(members, member(team, team+".lead@example.com", roleLead, ""))
+	}
+	stub := &stubScheduleReader{members: members}
+	rc := RoutingContext{Shift: ShiftLK, AssignedCRETeam: "vega", At: time.Now()}
+
+	all, err := testResolver(stub).Resolve(context.Background(), Level2, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != len(testTeams.ABTs) {
+		t.Errorf("default LEVEL_2 reached %d, want every ABT lead (%d)", len(all), len(testTeams.ABTs))
+	}
+
+	narrowed := testTeams
+	narrowed.TeamLeads = []string{"vega", "atlas", "apollo"}
+	three, err := NewTeamScheduleResolver(stub, narrowed, nil).
+		Resolve(context.Background(), Level2, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"apollo.lead@example.com", "atlas.lead@example.com", "vega.lead@example.com"}
+	if !equalStrings(emails(three), want) {
+		t.Errorf("configured LEVEL_2 = %v, want %v", emails(three), want)
+	}
+}
+
+// The night shift's LEVEL_1 has a second reading, selectable per rule: the
+// Americas team's own leads rather than every ABT's.
+func TestResolve_AmericasTeamLeadsIsSelectablePerRule(t *testing.T) {
+	stub := &stubScheduleReader{members: []teamMember{
+		member("americas", "am.lead1@example.com", roleLead, ""),
+		member("americas", "am.lead2@example.com", roleLead, ""),
+		member("vega", "vega.lead@example.com", roleLead, ""),
+	}}
+	rules := []Rule{{
+		ID: "R5", Shift: ShiftUSA, ABT: ABTAny,
+		Levels: [5]LevelSource{SourceAlertDutyAmericas, SourceAmericasTeamLeads,
+			SourceAmericasTeamLead, SourceCREHead, SourceCSHead},
+	}}
+	got, err := NewTeamScheduleResolver(stub, testTeams, rules).
+		Resolve(context.Background(), Level1,
+			RoutingContext{Shift: ShiftUSA, AssignedCRETeam: "vega", At: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"am.lead1@example.com", "am.lead2@example.com"}
+	if !equalStrings(emails(got), want) {
+		t.Errorf("LEVEL_1 = %v, want the Americas team's own leads %v", emails(got), want)
+	}
+}

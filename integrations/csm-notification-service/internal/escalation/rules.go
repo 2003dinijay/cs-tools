@@ -59,8 +59,14 @@ const (
 	SourceTeamLead LevelSource = "team_lead"
 	// SourceAllTeamLeads is the lead of every ABT, called together.
 	SourceAllTeamLeads LevelSource = "all_team_leads"
-	// SourceAmericasTeamLead is the Americas team's own lead.
+	// SourceAmericasTeamLead is the Americas team's own lead -- the one above
+	// its leads.
 	SourceAmericasTeamLead LevelSource = "americas_team_lead"
+	// SourceAmericasTeamLeads is the Americas team's own leads, plural. The
+	// alternative reading of the night shift's LEVEL_1: its three leads,
+	// rather than every ABT's one lead. Selectable per rule from the
+	// configuration file.
+	SourceAmericasTeamLeads LevelSource = "americas_team_leads"
 
 	// -- Levels 3 and 4: the heads, outside any ABT. --
 
@@ -227,7 +233,7 @@ func (s LevelSource) valid() bool {
 	case SourceNone, SourceRotaMembers, SourceRotaPair, SourceAlertDutyOwnABT,
 		SourceAlertDutyEachABT, SourceAlertDutyAmericas,
 		SourceRotaMemberAndAlertDutyAmericas, SourceTeamLead, SourceAllTeamLeads,
-		SourceAmericasTeamLead, SourceCREHead, SourceCSHead:
+		SourceAmericasTeamLead, SourceAmericasTeamLeads, SourceCREHead, SourceCSHead:
 		return true
 	}
 	return false
@@ -260,6 +266,8 @@ func (s LevelSource) Describe() string {
 		return "Team leads"
 	case SourceAmericasTeamLead:
 		return "Americas team lead"
+	case SourceAmericasTeamLeads:
+		return "Americas team leads"
 	case SourceCREHead:
 		return "CRE head"
 	case SourceCSHead:

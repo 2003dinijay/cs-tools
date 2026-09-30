@@ -58,6 +58,9 @@ type TeamScheduleResolver struct {
 	abtTeamKeys []string
 	// americasTeamKey is the team covering the night shift.
 	americasTeamKey string
+	// teamLeadKeys is which teams the "Team leads" rung spans; the ABTs when
+	// configuration names none.
+	teamLeadKeys []string
 	// history answers when somebody was last called, for the evening
 	// pairing's "one other member" rule. Optional: without it the pairing
 	// falls back to a stable order, which is deterministic but not fair.
@@ -102,10 +105,20 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 			keys = append(keys, k)
 		}
 	}
+	leadKeys := make([]string, 0, len(teams.TeamLeads))
+	for _, k := range teams.TeamLeads {
+		if k = teamKeyFor(k); k != "" {
+			leadKeys = append(leadKeys, k)
+		}
+	}
+	if len(leadKeys) == 0 {
+		leadKeys = keys
+	}
 	return TeamScheduleResolver{
 		entity:            entity,
 		rules:             rules,
 		abtTeamKeys:       keys,
+		teamLeadKeys:      leadKeys,
 		americasTeamKey:   teamKeyFor(teams.Americas),
 		leadershipTeamKey: teams.Leadership,
 	}
@@ -119,6 +132,16 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 type TeamKeys struct {
 	// ABTs are the ABT team keys.
 	ABTs []string `yaml:"abts"`
+	// TeamLeads is which teams the "Team leads" rung spans. Empty means every
+	// ABT.
+	//
+	// It is configurable because the spreadsheet and the roster disagree and
+	// only you can say which is right: the sheet counts that rung as three
+	// calls everywhere it appears, while "the lead of every ABT" is seven with
+	// seven ABTs. Naming three teams here makes it three; leaving it empty
+	// keeps the literal reading. Either way the resolver and the sheet can be
+	// made to agree without a release.
+	TeamLeads []string `yaml:"teamLeads"`
 	// Americas is the team covering the night shift.
 	Americas string `yaml:"americas"`
 	// Leadership is the team the two heads belong to.
@@ -223,7 +246,10 @@ func (r TeamScheduleResolver) fromSource(ctx context.Context, src LevelSource, r
 		return r.abtMembers(ctx, rc.AssignedCRETeam, roleLead)
 
 	case SourceAllTeamLeads:
-		return r.leadsOf(ctx, r.abtTeamKeys)
+		return r.leadsOf(ctx, r.teamLeadKeys)
+
+	case SourceAmericasTeamLeads:
+		return r.leadsOf(ctx, r.americasKeys())
 
 	case SourceAmericasTeamLead:
 		return r.leadsOf(ctx, r.americasKeys())
