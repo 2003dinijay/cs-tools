@@ -502,6 +502,14 @@ export interface CsmNavMatch {
  * prefix. `/operations/incidents/42` resolves to the Incidents tab rather than
  * to Operations, which is what lets a single finished tab stay reachable inside
  * an otherwise-unfinished section.
+ *
+ * On a length tie, the later match wins (`>=`, not `>`) — `flattenNavNodes`
+ * yields parents before their children, and a section whose `href` is just an
+ * alias for its own landing child (e.g. "spl"'s href and "spl.cases"'s href
+ * are both "/spl/cases", since the section has no dedicated landing page of
+ * its own) would otherwise have the parent win a same-length tie against the
+ * more specific child it's aliasing — surfacing as the child never being the
+ * one reported active for its own path.
  */
 export function navNodeMatchForPath(pathname: string): CsmNavMatch | undefined {
   let best: CsmNavMatch | undefined;
@@ -510,7 +518,7 @@ export function navNodeMatchForPath(pathname: string): CsmNavMatch | undefined {
     for (const prefix of navNodeRoutes(node)) {
       if (
         matchesPrefix(pathname, prefix) &&
-        prefix.length > (best?.prefix.length ?? -1)
+        prefix.length >= (best?.prefix.length ?? -1)
       ) {
         best = { node, prefix };
       }
