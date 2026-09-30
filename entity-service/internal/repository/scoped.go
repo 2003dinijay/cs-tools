@@ -177,10 +177,7 @@ func queueIdentity(batch *pgx.Batch, scope SearchScope) {
 	if scope.Unrestricted {
 		batch.Queue("SELECT set_config('app.viewer_project_ids', '{}', true)")
 	} else {
-		batch.Queue(`SELECT set_config('app.viewer_project_ids', COALESCE((
-			SELECT array_agg(pc.project_id)::text FROM project_contact pc
-			WHERE LOWER(pc.email) = LOWER($1) AND pc.state = 'REGISTERED'
-		), '{}'), true)`, viewerEmail)
+		batch.Queue(setViewerProjectIDsSQL, viewerEmail)
 	}
 }
 

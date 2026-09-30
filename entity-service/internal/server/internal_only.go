@@ -35,14 +35,18 @@ import (
 // 0153). None of them is used by the customer portal, and none has a
 // per-project concept a policy could filter on, so "internal or nothing" is
 // enforced here, once, on the route, independent of which service
-// implementation (Postgres or ServiceNow) backs the handler.
+// implementation (Postgres or ServiceNow) backs the handler. The check itself
+// is service.RequireInternalCaller, shared with the per-service guards.
 func internalOnly(access service.AccessService, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope, err := access.ResolveScope(r.Context())
+		err := service.RequireInternalCaller(r.Context(), access, "this resource is only available to internal callers")
 		if err != nil {
 			var ue *apierror.UnauthorizedError
 			var sue *apierror.ServiceUnavailableError
+			var fe *apierror.ForbiddenError
 			switch {
+			case errors.As(err, &fe):
+				apierror.WriteJSON(w, http.StatusForbidden, fe.Msg)
 			case errors.As(err, &ue):
 				apierror.WriteJSON(w, http.StatusUnauthorized, ue.Msg)
 			case errors.As(err, &sue):
@@ -51,10 +55,6 @@ func internalOnly(access service.AccessService, next http.HandlerFunc) http.Hand
 				log.Printf("internalOnly: resolve scope for %s: %v", r.Method, err)
 				apierror.WriteJSON(w, http.StatusInternalServerError, "internal server error")
 			}
-			return
-		}
-		if !scope.Unrestricted {
-			apierror.WriteJSON(w, http.StatusForbidden, "this resource is only available to internal callers")
 			return
 		}
 		next(w, r)

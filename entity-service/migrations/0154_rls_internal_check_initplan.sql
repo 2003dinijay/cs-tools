@@ -29,26 +29,47 @@
 -- row, and estimates it at a neutral 50% rather than 0.5%. No new role, no
 -- change to who can see what: the predicate's truth value is identical.
 --
--- Rewrites every existing policy that contains the old form; idempotent
--- (already-wrapped policies no longer match).
+-- Rewrites every existing policy that contains the old form. Idempotent:
+-- old_expr is a literal substring of the wrapped form, so a bare match on
+-- old_expr would re-wrap an already-fixed policy into (SELECT (SELECT ...)).
+-- pg_policies deparses the wrapped form as "( SELECT <old_expr>)" (note the
+-- space), which differs from the "(SELECT ...)" written below, so both
+-- spellings are folded back to old_expr first; only policies that still
+-- contain old_expr after that fold are rewritten, and the rewrite starts
+-- from the folded text.
 DO $$
 DECLARE
   old_expr CONSTANT TEXT := $e$(current_setting('app.is_internal'::text, true) = 'true'::text)$e$;
   new_expr CONSTANT TEXT := $e$(SELECT (current_setting('app.is_internal'::text, true) = 'true'::text))$e$;
+  wrapped_pg CONSTANT TEXT := '( SELECT ' || old_expr || ')';
+  wrapped_src CONSTANT TEXT := '(SELECT ' || old_expr || ')';
   r RECORD;
   using_sql TEXT;
   check_sql TEXT;
+  folded_qual TEXT;
+  folded_check TEXT;
 BEGIN
   FOR r IN
     SELECT policyname, tablename, qual, with_check
     FROM pg_policies
     WHERE schemaname = current_schema()
-      AND (position(old_expr IN coalesce(qual, '')) > 0 OR position(old_expr IN coalesce(with_check, '')) > 0)
   LOOP
+    folded_qual := replace(replace(r.qual, wrapped_pg, old_expr), wrapped_src, old_expr);
+    folded_check := replace(replace(r.with_check, wrapped_pg, old_expr), wrapped_src, old_expr);
+    -- Skip policies with nothing to wrap, and policies where every
+    -- occurrence is already wrapped (the fold is then a no-op on the count
+    -- of unwrapped occurrences, i.e. nothing outside a wrapper remains).
+    IF position(old_expr IN coalesce(r.qual, '')) = 0 AND position(old_expr IN coalesce(r.with_check, '')) = 0 THEN
+      CONTINUE;
+    END IF;
+    IF replace(replace(coalesce(r.qual, ''), wrapped_pg, ''), wrapped_src, '') NOT LIKE '%' || old_expr || '%'
+       AND replace(replace(coalesce(r.with_check, ''), wrapped_pg, ''), wrapped_src, '') NOT LIKE '%' || old_expr || '%' THEN
+      CONTINUE;
+    END IF;
     using_sql := CASE WHEN r.qual IS NOT NULL
-      THEN format(' USING (%s)', replace(r.qual, old_expr, new_expr)) ELSE '' END;
+      THEN format(' USING (%s)', replace(folded_qual, old_expr, new_expr)) ELSE '' END;
     check_sql := CASE WHEN r.with_check IS NOT NULL
-      THEN format(' WITH CHECK (%s)', replace(r.with_check, old_expr, new_expr)) ELSE '' END;
+      THEN format(' WITH CHECK (%s)', replace(folded_check, old_expr, new_expr)) ELSE '' END;
     EXECUTE format('ALTER POLICY %I ON %I%s%s', r.policyname, r.tablename, using_sql, check_sql);
   END LOOP;
 END

@@ -413,6 +413,10 @@ func (r *callRequestRepo) CreateCallRequest(ctx context.Context, req domain.Crea
 		return domain.CreateCallRequestResponse{}, fmt.Errorf("encode utcTimes: %w", err)
 	}
 
+	// The announcementVisibilityLeakGuard (case_repo.go) keeps a caller from
+	// raising a call request against an ANNOUNCEMENT whose extension row RLS
+	// hides from them: work_item RLS alone would let it through.
+	//
 	// INSERT ... SELECT ... FROM work_item so a nonexistent (or non-case)
 	// work item yields zero rows -> NotFoundError, instead of a bare
 	// foreign-key violation.
@@ -427,6 +431,7 @@ func (r *callRequestRepo) CreateCallRequest(ctx context.Context, req domain.Crea
 		       make_interval(mins => $3::int), $4::text, $5::text::jsonb
 		FROM work_item wi
 		WHERE wi.id = $6::text::uuid AND wi.type = ANY(` + caseLikeWorkItemTypes + `)
+		  AND ` + announcementVisibilityLeakGuard + `
 		RETURNING id, created_on`
 
 	var id string

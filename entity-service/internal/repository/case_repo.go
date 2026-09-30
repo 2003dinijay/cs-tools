@@ -1246,7 +1246,7 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 		req.CreatedBy, typeEnum, req.CaseID, req.Content,
 	).Scan(&c.ID, &c.CaseID, &typeRaw, &c.Content, &createdByEmail, &c.CreatedOn)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.CaseComment{}, &apierror.ValidationError{Msg: "case not found: " + req.CaseID}
+		return domain.CaseComment{}, &apierror.NotFoundError{Msg: "case not found"}
 	}
 	if err != nil {
 		return domain.CaseComment{}, fmt.Errorf("create case comment: %w", err)
@@ -2589,7 +2589,7 @@ func addCaseTagTx(ctx context.Context, tx pgx.Tx, caseID, label, callerEmail str
 		callerEmail, caseID, tag.ID)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return domain.Tag{}, &apierror.ValidationError{Msg: "case not found: " + pgErr.Detail}
+			return domain.Tag{}, &apierror.NotFoundError{Msg: "case not found"}
 		}
 		return domain.Tag{}, fmt.Errorf("attach tag to case: %w", err)
 	}
@@ -2604,7 +2604,7 @@ func addCaseTagTx(ctx context.Context, tx pgx.Tx, caseID, label, callerEmail str
 		return domain.Tag{}, fmt.Errorf("verify case exists: %w", err)
 	}
 	if !exists {
-		return domain.Tag{}, &apierror.ValidationError{Msg: "case not found: " + caseID}
+		return domain.Tag{}, &apierror.NotFoundError{Msg: "case not found"}
 	}
 
 	return tag, nil

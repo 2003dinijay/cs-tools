@@ -69,7 +69,10 @@ func main() {
 	// change-request activity to the linked issue. Same gate as the webhook --
 	// one switch turns the whole integration on or off, so it can never run
 	// half-connected.
-	githubCtx, stopGithub := context.WithCancel(context.Background())
+	// WithSystemIdentity: same reasoning as slaEngineCtx/crNoticeCtx below -- the
+	// outbound repo is a plain pool today, but stamping it now means migrating it
+	// to Scoped later cannot silently fail every tick with ErrNoCallerIdentity.
+	githubCtx, stopGithub := context.WithCancel(repository.WithSystemIdentity(context.Background()))
 	defer stopGithub()
 	if cfg.HasGithubIntegration() {
 		if pool == nil {

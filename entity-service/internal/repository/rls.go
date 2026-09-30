@@ -24,6 +24,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// setViewerProjectIDsSQL caches the external caller's registered project ids
+// in app.viewer_project_ids (read by is_project_member, migration 0152).
+// The email is NULLIF'd so an empty ViewerEmail matches no contact and the
+// array falls back to '{}' (fail closed), the same guard is_project_member
+// applies when it reads app.viewer_email. Shared by setCallerIdentity and
+// queueIdentity so the two paths cannot drift.
+const setViewerProjectIDsSQL = `SELECT set_config('app.viewer_project_ids', COALESCE((
+	SELECT array_agg(pc.project_id)::text FROM project_contact pc
+	WHERE LOWER(pc.email) = LOWER(NULLIF($1, '')) AND pc.state = 'REGISTERED'
+), '{}'), true)`
+
 // setCallerIdentity sets the two session-local GUCs a caller-scoped
 // row-level-security policy reads to decide what's visible: app.is_internal
 // ('true' bypasses the policy unconditionally -- the same all-access meaning
@@ -65,10 +76,7 @@ func setCallerIdentity(ctx context.Context, tx pgx.Tx, scope SearchScope) error 
 			return fmt.Errorf("set caller identity: viewer_project_ids: %w", err)
 		}
 	} else {
-		if _, err := tx.Exec(ctx, `SELECT set_config('app.viewer_project_ids', COALESCE((
-			SELECT array_agg(pc.project_id)::text FROM project_contact pc
-			WHERE LOWER(pc.email) = LOWER($1) AND pc.state = 'REGISTERED'
-		), '{}'), true)`, scope.ViewerEmail); err != nil {
+		if _, err := tx.Exec(ctx, setViewerProjectIDsSQL, scope.ViewerEmail); err != nil {
 			return fmt.Errorf("set caller identity: viewer_project_ids: %w", err)
 		}
 	}

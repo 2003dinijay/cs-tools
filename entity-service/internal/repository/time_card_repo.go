@@ -549,7 +549,7 @@ func createTimeCardTx(ctx context.Context, tx pgx.Tx, req domain.CreateTimeCardR
 	var caseProjectID *string
 	err := tx.QueryRow(ctx, `SELECT project_id FROM work_item WHERE id = $1 AND type = ANY(`+caseLikeWorkItemTypes+`)`, req.CaseID).Scan(&caseProjectID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", &apierror.ValidationError{Msg: "case not found: " + req.CaseID}
+		return "", &apierror.NotFoundError{Msg: "case not found"}
 	}
 	if err != nil {
 		return "", fmt.Errorf("look up case project: %w", err)

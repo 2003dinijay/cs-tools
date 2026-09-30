@@ -400,3 +400,45 @@ func TestAnnouncementSecurityFallbackNoSecurityContactIntegration(t *testing.T) 
 		t.Error("unrelated caller: security announcement in a no-security-contact project = visible, want not visible")
 	}
 }
+
+// TestAnnouncementVisibilityCreateCallRequestIntegration: CreateCallRequest's
+// INSERT ... SELECT ... FROM work_item passes work_item RLS for any project
+// member, so without announcementVisibilityLeakGuard a member who is not
+// cleared for a security announcement could raise a call request against
+// content they cannot see. The guard makes that a not-found.
+func TestAnnouncementVisibilityCreateCallRequestIntegration(t *testing.T) {
+	pool := announcementVisibilityPool(t)
+	seedAnnouncementVisibilityFixtures(t, pool)
+	scopedPool := repository.NewScoped(pool)
+	repo := repository.NewCallRequestRepository(scopedPool)
+	// customer_call.opened_by_id references "user", not account_contact.
+	const callerUserID = "d0000000-0000-0000-0000-000000000099"
+	sysCtx := repository.WithSystemIdentity(context.Background())
+	if _, err := pool.Exec(context.Background(), `INSERT INTO "user" (id, created_on, updated_on, user_name)
+		VALUES ($1, NOW(), NOW(), 'av-call-request-caller') ON CONFLICT (id) DO NOTHING`, callerUserID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = scopedPool.Exec(sysCtx, `DELETE FROM customer_call WHERE work_item_id IN ($1, $2)`, avGeneralID, avSecurityID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, callerUserID)
+	})
+
+	create := func(caseID, email string) error {
+		ctx := repository.WithCallerIdentity(context.Background(), repository.SearchScope{ProjectIDs: []string{avProjectID}, ViewerEmail: email})
+		_, err := repo.CreateCallRequest(ctx, domain.CreateCallRequestRequest{
+			CaseID: caseID, Reason: "guard test", UTCTimes: []string{"2030-01-01T10:00:00Z"}, DurationMinutes: 30,
+		}, callerUserID, email)
+		return err
+	}
+
+	var notFound *apierror.NotFoundError
+	if err := create(avSecurityID, "av-general@test.local"); !errors.As(err, &notFound) {
+		t.Errorf("General Access member on a security announcement: err = %v, want NotFoundError", err)
+	}
+	if err := create(avSecurityID, "av-secure-only@test.local"); err != nil {
+		t.Errorf("Security Only member on a security announcement: unexpected error %v", err)
+	}
+	if err := create(avGeneralID, "av-general@test.local"); err != nil {
+		t.Errorf("General Access member on a general announcement: unexpected error %v", err)
+	}
+}
