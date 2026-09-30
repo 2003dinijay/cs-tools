@@ -3394,6 +3394,16 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	if s.slaEngine != nil && req.State != nil && resp.Case.State != nil {
 		s.applyCaseStateSLAEffects(ctx, req.ID, derefState(resp.Case.State))
 	}
+	// Deliberately independent of s.publisher, same reasoning as the state
+	// effects call just above. WorkaroundProvided is the one genuine
+	// "workaround was provided" signal anywhere in the domain model --
+	// applyCaseStateSLAEffects only ever pauses/resumes this clock, never
+	// completes it. false (a recall) is deliberately not handled the
+	// opposite way -- see SLAEngineService.CompleteWorkaroundClock's own
+	// doc comment.
+	if s.slaEngine != nil && req.WorkaroundProvided != nil && *req.WorkaroundProvided {
+		s.slaEngine.CompleteWorkaroundClock(ctx, req.ID)
+	}
 	if publishCaseAssign {
 		assigneeName := assigneeEmail
 		if snResp.Case.AssignedTo != nil && snResp.Case.AssignedTo.Name != "" {

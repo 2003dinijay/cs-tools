@@ -1894,6 +1894,20 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 		return domain.UpdateCaseResponse{}, err
 	}
 
+	// Deliberately independent of s.publisher (never touches Event Hub) --
+	// same reasoning every other SLAEngineService call site in this file
+	// gives. WorkaroundProvided is the one genuine "workaround was
+	// provided" signal anywhere in the domain model -- unlike
+	// ApplyCaseStateEffects (called from UpdateCase's own State branch),
+	// which only ever pauses/resumes this clock, never completes it.
+	// false (a recall) is deliberately not handled the opposite way here:
+	// there's no "reopen a completed clock" operation on SLAEngineRepository,
+	// and recalling a workaround is rare enough that this is a real, known
+	// gap rather than a fix worth building speculatively.
+	if s.slaEngine != nil && req.WorkaroundProvided != nil && *req.WorkaroundProvided {
+		s.slaEngine.CompleteWorkaroundClock(ctx, req.ID)
+	}
+
 	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write
 	// only -- same Postgres-first/async posture as every sibling branch
 	// above. The recorded payload carries the actual values patchCaseFieldsBundle

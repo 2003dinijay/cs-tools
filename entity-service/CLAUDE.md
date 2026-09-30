@@ -1620,6 +1620,20 @@ regardless of severity.
     change (unlike the state hook above), reusing the same `GetCaseByID`
     fetch the `case.severity_changed` publish already does, rather than a
     second round trip.
+- **The workaround clock could never actually complete, on either code
+  path, until now — a separate, previously-accepted gap this also
+  closes.** `ApplyCaseStateEffects` only ever pauses/resumes the workaround
+  clock (even on close, per its own doc comment — there was no "workaround
+  provided" signal wired into it). `WorkaroundProvided` (a real field on
+  `UpdateCaseRequest`/`CaseView`, the "Provide Workaround" action) is the
+  one genuine such signal that exists anywhere in the domain model, and
+  it simply wasn't connected to the SLA engine at all. `SLAEngineService`
+  now has its own `CompleteWorkaroundClock`, called from both `caseService.
+  updateCaseFields` and `snCaseService.UpdateCase` whenever
+  `WorkaroundProvided` is set to `true` — `false` (a recall) deliberately
+  does **not** reopen a completed clock; `SLAEngineRepository` has no
+  "uncomplete" operation, and a recall is rare enough that this stays a
+  known, accepted gap rather than something built speculatively.
 
 ## Customer-reply state transition
 
