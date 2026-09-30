@@ -52,6 +52,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED` | no | `false` | Must be `"true"` for `POST /users/me/memberships/register` to be registered at all (see "Membership registration" below). Off = the route 404s and nothing on that path can write to Salesforce |
 | `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes (see "Salesforce membership ingest" below). The Account branch is unaffected |
 | `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Keep it off while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; the SE-1 columns are kept when Salesforce sends none; see "Salesforce Account ingest" for the full column set |
+| `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Opportunity` envelopes (`sf_opportunity` plus its `sf_opportunity_product` line items, see "Salesforce Opportunity ingest" below); off, they are acknowledged and ignored. Keep it off while csm-sync-service still copies these tables from ServiceNow: the two writers use different row ids and `sf_id` is not unique, so both on means duplicate rows |
 | `SALESFORCE_INGEST_RETRY_INTERVAL` | no | `5m` | How often the Salesforce ingest retry worker re-runs memberships whose DATABASE step FAILED because their project or account was not in CSM yet, and how old such a failure must be before it is re-run (see "Salesforce ingest ledger and the delayed-retry job" below). `0` disables the job. Only runs when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true` |
 | `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `false` | Must be `"true"` to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
 
@@ -427,9 +428,57 @@ older than the interval and `attempt_count` < 12
 at most 100 per tick. A failed re-run re-records the step with `attempt_count` + 1,
 so a parent that never arrives stops being retried after about an hour at the
 default. FAILED ledger rows are read the same way and handed to
-`EntityRetriers[entity]`; no family registers one yet, so they are only counted
-(the Account ingest records FAILED rows but has no parent to wait for, so it
+`EntityRetriers[entity]`; `opportunity` registers one (`RetryOpportunityIngest`) when
+`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true`, other entities are only
+counted (the Account ingest records FAILED rows but has no parent to wait for, so it
 registers none).
+
+## Salesforce Opportunity ingest
+
+`POST /salesforce/events` acts on `Opportunity` envelopes when
+`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true` (off by default: they are
+acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest.go`
+(attached to the event service with `WithOpportunityIngest` in `routes.go`),
+`internal/repository/sf_opportunity_repo.go`, `GetOpportunity` in
+`internal/salesentity/opportunity.go`. Plan: `docs/customer-onboarding/SALESFORCE_SYNC_PLAN.md` §7.
+
+- **CREATED / UPDATED / RESTORED:** `POST /opportunities/search {id, limit: 1}` on the
+  REST Sales Entity (empty result = `ServiceUnavailableError`, so Service Bus
+  retries), then `shouldSkipIngest` on the ledger with entity `opportunity`, then
+  `EnsureAccount(customerId)`, then one transaction that writes `sf_opportunity`, its
+  line items and the SUCCEEDED ledger row.
+- **`sf_opportunity`** by `sf_id` (not unique): advisory lock `"sf-opportunity:"+sfId`,
+  update every row with the `sf_id`, else insert with `gen_random_uuid()`;
+  `created_by`/`updated_by` = `salesforce-sync`, `sync_time_stamp = now()`. Written:
+  `name`, `account_id`, `stage`, `is_won`, `close_date` (= `supportAccountEndDateRollUp`,
+  not Salesforce `CloseDate`: what the ServiceNow script stored, decision D6),
+  `eula_version`, `eula_version_decimal` (first `\d+\.\d+` in the version; `3.4` when
+  the version is empty; NULL when it has no decimal). When Sales Entity does not send
+  the `eulaVersion` key at all (a build without the field) both EULA columns are kept.
+  **Never written:** `type`, `owner`, `engagement_code`, `query_hour_state`
+  (ServiceNow-derived; `TestSfOpportunitySQL_NeverTouchesServiceNowColumns` pins the
+  column lists). Values longer than their VARCHAR (migration 0080) are truncated and logged.
+- **Line items (derived path):** the embedded `subscriptionLineItems` replace the
+  opportunity's `sf_opportunity_product` rows as a set, in the same transaction:
+  update by `line_item_sf_id` (else insert), then delete the rows under this
+  `opportunity_id` the list does not mention. Written: `name`, `product_name`,
+  `quantity`, `service_start_date`, `service_end_date`, `product_code`,
+  `product_description`, `product_family`, `product_unit`, `eng_product_code`,
+  `product_sf_id`, `classification`, `environment`, `total_price`. **Never written:**
+  `development_support_hours`, `engagement_code`. With duplicate `sf_opportunity` rows
+  for one `sf_id`, the oldest owns the line items. Standalone `OpportunityLineItem`
+  events need a Sales Entity endpoint that does not exist yet and are still ignored.
+- **DELETED:** hard delete `sf_opportunity WHERE sf_id = $1` (FKs cascade line items
+  and project links, null invoices) plus a DELETED ledger row, in one transaction;
+  a never-ingested opportunity is acknowledged and logged.
+- **Failures:** an error after the fetch writes a FAILED ledger row (best effort,
+  outside the rolled-back transaction). A missing account (Account ingest off) fails
+  with `NotFoundError` "account not found for sfId ..." so the delayed-retry job
+  re-runs it; with the Account ingest on, `EnsureAccount` ingests the account first.
+  The retry job itself only runs while the membership ingest is on.
+- **Duplicate guard:** the REST Sales Entity does not return `lastModifiedDate` for
+  opportunities yet, so today the guard is skipped with a warning and the idempotent
+  upsert runs on every event; it starts working once Sales Entity sends the field.
 
 ## Membership registration (`POST /users/me/memberships/register`)
 

@@ -118,6 +118,8 @@ type salesforceEventService struct {
 	se         SalesEntityCustomerClient
 	support    SalesforceIngestSupport
 	membership *MembershipIngest
+	// opportunity is set by WithOpportunityIngest (salesforce_opportunity_ingest.go).
+	opportunity *OpportunityIngest
 }
 
 // NewSalesforceEventService constructs a SalesforceEventService that ingests
@@ -205,6 +207,8 @@ func (s *salesforceEventService) HandleEvent(ctx context.Context, req domain.Sal
 		return s.handleProjectContactEvent(ctx, req)
 	case strings.EqualFold(req.Entity, domain.SalesforceEntityContact):
 		return s.handleContactEvent(ctx, req)
+	case strings.EqualFold(req.Entity, domain.SalesforceEntityOpportunity):
+		return s.handleOpportunityEvent(ctx, req)
 	default:
 		// Other Salesforce objects are acknowledged and ignored: a 400 would
 		// make ASB retry the envelope forever.

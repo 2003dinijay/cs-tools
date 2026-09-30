@@ -110,6 +110,14 @@ type Config struct {
 	// ServiceNow sync still owns the account table and both writing it would
 	// fight over the same rows.
 	CSMMigrationSalesforceAccountIngestEnabled bool
+	// CSMMigrationSalesforceOpportunityIngestEnabled turns on the Opportunity
+	// branch of POST /salesforce/events (sf_opportunity plus its
+	// sf_opportunity_product line items), from
+	// CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true. Defaults to
+	// false: Opportunity envelopes are then acknowledged and ignored, because
+	// csm-sync-service still copies these tables from ServiceNow and the two
+	// writers would create duplicate rows (different row ids, non-unique sf_id).
+	CSMMigrationSalesforceOpportunityIngestEnabled bool
 	// CSMMigrationMembershipRegistrationEnabled turns on POST /users/me/memberships/register,
 	// which marks the signed-in user's still-INVITED memberships as
 	// REGISTERED in Salesforce (see membership_registration_service.go). Defaults to
@@ -386,6 +394,8 @@ func Load() *Config {
 		EscalationEL5CEOGroupID:                       os.Getenv("ESCALATION_EL5_CEO_GROUP_ID"),
 	}
 	cfg.AuthInternalClientIDs = ParseInternalClientIDs(cfg.AuthInternalClientIDsRaw)
+	// Set outside the literal so its longer key does not realign every field above.
+	cfg.CSMMigrationSalesforceOpportunityIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED") == "true"
 	return cfg
 }
 
