@@ -26,7 +26,11 @@ paths:
         Entity Account, only when CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED=true
         (otherwise acknowledged and ignored): fetches the Account via REST
         sales/sales-entity-service POST /customer-search (isRealTime true), not GraphQL
-        sales/entity-graphql-service, and upserts the csm-platform account table.
+        sales/entity-graphql-service, and upserts the csm-platform account table
+        (Salesforce-owned columns only) with its salesforce_ingest_state ledger row;
+        a replay whose lastModifiedDate is not newer than the ledger is a 204 no-op,
+        a customer without a name is a 204 recorded FAILED in the ledger, and
+        DELETED sets account.deleted_on (RESTORED clears it) instead of deleting.
         Entity Project_Contact__c (also accepted as Project_Contact), only when
         CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true: CREATED/UPDATED/RESTORED fetch
         the membership and its Contact (POST /project-contacts/search,
@@ -1972,7 +1976,10 @@ paths:
 
   /accounts/search:
     post:
-      summary: Search accounts by name or Salesforce ID.
+      summary: >-
+        Search accounts by name or Salesforce ID. Accounts deleted in Salesforce
+        (account.deleted_on set by the Salesforce Account ingest) are never
+        returned; GET /accounts/{id} still resolves them.
       operationId: searchAccounts
       requestBody:
         required: true

@@ -569,24 +569,44 @@ type SalesforceEventRequest struct {
 }
 
 // SalesforceAccountUpsert is the mapped Salesforce Account written to account.
+// Every field is a column Salesforce owns; the CSM-only columns (cre/sre
+// team, support tier and timezone, suspension state, AI flags, drive
+// location, and number once set) have no field here and are never written.
 type SalesforceAccountUpsert struct {
-	SfID                      string
-	Name                      string
-	Number                    string
-	Industry                  *string
-	Region                    *string
-	GlobalPod                 *string
-	Phone                     *string
-	KeepExistingPhone         bool
-	SalesRegion               *string
-	SubRegion                 *string
-	AccountVertical           *string
-	LifeCycle                 *string
-	NAICSIndustry             *string
-	SubIndustry               *string
-	Classification            *string
-	TechnicalOwnerID          *string
+	SfID              string
+	Name              string
+	Number            string
+	Industry          *string
+	Region            *string
+	GlobalPod         *string
+	Phone             *string
+	KeepExistingPhone bool
+	SalesRegion       *string
+	SubRegion         *string
+	LifeCycle         *string
+	NAICSIndustry     *string
+	SubIndustry       *string
+	Classification    *string
+	TechnicalOwnerID  *string
+	Street            *string
+	City              *string
+	StateProvince     *string
+	PostalCode        *string
+	Country           *string
+	AccountManagerID  *string
+	ActivationDate    *time.Time
+	LostDate          *time.Time
+	LostReason        *string
+
+	// The fields below come from the Sales Entity SE-1 change. Until it is
+	// deployed they are always nil, so the upsert writes them as
+	// COALESCE(new, stored): a nil keeps the value the ServiceNow sync loaded.
+	CustomerSuccessManagerID  *string
 	SecondaryTechnicalOwnerID *string
+	RenewalAccountManagerID   *string
+	AccountVertical           *string
+	LostReasonCategory        *string
+	DeactivationDate          *time.Time
 }
 
 // Salesforce Project_Contact__c states, as stored in Salesforce State__c and

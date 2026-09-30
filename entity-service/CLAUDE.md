@@ -51,7 +51,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `SALES_ENTITY_SCOPES` | no | — | Optional space-separated OAuth2 scopes for REST `sales/sales-entity-service` |
 | `CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED` | no | `false` | Must be `"true"` for `POST /users/me/memberships/register` to be registered at all (see "Membership registration" below). Off = the route 404s and nothing on that path can write to Salesforce |
 | `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes (see "Salesforce membership ingest" below). The Account branch is unaffected |
-| `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Keep it off while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; `account_vertical` and `secondary_technical_owner_id` are kept when Salesforce sends none |
+| `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Keep it off while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; the SE-1 columns are kept when Salesforce sends none; see "Salesforce Account ingest" for the full column set |
 | `SALESFORCE_INGEST_RETRY_INTERVAL` | no | `5m` | How often the Salesforce ingest retry worker re-runs memberships whose DATABASE step FAILED because their project or account was not in CSM yet, and how old such a failure must be before it is re-run (see "Salesforce ingest ledger and the delayed-retry job" below). `0` disables the job. Only runs when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true` |
 | `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `false` | Must be `"true"` to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
 
@@ -185,12 +185,54 @@ against Choreo id `sales/sales-entity-service` (not GraphQL
 `sales/entity-graphql-service`). Token is refreshed on 401. An empty
 search result on CREATED/UPDATED/RESTORED is a 503 so the caller can retry
 (the event can arrive before Salesforce commits). This service does not call
-Salesforce REST; the REST sales entity-service does. REST Customer has no AccountNumber,
-Account_Vertical__c, or Technical_Owner_2 — `number` falls back to Salesforce
-Id and those other columns stay null.
+Salesforce REST; the REST sales entity-service does.
 Non-Account entities return 204 and are ignored (do not 400 — ASB would
-retry forever). DELETED soft-deletes by setting `deactivation_date`; never
-`DELETE FROM account` (project → account is `ON DELETE CASCADE`).
+retry forever).
+
+**What the Account branch writes** (`upsertAccount` + `mapSalesEntityCustomer` in
+`salesforce_event_service.go`, `UpsertFromSalesforce` in `account_repo.go`). The
+UPDATE lists only Salesforce-owned columns; `account_repo_salesforce_test.go` pins
+the list.
+
+- Plain assignment (a value cleared in Salesforce clears here): `name`, `sf_id`,
+  `industry`, `region`, `global_pod`, `phone` (a value over 64 characters keeps the
+  stored phone), `sales_region`, `sub_region`, `life_cycle` (`status`),
+  `naics_industry`, `sub_industry`, `classification`, `technical_owner_id`, the
+  billing address (`street`, `city`, `state_province`, `postal_code`, `country`),
+  `account_manager_id` (`owner.email`), `activation_date`, `lost_date`, `lost_reason`.
+- `COALESCE(new, stored)`: `customer_success_manager_id` (`csmEmail`),
+  `secondary_technical_owner_id`, `renewal_account_manager_id`
+  (`renewalManager.email`), `account_vertical`, `lost_reason_category`,
+  `deactivation_date`. Sales Entity sends these only after its "customer fields"
+  change (SE-1 in `docs/customer-onboarding/SALESFORCE_SYNC_PLAN.md`); until then they
+  keep the ServiceNow sync's value. Switch them to plain assignment once SE-1 ships.
+- Never written: `number` on an existing row (a new row gets the Salesforce Id,
+  decision D9), `cre_team_id`, `sre_team_id`, `support_tier`, `support_timezone`,
+  `suspension_process_state`, the two AI flags, `drive_location`.
+- Person references resolve by email against `"user"` (`LookupUserIDByEmail`); an
+  email with no user writes NULL and logs a WARN with the role and email.
+- A value longer than its VARCHAR column (`accountColumnLimits`) or a date that does
+  not parse (`2006-01-02`) is written as NULL with a WARN, so one bad field cannot
+  fail the event.
+- A customer with no name is acknowledged (204, no retry, no dead letter), logged,
+  and recorded FAILED in `salesforce_ingest_state`.
+
+**Duplicate guard and ledger.** CREATED/UPDATED/RESTORED run `shouldSkipIngest`
+with entity `account` and the customer's `lastModifiedDate`, then write the account
+row and a SUCCEEDED ledger row in one transaction; a failed write records FAILED
+(best effort) and returns the error so Service Bus redelivers. `EnsureAccount`
+writes without the guard (the row is known to be missing).
+
+**DELETED** sets `account.deleted_on` (migration 0170, decision D7) and writes a
+DELETED ledger row in one transaction, stamped with the current time or the recorded
+version when that is later (Salesforce's clock can run ahead of ours), so the row
+really becomes DELETED and the RESTORED that follows is not skipped. No Sales Entity
+read. `deactivation_date` is not touched: it is Salesforce's contract end date. Any
+later CREATED/UPDATED/RESTORED clears `deleted_on`. Never `DELETE FROM account`
+(project → account is `ON DELETE CASCADE`). `SearchAccounts` excludes
+`deleted_on IS NOT NULL`; `GetAccountByID`, `LookupAccountIDBySfID` (so
+`EnsureAccount`), the partner lookup and the joins from projects/cases/global search
+still see the row.
 
 ## Salesforce membership ingest and onboarding steps
 
@@ -385,7 +427,9 @@ older than the interval and `attempt_count` < 12
 at most 100 per tick. A failed re-run re-records the step with `attempt_count` + 1,
 so a parent that never arrives stops being retried after about an hour at the
 default. FAILED ledger rows are read the same way and handed to
-`EntityRetriers[entity]`; no family registers one yet, so they are only counted.
+`EntityRetriers[entity]`; no family registers one yet, so they are only counted
+(the Account ingest records FAILED rows but has no parent to wait for, so it
+registers none).
 
 ## Membership registration (`POST /users/me/memberships/register`)
 

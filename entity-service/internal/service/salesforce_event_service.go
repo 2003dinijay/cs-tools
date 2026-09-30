@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -30,7 +31,35 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesentity"
 )
 
-const maxAccountPhoneChars = 20
+// maxAccountPhoneChars is account.phone's width (VARCHAR(64) since
+// migration 0096). A longer phone keeps the stored value rather than failing
+// the event.
+const maxAccountPhoneChars = 64
+
+// accountColumnLimits is the width of every other bounded VARCHAR account
+// column the Account ingest writes (migration 0012). A Salesforce value longer
+// than its column is written as NULL with a warning, so one oversized picklist
+// value cannot fail the whole event. name is not listed: it is NOT NULL, and
+// Salesforce caps Account.Name at 255 characters, which is its width here.
+var accountColumnLimits = map[string]int{
+	"industry":             255,
+	"region":               100,
+	"global_pod":           100,
+	"sales_region":         100,
+	"sub_region":           100,
+	"life_cycle":           50,
+	"naics_industry":       100,
+	"sub_industry":         255,
+	"classification":       255,
+	"street":               255,
+	"city":                 100,
+	"state_province":       100,
+	"postal_code":          20,
+	"country":              100,
+	"lost_reason":          255,
+	"account_vertical":     255,
+	"lost_reason_category": 255,
+}
 
 // SalesEntityCustomerClient fetches a REST sales/sales-entity-service Customer by Salesforce Account Id.
 type SalesEntityCustomerClient interface {
@@ -139,7 +168,9 @@ func (s *salesforceEventService) EnsureAccount(ctx context.Context, sfID string)
 		return "", &apierror.NotFoundError{Msg: "account " + sfID + " not in CSM yet"}
 	}
 	slog.InfoContext(ctx, "salesforce: parent account not in CSM yet, ingesting it first", "accountSfId", sfID)
-	if err := s.upsertAccount(ctx, sfID); err != nil {
+	// The duplicate guard is off here: the row is known to be missing, so a
+	// ledger row saying this version was written must not stop the write.
+	if err := s.upsertAccount(ctx, sfID, domain.SalesforceEventUpdated, false); err != nil {
 		return "", err
 	}
 	id, err = lookup.LookupAccountIDBySfID(ctx, sfID)
@@ -190,21 +221,62 @@ func (s *salesforceEventService) HandleEvent(ctx context.Context, req domain.Sal
 
 	switch req.EventType {
 	case domain.SalesforceEventCreated, domain.SalesforceEventUpdated, domain.SalesforceEventRestored:
-		return s.upsertAccount(ctx, req.ReferenceID)
+		return s.upsertAccount(ctx, req.ReferenceID, req.EventType, true)
 	case domain.SalesforceEventDeleted:
-		return s.repo.SoftDeleteBySfID(ctx, req.ReferenceID)
+		return s.softDeleteAccount(ctx, req.ReferenceID)
 	default:
 		return &apierror.ValidationError{Msg: "eventType must be CREATED, UPDATED, DELETED, RESTORED, or UNDEFINED"}
 	}
 }
 
-func (s *salesforceEventService) upsertAccount(ctx context.Context, sfID string) error {
-	cust, err := s.se.GetCustomer(ctx, sfID)
+// softDeleteAccount is the DELETED branch of the Account ingest. A deleted
+// record cannot be read from Sales Entity, so there is no LastModifiedDate
+// and no duplicate guard: the soft delete is idempotent (a repeat keeps the
+// first deleted_on). The ledger row is stamped with the current time, or the
+// recorded version when that is later, so the DELETED row always replaces
+// the one before it (the ledger only moves forward) and a later RESTORED —
+// which carries an older LastModifiedDate — is still let through by the
+// guard's DELETED rule.
+func (s *salesforceEventService) softDeleteAccount(ctx context.Context, sfID string) error {
+	modifiedOn := time.Now().UTC()
+	if s.support.States != nil {
+		st, err := s.support.States.Get(ctx, domain.SalesforceIngestEntityAccount, sfID)
+		if err != nil {
+			return err
+		}
+		if st != nil && st.EventModifiedOn.After(modifiedOn) {
+			modifiedOn = st.EventModifiedOn
+		}
+	}
+	found, err := s.repo.SoftDeleteBySfID(ctx, sfID, domain.UpsertSalesforceIngestStateRequest{
+		Entity:          domain.SalesforceIngestEntityAccount,
+		SfID:            sfID,
+		EventModifiedOn: modifiedOn,
+		EventType:       domain.SalesforceEventDeleted,
+		Status:          domain.SalesforceIngestSucceeded,
+	})
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(derefString(cust.Name)) == "" {
-		return &apierror.ServiceUnavailableError{Msg: "sales/sales-entity-service customer is missing Name"}
+	if !found {
+		slog.InfoContext(ctx, "salesforce: DELETED account was never ingested, nothing to mark", "accountSfId", sfID)
+	}
+	return nil
+}
+
+// upsertAccount is the CREATED/UPDATED/RESTORED branch of the Account
+// ingest (and EnsureAccount's write): read the Customer from Sales Entity,
+// skip it when the ledger already holds this version (guard), otherwise map
+// it and write the account row and a SUCCEEDED ledger row in one transaction.
+//
+// A customer with no name is acknowledged, not retried: account.name is NOT
+// NULL and no redelivery can fix the record, so the event is logged and
+// recorded FAILED in the ledger instead of dead-lettering. A failed write is
+// recorded FAILED too, and its error returned so Service Bus redelivers.
+func (s *salesforceEventService) upsertAccount(ctx context.Context, sfID, eventType string, guard bool) error {
+	cust, err := s.se.GetCustomer(ctx, sfID)
+	if err != nil {
+		return err
 	}
 	// The Salesforce id is stored as both sf_id and account.number (NOT NULL,
 	// UNIQUE), so a record without one could only be inserted as an empty
@@ -213,42 +285,178 @@ func (s *salesforceEventService) upsertAccount(ctx context.Context, sfID string)
 		return &apierror.ServiceUnavailableError{Msg: "sales/sales-entity-service customer is missing id"}
 	}
 
-	row := mapSalesEntityCustomer(cust)
-	row.TechnicalOwnerID, err = s.lookupOwner(ctx, derefString(cust.TechnicalOwner))
-	if err != nil {
+	// eventModifiedOn is the version the ledger records; shouldSkipIngest
+	// derives the same value (the current time when lastModifiedDate is
+	// missing), and warns about a missing one.
+	eventModifiedOn, ok := parseSalesforceLastModified(cust.LastModifiedDate)
+	if !ok {
+		eventModifiedOn = time.Now().UTC()
+	}
+	if guard && s.support.States != nil {
+		var skip bool
+		skip, eventModifiedOn, err = shouldSkipIngest(ctx, s.support.States, domain.SalesforceIngestEntityAccount, sfID, eventType, cust.LastModifiedDate)
+		if err != nil {
+			return err
+		}
+		if skip {
+			return nil
+		}
+	}
+	state := domain.UpsertSalesforceIngestStateRequest{
+		Entity:          domain.SalesforceIngestEntityAccount,
+		SfID:            sfID,
+		EventModifiedOn: eventModifiedOn,
+		EventType:       eventType,
+		Status:          domain.SalesforceIngestSucceeded,
+	}
+
+	if strings.TrimSpace(derefString(cust.Name)) == "" {
+		slog.WarnContext(ctx, "salesforce: customer has no name, account not written", "accountSfId", sfID, "eventType", eventType)
+		s.recordAccountIngestFailed(ctx, state, errors.New("sales/sales-entity-service customer is missing Name"))
+		return nil
+	}
+
+	row := mapSalesEntityCustomer(ctx, cust)
+	people := []struct {
+		role  string
+		email *string
+		dest  **string
+	}{
+		{"owner", ownerEmail(cust.Owner), &row.AccountManagerID},
+		{"technicalOwner", cust.TechnicalOwner, &row.TechnicalOwnerID},
+		{"csm", cust.CsmEmail, &row.CustomerSuccessManagerID},
+		{"secondaryTechnicalOwner", cust.SecondaryTechnicalOwner, &row.SecondaryTechnicalOwnerID},
+		{"renewalManager", ownerEmail(cust.RenewalManager), &row.RenewalAccountManagerID},
+	}
+	for _, p := range people {
+		*p.dest, err = s.lookupOwner(ctx, sfID, p.role, derefString(p.email))
+		if err != nil {
+			s.recordAccountIngestFailed(ctx, state, err)
+			return err
+		}
+	}
+	if err := s.repo.UpsertFromSalesforce(ctx, row, state); err != nil {
+		s.recordAccountIngestFailed(ctx, state, err)
 		return err
 	}
-	row.SecondaryTechnicalOwnerID = nil
-	return s.repo.UpsertFromSalesforce(ctx, row)
+	return nil
 }
 
-func (s *salesforceEventService) lookupOwner(ctx context.Context, email string) (*string, error) {
+// recordAccountIngestFailed writes a FAILED ledger row best-effort so the
+// onboarding dashboard can see the account is stuck; the caller's outcome
+// does not depend on whether this write succeeds.
+func (s *salesforceEventService) recordAccountIngestFailed(ctx context.Context, state domain.UpsertSalesforceIngestStateRequest, cause error) {
+	if s.support.States == nil {
+		return
+	}
+	msg := truncateOnboardingStepError(cause.Error())
+	state.Status = domain.SalesforceIngestFailed
+	state.LastError = &msg
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	if _, err := s.support.States.Upsert(recordCtx, state); err != nil {
+		slog.ErrorContext(ctx, "salesforce: recording FAILED account ingest state also failed", "accountSfId", state.SfID, "err", err)
+	}
+}
+
+// lookupOwner resolves a person reference on the account (owner, technical
+// owner, CSM, renewal manager) to a "user" id by email. An email with no
+// matching user writes NULL and logs a warning: WSO2 staff reach "user" only
+// through the ServiceNow sys_user sync today, so a missing one is a data gap
+// to see, not a reason to fail the event.
+func (s *salesforceEventService) lookupOwner(ctx context.Context, sfID, role, email string) (*string, error) {
 	email = strings.TrimSpace(email)
 	if email == "" {
 		return nil, nil
 	}
-	return s.repo.LookupUserIDByEmail(ctx, email)
+	id, err := s.repo.LookupUserIDByEmail(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	if id == nil {
+		slog.WarnContext(ctx, "salesforce: account person reference does not match a CSM user, writing NULL",
+			"accountSfId", sfID, "role", role, "email", email)
+	}
+	return id, nil
 }
 
-func mapSalesEntityCustomer(cust salesentity.Customer) domain.SalesforceAccountUpsert {
+func ownerEmail(u *salesentity.CustomerUser) *string {
+	if u == nil {
+		return nil
+	}
+	return u.Email
+}
+
+// mapSalesEntityCustomer maps the Customer's own fields; the person
+// references (user ids) are resolved by upsertAccount.
+func mapSalesEntityCustomer(ctx context.Context, cust salesentity.Customer) domain.SalesforceAccountUpsert {
 	phone, keepExistingPhone := mapPhone(derefString(cust.Phone))
+	addr := cust.Address
+	if addr == nil {
+		addr = &salesentity.CustomerAddress{}
+	}
+	bounded := func(column string, v *string) *string {
+		return boundedAccountColumn(ctx, cust.ID, column, v)
+	}
 	return domain.SalesforceAccountUpsert{
 		SfID:              cust.ID,
 		Name:              strings.TrimSpace(derefString(cust.Name)),
 		Number:            cust.ID,
-		Industry:          optionalPtr(cust.Industry),
-		Region:            optionalPtr(cust.Region),
-		GlobalPod:         optionalPtr(cust.GlobalPod),
+		Industry:          bounded("industry", cust.Industry),
+		Region:            bounded("region", cust.Region),
+		GlobalPod:         bounded("global_pod", cust.GlobalPod),
 		Phone:             phone,
 		KeepExistingPhone: keepExistingPhone,
-		SalesRegion:       optionalPtr(cust.SalesRegions),
-		SubRegion:         optionalPtr(cust.SubRegion),
-		AccountVertical:   nil,
-		LifeCycle:         optionalPtr(cust.Status),
-		NAICSIndustry:     optionalPtr(cust.NAICSIndustry),
-		SubIndustry:       optionalPtr(cust.SubIndustry),
-		Classification:    optionalPtr(cust.AccountClassification),
+		SalesRegion:       bounded("sales_region", cust.SalesRegions),
+		SubRegion:         bounded("sub_region", cust.SubRegion),
+		LifeCycle:         bounded("life_cycle", cust.Status),
+		NAICSIndustry:     bounded("naics_industry", cust.NAICSIndustry),
+		SubIndustry:       bounded("sub_industry", cust.SubIndustry),
+		Classification:    bounded("classification", cust.AccountClassification),
+		Street:            bounded("street", addr.BillingStreet),
+		City:              bounded("city", addr.BillingCity),
+		StateProvince:     bounded("state_province", addr.BillingState),
+		PostalCode:        bounded("postal_code", addr.BillingPostalCode),
+		Country:           bounded("country", addr.BillingCountry),
+		ActivationDate:    salesforceDate(ctx, cust.ID, "activation_date", cust.ActivationDate),
+		LostDate:          salesforceDate(ctx, cust.ID, "lost_date", cust.LostDate),
+		LostReason:        bounded("lost_reason", cust.LostReason),
+
+		AccountVertical:    bounded("account_vertical", cust.AccountVertical),
+		LostReasonCategory: bounded("lost_reason_category", cust.LostReasonCategory),
+		DeactivationDate:   salesforceDate(ctx, cust.ID, "deactivation_date", cust.DeactivationDate),
 	}
+}
+
+// boundedAccountColumn trims v and returns nil for an empty value or one
+// longer than the column (accountColumnLimits), logging the latter.
+func boundedAccountColumn(ctx context.Context, sfID, column string, v *string) *string {
+	out := optionalPtr(v)
+	if out == nil {
+		return nil
+	}
+	if limit, ok := accountColumnLimits[column]; ok && utf8.RuneCountInString(*out) > limit {
+		slog.WarnContext(ctx, "salesforce: account value is longer than its column, writing NULL",
+			"accountSfId", sfID, "column", column, "limit", limit, "length", utf8.RuneCountInString(*out))
+		return nil
+	}
+	return out
+}
+
+// salesforceDate parses a Salesforce date field ("2006-01-02"). A value
+// that does not parse is logged and written as NULL.
+func salesforceDate(ctx context.Context, sfID, column string, v *string) *time.Time {
+	raw := optionalPtr(v)
+	if raw == nil {
+		return nil
+	}
+	d, err := time.Parse(time.DateOnly, *raw)
+	if err != nil {
+		slog.WarnContext(ctx, "salesforce: account date does not parse, writing NULL",
+			"accountSfId", sfID, "column", column, "value", *raw)
+		return nil
+	}
+	return &d
 }
 
 func derefString(v *string) string {
