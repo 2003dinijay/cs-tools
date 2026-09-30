@@ -230,6 +230,44 @@ func TestInvoiceIngest_EnsuresMissingOpportunity(t *testing.T) {
 	}
 }
 
+// The ledger says opportunity version V was written, but the sf_opportunity
+// row is gone (a cascade or an out-of-band delete). A child event for V
+// re-ingests the opportunity past the duplicate guard and writes the child;
+// a plain Opportunity event for V is still skipped.
+func TestInvoiceIngest_StaleOpportunityLedgerReingestsMissingRow(t *testing.T) {
+	const version = "2026-09-18T06:37:07.000+0000"
+	recorded, _ := time.Parse(time.RFC3339, "2026-09-18T06:37:07Z")
+	succeeded := domain.UpsertSalesforceIngestStateRequest{Entity: domain.SalesforceIngestEntityOpportunity, SfID: testOpportunitySfID,
+		EventModifiedOn: recorded, EventType: "UPDATED", Status: domain.SalesforceIngestSucceeded}
+
+	h := newInvoiceHarness(sampleInvoice(), map[string]string{}, map[string]string{testOppAccountSfID: testOppAccountRowID})
+	h.oppSE.opp.LastModifiedDate = sampleStr(version)
+	h.states.apply(succeeded)
+	if err := h.svc.HandleEvent(context.Background(), invoiceEvent("Invoice__c", "UPDATED", testInvoiceSfID)); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	if h.oppSE.calls != 1 || len(h.oppRepo.upserts) != 1 {
+		t.Fatalf("opportunity fetches %d upserts %d, want the opportunity re-ingested", h.oppSE.calls, len(h.oppRepo.upserts))
+	}
+	if st := h.oppRepo.upsertState[0]; st.EventModifiedOn.Format(time.RFC3339) != "2026-09-18T06:37:07Z" || st.Status != domain.SalesforceIngestSucceeded {
+		t.Errorf("opportunity ledger state = %+v, want version V SUCCEEDED", st)
+	}
+	if len(h.repo.upserts) != 1 || derefString(h.repo.upserts[0].OpportunityID) != testInvoiceOppRow {
+		t.Errorf("invoice upserts %+v, want one under the re-ingested opportunity", h.repo.upserts)
+	}
+
+	// The guard still applies to the Opportunity's own events.
+	g := newInvoiceHarness(sampleInvoice(), map[string]string{}, map[string]string{testOppAccountSfID: testOppAccountRowID})
+	g.oppSE.opp.LastModifiedDate = sampleStr(version)
+	g.states.apply(succeeded)
+	if err := g.svc.HandleEvent(context.Background(), invoiceEvent("Opportunity", "UPDATED", testOpportunitySfID)); err != nil {
+		t.Fatalf("Opportunity HandleEvent: %v", err)
+	}
+	if len(g.oppRepo.upserts) != 0 {
+		t.Errorf("opportunity upserts = %d, want 0 (same version, guarded)", len(g.oppRepo.upserts))
+	}
+}
+
 // The opportunity's account missing with the Account ingest off: the invoice
 // fails with the "account not found" prefix the retry job re-runs, recorded
 // FAILED under entity invoice, and nothing is written.

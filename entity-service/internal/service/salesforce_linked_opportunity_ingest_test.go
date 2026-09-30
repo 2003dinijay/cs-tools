@@ -202,6 +202,22 @@ func TestLinkedOpportunityIngest_IngestsMissingOpportunity(t *testing.T) {
 	}
 }
 
+// The link resolves its opportunity through the shared ensureOpportunity, so
+// a stale Opportunity ledger row (version V SUCCEEDED, row gone) does not
+// stop the inline re-ingest.
+func TestLinkedOpportunityIngest_StaleOpportunityLedgerReingestsMissingRow(t *testing.T) {
+	h := newLinkHarness(nil, map[string]string{testLinkProjectSfID: testProjectRowID}, false, false)
+	h.oppSE.opp.LastModifiedDate = sampleStr("2026-09-18T06:37:07.000+0000")
+	h.states.apply(domain.UpsertSalesforceIngestStateRequest{Entity: domain.SalesforceIngestEntityOpportunity, SfID: testOpportunitySfID,
+		EventModifiedOn: time.Date(2026, 9, 18, 6, 37, 7, 0, time.UTC), EventType: "UPDATED", Status: domain.SalesforceIngestSucceeded})
+	if err := h.svc.HandleEvent(context.Background(), linkEvent("UPDATED")); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	if len(h.opps.upserts) != 1 || len(h.links.upserts) != 1 || h.links.upserts[0].OpportunityID != testLinkOppRowID {
+		t.Errorf("opportunity upserts %d, links %+v", len(h.opps.upserts), h.links.upserts)
+	}
+}
+
 // TestLinkedOpportunityIngest_MissingProject: without project inserts a
 // missing project fails the link with a retryable missing-parent error; with
 // them, EnsureProject ingests the project first.

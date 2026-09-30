@@ -102,7 +102,7 @@ func (s *salesforceEventService) RetryOpportunityIngest(ctx context.Context, opp
 	if !s.opportunity.enabled() {
 		return errOpportunityIngestDisabled
 	}
-	return s.ingestOpportunity(ctx, opportunitySfID, domain.SalesforceEventUpdated)
+	return s.ingestOpportunity(ctx, opportunitySfID, domain.SalesforceEventUpdated, true)
 }
 
 // handleOpportunityEvent is the Opportunity branch of HandleEvent.
@@ -116,7 +116,7 @@ func (s *salesforceEventService) handleOpportunityEvent(ctx context.Context, req
 
 	switch req.EventType {
 	case domain.SalesforceEventCreated, domain.SalesforceEventUpdated, domain.SalesforceEventRestored:
-		return s.ingestOpportunity(ctx, req.ReferenceID, req.EventType)
+		return s.ingestOpportunity(ctx, req.ReferenceID, req.EventType, true)
 	case domain.SalesforceEventDeleted:
 		return s.deleteOpportunity(ctx, req.ReferenceID)
 	case domain.SalesforceEventUndefined:
@@ -132,8 +132,9 @@ func (s *salesforceEventService) handleOpportunityEvent(ctx context.Context, req
 // Salesforce id, and a replay whose LastModifiedDate is not newer than the
 // ledger's is skipped. Sales Entity does not return lastModifiedDate for
 // opportunities yet, so until it does the guard is skipped (with a warning)
-// and the upsert simply runs again.
-func (s *salesforceEventService) ingestOpportunity(ctx context.Context, sfID, eventType string) error {
+// and the upsert simply runs again. guard=false turns the duplicate guard
+// off, for ensureOpportunity's write of a row known to be missing.
+func (s *salesforceEventService) ingestOpportunity(ctx context.Context, sfID, eventType string, guard bool) error {
 	if s.support.States == nil {
 		return errors.New("salesforce: salesforce_ingest_state ledger is not configured")
 	}
@@ -147,12 +148,19 @@ func (s *salesforceEventService) ingestOpportunity(ctx context.Context, sfID, ev
 		sfID = strings.TrimSpace(opp.ID)
 	}
 
-	skip, eventModifiedOn, err := shouldSkipIngest(ctx, s.support.States, domain.SalesforceIngestEntityOpportunity, sfID, eventType, opp.LastModifiedDate)
-	if err != nil {
-		return err
+	eventModifiedOn, ok := parseSalesforceLastModified(opp.LastModifiedDate)
+	if !ok {
+		eventModifiedOn = time.Now().UTC()
 	}
-	if skip {
-		return nil
+	if guard {
+		var skip bool
+		skip, eventModifiedOn, err = shouldSkipIngest(ctx, s.support.States, domain.SalesforceIngestEntityOpportunity, sfID, eventType, opp.LastModifiedDate)
+		if err != nil {
+			return err
+		}
+		if skip {
+			return nil
+		}
 	}
 	state := domain.UpsertSalesforceIngestStateRequest{
 		Entity:          domain.SalesforceIngestEntityOpportunity,

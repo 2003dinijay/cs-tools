@@ -27,13 +27,13 @@ import (
 )
 
 // ensureOpportunity returns the sf_opportunity.id of the opportunity with
-// this Salesforce Id, for a child ingest (invoice, line item) that needs its
-// parent row — the ServiceNow script's _initOpportunity step. A missing
-// opportunity is ingested inline through the ordinary Opportunity branch
-// (which ensures its account in turn) and looked up again. The child
-// families run under the Opportunity flag, so the branch is on whenever they
-// are; should it be off, the answer is a NotFoundError and the child event
-// fails and is redelivered.
+// this Salesforce Id, for a child ingest (linked opportunity, invoice, line
+// item) that needs its parent row — the ServiceNow script's _initOpportunity
+// step. A missing opportunity is ingested inline through the ordinary
+// Opportunity branch (which ensures its account in turn), with the duplicate
+// guard off, and looked up again. The child families run under the
+// Opportunity flag, so the branch is on whenever they are; should it be off,
+// the answer is a NotFoundError and the child event fails and is redelivered.
 //
 // A missing account under the inline Opportunity ingest surfaces as
 // EnsureAccount's "account not found ..." NotFoundError, which the child
@@ -54,7 +54,10 @@ func (s *salesforceEventService) ensureOpportunity(ctx context.Context, lookup r
 		return "", &apierror.NotFoundError{Msg: fmt.Sprintf("opportunity not found for sfId %q", sfID)}
 	}
 	slog.InfoContext(ctx, "salesforce: parent opportunity not in CSM yet, ingesting it first", "opportunitySfId", sfID)
-	if err := s.ingestOpportunity(ctx, sfID, domain.SalesforceEventUpdated); err != nil {
+	// The duplicate guard is off here, as in EnsureAccount: the row is known
+	// to be missing, so a ledger row saying this version was written is
+	// stale (a cascade or an out-of-band delete) and must not stop the write.
+	if err := s.ingestOpportunity(ctx, sfID, domain.SalesforceEventUpdated, false); err != nil {
 		return "", err
 	}
 	id, err = lookup.LookupOpportunityIDBySfID(ctx, sfID)
@@ -62,10 +65,6 @@ func (s *salesforceEventService) ensureOpportunity(ctx context.Context, lookup r
 		return "", err
 	}
 	if id == nil {
-		// The Opportunity guard skipped the write because its ledger already
-		// records this version, yet the row is gone (removed outside the
-		// ingest). Only a newer Salesforce version, or clearing the ledger
-		// row, brings it back; fail loudly rather than write an orphan.
 		return "", fmt.Errorf("salesforce: opportunity %s was ingested but cannot be read back by sf_id", sfID)
 	}
 	return *id, nil

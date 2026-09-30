@@ -579,8 +579,8 @@ acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest
   `internal/service/salesforce_linked_opportunity_ingest.go` (`WithLinkedOpportunityIngest`),
   `internal/repository/sf_opportunity_link_repo.go`, `GetLinkedOpportunity` on
   `POST /linked-opportunities/search`. CREATED/UPDATED/RESTORED: guard with entity
-  `linked_opportunity`, resolve the opportunity by `sf_id` (the Opportunity ingest runs
-  inline when it is missing, the script's `_initOpportunity`), the project through
+  `linked_opportunity`, resolve the opportunity through the shared `ensureOpportunity`
+  (see "Invoice__c" below; the script's `_initOpportunity`), the project through
   `EnsureProject` (missing project with inserts off = `NotFoundError`, re-run by the retry
   job, which registers `RetryLinkedOpportunityIngest`), then upsert `sf_opportunity_link` by
   `link_sf_id` under lock `"sf-opportunity-link:"+id`: `number` (= Name), `opportunity_id`,
@@ -630,12 +630,16 @@ ignored). Code: `internal/service/salesforce_project_ingest.go` (`WithProjectIng
 `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` too. Code:
 `internal/service/salesforce_invoice_ingest.go` (`WithInvoiceIngest`),
 `internal/repository/sf_invoice_repo.go`, `GetInvoice` in `internal/salesentity/invoice.go`,
-and `ensureOpportunity` in `internal/service/salesforce_opportunity_ensure.go`.
+and `ensureOpportunity` in `internal/service/salesforce_opportunity_ensure.go` (shared by
+the linked-opportunity, invoice and line-item families).
 
 - **CREATED / UPDATED / RESTORED:** `POST /invoices/search {id, limit: 1}` (empty =
   retryable), guard on entity `invoice` (Sales Entity sends `lastModifiedDate`), then
   `ensureOpportunity(opportunityId)` — look up `sf_opportunity` by `sf_id`, and when
-  missing run the Opportunity branch inline (which ensures the account) — then one
+  missing run the Opportunity branch inline (which ensures the account) **without the
+  duplicate guard**, as `EnsureAccount` and `EnsureProject` do: a missing row means the
+  ledger's "already written" is stale (a cascade or an out-of-band delete), so the
+  opportunity is re-ingested at its current version — then one
   transaction under `"sf-invoice:"+sfId`: update every `sf_invoice` row with the `sf_id`,
   else insert, plus the SUCCEEDED ledger row. Every data column is written (`name`,
   `description`, `classification` — VARCHAR(40), truncated with a warning —

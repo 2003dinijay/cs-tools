@@ -111,8 +111,8 @@ func (s *salesforceEventService) handleLinkedOpportunityEvent(ctx context.Contex
 
 // ingestLinkedOpportunity fetches one Linked_Opportunity__c and writes it to
 // sf_opportunity_link by link_sf_id, after resolving both parents by their
-// Salesforce ids: the opportunity (ingested inline when missing, the
-// ServiceNow script's _initOpportunity) and the project (EnsureProject: an
+// Salesforce ids: the opportunity (ensureOpportunity: ingested inline when
+// missing, the ServiceNow script's _initOpportunity) and the project (EnsureProject: an
 // inline ingest when project inserts are allowed, else a NotFoundError the
 // delayed-retry job re-runs).
 func (s *salesforceEventService) ingestLinkedOpportunity(ctx context.Context, sfID, eventType string) error {
@@ -153,7 +153,7 @@ func (s *salesforceEventService) ingestLinkedOpportunity(ctx context.Context, sf
 		return nil
 	}
 
-	oppID, err := s.ensureOpportunityForLink(ctx, oppSfID)
+	oppID, err := s.ensureOpportunity(ctx, s.linkedOpportunity.Links, oppSfID)
 	if err != nil {
 		s.recordLinkedOpportunityFailed(ctx, state, err)
 		return err
@@ -178,31 +178,6 @@ func (s *salesforceEventService) ingestLinkedOpportunity(ctx context.Context, sf
 	slog.InfoContext(ctx, "salesforce: linked opportunity ingested",
 		"linkSfId", sfID, "number", derefString(row.Number), "opportunityId", oppID, "projectId", projectID, "created", created)
 	return nil
-}
-
-// ensureOpportunityForLink returns the sf_opportunity id for oppSfID,
-// running the Opportunity ingest first when the row is missing.
-func (s *salesforceEventService) ensureOpportunityForLink(ctx context.Context, oppSfID string) (string, error) {
-	oppSfID = salesforceID18(oppSfID)
-	id, err := s.linkedOpportunity.Links.LookupOpportunityIDBySfID(ctx, oppSfID)
-	if err != nil {
-		return "", err
-	}
-	if id != nil {
-		return *id, nil
-	}
-	slog.InfoContext(ctx, "salesforce: linked opportunity's opportunity not in CSM yet, ingesting it first", "opportunitySfId", oppSfID)
-	if err := s.ingestOpportunity(ctx, oppSfID, domain.SalesforceEventUpdated); err != nil {
-		return "", err
-	}
-	id, err = s.linkedOpportunity.Links.LookupOpportunityIDBySfID(ctx, oppSfID)
-	if err != nil {
-		return "", err
-	}
-	if id == nil {
-		return "", fmt.Errorf("salesforce: opportunity %s was ingested but cannot be read back by sf_id", oppSfID)
-	}
-	return *id, nil
 }
 
 // deleteLinkedOpportunity is DELETED: a hard delete by link_sf_id, as
