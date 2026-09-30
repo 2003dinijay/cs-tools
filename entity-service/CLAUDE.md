@@ -4099,6 +4099,22 @@ The acting caller is resolved from `x-user-id-token` (`emailFromJWT`, the same h
 and stamped as `created_by`/`updated_by` — this service still has no notion of "admin" itself;
 restricting who may call this is `apps/csm-portal/backend`'s job (see that repo's own `CLAUDE.md`).
 
+**`userService.CreateUser` also rejects granting an internal-resolving role to a non-`@wso2.com`
+email.** `internalUserTypeRoles` (`user_service.go`, next to `emailRE`) is `["admin", "internal"]` —
+the same two names `recompute_user_type`'s trigger maps to `user_type = INTERNAL` — and
+`requestsInternalUserType` checks `req.Roles` against it case-insensitively before `repo.CreateUser`
+runs; a match with `req.Email` not ending in `wso2EmailDomain` (`@wso2.com`, the same constant
+`sn_case_service.go`'s `filterWso2Emails` already uses) is a `*apierror.ValidationError`. This is the
+real enforcement boundary for that rule: `apps/csm-portal/backend`'s own `UsersHandler.CreateUser` runs
+an identical, independently-maintained check for a fast 400 before ever reaching this service, but
+this one is what actually protects the database — `POST /users` is this service's own route, and
+nothing about role-name validation here should assume a single, trusted caller (see this file's own
+note on `domain.UserRole` not being validated against a fixed enum for the same reasoning). Found live:
+the CSM portal's Add User form sent no `roles` at all until it gained a type selector, so every user it
+created resolved to `user_type = NOT_AVAILABLE` — checked directly against staging before this shipped
+(128 such users). The type selector fixes that by granting `internal`/`external`; this check is what
+stops it from being pointed at the wrong email.
+
 ## SearchDeployments crashed on any page containing a NULL deployment.type
 
 Reported live: `POST /deployments/search` failing with `cannot scan NULL into
