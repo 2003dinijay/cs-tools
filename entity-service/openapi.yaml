@@ -26,7 +26,11 @@ paths:
         Entity Account, only when CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED=true
         (otherwise acknowledged and ignored): fetches the Account via REST
         sales/sales-entity-service POST /customer-search (isRealTime true), not GraphQL
-        sales/entity-graphql-service, and upserts the csm-platform account table.
+        sales/entity-graphql-service, and upserts the csm-platform account table
+        (Salesforce-owned columns only) with its salesforce_ingest_state ledger row;
+        a replay whose lastModifiedDate is not newer than the ledger is a 204 no-op,
+        a customer without a name is a 204 recorded FAILED in the ledger, and
+        DELETED sets account.deleted_on (RESTORED clears it) instead of deleting.
         Entity Project_Contact__c (also accepted as Project_Contact), only when
         CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true: CREATED/UPDATED/RESTORED fetch
         the membership and its Contact (POST /project-contacts/search,
@@ -1972,7 +1976,10 @@ paths:
 
   /accounts/search:
     post:
-      summary: Search accounts by name or Salesforce ID.
+      summary: >-
+        Search accounts by name or Salesforce ID. Accounts deleted in Salesforce
+        (account.deleted_on set by the Salesforce Account ingest) are never
+        returned; GET /accounts/{id} still resolves them.
       operationId: searchAccounts
       requestBody:
         required: true
@@ -2661,10 +2668,14 @@ paths:
     patch:
       summary: Replace a contact's roles on a project.
       description: >
-        Replaces the membership's Salesforce roles, and with them its project groups.
-        The membership's state is untouched. An empty roles list is accepted and means
-        "no roles" — it removes every project group rather than leaving the current set
-        alone. The database transaction and the Salesforce write succeed together or
+        Replaces the membership's portal-managed Salesforce roles (Portal user, Security
+        Contact, Lead, Admin), and with them its project groups. Every other Role__c label
+        already on the Salesforce membership (Business Contact, Business/Technical
+        Owner, Champion, Promoter or Detractor, or any label this service does not know)
+        is kept. If the membership's current roles cannot be read from Salesforce the
+        call fails with 503 instead of overwriting them. The membership's state is
+        untouched. An empty roles list is accepted and removes every portal-managed role
+        and its project group; labels set only in Salesforce stay. The database transaction and the Salesforce write succeed together or
         neither is applied; the database commits last.
 
 
@@ -11561,8 +11572,9 @@ components:
             type: string
             enum: [Portal user, Security Contact, Lead, Admin]
           description: >
-            The membership's new complete set of Salesforce roles — a replacement, not a merge.
-            An empty list is allowed and removes every project group.
+            The membership's new complete set of portal-managed Salesforce roles. It replaces
+            the Portal user / Security Contact / Lead / Admin labels; other Role__c labels
+            already on the Salesforce membership are kept. An empty list is allowed.
 
     ProjectMembership:
       type: object
@@ -11600,8 +11612,10 @@ components:
           items:
             type: string
           description: >
-            The raw Salesforce Role__c labels the membership now carries, exactly as written to
-            Salesforce — not the derived project_role/project_group values.
+            The portal-managed Salesforce Role__c labels (Portal user / Security Contact / Lead /
+            Admin) the membership now carries, as written to Salesforce — not the derived
+            project_role/project_group values. Labels set only in Salesforce (e.g. Business
+            Contact) are kept on the record but not listed here.
 
     SearchProjectContactsResponse:
       type: object
