@@ -1079,6 +1079,24 @@ func TestDispatcher_Handle_ProjectContactRegistered_Skips(t *testing.T) {
 	}
 }
 
+// A skipped replay must not overwrite a SUCCEEDED Welcome, and a failed lookup writes nothing.
+func TestDispatcher_Handle_ProjectContactRegistered_SkipKeepsSentWelcome(t *testing.T) {
+	email, steps := &mockEmailSender{}, &mockStepRecorder{welcomeAlreadySent: true}
+	if err := newOnboardingDispatcher(&mockIdentityProvisioner{}, email, steps, true, false).Handle(context.Background(), registeredRecord(false)); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(email.calls) != 0 || steps.welcomeChecks != 1 {
+		t.Errorf("emails = %d, checks = %d, want no send after one ledger check", len(email.calls), steps.welcomeChecks)
+	}
+	assertSteps(t, steps)
+
+	failing := &mockStepRecorder{welcomeErr: errors.New("ledger down")}
+	if err := newOnboardingDispatcher(&mockIdentityProvisioner{}, &mockEmailSender{}, failing, true, false).Handle(context.Background(), registeredRecord(false)); err == nil {
+		t.Fatal("Handle() = nil, want the lookup error so the record is retried")
+	}
+	assertSteps(t, failing)
+}
+
 func TestDispatcher_Handle_ProjectContactRegistered_DebugModeRedirects(t *testing.T) {
 	email, steps := &mockEmailSender{}, &mockStepRecorder{}
 	d := NewDispatcher(&mockEmailSender{}, &mockGoogleChatSender{}, &mockCallSender{}, &mockLinkResolver{}, true, true, []string{"debug@wso2.com"}, true, "").

@@ -1708,6 +1708,17 @@ func (d *Dispatcher) handleProjectContactRegistered(ctx context.Context, record 
 		}, lastErr)
 	}
 	skip := func(msg string) error {
+		// A SKIPPED write may replace SUCCEEDED for the same version, so a replay must not overwrite a sent Welcome.
+		if d.onboarding.Steps != nil {
+			sent, err := d.onboarding.Steps.SucceededStep(ctx, p.MembershipSfID, entity.OnboardingStepWelcomeEmail)
+			if err != nil {
+				return fmt.Errorf("dispatch: check welcome email already sent for membership %s: %w", p.MembershipSfID, err)
+			}
+			if sent != nil {
+				slog.InfoContext(ctx, "dispatch: welcome email already recorded as sent; not recording a skip", logAttrs...)
+				return nil
+			}
+		}
 		recordStep(entity.OnboardingStepSkipped, nil)
 		slog.InfoContext(ctx, msg, logAttrs...)
 		return nil
