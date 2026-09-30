@@ -399,6 +399,18 @@ func genTimeCards(ctx context.Context, tx pgx.Tx, workItems []genWorkItem, proje
 			}
 			summary.timeCards++
 
+			if state == "SUBMITTED" {
+				// A submitted card is waiting on an approver; leave none and it can never be reviewed.
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO time_card_approver (id, created_on, updated_on, created_by, updated_by,
+						time_card_id, approver_id)
+					VALUES ($1,$2,$2,'seed-generator','seed-generator',$3,md5('seed-manager-1')::uuid)
+					ON CONFLICT (id) DO NOTHING`,
+					newUUID(), createdOn, id); err != nil {
+					return err
+				}
+				summary.timeCardApprovers++
+			}
 			if approvedBy != nil && randBool(0.5) {
 				if _, err := tx.Exec(ctx, `
 					INSERT INTO time_card_approver (id, created_on, updated_on, created_by, updated_by,

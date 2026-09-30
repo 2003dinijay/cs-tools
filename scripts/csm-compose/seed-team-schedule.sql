@@ -162,6 +162,15 @@ JOIN role r ON r.name = 'timecard_approver'
 WHERE NOT EXISTS (SELECT 1 FROM user_role ur WHERE ur.user_id = u.id AND ur.role_id = r.id)
 ON CONFLICT (id) DO NOTHING;
 
+-- The fixed SUBMITTED sample card (seed-entity-service.sql) needs an approver too,
+-- or it is invisible in every approval queue. Resolved here because the manager
+-- and the approver role only exist from this file on.
+INSERT INTO time_card_approver (id, created_on, updated_on, created_by, updated_by, time_card_id, approver_id)
+SELECT md5('seed-tca-sample-801')::uuid, now(), now(), 'seed', 'seed',
+       '00000000-0000-0000-0000-000000000801'::uuid, md5('seed-manager-1')::uuid
+WHERE EXISTS (SELECT 1 FROM time_card WHERE id = '00000000-0000-0000-0000-000000000801'::uuid)
+ON CONFLICT DO NOTHING;
+
 -- ── a rota admin for each family ──────────────────────────────────────────
 -- One person who may edit any CRE rota, one who may edit any SRE rota, so the
 -- family scoping can actually be exercised: each should be refused the other
