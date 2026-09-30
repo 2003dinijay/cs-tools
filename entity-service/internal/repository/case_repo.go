@@ -185,6 +185,28 @@ const caseLikeWorkItemTypes = `'{CASE,ENGAGEMENT,SERVICE_REQUEST,SECURITY_REPORT
 // sites that used to reuse an existing join instead.
 const announcementVisibilityLeakGuard = `NOT (wi.type = 'ANNOUNCEMENT' AND NOT EXISTS (SELECT 1 FROM announcement rls_ann WHERE rls_ann.id = wi.id))`
 
+// announcementLeakGuardFor returns the announcementVisibilityLeakGuard
+// predicate for a caller that RLS actually restricts, and the always-true
+// predicate TRUE for an Unrestricted (internal) one.
+//
+// The guard exists only to hide announcement rows a scoped caller may not
+// see; an internal caller sees every announcement, so for them it filters
+// nothing. It is not free, though: the EXISTS reads the RLS-protected
+// announcement table, so the planner prices the announcement policy's
+// correlated sub-selects into a per-row subplan on every work_item row of the
+// list, count and aggregate queries. On a ~400K-row work_item that mispricing
+// turned staff case searches from ~150ms into 1.2-1.5s. Dropping the guard
+// for internal callers restores the plan they would get with RLS off.
+//
+// Fails closed: anything that is not explicitly Unrestricted (including the
+// zero SearchScope) keeps the guard.
+func announcementLeakGuardFor(scope SearchScope) string {
+	if scope.Unrestricted {
+		return "TRUE"
+	}
+	return announcementVisibilityLeakGuard
+}
+
 // caseLikeStateColumns COALESCEs state across every case-like work_item
 // extension table (aliased c/eng/sr/sra/ann) -- exactly one is non-null for
 // a given row, since each is a shared-PK extension keyed to a specific
@@ -1889,7 +1911,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 
 	// See announcementVisibilityLeakGuard's own doc comment. Shared by the
 	// data, COUNT and aggregate queries, which all use this WHERE.
-	where += " AND " + announcementVisibilityLeakGuard
+	where += " AND " + announcementLeakGuardFor(scope)
 	// Planner hint for external callers only (see viewerProjectHint): lets
 	// Postgres use idx_work_item_project_id instead of scanning all of
 	// work_item; RLS above remains the authorization boundary.

@@ -302,7 +302,10 @@ func (r *callRequestRepo) runCallRequestSearch(ctx context.Context, where, order
 	// case fields (subject/number) would otherwise come back for it. The
 	// wi.id IS NULL branch keeps a call request with no parent work item.
 	// Added to the shared WHERE so the count and page queries stay in step.
-	where += " AND (wi.id IS NULL OR " + announcementVisibilityLeakGuard + ")"
+	// Skipped for an Unrestricted caller (announcementLeakGuardFor); a ctx with
+	// no identity at all keeps the guard.
+	callerScope, _ := CallerIdentityFromContext(ctx)
+	where += " AND (wi.id IS NULL OR " + announcementLeakGuardFor(callerScope) + ")"
 	countQuery := `SELECT COUNT(*) ` + callRequestFrom + ` ` + where
 	dataQuery := fmt.Sprintf(`%s %s %s %s LIMIT $%d OFFSET $%d`,
 		callRequestSelect, callRequestFrom, where, orderBy, len(args)+1, len(args)+2)

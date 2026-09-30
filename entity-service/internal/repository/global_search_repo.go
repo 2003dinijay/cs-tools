@@ -286,7 +286,7 @@ func (r *globalSearchRepo) SearchCases(ctx context.Context, scope SearchScope, q
 	//
 	// See announcementVisibilityLeakGuard's own doc comment (case_repo.go).
 	// Applies to both countSQL and pageSQL below, via this same f.where.
-	f.where += " AND " + announcementVisibilityLeakGuard
+	f.where += " AND " + announcementLeakGuardFor(scope)
 	// Planner hint for external callers only (see viewerProjectHint); RLS
 	// remains the authorization boundary.
 	f.where += viewerProjectHint("wi", scope)

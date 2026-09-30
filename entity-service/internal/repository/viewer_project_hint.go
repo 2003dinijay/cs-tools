@@ -16,6 +16,8 @@
 
 package repository
 
+import "context"
+
 // viewerProjectHint returns an extra " AND <alias>.project_id = ANY(...)"
 // predicate for an external (non-Unrestricted) caller, or "" for an internal
 // one.
@@ -41,4 +43,13 @@ func viewerProjectHint(alias string, scope SearchScope) string {
 		return ""
 	}
 	return " AND " + alias + ".project_id = ANY(NULLIF(current_setting('app.viewer_project_ids', true), '')::uuid[])"
+}
+
+// viewerProjectHintFor is viewerProjectHint for repositories that only have
+// the request context. A ctx with no identity yields the zero scope, which is
+// not Unrestricted, so the hint is added: it can only narrow, never widen, and
+// Scoped refuses such a ctx anyway.
+func viewerProjectHintFor(ctx context.Context, alias string) string {
+	scope, _ := CallerIdentityFromContext(ctx)
+	return viewerProjectHint(alias, scope)
 }

@@ -119,3 +119,45 @@ func TestRLSSchemaIntegration_EveryProtectedTableHasForceRowLevelSecurity(t *tes
 		}
 	}
 }
+
+// TestRLSSchemaIntegration_PolicyHelperFunctionsAreParallelSafe guards
+// migration 0173. One PARALLEL UNSAFE function anywhere in a policy makes
+// every query on that table non-parallel, which is what made internal callers
+// several times slower than with RLS off. A later CREATE OR REPLACE FUNCTION
+// without a PARALLEL clause silently resets the label, so nothing else would
+// notice it regress.
+func TestRLSSchemaIntegration_PolicyHelperFunctionsAreParallelSafe(t *testing.T) {
+	pool := caseStatsPool(t)
+	ctx := context.Background()
+
+	rows, err := pool.Query(ctx, `
+		SELECT DISTINCT p.proname, p.proparallel
+		FROM pg_policy pol
+		JOIN pg_depend d ON d.classid = 'pg_policy'::regclass AND d.objid = pol.oid
+		                AND d.refclassid = 'pg_proc'::regclass
+		JOIN pg_proc p ON p.oid = d.refobjid
+		JOIN pg_namespace n ON n.oid = p.pronamespace
+		WHERE n.nspname = current_schema()`)
+	if err != nil {
+		t.Fatalf("query policy function dependencies: %v", err)
+	}
+	defer rows.Close()
+
+	seen := 0
+	for rows.Next() {
+		var name, parallel string
+		if err := rows.Scan(&name, &parallel); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		seen++
+		if parallel != "s" {
+			t.Errorf("policy helper function %q has proparallel = %q, want 's' (PARALLEL SAFE): see migration 0173", name, parallel)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate: %v", err)
+	}
+	if seen == 0 {
+		t.Error("found no functions referenced by any policy; is_project_member should at least be one -- the query or the schema assumption changed")
+	}
+}

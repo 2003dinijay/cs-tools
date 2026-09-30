@@ -527,6 +527,11 @@ func changeRequestApprovalEnum(snApproval string) string {
 // SearchChangeRequests implements ChangeRequestRepository.
 func (r *changeRequestRepo) SearchChangeRequests(ctx context.Context, req domain.SearchChangeRequestsRequest, createdStartDate, createdEndDate *time.Time, approval *string, _ []string) ([]domain.SearchChangeRequestView, int, error) {
 	where, args := changeRequestWhereClause(req.Filters, createdStartDate, createdEndDate, approval)
+	// Planner hint for external callers only (see viewerProjectHint): without
+	// it, making the policy helpers parallel safe lets Postgres pick a parallel
+	// scan of all of work_item for a customer with a handful of change requests.
+	// RLS remains the authorization boundary.
+	where += viewerProjectHintFor(ctx, "wi")
 
 	sortCol := "wi.created_on"
 	if req.SortBy.Field == domain.ChangeRequestSortFieldUpdatedOn {
@@ -600,6 +605,7 @@ func (r *changeRequestRepo) AggregateChangeRequests(ctx context.Context, req dom
 	}
 
 	where, args := changeRequestWhereClause(req.Filters, createdStartDate, createdEndDate, approval)
+	where += viewerProjectHintFor(ctx, "wi") // planner hint, external callers only; see SearchChangeRequests
 
 	query := fmt.Sprintf(`
 		SELECT %s AS bucket, COUNT(*) AS bucket_count
