@@ -53,15 +53,27 @@ import (
 // and read back by GetChangeRequestByID as domain.ChangeRequest.CustomerGroup
 // (see changeRequestDetailJoins/changeRequestDetailColumns).
 //
+// AssignedTeamID (distinct from CustomerGroupID) is backed by
+// work_item.assignment_group_id (migration 0075, a FK into "group") and read
+// back as domain.ChangeRequest.AssignedTeam via changeRequestFromJoins' own
+// "group" ag join -- see changeRequestSelectColumns' own doc comment for the
+// real bug this fixes (Assess could never be requested for any change
+// request, since the frontend requires it set first). Writing it is still
+// unwired on both create and PatchChangeRequest -- csm-sync-service already
+// owns populating it from ServiceNow's own Assignment group field for every
+// work_item type, the same way it does assigned_to_id, so there has been no
+// need for this repository to write it itself. Filtering search results by
+// it (the parsed filter array's assignmentGroupId) is also still unwired --
+// see changeRequestWhereClause's own comment.
+//
 // The remaining fields on the request/response contract have no
 // established mapping and are always left unset rather than guessed at:
 // ConfigurationItemID (no CMDB table exists at all in this schema); GroupID
-// and AssignedTeamID (distinct from CustomerGroupID -- these would need
-// work_item.assignment_group_id, migration 0075, which nothing in this
-// file joins or reads yet); ApprovedBy/ApprovedOn on domain.ChangeRequest
-// (there is a summary change_request.approval enum but no approver/date
-// columns); Environments/DeploymentProducts/Labels/Deployments (no M2M join
-// table exists for any of the four).
+// (the create-time field distinct from the above -- still unwired, for the
+// same reason); ApprovedBy/ApprovedOn on domain.ChangeRequest (there is a
+// summary change_request.approval enum but no approver/date columns);
+// Environments/DeploymentProducts/Labels/Deployments (no M2M join table
+// exists for any of the four).
 //
 // LegalNextStates is populated -- see legalChangeRequestNextStates's own
 // doc comment for how, and for the one branch it deliberately does not
@@ -96,9 +108,11 @@ type ChangeRequestRepository interface {
 	// array) -- parsing happens in the service layer
 	// (service.ParseChangeRequestFieldFilters), never here, since this
 	// layer must not import the service package. assignmentGroupIDs is
-	// accepted for interface symmetry with that parsed result but never
-	// applied: there is no column anywhere in this schema for it (see this
-	// file's own package doc comment).
+	// accepted for interface symmetry with that parsed result but still never
+	// applied here: the column it would filter on (work_item.assignment_group_id)
+	// does have a real join now (see this file's own package doc comment,
+	// and changeRequestWhereClause's own comment), but wiring this specific
+	// filter remains out of scope.
 	SearchChangeRequests(ctx context.Context, req domain.SearchChangeRequestsRequest, createdStartDate, createdEndDate *time.Time, approval *string, assignmentGroupIDs []string) ([]domain.SearchChangeRequestView, int, error)
 	// AggregateChangeRequests returns server-side aggregated counts of
 	// change requests per value of groupBy, capped to the top maxGroups
@@ -223,8 +237,26 @@ const changeRequestFromJoins = `
 	LEFT JOIN service svc ON svc.id = cr.service_id
 	LEFT JOIN service_offering so ON so.id = cr.service_offering_id
 	LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id
-	LEFT JOIN work_item origin_case ON origin_case.id = wi.parent_id`
+	LEFT JOIN work_item origin_case ON origin_case.id = wi.parent_id
+	LEFT JOIN "group" ag ON ag.id = wi.assignment_group_id`
 
+// ag (work_item.assignment_group_id, migration 0075) backs
+// domain.ChangeRequest's AssignedTeam -- the same column incident_repo.go's
+// own GetIncidentByID already joins and reads (as AssignmentGroup there; a
+// different domain field name for the same underlying column, matching what
+// the CSM Portal calls it for each entity type). This file used to leave it
+// entirely unread ("no confirmed mapping" -- see this file's own package doc
+// comment history): a real, reported bug -- Assess could never be requested
+// for *any* change request through the portal, since the frontend's own
+// TARGET_BLOCKED_REASON requires assignedTeam to be set first, and it could
+// never come back non-null. Confirmed live against a real change request
+// with a genuine ServiceNow Assignment group ("Devops"): its Assigned
+// engineer synced and displayed correctly (a column read the same way), but
+// Assigned team always showed empty -- proving csm-sync-service already
+// populates work_item.assignment_group_id for change requests the same way
+// it does for every other work_item type; this was purely a read-side gap,
+// not a missing-data one, so no create/patch write-path changes are needed
+// alongside this join.
 const changeRequestSelectColumns = `
 	wi.id, wi.number, wi.subject, wi.description,
 	p.id, p.name,
@@ -236,7 +268,8 @@ const changeRequestSelectColumns = `
 	so.id, so.name,
 	ae.id, COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')),
 	cr.start_on, cr.end_on, cr.impact::TEXT, cr.state::TEXT, cr.change_model::TEXT,
-	wi.created_on, wi.updated_on`
+	wi.created_on, wi.updated_on,
+	ag.id, ag.name`
 
 // changeRequestChangeModelToType/changeRequestTypeToChangeModel map between
 // change_request.change_model's real enum labels (migration 0056) and
@@ -383,6 +416,7 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 		svcID, svcName         *string
 		soID, soName           *string
 		aeID, aeName           *string
+		agID, agName           *string
 		startOn, endOn         *time.Time
 		impact, state          *string
 		changeModel            *string
@@ -400,6 +434,7 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 		&aeID, &aeName,
 		&startOn, &endOn, &impact, &state, &changeModel,
 		&createdOn, &updatedOn,
+		&agID, &agName,
 	)
 	if err != nil {
 		return domain.SearchChangeRequestView{}, err
@@ -427,6 +462,9 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 	}
 	if aeID != nil {
 		v.AssignedEngineer = &domain.EntityRef{ID: *aeID, Name: stringOrEmpty(aeName)}
+	}
+	if agID != nil {
+		v.AssignedTeam = &domain.EntityRef{ID: *agID, Name: stringOrEmpty(agName)}
 	}
 	if startOn != nil {
 		s := startOn.UTC().Format(time.RFC3339)
@@ -511,9 +549,11 @@ func changeRequestWhereClause(f domain.SearchChangeRequestsFilters, createdStart
 	if approval != nil {
 		add("cr.approval = $%d::change_request_approval_enum", changeRequestApprovalEnum(*approval))
 	}
-	// The parsed filter array's assignmentGroupId has no corresponding
-	// column anywhere in this schema (see this file's own package doc
-	// comment) and is deliberately not applied here.
+	// The parsed filter array's assignmentGroupId has a real backing column
+	// now (work_item.assignment_group_id, read as AssignedTeam -- see this
+	// file's own package doc comment), but filtering search results by it is
+	// still not wired here; out of scope for the read-side fix that added
+	// the column's own join.
 
 	return where, args
 }
@@ -719,6 +759,7 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 		svcID, svcName         *string
 		soID, soName           *string
 		aeID, aeName           *string
+		agID, agName           *string
 		startOn, endOn         *time.Time
 		impact, state          *string
 		changeModel            *string
@@ -750,6 +791,7 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 		&aeID, &aeName,
 		&startOn, &endOn, &impact, &state, &changeModel,
 		&createdOn, &updatedOn,
+		&agID, &agName,
 		&createdBy, &justification, &impactDescription, &serviceOutage, &communicationPlan, &rollbackPlan, &testPlan,
 		&isCustomerApproved, &isCustomerReviewed,
 		&implementationPlan, &priority, &category,
@@ -786,6 +828,9 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 	}
 	if aeID != nil {
 		v.AssignedEngineer = &domain.EntityRef{ID: *aeID, Name: stringOrEmpty(aeName)}
+	}
+	if agID != nil {
+		v.AssignedTeam = &domain.EntityRef{ID: *agID, Name: stringOrEmpty(agName)}
 	}
 	if startOn != nil {
 		s := startOn.UTC().Format(time.RFC3339)

@@ -1895,12 +1895,29 @@ v5 can't scan a binary-format timestamptz into a `*string`
 (`it_service_repo.go`/`service_offering_repo.go`) backing `POST /services/
 search` and `POST /service-offerings/search`, previously ServiceNow-only.
 
+**`AssignedTeamID` is now read** — `work_item.assignment_group_id` (migration
+0075, a FK into `group`), via `changeRequestFromJoins`' own `"group" ag`
+join, back as `domain.ChangeRequest.AssignedTeam`. A real, reported bug: the
+CSM Portal's own action bar requires `assignedTeam` to be set before it will
+let a change request advance to Assess at all, and since this was never
+read, *no* change request could ever be promoted past New through the
+portal on this data source — confirmed live against a real change request
+with a genuine ServiceNow Assignment group ("Devops"), whose `AssignedEngineer`
+synced and displayed correctly while `AssignedTeam` always showed empty.
+This proved `csm-sync-service` already populates
+`work_item.assignment_group_id` for change requests the same way it does
+for every other `work_item` type, so the fix is read-only — no create/patch
+write-path changes were needed alongside it. Writing it (create's `GroupID`,
+or `PatchChangeRequestRequest.AssignedTeamID`) and filtering search results
+by it (the parsed filter array's `assignmentGroupId`) both remain unwired,
+deliberately out of scope for this fix — see `ChangeRequestRepository`'s own
+doc comment.
+
 **Fields still with no real column anywhere, left unset rather than
 guessed at** (see `ChangeRequestRepository`'s own doc comment for the full
-list): `ConfigurationItemID`, `GroupID`, and `AssignedTeamID` (no CMDB/group
-tables exist in this schema at all); `Type`
-(`domain.ChangeRequestType` — standard/normal/emergency/... — has **no**
-relationship to `change_request.change_request_type`, whose real enum
+list): `ConfigurationItemID` (no CMDB table exists in this schema at all);
+`Type` (`domain.ChangeRequestType` — standard/normal/emergency/... — has
+**no** relationship to `change_request.change_request_type`, whose real enum
 values are `INFRA`/`GENERAL`, a completely different classification, not a
 subset of the domain enum); `ApprovedBy`/`ApprovedOn` on
 `domain.ChangeRequest` (no approver/date columns exist). `Duration`
