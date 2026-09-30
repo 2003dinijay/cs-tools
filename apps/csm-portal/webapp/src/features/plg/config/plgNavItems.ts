@@ -49,17 +49,22 @@ export const PLG_NAV_SECTION: CsmNavSection = {
   icon: Rocket,
   children: [
     {
+      // Labelled Overview, but this is the leadership view — see
+      // LeadershipDashboardPage. The label is what leadership calls the page;
+      // the component name is what it shows.
       id: "plg.overview",
       tab: "overview",
-      label: "Leadership Dashboard",
+      label: "Overview",
       href: `${PLG_BASE}/overview`,
       routes: [`${PLG_BASE}/overview`],
       icon: Gauge,
     },
     {
       // Standalone this was Workspace > Dashboard, and PLG's landing page. It
-      // shares a component with the leadership view above and differs by two
-      // tiles — the queue counts, which belong to whoever works the queue.
+      // carries two tiles the leadership view above does not — the queue
+      // counts, which belong to whoever works the queue. The two were one
+      // component until the variant flag proved too fragile; they now share
+      // only their charts.
       id: "plg.dashboard",
       tab: "dashboard",
       label: "Dashboard",

@@ -20,11 +20,13 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/github"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/handler"
@@ -233,6 +235,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// block builds, so all three are wired together rather than side by side.
 	var membershipIngestSvc service.SalesforceEventService
 	var salesEntityClient *salesentity.Client
+	// ingestRetryCtx stops the Salesforce ingest retry worker; closePublishers
+	// (returned to cmd/api/main.go) cancels it on shutdown and waits on
+	// ingestRetryWG for it to return. A worker that was never started leaves
+	// the WaitGroup at zero, so the wait returns at once.
+	ingestRetryCtx, stopIngestRetry := context.WithCancel(context.Background())
+	var ingestRetryWG sync.WaitGroup
 	// PostgresAuthoritative, not DATA_SOURCE=postgres alone: the dual-write
 	// mode serves memberships from PostgreSQL too, and memberships reach
 	// ServiceNow from Salesforce directly, so nothing here needs its mirror.
@@ -249,21 +257,74 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		if cfg.CSMMigrationSalesforceAccountIngestEnabled {
 			accountIngestRepo = accountRepo
 		}
+		// The shared ingest support is flag-independent: the full account
+		// repository serves EnsureAccount's read even while the Account
+		// branch (the write side) is off, and the salesforce_ingest_state
+		// ledger is where every non-membership family records its version.
+		ingestSupport := service.SalesforceIngestSupport{
+			Accounts: accountRepo,
+			States:   repository.NewSalesforceIngestStateRepository(db),
+		}
+		// The Opportunity branch (sf_opportunity + derived line items) is
+		// attached to whichever service variant is built below; off, the
+		// envelopes are acknowledged and ignored.
+		withOpportunityIngest := func(svc service.SalesforceEventService) service.SalesforceEventService {
+			if !cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+				return svc
+			}
+			return service.WithOpportunityIngest(svc, service.OpportunityIngest{
+				Opportunities: repository.NewSalesforceOpportunityRepository(db),
+				SalesEntity:   salesEntityClient,
+			})
+		}
 		if cfg.CSMMigrationSalesforceMembershipIngestEnabled {
 			// The membership branch (Project_Contact__c / Contact envelopes)
 			// writes user/account_contact/project_contact rows and the
 			// DATABASE onboarding step, and publishes project_contact.invited
-			// when eventPublisher is configured (nil is a no-op there).
+			// when eventPublisher is configured (nil is a no-op there). Its
+			// Contact writer writes a contact's user/account_contact rows
+			// even without a membership, recording the ledger.
+			stepRepo := repository.NewOnboardingStepRepository(db)
 			membershipIngestSvc = service.NewSalesforceEventServiceWithMembershipIngest(
-				accountIngestRepo, salesEntityClient, service.MembershipIngest{
+				accountIngestRepo, salesEntityClient, ingestSupport, service.MembershipIngest{
 					Memberships: repository.NewProjectMembershipRepository(db),
-					Steps:       repository.NewOnboardingStepRepository(db),
+					Steps:       stepRepo,
 					SalesEntity: salesEntityClient,
+					Contacts:    repository.NewSalesforceContactRepository(db),
 					Publisher:   projectEventPublisher,
 				})
+			membershipIngestSvc = withOpportunityIngest(membershipIngestSvc)
 			salesforceEventHandler = handler.NewSalesforceEventHandler(membershipIngestSvc)
+
+			// The delayed-retry job re-runs memberships whose project or
+			// account was not in CSM when their event arrived. It lives here
+			// rather than in cmd/api/main.go because it needs this very
+			// service (with its publisher, so a re-run invitation is still
+			// announced) and only makes sense when the membership ingest is
+			// on. SALESFORCE_INGEST_RETRY_INTERVAL=0 turns it off.
+			if cfg.SalesforceIngestRetryInterval > 0 {
+				retrier, ok := membershipIngestSvc.(service.MembershipReingester)
+				if !ok {
+					panic("salesforce: membership ingest service does not implement MembershipReingester")
+				}
+				retryWorker := service.NewSalesforceIngestRetryWorker(stepRepo, retrier, ingestSupport.States, cfg.SalesforceIngestRetryInterval)
+				if opp, ok := membershipIngestSvc.(service.OpportunityReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityOpportunity] = opp.RetryOpportunityIngest
+				}
+				// The Contact writer runs under the membership ingest, which is
+				// on whenever this job runs, so its retrier needs no extra flag.
+				if contact, ok := membershipIngestSvc.(service.ContactReingester); ok {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityContact] = contact.RetryContactIngest
+				}
+				ingestRetryWG.Add(1)
+				go func() {
+					defer ingestRetryWG.Done()
+					retryWorker.Run(ingestRetryCtx)
+				}()
+				log.Printf("salesforce ingest retry worker enabled (every %s)", cfg.SalesforceIngestRetryInterval)
+			}
 		} else {
-			salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient))
+			salesforceEventHandler = handler.NewSalesforceEventHandler(withOpportunityIngest(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient, ingestSupport)))
 		}
 	}
 
@@ -1315,8 +1376,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	// Both producers are closed together: they are constructed under the
 	// same conditions and neither caller has any reason to outlive the
-	// other.
+	// other. The Salesforce ingest retry worker stops first, and is waited
+	// for, so a re-run in flight is not handed a publisher that has already
+	// gone away. Cancelling its context also cancels the re-run's own
+	// context (retryOne derives from it), so the wait is short.
 	closePublishers := func() {
+		stopIngestRetry()
+		ingestRetryWG.Wait()
 		if eventPublisher != nil {
 			eventPublisher.Close()
 		}

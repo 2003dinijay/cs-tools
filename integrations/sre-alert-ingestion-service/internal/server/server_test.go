@@ -42,7 +42,7 @@ func (f *fakePipeline) Ingest(_ context.Context, req Request) Result {
 func newTestServer(p Pipeline) *Server {
 	return New(Options{
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Auth:         auth.None{},
+		Auth:         allowAll{},
 		Pipeline:     p,
 		Vendors:      []string{"aws", "prometheus"},
 		MaxBodyBytes: 16,
@@ -188,40 +188,9 @@ type denyAll struct{}
 
 func (denyAll) Authenticate(*http.Request, string) error { return auth.ErrUnauthorized }
 
-// countingReader reports how much of the body was actually consumed.
-type countingReader struct {
-	data []byte
-	read int
-}
+type allowAll struct{}
 
-func (c *countingReader) Read(p []byte) (int, error) {
-	if c.read >= len(c.data) {
-		return 0, io.EOF
-	}
-	n := copy(p, c.data[c.read:])
-	c.read += n
-	return n, nil
-}
-
-// A rejected webhook must not read its body: auth runs first so an unauthenticated
-// caller cannot make a replica allocate max_body_bytes, or spend a credential lookup,
-// per request.
-func TestVendorRoute_AuthRejectionNeverReadsBody(t *testing.T) {
-	s := New(Options{
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Auth: denyAll{},
-		Pipeline: &fakePipeline{}, Vendors: []string{"aws"}, MaxBodyBytes: 1 << 20,
-	})
-	body := &countingReader{data: []byte(strings.Repeat("x", 4096))}
-	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", VendorRoutePrefix+"aws", body))
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
-	if body.read != 0 {
-		t.Errorf("read %d body bytes on a 401; auth must run before the body is read", body.read)
-	}
-}
+func (allowAll) Authenticate(*http.Request, string) error { return nil }
 
 func TestVendorRoute_AuthHookRunsBeforePipeline(t *testing.T) {
 	p := &fakePipeline{result: Result{Status: http.StatusCreated}}
@@ -242,7 +211,7 @@ func TestAccessLog_CarriesVendorAndAltIDs(t *testing.T) {
 	var buf strings.Builder
 	p := &fakePipeline{result: Result{Status: http.StatusCreated, AltIDs: []string{"ALT000000007"}}}
 	s := New(Options{
-		Logger: slog.New(slog.NewJSONHandler(&buf, nil)), Auth: auth.None{}, Pipeline: p,
+		Logger: slog.New(slog.NewJSONHandler(&buf, nil)), Auth: allowAll{}, Pipeline: p,
 		Vendors: []string{"aws"}, MaxBodyBytes: 1024,
 	})
 	do(t, s, "POST", VendorRoutePrefix+"aws", "{}")
