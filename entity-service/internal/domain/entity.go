@@ -953,6 +953,9 @@ const (
 	OnboardingStepDatabase     OnboardingStepName = "DATABASE"
 	OnboardingStepEmail        OnboardingStepName = "EMAIL"
 	OnboardingStepRegistration OnboardingStepName = "REGISTRATION"
+	// OnboardingStepWelcomeEmail is the Welcome email csm-notification-service
+	// sends after registration.
+	OnboardingStepWelcomeEmail OnboardingStepName = "WELCOME_EMAIL"
 )
 
 // OnboardingStepStatus is the onboarding_step.status enum.

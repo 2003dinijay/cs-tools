@@ -169,7 +169,7 @@ paths:
     post:
       summary: >-
         Search the onboarding status ledger (onboarding_step): one row per
-        membership per step (IDENTITY, DATABASE, EMAIL, REGISTRATION), newest
+        membership per step (IDENTITY, DATABASE, EMAIL, REGISTRATION, WELCOME_EMAIL), newest
         first. Backs the onboarding dashboard. Has no ServiceNow equivalent —
         always backed by Postgres; 404 without a pool.
       operationId: searchOnboardingSteps
@@ -22270,8 +22270,9 @@ components:
         write done by the Salesforce membership ingest; IDENTITY is the Asgardeo
         user provisioned by csm-notification-service via the SCIM service; EMAIL
         the invitation email; REGISTRATION the member's first sign-in, recorded
-        by the customer portal backend.
-      enum: [IDENTITY, DATABASE, EMAIL, REGISTRATION]
+        by the customer portal backend; WELCOME_EMAIL the Welcome email sent
+        by csm-notification-service after registration.
+      enum: [IDENTITY, DATABASE, EMAIL, REGISTRATION, WELCOME_EMAIL]
 
     OnboardingStepStatus:
       type: string
