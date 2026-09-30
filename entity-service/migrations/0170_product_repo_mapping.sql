@@ -2,9 +2,6 @@
 -- One row per product. Many products may share one repository.
 -- No foreign key to product: staging cases are read from ServiceNow, while
 -- this table stays in Postgres.
---
--- Rows are loaded per environment outside this migration, so no repository
--- data is committed here.
 
 CREATE TABLE IF NOT EXISTS product_repo_mapping (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
