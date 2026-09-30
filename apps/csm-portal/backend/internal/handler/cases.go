@@ -452,6 +452,16 @@ func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) 
 	}
 	_ = json.Unmarshal(body, &reqMeta) // body is already validated JSON
 
+	// The route's own permission (PermCreateWorkNote) is deliberately
+	// broader than this: it also admits a worknote_creator-only caller, who
+	// must NOT be able to post anything but a work_note. Narrow back down
+	// to full PermWrite for every other type -- see PermCreateWorkNote's
+	// own doc comment.
+	if reqMeta.Type != "work_note" && !(h.access != nil && h.access.Permits(PermWrite, user.Roles)) {
+		writeError(w, http.StatusForbidden, ErrMsgForbidden)
+		return
+	}
+
 	if reqMeta.Type != "work_note" {
 		current, err := h.entity.GetCase(r.Context(), caseID)
 		if err != nil {

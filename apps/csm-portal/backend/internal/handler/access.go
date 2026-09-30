@@ -144,6 +144,20 @@ const (
 	// what the token claims, that one asks whether the person is still an
 	// employee. See internal/plg/plg.go.
 	PermUsePlg
+	// PermCreateWorkNote is posting a work_note-type comment on a case --
+	// POST /cases/{id}/comments, the route this gates. Deliberately broader
+	// than PermWrite at the ROUTE level (WorknoteCreator ∪ CsEngineer ∪
+	// Admin, a superset of PermWrite's CsEngineer ∪ Admin) so a
+	// WorknoteCreator-only caller can reach the handler at all; CaseHandler
+	// then requires the caller ALSO hold full PermWrite for any comment
+	// whose type is NOT work_note (a customer-visible reply, or any future
+	// type) -- same "broader route floor, narrower in-handler check for the
+	// more sensitive sub-action" shape as PermApproveTimeCard/
+	// PermViewSecurityCenter, just inverted: here the floor is the new
+	// permission and the narrower gate is the pre-existing one. A
+	// WorknoteCreator-only caller can therefore only ever post internal
+	// work notes, never a customer-visible comment.
+	PermCreateWorkNote
 	// PermManagePlaybooks is authoring a PLG playbook template: creating one,
 	// editing it, replacing its tasks, deleting it. Admin only.
 	//
@@ -189,6 +203,12 @@ type AccessConfig struct {
 	// PermUsageMetricsViewer/PermWrite/PermAdmin etc. are unaffected by
 	// this role.
 	SalesSolutions []string
+	// WorknoteCreator grants PermCreateWorkNote (see that permission's own
+	// doc comment) -- creating a work_note-type comment on a case, and
+	// nothing else. A holder still needs CsEngineer/Admin's own PermWrite
+	// to post a customer-visible reply, escalate, download an attachment,
+	// or any other write action; this role grants none of those.
+	WorknoteCreator []string
 }
 
 // AccessGuard authorises a request from the roles on the caller's validated
@@ -237,6 +257,9 @@ type portalRole struct {
 // plain Viewer, not sales_solutions or cs_engineer specifically -- see
 // PermSPLAccess's own doc comment for why that's a deliberately broader
 // audience check than the webapp's CsEngineer-first portal-nav choice.
+// worknote_creator is narrower still: it implies nothing but
+// PermCreateWorkNote, and even that is capped to work_note-type comments
+// only -- see that permission's own doc comment.
 func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	build := func(lists ...[]string) map[string]struct{} {
 		set := make(map[string]struct{})
@@ -258,6 +281,7 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			{"dashboard_designer", build(cfg.DashboardDesigner)},
 			{"admin", build(cfg.Admin)},
 			{"sales_solutions", build(cfg.SalesSolutions)},
+			{"worknote_creator", build(cfg.WorknoteCreator)},
 		},
 		allowed: map[Permission]map[string]struct{}{
 			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
@@ -289,6 +313,11 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			PermUsageMetricsViewer: build(cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin),
 			PermUsePlg:             build(cfg.CsEngineer, cfg.Admin),
 			PermManagePlaybooks:    build(cfg.Admin),
+			// The route-level floor for POST /cases/{id}/comments -- see
+			// PermCreateWorkNote's own doc comment for the in-handler
+			// narrowing that keeps a WorknoteCreator-only caller from
+			// posting anything but a work_note.
+			PermCreateWorkNote: build(cfg.WorknoteCreator, cfg.CsEngineer, cfg.Admin),
 		},
 	}
 }

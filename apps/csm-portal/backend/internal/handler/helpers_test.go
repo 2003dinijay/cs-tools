@@ -65,6 +65,25 @@ func withUser(r *http.Request) *http.Request {
 	return r.WithContext(middleware.WithUserInfo(r.Context(), testUser))
 }
 
+// testCsEngineerUser holds PermWrite (test-cs-engineer) -- unlike testUser
+// (deliberately SPL-only, see its own doc comment), for CreateCaseComment
+// subtests exercising the PermWrite narrowing PermCreateWorkNote's own doc
+// comment describes: a non-work_note (customer-visible) comment needs full
+// PermWrite, which testUser doesn't hold. Identity resolution for the
+// ownership check (resolveCurrentUserID) goes through the mocked entity
+// client's GetUserMe, not this struct's own fields, so which UserInfo is
+// injected doesn't affect it.
+var testCsEngineerUser = &middleware.UserInfo{
+	Email:  "engineer@example.com",
+	UserID: "f2d9bf5b-7067-43dc-8578-802c8623af5e",
+	Roles:  []string{"test-cs-engineer"},
+}
+
+// withCsEngineerUser returns r with testCsEngineerUser stored in its context.
+func withCsEngineerUser(r *http.Request) *http.Request {
+	return r.WithContext(middleware.WithUserInfo(r.Context(), testCsEngineerUser))
+}
+
 // ----- assertion helpers -----
 
 // assertStatus fails if the recorded status code differs from want.
