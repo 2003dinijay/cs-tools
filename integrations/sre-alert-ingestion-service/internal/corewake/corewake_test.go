@@ -39,7 +39,7 @@ func TestWake_PostsToAlertsCore(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(discard(), srv.URL+"/alert", "", time.Second)
+	c := New(discard(), srv.URL+"/alertz", "", time.Second)
 	c.Wake()
 	c.Wait(context.Background())
 	if calls.Load() != 1 || method != http.MethodPost {

@@ -97,7 +97,7 @@ func TestIsExpired(t *testing.T) {
 func TestParseCredentials(t *testing.T) {
 	t.Run("bearer base64 pair", func(t *testing.T) {
 		token := base64.StdEncoding.EncodeToString([]byte("alice:s3cr3t"))
-		r := httptest.NewRequest("POST", "/alert", nil)
+		r := httptest.NewRequest("POST", "/alertz", nil)
 		r.Header.Set("Authorization", "Bearer "+token)
 		u, s, ok := parseCredentials(r)
 		if !ok || u != "alice" || s != "s3cr3t" {
@@ -106,7 +106,7 @@ func TestParseCredentials(t *testing.T) {
 	})
 
 	t.Run("basic auth", func(t *testing.T) {
-		r := httptest.NewRequest("POST", "/alert", nil)
+		r := httptest.NewRequest("POST", "/alertz", nil)
 		r.SetBasicAuth("alice", "s3cr3t")
 		u, s, ok := parseCredentials(r)
 		if !ok || u != "alice" || s != "s3cr3t" {
@@ -120,7 +120,7 @@ func TestParseCredentials(t *testing.T) {
 	t.Run("scheme is case-insensitive", func(t *testing.T) {
 		token := base64.StdEncoding.EncodeToString([]byte("alice:s3cr3t"))
 		for _, scheme := range []string{"Bearer ", "bearer ", "BEARER ", "BeArEr "} {
-			r := httptest.NewRequest("POST", "/alert", nil)
+			r := httptest.NewRequest("POST", "/alertz", nil)
 			r.Header.Set("Authorization", scheme+token)
 			u, s, ok := parseCredentials(r)
 			if !ok || u != "alice" || s != "s3cr3t" {
@@ -132,7 +132,7 @@ func TestParseCredentials(t *testing.T) {
 	// A secret may contain colons; only the first one separates the pair.
 	t.Run("secret containing colons", func(t *testing.T) {
 		token := base64.StdEncoding.EncodeToString([]byte("alice:a:b:c"))
-		r := httptest.NewRequest("POST", "/alert", nil)
+		r := httptest.NewRequest("POST", "/alertz", nil)
 		r.Header.Set("Authorization", "Bearer "+token)
 		u, s, ok := parseCredentials(r)
 		if !ok || u != "alice" || s != "a:b:c" {
@@ -149,7 +149,7 @@ func TestParseCredentials(t *testing.T) {
 			"Bearer " + base64.StdEncoding.EncodeToString([]byte("empty-secret:")),
 			"Bogus scheme",
 		} {
-			r := httptest.NewRequest("POST", "/alert", nil)
+			r := httptest.NewRequest("POST", "/alertz", nil)
 			if header != "" {
 				r.Header.Set("Authorization", header)
 			}

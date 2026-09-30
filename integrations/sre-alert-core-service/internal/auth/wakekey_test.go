@@ -55,7 +55,7 @@ func TestRequireKey_Accepts(t *testing.T) {
 	for name, set := range cases {
 		t.Run(name, func(t *testing.T) {
 			h, ran := wakeGuarded(wakeTestKey)
-			r := httptest.NewRequest("POST", "/alert", nil)
+			r := httptest.NewRequest("POST", "/alertz", nil)
 			set(r)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, r)
@@ -82,7 +82,7 @@ func TestRequireKey_Rejects(t *testing.T) {
 	for name, set := range cases {
 		t.Run(name, func(t *testing.T) {
 			h, ran := wakeGuarded(wakeTestKey)
-			r := httptest.NewRequest("POST", "/alert", nil)
+			r := httptest.NewRequest("POST", "/alertz", nil)
 			set(r)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, r)
@@ -97,7 +97,7 @@ func TestRequireKey_Rejects(t *testing.T) {
 func TestRequireKey_EmptyKeyDisablesCheck(t *testing.T) {
 	h, ran := wakeGuarded("")
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/alert", nil))
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/alertz", nil))
 	if rec.Code != http.StatusAccepted || !*ran {
 		t.Errorf("code = %d, handler ran = %v", rec.Code, *ran)
 	}
@@ -107,7 +107,7 @@ func TestRequireKey_EmptyKeyDisablesCheck(t *testing.T) {
 func TestRequireKey_LeaksNoReason(t *testing.T) {
 	h, _ := wakeGuarded(wakeTestKey)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/alert", nil))
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/alertz", nil))
 	if body := rec.Body.String(); body != "unauthorized\n" {
 		t.Errorf("body = %q, want a bare \"unauthorized\"", body)
 	}
