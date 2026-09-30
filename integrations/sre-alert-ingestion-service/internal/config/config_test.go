@@ -73,7 +73,10 @@ func TestLoad_RejectsInvalidValues(t *testing.T) {
 		"zero drain delay":  "[server]\ndrain_delay = \"0s\"\n",
 		"budget over grace": "[server]\nshutdown_grace = \"10s\"\n",
 		"steps over grace":  "[server]\nrequest_wait = \"20s\"\n",
-		"wait near write":   "[server]\nwrite_timeout = \"8500ms\"\n",
+		"wait near write":   "[server]\nwrite_timeout = \"10500ms\"\n",
+		"deadline at gap":   "[store]\nwrite_deadline = \"10m\"\n",
+		"zero deadline":     "[store]\nwrite_deadline = \"0s\"\n",
+		"queue bytes small": "[allocator]\nqueue_max_bytes = 1048576\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -90,7 +93,7 @@ func TestLoad_RejectsInvalidValues(t *testing.T) {
 
 func TestLoadEnv(t *testing.T) {
 	t.Setenv("PORT", "")
-	t.Setenv("ALERT_CORE_WAKE_URL", " http://core/alert ")
+	t.Setenv("ALERT_CORE_WAKE_URL", " http://core/alertz ")
 	t.Setenv("FALLBACK_CHAT_WEBHOOK_URLS", "https://a, ,https://b ")
 	e, err := LoadEnv()
 	if err != nil {
@@ -99,7 +102,7 @@ func TestLoadEnv(t *testing.T) {
 	if e.Port != "8080" {
 		t.Errorf("Port = %q, want 8080 default", e.Port)
 	}
-	if e.WakeURL != "http://core/alert" {
+	if e.WakeURL != "http://core/alertz" {
 		t.Errorf("WakeURL = %q", e.WakeURL)
 	}
 	if len(e.ChatWebhookURLs) != 2 || e.ChatWebhookURLs[0] != "https://a" || e.ChatWebhookURLs[1] != "https://b" {

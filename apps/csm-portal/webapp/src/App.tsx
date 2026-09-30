@@ -36,6 +36,7 @@ import {
   firstEnabledDestination,
 } from "@config/featureFlags";
 import { usePortalAccess } from "@context/current-user/usePortalAccess";
+import { usePortalView } from "@context/current-user/usePortalView";
 import {
   POST_LOGIN_REDIRECT_KEY,
   PostLoginRedirectConsumer,
@@ -107,6 +108,21 @@ import CsmTimeCardsPage from "@features/csm-timecards/pages/CsmTimeCardsPage";
 import CsmAnnouncementsPage from "@features/csm-announcements/pages/CsmAnnouncementsPage";
 import CsmAnnouncementCreatePage from "@features/csm-announcements/pages/CsmAnnouncementCreatePage";
 import HelpPage from "@features/help/pages/HelpPage";
+import RouteGuard from "@features/spl/pages/RouteGuard";
+import AccountsPage from "@features/spl/accounts/pages/AccountsPage";
+import AccountDetailPage from "@features/spl/accounts/pages/AccountDetailPage";
+import ProjectsPage from "@features/spl/projects/pages/ProjectsPage";
+import ProjectDetailPage from "@features/spl/projects/pages/ProjectDetailPage";
+import SlaReportPage from "@features/spl/reports/pages/SlaReportPage";
+import CsReportPage from "@features/spl/reports/pages/CsReportPage";
+import TimelogsReportPage from "@features/spl/reports/pages/TimelogsReportPage";
+import TeamSchedulePage from "@features/spl/schedule/pages/TeamSchedulePage";
+import UserScanPage from "@features/spl/user-scan/pages/UserScanPage";
+import UsageMetricsPage from "@features/spl/usage-metrics/pages/UsageMetricsPage";
+import CustomerHealthDashboardPage from "@features/spl/customer-health/pages/CustomerHealthDashboardPage";
+import CustomerHealthDetailPage from "@features/spl/customer-health/pages/CustomerHealthDetailPage";
+// Cases lands in its own follow-up PR (feat/spl-merge-2-cases) -- see this
+// PR's own description for why this port was split by domain.
 
 /**
  * Landing for `/`. Defers to AuthGuard's post-login deep-link restore when a
@@ -138,7 +154,14 @@ function RootLanding(): JSX.Element | null {
   const hasDeepLinkSearch = ["goto", "q"].some((key) =>
     Boolean(searchParams.get(key)?.trim()),
   );
-  return pending || hasDeepLinkSearch ? null : <Navigate to="/dashboard" replace />;
+  // The Sales/SA view has no dashboard (SPL never had one) — its landing
+  // page is Cases, same as the standalone app's own index redirect (see
+  // usePortalView.ts). Cases itself lands in a follow-up PR
+  // (feat/spl-merge-2-cases); until it merges, Accounts is this view's
+  // landing page instead.
+  const view = usePortalView();
+  const landing = view === "sales-sa" ? "/spl/accounts" : "/dashboard";
+  return pending || hasDeepLinkSearch ? null : <Navigate to={landing} replace />;
 }
 
 /**
@@ -610,6 +633,63 @@ export default function App(): JSX.Element {
                       than its own route, so unlike Customers/Settings above
                       there is nothing to redirect an index route to. */}
                   <Route path="help" element={<HelpPage />} />
+
+                  {/* Support Portal Lite — ported from the former standalone
+                      apps/support-portal-lite/webapp. RouteGuard is the
+                      real enforcement point (an audience-gate 403, not just
+                      a hidden nav entry) and also mounts
+                      PermissionProvider for every screen below it.
+                      Cases lands in its own follow-up PR -- this port was
+                      split by domain to stay under CodeRabbit's 100-file
+                      review limit. */}
+                  <Route path="spl" element={<RouteGuard />}>
+                    {/* AccountsPage reads the path leaf itself to decide
+                        all-accounts vs my-accounts — same component, two
+                        routes. Only "accounts" has a csmNavItems.ts entry;
+                        "my-accounts" is reachable from within the page
+                        itself (a toggle), same as the source app. */}
+                    <Route path="accounts" element={<AccountsPage />} />
+                    <Route path="my-accounts" element={<AccountsPage />} />
+                    <Route path="accounts/:accountId" element={<AccountDetailPage />} />
+
+                    <Route path="projects" element={<ProjectsPage />} />
+                    {/* ProjectDetailPage only reads :projectId — reachable
+                        both directly and nested under its account, matching
+                        both links the source app's own components use. */}
+                    <Route path="projects/:projectId" element={<ProjectDetailPage />} />
+                    <Route
+                      path="accounts/:accountId/projects/:projectId"
+                      element={<ProjectDetailPage />}
+                    />
+                    <Route
+                      path="projects/:projectId/sla-report/:sysId"
+                      element={<SlaReportPage />}
+                    />
+                    <Route
+                      path="projects/:projectId/cs-report/:sysId"
+                      element={<CsReportPage />}
+                    />
+                    <Route
+                      path="projects/:projectId/timelogs-report"
+                      element={<TimelogsReportPage />}
+                    />
+
+                    <Route path="team-schedule" element={<TeamSchedulePage />} />
+                    <Route path="team-schedule/:sysId" element={<TeamSchedulePage />} />
+
+                    <Route path="user-scan" element={<UserScanPage />} />
+
+                    <Route path="usage-metrics" element={<UsageMetricsPage />} />
+
+                    <Route
+                      path="customer-health"
+                      element={<CustomerHealthDashboardPage />}
+                    />
+                    <Route
+                      path="customer-health/account/:accountId"
+                      element={<CustomerHealthDetailPage />}
+                    />
+                  </Route>
                 </Route>
               </Route>
 

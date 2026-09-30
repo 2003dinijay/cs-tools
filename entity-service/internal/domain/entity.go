@@ -541,6 +541,7 @@ const (
 	SalesforceEntityProjectContact    = "Project_Contact__c"
 	SalesforceEntityProjectContactAlt = "Project_Contact"
 	SalesforceEntityContact           = "Contact"
+	SalesforceEntityOpportunity       = "Opportunity"
 	SalesforceSyncActor               = "salesforce-sync"
 	// PortalMembershipWriteActor is created_by/updated_by for a membership
 	// written by a portal rather than by the Salesforce ingest, so the two
@@ -569,24 +570,44 @@ type SalesforceEventRequest struct {
 }
 
 // SalesforceAccountUpsert is the mapped Salesforce Account written to account.
+// Every field is a column Salesforce owns; the CSM-only columns (cre/sre
+// team, support tier and timezone, suspension state, AI flags, drive
+// location, and number once set) have no field here and are never written.
 type SalesforceAccountUpsert struct {
-	SfID                      string
-	Name                      string
-	Number                    string
-	Industry                  *string
-	Region                    *string
-	GlobalPod                 *string
-	Phone                     *string
-	KeepExistingPhone         bool
-	SalesRegion               *string
-	SubRegion                 *string
-	AccountVertical           *string
-	LifeCycle                 *string
-	NAICSIndustry             *string
-	SubIndustry               *string
-	Classification            *string
-	TechnicalOwnerID          *string
+	SfID              string
+	Name              string
+	Number            string
+	Industry          *string
+	Region            *string
+	GlobalPod         *string
+	Phone             *string
+	KeepExistingPhone bool
+	SalesRegion       *string
+	SubRegion         *string
+	LifeCycle         *string
+	NAICSIndustry     *string
+	SubIndustry       *string
+	Classification    *string
+	TechnicalOwnerID  *string
+	Street            *string
+	City              *string
+	StateProvince     *string
+	PostalCode        *string
+	Country           *string
+	AccountManagerID  *string
+	ActivationDate    *time.Time
+	LostDate          *time.Time
+	LostReason        *string
+
+	// The fields below come from the Sales Entity SE-1 change. Until it is
+	// deployed they are always nil, so the upsert writes them as
+	// COALESCE(new, stored): a nil keeps the value the ServiceNow sync loaded.
+	CustomerSuccessManagerID  *string
 	SecondaryTechnicalOwnerID *string
+	RenewalAccountManagerID   *string
+	AccountVertical           *string
+	LostReasonCategory        *string
+	DeactivationDate          *time.Time
 }
 
 // Salesforce Project_Contact__c states, as stored in Salesforce State__c and
@@ -643,10 +664,21 @@ type SalesforceMembershipUpsert struct {
 	ProjectSfID string
 	ProjectKey  string
 
+	// IsPrimaryContact is the contact's Salesforce primary_contact__c,
+	// written to account_contact.is_primary_contact on insert and update.
+	// nil (the portal writes, or a Sales Entity response without the key)
+	// inserts FALSE and leaves an existing row's value alone.
+	IsPrimaryContact *bool
+
 	// GlobalRoles are the role.name values the user must hold after the upsert
-	// (e.g. external, customer, customer_admin). Roles not listed here and not
-	// in ManagedAdminRoles are left untouched.
+	// (e.g. external, customer). Roles not listed here and not in
+	// ManagedGlobalRoles or ManagedAdminRoles are left untouched.
 	GlobalRoles []string
+	// ManagedGlobalRoles is the {customer, partner} pair when the contact's
+	// account classification is known: every role in it that GlobalRoles
+	// does not list is revoked, so a reclassified account flips the role
+	// instead of accumulating both. Empty revokes nothing.
+	ManagedGlobalRoles []string
 	// ManagedAdminRoles are the role.name values the ingest owns exclusively
 	// (customer_admin, partner_admin). Exactly one of them is granted when
 	// the user turns out to be an admin, and every one of them that is not
@@ -654,9 +686,9 @@ type SalesforceMembershipUpsert struct {
 	// alone.
 	ManagedAdminRoles []string
 	// AdminRoleName is which of ManagedAdminRoles this contact would hold if
-	// they are an admin: partner_admin for a PARTNER CONTACT, customer_admin
-	// otherwise, and empty for an integration user (which gets no global
-	// roles at all).
+	// they are an admin: partner_admin when the contact's account is
+	// classified Partner, customer_admin otherwise, and empty for an
+	// integration user (which gets no global roles at all).
 	//
 	// WHETHER they hold it is NOT decided from the membership being written.
 	// Admin is a project role now, and the account-level role is derived: the
@@ -695,6 +727,53 @@ type SalesforceMembershipUpsertResult struct {
 	// just applied: true when at least one of this user's live memberships
 	// carries the project ADMIN role (or the contact's Salesforce isCsAdmin
 	// flag is set), which is exactly when AdminRoleName is held.
+	IsAccountAdmin bool
+}
+
+// SalesforceContactUpsert is the Contact writer's input: one Salesforce
+// Contact, resolved to its CSM account, written to "user", account_contact
+// and the contact-derived part of user_role in one transaction. It exists so
+// a contact with no project membership (a commercial or billing contact) is
+// still represented in CSM, and so a contact edit is applied once rather
+// than once per membership.
+type SalesforceContactUpsert struct {
+	ContactSfID string
+	// Email is the contact's address, lower-cased; it resolves the user when
+	// no row carries ContactSfID yet.
+	Email     string
+	Name      string
+	FirstName string
+	LastName  string
+	// AccountID is the CSM id of the contact's account (EnsureAccount has
+	// already resolved or created it); AccountSfID is its Salesforce Id.
+	AccountID   string
+	AccountSfID string
+	// IsPrimaryContact is written to account_contact.is_primary_contact; nil
+	// keeps the stored value (FALSE on insert).
+	IsPrimaryContact    *bool
+	IsCsAdmin           bool
+	IsCsIntegrationUser bool
+
+	// The role fields mean what they mean on SalesforceMembershipUpsert.
+	GlobalRoles        []string
+	ManagedGlobalRoles []string
+	ManagedAdminRoles  []string
+	AdminRoleName      string
+}
+
+// SalesforceContactUpsertResult reports what the Contact writer resolved or
+// changed.
+type SalesforceContactUpsertResult struct {
+	UserID                string
+	AccountContactID      string
+	CreatedUser           bool
+	CreatedAccountContact bool
+	// DeactivatedAccountContacts counts the account_contact rows on other
+	// accounts that this write deactivated because the contact moved away
+	// from them.
+	DeactivatedAccountContacts int64
+	// IsAccountAdmin is the derived admin decision, as on
+	// SalesforceMembershipUpsertResult.
 	IsAccountAdmin bool
 }
 
@@ -759,6 +838,66 @@ type CreateProjectMembershipRequest struct {
 	// Trusted only because every caller of this route is an allow-listed
 	// internal client.
 	InviterEmail string `json:"inviterEmail,omitempty"`
+}
+
+// ValidateProjectMembershipRequest is the body of
+// POST /projects/{id}/contacts/validate: the invitation to check, without
+// making it. InviterEmail means exactly what it means on
+// CreateProjectMembershipRequest.
+type ValidateProjectMembershipRequest struct {
+	Email        string `json:"email"`
+	InviterEmail string `json:"inviterEmail,omitempty"`
+}
+
+// Reasons a ProjectMembershipValidation gives for refusing an invitation.
+// Each names the status the invitation itself would have been refused with,
+// so a caller can keep answering its own users the way it did before.
+const (
+	// MembershipValidationConflict: the address is already an active contact
+	// on the project, or Salesforce holds more than one contact for it (409).
+	MembershipValidationConflict = "CONFLICT"
+	// MembershipValidationForbidden: the invitation is not allowed, e.g. a
+	// public email domain, a domain outside the allowed list, or an inviter
+	// whose account neither owns nor partners the project (403).
+	MembershipValidationForbidden = "FORBIDDEN"
+	// MembershipValidationInvalid: the invitation cannot be made as it
+	// stands, e.g. the account has no domain list defined (400).
+	MembershipValidationInvalid = "INVALID"
+)
+
+// ProjectMembershipValidation is the answer of
+// POST /projects/{id}/contacts/validate. A refused invitation is an ordinary
+// answer here (Valid false, with Reason and Message), not an error status:
+// the error statuses are kept for the call itself failing, so a caller can
+// tell "this person may not be invited" apart from "the check could not run".
+type ProjectMembershipValidation struct {
+	Valid bool `json:"valid"`
+	// Reason is one of the MembershipValidation* constants. Empty when Valid.
+	Reason string `json:"reason,omitempty"`
+	// Message says why, in words safe to show the person who is inviting:
+	// the wording the project-contact onboarding service used.
+	Message string `json:"message,omitempty"`
+	// ExistingMembershipState is the state of the membership this project
+	// already holds for the address, when there is one. On a valid answer it
+	// can only be DEACTIVATED, meaning the invitation would bring it back.
+	ExistingMembershipState string `json:"existingMembershipState,omitempty"`
+	// ExistingContact is the Salesforce contact the invitation would adopt,
+	// when one already exists. Set only on a valid answer.
+	ExistingContact *ValidatedInvitee `json:"existingContact,omitempty"`
+}
+
+// ValidatedInvitee is the existing Salesforce contact an invitation would
+// adopt rather than create.
+type ValidatedInvitee struct {
+	ContactSfID           string  `json:"contactSfId"`
+	Email                 string  `json:"email"`
+	FirstName             string  `json:"firstName,omitempty"`
+	LastName              string  `json:"lastName,omitempty"`
+	IsCsAdmin             bool    `json:"isCsAdmin"`
+	IsCsIntegrationUser   bool    `json:"isCsIntegrationUser"`
+	AccountSfID           *string `json:"accountSfId,omitempty"`
+	AccountClassification *string `json:"accountClassification,omitempty"`
+	IsPartnerAccount      *bool   `json:"isPartnerAccount,omitempty"`
 }
 
 // UpdateProjectMembershipRolesRequest is the body of
@@ -878,6 +1017,60 @@ type SearchOnboardingStepsResponse struct {
 // GetOnboardingStepsResponse is the body of GET /onboarding-steps/{membershipSfId}.
 type GetOnboardingStepsResponse struct {
 	Steps []OnboardingStep `json:"steps"`
+}
+
+// SalesforceIngestStatus is salesforce_ingest_state.status: the outcome of the
+// last ingest of one Salesforce record. There is no SKIPPED — a duplicate
+// event is not written to the ledger at all.
+type SalesforceIngestStatus string
+
+const (
+	SalesforceIngestSucceeded SalesforceIngestStatus = "SUCCEEDED"
+	SalesforceIngestFailed    SalesforceIngestStatus = "FAILED"
+)
+
+// SalesforceIngestEntityAccount is the salesforce_ingest_state.entity value
+// of the Account family. Each family that records into the ledger adds its
+// own constant here, named after the CSM table it writes.
+const SalesforceIngestEntityAccount = "account"
+
+// SalesforceIngestEntityOpportunity is the salesforce_ingest_state.entity
+// value of the Opportunity family (table sf_opportunity).
+const SalesforceIngestEntityOpportunity = "opportunity"
+
+// SalesforceIngestEntityContact is the salesforce_ingest_state.entity value
+// of the Contact writer, which owns the "user" and account_contact rows of a
+// Salesforce Contact (two tables, so the ledger names the Salesforce concept).
+const SalesforceIngestEntityContact = "contact"
+
+// SalesforceIngestState is one row of salesforce_ingest_state — see migration
+// 0170 for the column semantics. It is the ledger the duplicate guard reads
+// for every ingested object other than a membership (those use
+// OnboardingStep), and the failure record the delayed-retry job re-runs.
+type SalesforceIngestState struct {
+	Entity          string                 `json:"entity"`
+	SfID            string                 `json:"sfId"`
+	EventModifiedOn time.Time              `json:"eventModifiedOn"`
+	EventType       string                 `json:"eventType"`
+	Status          SalesforceIngestStatus `json:"status"`
+	LastError       *string                `json:"lastError"`
+	AttemptCount    int                    `json:"attemptCount"`
+	CreatedOn       time.Time              `json:"createdOn"`
+	UpdatedOn       time.Time              `json:"updatedOn"`
+}
+
+// UpsertSalesforceIngestStateRequest is what an ingest writes to the ledger
+// after (or alongside, in the same transaction) its row write. Repeating it
+// for the same (entity, sfId) updates the row; attemptCount counts consecutive
+// failures (it restarts at 1 on a success or the first failure after one).
+type UpsertSalesforceIngestStateRequest struct {
+	Entity          string
+	SfID            string
+	EventModifiedOn time.Time
+	EventType       string
+	Status          SalesforceIngestStatus
+	// LastError is the failure text for a FAILED write; nil for SUCCEEDED.
+	LastError *string
 }
 
 // SubscriptionType classifies the subscription type of a project.
@@ -2013,6 +2206,12 @@ const (
 	CaseCauseInfrastructureProxy           CaseCause = "INFRASTRUCTURE_PROXY"
 	CaseCauseInfrastructureOther           CaseCause = "INFRASTRUCTURE_OTHER"
 	CaseCauseUnknown                       CaseCause = "UNKNOWN"
+	// CaseCauseUserMistake (case_cause_enum, migration 0108) has no
+	// ServiceNow numeric choice-value counterpart in snCauseKey -- a
+	// dual-write UpdateCase setting this cause gets a clean ValidationError
+	// from that map's own existence check rather than a wrong/silent write,
+	// so this is safe to allow on the Postgres-generic path without it.
+	CaseCauseUserMistake CaseCause = "USER_MISTAKE"
 )
 
 // EngagementType classifies the type of an engagement case.
@@ -2253,15 +2452,23 @@ type CaseView struct {
 	// Severity/IssueType/State are null in practice for a large share of
 	// real cases -- see domain.Case's own doc comment for the confirmed
 	// production null rates.
-	Severity       *CaseSeverity  `json:"severity"`
-	IssueType      *CaseIssueType `json:"issueType"`
-	State          *CaseState     `json:"state"`
-	WorkState      *CaseWorkState `json:"workState"`
-	Type           *string        `json:"type"`
-	EngagementType *string        `json:"engagementType"`
-	CreatedOn      time.Time      `json:"createdOn"`
-	UpdatedOn      time.Time      `json:"updatedOn"`
-	ClosedOn       *time.Time     `json:"closedOn"`
+	Severity  *CaseSeverity  `json:"severity"`
+	IssueType *CaseIssueType `json:"issueType"`
+	State     *CaseState     `json:"state"`
+	WorkState *CaseWorkState `json:"workState"`
+	Type      *string        `json:"type"`
+	// AnnouncementType is only meaningful when Type is "announcement" -- the
+	// real ServiceNow classification (u_announcement_type, migrated into
+	// Postgres' own announcement.announcement_type column) of "GENERAL" vs
+	// "SECURITY", set at creation time from CreateCaseRequest.IsSecurityAnnouncement
+	// (which already exists for a different purpose -- see that field's own
+	// doc comment -- reused here rather than adding a second flag for the
+	// same underlying yes/no). Nil for every other case-like type.
+	AnnouncementType *string    `json:"announcementType,omitempty"`
+	EngagementType   *string    `json:"engagementType"`
+	CreatedOn        time.Time  `json:"createdOn"`
+	UpdatedOn        time.Time  `json:"updatedOn"`
+	ClosedOn         *time.Time `json:"closedOn"`
 	// CreatedBy is the canonical user reference for the case creator. Its id is
 	// populated only where the backing data source already supplies one, and
 	// null otherwise: see UserReference.
@@ -2950,6 +3157,21 @@ type WatchListUser struct {
 	UserName string `json:"userName"`
 	Name     string `json:"name,omitempty"`
 	Email    string `json:"email,omitempty"`
+	// Locked is true when this watcher is currently one of the case's
+	// project's account's four named stakeholders (customer success manager,
+	// technical owner, secondary technical owner, account manager --
+	// CaseRepository.AccountDefaultWatcherIDs). A caller cannot remove a
+	// locked watcher via UpdateCase's WatchList field -- see
+	// caseService.updateCaseWatchList's own doc comment -- so a UI should
+	// disable the remove control for these specifically, rather than let the
+	// removal silently fail to stick. Computed live from the account's
+	// current stakeholder columns, not stamped at the time the watcher was
+	// added, so it tracks a later stakeholder change (e.g. a reassigned CSM)
+	// automatically rather than going stale. Postgres-data-source only --
+	// this concept has no ServiceNow-side equivalent, so a ServiceNow-backed
+	// watcher is always Locked: false, which is accurate for that data
+	// source (nothing there enforces this rule).
+	Locked bool `json:"locked"`
 	// User is the canonical user reference for this watcher, a sibling of the
 	// flat id/userName/name/email fields. Its id is always null: a watch-list
 	// entry is not guaranteed to point at a user record (the list collapses
@@ -3019,6 +3241,11 @@ type CreateCaseRequest struct {
 	// For engagement type
 	EngagementType        EngagementType        `json:"engagementType"`
 	EngagementPaymentType EngagementPaymentType `json:"engagementPaymentType"`
+	// For announcement type only -- decides the case's default audience:
+	// true resolves to every project contact holding the SECURITY_CONTACT
+	// project role, false to every contact holding PORTAL_USER. Ignored for
+	// every other type. See publishCaseCreatedEvent's own doc comment.
+	IsSecurityAnnouncement bool `json:"isSecurityAnnouncement,omitempty"`
 }
 
 // CommentType classifies the type of a case comment.
@@ -5387,6 +5614,10 @@ type IncidentView struct {
 	ResolvedBy      *string `json:"resolvedBy"`
 	ResolvedOn      *string `json:"resolvedOn"`
 	IncidentReport  *string `json:"incidentReport"`
+	// Description is ServiceNow's incident.description field (separate from Subject, which
+	// maps to the shorter short_description), read from work_item.description -- the same
+	// column every other work_item type already uses for its own long-form description.
+	Description *string `json:"description"`
 	// SpecialistHandoff is the derived summary of a specialist-group handoff, null when the
 	// incident has never been handed off. Nothing is persisted for it: the backing data
 	// source recomputes it at read time, so a handoff performed through its own native UI
@@ -5568,6 +5799,7 @@ type ProblemDetail struct {
 	ID                  *string         `json:"id"`
 	Number              *string         `json:"number"`
 	Subject             *string         `json:"subject"`
+	Description         *string         `json:"description"`
 	State               *string         `json:"state"`
 	Priority            *string         `json:"priority"`
 	Category            *string         `json:"category"`
@@ -5588,10 +5820,16 @@ type ProblemDetail struct {
 }
 
 // CreateProblemRequest is the request body for POST /problems. Subject is required;
-// Category, Subcategory, OriginCaseID, and PrimaryIncidentID are optional. OriginCaseID
-// and PrimaryIncidentID are UUIDs from the caller's perspective.
+// Description, Category, Subcategory, OriginCaseID, and PrimaryIncidentID are optional.
+// OriginCaseID and PrimaryIncidentID are UUIDs from the caller's perspective.
+//
+// Description round-trips on both data sources: the Postgres path persists it on
+// work_item.description, and the ServiceNow path forwards it to the Choreo
+// integration's POST /problems payload (see ProblemService.CreateProblem's
+// ServiceNow implementation, sn_problem_service.go).
 type CreateProblemRequest struct {
 	Subject           string  `json:"subject"`
+	Description       *string `json:"description,omitempty"`
 	Category          *string `json:"category,omitempty"`
 	Subcategory       *string `json:"subcategory,omitempty"`
 	OriginCaseID      *string `json:"originCaseId,omitempty"`
@@ -6991,9 +7229,26 @@ type SLAStatus struct {
 	CaseTitle  string `json:"caseTitle,omitempty"`
 	CaseType   string `json:"caseType,omitempty"`
 	Product    string `json:"product,omitempty"`
-	Team       string `json:"team,omitempty"`
-	Priority   string `json:"priority,omitempty"`
-	State      string `json:"state,omitempty"`
+	// Team is the case's account's CRE team display name (account.cre_team_id
+	// joined to "group") -- "" when the case has no account, or the account
+	// has no CRE team assigned.
+	Team     string `json:"team,omitempty"`
+	Priority string `json:"priority,omitempty"`
+	State    string `json:"state,omitempty"`
+	// ProjectOnboardingStatus/IsEvaluationAccount exist purely for
+	// csm-notification-service's own SLA breach-alert Chat-audience
+	// routing, the same team/onboarding/evaluation facts case.created's own
+	// Chat alert uses (see that payload's own doc comment on the
+	// csm-notification-service side). ProjectOnboardingStatus is the
+	// case's project.onboarding_status raw enum label (e.g. "IN_PROGRESS"),
+	// "" when the case has no project or the column is unset.
+	// IsEvaluationAccount is true when the project's project_type is
+	// "Evaluation Subscription" (matched by project_type.name, not a
+	// hardcoded id -- see evaluationSubscriptionProjectTypeName's own doc
+	// comment). Both are best-effort display/routing enrichment, not part
+	// of the SLA clock itself.
+	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
+	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
 }
 
 // SearchSLAStatusResponse is the response for GET /sla-status — every

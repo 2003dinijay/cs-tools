@@ -498,7 +498,6 @@ func escapeHTML(s string) string {
 	return b.String()
 }
 
-
 // applyOptionalBlock handles a template section wrapped in
 // "<!-- [BLOCK:<name>_START] -->"..."<!-- [BLOCK:<name>_END] -->": if value is
 // empty, the whole section (markers included) is removed; otherwise only the
@@ -639,8 +638,14 @@ type CaseCreatedEmailData struct {
 }
 
 // RenderCaseCreatedEmail fills in the "case created" HTML email template.
+// Priority and Product each drop their whole row (not just render blank)
+// when unset — every case type but "case" has no Priority, and
+// "announcement" has neither, since neither concept applies to those types
+// (see entity-service's own validateCreateCaseRequest/publishCaseCreatedEvent).
 func RenderCaseCreatedEmail(data CaseCreatedEmailData) (string, []InlineImage) {
 	tmpl := applyOptionalBlock(caseCreatedTemplate, "IMPACT", data.IncidentImpactDescription)
+	tmpl = applyOptionalBlock(tmpl, "PRIORITY", data.Priority)
+	tmpl = applyOptionalBlock(tmpl, "PRODUCT", data.Product)
 	// Description and IncidentImpactDescription both end up as attachments
 	// on this same outgoing email, so they must share one budget — see
 	// inlineImageBudget's own doc comment for why a fresh one per call

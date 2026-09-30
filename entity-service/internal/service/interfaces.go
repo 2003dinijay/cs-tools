@@ -220,6 +220,12 @@ type ProjectMembershipWriteService interface {
 	// systems, and a project_contact.invited event. A ConflictError when the
 	// address is already an active contact on the project.
 	Invite(ctx context.Context, projectID string, req domain.CreateProjectMembershipRequest) (domain.ProjectMembership, error)
+	// ValidateInvitation is Invite's dry run: the same checks, in the same
+	// order, against the same project and membership, with nothing written
+	// and nothing published. A refused invitation comes back as a
+	// ProjectMembershipValidation with Valid false; an error means the check
+	// itself could not be made.
+	ValidateInvitation(ctx context.Context, projectID string, req domain.ValidateProjectMembershipRequest) (domain.ProjectMembershipValidation, error)
 	// UpdateRoles replaces the membership's Salesforce roles, and with them
 	// its project groups. The state is untouched.
 	UpdateRoles(ctx context.Context, projectID, email string, req domain.UpdateProjectMembershipRolesRequest) (domain.ProjectMembership, error)
@@ -618,6 +624,17 @@ type CaseService interface {
 	// caller's AccessScope -- see ProjectService.GetProjectByID's identical
 	// note and CLAUDE.md for the full rule.
 	GetCaseByID(ctx context.Context, id string) (domain.CaseView, error)
+	// ProjectContactEmailsByRole returns the distinct project_contact email
+	// addresses for projectID whose contact currently holds role (a
+	// project_role_enum label, e.g. "SECURITY_CONTACT" or "PORTAL_USER") --
+	// see CaseRepository.ProjectContactEmailsByRole's own doc comment for the
+	// full join. Used by publishCaseCreatedEvent to resolve an announcement
+	// case's recipients. A deployment with no Postgres access at all (a pure
+	// ServiceNow data source with no pgFallback configured) returns an empty
+	// slice and no error -- this schema is Postgres-only, and an announcement
+	// case there simply falls back to the account's default watchers, same
+	// as an empty real result.
+	ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error)
 	// SearchCases returns a paginated list of cases filtered by optional project IDs,
 	// deployment IDs, deployed product IDs, state keys, severity keys, and search query.
 	// A ValidationError is returned for invalid input; any other error indicates an

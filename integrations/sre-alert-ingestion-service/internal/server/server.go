@@ -51,9 +51,12 @@ type Request struct {
 	RemoteAddr  string
 	ContentType string
 	Body        []byte
+	// Team is the ?team= query parameter (AWS SNS subscription emails).
+	Team string
 }
 
-// Result is the Pipeline's outcome. Status is one of 201, 400 or 503; Error is the message
+// Result is the Pipeline's outcome. Status is one of 200 (SNS subscription confirmation, nothing
+// stored), 201, 400 or 503; Error is the message
 // returned in the body for 400/503.
 type Result struct {
 	Status int
@@ -76,7 +79,7 @@ type Rejection struct {
 	RequestID   string
 	RemoteAddr  string
 	ContentType string
-	// Body is what was read; for a 413 it stops at the size limit.
+	// Body is the start of the request body (the card preview); BodySize is the full size.
 	Body     []byte
 	BodySize int64
 	// VendorTotal is this replica's rejection count for Vendor since it started.
@@ -100,6 +103,8 @@ type Options struct {
 	Rejects      RejectNotifier // nil only logs rejections
 	Vendors      []string
 	MaxBodyBytes int64
+	// PreviewChars is how much of a body a rejection keeps (reject.body_preview_chars).
+	PreviewChars int
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	// IdleTimeout closes keep-alive connections nobody is using, so idle vendor connections
@@ -116,6 +121,7 @@ type Server struct {
 	rejectCounts sync.Map // vendor -> *atomic.Int64
 	vendors      map[string]bool
 	maxBodyBytes int64
+	previewChars int
 	draining     atomic.Bool
 	handler      http.Handler
 	readTimeout  time.Duration
@@ -132,6 +138,7 @@ func New(opts Options) *Server {
 		rejects:      opts.Rejects,
 		vendors:      make(map[string]bool, len(opts.Vendors)),
 		maxBodyBytes: opts.MaxBodyBytes,
+		previewChars: opts.PreviewChars,
 		readTimeout:  opts.ReadTimeout,
 		writeTimeout: opts.WriteTimeout,
 		idleTimeout:  opts.IdleTimeout,
@@ -206,7 +213,7 @@ func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 			if size < 0 {
 				size = int64(len(body))
 			}
-			s.reject(r, vendor, http.StatusRequestEntityTooLarge, "payload too large", body, size)
+			s.reject(r, vendor, http.StatusRequestEntityTooLarge, "payload too large", s.preview(body), size)
 			writeJSON(w, http.StatusRequestEntityTooLarge, rejected("payload too large"))
 			return
 		}
@@ -224,16 +231,22 @@ func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 		writeUnavailable(w, "ingestion not configured")
 		return
 	}
-	res := s.pipeline.Ingest(r.Context(), Request{
+	// Only the preview is used after this, so the full body can be freed while Submit waits.
+	preview, size := s.preview(body), int64(len(body))
+	req := Request{
 		Vendor:      vendor,
 		RequestID:   RequestID(r.Context()),
 		Route:       r.URL.Path,
 		RemoteAddr:  r.RemoteAddr,
 		ContentType: r.Header.Get("Content-Type"),
 		Body:        body,
-	})
+		Team:        r.URL.Query().Get("team"),
+	}
+	res := s.pipeline.Ingest(r.Context(), req)
 	info.altIDs, info.err = res.AltIDs, res.Error
 	switch res.Status {
+	case http.StatusOK:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "subscription confirmation handled"})
 	case http.StatusCreated:
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"status":  "stored",
@@ -241,7 +254,7 @@ func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 			"count":   len(res.AltIDs),
 		})
 	case http.StatusBadRequest:
-		s.reject(r, vendor, http.StatusBadRequest, res.Error, body, int64(len(body)))
+		s.reject(r, vendor, http.StatusBadRequest, res.Error, preview, size)
 		writeJSON(w, http.StatusBadRequest, rejected(res.Error))
 	default:
 		writeUnavailable(w, res.Error)
@@ -249,20 +262,26 @@ func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 // reject logs a rejected webhook, counts it per vendor, and hands it to the RejectNotifier.
-func (s *Server) reject(r *http.Request, vendor string, status int, msg string, body []byte, size int64) {
+func (s *Server) reject(r *http.Request, vendor string, status int, msg, preview string, size int64) {
 	counter, _ := s.rejectCounts.LoadOrStore(vendor, new(atomic.Int64))
 	total := counter.(*atomic.Int64).Add(1)
-	preview, _ := textutil.Truncate(string(body), logPreviewChars)
+	logPreview, _ := textutil.Truncate(preview, logPreviewChars)
 	s.logger.Warn("webhook rejected", "request_id", RequestID(r.Context()), "vendor", vendor,
-		"status", status, "error", msg, "body_size", size, "body_preview", preview,
+		"status", status, "error", msg, "body_size", size, "body_preview", logPreview,
 		"vendor_rejections_total", total)
 	if s.rejects != nil {
 		s.rejects.Rejected(Rejection{
 			Vendor: vendor, Status: status, Error: msg, Route: r.URL.Path,
 			RequestID: RequestID(r.Context()), RemoteAddr: r.RemoteAddr,
-			ContentType: r.Header.Get("Content-Type"), Body: body, BodySize: size, VendorTotal: total,
+			ContentType: r.Header.Get("Content-Type"), Body: []byte(preview), BodySize: size, VendorTotal: total,
 		})
 	}
+}
+
+// preview keeps the start of body needed by the log line and the Chat card.
+func (s *Server) preview(body []byte) string {
+	p, _ := textutil.Truncate(string(body), max(logPreviewChars, s.previewChars))
+	return p
 }
 
 func rejected(msg string) map[string]string {
