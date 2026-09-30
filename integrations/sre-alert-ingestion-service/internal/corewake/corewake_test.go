@@ -50,8 +50,30 @@ func TestWake_PostsToAlertsCore(t *testing.T) {
 
 func TestWake_SendsAuthHeaderWhenCredentialsSet(t *testing.T) {
 	var gotAuth string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := New(discard(), srv.URL, "webhook-integration-user", "s3cr3t", time.Second)
+	c.http = srv.Client()
+	c.http.Timeout = time.Second
+	c.Wake()
+	c.Wait(context.Background())
+
+	want := "Bearer " + base64.StdEncoding.EncodeToString([]byte("webhook-integration-user:s3cr3t"))
+	if gotAuth != want {
+		t.Errorf("Authorization = %q, want %q", gotAuth, want)
+	}
+}
+
+func TestWake_NoAuthHeaderOverPlainHTTPEvenWithCredentials(t *testing.T) {
+	var gotAuth string
+	seen := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
+		seen = true
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer srv.Close()
@@ -60,9 +82,11 @@ func TestWake_SendsAuthHeaderWhenCredentialsSet(t *testing.T) {
 	c.Wake()
 	c.Wait(context.Background())
 
-	want := "Bearer " + base64.StdEncoding.EncodeToString([]byte("webhook-integration-user:s3cr3t"))
-	if gotAuth != want {
-		t.Errorf("Authorization = %q, want %q", gotAuth, want)
+	if !seen {
+		t.Fatal("request never reached the server")
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization = %q, want empty (plain-http wake url must never carry credentials)", gotAuth)
 	}
 }
 
