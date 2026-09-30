@@ -261,14 +261,29 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// repository serves EnsureAccount's read even while the Account
 		// branch (the write side) is off, and the salesforce_ingest_state
 		// ledger is where every non-membership family records its version.
+		projectIngestRepo := repository.NewSalesforceProjectRepository(db)
 		ingestSupport := service.SalesforceIngestSupport{
 			Accounts: accountRepo,
 			States:   repository.NewSalesforceIngestStateRepository(db),
+			Projects: projectIngestRepo,
 		}
-		// The Opportunity branch (sf_opportunity + derived line items) is
-		// attached to whichever service variant is built below; off, the
-		// envelopes are acknowledged and ignored.
+		// The Project branch is update-only unless its insert switch is on
+		// too (csm-sync-service still inserts project rows until cutover).
+		withProjectIngest := func(svc service.SalesforceEventService) service.SalesforceEventService {
+			if !cfg.CSMMigrationSalesforceProjectIngestEnabled {
+				return svc
+			}
+			return service.WithProjectIngest(svc, service.ProjectIngest{
+				Projects:      projectIngestRepo,
+				SalesEntity:   salesEntityClient,
+				InsertEnabled: cfg.CSMMigrationSalesforceProjectInsertEnabled,
+			})
+		}
+		// The Opportunity branch (sf_opportunity + derived line items) and
+		// the Project branch are attached to whichever service variant is
+		// built below; off, the envelopes are acknowledged and ignored.
 		withOpportunityIngest := func(svc service.SalesforceEventService) service.SalesforceEventService {
+			svc = withProjectIngest(svc)
 			if !cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
 				return svc
 			}
@@ -310,6 +325,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				retryWorker := service.NewSalesforceIngestRetryWorker(stepRepo, retrier, ingestSupport.States, cfg.SalesforceIngestRetryInterval)
 				if opp, ok := membershipIngestSvc.(service.OpportunityReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
 					retryWorker.EntityRetriers[domain.SalesforceIngestEntityOpportunity] = opp.RetryOpportunityIngest
+				}
+				if project, ok := membershipIngestSvc.(service.ProjectReingester); ok && cfg.CSMMigrationSalesforceProjectIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityProject] = project.RetryProjectIngest
 				}
 				// The Contact writer runs under the membership ingest, which is
 				// on whenever this job runs, so its retrier needs no extra flag.

@@ -542,6 +542,7 @@ const (
 	SalesforceEntityProjectContactAlt = "Project_Contact"
 	SalesforceEntityContact           = "Contact"
 	SalesforceEntityOpportunity       = "Opportunity"
+	SalesforceEntityProject           = "Project__c"
 	SalesforceSyncActor               = "salesforce-sync"
 	// PortalMembershipWriteActor is created_by/updated_by for a membership
 	// written by a portal rather than by the Salesforce ingest, so the two
@@ -1042,6 +1043,10 @@ const SalesforceIngestEntityOpportunity = "opportunity"
 // of the Contact writer, which owns the "user" and account_contact rows of a
 // Salesforce Contact (two tables, so the ledger names the Salesforce concept).
 const SalesforceIngestEntityContact = "contact"
+
+// SalesforceIngestEntityProject is the salesforce_ingest_state.entity value
+// of the Project family (table project).
+const SalesforceIngestEntityProject = "project"
 
 // SalesforceIngestState is one row of salesforce_ingest_state — see migration
 // 0170 for the column semantics. It is the ledger the duplicate guard reads
