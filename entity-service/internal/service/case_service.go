@@ -76,15 +76,14 @@ type caseService struct {
 	// other mode (plain caseService never creates a case of its own that
 	// needs this — see NewCaseService).
 	slaEngine SLAEngineService
-	// supportEngineerRole is the entity-service-internal role name (e.g. an
-	// org-specific "sn_customerservice_agent") identifying a support
-	// engineer's reply for the CSM-native SLA engine's response-clock
-	// completion — see completeResponseSLAOnComment's own doc comment.
-	// "" (unconfigured) means this can never be confirmed, so that hook
-	// skips entirely rather than guessing — same posture
-	// snCaseService.csEngineerRole's own doc comment describes for its own,
-	// separate ServiceNow-mode config (CS_ENGINEER_ROLE).
-	supportEngineerRole string
+	// csEngineerRole is config.Config.CSEngineerRole (CS_ENGINEER_ROLE) --
+	// the same role name snCaseService's own csEngineerRole field uses,
+	// shared rather than duplicated: "CS engineer" and "support engineer"
+	// are the same real-world role, just checked here via a different
+	// lookup (see completeResponseSLAOnComment's own doc comment). ""
+	// (unconfigured) means this can never be confirmed, so that hook skips
+	// entirely rather than guessing.
+	csEngineerRole string
 }
 
 // caseResolutionFields carries the resolution data that accompanies a
@@ -177,14 +176,14 @@ func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepo
 // whose CreateCase/UpdateCase perform the real ServiceNow POST/PATCH. It is
 // never made the active CaseService here — reads always stay on Postgres in
 // this mode.
-func NewCaseServiceWithSNWriteback(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService, projectContactRepo repository.ProjectContactRepository, dispatcher *SNWritebackDispatcher, mirror CaseService, slaEngine SLAEngineService, supportEngineerRole string) CaseService {
+func NewCaseServiceWithSNWriteback(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService, projectContactRepo repository.ProjectContactRepository, dispatcher *SNWritebackDispatcher, mirror CaseService, slaEngine SLAEngineService, csEngineerRole string) CaseService {
 	return &caseService{
 		repo: repo, userRepo: userRepo, publisher: publisher, access: access,
-		projectContactRepo:  projectContactRepo,
-		snWriteback:         dispatcher,
-		snMirror:            mirror,
-		slaEngine:           slaEngine,
-		supportEngineerRole: supportEngineerRole,
+		projectContactRepo: projectContactRepo,
+		snWriteback:        dispatcher,
+		snMirror:           mirror,
+		slaEngine:          slaEngine,
+		csEngineerRole:     csEngineerRole,
 	}
 }
 
@@ -866,24 +865,25 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 // completeResponseSLAOnComment best-effort marks the case's CSM-native
 // "response" SLA clock complete (SLAEngineService.CompleteResponseClock,
 // idempotent -- see repository.SLAEngineRepository.CompleteClock's own doc
-// comment) when actorEmail holds s.supportEngineerRole. This is the
-// Postgres/dual-write path's equivalent of
-// snCaseService.applyResponseSLAOnComment, which only ever ran for the
-// plain ServiceNow data source -- a real, live-observed gap: a support
-// engineer's reply on a dual-write case never stopped the response clock,
-// so it kept running to breach regardless of how quickly the case was
-// actually answered.
+// comment) when actorEmail holds s.csEngineerRole. This is caseService's
+// own equivalent of snCaseService.applyResponseSLAOnComment, which caseService
+// never reached before now -- a real, live-observed gap: a support
+// engineer's reply never stopped the response clock on this path, so it
+// kept running to breach regardless of how quickly the case was actually
+// answered. Shares the one CS_ENGINEER_ROLE config with that hook --
+// "CS engineer" and "support engineer" are the same real-world role, just
+// checked here via a different lookup (GetUserRoles) than snCaseService's
+// own.
 //
 // Skips entirely, rather than guessing, when: s.slaEngine or
-// s.supportEngineerRole is unset (no database, or the role name isn't
-// configured -- see supportEngineerRole's own doc comment); actorEmail
-// doesn't resolve to a real user row (the M2M CreateCaseCommentAs path
-// deliberately has none -- see that method's own doc comment, "no
-// GetUserByEmail lookup happens here"); or the role lookup itself fails.
-// None of these fail the comment creation itself -- the comment has
-// already been written by the time this runs.
+// s.csEngineerRole is unset (no database, or the role name isn't
+// configured); actorEmail doesn't resolve to a real user row (the M2M
+// CreateCaseCommentAs path deliberately has none -- see that method's own
+// doc comment, "no GetUserByEmail lookup happens here"); or the role lookup
+// itself fails. None of these fail the comment creation itself -- the
+// comment has already been written by the time this runs.
 func (s *caseService) completeResponseSLAOnComment(ctx context.Context, caseID, actorEmail string) {
-	if s.slaEngine == nil || s.supportEngineerRole == "" {
+	if s.slaEngine == nil || s.csEngineerRole == "" {
 		return
 	}
 	user, err := s.userRepo.GetUserByEmail(ctx, actorEmail)
@@ -895,7 +895,7 @@ func (s *caseService) completeResponseSLAOnComment(ctx context.Context, caseID, 
 		slog.ErrorContext(ctx, "create comment: response SLA not evaluated, user role lookup failed", "caseId", caseID)
 		return
 	}
-	if !slices.Contains(roles, s.supportEngineerRole) {
+	if !slices.Contains(roles, s.csEngineerRole) {
 		return
 	}
 	s.slaEngine.CompleteResponseClock(ctx, caseID)

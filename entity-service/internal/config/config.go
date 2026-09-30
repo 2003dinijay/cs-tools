@@ -210,33 +210,23 @@ type Config struct {
 	// nothing to do with case state) — the two are read by separate
 	// processes/environments and don't interact.
 	CustomerRoles []string
-	// CSEngineerRole is the ServiceNow role name (e.g. an org-specific
-	// "sn_*" role) whose presence on a case comment's resolved author marks
-	// that comment as a qualifying CS-engineer response — see
-	// sn_case_service.go's applyResponseSLAOnComment, which the CSM-native
-	// SLA engine (internal/service/sla_engine_service.go) uses to complete
-	// a case's "response" SLA clock. Deliberately no committed default:
-	// this is organisation-specific vocabulary, same reasoning
-	// CustomerRoles' own doc comment gives. Left unset, that function
-	// simply can't confirm engineer-authorship and skips (logged) — not
-	// fatal, not required by Validate. Read for the plain ServiceNow data
-	// source only — see SupportEngineerRole below for the Postgres/
-	// dual-write equivalent, a deliberately separate config since Postgres'
-	// own user_role table uses its own role vocabulary, not ServiceNow's
-	// role names.
+	// CSEngineerRole is the role name (e.g. an org-specific "sn_*" role)
+	// whose presence on a case comment's resolved author marks that comment
+	// as a qualifying CS-engineer/support-engineer response — see
+	// sn_case_service.go's applyResponseSLAOnComment and
+	// case_service.go's completeResponseSLAOnComment, both of which the
+	// CSM-native SLA engine (internal/service/sla_engine_service.go) uses
+	// to complete a case's "response" SLA clock. Deliberately no committed
+	// default: this is organisation-specific vocabulary, same reasoning
+	// CustomerRoles' own doc comment gives. Left unset, those functions
+	// simply can't confirm engineer-authorship and skip (logged) — not
+	// fatal, not required by Validate. Shared by both `snCaseService` (checked
+	// via `SNUserService`'s own role lookup) and `caseService` (checked
+	// against `repository.UserRepository.GetUserRoles`' own user_role
+	// vocabulary) — the same role name is meaningful in both, since
+	// "CS engineer" and "support engineer" are the same real-world role,
+	// not two different configs.
 	CSEngineerRole string
-	// SupportEngineerRole is caseService.completeResponseSLAOnComment's own
-	// equivalent of CSEngineerRole above, for the Postgres/dual-write case-
-	// comment path (caseService.createCaseCommentAs) — CSEngineerRole only
-	// ever gates snCaseService's own hook, which that path never reaches
-	// (this was a real, live-observed gap: a support engineer's reply on a
-	// dual-write case never stopped the response SLA clock at all). The
-	// role name is checked against repository.UserRepository.GetUserRoles'
-	// own vocabulary (user_role), not ServiceNow's, so the two configs are
-	// genuinely independent values, not just independent env vars for the
-	// same one. Same no-committed-default, "unset means skip, not fatal"
-	// reasoning as CSEngineerRole.
-	SupportEngineerRole string
 	// SLARecomputeInterval is how often SLAEngineRecomputeWorker
 	// recomputes every CSM-native "sla" row's elapsed percentage/breach
 	// status (internal/service/sla_engine_recompute_worker.go). Same
@@ -391,7 +381,6 @@ func Load() *Config {
 		AuthInternalClientIDsRaw:                      os.Getenv("AUTH_INTERNAL_CLIENT_IDS"),
 		CustomerRoles:                                 splitComma(os.Getenv("CUSTOMER_ROLES")),
 		CSEngineerRole:                                os.Getenv("CS_ENGINEER_ROLE"),
-		SupportEngineerRole:                           os.Getenv("SUPPORT_ENGINEER_ROLE"),
 		SLARecomputeInterval:                          envDuration("SLA_RECOMPUTE_INTERVAL", 45*time.Second),
 		SalesforceIngestRetryInterval:                 envDurationOrOff("SALESFORCE_INGEST_RETRY_INTERVAL", 5*time.Minute),
 		SalesEntityBaseURL:                            os.Getenv("SALES_ENTITY_BASE_URL"),

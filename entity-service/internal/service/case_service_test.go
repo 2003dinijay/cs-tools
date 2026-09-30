@@ -2781,7 +2781,7 @@ func TestCaseService_CreateCaseComment_CompletesResponseSLAForSupportEngineer(t 
 
 // TestCaseService_CreateCaseComment_DoesNotCompleteResponseSLAForNonEngineer
 // proves the hook above is genuinely role-gated, not unconditional -- a
-// reply from someone who does not hold supportEngineerRole must not
+// reply from someone who does not hold csEngineerRole must not
 // complete the clock, the same "can't confirm, skip" posture
 // snCaseService.applyResponseSLAOnComment's own doc comment describes.
 func TestCaseService_CreateCaseComment_DoesNotCompleteResponseSLAForNonEngineer(t *testing.T) {

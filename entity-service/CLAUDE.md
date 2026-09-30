@@ -1599,17 +1599,18 @@ regardless of severity.
   state transition ever paused/resumed/completed workaround or resolution,
   and no severity change ever revised a case's clocks, for any dual-write
   case, full stop. Each is now its own hook on `caseService`:
-  - **`completeResponseSLAOnComment`** (`createCaseCommentAs`) — gated on a
-    new config, `SupportEngineerRole` (`SUPPORT_ENGINEER_ROLE`), the
-    Postgres/dual-write equivalent of `CSEngineerRole`
-    (`CS_ENGINEER_ROLE`) — a genuinely separate value, not just a second
-    env var for the same one: it's checked against
-    `repository.UserRepository.GetUserRoles`' own vocabulary (`user_role`),
-    not ServiceNow's role names. Resolves the comment author via
-    `userRepo.GetUserByEmail` then `GetUserRoles` — tolerates both failing
-    (the M2M `CreateCaseCommentAs` path has no guaranteed user row, per
-    that method's own doc comment) by skipping, the same "can't confirm,
-    skip" posture `CSEngineerRole` itself uses when unconfigured.
+  - **`completeResponseSLAOnComment`** (`createCaseCommentAs`) — gated on
+    the same `CSEngineerRole` (`CS_ENGINEER_ROLE`) config
+    `snCaseService.applyResponseSLAOnComment` already uses, shared rather
+    than duplicated: "CS engineer" and "support engineer" are the same
+    real-world role, just checked against a different role vocabulary here
+    (`repository.UserRepository.GetUserRoles`, Postgres' own `user_role`
+    table) than `snCaseService`'s own lookup. Resolves the
+    comment author via `userRepo.GetUserByEmail` then `GetUserRoles` —
+    tolerates both failing (the M2M `CreateCaseCommentAs` path has no
+    guaranteed user row, per that method's own doc comment) by skipping,
+    the same "can't confirm, skip" posture `CSEngineerRole` itself uses
+    when unconfigured.
   - **`ApplyCaseStateEffects`** (`UpdateCase`) — fires unconditionally
     whenever `req.State != nil`, not gated on a genuine change, matching
     `snCaseService`'s own call site exactly: every effect it applies is
