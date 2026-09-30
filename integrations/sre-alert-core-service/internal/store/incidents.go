@@ -39,12 +39,7 @@ var incidentColumns = []string{
 // Bounds unbounded lists so a flapping alert can't blow past Cosmos's row-size limit; AlertCount keeps growing regardless.
 const maxWorkNotes = 200
 
-// ErrStaleWrite means the row's version no longer matched what the caller last read: another
-// replica (typically a new leader after this one's lease already expired) wrote to it first.
-// Cosmos's Cassandra API only supports equality in LWT conditions, so every mutating call here
-// is "read version, write IF version = <that value>" rather than a monotonic "IF version < ?"
-// check; a caller that hits this should drop the write and let the next read pick up fresh state,
-// not blindly retry with the stale data it already has.
+// ErrStaleWrite means another replica already wrote this row first (e.g. a new leader after this one's lease expired); callers should drop the write and let the next read pick up fresh state.
 var ErrStaleWrite = errors.New("incident row was modified concurrently")
 
 // IncidentRepo owns the incidents table; dedup uniqueness is a lightweight CAS transaction on fingerprint.
@@ -81,10 +76,7 @@ func isPending(csmConfirmed, csmPermanentlyFailed bool, pendingNotesLen int) boo
 	return owesCSMOrChat || owesNotes
 }
 
-// casUpdate applies a version-fenced UPDATE on incidents_processed. setCols/values must not
-// include "version" or "fingerprint"; both are bound here. On success it returns the row's new
-// version; on a lost race (another writer already advanced version past expectedVersion) it
-// returns ErrStaleWrite instead of overwriting that newer write.
+// casUpdate applies a version-fenced UPDATE on incidents_processed (setCols/values must exclude "version"/"fingerprint", bound here), returning the new version or ErrStaleWrite on a lost race.
 func (r *IncidentRepo) casUpdate(ctx context.Context, fp string, expectedVersion int64, setCols []string, values qb.M) (int64, error) {
 	stmt, names := qb.Update("incidents_processed").
 		Set(setCols...).
@@ -266,8 +258,7 @@ func (r *IncidentRepo) Upsert(ctx context.Context, alertID string, a model.Alert
 	return updated, false, nil
 }
 
-// RecordAlertID appends alertID for idempotent annotate-only paths, matching Upsert's dedup check; no-op if already present.
-// Returns the row's new version on success so the caller can keep chaining fenced writes on the same row.
+// RecordAlertID appends alertID for idempotent annotate-only paths (no-op if already present) and returns the row's new version so callers can chain further fenced writes.
 func (r *IncidentRepo) RecordAlertID(ctx context.Context, existing model.Incident, alertID string) (int64, error) {
 	for _, seen := range existing.AlertIDs {
 		if seen == alertID {
@@ -389,8 +380,7 @@ func (r *IncidentRepo) ListPending(ctx context.Context) ([]model.Incident, error
 			continue // index entry outlived its row; skip, nothing to retry.
 		}
 		if !isPending(inc.CSMConfirmed, inc.CSMPermanentlyFailed, len(inc.PendingNotes)) {
-			// Index entry is stale (e.g. a partial failure between the primary write and its index
-			// sync elsewhere) -- self-heal so future sweeps don't keep re-reading a delivered incident.
+			// Index entry is stale (e.g. a partial failure elsewhere); self-heal so future sweeps don't re-read a delivered incident.
 			_ = r.setPendingIndex(ctx, row.Fingerprint, false)
 			continue
 		}

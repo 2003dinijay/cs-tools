@@ -49,9 +49,7 @@ type Notifier struct {
 	callerID                string
 	unknownServiceID        string
 	services                *serviceCache
-	// serviceResolveGroup collapses concurrent cache misses for the same never-before-seen label into
-	// one CSM search, so an alert storm across the fingerprint-sharded worker pool doesn't fire N
-	// identical SearchServiceID calls for a label none of the workers has resolved yet.
+	// serviceResolveGroup collapses concurrent cache misses for the same unresolved label into one CSM search.
 	serviceResolveGroup     singleflight.Group
 	fallbackChatWebhookURLs []string
 	maxAttempts             int
@@ -218,8 +216,7 @@ func (n *Notifier) resolveServiceID(ctx context.Context, label string) (string, 
 	if id, ok := n.services.get(label, time.Now()); ok {
 		return id, nil
 	}
-	// Concurrent workers resolving the same unresolved label collapse into one CSM search; every
-	// caller waiting on it gets that single result rather than each firing its own SearchServiceID.
+	// Concurrent workers resolving the same unresolved label collapse into one CSM search.
 	v, err, _ := n.serviceResolveGroup.Do(label, func() (any, error) {
 		id, err := n.csm.SearchServiceID(ctx, label)
 		if err != nil {
@@ -243,8 +240,7 @@ func (n *Notifier) resolveServiceID(ctx context.Context, label string) (string, 
 // maxEnvironmentLen matches ServiceNow's custom incident.u_enviroment field's max_length.
 const maxEnvironmentLen = 40
 
-// truncateRunes bounds s to at most n runes, so a caller-supplied value never
-// overflows a downstream fixed-width field like ServiceNow's u_enviroment.
+// truncateRunes bounds s to at most n runes, so it never overflows a downstream fixed-width field like ServiceNow's u_enviroment.
 func truncateRunes(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {

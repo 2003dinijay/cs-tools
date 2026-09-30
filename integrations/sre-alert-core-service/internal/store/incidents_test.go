@@ -23,14 +23,7 @@ import (
 	"github.com/scylladb/gocqlx/v2/qb"
 )
 
-// TestCasUpdate_QueryShape locks down the exact CQL shape casUpdate relies on: version is bound
-// under two distinct names (new_version for the SET, expected_version for the IF), and the IF
-// clause is a plain equality check. This repo has no Cassandra test harness to exercise casUpdate
-// against a live session, but a positional/name collision between the SET and IF sides of "version"
-// -- or accidentally using Lt/LtOrEq instead of Eq -- is exactly the kind of mistake that only shows
-// up against Cosmos DB's Cassandra API, whose LWT conditions support equality only (see casUpdate's
-// doc comment). Building the same qb chain here and asserting on it catches that class of mistake
-// without needing a live connection.
+// TestCasUpdate_QueryShape locks down casUpdate's CQL shape: version bound under distinct SET/IF names with an equality-only IF clause, since Cosmos's Cassandra API supports no other comparator.
 func TestCasUpdate_QueryShape(t *testing.T) {
 	stmt, names := qb.Update("incidents_processed").
 		Set("alert_count").
@@ -55,9 +48,7 @@ func TestCasUpdate_QueryShape(t *testing.T) {
 			t.Fatalf("bound names = %v, want %v", names, wantNames)
 		}
 	}
-	// The SET side and the IF side must bind under different names -- both touch the same
-	// "version" column, so reusing one name would silently force the new value to equal the
-	// old one (or vice versa) instead of letting expectedVersion and expectedVersion+1 differ.
+	// SET and IF sides of "version" must bind under distinct names, or the new/old values would collide.
 	if names[1] == names[3] {
 		t.Fatalf("SET and IF sides of version must bind under distinct names, both got %q", names[1])
 	}

@@ -57,9 +57,7 @@ type Settings struct {
 	MaxWindow int
 	// NotifySweepInterval is the retry cadence for unconfirmed CSM/Chat notifications, independent of and concurrent-safe with the alert cycle.
 	NotifySweepInterval time.Duration
-	// GapTimeout is how long an alert id may stay missing, measured from when the current leader
-	// first saw it missing, before it's skipped. Every missing id in the window ages at once, so a
-	// whole gap is skipped together after one GapTimeout; zero disables skipping.
+	// GapTimeout is how long an alert id may stay missing before it's skipped; a whole gap is skipped together after one GapTimeout, zero disables skipping.
 	GapTimeout time.Duration
 }
 
@@ -179,8 +177,7 @@ func (p *Poller) processWindow(ctx context.Context, cursor, latest int64) int64 
 	// Stage 1: read + normalize every id in the window concurrently, into disjoint slots.
 	slots := p.readWindow(ctx, base, n)
 
-	// Stage 2: decide per id. Ready ids are handled; terminal ids and ids missing for GapTimeout
-	// are skipped; the walk stops at a newer missing id or a read error (never skipped).
+	// Stage 2: decide per id, skipping terminal/GapTimeout-expired ids, stopping at a newer missing id or read error.
 	d := decideWindow(slots, base, time.Now(), p.settings.GapTimeout, p.gaps)
 	if len(d.skipped) > 0 {
 		p.logSkipped(d.skipped)
@@ -234,9 +231,7 @@ type prepared struct {
 	notFound bool
 }
 
-// readWindow reads n alert ids starting at base concurrently, bounded by ReadConcurrency. Prepare
-// never returns an error itself (failures are folded into outcome/notFound), so the errgroup here
-// is purely a bounded fan-out; g.Wait()'s error is always nil.
+// readWindow reads n alert ids starting at base concurrently, bounded by ReadConcurrency; Prepare never errors itself, so g.Wait()'s error is always nil.
 func (p *Poller) readWindow(ctx context.Context, base int64, n int) []prepared {
 	slots := make([]prepared, n)
 	g, gctx := errgroup.WithContext(ctx)

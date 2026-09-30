@@ -33,9 +33,7 @@ type alertReader interface {
 	Get(ctx context.Context, id string) (model.Alert, error)
 }
 
-// incidentStore lets tests fake *store.IncidentRepo without the full repo type. Every mutating
-// method is version-fenced: it returns the row's new version on success, or store.ErrStaleWrite
-// when another replica (e.g. a new leader after this one's lease expired) already wrote first.
+// incidentStore lets tests fake *store.IncidentRepo without the full repo type; every mutating method returns the row's new version or store.ErrStaleWrite when another replica wrote first.
 type incidentStore interface {
 	FindByFingerprint(ctx context.Context, fingerprint string) (model.Incident, bool, error)
 	Upsert(ctx context.Context, alertID string, a model.Alert, severityNum int) (model.Incident, bool, error)
@@ -78,8 +76,7 @@ type Engine struct {
 	locks *fpLocks
 }
 
-// CSMRetryConfig bounds RetrySweep's exponential backoff for CSM retries, so a prolonged outage
-// doesn't get hit on every sweep: waits grow BaseDelay, BaseDelay*Multiplier, ..., capped at MaxDelay.
+// CSMRetryConfig bounds RetrySweep's exponential backoff for CSM retries: waits grow BaseDelay, BaseDelay*Multiplier, ..., capped at MaxDelay.
 type CSMRetryConfig struct {
 	BaseDelay  time.Duration
 	Multiplier float64
@@ -249,9 +246,7 @@ func (e *Engine) annotate(ctx context.Context, existing model.Incident, alertID,
 	incidentID, incidentNumber := current.IncidentID, current.IncidentNumber
 	unlock()
 
-	// Push now if CSM already has this incident; if not (CSM unconfirmed), the note stays in
-	// PendingNotes and RetrySweep's ListPending will flush it once CSM confirms. deliverAndPersist
-	// re-acquires the lock itself, so it must run after this one is released.
+	// Push now if CSM already has this incident, else it stays in PendingNotes for RetrySweep; deliverAndPersist re-locks itself, so it must run after unlock.
 	if incidentID != "" {
 		e.deliverAndPersist(ctx, fp)
 	}
@@ -343,8 +338,7 @@ func (e *Engine) deliverAndPersist(ctx context.Context, fingerprint string) {
 		cancel()
 		if startErr != nil {
 			if errors.Is(startErr, store.ErrStaleWrite) {
-				// Another replica already wrote this row (e.g. it took over leadership); back off
-				// rather than notify CSM against a fingerprint we no longer have exclusive delivery of.
+				// Another replica already wrote this row (e.g. took over leadership); back off instead of notifying CSM without exclusive delivery.
 				e.logger.Warn("incident changed concurrently, deferring delivery", "incident_number", inc.IncidentNumber)
 				return
 			}

@@ -63,11 +63,8 @@ CREATE TABLE IF NOT EXISTS alertintegration.incidents_processed (
   AND cosmosdb_cell_level_timestamp_tombstones = true
   AND cosmosdb_cell_level_timetolive = true;
 
--- If incidents_processed already existed before the version column was added, run this once (repeating
--- it after the column exists is a no-op error, so don't include it in routine `make migrate`-style setup):
+-- On a pre-existing incidents_processed table, run once (not part of routine `make migrate`-style setup); legacy rows read back version as 0, which is correct.
 --   ALTER TABLE alertintegration.incidents_processed ADD version bigint;
--- Existing rows read back version as 0 (Cassandra's zero-value for a null bigint scanned into Go),
--- which is exactly the value a lease-fenced write on a legacy row should expect.
 
 -- Maintained index of incidents still owing CSM/Chat delivery work, so RetrySweep never has to scan all of incidents_processed.
 CREATE TABLE IF NOT EXISTS alertintegration.incidents_pending (

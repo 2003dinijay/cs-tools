@@ -22,8 +22,7 @@ import (
 	"go.uber.org/goleak"
 )
 
-// TestMain fails the suite if any test in this package leaves a goroutine running, catching a
-// class of bug unit test assertions alone never would in a concurrency-heavy service like this one.
+// TestMain fails the suite if any test in this package leaves a goroutine running.
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
