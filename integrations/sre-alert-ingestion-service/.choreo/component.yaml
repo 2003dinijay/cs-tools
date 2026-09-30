@@ -25,6 +25,7 @@ endpoints:
     type: REST
     networkVisibilities:
       - Public
+    schemaFilePath: openapi.yaml
   - name: healthz
     displayName: SRE Alert Ingestion Healthz
     service:

@@ -591,8 +591,19 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// snCommentMirror interface) through snWritebackDispatcher, asynchronously;
 		// and it is caseAttachmentOverrideSvc below, for case attachments
 		// specifically.
-		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, slaEngineSvc)
-		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo, snWritebackDispatcher, snCaseMirrorSvc)
+		// snCaseMirrorSvc's own slaEngine is deliberately nil here, mirroring
+		// its nil publisher just above: SLA clock registration must not run
+		// as a side effect of this synchronous, SN-first CreateCase call —
+		// its own Postgres work_item row doesn't exist yet at this point
+		// (created in caseService.createCaseSNFirst right after this call
+		// returns), and "sla".work_item_id has a hard foreign key against
+		// it. caseService itself registers the clocks, via its own
+		// slaEngine below, once that insert has actually succeeded — see
+		// registerCaseSLAClocksEvent's own doc comment for the bug this
+		// fixed (every dual-write case creation silently failed clock
+		// registration with a foreign-key violation).
+		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, nil)
+		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo, snWritebackDispatcher, snCaseMirrorSvc, slaEngineSvc)
 		// Case ATTACHMENTS are ServiceNow-only in this mode, permanently —
 		// unlike case metadata (CREATE/UPDATE above), not a pilot scope
 		// decision but a hard requirement: the sftpgo-backed Postgres
@@ -748,16 +759,21 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	catalogHandler := handler.NewCatalogHandler(activeCatalogSvc)
 
-	// Case feedback (CSAT submissions) is a ServiceNow-only entity -- no
-	// feedback table exists anywhere in migrations/ -- but the routes are
-	// registered for both data sources, same as tasks above: with no handler
-	// the mux answers a silent, undocumented 404, while the OpenAPI spec
-	// documents a 503 ErrorResponse for these paths. The Postgres stand-in
-	// supplies that 503.
+	// Case feedback (CSAT submissions): the ServiceNow data source reads it
+	// from the backing system; both Postgres data sources read
+	// work_item_feedback (migration 0102). Dual write deliberately does NOT
+	// read from the backing system -- like every other read in that mode it
+	// stays on Postgres -- and the CSM side never writes feedback, so there is
+	// no writeback wrapper here. Routes are registered for every data source;
+	// NewUnavailableFeedbackService remains only as the documented-503
+	// fallback for a source with no feedback store.
 	var activeFeedbackSvc service.FeedbackService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeFeedbackSvc = service.NewServiceNowFeedbackService(serviceNowIntegrationServiceClient)
-	} else {
+	case config.DataSourcePostgres, config.DataSourcePostgresServiceNowDualWrite:
+		activeFeedbackSvc = service.NewPostgresFeedbackService(repository.NewFeedbackRepository(db))
+	default:
 		activeFeedbackSvc = service.NewUnavailableFeedbackService()
 	}
 	feedbackHandler := handler.NewFeedbackHandler(activeFeedbackSvc)
@@ -1033,6 +1049,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("GET /team-schedule/my-lead-teams", scheduleHandler.GetMyLeadTeams)
 		mux.HandleFunc("POST /team-schedule/assignments/apply", scheduleHandler.ApplyScheduleRange)
 		mux.HandleFunc("POST /team-schedule/absences/apply", scheduleHandler.ApplyScheduleAbsence)
+		mux.HandleFunc("DELETE /team-schedule/absences/{id}", scheduleHandler.DeleteScheduleAbsence)
+		mux.HandleFunc("POST /team-schedule/absence-kinds", scheduleHandler.CreateScheduleAbsenceKind)
+		mux.HandleFunc("DELETE /team-schedule/absence-kinds/{code}", scheduleHandler.DeleteScheduleAbsenceKind)
 	}
 	if announcementRequestHandler != nil {
 		mux.HandleFunc("POST /announcement-requests", announcementRequestHandler.CreateAnnouncementRequest)

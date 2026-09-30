@@ -536,21 +536,20 @@ easy to wire up for real once both exist.
   `publishIncidentCreated`, called the same way. No enrichment round trip is
   needed here: `req.Subject`/`req.AdditionalComments` already carry
   everything the payload needs (`Title`/`ShortDescription`, the latter
-  falling back to `Subject` when `AdditionalComments` is absent). This
-  service does not build or send an `IncidentLink` at all — this stays
-  strictly a publisher of the fact that an incident was created, nothing
-  more; `csm-notification-service` builds its own "Open in Portal" link
-  from the event's `EntityID` (`recipientlinks.Resolver.IncidentLink`), the
-  same way it already builds `case.created`'s portal link rather than
-  trusting a caller-supplied one — see that service's own `CLAUDE.md`.
-  Likewise, neither `Product` (which Google Chat space) nor `CallTo`
-  (on-call number) is ever set from this service — per explicit decision,
-  all notification-routing resolution belongs entirely in
-  `csm-notification-service`, which substitutes its own configured defaults
-  (`DEFAULT_CHAT_PRODUCT`/`INCIDENT_DEFAULT_CALL_TO`) when either is absent
-  from the payload. Consuming events and sending emails/Chat alerts/calls is
-  never this service's job — only publishing the raw fact that something
-  happened is.
+  falling back to `Subject` when `AdditionalComments` is absent).
+  `incident.created` has exactly one reaction on the receiving side now — a
+  Twilio voice call — not a Google Chat alert: `csm-notification-service`
+  removed that reaction entirely, per explicit product direction (an
+  incident pages on-call directly; a separate Chat post was redundant with
+  that) — see that service's own `CLAUDE.md`. `CallTo` (on-call number) is
+  never set from this service either way — per explicit decision, all
+  notification-routing resolution belongs entirely in
+  `csm-notification-service`, which substitutes its own configured
+  `INCIDENT_DEFAULT_CALL_TO` when it's absent from the payload. `Product` is
+  still accepted on the wire (decode compatibility) but no longer read by
+  `csm-notification-service` at all. Consuming events and sending
+  emails/Chat alerts/calls is never this service's job — only publishing
+  the raw fact that something happened is.
 - **`snCaseService.CreateCaseComment`** publishes `case.comment_added` via
   `publishCommentAdded`, called after the SN comment-create call succeeds.
   Enriches via `GetCaseByID` for `ProjectID`/`CaseTitle`/`Recipients`, the
@@ -687,23 +686,25 @@ service's own `CLAUDE.md`, `dispatch.subjectLine`).
 `cv.DeployedProductDetails.Product.Name` (e.g. `"WSO2 API Manager"`, `""`
 when the case has no deployed product) — used by `publishCaseCreated`,
 `publishCaseAcknowledged`, and `publishSeverityChanged` to populate their
-payloads' `Product` field.
-`CaseCreatedPayload.Product` was previously never populated at all ("this
-service has no data source for it yet"); now it doubles as both a display
-value in `csm-notification-service`'s redesigned `case.created` Chat card
-and that service's own Chat-space routing key (`GoogleChatConfig.Spaces`
-matches on it, falling back to `DEFAULT_CHAT_PRODUCT` when empty) — an
-operator's `GOOGLE_CHAT_SPACES` config needs a `Product` entry matching
-each deployed product's actual display name for per-product routing to
-take effect; until then, every case routes to `DEFAULT_CHAT_PRODUCT`'s
-space same as before this field was populated.
+payloads' `Product` field, a purely-display value in
+`csm-notification-service`'s Chat cards. `CaseCreatedPayload.Product` was
+previously never populated at all ("this service has no data source for it
+yet"); it plays no role in Chat routing on the receiving side —
+`csm-notification-service` removed its earlier per-product Chat-space
+routing (`GoogleChatConfig.Spaces`, `DEFAULT_CHAT_PRODUCT`) once it became
+clear this deployment has no real per-product Chat space need:
+`case.created`/`case.acknowledged`/`case.severity_changed` now always route
+to a single fixed Chat audience regardless of `Product` — see that
+service's own `CLAUDE.md`.
 
 `caseTeamName(cv)` (same shared-helper pattern) resolves
 `cv.AccountDetails.CreTeam.Name` (e.g. `"Team Nova"`, `""` when the case
 has no account or the account has no CRE team) — used by the same three
-publishers to populate their payloads' `Team` field, a purely-display
-value in `csm-notification-service`'s Chat cards (unlike `Product`, it
-plays no role in routing). `cv.AccountDetails` (and its `CreTeam`) is
+publishers to populate their payloads' `Team` field, also purely display in
+`csm-notification-service`'s Chat cards for these three event types (SLA
+breach alerts are the one place a case's team genuinely drives Chat
+routing — see `csm-notification-service`'s own `CLAUDE.md`, "SLA
+breach-alerting engine"). `cv.AccountDetails` (and its `CreTeam`) is
 resolved by `GetCaseByID` from the case's own embedded ServiceNow account
 object at no extra request cost — but as of this field's introduction,
 that embedded object's `creTeam`/`sreTeam` are documented in
@@ -711,22 +712,6 @@ that embedded object's `creTeam`/`sreTeam` are documented in
 the ServiceNow integration, even though the standalone accounts endpoint
 does return them. `Team` may therefore come back empty in practice until
 that catches up — not a bug in this service if so.
-
-**Known, accepted inconsistency**: `publishCaseAcknowledged` re-reads
-`caseProductName(cv)` from a fresh `GetCaseByID` at acknowledge time,
-rather than reusing whatever product `publishCaseCreated` read at create
-time — so if a case's deployed product genuinely changes between creation
-and acknowledgement, the two Chat alerts can route to different spaces.
-This service has no persisted state for a case at all (ServiceNow is the
-sole source of truth, no local DB row per case — the old `sla_clocks` table
-used to be the one exception, removed; see "SLA status" below), so "preserving the
-creation-time product" would mean adding new durable state purely to pin a
-routing decision, not a same-service code change. It's also arguably not
-even the more correct behavior: if a case's product association is
-corrected after creation, routing its acknowledgement to the *current*
-owning team's space is arguably more useful than a stale one. Left as
-current-product routing; revisit only if the same-space guarantee turns
-out to matter in practice.
 
 **`caseService.UpdateCase` (the Postgres data source) supports
 `Acknowledge`/`AssigneeEmail` too** — `caseService.acknowledgeCase`/
@@ -1267,8 +1252,98 @@ what should be trusted if that ever changes. The eight display fields
 `GetCaseByID`'s own product/severity joins exactly, and — unlike the old
 design's point-in-time registration snapshot — are read live alongside the
 SLA data on every call, so they can't go stale between registration and a
-breach firing days later. `team` is always empty on this data source: unlike
-ServiceNow, nothing in this schema resolves a case to a team today.
+breach firing days later. `team` now resolves via `account.cre_team_id`
+joined to `"group"` (added alongside `ProjectOnboardingStatus`/
+`IsEvaluationAccount` below — was previously always empty on this data
+source, since nothing in this schema resolved a case to a team before this).
+
+**`ProjectOnboardingStatus`/`IsEvaluationAccount` exist purely for
+`csm-notification-service`'s own SLA breach-alert Chat-audience routing** —
+the same team/onboarding/evaluation facts that service's own
+`internal/chataudience.Resolve` uses to route its Chat alerts, per explicit
+product direction: only SLA breach and (eventually) a
+customer-frustration-detector alert route by real per-team/audience
+resolution this way — `case.created`/`case.acknowledged`/
+`case.severity_changed` all route to a single fixed
+`chataudience.IncidentMonitor` audience instead, with no team detection at
+all, and `incident.created` has no Chat reaction. `ProjectOnboardingStatus`
+is `project.onboarding_status`'s raw enum label (e.g. `"IN_PROGRESS"`), `""`
+when the work item has no project or the column is unset.
+`IsEvaluationAccount` is true when the project's `project_type` matches the
+fixed `evaluationSubscriptionProjectTypeName` ("Evaluation Subscription",
+matched by name — see that constant's own doc comment for why not a
+hardcoded id). Both are resolved via `LEFT JOIN`s added to
+`activeSLAStatusFromJoins` (`account`/`"group"` for `team`,
+`project`/`project_type` for the other two) — best-effort display/routing
+enrichment, not part of the SLA clock itself; a work item with no
+project/account simply reports the zero value for each.
+
+## CSM-native SLA clock engine
+
+`internal/service/sla_engine_service.go` (`SLAEngineService`) is what actually
+keeps the `sla` table populated for a case-like work item this deployment
+creates itself — real, durable `source='CSM'` rows, not a value ServiceNow's
+own sync computes. This exists specifically for the dual-write pilot (and,
+in principle, any future pure-Postgres mode): a case created there has no
+ServiceNow-synced `sla` row of its own to read `GET /sla-status` from, so
+without this engine it would simply never get SLA tracking at all,
+regardless of severity.
+
+- **Durations come from the real, ServiceNow-synced `sla_policy` table**
+  (`internal/service/sla_policy_resolver.go`), not a hardcoded map — the
+  now-deleted `sla_clocks` design's old approach (see "SLA status" above for
+  that history). `resolve` looks up `"<P0-P3|Query> - <Response|Workaround|
+  Resolution> (<Managed Services|Open Source>)"` by exact name, falling back
+  to the other plan label, then a loose pattern match — see its own doc
+  comment for why (in short: `resolveCasePlan`'s plan guess is a weak
+  heuristic with no reliable underlying signal, and P0 policies only exist
+  under "Managed Services" in ServiceNow's own real data, so a P0 case whose
+  plan guesses "Open Source" must still find them). **P0 (Catastrophic) had
+  no ServiceNow-synced policy at all** — migration `0136_csm_p0_sla_policies.sql`
+  seeds it directly, `source='CSM'`, durations mirroring the old deleted
+  `sla_clocks` map's own P0 entries and WSO2's published [support
+  policy](https://wso2.com/licenses/support-policy/6.0): Response 15m,
+  Workaround 4h, Resolution 48h.
+- **`internal/repository/sla_engine_repo.go`'s `RecomputeActive`** is what
+  actually advances `business_elapsed_percentage` for these rows over time —
+  flat wall-clock time since `start_on` (`(NOW() - start_on) / duration *
+  100`), no business-hours calendar, same crudeness the old deleted design
+  had. Run by `SLAEngineRecomputeWorker` (`sla_engine_recompute_worker.go`)
+  on its own ticker, default 45s — frequent enough that a 50/75/100%
+  crossing is visible well within `csm-notification-service`'s own
+  `SLA_TICK_INTERVAL` poll cadence.
+- **`RegisterCaseClocks`/`ReviseCaseClocks`/`CompleteResponseClock`/
+  `ApplyCaseStateEffects`** are all called directly, in-process, from
+  `snCaseService`'s own case-lifecycle hooks (create/severity-change/
+  qualifying-comment/state-change) — best-effort, same "must never fail the
+  actual mutation" reasoning `publishCaseCreatedEvent` follows.
+- **A real, fixed bug: SLA clock registration must run only after this
+  case's Postgres `work_item` row actually exists.** `sla.work_item_id` has
+  a hard, non-deferrable foreign key on `work_item(id)` (migration `0048`).
+  `snCaseService.CreateCase` calls `registerCaseSLAClocks` right after its
+  own ServiceNow POST succeeds — fine for plain `DATA_SOURCE=servicenow`,
+  since that path has no Postgres insert of its own to wait for at all. But
+  in dual-write mode, `caseService.createCaseSNFirst` reaches
+  `snCaseService.CreateCase` *as its mirror*, calling it **before**
+  `caseService`'s own `CreateCaseFromServiceNow` insert — so every
+  dual-write case creation tried to insert an `sla` row referencing a
+  `work_item_id` that didn't exist yet, failing with a foreign-key violation
+  (`SQLSTATE 23503`), logged (`"sla engine: register clock failed"`) and
+  silently dropped (best-effort, never retried, never surfaced) — meaning no
+  SLA breach alert ever fired for any dual-write-created case. Fixed the
+  same way this exact problem was already solved for the `case.created`
+  publish (see `publishCaseCreatedEvent`'s own doc comment): `routes.go`
+  constructs `snCaseMirrorSvc` with a **nil `slaEngine`**, so its own
+  embedded registration call is a no-op when reached via the mirror path
+  (mirroring its existing nil `publisher`), and `caseService` registers the
+  clocks itself — `registerCaseSLAClocksEvent` (`sn_case_service.go`,
+  factored out the same way `publishCaseCreatedEvent` was) — right after its
+  own insert succeeds. Any future change that gives `snCaseMirrorSvc` a
+  non-nil `slaEngine` again, or that adds another consumer of
+  `snCaseService.CreateCase` as a mirror/pass-through, needs the same
+  "does the referenced Postgres row exist yet at this call site"
+  check — see `TestCaseService_CreateCase_RegistersSLAClocksOnlyAfterPostgresSucceeds`
+  for the regression test.
 
 ## Customer-reply state transition
 
@@ -3648,6 +3723,18 @@ above) and always registers both routes unconditionally — a real, documented
 503 instead of an undocumented 404 callers can't distinguish from a
 genuinely missing resource.
 
+**Update:** the "no feedback table" premise above is stale. Migration `0102`
+added `work_item_feedback`, and `pgFeedbackService`
+(`pg_feedback_service.go`, over `feedback_repo.go`) now serves `POST
+/cases/feedback/search` and `/aggregate` for both the `postgres` and
+`postgres-servicenow-dual-write` data sources (dual write reads Postgres, never
+the backing system). `unavailableFeedbackService` is now only the fallback for
+a data source with no feedback store. Known gaps: the table stores no
+per-rating reason chips, so every `reasons_*` bucket returns an empty result;
+`GET`/`POST /cases/{id}/feedback` (the emoji submission contract) is still a
+503 on Postgres because `work_item_feedback` has no emoji id, chip ids or
+assessment id to serve it from.
+
 ## Adding a new entity
 
 Follow these steps in order:
@@ -3740,7 +3827,7 @@ Migrations live in `migrations/` as plain SQL files, numbered `NNNN_<description
 
 - **Each file is a complete, forward-only migration** — there is no scripted rollback. A change that needs undoing is a new forward migration, not a `.down.sql`. `IF NOT EXISTS`/`IF EXISTS` guards (already this repo's convention) make every file safe to re-run.
 - **A migration file itself carries no tracking statement.** `make migrate` (Makefile) creates `csm_migration_applied_migration` (`filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now()`) if absent, then for each `migrations/*.sql` file, in ascending order: skips it if its name is already in that table, otherwise applies it (`psql -f`) and only then records it with a separate `INSERT INTO csm_migration_applied_migration (filename) VALUES (...)` — this exactly mirrors `operations/csm-sync-service`'s own `make migrate` loop, since both services must track migrations against the same shared database the same way. `scripts/generate_schema_bootstrap.sh` (a combined-file generator for a from-scratch DB, also ported from that service, supporting `--since`/`--from`/`--to` for a delta) is the one thing that *does* append the tracking insert per migration — necessary there because a single concatenated file has no per-statement loop to do it externally.
-- **Numbers `0001`–`0100` are a byte-for-byte mirror of `operations/csm-sync-service`'s own `migrations/0001`–`0100`**, including its control-plane tables (`migration_job`/`migration_run`/`sync_checkpoint`/`schema_version`, renamed to the `csm_migration_` prefix at `0091`) — entity-service's own Go code never queries those tables, but the file is kept here anyway so `make migrate` produces the *identical* resulting schema whichever repo it's run from, not just an overlapping subset. A handful of these (e.g. `0025`/`0033`/`0098`) are no-ops against this repo's own already-correct `CREATE TABLE` statements (guarded by `IF EXISTS`/`IF NOT EXISTS`/an already-true condition) — kept anyway, for the same reason. Beyond `0100`, each repo has its own entity-specific migrations that only exist on that side (this repo's `0101`+ covers GitHub integration, announcement requests, onboarding steps, and more — none of it sync-service's concern).
+- **Numbers `0001`–`0102` are a byte-for-byte, contiguous mirror of `operations/csm-sync-service`'s own `migrations/0001`–`0102`**, including its control-plane tables (`migration_job`/`migration_run`/`sync_checkpoint`/`schema_version`, renamed to the `csm_migration_` prefix at `0091`) — entity-service's own Go code never queries those tables, but the file is kept here anyway so `make migrate` produces the *identical* resulting schema whichever repo it's run from, not just an overlapping subset. A handful of these (e.g. `0025`/`0033`/`0098`) are no-ops against this repo's own already-correct `CREATE TABLE` statements (guarded by `IF EXISTS`/`IF NOT EXISTS`/an already-true condition) — kept anyway, for the same reason. Beyond `0102`, this repo has its own entity-specific migrations that only exist on this side (`0103`+ covers GitHub integration, announcement requests, onboarding steps, the Team Schedule tables, and more — none of it sync-service's concern) — **but a shared-table migration from sync-service is still pulled in verbatim under its own real filename whenever one lands, even at a number this repo has already used for something else of its own.** `0090_outage_affected_ci_table.sql` and `0103`–`0108` (`product_name_unit_unique`, `project_add_onboarding_owner`, `product_version_deployment_profile_unique`, `incident_category_add_missing_values`, `incident_resolution_code_add_resolved_by_caller`, `case_cause_add_user_mistake`) are exactly this: sync-service migrations mirrored in unchanged, coexisting at the same leading number as this repo's own unrelated files there — normal per "Duplicate migration numbers are normal here" in the top-level `cs-tools/CLAUDE.md`, since the tracking key is the full basename. **Never rename a mirrored file to avoid the collision or to fit this repo's own sequence** — the filename is what `csm_migration_applied_migration` tracks it by, so a rename makes `make migrate` treat an already-applied sync-service migration as brand new and re-run it from scratch against a database where the real, differently-named version already ran.
 - **Whenever a new migration touches a shared table (not something entity-service-only), check `operations/csm-sync-service/migrations/` directly for the next real number before picking one here** — its migrations are the authoritative record of what actually runs against the shared database, and it has continued past whatever this file's own highest number was at any given time. Picking a number here that sync-service has already used for something else creates two same-numbered-but-different migrations across the two repos; `make migrate` from either repo would then apply both under different filenames with no conflict *detected*, silently leaving whichever repo didn't get involved missing the other's columns/tables. When sync-service adds a migration for a table entity-service also cares about (or its own control-plane numbering advances), mirror the file here at the same number, the same way `0101`/`0102` (`account_support_fields`/`work_item_feedback_table`) were pulled in.
 - **The identical collision can happen entirely within this repo, with no other service involved.** Two branches cut from the same base each see the same "current highest number," each add their own next-numbered file, and both PRs merge cleanly — git sees two different filenames, so there's no merge conflict to catch it. The result is the same silent, undetected collision as the cross-repo case above: two unrelated migrations sharing one number, `make migrate` applies both under their own filenames without complaint, and the numbering no longer identifies one unambiguous point in the sequence. Rebase onto the target branch's actual latest `migrations/` state before opening a migration PR, and check for a same-number collision as part of reviewing one — this repo has no CI check enforcing unique leading numbers today.
 - **`ALTER TYPE ... ADD VALUE` migrations stay the only statement in their file** — it cannot run in the same transaction as a later statement that uses the new value, and every file here is expected to be applied with plain autocommit (never wrapped in `BEGIN`/`COMMIT`, never run with `psql -1`/`--single-transaction`).

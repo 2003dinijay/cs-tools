@@ -2073,6 +2073,12 @@ const (
 	CaseCauseInfrastructureProxy           CaseCause = "INFRASTRUCTURE_PROXY"
 	CaseCauseInfrastructureOther           CaseCause = "INFRASTRUCTURE_OTHER"
 	CaseCauseUnknown                       CaseCause = "UNKNOWN"
+	// CaseCauseUserMistake (case_cause_enum, migration 0108) has no
+	// ServiceNow numeric choice-value counterpart in snCauseKey -- a
+	// dual-write UpdateCase setting this cause gets a clean ValidationError
+	// from that map's own existence check rather than a wrong/silent write,
+	// so this is safe to allow on the Postgres-generic path without it.
+	CaseCauseUserMistake CaseCause = "USER_MISTAKE"
 )
 
 // EngagementType classifies the type of an engagement case.
@@ -5684,11 +5690,10 @@ type ProblemDetail struct {
 // Description, Category, Subcategory, OriginCaseID, and PrimaryIncidentID are optional.
 // OriginCaseID and PrimaryIncidentID are UUIDs from the caller's perspective.
 //
-// Description is accepted and validated but, for the ServiceNow data source, not yet
-// forwarded anywhere -- see ProblemService.CreateProblem's ServiceNow implementation
-// (sn_problem_service.go) for why: the Choreo integration's POST /problems payload has
-// no description field to receive it. It is silently dropped after validation until
-// that integration adds one; do not assume it round-trips to a created problem.
+// Description round-trips on both data sources: the Postgres path persists it on
+// work_item.description, and the ServiceNow path forwards it to the Choreo
+// integration's POST /problems payload (see ProblemService.CreateProblem's
+// ServiceNow implementation, sn_problem_service.go).
 type CreateProblemRequest struct {
 	Subject           string  `json:"subject"`
 	Description       *string `json:"description,omitempty"`
@@ -7091,9 +7096,26 @@ type SLAStatus struct {
 	CaseTitle  string `json:"caseTitle,omitempty"`
 	CaseType   string `json:"caseType,omitempty"`
 	Product    string `json:"product,omitempty"`
-	Team       string `json:"team,omitempty"`
-	Priority   string `json:"priority,omitempty"`
-	State      string `json:"state,omitempty"`
+	// Team is the case's account's CRE team display name (account.cre_team_id
+	// joined to "group") -- "" when the case has no account, or the account
+	// has no CRE team assigned.
+	Team     string `json:"team,omitempty"`
+	Priority string `json:"priority,omitempty"`
+	State    string `json:"state,omitempty"`
+	// ProjectOnboardingStatus/IsEvaluationAccount exist purely for
+	// csm-notification-service's own SLA breach-alert Chat-audience
+	// routing, the same team/onboarding/evaluation facts case.created's own
+	// Chat alert uses (see that payload's own doc comment on the
+	// csm-notification-service side). ProjectOnboardingStatus is the
+	// case's project.onboarding_status raw enum label (e.g. "IN_PROGRESS"),
+	// "" when the case has no project or the column is unset.
+	// IsEvaluationAccount is true when the project's project_type is
+	// "Evaluation Subscription" (matched by project_type.name, not a
+	// hardcoded id -- see evaluationSubscriptionProjectTypeName's own doc
+	// comment). Both are best-effort display/routing enrichment, not part
+	// of the SLA clock itself.
+	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
+	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
 }
 
 // SearchSLAStatusResponse is the response for GET /sla-status — every

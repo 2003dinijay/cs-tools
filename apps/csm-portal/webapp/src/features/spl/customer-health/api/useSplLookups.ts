@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// GET /spl/products, GET /spl/abt-teams — bare string[] lookups used by
+// GET /products, GET /abt-teams — bare string[] lookups used by
 // this domain's filter dropdowns. Small, harmless duplication if another
 // SPL domain also needs these (per the merge plan's own guidance).
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
@@ -24,7 +24,7 @@ export function useSplProducts(): UseQueryResult<string[], Error> {
   const backendApi = useBackendApi();
   return useQuery<string[], Error>({
     queryKey: ["spl-products"],
-    queryFn: async () => (await backendApi.get<string[]>("/spl/products")) ?? [],
+    queryFn: async () => (await backendApi.get<string[]>("/products")) ?? [],
     staleTime: 5 * 60 * 1000,
   });
 }
@@ -33,7 +33,7 @@ export function useSplAbtTeams(): UseQueryResult<string[], Error> {
   const backendApi = useBackendApi();
   return useQuery<string[], Error>({
     queryKey: ["spl-abt-teams"],
-    queryFn: async () => (await backendApi.get<string[]>("/spl/abt-teams")) ?? [],
+    queryFn: async () => (await backendApi.get<string[]>("/abt-teams")) ?? [],
     staleTime: 5 * 60 * 1000,
   });
 }

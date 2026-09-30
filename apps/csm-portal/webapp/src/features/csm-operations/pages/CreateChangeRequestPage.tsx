@@ -40,9 +40,10 @@ import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import Editor from "@components/rich-text-editor/Editor";
 import { isBlankHtml } from "@utils/sanitizeHtml";
-import { isPastDateTime } from "@utils/dateTime";
+import { isPastZonedInput, zonedInputToBackendUtc } from "@utils/dateTime";
 import { usePostChangeRequest } from "@features/csm-operations/api/usePostChangeRequest";
 import { usePatchChangeRequest } from "@features/csm-operations/api/usePatchChangeRequest";
+import { userLabel } from "@features/csm-operations/utils/incidentFormOptions";
 import { useGetUsersMe } from "@features/settings/api/useGetUsersMe";
 import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
@@ -106,20 +107,6 @@ const PRIORITY_OPTIONS: Array<{ value: BeChangeRequestPriority; label: string }>
   { value: "low", label: "Low" },
 ];
 
-// Option labels for this form's pickers. Each falls back down to the record id
-// rather than rendering blank, so an option is always selectable even when the
-// backing record carries none of the friendlier fields.
-
-/** Display label for a user option: full name, else email, else id. */
-function userLabel(u: BeUser): string {
-  return [u.firstName, u.lastName].filter(Boolean).join(" ").trim() || u.email || u.id || "";
-}
-
-/** `datetime-local` input value ("YYYY-MM-DDTHH:MM") to the BE's expected
- * "YYYY-MM-DD HH:MM:SS" string. */
-function toBackendDateTime(localValue: string): string {
-  return `${localValue.replace("T", " ")}:00`;
-}
 
 /** "YYYY-MM-DDTHH:MM" (the wire format this form's state still uses) to a
  * local Date, avoiding the UTC-parse day/hour shift a plain `new Date(value)`
@@ -137,7 +124,7 @@ function parseDateTimeLocal(value: string): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-/** Local Date back to "YYYY-MM-DDTHH:MM", matching toBackendDateTime's input. */
+/** Local Date back to "YYYY-MM-DDTHH:MM", the input `zonedInputToBackendUtc` expects. */
 function formatDateTimeLocal(date: Date): string {
   const y = date.getFullYear();
   const mo = String(date.getMonth() + 1).padStart(2, "0");
@@ -379,8 +366,8 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const canSubmit = subject.trim().length > 0 && !isSubmitting && !isIncidentParentSelected;
   // Non-blocking: a past planned start/end is unusual but not forbidden
   // (e.g. logging a change that already happened), so this only warns.
-  const plannedStartIsPast = isPastDateTime(parseDateTimeLocal(plannedStartDate));
-  const plannedEndIsPast = isPastDateTime(parseDateTimeLocal(plannedEndDate));
+  const plannedStartIsPast = isPastZonedInput(plannedStartDate);
+  const plannedEndIsPast = isPastZonedInput(plannedEndDate);
 
   const handleSubmit = (): void => {
     if (!canSubmit) return;
@@ -393,8 +380,11 @@ export default function CreateChangeRequestPage(): JSX.Element {
     // Change Management process flow confirms creation never branches to any
     // other state, so this form has no state picker and never sends one; the
     // backend enforces the same rule for any other API caller.
-    if (plannedStartDate) payload.plannedStartDate = toBackendDateTime(plannedStartDate);
-    if (plannedEndDate) payload.plannedEndDate = toBackendDateTime(plannedEndDate);
+    // Picker values are wall-clock in the user's timezone; the BE wants UTC.
+    const plannedStartUtc = plannedStartDate ? zonedInputToBackendUtc(plannedStartDate) : null;
+    const plannedEndUtc = plannedEndDate ? zonedInputToBackendUtc(plannedEndDate) : null;
+    if (plannedStartUtc) payload.plannedStartDate = plannedStartUtc;
+    if (plannedEndUtc) payload.plannedEndDate = plannedEndUtc;
     // These six are rich-text HTML from Editor, not plain strings — an
     // untouched editor still produces non-empty-looking HTML (e.g.
     // "<p><br></p>"), so `.trim()` truthiness would send blank content as
