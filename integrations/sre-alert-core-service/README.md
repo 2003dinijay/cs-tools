@@ -125,7 +125,7 @@ cp config.toml.example config.toml
 ```
 
 Internal API users (`integration_users`) are documented separately in
-[`cmd/user/PROVISION.md`](cmd/user/PROVISION.md).
+[`PROVISION.md`](PROVISION.md).
 
 ## Choreo Deployment
 
