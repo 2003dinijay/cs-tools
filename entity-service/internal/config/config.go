@@ -257,6 +257,44 @@ type Config struct {
 	// token in Authorization: Bearer. AuthUserTokenAudiences are the client ids
 	// (Asgardeo SPA/application ids) an ID token's aud must contain to be
 	// accepted as a user token.
+	// CloudStatusServiceIDs are the business services whose outages are
+	// published to the public cloud status dashboard, as a comma-separated
+	// list of UUIDs (CLOUD_STATUS_SERVICE_IDS).
+	//
+	// These are `service` rows, NOT service offerings. The ServiceNow flow
+	// this ports dot-walked an outage's configuration item AS a service
+	// offering and compared that offering's PARENT against a list of 14 ids.
+	// Setting offering ids here instead would match nothing and the sweep
+	// would silently never fire.
+	//
+	// Empty means the sweep is a no-op, which it logs. That is the safe
+	// default: an unconfigured deployment posts nothing to a public status
+	// page rather than guessing a scope.
+	CloudStatusServiceIDs []string
+
+	// CloudStatusDrainerEnabled turns on the background drainer that records
+	// outage transitions AND rewrites cloud_monitor.status
+	// (CLOUD_STATUS_DRAINER_ENABLED, default false).
+	//
+	// *** OFF BY DEFAULT BECAUSE OF THE STATUS WRITE. *** While
+	// csm-sync-service's one-time bulk migration is still running, both it and
+	// this drainer can write cloud_monitor.status. Clearing
+	// CLOUD_STATUS_SERVICE_IDS would stop the drainer but also disable the
+	// sweep endpoint and the dashboard reads, so the write needs a switch of
+	// its own.
+	CloudStatusDrainerEnabled bool
+
+	// CloudStatusPollInterval is how often CloudStatusDrainer claims
+	// event_outbox rows for `outage` and `outage_affected_ci`
+	// (CLOUD_STATUS_POLL_INTERVAL). Same envDuration convention as
+	// CRNoticePollInterval.
+	//
+	// This is the FAST path. The reconciliation sweep in
+	// csm-scheduled-tasks reaches the same conclusions on its own schedule
+	// and is what makes a missed drain harmless, so this interval governs
+	// promptness, not correctness.
+	CloudStatusPollInterval time.Duration
+
 	AuthIssuer             string
 	AuthJWKSURL            string
 	AuthUserTokenAudiences []string
@@ -382,6 +420,9 @@ func Load() *Config {
 		CustomerRoles:                                 splitComma(os.Getenv("CUSTOMER_ROLES")),
 		CSEngineerRole:                                os.Getenv("CS_ENGINEER_ROLE"),
 		SLARecomputeInterval:                          envDuration("SLA_RECOMPUTE_INTERVAL", 45*time.Second),
+		CloudStatusServiceIDs:                         splitComma(os.Getenv("CLOUD_STATUS_SERVICE_IDS")),
+		CloudStatusDrainerEnabled:                     os.Getenv("CLOUD_STATUS_DRAINER_ENABLED") == "true",
+		CloudStatusPollInterval:                       envDuration("CLOUD_STATUS_POLL_INTERVAL", 10*time.Second),
 		SalesforceIngestRetryInterval:                 envDurationOrOff("SALESFORCE_INGEST_RETRY_INTERVAL", 5*time.Minute),
 		SalesEntityBaseURL:                            os.Getenv("SALES_ENTITY_BASE_URL"),
 		SalesEntityTokenURL:                           os.Getenv("SALES_ENTITY_TOKEN_URL"),

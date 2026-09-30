@@ -1168,6 +1168,325 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /cloud-status/monitors:
+    get:
+      summary: >-
+        The public cloud status dashboard's monitor view for one cloud, keyed
+        by region and grouped as the page renders it. Replaces the ServiceNow
+        Scripted REST API `monitors` that wso2-enterprise/uptime-dashboard
+        calls today; the response shape is that dashboard's and is reproduced
+        field for field.
+      operationId: getCloudStatusMonitors
+      parameters:
+        - name: cloud
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [asgardeo, choreo, bijira, devant, moesif, choreo-eu, agent-manager]
+          description: >-
+            Seven clouds, where the ServiceNow script accepted five. choreo-eu
+            and agent-manager have monitors and a dashboard but have never
+            been reachable, because the notification flow's URL script has no
+            branch for them.
+      responses:
+        "200":
+          description: >-
+            An object keyed by region ("cp - us", "eu - dp - eu"), each holding
+            the groups shown in that column.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/CloudStatusMonitorGroup'
+        "400":
+          description: BadRequest — unknown cloud.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /cloud-status/incidents:
+    get:
+      summary: >-
+        Six months of incident history for one cloud, keyed "YYYY-M". Every
+        month key is present whether or not it has incidents — the dashboard
+        renders a row per key, so omitting empty months would shorten the page.
+      operationId: getCloudStatusIncidents
+      parameters:
+        - name: cloud
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [asgardeo, choreo, bijira, devant, moesif, choreo-eu, agent-manager]
+      responses:
+        "200":
+          description: Six month keys, newest first in the dashboard's rendering.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: '#/components/schemas/CloudStatusIncidentMonth'
+        "400":
+          description: BadRequest — unknown cloud.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /cloud-status/availabilities:
+    get:
+      summary: >-
+        Weighted uptime for one cloud, one figure per region per window.
+        Replaces the ServiceNow Scripted REST API `/availabilities`. Each
+        region's figure is a weighted average over the service offerings
+        beneath one parent service; the weights are a product decision that
+        exists only in the deployed ServiceNow script and is reproduced
+        verbatim, not recomputed.
+      operationId: getCloudStatusAvailabilities
+      parameters:
+        - name: cloud
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [asgardeo, choreo, bijira, devant, moesif, choreo-eu, agent-manager]
+      responses:
+        "200":
+          description: >-
+            An object keyed by region ("cp", "us - dp", "eu - dp - eu"), each
+            holding exactly four windows in the order the dashboard renders
+            them: last 7 days, last 30 days, last 90 days, last 12 months.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/CloudAvailabilityWindow'
+        "400":
+          description: BadRequest — unknown cloud.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /cloud-status/availability-history:
+    get:
+      summary: >-
+        The 90-day daily uptime chart for one cloud, nested region → group →
+        monitor. Replaces the ServiceNow Scripted REST API `/history`. Unlike
+        the availabilities endpoint this one applies no weighting at all.
+      operationId: getCloudStatusAvailabilityHistory
+      parameters:
+        - name: cloud
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [asgardeo, choreo, bijira, devant, moesif, choreo-eu, agent-manager]
+      responses:
+        "200":
+          description: >-
+            An object keyed by region, each holding the groups shown in that
+            column. A monitor with no daily data carries an empty history
+            rather than a fabricated figure.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AvailabilityHistoryGroup'
+        "400":
+          description: BadRequest — unknown cloud.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /cloud-status/incidents/{id}:
+    get:
+      summary: >-
+        One outage's public detail view. Replaces the ServiceNow Scripted
+        REST API `/incident/{sys_id}`.
+      description: >
+        *** THE 200 BODY HAS TWO SHAPES, AND THE SPARSE ONE IS THE COMMON
+        CASE. *** The ServiceNow script builds its payload from an incident
+        lookup gated on state, then assigns attachments onto whatever came
+        back. An outage with no linked incident — or one whose incident is
+        still New, On Hold or Canceled — therefore yields an object carrying
+        only `attachments`, with no id, begin or type. That is the majority
+        of outages. Reproduced rather than normalised, because the frontend
+        already handles it.
+
+
+        `comments` come from the outage's external communications, NOT from
+        the linked incident's comments. Postgres holds incident comments,
+        work notes and approval history; publishing those here would put
+        internal commentary on a public page, and ServiceNow does not.
+
+
+        `attachments` is always empty: nothing in Postgres stores outage
+        attachments, nothing writes any, and the dashboard frontend never
+        reads the field.
+      operationId: getCloudStatusIncidentDetail
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The outage id.
+        - name: cloud
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [asgardeo, choreo, bijira, devant, moesif, choreo-eu, agent-manager]
+      responses:
+        "200":
+          description: The outage's detail, or an attachments-only object.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CloudStatusIncidentDetail'
+                  - $ref: '#/components/schemas/CloudStatusIncidentAttachmentsOnly'
+        "400":
+          description: BadRequest — unknown cloud or missing id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No outage with that id belongs to that cloud.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/cloud-status/sweep:
+    post:
+      summary: >-
+        Internal-caller-only. Re-derives which outage transitions the public
+        cloud status dashboards are owed and records any not already recorded.
+        Decides only — sends nothing. The port of ServiceNow's `Cloud Status
+        Event Notification Flow`; invoked by operations/csm-scheduled-tasks'
+        cloud_status_webhooks sub-cron immediately before it delivers.
+        Idempotent: a sweep that finds nothing new records nothing, which is
+        the steady state.
+      operationId: sweepCloudStatusTransitions
+      responses:
+        "200":
+          description: The sweep ran. Recorded is 0 in the steady state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudStatusSweepResult'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/cloud-status/pending:
+    get:
+      summary: >-
+        Internal-caller-only. Returns the cloud status webhooks still owed to
+        the public dashboards and not yet past their attempt limit, oldest
+        first, with each cloud already translated to the slug the dashboards
+        are addressed by.
+      operationId: listPendingCloudStatusWebhooks
+      responses:
+        "200":
+          description: The webhooks still owed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PendingCloudStatusWebhooks'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/cloud-status/{id}/delivery:
+    post:
+      summary: >-
+        Internal-caller-only. Records the outcome of one webhook attempt.
+        Increments the attempt count on success and failure alike — it counts
+        what was tried, not what failed.
+      operationId: recordCloudStatusDelivery
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloudStatusDeliveryReport'
+      responses:
+        "204":
+          description: Outcome recorded.
+        "400":
+          description: >-
+            BadRequest — invalid id, or a failure reported with no error
+            message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such webhook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /scheduled-tasks/attempts:
     post:
       summary: >-
@@ -21108,6 +21427,283 @@ components:
         offset:
           type: integer
 
+    CloudAvailabilityWindow:
+      type: object
+      description: One weighted uptime figure for one window.
+      properties:
+        availability:
+          description: >-
+            The figure, rounded to three decimals. *** THE JSON TYPE VARIES BY
+            CLOUD, AND THAT IS DELIBERATE. *** Six clouds emit a STRING
+            ("100.000") because the ServiceNow weighting functions end in
+            toFixed; asgardeo emits a NUMBER (100) because it takes an
+            unweighted mean and parseFloat drops the trailing zeros. Verified
+            against the live API on 2026-09-29. Normalising the two would
+            change six clouds' payloads.
+          oneOf:
+            - type: string
+            - type: number
+        duration:
+          type: string
+          description: The window's label, rendered verbatim by the frontend.
+          enum: ["Last 7 days", "Last 30 days", "Last 90 days", "Last 12 months"]
+      required: [availability, duration]
+    AvailabilityHistoryPoint:
+      type: object
+      description: One day's uptime.
+      properties:
+        availability:
+          type: number
+          description: >-
+            A plain number for every cloud — the history resource uses
+            parseFloat and never toFixed, unlike the availabilities one.
+        date:
+          type: string
+          format: date
+          description: >-
+            The local day, YYYY-MM-DD, in the ServiceNow instance's timezone
+            (Asia/Colombo), which is where the daily buckets are cut.
+      required: [availability, date]
+    AvailabilityHistorySubgroup:
+      type: object
+      description: One monitored component's 90-day history.
+      properties:
+        display_name:
+          type: string
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailabilityHistoryPoint'
+      required: [display_name, history]
+    AvailabilityHistoryGroup:
+      type: object
+      description: One named group within a region.
+      properties:
+        display_name:
+          type: string
+        subgroups:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailabilityHistorySubgroup'
+      required: [display_name, subgroups]
+    CloudStatusIncidentComment:
+      type: object
+      description: One entry from the outage's external communications.
+      properties:
+        comment:
+          type: string
+        created_on:
+          type: string
+          description: UTC, "YYYY-MM-DD HH:MM:SS".
+      required: [comment, created_on]
+    CloudStatusIncidentAttachment:
+      type: object
+      properties:
+        name:
+          type: string
+        id:
+          type: string
+      required: [name, id]
+    CloudStatusIncidentDetail:
+      type: object
+      description: The full detail view, when the outage's incident qualifies.
+      properties:
+        id:
+          type: string
+        begin:
+          type: string
+        end:
+          type: string
+          description: Empty string while the outage is ongoing.
+        type:
+          type: string
+          description: >-
+            Not the enum and not plain title case — degradation renders as
+            "Degraded" and planned as "Maintenance".
+          enum: [Outage, Degraded, Maintenance]
+        status:
+          type: string
+          enum: ["In Progress", "Resolved"]
+        short_description:
+          type: string
+        comments:
+          type: array
+          items:
+            $ref: '#/components/schemas/CloudStatusIncidentComment'
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/CloudStatusIncidentAttachment'
+      required: [id, begin, end, type, status, short_description, comments, attachments]
+    CloudStatusIncidentAttachmentsOnly:
+      type: object
+      description: >-
+        What the endpoint returns when the outage's incident does not
+        qualify — the majority case. Carries no incident fields at all.
+      properties:
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/CloudStatusIncidentAttachment'
+      required: [attachments]
+    CloudStatusMonitorGroup:
+      type: object
+      properties:
+        display_name:
+          type: string
+        subgroups:
+          type: array
+          items:
+            $ref: '#/components/schemas/CloudStatusMonitorSubgroup'
+      required: [display_name, subgroups]
+    CloudStatusMonitorSubgroup:
+      type: object
+      properties:
+        description:
+          type: string
+        display_name:
+          type: string
+        status:
+          type: integer
+          description: >-
+            0 Operational · 1 Maintenance · 2 Degraded · 3 Outage. The
+            dashboard's own scale, fixed by its constants.js.
+        availability:
+          type: array
+          items:
+            $ref: '#/components/schemas/CloudStatusAvailability'
+        message:
+          type: string
+          description: >-
+            Short description of an ongoing outage, and only when that
+            outage's type agrees with the status shown. Empty otherwise.
+      required: [description, display_name, status, availability, message]
+    CloudStatusAvailability:
+      type: object
+      properties:
+        availability:
+          type: string
+          description: >-
+            A string, not a number — the dashboard renders it verbatim and has
+            always received it as text.
+        duration:
+          type: string
+          enum: ["Last 30 days", "Last 90 days"]
+      required: [availability, duration]
+    CloudStatusIncidentMonth:
+      type: object
+      properties:
+        incidents:
+          type: array
+          items:
+            $ref: '#/components/schemas/CloudStatusIncident'
+      required: [incidents]
+    CloudStatusIncident:
+      type: object
+      properties:
+        id:
+          type: string
+        begin:
+          type: string
+        end:
+          type: string
+          description: Empty while the outage is ongoing.
+        type:
+          type: string
+          enum: [Outage, Degradation, Planned]
+        status:
+          type: string
+          enum: [Ongoing, Resolved]
+        short_description:
+          type: string
+        expanded:
+          type: boolean
+          description: Drives a UI accordion; always false on the wire.
+      required: [id, begin, end, type, status, short_description, expanded]
+    CloudStatusSweepResult:
+      type: object
+      properties:
+        scanned:
+          type: integer
+          description: How many in-scope outages the sweep considered.
+        recorded:
+          type: integer
+          description: >-
+            How many new transitions were recorded. 0 is the steady state — a
+            sweep that records nothing is working correctly.
+        skippedNoCloud:
+          type: integer
+          description: >-
+            In-scope outages whose configuration item has no cloud monitor, or
+            whose cloud offering this build cannot address, and which therefore
+            cannot be routed to any dashboard. Non-zero means those outages are
+            never reaching the status page — a data problem in the outage
+            record, not a failure of the sweep.
+      required: [scanned, recorded, skippedNoCloud]
+    PendingCloudStatusWebhook:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        outageId:
+          type: string
+          format: uuid
+        number:
+          type: string
+          description: >-
+            The outage number, for logging and for whoever reads a failure. Not
+            part of the webhook body sent to the dashboard.
+        event:
+          type: string
+          enum: [OUTAGE_BEGIN, OUTAGE_END]
+          description: >-
+            This service's own name for the transition, for logs and for the
+            operator reading a failure. NOT what the webhook body carries --
+            see wireEvent.
+        wireEvent:
+          type: string
+          description: >-
+            The literal the webhook body must carry, e.g. "outage_begin". Kept
+            separate from event because the two are different contracts: event
+            belongs to this API, wireEvent belongs to the status dashboard and
+            cannot change without coordinating with it.
+        cloud:
+          type: string
+          description: >-
+            The dashboard slug, already translated from the stored offering
+            enum — e.g. "choreo-eu", not "CHOREO_EU".
+        timestamp:
+          type: string
+          format: date-time
+          description: >-
+            The outage's own begin or end instant, matching event — not the
+            moment of sending, so a delayed or retried webhook still reports
+            when the outage actually changed.
+        attemptCount:
+          type: integer
+        lastError:
+          type: string
+      required: [id, outageId, number, event, wireEvent, cloud, timestamp, attemptCount]
+    PendingCloudStatusWebhooks:
+      type: object
+      properties:
+        count:
+          type: integer
+        webhooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PendingCloudStatusWebhook'
+      required: [count, webhooks]
+    CloudStatusDeliveryReport:
+      type: object
+      properties:
+        delivered:
+          type: boolean
+        error:
+          type: string
+          description: Required when delivered is false.
+      required: [delivered]
     AnnouncementRequest:
       description: >
         A draft, in-review, or approved announcement that has not yet been
