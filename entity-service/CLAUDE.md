@@ -4,6 +4,13 @@ Go HTTP server (`net/http`, standard library only) that owns all core CS-platfor
 
 ## Architecture
 
+> **`cmd/` holds exactly one directory: `cmd/api`.** Never add a second
+> `package main` there — Choreo's build picks this service's main package from
+> `cmd/`, and a second directory fails the pipeline. It also drags dev-only
+> code into everything `go build ./...`, `go vet` and gosec walk. Put one-off
+> verification tooling in an env-var-guarded `TestServe*Harness` in
+> `internal/server/`, or in `scripts/`, or keep it out of the repo.
+
 Strict four-layer stack — no shortcuts across layers:
 
 ```
