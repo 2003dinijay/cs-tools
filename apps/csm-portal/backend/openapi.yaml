@@ -1920,10 +1920,14 @@ paths:
       summary: Create a new user.
       description: >
         Inserts a new platform user. Admin-only — every other portal role gets
-        403. Postgres data source only. roles is optional and currently unused
-        by the CSM portal frontend (no UI to pick a role yet); each name, if
+        403. Postgres data source only. roles is optional; each name, if
         supplied, is checked against the same configured role allow-list
-        POST /roles/search serves.
+        POST /roles/search serves. The CSM portal's Add User form sends exactly
+        one of "internal"/"external" here to set the new user's type — entity-
+        service derives user_type from role membership, so this is the only way
+        to set it. Granting "internal" or "admin" for an email that is not
+        @wso2.com is rejected with 400: an internal-type user must have a
+        wso2.com address.
       operationId: postUsers
       requestBody:
         required: true
@@ -1939,7 +1943,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/User'
         "400":
-          description: Bad request — missing/invalid email, neither firstName nor lastName supplied, or an unrecognized role.
+          description: >-
+            Bad request — missing/invalid email, neither firstName nor lastName
+            supplied, an unrecognized role, or roles requests an
+            internal-resolving role (admin/internal) for a non-@wso2.com email.
           content:
             application/json:
               schema:
@@ -15185,7 +15192,10 @@ components:
             type: string
           description: >-
             Role names to grant. Optional; omit or leave empty to create the
-            user with no roles. Not currently exposed in the CSM portal UI.
+            user with no roles. The Add User form sends exactly one of
+            "internal"/"external" here to set the new user's type (see
+            entity-service's own recompute_user_type trigger) — "internal" or
+            "admin" is rejected for a non-@wso2.com email.
       description: At least one of firstName/lastName is required.
 
     AccountSearchPayload:

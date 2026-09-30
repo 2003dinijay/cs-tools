@@ -2035,6 +2035,10 @@ paths:
         via `user_role` in the same transaction. Postgres-only — always
         404s on the ServiceNow data source. The acting caller is resolved
         from `x-user-id-token` and stamped as `createdBy`/`updatedBy`.
+        `roles` also decides `userType`, since `recompute_user_type`'s trigger
+        derives it from role membership rather than a plain settable column —
+        granting `admin`/`internal` resolves to INTERNAL and is rejected with
+        400 unless `email` is a `@wso2.com` address.
       operationId: createUser
       tags: [Users]
       requestBody:
@@ -2051,7 +2055,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/User'
         '400':
-          description: Bad request — missing/invalid email, or neither firstName nor lastName supplied.
+          description: >
+            Bad request — missing/invalid email, neither firstName nor
+            lastName supplied, or roles requests an internal-resolving role
+            (admin/internal) for a non-@wso2.com email.
           content:
             application/json:
               schema:
@@ -10900,7 +10907,8 @@ components:
       description: >-
         At least one of firstName/lastName is required. userType is never
         accepted here -- it is derived by the database from role membership.
-        Postgres-only.
+        Granting a role that resolves to userType INTERNAL (admin/internal)
+        for a non-@wso2.com email is rejected with 400. Postgres-only.
 
     SNUser:
       type: object

@@ -1708,14 +1708,18 @@ export interface BeUser {
 
 /**
  * `POST /users` request body. At least one of firstName/lastName is
- * required. `roles` is accepted by the backend but not currently sent by the
- * webapp — there is no Asgardeo-backed way to browse/assign roles at
- * account-creation time yet.
+ * required. `roles` is accepted by the backend and, beyond the allow-list
+ * check every role goes through, is also how `AddUserDialog.tsx` sets the
+ * new user's type: entity-service derives `user_type` from role membership
+ * (no plain settable column exists), so sending `["internal"]`/`["external"]`
+ * is what resolves it to INTERNAL/EXTERNAL — see that service's own
+ * `user_service.go` doc comment on `recompute_user_type`.
  */
 export interface BeCreateUserPayload {
   firstName?: string;
   lastName?: string;
   email: string;
+  roles?: string[];
 }
 
 export interface BeUserSearchFilters {
