@@ -470,7 +470,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		productVersionHandler = handler.NewProductVersionHandler(productVersionSvc)
 	}
 
-	deploymentRepo := repository.NewDeploymentRepository(db)
+	deploymentRepo := repository.NewDeploymentRepository(repository.NewScoped(db))
 	var activeDeploymentSvc service.DeploymentService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
@@ -488,7 +488,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	deploymentHandler := handler.NewDeploymentHandler(activeDeploymentSvc)
 
-	deployedProductRepo := repository.NewDeployedProductRepository(db)
+	deployedProductRepo := repository.NewDeployedProductRepository(repository.NewScoped(db))
 	var activeDeployedProductSvc service.DeployedProductService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
@@ -750,7 +750,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// sr_category_routing_rule (migrations 000067-000071) back the service
 	// request catalog on the Postgres data source, so these routes are
 	// registered for both data sources.
-	catalogRepo := repository.NewCatalogRepository(db)
+	catalogRepo := repository.NewCatalogRepository(repository.NewScoped(db))
 	var activeCatalogSvc service.CatalogService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeCatalogSvc = service.NewServiceNowCatalogService(serviceNowIntegrationServiceClient)
@@ -905,7 +905,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// instance_repo.go's own doc comment for the caveats around resolving an
 	// instance's project/deployment/deployed-product references on this data
 	// source.
-	instanceRepo := repository.NewInstanceRepository(db)
+	instanceRepo := repository.NewInstanceRepository(repository.NewScoped(db))
 	var activeInstanceSvc service.InstanceService
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeInstanceSvc = service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)

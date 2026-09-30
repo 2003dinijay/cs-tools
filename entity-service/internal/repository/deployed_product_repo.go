@@ -27,7 +27,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
@@ -363,11 +362,13 @@ func (r *deployedProductRepo) SearchDeployedProductUsageCounts(ctx context.Conte
 }
 
 type deployedProductRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
-// NewDeployedProductRepository constructs a DeployedProductRepository backed by the given connection pool.
-func NewDeployedProductRepository(db *pgxpool.Pool) DeployedProductRepository {
+// NewDeployedProductRepository constructs a DeployedProductRepository whose
+// every query runs under the caller identity on ctx (deployed_product has
+// row-level security, migration 0171).
+func NewDeployedProductRepository(db *Scoped) DeployedProductRepository {
 	return &deployedProductRepo{db: db}
 }
 
