@@ -418,8 +418,8 @@ func TestEnsureProject(t *testing.T) {
 		p.Key = nil
 		svc := newProjectService(&fakeProjectSalesEntity{project: p}, newProjectRepo(nil), &fakeIngestStateRepo{}, true)
 		var ve *apierror.ValidationError
-		if _, err := svc.EnsureProject(context.Background(), testProjectSfID); !errors.As(err, &ve) {
-			t.Errorf("err=%v, want ValidationError", err)
+		if _, err := svc.EnsureProject(context.Background(), testProjectSfID); !errors.As(err, &ve) || !errors.Is(err, errProjectKeyMissing) {
+			t.Errorf("err=%v, want a ValidationError matching errProjectKeyMissing", err)
 		}
 	})
 }

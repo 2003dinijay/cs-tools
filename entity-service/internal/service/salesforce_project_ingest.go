@@ -99,6 +99,18 @@ func (s *salesforceEventService) RetryProjectIngest(ctx context.Context, project
 	return ackRefusedProject(s.upsertProject(ctx, projectSfID, domain.SalesforceEventUpdated, true))
 }
 
+// projectKeyMissingError is EnsureProject's D5 refusal: a ValidationError
+// that also matches errProjectKeyMissing, so a child ingest (linked
+// opportunity) can acknowledge it through ackRefusedProject.
+type projectKeyMissingError struct {
+	*apierror.ValidationError
+}
+
+// Unwrap exposes both the ValidationError and the errProjectKeyMissing sentinel.
+func (e *projectKeyMissingError) Unwrap() []error {
+	return []error{e.ValidationError, errProjectKeyMissing}
+}
+
 // ackRefusedProject turns a D5 refusal (already recorded FAILED) into an
 // acknowledgement: a keyless project is fixed in Salesforce, not by retrying.
 func ackRefusedProject(err error) error {
@@ -171,7 +183,7 @@ func (s *salesforceEventService) EnsureProject(ctx context.Context, sfID string)
 	// ledger row saying this version was written must not stop the write.
 	if err := s.upsertProject(ctx, sfID, domain.SalesforceEventUpdated, false); err != nil {
 		if errors.Is(err, errProjectKeyMissing) {
-			return "", &apierror.ValidationError{Msg: fmt.Sprintf("project %s: %s", sfID, err)}
+			return "", &projectKeyMissingError{ValidationError: &apierror.ValidationError{Msg: fmt.Sprintf("project %s: %s", sfID, err)}}
 		}
 		return "", err
 	}

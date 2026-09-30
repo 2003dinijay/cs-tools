@@ -296,6 +296,16 @@ func TestAccountEvent_PartnerFlagOffDoesNotRead(t *testing.T) {
 	}
 }
 
+// With no account lookup wired (no Accounts support and no repo) the
+// refresh fails with a configuration error instead of panicking.
+func TestAccountEvent_PartnerRefreshWithoutLookupErrors(t *testing.T) {
+	svc := WithPartnerIngest(NewSalesforceEventService(nil, &stubSalesEntityClient{}, SalesforceIngestSupport{States: &fakeIngestStateRepo{}}),
+		PartnerIngest{Partners: &fakePartnerWriteRepo{}, SalesEntity: &fakePartnerSalesEntity{}}).(*salesforceEventService)
+	if err := svc.refreshPartnersAfterAccountEvent(context.Background(), testPartnerCustomerSfID); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("err = %v, want the account lookup configuration error", err)
+	}
+}
+
 func partnerContactMembership() salesentity.ProjectContact {
 	pc := sampleProjectContact(domain.MembershipStateInvited, "Portal user")
 	pc.Contact.CustomerID = sampleStr(testPartnerASfID)

@@ -308,6 +308,45 @@ func TestLinkedOpportunityIngest_Deleted(t *testing.T) {
 	}
 }
 
+// A DELETED ledger row is stamped with the recorded version when that is
+// ahead of now (Salesforce's clock runs ahead), so the row is not dropped and
+// a later RESTORED is not skipped.
+func TestLinkedOpportunityIngest_DeletedStampsLaterRecordedVersion(t *testing.T) {
+	h := newLinkHarness(nil, nil, false, false)
+	ahead := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	h.states.rows = map[string]domain.SalesforceIngestState{domain.SalesforceIngestEntityLinkedOpportunity + "/" + testLinkSfID: {
+		Status: domain.SalesforceIngestSucceeded, EventType: "UPDATED", EventModifiedOn: ahead,
+	}}
+	if err := h.svc.HandleEvent(context.Background(), linkEvent("DELETED")); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	if got := h.links.deleteState[0].EventModifiedOn; !got.Equal(ahead) {
+		t.Errorf("DELETED version = %v, want the recorded %v", got, ahead)
+	}
+}
+
+// A keyless parent project (D5) is recorded FAILED and acknowledged, not
+// returned as a 400 that Service Bus would redeliver and dead-letter.
+func TestLinkedOpportunityIngest_KeylessProjectAcknowledged(t *testing.T) {
+	h := newLinkHarness(map[string]string{testOpportunitySfID: testLinkOppRowID}, nil, true, true)
+	h.projSE.project.Key = nil
+	if err := h.svc.HandleEvent(context.Background(), linkEvent("UPDATED")); err != nil {
+		t.Fatalf("err = %v, want nil (acknowledged)", err)
+	}
+	if len(h.links.upserts) != 0 {
+		t.Errorf("links upserted = %d, want 0", len(h.links.upserts))
+	}
+	var linkFailed bool
+	for _, st := range h.states.upserts {
+		if st.Entity == domain.SalesforceIngestEntityLinkedOpportunity && st.Status == domain.SalesforceIngestFailed {
+			linkFailed = true
+		}
+	}
+	if !linkFailed {
+		t.Errorf("no FAILED linked opportunity ledger row: %+v", h.states.upserts)
+	}
+}
+
 func TestRetryWorker_LinkedOpportunityRetrier(t *testing.T) {
 	msg := fmt.Sprintf("project not found for sfId %q", testLinkProjectSfID)
 	states := &fakeIngestStateRepo{failed: []domain.SalesforceIngestState{{

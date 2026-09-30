@@ -195,8 +195,11 @@ func (s *salesforceEventService) refreshPartnersAfterAccountEvent(ctx context.Co
 		return nil
 	}
 	lookup := s.support.Accounts
-	if lookup == nil {
+	if lookup == nil && s.repo != nil {
 		lookup = s.repo
+	}
+	if lookup == nil {
+		return errors.New("salesforce: account lookup is not configured")
 	}
 	id, err := lookup.LookupAccountIDBySfID(ctx, sfID)
 	if err != nil {

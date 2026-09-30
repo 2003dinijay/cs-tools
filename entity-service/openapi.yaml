@@ -40,6 +40,19 @@ paths:
         resulting state is INVITED or RE-INVITED; DELETED marks the
         project_contact DEACTIVATED (never deletes). Entity Contact, UPDATED only:
         re-runs the membership upsert for each of the contact's memberships.
+        Entity Project__c, only when CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED=true:
+        CREATED/UPDATED/RESTORED fetch the project (POST /projects/search) and
+        update the Salesforce-owned project columns of the row found by sf_id or
+        else by key; the ingest is update-only (a project CSM does not have is
+        recorded FAILED and re-run by the delayed-retry job) unless
+        CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED=true also lets it insert;
+        a project without Project_Key__c is a 204 recorded FAILED; DELETED sets
+        project.is_active false (RESTORED sets it true).
+        Entity Linked_Opportunity__c (also accepted as Linked_Opportunity), only when
+        CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true: CREATED/UPDATED/RESTORED
+        fetch the link (POST /linked-opportunities/search), resolve its opportunity
+        and project, and upsert sf_opportunity_link by link_sf_id; DELETED
+        hard-deletes by link_sf_id.
         Entity Invoice__c (also accepted as Invoice), only when
         CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true: CREATED/UPDATED/RESTORED
         fetch the invoice (POST /invoices/search), ingest its opportunity first when
@@ -17033,11 +17046,16 @@ components:
           type: string
           pattern: '.*\S.*'
           description: >-
-            Salesforce sObject name. Account is always processed.
-            Project_Contact__c (also accepted as Project_Contact) and Contact
-            are processed only when CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED is
-            true; otherwise, like every other value, they are acknowledged
-            with 204 and ignored.
+            Salesforce sObject name. Each family is processed only when its
+            flag is true; otherwise, like every other value, it is acknowledged
+            with 204 and ignored. Account: CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED.
+            Project_Contact__c (also accepted as Project_Contact) and Contact:
+            CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED. Project__c:
+            CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED (update-only; inserts
+            also need CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED). Opportunity,
+            Linked_Opportunity__c (also accepted as Linked_Opportunity), Invoice__c
+            (also accepted as Invoice) and OpportunityLineItem:
+            CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED.
         referenceId:
           type: string
           pattern: '.*\S.*'

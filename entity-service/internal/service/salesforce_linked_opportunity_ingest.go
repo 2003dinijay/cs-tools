@@ -161,7 +161,9 @@ func (s *salesforceEventService) ingestLinkedOpportunity(ctx context.Context, sf
 	projectID, err := s.EnsureProject(ctx, projectSfID)
 	if err != nil {
 		s.recordLinkedOpportunityFailed(ctx, state, err)
-		return err
+		// A keyless parent project (D5) is fixed in Salesforce, not by
+		// redelivery: recorded FAILED above and acknowledged.
+		return ackRefusedProject(err)
 	}
 
 	row := domain.SalesforceOpportunityLinkUpsert{
@@ -181,15 +183,20 @@ func (s *salesforceEventService) ingestLinkedOpportunity(ctx context.Context, sf
 }
 
 // deleteLinkedOpportunity is DELETED: a hard delete by link_sf_id, as
-// ServiceNow plus csm-sync-service do today, with a DELETED ledger row. The
+// ServiceNow plus csm-sync-service do today, with a DELETED ledger row
+// stamped by deletedEventVersion. The
 // 15-character referenceId is widened to the 18-character form the ingest
 // stores first. A link never ingested is acknowledged.
 func (s *salesforceEventService) deleteLinkedOpportunity(ctx context.Context, sfID string) error {
 	sfID = salesforceID18(sfID)
+	modifiedOn, err := s.deletedEventVersion(ctx, domain.SalesforceIngestEntityLinkedOpportunity, sfID)
+	if err != nil {
+		return err
+	}
 	state := domain.UpsertSalesforceIngestStateRequest{
 		Entity:          domain.SalesforceIngestEntityLinkedOpportunity,
 		SfID:            sfID,
-		EventModifiedOn: time.Now().UTC(),
+		EventModifiedOn: modifiedOn,
 		EventType:       domain.SalesforceEventDeleted,
 		Status:          domain.SalesforceIngestSucceeded,
 	}
