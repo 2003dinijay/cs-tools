@@ -155,18 +155,12 @@ func seedAnnouncementVisibilityFixtures(t *testing.T, pool *pgxpool.Pool) {
 	mustExecScoped(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type, project_id)
 		VALUES ($1, $2, $2, 'test', 'test', 'AV-TEST-SEC-1', 'AV-WSO2-SEC-1', 'AV test security announcement', 'ANNOUNCEMENT', $3)`,
 		avSecurityID, now, avProjectID)
-	// is_security_announcement, not announcement_type, is what the RLS
-	// policy actually reads (confirmed directly against the deployed
-	// policy: it has no reference to announcement_type at all) -- this
-	// column is maintained by application code outside this schema
-	// (combining the announcement_type and "Security Announcement"-tag
-	// signals this file's own package doc comment describes), which this
-	// fixture simulates by setting it directly rather than reproducing
-	// that external computation here. Found live: the very first run of
-	// this test against a real database left it at its FALSE default,
-	// silently making every "security" scenario indistinguishable from
-	// "general" under RLS.
-	mustExecScoped(`INSERT INTO announcement (id, announcement_type, is_security_announcement) VALUES ($1, 'SECURITY', true)`, avSecurityID)
+	// announcement_is_security (migration 0149) reads announcement_type or
+	// the "Security Announcement" work_item_tag, so announcement_type alone
+	// carries the signal here. is_security_announcement is deliberately not
+	// set: it is not created by entity-service's migrations and is being
+	// removed upstream.
+	mustExecScoped(`INSERT INTO announcement (id, announcement_type) VALUES ($1, 'SECURITY')`, avSecurityID)
 
 	// Mirrors a real finding (checked live against ServiceNow-synced data): a
 	// currently-open, CVSS 10.0 security bulletin had announcement_type wrongly
@@ -176,12 +170,9 @@ func seedAnnouncementVisibilityFixtures(t *testing.T, pool *pgxpool.Pool) {
 	mustExecScoped(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type, project_id)
 		VALUES ($1, $2, $2, 'test', 'test', 'AV-TEST-SEC-2', 'AV-WSO2-SEC-2', 'AV test security via tag only', 'ANNOUNCEMENT', $3)`,
 		avSecurityViaTagID, now, avProjectID)
-	// is_security_announcement is still true here despite announcement_type
-	// staying (wrongly) GENERAL -- see the comment above this row's own
-	// work_item insert: this simulates the tag-based fallback signal having
-	// already corrected it, exactly like avSecurityID's own doc comment
-	// describes for the straightforward case.
-	mustExecScoped(`INSERT INTO announcement (id, announcement_type, is_security_announcement) VALUES ($1, 'GENERAL', true)`, avSecurityViaTagID)
+	// announcement_type stays (wrongly) GENERAL here; the tag added below is
+	// the only security signal, exercising the tag-based fallback.
+	mustExecScoped(`INSERT INTO announcement (id, announcement_type) VALUES ($1, 'GENERAL')`, avSecurityViaTagID)
 
 	var tagID string
 	err := pool.QueryRow(ctx, `SELECT id FROM tag WHERE LOWER(name) = LOWER('Security Announcement') LIMIT 1`).Scan(&tagID)
@@ -441,4 +432,118 @@ func TestAnnouncementVisibilityCreateCallRequestIntegration(t *testing.T) {
 	if err := create(avGeneralID, "av-general@test.local"); err != nil {
 		t.Errorf("General Access member on a general announcement: unexpected error %v", err)
 	}
+
+	// Reading is guarded the same way: the request the Security Only member
+	// just raised on the security announcement must not be listed for a
+	// General Access member, by case or in the cross-case search.
+	page := domain.Pagination{Limit: 50}
+	searchCounts := func(email string) (byCase, all int) {
+		t.Helper()
+		ctx := repository.WithCallerIdentity(context.Background(), repository.SearchScope{ProjectIDs: []string{avProjectID}, ViewerEmail: email})
+		_, n, err := repo.SearchCallRequests(ctx, avSecurityID, nil, page)
+		if err != nil {
+			t.Fatalf("SearchCallRequests: %v", err)
+		}
+		rows, _, err := repo.SearchAllCallRequests(ctx, domain.SearchAllCallRequestsFilters{}, domain.CallRequestSort{}, page)
+		if err != nil {
+			t.Fatalf("SearchAllCallRequests: %v", err)
+		}
+		for _, r := range rows {
+			if r.Case.ID == avSecurityID {
+				all++
+			}
+		}
+		return n, all
+	}
+	if byCase, all := searchCounts("av-general@test.local"); byCase != 0 || all != 0 {
+		t.Errorf("General Access member sees the security announcement's call request: byCase=%d all=%d, want 0/0", byCase, all)
+	}
+	if byCase, all := searchCounts("av-secure-only@test.local"); byCase != 1 || all != 1 {
+		t.Errorf("Security Only member: byCase=%d all=%d, want 1/1", byCase, all)
+	}
+}
+
+// TestAnnouncementVisibilityChildRowsIntegration (migration 0170): a hidden
+// announcement's comments and watchers must be hidden along with it, and a
+// caller who cannot see the announcement cannot add to it. Before 0170 a
+// project member not cleared for a security announcement could read its
+// comments by work-item UUID. (case_attachment needs no such rule: it
+// references "case", so an announcement cannot own an attachment.)
+func TestAnnouncementVisibilityChildRowsIntegration(t *testing.T) {
+	pool := announcementVisibilityPool(t)
+	seedAnnouncementVisibilityFixtures(t, pool)
+	scopedPool := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+
+	const watcherUserID = "d0000000-0000-0000-0000-0000000000a1"
+	if _, err := pool.Exec(context.Background(), `INSERT INTO "user" (id, created_on, updated_on, user_name)
+		VALUES ($1, NOW(), NOW(), 'av-child-watcher') ON CONFLICT (id) DO NOTHING`, watcherUserID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = scopedPool.Exec(sys, `DELETE FROM comment WHERE work_item_id IN ($1, $2)`, avGeneralID, avSecurityID)
+		_, _ = scopedPool.Exec(sys, `DELETE FROM work_item_watcher WHERE work_item_id IN ($1, $2)`, avGeneralID, avSecurityID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, watcherUserID)
+	})
+	for _, id := range []string{avGeneralID, avSecurityID} {
+		if _, err := scopedPool.Exec(sys, `INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
+			VALUES (gen_random_uuid(), NOW(), 'seed', 'COMMENT', $1, 'child comment')`, id); err != nil {
+			t.Fatalf("seed comment: %v", err)
+		}
+		if _, err := scopedPool.Exec(sys, `INSERT INTO work_item_watcher (id, work_item_id, user_id)
+			VALUES (gen_random_uuid(), $1, $2)`, id, watcherUserID); err != nil {
+			t.Fatalf("seed watcher: %v", err)
+		}
+	}
+
+	repo := repository.NewCaseRepository(scopedPool)
+	counts := func(scope repository.SearchScope, id string) (comments, watchers int) {
+		t.Helper()
+		ctx := repository.WithCallerIdentity(context.Background(), scope)
+		_, c, err := repo.SearchCaseComments(ctx, domain.SearchCaseCommentsRequest{CaseID: id, Pagination: domain.Pagination{Limit: 10}})
+		if err != nil {
+			t.Fatalf("SearchCaseComments: %v", err)
+		}
+		if err := scopedPool.QueryRow(ctx, `SELECT COUNT(*) FROM work_item_watcher WHERE work_item_id = $1`, id).Scan(&watchers); err != nil {
+			t.Fatalf("count watchers: %v", err)
+		}
+		return c, watchers
+	}
+	member := func(email string) repository.SearchScope {
+		return repository.SearchScope{ProjectIDs: []string{avProjectID}, ViewerEmail: email}
+	}
+
+	for _, tc := range []struct {
+		name        string
+		scope       repository.SearchScope
+		id          string
+		wantVisible bool
+	}{
+		{"General Access, general announcement", member("av-general@test.local"), avGeneralID, true},
+		{"General Access, security announcement", member("av-general@test.local"), avSecurityID, false},
+		{"Security Only, security announcement", member("av-secure-only@test.local"), avSecurityID, true},
+		{"Security Only, general announcement", member("av-secure-only@test.local"), avGeneralID, false},
+		{"Internal, security announcement", repository.SearchScope{Unrestricted: true}, avSecurityID, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, w := counts(tc.scope, tc.id)
+			want := 0
+			if tc.wantVisible {
+				want = 1
+			}
+			if c != want || w != want {
+				t.Errorf("comments=%d watchers=%d, want %d each", c, w, want)
+			}
+		})
+	}
+
+	t.Run("cannot comment on an announcement they cannot see", func(t *testing.T) {
+		ctx := repository.WithCallerIdentity(context.Background(), member("av-general@test.local"))
+		_, err := repo.CreateCaseComment(ctx, domain.CreateCaseCommentRequest{
+			CaseID: avSecurityID, CreatedBy: "av-general@test.local", Type: domain.CommentTypeComment, Content: "should be refused",
+		})
+		if err == nil {
+			t.Fatal("CreateCaseComment on a hidden security announcement succeeded, want an error")
+		}
+	})
 }

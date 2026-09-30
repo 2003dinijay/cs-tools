@@ -297,6 +297,12 @@ func scanCallRequest(row pgx.Row) (domain.CallRequestView, error) {
 // the RLS-protected `announcement` table's (migration 000085) -- both must
 // see the SAME transaction's identity, which Scoped guarantees per call.
 func (r *callRequestRepo) runCallRequestSearch(ctx context.Context, where, orderBy string, args []any, pagination domain.Pagination) ([]domain.CallRequestView, int, error) {
+	// Hide a call request whose parent is an ANNOUNCEMENT the caller cannot
+	// see: work_item RLS alone passes any project member, and the LEFT JOINed
+	// case fields (subject/number) would otherwise come back for it. The
+	// wi.id IS NULL branch keeps a call request with no parent work item.
+	// Added to the shared WHERE so the count and page queries stay in step.
+	where += " AND (wi.id IS NULL OR " + announcementVisibilityLeakGuard + ")"
 	countQuery := `SELECT COUNT(*) ` + callRequestFrom + ` ` + where
 	dataQuery := fmt.Sprintf(`%s %s %s %s LIMIT $%d OFFSET $%d`,
 		callRequestSelect, callRequestFrom, where, orderBy, len(args)+1, len(args)+2)

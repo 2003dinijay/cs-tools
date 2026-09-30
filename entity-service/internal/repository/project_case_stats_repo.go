@@ -133,9 +133,10 @@ type projectCaseStatsRepo struct {
 
 // NewProjectCaseStatsRepository constructs a ProjectCaseStatsRepository
 // backed by the given Scoped connection -- announcement's RLS (migration
-// 000085) and sla's (migration 0142) are both enforced entirely by
-// Postgres now, reading the caller's identity from ctx automatically
-// instead of a filter field the caller had to remember to populate.
+// 000085) and work_item's are enforced by Postgres, reading the caller's
+// identity from ctx automatically instead of a filter field the caller had
+// to remember to populate. sla has no RLS (migration 0153); its route
+// access is gated by internalOnly.
 func NewProjectCaseStatsRepository(db *Scoped) ProjectCaseStatsRepository {
 	return &projectCaseStatsRepo{db: db}
 }

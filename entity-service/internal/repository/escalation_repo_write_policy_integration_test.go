@@ -151,7 +151,7 @@ func TestEscalationWritePolicyIntegration_StrangerCannotInsertEscalation(t *test
 		INSERT INTO case_escalation (id, created_on, updated_on, created_by, updated_by, work_item_id, current_level, previous_level, reason)
 		VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1, $2, 'EL1'::case_escalation_level_enum, 'EL0'::case_escalation_level_enum, 'should be rejected')`,
 		escWritePolicyStranger, escWritePolicyCaseID)
-	if err == nil {
-		t.Fatal("INSERT INTO case_escalation as a non-member, non-internal caller: want a row-level security rejection, got no error")
+	if !repository.IsRLSPolicyViolation(err) {
+		t.Fatalf("INSERT INTO case_escalation as a non-member, non-internal caller: want an RLS violation (42501), got %v", err)
 	}
 }

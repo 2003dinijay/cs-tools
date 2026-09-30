@@ -86,6 +86,10 @@ AS $$
     JOIN project_role pr ON pr.id = pgr.project_role_id
     WHERE pc.project_id = target_project_id
       AND pr.role = 'SECURITY_CONTACT'
+      -- A deactivated contact can no longer see anything, so it must not
+      -- count as "the project has a security contact" and keep the
+      -- fallback off. Same predicate the rest of entity-service uses.
+      AND (pc.state IS NULL OR pc.state <> 'DEACTIVATED'::project_contact_state_enum)
   )
 $$;
 

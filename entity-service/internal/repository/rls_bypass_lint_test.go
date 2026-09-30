@@ -99,11 +99,15 @@ var rlsBypassLintExemptFiles = map[string]bool{
 func rlsTableNameMatchers() map[string]*regexp.Regexp {
 	out := make(map[string]*regexp.Regexp, len(rlsProtectedTables))
 	for _, table := range rlsProtectedTables {
-		name := regexp.QuoteMeta(table)
+		// A trailing \b keeps "comment" from matching "commented"; it is
+		// omitted for the quoted "case" form because the closing quote is a
+		// non-word character, so \b after it never matches real SQL
+		// (`FROM "case" c`).
+		name := regexp.QuoteMeta(table) + `\b`
 		if table == "case" {
 			name = `"case"`
 		}
-		out[table] = regexp.MustCompile(`(?i)\b(FROM|JOIN|INTO|UPDATE)\s+` + name + `\b`)
+		out[table] = regexp.MustCompile(`(?i)\b(FROM|JOIN|INTO|UPDATE)\s+` + name)
 	}
 	return out
 }
@@ -313,4 +317,22 @@ func uniqueSorted(in []string) []string {
 		}
 	}
 	return out
+}
+
+// TestRLSBypassLintMatchers pins the matchers themselves: the quoted "case"
+// form must match real SQL, and a plain table must still respect a word
+// boundary so ordinary words do not trip it.
+func TestRLSBypassLintMatchers(t *testing.T) {
+	m := rlsTableNameMatchers()
+	for _, sql := range []string{`SELECT 1 FROM "case" c`, "JOIN \"case\"\n ON x", `UPDATE "case" SET a = 1`} {
+		if !m["case"].MatchString(sql) {
+			t.Errorf(`case matcher missed %q`, sql)
+		}
+	}
+	if m["comment"].MatchString("FROM commented_out") {
+		t.Error("comment matcher must not match a longer identifier")
+	}
+	if !m["comment"].MatchString("SELECT 1 FROM comment c") {
+		t.Error("comment matcher missed a real reference")
+	}
 }

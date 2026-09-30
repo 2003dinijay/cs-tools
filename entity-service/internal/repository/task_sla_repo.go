@@ -59,8 +59,8 @@ type taskSlaRepo struct {
 }
 
 // NewTaskSlaRepository constructs a TaskSlaRepository backed by the given
-// Scoped connection -- sla's project-membership visibility (migration
-// 000094) is enforced entirely by Postgres RLS now; this repository applies
+// Scoped connection. Migration 0153 disables RLS on sla, so access is
+// enforced by internalOnly on every task-SLA route; this repository applies
 // no project filtering of its own.
 func NewTaskSlaRepository(db *Scoped) TaskSlaRepository {
 	return &taskSlaRepo{db: db}
