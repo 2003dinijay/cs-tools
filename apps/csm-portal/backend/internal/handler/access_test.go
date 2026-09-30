@@ -122,16 +122,27 @@ func TestAccessGuard_PermViewSharedEntityScope(t *testing.T) {
 		}
 	})
 
-	t.Run("sales_solutions holds PermViewSharedEntity and PermSPLAccess but not plain PermView", func(t *testing.T) {
+	t.Run("sales_solutions holds PermViewSharedEntity but not plain PermView or PermSPLAccess", func(t *testing.T) {
 		roles := []string{"test-sales-solutions"}
 		if status, _ := serveWithRoles(g, PermViewSharedEntity, roles); status != http.StatusNoContent {
 			t.Errorf("PermViewSharedEntity: status = %d, want 204", status)
 		}
-		if status, _ := serveWithRoles(g, PermSPLAccess, roles); status != http.StatusNoContent {
-			t.Errorf("PermSPLAccess: status = %d, want 204", status)
-		}
 		if status, _ := serveWithRoles(g, PermView, roles); status != http.StatusForbidden {
 			t.Errorf("PermView: status = %d, want 403 -- sales_solutions must not gain every PermView route", status)
+		}
+		// TEMPORARY: PermSPLAccess is Viewer-gated right now, not
+		// sales_solutions -- see PermSPLAccess's own doc comment.
+		if status, _ := serveWithRoles(g, PermSPLAccess, roles); status != http.StatusForbidden {
+			t.Errorf("PermSPLAccess: status = %d, want 403 (temporarily Viewer-gated, not sales_solutions)", status)
+		}
+	})
+
+	// TEMPORARY: guards the interim PermSPLAccess grant (Viewer, not
+	// sales_solutions) -- see PermSPLAccess's own doc comment for why, and
+	// for the real differentiation signal this still needs.
+	t.Run("plain viewer holds PermSPLAccess (temporary)", func(t *testing.T) {
+		if status, _ := serveWithRoles(g, PermSPLAccess, []string{"test-viewer"}); status != http.StatusNoContent {
+			t.Errorf("PermSPLAccess: status = %d, want 204", status)
 		}
 	})
 }

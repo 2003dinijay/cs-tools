@@ -33,20 +33,22 @@ export type PortalView = "cs-abt" | "sales-sa";
  * nav and RootLanding's default destination — see both for where this is
  * consumed.
  *
- * Real detection reads the "sales_solutions" portal role off `GET /users/me`
- * (the same server-authoritative `roles` array `usePortalAccess` reads the
- * other 8 portal roles from — see `internal/handler/access.go`'s
- * `AccessConfig.SalesSolutions`), not a client-side Asgardeo-groups decode —
- * so this can never disagree with what the backend itself thinks the caller
- * is. `AUTH_SALES_SOLUTIONS_ROLES` unset is a normal, supported state (every
- * caller resolves to "cs-abt"), not a misconfiguration.
+ * Detection reads a portal role off `GET /users/me` (the same
+ * server-authoritative `roles` array `usePortalAccess` reads the other 8
+ * portal roles from — see `internal/handler/access.go`'s `AccessConfig`),
+ * not a client-side Asgardeo-groups decode — so this can never disagree
+ * with what the backend itself thinks the caller is.
  *
- * NOT YET migrated: the actual `/spl/*` route/API enforcement
- * (`SplRouteGuard`/`useSplAccess`, and the backend's own `internal/splauth`)
- * still checks raw Asgardeo groups, unrelated to this role — a real,
- * currently-open follow-up (see the Asgardeo Role Catalogue memory note).
- * Until that migrates too, this hook only decides which NAV renders; it is
- * not itself a security boundary for SPL's data.
+ * TEMPORARY: checks plain "viewer", not "sales_solutions", per explicit
+ * request — Sales/SA staff are provisioned with Viewer today, and
+ * sales_solutions isn't reliably assigned yet. This is NOT the long-term
+ * answer: CS engineers are slated to also hold Viewer once cs_engineer
+ * itself is retired in favor of composable roles, at which point everyone
+ * would resolve to "sales-sa" and this stops differentiating anything.
+ * Needs a real SPL-vs-CS-Portal signal before that happens — see
+ * `useSplAccess.ts` and `internal/handler/access.go`'s `PermSPLAccess`,
+ * which carry the identical, byte-for-byte-in-sync check and the same
+ * TEMPORARY flag; keep all three in lockstep.
  *
  * `devViewOverride` (authConfig.ts) lets local testing force either view
  * regardless of the signed-in account's real roles — set
@@ -66,5 +68,5 @@ export function usePortalView(): PortalView {
   }
   if (devViewOverride) return devViewOverride;
   if (devBypassAccessCheck) return "cs-abt";
-  return roles?.includes("sales_solutions") ? "sales-sa" : "cs-abt";
+  return roles?.includes("viewer") ? "sales-sa" : "cs-abt";
 }
