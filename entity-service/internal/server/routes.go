@@ -307,6 +307,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				if opp, ok := membershipIngestSvc.(service.OpportunityReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
 					retryWorker.EntityRetriers[domain.SalesforceIngestEntityOpportunity] = opp.RetryOpportunityIngest
 				}
+				// The Contact writer runs under the membership ingest, which is
+				// on whenever this job runs, so its retrier needs no extra flag.
+				if contact, ok := membershipIngestSvc.(service.ContactReingester); ok {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityContact] = contact.RetryContactIngest
+				}
 				go retryWorker.Run(ingestRetryCtx)
 				log.Printf("salesforce ingest retry worker enabled (every %s)", cfg.SalesforceIngestRetryInterval)
 			}

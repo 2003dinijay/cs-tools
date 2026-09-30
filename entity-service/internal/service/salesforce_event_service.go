@@ -171,7 +171,10 @@ func (s *salesforceEventService) EnsureAccount(ctx context.Context, sfID string)
 		return *id, nil
 	}
 	if s.repo == nil {
-		return "", &apierror.NotFoundError{Msg: "account " + sfID + " not in CSM yet"}
+		// The prefix is what repository.IsMissingParentError (and so the
+		// delayed-retry job) matches, and the same text the membership
+		// ingest uses, so every child family's FAILED row is re-run.
+		return "", &apierror.NotFoundError{Msg: fmt.Sprintf("account not found for sfId %q", sfID)}
 	}
 	slog.InfoContext(ctx, "salesforce: parent account not in CSM yet, ingesting it first", "accountSfId", sfID)
 	// The duplicate guard is off here: the row is known to be missing, so a

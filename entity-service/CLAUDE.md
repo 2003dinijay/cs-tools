@@ -409,8 +409,9 @@ CREATED / UPDATED / RESTORED (`ingestContact`):
    one), fan-out still runs. Otherwise `EnsureAccount` on the contact's
    account; a failure (`NotFoundError` when the account is not in CSM and the
    Account ingest is off) records the ledger FAILED and fails the event, so
-   Service Bus redelivers it. So does a contact with no email (400) or a
-   failed write.
+   Service Bus redelivers it, and the delayed-retry job re-runs it through
+   `RetryContactIngest` once the account lands. A contact with no email (400)
+   or a failed write also fails the event (not retried by the job).
 4. One transaction, under a transaction-scoped advisory lock on the contact
    `sf_id`: `"user"` via `upsertMembershipUser` (by `sf_id`, then unique email;
    `user_name` never renamed; a user this writer soft-deleted — ledger
@@ -486,8 +487,9 @@ unparseable `LastModifiedDate` skips the guard (warning logged) and uses
 account's CSM id for a child ingest: it reads `account.id` by `sf_id`
 (`SalesforceIngestSupport.Accounts`, wired regardless of flags); when absent and the
 Account ingest is on it runs the ordinary `upsertAccount` and reads again; when
-absent and the Account ingest is off it returns `NotFoundError` "account <sfId> not
-in CSM yet".
+absent and the Account ingest is off it returns `NotFoundError`
+`account not found for sfId "<sfId>"` — the prefix `repository.IsMissingParentError`
+matches, so every child family's FAILED row is picked up by the delayed-retry job.
 
 **The delayed-retry job** (`SalesforceIngestRetryWorker`,
 `internal/service/salesforce_ingest_retry_worker.go`). Service Bus redelivers a
@@ -507,8 +509,10 @@ at most 100 per tick. A failed re-run re-records the step with `attempt_count` +
 so a parent that never arrives stops being retried after about an hour at the
 default. FAILED ledger rows are read the same way and handed to
 `EntityRetriers[entity]`; `opportunity` registers one (`RetryOpportunityIngest`) when
-`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true`, other entities are only
-counted (the Account ingest records FAILED rows but has no parent to wait for, so it
+`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true`, and `contact` always
+registers one (`RetryContactIngest`: the whole Contact writer as UPDATED, fan-out
+included; it runs under the membership flag the job already requires). Other
+entities are only counted (the Account ingest records FAILED rows but has no parent to wait for, so it
 registers none).
 
 ## Salesforce Opportunity ingest

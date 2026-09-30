@@ -66,8 +66,8 @@ type MembershipReingester interface {
 //
 // The salesforce_ingest_state ledger (accounts, projects, opportunities) is
 // read the same way through EntityRetriers: a FAILED missing-parent row is
-// handed to the retrier registered for its entity. Until a family records
-// into the ledger no retrier exists, so those rows are only counted.
+// handed to the retrier registered for its entity (routes.go registers
+// opportunity and contact); rows of an entity without one are only counted.
 //
 // Modeled on SLAEngineRecomputeWorker's Run loop — same
 // shutdown-by-context-cancellation shape — but the first tick waits one

@@ -19,7 +19,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -168,12 +167,8 @@ func (s *salesforceEventService) ingestOpportunity(ctx context.Context, sfID, ev
 	if customerID := strings.TrimSpace(opp.CustomerID); customerID != "" {
 		accountID, err := s.EnsureAccount(ctx, customerID)
 		if err != nil {
-			var nf *apierror.NotFoundError
-			if errors.As(err, &nf) {
-				// The ledger's retry filter (repository.IsMissingParentError)
-				// matches this prefix, the same text the membership ingest uses.
-				err = &apierror.NotFoundError{Msg: fmt.Sprintf("account not found for sfId %q", customerID)}
-			}
+			// EnsureAccount's NotFoundError already carries the
+			// "account not found for sfId" prefix the retry job matches.
 			s.recordOpportunityFailed(ctx, state, err)
 			return err
 		}

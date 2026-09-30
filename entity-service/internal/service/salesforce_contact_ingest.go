@@ -34,6 +34,27 @@ import (
 // writer's store or the ledger: a wiring mistake, never a data problem.
 var errContactWriterNotConfigured = errors.New("salesforce: contact writer is not configured (MembershipIngest.Contacts / SalesforceIngestSupport.States)")
 
+// ContactReingester re-runs the Contact writer for one Salesforce Contact id
+// as if an UPDATED event had arrived. The delayed-retry job registers it
+// under domain.SalesforceIngestEntityContact, so a contact whose account was
+// not in CSM yet (a FAILED "account not found" ledger row) is written once
+// the account lands.
+type ContactReingester interface {
+	RetryContactIngest(ctx context.Context, contactSfID string) error
+}
+
+// RetryContactIngest implements ContactReingester. It is the whole Contact
+// writer — contact write, then the membership fan-out — because the
+// memberships that failed for the same missing account need the same second
+// chance; each membership keeps its own duplicate guard. A FAILED ledger row
+// never blocks the guard, so the re-run goes through to the write.
+func (s *salesforceEventService) RetryContactIngest(ctx context.Context, contactSfID string) error {
+	if !s.membership.enabled() {
+		return errMembershipIngestDisabled
+	}
+	return s.ingestContact(ctx, contactSfID, domain.SalesforceEventUpdated)
+}
+
 // ingestContact is the Contact writer (CREATED / UPDATED / RESTORED): fetch
 // the contact once, write its "user" and account_contact rows and its
 // contact-derived roles (writeContact), then re-run the membership upsert

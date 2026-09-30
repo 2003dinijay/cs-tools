@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 const testAccountRowID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
@@ -92,8 +93,13 @@ func TestEnsureAccount_AbsentIngestOff(t *testing.T) {
 	if !errors.As(err, &nf) {
 		t.Fatalf("err = %v, want NotFoundError", err)
 	}
-	if !strings.Contains(nf.Msg, sampleCustomer().ID) || !strings.Contains(nf.Msg, "not in CSM yet") {
-		t.Errorf("message = %q, want the sfId and 'not in CSM yet'", nf.Msg)
+	// The delayed-retry job only re-runs rows whose last_error has the
+	// missing-parent prefix, so the message must carry it.
+	if want := `account not found for sfId "` + sampleCustomer().ID + `"`; !strings.HasPrefix(nf.Msg, want) {
+		t.Errorf("message = %q, want prefix %q", nf.Msg, want)
+	}
+	if !repository.IsMissingParentError(nf.Msg) {
+		t.Errorf("message = %q is not recognised by repository.IsMissingParentError", nf.Msg)
 	}
 	if id != "" || lookup.upsertCalls != 0 || se.calls != 0 {
 		t.Errorf("id=%q upserts=%d salesEntityCalls=%d, want nothing written or fetched", id, lookup.upsertCalls, se.calls)

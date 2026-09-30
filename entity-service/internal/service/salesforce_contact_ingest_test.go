@@ -26,6 +26,7 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/salesentity"
 )
 
@@ -273,6 +274,57 @@ func TestContactWriter_MissingAccountIngestOn(t *testing.T) {
 	}
 	if accounts.upsertCalls != 1 || len(h.contacts.upserts) != 1 || h.contacts.upserts[0].AccountID != testAccountCSMID {
 		t.Errorf("accountUpserts = %d, contact upserts = %+v", accounts.upsertCalls, h.contacts.upserts)
+	}
+}
+
+// TestContactRetrier_MissingAccountIsRetriedOnceTheAccountLands: the FAILED
+// ledger row the Contact writer records for a missing account carries the
+// missing-parent prefix, so the delayed-retry job hands it to the contact
+// retrier, which re-runs the writer as UPDATED once the account is in CSM.
+func TestContactRetrier_MissingAccountIsRetriedOnceTheAccountLands(t *testing.T) {
+	h := newIngestHarness(sampleProjectContact("REGISTERED"), sampleWriterContact(), false)
+	lookup := &stubSalesforceAccountRepo{accountsBySfID: map[string]string{}}
+	svc := NewSalesforceEventServiceWithMembershipIngest(nil, &stubSalesEntityClient{}, SalesforceIngestSupport{Accounts: lookup, States: h.states},
+		MembershipIngest{Memberships: h.repo, Steps: h.steps, SalesEntity: h.se, Contacts: h.contacts})
+
+	if err := svc.HandleEvent(context.Background(), contactEvent("UPDATED")); err == nil {
+		t.Fatal("want the missing account to fail the event")
+	}
+	if len(h.states.upserts) != 1 || h.states.upserts[0].LastError == nil {
+		t.Fatalf("FAILED ledger row not recorded: %+v", h.states.upserts)
+	}
+	failed := h.states.upserts[0]
+	if !repository.IsMissingParentError(*failed.LastError) {
+		t.Fatalf("last_error %q is not a missing-parent error, so the retry job would skip it", *failed.LastError)
+	}
+
+	// The account arrives through the ServiceNow sync; the job's next tick.
+	lookup.accountsBySfID[testAccountID] = testAccountCSMID
+	jobStates := &fakeIngestStateRepo{failed: []domain.SalesforceIngestState{{
+		Entity: failed.Entity, SfID: failed.SfID, Status: domain.SalesforceIngestFailed, LastError: failed.LastError, AttemptCount: 1,
+	}}}
+	w := NewSalesforceIngestRetryWorker(nil, nil, jobStates, time.Minute)
+	re, ok := svc.(ContactReingester)
+	if !ok {
+		t.Fatal("the membership-ingest service must implement ContactReingester")
+	}
+	w.EntityRetriers[domain.SalesforceIngestEntityContact] = re.RetryContactIngest
+	w.RunOnce(context.Background())
+
+	if len(h.contacts.upserts) != 1 || h.contacts.upserts[0].AccountID != testAccountCSMID {
+		t.Fatalf("contact upserts = %+v, want the retrier to write the contact", h.contacts.upserts)
+	}
+	if st := h.contacts.states[0]; st.EventType != domain.SalesforceEventUpdated || st.Status != domain.SalesforceIngestSucceeded {
+		t.Errorf("ledger row = %+v, want UPDATED SUCCEEDED", st)
+	}
+}
+
+// TestRetryContactIngest_MembershipIngestOff: the retrier is only registered
+// with the membership ingest on; built without it, it says so.
+func TestRetryContactIngest_MembershipIngestOff(t *testing.T) {
+	off := NewSalesforceEventService(nil, &stubSalesEntityClient{}, SalesforceIngestSupport{}).(*salesforceEventService)
+	if err := off.RetryContactIngest(context.Background(), testContactID); !errors.Is(err, errMembershipIngestDisabled) {
+		t.Errorf("err = %v, want errMembershipIngestDisabled", err)
 	}
 }
 
