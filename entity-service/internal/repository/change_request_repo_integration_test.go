@@ -33,30 +33,39 @@ import (
 //	CHANGE_REQUEST_TEST_DSN=postgres://... go test ./internal/repository/ -run ChangeRequestIntegration
 
 const (
-	changeRequestApprovalTestID         = "36666666-0000-0000-0000-000000000001"
-	changeRequestApprovalApproverUserID = "36666666-0000-0000-0000-000000000003"
+	changeRequestApprovalTestID          = "36666666-0000-0000-0000-000000000001"
+	changeRequestApprovalApproverUserID  = "36666666-0000-0000-0000-000000000003"
+	changeRequestApprovalApproverUserID2 = "36666666-0000-0000-0000-000000000004"
+	changeRequestApprovalApproverUserID3 = "36666666-0000-0000-0000-000000000005"
 )
 
-// seedApprovalUserForDecisionTest inserts the one "user" row
-// approval_stage_approver.approver_user_id's FK needs -- deliberately its own
-// fresh row (not relying on any of the local docker-compose stack's own
+// seedApprovalUserForDecisionTest inserts one "user" row per given id --
+// approval_stage_approver.approver_user_id's FK needs a real one -- as its
+// own fresh rows (not relying on any of the local docker-compose stack's own
 // incidental seed users) so this test only depends on migrations having run,
 // the same assumption every other integration test in this package makes.
-func seedApprovalUserForDecisionTest(t *testing.T, pool *pgxpool.Pool) {
+func seedApprovalUserForDecisionTest(t *testing.T, pool *pgxpool.Pool, userIDs ...string) {
 	t.Helper()
 	ctx := context.Background()
-
-	cleanup := func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, changeRequestApprovalApproverUserID)
+	if len(userIDs) == 0 {
+		userIDs = []string{changeRequestApprovalApproverUserID}
 	}
-	cleanup()
-	t.Cleanup(cleanup)
 
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user)
-		 VALUES ($1, now(), now(), 'cr-approval-test', 'cr-approval-test', 'cr-approval-test@example.com', 'CR Approval Test', 'CR', 'Approval Test', 'cr-approval-test@example.com', true, false)`,
-		changeRequestApprovalApproverUserID); err != nil {
-		t.Fatalf("seed approver user: %v", err)
+	for i, userID := range userIDs {
+		id := userID
+		cleanup := func() {
+			_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, id)
+		}
+		cleanup()
+		t.Cleanup(cleanup)
+
+		email := fmt.Sprintf("cr-approval-test-%d@example.com", i+1)
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user)
+			 VALUES ($1, now(), now(), 'cr-approval-test', 'cr-approval-test', $2, 'CR Approval Test', 'CR', 'Approval Test', $2, true, false)`,
+			id, email); err != nil {
+			t.Fatalf("seed approver user %s: %v", id, err)
+		}
 	}
 }
 
@@ -284,5 +293,78 @@ func TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess(t *t
 	}
 	if gotState != "AUTHORIZE" {
 		t.Fatalf("state after approval outside Assess = %q, want unchanged \"AUTHORIZE\"", gotState)
+	}
+}
+
+// TestChangeRequestIntegration_DecideApprovalCancelsSiblingApprovers is the
+// regression guard for the other real gap in the original cascade fix:
+// resolving a stage used to leave every other still-pending approver on it
+// sitting at Requested forever, with no visible way to tell "this group has
+// already been decided" apart from "nobody has looked at this yet". Real
+// ServiceNow does not do this (confirmed live against a genuine
+// multi-approver group): once enough approvers respond to resolve the group,
+// every other pending approver on it is moved to Cancelled. This test seeds
+// three approvers on one stage and confirms that deciding as just one of
+// them resolves the stage AND cancels the other two -- not just the acted-on
+// row.
+func TestChangeRequestIntegration_DecideApprovalCancelsSiblingApprovers(t *testing.T) {
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	repo := repository.NewChangeRequestRepository(pool)
+	seedApprovalUserForDecisionTest(t, pool,
+		changeRequestApprovalApproverUserID, changeRequestApprovalApproverUserID2, changeRequestApprovalApproverUserID3)
+	seedChangeRequestForApprovalTest(t, pool, "ASSESS")
+	stageID := seedApprovalStageForDecisionTest(t, pool,
+		changeRequestApprovalApproverUserID, changeRequestApprovalApproverUserID2, changeRequestApprovalApproverUserID3)
+
+	if _, err := repo.DecideChangeRequestApproval(context.Background(), changeRequestApprovalTestID,
+		changeRequestApprovalApproverUserID, "approved", "cr-approval-test"); err != nil {
+		t.Fatalf("DecideChangeRequestApproval(approved): %v", err)
+	}
+
+	rows, err := pool.Query(context.Background(),
+		`SELECT approver_user_id, status FROM approval_stage_approver WHERE stage_id = $1`, stageID)
+	if err != nil {
+		t.Fatalf("read back approver statuses: %v", err)
+	}
+	defer rows.Close()
+
+	statusByApprover := map[string]string{}
+	for rows.Next() {
+		var approverID, status string
+		if err := rows.Scan(&approverID, &status); err != nil {
+			t.Fatalf("scan approver row: %v", err)
+		}
+		statusByApprover[approverID] = status
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate approver rows: %v", err)
+	}
+
+	if got := statusByApprover[changeRequestApprovalApproverUserID]; got != "approved" {
+		t.Errorf("acted-on approver status = %q, want \"approved\"", got)
+	}
+	if got := statusByApprover[changeRequestApprovalApproverUserID2]; got != "cancelled" {
+		t.Errorf("sibling approver 2 status = %q, want \"cancelled\" (not left at \"requested\")", got)
+	}
+	if got := statusByApprover[changeRequestApprovalApproverUserID3]; got != "cancelled" {
+		t.Errorf("sibling approver 3 status = %q, want \"cancelled\" (not left at \"requested\")", got)
+	}
+
+	var gotState string
+	if scanErr := pool.QueryRow(context.Background(),
+		`SELECT state::TEXT FROM change_request WHERE id = $1`, changeRequestApprovalTestID).Scan(&gotState); scanErr != nil {
+		t.Fatalf("read back change request state: %v", scanErr)
+	}
+	if gotState != "AUTHORIZE" {
+		t.Fatalf("state after multi-approver approval = %q, want \"AUTHORIZE\"", gotState)
 	}
 }

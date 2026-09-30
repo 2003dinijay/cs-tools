@@ -2033,9 +2033,42 @@ against a change request in any state and only ever touches `approval`.
 
 The one real approval-gated transition remains **Assess→Authorize**, handled
 entirely by the separate `POST /change-requests/{id}/approvals/decision`
-endpoint (`DecideChangeRequestApproval`) and its own automatic cascade of
-`change_request.state` forward on approval — unrelated to `RequestApproval`
-and unchanged by any of this.
+endpoint (`DecideChangeRequestApproval`) — unrelated to `RequestApproval` and
+unchanged by any of this.
+
+**That cascade did not actually exist when this section was first written.**
+An earlier revision of this same fix claimed `DecideChangeRequestApproval`
+"already cascades `change_request.state` forward on approval" — that claim
+was false, based on a misread of an unrelated earlier test, and was never
+actually verified. Live testing (after the direct "Change state -> Authorize"
+button was removed, leaving the Approvers section the only path to Authorize)
+showed approving did nothing at all to `change_request.state`. Fixed
+properly: `DecideChangeRequestApproval` now applies the same
+first-responder-wins quorum rule `buildChangeRequestApprovals` uses at read
+time — a single approval, provided nobody on the same stage has rejected,
+both (1) advances `change_request.state` from Assess to Authorize and (2)
+cancels every other still-`requested` approver on that same stage, matching
+real ServiceNow's own observed behavior on a genuine multi-approver group
+(confirmed live: only the 1-2 who actually responded were left
+Approved/Rejected, every other pending approver on the same group was moved
+to Cancelled, not left sitting at Requested indefinitely). A rejection never
+does either. Still deliberately scoped to Assess→Authorize only — a decision
+on an Authorize-stage approver still cancels its own siblings, but has no
+state-cascade effect yet.
+
+`domain.ChangeRequestApprover` also gained `CreatedOn`/`Comments` (both
+`*string`, both read from `approval_stage_approver.created_on`/`.comments`
+via `changeRequestApprovalApproversQuery`) to support a full UI redesign:
+the CSM Portal's own Approvers list used to nest approvers under a
+collapsible per-stage accordion card — reported live as confusing (an
+approver looking for their own pending decision gained nothing from first
+finding "their" stage card and expanding it) — and now renders as one flat
+table (State/Approver/Assignment group/Comments/Created/Approved on),
+matching real ServiceNow's own Approvers list layout exactly, with every
+approver from every stage shown together rather than grouped. Both new
+fields are always null on the ServiceNow-backed data source: the Choreo
+`GET /change-requests/{id}/approvals` response has no equivalent fields to
+populate them from.
 
 **Linking happens entirely through `PATCH`, never at creation** —
 `CreateChangeRequestRequest` has no project/case field at all;

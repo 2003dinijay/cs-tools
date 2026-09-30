@@ -75,8 +75,12 @@ INSERT INTO time_card (id, created_on, updated_on, created_by, updated_by, case_
 ON CONFLICT (id) DO NOTHING;
 
 -- One ABT team with both seeded users as members, for GET /teams/{id}/members.
-INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, type) VALUES
-  ('00000000-0000-0000-0000-000000000901', now(), now(), 'seed', 'seed', 'Example Corp ABT', 'ABT')
+-- key is required (migration 000101_schedule_team_key_catalogue.up.sql added
+-- it NOT NULL) -- lower(name), matching that migration's own backfill
+-- convention for a row that predates it, since this one is inserted fresh
+-- after every migration has already run.
+INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, type, key) VALUES
+  ('00000000-0000-0000-0000-000000000901', now(), now(), 'seed', 'seed', 'Example Corp ABT', 'ABT', 'example corp abt')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id) VALUES

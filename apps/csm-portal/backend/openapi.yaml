@@ -17471,9 +17471,21 @@ components:
             Approver-level status as reported by the backing data source
             (e.g. "APPROVED", "NOT_REQUIRED", "REQUESTED"); open string set,
             not a fixed enum.
+        createdOn:
+          type: string
+          nullable: true
+          description: >-
+            When this approval was requested. Null on the ServiceNow-backed data
+            source, which has no equivalent field.
         respondedOn:
           type: string
           nullable: true
+        comments:
+          type: string
+          nullable: true
+          description: >-
+            The approver's own comment on their decision, if any. Null on the
+            ServiceNow-backed data source, same reason as createdOn above.
 
     ChangeRequestApproval:
       type: object

@@ -4402,7 +4402,9 @@ type ChangeRequestApprover struct {
 	ID          string  `json:"id"`
 	Name        string  `json:"name"`
 	Status      string  `json:"status"`
+	CreatedOn   *string `json:"createdOn"`
 	RespondedOn *string `json:"respondedOn"`
+	Comments    *string `json:"comments"`
 }
 
 // ChangeRequestApproval represents a single approval stage (e.g. Assess, Authorize,
