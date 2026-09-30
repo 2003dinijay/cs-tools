@@ -72,18 +72,23 @@ func main() {
 		logger.Error("failed to read environment", "error", err)
 		os.Exit(1)
 	}
-	authn, err := auth.New(cfg.Auth.Mode)
-	if err != nil {
-		logger.Error("failed to initialise auth hook", "error", err)
-		os.Exit(1)
-	}
-	if cfg.Auth.Mode == "none" {
-		logger.Warn("auth.mode is \"none\": vendor routes are unauthenticated")
-	}
 	registry, err := vendors.New()
 	if err != nil {
 		logger.Error("failed to load vendor config", "error", err)
 		os.Exit(1)
+	}
+	// After the registry, which auth.New validates the configured keys against.
+	authn, err := auth.New(cfg.Auth.Mode, envCfg.WebhookAPIKeys, registry.Names(), base.With("component", "auth"))
+	if err != nil {
+		logger.Error("failed to initialise auth hook", "error", err)
+		os.Exit(1)
+	}
+	switch cfg.Auth.Mode {
+	case auth.ModeNone:
+		logger.Warn("auth.mode is \"none\": vendor routes are unauthenticated")
+	case auth.ModeAudit:
+		logger.Warn("auth.mode is \"audit\": keys are checked but nothing is rejected",
+			"vendors_with_keys", len(envCfg.WebhookAPIKeys), "vendors", len(registry.Names()))
 	}
 
 	cassCfg, err := cassandra.ConfigFromEnv()
@@ -118,7 +123,7 @@ func main() {
 		SummaryInterval:  dbFailureInterval,
 		HTTPTimeout:      chatTimeout,
 	})
-	waker := corewake.New(base.With("component", "corewake"), envCfg.WakeURL, cfg.Wake.Timeout.Duration())
+	waker := corewake.New(base.With("component", "corewake"), envCfg.WakeURL, envCfg.WakeKey, cfg.Wake.Timeout.Duration())
 
 	sns, err := newSNSConfirmer(base.With("component", "snsconfirm"))
 	if err != nil {

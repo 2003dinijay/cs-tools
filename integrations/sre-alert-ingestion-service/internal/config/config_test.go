@@ -109,3 +109,24 @@ func TestLoadEnv(t *testing.T) {
 		t.Errorf("ChatWebhookURLs = %q", e.ChatWebhookURLs)
 	}
 }
+
+func TestParseWebhookAPIKeys(t *testing.T) {
+	keys, err := ParseWebhookAPIKeys(" aws:k1 ,datadog:k2, ")
+	if err != nil || len(keys) != 2 || keys["aws"] != "k1" || keys["datadog"] != "k2" {
+		t.Fatalf("keys = %v, err = %v", keys, err)
+	}
+	// Only the first colon splits, so a key may contain them.
+	if k, err := ParseWebhookAPIKeys("aws:a:b:c"); err != nil || k["aws"] != "a:b:c" {
+		t.Errorf("colon-containing key = %v, err = %v", k, err)
+	}
+	for name, raw := range map[string]string{
+		"no colon":     "aws",
+		"empty vendor": ":key",
+		"empty key":    "aws:",
+		"duplicate":    "aws:k1,aws:k2",
+	} {
+		if _, err := ParseWebhookAPIKeys(raw); err == nil {
+			t.Errorf("%s: %q should be rejected", name, raw)
+		}
+	}
+}
