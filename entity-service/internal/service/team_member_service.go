@@ -101,6 +101,11 @@ func (s *teamMemberService) MembersByTeamKeys(ctx context.Context, teamKeys, rol
 		}
 	}
 
+	// Trimmed like every other selector. The handler only splits on commas, so
+	// "T1, T2" reached the query as " T2", matched no row, and dropped that
+	// nominee from the first rung -- with no error, so the missing recipient
+	// was invisible.
+	alertTiers = nonEmptyTrimmed(alertTiers)
 	members, err := s.repo.MembersByTeamKeys(ctx, teamKeys, roles, alertTiers, teamTypes)
 	if err != nil {
 		return domain.TeamMembersResponse{}, err

@@ -95,6 +95,12 @@ func main() {
 		Voice:               os.Getenv("TWILIO_VOICE"),
 		Language:            os.Getenv("TWILIO_LANGUAGE"),
 		APIBaseURL:          os.Getenv("TWILIO_API_BASE_URL"),
+		// Without this the field was documented, settable, and read by
+		// nothing: every production ladder call rang for Twilio's 60s default
+		// whatever an operator configured. It matters for a ladder because a
+		// rung's next attempt can come due while the previous call is still
+		// ringing.
+		RingTimeoutSeconds: envInt("TWILIO_RING_TIMEOUT_SECONDS", 0),
 	})
 
 	// The customer entity service backs per-recipient portal-link resolution
@@ -187,6 +193,24 @@ func main() {
 
 	crDLQProducer := eventbus.NewProducer(crDLQCfg)
 	defer crDLQProducer.Close()
+
+	// The escalation ladder needs a dead-letter topic of its own, and for a
+	// sharper reason than isolation.
+	//
+	// It shares the case topic with the dispatcher but runs a different
+	// handler. Dead-lettering a ladder record onto the shared DLQ hands it to
+	// the DLQ consumer, which runs dispatcher.Handle -- so an incident.created
+	// whose LADDER exhausted its retries would be dispatched a second time,
+	// placing another immediate call for an incident the dispatcher had
+	// already handled, while the ladder itself was never retried at all. One
+	// duplicate call, and still no escalation.
+	escalationDLQCfg := eventbus.Config{
+		Broker:           eventBusCfg.Broker,
+		ConnectionString: eventBusCfg.ConnectionString,
+		Topic:            envOrDefault("INCIDENT_ESCALATION_DLQ_TOPIC", "escalation-events-dlq"),
+	}
+	escalationDLQProducer := eventbus.NewProducer(escalationDLQCfg)
+	defer escalationDLQProducer.Close()
 
 	// The onboarding events ride their own topic too, for the same reason
 	// the change-request notices do: a separate consumer group isolates
@@ -296,6 +320,16 @@ func main() {
 		slog.WarnContext(ctx, "eventbus: handler exhausted retries, publishing to dead-letter topic",
 			append(attrs, deadLetterErrAttrs(handleErr)...)...)
 		return crDLQProducer.Publish(ctx, record.Key, record.Value)
+	}
+
+	// The escalation ladder's own, for the reason escalationDLQCfg gives: a
+	// record retried by the wrong handler is a duplicate call.
+	escalationToDeadLetter := func(ctx context.Context, record eventbus.Record, handleErr error) error {
+		attrs := []any{"topic", record.Topic, "partition", record.Partition,
+			"offset", record.Offset, "dlqTopic", escalationDLQCfg.Topic}
+		slog.WarnContext(ctx, "eventbus: escalation handler exhausted retries, publishing to its own dead-letter topic",
+			append(attrs, deadLetterErrAttrs(handleErr)...)...)
+		return escalationDLQProducer.Publish(ctx, record.Key, record.Value)
 	}
 
 	// Same again for the onboarding consumer: a stuck invitation cannot
@@ -487,9 +521,21 @@ func main() {
 			escalationChannel = creCfg.Channel
 		}
 
+		usingTeamSchedule := os.Getenv("INCIDENT_ESCALATION_RESOLVER") == "team-schedule"
 		startProblem := escalationStartProblem(err != nil, roster.IsEmpty(),
-			os.Getenv("INCIDENT_ESCALATION_RESOLVER") == "team-schedule",
-			os.Getenv("CUSTOMER_ENTITY_BASE_URL") != "")
+			usingTeamSchedule, os.Getenv("CUSTOMER_ENTITY_BASE_URL") != "")
+		// A Team Schedule resolver with no teams configured can resolve almost
+		// nothing: no ABT keys and no ABT type means isABT is always false,
+		// the team-lead and nominee rungs return nobody, and only the two
+		// heads are reachable. The ladder would start, climb, and page almost
+		// no one -- which is the "worse than an absent one, because it looks
+		// like coverage" case escalationStartProblem exists to prevent, just
+		// arriving through configuration rather than through a missing roster.
+		if startProblem == "" && usingTeamSchedule &&
+			len(creCfg.Teams.ABTs) == 0 && creCfg.Teams.ABTType == "" {
+			startProblem = "INCIDENT_ESCALATION_RESOLVER=team-schedule needs teams.abtType or teams.abts " +
+				"in the escalation configuration; without them almost every rung resolves to nobody"
+		}
 		switch {
 		case cfgErr != nil:
 			// Never a fall back to defaults: this file decides what gets
@@ -599,7 +645,19 @@ func main() {
 
 			escalationGroup := envOrDefault("INCIDENT_ESCALATION_CONSUMER_GROUP", "csm-notification-service-escalation")
 			escalationCount := envInt("INCIDENT_ESCALATION_CONSUMER_COUNT", 1)
-			escalationConsumers = startConsumers(ctx, "escalation", eventBusCfg, escalationGroup, escalationCount, escalationEngine.Handle, toDeadLetter)
+			escalationConsumers = startConsumers(ctx, "escalation", eventBusCfg, escalationGroup, escalationCount, escalationEngine.Handle, escalationToDeadLetter)
+
+			// And a consumer for that DLQ running the LADDER's handler, so a
+			// dead-lettered ladder gets its own retry pass rather than being
+			// re-dispatched by the wrong one. onExhausted is nil: a record
+			// that fails here too is logged and dropped, the same single extra
+			// tier every other consumer here gets.
+			escalationDLQGroup := envOrDefault("INCIDENT_ESCALATION_DLQ_CONSUMER_GROUP",
+				"csm-notification-service-escalation-dlq")
+			escalationDLQCount := envInt("INCIDENT_ESCALATION_DLQ_CONSUMER_COUNT", 1)
+			escalationConsumers = append(escalationConsumers,
+				startConsumers(ctx, "escalation-dlq", escalationDLQCfg, escalationDLQGroup,
+					escalationDLQCount, escalationEngine.Handle, nil)...)
 
 			// Ticks faster than the SLA engine's 15s: the shortest gap
 			// between two calls in section 7.0's table is one minute (P0), so

@@ -46,6 +46,7 @@ package escalation
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -279,6 +280,29 @@ var priorityAliases = map[string]string{
 	"MEDIUM":       "P3",
 	"MODERATE":     "P3",
 	"LOW":          "P4",
+	// S-notation is what the escalation rules spreadsheet uses, and therefore
+	// what an operator writing trigger.priorities reaches for. No publisher
+	// emits it, so without these an allowlist written the way the document
+	// spells it matches nothing and escalation turns off with only an Info
+	// line to say so.
+	"S0": "P0",
+	"S1": "P1",
+	"S2": "P2",
+	"S3": "P3",
+	"S4": "P4",
+}
+
+// NormalisePriority resolves any spelling of a priority to P-notation: the
+// P-codes themselves, the severity labels a payload carries (CRITICAL,
+// MODERATE), and the S-codes the rules document uses. An unrecognised value
+// comes back trimmed and upper-cased, so two unknown spellings of the same
+// thing still compare equal.
+func NormalisePriority(raw string) string {
+	v := strings.ToUpper(strings.TrimSpace(raw))
+	if alias, ok := priorityAliases[v]; ok {
+		return alias
+	}
+	return v
 }
 
 // Lookup resolves a priority string to its policy, accepting both P-notation

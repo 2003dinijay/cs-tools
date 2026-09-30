@@ -525,6 +525,7 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 	}
 
 	call := st.Plan.Calls[index]
+	var failure string
 	if err := e.place(ctx, st.Plan, call); err != nil {
 		if !isPermanent(err) {
 			// Transient — leave the wake entry, the next tick retries.
@@ -538,10 +539,39 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 			"incidentId", incidentID, "rule", st.Plan.Trigger.Routing.Rule(),
 			"level", call.Level.String(), "attempt", call.Ordinal,
 			"to", maskPhone(call.Recipient.Phone), "reason", permanentReason(err))
-		st.setFailure(index, permanentReason(err))
-	} else {
-		st.Placed[index] = true
+		failure = permanentReason(err)
 	}
+
+	// Re-read before writing, and carry over only what this goroutine owns.
+	//
+	// e.place above is an HTTP call that can take seconds, and the consumer
+	// goroutine is live throughout: an acknowledgement can arrive and write
+	// SawStateChange, or Cancelled, or delete the ladder outright. Saving the
+	// copy read before the call would put all of that back -- losing a half
+	// acknowledgement, so the ladder demands a gesture that already arrived,
+	// or resurrecting a ladder somebody has already stopped and calling the
+	// next rung.
+	//
+	// This narrows the window to the gap between this read and the save
+	// rather than closing it: there is no compare-and-set here, and a proper
+	// fix is a Lua script that does both in one round trip. The remaining gap
+	// is microseconds against seconds, and it fails in the recoverable
+	// direction -- a placed call is not recorded, so it is placed again.
+	fresh, stillRunning, err := e.store.Get(ctx, incidentID)
+	if err != nil {
+		return fmt.Errorf("escalation: reload ladder for %s: %w", incidentID, err)
+	}
+	if !stillRunning || fresh.Cancelled != nil || index >= len(fresh.Placed) {
+		// Acknowledged, replaced or completed while the call was in flight.
+		// The call did go out, but there is nothing left to record it on.
+		return e.store.RemoveWakes(ctx, member)
+	}
+	if failure != "" {
+		fresh.setFailure(index, failure)
+	} else {
+		fresh.Placed[index] = true
+	}
+	st = fresh
 
 	if err := e.store.Save(ctx, incidentID, st); err != nil {
 		return fmt.Errorf("escalation: record placed call for %s: %w", incidentID, err)

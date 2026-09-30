@@ -171,11 +171,14 @@ var DefaultRules = []Rule{
 
 // MatchRule picks the row an incident routes by.
 //
-// A rule scoped to yes or no only matches when eligibility is actually known.
-// abtKnown being false is not "no": no publisher populates the flag today, and
-// treating absent as a definite answer would silently route every unassigned-
-// looking incident down whichever half of the table happened to be first. The
-// caller reports the miss rather than guessing.
+// abtKnown distinguishes "this incident is not on an ABT team" from "we could
+// not find out". Only the second leaves the yes/no rows unmatchable, and a
+// caller that genuinely cannot tell should report the miss rather than guess.
+//
+// A missing team is the FIRST case, not the second: an incident with no team
+// is definitely not on an ABT team, which is what R3 and R4b are for. Reading
+// it as unknown meant LK and LK_EVENING -- whose only rows are the yes/no
+// pair -- matched nothing at all, and the incident was never paged.
 func MatchRule(rules []Rule, shift Shift, assignedToABT bool, abtKnown bool) (Rule, bool) {
 	for _, r := range rules {
 		if r.Shift != shift {

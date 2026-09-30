@@ -6659,21 +6659,38 @@ paths:
       summary: Who holds which rank on these teams.
       description: >
         The org chart behind the rota, as the call-escalation ladder reads it.
-        Four of its five rungs resolve from here: an incident's own ABT
-        supplies the sub leads and the lead, and the two heads sit in a
-        leadership team of their own. The fifth, the rung that rings whoever is
-        on call, is this answer intersected with `/team-schedule/on-duty`.
+        Its rungs resolve from here: an incident's own team supplies the team
+        lead, the ABT supplies every team lead, and the first rung is the
+        alert-duty nominees, on their own or intersected with
+        `/team-schedule/on-duty`.
+
+
+        Either `teamKeys` or `teamTypes` must be supplied. Both being absent is
+        rejected: an unfiltered read would return every membership in the
+        organisation.
       operationId: getTeamMembers
       parameters:
         - name: teamKeys
           in: query
-          required: true
+          required: false
           schema:
             type: string
           description: >
             Comma-separated team keys, as the rota names them (`vega`,
-            `cre-leadership`). At least one is required.
-          example: vega,cre-leadership
+            `americas`). Required unless `teamTypes` is supplied.
+          example: vega,americas
+        - name: teamTypes
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Comma-separated team types, which is how teams are grouped into an
+            ABT: `cre-abt` holds seven teams and `sre-abt` two, while a team
+            like Americas is `cre` and belongs to no ABT. Selecting by type
+            means a team added to an ABT is included without the caller
+            carrying a list of keys. Required unless `teamKeys` is supplied.
+          example: cre-abt
         - name: roles
           in: query
           required: false
@@ -6682,7 +6699,18 @@ paths:
           description: >
             Comma-separated roles to keep. Omit for every role. One of
             `engineer`, `sub_lead`, `lead`, `cre_head`, `cs_head`.
-          example: sub_lead,lead
+          example: lead
+        - name: alertTiers
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Comma-separated alert-duty nominations to keep (`T1`, `T2`, `T3`).
+            Omit for members holding any nomination or none. A nomination is a
+            standing duty to take the first call for a team, independent of
+            rank and never held by a lead.
+          example: T1,T2,T3
       responses:
         "200":
           description: >
@@ -6693,7 +6721,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/TeamMembersResponse'
         "400":
-          description: Bad request — no teamKeys, or a role that is not one of the five.
+          description: Bad request — no teamKeys or teamTypes, or a role that is not one of the five.
           content:
             application/json:
               schema:
@@ -17323,6 +17351,18 @@ components:
         teamKey:
           type: string
           example: vega
+        teamType:
+          type: string
+          description: >
+            The team's own type, which is what groups teams into an ABT:
+            `cre-abt`, `sre-abt`, `cre`, `cre-leadership`.
+          example: cre-abt
+        alertTier:
+          type: string
+          description: >
+            The standing alert-duty nomination this member holds (`T1`, `T2`,
+            `T3`), absent when they hold none.
+          example: T1
         role:
           type: string
           description: >

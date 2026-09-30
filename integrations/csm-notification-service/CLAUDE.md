@@ -223,9 +223,13 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   redelivered trigger must not restart a ladder from LEVEL_0);
   `incident.priority_elevated` deliberately **replaces** a running ladder,
   retiring its outstanding calls; `incident.acknowledged` (leaving NEW) and a
-  public `incident.comment_added` both **cancel** — either gesture stops any
-  running ladder, slightly broader than the document's per-trigger pairing,
-  because a responder who commented is just as visibly attending. A work note
+  public `incident.comment_added` are the two halves of an acknowledgement and
+  **both are required**: each is recorded on the ladder's own state as it
+  arrives, in either order, and the ladder keeps climbing until the second one
+  does. A status move on its own is what a dispatcher does while triaging a
+  queue, and treating it as an answer silenced the pager for incidents nobody
+  had picked up. `acknowledgement.requireBoth: false` restores the old
+  either-gesture rule. A work note
   (`isPublic: false`) is ignored. `Tick` (every `INCIDENT_ESCALATION_TICK_INTERVAL`,
   default 5s — finer than the SLA engine's, since P0's calls are a minute
   apart) scans the wake ZSET, and for each due call: **place, then record,
@@ -317,11 +321,12 @@ covers an environment, or an incident gets both.
 
 **Not built**: the email at each rung (section 10.0), the two
 erroneous-scenario emails (section 12.0), LEVEL_0 availability filtering
-(section 8.0), a ServiceNow-backed `Resolver`. **Never populated by any
-publisher**: `abtEligible` (entity-service has no product→BU mapping), so
-every incident currently routes as `UNKNOWN_ABT` and the engine warns once per
-ladder — and `account` (incidents have no account field; the voice message
-skips the sentence).
+(section 8.0), a ServiceNow-backed `Resolver`. **No longer relevant**: `abtEligible` was never populated by any publisher, so
+every incident used to route as `UNKNOWN_ABT`. The updated rule table does not
+ask: whether an incident is on an ABT team is answered from the team's own
+`team.type`, which entity-service already records, and the matched rule's id is
+stamped onto the routing context by `BuildPlan` and reported everywhere. The
+field remains on the payload for decode compatibility and is unread.
 
 **Testing**: `cmd/escalation-local` runs the *real* engine against a real
 Redis with the real Twilio client pointed at a local stub (or at Twilio with

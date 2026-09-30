@@ -63,6 +63,8 @@ type TeamScheduleResolver struct {
 	teamLeadKeys []string
 	// teamLeadsToCall is how many of that pool the rung calls; 0 calls all.
 	teamLeadsToCall int
+	// americasLead is the single lead above the Americas team's own leads.
+	americasLead Person
 	// heads are the last two rungs when configuration names them outright,
 	// which is the normal case: they are two people, not a team.
 	heads Heads
@@ -142,6 +144,7 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 	}
 	return TeamScheduleResolver{
 		abtType:           strings.ToLower(strings.TrimSpace(teams.ABTType)),
+		americasLead:      teams.AmericasLead,
 		teamLeadsToCall:   teams.TeamLeadsToCall,
 		tiers:             alertTiers,
 		entity:            entity,
@@ -194,6 +197,18 @@ type TeamKeys struct {
 	Americas string `yaml:"americas"`
 	// Leadership is the team the two heads belong to.
 	Leadership string `yaml:"leadership"`
+	// AmericasLead is the single lead above the Americas team's own leads,
+	// named outright.
+	//
+	// It has to be named because the schema cannot tell the two apart: the
+	// three Americas team leads and the one above them all hold role 'lead',
+	// so looking the rung up by role returned the whole pool and LEVEL_2
+	// re-called everybody LEVEL_1 had just reached -- an escalation that looks
+	// like it climbed without reaching anybody new.
+	//
+	// Left empty, LEVEL_2 falls back to the lowest-addressed lead of the
+	// Americas team, which is at least one person rather than all of them.
+	AmericasLead Person `yaml:"americasLead"`
 }
 
 const defaultLeadershipTeamKey = "cre-leadership"
@@ -244,7 +259,13 @@ func (r TeamScheduleResolver) RuleFor(rc RoutingContext) (Rule, bool) {
 // may mean asking entity-service when the ABT is resolved by type.
 func (r TeamScheduleResolver) RuleForCtx(ctx context.Context, rc RoutingContext) (Rule, bool) {
 	key := teamKeyFor(rc.AssignedCRETeam)
-	return MatchRule(r.rules, rc.Shift, r.isABT(ctx, key), key != "")
+	// An incident with no team is a DEFINITE "not assigned to an ABT team",
+	// not an unknown. Treating it as unknown left every ABTYes/ABTNo row
+	// unmatchable, and LK and LK_EVENING have only those two rows each -- so
+	// an unassigned incident during business hours matched nothing, every rung
+	// resolved to nobody, and it was never paged at all. Not being on a team
+	// is exactly the case R3 and R4b exist for.
+	return MatchRule(r.rules, rc.Shift, r.isABT(ctx, key), true)
 }
 
 // isABT answers the rule table's "is this assigned to a team in the ABT"
@@ -327,7 +348,20 @@ func (r TeamScheduleResolver) fromSource(ctx context.Context, src LevelSource, r
 		return r.leadsOf(ctx, r.americasKeys())
 
 	case SourceAmericasTeamLead:
-		return r.leadsOf(ctx, r.americasKeys())
+		if r.americasLead.Set() {
+			return []Recipient{{
+				Name:  r.americasLead.Name,
+				Email: r.americasLead.Email,
+				Phone: r.americasLead.Phone,
+			}}, nil
+		}
+		// Nobody named: take one rather than the whole pool, so this rung is
+		// still distinguishable from LEVEL_1's three.
+		leads, err := r.leadsOf(ctx, r.americasKeys())
+		if err != nil || len(leads) == 0 {
+			return leads, err
+		}
+		return leads[:1], nil
 
 	case SourceCREHead:
 		if p := r.heads.CRE; p.Set() {

@@ -784,3 +784,61 @@ func TestResolve_TeamLeadsRotateAcrossThePool(t *testing.T) {
 		t.Errorf("LEVEL_2 = %v, want the three longest without a call %v", emails(got), want)
 	}
 }
+
+// An incident with no team is a definite "not on an ABT team", not an unknown.
+//
+// Regression test: reading it as unknown left every ABTYes/ABTNo row
+// unmatchable, and LK and LK_EVENING have only that pair -- so an unassigned
+// incident during business hours matched no rule, every rung resolved to
+// nobody, and it was never paged. Not being on a team is what R3 and R4b are
+// for.
+func TestRuleFor_NoTeamMatchesTheNotAssignedRow(t *testing.T) {
+	r := testResolver(&stubScheduleReader{})
+	for _, tc := range []struct {
+		shift Shift
+		want  string
+	}{
+		{ShiftLK, "R3"},
+		{ShiftLKEvening, "R4b"},
+	} {
+		rule, ok := r.RuleFor(RoutingContext{Shift: tc.shift, AssignedCRETeam: ""})
+		if !ok {
+			t.Fatalf("%s with no team matched no rule at all", tc.shift)
+		}
+		if rule.ID != tc.want {
+			t.Errorf("%s with no team routed by %s, want %s", tc.shift, rule.ID, tc.want)
+		}
+	}
+}
+
+// LEVEL_2 on the night shift is ONE person, not the pool LEVEL_1 just called.
+// Both sources read role 'lead' on the Americas team, so without a named lead
+// the rung returned everybody and the escalation reached nobody new.
+func TestResolve_AmericasTeamLeadIsOnePerson(t *testing.T) {
+	stub := &stubScheduleReader{members: []teamMember{
+		member("americas", "am1@example.com", roleLead, ""),
+		member("americas", "am2@example.com", roleLead, ""),
+		member("americas", "am3@example.com", roleLead, ""),
+	}}
+	rc := RoutingContext{Shift: ShiftUSA, AssignedCRETeam: "vega", At: time.Now()}
+
+	// Named outright, which is the intended configuration.
+	named := testTeams
+	named.AmericasLead = Person{Name: "Americas Lead", Email: "above@example.com"}
+	got, err := NewTeamScheduleResolver(stub, named, nil).Resolve(context.Background(), Level2, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Email != "above@example.com" {
+		t.Errorf("LEVEL_2 = %v, want the one named lead", emails(got))
+	}
+
+	// Unnamed, it still must not call the whole pool.
+	fallback, err := NewTeamScheduleResolver(stub, testTeams, nil).Resolve(context.Background(), Level2, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fallback) != 1 {
+		t.Errorf("LEVEL_2 = %v, want one person even with none named", emails(fallback))
+	}
+}

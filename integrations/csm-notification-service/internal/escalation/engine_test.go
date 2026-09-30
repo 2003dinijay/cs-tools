@@ -332,10 +332,7 @@ func TestEngine_AcknowledgementCancelsAndWritesTheSummary(t *testing.T) {
 	if len(store.wakes) == 0 {
 		t.Fatal("a status move alone stopped the ladder; acknowledgement takes a public comment too")
 	}
-	if err := e.Handle(context.Background(), record(t, events.TypeIncidentCommentAdded,
-		events.IncidentCommentAddedPayload{CommentID: "c-ack", IsPublic: true})); err != nil {
-		t.Fatal(err)
-	}
+	acknowledgeFully(t, e)
 
 	if len(store.wakes) != 0 {
 		t.Errorf("%d calls still scheduled after acknowledgement", len(store.wakes))

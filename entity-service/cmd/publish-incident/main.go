@@ -74,7 +74,7 @@ func main() {
 	payload, err := json.Marshal(events.IncidentCreatedPayload{
 		Title:            *title,
 		ShortDescription: *title,
-		Number:           "INC" + incidentID[len(incidentID)-7:],
+		Number:           "INC" + lastN(incidentID, 7),
 		Priority:         *priority,
 		Account:          *account,
 		Team:             *team,
@@ -119,4 +119,14 @@ func main() {
 	fmt.Printf("published %s for %s (priority %s, team %s) to %s\n",
 		events.TypeIncidentCreated, incidentID, *priority, *team, *topic)
 	fmt.Printf("payload: %s\n", payload)
+}
+
+// lastN is the last n characters of s, or all of them when it is shorter.
+// Slicing directly panicked on any -incident-id under seven characters, which
+// is a crash instead of an error message for a tool somebody is using by hand.
+func lastN(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }

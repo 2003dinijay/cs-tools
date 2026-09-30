@@ -138,11 +138,6 @@ func withThreadReplyOption(webhookURL string) (string, error) {
 	return u.String(), nil
 }
 
-// normalizeProduct makes product matching case- and whitespace-insensitive.
-func normalizeProduct(product string) string {
-	return strings.ToLower(strings.TrimSpace(product))
-}
-
 // redactURLError strips the request URL — which carries the webhook's secret
 // key/token query parameters — out of a *url.Error before it's wrapped and
 // potentially logged, keeping only the underlying (safe) failure reason.

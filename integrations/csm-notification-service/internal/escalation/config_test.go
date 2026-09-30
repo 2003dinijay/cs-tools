@@ -454,3 +454,32 @@ func equalStringSets(got, want []string) bool {
 	}
 	return true
 }
+
+// trigger.priorities is documented as S0..S4, but no publisher emits that
+// notation -- a payload carries CRITICAL, MODERATE or P1. Comparing them raw
+// meant an allowlist written exactly as the rules document spells it matched
+// nothing, and escalation turned itself off with only an Info line per
+// incident to say so.
+func TestStartWhen_PrioritiesCompareAcrossNotations(t *testing.T) {
+	cases := []struct {
+		allow    []string
+		priority string
+		want     bool
+	}{
+		{[]string{"S0", "S1"}, "CRITICAL", true},  // S-notation vs a severity label
+		{[]string{"S0", "S1"}, "P1", true},        // S-notation vs P-notation
+		{[]string{"P0", "P1"}, "CRITICAL", true},  // P-notation vs a label
+		{[]string{"CRITICAL"}, "S1", true},        // and the reverse
+		{[]string{"S0", "S1"}, "MODERATE", false}, // genuinely outside the list
+		{[]string{"S0"}, "P1", false},
+		{[]string{" s1 "}, "CRITICAL", true}, // case and space insensitive
+		{nil, "ANYTHING", true},              // empty means no opinion
+	}
+	for _, tc := range cases {
+		l := LadderConfig{Start: StartWhen{Priorities: tc.allow}}
+		got, why := l.Allows(tc.priority, "vega", "LK")
+		if got != tc.want {
+			t.Errorf("Allows(%q) with %v = %v (%s), want %v", tc.priority, tc.allow, got, why, tc.want)
+		}
+	}
+}

@@ -305,7 +305,12 @@ func (l LadderConfig) Allows(priority, team, shift string) (bool, string) {
 	if l.Start.RequireKnownTeam && strings.TrimSpace(team) == "" {
 		return false, "the incident names no team and trigger.requireKnownTeam is set"
 	}
-	if !matches(l.Start.Priorities, priority) {
+	// Both sides go through the same normalisation. The allowlist is written
+	// the way the rules document spells it (S0..S4) while the incident carries
+	// whatever the publisher sent (CRITICAL, P1, MODERATE), and comparing
+	// those raw meant a correctly written allowlist matched nothing at all --
+	// escalation silently off, with only an Info line per incident to say so.
+	if !matchesPriority(l.Start.Priorities, priority) {
 		return false, fmt.Sprintf("priority %s is not in trigger.priorities", priority)
 	}
 	if contains(l.Start.ExcludeTeams, team) {
@@ -336,6 +341,21 @@ func (l LadderConfig) Dialable(number string) bool {
 		return true
 	}
 	return contains(l.Safety.AllowedNumbers, number)
+}
+
+// matchesPriority is the allowlist test for priorities, comparing both sides
+// in P-notation so S1, P1 and CRITICAL are one value.
+func matchesPriority(allow []string, v string) bool {
+	if len(allow) == 0 {
+		return true
+	}
+	want := NormalisePriority(v)
+	for _, item := range allow {
+		if NormalisePriority(item) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // matches is an allowlist test where empty means "no opinion". Comparison is
