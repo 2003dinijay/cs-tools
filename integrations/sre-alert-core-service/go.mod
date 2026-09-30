@@ -10,6 +10,7 @@ require (
 	github.com/scylladb/gocqlx/v2 v2.8.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/oauth2 v0.27.0
+	golang.org/x/sync v0.23.0
 )
 
 require (

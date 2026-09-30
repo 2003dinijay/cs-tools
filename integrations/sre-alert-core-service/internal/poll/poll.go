@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/gocql/gocql"
+	"golang.org/x/sync/errgroup"
 
 	"alert-core-service/internal/cassandra"
 	"alert-core-service/internal/engine"
@@ -233,23 +234,22 @@ type prepared struct {
 	notFound bool
 }
 
-// readWindow reads n alert ids starting at base concurrently, bounded by ReadConcurrency.
+// readWindow reads n alert ids starting at base concurrently, bounded by ReadConcurrency. Prepare
+// never returns an error itself (failures are folded into outcome/notFound), so the errgroup here
+// is purely a bounded fan-out; g.Wait()'s error is always nil.
 func (p *Poller) readWindow(ctx context.Context, base int64, n int) []prepared {
 	slots := make([]prepared, n)
-	sem := make(chan struct{}, p.settings.ReadConcurrency)
-	var wg sync.WaitGroup
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(p.settings.ReadConcurrency)
 	for i := range n {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int) {
-			defer wg.Done()
-			defer func() { <-sem }()
+		g.Go(func() error {
 			id := cassandra.FormatSeq(alertIDPrefix, alertIDWidth, base+int64(i))
-			alert, fp, outcome, ready, notFound := p.engine.Prepare(ctx, id)
+			alert, fp, outcome, ready, notFound := p.engine.Prepare(gctx, id)
 			slots[i] = prepared{alert: alert, fp: fp, outcome: outcome, ready: ready, notFound: notFound}
-		}(i)
+			return nil
+		})
 	}
-	wg.Wait()
+	_ = g.Wait()
 	return slots
 }
 

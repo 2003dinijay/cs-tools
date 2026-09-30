@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
+	"golang.org/x/sync/singleflight"
 
 	"alert-core-service/internal/apierror"
 	"alert-core-service/internal/csm"
@@ -48,6 +49,10 @@ type Notifier struct {
 	callerID                string
 	unknownServiceID        string
 	services                *serviceCache
+	// serviceResolveGroup collapses concurrent cache misses for the same never-before-seen label into
+	// one CSM search, so an alert storm across the fingerprint-sharded worker pool doesn't fire N
+	// identical SearchServiceID calls for a label none of the workers has resolved yet.
+	serviceResolveGroup     singleflight.Group
 	fallbackChatWebhookURLs []string
 	maxAttempts             int
 	retryBaseDelay          time.Duration
@@ -213,14 +218,25 @@ func (n *Notifier) resolveServiceID(ctx context.Context, label string) (string, 
 	if id, ok := n.services.get(label, time.Now()); ok {
 		return id, nil
 	}
-	id, err := n.csm.SearchServiceID(ctx, label)
+	// Concurrent workers resolving the same unresolved label collapse into one CSM search; every
+	// caller waiting on it gets that single result rather than each firing its own SearchServiceID.
+	v, err, _ := n.serviceResolveGroup.Do(label, func() (any, error) {
+		id, err := n.csm.SearchServiceID(ctx, label)
+		if err != nil {
+			return "", err
+		}
+		if id != "" {
+			n.services.set(label, id, time.Now())
+		}
+		return id, nil
+	})
 	if err != nil {
 		return "", err
 	}
+	id := v.(string)
 	if id == "" {
 		return n.unknownServiceID, nil
 	}
-	n.services.set(label, id, time.Now())
 	return id, nil
 }
 
