@@ -28,7 +28,6 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/githubissue"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
@@ -127,7 +126,7 @@ func buildGitHubIssueBody(req caseGitHubIssueRequest) string {
 // label always go on. Patch adds Type/Patch and patch. Discussion adds the
 // priority label. The switches add Require/Hotfix, regression, and
 // Affected/Migration. An in-progress project adds Onboarding/affected.
-func buildGitHubIssueLabels(option githubissue.RepoOption, req caseGitHubIssueRequest) []string {
+func buildGitHubIssueLabels(productLabel string, req caseGitHubIssueRequest) []string {
 	var labels []string
 	seen := make(map[string]bool)
 	add := func(l string) {
@@ -145,7 +144,7 @@ func buildGitHubIssueLabels(option githubissue.RepoOption, req caseGitHubIssueRe
 	if !reservedIssueLabel(req.UpdateLevel) {
 		add(req.UpdateLevel)
 	}
-	add(option.GithubLabel)
+	add(productLabel)
 	issueType := strings.TrimSpace(req.IssueTypeLabel)
 	switch issueType {
 	case patchIssueTypeLabel:
@@ -271,7 +270,6 @@ func (h *CaseHandler) createGitHubIssueViaEngineering(w http.ResponseWriter, r *
 		return
 	}
 	var mapping struct {
-		ProductName string `json:"productName"`
 		Owner       string `json:"owner"`
 		Repository  string `json:"repository"`
 		GithubLabel string `json:"githubLabel"`
@@ -280,20 +278,16 @@ func (h *CaseHandler) createGitHubIssueViaEngineering(w http.ResponseWriter, r *
 		writeError(w, http.StatusBadRequest, errMsgGitHubRepoNotMapped)
 		return
 	}
-	option := githubissue.RepoOption{
-		Owner:        strings.TrimSpace(mapping.Owner),
-		Repo:         strings.TrimSpace(mapping.Repository),
-		GithubLabel:  strings.TrimSpace(mapping.GithubLabel),
-		DisplayLabel: strings.TrimSpace(mapping.ProductName),
-	}
+	owner := strings.TrimSpace(mapping.Owner)
+	repo := strings.TrimSpace(mapping.Repository)
 
-	// The catalogue's owner is the GitHub organisation, so it is passed as both
+	// The mapping's owner is the GitHub organisation, so it is passed as both
 	// the organisation and the owner the engineering service asks for. The
 	// service picks its GitHub access token by that organisation name, so it
 	// must be one it is configured with.
-	issue, err := h.engineering.CreateGitIssue(r.Context(), option.Owner, option.Owner, option.Repo, title, issueBody, buildGitHubIssueLabels(option, req))
+	issue, err := h.engineering.CreateGitIssue(r.Context(), owner, owner, repo, title, issueBody, buildGitHubIssueLabels(mapping.GithubLabel, req))
 	if err != nil {
-		slog.ErrorContext(r.Context(), "engineering CreateGitIssue failed", "userID", user.UserID, "caseID", caseID, "repo", option.Owner+"/"+option.Repo, "err", err)
+		slog.ErrorContext(r.Context(), "engineering CreateGitIssue failed", "userID", user.UserID, "caseID", caseID, "repo", owner+"/"+repo, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to create GitHub issue.")
 		return
 	}
@@ -301,15 +295,15 @@ func (h *CaseHandler) createGitHubIssueViaEngineering(w http.ResponseWriter, r *
 	// The engineering service returns the issue's id, number, state, title, body
 	// and labels but no URL, and files issues on github.com, so the URL is built
 	// from the repo and number.
-	slog.InfoContext(r.Context(), "GitHub issue created from case", "userID", user.UserID, "caseID", caseID, "repo", option.Owner+"/"+option.Repo, "number", issue.Number)
-	issueURL := fmt.Sprintf("https://github.com/%s/%s/issues/%d", option.Owner, option.Repo, issue.Number)
+	slog.InfoContext(r.Context(), "GitHub issue created from case", "userID", user.UserID, "caseID", caseID, "repo", owner+"/"+repo, "number", issue.Number)
+	issueURL := fmt.Sprintf("https://github.com/%s/%s/issues/%d", owner, repo, issue.Number)
 	h.recordGitHubIssueWorkNote(r.Context(), user, caseID, issueURL)
 	writeJSONValue(w, http.StatusCreated, caseGitHubIssueResponse{
 		Message: "GitHub issue created.",
 		Issue: caseGitHubIssueResult{
 			URL:    issueURL,
 			Number: issue.Number,
-			Repo:   option.Owner + "/" + option.Repo,
+			Repo:   owner + "/" + repo,
 		},
 	})
 }
