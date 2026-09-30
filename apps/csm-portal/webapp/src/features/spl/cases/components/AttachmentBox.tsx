@@ -17,9 +17,9 @@
 // Ported from apps/support-portal-lite/webapp's own
 // features/spl/cases/components/AttachmentBox.tsx — rewritten against
 // useGetCaseAttachments (React Query) instead of useSplApi's useGetApi.
-import { Box, Stack, Tooltip, Typography } from "@wso2/oxygen-ui";
+import { Box, ButtonBase, Stack, Tooltip, Typography } from "@wso2/oxygen-ui";
 import { CircleAlertIcon, ClockIcon } from "@wso2/oxygen-ui-icons-react";
-import { useSplPermissions } from "@features/spl/api/splPermissionsContext";
+import { usePermissions } from "@features/spl/api/permissionsContext";
 import { useAttachmentDownload } from "../api/useAttachmentDownload";
 import { useGetCaseAttachments } from "../api/useCases";
 import type { AttachmentDetails } from "../api/caseTypes";
@@ -27,7 +27,7 @@ import { LinearLoadingPanel } from "./StatePanels";
 
 export function AttachmentBox({ caseId }: { caseId: string | undefined }) {
   const { data, isLoading, error } = useGetCaseAttachments(caseId ?? "");
-  const { canDownloadAttachments } = useSplPermissions();
+  const { canDownloadAttachments } = usePermissions();
   const { downloadAttachment } = useAttachmentDownload();
 
   if (isLoading) return <LinearLoadingPanel />;
@@ -54,10 +54,17 @@ export function AttachmentBox({ caseId }: { caseId: string | undefined }) {
     <Stack spacing={1}>
       {attachments.map((item, index) =>
         canDownloadAttachments ? (
-          <Box
+          <ButtonBase
             key={index}
-            sx={{ cursor: "pointer", p: 1, borderRadius: 1, "&:hover": { backgroundColor: "action.hover" } }}
             onClick={() => downloadAttachment(item.sysId, item.fileName)}
+            sx={{
+              display: "block",
+              width: "100%",
+              textAlign: "left",
+              p: 1,
+              borderRadius: 1,
+              "&:hover": { backgroundColor: "action.hover" },
+            }}
           >
             <Typography variant="body2" fontWeight={600}>
               {item.fileName}
@@ -66,7 +73,7 @@ export function AttachmentBox({ caseId }: { caseId: string | undefined }) {
               <ClockIcon size={14} />
               <Typography variant="caption">{new Date(item.createdOn + "Z").toLocaleString()}</Typography>
             </Stack>
-          </Box>
+          </ButtonBase>
         ) : (
           <Tooltip key={index} title="You don't have permission to download this file">
             <Box sx={{ p: 1, opacity: 0.6 }}>

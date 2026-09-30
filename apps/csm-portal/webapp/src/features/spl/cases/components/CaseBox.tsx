@@ -25,14 +25,14 @@ import { Box, Button, Card, CardContent, Stack, Typography } from "@wso2/oxygen-
 import { useTheme } from "@mui/material/styles";
 import { CircleAlertIcon, ClockIcon, StickyNoteIcon } from "@wso2/oxygen-ui-icons-react";
 import DOMPurify from "dompurify";
-import { useSplPermissions } from "@features/spl/api/splPermissionsContext";
+import { usePermissions } from "@features/spl/api/permissionsContext";
 import { useInlineAttachmentImages } from "../utils/useInlineAttachmentImages";
 import { useGetCaseComments } from "../api/useCases";
 import type { CaseCommentDetails } from "../api/caseTypes";
 import { LinearLoadingPanel } from "./StatePanels";
 
 function getCommentKey(comment: CaseCommentDetails): string {
-  return `${comment.createdOn}_${comment.createdBy}_${comment.type}`;
+  return comment.id;
 }
 
 // entity-service's own createdOn (via the accounts/projects/cases merge --
@@ -67,7 +67,7 @@ export function CaseBox({ caseId, worknoteRsp }: { caseId: string | undefined; w
   const [endOfComments, setEndOfComments] = useState(false);
   const [allComments, setAllComments] = useState<CaseCommentDetails[]>([]);
 
-  const { data, isLoading, error } = useGetCaseComments(caseId ?? "", offset, 10);
+  const { data, isLoading, isFetching, error } = useGetCaseComments(caseId ?? "", offset, 10);
 
   // Resets pagination whenever the case changes, or a worknote was just
   // submitted (worknoteRsp is a fresh {ts: Date.now()} object each time —
@@ -118,7 +118,7 @@ export function CaseBox({ caseId, worknoteRsp }: { caseId: string | undefined; w
       ))}
       {!endOfComments && allComments.length > 0 && (
         <Box sx={{ display: "flex", justifyContent: "center", pt: 3 }}>
-          <Button variant="outlined" onClick={nextComments}>
+          <Button variant="outlined" onClick={nextComments} disabled={isFetching}>
             Show More
           </Button>
         </Box>
@@ -128,7 +128,7 @@ export function CaseBox({ caseId, worknoteRsp }: { caseId: string | undefined; w
 }
 
 function CommentEntry({ item }: { item: CaseCommentDetails }) {
-  const { canDownloadAttachments } = useSplPermissions();
+  const { canDownloadAttachments } = usePermissions();
   const sanitizedValue = DOMPurify.sanitize(item.value);
   const { resolvedHtml } = useInlineAttachmentImages(sanitizedValue, canDownloadAttachments);
 

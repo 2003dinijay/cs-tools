@@ -144,6 +144,7 @@ export function useGetCase(caseId: string): UseQueryResult<CaseDetails, Error> {
 }
 
 interface EntityCaseComment {
+  id: string;
   type: "work_note" | "comment" | "activity";
   content: string;
   createdBy: EntityUserRef | null;
@@ -188,6 +189,7 @@ export function useGetCaseComments(
         const type = commentTypeToDisplay(c.type);
         if (!type) continue;
         comments.push({
+          id: c.id,
           createdOn: c.createdOn,
           caseType: "case",
           type,

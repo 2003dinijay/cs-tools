@@ -44,7 +44,10 @@ export function useAttachmentDownload() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      URL.revokeObjectURL(href);
+      // Deferred, not immediate: some browsers (older Safari/Firefox) start
+      // the download asynchronously, so revoking synchronously here can race
+      // it and fail the download.
+      setTimeout(() => URL.revokeObjectURL(href), 0);
     },
     [api],
   );

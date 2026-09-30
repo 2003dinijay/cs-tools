@@ -57,6 +57,8 @@ export interface CaseDetailsWithCount extends DataStruct {
 }
 
 export interface CaseCommentDetails extends DataStruct {
+  /** entity-service's own id for this comment -- stable identity for dedup, since createdOn/createdBy/type alone can collide across different comments. */
+  id: string;
   createdOn: string;
   caseType: string;
   type: "comments" | "work_notes";
