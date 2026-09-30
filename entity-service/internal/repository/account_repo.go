@@ -168,7 +168,7 @@ func (r *accountRepo) SearchAccounts(ctx context.Context, req domain.SearchAccou
 	filterArgs := []any{}
 	argIdx := 1
 
-	// An account deleted in Salesforce (deleted_on, migration 0170) is not a
+	// An account deleted in Salesforce (deleted_on, migration 0171) is not a
 	// live account and is left out of every list; GetAccountByID still
 	// resolves it, so the projects and cases that reference it keep working.
 	where := "WHERE a.deleted_on IS NULL"
@@ -462,7 +462,7 @@ const insertAccountFromSalesforceQuery = `
 	)`
 
 // SoftDeleteBySfID marks every account carrying this Salesforce id as deleted
-// in Salesforce (deleted_on, migration 0170) and records the DELETED ledger
+// in Salesforce (deleted_on, migration 0171) and records the DELETED ledger
 // row, in one transaction. The account row stays: its projects, cases and
 // contacts still reference it, and a Salesforce merge deletes the losing
 // account while its children move to the winner. deactivation_date (the

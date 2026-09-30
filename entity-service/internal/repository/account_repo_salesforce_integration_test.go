@@ -22,7 +22,7 @@
 //
 // Skipped unless ENTITY_TEST_DATABASE_URL is set, so `go test ./...` on a
 // machine with no database stays green. Apply every migration in order first
-// (account comes from 0012, deleted_on from 0170, the ledger from 0169):
+// (account comes from 0012, deleted_on from 0171, the ledger from 0170):
 //
 //	createdb entity_test
 //	for f in migrations/*.sql; do psql -v ON_ERROR_STOP=1 -d entity_test -f "$f"; done

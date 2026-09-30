@@ -1044,7 +1044,7 @@ const SalesforceIngestEntityOpportunity = "opportunity"
 const SalesforceIngestEntityContact = "contact"
 
 // SalesforceIngestState is one row of salesforce_ingest_state — see migration
-// 0169 for the column semantics. It is the ledger the duplicate guard reads
+// 0170 for the column semantics. It is the ledger the duplicate guard reads
 // for every ingested object other than a membership (those use
 // OnboardingStep), and the failure record the delayed-retry job re-runs.
 type SalesforceIngestState struct {

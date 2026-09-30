@@ -224,7 +224,7 @@ row and a SUCCEEDED ledger row in one transaction; a failed write records FAILED
 (best effort) and returns the error so Service Bus redelivers. `EnsureAccount`
 writes without the guard (the row is known to be missing).
 
-**DELETED** sets `account.deleted_on` (migration 0170, decision D7) and writes a
+**DELETED** sets `account.deleted_on` (migration 0171, decision D7) and writes a
 DELETED ledger row in one transaction, stamped with the current time or the recorded
 version when that is later (Salesforce's clock can run ahead of ours), so the row
 really becomes DELETED and the RESTORED that follows is not skipped. No Sales Entity
@@ -462,7 +462,7 @@ write was based on.
 
 ## Salesforce ingest ledger and the delayed-retry job
 
-`salesforce_ingest_state` (migration 0169) is the per-record ledger of the
+`salesforce_ingest_state` (migration 0170) is the per-record ledger of the
 Salesforce ingest for every object that is not a membership (memberships keep
 using `onboarding_step`). One row per (`entity`, `sf_id`), where `entity` is the
 CSM table the record lands in (`domain.SalesforceIngestEntityAccount` = `account`,

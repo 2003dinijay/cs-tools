@@ -28,7 +28,7 @@ import (
 )
 
 // SalesforceIngestStateRepository persists the per-record ledger of the
-// Salesforce ingest (table salesforce_ingest_state, migration 0169). It is
+// Salesforce ingest (table salesforce_ingest_state, migration 0170). It is
 // generic over entity: the account, project and opportunity ingests share
 // one table and one repository, each under its own entity value
 // (domain.SalesforceIngestEntityAccount and the constants the other
