@@ -51,6 +51,10 @@ func (h *TeamMemberHandler) GetTeamMembers(w http.ResponseWriter, r *http.Reques
 		// what the ladder's first rung asks for. Empty means "any", so an
 		// existing caller is unaffected.
 		splitCommaList(r.URL.Query().Get("alertTiers")),
+		// teamTypes selects whole ABTs -- cre-abt holds seven teams, sre-abt
+		// two -- so a caller asking for "every team in this ABT" does not
+		// carry a list of keys that goes stale when a team is added.
+		splitCommaList(r.URL.Query().Get("teamTypes")),
 	)
 	if err != nil {
 		writeServiceError(w, r, err)

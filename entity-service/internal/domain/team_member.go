@@ -26,18 +26,25 @@ package domain
 // carry five values.
 type TeamMemberEntry struct {
 	TeamKey string `json:"teamKey"`
+	// TeamType is the team's own type -- cre-abt, sre-abt, cre,
+	// cre-leadership. It is what groups teams into an ABT: cre-abt holds
+	// seven teams and sre-abt two, while Americas is type cre and is not an
+	// ABT at all. The escalation ladder reads it so "every team in this ABT"
+	// is a question about the data rather than a list in a config file that
+	// drifts the first time a team is added.
+	TeamType string `json:"teamType,omitempty"`
 	// Role is the raw team_member.role: engineer, sub_lead, lead, cre_head or
 	// cs_head. Passed through unvalidated, the same way the schedule views
 	// render state and priority, so a role added by a migration reaches a
 	// caller without this service needing to learn about it first.
-	Role   string `json:"role"`
+	Role string `json:"role"`
 	// AlertTier is the standing alert-duty nomination (T1/T2/T3), empty when
 	// this member holds none. A different axis from Role -- see migration
 	// 0171 -- and the input the ladder's first rung resolves from.
 	AlertTier string `json:"alertTier,omitempty"`
 	UserID    string `json:"userId"`
-	Name   string `json:"name"`
-	Email  string `json:"email"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
 }
 
 // TeamMembersResponse is every membership matching a lookup.

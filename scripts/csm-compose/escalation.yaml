@@ -53,25 +53,36 @@ cre:
   # assigned to an ABT team" column. Get one wrong and that rule silently
   # routes the other way, so they are configuration, not a constant.
   teams:
-    # An ABT has exactly one lead, called the Team lead.
-    abts: [apollo, artemis, atlas, castor, draco, phoenix, vega]
+    # The ABT this ladder escalates within, as team.type spells it in the
+    # database. There are two: cre-abt holds seven teams (atlas, castor,
+    # draco, phoenix, rigel, sirius, vega) and sre-abt holds two (apollo,
+    # artemis). Each of those teams has exactly one lead, its Team lead.
+    #
+    # Naming the type rather than the teams is deliberate: which teams an ABT
+    # holds is already recorded per team, so adding one needs no change here
+    # and a team moved between ABTs cannot leave a stale key behind.
+    abtType: cre-abt
 
-    # Americas is NOT an ABT. It covers 9pm-6am IST, has its own alert-duty
-    # nominees, and has three Team leads of its own with a single Americas
-    # lead above them -- which is why R5 and R6 read
+    # An explicit team list, if you would rather name them than take whatever
+    # the ABT currently holds. Set, it wins over abtType.
+    abts: []
+
+    # Americas is NOT an ABT -- its team.type is cre. It covers 9pm-6am IST,
+    # has its own alert-duty nominees, and three Team leads of its own with a
+    # single Americas lead above them, which is why R5 and R6 read
     # americas_team_leads at LEVEL_1 and americas_team_lead at LEVEL_2.
     americas: americas
 
     # Only used when heads.cre / heads.cs below are left empty.
     leadership: cre-leadership
 
-    # Which teams the "Team leads" rung spans. Empty means every ABT above,
-    # which with seven ABTs is seven calls.
+    # Which teams the "Team leads" rung spans. Empty means every team in the
+    # ABT above, which for cre-abt is seven calls.
     #
     # The spreadsheet counts that rung as THREE calls everywhere it appears,
     # so the two readings disagree and only you can settle it:
-    #   - leave it empty  -> "Team leads" is the lead of every ABT (7 calls)
-    #   - name three teams -> "Team leads" is those three leads (3 calls)
+    #   - leave it empty   -> every team in the ABT (7 for cre-abt)
+    #   - name three teams -> those three leads (3 calls)
     # Either way the resolver and the sheet can be made to agree here rather
     # than in a release.
     teamLeads: []
@@ -117,11 +128,11 @@ cre:
     # How many nominees a rung takes from each team it spans. 0 takes all of
     # them.
     #
-    # This is the other half of the 3-vs-7 question: "the ABT's nominees" is
-    # all three of one team, while "one nominee from each ABT" is one each
-    # across seven. Set it to 1 and every nominated rung calls one person per
+    # This is the other half of the 3-vs-7 question: "the team's nominees" is
+    # all three of one team, while "one nominee from each team in the ABT" is
+    # one each across seven. Set it to 1 and every nominated rung calls one person per
     # team; leave it 0 and it calls all of them.
-    perTeam: 0
+    perTeam: 3
 
   # What stops a ladder.
   acknowledgement:
@@ -153,6 +164,9 @@ cre:
 sre:
   enabled: true
   channel: log
+  teams:
+    # The other ABT: two teams, apollo and artemis.
+    abtType: sre-abt
   trigger:
     priorities: []
     requireKnownTeam: true

@@ -51,11 +51,11 @@ type TeamScheduleResolver struct {
 	// rules is the table this resolver routes by. Held rather than read from a
 	// package variable so a deployment can correct a row without a release.
 	rules []Rule
-	// abtTeamKeys are the ABTs, in the order a "one from each" rung walks
-	// them. Also what answers the rule table's "is assigned to an ABT team"
-	// column -- a question the old table needed a publisher-supplied flag for,
-	// and which nobody ever populated.
+	// abtTeamKeys are the ABT's teams when configuration names them outright.
+	// Empty means the ABT is resolved by type instead.
 	abtTeamKeys []string
+	// abtType is the ABT this ladder escalates within, as team.type spells it.
+	abtType string
 	// americasTeamKey is the team covering the night shift.
 	americasTeamKey string
 	// teamLeadKeys is which teams the "Team leads" rung spans; the ABTs when
@@ -82,7 +82,7 @@ type TeamScheduleResolver struct {
 // teamScheduleReader is the slice of EntityClient this needs, named so tests
 // can stand in for it without an HTTP server.
 type teamScheduleReader interface {
-	TeamMembers(ctx context.Context, teamKeys, roles, alertTiers []string) ([]teamMember, error)
+	TeamMembers(ctx context.Context, teamKeys, roles, alertTiers, teamTypes []string) ([]teamMember, error)
 	OnDutyAt(ctx context.Context, at time.Time) ([]onDutyAssignment, error)
 }
 
@@ -139,6 +139,7 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 		leadKeys = keys
 	}
 	return TeamScheduleResolver{
+		abtType:           strings.ToLower(strings.TrimSpace(teams.ABTType)),
 		tiers:             alertTiers,
 		entity:            entity,
 		rules:             rules,
@@ -155,7 +156,17 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 // silently reaches nobody because a team was renamed is the failure this whole
 // resolver exists to avoid.
 type TeamKeys struct {
-	// ABTs are the ABT team keys.
+	// ABTType is the ABT this ladder escalates within, as team.type spells it:
+	// cre-abt for the CRE ladder, sre-abt for the SRE one.
+	//
+	// Preferred over listing keys. cre-abt holds seven teams and sre-abt two,
+	// and which teams those are is already recorded per team in the database
+	// -- so asking for the type means adding a team to an ABT needs no config
+	// change, and a team moved between ABTs cannot leave a stale key behind.
+	ABTType string `yaml:"abtType"`
+	// ABTs is an explicit list of team keys, for a deployment that wants to
+	// name them rather than take whatever the ABT currently holds. When set it
+	// wins over ABTType.
 	ABTs []string `yaml:"abts"`
 	// TeamLeads is which teams the "Team leads" rung spans. Empty means every
 	// ABT.
@@ -214,17 +225,40 @@ func (r TeamScheduleResolver) Resolve(ctx context.Context, level Level, rc Routi
 // publisher ever did, and every incident routed as UNKNOWN_ABT as a result.
 // The question is answerable from data already in hand, so it is answered.
 func (r TeamScheduleResolver) RuleFor(rc RoutingContext) (Rule, bool) {
-	key := teamKeyFor(rc.AssignedCRETeam)
-	return MatchRule(r.rules, rc.Shift, r.isABT(key), key != "")
+	return r.RuleForCtx(context.Background(), rc)
 }
 
-func (r TeamScheduleResolver) isABT(teamKey string) bool {
+// RuleForCtx is RuleFor with a context, since answering "is this an ABT team"
+// may mean asking entity-service when the ABT is resolved by type.
+func (r TeamScheduleResolver) RuleForCtx(ctx context.Context, rc RoutingContext) (Rule, bool) {
+	key := teamKeyFor(rc.AssignedCRETeam)
+	return MatchRule(r.rules, rc.Shift, r.isABT(ctx, key), key != "")
+}
+
+// isABT answers the rule table's "is this assigned to a team in the ABT"
+// column.
+//
+// From the configured keys when there are some; otherwise by asking whether the
+// team's own type is this ladder's ABT, which is where the grouping actually
+// lives. Americas is type cre, not cre-abt, so it correctly answers no -- which
+// is what sends a night incident down R5 rather than R2.
+func (r TeamScheduleResolver) isABT(ctx context.Context, teamKey string) bool {
+	if teamKey == "" {
+		return false
+	}
 	for _, k := range r.abtTeamKeys {
 		if k == teamKey {
 			return true
 		}
 	}
-	return false
+	if len(r.abtTeamKeys) > 0 || r.abtType == "" {
+		return false
+	}
+	members, err := r.entity.TeamMembers(ctx, []string{teamKey}, nil, nil, nil)
+	if err != nil || len(members) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(members[0].TeamType), r.abtType)
 }
 
 // fromSource answers one rung.
@@ -247,7 +281,7 @@ func (r TeamScheduleResolver) fromSource(ctx context.Context, src LevelSource, r
 		return r.alertDuty(ctx, []string{key})
 
 	case SourceAlertDutyEachABT:
-		return r.oneNomineePerTeam(ctx, r.abtTeamKeys)
+		return r.oneNomineePerABTTeam(ctx)
 
 	case SourceAlertDutyAmericas:
 		return r.alertDuty(ctx, r.americasKeys())
@@ -271,7 +305,10 @@ func (r TeamScheduleResolver) fromSource(ctx context.Context, src LevelSource, r
 		return r.abtMembers(ctx, rc.AssignedCRETeam, roleLead)
 
 	case SourceAllTeamLeads:
-		return r.leadsOf(ctx, r.teamLeadKeys)
+		if len(r.teamLeadKeys) > 0 {
+			return r.leadsOf(ctx, r.teamLeadKeys)
+		}
+		return r.leadsOfABT(ctx)
 
 	case SourceAmericasTeamLeads:
 		return r.leadsOf(ctx, r.americasKeys())
@@ -419,7 +456,7 @@ func (r TeamScheduleResolver) alertDuty(ctx context.Context, teamKeys []string) 
 	if len(teamKeys) == 0 {
 		return nil, nil
 	}
-	members, err := r.entity.TeamMembers(ctx, teamKeys, nil, r.alertTiers())
+	members, err := r.entity.TeamMembers(ctx, teamKeys, nil, r.alertTiers(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -477,36 +514,74 @@ func (r TeamScheduleResolver) oneNomineePerTeam(ctx context.Context, teamKeys []
 	if len(teamKeys) == 0 {
 		return nil, nil
 	}
-	members, err := r.entity.TeamMembers(ctx, teamKeys, nil, r.alertTiers())
+	members, err := r.entity.TeamMembers(ctx, teamKeys, nil, r.alertTiers(), nil)
 	if err != nil {
 		return nil, err
 	}
 
-	// Lowest tier wins, then email, so the choice is stable across calls.
+	return r.pickOnePerTeam(members), nil
+}
+
+// pickOnePerTeam keeps the lowest tier from each team, breaking ties on email
+// so the choice is stable across calls and a retry reaches the same people.
+func (r TeamScheduleResolver) pickOnePerTeam(members []teamMember) []Recipient {
 	byTeam := map[string]teamMember{}
+	var order []string
 	for _, m := range members {
 		cur, seen := byTeam[m.TeamKey]
+		if !seen {
+			order = append(order, m.TeamKey)
+		}
 		if !seen || m.AlertTier < cur.AlertTier ||
 			(m.AlertTier == cur.AlertTier && m.Email < cur.Email) {
 			byTeam[m.TeamKey] = m
 		}
 	}
-
-	var out []Recipient
-	for _, key := range teamKeys {
-		if m, ok := byTeam[key]; ok {
-			out = append(out, Recipient{Email: m.Email, Name: m.Name})
-		}
+	sort.Strings(order)
+	out := make([]Recipient, 0, len(order))
+	for _, key := range order {
+		m := byTeam[key]
+		out = append(out, Recipient{Email: m.Email, Name: m.Name})
 	}
-	return out, nil
+	return out
 }
 
 // leadsOf is the lead of each named team.
+// leadsOfABT is every lead in this ladder's ABT, resolved by type so a team
+// added to the ABT is reached without a config change.
+func (r TeamScheduleResolver) leadsOfABT(ctx context.Context) ([]Recipient, error) {
+	if r.abtType == "" {
+		return nil, nil
+	}
+	members, err := r.entity.TeamMembers(ctx, nil, []string{roleLead}, nil, []string{r.abtType})
+	if err != nil {
+		return nil, err
+	}
+	out := recipientsOf(members)
+	sortRecipients(out)
+	return out, nil
+}
+
+// oneNomineePerABTTeam takes a single nominee from every team in this ABT.
+func (r TeamScheduleResolver) oneNomineePerABTTeam(ctx context.Context) ([]Recipient, error) {
+	if len(r.abtTeamKeys) > 0 {
+		return r.oneNomineePerTeam(ctx, r.abtTeamKeys)
+	}
+	if r.abtType == "" {
+		return nil, nil
+	}
+	members, err := r.entity.TeamMembers(ctx, nil, nil, r.alertTiers(), []string{r.abtType})
+	if err != nil {
+		return nil, err
+	}
+	return r.pickOnePerTeam(members), nil
+}
+
 func (r TeamScheduleResolver) leadsOf(ctx context.Context, teamKeys []string) ([]Recipient, error) {
 	if len(teamKeys) == 0 {
 		return nil, nil
 	}
-	members, err := r.entity.TeamMembers(ctx, teamKeys, []string{roleLead}, nil)
+	members, err := r.entity.TeamMembers(ctx, teamKeys, []string{roleLead}, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -540,7 +615,7 @@ func (r TeamScheduleResolver) abtMembers(ctx context.Context, team, role string)
 		// read here yet, so this rung reaches nobody and the ladder climbs.
 		return nil, nil
 	}
-	members, err := r.entity.TeamMembers(ctx, []string{key}, []string{role}, nil)
+	members, err := r.entity.TeamMembers(ctx, []string{key}, []string{role}, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -548,7 +623,7 @@ func (r TeamScheduleResolver) abtMembers(ctx context.Context, team, role string)
 }
 
 func (r TeamScheduleResolver) head(ctx context.Context, role string) ([]Recipient, error) {
-	members, err := r.entity.TeamMembers(ctx, []string{r.leadershipTeamKey}, []string{role}, nil)
+	members, err := r.entity.TeamMembers(ctx, []string{r.leadershipTeamKey}, []string{role}, nil, nil)
 	if err != nil {
 		return nil, err
 	}

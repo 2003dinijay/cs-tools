@@ -32,7 +32,7 @@ type stubTeamMemberRepo struct {
 	err         error
 }
 
-func (s *stubTeamMemberRepo) MembersByTeamKeys(_ context.Context, teamKeys, roles, alertTiers []string) ([]domain.TeamMemberEntry, error) {
+func (s *stubTeamMemberRepo) MembersByTeamKeys(_ context.Context, teamKeys, roles, alertTiers, teamTypes []string) ([]domain.TeamMemberEntry, error) {
 	s.gotTeamKeys, s.gotRoles = teamKeys, roles
 	return s.members, s.err
 }
@@ -43,7 +43,7 @@ func (s *stubTeamMemberRepo) MembersByTeamKeys(_ context.Context, teamKeys, role
 // "absent".
 func TestMembersByTeamKeys_NoMatchesIsEmptyNotNull(t *testing.T) {
 	repo := &stubTeamMemberRepo{}
-	resp, err := NewTeamMemberService(repo, alwaysUnrestrictedAccess{}).MembersByTeamKeys(context.Background(), []string{"vega"}, nil, nil)
+	resp, err := NewTeamMemberService(repo, alwaysUnrestrictedAccess{}).MembersByTeamKeys(context.Background(), []string{"vega"}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestMembersByTeamKeys_NoMatchesIsEmptyNotNull(t *testing.T) {
 func TestMembersByTeamKeys_TrimsBlanks(t *testing.T) {
 	repo := &stubTeamMemberRepo{}
 	_, err := NewTeamMemberService(repo, alwaysUnrestrictedAccess{}).MembersByTeamKeys(
-		context.Background(), []string{" vega ", "", "  "}, []string{"lead", " "}, nil)
+		context.Background(), []string{" vega ", "", "  "}, []string{"lead", " "}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestMembersByTeamKeys_RejectsBadInput(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			repo := &stubTeamMemberRepo{}
-			_, err := NewTeamMemberService(repo, alwaysUnrestrictedAccess{}).MembersByTeamKeys(context.Background(), tc.teamKeys, tc.roles, nil)
+			_, err := NewTeamMemberService(repo, alwaysUnrestrictedAccess{}).MembersByTeamKeys(context.Background(), tc.teamKeys, tc.roles, nil, nil)
 			var ve *apierror.ValidationError
 			if !errors.As(err, &ve) {
 				t.Fatalf("err = %v, want a ValidationError", err)
@@ -107,7 +107,7 @@ func TestMembersByTeamKeys_AcceptsEveryRole(t *testing.T) {
 		t.Run(role, func(t *testing.T) {
 			repo := &stubTeamMemberRepo{}
 			if _, err := NewTeamMemberService(repo, alwaysUnrestrictedAccess{}).MembersByTeamKeys(
-				context.Background(), []string{"vega"}, []string{role}, nil); err != nil {
+				context.Background(), []string{"vega"}, []string{role}, nil, nil); err != nil {
 				t.Fatalf("role %q rejected: %v", role, err)
 			}
 		})
@@ -123,7 +123,7 @@ func TestMembersByTeamKeys_RejectsAnyoneNotInternal(t *testing.T) {
 	repo := &stubTeamMemberRepo{}
 	svc := NewTeamMemberService(repo, stubAccess{scope: AccessScope{Unrestricted: false}})
 
-	_, err := svc.MembersByTeamKeys(context.Background(), []string{"vega"}, nil, nil)
+	_, err := svc.MembersByTeamKeys(context.Background(), []string{"vega"}, nil, nil, nil)
 
 	var fe *apierror.ForbiddenError
 	if !errors.As(err, &fe) {
@@ -139,7 +139,7 @@ func TestMembersByTeamKeys_ScopeErrorIsNotAllowed(t *testing.T) {
 	repo := &stubTeamMemberRepo{}
 	svc := NewTeamMemberService(repo, stubAccess{err: errors.New("identity lookup failed")})
 
-	if _, err := svc.MembersByTeamKeys(context.Background(), []string{"vega"}, nil, nil); err == nil {
+	if _, err := svc.MembersByTeamKeys(context.Background(), []string{"vega"}, nil, nil, nil); err == nil {
 		t.Fatal("err = nil, want the scope failure surfaced")
 	}
 	if repo.gotTeamKeys != nil {

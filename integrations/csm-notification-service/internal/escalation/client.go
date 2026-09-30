@@ -117,6 +117,9 @@ func (c *EntityClient) AppendWorkNote(ctx context.Context, incidentID, note stri
 type teamMember struct {
 	TeamKey string `json:"teamKey"`
 	Role    string `json:"role"`
+	// TeamType is the team's ABT: cre-abt (seven teams), sre-abt (two), or
+	// cre for a team like Americas that belongs to no ABT at all.
+	TeamType string `json:"teamType,omitempty"`
 	// AlertTier is the standing alert-duty nomination (T1/T2/T3), empty when
 	// this member holds none. A different axis from Role -- see entity-service
 	// migration 0171 -- and what the ladder's first rung resolves from on the
@@ -135,12 +138,17 @@ type teamMembersResponse struct {
 //
 // An empty result is not an error: a team with nobody at that rank is a rung
 // that reaches nobody, which the ladder logs and climbs past.
-func (c *EntityClient) TeamMembers(ctx context.Context, teamKeys, roles, alertTiers []string) ([]teamMember, error) {
-	if len(teamKeys) == 0 {
+func (c *EntityClient) TeamMembers(ctx context.Context, teamKeys, roles, alertTiers, teamTypes []string) ([]teamMember, error) {
+	if len(teamKeys) == 0 && len(teamTypes) == 0 {
 		return nil, nil
 	}
 	q := url.Values{}
-	q.Set("teamKeys", strings.Join(teamKeys, ","))
+	if len(teamKeys) > 0 {
+		q.Set("teamKeys", strings.Join(teamKeys, ","))
+	}
+	if len(teamTypes) > 0 {
+		q.Set("teamTypes", strings.Join(teamTypes, ","))
+	}
 	if len(roles) > 0 {
 		q.Set("roles", strings.Join(roles, ","))
 	}

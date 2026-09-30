@@ -36,7 +36,7 @@ import (
 // because folding rank into the rota response would change a shape the Team
 // Schedule page already renders.
 type TeamMemberService interface {
-	MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers []string) (domain.TeamMembersResponse, error)
+	MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers, teamTypes []string) (domain.TeamMembersResponse, error)
 }
 
 type teamMemberService struct {
@@ -78,13 +78,19 @@ var validTeamMemberRole = map[string]bool{
 	"cs_head":  true,
 }
 
-func (s *teamMemberService) MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers []string) (domain.TeamMembersResponse, error) {
+func (s *teamMemberService) MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers, teamTypes []string) (domain.TeamMembersResponse, error) {
 	if err := s.requireInternalCaller(ctx); err != nil {
 		return domain.TeamMembersResponse{}, err
 	}
 	teamKeys = nonEmptyTrimmed(teamKeys)
-	if len(teamKeys) == 0 {
-		return domain.TeamMembersResponse{}, &apierror.ValidationError{Msg: "at least one teamKey is required"}
+	teamTypes = nonEmptyTrimmed(teamTypes)
+	// One selector or the other, but never neither: an unfiltered read would
+	// hand back every membership in the organisation, which is precisely the
+	// staff data this endpoint's internal-caller check exists to protect.
+	if len(teamKeys) == 0 && len(teamTypes) == 0 {
+		return domain.TeamMembersResponse{}, &apierror.ValidationError{
+			Msg: "at least one teamKey or teamType is required",
+		}
 	}
 	roles = nonEmptyTrimmed(roles)
 	for _, r := range roles {
@@ -95,7 +101,7 @@ func (s *teamMemberService) MembersByTeamKeys(ctx context.Context, teamKeys, rol
 		}
 	}
 
-	members, err := s.repo.MembersByTeamKeys(ctx, teamKeys, roles, alertTiers)
+	members, err := s.repo.MembersByTeamKeys(ctx, teamKeys, roles, alertTiers, teamTypes)
 	if err != nil {
 		return domain.TeamMembersResponse{}, err
 	}

@@ -36,20 +36,27 @@ type stubScheduleReader struct {
 	gotTeamKeys []string
 	gotRoles    []string
 	gotTiers    []string
+	gotTypes    []string
 	gotAt       time.Time
 	memberCalls int
 	onDutyCalls int
 }
 
-func (s *stubScheduleReader) TeamMembers(_ context.Context, teamKeys, roles, tiers []string) ([]teamMember, error) {
-	s.gotTeamKeys, s.gotRoles, s.gotTiers = teamKeys, roles, tiers
+func (s *stubScheduleReader) TeamMembers(_ context.Context, teamKeys, roles, tiers, types []string) ([]teamMember, error) {
+	s.gotTeamKeys, s.gotRoles, s.gotTiers, s.gotTypes = teamKeys, roles, tiers, types
 	s.memberCalls++
 	if s.membersErr != nil {
 		return nil, s.membersErr
 	}
 	var out []teamMember
 	for _, m := range s.members {
-		if !inList(teamKeys, m.TeamKey) {
+		if len(teamKeys) > 0 && !inList(teamKeys, m.TeamKey) {
+			continue
+		}
+		if len(types) > 0 && !inList(types, m.TeamType) {
+			continue
+		}
+		if len(teamKeys) == 0 && len(types) == 0 {
 			continue
 		}
 		if len(roles) > 0 && !inList(roles, m.Role) {
@@ -86,7 +93,17 @@ func onDutyFor(userID, email, teamKey string) onDutyAssignment {
 }
 
 func member(team, email, role, tier string) teamMember {
-	return teamMember{TeamKey: team, Email: email, Name: email, UserID: email, Role: role, AlertTier: tier}
+	// Every test team belongs to the CRE ABT unless a test says otherwise;
+	// Americas is type cre, which is what makes it not an ABT.
+	typ := "cre-abt"
+	if team == "americas" {
+		typ = "cre"
+	}
+	if team == "cre-leadership" {
+		typ = "cre-leadership"
+	}
+	return teamMember{TeamKey: team, TeamType: typ, Email: email, Name: email,
+		UserID: email, Role: role, AlertTier: tier}
 }
 
 // The seven ABTs plus Americas, as deployed.
@@ -638,5 +655,64 @@ func TestResolve_AlertDutyPerTeamIsConfigurable(t *testing.T) {
 	}
 	if len(one) != 1 || one[0].Email != "v1@example.com" {
 		t.Errorf("perTeam=1 LEVEL_0 = %v, want the lowest tier only", emails(one))
+	}
+}
+
+// The ABT is a property of the team, not a list in a config file.
+//
+// team.type is where the grouping lives -- cre-abt holds seven teams, sre-abt
+// two, and Americas is type cre and belongs to no ABT. Resolving from it means
+// a team added to an ABT is reached with no config change, and a team moved
+// between ABTs cannot leave a stale key behind.
+func TestResolve_ABTResolvesFromTeamType(t *testing.T) {
+	cre := []string{"atlas", "castor", "draco", "phoenix", "rigel", "sirius", "vega"}
+	var members []teamMember
+	for _, team := range cre {
+		members = append(members,
+			member(team, team+".lead@example.com", roleLead, ""),
+			member(team, team+".t1@example.com", "engineer", "T1"))
+	}
+	// An SRE team and Americas must not be reached by the CRE ladder.
+	members = append(members,
+		teamMember{TeamKey: "apollo", TeamType: "sre-abt", Email: "apollo.lead@example.com",
+			Name: "apollo.lead@example.com", UserID: "apollo.lead", Role: roleLead},
+		member("americas", "am.lead@example.com", roleLead, ""))
+
+	byType := TeamKeys{ABTType: "cre-abt", Americas: "americas"}
+	r := NewTeamScheduleResolver(&stubScheduleReader{members: members}, byType, nil)
+	rc := RoutingContext{Shift: ShiftLK, AssignedCRETeam: "vega", At: time.Now()}
+
+	// A team in the ABT routes by the assigned-to-an-ABT row.
+	rule, ok := r.RuleFor(rc)
+	if !ok || rule.ID != "R2" {
+		t.Fatalf("vega routed by %v, want R2", rule.ID)
+	}
+	// Americas is type cre, so it is NOT an ABT team -- which is what sends a
+	// night incident down R5 rather than R2.
+	if rule, _ := r.RuleFor(RoutingContext{Shift: ShiftLK, AssignedCRETeam: "americas"}); rule.ID != "R3" {
+		t.Errorf("americas routed by %s, want R3 (not an ABT team)", rule.ID)
+	}
+
+	leads, err := r.Resolve(context.Background(), Level2, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leads) != len(cre) {
+		t.Errorf("LEVEL_2 reached %d, want every CRE ABT lead (%d): %v", len(leads), len(cre), emails(leads))
+	}
+	for _, e := range emails(leads) {
+		if strings.HasPrefix(e, "apollo") || strings.HasPrefix(e, "am.") {
+			t.Errorf("%s was called; it is not in cre-abt", e)
+		}
+	}
+
+	// And one nominee from each team in the ABT, not from outside it.
+	nominees, err := r.Resolve(context.Background(), Level0,
+		RoutingContext{Shift: ShiftLK, AssignedCRETeam: "not-an-abt", At: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nominees) != len(cre) {
+		t.Errorf("R3 LEVEL_0 reached %d, want one per CRE ABT team (%d)", len(nominees), len(cre))
 	}
 }

@@ -36,7 +36,7 @@ type TeamMemberRepository interface {
 	// stable response.
 	//
 	// roles filters when non-empty; an empty slice means every role.
-	MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers []string) ([]domain.TeamMemberEntry, error)
+	MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers, teamTypes []string) ([]domain.TeamMemberEntry, error)
 }
 
 type teamMemberRepository struct{ db *pgxpool.Pool }
@@ -54,17 +54,21 @@ func NewTeamMemberRepository(db *pgxpool.Pool) TeamMemberRepository {
 // the whole lookup. An empty email is the caller's problem to notice, not a
 // reason to return nothing.
 const teamMemberQuery = `
-SELECT t.key, m.role, COALESCE(m.alert_tier, ''), u.id::text, COALESCE(u.name, ''), COALESCE(u.email, '')
+SELECT t.key, COALESCE(t.type, ''), m.role, COALESCE(m.alert_tier, ''), u.id::text, COALESCE(u.name, ''), COALESCE(u.email, '')
   FROM team_member m
   JOIN team t ON t.id = m.team_id
   JOIN "user" u ON u.id = m.user_id
- WHERE t.key = ANY($1)
+ WHERE (cardinality($1::text[]) = 0 OR t.key = ANY($1))
    AND (cardinality($2::text[]) = 0 OR m.role = ANY($2))
    AND (cardinality($3::text[]) = 0 OR m.alert_tier = ANY($3))
+   AND (cardinality($4::text[]) = 0 OR t.type = ANY($4))
+   AND (cardinality($1::text[]) > 0 OR cardinality($4::text[]) > 0)
  ORDER BY t.key, m.role, COALESCE(m.alert_tier, ''), COALESCE(u.email, '')`
 
-func (r *teamMemberRepository) MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers []string) ([]domain.TeamMemberEntry, error) {
-	if len(teamKeys) == 0 {
+func (r *teamMemberRepository) MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers, teamTypes []string) ([]domain.TeamMemberEntry, error) {
+	// One of the two selectors must be present: an unfiltered read would be
+	// every membership in the organisation.
+	if len(teamKeys) == 0 && len(teamTypes) == 0 {
 		return nil, nil
 	}
 	if roles == nil {
@@ -73,7 +77,10 @@ func (r *teamMemberRepository) MembersByTeamKeys(ctx context.Context, teamKeys, 
 	if alertTiers == nil {
 		alertTiers = []string{}
 	}
-	rows, err := r.db.Query(ctx, teamMemberQuery, teamKeys, roles, alertTiers)
+	if teamTypes == nil {
+		teamTypes = []string{}
+	}
+	rows, err := r.db.Query(ctx, teamMemberQuery, teamKeys, roles, alertTiers, teamTypes)
 	if err != nil {
 		return nil, fmt.Errorf("query team members: %w", err)
 	}
@@ -82,7 +89,7 @@ func (r *teamMemberRepository) MembersByTeamKeys(ctx context.Context, teamKeys, 
 	var out []domain.TeamMemberEntry
 	for rows.Next() {
 		var e domain.TeamMemberEntry
-		if err := rows.Scan(&e.TeamKey, &e.Role, &e.AlertTier, &e.UserID, &e.Name, &e.Email); err != nil {
+		if err := rows.Scan(&e.TeamKey, &e.TeamType, &e.Role, &e.AlertTier, &e.UserID, &e.Name, &e.Email); err != nil {
 			return nil, fmt.Errorf("scan team member: %w", err)
 		}
 		out = append(out, e)

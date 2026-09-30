@@ -351,7 +351,6 @@ func (r *githubMutationRepository) workItemByIssue(ctx context.Context, accountI
 	return id, nil
 }
 
-
 // CreateServiceRequestFromIssue implements GithubMutationRepository.
 func (r *githubMutationRepository) CreateServiceRequestFromIssue(ctx context.Context, in NewServiceRequestFromIssue) (string, string, error) {
 	tx, err := r.db.Begin(ctx)
