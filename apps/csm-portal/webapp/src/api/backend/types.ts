@@ -2399,27 +2399,6 @@ export interface BeCreateCaseGithubIssueResponse {
   };
 }
 
-/**
- * One entry of the config-driven "repository" catalogue offered by the
- * "Open Git issue" dialog's repo `Select` (cloud cases only — see
- * `CreateGithubIssueDialog`'s `showRepoField`). `value` is an opaque dropdown
- * key; `owner`/`repo` are the real GitHub org/repo an issue filed against
- * this option is created in, and are what populates
- * `BeCreateCaseGithubIssuePayload.repoOverride` — never derive owner/repo
- * from `value` itself. `githubLabel` is the real GitHub issue label that
- * should eventually be applied to an issue filed against this option
- * (distinct from `displayLabel`, which is only this dropdown's display
- * text) — not yet consumed anywhere on the frontend; the actual apply
- * step is a separate, larger follow-up outside this webapp.
- */
-export interface BeGithubIssueRepoOption {
-  value: string;
-  displayLabel: string;
-  owner: string;
-  repo: string;
-  githubLabel: string;
-}
-
 /** `GET /products/github-repo` — the repository an issue for this product is filed in. */
 export interface BeProductRepoMapping {
   productName: string;
@@ -2427,17 +2406,6 @@ export interface BeProductRepoMapping {
   owner: string;
   repository: string;
   githubLabel: string;
-}
-
-/**
- * `GET /metadata` response: a single growable bag of reference/config data
- * the webapp fetches once, rather than a dedicated endpoint per field.
- * `githubIssueRepoOptions` is the first field — more are expected to be
- * added here over time as new frontend needs come up. Empty array when
- * unconfigured.
- */
-export interface BeMetadataResponse {
-  githubIssueRepoOptions: BeGithubIssueRepoOption[];
 }
 
 /**
