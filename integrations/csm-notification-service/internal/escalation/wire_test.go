@@ -292,9 +292,11 @@ func TestWire_NoRingTimeoutSendsNoTimeout(t *testing.T) {
 func TestWire_RealRejectionIsPermanentAndCarriesTheCode(t *testing.T) {
 	spy := &twilioSpy{
 		status: http.StatusBadRequest,
-		// The real body, long enough that the client's error budget truncates
-		// it — which is exactly what once lost the code.
-		body: `{"code": 21219, "message": "The number +94716531267 is unverified. Trial accounts may only make calls to verified numbers.", "more_info": "https://www.twilio.com/docs/errors/21219", "status": 400}`,
+		// A real rejection body, long enough that the client's error budget
+		// truncates it — which is exactly what once lost the code. The number
+		// is a placeholder: the captured original was somebody's real mobile,
+		// and this file is shared.
+		body: `{"code": 21219, "message": "The number +15550001234 is unverified. Trial accounts may only make calls to verified numbers.", "more_info": "https://www.twilio.com/docs/errors/21219", "status": 400}`,
 	}
 	e, store, closeSrv := wiredEngine(t, spy, enabled(), 0)
 	defer closeSrv()
@@ -311,7 +313,7 @@ func TestWire_RealRejectionIsPermanentAndCarriesTheCode(t *testing.T) {
 	if got := st.failure(0); got != "REJECTED_400_21219" {
 		t.Errorf("failure = %q, want REJECTED_400_21219 — the provider's code must survive truncation", got)
 	}
-	if strings.Contains(strings.Join(st.Failed, " "), "+94716531267") {
+	if strings.Contains(strings.Join(st.Failed, " "), "+15550001234") {
 		t.Error("the recorded failure quotes the phone number back")
 	}
 }
