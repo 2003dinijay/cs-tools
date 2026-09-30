@@ -375,6 +375,9 @@ publishes) while still suppressing the portal's own echo (RE-INVITED →
 RE-INVITED is unchanged, so it does not). Do not put the insert-only condition
 back.
 
+`project_contact.registered` (`events.ProjectContactRegisteredPayload`) is published the same way, only on an
+existing row moving INVITED / RE-INVITED → REGISTERED; csm-notification-service sends the Welcome email (step `WELCOME_EMAIL`).
+
 **Schema prerequisite**: the `sf_id` columns on `"user"`, `account_contact`
 and `project_contact` come from the csm-sync migration 0076, which is not in
 this repo's `migrations/`; the ingest fails at the first `SELECT ... sf_id`
