@@ -1298,3 +1298,18 @@ type CloudStatusService interface {
 	// by the same code -- see CloudStatusDrainer.
 	HandleOutages(ctx context.Context, outageIDs []string) error
 }
+
+// OutageCommunicationService is the port of ServiceNow's `Outage
+// Communication` flow: the SRE-facing declaration and resolution emails.
+//
+// Distinct from OutageNotificationService, which ports the internal
+// STAKEHOLDER notifier. Different flow, different audience, different
+// idempotency mechanism — this one keys on its own communication log
+// because ServiceNow's version relies on "Run Trigger: Once" and writes no
+// state to the outage at all.
+type OutageCommunicationService interface {
+	// Sweep returns the emails owed, recording each before returning it.
+	Sweep(ctx context.Context, limit int) (domain.OutageCommunicationSweepResponse, error)
+	// Log returns one outage's communication history, newest first.
+	Log(ctx context.Context, number string) ([]domain.OutageCommunicationLogEntry, error)
+}
