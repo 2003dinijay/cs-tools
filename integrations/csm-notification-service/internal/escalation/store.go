@@ -67,6 +67,17 @@ type LadderState struct {
 	// wake entries are dropped, so a retry of the cancellation knows the
 	// dropping half already happened.
 	Cancelled *time.Time `json:"cancelled,omitempty"`
+	// SawStateChange and SawPublicComment remember which acknowledgement
+	// gestures have arrived so far.
+	//
+	// They exist because acknowledgement takes BOTH -- the incident moved to
+	// Work In Progress AND a public comment -- and the two arrive as separate
+	// events, in either order, minutes apart. A ladder therefore has to
+	// remember a half-acknowledgement across ticks and restarts; holding it
+	// only in memory would let the first gesture be forgotten and the ladder
+	// keep climbing past a responder who had already answered.
+	SawStateChange   bool `json:"sawStateChange,omitempty"`
+	SawPublicComment bool `json:"sawPublicComment,omitempty"`
 	// CancelReason names which of section 3.0's two acknowledgement gestures
 	// stopped the ladder, stored alongside Cancelled so a retried cancellation
 	// writes the same summary the first attempt would have.

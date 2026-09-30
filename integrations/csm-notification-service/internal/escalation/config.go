@@ -61,6 +61,12 @@ type LadderConfig struct {
 	// Teams names the teams the rules refer to by role rather than by name --
 	// the ABTs, the Americas team, the leadership team.
 	Teams TeamKeys `yaml:"teams"`
+	// Heads are the last two rungs, named outright.
+	Heads Heads `yaml:"heads"`
+	// AlertDuty is how the nominated rungs are read.
+	AlertDuty AlertDuty `yaml:"alertDuty"`
+	// Acknowledgement decides what stops a ladder.
+	Acknowledgement Acknowledgement `yaml:"acknowledgement"`
 	// Rules is the escalation rule table. Empty uses DefaultRules, which is
 	// the shipped transcription of the spreadsheet; a deployment overrides a
 	// row here rather than waiting for a release.
@@ -94,6 +100,77 @@ type StartWhen struct {
 	// could produce it. Refusing is louder and cheaper than calling the wrong
 	// people.
 	RequireKnownTeam bool `yaml:"requireKnownTeam"`
+}
+
+// Heads names the two people the top of the ladder reaches.
+//
+// They are configuration rather than a team lookup because they are not a
+// team: there is one CRE head and one CS head, they change rarely, and the
+// ladder's only interest in them is a number to call. Inventing a
+// "cre-leadership" team to hold two rows made the schema carry an org chart it
+// otherwise has no opinion about, and made the top of the ladder depend on a
+// team key being spelled right in two places.
+//
+// A head left empty falls back to the old lookup -- role cre_head or cs_head
+// inside teams.leadership -- so an existing deployment keeps working.
+type Heads struct {
+	CRE Person `yaml:"cre"`
+	CS  Person `yaml:"cs"`
+}
+
+// Person is somebody the ladder can reach.
+type Person struct {
+	Name  string `yaml:"name"`
+	Email string `yaml:"email"`
+	// Phone is E.164. Only the call channel needs it.
+	Phone string `yaml:"phone"`
+}
+
+// Set reports whether this person is worth calling.
+func (p Person) Set() bool {
+	return strings.TrimSpace(p.Email) != "" || strings.TrimSpace(p.Phone) != ""
+}
+
+// AlertDuty is how the nominated rungs are read.
+type AlertDuty struct {
+	// Tiers are the nominations that exist, in the order a rung walks them.
+	// Empty means T1, T2, T3.
+	Tiers []string `yaml:"tiers"`
+	// PerTeam is how many nominees a rung takes from each team it spans.
+	// Zero means all of them.
+	//
+	// It is configurable because the two readings of the sheet differ by
+	// exactly this number: "the ABT's nominees" is three, "one nominee from
+	// each ABT" is one each. Changing which is right is a number here, not a
+	// release.
+	PerTeam int `yaml:"perTeam"`
+}
+
+// AlertTiers is the tier vocabulary this ladder reads.
+func (l LadderConfig) AlertTiers() []string {
+	if len(l.AlertDuty.Tiers) == 0 {
+		return []string{"T1", "T2", "T3"}
+	}
+	return l.AlertDuty.Tiers
+}
+
+// Acknowledgement is what counts as somebody having picked the incident up.
+type Acknowledgement struct {
+	// RequireBoth means a ladder stops only once the incident has BOTH moved
+	// out of NEW and received a public comment. Defaults to true.
+	//
+	// A pointer so absent and false are different: the default is the stricter
+	// rule, and a deployment that wants either gesture alone has to say so
+	// rather than get it by omitting a key.
+	RequireBoth *bool `yaml:"requireBoth"`
+}
+
+// RequireBothGestures reports whether acknowledgement takes both gestures.
+func (l LadderConfig) RequireBothGestures() bool {
+	if l.Acknowledgement.RequireBoth == nil {
+		return true
+	}
+	return *l.Acknowledgement.RequireBoth
 }
 
 // Safety caps what a single ladder can spend before anybody is dialled.

@@ -238,6 +238,10 @@ const (
 	// cancelPublicComment is the gesture for a priority elevation, and the
 	// only stop signal such a ladder has.
 	cancelPublicComment cancelReason = "Public comment added"
+	// cancelAcknowledged is both gestures together, which is what
+	// acknowledgement actually means: the incident moved out of NEW and
+	// somebody said so where the customer can see it.
+	cancelAcknowledged cancelReason = "Acknowledged (status and public comment)"
 )
 
 // start expands a trigger into a ladder and schedules it.
@@ -419,6 +423,38 @@ func (e *Engine) cancelBy(ctx context.Context, incidentID string, reason cancelR
 		// The common case: an incident acknowledged without a ladder ever
 		// having run, or one already finished.
 		return nil
+	}
+
+	// Acknowledgement is BOTH gestures, not either: the incident moved out of
+	// NEW and a public comment written. Moving the status alone is what a
+	// dispatcher does while triaging a queue, and it would otherwise silence
+	// the pager for an incident nobody had actually picked up -- which is the
+	// case this rule exists for. The card and the voice message have always
+	// asked for both; only the engine disagreed.
+	//
+	// The two arrive as separate events in either order, so each is recorded
+	// and the ladder keeps climbing until both are in.
+	if st.Cancelled == nil && e.cfg.Ladder.RequireBothGestures() {
+		switch reason {
+		case cancelStateChange:
+			st.SawStateChange = true
+		case cancelPublicComment:
+			st.SawPublicComment = true
+		}
+		if !(st.SawStateChange && st.SawPublicComment) {
+			missing := "a public comment"
+			if !st.SawStateChange {
+				missing = "a move out of NEW"
+			}
+			if err := e.store.Save(ctx, incidentID, st); err != nil {
+				return fmt.Errorf("escalation: record acknowledgement for %s: %w", incidentID, err)
+			}
+			slog.InfoContext(ctx, "escalation: half acknowledged; the ladder keeps climbing",
+				"incidentId", incidentID, "saw", string(reason), "stillNeeds", missing,
+				"reachedLevel", st.ReachedLevel())
+			return nil
+		}
+		reason = cancelAcknowledged
 	}
 
 	if st.Cancelled == nil {

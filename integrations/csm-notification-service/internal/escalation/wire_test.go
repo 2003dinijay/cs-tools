@@ -382,6 +382,11 @@ func TestWire_AcknowledgementStopsTheCalls(t *testing.T) {
 	if err := e.Handle(context.Background(), ack); err != nil {
 		t.Fatal(err)
 	}
+	// Acknowledgement takes both gestures; the status move alone leaves it running.
+	if err := e.Handle(context.Background(), record(t, events.TypeIncidentCommentAdded,
+		events.IncidentCommentAddedPayload{CommentID: "c-ack", IsPublic: true})); err != nil {
+		t.Fatal(err)
+	}
 	if err := e.Tick(context.Background(), at.Add(2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}

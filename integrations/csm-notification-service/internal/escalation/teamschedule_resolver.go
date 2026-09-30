@@ -61,6 +61,13 @@ type TeamScheduleResolver struct {
 	// teamLeadKeys is which teams the "Team leads" rung spans; the ABTs when
 	// configuration names none.
 	teamLeadKeys []string
+	// heads are the last two rungs when configuration names them outright,
+	// which is the normal case: they are two people, not a team.
+	heads Heads
+	// tiers is the alert-duty vocabulary, and perTeam how many nominees a
+	// rung takes from each team it spans (0 = all).
+	tiers   []string
+	perTeam int
 	// history answers when somebody was last called, for the evening
 	// pairing's "one other member" rule. Optional: without it the pairing
 	// falls back to a stable order, which is deterministic but not fair.
@@ -83,6 +90,23 @@ type teamScheduleReader interface {
 // *Store; nil is a valid value and means "no history to go on".
 type callHistory interface {
 	LastCalled(ctx context.Context, emails []string) (map[string]time.Time, error)
+}
+
+// WithHeads names the two people the top of the ladder reaches, instead of
+// looking them up by role inside a leadership team.
+func (r TeamScheduleResolver) WithHeads(h Heads) TeamScheduleResolver {
+	r.heads = h
+	return r
+}
+
+// WithAlertDuty sets the nomination vocabulary and how many nominees a rung
+// takes from each team.
+func (r TeamScheduleResolver) WithAlertDuty(tiers []string, perTeam int) TeamScheduleResolver {
+	if len(tiers) > 0 {
+		r.tiers = tiers
+	}
+	r.perTeam = perTeam
+	return r
 }
 
 // WithCallHistory returns a copy that spreads the evening pairing's second
@@ -115,6 +139,7 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 		leadKeys = keys
 	}
 	return TeamScheduleResolver{
+		tiers:             alertTiers,
 		entity:            entity,
 		rules:             rules,
 		abtTeamKeys:       keys,
@@ -255,9 +280,15 @@ func (r TeamScheduleResolver) fromSource(ctx context.Context, src LevelSource, r
 		return r.leadsOf(ctx, r.americasKeys())
 
 	case SourceCREHead:
+		if p := r.heads.CRE; p.Set() {
+			return []Recipient{{Name: p.Name, Email: p.Email, Phone: p.Phone}}, nil
+		}
 		return r.head(ctx, roleCREHead)
 
 	case SourceCSHead:
+		if p := r.heads.CS; p.Set() {
+			return []Recipient{{Name: p.Name, Email: p.Email, Phone: p.Phone}}, nil
+		}
 		return r.head(ctx, roleCSHead)
 	}
 	return nil, fmt.Errorf("escalation: unknown level source %q", src)
@@ -388,13 +419,52 @@ func (r TeamScheduleResolver) alertDuty(ctx context.Context, teamKeys []string) 
 	if len(teamKeys) == 0 {
 		return nil, nil
 	}
-	members, err := r.entity.TeamMembers(ctx, teamKeys, nil, alertTiers)
+	members, err := r.entity.TeamMembers(ctx, teamKeys, nil, r.alertTiers())
 	if err != nil {
 		return nil, err
 	}
-	out := recipientsOf(members)
+	out := recipientsOf(r.takePerTeam(members))
 	sortRecipients(out)
 	return out, nil
+}
+
+func (r TeamScheduleResolver) alertTiers() []string {
+	if len(r.tiers) == 0 {
+		return alertTiers
+	}
+	return r.tiers
+}
+
+// takePerTeam keeps at most perTeam nominees from each team, lowest tier
+// first. Zero keeps all of them, which is "the team's nominees"; one makes it
+// "one nominee from each team".
+func (r TeamScheduleResolver) takePerTeam(members []teamMember) []teamMember {
+	if r.perTeam <= 0 {
+		return members
+	}
+	byTeam := map[string][]teamMember{}
+	var order []string
+	for _, m := range members {
+		if _, seen := byTeam[m.TeamKey]; !seen {
+			order = append(order, m.TeamKey)
+		}
+		byTeam[m.TeamKey] = append(byTeam[m.TeamKey], m)
+	}
+	var out []teamMember
+	for _, key := range order {
+		group := byTeam[key]
+		sort.Slice(group, func(i, j int) bool {
+			if group[i].AlertTier != group[j].AlertTier {
+				return group[i].AlertTier < group[j].AlertTier
+			}
+			return group[i].Email < group[j].Email
+		})
+		if len(group) > r.perTeam {
+			group = group[:r.perTeam]
+		}
+		out = append(out, group...)
+	}
+	return out
 }
 
 // oneNomineePerTeam takes a single nominee from each team, lowest tier first.
@@ -407,7 +477,7 @@ func (r TeamScheduleResolver) oneNomineePerTeam(ctx context.Context, teamKeys []
 	if len(teamKeys) == 0 {
 		return nil, nil
 	}
-	members, err := r.entity.TeamMembers(ctx, teamKeys, nil, alertTiers)
+	members, err := r.entity.TeamMembers(ctx, teamKeys, nil, r.alertTiers())
 	if err != nil {
 		return nil, err
 	}

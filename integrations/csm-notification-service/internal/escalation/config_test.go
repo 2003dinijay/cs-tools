@@ -328,3 +328,68 @@ func TestLoadConfig_ShippedExampleIsValid(t *testing.T) {
 		t.Errorf("example SRE channel = %q; it must ship as log", sre.Channel)
 	}
 }
+
+// Acknowledgement defaults to BOTH gestures. A file that says nothing must get
+// the stricter rule, not the permissive one -- the card and the voice message
+// both ask for a status move and a public comment.
+func TestAcknowledgement_DefaultsToBoth(t *testing.T) {
+	if !(LadderConfig{}).RequireBothGestures() {
+		t.Error("the zero LadderConfig must require both gestures")
+	}
+	path := writeConfig(t, "enabled: true\ncre:\n  enabled: true\n")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cre, _ := cfg.For(LadderKeyCRE)
+	if !cre.RequireBothGestures() {
+		t.Error("a file that says nothing must still require both")
+	}
+
+	off := writeConfig(t, "enabled: true\ncre:\n  acknowledgement:\n    requireBoth: false\n")
+	cfg, err = LoadConfig(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cre, _ = cfg.For(LadderKeyCRE)
+	if cre.RequireBothGestures() {
+		t.Error("requireBoth: false must be honoured")
+	}
+}
+
+func TestHeadsAndAlertDuty_ReadFromTheFile(t *testing.T) {
+	path := writeConfig(t, `
+enabled: true
+cre:
+  enabled: true
+  heads:
+    cre: {name: "CRE Head", email: "cre.head@example.com", phone: "+94770000001"}
+    cs:  {name: "CS Head",  email: "cs.head@example.com"}
+  alertDuty:
+    tiers: [T1, T2, T3]
+    perTeam: 1
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cre, _ := cfg.For(LadderKeyCRE)
+	if !cre.Heads.CRE.Set() || cre.Heads.CRE.Phone != "+94770000001" {
+		t.Errorf("CRE head = %+v", cre.Heads.CRE)
+	}
+	// A head with an address but no number is still somebody the chat and log
+	// channels reach.
+	if !cre.Heads.CS.Set() {
+		t.Error("a head with an email but no phone is still reachable")
+	}
+	if got := cre.AlertDuty.PerTeam; got != 1 {
+		t.Errorf("perTeam = %d, want 1", got)
+	}
+	if got := len(cre.AlertTiers()); got != 3 {
+		t.Errorf("tiers = %d, want 3", got)
+	}
+	// An empty tiers list falls back to the three that exist.
+	if got := len((LadderConfig{}).AlertTiers()); got != 3 {
+		t.Errorf("default tiers = %d, want 3", got)
+	}
+}

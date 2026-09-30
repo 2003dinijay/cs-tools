@@ -546,7 +546,15 @@ func main() {
 						"falling back to the configured roster")
 				} else {
 					escalationResolver = escalation.NewTeamScheduleResolver(
-						escalationNotes, creCfg.Teams, creCfg.Rules)
+						escalationNotes, creCfg.Teams, creCfg.Rules).
+						// The heads are two named people, not a team lookup.
+						WithHeads(creCfg.Heads).
+						// How the nominated rungs are read: which tiers exist,
+						// and how many nominees a rung takes per team.
+						WithAlertDuty(creCfg.AlertTiers(), creCfg.AlertDuty.PerTeam).
+						// Who has gone longest without a call, for the evening
+						// pairing's second call.
+						WithCallHistory(escalation.NewStore(redisClient))
 					slog.Info("incident escalation resolves rungs from the Team Schedule")
 				}
 			}

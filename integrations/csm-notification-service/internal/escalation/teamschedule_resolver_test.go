@@ -583,3 +583,60 @@ func TestResolve_AmericasTeamLeadsIsSelectablePerRule(t *testing.T) {
 		t.Errorf("LEVEL_1 = %v, want the Americas team's own leads %v", emails(got), want)
 	}
 }
+
+// The heads are two named people, not a team lookup -- so a deployment with no
+// leadership team still reaches them, and entity-service is never asked.
+func TestResolve_HeadsComeFromConfigurationWhenNamed(t *testing.T) {
+	stub := &stubScheduleReader{}
+	r := testResolver(stub).WithHeads(Heads{
+		CRE: Person{Name: "CRE Head", Email: "cre.head@example.com", Phone: "+94770000001"},
+		CS:  Person{Name: "CS Head", Email: "cs.head@example.com"},
+	})
+	rc := RoutingContext{Shift: ShiftLK, AssignedCRETeam: "vega", At: time.Now()}
+
+	for _, tc := range []struct {
+		level Level
+		want  string
+	}{
+		{Level3, "cre.head@example.com"}, {Level4, "cs.head@example.com"},
+	} {
+		got, err := r.Resolve(context.Background(), tc.level, rc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].Email != tc.want {
+			t.Errorf("%s = %v, want %s", tc.level, emails(got), tc.want)
+		}
+	}
+	if stub.memberCalls != 0 {
+		t.Errorf("entity-service was asked %d times; named heads need no lookup", stub.memberCalls)
+	}
+}
+
+// perTeam is the other half of the 3-vs-7 question: all of a team's nominees,
+// or one from each team.
+func TestResolve_AlertDutyPerTeamIsConfigurable(t *testing.T) {
+	stub := &stubScheduleReader{members: []teamMember{
+		member("vega", "v1@example.com", "engineer", "T1"),
+		member("vega", "v2@example.com", "engineer", "T2"),
+		member("vega", "v3@example.com", "engineer", "T3"),
+	}}
+	rc := RoutingContext{Shift: ShiftLK, AssignedCRETeam: "vega", At: time.Now()}
+
+	all, err := testResolver(stub).Resolve(context.Background(), Level0, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Errorf("default LEVEL_0 = %v, want all three nominees", emails(all))
+	}
+
+	one, err := testResolver(stub).WithAlertDuty(nil, 1).
+		Resolve(context.Background(), Level0, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one) != 1 || one[0].Email != "v1@example.com" {
+		t.Errorf("perTeam=1 LEVEL_0 = %v, want the lowest tier only", emails(one))
+	}
+}

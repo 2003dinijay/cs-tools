@@ -53,8 +53,16 @@ cre:
   # assigned to an ABT team" column. Get one wrong and that rule silently
   # routes the other way, so they are configuration, not a constant.
   teams:
+    # An ABT has exactly one lead, called the Team lead.
     abts: [apollo, artemis, atlas, castor, draco, phoenix, vega]
+
+    # Americas is NOT an ABT. It covers 9pm-6am IST, has its own alert-duty
+    # nominees, and has three Team leads of its own with a single Americas
+    # lead above them -- which is why R5 and R6 read
+    # americas_team_leads at LEVEL_1 and americas_team_lead at LEVEL_2.
     americas: americas
+
+    # Only used when heads.cre / heads.cs below are left empty.
     leadership: cre-leadership
 
     # Which teams the "Team leads" rung spans. Empty means every ABT above,
@@ -93,6 +101,35 @@ cre:
   #   alert_duty_americas · rota_member_and_alert_duty_americas
   #   team_lead · all_team_leads · americas_team_lead · americas_team_leads
   #   cre_head · cs_head
+
+  # The last two rungs, named outright. They are two people, not a team, so
+  # the ladder asks for them here rather than looking them up by role inside a
+  # leadership team. Leave a head empty to fall back to that lookup.
+  heads:
+    cre: {name: "", email: "", phone: ""}
+    cs:  {name: "", email: "", phone: ""}
+
+  # How the nominated rungs are read.
+  alertDuty:
+    # The nominations that exist. Each ABT has three, and so does Americas.
+    tiers: [T1, T2, T3]
+
+    # How many nominees a rung takes from each team it spans. 0 takes all of
+    # them.
+    #
+    # This is the other half of the 3-vs-7 question: "the ABT's nominees" is
+    # all three of one team, while "one nominee from each ABT" is one each
+    # across seven. Set it to 1 and every nominated rung calls one person per
+    # team; leave it 0 and it calls all of them.
+    perTeam: 0
+
+  # What stops a ladder.
+  acknowledgement:
+    # Acknowledgement is BOTH gestures: the incident moved out of NEW AND a
+    # public comment written. Either alone leaves it climbing, which is the
+    # point -- a dispatcher moving a status while triaging has not picked the
+    # incident up. Set false to accept either gesture on its own.
+    requireBoth: true
 
   safety:
     # The most calls one ladder may place across every rung. A plan larger

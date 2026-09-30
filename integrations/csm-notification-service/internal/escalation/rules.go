@@ -153,17 +153,18 @@ var DefaultRules = []Rule{
 		ExpectedCalls: [5]int{7, 1, 3, 1, 1},
 	},
 	{
-		// The Rules tab writes Level 1 as "Team lead" and the Twilio tab as
-		// "Team leads", three calls, for this same row. Confirmed as team
-		// leads -- so R5 and R6 agree, and the Americas night escalates to
-		// every ABT lead before reaching the Americas lead above them.
+		// Level 1 is the AMERICAS team's own leads -- it has three, and it is
+		// not an ABT. An ABT has exactly one lead, so "Team leads" here could
+		// never have meant an ABT's; it is the three above the night rota and
+		// below the single Americas lead at Level 2. Three calls, which is
+		// what the Twilio tab counts.
 		ID: "R5", Shift: ShiftUSA, ABT: ABTAny,
-		Levels:        [5]LevelSource{SourceAlertDutyAmericas, SourceAllTeamLeads, SourceAmericasTeamLead, SourceCREHead, SourceCSHead},
+		Levels:        [5]LevelSource{SourceAlertDutyAmericas, SourceAmericasTeamLeads, SourceAmericasTeamLead, SourceCREHead, SourceCSHead},
 		ExpectedCalls: [5]int{3, 3, 1, 1, 1},
 	},
 	{
 		ID: "R6", Shift: ShiftUSAWeekend, ABT: ABTAny,
-		Levels:        [5]LevelSource{SourceRotaMemberAndAlertDutyAmericas, SourceAllTeamLeads, SourceAmericasTeamLead, SourceCREHead, SourceCSHead},
+		Levels:        [5]LevelSource{SourceRotaMemberAndAlertDutyAmericas, SourceAmericasTeamLeads, SourceAmericasTeamLead, SourceCREHead, SourceCSHead},
 		ExpectedCalls: [5]int{4, 3, 1, 1, 1},
 	},
 }

@@ -324,10 +324,16 @@ func TestEngine_AcknowledgementCancelsAndWritesTheSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ack := record(t, events.TypeIncidentAcknowledged, events.IncidentAcknowledgedPayload{
-		PreviousState: "NEW", NewState: "IN_PROGRESS",
-	})
-	if err := e.Handle(context.Background(), ack); err != nil {
+	// One gesture is not acknowledgement: the ladder must still be running.
+	if err := e.Handle(context.Background(), record(t, events.TypeIncidentAcknowledged,
+		events.IncidentAcknowledgedPayload{PreviousState: "NEW", NewState: "IN_PROGRESS"})); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.wakes) == 0 {
+		t.Fatal("a status move alone stopped the ladder; acknowledgement takes a public comment too")
+	}
+	if err := e.Handle(context.Background(), record(t, events.TypeIncidentCommentAdded,
+		events.IncidentCommentAddedPayload{CommentID: "c-ack", IsPublic: true})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -388,9 +394,14 @@ func TestEngine_PublicCommentStopsAnElevationLadder(t *testing.T) {
 	if err := e.Handle(context.Background(), comment); err != nil {
 		t.Fatal(err)
 	}
+	// Acknowledgement takes both gestures; the comment alone leaves it running.
+	if err := e.Handle(context.Background(), record(t, events.TypeIncidentAcknowledged,
+		events.IncidentAcknowledgedPayload{PreviousState: "NEW", NewState: "IN_PROGRESS"})); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(store.wakes) != 0 {
-		t.Errorf("%d calls still scheduled after a public comment", len(store.wakes))
+		t.Errorf("%d calls still scheduled after acknowledgement", len(store.wakes))
 	}
 	if _, found, _ := store.Get(context.Background(), testIncidentID); found {
 		t.Error("the ladder should stop being tracked once its summary is written")
@@ -404,8 +415,8 @@ func TestEngine_PublicCommentStopsAnElevationLadder(t *testing.T) {
 	if len(notes.notes) != 1 {
 		t.Fatalf("wrote %d work notes, want 1", len(notes.notes))
 	}
-	// The summary must say which gesture stopped it, not just that something did.
-	if !containsAll(notes.notes[0], "Public comment added", "call(s) cancelled") {
+	// The summary must say what stopped it, not just that something did.
+	if !containsAll(notes.notes[0], "Acknowledged (status and public comment)", "call(s) cancelled") {
 		t.Errorf("the work note does not name the gesture that stopped the ladder:\n%s", notes.notes[0])
 	}
 }
@@ -440,7 +451,7 @@ func TestEngine_WorkNoteDoesNotStopTheLadder(t *testing.T) {
 // their own trigger started — a responder who comments on a newly reported
 // incident rather than moving it to Work In Progress is just as visibly
 // attending to it.
-func TestEngine_PublicCommentAlsoStopsANewIncidentLadder(t *testing.T) {
+func TestEngine_BothGesturesStopANewIncidentLadder(t *testing.T) {
 	store, notes := newMemStore(), &fakeNotes{}
 	e := testEngine(store, &fakeCaller{}, notes, enabled())
 	at := ist(2026, 9, 9, 10, 0)
@@ -453,8 +464,20 @@ func TestEngine_PublicCommentAlsoStopsANewIncidentLadder(t *testing.T) {
 	if err := e.Handle(context.Background(), comment); err != nil {
 		t.Fatal(err)
 	}
+	// A comment alone is half an acknowledgement. The ladder keeps climbing.
+	if len(store.wakes) == 0 {
+		t.Fatal("a public comment alone stopped the ladder; the status move is still owed")
+	}
+	if len(notes.notes) != 0 {
+		t.Error("no summary should be written while the ladder is still running")
+	}
+
+	if err := e.Handle(context.Background(), record(t, events.TypeIncidentAcknowledged,
+		events.IncidentAcknowledgedPayload{PreviousState: "NEW", NewState: "IN_PROGRESS"})); err != nil {
+		t.Fatal(err)
+	}
 	if len(store.wakes) != 0 {
-		t.Errorf("%d calls still scheduled after a public comment", len(store.wakes))
+		t.Errorf("%d calls still scheduled after acknowledgement", len(store.wakes))
 	}
 	if len(notes.notes) != 1 {
 		t.Error("expected the execution summary to be written")
@@ -976,5 +999,24 @@ func TestEngine_TransientFailureIsStillRetried(t *testing.T) {
 	}
 	if _, still := store.wakes[wakeMember(testIncidentID, 0)]; !still {
 		t.Error("a transiently failed call must stay scheduled")
+	}
+}
+
+// acknowledgeFully delivers BOTH gestures, which is what acknowledgement takes:
+// the incident moved out of NEW and a public comment written. Either alone
+// leaves the ladder climbing on purpose -- a dispatcher moving a status while
+// triaging has not picked the incident up.
+func acknowledgeFully(t *testing.T, e *Engine) {
+	t.Helper()
+	ctx := context.Background()
+	if err := e.Handle(ctx, record(t, events.TypeIncidentAcknowledged, events.IncidentAcknowledgedPayload{
+		PreviousState: "NEW", NewState: "IN_PROGRESS",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Handle(ctx, record(t, events.TypeIncidentCommentAdded, events.IncidentCommentAddedPayload{
+		CommentID: "c-ack", IsPublic: true,
+	})); err != nil {
+		t.Fatal(err)
 	}
 }

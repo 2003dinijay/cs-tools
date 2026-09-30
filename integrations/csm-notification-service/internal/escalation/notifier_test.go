@@ -421,6 +421,11 @@ func TestChatChannel_ClimbsOverTimeAndStopsOnAcknowledgement(t *testing.T) {
 	if err := e.Handle(context.Background(), ack); err != nil {
 		t.Fatal(err)
 	}
+	// Acknowledgement takes both gestures; the comment alone leaves it running.
+	if err := e.Handle(context.Background(), record(t, events.TypeIncidentAcknowledged,
+		events.IncidentAcknowledgedPayload{PreviousState: "NEW", NewState: "IN_PROGRESS"})); err != nil {
+		t.Fatal(err)
+	}
 	if err := e.Tick(context.Background(), at.Add(3*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
