@@ -100,28 +100,70 @@ CREATE POLICY deployed_product_visibility ON deployed_product
        )
   );
 
+-- Write policies additionally require the row to be internally consistent:
+-- deployed_product.project_id and deployment_id are separate foreign keys with
+-- nothing tying them together, so without this a member could store their OWN
+-- project_id next to ANOTHER project's deployment_id and pass the membership
+-- test on project_id alone (found in review of #2094). The EXISTS reads
+-- deployment as the invoker, so a foreign deployment is invisible to the
+-- member and the row is rejected. Rows with a NULL project_id or NULL
+-- deployment_id skip the check: their project is resolved from the other
+-- column (COALESCE), so there is nothing to disagree with.
 CREATE POLICY deployed_product_write ON deployed_product
   FOR INSERT
   WITH CHECK (
     (SELECT current_setting('app.is_internal', true) = 'true')
-    OR is_project_member(
-         COALESCE(project_id, (SELECT d.project_id FROM deployment d WHERE d.id = deployed_product.deployment_id))
-       )
+    OR (
+      is_project_member(
+        COALESCE(project_id, (SELECT d.project_id FROM deployment d WHERE d.id = deployed_product.deployment_id))
+      )
+      AND (
+        deployed_product.project_id IS NULL
+        OR deployed_product.deployment_id IS NULL
+        OR EXISTS (
+          SELECT 1 FROM deployment d
+          WHERE d.id = deployed_product.deployment_id
+            AND d.project_id = deployed_product.project_id
+        )
+      )
+    )
   );
 
 CREATE POLICY deployed_product_update ON deployed_product
   FOR UPDATE
   USING (
     (SELECT current_setting('app.is_internal', true) = 'true')
-    OR is_project_member(
-         COALESCE(project_id, (SELECT d.project_id FROM deployment d WHERE d.id = deployed_product.deployment_id))
-       )
+    OR (
+      is_project_member(
+        COALESCE(project_id, (SELECT d.project_id FROM deployment d WHERE d.id = deployed_product.deployment_id))
+      )
+      AND (
+        deployed_product.project_id IS NULL
+        OR deployed_product.deployment_id IS NULL
+        OR EXISTS (
+          SELECT 1 FROM deployment d
+          WHERE d.id = deployed_product.deployment_id
+            AND d.project_id = deployed_product.project_id
+        )
+      )
+    )
   )
   WITH CHECK (
     (SELECT current_setting('app.is_internal', true) = 'true')
-    OR is_project_member(
-         COALESCE(project_id, (SELECT d.project_id FROM deployment d WHERE d.id = deployed_product.deployment_id))
-       )
+    OR (
+      is_project_member(
+        COALESCE(project_id, (SELECT d.project_id FROM deployment d WHERE d.id = deployed_product.deployment_id))
+      )
+      AND (
+        deployed_product.project_id IS NULL
+        OR deployed_product.deployment_id IS NULL
+        OR EXISTS (
+          SELECT 1 FROM deployment d
+          WHERE d.id = deployed_product.deployment_id
+            AND d.project_id = deployed_product.project_id
+        )
+      )
+    )
   );
 
 CREATE POLICY deployed_product_delete_internal_only ON deployed_product

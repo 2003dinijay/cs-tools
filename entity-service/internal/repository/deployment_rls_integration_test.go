@@ -324,6 +324,27 @@ func TestDeploymentRLSIntegration_WritePolicies(t *testing.T) {
 			t.Fatalf("want an RLS policy violation (42501), got %v", err)
 		}
 	})
+	t.Run("member cannot pair their own project_id with another project's deployment (insert)", func(t *testing.T) {
+		_, err := scoped.Exec(member, `INSERT INTO deployed_product (id, created_on, updated_on, created_by, updated_by, number, active, project_id, deployment_id, product_id)
+			VALUES ('a5000000-0000-0000-0000-0000000000b2', $1, $1, $2, $2, 'DEPP-W2', TRUE, $3, $4, $5)`,
+			now, depCreatedBy, depProjectOne, depDeployTwo, depProductID)
+		if err == nil || !repository.IsRLSPolicyViolation(err) {
+			t.Fatalf("want an RLS policy violation (42501) for project_id/deployment_id from different projects, got %v", err)
+		}
+	})
+	t.Run("member cannot repoint their deployed product at another project's deployment (update)", func(t *testing.T) {
+		_, err := scoped.Exec(member, `UPDATE deployed_product SET deployment_id = $1 WHERE id = $2`, depDeployTwo, depDPOneSet)
+		if err == nil || !repository.IsRLSPolicyViolation(err) {
+			t.Fatalf("want an RLS policy violation (42501) from WITH CHECK, got %v", err)
+		}
+	})
+	t.Run("member can write a consistent deployed product in their own project", func(t *testing.T) {
+		if _, err := scoped.Exec(member, `INSERT INTO deployed_product (id, created_on, updated_on, created_by, updated_by, number, active, project_id, deployment_id, product_id)
+			VALUES ('a5000000-0000-0000-0000-0000000000b3', $1, $1, $2, $2, 'DEPP-W3', TRUE, $3, $4, $5)`,
+			now, depCreatedBy, depProjectOne, depDeployOne, depProductID); err != nil {
+			t.Fatalf("consistent insert into own project: %v", err)
+		}
+	})
 	t.Run("internal caller can create a deployment in any project", func(t *testing.T) {
 		if err := insert(internal, "a3000000-0000-0000-0000-0000000000a3", "DEP-NUM-W3", depProjectTwo); err != nil {
 			t.Fatalf("internal insert: %v", err)
