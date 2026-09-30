@@ -998,9 +998,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// source.
 	instanceRepo := repository.NewInstanceRepository(db)
 	var activeInstanceSvc service.InstanceService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeInstanceSvc = service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		// Read-only fallback to ServiceNow, same reasoning as
+		// deploymentService/deployedProductService under this data source
+		// (see instanceService.snMirror's own doc comment): Postgres's
+		// instance/usage-tracking tables were never backfilled with
+		// ServiceNow's existing history.
+		snInstanceMirrorSvc := service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)
+		activeInstanceSvc = service.NewInstanceServiceWithSNFallback(instanceRepo, snInstanceMirrorSvc)
+	default:
 		activeInstanceSvc = service.NewInstanceService(instanceRepo)
 	}
 	instanceHandler := handler.NewInstanceHandler(activeInstanceSvc)
