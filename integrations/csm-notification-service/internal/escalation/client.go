@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -56,6 +57,11 @@ type EntityConfig struct {
 type EntityClient struct {
 	http    *http.Client
 	baseURL string
+	// tokens is the same client-credentials source the HTTP client uses. It is
+	// held separately so do() can put the access token in x-jwt-assertion as
+	// well as in Authorization -- see do() for why that header is the one that
+	// decides whether this caller counts as internal.
+	tokens oauth2.TokenSource
 }
 
 // NewEntityClient constructs an EntityClient authenticated via the OAuth2
@@ -76,6 +82,7 @@ func NewEntityClient(cfg EntityConfig) *EntityClient {
 	httpClient.Timeout = 25 * time.Second
 
 	return &EntityClient{
+		tokens:  cc.TokenSource(tokenCtx),
 		http:    httpClient,
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
 	}
@@ -220,6 +227,7 @@ func (c *EntityClient) do(ctx context.Context, method, path string, body []byte)
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	c.setClientAssertion(ctx, req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -236,4 +244,34 @@ func (c *EntityClient) do(ctx context.Context, method, path string, body []byte)
 		return nil, &apierror.Error{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 	return respBody, nil
+}
+
+// setClientAssertion puts the access token in x-jwt-assertion as well as in
+// Authorization, which the OAuth2 transport sets on its own.
+//
+// entity-service decides whether a caller is internal -- and so whether it may
+// read the rota at all -- from x-jwt-assertion's client_id claim, not from
+// Authorization. In a Choreo deployment its gateway translates one into the
+// other before entity-service sees the request, so this works in production
+// whether or not the header is set here. Nothing translates it locally, so
+// without this every rota lookup is refused and every rung of a real ladder
+// resolves to nobody. Setting it is also what csm-portal-backend's own CORS
+// allow-list describes as intended: local testing that bypasses the gateway,
+// and defence in depth behind it.
+//
+// Best-effort: a token fetch that fails leaves the header off and lets the
+// request go, so the failure surfaces as the upstream's own status rather than
+// as a client-side error that hides it. The transport will fail the same fetch
+// a moment later anyway.
+func (c *EntityClient) setClientAssertion(ctx context.Context, req *http.Request) {
+	if c.tokens == nil {
+		return
+	}
+	tok, err := c.tokens.Token()
+	if err != nil || tok == nil || tok.AccessToken == "" {
+		slog.WarnContext(ctx, "escalation: could not attach the client assertion; "+
+			"entity-service will not see this caller as internal")
+		return
+	}
+	req.Header.Set("x-jwt-assertion", tok.AccessToken)
 }

@@ -30,11 +30,13 @@
 # reachable and CUSTOMER_ENTITY_BASE_URL set.
 #
 # Usage:
+#   ./scripts/csm-compose/test-cre-ladder.sh p0           # one P0 ladder
 #   ./scripts/csm-compose/test-cre-ladder.sh              # every scenario
 #   ./scripts/csm-compose/test-cre-ladder.sh timings      # just one
 #   KEEP_REDIS=1 ./scripts/csm-compose/test-cre-ladder.sh # leave Redis running
+#   MINUTE=1s ./scripts/csm-compose/test-cre-ladder.sh p0 # slower clock
 #
-# Scenarios: timings | ack | half-ack | shifts | not-abt
+# Scenarios: p0 | timings | ack | half-ack | shifts | not-abt
 
 set -euo pipefail
 
@@ -47,13 +49,27 @@ REDIS_ADDR="127.0.0.1:${REDIS_PORT}"
 MINUTE="${MINUTE:-150ms}"
 TICK="${TICK:-60ms}"
 
+# Empty means "use the local roster". Set USE_TEAM_SCHEDULE=1 to resolve real
+# people from entity-service instead -- which needs it running AND the
+# x-jwt-assertion gap closed, or every rung returns RESOLVE_FAILED.
+ENTITY_URL=""
+[ -n "${USE_TEAM_SCHEDULE:-}" ] && ENTITY_URL="${CUSTOMER_ENTITY_BASE_URL:-http://localhost:8081}"
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 service_dir="${repo_root}/integrations/csm-notification-service"
 
 run() {
   # --channel log is what makes this safe: the ladder runs in full and reaches
   # nobody. Every other flag is about which ladder to run.
-  (cd "${service_dir}" && go run ./cmd/escalation-local \
+  #
+  # CUSTOMER_ENTITY_BASE_URL is blanked unless USE_TEAM_SCHEDULE is set. The
+  # service's own .env points it at a local entity-service, and the harness
+  # would then resolve rungs from the real Team Schedule -- which cannot
+  # authenticate yet, so every rung comes back RESOLVE_FAILED and no ladder is
+  # scheduled at all. Blank it and the local roster answers instead, which is
+  # what a dry run wants: you see which rung fires, not which person.
+  (cd "${service_dir}" && CUSTOMER_ENTITY_BASE_URL="${ENTITY_URL}" \
+      go run ./cmd/escalation-local \
       --channel log --redis "${REDIS_ADDR}" \
       --minute "${MINUTE}" --tick "${TICK}" "$@" 2>/dev/null)
 }
@@ -89,6 +105,12 @@ cleanup() {
   docker rm -f "${REDIS_NAME}" >/dev/null 2>&1 || true
   echo
   echo "redis removed"
+}
+
+scenario_p0() {
+  heading "A P0 incident, raised during business hours"
+  echo "The whole ladder, start to finish. Nothing is dialled."
+  run --priority P0 --shift LK
 }
 
 scenario_timings() {
@@ -167,6 +189,7 @@ main() {
   trap cleanup EXIT
 
   case "${1:-all}" in
+    p0)       scenario_p0 ;;
     timings)  scenario_timings ;;
     ack)      scenario_ack ;;
     half-ack) scenario_half_ack ;;
@@ -181,7 +204,7 @@ main() {
       ;;
     *)
       echo "unknown scenario: $1" >&2
-      echo "use one of: timings ack half-ack shifts not-abt all" >&2
+      echo "use one of: p0 timings ack half-ack shifts not-abt all" >&2
       exit 2
       ;;
   esac
