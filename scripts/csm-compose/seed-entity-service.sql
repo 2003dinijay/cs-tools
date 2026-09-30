@@ -63,8 +63,10 @@ INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, numbe
   ('00000000-0000-0000-0000-000000000601', now(), now(), 'seed', 'seed', 'CASE-0001', 'CASE-0001', 'Sample case seeded for local dev', 'CASE', '00000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000501', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Seed data for docker-compose local dev stack.')
 ON CONFLICT (id) DO NOTHING;
 
+-- work_state is NULL: an OPEN case has not been started. ONGOING here would also make
+-- jane.doe (its assignee) fail every later "Resume work" with "already has an Ongoing case".
 INSERT INTO "case" (id, severity, issue_type, state, current_escalation_level, is_escalated, work_state) VALUES
-  ('00000000-0000-0000-0000-000000000601', 'S3', 'QUESTION', 'OPEN', 'EL0', false, 'ONGOING')
+  ('00000000-0000-0000-0000-000000000601', 'S3', 'QUESTION', 'OPEN', 'EL0', false, NULL)
 ON CONFLICT (id) DO NOTHING;
 
 -- One comment on the seeded case.
