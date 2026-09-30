@@ -716,3 +716,71 @@ func TestResolve_ABTResolvesFromTeamType(t *testing.T) {
 		t.Errorf("R3 LEVEL_0 reached %d, want one per CRE ABT team (%d)", len(nominees), len(cre))
 	}
 }
+
+// "Team leads" is at least three OUT OF the pool, and the pool is every ABT
+// team's lead. The sheet's three and the ABT's seven were never in conflict --
+// one is how many get called, the other how many there are to choose from.
+func TestResolve_TeamLeadsCallsNFromThePool(t *testing.T) {
+	cre := []string{"atlas", "castor", "draco", "phoenix", "rigel", "sirius", "vega"}
+	var members []teamMember
+	for _, team := range cre {
+		members = append(members, member(team, team+".lead@example.com", roleLead, ""))
+	}
+	stub := &stubScheduleReader{members: members}
+	teams := testTeams
+	teams.ABTs = cre
+	teams.TeamLeadsToCall = 3
+	rc := RoutingContext{Shift: ShiftLK, AssignedCRETeam: "vega", At: time.Now()}
+
+	got, err := NewTeamScheduleResolver(stub, teams, nil).
+		Resolve(context.Background(), Level2, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("LEVEL_2 called %d, want 3 from a pool of %d: %v", len(got), len(cre), emails(got))
+	}
+
+	// Zero means the whole pool, which is the other reading.
+	teams.TeamLeadsToCall = 0
+	all, err := NewTeamScheduleResolver(stub, teams, nil).
+		Resolve(context.Background(), Level2, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != len(cre) {
+		t.Errorf("with no cap LEVEL_2 called %d, want the whole pool (%d)", len(all), len(cre))
+	}
+}
+
+// The three rotate: whoever has gone longest without a call goes first, so the
+// duty spreads across the pool rather than always landing on the same names.
+func TestResolve_TeamLeadsRotateAcrossThePool(t *testing.T) {
+	now := time.Date(2026, 9, 30, 11, 0, 0, 0, time.UTC)
+	cre := []string{"atlas", "castor", "draco", "phoenix", "rigel", "sirius", "vega"}
+	var members []teamMember
+	for _, team := range cre {
+		members = append(members, member(team, team+".lead@example.com", roleLead, ""))
+	}
+	// Everyone called recently except three.
+	seen := map[string]time.Time{}
+	for i, team := range cre {
+		seen[team+".lead@example.com"] = now.Add(-time.Duration(i) * time.Hour)
+	}
+	teams := testTeams
+	teams.ABTs = cre
+	teams.TeamLeadsToCall = 3
+
+	got, err := NewTeamScheduleResolver(&stubScheduleReader{members: members}, teams, nil).
+		WithCallHistory(stubHistory{seen: seen}).
+		Resolve(context.Background(), Level2,
+			RoutingContext{Shift: ShiftLK, AssignedCRETeam: "vega", At: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The three longest-waiting are the last three in that -i hour ordering.
+	want := []string{"vega.lead@example.com", "sirius.lead@example.com", "rigel.lead@example.com"}
+	if !equalStrings(emails(got), want) {
+		t.Errorf("LEVEL_2 = %v, want the three longest without a call %v", emails(got), want)
+	}
+}

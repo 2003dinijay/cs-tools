@@ -58,9 +58,11 @@ type TeamScheduleResolver struct {
 	abtType string
 	// americasTeamKey is the team covering the night shift.
 	americasTeamKey string
-	// teamLeadKeys is which teams the "Team leads" rung spans; the ABTs when
-	// configuration names none.
+	// teamLeadKeys overrides the "Team leads" pool; empty means the ABT's own
+	// teams.
 	teamLeadKeys []string
+	// teamLeadsToCall is how many of that pool the rung calls; 0 calls all.
+	teamLeadsToCall int
 	// heads are the last two rungs when configuration names them outright,
 	// which is the normal case: they are two people, not a team.
 	heads Heads
@@ -140,6 +142,7 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 	}
 	return TeamScheduleResolver{
 		abtType:           strings.ToLower(strings.TrimSpace(teams.ABTType)),
+		teamLeadsToCall:   teams.TeamLeadsToCall,
 		tiers:             alertTiers,
 		entity:            entity,
 		rules:             rules,
@@ -168,8 +171,17 @@ type TeamKeys struct {
 	// name them rather than take whatever the ABT currently holds. When set it
 	// wins over ABTType.
 	ABTs []string `yaml:"abts"`
-	// TeamLeads is which teams the "Team leads" rung spans. Empty means every
-	// ABT.
+	// TeamLeadsToCall is how many leads the "Team leads" rung calls out of the
+	// pool. Zero calls all of them.
+	//
+	// The rung is "at least three team leads from the pool", and the pool is
+	// every ABT team's lead -- seven for cre-abt. So the sheet's count of
+	// three and the pool of seven were never in conflict: one is how many are
+	// called, the other is how many there are to choose from. Which three
+	// rotates, by who has gone longest without a call, so the duty spreads
+	// across the pool instead of always landing on the same names.
+	TeamLeadsToCall int `yaml:"teamLeadsToCall"`
+	// TeamLeads overrides the pool itself. Empty means every ABT team's lead.
 	//
 	// It is configurable because the spreadsheet and the roster disagree and
 	// only you can say which is right: the sheet counts that rung as three
@@ -305,10 +317,11 @@ func (r TeamScheduleResolver) fromSource(ctx context.Context, src LevelSource, r
 		return r.abtMembers(ctx, rc.AssignedCRETeam, roleLead)
 
 	case SourceAllTeamLeads:
-		if len(r.teamLeadKeys) > 0 {
-			return r.leadsOf(ctx, r.teamLeadKeys)
+		pool, err := r.teamLeadPool(ctx)
+		if err != nil {
+			return nil, err
 		}
-		return r.leadsOfABT(ctx)
+		return r.takeLongestSinceCalled(ctx, pool, r.teamLeadsToCall), nil
 
 	case SourceAmericasTeamLeads:
 		return r.leadsOf(ctx, r.americasKeys())
@@ -417,38 +430,56 @@ func (r TeamScheduleResolver) rotaPair(ctx context.Context, at time.Time, teamKe
 // where there is no history at all -- break on email, so the answer stays
 // deterministic and a retry reaches the same person as the first attempt.
 func (r TeamScheduleResolver) longestSinceCalled(ctx context.Context, pool []Recipient) (Recipient, bool) {
-	if len(pool) == 0 {
+	picked := r.takeLongestSinceCalled(ctx, pool, 1)
+	if len(picked) == 0 {
 		return Recipient{}, false
 	}
-	if r.history == nil {
-		return pool[0], true
-	}
+	return picked[0], true
+}
 
-	emails := make([]string, 0, len(pool))
-	for _, p := range pool {
-		emails = append(emails, p.Email)
+// takeLongestSinceCalled picks n from the pool, those who have gone longest
+// without a call first. n of zero or more than the pool holds takes all of it.
+//
+// Never called counts as the longest wait of all, which is what brings
+// somebody new into the rotation the first time. Ties -- including the case
+// where there is no history at all -- break on email, so the answer stays
+// deterministic and a retry reaches the same people as the first attempt.
+func (r TeamScheduleResolver) takeLongestSinceCalled(ctx context.Context, pool []Recipient, n int) []Recipient {
+	if len(pool) == 0 {
+		return nil
 	}
-	seen, err := r.history.LastCalled(ctx, emails)
-	if err != nil {
-		// Fairness is not worth failing a rung over: fall back to the stable
-		// order, which is still deterministic.
-		slog.WarnContext(ctx, "escalation: could not read call history; pairing falls back to a stable order",
-			"err", err)
-		return pool[0], true
-	}
+	ordered := append([]Recipient(nil), pool...)
 
-	best := pool[0]
-	bestAt, bestKnown := seen[best.Email]
-	for _, cand := range pool[1:] {
-		at, known := seen[cand.Email]
-		switch {
-		case !known && bestKnown:
-			best, bestAt, bestKnown = cand, at, false
-		case known && bestKnown && at.Before(bestAt):
-			best, bestAt = cand, at
+	if r.history != nil {
+		emails := make([]string, 0, len(ordered))
+		for _, p := range ordered {
+			emails = append(emails, p.Email)
+		}
+		seen, err := r.history.LastCalled(ctx, emails)
+		if err != nil {
+			// Fairness is not worth failing a rung over: fall back to the
+			// stable order, which is still deterministic.
+			slog.WarnContext(ctx, "escalation: could not read call history; the rung falls back to a stable order",
+				"err", err)
+		} else {
+			sort.SliceStable(ordered, func(i, j int) bool {
+				ai, oki := seen[ordered[i].Email]
+				aj, okj := seen[ordered[j].Email]
+				if oki != okj {
+					return !oki // never called sorts first
+				}
+				if oki && !ai.Equal(aj) {
+					return ai.Before(aj)
+				}
+				return ordered[i].Email < ordered[j].Email
+			})
 		}
 	}
-	return best, true
+
+	if n <= 0 || n >= len(ordered) {
+		return ordered
+	}
+	return ordered[:n]
 }
 
 // alertDuty is every nominee of the named teams.
@@ -547,6 +578,14 @@ func (r TeamScheduleResolver) pickOnePerTeam(members []teamMember) []Recipient {
 }
 
 // leadsOf is the lead of each named team.
+// teamLeadPool is everybody the "Team leads" rung may call.
+func (r TeamScheduleResolver) teamLeadPool(ctx context.Context) ([]Recipient, error) {
+	if len(r.teamLeadKeys) > 0 {
+		return r.leadsOf(ctx, r.teamLeadKeys)
+	}
+	return r.leadsOfABT(ctx)
+}
+
 // leadsOfABT is every lead in this ladder's ABT, resolved by type so a team
 // added to the ABT is reached without a config change.
 func (r TeamScheduleResolver) leadsOfABT(ctx context.Context) ([]Recipient, error) {

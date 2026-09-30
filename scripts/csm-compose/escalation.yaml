@@ -78,15 +78,19 @@ cre:
     # Only used when heads.cre / heads.cs below are left empty.
     leadership: cre-leadership
 
-    # Which teams the "Team leads" rung spans. Empty means every team in the
-    # ABT above, which for cre-abt is seven calls.
+    # How many leads the "Team leads" rung calls, out of the pool below.
+    # Zero calls all of them.
     #
-    # The spreadsheet counts that rung as THREE calls everywhere it appears,
-    # so the two readings disagree and only you can settle it:
-    #   - leave it empty   -> every team in the ABT (7 for cre-abt)
-    #   - name three teams -> those three leads (3 calls)
-    # Either way the resolver and the sheet can be made to agree here rather
-    # than in a release.
+    # The rung is "at least three team leads from the pool", and the pool is
+    # every ABT team's lead -- seven for cre-abt. So the sheet's three and the
+    # pool's seven were never in conflict: one is how many get called, the
+    # other how many there are to choose from.
+    #
+    # Which three rotates, by who has gone longest without a call, so the duty
+    # spreads across the pool instead of landing on the same names every time.
+    teamLeadsToCall: 3
+
+    # The pool itself. Empty means every team in the ABT above.
     teamLeads: []
 
   # rules: the R1-R6 table. Omitted here, which uses the shipped
