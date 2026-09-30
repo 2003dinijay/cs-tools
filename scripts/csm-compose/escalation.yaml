@@ -63,9 +63,11 @@ cre:
     # and a team moved between ABTs cannot leave a stale key behind.
     abtType: cre-abt
 
-    # An explicit team list, if you would rather name them than take whatever
-    # the ABT currently holds. Set, it wins over abtType.
-    abts: []
+    # The seven teams cre-abt holds, named outright. This WINS over abtType
+    # above, so the ladder reaches exactly these and nothing else -- empty it
+    # to have entity-service answer from team.type instead, which is the
+    # version that survives a team being added.
+    abts: [atlas, castor, draco, phoenix, rigel, sirius, vega]
 
     # Americas is NOT an ABT -- its team.type is cre. It covers 9pm-6am IST,
     # has its own alert-duty nominees, and three Team leads of its own with a
@@ -165,8 +167,9 @@ sre:
   enabled: true
   channel: log
   teams:
-    # The other ABT: two teams, apollo and artemis.
+    # The other ABT: two teams.
     abtType: sre-abt
+    abts: [apollo, artemis]
   trigger:
     priorities: []
     requireKnownTeam: true

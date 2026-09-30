@@ -393,3 +393,64 @@ cre:
 		t.Errorf("default tiers = %d, want 3", got)
 	}
 }
+
+// The shipped example must name the real teams. Getting this wrong is silent:
+// a list naming an SRE team and omitting a CRE one still resolves to real
+// people, so the ladder calls the wrong leads and nothing reports it. That
+// happened once already.
+func TestLoadConfig_ExampleNamesTheRealABTTeams(t *testing.T) {
+	const path = "../../../../scripts/csm-compose/escalation.yaml"
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("example config not reachable: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cre, _ := cfg.For(LadderKeyCRE)
+	sre, _ := cfg.For(LadderKeySRE)
+
+	wantCRE := []string{"atlas", "castor", "draco", "phoenix", "rigel", "sirius", "vega"}
+	wantSRE := []string{"apollo", "artemis"}
+	if !equalStringSets(cre.Teams.ABTs, wantCRE) {
+		t.Errorf("cre-abt = %v, want %v", cre.Teams.ABTs, wantCRE)
+	}
+	if !equalStringSets(sre.Teams.ABTs, wantSRE) {
+		t.Errorf("sre-abt = %v, want %v", sre.Teams.ABTs, wantSRE)
+	}
+	// The two ABTs must not overlap: a team in both would be escalated by
+	// both ladders for the same incident.
+	for _, c := range cre.Teams.ABTs {
+		for _, s := range sre.Teams.ABTs {
+			if c == s {
+				t.Errorf("%s is in both ABTs", c)
+			}
+		}
+	}
+	if cre.Teams.ABTType != "cre-abt" || sre.Teams.ABTType != "sre-abt" {
+		t.Errorf("abtType = %q / %q, want cre-abt / sre-abt",
+			cre.Teams.ABTType, sre.Teams.ABTType)
+	}
+	// Americas belongs to neither.
+	for _, k := range append(append([]string{}, cre.Teams.ABTs...), sre.Teams.ABTs...) {
+		if k == cre.Teams.Americas {
+			t.Errorf("%s is listed as an ABT team; Americas is type cre", k)
+		}
+	}
+}
+
+func equalStringSets(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, g := range got {
+		seen[g] = true
+	}
+	for _, w := range want {
+		if !seen[w] {
+			return false
+		}
+	}
+	return true
+}
