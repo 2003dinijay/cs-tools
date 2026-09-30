@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -69,8 +70,56 @@ type LadderConfig struct {
 	Acknowledgement Acknowledgement `yaml:"acknowledgement"`
 	// Rules is the escalation rule table. Empty uses DefaultRules, which is
 	// the shipped transcription of the spreadsheet; a deployment overrides a
-	// row here rather than waiting for a release.
+	// row here rather than waiting for a release. CRE only: the SRE ladder
+	// routes by on-call tier, which has one path.
 	Rules []Rule `yaml:"rules"`
+	// Timing is the SRE ladder's clock. SRE only: the CRE ladder's clock is
+	// section 7.0's per-priority table.
+	Timing SRETiming `yaml:"timing"`
+}
+
+// SRETiming is the SRE ladder's clock: one call per rung, a fixed gap between
+// rungs, the same for every priority.
+type SRETiming struct {
+	// InitialWait is how long after the incident L1 support is called.
+	// Absent means zero -- the diagram calls L1 the moment it is created.
+	InitialWait Duration `yaml:"initialWait"`
+	// Interval is the gap between two rungs. Absent means five minutes.
+	Interval Duration `yaml:"interval"`
+	// IncludeL4 adds the fourth rung, L4 support. NOT CONFIRMED: the rota's
+	// tiers stop at L3, and L4 resolves to the SRE team's lead on an
+	// assumption nobody has signed off.
+	IncludeL4 bool `yaml:"includeL4"`
+}
+
+// Policy turns the timing into the policy shape the planner reads.
+func (t SRETiming) Policy() PriorityPolicy {
+	interval := time.Duration(t.Interval)
+	if interval <= 0 {
+		interval = sreStep
+	}
+	rung := LevelPolicy{NotificationCount: 1, NotificationInterval: interval}
+	p := PriorityPolicy{InitialWait: time.Duration(t.InitialWait)}
+	p.Levels[Level0] = rung
+	p.Levels[Level1] = rung
+	p.Levels[Level2] = rung
+	if t.IncludeL4 {
+		p.Levels[Level3] = rung
+	}
+	return p
+}
+
+// Duration is a time.Duration written the way a person writes one in YAML:
+// "5m", "30s".
+type Duration time.Duration
+
+func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
+	v, err := time.ParseDuration(strings.TrimSpace(n.Value))
+	if err != nil {
+		return fmt.Errorf("line %d: %q is not a duration; write it like 5m or 30s", n.Line, n.Value)
+	}
+	*d = Duration(v)
+	return nil
 }
 
 // StartWhen decides which incidents get a ladder at all.
@@ -100,6 +149,29 @@ type StartWhen struct {
 	// could produce it. Refusing is louder and cheaper than calling the wrong
 	// people.
 	RequireKnownTeam bool `yaml:"requireKnownTeam"`
+	// CREPriorities is the SRE ladder's second way in: an incident assigned
+	// to a CRE team at one of these priorities climbs the SRE ladder as well
+	// as its own. SRE only.
+	//
+	// Most SRE incidents arrive by the alert flow and are assigned to an SRE
+	// team already; a P0 raised on the CRE side is the exception, and it
+	// needs both teams at once. Absent means [P0]; an explicit empty list
+	// turns the second way in off.
+	CREPriorities []string `yaml:"crePriorities"`
+}
+
+// defaultCREPriorities is which CRE incidents also climb the SRE ladder when
+// the file does not say.
+var defaultCREPriorities = []string{"P0"}
+
+// AlsoForCRE reports whether a CRE incident at this priority also climbs the
+// SRE ladder. Priority labels (CATASTROPHIC) and codes (P0) are both accepted.
+func (s StartWhen) AlsoForCRE(priority string) bool {
+	list := s.CREPriorities
+	if list == nil {
+		list = defaultCREPriorities
+	}
+	return contains(list, priority) || contains(list, priorityAliases[strings.ToUpper(strings.TrimSpace(priority))])
 }
 
 // Heads names the two people the top of the ladder reaches.
@@ -249,7 +321,18 @@ func (c *Config) validate() error {
 	if err := c.CRE.validate("cre"); err != nil {
 		return err
 	}
-	return c.SRE.validate("sre")
+	if err := c.SRE.validate("sre"); err != nil {
+		return err
+	}
+	// A team is an ABT or an SRE team, never both. Listed as both, its
+	// incidents would climb the SRE ladder while its lead was still being
+	// called on every CRE ladder's all_team_leads rung.
+	for _, k := range c.SRE.Teams.ABTs {
+		if contains(c.CRE.Teams.ABTs, k) {
+			return fmt.Errorf("team %q is in both cre.teams.abts and sre.teams.abts", k)
+		}
+	}
+	return nil
 }
 
 func (l *LadderConfig) validate(name string) error {
@@ -286,6 +369,25 @@ func (l *LadderConfig) validate(name string) error {
 	if len(l.Rules) > 0 {
 		if err := Validate(l.Rules); err != nil {
 			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+
+	// Each ladder's own knobs are refused on the other, rather than accepted
+	// and ignored: an SRE clock written under cre: would otherwise look like
+	// it had changed something.
+	if name == LadderKeySRE {
+		if len(l.Rules) > 0 {
+			return fmt.Errorf("sre: rules is a CRE setting; the SRE ladder routes by on-call tier")
+		}
+		if l.Timing.Interval < 0 || l.Timing.InitialWait < 0 {
+			return fmt.Errorf("sre: timing durations must not be negative")
+		}
+	} else {
+		if l.Timing != (SRETiming{}) {
+			return fmt.Errorf("%s: timing is an SRE setting; the CRE clock is the per-priority policy", name)
+		}
+		if l.Start.CREPriorities != nil {
+			return fmt.Errorf("%s: trigger.crePriorities is an SRE setting", name)
 		}
 	}
 	return nil

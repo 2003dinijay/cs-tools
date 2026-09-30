@@ -233,6 +233,12 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 	if product == "" {
 		product = n.defaultProduct
 	}
+	// The assignment group's own space when one is configured, the same rule
+	// as the incident's own alert, so a ladder climbs in the room that owns
+	// it.
+	if sc, ok := n.chat.(interface{ HasSpace(string) bool }); ok && sc.HasSpace(t.Routing.AssignedCRETeam) {
+		product = t.Routing.AssignedCRETeam
+	}
 	portal := ""
 	if n.links != nil {
 		portal = n.links.IncidentLink(t.IncidentID)
@@ -241,7 +247,7 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 	alert := notifications.EscalationAlert{
 		Product:       product,
 		Rung:          call.Level.String(),
-		RungRole:      call.Level.Role(),
+		RungRole:      call.Level.RoleIn(t.Routing.Ladder),
 		Attempt:       call.Ordinal,
 		Priority:      t.Priority,
 		IncidentRef:   t.caseRef(),

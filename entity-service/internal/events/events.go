@@ -66,6 +66,11 @@ const (
 	// already left NEW by the time its priority is raised, so
 	// TypeIncidentAcknowledged can never fire again for it.
 	TypeIncidentCommentAdded Type = "incident.comment_added"
+	// TypeIncidentAssigned is published when an engineer is set as an
+	// incident's assignee. It is how the SRE escalation ladder stops: the SRE
+	// flow's acknowledgement is "assignee set on incident". The CRE ladder
+	// ignores it.
+	TypeIncidentAssigned Type = "incident.assigned"
 	// TypeCaseBillableStatusChanged is Postgres-data-source-only (unlike
 	// every other type here, which is ServiceNow-only) — see
 	// CaseBillableStatusChangedPayload's own doc comment for what it's for
@@ -425,6 +430,16 @@ type ProjectContactRegisteredPayload struct {
 	ProjectKey        string `json:"projectKey"`
 	IsIntegrationUser bool   `json:"isIntegrationUser,omitempty"`
 	EventModifiedOn   string `json:"eventModifiedOn,omitempty"`
+}
+
+// IncidentAssignedPayload is TypeIncidentAssigned's payload, mirrored by
+// hand in csm-notification-service's events package.
+type IncidentAssignedPayload struct {
+	// AssigneeID is the engineer now assigned.
+	AssigneeID string `json:"assigneeId"`
+	// AssigneeName is for the escalation's execution summary; omitted when
+	// ServiceNow returned no display name.
+	AssigneeName string `json:"assigneeName,omitempty"`
 }
 
 // IncidentAcknowledgedPayload is the Payload shape for

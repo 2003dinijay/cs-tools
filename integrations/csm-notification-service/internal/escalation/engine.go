@@ -77,6 +77,11 @@ type EngineConfig struct {
 	// value has no opinion on either, which is what a deployment with no
 	// configuration file gets.
 	Ladder LadderConfig
+	// Kind is which ladder this engine runs. The service runs one engine per
+	// ladder, each with its own channel, consumer group and store namespace,
+	// because a P0 CRE incident climbs both at once. The zero value is the
+	// CRE ladder, which is what every engine was before the SRE one existed.
+	Kind Ladder
 }
 
 // Engine runs the incident call-escalation ladder.
@@ -126,7 +131,16 @@ func (e *Engine) now() time.Time {
 // interface holding a nil pointer, so writeNote's `e.notes == nil` would be
 // false and it would call AppendWorkNote on a nil receiver.
 func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *notifications.TwilioClient, chat *notifications.GoogleChatClient, links PortalLinks, store *Store, notes *EntityClient, defaultChatProduct string, cfg EngineConfig) *Engine {
-	e := &Engine{policies: policies, resolver: resolver, store: store, cfg: cfg}
+	e := &Engine{policies: policies, resolver: resolver, cfg: cfg}
+	if store != nil {
+		// Not assigned when nil, for the same reason notes is not: a nil
+		// *Store in the interface field would not compare equal to nil.
+		e.store = store.ForLadder(cfg.Kind)
+	}
+	if cfg.Kind == LadderSRE {
+		// The SRE clock is the file's sre.timing, not section 7.0's table.
+		e.policies = withSREPolicy(policies, cfg.Ladder.Timing.Policy())
+	}
 	if notes != nil {
 		e.notes = notes
 	}
@@ -189,7 +203,8 @@ func (e *Engine) Handle(ctx context.Context, record eventbus.Record) error {
 	}
 	switch env.Type {
 	case events.TypeIncidentCreated, events.TypeIncidentPriorityElevated,
-		events.TypeIncidentAcknowledged, events.TypeIncidentCommentAdded:
+		events.TypeIncidentAcknowledged, events.TypeIncidentCommentAdded,
+		events.TypeIncidentAssigned:
 	default:
 		return nil
 	}
@@ -209,8 +224,18 @@ func (e *Engine) Handle(ctx context.Context, record eventbus.Record) error {
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return fmt.Errorf("escalation: decode incident.priority_elevated payload: %w", err)
 		}
-		return e.start(ctx, triggerFromElevated(env.EntityID, p), true)
+		// An elevation replaces a CRE ladder -- section 7.0 keys its timings
+		// on priority -- but never restarts an SRE one, whose clock does not
+		// depend on priority. For the SRE engine an elevation matters only
+		// when it brings a CRE incident up to a priority that also needs SRE.
+		return e.start(ctx, triggerFromElevated(env.EntityID, p), e.cfg.Kind != LadderSRE)
 	case events.TypeIncidentCommentAdded:
+		if e.cfg.Kind == LadderSRE {
+			// Not an SRE acknowledgement: a comment may be a third party
+			// triaging, not the engineer who was paged. The SRE ladder stops
+			// on an assignee.
+			return nil
+		}
 		var p events.IncidentCommentAddedPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return fmt.Errorf("escalation: decode incident.comment_added payload: %w", err)
@@ -222,6 +247,14 @@ func (e *Engine) Handle(ctx context.Context, record eventbus.Record) error {
 			return nil
 		}
 		return e.cancelBy(ctx, env.EntityID, cancelPublicComment)
+	case events.TypeIncidentAssigned:
+		if e.cfg.Kind != LadderSRE {
+			// Assignment is the SRE ladder's acknowledgement, not the CRE
+			// one's: an incident assigned by a dispatcher to somebody who has
+			// not yet seen it is not evidence it is being attended.
+			return nil
+		}
+		return e.cancelBy(ctx, env.EntityID, cancelAssigned)
 	default:
 		return e.cancelBy(ctx, env.EntityID, cancelStateChange)
 	}
@@ -242,6 +275,9 @@ const (
 	// acknowledgement actually means: the incident moved out of NEW and
 	// somebody said so where the customer can see it.
 	cancelAcknowledged cancelReason = "Acknowledged (status and public comment)"
+	// cancelAssigned is the SRE ladder's own gesture: an engineer taking the
+	// incident.
+	cancelAssigned cancelReason = "Assignee set"
 )
 
 // start expands a trigger into a ladder and schedules it.
@@ -255,8 +291,10 @@ const (
 // deliberately replaces whatever is running, retiring the old ladder's
 // outstanding calls first.
 func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
-	policy, ok := Lookup(e.policies, t.Priority)
-	if !ok {
+	if !e.claims(ctx, &t) {
+		return nil
+	}
+	if _, ok := PolicyFor(e.policies, t); !ok {
 		// Not an error: section 7.0 has no row below P4, so a
 		// planning-priority incident legitimately has no ladder. Erroring
 		// would dead-letter a valid event.
@@ -283,7 +321,7 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 	// product-to-ABT mapping, so the field arrives false and this shift always
 	// takes the R12 branch. A bool cannot distinguish "not eligible" from
 	// "nobody told us", so the mis-branch is announced rather than hidden.
-	if !t.Routing.abtKnown() {
+	if t.Routing.Ladder != LadderSRE && !t.Routing.abtKnown() {
 		// Not a detail: eligibility selects which half of section 5.0's table
 		// an incident routes by, so without it the rule is unnamed and the
 		// recipients are whatever the roster's fallback tier happens to hold.
@@ -380,9 +418,66 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 		"rule", t.Routing.Rule(), "shift", string(t.Routing.Shift),
 		"product", t.Routing.Product, "team", t.Routing.AssignedCRETeam,
 		"abtEligible", t.Routing.ABTEligibility(),
+		"ladder", ladderName(t.Routing.Ladder),
 		"levels", plan.LevelsClimbed(), "calls", len(plan.Calls),
-		"finalLevelAt", t.At.Add(TimeToFinalLevel(policy, t.Routing.HasNotificationLevel())).Format(time.RFC3339))
+		"lastCallAt", plan.Calls[len(plan.Calls)-1].At.Format(time.RFC3339))
 	return nil
+}
+
+// claims decides whether this engine's ladder runs for a trigger, and stamps
+// the trigger with that ladder when it does.
+//
+//	CRE engine  every incident not assigned to an SRE team
+//	SRE engine  every incident assigned to an SRE team, whatever its priority,
+//	            and a CRE incident at a priority in trigger.crePriorities (P0)
+//
+// So a P0 CRE incident is claimed by both, and runs two ladders side by side.
+// An elevation reaches the SRE engine only for that second case: an SRE
+// incident's ladder never restarts because its priority changed.
+func (e *Engine) claims(ctx context.Context, t *Trigger) bool {
+	ladder := e.classify(ctx, *t)
+	if e.cfg.Kind != LadderSRE {
+		t.Routing.Ladder = LadderCRE
+		return ladder != LadderSRE
+	}
+	alsoCRE := ladder != LadderSRE && e.cfg.Ladder.Start.AlsoForCRE(t.Priority)
+	if t.Kind == TriggerPriorityElevated && !alsoCRE {
+		return false
+	}
+	if ladder != LadderSRE && !alsoCRE {
+		return false
+	}
+	t.Routing.Ladder = LadderSRE
+	if alsoCRE {
+		slog.InfoContext(ctx, "escalation: CRE incident at a priority that also calls SRE; starting the SRE ladder too",
+			"incidentId", t.IncidentID, "priority", t.Priority, "team", t.Routing.AssignedCRETeam)
+	}
+	return true
+}
+
+// classify asks the resolver which ladder this incident climbs. A resolver
+// that cannot tell, or a failure to ask, leaves it on the CRE ladder: that is
+// the one every incident climbed before the SRE ladder existed, and an
+// incident still gets escalated rather than dropped.
+func (e *Engine) classify(ctx context.Context, t Trigger) Ladder {
+	c, ok := e.resolver.(LadderClassifier)
+	if !ok {
+		return LadderCRE
+	}
+	ladder, err := c.LadderFor(ctx, t.Routing)
+	if err != nil {
+		slog.WarnContext(ctx, "escalation: could not tell which ladder this incident climbs; using CRE",
+			"incidentId", t.IncidentID, "team", t.Routing.AssignedCRETeam, "err", err)
+		return LadderCRE
+	}
+	return ladder
+}
+
+func ladderName(l Ladder) string {
+	if l == LadderSRE {
+		return "SRE"
+	}
+	return "CRE"
 }
 
 // retireRunning drops any outstanding wake entries for an incident, used when
@@ -440,7 +535,12 @@ func (e *Engine) cancelBy(ctx context.Context, incidentID string, reason cancelR
 	//
 	// The two arrive as separate events in either order, so each is recorded
 	// and the ladder keeps climbing until both are in.
-	if st.Cancelled == nil && e.cfg.Ladder.RequireBothGestures() {
+	//
+	// CRE only. The SRE ladder's acknowledgement is one gesture, an engineer
+	// assigned (or the incident leaving NEW); a public comment never reaches
+	// here for it (Handle drops it), and treating an assignee as half of a
+	// CRE pair would leave an SRE ladder climbing for ever.
+	if st.Cancelled == nil && e.cfg.Kind != LadderSRE && e.cfg.Ladder.RequireBothGestures() {
 		switch reason {
 		case cancelStateChange:
 			st.SawStateChange = true

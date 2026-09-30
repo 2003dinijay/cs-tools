@@ -210,6 +210,16 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		if entityID == "" || p.PreviousState == "" || p.NewState == "" {
 			return fmt.Errorf("events: missing required field for %s", t)
 		}
+	case TypeIncidentAssigned:
+		var p IncidentAssignedPayload
+		if err := decodeStrict(raw, &p); err != nil {
+			return err
+		}
+		// entityID ties the signal to the ladder it stops; AssigneeID is what
+		// makes it an acknowledgement at all.
+		if entityID == "" || p.AssigneeID == "" {
+			return fmt.Errorf("events: missing required field for %s", t)
+		}
 	case TypeIncidentCommentAdded:
 		var p IncidentCommentAddedPayload
 		if err := decodeStrict(raw, &p); err != nil {

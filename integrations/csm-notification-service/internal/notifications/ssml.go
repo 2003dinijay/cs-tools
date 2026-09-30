@@ -110,6 +110,32 @@ func Stress(level, text string) SpeechPart {
 	return SpeechPart{Emphasis: &SpeechEmphasis{Level: level, Text: text}}
 }
 
+// Transcript is the words this document speaks, as one line of plain text:
+// every spoken part in order, pauses and prosody dropped. It is for showing a
+// reader what a call says - never for building TwiML, which takes the tree.
+func (s Speech) Transcript() string {
+	var b strings.Builder
+	for _, sentence := range s.Sentences {
+		for _, p := range sentence.Parts {
+			switch {
+			case p.Break != nil:
+				b.WriteByte(' ')
+			case p.Prosody != nil:
+				b.WriteString(p.Prosody.Text)
+			case p.Emphasis != nil:
+				b.WriteString(p.Emphasis.Text)
+			default:
+				b.WriteString(p.Text)
+			}
+		}
+		b.WriteByte(' ')
+	}
+	// The tree spaces its parts for a speech engine ("INC001 ." keeps the
+	// full stop off the spelled reference); a reader wants ordinary spacing.
+	out := strings.Join(strings.Fields(b.String()), " ")
+	return strings.ReplaceAll(out, " .", ".")
+}
+
 // IsEmpty reports whether this document would say nothing at all — used by
 // MakeSSMLCall to reject a silent call the same way MakeCall rejects an empty
 // message.

@@ -520,7 +520,9 @@ func main() {
 		// env-derived value, so an existing deployment behaves exactly as it
 		// did -- see loadEscalationConfig.
 		escalationCfg, cfgErr := loadEscalationConfig(escalationChannel)
-		creCfg, escalationRunning := escalationCfg.For(escalation.LadderKeyCRE)
+		creCfg, creRunning := escalationCfg.For(escalation.LadderKeyCRE)
+		sreCfg, sreRunning := escalationCfg.For(escalation.LadderKeySRE)
+		escalationRunning := creRunning || sreRunning
 		if cfgErr == nil {
 			// The file wins over INCIDENT_ESCALATION_CHANNEL when there is
 			// one, so there is a single answer to "what will this dial".
@@ -597,8 +599,17 @@ func main() {
 					slog.Error("INCIDENT_ESCALATION_RESOLVER=team-schedule needs CUSTOMER_ENTITY_BASE_URL; " +
 						"falling back to the configured roster")
 				} else {
+					// The rota holds no phone numbers: they come from
+					// INCIDENT_ESCALATION_PHONES (e-mail -> E.164), or every
+					// call goes to INCIDENT_ESCALATION_TEST_CALL_TO. A chat-only
+					// ladder needs neither.
+					phones, perr := escalation.ParsePhoneBook(os.Getenv("INCIDENT_ESCALATION_PHONES"), os.Getenv("INCIDENT_ESCALATION_TEST_CALL_TO"))
+					if perr != nil {
+						// Not logging perr: the decode error can quote numbers.
+						slog.Error("invalid INCIDENT_ESCALATION_PHONES; escalation calls will have no numbers")
+					}
 					escalationResolver = escalation.NewTeamScheduleResolver(
-						escalationNotes, creCfg.Teams, creCfg.Rules).
+						escalationNotes, resolverTeams(creCfg, sreCfg), creCfg.Rules).
 						// The heads are two named people, not a team lookup.
 						WithHeads(creCfg.Heads).
 						// How the nominated rungs are read: which tiers exist,
@@ -606,75 +617,110 @@ func main() {
 						WithAlertDuty(creCfg.AlertTiers(), creCfg.AlertDuty.PerTeam).
 						// Who has gone longest without a call, for the evening
 						// pairing's second call.
-						WithCallHistory(escalation.NewStore(redisClient))
-					slog.Info("incident escalation resolves rungs from the Team Schedule")
+						WithCallHistory(escalation.NewStore(redisClient)).
+						// The rota holds no numbers; see ParsePhoneBook above.
+						WithPhoneBook(phones)
+					slog.Info("incident escalation resolves rungs from the Team Schedule (CRE and SRE ladders)")
 				}
 			}
 
-			escalationEngine := escalation.NewEngine(
-				escalation.DefaultPolicy,
-				escalationResolver,
-				twilioClient,
-				googleChatClient,
-				// The ladder builds its own incident link. recipientlinks
-				// lost IncidentLink when incident.created stopped posting a
-				// Chat alert and nothing else needed one; a rung's card still
-				// has to say where to go and look.
-				escalation.PortalLinks{CSMBaseURL: csmPortalBaseURL},
-				escalation.NewStore(redisClient),
-				escalationNotes,
-				// The audience a rung's card posts to when the incident names
-				// no product of its own. Its own variable rather than the
-				// dispatcher's old DEFAULT_CHAT_PRODUCT, which went away with
-				// the incident Chat alert -- the ladder's room is its own
-				// decision now.
-				os.Getenv("INCIDENT_ESCALATION_CHAT_AUDIENCE"),
-				escalation.EngineConfig{
-					// Shares CALL_SENDING_ENABLED with
-					// dispatch.handleIncidentCreated's single call: both are
-					// the same outbound channel to the same people, and
-					// splitting them would let a deployment silence one and
-					// not the other.
-					CallSendingEnabled: callSendingEnabled,
-					// SSML is opt-in rather than the default: it changes how
-					// every escalation call sounds, so a deployment should
-					// hear it (escalation-local --speak) before switching.
-					UseSSML: os.Getenv("INCIDENT_ESCALATION_SSML") == "true",
-					// call, chat or both. Defaults to call — see
-					// ParseChannel for why silently downgrading a pager to a
-					// chat message would be the wrong default.
-					Channel: escalationChannel,
-					// Which incidents get a ladder, and what one may spend.
-					Ladder: creCfg,
-				},
-			)
+			// One engine per ladder. They share the resolver, the Redis and
+			// the Twilio account, and nothing else: each has its own channel,
+			// its own consumer group and its own store namespace, because a
+			// P0 CRE incident climbs both ladders at the same time and the
+			// two must not mistake each other for a redelivery.
+			ladders := []struct {
+				kind    escalation.Ladder
+				name    string
+				cfg     escalation.LadderConfig
+				running bool
+				group   string
+			}{
+				{escalation.LadderCRE, "escalation", creCfg, creRunning,
+					envOrDefault("INCIDENT_ESCALATION_CONSUMER_GROUP", "csm-notification-service-escalation")},
+				{escalation.LadderSRE, "escalation-sre", sreCfg, sreRunning,
+					envOrDefault("INCIDENT_ESCALATION_SRE_CONSUMER_GROUP", "csm-notification-service-escalation-sre")},
+			}
+			for _, l := range ladders {
+				if !l.running {
+					slog.Warn("incident call escalation ladder is disabled by configuration", "ladder", l.name)
+					continue
+				}
+				// With no file, both ladders take INCIDENT_ESCALATION_CHANNEL;
+				// with one, each ladder's own channel wins.
+				channel := l.cfg.Channel
+				if channel == "" {
+					channel = escalationChannel
+				}
+				escalationEngine := escalation.NewEngine(
+					escalation.DefaultPolicy,
+					escalationResolver,
+					twilioClient,
+					googleChatClient,
+					// The ladder builds its own incident link. recipientlinks
+					// lost IncidentLink when incident.created stopped posting
+					// a Chat alert and nothing else needed one; a rung's card
+					// still has to say where to go and look.
+					escalation.PortalLinks{CSMBaseURL: csmPortalBaseURL},
+					escalation.NewStore(redisClient),
+					escalationNotes,
+					// The audience a rung's card posts to when the incident
+					// names no product of its own. Its own variable rather
+					// than the dispatcher's old DEFAULT_CHAT_PRODUCT, which
+					// went away with the incident Chat alert -- the ladder's
+					// room is its own decision now.
+					os.Getenv("INCIDENT_ESCALATION_CHAT_AUDIENCE"),
+					escalation.EngineConfig{
+						// Shares CALL_SENDING_ENABLED with
+						// dispatch.handleIncidentCreated's single call: both
+						// are the same outbound channel to the same people,
+						// and splitting them would let a deployment silence
+						// one and not the other.
+						CallSendingEnabled: callSendingEnabled,
+						// SSML is opt-in rather than the default: it changes
+						// how every escalation call sounds, so a deployment
+						// should hear it (escalation-local --speak) before
+						// switching.
+						UseSSML: os.Getenv("INCIDENT_ESCALATION_SSML") == "true",
+						Channel: channel,
+						// Which incidents get a ladder, and what one may spend.
+						Ladder: l.cfg,
+						Kind:   l.kind,
+					},
+				)
 
-			escalationGroup := envOrDefault("INCIDENT_ESCALATION_CONSUMER_GROUP", "csm-notification-service-escalation")
-			escalationCount := envInt("INCIDENT_ESCALATION_CONSUMER_COUNT", 1)
-			escalationConsumers = startConsumers(ctx, "escalation", eventBusCfg, escalationGroup, escalationCount, escalationEngine.Handle, escalationToDeadLetter)
+				escalationCount := envInt("INCIDENT_ESCALATION_CONSUMER_COUNT", 1)
+				escalationConsumers = append(escalationConsumers,
+					startConsumers(ctx, l.name, eventBusCfg, l.group, escalationCount, escalationEngine.Handle, escalationToDeadLetter)...)
 
-			// And a consumer for that DLQ running the LADDER's handler, so a
-			// dead-lettered ladder gets its own retry pass rather than being
-			// re-dispatched by the wrong one. onExhausted is nil: a record
-			// that fails here too is logged and dropped, the same single extra
-			// tier every other consumer here gets.
-			escalationDLQGroup := envOrDefault("INCIDENT_ESCALATION_DLQ_CONSUMER_GROUP",
-				"csm-notification-service-escalation-dlq")
-			escalationDLQCount := envInt("INCIDENT_ESCALATION_DLQ_CONSUMER_COUNT", 1)
-			escalationConsumers = append(escalationConsumers,
-				startConsumers(ctx, "escalation-dlq", escalationDLQCfg, escalationDLQGroup,
-					escalationDLQCount, escalationEngine.Handle, nil)...)
+				// And a consumer for that DLQ running THIS ladder's handler, so
+				// a dead-lettered record gets a retry pass from the ladder that
+				// failed it. Both ladders dead-letter onto the one topic, each
+				// in its own consumer group; a record the other ladder failed
+				// is a redelivery here, which the create-if-absent claim and
+				// the stale-trigger guard already make harmless. onExhausted
+				// is nil: a record that fails here too is logged and dropped.
+				dlqGroup := l.group + "-dlq"
+				if l.kind == escalation.LadderCRE {
+					dlqGroup = envOrDefault("INCIDENT_ESCALATION_DLQ_CONSUMER_GROUP", dlqGroup)
+				}
+				escalationDLQCount := envInt("INCIDENT_ESCALATION_DLQ_CONSUMER_COUNT", 1)
+				escalationConsumers = append(escalationConsumers,
+					startConsumers(ctx, l.name+"-dlq", escalationDLQCfg, dlqGroup,
+						escalationDLQCount, escalationEngine.Handle, nil)...)
 
-			// Ticks faster than the SLA engine's 15s: the shortest gap
-			// between two calls in section 7.0's table is one minute (P0), so
-			// a coarse tick would visibly smear a P0 ladder.
-			escalationTick := envDuration("INCIDENT_ESCALATION_TICK_INTERVAL", 5*time.Second)
-			go escalationEngine.RunTicker(ctx, escalationTick)
+				// Ticks faster than the SLA engine's 15s: the shortest gap
+				// between two calls in section 7.0's table is one minute
+				// (P0), so a coarse tick would visibly smear a P0 ladder.
+				escalationTick := envDuration("INCIDENT_ESCALATION_TICK_INTERVAL", 5*time.Second)
+				go escalationEngine.RunTicker(ctx, escalationTick)
 
-			slog.Info("incident call escalation is enabled",
-				"channel", string(escalationChannel),
-				"ssml", os.Getenv("INCIDENT_ESCALATION_SSML") == "true",
-				"sending", callSendingEnabled)
+				slog.Info("incident call escalation is enabled",
+					"ladder", l.name,
+					"channel", string(channel),
+					"ssml", os.Getenv("INCIDENT_ESCALATION_SSML") == "true",
+					"sending", callSendingEnabled)
+			}
 
 			// dispatch.handleIncidentCreated's own single, immediate call to
 			// INCIDENT_DEFAULT_CALL_TO predates the ladder and is NOT part of
@@ -1077,7 +1123,9 @@ func loadEscalationConfig(envChannel escalation.Channel) (escalation.Config, err
 	cfg := escalation.Config{
 		Enabled: true,
 		CRE:     escalation.LadderConfig{Enabled: true, Channel: envChannel},
-		SRE:     escalation.LadderConfig{Enabled: true, Channel: envChannel},
+		SRE: escalation.LadderConfig{Enabled: true, Channel: envChannel,
+			// The file's sre.timing.includeL4, for a deployment without one.
+			Timing: escalation.SRETiming{IncludeL4: os.Getenv("INCIDENT_ESCALATION_SRE_L4") == "true"}},
 	}
 	if path != "" {
 		loaded, err := escalation.LoadConfig(path)
@@ -1099,4 +1147,24 @@ func loadEscalationConfig(envChannel escalation.Channel) (escalation.Config, err
 		cfg.Enabled = on
 	}
 	return cfg, nil
+}
+
+// resolverTeams merges the two ladders' team keys into the one resolver both
+// ladders share: the CRE section names the ABTs, the Americas team and the
+// heads; the SRE section names the SRE teams. Aliases from either apply to
+// both, since an assignment group means the same team whichever ladder asks.
+func resolverTeams(cre, sre escalation.LadderConfig) escalation.TeamKeys {
+	teams := cre.Teams
+	teams.SRE = sre.Teams.ABTs
+	if len(sre.Teams.Aliases) > 0 {
+		merged := make(map[string]string, len(cre.Teams.Aliases)+len(sre.Teams.Aliases))
+		for k, v := range cre.Teams.Aliases {
+			merged[k] = v
+		}
+		for k, v := range sre.Teams.Aliases {
+			merged[k] = v
+		}
+		teams.Aliases = merged
+	}
+	return teams
 }

@@ -317,6 +317,70 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   `INCIDENT_ESCALATION_SSML=true`. No `<speak>` root: in TwiML, `<Say>` is
   the root.
 
+### The SRE ladder (`sre.go`, `teamschedule_sre.go`)
+
+There are two ladders, and **one engine per ladder**: `cmd/server/main.go`
+starts a CRE engine and an SRE engine (`EngineConfig.Kind`), each with its own
+channel, its own consumer group (`INCIDENT_ESCALATION_CONSUMER_GROUP`,
+`INCIDENT_ESCALATION_SRE_CONSUMER_GROUP`) and its own Redis namespace
+(`Store.ForLadder` -- the CRE ladder keeps the original keys, so ladders stored
+before this existed are still found). One engine per ladder because **a P0 CRE
+incident climbs both at once**: sharing one namespace would make the second
+SETNX look like a redelivery, and sharing one wake index would let each tick
+place the other ladder's calls over its own channel. Which engine claims an
+incident is `Engine.claims`:
+
+    CRE engine  every incident not assigned to an SRE team
+    SRE engine  every incident assigned to an SRE team, whatever its priority,
+                AND a CRE incident at a priority in sre.trigger.crePriorities
+                (default [P0]), including one elevated to it later
+
+An incident is an SRE team's when its assignment group (after
+`sre.teams.aliases`) is in `sre.teams.abts`; with no list configured, the Team
+Schedule catalogue's team `family` answers (`TeamScheduleResolver.LadderFor`).
+
+    LEVEL_0  L1 support   at once
+    LEVEL_1  L2 support   +interval (5m)
+    LEVEL_2  L3 support   +interval
+    LEVEL_3  L4 support   +interval, only with sre.timing.includeL4 (NOT CONFIRMED)
+
+**One call, one person per rung**, the same clock for every priority, and **no
+priority gate** -- `PolicyFor` gates only the CRE ladder on priority; an SRE
+incident at PLANNING still gets its clock. The clock is `sre.timing`
+(`SRETiming.Policy`); without a file, `INCIDENT_ESCALATION_SRE_L4` still turns
+L4 on. A rung is whoever holds that **tier** on an SRE window at the trigger
+instant (on-duty `tier`, else the window's own), picked in this order: the
+incident's own SRE team; then the zone whose L1 block is live -- weekdays
+12:00-15:00 IST the TZ1 and TZ2 escalation windows are both live, and the SRE
+team confirmed only one person is called; then `sre.teams.abts` order; then
+email. The rota has no L4 tier, so L4 is the lead of the answering team -- the
+incident's own, or for a CRE P0 the team of whoever took L1. An assumption.
+
+**Stops on**: `incident.assigned` (an engineer set as the assignee, published
+by entity-service) or `incident.acknowledged` (leaving NEW). A public comment
+does **not** stop an SRE ladder -- it may be a third party triaging -- and an
+assignee does not stop a CRE one (the engine's `Kind` decides; there is no
+per-plan check). An elevation never restarts an SRE team's ladder: its clock
+does not depend on priority. The voice message and card say "assign the
+incident to yourself", and the rule is reported as `SRE_TIERS`.
+
+**Configuration** is the file's `sre:` section, the same shape as `cre:` plus
+`trigger.crePriorities`, `timing` and `teams.abts`/`teams.aliases`. Each
+ladder's own keys are refused on the other (a `timing:` under `cre:` is an
+error, not ignored), and a team in both `cre.teams.abts` and `sre.teams.abts` is
+an error -- its lead would still be called on every CRE ladder's
+`all_team_leads` rung.
+
+**Numbers**: the rota holds none. `INCIDENT_ESCALATION_PHONES` (JSON, e-mail ->
+E.164) or `INCIDENT_ESCALATION_TEST_CALL_TO` (every call to one number) fill
+them through `TeamScheduleResolver.WithPhoneBook`. A chat-only ladder needs
+neither.
+
+**Not on this branch**: the alert service's side of the handoff. The upstream
+`sre-alert-ingestion-service` does not create CSM incidents at all today, so
+nothing yet sets an SRE assignment group on an alert-born incident; the SRE
+ladder runs for any incident assigned to an SRE team however it got there.
+
 **Wiring** (`cmd/server/main.go`): inside the Redis block, started only when
 the ladder has somebody to resolve rungs from (`escalationStartProblem`): the
 Team Schedule, with `INCIDENT_ESCALATION_RESOLVER=team-schedule` and

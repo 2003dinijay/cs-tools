@@ -485,3 +485,40 @@ func TestChatNotifier_CardCarriesTheClock(t *testing.T) {
 		t.Errorf("the final rung claims it escalates to %q in %q", last.NextRung, last.NextIn)
 	}
 }
+
+// Each rung's card quotes the call's own message, in the words a reader can
+// check against what the callee hears. The card always carries the plain form:
+// SSML is markup for the telephony provider, and a card showing it would be
+// quoting the wire format rather than the message.
+func TestChatNotifier_QuotesTheVoiceMessage(t *testing.T) {
+	chat := &fakeChat{}
+	e := chatEngine(t, chat, newMemStore(), &fakeNotes{})
+	e.notifiers = []notifier{chatNotifier{chat: chat, links: fakeLinks{}, defaultProduct: "WSO2 API Manager"}}
+
+	at := ist(2026, 9, 9, 10, 0)
+	if err := e.Handle(context.Background(), createdEvent(t, "CRITICAL", at)); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Tick(context.Background(), at.Add(7*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.posted) == 0 {
+		t.Fatalf("no card posted")
+	}
+
+	got := chat.posted[0].VoiceScript
+	trig := Trigger{Number: "INC0012345", Priority: "CRITICAL", Kind: TriggerNewIncident}
+	if !strings.HasPrefix(got, "WSO2 Support Alert.") {
+		t.Errorf("voice script = %q; want it to open the way the call does", got)
+	}
+	if !strings.Contains(got, trig.instruction(false)) {
+		t.Errorf("voice script = %q; want it to carry the instruction the call gives", got)
+	}
+	// The plain form spells the reference out so a listener can write it down.
+	if !strings.Contains(got, "I N C") {
+		t.Errorf("voice script = %q; want the reference spelled out, as the plain call speaks it", got)
+	}
+	if strings.Contains(got, "<speak") || strings.Contains(got, "<say-as") {
+		t.Errorf("voice script = %q; want the spoken words, not the SSML wire format", got)
+	}
+}

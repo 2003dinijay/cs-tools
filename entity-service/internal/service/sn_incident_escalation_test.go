@@ -110,3 +110,27 @@ func TestIncidentPriorityElevation_ReturnsBothValues(t *testing.T) {
 		t.Fatalf("got %q -> %q, want MODERATE -> CRITICAL", oldP, newP)
 	}
 }
+
+func TestIncidentAssignment_OnlyOnANewAssignee(t *testing.T) {
+	ana, ben := &domain.EntityRef{ID: "a", Name: "Ana"}, &domain.EntityRef{ID: "b", Name: "Ben"}
+	cases := []struct {
+		name          string
+		before, after *domain.EntityRef
+		want          bool
+	}{
+		{"first assignee", nil, ana, true},
+		{"reassigned", ana, ben, true},
+		{"unchanged", ana, &domain.EntityRef{ID: "a", Name: "Ana"}, false},
+		{"cleared", ana, nil, false},
+		{"empty id", nil, &domain.EntityRef{}, false},
+	}
+	for _, c := range cases {
+		got, ok := incidentAssignment(domain.IncidentView{AssignedTo: c.before}, domain.IncidentView{AssignedTo: c.after})
+		if ok != c.want {
+			t.Errorf("%s: ok = %v, want %v", c.name, ok, c.want)
+		}
+		if ok && got.ID != c.after.ID {
+			t.Errorf("%s: assignee = %+v", c.name, got)
+		}
+	}
+}

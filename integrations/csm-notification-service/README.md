@@ -292,6 +292,33 @@ go run ./cmd/escalation-local -priority P0 -live -to +9477xxxxxxx -ssml \
     -cancel-after 10s
 ```
 
+### Testing a ladder against the local Team Schedule
+
+`scripts/csm-compose/trigger-sre-escalation.sh` runs the real engine against the
+local stack's rota and shows who each rung reaches. By default nothing leaves the
+machine: it runs on the `log` channel, which prints who each rung would reach
+and contacts nobody, so no Chat space, webhook or Twilio account is needed.
+
+```bash
+scripts/csm-compose/trigger-sre-escalation.sh                         # apollo (SRE), HIGH, logged
+scripts/csm-compose/trigger-sre-escalation.sh -p all -m 200ms         # every priority, fast
+scripts/csm-compose/trigger-sre-escalation.sh -t castor -p P0 -l both # a CRE P0: both ladders
+scripts/csm-compose/trigger-sre-escalation.sh -c 3 -o chat            # post to the space instead
+```
+
+An SRE team climbs the SRE ladder, the same clock for every priority, so
+`-p all` on one shows five identical plans; a CRE team's clock is set by the
+priority. A P0 on a CRE team climbs both ladders; `-l both` runs the CRE
+one and then the SRE one, so each can be read on its own (`-l sre` alone, on a
+CRE team below P0, schedules nothing -- that is the rule). `-o chat` needs
+`GOOGLE_CHAT_SPACES` (exported, or in the `.env` `ESCALATION_ENV_FILE` points
+at) and masks names on the cards; the default log shows real names, since it
+stays on the terminal. It needs entity-service, mock-oidc and Redis up, and runs
+the repo's gateway shim in front of entity-service for the run, because
+entity-service reads the caller from `x-jwt-assertion`, which only the Choreo
+gateway adds. The local seed rosters SRE engineers on L1 and L2 only, so L3
+reports NO_RECIPIENTS. `-h` lists every option.
+
 A ladder outlives the process that started it, so an interrupted run can leave
 one in Redis that the next run resumes and keeps dialling. The tool retires its
 own on exit, but `go run` does not forward signals to the child it spawns, so an

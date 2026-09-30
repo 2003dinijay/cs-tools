@@ -121,6 +121,10 @@ type RoutingContext struct {
 	// Zero when a Resolver does not need it -- StaticResolver and
 	// RosterResolver both answer from configuration and never read it.
 	At time.Time
+	// Ladder is which ladder this incident climbs, CRE (the zero value) or
+	// SRE. Set by the engine from a LadderClassifier before the plan is
+	// built; see sre.go.
+	Ladder Ladder
 }
 
 // HasNotificationLevel reports whether LEVEL_0 exists for this incident.
@@ -144,6 +148,11 @@ type RoutingContext struct {
 // level for both business units; only the recipients differ, which is the
 // Resolver's concern rather than this one's.
 func (rc RoutingContext) HasNotificationLevel() bool {
+	// The SRE ladder's LEVEL_0 is L1 support, the first responder on every
+	// shift, not a rotation-only notification level.
+	if rc.Ladder == LadderSRE {
+		return true
+	}
 	if !rc.Shift.IsRotation() {
 		return false
 	}
@@ -216,6 +225,11 @@ func (rc RoutingContext) Rule() string {
 	// is worse than reporting none, so a known id always wins.
 	if rc.RuleID != "" {
 		return rc.RuleID
+	}
+	// Section 5.0's table is the CRE ladder's. An SRE incident routes by
+	// on-call tier, which has one path and so one name.
+	if rc.Ladder == LadderSRE {
+		return "SRE_TIERS"
 	}
 	lkRotation := rc.Shift == ShiftLKMorning || rc.Shift == ShiftLKEvening || rc.Shift == ShiftLKWeekend
 

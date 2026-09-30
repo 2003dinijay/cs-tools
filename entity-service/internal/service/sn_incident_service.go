@@ -1609,6 +1609,40 @@ func (s *snIncidentService) publishEscalationSignals(
 			s.publishIncidentPriorityElevated(ctx, req.ID, oldP, newP, after)
 		}
 	}
+	if req.AssignedEngineerID != nil {
+		if assignee, ok := incidentAssignment(before, after); ok {
+			s.publishIncidentAssigned(ctx, req.ID, assignee)
+		}
+	}
+}
+
+// incidentAssignment reports a genuine change of assignee to someone. Clearing
+// the assignee, or re-sending the one already set, acknowledges nothing.
+func incidentAssignment(before, after domain.IncidentView) (domain.EntityRef, bool) {
+	if after.AssignedTo == nil || after.AssignedTo.ID == "" {
+		return domain.EntityRef{}, false
+	}
+	if before.AssignedTo != nil && before.AssignedTo.ID == after.AssignedTo.ID {
+		return domain.EntityRef{}, false
+	}
+	return *after.AssignedTo, true
+}
+
+// publishIncidentAssigned emits the SRE escalation ladder's stop signal: an
+// engineer has taken the incident.
+func (s *snIncidentService) publishIncidentAssigned(ctx context.Context, incidentID string, assignee domain.EntityRef) {
+	ctx, cancel := context.WithTimeout(ctx, publishIncidentEscalationSignalTimeout)
+	defer cancel()
+
+	payload, err := json.Marshal(events.IncidentAssignedPayload{AssigneeID: assignee.ID, AssigneeName: assignee.Name})
+	if err != nil {
+		slog.ErrorContext(ctx, "sn update incident: encode incident.assigned payload failed", "incidentId", incidentID, "error", err)
+		return
+	}
+	if err := s.publisher.Publish(ctx, events.TypeIncidentAssigned, incidentID, payload); err != nil {
+		// Not logging err itself, same reasoning as publishIncidentCreated.
+		slog.ErrorContext(ctx, "sn update incident: publish incident.assigned failed", "incidentId", incidentID)
+	}
 }
 
 // incidentUpdateTouchesPriority reports whether an update could change the
@@ -1627,7 +1661,7 @@ func incidentUpdateTouchesPriority(req domain.UpdateIncidentRequest) bool {
 // stop a call escalation, and so whether the pre-PATCH baseline is worth
 // fetching.
 func incidentUpdateTouchesEscalation(req domain.UpdateIncidentRequest) bool {
-	return req.State != nil || incidentUpdateTouchesPriority(req)
+	return req.State != nil || incidentUpdateTouchesPriority(req) || req.AssignedEngineerID != nil
 }
 
 // incidentStateTransition reports a genuine move out of NEW. Leaving NEW is

@@ -140,15 +140,34 @@ func (s LadderState) ReachedLevel() string {
 // Store is the Redis-backed ladder store and wake index.
 type Store struct {
 	rdb *redis.Client
+	// wake and state are this store's own keys. The CRE ladder keeps the
+	// original ones, so ladders stored before the SRE ladder existed are
+	// still found; see ForLadder.
+	wake, state string
 }
 
 // NewStore constructs a Store. Connecting is lazy, matching
 // slaengine.NewWakeIndex and every other lazy-connect client here.
 func NewStore(rdb *redis.Client) *Store {
-	return &Store{rdb: rdb}
+	return &Store{rdb: rdb, wake: wakeKey, state: statePrefix}
 }
 
-func stateKey(incidentID string) string { return statePrefix + incidentID }
+// ForLadder returns a store over the same Redis whose ladder state and wake
+// index belong to one ladder.
+//
+// A P0 incident climbs both ladders at once. Sharing one namespace would make
+// them one ladder -- the second SETNX would find the first one's state and
+// decide it was a redelivery -- and sharing one wake index would let each
+// engine's tick place the other's calls through its own channel. The call
+// history (MarkCalled) stays shared: somebody reached is reached.
+func (s *Store) ForLadder(l Ladder) *Store {
+	if l != LadderSRE {
+		return s
+	}
+	return &Store{rdb: s.rdb, wake: "incident:escalation:sre:wake", state: "incident:escalation:sre:state:"}
+}
+
+func (s *Store) stateKey(incidentID string) string { return s.state + incidentID }
 
 // Create stores a new ladder only if none is running for this incident, and
 // reports whether it actually created one.
@@ -162,7 +181,7 @@ func (s *Store) Create(ctx context.Context, incidentID string, st LadderState) (
 	if err != nil {
 		return false, fmt.Errorf("escalation: encode ladder state: %w", err)
 	}
-	return s.rdb.SetNX(ctx, stateKey(incidentID), body, stateTTL).Result()
+	return s.rdb.SetNX(ctx, s.stateKey(incidentID), body, stateTTL).Result()
 }
 
 // Save overwrites the ladder state unconditionally — used both to record a
@@ -172,14 +191,14 @@ func (s *Store) Save(ctx context.Context, incidentID string, st LadderState) err
 	if err != nil {
 		return fmt.Errorf("escalation: encode ladder state: %w", err)
 	}
-	return s.rdb.Set(ctx, stateKey(incidentID), body, stateTTL).Err()
+	return s.rdb.Set(ctx, s.stateKey(incidentID), body, stateTTL).Err()
 }
 
 // Get loads a ladder. The second return is false when no ladder is running for
 // this incident, which is a normal outcome, not an error — an acknowledgement
 // for an incident that never had a ladder is the common case.
 func (s *Store) Get(ctx context.Context, incidentID string) (LadderState, bool, error) {
-	body, err := s.rdb.Get(ctx, stateKey(incidentID)).Bytes()
+	body, err := s.rdb.Get(ctx, s.stateKey(incidentID)).Bytes()
 	if errors.Is(err, redis.Nil) {
 		return LadderState{}, false, nil
 	}
@@ -196,12 +215,12 @@ func (s *Store) Get(ctx context.Context, incidentID string) (LadderState, bool, 
 // Delete drops a ladder's state, once it has either run out or been
 // acknowledged and its work note written.
 func (s *Store) Delete(ctx context.Context, incidentID string) error {
-	return s.rdb.Del(ctx, stateKey(incidentID)).Err()
+	return s.rdb.Del(ctx, s.stateKey(incidentID)).Err()
 }
 
 // AddWake schedules call index at the given time.
 func (s *Store) AddWake(ctx context.Context, member string, at time.Time) error {
-	return s.rdb.ZAdd(ctx, wakeKey, redis.Z{Score: float64(at.Unix()), Member: member}).Err()
+	return s.rdb.ZAdd(ctx, s.wake, redis.Z{Score: float64(at.Unix()), Member: member}).Err()
 }
 
 // RemoveWakes drops the given members. Variadic so cancelling a ladder retires
@@ -214,13 +233,13 @@ func (s *Store) RemoveWakes(ctx context.Context, members ...string) error {
 	for i, m := range members {
 		args[i] = m
 	}
-	return s.rdb.ZRem(ctx, wakeKey, args...).Err()
+	return s.rdb.ZRem(ctx, s.wake, args...).Err()
 }
 
 // DueMembers returns every member whose due time has passed.
 func (s *Store) DueMembers(ctx context.Context, now time.Time) ([]string, error) {
 	return s.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
-		Key:     wakeKey,
+		Key:     s.wake,
 		Start:   0,
 		Stop:    now.Unix(),
 		ByScore: true,

@@ -118,6 +118,18 @@ type config struct {
 	sayVoice    string
 	keep        bool
 	cleanup     bool
+	sreL4       bool
+	ladder      string
+	realNames   bool
+}
+
+// kind is the ladder this run exercises. The service runs one engine per
+// ladder; this tool runs the one asked for.
+func (c config) ladderKind() escalation.Ladder {
+	if strings.EqualFold(c.ladder, "sre") {
+		return escalation.LadderSRE
+	}
+	return escalation.LadderCRE
 }
 
 func main() {
@@ -163,7 +175,7 @@ func run() error {
 	}
 
 	if cfg.cleanup {
-		return cleanupLocalLadders(ctx, escalation.NewStore(rdb), rdb)
+		return cleanupLocalLadders(ctx, escalation.NewStore(rdb).ForLadder(cfg.ladderKind()), rdb)
 	}
 
 	speaker := newSpeaker()
@@ -180,7 +192,7 @@ func run() error {
 	}
 	engine := escalation.NewEngine(
 		escalation.DefaultPolicy,
-		localResolver(to),
+		localResolver(to, cfg.realNames),
 		twilio,
 		localChatClient(cfg),
 		// Empty base: a local card carries no portal URL, which PortalLinks
@@ -189,7 +201,11 @@ func run() error {
 		escalation.NewStore(rdb),
 		nil, // no entity-service locally; the summary is printed here instead
 		cfg.chatProduct,
-		escalation.EngineConfig{CallSendingEnabled: true, UseSSML: cfg.ssml, Channel: channel},
+		escalation.EngineConfig{
+			CallSendingEnabled: true, UseSSML: cfg.ssml, Channel: channel,
+			Kind:   cfg.ladderKind(),
+			Ladder: escalation.LadderConfig{Timing: escalation.SRETiming{IncludeL4: cfg.sreL4}},
+		},
 	)
 
 	// The trigger instant decides the effective shift (the engine derives it
@@ -211,7 +227,7 @@ func run() error {
 		return fmt.Errorf("starting the ladder: %w", err)
 	}
 
-	st, found, err := escalation.NewStore(rdb).Get(ctx, cfg.incidentID)
+	st, found, err := escalation.NewStore(rdb).ForLadder(cfg.ladderKind()).Get(ctx, cfg.incidentID)
 	if err != nil {
 		return fmt.Errorf("reading the stored ladder: %w", err)
 	}
@@ -227,7 +243,7 @@ func run() error {
 		// live in a sorted set shared with every other ladder. Deleting the
 		// state alone would strand them there, rescanned on every tick, with
 		// nothing able to reclaim them afterwards.
-		if err := retireLadder(ctx, escalation.NewStore(rdb), cfg.incidentID); err != nil {
+		if err := retireLadder(ctx, escalation.NewStore(rdb).ForLadder(cfg.ladderKind()), cfg.incidentID); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not retire the over-cap ladder %s: %v\n", cfg.incidentID, err)
 		}
 		return fmt.Errorf("this plan is %d calls, more than --max-calls=%d; raise the cap or pick a shorter priority",
@@ -241,7 +257,7 @@ func run() error {
 	// out unless resumption is what is being tested.
 	if !cfg.keep {
 		defer func() {
-			if err := retireLadder(context.Background(), escalation.NewStore(rdb), cfg.incidentID); err != nil {
+			if err := retireLadder(context.Background(), escalation.NewStore(rdb).ForLadder(cfg.ladderKind()), cfg.incidentID); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not retire ladder %s: %v\n", cfg.incidentID, err)
 			}
 		}()
@@ -273,7 +289,7 @@ func parseFlags() config {
 	flag.DurationVar(&cfg.tick, "tick", 200*time.Millisecond, "how often the engine scans for due calls")
 	flag.DurationVar(&cfg.cancelAfter, "cancel-after", 0, "acknowledge this far into the run; 0 runs the whole ladder")
 	flag.StringVar(&cfg.cancelBy, "cancel-by", "both",
-		"how to acknowledge: both (a move out of NEW AND a public comment -- the only thing that actually stops a CRE ladder), comment, or status")
+		"how to acknowledge: both (a move out of NEW AND a public comment -- the only thing that actually stops a CRE ladder), comment, status, or assign (an engineer assigned -- what stops an SRE ladder)")
 	flag.StringVar(&cfg.cancelAt, "cancel-at", "",
 		"acknowledge once the ladder has called this rung, e.g. LEVEL_2; easier than timing -cancel-after by hand, and the two are mutually exclusive")
 	flag.IntVar(&cfg.maxCalls, "max-calls", 20, "refuse to run a plan larger than this")
@@ -287,6 +303,9 @@ func parseFlags() config {
 	flag.BoolVar(&cfg.showTwiML, "show-twiml", false, "print the TwiML document of each call (dry runs only)")
 	flag.BoolVar(&cfg.keep, "keep", false, "leave this run's ladder in Redis on exit, so a later run resumes it (for testing resumption)")
 	flag.BoolVar(&cfg.cleanup, "cleanup", false, "retire every ladder this tool has left in Redis, then exit")
+	flag.BoolVar(&cfg.sreL4, "sre-l4", false, "add the SRE ladder's unconfirmed fourth rung, L4 support")
+	flag.StringVar(&cfg.ladder, "ladder", "cre", "which ladder to run: cre, or sre (an SRE team's incident, or a P0 CRE one)")
+	flag.BoolVar(&cfg.realNames, "real-names", false, "show rota-resolved people by name on cards and output; off shows them by rung, since the local rota can hold real staff")
 	flag.Parse()
 	return cfg
 }
@@ -392,7 +411,38 @@ func localChatClient(cfg config) *notifications.GoogleChatClient {
 // Remember that the rung model the schedule resolver implements is still an
 // assumption. A run against it exercises a complete, valid flow, which is the
 // point; it does not confirm the flow is right.
-func localResolver(to string) escalation.Resolver {
+func localResolver(to string, realNames bool) escalation.Resolver {
+	r := teamScheduleOrRoster(to)
+	if realNames {
+		return r
+	}
+	return maskedResolver{inner: r}
+}
+
+// maskedResolver shows a rota-resolved person by their rung instead of their
+// name. The local stack's rota can hold real staff imported from the roster
+// sheet, and a card posted to a Chat space would carry their names out of
+// this machine; -real-names opts back in. It forwards classification, or
+// every incident would fall back to the CRE ladder.
+type maskedResolver struct{ inner escalation.Resolver }
+
+func (m maskedResolver) Resolve(ctx context.Context, level escalation.Level, rc escalation.RoutingContext) ([]escalation.Recipient, error) {
+	people, err := m.inner.Resolve(ctx, level, rc)
+	for i := range people {
+		people[i].Name = fmt.Sprintf("%s #%d", level.RoleIn(rc.Ladder), i+1)
+		people[i].Email = fmt.Sprintf("%s-%d@local.invalid", strings.ToLower(level.String()), i+1)
+	}
+	return people, err
+}
+
+func (m maskedResolver) LadderFor(ctx context.Context, rc escalation.RoutingContext) (escalation.Ladder, error) {
+	if c, ok := m.inner.(escalation.LadderClassifier); ok {
+		return c.LadderFor(ctx, rc)
+	}
+	return escalation.LadderCRE, nil
+}
+
+func teamScheduleOrRoster(to string) escalation.Resolver {
 	base := os.Getenv("CUSTOMER_ENTITY_BASE_URL")
 	if base == "" {
 		return ruleAwareRoster{
@@ -412,7 +462,9 @@ func localResolver(to string) escalation.Resolver {
 		}),
 		localTeamKeys(),
 		nil,
-	)
+	// Every person the rota names is rung on the one number under test (or
+	// the stub), never their own: this reads real staff.
+	).WithPhoneBook(escalation.PhoneBook{TestCallTo: to})
 }
 
 // localTeamKeys mirrors the deployed configuration's own teams block, so a dry
@@ -429,6 +481,10 @@ func localTeamKeys() escalation.TeamKeys {
 		// the Level 2 lead pool -- and never reached rigel or sirius at all.
 		abts = []string{"atlas", "castor", "draco", "phoenix", "rigel", "sirius", "vega"}
 	}
+	sre := splitCommaEnv("INCIDENT_ESCALATION_SRE_TEAMS")
+	if len(sre) == 0 {
+		sre = []string{"apollo", "artemis"}
+	}
 	americas := os.Getenv("INCIDENT_ESCALATION_AMERICAS_TEAM")
 	if americas == "" {
 		americas = "americas"
@@ -437,6 +493,7 @@ func localTeamKeys() escalation.TeamKeys {
 		ABTs:       abts,
 		Americas:   americas,
 		Leadership: os.Getenv("INCIDENT_ESCALATION_LEADERSHIP_TEAM"),
+		SRE:        sre,
 	}
 }
 
@@ -619,6 +676,11 @@ func startRecord(cfg config, at time.Time) eventbus.Record {
 // public comment an elevation's voice message instructs, or the move out of
 // NEW a new incident's does.
 func cancelRecord(cfg config) eventbus.Record {
+	if cfg.cancelBy == "assign" {
+		return envelope(cfg.incidentID, events.TypeIncidentAssigned, events.IncidentAssignedPayload{
+			AssigneeID: "local-engineer", AssigneeName: "local engineer",
+		})
+	}
 	if cfg.cancelBy == "status" {
 		return statusRecord(cfg)
 	}
@@ -647,6 +709,10 @@ func commentRecord(cfg config) eventbus.Record {
 // to acknowledge actually acknowledges.
 func cancelRecords(cfg config) []eventbus.Record {
 	switch cfg.cancelBy {
+	case "assign":
+		// An engineer assigned: what stops an SRE ladder. A CRE ladder
+		// ignores it.
+		return []eventbus.Record{cancelRecord(cfg)}
 	case "status":
 		return []eventbus.Record{statusRecord(cfg)}
 	case "comment":
@@ -690,7 +756,7 @@ func envelope(entityID string, t events.Type, payload any) eventbus.Record {
 // acknowledgement part-way when asked.
 func runTicks(ctx context.Context, cfg config, engine *escalation.Engine, rdb *redis.Client, trigger time.Time, rec *callRecorder, plan escalation.Plan, runStart time.Time) error {
 	fmt.Printf("\n  running (ctrl-c to stop)...\n\n")
-	store := escalation.NewStore(rdb)
+	store := escalation.NewStore(rdb).ForLadder(cfg.ladderKind())
 	ticker := time.NewTicker(cfg.tick)
 	defer ticker.Stop()
 
@@ -792,6 +858,9 @@ func summarise(ctx context.Context, cfg config, store *escalation.Store, rec *ca
 		reason = "Public comment added"
 		if cfg.cancelBy == "status" {
 			reason = "Acknowledged"
+		}
+		if cfg.cancelBy == "assign" {
+			reason = "Assignee set"
 		}
 	}
 	if st, found, err := store.Get(ctx, cfg.incidentID); err == nil && found {

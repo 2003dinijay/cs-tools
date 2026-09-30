@@ -49,6 +49,8 @@ func TestValidate_Valid(t *testing.T) {
 		"incident.priority_elevated without a title": {"INC-1", TypeIncidentPriorityElevated, `{"oldPriority":"MODERATE","newPriority":"HIGH"}`},
 		"incident.comment_added (public)":            {"INC-1", TypeIncidentCommentAdded, `{"commentId":"c-1","isPublic":true}`},
 		"incident.comment_added (work note)":         {"INC-1", TypeIncidentCommentAdded, `{"commentId":"c-1","isPublic":false}`},
+		"incident.assigned":                          {"INC-1", TypeIncidentAssigned, `{"assigneeId":"u-1","assigneeName":"Ana"}`},
+		"incident.assigned without a name":           {"INC-1", TypeIncidentAssigned, `{"assigneeId":"u-1"}`},
 		"sla.tier_reached":                           {"CASE-1", TypeSLATierReached, `{"caseId":"CASE-1","clockType":"response","tier":"50"}`},
 		"project_contact.invited":                    {"a0e000000000001AAA", TypeProjectContactInvited, `{"membershipSfId":"a0e000000000001AAA","contactSfId":"003000000000001AAA","email":"jane@acme.com","givenName":"Jane","familyName":"Doe","projectName":"Acme Cloud","projectKey":"ACMECLOUD","roles":["Admin","Portal user"],"isIntegrationUser":false,"type":"OWN CONTACT"}`},
 		"project_contact.invited resend":             {"a0e000000000001AAA", TypeProjectContactInvited, `{"membershipSfId":"a0e000000000001AAA","contactSfId":"003000000000001AAA","email":"jane@acme.com","givenName":"Jane","familyName":"Doe","projectName":"Acme Cloud","projectKey":"ACMECLOUD","roles":["Admin"],"isIntegrationUser":false,"type":"OWN CONTACT","isResend":true}`},
@@ -125,6 +127,8 @@ func TestValidate_RequiresFields(t *testing.T) {
 		"incident.priority_elevated without newP":                  {"INC-1", TypeIncidentPriorityElevated, `{"oldPriority":"MODERATE","title":"t"}`},
 		"incident.priority_elevated without oldP":                  {"INC-1", TypeIncidentPriorityElevated, `{"newPriority":"HIGH","title":"t"}`},
 		"incident.comment_added without commentId":                 {"INC-1", TypeIncidentCommentAdded, `{"isPublic":true}`},
+		"incident.assigned without assigneeId":                     {"INC-1", TypeIncidentAssigned, `{"assigneeName":"Ana"}`},
+		"incident.assigned without an incident":                    {"", TypeIncidentAssigned, `{"assigneeId":"u-1"}`},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

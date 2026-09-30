@@ -1028,7 +1028,14 @@ easy to wire up for real once both exist.
   `incident.created`, from the post-PATCH view, plus `ElevatedAt` (`now`,
   the instant the ladder's offsets run from). Neither carries an actor:
   `UpdateIncidentRequest` has none and this service cannot resolve who
-  performed an update.
+  performed an update. A third signal, **`incident.assigned`**
+  (`publishIncidentAssigned`), goes out when `AssignedEngineerID` genuinely
+  changes the assignee to someone (`incidentAssignment`: not on a re-send of
+  the same assignee, not when it is cleared), carrying the assignee's id and
+  display name from the post-PATCH view. It is the SRE escalation ladder's
+  stop signal ("assignee set on incident"); the CRE ladder ignores it. It
+  shares the pre-PATCH baseline fetch, which an `AssignedEngineerID` PATCH now
+  also triggers.
 - **`snCommentSearchService.CreateComment`** (the reference-generic comment
   service, ServiceNow branch only) publishes `incident.comment_added` via
   `publishIncidentCommentAdded` whenever a comment lands on an
