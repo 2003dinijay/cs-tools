@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS alertintegration.incidents_processed (
   AND cosmosdb_cell_level_timestamp_tombstones = true
   AND cosmosdb_cell_level_timetolive = true;
 
--- On a pre-existing incidents_processed table, run once (not part of routine `make migrate`-style setup); legacy rows read back version as 0, which is correct.
+-- On a pre-existing incidents_processed table, run once (not part of routine `make migrate`-style setup); the server backfills version=0 on every existing row itself at startup (IncidentRepo.BackfillVersions), since a NULL column never satisfies casUpdate's "IF version = 0" equality check.
 --   ALTER TABLE alertintegration.incidents_processed ADD version bigint;
 
 -- Maintained index of incidents still owing CSM/Chat delivery work, so RetrySweep never has to scan all of incidents_processed.

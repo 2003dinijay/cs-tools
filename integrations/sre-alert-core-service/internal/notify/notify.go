@@ -212,9 +212,9 @@ func (n *Notifier) resolveServiceID(ctx context.Context, label string) (string, 
 	if id, ok := n.services.get(label, time.Now()); ok {
 		return id, nil
 	}
-	// Concurrent workers resolving the same unresolved label collapse into one CSM search.
-	v, err, _ := n.serviceResolveGroup.Do(label, func() (any, error) {
-		id, err := n.csm.SearchServiceID(ctx, label)
+	// Collapses concurrent same-label lookups into one CSM search on its own context (not any single caller's), so one caller's cancellation can't fail it for the others still waiting.
+	resultCh := n.serviceResolveGroup.DoChan(label, func() (any, error) {
+		id, err := n.csm.SearchServiceID(context.WithoutCancel(ctx), label)
 		if err != nil {
 			return "", err
 		}
@@ -223,14 +223,19 @@ func (n *Notifier) resolveServiceID(ctx context.Context, label string) (string, 
 		}
 		return id, nil
 	})
-	if err != nil {
-		return "", err
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-resultCh:
+		if res.Err != nil {
+			return "", res.Err
+		}
+		id := res.Val.(string)
+		if id == "" {
+			return n.unknownServiceID, nil
+		}
+		return id, nil
 	}
-	id := v.(string)
-	if id == "" {
-		return n.unknownServiceID, nil
-	}
-	return id, nil
 }
 
 // maxEnvironmentLen matches ServiceNow's custom incident.u_enviroment field's max_length.

@@ -104,7 +104,7 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
-// newBreaker excludes a non-retryable 4xx (e.g. "no such incident") from tripping the breaker, since it's an invalid request, not evidence CSM is down.
+// newBreaker excludes a non-retryable 4xx and genuine caller cancellation from tripping the breaker, but not a bare http.Client timeout, which must count as a real CSM-is-down failure.
 func newBreaker() *gobreaker.CircuitBreaker[[]byte] {
 	return gobreaker.NewCircuitBreaker[[]byte](gobreaker.Settings{
 		Name:    "csm",
@@ -113,7 +113,7 @@ func newBreaker() *gobreaker.CircuitBreaker[[]byte] {
 			return counts.ConsecutiveFailures >= breakerConsecutiveFailures
 		},
 		IsExcluded: func(err error) bool {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(err, errCallerDone) {
 				return true
 			}
 			var apiErr *apierror.Error
@@ -124,6 +124,9 @@ func newBreaker() *gobreaker.CircuitBreaker[[]byte] {
 		},
 	})
 }
+
+// errCallerDone marks a failure as caused by the caller's own ctx, not an http.Client-level timeout.
+var errCallerDone = errors.New("csm: caller context canceled or deadline exceeded")
 
 // do executes an authenticated request through the circuit breaker (caller owns the returned body slice); when open it returns gobreaker.ErrOpenState with no network call, which callers already treat as retryable.
 func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]byte, error) {
@@ -146,7 +149,7 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 
 		resp, err := c.http.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("csm: %s %s: %w", method, path, err)
+			return nil, wrapCallerDone(ctx, fmt.Errorf("csm: %s %s: %w", method, path, err))
 		}
 		defer resp.Body.Close()
 
@@ -154,18 +157,26 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 			const maxErrBody = 256
 			excerpt, err := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
 			if err != nil {
-				return nil, fmt.Errorf("csm: read error response body: %w", err)
+				return nil, wrapCallerDone(ctx, fmt.Errorf("csm: read error response body: %w", err))
 			}
 			return nil, &apierror.Error{StatusCode: resp.StatusCode, Body: string(excerpt)}
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("csm: read response body: %w", err)
+			return nil, wrapCallerDone(ctx, fmt.Errorf("csm: read response body: %w", err))
 		}
 
 		return respBody, nil
 	})
+}
+
+// wrapCallerDone wraps err with errCallerDone only if ctx itself is done, so an http.Client timeout stays a plain error (counts as a breaker failure) while genuine caller cancellation is excluded.
+func wrapCallerDone(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%w: %w", errCallerDone, err)
+	}
+	return err
 }
 
 // httpsOnlyTransport blocks non-HTTPS requests since this client always carries a secret or bearer token.

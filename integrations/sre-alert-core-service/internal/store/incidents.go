@@ -389,6 +389,31 @@ func (r *IncidentRepo) ListPending(ctx context.Context) ([]model.Incident, error
 	return pending, nil
 }
 
+// BackfillVersions sets version=0 on any pre-existing row where it's still NULL (e.g. right after `ALTER TABLE ... ADD version`), since NULL never satisfies casUpdate's "IF version = 0" equality check and would otherwise leave that row permanently stuck returning ErrStaleWrite. Idempotent: an already-backfilled row is skipped.
+func (r *IncidentRepo) BackfillVersions(ctx context.Context) error {
+	stmt, names := qb.Select("incidents_processed").Columns("fingerprint", "version").ToCql()
+	var rows []struct {
+		Fingerprint string `db:"fingerprint"`
+		Version     *int64 `db:"version"`
+	}
+	if err := r.session.Query(stmt, names).WithContext(ctx).SelectRelease(&rows); err != nil {
+		return fmt.Errorf("backfill versions: list incidents: %w", err)
+	}
+	for _, row := range rows {
+		if row.Version != nil {
+			continue
+		}
+		upd, updNames := qb.Update("incidents_processed").Set("version").Where(qb.Eq("fingerprint")).ToCql()
+		if err := r.session.Query(upd, updNames).WithContext(ctx).BindMap(qb.M{
+			"fingerprint": row.Fingerprint,
+			"version":     int64(0),
+		}).ExecRelease(); err != nil {
+			return fmt.Errorf("backfill versions: set version for %s: %w", row.Fingerprint, err)
+		}
+	}
+	return nil
+}
+
 // BackfillPendingIndex populates incidents_pending for rows that owe delivery before this index existed (one-time cost at startup).
 func (r *IncidentRepo) BackfillPendingIndex(ctx context.Context) error {
 	stmt, names := qb.Select("incidents_processed").

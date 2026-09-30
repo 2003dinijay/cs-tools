@@ -79,6 +79,10 @@ func main() {
 		logger.Error("failed to initialise incident repository", "error", err)
 		os.Exit(1)
 	}
+	// Backfill version=0 on any pre-existing NULL row before anything mutates incidents_processed, or casUpdate's "IF version = 0" never matches.
+	if err := incidents.BackfillVersions(context.Background()); err != nil {
+		logger.Warn("failed to backfill incident versions, will retry on next restart", "error", err)
+	}
 	// Backfill pending index for pre-existing rows; startup continues if this fails as it will retry on next restart.
 	if err := incidents.BackfillPendingIndex(context.Background()); err != nil {
 		logger.Warn("failed to backfill pending incident index, will retry on next restart", "error", err)
