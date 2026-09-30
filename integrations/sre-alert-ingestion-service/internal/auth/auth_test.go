@@ -17,12 +17,19 @@
 package auth
 
 import (
+	"io"
+	"log/slog"
 	"net/http/httptest"
 	"testing"
 )
 
+// discard keeps Audit's log lines out of the test output.
+func discard() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
 func TestNew_None(t *testing.T) {
-	a, err := New("none")
+	a, err := New(ModeNone, nil, nil, discard())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -32,7 +39,33 @@ func TestNew_None(t *testing.T) {
 }
 
 func TestNew_UnknownModeFails(t *testing.T) {
-	if _, err := New("basic"); err == nil {
+	if _, err := New("basic", nil, nil, discard()); err == nil {
 		t.Error("unknown mode should fail at startup")
+	}
+}
+
+func TestNew_APIKeyRequiresEveryVendor(t *testing.T) {
+	_, err := New(ModeAPIKey, map[string]string{"aws": "k"}, []string{"aws", "datadog"}, discard())
+	if err == nil {
+		t.Fatal("apikey mode should refuse to start with datadog unprotected")
+	}
+}
+
+func TestNew_AuditAllowsPartialConfig(t *testing.T) {
+	a, err := New(ModeAudit, map[string]string{"aws": "k"}, []string{"aws", "datadog"}, discard())
+	if err != nil {
+		t.Fatalf("audit mode should start with a partial config: %v", err)
+	}
+	// The whole point of audit: the unconfigured vendor still gets through.
+	if err := a.Authenticate(httptest.NewRequest("POST", "/", nil), "datadog"); err != nil {
+		t.Errorf("audit must not reject, got %v", err)
+	}
+}
+
+func TestNew_RejectsKeyForUnknownVendor(t *testing.T) {
+	for _, mode := range []string{ModeAudit, ModeAPIKey} {
+		if _, err := New(mode, map[string]string{"awz": "k"}, []string{"aws"}, discard()); err == nil {
+			t.Errorf("%s: a typo'd vendor name should fail at startup", mode)
+		}
 	}
 }

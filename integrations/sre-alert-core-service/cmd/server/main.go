@@ -31,6 +31,7 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/gocql/gocql"
 
+	"alert-core-service/internal/auth"
 	"alert-core-service/internal/cassandra"
 	"alert-core-service/internal/config"
 	"alert-core-service/internal/csm"
@@ -157,7 +158,12 @@ func main() {
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("/alertz", h.ServeAlert)
+	// The endpoint is Public, so WAKE_API_KEY is its only protection.
+	wakeKey := os.Getenv("WAKE_API_KEY")
+	if wakeKey == "" {
+		logger.Warn("WAKE_API_KEY is empty: the wake endpoint is unauthenticated")
+	}
+	mux.Handle("/alert", auth.RequireKey(wakeKey, base.With("component", "auth"), http.HandlerFunc(h.ServeAlert)))
 
 	port := os.Getenv("PORT")
 	if port == "" {
