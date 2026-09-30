@@ -230,6 +230,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 
 	var salesforceEventHandler *handler.SalesforceEventHandler
+	// salesforcePartnerHandler is set when the partner refresh is on.
+	var salesforcePartnerHandler *handler.SalesforcePartnerHandler
 	// membershipRegistrationHandler and projectContactSyncHandler both need
 	// the very same membership-ingest-enabled SalesforceEventService this
 	// block builds, so all three are wired together rather than side by side.
@@ -261,21 +263,70 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// repository serves EnsureAccount's read even while the Account
 		// branch (the write side) is off, and the salesforce_ingest_state
 		// ledger is where every non-membership family records its version.
+		projectIngestRepo := repository.NewSalesforceProjectRepository(db)
 		ingestSupport := service.SalesforceIngestSupport{
 			Accounts: accountRepo,
 			States:   repository.NewSalesforceIngestStateRepository(db),
+			Projects: projectIngestRepo,
 		}
-		// The Opportunity branch (sf_opportunity + derived line items) is
-		// attached to whichever service variant is built below; off, the
-		// envelopes are acknowledged and ignored.
+		// The Project branch is update-only unless its insert switch is on
+		// too (csm-sync-service still inserts project rows until cutover).
+		withProjectIngest := func(svc service.SalesforceEventService) service.SalesforceEventService {
+			if !cfg.CSMMigrationSalesforceProjectIngestEnabled {
+				return svc
+			}
+			return service.WithProjectIngest(svc, service.ProjectIngest{
+				Projects:      projectIngestRepo,
+				SalesEntity:   salesEntityClient,
+				InsertEnabled: cfg.CSMMigrationSalesforceProjectInsertEnabled,
+			})
+		}
+		// The Opportunity branch (sf_opportunity + derived line items) and
+		// the Project branch are attached to whichever service variant is
+		// built below; off, the envelopes are acknowledged and ignored.
 		withOpportunityIngest := func(svc service.SalesforceEventService) service.SalesforceEventService {
+			svc = withProjectIngest(svc)
 			if !cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
 				return svc
 			}
-			return service.WithOpportunityIngest(svc, service.OpportunityIngest{
+			svc = service.WithOpportunityIngest(svc, service.OpportunityIngest{
 				Opportunities: repository.NewSalesforceOpportunityRepository(db),
 				SalesEntity:   salesEntityClient,
 			})
+			// Linked_Opportunity__c belongs to the Opportunity family.
+			svc = service.WithLinkedOpportunityIngest(svc, service.LinkedOpportunityIngest{
+				Links:       repository.NewSalesforceOpportunityLinkRepository(db),
+				SalesEntity: salesEntityClient,
+			})
+			// Invoice__c events ride on the same flag: an invoice needs its
+			// opportunity, which the Opportunity branch ingests inline.
+			opportunityLookup := repository.NewSalesforceOpportunityLookup(db)
+			svc = service.WithInvoiceIngest(svc, service.InvoiceIngest{
+				Invoices:      repository.NewSalesforceInvoiceRepository(db),
+				Opportunities: opportunityLookup,
+				SalesEntity:   salesEntityClient,
+			})
+			// So do standalone OpportunityLineItem events.
+			return service.WithOpportunityLineItemIngest(svc, service.OpportunityLineItemIngest{
+				LineItems:     repository.NewSalesforceOpportunityLineItemRepository(db),
+				Opportunities: opportunityLookup,
+				SalesEntity:   salesEntityClient,
+			})
+		}
+		// The partner-link refresh is attached the same way; off, nothing
+		// refreshes partners and the internal route is not registered.
+		withPartnerIngest := func(svc service.SalesforceEventService) service.SalesforceEventService {
+			if !cfg.CSMMigrationSalesforcePartnerIngestEnabled {
+				return svc
+			}
+			svc = service.WithPartnerIngest(svc, service.PartnerIngest{
+				Partners:    repository.NewAccountPartnerWriteRepository(db),
+				SalesEntity: salesEntityClient,
+			})
+			if refresher, ok := svc.(service.PartnerRefresher); ok {
+				salesforcePartnerHandler = handler.NewSalesforcePartnerHandler(service.NewPartnerRefreshService(refresher, accessSvc))
+			}
+			return svc
 		}
 		if cfg.CSMMigrationSalesforceMembershipIngestEnabled {
 			// The membership branch (Project_Contact__c / Contact envelopes)
@@ -293,7 +344,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 					Contacts:    repository.NewSalesforceContactRepository(db),
 					Publisher:   projectEventPublisher,
 				})
-			membershipIngestSvc = withOpportunityIngest(membershipIngestSvc)
+			membershipIngestSvc = withPartnerIngest(withOpportunityIngest(membershipIngestSvc))
 			salesforceEventHandler = handler.NewSalesforceEventHandler(membershipIngestSvc)
 
 			// The delayed-retry job re-runs memberships whose project or
@@ -311,6 +362,21 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				if opp, ok := membershipIngestSvc.(service.OpportunityReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
 					retryWorker.EntityRetriers[domain.SalesforceIngestEntityOpportunity] = opp.RetryOpportunityIngest
 				}
+				if link, ok := membershipIngestSvc.(service.LinkedOpportunityReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityLinkedOpportunity] = link.RetryLinkedOpportunityIngest
+				}
+				if project, ok := membershipIngestSvc.(service.ProjectReingester); ok && cfg.CSMMigrationSalesforceProjectIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityProject] = project.RetryProjectIngest
+				}
+				if inv, ok := membershipIngestSvc.(service.InvoiceReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityInvoice] = inv.RetryInvoiceIngest
+				}
+				if li, ok := membershipIngestSvc.(service.OpportunityLineItemReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityOpportunityLineItem] = li.RetryOpportunityLineItemIngest
+				}
+				if partners, ok := membershipIngestSvc.(service.PartnerReingester); ok && cfg.CSMMigrationSalesforcePartnerIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityAccountPartners] = partners.RetryPartnerRefresh
+				}
 				// The Contact writer runs under the membership ingest, which is
 				// on whenever this job runs, so its retrier needs no extra flag.
 				if contact, ok := membershipIngestSvc.(service.ContactReingester); ok {
@@ -324,7 +390,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				log.Printf("salesforce ingest retry worker enabled (every %s)", cfg.SalesforceIngestRetryInterval)
 			}
 		} else {
-			salesforceEventHandler = handler.NewSalesforceEventHandler(withOpportunityIngest(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient, ingestSupport)))
+			salesforceEventHandler = handler.NewSalesforceEventHandler(withPartnerIngest(withOpportunityIngest(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient, ingestSupport))))
 		}
 	}
 
@@ -1087,6 +1153,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	if salesforceEventHandler != nil {
 		mux.HandleFunc("POST /salesforce/events", salesforceEventHandler.HandleEvent)
+	}
+	if salesforcePartnerHandler != nil {
+		mux.HandleFunc("POST /salesforce/accounts/{sfId}/refresh-partners", salesforcePartnerHandler.RefreshPartners)
 	}
 	if onboardingStepHandler != nil {
 		mux.HandleFunc("PUT /onboarding-steps/{membershipSfId}/{step}", onboardingStepHandler.UpsertOnboardingStep)

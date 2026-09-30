@@ -40,6 +40,26 @@ paths:
         resulting state is INVITED or RE-INVITED; DELETED marks the
         project_contact DEACTIVATED (never deletes). Entity Contact, UPDATED only:
         re-runs the membership upsert for each of the contact's memberships.
+        Entity Project__c, only when CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED=true:
+        CREATED/UPDATED/RESTORED fetch the project (POST /projects/search) and
+        update the Salesforce-owned project columns of the row found by sf_id or
+        else by key; the ingest is update-only (a project CSM does not have is
+        recorded FAILED and re-run by the delayed-retry job) unless
+        CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED=true also lets it insert;
+        a project without Project_Key__c is a 204 recorded FAILED; DELETED sets
+        project.is_active false (RESTORED sets it true).
+        Entity Linked_Opportunity__c (also accepted as Linked_Opportunity), only when
+        CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true: CREATED/UPDATED/RESTORED
+        fetch the link (POST /linked-opportunities/search), resolve its opportunity
+        and project, and upsert sf_opportunity_link by link_sf_id; DELETED
+        hard-deletes by link_sf_id.
+        Entity Invoice__c (also accepted as Invoice), only when
+        CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true: CREATED/UPDATED/RESTORED
+        fetch the invoice (POST /invoices/search), ingest its opportunity first when
+        missing, and upsert sf_invoice by sf_id; DELETED hard-deletes by sf_id.
+        Entity OpportunityLineItem, under the same flag, does the same for one
+        sf_opportunity_product row (POST /opportunity-line-items/search, keyed on
+        line_item_sf_id).
         Every other entity is acknowledged with 204 and ignored. A replay whose
         Salesforce lastModifiedDate is not newer than the recorded DATABASE step
         is a 204 no-op, so the customer portal and the reconcile job can replay
@@ -81,6 +101,65 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
           description: Salesforce is temporarily unavailable (including a 404 from sales-entity-service so the event can be retried), or a role / project_group row the membership mapping needs is not seeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /salesforce/accounts/{sfId}/refresh-partners:
+    post:
+      summary: >-
+        Re-read one account's partners from Salesforce (REST sales-entity-service
+        POST /customer-search with includePartners) and make its stored partner
+        links in account_relationship equal to them: a forward "Is Partner Of"
+        row (partner to customer) and its reverse "Is Customer Of" mirror per
+        partner, missing partner accounts ingested first, rows of every other
+        label untouched. The same refresh runs after Account events and after
+        partner-contact membership events. Internal callers only
+        (AUTH_INTERNAL_CLIENT_IDS). Registered only when
+        CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true, DATA_SOURCE=postgres
+        and REST sales-entity-service config is present; 404 otherwise.
+      operationId: refreshSalesforceAccountPartners
+      parameters:
+        - name: sfId
+          in: path
+          required: true
+          description: Salesforce Account Id of the customer (15 or 18 characters).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The partner set now stored for the account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalesforcePartnerRefreshResult'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found (a partner or the account is not in CSM and the Account ingest is off).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Salesforce is temporarily unavailable, or sales-entity-service did not return the partner list.
           content:
             application/json:
               schema:
@@ -17286,15 +17365,39 @@ components:
           type: string
           pattern: '.*\S.*'
           description: >-
-            Salesforce sObject name. Account is always processed.
-            Project_Contact__c (also accepted as Project_Contact) and Contact
-            are processed only when CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED is
-            true; otherwise, like every other value, they are acknowledged
-            with 204 and ignored.
+            Salesforce sObject name. Each family is processed only when its
+            flag is true; otherwise, like every other value, it is acknowledged
+            with 204 and ignored. Account: CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED.
+            Project_Contact__c (also accepted as Project_Contact) and Contact:
+            CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED. Project__c:
+            CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED (update-only; inserts
+            also need CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED). Opportunity,
+            Linked_Opportunity__c (also accepted as Linked_Opportunity), Invoice__c
+            (also accepted as Invoice) and OpportunityLineItem:
+            CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED.
         referenceId:
           type: string
           pattern: '.*\S.*'
           description: Salesforce record Id.
+
+    SalesforcePartnerRefreshResult:
+      type: object
+      required: [customerSfId, partnerSfIds, added, removed]
+      properties:
+        customerSfId:
+          type: string
+          description: The customer's Salesforce Account Id as Salesforce spells it (18 characters).
+        partnerSfIds:
+          type: array
+          items:
+            type: string
+          description: The partner accounts Salesforce lists now, and so the ones stored.
+        added:
+          type: integer
+          description: account_relationship rows inserted (a new partner is two rows, forward and reverse).
+        removed:
+          type: integer
+          description: account_relationship rows deleted.
 
     ErrorResponse:
       type: object
