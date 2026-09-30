@@ -26,7 +26,11 @@ paths:
         Entity Account, only when CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED=true
         (otherwise acknowledged and ignored): fetches the Account via REST
         sales/sales-entity-service POST /customer-search (isRealTime true), not GraphQL
-        sales/entity-graphql-service, and upserts the csm-platform account table.
+        sales/entity-graphql-service, and upserts the csm-platform account table
+        (Salesforce-owned columns only) with its salesforce_ingest_state ledger row;
+        a replay whose lastModifiedDate is not newer than the ledger is a 204 no-op,
+        a customer without a name is a 204 recorded FAILED in the ledger, and
+        DELETED sets account.deleted_on (RESTORED clears it) instead of deleting.
         Entity Project_Contact__c (also accepted as Project_Contact), only when
         CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true: CREATED/UPDATED/RESTORED fetch
         the membership and its Contact (POST /project-contacts/search,
@@ -1972,7 +1976,10 @@ paths:
 
   /accounts/search:
     post:
-      summary: Search accounts by name or Salesforce ID.
+      summary: >-
+        Search accounts by name or Salesforce ID. Accounts deleted in Salesforce
+        (account.deleted_on set by the Salesforce Account ingest) are never
+        returned; GET /accounts/{id} still resolves them.
       operationId: searchAccounts
       requestBody:
         required: true
@@ -2661,10 +2668,14 @@ paths:
     patch:
       summary: Replace a contact's roles on a project.
       description: >
-        Replaces the membership's Salesforce roles, and with them its project groups.
-        The membership's state is untouched. An empty roles list is accepted and means
-        "no roles" — it removes every project group rather than leaving the current set
-        alone. The database transaction and the Salesforce write succeed together or
+        Replaces the membership's portal-managed Salesforce roles (Portal user, Security
+        Contact, Lead, Admin), and with them its project groups. Every other Role__c label
+        already on the Salesforce membership (Business Contact, Business/Technical
+        Owner, Champion, Promoter or Detractor, or any label this service does not know)
+        is kept. If the membership's current roles cannot be read from Salesforce the
+        call fails with 503 instead of overwriting them. The membership's state is
+        untouched. An empty roles list is accepted and removes every portal-managed role
+        and its project group; labels set only in Salesforce stay. The database transaction and the Salesforce write succeed together or
         neither is applied; the database commits last.
 
 
@@ -3625,8 +3636,7 @@ paths:
   /cases/feedback/search:
     post:
       summary: >-
-        Search case-feedback (satisfaction rating) records across cases
-        (ServiceNow data source only).
+        Search case-feedback (satisfaction rating) records across cases.
       description: >-
         Backs the case-feedback dashboard's list view. Distinct from any
         single-case feedback lookup: this is filterable by case, accounts,
@@ -3680,11 +3690,15 @@ paths:
     post:
       summary: >-
         Date-bucketed rating aggregation of case-feedback records across
-        cases (ServiceNow data source only).
+        cases.
       description: >-
         Backs the case-feedback dashboard's rating-trend chart. This is the
         many-cases trend endpoint, not scoped to one case, so filters.caseId
         is not accepted here (unlike POST /cases/feedback/search).
+
+        Postgres: the reasons_* buckets return an empty result (the stored
+        feedback carries no per-rating reason selections), and pageSize is
+        capped at 50 on search.
       operationId: aggregateCaseFeedback
       requestBody:
         required: true
@@ -5704,6 +5718,168 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/absences/{id}:
+    delete:
+      summary: Remove one absence — the whole span, open-ended or not.
+      description: >
+        Lead edit, gated on the team the absence belongs to (read from the row,
+        not from the caller). Unlike clearing a date range with
+        /team-schedule/absences/apply, this also removes an absence with no end
+        date. The removal is recorded in the absence history before the row
+        goes.
+      operationId: deleteScheduleAbsence
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: note
+          in: query
+          required: false
+          description: Why it was removed, kept on the history row.
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Bad request — malformed id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller does not lead this absence's team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such absence.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/absence-kinds:
+    post:
+      summary: Add a leave or allocation kind to the shared catalogue.
+      description: >
+        Any team lead may add one, and every team then sees it. The code is
+        derived from the label (upper case, words joined by underscores), so the
+        same label cannot be added twice. The colour must be one the rota draws
+        a leave or allocation chip for.
+      operationId: createScheduleAbsenceKind
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateScheduleAbsenceKindRequest'
+      responses:
+        "201":
+          description: The new kind.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleAbsenceKind'
+        "400":
+          description: Bad request — a missing or over-long field, an unknown bucket or colour.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller neither leads a team nor is a rota admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: A kind with that label, or an active kind with that short code, already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/absence-kinds/{code}:
+    delete:
+      summary: Delete a tag a lead added.
+      description: >
+        Any team lead may. Only a tag added from the portal can be deleted, never
+        one of the catalogue's own, and only once no leave or allocation uses it
+        -- a tag still in use is refused with how many entries use it, since
+        retiring it quietly would leave those entries with no label or colour.
+      operationId: deleteScheduleAbsenceKind
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller leads no team, or the tag is a built-in one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such tag.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The tag is still in use.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
           content:
             application/json:
               schema:
@@ -11396,8 +11572,9 @@ components:
             type: string
             enum: [Portal user, Security Contact, Lead, Admin]
           description: >
-            The membership's new complete set of Salesforce roles — a replacement, not a merge.
-            An empty list is allowed and removes every project group.
+            The membership's new complete set of portal-managed Salesforce roles. It replaces
+            the Portal user / Security Contact / Lead / Admin labels; other Role__c labels
+            already on the Salesforce membership are kept. An empty list is allowed.
 
     ProjectMembership:
       type: object
@@ -11435,8 +11612,10 @@ components:
           items:
             type: string
           description: >
-            The raw Salesforce Role__c labels the membership now carries, exactly as written to
-            Salesforce — not the derived project_role/project_group values.
+            The portal-managed Salesforce Role__c labels (Portal user / Security Contact / Lead /
+            Admin) the membership now carries, as written to Salesforce — not the derived
+            project_role/project_group values. Labels set only in Salesforce (e.g. Business
+            Contact) are kept on the record but not listed here.
 
     SearchProjectContactsResponse:
       type: object
@@ -16128,6 +16307,23 @@ components:
           description: >-
             Display order, and what gives a team a stable colour without any
             client naming it.
+    CreateScheduleAbsenceKindRequest:
+      type: object
+      required: [shortCode, label, bucket, colourToken]
+      properties:
+        shortCode:
+          type: string
+          maxLength: 12
+          description: What a roster cell draws, e.g. "Trn". Unique among active kinds.
+        label:
+          type: string
+          maxLength: 100
+        bucket:
+          type: string
+          enum: [LEAVE, ALLOCATION]
+        colourToken:
+          type: string
+          enum: [AL, LL, MAT, PAT, RND, EXT, INT, BR, MIG, ONB, EXC, IND]
     ScheduleAbsenceKind:
       type: object
       description: Why someone is out of the rota.
@@ -16139,6 +16335,18 @@ components:
         bucket: { type: string, enum: [LEAVE, ALLOCATION, EXCLUDED] }
         colourToken: { type: string }
         sortOrder: { type: integer }
+        custom:
+          type: boolean
+          description: True for a tag a lead added from the portal, which a lead may also delete.
+        family:
+          type: string
+          enum: [CRE, SRE]
+          description: The rota the kind is offered on. Absent for a kind both rotas use, which is every kind of leave.
+        retired:
+          type: boolean
+          description: >-
+            True for a kind no longer offered. Still served so the days already
+            marked with it keep their label; a client must not offer it.
     ScheduleCatalogue:
       type: object
       properties:
@@ -16194,7 +16402,7 @@ components:
           type: string
           description: >-
             A schedule_absence_kind code, e.g. ANNUAL_LEAVE. Empty, or omitted,
-            brings them back over the span instead.
+            brings them back over the span instead. Must be an active kind.
         from:
           type: string
           format: date
@@ -16203,6 +16411,13 @@ components:
           format: date
         note:
           type: string
+        allocatedTo:
+          type: string
+          maxLength: 100
+          description: >-
+            Who an allocation is for: the customer, or the product team for
+            RnD. Stored only with an ALLOCATION kind; ignored for leave, and a
+            blank value is treated as absent.
     ApplyScheduleAbsenceResponse:
       type: object
       required: [created, removed, trimmed]
@@ -16239,6 +16454,24 @@ components:
         note:
           type: string
           nullable: true
+        tier:
+          type: string
+          enum: [L1, L2, L3]
+          description: >-
+            For an escalation window that leaves the tier to the person
+            (SRE_TZ1, SRE_TZ3, ...), which tier they hold. Omitted takes the
+            window's own tier; a window that fixes a tier accepts only that
+            one, and a window that is not an escalation window accepts none.
+            An escalation window that leaves the tier open requires one --
+            with no tier, the person is on the zone's regular hours, which
+            have a window of their own.
+        zoneCode:
+          type: string
+          description: >-
+            With shiftCode empty, clears only this zone's turn and leaves the
+            rest of the day. (An escalation turn only ever displaces what is in
+            its own zone or overlaps it in time, so one engineer can hold turns
+            in two zones on one day.)
 
     ApplyScheduleRangeResponse:
       type: object
