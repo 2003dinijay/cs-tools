@@ -1589,6 +1589,36 @@ regardless of severity.
   "does the referenced Postgres row exist yet at this call site"
   check — see `TestCaseService_CreateCase_RegistersSLAClocksOnlyAfterPostgresSucceeds`
   for the regression test.
+- **The same "wired into `snCaseService` only" gap existed for every other
+  `SLAEngineService` hook too, not just registration — all now fixed in
+  `caseService` directly.** `snCaseService.applyResponseSLAOnComment`/
+  `applyCaseStateSLAEffects`/`reviseCaseSLAClocks` are the plain-ServiceNow-
+  mode's own hooks; `caseService.createCaseCommentAs`/`UpdateCase` (the
+  active, Postgres-primary path in dual-write mode) had no equivalents at
+  all — a support engineer's reply never completed the response clock, no
+  state transition ever paused/resumed/completed workaround or resolution,
+  and no severity change ever revised a case's clocks, for any dual-write
+  case, full stop. Each is now its own hook on `caseService`:
+  - **`completeResponseSLAOnComment`** (`createCaseCommentAs`) — gated on a
+    new config, `SupportEngineerRole` (`SUPPORT_ENGINEER_ROLE`), the
+    Postgres/dual-write equivalent of `CSEngineerRole`
+    (`CS_ENGINEER_ROLE`) — a genuinely separate value, not just a second
+    env var for the same one: it's checked against
+    `repository.UserRepository.GetUserRoles`' own vocabulary (`user_role`),
+    not ServiceNow's role names. Resolves the comment author via
+    `userRepo.GetUserByEmail` then `GetUserRoles` — tolerates both failing
+    (the M2M `CreateCaseCommentAs` path has no guaranteed user row, per
+    that method's own doc comment) by skipping, the same "can't confirm,
+    skip" posture `CSEngineerRole` itself uses when unconfigured.
+  - **`ApplyCaseStateEffects`** (`UpdateCase`) — fires unconditionally
+    whenever `req.State != nil`, not gated on a genuine change, matching
+    `snCaseService`'s own call site exactly: every effect it applies is
+    idempotent, so a no-op re-PATCH just harmlessly re-applies the same
+    effect.
+  - **`ReviseCaseClocks`** (`UpdateCase`) — gated on a genuine severity
+    change (unlike the state hook above), reusing the same `GetCaseByID`
+    fetch the `case.severity_changed` publish already does, rather than a
+    second round trip.
 
 ## Customer-reply state transition
 

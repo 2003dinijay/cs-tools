@@ -219,8 +219,24 @@ type Config struct {
 	// this is organisation-specific vocabulary, same reasoning
 	// CustomerRoles' own doc comment gives. Left unset, that function
 	// simply can't confirm engineer-authorship and skips (logged) — not
-	// fatal, not required by Validate.
+	// fatal, not required by Validate. Read for the plain ServiceNow data
+	// source only — see SupportEngineerRole below for the Postgres/
+	// dual-write equivalent, a deliberately separate config since Postgres'
+	// own user_role table uses its own role vocabulary, not ServiceNow's
+	// role names.
 	CSEngineerRole string
+	// SupportEngineerRole is caseService.completeResponseSLAOnComment's own
+	// equivalent of CSEngineerRole above, for the Postgres/dual-write case-
+	// comment path (caseService.createCaseCommentAs) — CSEngineerRole only
+	// ever gates snCaseService's own hook, which that path never reaches
+	// (this was a real, live-observed gap: a support engineer's reply on a
+	// dual-write case never stopped the response SLA clock at all). The
+	// role name is checked against repository.UserRepository.GetUserRoles'
+	// own vocabulary (user_role), not ServiceNow's, so the two configs are
+	// genuinely independent values, not just independent env vars for the
+	// same one. Same no-committed-default, "unset means skip, not fatal"
+	// reasoning as CSEngineerRole.
+	SupportEngineerRole string
 	// SLARecomputeInterval is how often SLAEngineRecomputeWorker
 	// recomputes every CSM-native "sla" row's elapsed percentage/breach
 	// status (internal/service/sla_engine_recompute_worker.go). Same
@@ -375,6 +391,7 @@ func Load() *Config {
 		AuthInternalClientIDsRaw:                      os.Getenv("AUTH_INTERNAL_CLIENT_IDS"),
 		CustomerRoles:                                 splitComma(os.Getenv("CUSTOMER_ROLES")),
 		CSEngineerRole:                                os.Getenv("CS_ENGINEER_ROLE"),
+		SupportEngineerRole:                           os.Getenv("SUPPORT_ENGINEER_ROLE"),
 		SLARecomputeInterval:                          envDuration("SLA_RECOMPUTE_INTERVAL", 45*time.Second),
 		SalesforceIngestRetryInterval:                 envDurationOrOff("SALESFORCE_INGEST_RETRY_INTERVAL", 5*time.Minute),
 		SalesEntityBaseURL:                            os.Getenv("SALES_ENTITY_BASE_URL"),
