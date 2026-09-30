@@ -122,10 +122,16 @@ func (f *fakeMembershipRepo) GetMembershipByEmail(context.Context, string, strin
 }
 
 type fakeStepRepo struct {
-	existing []domain.OnboardingStep
-	upserts  []domain.UpsertOnboardingStepRequest
-	getErr   error
-	listErr  error
+	existing      []domain.OnboardingStep
+	upserts       []domain.UpsertOnboardingStepRequest
+	getErr        error
+	listErr       error
+	retryAttempts []string
+}
+
+func (f *fakeStepRepo) RecordRetryAttempt(_ context.Context, stepID string, seenUpdatedOn time.Time) (bool, error) {
+	f.retryAttempts = append(f.retryAttempts, stepID+"@"+seenUpdatedOn.Format(time.RFC3339))
+	return true, nil
 }
 
 func (f *fakeStepRepo) Upsert(_ context.Context, req domain.UpsertOnboardingStepRequest) (domain.OnboardingStep, error) {

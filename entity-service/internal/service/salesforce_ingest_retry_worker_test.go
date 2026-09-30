@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -186,5 +187,87 @@ func TestRetryMembershipIngest_ReRunsAsUpdated(t *testing.T) {
 	off := NewSalesforceEventService(&stubSalesforceAccountRepo{}, &stubSalesEntityClient{}, SalesforceIngestSupport{}).(*salesforceEventService)
 	if err := off.RetryMembershipIngest(context.Background(), testMembershipID); !errors.Is(err, errMembershipIngestDisabled) {
 		t.Errorf("disabled service: err = %v, want errMembershipIngestDisabled", err)
+	}
+}
+
+// TestRetryWorker_FailedReRunCountsTheAttempt: a re-run that fails before
+// the ingest records anything (the Sales Entity fetch) still counts, keyed by
+// the updated_on the job read, so the step reaches the cap and waits an
+// interval instead of being re-run on every tick. A re-run that succeeds
+// records nothing extra.
+func TestRetryWorker_FailedReRunCountsTheAttempt(t *testing.T) {
+	failing := failedDatabaseStep("m-fetch-fails", "project not found", 3)
+	failing.ID = "step-1"
+	ok := failedDatabaseStep("m-ok", "project not found", 1)
+	ok.ID = "step-2"
+	steps := &fakeStepRepo{existing: []domain.OnboardingStep{failing, ok}}
+	re := &fakeReingester{errs: map[string]error{"m-fetch-fails": errors.New("salesentity: project contact not found")}}
+	w := newRetryWorker(steps, re, nil)
+
+	w.RunOnce(context.Background())
+
+	if want := []string{"step-1@" + failing.UpdatedOn.Format(time.RFC3339)}; !reflect.DeepEqual(steps.retryAttempts, want) {
+		t.Errorf("recorded attempts = %v, want %v", steps.retryAttempts, want)
+	}
+}
+
+// TestRetryWorker_LedgerFailedReRunCountsTheAttempt mirrors the step case.
+func TestRetryWorker_LedgerFailedReRunCountsTheAttempt(t *testing.T) {
+	at := time.Now().Add(-time.Hour)
+	states := &fakeIngestStateRepo{failed: []domain.SalesforceIngestState{
+		{Entity: "widget", SfID: "w-1", Status: domain.SalesforceIngestFailed, LastError: sampleStr(`account not found for sfId "0011"`), AttemptCount: 1, UpdatedOn: at},
+	}}
+	w := newRetryWorker(&fakeStepRepo{}, &fakeReingester{}, states)
+	w.EntityRetriers["widget"] = func(context.Context, string) error { return errors.New("sales entity down") }
+
+	w.RunOnce(context.Background())
+
+	if want := []string{"widget/w-1@" + at.Format(time.RFC3339)}; !reflect.DeepEqual(states.retryAttempts, want) {
+		t.Errorf("recorded attempts = %v, want %v", states.retryAttempts, want)
+	}
+}
+
+// TestRetryWorker_LedgerAsksOnlyForRetriableEntities: the ledger read is
+// narrowed to the entities with a registered retrier (so eligibility is
+// applied before the batch limit), and skipped entirely when there are none.
+func TestRetryWorker_LedgerAsksOnlyForRetriableEntities(t *testing.T) {
+	states := &fakeIngestStateRepo{}
+	w := newRetryWorker(&fakeStepRepo{}, &fakeReingester{}, states)
+	w.RunOnce(context.Background())
+	if len(states.listEntities) != 0 {
+		t.Errorf("no retrier registered, want no ledger read; got %v", states.listEntities)
+	}
+
+	w.EntityRetriers[domain.SalesforceIngestEntityOpportunity] = func(context.Context, string) error { return nil }
+	w.EntityRetriers[domain.SalesforceIngestEntityContact] = func(context.Context, string) error { return nil }
+	w.RunOnce(context.Background())
+	want := [][]string{{domain.SalesforceIngestEntityContact, domain.SalesforceIngestEntityOpportunity}}
+	if !reflect.DeepEqual(states.listEntities, want) {
+		t.Errorf("entities asked for = %v, want %v", states.listEntities, want)
+	}
+}
+
+// TestRetryWorker_IneligibleBacklogDoesNotStarve: a full batch of older rows
+// the job would skip must not hide a newer eligible one.
+func TestRetryWorker_IneligibleBacklogDoesNotStarve(t *testing.T) {
+	var failed []domain.SalesforceIngestState
+	for i := 0; i < salesforceIngestRetryBatchSize+5; i++ {
+		failed = append(failed, domain.SalesforceIngestState{
+			Entity: domain.SalesforceIngestEntityAccount, SfID: "acct-" + strconv.Itoa(i), Status: domain.SalesforceIngestFailed,
+			LastError: sampleStr("customer is missing Name"), AttemptCount: 1,
+		})
+	}
+	failed = append(failed, domain.SalesforceIngestState{
+		Entity: "widget", SfID: "w-new", Status: domain.SalesforceIngestFailed, LastError: sampleStr("project not found"), AttemptCount: 1,
+	})
+	states := &fakeIngestStateRepo{failed: failed}
+	var retried []string
+	w := newRetryWorker(&fakeStepRepo{}, &fakeReingester{}, states)
+	w.EntityRetriers["widget"] = func(_ context.Context, id string) error { retried = append(retried, id); return nil }
+
+	w.RunOnce(context.Background())
+
+	if !reflect.DeepEqual(retried, []string{"w-new"}) {
+		t.Errorf("retried = %v, want the eligible row despite the backlog", retried)
 	}
 }

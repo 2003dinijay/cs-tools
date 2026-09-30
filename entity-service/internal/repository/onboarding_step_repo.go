@@ -47,6 +47,13 @@ type OnboardingStepRepository interface {
 	// more than olderThan ago and have fewer than maxAttempts attempts, oldest
 	// first, at most limit of them. It is the delayed-retry job's read.
 	ListMissingParentFailures(ctx context.Context, olderThan time.Duration, maxAttempts, limit int) ([]domain.OnboardingStep, error)
+	// RecordRetryAttempt counts one failed delayed-retry re-run that the
+	// ingest itself did not record (it failed before the membership upsert,
+	// e.g. the Sales Entity fetch): attempt_count + 1 and updated_on = now(),
+	// last_error kept. It only applies while the step is still FAILED and its
+	// updated_on is still seenUpdatedOn, so a step the re-run did record, or
+	// any newer outcome, is left alone. Reports whether a row was updated.
+	RecordRetryAttempt(ctx context.Context, stepID string, seenUpdatedOn time.Time) (bool, error)
 }
 
 type onboardingStepRepo struct {
@@ -266,4 +273,17 @@ type querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// RecordRetryAttempt implements OnboardingStepRepository.
+func (r *onboardingStepRepo) RecordRetryAttempt(ctx context.Context, stepID string, seenUpdatedOn time.Time) (bool, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE onboarding_step
+		   SET attempt_count = attempt_count + 1, updated_on = NOW()
+		 WHERE id = $1::uuid AND status = $2::onboarding_step_status_enum AND updated_on = $3`,
+		stepID, string(domain.OnboardingStepFailed), seenUpdatedOn)
+	if err != nil {
+		return false, fmt.Errorf("record onboarding step retry attempt: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }

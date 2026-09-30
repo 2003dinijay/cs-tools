@@ -1061,7 +1061,8 @@ type SalesforceIngestState struct {
 
 // UpsertSalesforceIngestStateRequest is what an ingest writes to the ledger
 // after (or alongside, in the same transaction) its row write. Repeating it
-// for the same (entity, sfId) updates the row and increments attemptCount.
+// for the same (entity, sfId) updates the row; attemptCount counts consecutive
+// failures (it restarts at 1 on a success or the first failure after one).
 type UpsertSalesforceIngestStateRequest struct {
 	Entity          string
 	SfID            string

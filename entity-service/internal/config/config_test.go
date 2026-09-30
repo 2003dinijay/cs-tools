@@ -589,7 +589,8 @@ func TestConfig_PostgresAuthoritative(t *testing.T) {
 func TestLoad_SalesforceIngestRetryInterval(t *testing.T) {
 	for value, want := range map[string]time.Duration{
 		"": 5 * time.Minute, "0": 0, "0s": 0, "0m": 0, "2m": 2 * time.Minute, "90s": 90 * time.Second,
-		"bogus": 5 * time.Minute, "-1m": 5 * time.Minute,
+		// Invalid values fail closed: disabled, not the default.
+		"bogus": 0, "off": 0, "-1m": 0,
 	} {
 		t.Setenv("SALESFORCE_INGEST_RETRY_INTERVAL", value)
 		if got := Load().SalesforceIngestRetryInterval; got != want {

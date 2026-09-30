@@ -236,7 +236,8 @@ type Config struct {
 	// sync's own cadence. Unlike the other intervals, an explicit "0"
 	// disables the job (envDurationOrOff), because it makes outbound Sales
 	// Entity calls on its own initiative and an operator must be able to
-	// stop that without turning the ingest off.
+	// stop that without turning the ingest off. An invalid or negative value
+	// disables it too (with a warning) rather than falling back to 5m.
 	SalesforceIngestRetryInterval time.Duration
 	// Auth* configure token validation (internal/auth), always on -- there is
 	// no config flag to disable it. AuthIssuer/AuthJWKSURL/
@@ -695,8 +696,11 @@ func envDuration(key string, def time.Duration) time.Duration {
 }
 
 // envDurationOrOff is envDuration for an interval that can be switched off:
-// an explicit zero ("0", "0s", "0m") returns 0, which the caller reads as
-// "disabled". Unset, unparseable and negative values still fall back to def.
+// unset returns def, and an explicit zero ("0", "0s", "0m") returns 0, which
+// the caller reads as "disabled". An unparseable or negative value also
+// returns 0, with a warning: it fails closed, because an operator who wrote
+// "off" or "-1" meant to stop the job, and falling back to def would start a
+// worker that makes outbound calls they tried to turn off.
 func envDurationOrOff(key string, def time.Duration) time.Duration {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
@@ -704,7 +708,9 @@ func envDurationOrOff(key string, def time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil || d < 0 {
-		return def
+		slog.Warn("invalid duration configuration value, treating it as disabled",
+			"key", key, "value", v)
+		return 0
 	}
 	return d
 }

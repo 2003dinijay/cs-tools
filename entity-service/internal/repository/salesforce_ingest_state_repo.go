@@ -43,13 +43,25 @@ type SalesforceIngestStateRepository interface {
 	// error) when that record was never ingested.
 	Get(ctx context.Context, entity, sfID string) (*domain.SalesforceIngestState, error)
 	// Upsert writes the latest outcome of one record's ingest. The
-	// (entity, sf_id) pair is the primary key: a repeat updates the row and
-	// increments attempt_count.
+	// (entity, sf_id) pair is the primary key: a repeat updates the row;
+	// attempt_count counts consecutive failures (see
+	// upsertSalesforceIngestState).
 	Upsert(ctx context.Context, req domain.UpsertSalesforceIngestStateRequest) (domain.SalesforceIngestState, error)
-	// ListFailed returns FAILED rows across every entity whose last write is
-	// older than olderThan, oldest first, at most limit of them. It is the
-	// delayed-retry job's read.
-	ListFailed(ctx context.Context, olderThan time.Duration, limit int) ([]domain.SalesforceIngestState, error)
+	// ListMissingParentFailures returns the FAILED rows the delayed-retry
+	// job can act on: entity in entities (those with a registered retrier),
+	// last_error a missing-parent error (missingParentErrorPatterns),
+	// attempt_count below maxAttempts and the last write older than
+	// olderThan; oldest first, at most limit of them. Filtering before the
+	// LIMIT keeps a backlog of rows the job would skip from starving the
+	// ones it would retry.
+	ListMissingParentFailures(ctx context.Context, entities []string, olderThan time.Duration, maxAttempts, limit int) ([]domain.SalesforceIngestState, error)
+	// RecordRetryAttempt counts one failed re-run of a FAILED row that the
+	// re-run itself did not record (it failed before its own ledger write,
+	// e.g. the Sales Entity fetch): attempt_count + 1 and updated_on = now(),
+	// last_error kept. It only applies while the row is still FAILED and its
+	// updated_on is still seenUpdatedOn, so an outcome written in the
+	// meantime is never overwritten. Reports whether a row was updated.
+	RecordRetryAttempt(ctx context.Context, entity, sfID string, seenUpdatedOn time.Time) (bool, error)
 }
 
 type salesforceIngestStateRepo struct {
@@ -107,8 +119,11 @@ func (r *salesforceIngestStateRepo) Upsert(ctx context.Context, req domain.Upser
 // move when the incoming event is at least as new as the recorded one, or
 // when the recorded row was stamped by a DELETED event (an undelete keeps the
 // Salesforce LastModifiedDate, and the row must be allowed to leave that
-// state) — the same rule upsertOnboardingStep applies. attempt_count and
-// updated_on advance on every write so a stale retry is still visible.
+// state) — the same rule upsertOnboardingStep applies. updated_on advances on
+// every write so a stale retry is still visible. attempt_count counts
+// consecutive failures: it goes up while the row stays FAILED and restarts
+// at 1 on a success or on the first failure after one, so a record that
+// Salesforce saves often never reaches the retry job's cap by succeeding.
 func upsertSalesforceIngestState(ctx context.Context, q querier, req domain.UpsertSalesforceIngestStateRequest) (domain.SalesforceIngestState, error) {
 	row, err := scanSalesforceIngestState(q.QueryRow(ctx, `
 		INSERT INTO salesforce_ingest_state (
@@ -121,7 +136,10 @@ func upsertSalesforceIngestState(ctx context.Context, q querier, req domain.Upse
 			last_error        = CASE WHEN EXCLUDED.event_modified_on >= salesforce_ingest_state.event_modified_on OR salesforce_ingest_state.event_type = 'DELETED' THEN EXCLUDED.last_error ELSE salesforce_ingest_state.last_error END,
 			event_type        = CASE WHEN EXCLUDED.event_modified_on >= salesforce_ingest_state.event_modified_on OR salesforce_ingest_state.event_type = 'DELETED' THEN EXCLUDED.event_type ELSE salesforce_ingest_state.event_type END,
 			event_modified_on = GREATEST(EXCLUDED.event_modified_on, salesforce_ingest_state.event_modified_on),
-			attempt_count     = salesforce_ingest_state.attempt_count + 1,
+			attempt_count     = CASE WHEN salesforce_ingest_state.status = 'FAILED'
+			                          AND (NOT (EXCLUDED.event_modified_on >= salesforce_ingest_state.event_modified_on OR salesforce_ingest_state.event_type = 'DELETED')
+			                               OR EXCLUDED.status = 'FAILED')
+			                         THEN salesforce_ingest_state.attempt_count + 1 ELSE 1 END,
 			updated_on        = NOW()
 		RETURNING `+salesforceIngestStateColumns,
 		req.Entity, req.SfID, req.EventModifiedOn, req.EventType, string(req.Status), req.LastError,
@@ -132,12 +150,20 @@ func upsertSalesforceIngestState(ctx context.Context, q querier, req domain.Upse
 	return row, nil
 }
 
-func (r *salesforceIngestStateRepo) ListFailed(ctx context.Context, olderThan time.Duration, limit int) ([]domain.SalesforceIngestState, error) {
+func (r *salesforceIngestStateRepo) ListMissingParentFailures(ctx context.Context, entities []string, olderThan time.Duration, maxAttempts, limit int) ([]domain.SalesforceIngestState, error) {
+	if len(entities) == 0 {
+		return []domain.SalesforceIngestState{}, nil
+	}
 	rows, err := r.db.Query(ctx, `SELECT `+salesforceIngestStateColumns+`
 		FROM salesforce_ingest_state
-		WHERE status = $1 AND updated_on < NOW() - make_interval(secs => $2::int)
+		WHERE status = $1
+		  AND entity = ANY($2::text[])
+		  AND last_error ILIKE ANY($3::text[])
+		  AND attempt_count < $4
+		  AND updated_on < NOW() - make_interval(secs => $5::int)
 		ORDER BY updated_on, entity, sf_id
-		LIMIT $3`, string(domain.SalesforceIngestFailed), int(olderThan.Seconds()), limit)
+		LIMIT $6`, string(domain.SalesforceIngestFailed), entities, missingParentErrorPatterns,
+		maxAttempts, int(olderThan.Seconds()), limit)
 	if err != nil {
 		return nil, fmt.Errorf("query failed salesforce ingest states: %w", err)
 	}
@@ -154,4 +180,16 @@ func (r *salesforceIngestStateRepo) ListFailed(ctx context.Context, olderThan ti
 		return nil, fmt.Errorf("iterate salesforce ingest states: %w", err)
 	}
 	return out, nil
+}
+
+func (r *salesforceIngestStateRepo) RecordRetryAttempt(ctx context.Context, entity, sfID string, seenUpdatedOn time.Time) (bool, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE salesforce_ingest_state
+		   SET attempt_count = attempt_count + 1, updated_on = NOW()
+		 WHERE entity = $1 AND sf_id = $2 AND status = $3 AND updated_on = $4`,
+		entity, sfID, string(domain.SalesforceIngestFailed), seenUpdatedOn)
+	if err != nil {
+		return false, fmt.Errorf("record salesforce ingest retry attempt: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }

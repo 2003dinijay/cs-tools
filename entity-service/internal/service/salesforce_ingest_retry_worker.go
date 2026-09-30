@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -149,9 +150,15 @@ func (w *SalesforceIngestRetryWorker) retryMemberships(ctx context.Context) {
 		slog.InfoContext(ctx, "salesforce: ingest retry: re-running membership",
 			"membershipSfId", st.MembershipSfID, "attempt", st.AttemptCount+1, "lastError", derefString(st.LastError), "failedOn", st.UpdatedOn)
 		if err := w.retryOne(ctx, func(c context.Context) error { return w.Memberships.RetryMembershipIngest(c, st.MembershipSfID) }); err != nil {
-			// The ingest has already re-recorded DATABASE=FAILED with the
-			// new attempt count where it got that far; nothing to add.
 			slog.WarnContext(ctx, "salesforce: ingest retry: membership still failing", "membershipSfId", st.MembershipSfID, "err", err)
+			// Where the ingest got as far as the upsert it has re-recorded
+			// the step (new updated_on, attempt + 1) and this is a no-op.
+			// Where it failed earlier (the Sales Entity fetch), this counts
+			// the attempt, so the cap is reached and the next try waits an
+			// interval instead of repeating on every tick.
+			if _, rerr := w.Steps.RecordRetryAttempt(ctx, st.ID, st.UpdatedOn); rerr != nil {
+				slog.ErrorContext(ctx, "salesforce: ingest retry: record membership attempt", "membershipSfId", st.MembershipSfID, "err", rerr)
+			}
 			continue
 		}
 		succeeded++
@@ -164,7 +171,20 @@ func (w *SalesforceIngestRetryWorker) retryLedger(ctx context.Context) {
 	if w.States == nil {
 		return
 	}
-	rows, err := w.States.ListFailed(ctx, w.Interval, w.BatchSize)
+	entities := make([]string, 0, len(w.EntityRetriers))
+	for entity, retrier := range w.EntityRetriers {
+		if retrier != nil {
+			entities = append(entities, entity)
+		}
+	}
+	if len(entities) == 0 {
+		return
+	}
+	sort.Strings(entities)
+	// Eligibility (a registered retrier, a missing-parent error, under the
+	// cap) is applied in the query, before the batch limit, so rows this
+	// job would skip can never fill the batch and starve eligible ones.
+	rows, err := w.States.ListMissingParentFailures(ctx, entities, w.Interval, w.MaxAttempts, w.BatchSize)
 	if err != nil {
 		slog.ErrorContext(ctx, "salesforce: ingest retry: list failed ledger rows", "err", err)
 		return
@@ -184,6 +204,11 @@ func (w *SalesforceIngestRetryWorker) retryLedger(ctx context.Context) {
 			"entity", row.Entity, "sfId", row.SfID, "attempt", row.AttemptCount+1, "lastError", derefString(row.LastError), "failedOn", row.UpdatedOn)
 		if err := w.retryOne(ctx, func(c context.Context) error { return retrier(c, row.SfID) }); err != nil {
 			slog.WarnContext(ctx, "salesforce: ingest retry: record still failing", "entity", row.Entity, "sfId", row.SfID, "err", err)
+			// Same as for memberships: counts a failure the re-run did not
+			// record itself; a no-op when it did.
+			if _, rerr := w.States.RecordRetryAttempt(ctx, row.Entity, row.SfID, row.UpdatedOn); rerr != nil {
+				slog.ErrorContext(ctx, "salesforce: ingest retry: record ledger attempt", "entity", row.Entity, "sfId", row.SfID, "err", rerr)
+			}
 			continue
 		}
 		succeeded++

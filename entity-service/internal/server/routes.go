@@ -20,6 +20,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -235,8 +236,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var membershipIngestSvc service.SalesforceEventService
 	var salesEntityClient *salesentity.Client
 	// ingestRetryCtx stops the Salesforce ingest retry worker; closePublishers
-	// (returned to cmd/api/main.go) cancels it on shutdown.
+	// (returned to cmd/api/main.go) cancels it on shutdown and waits on
+	// ingestRetryWG for it to return. A worker that was never started leaves
+	// the WaitGroup at zero, so the wait returns at once.
 	ingestRetryCtx, stopIngestRetry := context.WithCancel(context.Background())
+	var ingestRetryWG sync.WaitGroup
 	// PostgresAuthoritative, not DATA_SOURCE=postgres alone: the dual-write
 	// mode serves memberships from PostgreSQL too, and memberships reach
 	// ServiceNow from Salesforce directly, so nothing here needs its mirror.
@@ -312,7 +316,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				if contact, ok := membershipIngestSvc.(service.ContactReingester); ok {
 					retryWorker.EntityRetriers[domain.SalesforceIngestEntityContact] = contact.RetryContactIngest
 				}
-				go retryWorker.Run(ingestRetryCtx)
+				ingestRetryWG.Add(1)
+				go func() {
+					defer ingestRetryWG.Done()
+					retryWorker.Run(ingestRetryCtx)
+				}()
 				log.Printf("salesforce ingest retry worker enabled (every %s)", cfg.SalesforceIngestRetryInterval)
 			}
 		} else {
@@ -1368,10 +1376,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	// Both producers are closed together: they are constructed under the
 	// same conditions and neither caller has any reason to outlive the
-	// other. The Salesforce ingest retry worker stops first, so a re-run in
-	// flight is not handed a publisher that has already gone away.
+	// other. The Salesforce ingest retry worker stops first, and is waited
+	// for, so a re-run in flight is not handed a publisher that has already
+	// gone away. Cancelling its context also cancels the re-run's own
+	// context (retryOne derives from it), so the wait is short.
 	closePublishers := func() {
 		stopIngestRetry()
+		ingestRetryWG.Wait()
 		if eventPublisher != nil {
 			eventPublisher.Close()
 		}

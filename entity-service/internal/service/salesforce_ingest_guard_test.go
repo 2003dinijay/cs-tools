@@ -19,10 +19,12 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 // fakeIngestStateRepo is an in-memory salesforce_ingest_state, keyed by
@@ -34,6 +36,10 @@ type fakeIngestStateRepo struct {
 	getCalls int
 	getErr   error
 	listErr  error
+	// listEntities records the entities each ListMissingParentFailures
+	// call asked for; retryAttempts each RecordRetryAttempt call.
+	listEntities  [][]string
+	retryAttempts []string
 }
 
 func (f *fakeIngestStateRepo) Get(_ context.Context, entity, sfID string) (*domain.SalesforceIngestState, error) {
@@ -79,14 +85,28 @@ func (f *fakeIngestStateRepo) apply(req domain.UpsertSalesforceIngestStateReques
 	f.rows[key] = cur
 }
 
-func (f *fakeIngestStateRepo) ListFailed(_ context.Context, _ time.Duration, limit int) ([]domain.SalesforceIngestState, error) {
+func (f *fakeIngestStateRepo) ListMissingParentFailures(_ context.Context, entities []string, _ time.Duration, maxAttempts, limit int) ([]domain.SalesforceIngestState, error) {
+	f.listEntities = append(f.listEntities, entities)
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	if len(f.failed) > limit {
-		return f.failed[:limit], nil
+	// The same eligibility the SQL applies, before the limit.
+	out := []domain.SalesforceIngestState{}
+	for _, st := range f.failed {
+		if len(out) == limit {
+			break
+		}
+		if st.Status == domain.SalesforceIngestFailed && slices.Contains(entities, st.Entity) &&
+			repository.IsMissingParentError(derefString(st.LastError)) && st.AttemptCount < maxAttempts {
+			out = append(out, st)
+		}
 	}
-	return f.failed, nil
+	return out, nil
+}
+
+func (f *fakeIngestStateRepo) RecordRetryAttempt(_ context.Context, entity, sfID string, seenUpdatedOn time.Time) (bool, error) {
+	f.retryAttempts = append(f.retryAttempts, entity+"/"+sfID+"@"+seenUpdatedOn.Format(time.RFC3339))
+	return true, nil
 }
 
 func ingestStateRow(status domain.SalesforceIngestStatus, eventType, modified string) domain.SalesforceIngestState {

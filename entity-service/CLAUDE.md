@@ -53,7 +53,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes, the Contact writer included (see "Salesforce membership ingest" and "The Contact writer" below). The Account branch is unaffected |
 | `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Keep it off while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; the SE-1 columns are kept when Salesforce sends none; see "Salesforce Account ingest" for the full column set |
 | `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Opportunity` envelopes (`sf_opportunity` plus its `sf_opportunity_product` line items, see "Salesforce Opportunity ingest" below); off, they are acknowledged and ignored. Keep it off while csm-sync-service still copies these tables from ServiceNow: the two writers use different row ids and `sf_id` is not unique, so both on means duplicate rows |
-| `SALESFORCE_INGEST_RETRY_INTERVAL` | no | `5m` | How often the Salesforce ingest retry worker re-runs memberships whose DATABASE step FAILED because their project or account was not in CSM yet, and how old such a failure must be before it is re-run (see "Salesforce ingest ledger and the delayed-retry job" below). `0` disables the job. Only runs when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true` |
+| `SALESFORCE_INGEST_RETRY_INTERVAL` | no | `5m` | How often the Salesforce ingest retry worker re-runs memberships whose DATABASE step FAILED because their project or account was not in CSM yet, and how old such a failure must be before it is re-run (see "Salesforce ingest ledger and the delayed-retry job" below). `0` disables the job, and so does an unparseable or negative value (logged as a warning; it fails closed rather than falling back to `5m`). Only runs when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true` |
 | `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `false` | Must be `"true"` to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
 
 \* `DB_USER`/`DB_PASSWORD`/`DB_NAME` are required when `DATA_SOURCE=postgres`
@@ -470,8 +470,10 @@ CSM table the record lands in (`domain.SalesforceIngestEntityAccount` = `account
 `domain.SalesforceIngestEntityContact` = `contact` for the Contact writer, which
 writes two tables; more to come per family); `status` ∈ SUCCEEDED / FAILED (CHECK constraint),
 `event_modified_on` = the Salesforce `LastModifiedDate` the last write was based on,
-`attempt_count` bumped on every write. `repository.SalesforceIngestStateRepository`
-(`Get`, `Upsert`, `ListFailed`) is generic over `entity`; a repository that writes
+`attempt_count` = consecutive failures (up while the row stays FAILED, back to 1 on
+a success or on the first failure after one, so a record Salesforce saves often
+never reaches the retry cap by succeeding). `repository.SalesforceIngestStateRepository`
+(`Get`, `Upsert`, `ListMissingParentFailures`, `RecordRetryAttempt`) is generic over `entity`; a repository that writes
 its own rows in a transaction records the ledger in that same transaction through
 `upsertSalesforceIngestState(ctx, q querier, ...)`, like `upsertOnboardingStep`. The
 upsert only moves the outcome columns when the incoming version is at least as new,
@@ -505,9 +507,15 @@ first one after one interval) it reads DATABASE steps with status FAILED, a
 older than the interval and `attempt_count` < 12
 (`OnboardingStepRepository.ListMissingParentFailures`), and re-runs
 `ingestMembership` for each as UPDATED (`RetryMembershipIngest`), 30s timeout each,
-at most 100 per tick. A failed re-run re-records the step with `attempt_count` + 1,
-so a parent that never arrives stops being retried after about an hour at the
-default. FAILED ledger rows are read the same way and handed to
+at most 100 per tick. A failed re-run re-records the step with `attempt_count` + 1;
+when it failed before the ingest recorded anything (e.g. the Sales Entity fetch),
+the job itself counts the attempt (`RecordRetryAttempt`: attempt + 1, `updated_on =
+now()`, `last_error` kept, only while the step is still FAILED with the `updated_on`
+the job read). So a parent that never arrives stops being retried after about an
+hour at the default. FAILED ledger rows are read the same way
+(`SalesforceIngestStateRepository.ListMissingParentFailures`, which applies the
+registered-retrier, missing-parent and attempt-cap filters in SQL before the batch
+limit, so a backlog of rows the job would skip cannot starve eligible ones) and handed to
 `EntityRetriers[entity]`; `opportunity` registers one (`RetryOpportunityIngest`) when
 `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true`, and `contact` always
 registers one (`RetryContactIngest`: the whole Contact writer as UPDATED, fan-out
