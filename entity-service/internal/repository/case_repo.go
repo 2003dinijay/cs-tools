@@ -1778,12 +1778,39 @@ func (r *caseRepo) UpdateCaseAttachmentName(ctx context.Context, id, name, updat
 	return updatedOn, nil
 }
 
+// caseLikeStateSortColumn ranks caseLikeStateColumn's label by
+// case_state_enum's own declared order (migration 0023: WORK_IN_PROGRESS,
+// AWAITING_INFO, SOLUTION_PROPOSED, CLOSED, OPEN, WAITING_ON_WSO2, REOPENED)
+// rather than sorting the label as text. Native Postgres enum comparison
+// (what bare c.state ordered by before this existed) already followed that
+// declared order for CASE rows; caseLikeStateColumn casts to TEXT so every
+// case-like type can share one expression, but ORDER BY on that TEXT would
+// sort alphabetically instead -- e.g. AWAITING_INFO before CLOSED and
+// WORK_IN_PROGRESS, a real change to the customer-facing sort order. This
+// preserves the original order while still applying to every case-like type,
+// not just CASE.
+const caseLikeStateSortColumn = `CASE ` + caseLikeStateColumn + `
+	WHEN 'WORK_IN_PROGRESS' THEN 0
+	WHEN 'AWAITING_INFO' THEN 1
+	WHEN 'SOLUTION_PROPOSED' THEN 2
+	WHEN 'CLOSED' THEN 3
+	WHEN 'OPEN' THEN 4
+	WHEN 'WAITING_ON_WSO2' THEN 5
+	WHEN 'REOPENED' THEN 6
+	END`
+
 // pgSortColMap maps domain CaseSortField values to Postgres column expressions.
+// State uses caseLikeStateSortColumn, not a bare "case" column, for the same
+// reason the state filter uses caseLikeStateColumn (see that const's own doc
+// comment): "case" is a LEFT JOIN here, so a service_request/engagement/
+// security_report_analysis/announcement row's own c.state is always NULL,
+// and sorting on it left every non-CASE row unsorted by state. Severity stays
+// c.severity -- it's genuinely case-only, unlike state.
 var pgSortColMap = map[domain.CaseSortField]string{
 	domain.CaseSortFieldCreatedOn: "wi.created_on",
 	domain.CaseSortFieldUpdatedOn: "wi.updated_on",
 	domain.CaseSortFieldSeverity:  "c.severity",
-	domain.CaseSortFieldState:     "c.state",
+	domain.CaseSortFieldState:     caseLikeStateSortColumn,
 }
 
 // onboardingStatusLabels maps a projectOnboardingStatus filter value (keyed by

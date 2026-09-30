@@ -20,11 +20,13 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/github"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/handler"
@@ -228,11 +230,19 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 
 	var salesforceEventHandler *handler.SalesforceEventHandler
+	// salesforcePartnerHandler is set when the partner refresh is on.
+	var salesforcePartnerHandler *handler.SalesforcePartnerHandler
 	// membershipRegistrationHandler and projectContactSyncHandler both need
 	// the very same membership-ingest-enabled SalesforceEventService this
 	// block builds, so all three are wired together rather than side by side.
 	var membershipIngestSvc service.SalesforceEventService
 	var salesEntityClient *salesentity.Client
+	// ingestRetryCtx stops the Salesforce ingest retry worker; closePublishers
+	// (returned to cmd/api/main.go) cancels it on shutdown and waits on
+	// ingestRetryWG for it to return. A worker that was never started leaves
+	// the WaitGroup at zero, so the wait returns at once.
+	ingestRetryCtx, stopIngestRetry := context.WithCancel(context.Background())
+	var ingestRetryWG sync.WaitGroup
 	// PostgresAuthoritative, not DATA_SOURCE=postgres alone: the dual-write
 	// mode serves memberships from PostgreSQL too, and memberships reach
 	// ServiceNow from Salesforce directly, so nothing here needs its mirror.
@@ -249,21 +259,138 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		if cfg.CSMMigrationSalesforceAccountIngestEnabled {
 			accountIngestRepo = accountRepo
 		}
+		// The shared ingest support is flag-independent: the full account
+		// repository serves EnsureAccount's read even while the Account
+		// branch (the write side) is off, and the salesforce_ingest_state
+		// ledger is where every non-membership family records its version.
+		projectIngestRepo := repository.NewSalesforceProjectRepository(db)
+		ingestSupport := service.SalesforceIngestSupport{
+			Accounts: accountRepo,
+			States:   repository.NewSalesforceIngestStateRepository(db),
+			Projects: projectIngestRepo,
+		}
+		// The Project branch is update-only unless its insert switch is on
+		// too (csm-sync-service still inserts project rows until cutover).
+		withProjectIngest := func(svc service.SalesforceEventService) service.SalesforceEventService {
+			if !cfg.CSMMigrationSalesforceProjectIngestEnabled {
+				return svc
+			}
+			return service.WithProjectIngest(svc, service.ProjectIngest{
+				Projects:      projectIngestRepo,
+				SalesEntity:   salesEntityClient,
+				InsertEnabled: cfg.CSMMigrationSalesforceProjectInsertEnabled,
+			})
+		}
+		// The Opportunity branch (sf_opportunity + derived line items) and
+		// the Project branch are attached to whichever service variant is
+		// built below; off, the envelopes are acknowledged and ignored.
+		withOpportunityIngest := func(svc service.SalesforceEventService) service.SalesforceEventService {
+			svc = withProjectIngest(svc)
+			if !cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+				return svc
+			}
+			svc = service.WithOpportunityIngest(svc, service.OpportunityIngest{
+				Opportunities: repository.NewSalesforceOpportunityRepository(db),
+				SalesEntity:   salesEntityClient,
+			})
+			// Linked_Opportunity__c belongs to the Opportunity family.
+			svc = service.WithLinkedOpportunityIngest(svc, service.LinkedOpportunityIngest{
+				Links:       repository.NewSalesforceOpportunityLinkRepository(db),
+				SalesEntity: salesEntityClient,
+			})
+			// Invoice__c events ride on the same flag: an invoice needs its
+			// opportunity, which the Opportunity branch ingests inline.
+			opportunityLookup := repository.NewSalesforceOpportunityLookup(db)
+			svc = service.WithInvoiceIngest(svc, service.InvoiceIngest{
+				Invoices:      repository.NewSalesforceInvoiceRepository(db),
+				Opportunities: opportunityLookup,
+				SalesEntity:   salesEntityClient,
+			})
+			// So do standalone OpportunityLineItem events.
+			return service.WithOpportunityLineItemIngest(svc, service.OpportunityLineItemIngest{
+				LineItems:     repository.NewSalesforceOpportunityLineItemRepository(db),
+				Opportunities: opportunityLookup,
+				SalesEntity:   salesEntityClient,
+			})
+		}
+		// The partner-link refresh is attached the same way; off, nothing
+		// refreshes partners and the internal route is not registered.
+		withPartnerIngest := func(svc service.SalesforceEventService) service.SalesforceEventService {
+			if !cfg.CSMMigrationSalesforcePartnerIngestEnabled {
+				return svc
+			}
+			svc = service.WithPartnerIngest(svc, service.PartnerIngest{
+				Partners:    repository.NewAccountPartnerWriteRepository(db),
+				SalesEntity: salesEntityClient,
+			})
+			if refresher, ok := svc.(service.PartnerRefresher); ok {
+				salesforcePartnerHandler = handler.NewSalesforcePartnerHandler(service.NewPartnerRefreshService(refresher, accessSvc))
+			}
+			return svc
+		}
 		if cfg.CSMMigrationSalesforceMembershipIngestEnabled {
 			// The membership branch (Project_Contact__c / Contact envelopes)
 			// writes user/account_contact/project_contact rows and the
 			// DATABASE onboarding step, and publishes project_contact.invited
-			// when eventPublisher is configured (nil is a no-op there).
+			// when eventPublisher is configured (nil is a no-op there). Its
+			// Contact writer writes a contact's user/account_contact rows
+			// even without a membership, recording the ledger.
+			stepRepo := repository.NewOnboardingStepRepository(db)
 			membershipIngestSvc = service.NewSalesforceEventServiceWithMembershipIngest(
-				accountIngestRepo, salesEntityClient, service.MembershipIngest{
+				accountIngestRepo, salesEntityClient, ingestSupport, service.MembershipIngest{
 					Memberships: repository.NewProjectMembershipRepository(db),
-					Steps:       repository.NewOnboardingStepRepository(db),
+					Steps:       stepRepo,
 					SalesEntity: salesEntityClient,
+					Contacts:    repository.NewSalesforceContactRepository(db),
 					Publisher:   projectEventPublisher,
 				})
+			membershipIngestSvc = withPartnerIngest(withOpportunityIngest(membershipIngestSvc))
 			salesforceEventHandler = handler.NewSalesforceEventHandler(membershipIngestSvc)
+
+			// The delayed-retry job re-runs memberships whose project or
+			// account was not in CSM when their event arrived. It lives here
+			// rather than in cmd/api/main.go because it needs this very
+			// service (with its publisher, so a re-run invitation is still
+			// announced) and only makes sense when the membership ingest is
+			// on. SALESFORCE_INGEST_RETRY_INTERVAL=0 turns it off.
+			if cfg.SalesforceIngestRetryInterval > 0 {
+				retrier, ok := membershipIngestSvc.(service.MembershipReingester)
+				if !ok {
+					panic("salesforce: membership ingest service does not implement MembershipReingester")
+				}
+				retryWorker := service.NewSalesforceIngestRetryWorker(stepRepo, retrier, ingestSupport.States, cfg.SalesforceIngestRetryInterval)
+				if opp, ok := membershipIngestSvc.(service.OpportunityReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityOpportunity] = opp.RetryOpportunityIngest
+				}
+				if link, ok := membershipIngestSvc.(service.LinkedOpportunityReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityLinkedOpportunity] = link.RetryLinkedOpportunityIngest
+				}
+				if project, ok := membershipIngestSvc.(service.ProjectReingester); ok && cfg.CSMMigrationSalesforceProjectIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityProject] = project.RetryProjectIngest
+				}
+				if inv, ok := membershipIngestSvc.(service.InvoiceReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityInvoice] = inv.RetryInvoiceIngest
+				}
+				if li, ok := membershipIngestSvc.(service.OpportunityLineItemReingester); ok && cfg.CSMMigrationSalesforceOpportunityIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityOpportunityLineItem] = li.RetryOpportunityLineItemIngest
+				}
+				if partners, ok := membershipIngestSvc.(service.PartnerReingester); ok && cfg.CSMMigrationSalesforcePartnerIngestEnabled {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityAccountPartners] = partners.RetryPartnerRefresh
+				}
+				// The Contact writer runs under the membership ingest, which is
+				// on whenever this job runs, so its retrier needs no extra flag.
+				if contact, ok := membershipIngestSvc.(service.ContactReingester); ok {
+					retryWorker.EntityRetriers[domain.SalesforceIngestEntityContact] = contact.RetryContactIngest
+				}
+				ingestRetryWG.Add(1)
+				go func() {
+					defer ingestRetryWG.Done()
+					retryWorker.Run(ingestRetryCtx)
+				}()
+				log.Printf("salesforce ingest retry worker enabled (every %s)", cfg.SalesforceIngestRetryInterval)
+			}
 		} else {
-			salesforceEventHandler = handler.NewSalesforceEventHandler(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient))
+			salesforceEventHandler = handler.NewSalesforceEventHandler(withPartnerIngest(withOpportunityIngest(service.NewSalesforceEventService(accountIngestRepo, salesEntityClient, ingestSupport))))
 		}
 	}
 
@@ -603,7 +730,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// fixed (every dual-write case creation silently failed clock
 		// registration with a foreign-key violation).
 		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, nil)
-		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo, snWritebackDispatcher, snCaseMirrorSvc, slaEngineSvc)
+		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo, snWritebackDispatcher, snCaseMirrorSvc, slaEngineSvc, cfg.CSEngineerRole)
 		// Case ATTACHMENTS are ServiceNow-only in this mode, permanently —
 		// unlike case metadata (CREATE/UPDATE above), not a pilot scope
 		// decision but a hard requirement: the sftpgo-backed Postgres
@@ -885,6 +1012,36 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if cfg.DataSource == config.DataSourceServiceNow {
 		outageHandler = handler.NewOutageHandler(service.NewServiceNowOutageService(serviceNowIntegrationServiceClient))
 	}
+
+	// cloudStatusHandler is Postgres-only, and unconditionally so even though
+	// the outage endpoints above are ServiceNow-only. It reads the mirrored
+	// `outage` table directly rather than through the integration service:
+	// the sweep is a background decision over every in-scope outage, not a
+	// user-facing read, and routing it through ServiceNow would both reproduce
+	// the flow it is replacing and make the port depend on the system being
+	// decommissioned.
+	// The public status dashboard's reads, consumed by
+	// wso2-enterprise/uptime-dashboard via csm-integration-service. They
+	// replace five ServiceNow Scripted REST APIs and have no
+	// ServiceNow-backed counterpart here.
+	//
+	// *** GATED ON db != nil LIKE EVERY OTHER POSTGRES-ONLY HANDLER. *** An
+	// earlier version built these unconditionally. With
+	// DATA_SOURCE=servicenow the pool is nil, so the first request to any
+	// /cloud-status or /internal/cloud-status route dereferenced nil --
+	// Recovery caught the panic and returned a 500, which is a confusing
+	// answer to a route that simply is not available in that mode. Leaving
+	// them unregistered gives an honest 404 instead.
+	var cloudStatusDashboardHandler *handler.CloudStatusDashboardHandler
+	var cloudStatusHandler *handler.CloudStatusHandler
+	if db != nil {
+		cloudStatusDashboardHandler = handler.NewCloudStatusDashboardHandler(
+			service.NewCloudStatusDashboardService(repository.NewCloudStatusDashboardRepository(db)),
+		)
+		cloudStatusHandler = handler.NewCloudStatusHandler(
+			service.NewCloudStatusService(repository.NewCloudStatusRepository(db), cfg.CloudStatusServiceIDs),
+		)
+	}
 	// globalHandler is wired for both data sources now: GetSystemMetadata has
 	// a Postgres-backed implementation (globalService, reusing
 	// referenceDataRepo above); GlobalSearch does not yet, and returns a
@@ -907,9 +1064,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// source.
 	instanceRepo := repository.NewInstanceRepository(repository.NewScoped(db))
 	var activeInstanceSvc service.InstanceService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeInstanceSvc = service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		// Read-only fallback to ServiceNow, same reasoning as
+		// deploymentService/deployedProductService under this data source
+		// (see instanceService.snMirror's own doc comment): Postgres's
+		// instance/usage-tracking tables were never backfilled with
+		// ServiceNow's existing history.
+		snInstanceMirrorSvc := service.NewServiceNowInstanceService(serviceNowIntegrationServiceClient)
+		activeInstanceSvc = service.NewInstanceServiceWithSNFallback(instanceRepo, snInstanceMirrorSvc)
+	default:
 		activeInstanceSvc = service.NewInstanceService(instanceRepo)
 	}
 	instanceHandler := handler.NewInstanceHandler(activeInstanceSvc)
@@ -996,6 +1162,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	if salesforceEventHandler != nil {
 		mux.HandleFunc("POST /salesforce/events", salesforceEventHandler.HandleEvent)
+	}
+	if salesforcePartnerHandler != nil {
+		mux.HandleFunc("POST /salesforce/accounts/{sfId}/refresh-partners", salesforcePartnerHandler.RefreshPartners)
 	}
 	if onboardingStepHandler != nil {
 		mux.HandleFunc("PUT /onboarding-steps/{membershipSfId}/{step}", onboardingStepHandler.UpsertOnboardingStep)
@@ -1148,6 +1317,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	} else if productVersionHandler != nil {
 		mux.HandleFunc("POST /products/{id}/versions/search", productVersionHandler.SearchProductVersions)
 	}
+	// Always Postgres, including when products themselves are read from
+	// ServiceNow. The literal path does not collide with /products/{id}.
+	if db != nil {
+		productRepoMappingHandler := handler.NewProductRepoMappingHandler(
+			service.NewProductRepoMappingService(repository.NewProductRepoMappingRepository(db)))
+		mux.HandleFunc("GET /products/github-repo", productRepoMappingHandler.Get)
+	}
 	mux.HandleFunc("POST /deployments", deploymentHandler.CreateDeployment)
 	mux.HandleFunc("POST /deployments/search", deploymentHandler.SearchDeployments)
 	mux.HandleFunc("PATCH /deployments/{id}", deploymentHandler.PatchDeployment)
@@ -1270,6 +1446,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /outages/{id}/communications/search", outageHandler.SearchOutageCommunications)
 	}
 
+	// Cloud status webhooks: service-to-service, called by csm-scheduled-tasks.
+	if cloudStatusDashboardHandler != nil {
+		mux.HandleFunc("GET /cloud-status/monitors", cloudStatusDashboardHandler.Monitors)
+		mux.HandleFunc("GET /cloud-status/incidents", cloudStatusDashboardHandler.Incidents)
+		mux.HandleFunc("GET /cloud-status/availabilities", cloudStatusDashboardHandler.Availabilities)
+		mux.HandleFunc("GET /cloud-status/availability-history", cloudStatusDashboardHandler.AvailabilityHistory)
+		mux.HandleFunc("GET /cloud-status/incidents/{id}", cloudStatusDashboardHandler.IncidentDetail)
+	}
+	if cloudStatusHandler != nil {
+		mux.HandleFunc("POST /internal/cloud-status/sweep", cloudStatusHandler.Sweep)
+		mux.HandleFunc("GET /internal/cloud-status/pending", cloudStatusHandler.Pending)
+		mux.HandleFunc("POST /internal/cloud-status/{id}/delivery", cloudStatusHandler.RecordDelivery)
+	}
+
 	mux.HandleFunc("POST /problems", internalOnly(accessSvc, problemHandler.CreateProblem))
 	mux.HandleFunc("POST /problems/search", internalOnly(accessSvc, problemHandler.SearchProblems))
 	mux.HandleFunc("POST /problems/aggregate", internalOnly(accessSvc, problemHandler.AggregateProblems))
@@ -1321,8 +1511,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	// Both producers are closed together: they are constructed under the
 	// same conditions and neither caller has any reason to outlive the
-	// other.
+	// other. The Salesforce ingest retry worker stops first, and is waited
+	// for, so a re-run in flight is not handed a publisher that has already
+	// gone away. Cancelling its context also cancels the re-run's own
+	// context (retryOne derives from it), so the wait is short.
 	closePublishers := func() {
+		stopIngestRetry()
+		ingestRetryWG.Wait()
 		if eventPublisher != nil {
 			eventPublisher.Close()
 		}

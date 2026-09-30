@@ -367,7 +367,7 @@ type deployedProductRepo struct {
 
 // NewDeployedProductRepository constructs a DeployedProductRepository whose
 // every query runs under the caller identity on ctx (deployed_product has
-// row-level security, migration 0171).
+// row-level security, migration 0172).
 func NewDeployedProductRepository(db *Scoped) DeployedProductRepository {
 	return &deployedProductRepo{db: db}
 }

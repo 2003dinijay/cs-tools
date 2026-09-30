@@ -14,13 +14,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Regression test for migration 0171: deployment and deployed_product now
+// Regression test for migration 0172: deployment and deployed_product now
 // carry project-membership row-level security. Reads go through the real
 // DeploymentRepository / DeployedProductRepository Go code (not just the SQL
 // policy in isolation), writes through repository.Scoped so the exact same
-// identity plumbing production uses is what the policies see. Before 0171 a
+// identity plumbing production uses is what the policies see. Before 0172 a
 // customer on project A could list project B's deployments and deployed
-// products. Runs against a real Postgres with 0171 applied. Skipped without
+// products. Runs against a real Postgres with 0172 applied. Skipped without
 // CASE_STATS_TEST_DSN.
 //
 //	CASE_STATS_TEST_DSN=postgres://... go test ./internal/repository/ -run DeploymentRLS
@@ -185,7 +185,7 @@ func TestDeploymentRLSIntegration_ProjectFilterCannotReachAForeignProject(t *tes
 	repo := repository.NewDeploymentRepository(repository.NewScoped(pool))
 
 	// The exact request the portal sends: an explicit projectIds filter naming
-	// a project the caller does not belong to. This is the leak 0171 closes.
+	// a project the caller does not belong to. This is the leak 0172 closes.
 	req := domain.SearchDeploymentsRequest{Pagination: domain.Pagination{Limit: 50}, ProjectIDs: []string{depProjectTwo}}
 	views, total, err := repo.SearchDeployments(depCtx(repository.SearchScope{ViewerEmail: depMemberOne}), req)
 	if err != nil {
