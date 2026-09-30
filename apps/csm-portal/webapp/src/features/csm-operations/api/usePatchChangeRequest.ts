@@ -37,13 +37,13 @@ export interface PatchChangeRequestInput {
  *
  * The detail and any cached list/search are invalidated on both success
  * *and* error (`onSettled`, not just `onSuccess`): a state-changing patch
- * (e.g. `requestApproval`) can commit upstream and still be reported back as
- * an error — a response-parsing failure on a slim success receipt has done
- * exactly this. Trusting a cached "unchanged" record after such an error is
- * what lets a state-gated action (like Request approval) look re-enabled
- * when the record has actually already moved on; refetching after every
- * attempt keeps the next pre-flight check honest regardless of which side
- * of that ambiguity a given failure falls on.
+ * (e.g. `state`) can commit upstream and still be reported back as an error —
+ * a response-parsing failure on a slim success receipt has done exactly this.
+ * Trusting a cached "unchanged" record after such an error is what lets a
+ * state-gated action (like Move to Assess) look re-enabled when the record
+ * has actually already moved on; refetching after every attempt keeps the
+ * next pre-flight check honest regardless of which side of that ambiguity a
+ * given failure falls on.
  */
 export function usePatchChangeRequest(): UseMutationResult<
   BePatchChangeRequestResponse,

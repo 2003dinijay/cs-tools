@@ -18,12 +18,10 @@ package repository_test
 
 import (
 	"context"
-	"errors"
 	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
@@ -63,14 +61,21 @@ func seedChangeRequestForApprovalTest(t *testing.T, pool *pgxpool.Pool, state st
 		changeRequestApprovalTestID, state)
 }
 
-// TestChangeRequestIntegration_RequestApprovalRejectsNonNewState guards
-// against the regression CodeRabbit flagged on PR #2132: PatchChangeRequest's
-// {requestApproval: true} branch used to write state=ASSESS unconditionally
-// whenever the caller didn't also send an explicit state, regardless of the
-// record's actual current state -- so a stale/replayed request against a
-// change request already at, say, Review or Closed would silently regress it
-// back to Assess. It must now be rejected instead.
-func TestChangeRequestIntegration_RequestApprovalRejectsNonNewState(t *testing.T) {
+// TestChangeRequestIntegration_RequestApprovalIsBookkeepingOnly confirms the
+// corrected behavior: {requestApproval: true} always sets
+// change_request.approval = 'REQUESTED' and never touches state, regardless
+// of the change request's current state. This replaces two prior tests
+// (TestChangeRequestIntegration_RequestApprovalRejectsNonNewState/
+// TestChangeRequestIntegration_RequestApprovalAdvancesNewToAssess) that
+// asserted the earlier, now-confirmed-wrong model -- PatchChangeRequest used
+// to also force state=ASSESS for a change request in New (and reject the
+// request with a ConflictError for any other state) modeling New->Assess as
+// an approval-gated ceremony. Checked against the real ServiceNow instance:
+// New->Assess is a plain, ungated state change like every other transition,
+// unrelated to approval at all -- the one real approval-gated transition is
+// Assess->Authorize, handled entirely by DecideChangeRequestApproval, which
+// this test does not touch.
+func TestChangeRequestIntegration_RequestApprovalIsBookkeepingOnly(t *testing.T) {
 	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
 	if dsn == "" {
 		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
@@ -82,51 +87,30 @@ func TestChangeRequestIntegration_RequestApprovalRejectsNonNewState(t *testing.T
 	defer pool.Close()
 
 	repo := repository.NewChangeRequestRepository(pool)
-	seedChangeRequestForApprovalTest(t, pool, "REVIEW")
 
-	yes := true
-	_, err = repo.PatchChangeRequest(context.Background(), changeRequestApprovalTestID,
-		domain.PatchChangeRequestRequest{RequestApproval: &yes}, "cr-approval-test")
+	for _, seedState := range []string{"NEW", "REVIEW", "CLOSED"} {
+		t.Run(seedState, func(t *testing.T) {
+			seedChangeRequestForApprovalTest(t, pool, seedState)
 
-	var conflict *apierror.ConflictError
-	if !errors.As(err, &conflict) {
-		t.Fatalf("PatchChangeRequest(requestApproval=true) on a Review-state change request: got err=%v, want *apierror.ConflictError", err)
-	}
+			yes := true
+			_, err := repo.PatchChangeRequest(context.Background(), changeRequestApprovalTestID,
+				domain.PatchChangeRequestRequest{RequestApproval: &yes}, "cr-approval-test")
+			if err != nil {
+				t.Fatalf("PatchChangeRequest(requestApproval=true) on a %s-state change request: %v", seedState, err)
+			}
 
-	var gotState *string
-	if scanErr := pool.QueryRow(context.Background(),
-		`SELECT state::TEXT FROM change_request WHERE id = $1`, changeRequestApprovalTestID).Scan(&gotState); scanErr != nil {
-		t.Fatalf("read back state: %v", scanErr)
-	}
-	if gotState == nil || *gotState != "REVIEW" {
-		t.Fatalf("state after rejected approval request = %v, want unchanged \"REVIEW\"", gotState)
-	}
-}
-
-// TestChangeRequestIntegration_RequestApprovalAdvancesNewToAssess is the
-// companion positive case: a change request genuinely in New must still
-// advance to Assess exactly as before this fix.
-func TestChangeRequestIntegration_RequestApprovalAdvancesNewToAssess(t *testing.T) {
-	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
-	if dsn == "" {
-		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer pool.Close()
-
-	repo := repository.NewChangeRequestRepository(pool)
-	seedChangeRequestForApprovalTest(t, pool, "NEW")
-
-	yes := true
-	got, err := repo.PatchChangeRequest(context.Background(), changeRequestApprovalTestID,
-		domain.PatchChangeRequestRequest{RequestApproval: &yes}, "cr-approval-test")
-	if err != nil {
-		t.Fatalf("PatchChangeRequest(requestApproval=true) on a New-state change request: %v", err)
-	}
-	if got.State == nil || *got.State != "assess" {
-		t.Fatalf("state after approval request = %v, want \"assess\"", got.State)
+			var gotState, gotApproval *string
+			if scanErr := pool.QueryRow(context.Background(),
+				`SELECT state::TEXT, approval::TEXT FROM change_request WHERE id = $1`, changeRequestApprovalTestID).
+				Scan(&gotState, &gotApproval); scanErr != nil {
+				t.Fatalf("read back state/approval: %v", scanErr)
+			}
+			if gotState == nil || *gotState != seedState {
+				t.Fatalf("state after requestApproval=true = %v, want unchanged %q", gotState, seedState)
+			}
+			if gotApproval == nil || *gotApproval != "REQUESTED" {
+				t.Fatalf("approval after requestApproval=true = %v, want \"REQUESTED\"", gotApproval)
+			}
+		})
 	}
 }

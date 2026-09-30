@@ -1061,42 +1061,23 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 	if req.IsCustomerReviewed != nil {
 		addCR("is_customer_reviewed = $%d", *req.IsCustomerReviewed)
 	}
+	// RequestApproval is a pure bookkeeping flag: it records that approval
+	// has been requested (change_request.approval = 'REQUESTED') and has no
+	// state-transition side effect of its own. This used to also force
+	// state to ASSESS when req.State wasn't separately provided, modeling
+	// New->Assess as an approval-gated ceremony -- confirmed against the
+	// real ServiceNow instance to be wrong: New->Assess (like every other
+	// non-approval-gated transition) is a plain, ungated state change, no
+	// different from picking a new value from a dropdown, and has nothing
+	// to do with approval at all. The frontend now sends a plain
+	// {state: "assess"} for that transition, handled generically by the
+	// req.State branch above -- no special casing needed here for
+	// New->Assess specifically. The one real approval-gated transition is
+	// Assess->Authorize, which is unrelated to this flag entirely and is
+	// handled by DecideChangeRequestApproval, which already cascades
+	// change_request.state forward on its own.
 	if req.RequestApproval != nil && *req.RequestApproval {
 		addCR("approval = $%d::change_request_approval_enum", "REQUESTED")
-		// The New -> Assess promote action sends {requestApproval: true}
-		// rather than {state: "assess"} (see ChangeRequestActionBar.tsx /
-		// buildTransitionPatch on the frontend -- "assess" is the one target
-		// requested through the approval workflow, not a raw state PATCH).
-		// An earlier revision of this handler only recorded the approval
-		// request itself, never advancing state -- a real, reported bug:
-		// with legalChangeRequestNextStates now actually populated, clicking
-		// "Request Approval" got a 200 back but the record's own state (and
-		// therefore its own next legal action) never moved off New, so the
-		// same button just reappeared. req.State is never also set for this
-		// same request (the frontend sends one or the other, never both),
-		// so this cannot conflict with the req.State branch above.
-		//
-		// Only a record actually sitting in New may advance this way: the
-		// crQuery below filters solely by id, so nothing stops this branch
-		// from writing ASSESS over a record already at, say, Implement or
-		// Closed if a stale/replayed {requestApproval: true} request arrived
-		// for it. Locking the row's current state here (in the same
-		// transaction as the update below) closes that gap; a concurrent
-		// second RequestApproval racing this one blocks on the lock rather
-		// than both reading New and both writing ASSESS.
-		if req.State == nil {
-			var currentState string
-			if err := tx.QueryRow(ctx, `SELECT state FROM change_request WHERE id = $1 FOR UPDATE`, id).Scan(&currentState); err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					return domain.ChangeRequest{}, &apierror.NotFoundError{Msg: "change request not found"}
-				}
-				return domain.ChangeRequest{}, fmt.Errorf("patch change request: check current state: %w", err)
-			}
-			if strings.ToLower(currentState) != string(domain.ChangeRequestStateNew) {
-				return domain.ChangeRequest{}, &apierror.ConflictError{Msg: "approval can only be requested while the change request is in New, not " + strings.ToLower(currentState)}
-			}
-			addCR("state = $%d::change_request_state_enum", "ASSESS")
-		}
 	}
 	// **T fields: nil outer = omitted, non-nil outer with nil inner = explicit
 	// null (clear the column), otherwise set it.

@@ -2009,21 +2009,33 @@ the one value ServiceNow's real workflow always assigns on create.
 shared with `PatchChangeRequestRequest`) but has no effect at creation and
 is intentionally ignored by this insert.
 
-**The New→Assess promote action had a second, related bug**: it sends
-`{requestApproval: true}` rather than `{state: "assess"}` (see
-`ChangeRequestActionBar.tsx`/`buildTransitionPatch` on the frontend), and
-`PatchChangeRequest`'s handling of `RequestApproval` only ever recorded
-`change_request.approval = 'REQUESTED'` — it never advanced `state`. Before
-`LegalNextStates` was populated at all, this was unreachable (the button
-never appeared for any state, New included), so the gap was invisible.
-Populating `LegalNextStates` made it reachable for the first time, and it
-became a real, visible dead end: clicking "Request Approval" got a
-successful response, but the record's own state (and therefore its next
-legal action) never left New, so the same button just reappeared.
-`PatchChangeRequest` now also sets `state = 'ASSESS'` when
-`RequestApproval` is true and `req.State` wasn't itself separately
-provided (the frontend only ever sends one or the other, never both, so
-this can't double-write the column).
+**New→Assess is a plain, ungated state change — `RequestApproval` has
+nothing to do with it.** An earlier revision of this section documented the
+New→Assess promote action as sending `{requestApproval: true}` (see
+`ChangeRequestActionBar.tsx`/`buildTransitionPatch` on the frontend) rather
+than `{state: "assess"}`, and had `PatchChangeRequest` locally force
+`state = 'ASSESS'` whenever `RequestApproval` was true and `req.State`
+wasn't itself separately provided — modeling New→Assess as a special
+"request approval" ceremony, gated on the record actually being in New
+(rejecting with a `ConflictError` otherwise). **Checked against the real
+ServiceNow instance and confirmed wrong**: New→Assess is a plain, direct,
+ungated state change — like picking a new value from a dropdown — with no
+relationship to approval at all. The frontend now sends a plain
+`{state: "assess"}` for this transition, exactly like every other one, and
+`PatchChangeRequest` handles it generically via its existing
+`if req.State != nil { ... }` branch, with no special casing for New→Assess.
+
+`RequestApproval` is now a pure bookkeeping flag: `{requestApproval: true}`
+still sets `change_request.approval = 'REQUESTED'` (other code/displays may
+still care about that field), but has **no state-transition side effect at
+all**, and is no longer gated on the caller's current state — it can be sent
+against a change request in any state and only ever touches `approval`.
+
+The one real approval-gated transition remains **Assess→Authorize**, handled
+entirely by the separate `POST /change-requests/{id}/approvals/decision`
+endpoint (`DecideChangeRequestApproval`) and its own automatic cascade of
+`change_request.state` forward on approval — unrelated to `RequestApproval`
+and unchanged by any of this.
 
 **Linking happens entirely through `PATCH`, never at creation** —
 `CreateChangeRequestRequest` has no project/case field at all;
