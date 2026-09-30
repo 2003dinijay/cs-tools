@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,6 +76,14 @@ type caseService struct {
 	// other mode (plain caseService never creates a case of its own that
 	// needs this — see NewCaseService).
 	slaEngine SLAEngineService
+	// csEngineerRole is config.Config.CSEngineerRole (CS_ENGINEER_ROLE) --
+	// the same role name snCaseService's own csEngineerRole field uses,
+	// shared rather than duplicated: "CS engineer" and "support engineer"
+	// are the same real-world role, just checked here via a different
+	// lookup (see completeResponseSLAOnComment's own doc comment). ""
+	// (unconfigured) means this can never be confirmed, so that hook skips
+	// entirely rather than guessing.
+	csEngineerRole string
 }
 
 // caseResolutionFields carries the resolution data that accompanies a
@@ -167,13 +176,14 @@ func NewCaseService(repo repository.CaseRepository, userRepo repository.UserRepo
 // whose CreateCase/UpdateCase perform the real ServiceNow POST/PATCH. It is
 // never made the active CaseService here — reads always stay on Postgres in
 // this mode.
-func NewCaseServiceWithSNWriteback(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService, projectContactRepo repository.ProjectContactRepository, dispatcher *SNWritebackDispatcher, mirror CaseService, slaEngine SLAEngineService) CaseService {
+func NewCaseServiceWithSNWriteback(repo repository.CaseRepository, userRepo repository.UserRepository, publisher EventPublisherService, access AccessService, projectContactRepo repository.ProjectContactRepository, dispatcher *SNWritebackDispatcher, mirror CaseService, slaEngine SLAEngineService, csEngineerRole string) CaseService {
 	return &caseService{
 		repo: repo, userRepo: userRepo, publisher: publisher, access: access,
 		projectContactRepo: projectContactRepo,
 		snWriteback:        dispatcher,
 		snMirror:           mirror,
 		slaEngine:          slaEngine,
+		csEngineerRole:     csEngineerRole,
 	}
 }
 
@@ -783,6 +793,15 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 		return domain.CreateCaseCommentResponse{}, err
 	}
 
+	// Best-effort, in-process only -- deliberately not gated on s.publisher
+	// (never touches Event Hub), same reasoning
+	// snCaseService.applyResponseSLAOnComment's own doc comment gives for
+	// its own, separate ServiceNow-mode hook: a deployment without Event
+	// Hub configured must not lose SLA tracking as a side effect either.
+	if req.Type == domain.CommentTypeComment {
+		s.completeResponseSLAOnComment(ctx, req.CaseID, actorEmail)
+	}
+
 	// Event publishing follows the write, not DATA_SOURCE -- see
 	// publishCaseCreatedEvent's own doc comment for why. authorName reuses
 	// the actor already resolved above -- unlike snCaseService's own
@@ -841,6 +860,45 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 			CreatedBy: actorEmail,
 		},
 	}, nil
+}
+
+// completeResponseSLAOnComment best-effort marks the case's CSM-native
+// "response" SLA clock complete (SLAEngineService.CompleteResponseClock,
+// idempotent -- see repository.SLAEngineRepository.CompleteClock's own doc
+// comment) when actorEmail holds s.csEngineerRole. This is caseService's
+// own equivalent of snCaseService.applyResponseSLAOnComment, which caseService
+// never reached before now -- a real, live-observed gap: a support
+// engineer's reply never stopped the response clock on this path, so it
+// kept running to breach regardless of how quickly the case was actually
+// answered. Shares the one CS_ENGINEER_ROLE config with that hook --
+// "CS engineer" and "support engineer" are the same real-world role, just
+// checked here via a different lookup (GetUserRoles) than snCaseService's
+// own.
+//
+// Skips entirely, rather than guessing, when: s.slaEngine or
+// s.csEngineerRole is unset (no database, or the role name isn't
+// configured); actorEmail doesn't resolve to a real user row (the M2M
+// CreateCaseCommentAs path deliberately has none -- see that method's own
+// doc comment, "no GetUserByEmail lookup happens here"); or the role lookup
+// itself fails. None of these fail the comment creation itself -- the
+// comment has already been written by the time this runs.
+func (s *caseService) completeResponseSLAOnComment(ctx context.Context, caseID, actorEmail string) {
+	if s.slaEngine == nil || s.csEngineerRole == "" {
+		return
+	}
+	user, err := s.userRepo.GetUserByEmail(ctx, actorEmail)
+	if err != nil {
+		return
+	}
+	roles, err := s.userRepo.GetUserRoles(ctx, user.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "create comment: response SLA not evaluated, user role lookup failed", "caseId", caseID)
+		return
+	}
+	if !slices.Contains(roles, s.csEngineerRole) {
+		return
+	}
+	s.slaEngine.CompleteResponseClock(ctx, caseID)
 }
 
 // SearchCaseComments implements CaseService.
@@ -1075,6 +1133,21 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 		s.detectBillableStatusChange(ctx, req.ID, oldSeverity, c.Severity)
 	}
 
+	// Deliberately independent of s.publisher (never touches Event Hub) --
+	// same reasoning snCaseService's own applyCaseStateSLAEffects call site
+	// gives (SLAEngineService.ApplyCaseStateEffects' own doc comment): a
+	// deployment without Event Hub configured must not lose SLA
+	// pause/resume/completion as a side effect. req.State != nil alone is
+	// enough, not a genuine-change check -- every effect
+	// ApplyCaseStateEffects applies is idempotent, so a caller re-PATCHing
+	// the case's own current state just redundantly re-applies the same
+	// effect harmlessly. This is a real, live-observed gap this fixes: the
+	// Postgres/dual-write path never paused/resumed/completed workaround or
+	// resolution clocks on any state transition at all before now.
+	if s.slaEngine != nil && req.State != nil && c.State != nil {
+		s.slaEngine.ApplyCaseStateEffects(ctx, req.ID, *c.State)
+	}
+
 	// Activity-feed logging follows the write, same as event publishing
 	// below -- see CaseRepository.RecordCaseFieldChangeActivity's own doc
 	// comment for why this table needed a write path at all on this data
@@ -1106,6 +1179,36 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			slog.ErrorContext(ctx, "update case: enrich case for case.severity_changed publish failed", "caseId", req.ID)
 		} else {
 			publishSeverityChangedEvent(ctx, s.publisher, req.ID, string(derefSeverity(oldSeverity)), string(*c.Severity), cv)
+			// Deliberately independent of s.publisher -- see
+			// reviseCaseSLAClocks' own doc comment (sn_case_service.go) for
+			// why revising SLA clocks must not depend on Event Hub being
+			// configured. A real, live-observed gap this fixes: the
+			// Postgres/dual-write path never cancelled a case's old-severity
+			// clocks and registered fresh ones on a severity change at all
+			// before now, so they kept running against durations that no
+			// longer applied to the case's real severity.
+			if s.slaEngine != nil {
+				projectID := ""
+				if cv.ProjectDetails != nil {
+					projectID = cv.ProjectDetails.ID
+				}
+				s.slaEngine.ReviseCaseClocks(ctx, req.ID, c.Severity, projectID)
+				// ReviseCaseClocks' own replacement clocks always start
+				// IN_PROGRESS, with no awareness of the case's current
+				// state -- a case already paused (Awaiting Info/Solution
+				// Proposed) at the moment its severity changes would
+				// otherwise get fresh workaround/resolution clocks that
+				// immediately start counting down unpaused, producing a
+				// false breach later. Re-applying ApplyCaseStateEffects
+				// against the case's already-known current state (State is
+				// mutually exclusive with Severity on one request, so cv's
+				// State here is unaffected by this update) re-pauses them
+				// to match reality; a harmless no-op when the case isn't
+				// currently paused.
+				if cv.State != nil {
+					s.slaEngine.ApplyCaseStateEffects(ctx, req.ID, *cv.State)
+				}
+			}
 		}
 	}
 
@@ -1804,6 +1907,20 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 	updatedOn, err := s.repo.UpdateCaseFields(ctx, req, actor.ID, actor.Email)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
+	}
+
+	// Deliberately independent of s.publisher (never touches Event Hub) --
+	// same reasoning every other SLAEngineService call site in this file
+	// gives. WorkaroundProvided is the one genuine "workaround was
+	// provided" signal anywhere in the domain model -- unlike
+	// ApplyCaseStateEffects (called from UpdateCase's own State branch),
+	// which only ever pauses/resumes this clock, never completes it.
+	// false (a recall) is deliberately not handled the opposite way here:
+	// there's no "reopen a completed clock" operation on SLAEngineRepository,
+	// and recalling a workaround is rare enough that this is a real, known
+	// gap rather than a fix worth building speculatively.
+	if s.slaEngine != nil && req.WorkaroundProvided != nil && *req.WorkaroundProvided {
+		s.slaEngine.CompleteWorkaroundClock(ctx, req.ID)
 	}
 
 	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write

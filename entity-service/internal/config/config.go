@@ -118,6 +118,28 @@ type Config struct {
 	// csm-sync-service still copies these tables from ServiceNow and the two
 	// writers would create duplicate rows (different row ids, non-unique sf_id).
 	CSMMigrationSalesforceOpportunityIngestEnabled bool
+	// CSMMigrationSalesforceProjectIngestEnabled turns on the Project__c
+	// branch of POST /salesforce/events, from
+	// CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED=true. Defaults to false:
+	// Project__c envelopes are acknowledged and ignored. On, it updates the
+	// ten Salesforce-owned project columns of rows CSM already has.
+	CSMMigrationSalesforceProjectIngestEnabled bool
+	// CSMMigrationSalesforceProjectInsertEnabled lets the Project ingest (and
+	// EnsureProject, for memberships and linked opportunities) insert
+	// projects CSM does not have, from
+	// CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED=true. Defaults to false,
+	// the update-only mode: while csm-sync-service still inserts project rows
+	// from ServiceNow, an ingest-created row would make its insert fail on
+	// project.key forever. Turn on at cutover, when csm-sync-service stops.
+	CSMMigrationSalesforceProjectInsertEnabled bool
+	// CSMMigrationSalesforcePartnerIngestEnabled turns on the partner-link
+	// refresh (account_relationship "Is Partner Of" / "Is Customer Of") that
+	// runs after Account events, after partner-contact membership events and
+	// from POST /salesforce/accounts/{sfId}/refresh-partners, from
+	// CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true. Defaults to false:
+	// nothing refreshes partners and the route is not registered, because
+	// csm-sync-service still copies account_relationship from ServiceNow.
+	CSMMigrationSalesforcePartnerIngestEnabled bool
 	// CSMMigrationMembershipRegistrationEnabled turns on POST /users/me/memberships/register,
 	// which marks the signed-in user's still-INVITED memberships as
 	// REGISTERED in Salesforce (see membership_registration_service.go). Defaults to
@@ -210,16 +232,22 @@ type Config struct {
 	// nothing to do with case state) — the two are read by separate
 	// processes/environments and don't interact.
 	CustomerRoles []string
-	// CSEngineerRole is the ServiceNow role name (e.g. an org-specific
-	// "sn_*" role) whose presence on a case comment's resolved author marks
-	// that comment as a qualifying CS-engineer response — see
-	// sn_case_service.go's applyResponseSLAOnComment, which the CSM-native
-	// SLA engine (internal/service/sla_engine_service.go) uses to complete
-	// a case's "response" SLA clock. Deliberately no committed default:
-	// this is organisation-specific vocabulary, same reasoning
-	// CustomerRoles' own doc comment gives. Left unset, that function
-	// simply can't confirm engineer-authorship and skips (logged) — not
-	// fatal, not required by Validate.
+	// CSEngineerRole is the role name (e.g. an org-specific "sn_*" role)
+	// whose presence on a case comment's resolved author marks that comment
+	// as a qualifying CS-engineer/support-engineer response — see
+	// sn_case_service.go's applyResponseSLAOnComment and
+	// case_service.go's completeResponseSLAOnComment, both of which the
+	// CSM-native SLA engine (internal/service/sla_engine_service.go) uses
+	// to complete a case's "response" SLA clock. Deliberately no committed
+	// default: this is organisation-specific vocabulary, same reasoning
+	// CustomerRoles' own doc comment gives. Left unset, those functions
+	// simply can't confirm engineer-authorship and skip (logged) — not
+	// fatal, not required by Validate. Shared by both `snCaseService` (checked
+	// via `SNUserService`'s own role lookup) and `caseService` (checked
+	// against `repository.UserRepository.GetUserRoles`' own user_role
+	// vocabulary) — the same role name is meaningful in both, since
+	// "CS engineer" and "support engineer" are the same real-world role,
+	// not two different configs.
 	CSEngineerRole string
 	// SLARecomputeInterval is how often SLAEngineRecomputeWorker
 	// recomputes every CSM-native "sla" row's elapsed percentage/breach
@@ -251,6 +279,44 @@ type Config struct {
 	// token in Authorization: Bearer. AuthUserTokenAudiences are the client ids
 	// (Asgardeo SPA/application ids) an ID token's aud must contain to be
 	// accepted as a user token.
+	// CloudStatusServiceIDs are the business services whose outages are
+	// published to the public cloud status dashboard, as a comma-separated
+	// list of UUIDs (CLOUD_STATUS_SERVICE_IDS).
+	//
+	// These are `service` rows, NOT service offerings. The ServiceNow flow
+	// this ports dot-walked an outage's configuration item AS a service
+	// offering and compared that offering's PARENT against a list of 14 ids.
+	// Setting offering ids here instead would match nothing and the sweep
+	// would silently never fire.
+	//
+	// Empty means the sweep is a no-op, which it logs. That is the safe
+	// default: an unconfigured deployment posts nothing to a public status
+	// page rather than guessing a scope.
+	CloudStatusServiceIDs []string
+
+	// CloudStatusDrainerEnabled turns on the background drainer that records
+	// outage transitions AND rewrites cloud_monitor.status
+	// (CLOUD_STATUS_DRAINER_ENABLED, default false).
+	//
+	// *** OFF BY DEFAULT BECAUSE OF THE STATUS WRITE. *** While
+	// csm-sync-service's one-time bulk migration is still running, both it and
+	// this drainer can write cloud_monitor.status. Clearing
+	// CLOUD_STATUS_SERVICE_IDS would stop the drainer but also disable the
+	// sweep endpoint and the dashboard reads, so the write needs a switch of
+	// its own.
+	CloudStatusDrainerEnabled bool
+
+	// CloudStatusPollInterval is how often CloudStatusDrainer claims
+	// event_outbox rows for `outage` and `outage_affected_ci`
+	// (CLOUD_STATUS_POLL_INTERVAL). Same envDuration convention as
+	// CRNoticePollInterval.
+	//
+	// This is the FAST path. The reconciliation sweep in
+	// csm-scheduled-tasks reaches the same conclusions on its own schedule
+	// and is what makes a missed drain harmless, so this interval governs
+	// promptness, not correctness.
+	CloudStatusPollInterval time.Duration
+
 	AuthIssuer             string
 	AuthJWKSURL            string
 	AuthUserTokenAudiences []string
@@ -376,6 +442,9 @@ func Load() *Config {
 		CustomerRoles:                                 splitComma(os.Getenv("CUSTOMER_ROLES")),
 		CSEngineerRole:                                os.Getenv("CS_ENGINEER_ROLE"),
 		SLARecomputeInterval:                          envDuration("SLA_RECOMPUTE_INTERVAL", 45*time.Second),
+		CloudStatusServiceIDs:                         splitComma(os.Getenv("CLOUD_STATUS_SERVICE_IDS")),
+		CloudStatusDrainerEnabled:                     os.Getenv("CLOUD_STATUS_DRAINER_ENABLED") == "true",
+		CloudStatusPollInterval:                       envDuration("CLOUD_STATUS_POLL_INTERVAL", 10*time.Second),
 		SalesforceIngestRetryInterval:                 envDurationOrOff("SALESFORCE_INGEST_RETRY_INTERVAL", 5*time.Minute),
 		SalesEntityBaseURL:                            os.Getenv("SALES_ENTITY_BASE_URL"),
 		SalesEntityTokenURL:                           os.Getenv("SALES_ENTITY_TOKEN_URL"),
@@ -397,6 +466,9 @@ func Load() *Config {
 	cfg.AuthInternalClientIDs = ParseInternalClientIDs(cfg.AuthInternalClientIDsRaw)
 	// Set outside the literal so its longer key does not realign every field above.
 	cfg.CSMMigrationSalesforceOpportunityIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED") == "true"
+	cfg.CSMMigrationSalesforceProjectIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED") == "true"
+	cfg.CSMMigrationSalesforceProjectInsertEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED") == "true"
+	cfg.CSMMigrationSalesforcePartnerIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED") == "true"
 	return cfg
 }
 

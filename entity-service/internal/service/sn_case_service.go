@@ -3394,6 +3394,16 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	if s.slaEngine != nil && req.State != nil && resp.Case.State != nil {
 		s.applyCaseStateSLAEffects(ctx, req.ID, derefState(resp.Case.State))
 	}
+	// Deliberately independent of s.publisher, same reasoning as the state
+	// effects call just above. WorkaroundProvided is the one genuine
+	// "workaround was provided" signal anywhere in the domain model --
+	// applyCaseStateSLAEffects only ever pauses/resumes this clock, never
+	// completes it. false (a recall) is deliberately not handled the
+	// opposite way -- see SLAEngineService.CompleteWorkaroundClock's own
+	// doc comment.
+	if s.slaEngine != nil && req.WorkaroundProvided != nil && *req.WorkaroundProvided {
+		s.slaEngine.CompleteWorkaroundClock(ctx, req.ID)
+	}
 	if publishCaseAssign {
 		assigneeName := assigneeEmail
 		if snResp.Case.AssignedTo != nil && snResp.Case.AssignedTo.Name != "" {
@@ -3434,6 +3444,20 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 			projectID = caseBeforeSeverity.ProjectDetails.ID
 		}
 		s.reviseCaseSLAClocks(ctx, req.ID, resp.Case.Severity, projectID)
+		// reviseCaseSLAClocks' own replacement clocks always start
+		// IN_PROGRESS, with no awareness of the case's current state -- a
+		// case already paused (Awaiting Info/Solution Proposed) at the
+		// moment its severity changes would otherwise get fresh
+		// workaround/resolution clocks that immediately start counting
+		// down unpaused, producing a false breach later. Re-applying
+		// applyCaseStateSLAEffects against the case's already-known
+		// current state (State is mutually exclusive with Severity on one
+		// request, so caseBeforeSeverity's State here is unaffected by
+		// this update) re-pauses them to match reality; a harmless no-op
+		// when the case isn't currently paused.
+		if caseBeforeSeverity.State != nil {
+			s.applyCaseStateSLAEffects(ctx, req.ID, *caseBeforeSeverity.State)
+		}
 	}
 
 	return resp, nil
