@@ -812,6 +812,30 @@ func runTicks(ctx context.Context, cfg config, engine *escalation.Engine, rdb *r
 				return fmt.Errorf("reading the stored ladder: %w", err)
 			}
 			if !found {
+				if !cancelled {
+					// Run to its end. The engine clears a ladder in the same
+					// tick that settles its last call, so the snapshot from
+					// the tick before never saw that call placed -- and the
+					// progress lines and the summary both dropped it. The
+					// engine only exhausts a ladder once every call is
+					// settled, so every call not already known to have
+					// failed went out. (A final call the provider rejected
+					// in that same tick is the one case this still reports
+					// as placed; the engine's own work note has it right.)
+					lastPlaced = make([]bool, len(plan.Calls))
+					for i := range lastPlaced {
+						lastPlaced[i] = i >= len(lastFailed) || lastFailed[i] == ""
+					}
+					for i := seen; i < len(plan.Calls); i++ {
+						if !lastPlaced[i] {
+							continue
+						}
+						c := plan.Calls[i]
+						fmt.Printf("  [%7s] %-8s #%d  %-14s called %s  (ladder +%s)\n",
+							short(elapsed), c.Level, c.Ordinal, c.Recipient.Name,
+							maskPhone(c.Recipient.Phone), short(c.At.Sub(trigger)))
+					}
+				}
 				fmt.Printf("\n  the engine has finished with this incident and cleared its state\n")
 				return summarise(ctx, cfg, store, rec, plan, cancelledAtLadderTime, lastPlaced, lastFailed, runStart)
 			}

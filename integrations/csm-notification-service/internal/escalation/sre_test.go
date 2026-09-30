@@ -18,6 +18,7 @@ package escalation
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -506,5 +507,22 @@ func TestConfig_LocalComposeFileLoads(t *testing.T) {
 	}
 	if len(cfg.SRE.Teams.ABTs) != 2 || cfg.SRE.Timing.Policy().Levels[Level1].NotificationInterval != 5*time.Minute {
 		t.Fatalf("sre section = %+v", cfg.SRE)
+	}
+}
+
+// The log channel names each rung the way its own ladder does: an SRE rung is
+// "L2 support", not the CRE ladder's name for LEVEL_1.
+func TestLogNotifier_NamesTheRungByItsLadder(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	plan := Plan{Trigger: Trigger{Routing: RoutingContext{Ladder: LadderSRE}}}
+	if _, err := (logNotifier{}).Deliver(context.Background(), plan, PlannedCall{Level: Level1}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `role="L2 support"`) {
+		t.Fatalf("log line = %s; want role=\"L2 support\"", buf.String())
 	}
 }

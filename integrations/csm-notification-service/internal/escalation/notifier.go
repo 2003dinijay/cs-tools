@@ -129,7 +129,7 @@ func (logNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) (De
 		"incident", plan.Trigger.Number,
 		"priority", plan.Trigger.Priority,
 		"rung", call.Level.String(),
-		"role", call.Level.Role(),
+		"role", call.Level.RoleIn(plan.Trigger.Routing.Ladder),
 		"attempt", call.Ordinal,
 		"name", call.Recipient.Name,
 		"shift", call.Recipient.ShiftCode,
