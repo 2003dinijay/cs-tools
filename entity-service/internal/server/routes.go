@@ -1181,10 +1181,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /change-requests/{id}/approvals/decision", changeRequestHandler.DecideChangeRequestApproval)
 
 	mux.HandleFunc("POST /time-cards/search", timeCardHandler.SearchTimeCards)
-	mux.HandleFunc("POST /time-cards", timeCardHandler.CreateTimeCard)
-	mux.HandleFunc("PATCH /time-cards/{id}", timeCardHandler.UpdateTimeCard)
+	// Time cards are logged, edited and deleted by internal staff only;
+	// customers can read them (the two search routes) but never write. The
+	// gate makes that a property of entity-service itself rather than of
+	// whichever caller happens to sit in front of it. It costs no extra
+	// query: callerIdentityMiddleware has already resolved the caller's scope
+	// and internalOnly reads it back from the request context.
+	mux.HandleFunc("POST /time-cards", internalOnly(accessSvc, timeCardHandler.CreateTimeCard))
+	mux.HandleFunc("PATCH /time-cards/{id}", internalOnly(accessSvc, timeCardHandler.UpdateTimeCard))
 	mux.HandleFunc("POST /cases/time-cards/search", timeCardHandler.SearchCaseTimeCards)
-	mux.HandleFunc("DELETE /time-cards/{id}", timeCardHandler.DeleteTimeCard)
+	mux.HandleFunc("DELETE /time-cards/{id}", internalOnly(accessSvc, timeCardHandler.DeleteTimeCard))
 
 	mux.HandleFunc("POST /catalogs/search", catalogHandler.SearchCatalogs)
 	mux.HandleFunc("GET /catalogs/{catalogId}/items/{catalogItemId}/variables", catalogHandler.GetCatalogItemVariables)
