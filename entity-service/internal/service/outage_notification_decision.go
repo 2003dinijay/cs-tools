@@ -18,6 +18,7 @@ package service
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
@@ -73,6 +74,23 @@ func decideOutageNotification(o domain.OutageForNotification) domain.OutageNotif
 		d.Reason = "Resolution (The Final Email)"
 
 	case phase == domain.OutageNotificationPhaseDeclared && !ended:
+		// *** ONCE PER CHANGE, NOT ONCE PER SWEEP. *** ServiceNow ran this
+		// flow "For each unique change" on the outage record, so this arm was
+		// reached only when the outage had actually been edited. A sweep has
+		// no trigger to inherit: it re-reads every declared, unended outage on
+		// every tick, so without this guard each one mails the whole internal
+		// list again — twelve times an hour at the default */5 schedule, for
+		// as long as the outage stays open.
+		//
+		// The comparison is against the last thing we SAID, not the last time
+		// we looked: last_update_on when we have sent an update, otherwise
+		// declared_on. An outage edited between the declaration and the first
+		// update therefore still earns one.
+		if !outageChangedSince(o, lastSpokeAt(o)) {
+			d.Kind = domain.OutageNotificationNone
+			d.Reason = "no change since the last notice"
+			return d
+		}
 		d.Kind = domain.OutageNotificationUpdate
 		d.Reason = "Update (Everything In-Between)"
 
@@ -144,4 +162,34 @@ func phaseAfter(kind domain.OutageNotificationKind) domain.OutageNotificationPha
 		// there.
 		return domain.OutageNotificationPhaseDeclared
 	}
+}
+
+// lastSpokeAt is the instant of the most recent thing this service said about
+// an outage: the last update if there has been one, otherwise the
+// declaration. Nil when it has said nothing, which cannot happen on the
+// Update arm — that arm requires phase DECLARED — but is handled rather than
+// assumed, because a state row seeded from ServiceNow carries a phase without
+// necessarily carrying our timestamps.
+func lastSpokeAt(o domain.OutageForNotification) *time.Time {
+	if o.State == nil {
+		return nil
+	}
+	if o.State.LastUpdateOn != nil {
+		return o.State.LastUpdateOn
+	}
+	return o.State.DeclaredOn
+}
+
+// outageChangedSince reports whether the outage row was modified after since.
+//
+// Both unknowns are deliberately resolved toward SENDING. A missing
+// updated_on (the column is nullable in the mirror) or a state row with no
+// timestamps of its own — the seeded-from-ServiceNow case — would otherwise
+// silence the update arm permanently for that outage, and a notifier that
+// goes quiet is far harder to notice than one that repeats.
+func outageChangedSince(o domain.OutageForNotification, since *time.Time) bool {
+	if o.UpdatedOn == nil || since == nil {
+		return true
+	}
+	return o.UpdatedOn.After(*since)
 }

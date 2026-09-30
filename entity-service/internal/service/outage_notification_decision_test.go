@@ -177,3 +177,85 @@ func TestPhaseAfter_EveryArmHasAWellDefinedResultingPhase(t *testing.T) {
 		t.Errorf("update -> %q, want DECLARED (unchanged, but known)", p)
 	}
 }
+
+// *** THE UPDATE ARM FIRES ONCE PER CHANGE, NOT ONCE PER SWEEP. ***
+//
+// ServiceNow ran the flow "For each unique change" on the outage record. A
+// sweep inherits no such trigger: it re-reads every declared, unended outage
+// on every tick. Without a guard, one open outage mails the whole internal
+// list twelve times an hour at the default */5 schedule.
+//
+// Each case below pins one half of the rule, and the first two are the ones
+// that regress silently — a notifier that repeats is noisy, but a notifier
+// that goes quiet is nearly invisible.
+func TestDecideOutageNotification_UpdateOnlyAfterTheOutageChanges(t *testing.T) {
+	declared := at("2026-09-30T08:00:00Z")
+
+	withTimes := func(updatedOn, declaredOn, lastUpdateOn *time.Time) domain.OutageForNotification {
+		o := outage(domain.OutageNotificationPhaseDeclared, nil)
+		o.UpdatedOn = updatedOn
+		o.State.DeclaredOn = declaredOn
+		o.State.LastUpdateOn = lastUpdateOn
+		return o
+	}
+
+	tests := []struct {
+		name     string
+		outage   domain.OutageForNotification
+		wantKind domain.OutageNotificationKind
+	}{
+		{
+			// The whole bug: a sweep five minutes later, nothing edited.
+			name:     "unchanged since the declaration sends nothing",
+			outage:   withTimes(at("2026-09-30T07:59:00Z"), declared, nil),
+			wantKind: domain.OutageNotificationNone,
+		},
+		{
+			name:     "edited after the declaration earns one update",
+			outage:   withTimes(at("2026-09-30T08:30:00Z"), declared, nil),
+			wantKind: domain.OutageNotificationUpdate,
+		},
+		{
+			// Compared against what we last SAID, not when we last looked.
+			name:     "unchanged since the last update sends nothing",
+			outage:   withTimes(at("2026-09-30T08:30:00Z"), declared, at("2026-09-30T09:00:00Z")),
+			wantKind: domain.OutageNotificationNone,
+		},
+		{
+			name:     "edited again after the last update earns another",
+			outage:   withTimes(at("2026-09-30T09:30:00Z"), declared, at("2026-09-30T09:00:00Z")),
+			wantKind: domain.OutageNotificationUpdate,
+		},
+		{
+			// An edit landing exactly on the recorded instant is NOT a change.
+			// After() is strict, and equal timestamps are what a same-second
+			// write produces.
+			name:     "an edit at the same instant is not a change",
+			outage:   withTimes(declared, declared, nil),
+			wantKind: domain.OutageNotificationNone,
+		},
+		{
+			// Fail open: the mirror leaves updated_on nullable, and silence
+			// would be permanent for that outage.
+			name:     "a missing updated_on still sends",
+			outage:   withTimes(nil, declared, nil),
+			wantKind: domain.OutageNotificationUpdate,
+		},
+		{
+			// Fail open: a phase seeded from ServiceNow carries no timestamps
+			// of ours.
+			name:     "a state row with no timestamps still sends",
+			outage:   withTimes(at("2026-09-30T08:30:00Z"), nil, nil),
+			wantKind: domain.OutageNotificationUpdate,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decideOutageNotification(tc.outage)
+			if got.Kind != tc.wantKind {
+				t.Fatalf("Kind = %q, want %q (reason %q)", got.Kind, tc.wantKind, got.Reason)
+			}
+		})
+	}
+}

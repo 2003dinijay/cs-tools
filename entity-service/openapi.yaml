@@ -6626,10 +6626,22 @@ paths:
                 $ref: '#/components/schemas/OutageNotificationSweepResponse'
         "400":
           description: Bad request — limit is not an integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "403":
           description: The caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /outages/{id}/notification-state:
     get:
       summary: What has already been sent for one outage.
@@ -6659,12 +6671,28 @@ paths:
                 $ref: '#/components/schemas/OutageNotificationState'
         "400":
           description: Bad request — the id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "403":
           description: The caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: This outage has never been evaluated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /outages/{id}/communications:
     post:
       summary: >-

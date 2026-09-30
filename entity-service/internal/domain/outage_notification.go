@@ -80,6 +80,16 @@ type OutageForNotification struct {
 	// separate state field on an outage — "closing an outage is done by
 	// setting End", as entity-service's own OutageService already documents.
 	EndOn *time.Time `json:"endOn,omitempty"`
+	// UpdatedOn is the outage row's own last-modified instant, and it is what
+	// makes the Update arm fire once per change rather than once per sweep.
+	//
+	// ServiceNow ran this flow "For each unique change" on the record, so its
+	// update branch was reached only when the outage was actually edited. A
+	// sweep has no such trigger: it re-reads every declared, unended outage on
+	// every tick, and without this the whole internal list is mailed again on
+	// each one. At the default */5 that is twelve identical emails an hour,
+	// for as long as the outage stays open.
+	UpdatedOn *time.Time `json:"updatedOn,omitempty"`
 	// SyncedPhase is outage.internal_notification_phase, mirrored from
 	// ServiceNow. READ ONLY, and only to seed a first state row.
 	SyncedPhase OutageNotificationPhase `json:"syncedPhase"`

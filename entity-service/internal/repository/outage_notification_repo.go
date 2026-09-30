@@ -79,6 +79,7 @@ SELECT o.id::text,
        COALESCE(o.type::text, ''),
        o.start_on,
        o.end_on,
+       o.updated_on,
        COALESCE(o.internal_notification_phase::text, 'NONE'),
        COALESCE(s.name, ''),
        COALESCE(so.name, ''),
@@ -123,7 +124,7 @@ func (r *outageNotificationRepo) PendingOutages(ctx context.Context, limit int) 
 		var st domain.OutageNotificationState
 		if err := rows.Scan(
 			&o.OutageID, &o.Number, &o.Name, &o.Message, &o.Type,
-			&o.StartOn, &o.EndOn, &o.SyncedPhase,
+			&o.StartOn, &o.EndOn, &o.UpdatedOn, &o.SyncedPhase,
 			&o.ServiceName, &o.ServiceOfferingName,
 			&stateID, &statePhase, &st.DeclaredOn, &st.ResolvedOn,
 			&st.LastUpdateOn, &st.UpdateCount, &st.SeededFromSync,
