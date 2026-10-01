@@ -43,6 +43,10 @@ max_body_bytes = 1048576
 #            alerts-core's cmd/user.
 mode = "none"
 
+# Check credentials and log "auth would reject request", but reject nothing. Use with
+# "integration_users" while vendors are being given credentials, then remove.
+audit_only = false
+
 # How long a verified integration_users credential is reused before the row is read
 # again; 0 disables the cache. Only used by "integration_users".
 cache_ttl = "60s"
