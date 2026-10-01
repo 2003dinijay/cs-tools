@@ -245,16 +245,10 @@ type CaseRepository interface {
 	// not counted. The caller applies any top-N cap.
 	AggregateCases(ctx context.Context, req domain.SearchCasesRequest, groupBy string, scope SearchScope) ([]domain.AggregateBucket, error)
 	// CreateCaseComment inserts a new comment row for the given case.
-	CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error)
-	// CreateCaseCommentMirrored is CreateCaseComment for a comment that
-	// already happened at a known past time -- ServiceNow's own
-	// case-creation business rules generate a case's first comment(s)
-	// before this service ever learns about them (see
-	// caseService.mirrorInitialSNComments), so mirroring one into Postgres
-	// must preserve ServiceNow's own createdOn rather than stamping NOW(),
-	// which SearchCaseComments' own "ORDER BY cc.created_on DESC" would
-	// otherwise misorder relative to the source chronology.
-	CreateCaseCommentMirrored(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn time.Time) (domain.CaseComment, error)
+	// createdOn is nil for an ordinary comment (created_on = NOW()); pass a
+	// non-nil value to preserve a known past timestamp instead -- see the
+	// implementation's own doc comment for why (ServiceNow comment mirroring).
+	CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error)
 	// SearchCaseComments returns a paginated slice of comments for the given case
 	// together with the total count of matching rows before pagination.
 	SearchCaseComments(ctx context.Context, req domain.SearchCaseCommentsRequest) ([]domain.CaseComment, int, error)
@@ -1214,8 +1208,13 @@ var caseCommentEnumType = map[string]domain.CommentType{
 	"APPROVAL_HISTORY": domain.CommentTypeActivity,
 }
 
-// CreateCaseComment implements CaseRepository.
-func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+// CreateCaseComment implements CaseRepository. createdOn is nil for an
+// ordinary, caller-authored comment (created_on binds to NOW()); mirroring
+// a comment ServiceNow already created at a known past time (see
+// caseService.mirrorInitialSNComments) passes its own timestamp instead,
+// so SearchCaseComments' "ORDER BY created_on DESC" reflects the real
+// chronology rather than when the mirror step happened to run.
+func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error) {
 	// APPROVAL_HISTORY only ever arises from ServiceNow's own audit trail,
 	// never a caller-authored comment -- see commentService.CreateComment's
 	// identical restriction in the generic comment path.
@@ -1239,48 +1238,13 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 	// made commenting on any non-"case" work item impossible regardless of
 	// whether it genuinely existed (reported live: posting an update to a
 	// real, existing ANNOUNCEMENT case always failed with "case not found").
+	//
+	// COALESCE($5, NOW()) rather than two separate query strings: $5 is a
+	// nil *time.Time (pgx sends SQL NULL) for the ordinary path, or a real
+	// timestamp for the mirror path.
 	const query = `
 		INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
-		SELECT gen_random_uuid(), NOW(), $1, $2::comment_type_enum, w.id, $4
-		FROM work_item w
-		WHERE w.id = $3
-		RETURNING id, work_item_id, type, content, created_by, created_on`
-
-	var c domain.CaseComment
-	var typeRaw, createdByEmail string
-	err := r.db.QueryRow(ctx, query,
-		req.CreatedBy, typeEnum, req.CaseID, req.Content,
-	).Scan(&c.ID, &c.CaseID, &typeRaw, &c.Content, &createdByEmail, &c.CreatedOn)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.CaseComment{}, &apierror.ValidationError{Msg: "case not found: " + req.CaseID}
-	}
-	if err != nil {
-		return domain.CaseComment{}, fmt.Errorf("create case comment: %w", err)
-	}
-	c.Type = caseCommentEnumType[typeRaw]
-	// comment.created_by is a free-text VARCHAR (an email, by this data
-	// source's own convention -- see caseService.CreateCaseComment), not a
-	// UUID FK, so the reference carries no id here, matching this file's
-	// other email-only CreatedBy references (e.g. SearchCaseView.CreatedBy).
-	c.CreatedBy = domain.NewUserReference("", createdByEmail, "")
-	return c, nil
-}
-
-// CreateCaseCommentMirrored implements CaseRepository. Identical to
-// CreateCaseComment except created_on is bound from createdOn instead of
-// NOW() -- see the interface doc comment on why.
-func (r *caseRepo) CreateCaseCommentMirrored(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn time.Time) (domain.CaseComment, error) {
-	if req.Type == domain.CommentTypeActivity {
-		return domain.CaseComment{}, &apierror.ValidationError{Msg: `type "activity" is not writable through this endpoint`}
-	}
-	typeEnum, ok := caseCommentTypeEnum[req.Type]
-	if !ok {
-		return domain.CaseComment{}, &apierror.ValidationError{Msg: "type contains invalid value: " + string(req.Type)}
-	}
-
-	const query = `
-		INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
-		SELECT gen_random_uuid(), $5, $1, $2::comment_type_enum, w.id, $4
+		SELECT gen_random_uuid(), COALESCE($5, NOW()), $1, $2::comment_type_enum, w.id, $4
 		FROM work_item w
 		WHERE w.id = $3
 		RETURNING id, work_item_id, type, content, created_by, created_on`
@@ -1294,9 +1258,13 @@ func (r *caseRepo) CreateCaseCommentMirrored(ctx context.Context, req domain.Cre
 		return domain.CaseComment{}, &apierror.ValidationError{Msg: "case not found: " + req.CaseID}
 	}
 	if err != nil {
-		return domain.CaseComment{}, fmt.Errorf("create mirrored case comment: %w", err)
+		return domain.CaseComment{}, fmt.Errorf("create case comment: %w", err)
 	}
 	c.Type = caseCommentEnumType[typeRaw]
+	// comment.created_by is a free-text VARCHAR (an email, by this data
+	// source's own convention -- see caseService.CreateCaseComment), not a
+	// UUID FK, so the reference carries no id here, matching this file's
+	// other email-only CreatedBy references (e.g. SearchCaseView.CreatedBy).
 	c.CreatedBy = domain.NewUserReference("", createdByEmail, "")
 	return c, nil
 }

@@ -59,8 +59,7 @@ type stubCaseRepo struct {
 	searchCaseComments            func(ctx context.Context, req domain.SearchCaseCommentsRequest) ([]domain.CaseComment, int, error)
 	updateCase                    func(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error)
 	createCaseFromServiceNow      func(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error)
-	createCaseComment             func(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error)
-	createCaseCommentMirrored     func(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn time.Time) (domain.CaseComment, error)
+	createCaseComment             func(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error)
 	createCase                    func(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
 	getCaseByID                   func(ctx context.Context, id string, scope repository.SearchScope) (domain.CaseView, error)
 	addCaseTag                    func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
@@ -108,22 +107,9 @@ func (s *stubCaseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRe
 	}
 	panic("SearchCases called unexpectedly: the unsupported-field check should have short-circuited before reaching the repository")
 }
-func (s *stubCaseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+func (s *stubCaseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error) {
 	if s.createCaseComment != nil {
-		return s.createCaseComment(ctx, req)
-	}
-	panic("not implemented")
-}
-func (s *stubCaseRepo) CreateCaseCommentMirrored(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn time.Time) (domain.CaseComment, error) {
-	if s.createCaseCommentMirrored != nil {
-		return s.createCaseCommentMirrored(ctx, req, createdOn)
-	}
-	// Most tests exercising mirrorInitialSNComments only care about
-	// createCaseComment's own assertions (CaseID/Type/Content/CreatedBy);
-	// defaulting to it here means they don't also have to stub this
-	// mirror-specific variant just to avoid a panic.
-	if s.createCaseComment != nil {
-		return s.createCaseComment(ctx, req)
+		return s.createCaseComment(ctx, req, createdOn)
 	}
 	panic("not implemented")
 }
@@ -2143,11 +2129,14 @@ func TestCaseService_CreateCase_MirrorsInitialServiceNowComments(t *testing.T) {
 			respState := domain.CaseStateOpen
 			return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy, State: &respState}, nil
 		},
-		createCaseCommentMirrored: func(_ context.Context, req domain.CreateCaseCommentRequest, createdOn time.Time) (domain.CaseComment, error) {
+		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error) {
+			if createdOn == nil {
+				t.Fatalf("mirrorInitialSNComments must pass a non-nil createdOn, got nil for %+v", req)
+			}
 			mu.Lock()
-			mirrored = append(mirrored, mirroredCall{req: req, createdOn: createdOn})
+			mirrored = append(mirrored, mirroredCall{req: req, createdOn: *createdOn})
 			mu.Unlock()
-			return domain.CaseComment{ID: "mirrored", CaseID: req.CaseID, Type: req.Type, Content: req.Content, CreatedOn: createdOn}, nil
+			return domain.CaseComment{ID: "mirrored", CaseID: req.CaseID, Type: req.Type, Content: req.Content, CreatedOn: *createdOn}, nil
 		},
 	}
 	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
@@ -2918,7 +2907,7 @@ func TestCaseService_CreateCaseComment_MirrorsToServiceNow(t *testing.T) {
 
 	createdOn := time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC)
 	repo := &stubCaseRepo{
-		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest, _ *time.Time) (domain.CaseComment, error) {
 			return domain.CaseComment{ID: "comment-1", CaseID: req.CaseID, Type: req.Type, Content: req.Content, CreatedOn: createdOn}, nil
 		},
 	}
@@ -2966,7 +2955,7 @@ func TestCaseService_CreateCaseComment_MirrorsToServiceNow(t *testing.T) {
 // was actually answered.
 func TestCaseService_CreateCaseComment_CompletesResponseSLAForSupportEngineer(t *testing.T) {
 	repo := &stubCaseRepo{
-		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest, _ *time.Time) (domain.CaseComment, error) {
 			return domain.CaseComment{ID: "comment-1", CaseID: req.CaseID, Type: req.Type, Content: req.Content}, nil
 		},
 	}
@@ -3004,7 +2993,7 @@ func TestCaseService_CreateCaseComment_CompletesResponseSLAForSupportEngineer(t 
 // snCaseService.applyResponseSLAOnComment's own doc comment describes.
 func TestCaseService_CreateCaseComment_DoesNotCompleteResponseSLAForNonEngineer(t *testing.T) {
 	repo := &stubCaseRepo{
-		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest, _ *time.Time) (domain.CaseComment, error) {
 			return domain.CaseComment{ID: "comment-1", CaseID: req.CaseID, Type: req.Type, Content: req.Content}, nil
 		},
 	}
@@ -3045,7 +3034,7 @@ func TestCaseService_CreateCaseComment_DoesNotCompleteResponseSLAForNonEngineer(
 // snCaseService's own version requires.
 func TestCaseService_CreateCaseComment_PublishesCommentAdded(t *testing.T) {
 	repo := &stubCaseRepo{
-		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest, _ *time.Time) (domain.CaseComment, error) {
 			return domain.CaseComment{ID: "comment-1", CaseID: req.CaseID, Type: req.Type, Content: req.Content}, nil
 		},
 		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
@@ -3100,7 +3089,7 @@ func TestCaseService_CreateCaseComment_RecordsSNWritebackFailureOnMirrorError(t 
 	dispatcher := NewSNWritebackDispatcher(failures)
 
 	repo := &stubCaseRepo{
-		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest, _ *time.Time) (domain.CaseComment, error) {
 			return domain.CaseComment{ID: "comment-1", CaseID: req.CaseID, Type: req.Type, Content: req.Content}, nil
 		},
 	}
@@ -3147,7 +3136,7 @@ func TestCaseService_CreateCaseComment_SkipsMirrorForActivityType(t *testing.T) 
 	dispatcher := NewSNWritebackDispatcher(failures)
 
 	repo := &stubCaseRepo{
-		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest, _ *time.Time) (domain.CaseComment, error) {
 			return domain.CaseComment{ID: "comment-1", CaseID: req.CaseID, Type: req.Type, Content: req.Content}, nil
 		},
 	}
@@ -3181,7 +3170,7 @@ func TestCaseService_CreateCaseComment_SkipsMirrorForActivityType(t *testing.T) 
 // exactly as it did before this feature existed.
 func TestCaseService_CreateCaseComment_DoesNotMirrorWithoutSNWriteback(t *testing.T) {
 	repo := &stubCaseRepo{
-		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest, _ *time.Time) (domain.CaseComment, error) {
 			return domain.CaseComment{ID: "comment-1", CaseID: req.CaseID, Type: req.Type, Content: req.Content}, nil
 		},
 	}
@@ -3211,7 +3200,7 @@ func TestCaseService_CreateCaseComment_DoesNotMirrorWithoutSNWriteback(t *testin
 func TestCaseService_CreateCaseCommentAs_UsesActorEmailDirectly(t *testing.T) {
 	var gotCreatedBy string
 	repo := &stubCaseRepo{
-		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest, _ *time.Time) (domain.CaseComment, error) {
 			gotCreatedBy = req.CreatedBy
 			return domain.CaseComment{ID: "comment-1", CaseID: req.CaseID, Type: req.Type, Content: req.Content}, nil
 		},
