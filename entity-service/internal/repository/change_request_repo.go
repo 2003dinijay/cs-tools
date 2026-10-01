@@ -59,13 +59,19 @@ import (
 // back as domain.ChangeRequest.AssignedTeam via changeRequestFromJoins' own
 // "group" ag join -- see changeRequestSelectColumns' own doc comment for the
 // real bug this fixes (Assess could never be requested for any change
-// request, since the frontend requires it set first). Writing it is still
-// unwired on both create and PatchChangeRequest -- csm-sync-service already
-// owns populating it from ServiceNow's own Assignment group field for every
-// work_item type, the same way it does assigned_to_id, so there has been no
-// need for this repository to write it itself. Filtering search results by
-// it (the parsed filter array's assignmentGroupId) is also still unwired --
-// see changeRequestWhereClause's own comment.
+// request, since the frontend requires it set first). Writing it via
+// PatchChangeRequestRequest.AssignedTeamID is now wired too (addWI sets
+// assignment_group_id, same shape as AssignedEngineerID immediately above
+// it; a 23503 on the FK is mapped to the friendly field name "assignedTeamId"
+// via changeRequestPatchFKField, the same convention every other FK column
+// on this PATCH already uses) -- csm-sync-service still separately populates
+// it from ServiceNow's own Assignment group field for every work_item type
+// the same way it does assigned_to_id, but a caller can now also set it
+// directly through this API. Writing it at create time
+// (CreateChangeRequestRequest.GroupID) remains unwired -- see this file's
+// own doc comment on CreateChangeRequestFromServiceNow. Filtering search
+// results by it (the parsed filter array's assignmentGroupId) is also still
+// unwired -- see changeRequestWhereClause's own comment.
 //
 // The remaining fields on the request/response contract have no
 // established mapping and are always left unset rather than guessed at:
@@ -933,6 +939,7 @@ var changeRequestPatchFKField = map[string]string{
 	"work_item_deployment_id_fkey":       "deploymentId",
 	"work_item_deployed_product_id_fkey": "deployedProductId",
 	"work_item_assigned_to_id_fkey":      "assignedEngineerId",
+	"work_item_assignment_group_id_fkey": "assignedTeamId",
 }
 
 // changeRequestPatchCRFKField mirrors changeRequestPatchFKField for the
@@ -979,7 +986,9 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 	if req.AssignedEngineerID != nil {
 		addWI("assigned_to_id = $%d::uuid", *req.AssignedEngineerID)
 	}
-	// AssignedTeamID has no wired mapping here -- see this file's own package doc comment.
+	if req.AssignedTeamID != nil {
+		addWI("assignment_group_id = $%d::uuid", *req.AssignedTeamID)
+	}
 
 	wiArgs = append(wiArgs, id)
 	wiQuery := fmt.Sprintf(`UPDATE work_item SET %s WHERE id = $%d AND type = 'CHANGE_REQUEST' RETURNING id`, strings.Join(wiSets, ", "), wiIdx)

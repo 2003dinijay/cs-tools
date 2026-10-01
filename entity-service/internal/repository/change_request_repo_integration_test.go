@@ -18,11 +18,13 @@ package repository_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
@@ -37,6 +39,21 @@ const (
 	changeRequestApprovalApproverUserID  = "36666666-0000-0000-0000-000000000003"
 	changeRequestApprovalApproverUserID2 = "36666666-0000-0000-0000-000000000004"
 	changeRequestApprovalApproverUserID3 = "36666666-0000-0000-0000-000000000005"
+
+	// changeRequestAssignedTeamTestID is its own id, distinct from
+	// changeRequestApprovalTestID above, so the AssignedTeamID tests below
+	// never race the approval tests' seed/cleanup of the same work_item row.
+	changeRequestAssignedTeamTestID = "36666666-0000-0000-0000-000000000006"
+
+	// seededGroupID is scripts/csm-compose/seed-entity-service.sql's one
+	// "group" row ("Example Corp ABT", id 901) -- reused here rather than
+	// inserting a fresh "group" row for this test alone, to avoid growing
+	// that seed file for something it already covers.
+	seededGroupID = "00000000-0000-0000-0000-000000000901"
+
+	// unknownGroupID is a well-formed UUID that is not the id of any "group"
+	// row -- used to exercise assignment_group_id's FK violation path.
+	unknownGroupID = "36666666-aaaa-0000-0000-000000000000"
 )
 
 // seedApprovalUserForDecisionTest inserts one "user" row per given id --
@@ -366,5 +383,130 @@ func TestChangeRequestIntegration_DecideApprovalCancelsSiblingApprovers(t *testi
 	}
 	if gotState != "AUTHORIZE" {
 		t.Fatalf("state after multi-approver approval = %q, want \"AUTHORIZE\"", gotState)
+	}
+}
+
+// seedChangeRequestForAssignedTeamTest inserts a minimal work_item/
+// change_request pair for the AssignedTeamID tests below, following the same
+// shape as seedChangeRequestForApprovalTest but under its own id so the two
+// test groups can never collide.
+func seedChangeRequestForAssignedTeamTest(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+
+	cleanup := func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM work_item WHERE id = $1`, changeRequestAssignedTeamTestID)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type)
+		 VALUES ($1, now(), now(), 'cr-assigned-team-test', 'cr-assigned-team-test', 'CRTEAM001', 'assigned team patch test', 'CHANGE_REQUEST')`,
+		changeRequestAssignedTeamTestID); err != nil {
+		t.Fatalf("seed work_item: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO change_request (id, state) VALUES ($1, 'NEW'::change_request_state_enum)`,
+		changeRequestAssignedTeamTestID); err != nil {
+		t.Fatalf("seed change_request: %v", err)
+	}
+}
+
+// TestChangeRequestIntegration_PatchAssignedTeamID is the regression guard for
+// the bug this change fixes: PatchChangeRequestRequest.AssignedTeamID used to
+// be read but never written anywhere in PatchChangeRequest's own UPDATE,
+// unlike the adjacent AssignedEngineerID handling. Patching it to a real
+// "group" id must round-trip through work_item.assignment_group_id and come
+// back as ChangeRequest.AssignedTeam on a subsequent read.
+func TestChangeRequestIntegration_PatchAssignedTeamID(t *testing.T) {
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	repo := repository.NewChangeRequestRepository(pool)
+	seedChangeRequestForAssignedTeamTest(t, pool)
+
+	teamID := seededGroupID
+	updated, err := repo.PatchChangeRequest(context.Background(), changeRequestAssignedTeamTestID,
+		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID}, "cr-assigned-team-test")
+	if err != nil {
+		t.Fatalf("PatchChangeRequest(assignedTeamId=%s): %v", teamID, err)
+	}
+	if updated.AssignedTeam == nil || updated.AssignedTeam.ID != teamID {
+		t.Fatalf("PatchChangeRequest response AssignedTeam = %+v, want ID %q", updated.AssignedTeam, teamID)
+	}
+
+	// Read back directly, independent of the repository's own response, to
+	// confirm the column itself -- not just the in-memory return value --
+	// actually changed.
+	var gotAssignmentGroupID string
+	if scanErr := pool.QueryRow(context.Background(),
+		`SELECT assignment_group_id::TEXT FROM work_item WHERE id = $1`, changeRequestAssignedTeamTestID).
+		Scan(&gotAssignmentGroupID); scanErr != nil {
+		t.Fatalf("read back assignment_group_id: %v", scanErr)
+	}
+	if gotAssignmentGroupID != teamID {
+		t.Fatalf("work_item.assignment_group_id = %q, want %q", gotAssignmentGroupID, teamID)
+	}
+
+	// GetChangeRequestByID, the way a caller would actually re-read the
+	// change request, must agree too.
+	fetched, err := repo.GetChangeRequestByID(context.Background(), changeRequestAssignedTeamTestID)
+	if err != nil {
+		t.Fatalf("GetChangeRequestByID: %v", err)
+	}
+	if fetched.AssignedTeam == nil || fetched.AssignedTeam.ID != teamID {
+		t.Fatalf("GetChangeRequestByID AssignedTeam = %+v, want ID %q", fetched.AssignedTeam, teamID)
+	}
+}
+
+// TestChangeRequestIntegration_PatchAssignedTeamIDUnknownTeamIsValidationError
+// confirms an unknown team id produces a clean ValidationError (the
+// changeRequestPatchFKField mapping's "assignedTeamId" entry), not a raw
+// Postgres foreign-key-violation error surfaced to the caller.
+func TestChangeRequestIntegration_PatchAssignedTeamIDUnknownTeamIsValidationError(t *testing.T) {
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	repo := repository.NewChangeRequestRepository(pool)
+	seedChangeRequestForAssignedTeamTest(t, pool)
+
+	badTeamID := unknownGroupID
+	_, err = repo.PatchChangeRequest(context.Background(), changeRequestAssignedTeamTestID,
+		domain.PatchChangeRequestRequest{AssignedTeamID: &badTeamID}, "cr-assigned-team-test")
+	if err == nil {
+		t.Fatal("PatchChangeRequest(assignedTeamId=<unknown>) succeeded, want a ValidationError")
+	}
+	var valErr *apierror.ValidationError
+	if !errors.As(err, &valErr) {
+		t.Fatalf("PatchChangeRequest(assignedTeamId=<unknown>) error = %v (%T), want *apierror.ValidationError", err, err)
+	}
+	if valErr.Msg == "" {
+		t.Fatal("ValidationError.Msg is empty")
+	}
+
+	// The column must be left untouched by the rolled-back transaction.
+	var gotAssignmentGroupID *string
+	if scanErr := pool.QueryRow(context.Background(),
+		`SELECT assignment_group_id::TEXT FROM work_item WHERE id = $1`, changeRequestAssignedTeamTestID).
+		Scan(&gotAssignmentGroupID); scanErr != nil {
+		t.Fatalf("read back assignment_group_id: %v", scanErr)
+	}
+	if gotAssignmentGroupID != nil {
+		t.Fatalf("work_item.assignment_group_id = %v after a failed patch, want unchanged NULL", *gotAssignmentGroupID)
 	}
 }

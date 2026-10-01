@@ -400,7 +400,7 @@ export default function EditChangeRequestDialog({
             getId={(g) => g.id}
             getLabel={(g) => g.name}
             knownLabel={cr.assignedTeam?.name}
-            helperText="Required before approval can be requested."
+            helperText="The team or group that owns this change."
           />
           <AsyncEntitySelect<BeUser>
             id="cr-edit-assigned-engineer"
