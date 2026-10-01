@@ -260,6 +260,58 @@ func TestCreateCaseComment(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
+	// ----- PermCreateWorkNote boundary: worknote_creator-only caller -----
+	// (see the permission's own doc comment in access.go)
+
+	t.Run("worknote_creator-only caller is forbidden from posting a customer-visible comment", func(t *testing.T) {
+		called := false
+		client := &mockEntityCaseClient{
+			createCaseCommentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				called = true
+				return []byte(`{}`), nil
+			},
+		}
+		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		r := withWorknoteCreatorUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusForbidden)
+		assertErrorMessage(t, w, ErrMsgForbidden)
+		if called {
+			t.Error("entity CreateCaseComment must not be called when the permission gate denies the request")
+		}
+	})
+
+	t.Run("worknote_creator-only caller can post a work_note", func(t *testing.T) {
+		var forwardedBody []byte
+		client := &mockEntityCaseClient{
+			getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+				return []byte(`{"state":"work_in_progress"}`), nil
+			},
+			createCaseCommentFn: func(_ context.Context, _ string, body []byte) ([]byte, error) {
+				forwardedBody = body
+				return []byte(`{}`), nil
+			},
+		}
+		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		// A duplicate "type" key: if the forwarded body were the raw client
+		// bytes rather than rebuilt server-side (see CreateCaseComment's own
+		// comment on this), a downstream decoder disagreeing with Go's
+		// "last key wins" about which "type" governs could store this as a
+		// customer-visible comment despite passing this caller's work_note-only
+		// gate.
+		const trickPayload = `{"type":"comment","type":"work_note","content":"on it"}`
+		r := withWorknoteCreatorUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(trickPayload)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusCreated)
+		if want := `{"type":"work_note","content":"on it"}`; string(forwardedBody) != want {
+			t.Errorf("forwarded body = %s, want %s (rebuilt server-side, not the caller-supplied bytes)", forwardedBody, want)
+		}
+	})
+
 	// testPlatformUserID is the id GET /users/me resolves for the requesting
 	// user (see helpers_test.go), so this fixture represents that user being
 	// the case's assigned engineer. Note it is NOT testUser.UserID: assignee

@@ -448,7 +448,8 @@ func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) 
 
 	// Work notes are internal-only and exempt from the state gate.
 	var reqMeta struct {
-		Type string `json:"type"`
+		Type    string `json:"type"`
+		Content string `json:"content"`
 	}
 	_ = json.Unmarshal(body, &reqMeta) // body is already validated JSON
 
@@ -457,9 +458,35 @@ func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) 
 	// must NOT be able to post anything but a work_note. Narrow back down
 	// to full PermWrite for every other type -- see PermCreateWorkNote's
 	// own doc comment.
-	if reqMeta.Type != "work_note" && !(h.access != nil && h.access.Permits(PermWrite, user.Roles)) {
+	hasFullWrite := h.access != nil && h.access.Permits(PermWrite, user.Roles)
+	if reqMeta.Type != "work_note" && !hasFullWrite {
 		writeError(w, http.StatusForbidden, ErrMsgForbidden)
 		return
+	}
+
+	// A worknote-creator-only caller is only ever allowed to reach here with
+	// type=work_note (just checked above) -- but body is still the
+	// caller-supplied raw bytes, forwarded to the entity service unchanged
+	// below. encoding/json's handling of a duplicate "type" key (last one
+	// wins) is an implementation detail, not a wire-format guarantee the
+	// entity service is bound by; if it parses the same bytes differently,
+	// a body like {"type":"comment","type":"work_note"} could pass this
+	// check yet be stored as a customer-visible comment. Rebuild the body
+	// from what THIS check actually approved rather than forwarding the
+	// ambiguous original, so there is no decoder for the two services to
+	// disagree on. Full-PermWrite callers are unaffected: they may post any
+	// type, so there is nothing narrower here to enforce for them.
+	if !hasFullWrite {
+		rebuilt, err := json.Marshal(struct {
+			Type    string `json:"type"`
+			Content string `json:"content"`
+		}{Type: "work_note", Content: reqMeta.Content})
+		if err != nil {
+			slog.ErrorContext(r.Context(), "failed to rebuild work-note comment body", "userID", user.UserID, "caseID", caseID, "err", err)
+			writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+			return
+		}
+		body = rebuilt
 	}
 
 	if reqMeta.Type != "work_note" {
