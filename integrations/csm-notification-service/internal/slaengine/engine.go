@@ -43,6 +43,7 @@ type tierStore interface {
 	SetTier(ctx context.Context, caseID, clockType string, tier int) error
 	ClaimTier(ctx context.Context, caseID, clockType string, tier int) (claimed bool, err error)
 	ReleaseTier(ctx context.Context, caseID, clockType string, tier int) error
+	ClaimEmail(ctx context.Context, caseID, clockType string, tier int) (claimed bool, err error)
 }
 
 // eventPublisher abstracts eventbus.Producer for testability.
@@ -307,20 +308,23 @@ func (e *Engine) alertTier(ctx context.Context, s SLAStatus, tier int) error {
 		return fmt.Errorf("publish sla.tier_reached: %w", err)
 	}
 
-	if err := e.sendBreachAlert(ctx, s, tier); err != nil {
-		return fmt.Errorf("send sla breach alert: %w", err)
-	}
-	// Best-effort, deliberately not folded into this function's own error
-	// return: alertTier failing causes processStatus to release this
-	// tier's claim and retry the WHOLE tier on the next Tick, including
-	// the Chat alert above, which has no idempotency of its own beyond the
-	// claim itself — propagating a transient email failure here would
-	// resend an already-successfully-delivered Chat alert, the exact class
-	// of duplicate-send bug this codebase has hit (and fixed) more than
-	// once elsewhere (see dispatch.go's beginRecord/endRecord history). A
-	// failed breach email is logged and otherwise swallowed; the Chat
-	// alert and tier advancement are unaffected either way.
+	chatErr := e.sendBreachAlert(ctx, s, tier)
+	// Breach emails are attempted regardless of the Chat alert's own
+	// outcome: a Chat space outage must not also suppress email, which
+	// would otherwise happen silently if the clock completes (and so drops
+	// out of the active /sla-status list) before Chat recovers and this
+	// tier gets a retry. Best-effort, deliberately not folded into this
+	// function's own error return: a transient email failure must never
+	// cause processStatus to release this tier's claim and retry the WHOLE
+	// tier — see dispatch.go's beginRecord/endRecord history for the class
+	// of duplicate-send bug that would reintroduce for the Chat alert
+	// above. e.store.ClaimEmail (checked inside sendBreachEmails) ensures a
+	// retry caused solely by the Chat error below doesn't re-attempt an
+	// already-attempted email.
 	e.sendBreachEmails(ctx, s, tier)
+	if chatErr != nil {
+		return fmt.Errorf("send sla breach alert: %w", chatErr)
+	}
 	slog.InfoContext(ctx, "slaengine: sla tier reached", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier)
 	return nil
 }
@@ -374,16 +378,40 @@ func (e *Engine) sendBreachAlert(ctx context.Context, s SLAStatus, tier int) err
 // couldn't resolve it (s.AssigneeEmail/s.TeamEmail empty) — a case with no
 // assignee, or a team with no configured group_email, is a normal state,
 // not a misconfiguration this engine can fix.
+//
+// Claims (caseID, clockType, tier) via e.store.ClaimEmail before sending
+// anything: alertTier now attempts this regardless of whether the Chat
+// alert itself succeeded, so a tier retried solely because Chat failed
+// must not re-send an already-attempted email — see emailClaimKeyPrefix's
+// own doc comment. A claim failure (Redis error) is logged and treated the
+// same as "already claimed" — skip rather than risk a duplicate send on an
+// indeterminate claim result.
 func (e *Engine) sendBreachEmails(ctx context.Context, s SLAStatus, tier int) {
 	if e.email == nil || !e.emailSendingEnabled {
 		return
 	}
+	claimed, err := e.store.ClaimEmail(ctx, s.CaseID, s.ClockType, tier)
+	if err != nil {
+		slog.ErrorContext(ctx, "slaengine: failed to claim sla breach email, skipping to avoid a duplicate send", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "err", err)
+		return
+	}
+	if !claimed {
+		return
+	}
 	caseLink := e.links.CSMLink(s.CaseID)
+	// s.CaseNumber can be empty for a work item entity-service's own case-like
+	// joins don't cover — fall back to the raw case id, same as
+	// sendBreachAlert's own Chat card above, so the email's case reference is
+	// never blank.
+	caseNumber := s.CaseNumber
+	if caseNumber == "" {
+		caseNumber = s.CaseID
+	}
 	data := notifications.SLABreachEmailData{
 		ClockType:    s.ClockType,
 		Tier:         tierLabel(tier),
 		Severity:     s.Priority,
-		CaseNumber:   s.CaseNumber,
+		CaseNumber:   caseNumber,
 		WSO2CaseID:   s.WSO2CaseID,
 		CaseTitle:    s.CaseTitle,
 		CaseType:     s.CaseType,
@@ -396,7 +424,7 @@ func (e *Engine) sendBreachEmails(ctx context.Context, s SLAStatus, tier int) {
 	if s.StartedOn != nil && !s.StartedOn.IsZero() {
 		data.OpenedAt = s.StartedOn.UTC().Format("2006-01-02 15:04:05") + " (UTC)"
 	}
-	subject := notifications.SLABreachEmailSubject(s.ClockType, data.Tier, s.Priority, s.CaseNumber, s.WSO2CaseID)
+	subject := notifications.SLABreachEmailSubject(s.ClockType, data.Tier, s.Priority, caseNumber, s.WSO2CaseID)
 
 	send := func(real string, render func(intendedFor string) string) {
 		if real == "" {

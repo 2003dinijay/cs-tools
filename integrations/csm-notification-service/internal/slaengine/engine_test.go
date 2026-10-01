@@ -22,9 +22,11 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
 )
 
 // fakeStatusLister is a hand-written fake for statusLister, following this
@@ -48,23 +50,26 @@ type tierCall struct {
 // a test simulate a concurrent replica (or an earlier attempt) already
 // holding a given tier's claim, without needing a real Redis.
 type fakeTierStore struct {
-	tiers  map[string]int
-	claims map[string]bool
+	tiers       map[string]int
+	claims      map[string]bool
+	emailClaims map[string]bool
 
-	getErr     error
-	setErr     error
-	claimErr   error
-	releaseErr error
+	getErr        error
+	setErr        error
+	claimErr      error
+	releaseErr    error
+	claimEmailErr error
 
 	forceClaimLoss map[string]bool
 
-	sets         []tierCall
-	claimCalls   []tierCall
-	releaseCalls []tierCall
+	sets            []tierCall
+	claimCalls      []tierCall
+	releaseCalls    []tierCall
+	claimEmailCalls []tierCall
 }
 
 func newFakeTierStore() *fakeTierStore {
-	return &fakeTierStore{tiers: map[string]int{}, claims: map[string]bool{}, forceClaimLoss: map[string]bool{}}
+	return &fakeTierStore{tiers: map[string]int{}, claims: map[string]bool{}, emailClaims: map[string]bool{}, forceClaimLoss: map[string]bool{}}
 }
 
 func (f *fakeTierStore) key(caseID, clockType string) string { return caseID + "|" + clockType }
@@ -112,6 +117,19 @@ func (f *fakeTierStore) ReleaseTier(_ context.Context, caseID, clockType string,
 	return nil
 }
 
+func (f *fakeTierStore) ClaimEmail(_ context.Context, caseID, clockType string, tier int) (bool, error) {
+	if f.claimEmailErr != nil {
+		return false, f.claimEmailErr
+	}
+	f.claimEmailCalls = append(f.claimEmailCalls, tierCall{caseID, clockType, tier})
+	key := f.claimKey(caseID, clockType, tier)
+	if f.emailClaims[key] {
+		return false, nil
+	}
+	f.emailClaims[key] = true
+	return true, nil
+}
+
 type publishCall struct {
 	key, value []byte
 }
@@ -150,6 +168,23 @@ func (f *fakeChatSender) HasAudienceSpace(audience string) bool {
 		return f.hasAudienceSpace(audience)
 	}
 	return false
+}
+
+type emailCall struct {
+	to, cc  []string
+	subject string
+	body    string
+}
+
+// fakeEmailSender is a hand-written fake for emailSender.
+type fakeEmailSender struct {
+	calls []emailCall
+	err   error
+}
+
+func (f *fakeEmailSender) SendEmail(_ context.Context, to, cc, _, _ []string, subject, htmlBody string, _ []notifications.EmailAttachment) error {
+	f.calls = append(f.calls, emailCall{to: to, cc: cc, subject: subject, body: htmlBody})
+	return f.err
 }
 
 // fakeLinkResolver is a hand-written fake for linkResolver.
@@ -385,6 +420,96 @@ func TestEngine_Tick_ChatFailurePropagatesAndKeepsCursor(t *testing.T) {
 	}
 	if store.tiers["CASE-1|response"] != 0 {
 		t.Errorf("cursor = %d, want left at 0 (chat send failed before it could advance)", store.tiers["CASE-1|response"])
+	}
+}
+
+// TestEngine_SendBreachEmails_StillSendsWhenChatFails verifies a Chat
+// outage doesn't also suppress the breach emails — a real gap this closed:
+// previously, alertTier returned before sendBreachEmails ever ran when
+// sendBreachAlert failed, so a case whose clock completed (and so dropped
+// out of the active /sla-status list) before Chat recovered never got
+// either email at all.
+func TestEngine_SendBreachEmails_StillSendsWhenChatFails(t *testing.T) {
+	entity := &fakeStatusLister{statuses: []SLAStatus{{
+		CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 50,
+		AssigneeEmail: "assignee@example.test", TeamEmail: "team@example.test",
+	}}}
+	store := newFakeTierStore()
+	store.tiers["CASE-1|response"] = 0
+	e := newTestEngine(entity, store, &fakePublisher{})
+	e.chat = &fakeChatSender{err: errors.New("chat webhook unreachable")}
+	email := &fakeEmailSender{}
+	e.email = email
+	e.emailSendingEnabled = true
+
+	if err := e.Tick(context.Background()); err == nil {
+		t.Fatal("Tick() error = nil, want the chat send failure propagated")
+	}
+	if len(email.calls) != 2 {
+		t.Fatalf("email calls = %d, want 2 (assignee + team) sent despite the chat failure, got %+v", len(email.calls), email.calls)
+	}
+}
+
+// TestEngine_SendBreachEmails_NotResentOnChatRetry verifies a tier retried
+// solely because the Chat alert failed does not re-send an already-
+// attempted breach email on the next Tick — the per-tier Redis claim
+// (TierStore.ClaimEmail) this closes a duplicate-send gap for.
+func TestEngine_SendBreachEmails_NotResentOnChatRetry(t *testing.T) {
+	entity := &fakeStatusLister{statuses: []SLAStatus{{
+		CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 50,
+		AssigneeEmail: "assignee@example.test", TeamEmail: "team@example.test",
+	}}}
+	store := newFakeTierStore()
+	store.tiers["CASE-1|response"] = 0
+	e := newTestEngine(entity, store, &fakePublisher{})
+	failingChat := &fakeChatSender{err: errors.New("chat webhook unreachable")}
+	e.chat = failingChat
+	email := &fakeEmailSender{}
+	e.email = email
+	e.emailSendingEnabled = true
+
+	if err := e.Tick(context.Background()); err == nil {
+		t.Fatal("first Tick() error = nil, want the chat send failure propagated")
+	}
+	if len(email.calls) != 2 {
+		t.Fatalf("after first Tick: email calls = %d, want 2", len(email.calls))
+	}
+
+	// Chat now recovers; the cursor was never advanced, so this tier is
+	// retried from scratch.
+	failingChat.err = nil
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("second Tick() error = %v, want nil now that chat recovered", err)
+	}
+	if len(email.calls) != 2 {
+		t.Errorf("after second Tick: email calls = %d, want still 2 (not resent on the chat-triggered retry)", len(email.calls))
+	}
+}
+
+// TestEngine_SendBreachEmails_FallsBackToCaseIDWhenCaseNumberEmpty verifies
+// the email path uses the same caseNumber fallback sendBreachAlert's own
+// Chat card already has: a work item with no resolved CaseNumber still gets
+// a non-blank case reference in the email subject/body, via s.CaseID.
+func TestEngine_SendBreachEmails_FallsBackToCaseIDWhenCaseNumberEmpty(t *testing.T) {
+	entity := &fakeStatusLister{statuses: []SLAStatus{{
+		CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 50,
+		AssigneeEmail: "assignee@example.test",
+	}}}
+	store := newFakeTierStore()
+	store.tiers["CASE-1|response"] = 0
+	e := newTestEngine(entity, store, &fakePublisher{})
+	email := &fakeEmailSender{}
+	e.email = email
+	e.emailSendingEnabled = true
+
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(email.calls) != 1 {
+		t.Fatalf("email calls = %d, want 1 (assignee only, no team email configured)", len(email.calls))
+	}
+	if !strings.Contains(email.calls[0].subject, "CASE-1") {
+		t.Errorf("subject = %q, want it to fall back to the raw case id when CaseNumber is empty", email.calls[0].subject)
 	}
 }
 
