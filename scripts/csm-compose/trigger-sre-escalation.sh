@@ -57,13 +57,17 @@
 #                  comment -- which must NOT stop an SRE ladder)        (default assign)
 #   -k  kind       what starts the ladder: new (incident.created) or
 #                  elevated (incident.priority_elevated to -p)          (default new)
-#   -m  duration   how long one ladder minute lasts                     (default 1s)
+#   -i             interactive: acknowledge whenever you choose while the
+#                  ladder runs -- type a (assign), s (leave NEW) or c
+#                  (public comment) and press Enter
+#   -m  duration   how long one ladder minute lasts; 1m is real time    (default 1s)
 #   -4             include the SRE ladder's unconfirmed L4 support rung
 #
 #   trigger-sre-escalation.sh                          # apollo, HIGH, logged
 #   trigger-sre-escalation.sh -p all -m 200ms          # run them all, fast
 #   trigger-sre-escalation.sh -t castor -p P0 -l both  # a CRE P0: both ladders
 #   trigger-sre-escalation.sh -c 3 -o chat             # to the space, stopped after L1
+#   trigger-sre-escalation.sh -m 1m -i                 # real time; acknowledge by typing
 set -euo pipefail
 
 TEAM=apollo
@@ -74,12 +78,13 @@ LADDER=auto
 CANCEL_AFTER=0
 CANCEL_BY=assign
 KIND=new
+INTERACTIVE=false
 MINUTE=1s
 L4=false
 
 usage() { sed -n '/^# Usage:/,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//;$d'; exit "${1:-0}"; }
 
-while getopts ":t:p:s:o:l:c:a:k:m:4h" opt; do
+while getopts ":t:p:s:o:l:c:a:k:m:4ih" opt; do
   case $opt in
     t) TEAM=$OPTARG ;;
     p) PRIORITIES=$OPTARG ;;
@@ -89,6 +94,7 @@ while getopts ":t:p:s:o:l:c:a:k:m:4h" opt; do
     c) CANCEL_AFTER=$OPTARG ;;
     a) CANCEL_BY=$OPTARG ;;
     k) KIND=$OPTARG ;;
+    i) INTERACTIVE=true ;;
     m) MINUTE=$OPTARG ;;
     4) L4=true ;;
     h) usage 0 ;;
@@ -181,6 +187,7 @@ else
 fi
 [[ "$CANCEL_AFTER" != "0" ]] && ARGS+=(-cancel-after "${CANCEL_AFTER}s" -cancel-by "$CANCEL_BY")
 ARGS+=(-kind "$KIND")
+[[ "$INTERACTIVE" == true ]] && ARGS+=(-interactive)
 [[ "$L4" == true ]] && ARGS+=(-sre-l4)
 
 # Every variable the harness would otherwise take from a .env is set here, even

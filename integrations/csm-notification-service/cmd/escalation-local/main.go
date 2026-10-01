@@ -107,6 +107,7 @@ type config struct {
 	cancelAfter time.Duration
 	cancelBy    string
 	cancelAt    string
+	interactive bool
 	maxCalls    int
 	redisAddr   string
 	incidentID  string
@@ -292,6 +293,7 @@ func parseFlags() config {
 		"how to acknowledge: both (a move out of NEW AND a public comment -- the only thing that actually stops a CRE ladder), comment, status, or assign (an engineer assigned -- what stops an SRE ladder)")
 	flag.StringVar(&cfg.cancelAt, "cancel-at", "",
 		"acknowledge once the ladder has called this rung, e.g. LEVEL_2; easier than timing -cancel-after by hand, and the two are mutually exclusive")
+	flag.BoolVar(&cfg.interactive, "interactive", false, "acknowledge by typing while the ladder runs: a (assign), s (leave NEW), c (public comment), then Enter")
 	flag.IntVar(&cfg.maxCalls, "max-calls", 20, "refuse to run a plan larger than this")
 	flag.StringVar(&cfg.redisAddr, "redis", envOr("REDIS_ADDR", "localhost:6379"), "Redis address holding the ladder state")
 	flag.StringVar(&cfg.incidentID, "incident-id", "", "incident id to use; defaults to a fresh one per run")
@@ -779,8 +781,66 @@ func runTicks(ctx context.Context, cfg config, engine *escalation.Engine, rdb *r
 	seen := 0
 	reachedCancelLevel := false
 
+	// acknowledge sends one gesture to the engine and reports what the engine
+	// did with it, read back from the ladder's own state: the state is gone,
+	// or marked cancelled, only when the gesture really stopped the ladder.
+	acknowledge := func(by string, elapsed time.Duration, now time.Time) error {
+		cfg.cancelBy = by // the summary names the gesture actually sent
+		fmt.Printf("  [%7s] SENT %s to the engine  (ladder %s)\n", short(elapsed), gestureName(by), now.Format("15:04:05"))
+		// Each gesture is a separate event, exactly as entity-service
+		// publishes them, so the engine's own rules decide whether this stops
+		// the ladder -- both gestures for CRE, an assignee or a move out of
+		// NEW for SRE.
+		for _, r := range cancelRecords(cfg) {
+			if err := engine.Handle(ctx, r); err != nil {
+				return fmt.Errorf("acknowledging: %w", err)
+			}
+		}
+		st, found, err := store.Get(ctx, cfg.incidentID)
+		switch {
+		case err != nil:
+			fmt.Printf("  [%7s] could not read the ladder back: %v\n", short(elapsed), err)
+		case !found || st.Cancelled != nil:
+			if !cancelled {
+				cancelled = true
+				at := now
+				cancelledAtLadderTime = &at
+			}
+			fmt.Printf("  [%7s] STOPPED — the engine cancelled the ladder\n", short(elapsed))
+		default:
+			fmt.Printf("  [%7s] NOT STOPPED — the engine keeps climbing; this gesture does not acknowledge this ladder\n", short(elapsed))
+		}
+		return nil
+	}
+
+	// Typed gestures, read off the terminal while the ladder runs on its own
+	// clock -- the way to acknowledge at a rung of your choosing rather than
+	// at a time fixed before the run.
+	var typed chan string
+	if cfg.interactive {
+		typed = make(chan string)
+		go func() {
+			sc := bufio.NewScanner(os.Stdin)
+			for sc.Scan() {
+				typed <- strings.ToLower(strings.TrimSpace(sc.Text()))
+			}
+		}()
+		fmt.Printf("  type a + Enter to assign an engineer, s to move it out of NEW, c for a public comment\n\n")
+	}
+
 	for {
 		select {
+		case line := <-typed:
+			elapsed := time.Since(realStart)
+			now := trigger.Add(time.Duration(float64(elapsed) / float64(cfg.minute) * float64(time.Minute)))
+			by := map[string]string{"a": "assign", "assign": "assign", "s": "status", "status": "status", "c": "comment", "comment": "comment"}[line]
+			if by == "" {
+				fmt.Printf("  (unknown %q: a = assign, s = leave NEW, c = public comment)\n", line)
+				continue
+			}
+			if err := acknowledge(by, elapsed, now); err != nil {
+				return err
+			}
 		case <-ctx.Done():
 			fmt.Printf("\n  interrupted\n")
 			return summarise(context.Background(), cfg, store, rec, plan, cancelledAtLadderTime, lastPlaced, lastFailed, runStart)
@@ -792,26 +852,8 @@ func runTicks(ctx context.Context, cfg config, engine *escalation.Engine, rdb *r
 
 			if !sent && (dueByTime(cfg, elapsed) || reachedCancelLevel) {
 				sent = true
-				fmt.Printf("  [%7s] SENT %s to the engine\n", short(elapsed), gestureName(cfg.cancelBy))
-				// Each gesture is a separate event, exactly as entity-service
-				// publishes them, so the engine's own rules decide whether
-				// this stops the ladder -- both gestures for CRE, an assignee
-				// or a move out of NEW for SRE.
-				for _, r := range cancelRecords(cfg) {
-					if err := engine.Handle(ctx, r); err != nil {
-						return fmt.Errorf("acknowledging: %w", err)
-					}
-				}
-				// Report what the engine did with it, not what it was expected
-				// to do: the state is gone, or marked cancelled, only when the
-				// gesture really stopped the ladder.
-				if st, found, err := store.Get(ctx, cfg.incidentID); err == nil && (!found || st.Cancelled != nil) {
-					cancelled = true
-					at := now
-					cancelledAtLadderTime = &at
-					fmt.Printf("  [%7s] STOPPED — the engine cancelled the ladder\n", short(elapsed))
-				} else if err == nil {
-					fmt.Printf("  [%7s] NOT STOPPED — the engine keeps climbing; this gesture does not acknowledge this ladder\n", short(elapsed))
+				if err := acknowledge(cfg.cancelBy, elapsed, now); err != nil {
+					return err
 				}
 			}
 
