@@ -286,8 +286,8 @@ type Env struct {
 // ParseWebhookAPIKeys parses <vendor>:<key> pairs separated by commas, semicolons,
 // newlines or spaces, tolerating quotes around the value or any entry, since those
 // are how the value tends to get pasted into a console. Only the first colon splits,
-// so a key may contain colons. Errors name the entry's position and vendor, never
-// its key: this runs at startup and its error goes to the logs.
+// so a key may contain colons. Errors name only the entry's position, never its
+// text: a pasted key can land in either half, and the error goes to the startup log.
 func ParseWebhookAPIKeys(raw string) (map[string]string, error) {
 	isSep := func(r rune) bool {
 		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
@@ -302,10 +302,10 @@ func ParseWebhookAPIKeys(raw string) (map[string]string, error) {
 		case vendor == "":
 			return nil, fmt.Errorf("webhook api keys: entry %d has an empty vendor name", i+1)
 		case key == "":
-			return nil, fmt.Errorf("webhook api keys: entry %d (%q) has an empty key", i+1, vendor)
+			return nil, fmt.Errorf("webhook api keys: entry %d has an empty key", i+1)
 		}
 		if _, dup := keys[vendor]; dup {
-			return nil, fmt.Errorf("webhook api keys: vendor %q listed twice", vendor)
+			return nil, fmt.Errorf("webhook api keys: entry %d repeats an earlier vendor", i+1)
 		}
 		keys[vendor] = key
 	}

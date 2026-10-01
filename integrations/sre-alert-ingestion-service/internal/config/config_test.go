@@ -157,9 +157,11 @@ func TestParseWebhookAPIKeys_PasteFormats(t *testing.T) {
 func TestParseWebhookAPIKeys_ErrorsNeverContainTheKey(t *testing.T) {
 	const secret = "s3cr3tKeyMaterial"
 	for _, raw := range []string{
-		secret,             // bare key pasted with no vendor prefix
-		"aws:k1," + secret, // one good entry, then a bare key
-		":" + secret,       // empty vendor
+		secret,                         // bare key pasted with no vendor prefix
+		"aws:k1," + secret,             // one good entry, then a bare key
+		":" + secret,                   // empty vendor
+		secret + ":",                   // trailing colon: the key lands in the vendor half
+		secret + ":a," + secret + ":b", // a repeated "vendor" that is really a key
 	} {
 		_, err := ParseWebhookAPIKeys(raw)
 		if err == nil {
