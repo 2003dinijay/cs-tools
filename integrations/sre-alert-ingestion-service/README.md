@@ -121,6 +121,7 @@ docker run --rm -p 8080:8080 --env-file .env \
 | `CASSANDRA_USERNAME` | no | Defaults to the account name (first DNS label of the contact point) |
 | `CASSANDRA_PORT` | no | Default `10350` |
 | `ALERT_CORE_WAKE_URL` | no | alerts-core's `POST /alertz` URL. Empty: no wake-up, alerts-core's poll still works |
+| `ALERT_CORE_WAKE_USERNAME`, `ALERT_CORE_WAKE_SECRET` | no | An `integration_users` credential for the wake call, sent as `Bearer base64("<user>:<secret>")` and only over https. Provision with alerts-core's `cmd/user`. The secret is a secret |
 | `FALLBACK_CHAT_WEBHOOK_URLS` | no | Comma-separated Google Chat webhook URLs (secret). Empty: no cards, only logs |
 | `AWS_SNS_SUBSCRIPTION_NOTIFICATION_CONFIG` | no | `{"teams":{"<team>":"<email>","Default":"<email>"}}`: who is emailed about SNS subscription confirmations, by the AWS URL's `?team=` |
 | `EMAIL_BASE_URL`, `EMAIL_TOKEN_URL`, `EMAIL_CLIENT_ID`, `EMAIL_CLIENT_SECRET`, `EMAIL_FROM_ADDRESS` | no | WSO2 email notification service (OAuth2 client credentials) for those emails. `EMAIL_CLIENT_SECRET` is a secret. Empty `EMAIL_BASE_URL` disables email |
