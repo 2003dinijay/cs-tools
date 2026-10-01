@@ -406,6 +406,15 @@ type CaseRepository interface {
 	// stakeholder with no email on file is silently excluded, same as
 	// watchListUserEmails does for an explicit watcher.
 	AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error)
+	// GetCaseEtaSharedOn returns work_item.eta_shared_on for caseID -- nil
+	// (not an error) when the case has no fix ETA shared yet, or the case
+	// id doesn't exist. See domain.CaseView.EtaSharedOn's own doc comment
+	// for why this is a dedicated single-column lookup: the plain-ServiceNow
+	// data source's own GetCaseByID has no Postgres row to read this from
+	// via its usual join (it never runs one), so snCaseService calls this
+	// directly through pgFallback instead, rather than paying for a full
+	// CaseRepository.GetCaseByID just for one column.
+	GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error)
 	// ProjectContactEmailsByRole returns the distinct project_contact.email
 	// addresses for projectID whose contact currently holds role (a
 	// project_role_enum label, e.g. "SECURITY_CONTACT" or "PORTAL_USER") via
@@ -1048,6 +1057,8 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		sreTeamID, sreTeamName                   *string
 		creatorEmail                             string
 		creatorID, creatorName                   *string
+		bestCaseEta, mostLikelyEta, worstCaseEta *time.Time
+		etaSharedOn                              *time.Time
 	)
 	// A scoped caller asking for a case outside their access still gets
 	// pgx.ErrNoRows -> NotFoundError below, the same as a genuinely
@@ -1066,6 +1077,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		        c.resolution_code::TEXT, c.current_escalation_level::TEXT, c.is_escalated,
 		        wi.created_on, wi.updated_on, `+caseLikeClosedOnColumn+`, `+caseLikeResolvedOnColumn+`,
 		        wi.subject,
+		        wi.best_case_eta, wi.most_likely_eta, wi.worst_case_eta, wi.eta_shared_on,
 		        wi.created_by, creator.id, COALESCE(creator.name, NULLIF(TRIM(CONCAT_WS(' ', creator.first_name, creator.last_name)), '')),
 		        p.id, p.name,
 		        d.id, d.name,
@@ -1103,6 +1115,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		&resolutionCode, &escalationLevel, &isEscalated,
 		&cv.CreatedOn, &cv.UpdatedOn, &cv.ClosedOn, &resolvedOn,
 		&cv.Subject,
+		&bestCaseEta, &mostLikelyEta, &worstCaseEta, &etaSharedOn,
 		&creatorEmail, &creatorID, &creatorName,
 		&projID, &projName,
 		&depID, &depName,
@@ -1133,6 +1146,25 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 	if description != nil {
 		cv.Description = *description
 	}
+	// best_case_eta/most_likely_eta/worst_case_eta are DATE columns --
+	// formatted back to the same "YYYY-MM-DD" string shape
+	// CaseView.BestCaseFixEta/etc. already use for the ServiceNow-sourced
+	// value, so a caller can't tell which data source answered. eta_shared_on
+	// is a TIMESTAMPTZ with no ServiceNow equivalent at all -- see
+	// CaseView.EtaSharedOn's own doc comment.
+	if bestCaseEta != nil {
+		s := bestCaseEta.Format("2006-01-02")
+		cv.BestCaseFixEta = &s
+	}
+	if mostLikelyEta != nil {
+		s := mostLikelyEta.Format("2006-01-02")
+		cv.MostLikelyFixEta = &s
+	}
+	if worstCaseEta != nil {
+		s := worstCaseEta.Format("2006-01-02")
+		cv.WorstCaseFixEta = &s
+	}
+	cv.EtaSharedOn = etaSharedOn
 	// case_state_enum/case_issue_type_enum are UPPER_SNAKE_CASE while the
 	// domain values are lowercase; case_severity_enum's 'S0'..'S4' labels
 	// have no case-only relationship to the domain value at all -- see
@@ -2589,6 +2621,19 @@ func (r *caseRepo) AccountDefaultWatcherEmails(ctx context.Context, projectID st
 		emails = append(emails, *email)
 	}
 	return emails, nil
+}
+
+// GetCaseEtaSharedOn implements CaseRepository.
+func (r *caseRepo) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error) {
+	var etaSharedOn *time.Time
+	err := r.db.QueryRow(ctx, `SELECT eta_shared_on FROM work_item WHERE id = $1`, caseID).Scan(&etaSharedOn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get case eta shared on: %w", err)
+	}
+	return etaSharedOn, nil
 }
 
 // ProjectContactEmailsByRole implements CaseRepository.
