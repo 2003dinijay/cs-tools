@@ -15,8 +15,9 @@
 -- under the License.
 
 -- Reuses service_status_enum, service_business_criticality_enum, service_consumer_type_enum,
--- and service_state_enum from 000048_service_table.up.sql: service_offering shares the
--- identical value sets for these fields.
+-- and service_state_enum from 0044_service_table.sql: service_offering shares the identical
+-- value sets for these fields.
+
 CREATE TABLE IF NOT EXISTS service_offering (
     id UUID PRIMARY KEY,
     created_on TIMESTAMPTZ NOT NULL,
@@ -31,5 +32,3 @@ CREATE TABLE IF NOT EXISTS service_offering (
     consumer_type service_consumer_type_enum,
     state service_state_enum
 );
-
-CREATE INDEX IF NOT EXISTS idx_service_offering_parent_id ON service_offering (parent_id);

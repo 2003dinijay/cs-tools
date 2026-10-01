@@ -15,14 +15,14 @@
 -- under the License.
 
 -- work_item type extension for INCIDENT, same shared-primary-key pattern as
--- case/change_request (000018_case_table.up.sql, 000047_change_request_table.up.sql):
+-- case/change_request (migrations/0023_case_table.sql, 0043_change_request_details_table.sql):
 -- id IS work_item.id, ON DELETE CASCADE, no audit columns - those live on
 -- work_item and are reachable via join.
 --
 -- parent_incident_id and problem_id are deliberately left out for now: both
 -- need a backfill pass once the tables they reference (incident itself, and
--- the not-yet-migrated problem child table) are populated. Added in
--- 000060_incident_add_parent_and_problem.up.sql.
+-- the not-yet-migrated problem child table) are populated.
+
 DO $$ BEGIN
     CREATE TYPE incident_priority_enum AS ENUM ('CRITICAL', 'HIGH', 'MODERATE', 'LOW');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -66,19 +66,16 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- subcategory is a ServiceNow dependent choice list (subcategory valid values
 -- depend on category) - a native enum can't express that, so it's modeled as
 -- a lookup table instead, with its own surrogate id (this data isn't synced
--- from ServiceNow, so gen_random_uuid() stands in for a resolved sysid).
--- value is the raw ServiceNow choice value (lookup-by-name match target);
+-- from ServiceNow, so gen_random_uuid() stands in for sysid_to_uuid here -
+-- see the seed comment/pattern in 0053_change_request_plan_date_sr_comment.sql).
+-- value is the raw ServiceNow choice value (lookup_by_name match target);
 -- label is the display text.
 CREATE TABLE IF NOT EXISTS incident_subcategory (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     category incident_category_enum NOT NULL,
     value TEXT NOT NULL,
     label TEXT NOT NULL,
-    UNIQUE (category, value),
-    -- Composite target for incident's (category, subcategory_id) FK below, so
-    -- a subcategory can never be attached to an incident whose own category
-    -- doesn't match the subcategory's category.
-    UNIQUE (category, id)
+    UNIQUE (category, value)
 );
 
 INSERT INTO incident_subcategory (category, value, label) VALUES
@@ -129,7 +126,7 @@ CREATE TABLE IF NOT EXISTS incident (
     opened_on TIMESTAMPTZ,
     caller_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
     category incident_category_enum,
-    subcategory_id UUID,
+    subcategory_id UUID REFERENCES incident_subcategory(id) ON DELETE SET NULL,
     impact incident_impact_enum NOT NULL DEFAULT 'LOW',
     urgency incident_urgency_enum NOT NULL DEFAULT 'LOW',
     service_offering_id UUID REFERENCES service_offering(id) ON DELETE SET NULL,
@@ -140,15 +137,7 @@ CREATE TABLE IF NOT EXISTS incident (
     close_notes TEXT,
     resolved_by_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
     resolved_on TIMESTAMPTZ,
-    incident_report TEXT,
-    -- Both columns stay individually nullable (an incident may have no
-    -- subcategory at all), but a non-null subcategory_id must carry a
-    -- matching category - MATCH SIMPLE alone wouldn't catch a NULL
-    -- category paired with a non-null subcategory_id, hence the CHECK.
-    CONSTRAINT incident_category_subcategory_fkey FOREIGN KEY (category, subcategory_id)
-        REFERENCES incident_subcategory (category, id) ON DELETE SET NULL (subcategory_id),
-    CONSTRAINT incident_subcategory_requires_category
-        CHECK (subcategory_id IS NULL OR category IS NOT NULL)
+    incident_report TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_incident_service_id ON incident (service_id);

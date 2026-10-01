@@ -31,5 +31,3 @@ CREATE TABLE IF NOT EXISTS sr_category_routing_rule (
     classification sr_category_routing_rule_classification_enum,
     catalog_item_id UUID REFERENCES catalog_item(id) ON DELETE CASCADE
 );
-
-CREATE INDEX IF NOT EXISTS idx_sr_category_routing_rule_catalog_item_id ON sr_category_routing_rule (catalog_item_id);
