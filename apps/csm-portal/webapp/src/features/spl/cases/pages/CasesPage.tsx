@@ -71,7 +71,7 @@ export default function CasesPage() {
           </Typography>
           <Grid container spacing={2}>
             {STATES.map((state, i) => (
-              <Grid key={state} size={{ xs: 4 }} sx={{ display: "flex", justifyContent: "center" }}>
+              <Grid key={state} size={{ xs: 12, sm: 6, md: 4 }} sx={{ display: "flex", justifyContent: "center" }}>
                 <CaseStateCard
                   data={queries[i].data}
                   loading={queries[i].loading}
