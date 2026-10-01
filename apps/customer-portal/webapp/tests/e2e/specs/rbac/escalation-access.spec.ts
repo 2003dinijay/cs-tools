@@ -63,6 +63,17 @@ import {
   skipWhenUnconfigured,
 } from "../../utils/caseFlows";
 
+// These specs perform a REAL sign-in — a password and a TOTP code are typed into
+// the page. The chromium project records trace and video `retain-on-failure`, and
+// both capture keystrokes and DOM, so a failing test would write those
+// credentials into an artefact that CI then uploads and the container emails.
+//
+// Disabled here rather than in signInAsRole: a helper cannot change project
+// recording settings, and doing it globally would strip the diagnostics every
+// other spec relies on. The `auth` setup project is configured the same way for
+// the same reason (see playwright.config.ts).
+test.use({ trace: "off", video: "off" });
+
 const PROJECT_TYPE = ProjectType.SUBSCRIPTION;
 const PROJECT_KEY = "SUB" as const;
 
@@ -82,6 +93,17 @@ const EXPECTATIONS: { role: RoleKey; maxLevel: number }[] = [
   { role: "ADMIN", maxLevel: 3 },
   { role: "PORTAL", maxLevel: MAX_LEVEL },
   { role: "LEAD", maxLevel: 3 },
+  // ⚠️ SECURITY = 0 is a REQUIREMENT, not a description of the current build.
+  // `showEscalateButton` in CaseDetailsActionRow gates only on the escalation
+  // level, the case not being Closed, EL5 being the ceiling, and `isCurrentUserLead`
+  // for levels 3-4. There is no Security-contact check anywhere in that path, so
+  // as implemented a Security Contact IS offered escalation at EL0 and this case
+  // will fail.
+  //
+  // Left as specified on purpose: flipping it to match the code would turn a
+  // missing restriction into a green test and erase the requirement. If the
+  // restriction is not wanted, delete this entry rather than invert it — an
+  // inverted assertion would then claim to verify something nobody asked for.
   { role: "SECURITY", maxLevel: 0 },
 ];
 
@@ -134,7 +156,11 @@ test.describe("RBAC — escalation ceiling per user type", () => {
         // itself rather than a state that happens to forbid it.
         await expect(
           caseDetail.escalateButton(),
-          `${role} must not be offered escalation on a case at EL0`,
+          `${role} must not be offered escalation on a case at EL0. If this ` +
+            "fails, the restriction is absent from the app rather than broken " +
+            "in the test: showEscalateButton (CaseDetailsActionRow) has no " +
+            "Security-contact check, so the button renders for every user type " +
+            "at EL0. Implement the gate, or drop SECURITY from EXPECTATIONS.",
         ).toHaveCount(0, { timeout: 60_000 });
 
         console.log(

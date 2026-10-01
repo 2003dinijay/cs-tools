@@ -102,6 +102,34 @@ export class CasesListPage {
     // match" — assert it succeeded rather than reporting zero.
     await expectSuccess(response, "case search");
 
+    // The response arriving is not the list having re-rendered. Counting rows
+    // here reads whatever is still on screen — the PREVIOUS search's results,
+    // or none at all — so the body's own total is used as the signal to wait
+    // against rather than a bare count.
+    const { totalRecords = 0 } = (await response.json()) as {
+      totalRecords?: number;
+    };
+
+    if (totalRecords === 0) {
+      await expect(
+        this.rows(),
+        "a search with no matches should render no rows",
+      ).toHaveCount(0, { timeout: LOAD_TIMEOUT_MS });
+      return 0;
+    }
+
+    // Rows are paginated, so the rendered count is capped — the assertion is
+    // that the list has caught up with the response, not that every match is
+    // on screen.
+    await expect
+      .poll(() => this.rows().count(), {
+        timeout: LOAD_TIMEOUT_MS,
+        message:
+          `the list should render results for "${term}" ` +
+          `(${totalRecords} matched)`,
+      })
+      .toBeGreaterThan(0);
+
     return this.rows().count();
   }
 

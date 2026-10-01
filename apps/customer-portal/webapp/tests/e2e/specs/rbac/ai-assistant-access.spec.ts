@@ -52,6 +52,17 @@ import { signInAsRole } from "../../auth/signInAsRole";
 import { PROJECTS, ProjectType } from "../../config/testData";
 import { SETTINGS } from "../../utils/selectors";
 
+// These specs perform a REAL sign-in — a password and a TOTP code are typed into
+// the page. The chromium project records trace and video `retain-on-failure`, and
+// both capture keystrokes and DOM, so a failing test would write those
+// credentials into an artefact that CI then uploads and the container emails.
+//
+// Disabled here rather than in signInAsRole: a helper cannot change project
+// recording settings, and doing it globally would strip the diagnostics every
+// other spec relies on. The `auth` setup project is configured the same way for
+// the same reason (see playwright.config.ts).
+test.use({ trace: "off", video: "off" });
+
 /** The three project types, each with its credential env-var prefix. */
 const PROJECTS_UNDER_TEST: { type: ProjectType; key: ProjectKey }[] = [
   { type: ProjectType.SUBSCRIPTION, key: "SUB" },

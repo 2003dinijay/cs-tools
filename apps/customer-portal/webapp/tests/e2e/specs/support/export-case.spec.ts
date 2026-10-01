@@ -121,7 +121,14 @@ test.describe("Export Case", () => {
         `${CASE_EXPORT_INPUT.projectType}; update CASE_EXPORT_INPUT if it does not`,
     ).toBeGreaterThan(0);
 
-    await expect(cases.rows().first()).toBeVisible({ timeout: 60_000 });
+    // The row must be the one searched for, not merely a row. Without this a
+    // stale result left over from a previous render satisfies the check, and
+    // the export then runs against whatever the list happens to show — which
+    // is exactly the thing the CSV assertion later claims to prove.
+    await expect(
+      cases.rows().first(),
+      `the first result should be ${CASE_EXPORT_INPUT.caseNumber}`,
+    ).toContainText(CASE_EXPORT_INPUT.caseNumber, { timeout: 60_000 });
 
     return cases;
   }

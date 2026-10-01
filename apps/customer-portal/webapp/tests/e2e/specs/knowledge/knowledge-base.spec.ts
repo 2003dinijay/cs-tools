@@ -51,6 +51,10 @@ import {
   setNoveraViaApi,
 } from "../../utils/noveraFlows";
 import { isSuccess } from "../../utils/caseFlows";
+import {
+  permanentWriteSkipReason,
+  permanentWritesAllowed,
+} from "../../utils/permanentWrites";
 
 withSession(test);
 
@@ -61,175 +65,193 @@ test.describe("Knowledge Base", () => {
   // creation and the recommendation fetch — well past the 30s default.
   test.describe.configure({ timeout: 420_000 });
 
+  // The assistant is switched back off after every test, and a failure to do so
+  // FAILS the run rather than being swallowed: `hasAgent` decides whether Get
+  // Help opens the chat or the case form, so leaving it on silently breaks
+  // every create-case spec that follows.
+  //
+  // In afterEach rather than a `finally`, deliberately. A throw inside finally
+  // replaces the error the test body raised, so a restore problem would mask
+  // the real failure; as a hook it is reported alongside it instead.
+  test.afterEach(async ({ page }) => {
+    if (!project.id) return;
+    await setNoveraViaApi(page, project.id, false);
+  });
+
   test("case raised from a chat carries KB articles", async ({ page }) => {
     test.skip(
-      !project.id,
-      `${KNOWLEDGE_BASE_INPUT.projectType} needs a project id.`,
+    !project.id,
+    `${KNOWLEDGE_BASE_INPUT.projectType} needs a project id.`,
     );
 
-    try {
-      //
-      // 1. Settings → AI Assistant: the assistant must be active, or Get Help
-      //    opens the plain case form and there is no conversation to raise a
-      //    case from.
-      //
-      const settings = new SettingsPage(page);
-      await settings.openViaSideNav(project.id);
-      await settings.openTab(SETTINGS.tabs.aiAssistant);
+    // Checked BEFORE anything is mutated: this test raises a case that cannot
+    // be deleted and flips the project's `hasAgent` flag, and the flag change
+    // alters what Get Help does for every other spec while it is in effect.
+    // Same gate as the other creation specs.
+    test.skip(
+    !permanentWritesAllowed(),
+    permanentWriteSkipReason(
+      "a support case, and it toggles the project's AI assistant",
+    ),
+    );
 
-      await expect(settings.capabilitiesSection()).toBeVisible({
-        timeout: 30_000,
-      });
+    //
+    // 1. Settings → AI Assistant: the assistant must be active, or Get Help
+    //    opens the plain case form and there is no conversation to raise a
+    //    case from.
+    //
+    const settings = new SettingsPage(page);
+    await settings.openViaSideNav(project.id);
+    await settings.openTab(SETTINGS.tabs.aiAssistant);
 
-      // The switch renders disabled while project details load, and isChecked()
-      // does not retry — so wait for it to be interactive before reading it.
-      await expect(settings.noveraToggle()).toBeEnabled({ timeout: 30_000 });
-      if (!(await settings.noveraToggle().isChecked())) {
-        await settings.setNovera(project.id, true);
-      }
+    await expect(settings.capabilitiesSection()).toBeVisible({
+      timeout: 30_000,
+    });
 
-      const novera = SETTINGS.aiAssistant.novera;
-      await expect(settings.noveraToggle()).toBeChecked({ timeout: 30_000 });
-      await expect(
-        settings.noveraChip(novera.activeChip),
-        "the assistant must report Active before the chat can be used",
-      ).toBeVisible({ timeout: 30_000 });
-
-      //
-      // 2. Get Help → the assistant, and ask the question.
-      //
-      const chat = new NoveraChatPage(page);
-      await chat.openViaGetHelp(project.id);
-      await expect(chat.heading()).toBeVisible();
-
-      await chat.issueInput().fill(KNOWLEDGE_BASE_INPUT.question);
-      await expect(chat.submitButton()).toBeEnabled({ timeout: 30_000 });
-      await chat.submitButton().click();
-
-      // The conversation's own id, not just the chat route: the id arrives a
-      // second or two after the navigation, and acting before it lands aborts
-      // the conversation's creation.
-      await expect(page).toHaveURL(NOVERA_CHAT.conversationIdPattern, {
-        timeout: 60_000,
-      });
-      console.log(`Knowledge Base: conversation at ${page.url()}`);
-
-      //
-      // 3. Let the assistant answer. The case description is built from the
-      //    exchange, so this wait is what gives the backend something to
-      //    recommend against.
-      //
-      await page.waitForTimeout(NOVERA_REPLY_SETTLE_MS);
-
-      //
-      // 4. Raise the case from the conversation. The form arrives
-      //    pre-populated — deployment, product, title and description are
-      //    already filled from the chat — so this is review-and-submit.
-      //
-      await chat.openCreateCase(project.id);
-
-      const createCase = new CaseCreatePage(page);
-      await expect(
-        page.getByRole("heading", { name: CREATE_CASE.heading }),
-      ).toBeVisible({ timeout: 60_000 });
-      await expect(createCase.submitButton()).toBeEnabled({ timeout: 60_000 });
-
-      const [createResponse] = await Promise.all([
-        page.waitForResponse(
-          (r) =>
-            new URL(r.url()).pathname.endsWith("/cases") &&
-            r.request().method() === "POST" &&
-            isSuccess(r.status()),
-        ),
-        createCase.submit(),
-      ]);
-
-      const created = (await createResponse.json()) as {
-        id?: string;
-        number?: string;
-      };
-      expect(created.id, "backend returned no case id").toBeTruthy();
-      console.log(
-        `Knowledge Base: created case ${created.number ?? created.id}`,
-      );
-
-      //
-      // 5. The Knowledge Base tab of that case.
-      //
-      const caseDetail = new CaseDetailPage(page);
-      await expect(page).toHaveURL(new RegExp(CASE_DETAIL.pathSegment), {
-        timeout: 60_000,
-      });
-      await expect(caseDetail.caseNumber()).toBeVisible({ timeout: 60_000 });
-
-      // Capture the recommendation response alongside opening the tab: an empty
-      // list and a failed render look identical on screen, and only the wire
-      // tells them apart.
-      const [recommendationResponse] = await Promise.all([
-        page.waitForResponse(
-          (r) =>
-            r.url().includes(CASE_KNOWLEDGE_BASE.recommendationsPath) &&
-            r.request().method() === "POST",
-          { timeout: 60_000 },
-        ),
-        caseDetail.openKnowledgeBaseTab(),
-      ]);
-
-      expect(
-        isSuccess(recommendationResponse.status()),
-        `the recommendation request failed (${recommendationResponse.status()})`,
-      ).toBe(true);
-
-      const recommended = (await recommendationResponse.json()) as {
-        query?: string;
-        recommendations?: unknown[];
-      };
-      console.log(
-        `Knowledge Base: service returned ` +
-          `${recommended.recommendations?.length ?? 0} recommendation(s) for ` +
-          `"${recommended.query}"`,
-      );
-
-      // Neither "no articles" nor "not enough content" is acceptable here: the
-      // case came from a real question, which is exactly the input the
-      // recommendation service exists to act on. Asserting their absence names
-      // WHICH of the two happened when it fails, where a bare count of zero
-      // would not.
-      await expect(
-        caseDetail.detailsText(CASE_KNOWLEDGE_BASE.needsContentMessage),
-        "the case should carry enough text to recommend from",
-      ).toHaveCount(0);
-      await expect(
-        caseDetail.detailsText(CASE_KNOWLEDGE_BASE.emptyMessage),
-        `the recommendation service returned no articles for ` +
-          `"${recommended.query}". The request succeeded, so this is the ` +
-          `service or its corpus, not the portal — check that staging's ` +
-          `knowledge base is populated.`,
-      ).toHaveCount(0);
-
-      const articles = await caseDetail.knowledgeBaseArticles().count();
-      expect(
-        articles,
-        "the Knowledge Base tab should list at least one article",
-      ).toBeGreaterThan(0);
-
-      // The tab's own count must agree with what is rendered — they come from
-      // the same fetch, so a mismatch means one of them is stale.
-      const tabCount = await caseDetail.knowledgeBaseTabCount();
-      expect(tabCount, "the tab count should match the rendered articles").toBe(
-        articles,
-      );
-
-      await expect(caseDetail.knowledgeBaseArticles().first()).toBeVisible();
-
-      console.log(
-        `Knowledge Base: ${articles} article(s) on ` +
-          `${created.number ?? created.id}`,
-      );
-    } finally {
-      // Off again whatever happened: leaving the assistant on sends every
-      // create-case spec to the chat instead of the form.
-      await setNoveraViaApi(page, project.id, false).catch(() => undefined);
+    // The switch renders disabled while project details load, and isChecked()
+    // does not retry — so wait for it to be interactive before reading it.
+    await expect(settings.noveraToggle()).toBeEnabled({ timeout: 30_000 });
+    if (!(await settings.noveraToggle().isChecked())) {
+      await settings.setNovera(project.id, true);
     }
+
+    const novera = SETTINGS.aiAssistant.novera;
+    await expect(settings.noveraToggle()).toBeChecked({ timeout: 30_000 });
+    await expect(
+      settings.noveraChip(novera.activeChip),
+      "the assistant must report Active before the chat can be used",
+    ).toBeVisible({ timeout: 30_000 });
+
+    //
+    // 2. Get Help → the assistant, and ask the question.
+    //
+    const chat = new NoveraChatPage(page);
+    await chat.openViaGetHelp(project.id);
+    await expect(chat.heading()).toBeVisible();
+
+    await chat.issueInput().fill(KNOWLEDGE_BASE_INPUT.question);
+    await expect(chat.submitButton()).toBeEnabled({ timeout: 30_000 });
+    await chat.submitButton().click();
+
+    // The conversation's own id, not just the chat route: the id arrives a
+    // second or two after the navigation, and acting before it lands aborts
+    // the conversation's creation.
+    await expect(page).toHaveURL(NOVERA_CHAT.conversationIdPattern, {
+      timeout: 60_000,
+    });
+    console.log(`Knowledge Base: conversation at ${page.url()}`);
+
+    //
+    // 3. Let the assistant answer. The case description is built from the
+    //    exchange, so this wait is what gives the backend something to
+    //    recommend against.
+    //
+    await page.waitForTimeout(NOVERA_REPLY_SETTLE_MS);
+
+    //
+    // 4. Raise the case from the conversation. The form arrives
+    //    pre-populated — deployment, product, title and description are
+    //    already filled from the chat — so this is review-and-submit.
+    //
+    await chat.openCreateCase(project.id);
+
+    const createCase = new CaseCreatePage(page);
+    await expect(
+      page.getByRole("heading", { name: CREATE_CASE.heading }),
+    ).toBeVisible({ timeout: 60_000 });
+    await expect(createCase.submitButton()).toBeEnabled({ timeout: 60_000 });
+
+    const [createResponse] = await Promise.all([
+      page.waitForResponse(
+        (r) =>
+          new URL(r.url()).pathname.endsWith("/cases") &&
+          r.request().method() === "POST" &&
+          isSuccess(r.status()),
+      ),
+      createCase.submit(),
+    ]);
+
+    const created = (await createResponse.json()) as {
+      id?: string;
+      number?: string;
+    };
+    expect(created.id, "backend returned no case id").toBeTruthy();
+    console.log(
+      `Knowledge Base: created case ${created.number ?? created.id}`,
+    );
+
+    //
+    // 5. The Knowledge Base tab of that case.
+    //
+    const caseDetail = new CaseDetailPage(page);
+    await expect(page).toHaveURL(new RegExp(CASE_DETAIL.pathSegment), {
+      timeout: 60_000,
+    });
+    await expect(caseDetail.caseNumber()).toBeVisible({ timeout: 60_000 });
+
+    // Capture the recommendation response alongside opening the tab: an empty
+    // list and a failed render look identical on screen, and only the wire
+    // tells them apart.
+    const [recommendationResponse] = await Promise.all([
+      page.waitForResponse(
+        (r) =>
+          r.url().includes(CASE_KNOWLEDGE_BASE.recommendationsPath) &&
+          r.request().method() === "POST",
+        { timeout: 60_000 },
+      ),
+      caseDetail.openKnowledgeBaseTab(),
+    ]);
+
+    expect(
+      isSuccess(recommendationResponse.status()),
+      `the recommendation request failed (${recommendationResponse.status()})`,
+    ).toBe(true);
+
+    const recommended = (await recommendationResponse.json()) as {
+      query?: string;
+      recommendations?: unknown[];
+    };
+    console.log(
+      `Knowledge Base: service returned ` +
+        `${recommended.recommendations?.length ?? 0} recommendation(s) for ` +
+        `"${recommended.query}"`,
+    );
+
+    // Neither "no articles" nor "not enough content" is acceptable here: the
+    // case came from a real question, which is exactly the input the
+    // recommendation service exists to act on. Asserting their absence names
+    // WHICH of the two happened when it fails, where a bare count of zero
+    // would not.
+    await expect(
+      caseDetail.detailsText(CASE_KNOWLEDGE_BASE.needsContentMessage),
+      "the case should carry enough text to recommend from",
+    ).toHaveCount(0);
+    await expect(
+      caseDetail.detailsText(CASE_KNOWLEDGE_BASE.emptyMessage),
+      `the recommendation service returned no articles for ` +
+        `"${recommended.query}". The request succeeded, so this is the ` +
+        `service or its corpus, not the portal — check that staging's ` +
+        `knowledge base is populated.`,
+    ).toHaveCount(0);
+
+    const articles = await caseDetail.knowledgeBaseArticles().count();
+    expect(
+      articles,
+      "the Knowledge Base tab should list at least one article",
+    ).toBeGreaterThan(0);
+
+    // The tab's own count must agree with what is rendered — they come from
+    // the same fetch, so a mismatch means one of them is stale.
+    const tabCount = await caseDetail.knowledgeBaseTabCount();
+    expect(tabCount, "the tab count should match the rendered articles").toBe(
+      articles,
+    );
+
+    await expect(caseDetail.knowledgeBaseArticles().first()).toBeVisible();
+
+    console.log(
+      `Knowledge Base: ${articles} article(s) on ` +
+        `${created.number ?? created.id}`,
+    );
   });
 });

@@ -161,8 +161,40 @@ export class CaseCreatePage {
   }
 
   /** The MUI Select for Deployment, matched on its placeholder text. */
+  /**
+   * A dropdown option, matched on its exact accessible name.
+   *
+   * Deliberately not `filter({ hasText: new RegExp(...) })`: the labels here are
+   * project data and routinely contain regex metacharacters, so interpolating
+   * one into a pattern makes the match broader than it looks.
+   *
+   * @param label - The option's exact visible text.
+   */
+  private optionByName(label: string): Locator {
+    return this.page.getByRole("option", { name: label, exact: true });
+  }
+
+  /**
+   * The Deployment select, WHILE IT STILL SHOWS ITS PLACEHOLDER.
+   *
+   * ⚠️ These two selects are matched on placeholder text rather than on a
+   * stable handle because the app gives them none: BasicInformationSection
+   * renders bare MUI `<Select>` elements with no id, no labelId and no
+   * InputLabel, so the combobox has no accessible name and the visible
+   * "Deployment *" beside it is an unassociated text node. `getByLabel` and an
+   * id selector both fail against it.
+   *
+   * The consequence to know: the locator stops matching once a value is
+   * chosen, so it answers "is this still awaiting a choice?", not "where is the
+   * deployment select". That is exactly what the `toBeDisabled` / `toBeHidden`
+   * assertions at the call sites want, and {@link selectDeployment} treats a
+   * vanished placeholder as "already selected" rather than an error.
+   *
+   * Giving those selects an id in the app would allow a value-independent
+   * locator and is the real fix.
+   */
   deploymentSelect(): Locator {
-    return this.page
+    return this.main()
       .getByRole("combobox")
       .filter({ hasText: CREATE_CASE.placeholders.deployment });
   }
@@ -170,7 +202,7 @@ export class CaseCreatePage {
   /** The MUI Select for Product Version. Stays disabled, reading "Select
    * deployment first", until a deployment is chosen. */
   productVersionSelect(): Locator {
-    return this.page
+    return this.main()
       .getByRole("combobox")
       .filter({ hasText: CREATE_CASE.placeholders.productVersion });
   }
@@ -231,7 +263,11 @@ export class CaseCreatePage {
     const options = this.page.getByRole("option");
     await expect(options.first()).toBeVisible({ timeout: FORM_LOAD_TIMEOUT_MS });
 
-    const exact = options.filter({ hasText: new RegExp(`^${name}$`) });
+    // Exact accessible-name matching, not an interpolated RegExp: labels carry
+    // metacharacters — product versions have dots ("WSO2 API Manager 4.5.0"),
+    // severities have parentheses ("S4(Query)") — and unescaped those match
+    // more than intended, so a lookup could select the wrong option.
+    const exact = this.optionByName(name);
     if ((await exact.count()) > 0) {
       await exact.first().click();
       return name;
@@ -263,7 +299,7 @@ export class CaseCreatePage {
         `instead (${labels.length} available). Update the fixture in ` +
         `config/testData.ts if this project should have "${name}".`,
     );
-    await options.filter({ hasText: new RegExp(`^${chosen}$`) }).first().click();
+    await this.optionByName(chosen).first().click();
     return chosen;
   }
 
@@ -296,7 +332,11 @@ export class CaseCreatePage {
     const options = this.page.getByRole("option");
     await expect(options.first()).toBeVisible({ timeout: FORM_LOAD_TIMEOUT_MS });
 
-    const exact = options.filter({ hasText: new RegExp(`^${name}$`) });
+    // Exact accessible-name matching, not an interpolated RegExp: labels carry
+    // metacharacters — product versions have dots ("WSO2 API Manager 4.5.0"),
+    // severities have parentheses ("S4(Query)") — and unescaped those match
+    // more than intended, so a lookup could select the wrong option.
+    const exact = this.optionByName(name);
     if ((await exact.count()) > 0) {
       await exact.first().click();
       return name;
@@ -322,7 +362,7 @@ export class CaseCreatePage {
       `Product "${name}" is not offered for the selected deployment; using ` +
         `"${chosen}" instead (${labels.length} available).`,
     );
-    await options.filter({ hasText: new RegExp(`^${chosen}$`) }).first().click();
+    await this.optionByName(chosen).first().click();
     return chosen;
   }
 
