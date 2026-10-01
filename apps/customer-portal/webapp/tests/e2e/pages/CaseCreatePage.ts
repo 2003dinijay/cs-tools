@@ -70,6 +70,51 @@ export class CaseCreatePage {
     });
   }
 
+  /**
+   * Opens the create-case form by URL, bypassing Get Help.
+   *
+   * Get Help branches on the project's `hasAgent`: with the assistant enabled it
+   * opens the chat instead of this form, so a spec that only needs a case
+   * cannot use it while Novera is on — and a non-admin cannot turn Novera off.
+   * Navigating straight to the route sidesteps that entirely, which keeps case
+   * creation independent of a global flag other specs may have changed.
+   *
+   * The form arrives pre-populated here (it shares the route with the
+   * chat-originated variant), so callers review and overwrite rather than fill
+   * from empty.
+   *
+   * @param projectId - Project to raise the case under.
+   */
+  async openDirect(projectId: string): Promise<void> {
+    await this.page.goto(
+      `/projects/${projectId}/${CREATE_CASE.pathSegment}`,
+    );
+    await expect(
+      this.page.getByRole("heading", { name: CREATE_CASE.heading }),
+    ).toBeVisible({ timeout: FORM_LOAD_TIMEOUT_MS });
+
+    // Product is the reliable readiness signal for every project type — see
+    // openViaGetHelp.
+    await expect(this.productVersionSelect()).toBeVisible({
+      timeout: FORM_LOAD_TIMEOUT_MS,
+    });
+  }
+
+
+  /**
+   * The product field while it is still gated on choosing a deployment.
+   *
+   * Asserting this is GONE is how the gate lifting is verified. The obvious
+   * alternative — waiting for the product placeholder to become enabled —
+   * fails whenever the chosen deployment has exactly one product, because the
+   * form selects it automatically and the placeholder never appears.
+   */
+  productGateMessage(): Locator {
+    return this.main()
+      .getByRole("combobox")
+      .filter({ hasText: CREATE_CASE.placeholders.productGatedOnDeployment });
+  }
+
   /** The app's <main> region, for scoping text assertions away from the
    * surrounding chrome. */
   private main(): Locator {
@@ -167,8 +212,59 @@ export class CaseCreatePage {
     await this.page.getByRole("option", { name: option, exact: true }).click();
   }
 
-  async selectDeployment(name: string): Promise<void> {
-    await this.chooseOption(this.deploymentSelect(), name);
+  async selectDeployment(name: string): Promise<string> {
+    const select = this.deploymentSelect();
+
+    // Located by PLACEHOLDER text, so a pre-populated form — which the
+    // chat-shared route produces — matches nothing, and the match is transient
+    // while loading ("Select deployment first"). Treat a vanished placeholder
+    // as "already chosen" rather than an error.
+    const needsChoosing = await select
+      .waitFor({ state: "attached", timeout: FORM_LOAD_TIMEOUT_MS })
+      .then(() => true)
+      .catch(() => false);
+    if (!needsChoosing) return "(already selected)";
+
+    await expect(select).toBeEnabled({ timeout: FORM_LOAD_TIMEOUT_MS });
+    await select.click();
+
+    const options = this.page.getByRole("option");
+    await expect(options.first()).toBeVisible({ timeout: FORM_LOAD_TIMEOUT_MS });
+
+    const exact = options.filter({ hasText: new RegExp(`^${name}$`) });
+    if ((await exact.count()) > 0) {
+      await exact.first().click();
+      return name;
+    }
+
+    // Deployment names are project data, not fixtures, and they do change —
+    // projects have at times carried only the timestamped records the
+    // add-deployment spec leaves behind. Falling back keeps a fixture drift
+    // from stalling for the full timeout on an option that cannot appear.
+    //
+    // "Add Deployment" is an ACTION in this list, not a deployment; selecting
+    // it opens a creation dialog, so it is excluded.
+    const labels = (await options.allTextContents())
+      .map((text) => text.trim())
+      .filter(
+        (text) =>
+          text && !/^select /i.test(text) && !/^add deployment$/i.test(text),
+      );
+
+    if (labels.length === 0) {
+      throw new Error(
+        `No deployments are available to choose from (wanted "${name}").`,
+      );
+    }
+
+    const chosen = labels[0];
+    console.log(
+      `Deployment "${name}" is not offered on this project; using "${chosen}" ` +
+        `instead (${labels.length} available). Update the fixture in ` +
+        `config/testData.ts if this project should have "${name}".`,
+    );
+    await options.filter({ hasText: new RegExp(`^${chosen}$`) }).first().click();
+    return chosen;
   }
 
   /**
@@ -176,13 +272,58 @@ export class CaseCreatePage {
    * the options are fetched per-deployment, so it is disabled immediately after
    * a deployment is chosen.
    *
-   * @param name - Exact product version label.
+   * @param name - Preferred product version label. When the selected deployment
+   *   does not offer it, the first available product is used and logged.
+   * @returns The product version actually selected.
    */
-  async selectProductVersion(name: string): Promise<void> {
-    // chooseOption already waits for the control to be present and enabled, on
-    // the long form-load budget — which is what this needs, since the options
-    // are refetched after a deployment is picked.
-    await this.chooseOption(this.productVersionSelect(), name);
+  async selectProductVersion(name: string): Promise<string> {
+    const select = this.productVersionSelect();
+
+    // Same placeholder caveat as selectDeployment: a pre-populated form has no
+    // placeholder to match, and the "Select deployment first" variant appears
+    // only transiently while the options load.
+    const needsChoosing = await select
+      .waitFor({ state: "attached", timeout: FORM_LOAD_TIMEOUT_MS })
+      .then(() => true)
+      .catch(() => false);
+    if (!needsChoosing) return "(already selected)";
+
+    // Waits for enabled on the long form-load budget: the options are refetched
+    // after a deployment is picked, and the control is disabled until they land.
+    await expect(select).toBeEnabled({ timeout: FORM_LOAD_TIMEOUT_MS });
+    await select.click();
+
+    const options = this.page.getByRole("option");
+    await expect(options.first()).toBeVisible({ timeout: FORM_LOAD_TIMEOUT_MS });
+
+    const exact = options.filter({ hasText: new RegExp(`^${name}$`) });
+    if ((await exact.count()) > 0) {
+      await exact.first().click();
+      return name;
+    }
+
+    // Products are scoped to the CHOSEN DEPLOYMENT, so this follows from the
+    // deployment fallback above: a different deployment offers a different
+    // product list, and insisting on the fixture's product would stall for the
+    // full timeout on an option that cannot appear.
+    const labels = (await options.allTextContents())
+      .map((text) => text.trim())
+      .filter((text) => text && !/^select /i.test(text));
+
+    if (labels.length === 0) {
+      throw new Error(
+        `No product versions are available for the selected deployment ` +
+          `(wanted "${name}").`,
+      );
+    }
+
+    const chosen = labels[0];
+    console.log(
+      `Product "${name}" is not offered for the selected deployment; using ` +
+        `"${chosen}" instead (${labels.length} available).`,
+    );
+    await options.filter({ hasText: new RegExp(`^${chosen}$`) }).first().click();
+    return chosen;
   }
 
   async fillTitle(title: string): Promise<void> {
