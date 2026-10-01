@@ -32,6 +32,10 @@
 #
 # Usage:
 #   sre-e2e.sh up                      build, start, roster L1/L2/L3 for now
+#   sre-e2e.sh run [-t team] [-p priority] [-x contactType]
+#                                      THE ONE TO USE: create an incident, show
+#                                      every rung live as it is called, and
+#                                      acknowledge by pressing a / s / c
 #   sre-e2e.sh create [-t team] [-p priority] [-x contactType]
 #                                      publish incident.created (default apollo, HIGH)
 #   sre-e2e.sh ack assign|status|comment [incident]
@@ -51,15 +55,17 @@ last_incident() { [[ -s "$STATE" ]] && cat "$STATE" || { echo "no incident yet: 
 
 build_publisher() {
   local arch
-  arch="$(docker compose exec -T entity-service uname -m | tr -d '\r' | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
+  arch="$(docker compose exec -T entity-service uname -m </dev/null | tr -d '\r' | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
   ( cd entity-service && GOOS=linux GOARCH="$arch" go build -o "${TMPDIR:-/tmp}/publish-incident" ./cmd/publish-incident )
   docker compose cp "${TMPDIR:-/tmp}/publish-incident" entity-service:/tmp/publish-incident >/dev/null
 }
 
-publish() { docker compose exec -T entity-service /tmp/publish-incident -broker kafka:9094 -topic case-events "$@"; }
+# Every docker compose exec reads from /dev/null: left on the terminal it
+# would swallow the keys 'run' is waiting for.
+publish() { docker compose exec -T entity-service /tmp/publish-incident -broker kafka:9094 -topic case-events "$@" </dev/null; }
 
 oncall() {
-  "${PSQL[@]}" -c "
+  "${PSQL[@]}" </dev/null -c "
     SELECT a.team_key AS team, coalesce(a.tier::text, s.tier::text) AS tier, s.code AS window, u.name AS engineer,
            to_char(a.ends_at AT TIME ZONE 'Asia/Kolkata', 'HH24:MI') AS until_ist, coalesce(a.note,'') AS note
       FROM team_schedule_assignment a
@@ -131,8 +137,126 @@ END $$;
 SQL
 }
 
+check_engine() {
+  local resolver logs
+  resolver="$(docker inspect csm-platform-csm-notification-service-1 \
+    --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | sed -n 's/^INCIDENT_ESCALATION_RESOLVER=//p')"
+  logs="$(docker compose logs csm-notification-service 2>/dev/null)"
+  if [[ "$resolver" != team-schedule ]] || ! grep -q 'ladder=escalation-sre' <<<"$logs" \
+     || grep -q 'invalid escalation configuration' <<<"$logs"; then
+    echo "==> the notification service running now is not this SRE test setup" >&2
+    grep -E 'invalid escalation configuration|escalation is disabled|is not the' <<<"$logs" | tail -2 | sed 's/^/    /' >&2
+    echo "    (another worktree's 'docker compose up' replaces it: the compose project is shared)" >&2
+    echo "    run:  $0 up   -- then run this again" >&2
+    exit 1
+  fi
+}
+
+# One line per thing the ladder does, in words, stamped with the wall clock and
+# the minute of the ladder.
+narrate() {
+  local start=$1 line now el
+  while IFS= read -r line; do
+    now=$(date +%s); el=$(( (now - start) / 60 ))
+    case "$line" in
+      *"routing put the incident on this ladder"*)
+        printf '  %s  +%2dm  ROUTED    %s ladder, by routing rule "%s"\n' "$(date +%H:%M:%S)" "$el" \
+          "$(sed -E 's/.* ladder=([a-z]+) .*/\1/' <<<"$line" | tr a-z A-Z)" "$(sed -E 's/.* rule=([a-z0-9-]+) .*/\1/' <<<"$line")" ;;
+      *"ladder scheduled"*)
+        printf '  %s  +%2dm  PLANNED   %s ladder: %s, %s call(s)\n' "$(date +%H:%M:%S)" "$el" \
+          "$(sed -E 's/.* ladder=([A-Z]+) .*/\1/' <<<"$line")" "$(sed -E 's/.* levels="([^"]+)".*/\1/' <<<"$line")" "$(sed -E 's/.* calls=([0-9]+).*/\1/' <<<"$line")" ;;
+      *"would notify"*)
+        printf '  %s  +%2dm  CALLING   %-11s -> %s   (window %s)\n' "$(date +%H:%M:%S)" "$el" \
+          "$(sed -E 's/.* role="([^"]+)".*/\1/' <<<"$line")" "$(sed -E 's/.* name="([^"]+)".*/\1/' <<<"$line")" "$(sed -E 's/.* shift=([A-Z0-9_]+).*/\1/' <<<"$line")" ;;
+      *"level cannot be called"*)
+        printf '  %s  +%2dm  SKIPPED   %s: nobody on that tier (%s)\n' "$(date +%H:%M:%S)" "$el" \
+          "$(sed -E 's/.* level=([A-Z_0-9]+) .*/\1/' <<<"$line")" "$(sed -E 's/.* reason=([A-Z_]+).*/\1/' <<<"$line")" ;;
+      *"ladder cancelled"*)
+        printf '  %s  +%2dm  STOPPED   by "%s" -- %s rung call(s) made, %s cancelled\n' "$(date +%H:%M:%S)" "$el" \
+          "$(sed -E 's/.* reason="?([^"=]+)"? rule=.*/\1/' <<<"$line")" "$(sed -E 's/.* placedCalls=([0-9]+).*/\1/' <<<"$line")" "$(sed -E 's/.* cancelledCalls=([0-9]+).*/\1/' <<<"$line")" ;;
+      *"half acknowledged"*)
+        printf '  %s  +%2dm  NOT YET   CRE ladder saw one gesture; it stops only on both (status AND comment)\n' "$(date +%H:%M:%S)" "$el" ;;
+      *"exhausted without acknowledgement"*)
+        printf '  %s  +%2dm  FINISHED  every rung called, nobody acknowledged\n' "$(date +%H:%M:%S)" "$el" ;;
+      *"configuration does not escalate"*)
+        printf '  %s  +%2dm  NOT STARTED  CRE ladder: %s\n' "$(date +%H:%M:%S)" "$el" "$(sed -E 's/.* reason="([^"]+)".*/\1/' <<<"$line")" ;;
+    esac
+  done
+}
+
+running() {  # how many of the incident's ladders are still in Redis
+  local n=0 ns
+  for ns in "incident:escalation:state:" "incident:escalation:sre:state:"; do
+    [[ "$(docker compose exec -T redis redis-cli EXISTS "$ns$1" </dev/null | tr -d '\r')" == 1 ]] && n=$((n + 1))
+  done
+  echo "$n"
+}
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
+  run)
+    TEAM=apollo PRIORITY=HIGH CONTACT=""
+    while getopts ":t:p:x:" opt; do
+      case $opt in t) TEAM=$OPTARG ;; p) PRIORITY=$OPTARG ;; x) CONTACT=$OPTARG ;; *) echo "run [-t team] [-p priority] [-x contactType]" >&2; exit 2 ;; esac
+    done
+    [[ "$TEAM" == none ]] && TEAM=""
+    # The compose project is shared by every worktree: a 'docker compose up'
+    # from another branch replaces this container with that branch's build and
+    # config. Check that what is running now is this test setup, with the SRE
+    # ladder enabled, before publishing anything into it.
+    check_engine
+    echo "==> on call right now"
+    oncall
+    build_publisher
+    ARGS=(-priority "$PRIORITY" -team "$TEAM" -title "SRE end-to-end test incident")
+    [[ -n "$CONTACT" ]] && ARGS+=(-contact-type "$CONTACT")
+    OUT="$(publish "${ARGS[@]}")"
+    INC="$(printf '%s' "$OUT" | sed -n 's/^published incident.created for \([^ ]*\) .*/\1/p')"
+    [[ -n "$INC" ]] || { echo "$OUT" >&2; echo "could not publish the incident" >&2; exit 1; }
+    echo "$INC" > "$STATE"
+    START=$(date +%s)
+    cat <<BANNER
+
+  Incident $INC  (team ${TEAM:-none}, priority $PRIORITY${CONTACT:+, raised by $CONTACT}) created at $(date +%H:%M:%S)
+  The ladder runs on the real clock: L1 now, L2 at +5 min, L3 at +10 min.
+
+  Acknowledge at any moment by typing a letter and pressing Enter:
+     a  assign an engineer      (stops the SRE ladder)
+     s  move it out of NEW      (stops the SRE ladder; one of the CRE ladder's two gestures)
+     c  post a public comment   (does NOT stop the SRE ladder; the CRE ladder's other gesture)
+     q  stop watching           (the ladder keeps running in the service)
+
+BANNER
+    docker compose logs -f --since 30s csm-notification-service 2>/dev/null \
+      | grep --line-buffered "$INC" | narrate "$START" &
+    # Everything in that pipeline is a child of this shell; stop all of it on
+    # the way out, or 'docker compose logs -f' outlives the run.
+    trap 'pkill -P $$ 2>/dev/null; true' EXIT
+    seen=0
+    while true; do
+      if read -r -t 5 key; then
+        case "$key" in
+          a|assign)  publish -event assigned     -incident-id "$INC" >/dev/null && echo "  $(date +%H:%M:%S)         SENT      an engineer assigned" ;;
+          s|status)  publish -event acknowledged -incident-id "$INC" >/dev/null && echo "  $(date +%H:%M:%S)         SENT      moved out of NEW" ;;
+          c|comment) publish -event comment      -incident-id "$INC" >/dev/null && echo "  $(date +%H:%M:%S)         SENT      a public comment" ;;
+          q|quit)    echo "  stopped watching; the ladder carries on in the service ('$0 status $INC')"; exit 0 ;;
+          "") ;;
+          *) echo "  (a = assign, s = leave NEW, c = public comment, q = stop watching)" ;;
+        esac
+      fi
+      n=$(running "$INC")
+      if [[ $n -gt 0 ]]; then seen=1; fi
+      if [[ $seen == 1 && $n == 0 ]]; then
+        sleep 2
+        echo; echo "==> every ladder for $INC has finished or been stopped"
+        exit 0
+      fi
+      if [[ $seen == 0 && $(( $(date +%s) - START )) -gt 40 ]]; then
+        echo; echo "==> no ladder started for $INC within 40 s -- that is the expected result when no routing rule takes it (e.g. -t none -x EMAIL)"
+        exit 0
+      fi
+    done
+    ;;
   up)
     echo "==> building entity-service, the notification service and the gateway shim from this branch"
     "${COMPOSE[@]}" build entity-service csm-notification-service entity-gateway-shim >/dev/null
@@ -172,8 +296,8 @@ case "$cmd" in
     echo "==> sent at $(TZ=Asia/Kolkata date '+%H:%M:%S IST'). Watch for 'ladder cancelled' (assign, status) or nothing (comment)."
     ;;
   watch)
-    INC="${1:-$(last_incident)}"
-    echo "==> following $INC (ctrl-c to stop)"
+    INC="${1:-local-inc-}"
+    echo "==> following ${1:-every test incident} (ctrl-c to stop)"
     docker compose logs -f --since 30m csm-notification-service 2>/dev/null \
       | grep --line-buffered "$INC" \
       | grep --line-buffered -E 'routing put|ladder scheduled|would notify|ALERT TRIGGERED|ladder cancelled|exhausted|half acknowledged|level cannot be called|scheduled no|configuration does not' \
