@@ -890,3 +890,58 @@ func TestResolve_AlertDutyKeepsNominationOrder(t *testing.T) {
 		t.Errorf("perTeam=2 LEVEL_0 = %v, want %v", emails(two), want[:2])
 	}
 }
+
+// Level 1 must reach somebody when the incident is on no ABT.
+//
+// R3, R4b and R1-with-no-team all route an incident that belongs to no ABT,
+// and Level 1 is "the team lead" -- the incident's OWN ABT's lead, which does
+// not exist for these. The rung resolved to nobody, BuildPlan recorded
+// NO_RECIPIENTS and dropped it, and because the rungs above keep their own
+// offsets the ladder went silent for Level 1's whole budget: a P0 placed its
+// Level 0 calls at +0m and then nothing until Level 2 at +4m. Proved against
+// a running Team Schedule before this existed -- the engine logged
+// levels="[LEVEL_0 LEVEL_2 LEVEL_3 LEVEL_4]".
+//
+// Climbing past an EMPTY rung is still right; this is about a rung that could
+// never fire for any unassigned incident, which is a different thing.
+func TestResolve_UnassignedIncidentStillReachesATeamLead(t *testing.T) {
+	stub := &stubScheduleReader{members: []teamMember{
+		member("vega", "vega.lead@example.com", roleLead, ""),
+		member("castor", "castor.lead@example.com", roleLead, ""),
+		member("atlas", "atlas.lead@example.com", roleLead, ""),
+	}}
+	// No AssignedCRETeam: the incident is on no ABT.
+	rc := RoutingContext{Shift: ShiftLK, At: time.Now()}
+
+	got, err := testResolver(stub).Resolve(context.Background(), Level1, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("LEVEL_1 = %v, want exactly one lead from the pool", emails(got))
+	}
+	if !strings.HasSuffix(got[0].Email, ".lead@example.com") {
+		t.Errorf("LEVEL_1 = %v, want somebody from the team-lead pool", emails(got))
+	}
+
+	// One, not three -- Level 2 is the three-lead rung, and blurring them
+	// would spend Level 2's people on Level 1's budget.
+	three, err := testResolver(stub).Resolve(context.Background(), Level2, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(three) <= len(got) {
+		t.Errorf("LEVEL_2 = %v, want more than LEVEL_1's %v", emails(three), emails(got))
+	}
+
+	// An incident that DOES name an ABT is unaffected: it still gets that
+	// team's own lead, not the pool.
+	own, err := testResolver(stub).Resolve(context.Background(), Level1,
+		RoutingContext{Shift: ShiftLK, AssignedCRETeam: "castor", At: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(own) != 1 || own[0].Email != "castor.lead@example.com" {
+		t.Errorf("LEVEL_1 for castor = %v, want castor's own lead", emails(own))
+	}
+}

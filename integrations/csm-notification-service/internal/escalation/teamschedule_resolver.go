@@ -63,6 +63,11 @@ type TeamScheduleResolver struct {
 	teamLeadKeys []string
 	// teamLeadsToCall is how many of that pool the rung calls; 0 calls all.
 	teamLeadsToCall int
+	// unassignedTeamLead is how the "Team lead" rung answers when there is no
+	// ABT to take a lead from: "pool" or "none". See TeamKeys.
+	unassignedTeamLead string
+	// unassignedTeamLeadCount is how many of the pool that case calls.
+	unassignedTeamLeadCount int
 	// americasLead is the single lead above the Americas team's own leads.
 	americasLead Person
 	// heads are the last two rungs when configuration names them outright,
@@ -143,16 +148,19 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 		leadKeys = keys
 	}
 	return TeamScheduleResolver{
-		abtType:           strings.ToLower(strings.TrimSpace(teams.ABTType)),
-		americasLead:      teams.AmericasLead,
-		teamLeadsToCall:   teams.TeamLeadsToCall,
-		tiers:             alertTiers,
-		entity:            entity,
-		rules:             rules,
-		abtTeamKeys:       keys,
-		teamLeadKeys:      leadKeys,
-		americasTeamKey:   teamKeyFor(teams.Americas),
-		leadershipTeamKey: teams.Leadership,
+		abtType:         strings.ToLower(strings.TrimSpace(teams.ABTType)),
+		americasLead:    teams.AmericasLead,
+		teamLeadsToCall: teams.TeamLeadsToCall,
+
+		unassignedTeamLead:      unassignedLeadMode(teams.UnassignedTeamLead),
+		unassignedTeamLeadCount: unassignedLeadCount(teams.UnassignedTeamLeadCount),
+		tiers:                   alertTiers,
+		entity:                  entity,
+		rules:                   rules,
+		abtTeamKeys:             keys,
+		teamLeadKeys:            leadKeys,
+		americasTeamKey:         teamKeyFor(teams.Americas),
+		leadershipTeamKey:       teams.Leadership,
 	}
 }
 
@@ -184,6 +192,25 @@ type TeamKeys struct {
 	// rotates, by who has gone longest without a call, so the duty spreads
 	// across the pool instead of always landing on the same names.
 	TeamLeadsToCall int `yaml:"teamLeadsToCall"`
+	// UnassignedTeamLead is who the "Team lead" rung reaches when the incident
+	// is on no ABT -- R3, R4b, and R1 when the incident carries no team at all.
+	//
+	// That rung takes the incident's OWN ABT's lead, and an unassigned
+	// incident has no ABT to take one from, so it used to resolve to nobody:
+	// the rung was recorded NO_RECIPIENTS and skipped. Skipping is right when a
+	// lead is merely unconfigured -- the ladder climbs and somebody above
+	// answers -- but here the rung can never fire for ANY unassigned incident,
+	// and the rungs above keep their own offsets, so the ladder simply went
+	// quiet for Level 1's whole budget. On a P0 that is +0m to +4m with nobody
+	// called, where the rules sheet says one call.
+	//
+	//	pool  one lead from TeamLeads, longest-since-called (the default)
+	//	none  reach nobody and climb, the behaviour before this existed
+	UnassignedTeamLead string `yaml:"unassignedTeamLead"`
+	// UnassignedTeamLeadCount is how many of that pool it calls. The sheet
+	// says one at Level 1 against three at Level 2, which is what keeps the
+	// two rungs distinct; raising it blurs them.
+	UnassignedTeamLeadCount int `yaml:"unassignedTeamLeadCount"`
 	// TeamLeads overrides the pool itself. Empty means every ABT team's lead.
 	//
 	// It is configurable because the spreadsheet and the roster disagree and
@@ -335,6 +362,23 @@ func (r TeamScheduleResolver) fromSource(ctx context.Context, src LevelSource, r
 		return dedupeRecipients(append(rota, nominees...)), nil
 
 	case SourceTeamLead:
+		// Not on an ABT means there is no own-team lead to take, so fall back
+		// to the shared pool rather than leaving the rung dead -- see
+		// TeamKeys.UnassignedTeamLead for why skipping was wrong here.
+		//
+		// The test is isABT, the same predicate the rule table routes by, NOT
+		// an empty team string. teamKeyFor slugifies whatever the incident
+		// carries, so an unmapped ServiceNow group yields a perfectly
+		// non-empty key that simply belongs to no ABT -- which is the common
+		// shape of an unassigned incident in practice, and the one an
+		// emptiness check silently missed.
+		if r.unassignedTeamLead != unassignedLeadNone && !r.isABT(ctx, teamKeyFor(rc.AssignedCRETeam)) {
+			pool, err := r.teamLeadPool(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return r.takeLongestSinceCalled(ctx, pool, r.unassignedTeamLeadCount), nil
+		}
 		return r.abtMembers(ctx, rc.AssignedCRETeam, roleLead)
 
 	case SourceAllTeamLeads:
@@ -618,6 +662,38 @@ func (r TeamScheduleResolver) pickOnePerTeam(members []teamMember) []Recipient {
 
 // leadsOf is the lead of each named team.
 // teamLeadPool is everybody the "Team leads" rung may call.
+// How the "Team lead" rung answers for an incident on no ABT.
+const (
+	unassignedLeadPool = "pool"
+	unassignedLeadNone = "none"
+)
+
+// unassignedLeadMode defaults an unset value to "pool".
+//
+// Defaulting to the fallback rather than to the old behaviour is deliberate:
+// the old behaviour is a rung that can never fire, which reads as coverage and
+// is not. A deployment that wants it back says so explicitly.
+func unassignedLeadMode(v string) string {
+	if strings.EqualFold(strings.TrimSpace(v), unassignedLeadNone) {
+		return unassignedLeadNone
+	}
+	// Everything else, including unset, is the pool. The resolver tests the
+	// field against unassignedLeadNone rather than for equality with "pool",
+	// so a resolver built as a struct literal -- as the tests and the local
+	// harness do -- gets the same behaviour from its zero value.
+	return unassignedLeadPool
+}
+
+// unassignedLeadCount defaults to one, which is what the rules sheet counts at
+// Level 1. Zero would mean "all of them" to takeLongestSinceCalled, turning
+// Level 1 into Level 2, so it is treated as unset.
+func unassignedLeadCount(n int) int {
+	if n <= 0 {
+		return 1
+	}
+	return n
+}
+
 func (r TeamScheduleResolver) teamLeadPool(ctx context.Context) ([]Recipient, error) {
 	if len(r.teamLeadKeys) > 0 {
 		return r.leadsOf(ctx, r.teamLeadKeys)

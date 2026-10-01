@@ -93,6 +93,25 @@ cre:
     # The pool itself. Empty means every team in the ABT above.
     teamLeads: []
 
+    # Level 1 ("Team lead") when the incident is on no ABT -- R3, R4b, and R1
+    # when the incident carries no team at all.
+    #
+    # That rung takes the incident's OWN ABT lead, and an unassigned incident
+    # has no ABT to take one from, so it used to reach nobody: the rung was
+    # recorded NO_RECIPIENTS and skipped. Skipping is right when a lead is
+    # merely unconfigured -- the ladder climbs and somebody above answers --
+    # but for an unassigned incident the rung can never fire at all, and the
+    # rungs above keep their own offsets. A P0 went from +0m straight to
+    # +4m with nobody called, where the rules sheet says one call.
+    #
+    #   pool  one lead from teamLeads above, longest-since-called
+    #   none  reach nobody and climb, the behaviour before this existed
+    unassignedTeamLead: pool
+
+    # How many of that pool it calls. One is what the sheet counts at Level 1,
+    # against three at Level 2 -- which is what keeps the two rungs distinct.
+    unassignedTeamLeadCount: 1
+
   # rules: the R1-R6 table. Omitted here, which uses the shipped
   # transcription of the spreadsheet (see internal/escalation/rules.go).
   # Override a row only to correct it ahead of a release; the shape is
