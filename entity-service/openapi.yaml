@@ -360,69 +360,61 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /webhooks/github:
+  /github/deliveries:
     post:
       summary: >-
-        Receive a GitHub issue webhook. Called by GitHub, not by a portal
-        client, and authenticated by the X-Hub-Signature-256 HMAC rather than
-        by the OAuth2 scopes every other operation here uses -- GitHub cannot
-        obtain a token. Declared so the gateway routes it; the gateway must
-        leave the body byte-for-byte intact, since the signature covers the
-        raw bytes and any re-serialisation invalidates it.
-      operationId: handleGithubWebhook
-      security: []
-      parameters:
-        - name: X-Hub-Signature-256
-          in: header
-          required: true
-          description: HMAC-SHA256 of the raw body, keyed by the webhook secret.
-          schema:
-            type: string
-        - name: X-GitHub-Event
-          in: header
-          required: true
-          description: The event name, e.g. "issues" or "issue_comment".
-          schema:
-            type: string
-        - name: X-GitHub-Delivery
-          in: header
-          required: true
-          description: >-
-            GitHub's delivery id. Recorded, and a repeat of one already
-            applied is answered 200 without reapplying it.
-          schema:
-            type: string
+        Apply a GitHub delivery that operations/csm-github-webhook has already
+        authenticated. That component is the public endpoint GitHub posts to;
+        it verifies the X-Hub-Signature-256 HMAC over the raw body and
+        forwards the result here. This service is Organization-visible and
+        never sees GitHub directly, so the internal client credential is what
+        stands in for the signature across this hop.
+      operationId: handleGithubDelivery
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/GithubWebhookPayload'
+              type: object
+              required: [id, event, payload]
+              properties:
+                id:
+                  type: string
+                  description: >-
+                    GitHub's delivery id. Recorded, so a repeat of one already
+                    applied is answered 409 rather than applied twice.
+                event:
+                  type: string
+                  description: The event name, e.g. "issues" or "issue_comment".
+                payload:
+                  type: object
+                  description: GitHub's webhook body, forwarded unchanged.
       responses:
         "200":
           description: >-
-            Accepted. Also returned for a delivery that was deliberately
-            skipped or already applied, so GitHub stops retrying it.
+            Applied, or deliberately skipped. The caller maps both to the 200
+            GitHub needs.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/GithubWebhookResult'
         "400":
-          description: Unreadable body, malformed payload, or a missing delivery/event header.
+          description: Malformed payload, or a missing id or event.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
-          description: >-
-            The signature did not verify. Deliberately identical for every
-            cause -- a caller must not learn which check failed.
+          description: Not an authorized internal client.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        "500":
-          description: Processing failed. GitHub retries; the delivery claim is released.
+        "409":
+          description: >-
+            This delivery id has already been applied. Distinct from 200 so
+            the caller can tell "already done" from "done just now" without
+            parsing a message.
           content:
             application/json:
               schema:

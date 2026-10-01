@@ -1,0 +1,116 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package handler
+
+import (
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
+)
+
+// GithubDeliveryHandler applies a GitHub delivery that something else has
+// already authenticated.
+//
+// *** THE HMAC CHECK IS NOT HERE ANY MORE, AND THAT IS THE POINT. ***
+// GitHub has to reach the webhook from the internet, and entity-service is
+// Organization-visible in Choreo -- exposing it so one route could be
+// reached would publish every other route with it. So the public endpoint
+// moved to operations/csm-github-webhook, which verifies the signature over
+// the raw body and forwards the result here.
+//
+// This endpoint is therefore INTERNAL-CLIENT ONLY. It trusts its caller, so
+// anything able to reach it could apply an arbitrary delivery -- the client
+// credential is what stands in for the signature across that hop.
+type GithubDeliveryHandler struct {
+	svc service.GithubSyncService
+	// internalClientIDs is config.Config.AuthInternalClientIDs.
+	internalClientIDs map[string]bool
+}
+
+// NewGithubDeliveryHandler constructs the internal delivery endpoint.
+func NewGithubDeliveryHandler(svc service.GithubSyncService, internalClientIDs map[string]bool) *GithubDeliveryHandler {
+	return &GithubDeliveryHandler{svc: svc, internalClientIDs: internalClientIDs}
+}
+
+// githubDeliveryRequest is what the webhook component forwards: the two
+// headers that identify a delivery, plus GitHub's body verbatim.
+type githubDeliveryRequest struct {
+	ID      string          `json:"id"`
+	Event   string          `json:"event"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// Handle handles POST /github/deliveries.
+func (h *GithubDeliveryHandler) Handle(w http.ResponseWriter, r *http.Request) {
+	id := auth.IdentityFromContext(r.Context())
+	if !id.Validated || id.ClientID == "" || !h.internalClientIDs[id.ClientID] {
+		apierror.WriteJSON(w, http.StatusUnauthorized,
+			"an authorized internal client credential is required")
+		return
+	}
+
+	var req githubDeliveryRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	if req.ID == "" || req.Event == "" {
+		apierror.WriteJSON(w, http.StatusBadRequest, "id and event are required")
+		return
+	}
+
+	var payload service.IssuePayload
+	if err := json.Unmarshal(req.Payload, &payload); err != nil {
+		apierror.WriteJSON(w, http.StatusBadRequest, "malformed webhook payload")
+		return
+	}
+
+	outcome, err := h.svc.HandleWebhook(r.Context(), service.Delivery{
+		ID: req.ID, Event: req.Event, Payload: payload,
+	})
+	if err != nil {
+		if errors.Is(err, repository.ErrDeliverySeen) {
+			// 409 rather than 200: the caller maps it back to the 200 GitHub
+			// needs, and a distinct status lets it tell "already applied"
+			// from "applied just now" without parsing a message.
+			apierror.WriteJSON(w, http.StatusConflict, "duplicate delivery, already processed")
+			return
+		}
+		slog.ErrorContext(r.Context(), "github: delivery handling failed",
+			"delivery", req.ID, "event", req.Event, "err", err)
+		apierror.WriteJSON(w, http.StatusInternalServerError, "could not process the delivery")
+		return
+	}
+
+	slog.InfoContext(r.Context(), "github: delivery handled",
+		"delivery", req.ID, "event", req.Event,
+		"action", outcome.Action, "skipped", outcome.Skipped,
+		"changeRequestId", outcome.ChangeRequestID)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"action":  outcome.Action,
+		"skipped": outcome.Skipped,
+	})
+}

@@ -144,7 +144,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// webhook endpoint is not registered merely because a database exists --
 	// it authenticates by HMAC rather than by bearer token, and an endpoint
 	// that mutates change requests should appear only when asked for.
-	var githubWebhookHandler *handler.GithubWebhookHandler
+	var githubDeliveryHandler *handler.GithubDeliveryHandler
 	var githubServiceRequestHandler *handler.GithubServiceRequestHandler
 
 	// Assigned inside the GitHub-integration block below and read further down,
@@ -187,7 +187,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				cfg.GithubIntegrationLogin,
 				githubLabels,
 			)
-			githubWebhookHandler = handler.NewGithubWebhookHandler(githubSyncSvc, cfg.GithubWebhookSecret)
+			githubDeliveryHandler = handler.NewGithubDeliveryHandler(githubSyncSvc, cfg.AuthInternalClientIDs)
 			githubServiceRequestHandler = handler.NewGithubServiceRequestHandler(githubSyncSvc, cfg.AuthInternalClientIDs)
 		}
 	}
@@ -1222,8 +1222,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if slaStatusHandler != nil {
 		mux.HandleFunc("GET /sla-status", slaStatusHandler.SearchActiveSLAStatuses)
 	}
-	if githubWebhookHandler != nil {
-		mux.HandleFunc("POST /webhooks/github", githubWebhookHandler.Handle)
+	if githubDeliveryHandler != nil {
+		mux.HandleFunc("POST /github/deliveries", githubDeliveryHandler.Handle)
 		mux.HandleFunc("POST /github/service-requests", githubServiceRequestHandler.Create)
 	}
 
