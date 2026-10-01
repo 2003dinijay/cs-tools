@@ -1731,6 +1731,44 @@ regardless of severity.
   on its own ticker, default 45s — frequent enough that a 50/75/100%
   crossing is visible well within `csm-notification-service`'s own
   `SLA_TICK_INTERVAL` poll cadence.
+- **A BREACHED clock is not terminal — it keeps being recomputed, and stays
+  completable, until its own genuine finishing event.** A real, reported bug
+  had `RecomputeActive` stop touching a row the instant it first flipped to
+  `BREACHED` (its `WHERE` clause only ever matched `IN_PROGRESS`), freezing
+  `business_elapsed_percentage`/`business_duration` forever at whatever the
+  breaching tick happened to compute — e.g. a response SLA observed stuck at
+  "59m" elapsed long after real time had moved well past that, because
+  nothing ever recomputed it again. `CompleteClock`/`SetPaused` had the
+  matching half of the same bug: both excluded `BREACHED` via
+  `slaEngineActiveStageFilter`, so a RESPONSE clock that breached before a
+  support engineer ever replied silently ignored that reply's own
+  `CompleteClock` call — matching zero rows instead of finally finalizing
+  it. Fixed by giving `CompleteClock`/`SetPaused` their own, narrower
+  `slaEngineOpenStageFilter` (excludes only `ACHIEVED`/`CANCELLED`/
+  `COMPLETED` — the stages a clock genuinely never leaves — not `BREACHED`
+  too), and widening `RecomputeActive`'s own `WHERE` to `stage IN
+  ('IN_PROGRESS', 'BREACHED')` (still excluding `PAUSED`, for the same
+  "pause must actually stop accumulation" reason it always did).
+  `business_elapsed_percentage` is no longer capped at 100 either, in both
+  `RecomputeActive` and `CompleteClock` — a clock now shows its real,
+  uncapped overrun (e.g. 134%) for as long as it stays unanswered/BREACHED,
+  and still shows that same true number once it's finally completed,
+  instead of an identical-looking 100% regardless of how late the real
+  completion actually was. The webapp's `CaseSlaTable` already handles a
+  percentage above 100 correctly (clamps the progress-bar fill, shows the
+  real number as text), confirmed before uncapping this.
+- **A case closing now finalizes all three clock types, not just
+  resolution.** `ApplyCaseStateEffects`'s `CaseStateClosed` branch used to
+  only resume+complete `resolution` and merely pause `workaround` forever
+  (a documented, carried-forward gap from the old deleted design) — and
+  never touched `response` at all, leaving a case closed before anyone ever
+  replied with its response clock permanently `IN_PROGRESS`/`BREACHED`.
+  Closing now resumes+completes `workaround` the same way `resolution`
+  already was, and completes `response` directly (it's never paused at any
+  state) — all three unconditionally, every close, since `CompleteClock`'s
+  own stage filter is a no-op for whichever clock(s) already reached a
+  genuine completion (an engineer's reply, an earlier close) before this
+  ran.
 - **`RegisterCaseClocks`/`ReviseCaseClocks`/`CompleteResponseClock`/
   `ApplyCaseStateEffects`** are all called directly, in-process, from
   `snCaseService`'s own case-lifecycle hooks (create/severity-change/
