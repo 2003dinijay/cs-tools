@@ -221,8 +221,11 @@ export default function CsmSideBar({
       <Sidebar.Nav>
         <Sidebar.Category>
           {view === "sales-sa" ? (
+            // No category label here, matching the CS-ABT branch below: a
+            // viewer with the "viewer" role is just a CSM Portal user whose
+            // nav happens to be this set of sections, not someone using a
+            // separate "Support Portal Lite" product -- see usePortalView.ts.
             <>
-              <Sidebar.CategoryLabel>Support Portal Lite</Sidebar.CategoryLabel>
               {splItems.map((item) => {
                 const itemContent = (
                   <Sidebar.Item id={item.id}>
