@@ -266,6 +266,21 @@ func (l *LadderConfig) validate(name string) error {
 	if l.Safety.MaxCallsPerLadder < 0 {
 		return fmt.Errorf("%s: safety.maxCallsPerLadder is negative", name)
 	}
+	// A cap keyed by a shift name that does not exist would read as a cap and
+	// do nothing -- the same failure KnownFields(true) exists to prevent, which
+	// cannot see inside a map's keys.
+	for k, v := range l.Teams.RotaMembersToCall {
+		shift := Shift(strings.ToUpper(strings.TrimSpace(k)))
+		if !shift.Known() {
+			return fmt.Errorf("%s: teams.rotaMembersToCall names shift %q, which is not one of %s",
+				name, k, strings.Join(KnownShiftNames(), ", "))
+		}
+		if v < 0 {
+			return fmt.Errorf("%s: teams.rotaMembersToCall[%s] is negative; use 0 or omit it to call everyone on duty",
+				name, k)
+		}
+	}
+
 	// Only a table that was actually supplied is validated: an empty one means
 	// "use the shipped rules", which are validated by their own test.
 	if len(l.Rules) > 0 {

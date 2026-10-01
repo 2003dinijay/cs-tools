@@ -35,6 +35,34 @@ const (
 	ShiftUSAWeekend Shift = "USA_WEEKEND" // 9PM - 6AM IST, weekends
 )
 
+// allShifts is every shift the rule table can route by, in the order a reader
+// expects them: the IST day, then the night.
+var allShifts = []Shift{
+	ShiftLK, ShiftLKMorning, ShiftLKEvening, ShiftLKWeekend, ShiftUSA, ShiftUSAWeekend,
+}
+
+// Known reports whether this is one of the six real shifts. Used to reject a
+// configured shift name that does not exist, which would otherwise be accepted
+// and silently do nothing.
+func (s Shift) Known() bool {
+	for _, k := range allShifts {
+		if s == k {
+			return true
+		}
+	}
+	return false
+}
+
+// KnownShiftNames lists the six, for an error message that tells the reader
+// what they may write instead of only that what they wrote is wrong.
+func KnownShiftNames() []string {
+	out := make([]string, 0, len(allShifts))
+	for _, s := range allShifts {
+		out = append(out, string(s))
+	}
+	return out
+}
+
 // IsRotation reports whether this shift is a rotation at all. The regular LK
 // and USA business-hours shifts are not, and never carry a notification level.
 //

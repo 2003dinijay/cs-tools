@@ -63,6 +63,9 @@ type TeamScheduleResolver struct {
 	teamLeadKeys []string
 	// teamLeadsToCall is how many of that pool the rung calls; 0 calls all.
 	teamLeadsToCall int
+	// rotaMembersToCall caps the rota rungs per shift; absent or 0 means
+	// everyone on duty, which is the normal case.
+	rotaMembersToCall map[Shift]int
 	// unassignedTeamLead is how the "Team lead" rung answers when there is no
 	// ABT to take a lead from: "pool" or "none". See TeamKeys.
 	unassignedTeamLead string
@@ -152,6 +155,7 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 		americasLead:    teams.AmericasLead,
 		teamLeadsToCall: teams.TeamLeadsToCall,
 
+		rotaMembersToCall:       normaliseRotaCaps(teams.RotaMembersToCall),
 		unassignedTeamLead:      unassignedLeadMode(teams.UnassignedTeamLead),
 		unassignedTeamLeadCount: unassignedLeadCount(teams.UnassignedTeamLeadCount),
 		tiers:                   alertTiers,
@@ -192,6 +196,29 @@ type TeamKeys struct {
 	// rotates, by who has gone longest without a call, so the duty spreads
 	// across the pool instead of always landing on the same names.
 	TeamLeadsToCall int `yaml:"teamLeadsToCall"`
+	// RotaMembersToCall caps the rota-sourced Level 0 rungs, per shift.
+	//
+	// "Rota Members" means everyone on duty, and that is what the resolver
+	// returns -- so the rules sheet's counts for those rungs (2 on LK_MORNING,
+	// 3 on LK_WEEKEND, 7 on LK_EVENING without an ABT) are descriptions of how
+	// many people are rostered in each shift, not limits the code imposes.
+	//
+	// EMPTY IS THE DEFAULT AND THE RECOMMENDED SETTING. A cap means an
+	// engineer who IS on duty does not get called, which is a strange thing to
+	// want from a pager; it exists because these numbers decide the Twilio
+	// bill and a deployment may need a hard ceiling it can set without a
+	// release. Name only the shifts you want capped:
+	//
+	//	rotaMembersToCall:
+	//	  LK_EVENING: 7
+	//
+	// Keyed by shift as resolver.go spells it (LK, LK_MORNING, LK_EVENING,
+	// LK_WEEKEND, USA, USA_WEEKEND); an unrecognised key is an error rather
+	// than a silent no-op, since a typo would otherwise read as a cap that is
+	// quietly not applied. Which members are dropped rotates by
+	// longest-since-called, the same fairness the "Team leads" rung uses, so a
+	// cap does not always spare the same names.
+	RotaMembersToCall map[string]int `yaml:"rotaMembersToCall"`
 	// UnassignedTeamLead is who the "Team lead" rung reaches when the incident
 	// is on no ABT -- R3, R4b, and R1 when the incident carries no team at all.
 	//
@@ -328,7 +355,7 @@ func (r TeamScheduleResolver) fromSource(ctx context.Context, src LevelSource, r
 		return nil, nil
 
 	case SourceRotaMembers:
-		return r.rotaMembers(ctx, rc.At)
+		return r.rotaMembers(ctx, rc.At, rc.Shift)
 
 	case SourceRotaPair:
 		return r.rotaPair(ctx, rc.At, teamKeyFor(rc.AssignedCRETeam))
@@ -347,7 +374,7 @@ func (r TeamScheduleResolver) fromSource(ctx context.Context, src LevelSource, r
 		return r.alertDuty(ctx, r.americasKeys())
 
 	case SourceRotaMemberAndAlertDutyAmericas:
-		rota, err := r.rotaMembers(ctx, rc.At)
+		rota, err := r.rotaMembers(ctx, rc.At, rc.Shift)
 		if err != nil {
 			return nil, err
 		}
@@ -433,7 +460,20 @@ func (r TeamScheduleResolver) americasKeys() []string {
 var alertTiers = []string{"T1", "T2", "T3"}
 
 // rotaMembers is everybody rostered at that instant, in a stable order.
-func (r TeamScheduleResolver) rotaMembers(ctx context.Context, at time.Time) ([]Recipient, error) {
+// normaliseRotaCaps upper-cases the configured shift keys so the map can be
+// looked up by Shift directly.
+func normaliseRotaCaps(in map[string]int) map[Shift]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[Shift]int, len(in))
+	for k, v := range in {
+		out[Shift(strings.ToUpper(strings.TrimSpace(k)))] = v
+	}
+	return out
+}
+
+func (r TeamScheduleResolver) rotaMembers(ctx context.Context, at time.Time, shift Shift) ([]Recipient, error) {
 	onDuty, err := r.entity.OnDutyAt(ctx, at)
 	if err != nil {
 		return nil, err
@@ -450,6 +490,11 @@ func (r TeamScheduleResolver) rotaMembers(ctx context.Context, at time.Time) ([]
 		})
 	}
 	sortRecipients(out)
+	// Uncapped unless this shift is named in configuration -- "Rota Members"
+	// is everyone on duty. See TeamKeys.RotaMembersToCall.
+	if n := r.rotaMembersToCall[shift]; n > 0 && len(out) > n {
+		return r.takeLongestSinceCalled(ctx, out, n), nil
+	}
 	return out, nil
 }
 

@@ -483,3 +483,34 @@ func TestStartWhen_PrioritiesCompareAcrossNotations(t *testing.T) {
 		}
 	}
 }
+
+// A cap keyed by a shift that does not exist must be refused, not ignored.
+//
+// KnownFields(true) cannot see inside a map's keys, so "LK_EVENINGS" would be
+// accepted and quietly cap nothing -- leaving an operator certain they had
+// limited the spend when they had not. That is the same failure the strict
+// decoder exists to prevent, so it gets the same treatment.
+func TestConfig_RejectsAnUnknownShiftInRotaCaps(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "escalation.yaml")
+	write := func(body string) {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("enabled: true\ncre:\n  teams:\n    rotaMembersToCall:\n      LK_EVENINGS: 7\n")
+	if _, err := LoadConfig(path); err == nil {
+		t.Error("a misspelled shift name was accepted; it would have capped nothing")
+	}
+
+	write("enabled: true\ncre:\n  teams:\n    rotaMembersToCall:\n      LK_EVENING: -1\n")
+	if _, err := LoadConfig(path); err == nil {
+		t.Error("a negative cap was accepted")
+	}
+
+	// Lower case is fine: the key is normalised before it is looked up.
+	write("enabled: true\ncre:\n  teams:\n    rotaMembersToCall:\n      lk_evening: 7\n")
+	if _, err := LoadConfig(path); err != nil {
+		t.Errorf("a lower-case shift name should be accepted: %v", err)
+	}
+}

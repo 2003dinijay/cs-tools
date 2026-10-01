@@ -93,6 +93,28 @@ cre:
     # The pool itself. Empty means every team in the ABT above.
     teamLeads: []
 
+    # Caps the rota-sourced Level 0 rungs, per shift.
+    #
+    # "Rota Members" means everyone on duty, and that is what the ladder calls.
+    # The rules sheet's counts for those rungs -- 2 on LK_MORNING, 3 on
+    # LK_WEEKEND, 7 on LK_EVENING without an ABT -- describe how many people
+    # are rostered in each shift, not a limit the code imposes.
+    #
+    # Empty is the default and the recommended setting: a cap means somebody
+    # who IS on duty does not get called, which is a strange thing to want
+    # from a pager. It exists because these counts decide the Twilio bill and
+    # a deployment may need a ceiling it can set without a release. Name only
+    # the shifts you want capped, e.g.
+    #
+    #   rotaMembersToCall:
+    #     LK_EVENING: 7
+    #
+    # Shift names are LK, LK_MORNING, LK_EVENING, LK_WEEKEND, USA,
+    # USA_WEEKEND; anything else is refused at startup rather than ignored.
+    # Which members a cap drops rotates by longest-since-called, so it does
+    # not always spare the same names.
+    rotaMembersToCall: {}
+
     # Level 1 ("Team lead") when the incident is on no ABT -- R3, R4b, and R1
     # when the incident carries no team at all.
     #
