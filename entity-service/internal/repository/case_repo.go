@@ -2253,6 +2253,14 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 
 	countQuery := "SELECT COUNT(*) FROM work_item wi " + joins + " " + where
 
+	// The page is chosen first, by an inner query that selects only wi.id,
+	// and the display columns are joined onto just those rows afterwards.
+	// Every join in caseSearchJoins is on a primary key, so the inner query
+	// returns exactly the rows the single-level form did, in the same order
+	// (same ORDER BY, wi.id tie-break), while Postgres drops the joins the
+	// WHERE and ORDER BY do not reference. Under RLS this matters: the
+	// policies on the joined tables stop the planner from limiting rows
+	// before joining, so a deep page used to join every matching row first.
 	dataQuery := fmt.Sprintf(
 		`SELECT wi.id, wi.number, wi.wso2_id,
 		        wi.type::TEXT, wi.subject, wi.description, c.severity::TEXT, c.issue_type::TEXT, `+caseLikeStateColumn+`,
@@ -2265,10 +2273,13 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		        ae.id, COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')), ae.email,
 		        pw.id, pw.number,
 		        rc_wi.id, rc_wi.number
-		 FROM work_item wi %s %s
-		 ORDER BY %s %s NULLS LAST, wi.id
-		 LIMIT $%d OFFSET $%d`,
+		 FROM (SELECT wi.id FROM work_item wi %s %s
+		       ORDER BY %s %s NULLS LAST, wi.id
+		       LIMIT $%d OFFSET $%d) page
+		 JOIN work_item wi ON wi.id = page.id %s
+		 ORDER BY %s %s NULLS LAST, wi.id`,
 		joins, where, sortCol, sortDir, argIdx, argIdx+1,
+		joins, sortCol, sortDir,
 	)
 	dataArgs := append(append([]any{}, filterArgs...), req.Pagination.Limit, req.Pagination.Offset)
 
