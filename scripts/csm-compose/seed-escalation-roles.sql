@@ -120,4 +120,40 @@ VALUES
    md5('seed-team-cre-leadership')::uuid, md5('seed-cs-head')::uuid, 'cs_head')
 ON CONFLICT (id) DO NOTHING;
 
+-- Alert-duty nominees (T1/T2/T3) for every ABT team.
+--
+-- LEVEL_0 on the business-hours rules IS these people: R2 calls the incident's
+-- own ABT's three, and R3 -- an incident on no ABT -- calls one from each ABT,
+-- which is seven calls. Without them that rung resolves to nobody, so the
+-- fastest rung of a business-hours ladder silently does not happen, and a
+-- local run looks like it is working because the rungs above still fire.
+--
+-- Three per team, lowest user_id first, so a volume reset reproduces the same
+-- nominees and a test asserting who gets called stays stable. Deterministic,
+-- not meaningful: these are seeded synthetic people.
+-- Cleared first: alert_tier carries a UNIQUE (team_id, alert_tier) index, so
+-- re-seeding a team whose T1 is currently somebody else collides rather than
+-- moving the nomination. Clearing inside the same transaction makes this file
+-- re-runnable, which migrate-and-seed.sh relies on -- it runs every time.
+UPDATE team_member m
+   SET alert_tier = NULL, updated_on = now(), updated_by = 'seed:alert-duty'
+  FROM team t
+ WHERE t.id = m.team_id
+   AND t.type IN ('cre-abt', 'sre-abt')
+   AND m.alert_tier IS NOT NULL;
+
+WITH ranked AS (
+  SELECT tm.id,
+         ROW_NUMBER() OVER (PARTITION BY tm.team_id ORDER BY tm.user_id) AS rn
+    FROM team_member tm
+    JOIN team t ON t.id = tm.team_id
+   WHERE t.type IN ('cre-abt', 'sre-abt')
+     AND tm.role = 'engineer'
+)
+UPDATE team_member m
+   SET alert_tier = 'T' || r.rn, updated_on = now(), updated_by = 'seed:alert-duty'
+  FROM ranked r
+ WHERE m.id = r.id
+   AND r.rn <= 3;
+
 COMMIT;
