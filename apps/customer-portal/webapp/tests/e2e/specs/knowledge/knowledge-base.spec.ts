@@ -65,16 +65,28 @@ test.describe("Knowledge Base", () => {
   // creation and the recommendation fetch — well past the 30s default.
   test.describe.configure({ timeout: 420_000 });
 
-  // The assistant is switched back off after every test, and a failure to do so
-  // FAILS the run rather than being swallowed: `hasAgent` decides whether Get
-  // Help opens the chat or the case form, so leaving it on silently breaks
+  // Whether THIS test switched the assistant on. Restoring is conditional on
+  // it, because the flag is shared project state: the Subscription project
+  // normally has Novera already enabled, so an unconditional "off" would turn
+  // off a setting this test never turned on — and afterEach runs for SKIPPED
+  // tests too, which would disable it without the test having done anything at
+  // all.
+  let enabledByThisTest = false;
+
+  test.beforeEach(() => {
+    enabledByThisTest = false;
+  });
+
+  // Switched back off only when this test switched it on, and a failure to do
+  // so FAILS the run rather than being swallowed: `hasAgent` decides whether
+  // Get Help opens the chat or the case form, so leaving it on silently breaks
   // every create-case spec that follows.
   //
   // In afterEach rather than a `finally`, deliberately. A throw inside finally
   // replaces the error the test body raised, so a restore problem would mask
   // the real failure; as a hook it is reported alongside it instead.
   test.afterEach(async ({ page }) => {
-    if (!project.id) return;
+    if (!enabledByThisTest || !project.id) return;
     await setNoveraViaApi(page, project.id, false);
   });
 
@@ -113,6 +125,8 @@ test.describe("Knowledge Base", () => {
     await expect(settings.noveraToggle()).toBeEnabled({ timeout: 30_000 });
     if (!(await settings.noveraToggle().isChecked())) {
       await settings.setNovera(project.id, true);
+      // Ownership: only a test that made the change may undo it.
+      enabledByThisTest = true;
     }
 
     const novera = SETTINGS.aiAssistant.novera;
@@ -183,31 +197,38 @@ test.describe("Knowledge Base", () => {
     //
     // 5. The Knowledge Base tab of that case.
     //
+    // Armed BEFORE the case detail loads, not alongside the tab click. The
+    // recommendations call fires when the tab opens in the current build, but
+    // nothing guarantees that — the tab label carries a count, so a build that
+    // prefetched to populate it would send the request during page load and a
+    // listener registered later would miss it entirely, failing as a 60s
+    // timeout rather than as the empty result it actually is. A wait registered
+    // early still matches a request made later, so this is strictly safer.
+    //
+    // Capturing it at all matters because an empty list and a failed render
+    // look identical on screen; only the wire tells them apart.
+    const recommendationResponse = page.waitForResponse(
+      (r) =>
+        r.url().includes(CASE_KNOWLEDGE_BASE.recommendationsPath) &&
+        r.request().method() === "POST",
+      { timeout: 120_000 },
+    );
+
     const caseDetail = new CaseDetailPage(page);
     await expect(page).toHaveURL(new RegExp(CASE_DETAIL.pathSegment), {
       timeout: 60_000,
     });
     await expect(caseDetail.caseNumber()).toBeVisible({ timeout: 60_000 });
 
-    // Capture the recommendation response alongside opening the tab: an empty
-    // list and a failed render look identical on screen, and only the wire
-    // tells them apart.
-    const [recommendationResponse] = await Promise.all([
-      page.waitForResponse(
-        (r) =>
-          r.url().includes(CASE_KNOWLEDGE_BASE.recommendationsPath) &&
-          r.request().method() === "POST",
-        { timeout: 60_000 },
-      ),
-      caseDetail.openKnowledgeBaseTab(),
-    ]);
+    await caseDetail.openKnowledgeBaseTab();
+    const recommendation = await recommendationResponse;
 
     expect(
-      isSuccess(recommendationResponse.status()),
-      `the recommendation request failed (${recommendationResponse.status()})`,
+      isSuccess(recommendation.status()),
+      `the recommendation request failed (${recommendation.status()})`,
     ).toBe(true);
 
-    const recommended = (await recommendationResponse.json()) as {
+    const recommended = (await recommendation.json()) as {
       query?: string;
       recommendations?: unknown[];
     };
