@@ -48,6 +48,12 @@
 -- ALTER POLICY replaces a policy's expressions in place, so this is safe to
 -- re-run.
 
+-- One transaction: `make migrate` runs each file with `psql -f` and no
+-- --single-transaction, so a failure partway would leave the comment policies on
+-- the new rule and the watcher policies on the old one (announcement children
+-- visible again) until a retry. All or nothing instead.
+BEGIN;
+
 -- comment
 
 ALTER POLICY comment_visibility ON comment
@@ -126,3 +132,5 @@ ALTER POLICY work_item_watcher_delete ON work_item_watcher
         AND (wi.type <> 'ANNOUNCEMENT' OR EXISTS (SELECT 1 FROM announcement a WHERE a.id = wi.id))
     )
   );
+
+COMMIT;

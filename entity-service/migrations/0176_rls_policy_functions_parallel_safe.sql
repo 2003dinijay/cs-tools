@@ -15,6 +15,10 @@
 -- under the License.
 
 
+-- One transaction, so the three labels change together or not at all
+-- (`make migrate` runs each file with `psql -f`, no --single-transaction).
+BEGIN;
+
 -- Let Postgres use parallel plans for statements that touch an RLS-protected
 -- table, by declaring the policies' helper functions PARALLEL SAFE.
 --
@@ -47,3 +51,5 @@
 ALTER FUNCTION is_project_member(UUID) PARALLEL SAFE;
 ALTER FUNCTION announcement_is_security(UUID, announcement_type_enum) PARALLEL SAFE;
 ALTER FUNCTION project_has_security_contact(UUID) PARALLEL SAFE;
+
+COMMIT;
