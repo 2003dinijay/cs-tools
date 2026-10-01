@@ -267,11 +267,20 @@ func incidentSubject(inc model.Incident) string {
 
 // NotifyChat returns true only if every configured target confirms, or if none are configured.
 func (n *Notifier) NotifyChat(ctx context.Context, inc model.Incident) (ok bool) {
+	return n.postCardToChat(ctx, inc.IncidentNumber, fallbackGoogleChatCard(inc, n.chatThreadingEnabled))
+}
+
+// NotifyChatAnnotation threads a Duplicate/OK annotation into the incident's existing Chat thread, rendering kind and note so it reads as an update rather than a repeat of the original "Priority Incident Reported" card.
+func (n *Notifier) NotifyChatAnnotation(ctx context.Context, inc model.Incident, kind, note string) (ok bool) {
+	return n.postCardToChat(ctx, inc.IncidentNumber, annotationGoogleChatCard(inc, kind, note, n.chatThreadingEnabled))
+}
+
+// postCardToChat posts card to every configured webhook, threading it when enabled, and returns true only if every target confirms, or if none are configured.
+func (n *Notifier) postCardToChat(ctx context.Context, incidentNumber string, card map[string]any) (ok bool) {
 	if len(n.fallbackChatWebhookURLs) == 0 {
-		n.logger.Warn("no chat target for incident: FALLBACK_CHAT_WEBHOOK_URLS not configured", "incident_number", inc.IncidentNumber)
+		n.logger.Warn("no chat target for incident: FALLBACK_CHAT_WEBHOOK_URLS not configured", "incident_number", incidentNumber)
 		return true
 	}
-	card := fallbackGoogleChatCard(inc, n.chatThreadingEnabled)
 	var wg sync.WaitGroup
 	var failures atomic.Int32
 	for _, chatURL := range n.fallbackChatWebhookURLs {
@@ -284,11 +293,11 @@ func (n *Notifier) NotifyChat(ctx context.Context, inc model.Incident) (ok bool)
 				target = withThreadReplyOption(chatURL)
 			}
 			if _, err := n.postWithRetry(ctx, target, card); err != nil {
-				n.logger.Error("notify failed after retries", "target", "google_chat", "chat_space_id", spaceID, "incident_number", inc.IncidentNumber, "error", err)
+				n.logger.Error("notify failed after retries", "target", "google_chat", "chat_space_id", spaceID, "incident_number", incidentNumber, "error", err)
 				failures.Add(1)
 				return
 			}
-			n.logger.Info("notified", "target", "google_chat", "chat_space_id", spaceID, "incident_number", inc.IncidentNumber)
+			n.logger.Info("notified", "target", "google_chat", "chat_space_id", spaceID, "incident_number", incidentNumber)
 		}(chatURL)
 	}
 	wg.Wait()
@@ -436,6 +445,51 @@ func fallbackGoogleChatCard(inc model.Incident, threaded bool) map[string]any {
 								{"textParagraph": map[string]any{"text": "<b>Category:</b> " + category + "<br>" +
 									"<b>Priority:</b> " + priorityLabel(inc.Severity) + "<br>" +
 									"<b>State:</b> " + inc.Status}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	if threaded {
+		card["thread"] = map[string]any{"threadKey": inc.Fingerprint}
+	}
+	return card
+}
+
+// annotationStyle picks the header color and label for a Duplicate/OK annotation card; unrecognized kinds still render legibly instead of silently reusing the Duplicate style.
+func annotationStyle(kind string) (color, label string) {
+	switch kind {
+	case "OK":
+		return "#0f9d58", "RESOLVED | Incident Cleared"
+	case "Duplicate":
+		return "#f4b400", "DUPLICATE | Repeat Alert"
+	default:
+		return "#f4b400", strings.ToUpper(kind) + " | Incident Update"
+	}
+}
+
+// annotationGoogleChatCard renders a Duplicate/OK annotation as a reply distinct from fallbackGoogleChatCard's "Priority Incident Reported" header, so a threaded Duplicate or OK doesn't look like a brand new page. note is model.BuildWorkNote's HTML output, already naming the kind.
+func annotationGoogleChatCard(inc model.Incident, kind, note string, threaded bool) map[string]any {
+	color, label := annotationStyle(kind)
+	subtitle := "#" + inc.IncidentNumber + " | " + inc.Service
+	if inc.Environment != "" {
+		subtitle += " | " + inc.Environment
+	}
+	card := map[string]any{
+		"cardsV2": []map[string]any{
+			{
+				"cardId": inc.IncidentNumber,
+				"card": map[string]any{
+					"header": map[string]any{
+						"title":    "<font color='" + color + "'><b>" + label + "</b></font>",
+						"subtitle": subtitle,
+					},
+					"sections": []map[string]any{
+						{
+							"widgets": []map[string]any{
+								{"textParagraph": map[string]any{"text": note}},
 							},
 						},
 					},

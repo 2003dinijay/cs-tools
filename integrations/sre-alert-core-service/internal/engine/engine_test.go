@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -252,6 +253,10 @@ type fakeNotifier struct {
 	pushNoteCalls atomic.Int32
 	pushNoteErr   error
 	pushedNotes   []string
+
+	chatAnnotationCalls atomic.Int32
+	chatAnnotationKinds []string // kind observed on each NotifyChatAnnotation call, in order
+	chatAnnotationNotes []string // note observed on each NotifyChatAnnotation call, in order
 }
 
 func (n *fakeNotifier) NotifyCSM(_ context.Context, inc model.Incident) (string, string, bool, bool) {
@@ -267,6 +272,15 @@ func (n *fakeNotifier) NotifyCSM(_ context.Context, inc model.Incident) (string,
 
 func (n *fakeNotifier) NotifyChat(_ context.Context, inc model.Incident) bool {
 	n.chatCalls.Add(1)
+	return n.chatOK
+}
+
+func (n *fakeNotifier) NotifyChatAnnotation(_ context.Context, inc model.Incident, kind, note string) bool {
+	n.chatAnnotationCalls.Add(1)
+	n.mu.Lock()
+	n.chatAnnotationKinds = append(n.chatAnnotationKinds, kind)
+	n.chatAnnotationNotes = append(n.chatAnnotationNotes, note)
+	n.mu.Unlock()
 	return n.chatOK
 }
 
@@ -672,8 +686,46 @@ func TestAnnotate_ChatFallbackIncident_ThreadsDuplicateWhenThreadingEnabled(t *t
 	if outcome != Processed {
 		t.Fatalf("outcome = %v, want Processed", outcome)
 	}
-	if calls := notifier.chatCalls.Load(); calls != 1 {
-		t.Fatalf("NotifyChat calls = %d, want 1: duplicate should thread into the existing fallback message", calls)
+	if calls := notifier.chatAnnotationCalls.Load(); calls != 1 {
+		t.Fatalf("NotifyChatAnnotation calls = %d, want 1: duplicate should thread into the existing fallback message", calls)
+	}
+	if got, want := notifier.chatAnnotationKinds[0], "Duplicate"; got != want {
+		t.Fatalf("annotation kind = %q, want %q: the reply must be visibly labeled, not a repeat of the original card", got, want)
+	}
+	if !strings.Contains(notifier.chatAnnotationNotes[0], "Duplicate alert received") {
+		t.Fatalf("annotation note = %q, want it to name the kind", notifier.chatAnnotationNotes[0])
+	}
+	if calls := notifier.chatCalls.Load(); calls != 0 {
+		t.Fatalf("NotifyChat calls = %d, want 0: a Duplicate/OK annotation must not repost the original fallback card", calls)
+	}
+}
+
+func TestAnnotate_ChatFallbackIncident_ThreadsOKWhenThreadingEnabled(t *testing.T) {
+	notifier := &fakeNotifier{csmOK: false, chatOK: true}
+	incidents := newFakeIncidents()
+	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 5, 0, time.Hour, CSMRetryConfig{BaseDelay: time.Hour, Multiplier: 3, MaxDelay: time.Hour}, true)
+	ctx := context.Background()
+
+	alert := model.Alert{Service: "svc", MetricName: "cpu", Severity: "ok", Source: "vendor"}
+	fp := model.Fingerprint(alert.Source, alert.Service, alert.MetricName, alert.Environment, alert.UniqueIdentifier)
+	incidents.byFP[fp] = model.Incident{
+		Fingerprint: fp, IncidentNumber: "PENDING-abc", Status: "new", Severity: 1,
+		Service: "svc", MetricName: "cpu", Source: "vendor", AlertIDs: []string{"ALT1"}, AlertCount: 1,
+		FirstSeen: time.Now(), Fallback: true,
+	}
+
+	outcome := e.Handle(ctx, "ALT2", alert) // OK/resolving alert on an incident already stuck in chat-fallback
+	if outcome != Processed {
+		t.Fatalf("outcome = %v, want Processed", outcome)
+	}
+	if calls := notifier.chatAnnotationCalls.Load(); calls != 1 {
+		t.Fatalf("NotifyChatAnnotation calls = %d, want 1: OK should thread into the existing fallback message", calls)
+	}
+	if got, want := notifier.chatAnnotationKinds[0], "OK"; got != want {
+		t.Fatalf("annotation kind = %q, want %q: the resolution must be visibly labeled, not a repeat of the original critical card", got, want)
+	}
+	if !strings.Contains(notifier.chatAnnotationNotes[0], "OK alert received") {
+		t.Fatalf("annotation note = %q, want it to name the kind", notifier.chatAnnotationNotes[0])
 	}
 }
 
@@ -695,8 +747,8 @@ func TestAnnotate_ChatFallbackIncident_SkipsThreadingWhenDisabled(t *testing.T) 
 	if outcome != Processed {
 		t.Fatalf("outcome = %v, want Processed", outcome)
 	}
-	if calls := notifier.chatCalls.Load(); calls != 0 {
-		t.Fatalf("NotifyChat calls = %d, want 0: threading disabled must preserve today's silent-until-CSM-recovers behavior", calls)
+	if calls := notifier.chatAnnotationCalls.Load(); calls != 0 {
+		t.Fatalf("NotifyChatAnnotation calls = %d, want 0: threading disabled must preserve today's silent-until-CSM-recovers behavior", calls)
 	}
 }
 

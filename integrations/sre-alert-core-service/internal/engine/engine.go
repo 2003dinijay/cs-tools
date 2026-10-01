@@ -53,6 +53,7 @@ type incidentStore interface {
 type notifier interface {
 	NotifyCSM(ctx context.Context, inc model.Incident) (incidentID, incidentNumber string, ok bool, permanent bool)
 	NotifyChat(ctx context.Context, inc model.Incident) (ok bool)
+	NotifyChatAnnotation(ctx context.Context, inc model.Incident, kind, note string) (ok bool)
 	PushWorkNote(ctx context.Context, incidentID, note string) error
 	IncidentState(ctx context.Context, incidentNumber string) (open bool, found bool, err error)
 }
@@ -253,7 +254,7 @@ func (e *Engine) annotate(ctx context.Context, existing model.Incident, alertID,
 		e.deliverAndPersist(ctx, fp)
 	} else if e.chatThreadingEnabled && current.Fallback {
 		// CSM never confirmed, but this incident already reached Chat once; thread this Duplicate/OK in as a reply instead of leaving it silent until CSM recovers. Best-effort: the work note above already persisted either way.
-		if !e.notifier.NotifyChat(ctx, current) {
+		if !e.notifier.NotifyChatAnnotation(ctx, current, kind, note) {
 			e.logger.Warn("chat thread reply failed for annotated incident", "incident_number", incidentNumber, "alert_id", alertID, "kind", kind)
 		}
 	}

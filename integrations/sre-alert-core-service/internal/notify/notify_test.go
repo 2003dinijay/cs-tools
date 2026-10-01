@@ -18,11 +18,13 @@ package notify
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,5 +118,76 @@ func TestNotifyChat_ThreadReplyOptionFollowsThreadingFlag(t *testing.T) {
 				t.Fatalf("expected the webhook's existing key= query param to survive, got %q", gotURL)
 			}
 		})
+	}
+}
+
+func TestAnnotationGoogleChatCard_RendersKindAndNoteDistinctFromFallbackCard(t *testing.T) {
+	inc := model.Incident{Fingerprint: "fp-abc123", IncidentNumber: "PENDING-fp-abc1", Service: "svc", Severity: 1}
+	note := model.BuildWorkNote("Duplicate", "ALT2", "cpu", "vendor")
+
+	card := annotationGoogleChatCard(inc, "Duplicate", note, true)
+	raw, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("marshal card: %v", err)
+	}
+	body := string(raw)
+
+	if !strings.Contains(body, "DUPLICATE") {
+		t.Fatalf("expected the card to visibly label the Duplicate kind, got %s", body)
+	}
+	if strings.Contains(body, "Priority Incident Reported") {
+		t.Fatalf("expected a Duplicate annotation to render distinctly from the original fallback card, got %s", body)
+	}
+	if !strings.Contains(body, "Duplicate alert received") {
+		t.Fatalf("expected the rendered note in the card body, got %s", body)
+	}
+	thread, ok := card["thread"].(map[string]any)
+	if !ok || thread["threadKey"] != inc.Fingerprint {
+		t.Fatalf("expected thread.threadKey = %q when threaded=true, got %#v", inc.Fingerprint, card["thread"])
+	}
+
+	okCard := annotationGoogleChatCard(inc, "OK", model.BuildWorkNote("OK", "ALT3", "cpu", "vendor"), false)
+	okBody, err := json.Marshal(okCard)
+	if err != nil {
+		t.Fatalf("marshal card: %v", err)
+	}
+	if !strings.Contains(string(okBody), "RESOLVED") {
+		t.Fatalf("expected the card to visibly label the OK/resolved kind, got %s", okBody)
+	}
+	if _, ok := okCard["thread"]; ok {
+		t.Fatalf("expected no thread field when threaded=false, got %#v", okCard)
+	}
+}
+
+func TestNotifyChatAnnotation_PostsThreadedCard(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	n := &Notifier{
+		logger:                  testLogger(),
+		client:                  &http.Client{},
+		fallbackChatWebhookURLs: []string{srv.URL + "/spaces/AAA/messages?key=k&token=t"},
+		maxAttempts:             1,
+		retryBaseDelay:          time.Millisecond,
+		chatThreadingEnabled:    true,
+	}
+	inc := model.Incident{Fingerprint: "fp-xyz", IncidentNumber: "PENDING-fp-xyz", Service: "svc"}
+	note := model.BuildWorkNote("OK", "ALT2", "cpu", "vendor")
+	if ok := n.NotifyChatAnnotation(context.Background(), inc, "OK", note); !ok {
+		t.Fatalf("NotifyChatAnnotation() = false, want true")
+	}
+
+	var posted map[string]any
+	if err := json.Unmarshal(gotBody, &posted); err != nil {
+		t.Fatalf("unmarshal posted body: %v", err)
+	}
+	thread, ok := posted["thread"].(map[string]any)
+	if !ok || thread["threadKey"] != inc.Fingerprint {
+		t.Fatalf("expected posted card's thread.threadKey = %q, got %#v", inc.Fingerprint, posted["thread"])
 	}
 }
