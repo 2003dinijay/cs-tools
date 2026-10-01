@@ -247,14 +247,8 @@ still see the row.
 
 ### One row per sf_id
 
-`sf_id` is not unique (csm-sync copies ServiceNow duplicates). Every ingest write
-and parent lookup (`EnsureAccount`, `EnsureProject`, `ensureOpportunity`) resolves
-ONE row and updates it by `id` (`internal/repository/sf_id_resolve.go`): the copy
-with the most kinds of child (account: cases, contacts, projects, opportunities;
-project: cases, memberships, links; opportunity: invoices, links, line items), then
-oldest, then lowest `id`. Line items, invoices and links prefer the copy under the
-same parent. More than one copy logs a warning with the count. Deletes still hit
-every copy.
+`sf_id` is not unique, so every ingest write and parent lookup updates ONE row by `id`;
+the tie-break lives in `internal/repository/sf_id_resolve.go`. Deletes still hit every copy.
 
 ## Salesforce membership ingest and onboarding steps
 
