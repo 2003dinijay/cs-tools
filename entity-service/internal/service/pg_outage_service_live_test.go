@@ -141,6 +141,31 @@ SELECT so.id::text FROM service_offering so
 		t.Errorf("empty patch: got %T, want *apierror.ValidationError", err)
 	}
 
+	// *** THE PORTAL SENDS "YYYY-MM-DD HH:mm:ss", NOT RFC3339. *** The
+	// repository used to parse RFC3339 only while create accepted both, so
+	// closing an outage from the portal failed with "invalid end" while
+	// creating one worked. This is that exact request.
+	portalEnd := time.Now().UTC().Format("2006-01-02 15:04:05")
+	portalEndPtr := &portalEnd
+	closedAgain, err := svc.UpdateOutage(ctx, domain.PatchOutageRequest{ID: id, End: &portalEndPtr})
+	if err != nil {
+		t.Fatalf("close with the portal timestamp format: %v", err)
+	}
+	if got := derefLocal(closedAgain.Outage.Status); got != string(domain.OutageStatusResolved) {
+		t.Errorf("status after portal-format close: got %q, want resolved", got)
+	}
+
+	// An end before the STORED begin must be refused. Only the end is sent,
+	// so this passes unless the effective interval is checked against the
+	// stored begin rather than against the submitted fields alone.
+	bad := time.Now().UTC().Add(-48 * time.Hour).Format("2006-01-02 15:04:05")
+	badPtr := &bad
+	if _, err := svc.UpdateOutage(ctx, domain.PatchOutageRequest{ID: id, End: &badPtr}); err == nil {
+		t.Error("an end before the stored begin must be rejected")
+	} else if _, ok := err.(*apierror.ValidationError); !ok {
+		t.Errorf("end before begin: got %T (%v), want *apierror.ValidationError", err, err)
+	}
+
 	found, err := svc.SearchOutages(ctx, domain.SearchOutagesRequest{
 		Filters:    domain.SearchOutagesFilters{SearchTerm: created.Outage.Number},
 		Pagination: domain.Pagination{Limit: 10},

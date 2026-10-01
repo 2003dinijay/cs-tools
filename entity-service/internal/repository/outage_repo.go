@@ -51,7 +51,7 @@ type OutageRepository interface {
 	Create(ctx context.Context, in OutageWrite) (domain.Outage, error)
 	Search(ctx context.Context, req domain.SearchOutagesRequest, beginFrom time.Time) ([]domain.Outage, int, error)
 	GetByID(ctx context.Context, id string) (domain.OutageDetail, error)
-	Update(ctx context.Context, req domain.PatchOutageRequest, actor string) (domain.Outage, error)
+	Update(ctx context.Context, patch OutagePatch) (domain.Outage, error)
 	// PublicationFor reports whether an offering resolves to a monitored
 	// cloud, so the service can apply the acknowledgement gate before writing.
 	PublicationFor(ctx context.Context, serviceOfferingID *string) (bool, *string, error)
@@ -73,6 +73,29 @@ type OutageWrite struct {
 	ExternalCommunication *string
 	InternalCommunication *string
 	Actor                 string
+}
+
+// OutagePatch carries an update whose timestamps are ALREADY PARSED.
+//
+// *** THE REPOSITORY DOES NOT PARSE TIME, AND THAT IS DELIBERATE. *** It used
+// to, with time.Parse(RFC3339) only, while the service accepted both RFC3339
+// and the space-separated "YYYY-MM-DD HH:mm:ss" the portal actually sends.
+// The two disagreed, so closing an outage from the portal failed with
+// "invalid end" while creating one worked. Parsing in exactly one place is
+// the fix; a second parser is the bug.
+//
+// End is a pointer-to-pointer for the same three states PatchOutageRequest
+// documents: nil leaves end alone, non-nil-outer with nil-inner REOPENS, and
+// a value closes.
+type OutagePatch struct {
+	ID                string
+	Type              *string
+	Begin             *time.Time
+	End               **time.Time
+	ShortDescription  *string
+	ServiceOfferingID *string
+	IncidentID        *string
+	Actor             string
 }
 
 type outageRepo struct {
@@ -253,13 +276,25 @@ VALUES (gen_random_uuid(),
         NOW(), $9, NOW(), $9)
 RETURNING id::text`
 
+	// *** ONE TRANSACTION, BECAUSE A PARTIAL CREATE IS WHAT ACTUALLY
+	// HAPPENED. *** On the first live run the insert succeeded and the
+	// read-back failed on a bad column, leaving an outage row behind with no
+	// caller aware of it -- and an orphan outage on an in-scope offering is
+	// not inert: the next cloud status sweep posts a real outage_begin for it
+	// to a shared dashboard. The seeded journal entries belong in the same
+	// transaction for the same reason.
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return domain.Outage{}, fmt.Errorf("create outage: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	var id string
-	err := r.db.QueryRow(ctx, insertSQL,
+	if err := tx.QueryRow(ctx, insertSQL,
 		strings.ToUpper(in.Type), in.Begin, in.End, in.ShortDescription,
 		in.ServiceOfferingID, in.IncidentID,
 		in.ExternalCommunication, in.InternalCommunication, in.Actor,
-	).Scan(&id)
-	if err != nil {
+	).Scan(&id); err != nil {
 		return domain.Outage{}, fmt.Errorf("create outage: %w", err)
 	}
 
@@ -267,14 +302,18 @@ RETURNING id::text`
 	// outage -- the detail page reads the journal, so writing only the column
 	// would make the text invisible where people look for it.
 	if in.ExternalCommunication != nil && strings.TrimSpace(*in.ExternalCommunication) != "" {
-		if _, err := r.AddCommunication(ctx, id, domain.OutageCommunicationChannelExternal, *in.ExternalCommunication, in.Actor); err != nil {
+		if _, err := insertCommunication(ctx, tx, id, domain.OutageCommunicationChannelExternal, *in.ExternalCommunication, in.Actor); err != nil {
 			return domain.Outage{}, err
 		}
 	}
 	if in.InternalCommunication != nil && strings.TrimSpace(*in.InternalCommunication) != "" {
-		if _, err := r.AddCommunication(ctx, id, domain.OutageCommunicationChannelInternal, *in.InternalCommunication, in.Actor); err != nil {
+		if _, err := insertCommunication(ctx, tx, id, domain.OutageCommunicationChannelInternal, *in.InternalCommunication, in.Actor); err != nil {
 			return domain.Outage{}, err
 		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Outage{}, fmt.Errorf("create outage: commit: %w", err)
 	}
 
 	detail, err := r.GetByID(ctx, id)
@@ -428,7 +467,7 @@ func (r *outageRepo) Search(ctx context.Context, req domain.SearchOutagesRequest
 
 // Update applies a partial change. Closing an outage is setting End; there is
 // no separate state column, exactly as the ServiceNow contract documents.
-func (r *outageRepo) Update(ctx context.Context, req domain.PatchOutageRequest, actor string) (domain.Outage, error) {
+func (r *outageRepo) Update(ctx context.Context, patch OutagePatch) (domain.Outage, error) {
 	var sets []string
 	var args []any
 	set := func(clause string, v any) {
@@ -436,49 +475,41 @@ func (r *outageRepo) Update(ctx context.Context, req domain.PatchOutageRequest, 
 		sets = append(sets, fmt.Sprintf(clause, len(args)))
 	}
 
-	if req.Type != nil {
-		set("type = $%d::outage_type_enum", strings.ToUpper(string(*req.Type)))
+	if patch.Type != nil {
+		set("type = $%d::outage_type_enum", strings.ToUpper(*patch.Type))
 	}
-	if req.Begin != nil {
-		t, err := time.Parse(time.RFC3339, *req.Begin)
-		if err != nil {
-			return domain.Outage{}, &apierror.ValidationError{Msg: "invalid begin"}
-		}
-		set("start_on = $%d", t)
+	if patch.Begin != nil {
+		set("start_on = $%d", *patch.Begin)
 	}
 	// End is pointer-to-pointer on purpose: omitted leaves it alone, explicit
 	// null REOPENS the outage, a value closes it. Collapsing those two is how
 	// a reopen silently becomes a no-op.
-	if req.End != nil {
-		if *req.End == nil {
+	if patch.End != nil {
+		if *patch.End == nil {
 			sets = append(sets, "end_on = NULL")
 		} else {
-			t, err := time.Parse(time.RFC3339, **req.End)
-			if err != nil {
-				return domain.Outage{}, &apierror.ValidationError{Msg: "invalid end"}
-			}
-			set("end_on = $%d", t)
+			set("end_on = $%d", **patch.End)
 		}
 	}
-	if req.ShortDescription != nil {
-		set("name = $%d", *req.ShortDescription)
+	if patch.ShortDescription != nil {
+		set("name = $%d", *patch.ShortDescription)
 	}
-	if req.ConfigurationItemID != nil {
-		set("service_offering_id = $%d::uuid", *req.ConfigurationItemID)
+	if patch.ServiceOfferingID != nil {
+		set("service_offering_id = $%d::uuid", *patch.ServiceOfferingID)
 	}
-	if req.IncidentID != nil {
-		set("work_item_id = $%d::uuid", *req.IncidentID)
+	if patch.IncidentID != nil {
+		set("work_item_id = $%d::uuid", *patch.IncidentID)
 	}
 
 	if len(sets) == 0 {
 		return domain.Outage{}, &apierror.ValidationError{Msg: "at least one field must be provided"}
 	}
 
-	args = append(args, actor)
+	args = append(args, patch.Actor)
 	sets = append(sets, fmt.Sprintf("updated_by = $%d", len(args)))
 	sets = append(sets, "updated_on = NOW()")
 
-	args = append(args, req.ID)
+	args = append(args, patch.ID)
 	q := fmt.Sprintf("UPDATE outage SET %s WHERE id = $%d::uuid RETURNING id::text",
 		strings.Join(sets, ", "), len(args))
 
@@ -520,17 +551,23 @@ SELECT m.cloud_offering::text FROM cloud_monitor m
 	return true, &slug, nil
 }
 
-// AddCommunication appends one journal entry.
-func (r *outageRepo) AddCommunication(ctx context.Context, outageID string,
+// rowQuerier is the sliver of pgxpool.Pool and pgx.Tx this file shares, so a
+// journal insert reads the same whether it is standalone or inside a create.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// insertCommunication appends one journal entry on whichever handle it is given.
+func insertCommunication(ctx context.Context, q rowQuerier, outageID string,
 	channel domain.OutageCommunicationChannel, body, actor string) (domain.OutageCommunication, error) {
-	const q = `
+	const stmt = `
 INSERT INTO outage_communication (id, outage_id, channel, comment, created_on, created_by)
 VALUES (gen_random_uuid(), $1::uuid, $2, $3, NOW(), $4)
 RETURNING id::text, created_on`
 
 	var out domain.OutageCommunication
 	var createdOn time.Time
-	if err := r.db.QueryRow(ctx, q, outageID, string(channel), body, actor).
+	if err := q.QueryRow(ctx, stmt, outageID, string(channel), body, actor).
 		Scan(&out.ID, &createdOn); err != nil {
 		return domain.OutageCommunication{}, fmt.Errorf("add outage communication: %w", err)
 	}
@@ -540,6 +577,12 @@ RETURNING id::text, created_on`
 	out.CreatedOn = createdOn.UTC().Format(time.RFC3339)
 	out.CreatedBy = actor
 	return out, nil
+}
+
+// AddCommunication appends one journal entry.
+func (r *outageRepo) AddCommunication(ctx context.Context, outageID string,
+	channel domain.OutageCommunicationChannel, body, actor string) (domain.OutageCommunication, error) {
+	return insertCommunication(ctx, r.db, outageID, channel, body, actor)
 }
 
 // SearchCommunications returns one page of an outage's journal, newest first.

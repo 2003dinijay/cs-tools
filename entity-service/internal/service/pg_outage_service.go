@@ -269,7 +269,75 @@ func (s *pgOutageService) UpdateOutage(ctx context.Context, req domain.PatchOuta
 		}
 	}
 
-	out, err := s.repo.Update(ctx, req, actorOf(ctx))
+	patch := repository.OutagePatch{
+		ID:                req.ID,
+		ShortDescription:  req.ShortDescription,
+		ServiceOfferingID: req.ConfigurationItemID,
+		IncidentID:        req.IncidentID,
+		Actor:             actorOf(ctx),
+	}
+	if req.Type != nil {
+		t := string(*req.Type)
+		patch.Type = &t
+	}
+
+	// Parsing happens HERE and only here, with the same formats CreateOutage
+	// accepts. The repository used to parse RFC3339 only, so the portal --
+	// which sends "YYYY-MM-DD HH:mm:ss" -- could create an outage but not
+	// close one.
+	if req.Begin != nil {
+		t, err := parseOutageTime(*req.Begin, "begin")
+		if err != nil {
+			return domain.PatchOutageResponse{}, err
+		}
+		patch.Begin = &t
+	}
+	if req.End != nil {
+		if *req.End == nil {
+			// Explicit null reopens; the inner nil has to survive to the
+			// repository or a reopen silently becomes a no-op.
+			var reopen *time.Time
+			patch.End = &reopen
+		} else {
+			t, err := parseOutageTime(**req.End, "end")
+			if err != nil {
+				return domain.PatchOutageResponse{}, err
+			}
+			tp := &t
+			patch.End = &tp
+		}
+	}
+
+	// *** VALIDATE THE EFFECTIVE INTERVAL, NOT THE SUBMITTED FIELDS. *** A
+	// patch that sets only end has to be checked against the STORED begin,
+	// or an end before the outage started is accepted -- and a negative
+	// interval renders as a nonsense duration on the public status page.
+	// CreateOutage already refuses this; without the stored-value lookup the
+	// same request would sail through as an update.
+	if patch.Begin != nil || (patch.End != nil && *patch.End != nil) {
+		current, err := s.repo.GetByID(ctx, req.ID)
+		if err != nil {
+			return domain.PatchOutageResponse{}, err
+		}
+		effBegin, err := effectiveInstant(patch.Begin, current.Begin)
+		if err != nil {
+			return domain.PatchOutageResponse{}, err
+		}
+		var effEnd *time.Time
+		if patch.End != nil {
+			effEnd = *patch.End
+		} else if current.End != nil {
+			effEnd, err = effectiveInstant(nil, *current.End)
+			if err != nil {
+				return domain.PatchOutageResponse{}, err
+			}
+		}
+		if effBegin != nil && effEnd != nil && effEnd.Before(*effBegin) {
+			return domain.PatchOutageResponse{}, &apierror.ValidationError{Msg: "end must not be before begin"}
+		}
+	}
+
+	out, err := s.repo.Update(ctx, patch)
 	if err != nil {
 		return domain.PatchOutageResponse{}, err
 	}
@@ -360,4 +428,22 @@ func (s *pgOutageService) GetOutageMetadata(ctx context.Context) (domain.OutageM
 		},
 		StatusPageClouds: clouds,
 	}, nil
+}
+
+// effectiveInstant returns the patched value when one is supplied, otherwise
+// the stored one parsed back from its wire form. Stored values are written by
+// this service in RFC3339, so a parse failure here is a bug rather than bad
+// input -- it is reported rather than silently ignored.
+func effectiveInstant(patched *time.Time, stored string) (*time.Time, error) {
+	if patched != nil {
+		return patched, nil
+	}
+	if strings.TrimSpace(stored) == "" {
+		return nil, nil
+	}
+	t, err := parseOutageTime(stored, "stored timestamp")
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
