@@ -135,10 +135,6 @@ func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident) (incidentI
 	if inc.Description != "" {
 		req.WorkNotes = &inc.Description
 	}
-	if inc.Environment != "" {
-		env := truncateRunes(inc.Environment, maxEnvironmentLen)
-		req.Environment = &env
-	}
 
 	res, err := n.createIncidentWithRetry(ctx, tag, req)
 	if err != nil {
@@ -236,18 +232,6 @@ func (n *Notifier) resolveServiceID(ctx context.Context, label string) (string, 
 		}
 		return id, nil
 	}
-}
-
-// maxEnvironmentLen matches ServiceNow's custom incident.u_enviroment field's max_length.
-const maxEnvironmentLen = 40
-
-// truncateRunes bounds s to at most n runes, so it never overflows a downstream fixed-width field like ServiceNow's u_enviroment.
-func truncateRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n])
 }
 
 var csmCategoryMap = map[string]string{

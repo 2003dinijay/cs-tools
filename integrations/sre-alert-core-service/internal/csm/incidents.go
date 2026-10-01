@@ -35,8 +35,6 @@ type CreateIncidentRequest struct {
 	WorkNotes *string `json:"workNotes,omitempty"`
 	// CorrelationID is the dedup fingerprint tag on ServiceNow's own correlation_id field, so SearchIncidentByCorrelationID finds a prior create by exact match.
 	CorrelationID *string `json:"correlationId,omitempty"`
-	// Environment is the source alert's environment label, forwarded to ServiceNow's custom incident.u_enviroment field (max length 40).
-	Environment *string `json:"environment,omitempty"`
 }
 
 // createdIncident is the subset of the response's nested "incident" object this service actually reads.
