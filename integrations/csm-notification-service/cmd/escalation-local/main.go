@@ -94,6 +94,8 @@ const placeholderNumber = "+10000000000"
 type config struct {
 	priority    string
 	team        string
+	at          string
+	weekend     bool
 	shift       string
 	kind        string
 	to          string
@@ -197,6 +199,13 @@ func run() error {
 	// what compresses a 113-minute P4 ladder into something observable. No
 	// engine code is aware this is a test.
 	trigger := triggerTime(escalation.Shift(cfg.shift))
+	if cfg.at != "" {
+		t, err := reportTime(cfg.at, cfg.weekend, time.Now().In(escalation.IST))
+		if err != nil {
+			return err
+		}
+		trigger = t
+	}
 
 	if err := engine.Handle(ctx, startRecord(cfg, trigger)); err != nil {
 		return fmt.Errorf("starting the ladder: %w", err)
@@ -249,6 +258,11 @@ func parseFlags() config {
 	flag.StringVar(&cfg.priority, "priority", "CRITICAL", "incident priority: P0-P4, or CRITICAL/HIGH/MODERATE/LOW")
 	flag.StringVar(&cfg.team, "team", defaultTeam,
 		"the incident's assignment group; an ABT key (vega, castor, ...) routes an ABT rule, anything else the not-an-ABT row")
+	flag.StringVar(&cfg.at, "at", "",
+		"when the incident was reported, in IST: HH:MM for the next weekday at that time, or YYYY-MM-DDTHH:MM; "+
+			"the engine derives the shift from it exactly as it would for a real incident. Overrides -shift")
+	flag.BoolVar(&cfg.weekend, "weekend", false,
+		"with -at HH:MM, the next Saturday or Sunday at that time rather than the next weekday")
 	flag.StringVar(&cfg.shift, "shift", "LK_MORNING", "shift when reported: LK, LK_MORNING, LK_EVENING, LK_WEEKEND, USA, USA_WEEKEND")
 	flag.StringVar(&cfg.kind, "kind", "new", "what starts the ladder: new or elevated")
 	flag.StringVar(&cfg.to, "to", "", "the one number every level resolves to; required with -live")
@@ -407,7 +421,13 @@ func localResolver(to string) escalation.Resolver {
 func localTeamKeys() escalation.TeamKeys {
 	abts := splitCommaEnv("INCIDENT_ESCALATION_ABT_TEAMS")
 	if len(abts) == 0 {
-		abts = []string{"apollo", "artemis", "atlas", "castor", "draco", "phoenix", "vega"}
+		// The seven cre-abt teams, as escalation.yaml's cre.teams.abts names
+		// them. This fallback used to be an older list that named two SRE
+		// teams (apollo, artemis) and omitted two CRE ones (rigel, sirius):
+		// escalation.yaml was corrected and this was not, so every local run
+		// put SRE people on a CRE ladder -- in R3's one-per-ABT Level 0 and in
+		// the Level 2 lead pool -- and never reached rigel or sirius at all.
+		abts = []string{"atlas", "castor", "draco", "phoenix", "rigel", "sirius", "vega"}
 	}
 	americas := os.Getenv("INCIDENT_ESCALATION_AMERICAS_TEAM")
 	if americas == "" {
@@ -486,6 +506,49 @@ func (r ruleAwareRoster) RuleFor(rc escalation.RoutingContext) (escalation.Rule,
 // from burst-dialling stale incidents — so a fixed reference date days in the
 // past would be refused. A trigger a few hours ahead is fine: every call is an
 // offset from it, and runTicks feeds the engine a "now" measured from it.
+// reportTime turns -at into the trigger instant.
+//
+// HH:MM is the next WEEKDAY at that IST time (or the next weekend day with
+// -weekend), because the shift depends on the day as well as the hour -- 10:00
+// is LK on a Tuesday and LK_WEEKEND on a Saturday -- and "today or tomorrow"
+// would quietly change it on a Friday evening. A full date is taken as given.
+//
+// Either way it must be in the future. The engine drops a trigger whose whole
+// ladder is already behind it, so a past time would either be refused outright
+// or, if recent, have its early rungs fire in one burst on the first tick --
+// neither of which is the run that was asked for.
+func reportTime(at string, weekend bool, now time.Time) (time.Time, error) {
+	at = strings.TrimSpace(at)
+	var hh, mm int
+	if n, _ := fmt.Sscanf(at, "%d:%d", &hh, &mm); n == 2 && len(at) <= 5 {
+		if hh < 0 || hh > 23 || mm < 0 || mm > 59 {
+			return time.Time{}, fmt.Errorf("-at %q is not a time of day", at)
+		}
+		for day := 0; day < 8; day++ {
+			d := now.AddDate(0, 0, day)
+			isWeekend := d.Weekday() == time.Saturday || d.Weekday() == time.Sunday
+			if isWeekend != weekend {
+				continue
+			}
+			t := time.Date(d.Year(), d.Month(), d.Day(), hh, mm, 0, 0, escalation.IST)
+			if t.After(now) {
+				return t, nil
+			}
+		}
+		return time.Time{}, fmt.Errorf("-at %q: no matching day in the next week", at)
+	}
+	for _, layout := range []string{"2006-01-02T15:04", "2006-01-02 15:04"} {
+		if t, err := time.ParseInLocation(layout, at, escalation.IST); err == nil {
+			if !t.After(now) {
+				return time.Time{}, fmt.Errorf("-at %s IST is in the past; give a future time, "+
+					"since the engine drops a ladder that is already over", t.Format("Mon 2006-01-02 15:04"))
+			}
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("-at %q: use HH:MM or YYYY-MM-DDTHH:MM (IST)", at)
+}
+
 func triggerTime(shift escalation.Shift) time.Time {
 	hour, weekend := 11, false
 	switch shift {
