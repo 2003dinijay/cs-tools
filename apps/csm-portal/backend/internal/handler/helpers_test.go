@@ -35,7 +35,7 @@ import (
 // is NOT the platform's own user record id (see testPlatformUserID). Roles
 // holds every test role testAccessConfig() (access_test.go) grants a
 // permission for, so testUser passes every /spl/* handler's gates by
-// default (PermSPLAccess plus every sub-permission) — a test needing to
+// default (PermViewerAccess plus every sub-permission) — a test needing to
 // exercise a denial builds its own narrower *middleware.UserInfo instead
 // (see e.g. spl_accounts_test.go's TestSplEscalateCase_RequiresEscalation).
 var testUser = &middleware.UserInfo{
@@ -47,11 +47,11 @@ var testUser = &middleware.UserInfo{
 	},
 }
 
-// splAccessGuard is the shared AccessGuard every /spl/* handler test wires
+// viewerAccessGuard is the shared AccessGuard every /spl/* handler test wires
 // its handler with, built from the same testAccessConfig() (access_test.go)
 // every non-SPL handler test already uses — one guard, one set of test role
 // names, for the whole package.
-var splAccessGuard = NewAccessGuard(testAccessConfig())
+var viewerAccessGuard = NewAccessGuard(testAccessConfig())
 
 // testPlatformUserID is the id GET /users/me resolves for testUser: the
 // platform's own user record id, from a different id space than
