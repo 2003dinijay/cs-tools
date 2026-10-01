@@ -984,6 +984,7 @@ type OnboardingStep struct {
 	EventModifiedOn  time.Time            `json:"eventModifiedOn"`
 	CreatedOn        time.Time            `json:"createdOn"`
 	UpdatedOn        time.Time            `json:"updatedOn"`
+	RetryCount       int                  `json:"-"` // the delayed-retry job's re-runs only (its cap)
 }
 
 // UpsertOnboardingStepRequest is the body of
@@ -1077,6 +1078,7 @@ type SalesforceIngestState struct {
 	AttemptCount    int                    `json:"attemptCount"`
 	CreatedOn       time.Time              `json:"createdOn"`
 	UpdatedOn       time.Time              `json:"updatedOn"`
+	RetryCount      int                    `json:"-"` // the delayed-retry job's re-runs only (its cap)
 }
 
 // UpsertSalesforceIngestStateRequest is what an ingest writes to the ledger

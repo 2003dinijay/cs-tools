@@ -517,14 +517,14 @@ membership-ingest-enabled service, publisher included) only when
 `cmd/api/main.go` calls on shutdown, before the producers close. Every tick (the
 first one after one interval) it reads DATABASE steps with status FAILED, a
 `last_error` starting "project not found" / "account not found", `updated_on`
-older than the interval and `attempt_count` < 12
+older than the interval and `retry_count` < 12
 (`OnboardingStepRepository.ListMissingParentFailures`), and re-runs
 `ingestMembership` for each as UPDATED (`RetryMembershipIngest`), 30s timeout each,
-at most 100 per tick. A failed re-run re-records the step with `attempt_count` + 1;
-when it failed before the ingest recorded anything (e.g. the Sales Entity fetch),
-the job itself counts the attempt (`RecordRetryAttempt`: attempt + 1, `updated_on =
-now()`, `last_error` kept, only while the step is still FAILED with the `updated_on`
-the job read). So a parent that never arrives stops being retried after about an
+at most 100 per tick. Each failed re-run counts one retry (`RecordRetryAttempt`:
+`retry_count` + 1, `updated_on = now()`, `last_error` kept, while still FAILED);
+redeliveries and new events never add to `retry_count` (migration 0174), and a
+successful project/account ingest resets it on the rows whose error names that parent
+(`RequeueMissingParentFailures`). So a parent that never arrives stops being retried after about an
 hour at the default. FAILED ledger rows are read the same way
 (`SalesforceIngestStateRepository.ListMissingParentFailures`, which applies the
 registered-retrier, missing-parent and attempt-cap filters in SQL before the batch
