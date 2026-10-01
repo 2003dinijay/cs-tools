@@ -437,14 +437,11 @@ type AccountView struct {
 	CreatedOn        string     `json:"createdOn"`
 	CreatedBy        *string    `json:"createdBy"`
 	UpdatedOn        string     `json:"updatedOn"`
-	// IsPartner is whether this account is itself a partner organization. Named/derived at
-	// this layer from ServiceNow's raw `customer_account.partner` passthrough (ServiceNow
-	// data source only).
+	// IsPartner is whether this account is itself a partner organization: ServiceNow's
+	// customer_account.partner, or account.classification = 'Partner' on Postgres.
 	IsPartner *bool `json:"isPartner"`
-	// HasPrimaryPartner is whether this account has a primary partner account set. Derived
-	// at this layer as "ServiceNow's customer_account.u_primary_partner_account_id reference
-	// is non-nil" -- the raw reference itself is not exposed, only this boolean (ServiceNow
-	// data source only).
+	// HasPrimaryPartner is whether this account has a primary partner account set. On
+	// Postgres it approximates this as "has any partner in account_relationship".
 	HasPrimaryPartner *bool `json:"hasPrimaryPartner"`
 }
 
@@ -499,11 +496,11 @@ type AccountDetail struct {
 	CreatedOn        string     `json:"createdOn"`
 	CreatedBy        *string    `json:"createdBy"`
 	UpdatedOn        string     `json:"updatedOn"`
-	// IsPartner is whether this account is itself a partner organization (ServiceNow data
-	// source only). Mirrors AccountView.IsPartner.
+	// IsPartner is whether this account is itself a partner organization. Mirrors
+	// AccountView.IsPartner.
 	IsPartner *bool `json:"isPartner"`
-	// HasPrimaryPartner is whether this account has a primary partner account set
-	// (ServiceNow data source only). Mirrors AccountView.HasPrimaryPartner.
+	// HasPrimaryPartner is whether this account has a primary partner account set.
+	// Mirrors AccountView.HasPrimaryPartner, including its Postgres approximation.
 	HasPrimaryPartner *bool `json:"hasPrimaryPartner"`
 }
 
@@ -1136,16 +1133,15 @@ type Project struct {
 	Key              string           `json:"key"`
 	SubscriptionType SubscriptionType `json:"subscriptionType"`
 	ClosureStatus    *ClosureStatus   `json:"closureStatus"`
-	// ClosureState mirrors ProjectDetailsView's own field of the same name
-	// (project.wso2_closure_state) -- a distinct concept from ClosureStatus
-	// above despite the similar name: this is the raw enum label
-	// (e.g. "Suspended") SearchProjects' own ProjectView.ClosureState
-	// (ProjectClosureFields, embedded there) is populated from.
-	ClosureState *string    `json:"closureState"`
-	StartDate    *time.Time `json:"startDate"`
-	EndDate      *time.Time `json:"endDate"`
-	CreatedOn    time.Time  `json:"createdOn"`
-	UpdatedOn    time.Time  `json:"updatedOn"`
+	// ProjectClosureFields carry the Title Case closure states (e.g. "Suspended").
+	ProjectClosureFields
+	StartDate        *time.Time               `json:"startDate"`
+	EndDate          *time.Time               `json:"endDate"`
+	CreatedOn        time.Time                `json:"createdOn"`
+	UpdatedOn        time.Time                `json:"updatedOn"`
+	Account          *ProjectSearchAccountRef `json:"account"`
+	ActiveCasesCount int                      `json:"activeCasesCount"`
+	OnboardingStatus *string                  `json:"onboardingStatus"`
 }
 
 // ProjectAccountRef is the embedded account summary returned in project detail responses.
@@ -1167,9 +1163,8 @@ type ProjectAccountRef struct {
 	// Ballerina's ProjectResponse.account and the portal's ProjectDetailsAccount.
 	OwnerEmail          *string `json:"ownerEmail"`
 	TechnicalOwnerEmail *string `json:"technicalOwnerEmail"`
-	// IsPartner is whether this project's linked account is itself a partner organization
-	// (ServiceNow data source only). Mirrors AccountView.IsPartner, surfaced through the
-	// project's nested account object; there is no project-level primary-partner concept.
+	// IsPartner is whether this project's linked account is itself a partner organization.
+	// Postgres derives it from account.classification = 'Partner'. Mirrors AccountView.IsPartner.
 	IsPartner *bool `json:"isPartner"`
 }
 
@@ -1182,17 +1177,13 @@ type ProjectClosureFields struct {
 	// ClosureState is the project's closure/access state (project.wso2_closure_state,
 	// migration 0014 -- populated on both data sources).
 	ClosureState *string `json:"closureState"`
-	// EndDateClosureState reflects the closure state driven by the project's end date
-	// (ServiceNow data source only).
+	// EndDateClosureState reflects the closure state driven by the project's end date.
 	EndDateClosureState *string `json:"endDateClosureState"`
-	// InvoiceDueDateClosureState reflects the closure state driven by the invoice due
-	// date (ServiceNow data source only).
+	// InvoiceDueDateClosureState reflects the closure state driven by the invoice due date.
 	InvoiceDueDateClosureState *string `json:"invoiceDueDateClosureState"`
-	// ComplianceViolationClosureState reflects the closure state driven by a compliance
-	// violation (ServiceNow data source only).
+	// ComplianceViolationClosureState reflects the closure state driven by a compliance violation.
 	ComplianceViolationClosureState *string `json:"complianceViolationClosureState"`
-	// ComplianceViolationDate is the date a compliance violation was recorded, if any
-	// (ServiceNow data source only).
+	// ComplianceViolationDate is the date (yyyy-MM-dd) a compliance violation was recorded, if any.
 	ComplianceViolationDate *string `json:"complianceViolationDate"`
 	// SuspensionProcessState is a free-form JSON object tracking per-dimension
 	// Account Closure Process (ACP) suspension-process state (event type + action
@@ -1293,7 +1284,7 @@ type ProjectUpdateResult struct {
 type SearchProjectsRequest struct {
 	Pagination  Pagination `json:"pagination"`
 	SearchQuery string     `json:"searchQuery"`
-	// ClosureStatus filters by closure status (ServiceNow data source only).
+	// ClosureStatus filters by overall closure state: Open, Suspended or Restricted.
 	ClosureStatus string `json:"closureStatus"`
 	// EndDateFrom filters projects with an end date on or after this date
 	// (yyyy-MM-dd, ServiceNow data source only).
@@ -1301,10 +1292,9 @@ type SearchProjectsRequest struct {
 	// EndDateTo filters projects with an end date on or before this date
 	// (yyyy-MM-dd, ServiceNow data source only).
 	EndDateTo string `json:"endDateTo"`
-	// SortBy is the field to sort results by. Currently only "endDate" is
-	// meaningful (ServiceNow data source only).
+	// SortBy is the field to sort results by. Only "endDate" is accepted.
 	SortBy string `json:"sortBy"`
-	// SortOrder is the sort direction ("asc" or "desc", ServiceNow data source only).
+	// SortOrder is the sort direction ("asc" or "desc").
 	SortOrder string `json:"sortOrder"`
 	// AccountID filters to projects belonging to this account. Platform
 	// UUID. Supported on both data sources: the ServiceNow path converts it
@@ -1367,13 +1357,13 @@ type SearchProjectsRequest struct {
 type ProjectSearchAccountRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	// Region/SubRegion/ArrToday are nil when the backing data source has no
-	// value recorded (ServiceNow data source only).
+	// Region/SubRegion/ArrToday are nil when no value is recorded. ArrToday is
+	// ServiceNow data source only.
 	Region    *string `json:"region"`
 	SubRegion *string `json:"subRegion"`
 	ArrToday  *string `json:"arrToday"`
-	// IsPartner is whether this project's linked account is itself a partner organization
-	// (ServiceNow data source only). Mirrors ProjectAccountRef.IsPartner.
+	// IsPartner is whether this project's linked account is itself a partner organization.
+	// Mirrors ProjectAccountRef.IsPartner.
 	IsPartner *bool `json:"isPartner"`
 }
 
@@ -1385,6 +1375,8 @@ type ProjectView struct {
 	Name             string           `json:"name"`
 	Key              string           `json:"key"`
 	SubscriptionType SubscriptionType `json:"subscriptionType"`
+	// SfID is the project's Salesforce id, nil when none is recorded.
+	SfID *string `json:"sfId"`
 	// StartDate is the start of the project's current renewed period, and is nil
 	// when the backing data source has no start date recorded for this project
 	// (e.g. ServiceNow leaves it blank).
@@ -1396,11 +1388,11 @@ type ProjectView struct {
 	// ActiveCasesCount is a plain int, not a pointer: the portal's
 	// ProjectListItem types it as a required number.
 	ActiveCasesCount int `json:"activeCasesCount"`
-	// Account is nil when the project has no linked account (ServiceNow data source only).
+	// Account is nil when the project has no linked account.
 	Account *ProjectSearchAccountRef `json:"account"`
 	ProjectClosureFields
 	// OnboardingStatus is the project's onboarding status, nil when not
-	// tracked for this project (ServiceNow data source only).
+	// tracked for this project.
 	OnboardingStatus *string `json:"onboardingStatus"`
 	// OnboardingOwner is the person assigned to run this project's
 	// onboarding. Nil when no owner is assigned — most projects, since only

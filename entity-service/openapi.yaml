@@ -2750,11 +2750,12 @@ paths:
     patch:
       summary: Update a project's closure-state fields or hasAgent/hasKbReferences toggles.
       description: >
-        ServiceNow data source only; there is no Postgres equivalent. At least one
-        field must be provided. closureState itself is not settable — it is derived
-        automatically from the three closure sub-state fields by an SN business
-        rule, so setting one of those and re-fetching the project is how a caller
-        observes the resulting overall status.
+        At least one field must be provided. closureState itself is not settable — it
+        is derived from the three closure sub-states (by an SN business rule, or on
+        Postgres by the same rule in the same transaction) and returned. Sub-states
+        are accepted and returned in ServiceNow Title Case, e.g. "Pending Notified".
+        On Postgres, an allow-listed internal client may call without
+        x-user-id-token, and suspensionProcessState is accepted but not stored.
       operationId: updateProject
       parameters:
         - name: id
@@ -2783,7 +2784,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
-          description: Missing or invalid x-user-id-token header (ServiceNow data source only).
+          description: Missing or invalid x-user-id-token header, and not an allow-listed internal client.
           content:
             application/json:
               schema:
@@ -11525,11 +11526,13 @@ components:
         isPartner:
           type: boolean
           nullable: true
-          description: Whether this account is itself a partner organization. ServiceNow data source only.
+          description: Whether this account is itself a partner organization (on Postgres, classification is Partner).
         hasPrimaryPartner:
           type: boolean
           nullable: true
-          description: Whether this account has a primary partner account set. ServiceNow data source only.
+          description: >-
+            Whether this account has a primary partner account set. Postgres approximates
+            this as having any partner in account_relationship.
 
     SNSupportTierRef:
       type: object
@@ -11602,11 +11605,13 @@ components:
         isPartner:
           type: boolean
           nullable: true
-          description: Whether this account is itself a partner organization. ServiceNow data source only.
+          description: Whether this account is itself a partner organization (on Postgres, classification is Partner).
         hasPrimaryPartner:
           type: boolean
           nullable: true
-          description: Whether this account has a primary partner account set. ServiceNow data source only.
+          description: >-
+            Whether this account has a primary partner account set. Postgres approximates
+            this as having any partner in account_relationship.
 
     SearchAccountsResponse:
       type: object
@@ -11668,6 +11673,17 @@ components:
         searchQuery:
           type: string
           description: Case-insensitive match against name, key, and subscription_type.
+        closureStatus:
+          type: string
+          enum: [Open, Suspended, Restricted]
+          description: Only projects with this overall closure state.
+        sortBy:
+          type: string
+          enum: [endDate]
+          description: Sort field. Postgres puts projects with no end date last.
+        sortOrder:
+          type: string
+          enum: [asc, desc]
         excludeClosureStates:
           type: array
           items:
@@ -11675,7 +11691,7 @@ components:
             enum: [Open, Suspended, Restricted]
           description: >-
             Excludes projects whose closure state is any of the given values.
-            Supported on both data sources (case-insensitive on Postgres).
+            Supported on both data sources.
         excludeSubscriptionTypes:
           type: array
           items:
@@ -11740,8 +11756,8 @@ components:
           type: boolean
           nullable: true
           description: >
-            Whether this project's linked account is itself a partner organization.
-            ServiceNow data source only.
+            Whether this project's linked account is itself a partner organization
+            (on Postgres, classification is Partner).
 
     ProjectDetailsView:
       type: object
@@ -11878,6 +11894,12 @@ components:
           type: string
         key:
           type: string
+        sfId:
+          type: string
+          nullable: true
+          description: >
+            Salesforce id. Null when the backing data source has no value
+            recorded for this project.
         subscriptionType:
           type: string
           enum:
@@ -11909,13 +11931,34 @@ components:
             When the project record was created. Distinct from startDate, which
             moves forward on each renewal.
         account:
+          type: object
           nullable: true
-          description: Null when the project has no linked account.
-          allOf:
-            - $ref: '#/components/schemas/EntityRef'
+          description: Null when the project has no linked account. arrToday is ServiceNow only.
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            region:
+              type: string
+              nullable: true
+            subRegion:
+              type: string
+              nullable: true
+            arrToday:
+              type: string
+              nullable: true
+            isPartner:
+              type: boolean
+              nullable: true
+        onboardingStatus:
+          type: string
+          nullable: true
+          description: Hyphenated Title Case, e.g. "In-Progress".
         closureState:
           type: string
           nullable: true
+          description: Open, Suspended or Restricted. Sub-states are Title Case too, e.g. "Pending Notified".
         endDateClosureState:
           type: string
           nullable: true
@@ -11928,6 +11971,7 @@ components:
         complianceViolationDate:
           type: string
           nullable: true
+          description: yyyy-MM-dd.
         suspensionProcessState:
           type: object
           additionalProperties: true
@@ -11936,7 +11980,7 @@ components:
             Free-form, per-dimension Account Closure Process (ACP) suspension-process
             state (event type + action results) written by an existing ServiceNow
             suspension flow. This is opaque JSON passed through as-is — its shape is
-            not defined or validated by this layer.
+            not defined or validated by this layer. Always null on Postgres.
 
     SearchProjectsResponse:
       type: object
@@ -11961,8 +12005,7 @@ components:
       description: >
         At least one field must be provided. hasAgent and hasKbReferences are
         simple toggles; the closure-state fields track sub-states of an
-        Account Closure Process and are only applicable to projects sourced
-        from ServiceNow.
+        Account Closure Process.
       properties:
         hasAgent:
           type: boolean
