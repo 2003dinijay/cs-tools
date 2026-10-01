@@ -14,9 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package config loads deployment tunables from config.toml and endpoints/secrets from the
-// environment, validating every value before returning it. The config.toml handling mirrors
-// sre-alert-core-service: built-in defaults, overridden field by field by the file if present.
+// Package config loads tunables from config.toml (over built-in defaults) and secrets from the environment.
 package config
 
 import (
@@ -32,28 +30,26 @@ import (
 // DefaultPath is used when CONFIG_PATH is unset; expected at the working directory root.
 const DefaultPath = "config.toml"
 
-// MaxWriteDeadline is alerts-core's gap_timeout. A claimed id still being retried when
-// alerts-core gives up on it would be skipped, so write_deadline must stay under it.
+// MaxWriteDeadline is alerts-core's gap_timeout; write_deadline must stay under it or ids get skipped.
 const MaxWriteDeadline = Duration(10 * time.Minute)
 
-// WriteMargin keeps request_wait under write_timeout, so a slow store answers 503 instead of
-// the connection being cut.
+// WriteMargin keeps request_wait under write_timeout, so a slow store answers 503, not a cut connection.
 const WriteMargin = Duration(time.Second)
 
 // Config groups every deployment tunable by the subsystem it configures.
 type Config struct {
 	Server    ServerConfig    `toml:"server"`
-	Auth      AuthConfig      `toml:"auth"`
 	Allocator AllocatorConfig `toml:"allocator"`
 	Store     StoreConfig     `toml:"store"`
 	Cassandra CassandraConfig `toml:"cassandra"`
 	Wake      WakeConfig      `toml:"wake"`
 	Reject    RejectConfig    `toml:"reject"`
 	Fallback  FallbackConfig  `toml:"fallback"`
+	// LegacyAuthSection flags a leftover [auth] table, no longer read now auth is AUTH_ENABLED.
+	LegacyAuthSection bool `toml:"-"`
 }
 
-// ServerConfig tunes the HTTP server: shutdown drain window, read/write timeouts, and the
-// request body limit beyond which a webhook is answered 413.
+// ServerConfig tunes the HTTP server: shutdown drain, read/write timeouts and the 413 body limit.
 type ServerConfig struct {
 	ShutdownGrace  Duration `toml:"shutdown_grace"`
 	DrainDelay     Duration `toml:"drain_delay"`
@@ -65,19 +61,7 @@ type ServerConfig struct {
 	MaxBodyBytes   int64    `toml:"max_body_bytes"`
 }
 
-// AuthConfig selects the auth hook implementation. Only "none" exists today.
-type AuthConfig struct {
-	Mode string `toml:"mode"`
-	// CacheTTL is how long a verified integration_users credential is reused before
-	// re-reading the row; 0 disables the cache. Only used by "integration_users".
-	CacheTTL Duration `toml:"cache_ttl"`
-	// AuditOnly checks credentials and logs what would be rejected, but rejects
-	// nothing. The rollout step for "integration_users"; "audit" already implies it.
-	AuditOnly bool `toml:"audit_only"`
-}
-
-// AllocatorConfig tunes the id allocator: queue depth before 503, alerts claimed
-// per compare-and-set, parallel row writers, and compare-and-set attempts before giving up.
+// AllocatorConfig tunes the id allocator: queue depth, batch size, writers and CAS attempts.
 type AllocatorConfig struct {
 	QueueSize        int   `toml:"queue_size"`
 	QueueMaxBytes    int64 `toml:"queue_max_bytes"`
@@ -86,8 +70,7 @@ type AllocatorConfig struct {
 	ClaimMaxAttempts int   `toml:"claim_max_attempts"`
 }
 
-// StoreConfig tunes row writes: attempts on the same id, the base of the doubling backoff
-// between them, and the per-query timeout.
+// StoreConfig tunes row writes: attempts per id, the doubling backoff base and the query timeout.
 type StoreConfig struct {
 	InsertAttempts  int      `toml:"insert_attempts"`
 	InsertBaseDelay Duration `toml:"insert_base_delay"`
@@ -108,8 +91,7 @@ type WakeConfig struct {
 	Timeout Duration `toml:"timeout"`
 }
 
-// RejectConfig tunes the rejected-webhook Chat card: the per vendor+error
-// rate-limit window and how much of the body the card previews.
+// RejectConfig tunes the reject Chat card: the per vendor+error window and the body preview length.
 type RejectConfig struct {
 	Window           Duration `toml:"window"`
 	BodyPreviewChars int      `toml:"body_preview_chars"`
@@ -151,7 +133,6 @@ func Defaults() Config {
 			IdleTimeout:    Duration(60 * time.Second),
 			MaxBodyBytes:   1 << 20,
 		},
-		Auth: AuthConfig{Mode: "none", CacheTTL: Duration(60 * time.Second)},
 		Allocator: AllocatorConfig{
 			QueueSize:        5000,
 			QueueMaxBytes:    256 << 20,
@@ -177,8 +158,7 @@ func Defaults() Config {
 	}
 }
 
-// Load falls back to CONFIG_PATH, then DefaultPath, when path is empty. Values start at
-// Defaults and a present file overrides them field by field; a missing file is not an error.
+// Load reads CONFIG_PATH or DefaultPath over Defaults, field by field; a missing file is fine.
 func Load(path string) (Config, error) {
 	if path == "" {
 		path = os.Getenv("CONFIG_PATH")
@@ -188,11 +168,12 @@ func Load(path string) (Config, error) {
 	}
 
 	cfg := Defaults()
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
-		if !os.IsNotExist(err) {
-			return Config{}, fmt.Errorf("load config %s: %w", path, err)
-		}
+	md, err := toml.DecodeFile(path, &cfg)
+	if err != nil && !os.IsNotExist(err) {
+		return Config{}, fmt.Errorf("load config %s: %w", path, err)
 	}
+	// [auth] is no longer read; flag it so a deployment expecting auth isn't left without it.
+	cfg.LegacyAuthSection = md.IsDefined("auth")
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate config %s: %w", path, err)
 	}
@@ -222,8 +203,6 @@ func (c Config) Validate() error {
 		return fmt.Errorf("server.idle_timeout must be positive")
 	case c.Server.MaxBodyBytes <= 0:
 		return fmt.Errorf("server.max_body_bytes must be positive")
-	case c.Auth.Mode == "":
-		return fmt.Errorf("auth.mode must be set")
 	case c.Allocator.QueueSize <= 0:
 		return fmt.Errorf("allocator.queue_size must be positive")
 	case c.Allocator.QueueMaxBytes <= 0:
@@ -264,64 +243,22 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Env holds the endpoints read from the environment. CASSANDRA_* and the
-// per-vendor <VENDOR>_ALERT_CONFIG variables are read by their own packages.
+// Env is read from the environment; CASSANDRA_* and <VENDOR>_ALERT_CONFIG are read by their packages.
 type Env struct {
 	Port string `env:"PORT" envDefault:"8080"`
-	// WakeURL is alerts-core's POST /alertz. Empty disables the wake-up (local dev); the
-	// 10-second poll on alerts-core still picks the alerts up.
+	// WakeURL is alerts-core's POST /alertz; empty skips the wake-up and the 10s poll still runs.
 	WakeURL string `env:"ALERT_CORE_WAKE_URL"`
-	// ChatWebhookURLs are Google Chat incoming webhooks for rejected-webhook and DB-failure
-	// cards. Empty disables the cards (local dev); rejections and failures are still logged.
+	// ChatWebhookURLs are Google Chat webhooks for reject/DB-failure cards; empty only logs them.
 	ChatWebhookURLs []string `env:"FALLBACK_CHAT_WEBHOOK_URLS" envSeparator:","`
-	// WebhookAPIKeysRaw is WEBHOOK_API_KEYS, unparsed: only auth.mode "audit" and
-	// "apikey" read it, so a bad value must not stop the other modes from starting.
-	// Parse it with ParseWebhookAPIKeys.
-	WebhookAPIKeysRaw string `env:"WEBHOOK_API_KEYS"`
-	// WakeUsername/WakeSecret are an integration_users credential for alerts-core's
-	// wake endpoint, sent only over https. Empty sends the call unauthenticated.
+	// AuthEnabledRaw is AUTH_ENABLED, unparsed; read AuthEnabled.
+	AuthEnabledRaw string `env:"AUTH_ENABLED"`
+	// AuthAuditOnlyRaw is AUTH_AUDIT_ONLY, unparsed; read AuthAuditOnly.
+	AuthAuditOnlyRaw string `env:"AUTH_AUDIT_ONLY"`
+	AuthEnabled      bool   `env:"-"`
+	AuthAuditOnly    bool   `env:"-"`
+	// WakeUsername/WakeSecret are an integration_users credential for the wake call, sent only over https.
 	WakeUsername string `env:"ALERT_CORE_WAKE_USERNAME"`
 	WakeSecret   string `env:"ALERT_CORE_WAKE_SECRET"`
-}
-
-// ParseWebhookAPIKeys parses <vendor>:<key> pairs separated by commas, semicolons,
-// newlines or spaces, tolerating quotes around the value or any entry, since those
-// are how the value tends to get pasted into a console. Only the first colon splits,
-// so a key may contain colons. Errors name only the entry's position, never its
-// text: a pasted key can land in either half, and the error goes to the startup log.
-func ParseWebhookAPIKeys(raw string) (map[string]string, error) {
-	isSep := func(r rune) bool {
-		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
-	}
-	keys := make(map[string]string)
-	for i, pair := range strings.FieldsFunc(unquote(raw), isSep) {
-		vendor, key, found := strings.Cut(unquote(pair), ":")
-		vendor, key = unquote(vendor), unquote(key)
-		switch {
-		case !found:
-			return nil, fmt.Errorf("webhook api keys: entry %d has no \"<vendor>:\" prefix", i+1)
-		case vendor == "":
-			return nil, fmt.Errorf("webhook api keys: entry %d has an empty vendor name", i+1)
-		case key == "":
-			return nil, fmt.Errorf("webhook api keys: entry %d has an empty key", i+1)
-		}
-		if _, dup := keys[vendor]; dup {
-			return nil, fmt.Errorf("webhook api keys: entry %d repeats an earlier vendor", i+1)
-		}
-		keys[vendor] = key
-	}
-	return keys, nil
-}
-
-// unquote trims whitespace and one layer of matching surrounding quotes, unless the
-// quote also appears inside: `"a","b"` is two quoted entries, not one quoted value.
-func unquote(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] &&
-		!strings.ContainsRune(s[1:len(s)-1], rune(s[0])) {
-		s = strings.TrimSpace(s[1 : len(s)-1])
-	}
-	return s
 }
 
 // LoadEnv parses Env, trimming blanks out of the comma-separated Chat webhook list.
@@ -340,5 +277,24 @@ func LoadEnv() (Env, error) {
 		}
 	}
 	e.ChatWebhookURLs = urls
+	var err error
+	if e.AuthEnabled, err = parseBool("AUTH_ENABLED", e.AuthEnabledRaw); err != nil {
+		return Env{}, err
+	}
+	if e.AuthAuditOnly, err = parseBool("AUTH_AUDIT_ONLY", e.AuthAuditOnlyRaw); err != nil {
+		return Env{}, err
+	}
 	return e, nil
+}
+
+// parseBool reads a true/false switch (case and spaces ignored); anything else fails startup.
+func parseBool(name, raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "false", "0", "no", "off":
+		return false, nil
+	case "true", "1", "yes", "on":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s must be true or false, got %q", name, strings.TrimSpace(raw))
+	}
 }
