@@ -1850,14 +1850,26 @@ var pgSortColMap = map[domain.CaseSortField]string{
 // onboarding_status_enum. The filter's vocabulary is ServiceNow's choice labels
 // ("In-Progress", "Not-Applicable", "OnHold"), which are not the enum's spelling,
 // so values are compared with case, hyphens, underscores and spaces ignored.
-var onboardingStatusLabels = map[string]string{
-	"notstarted":    "NOT_STARTED",
-	"inprogress":    "IN_PROGRESS",
-	"completed":     "COMPLETED",
-	"onhold":        "ON_HOLD",
-	"notapplicable": "NOT_APPLICABLE",
-	"expired":       "EXPIRED",
-	"cancelled":     "CANCELLED",
+var onboardingStatusLabels, onboardingStatusNames = buildOnboardingStatusTables([][2]string{
+	{"Cancelled", "CANCELLED"},
+	{"Completed", "COMPLETED"},
+	{"Expired", "EXPIRED"},
+	{"In-Progress", "IN_PROGRESS"},
+	{"Not-Applicable", "NOT_APPLICABLE"},
+	{"Not-Started", "NOT_STARTED"},
+	{"On-Hold", "ON_HOLD"},
+})
+
+// buildOnboardingStatusTables derives the normalized-key lookup and the
+// display names for error messages from one {name, label} list.
+func buildOnboardingStatusTables(pairs [][2]string) (map[string]string, []string) {
+	labels := make(map[string]string, len(pairs))
+	names := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		labels[onboardingStatusKeyStripper.Replace(strings.ToLower(p[0]))] = p[1]
+		names = append(names, p[0])
+	}
+	return labels, names
 }
 
 // lowerAll returns a lower-cased copy of values.
@@ -1871,15 +1883,15 @@ func lowerAll(values []string) []string {
 
 var onboardingStatusKeyStripper = strings.NewReplacer("-", "", "_", "", " ", "")
 
-// onboardingStatusEnumLabels translates projectOnboardingStatus filter values
+// onboardingStatusEnumLabels translates field's onboarding status filter values
 // to onboarding_status_enum labels. An unknown value is a ValidationError
 // rather than a silent no-match: for notIn that would widen the result set.
-func onboardingStatusEnumLabels(values []string) ([]string, error) {
+func onboardingStatusEnumLabels(field string, values []string) ([]string, error) {
 	out := make([]string, 0, len(values))
 	for _, v := range values {
 		label, ok := onboardingStatusLabels[onboardingStatusKeyStripper.Replace(strings.ToLower(strings.TrimSpace(v)))]
 		if !ok {
-			return nil, &apierror.ValidationError{Msg: "projectOnboardingStatus contains invalid value: " + v}
+			return nil, apierror.InvalidValue(field, v, "onboarding status", onboardingStatusNames)
 		}
 		out = append(out, label)
 	}
@@ -2060,7 +2072,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	// the LEFT JOIN below). A case whose project has no status set (NULL)
 	// satisfies notIn -- "not in progress" is true of it -- but never in.
 	if len(req.Parsed.ProjectOnboardingStatuses) > 0 {
-		labels, err := onboardingStatusEnumLabels(req.Parsed.ProjectOnboardingStatuses)
+		labels, err := onboardingStatusEnumLabels("projectOnboardingStatus", req.Parsed.ProjectOnboardingStatuses)
 		if err != nil {
 			return "", nil, argIdx, err
 		}
@@ -2069,7 +2081,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 		argIdx++
 	}
 	if len(req.Parsed.ExcludeProjectOnboardingStatuses) > 0 {
-		labels, err := onboardingStatusEnumLabels(req.Parsed.ExcludeProjectOnboardingStatuses)
+		labels, err := onboardingStatusEnumLabels("projectOnboardingStatus", req.Parsed.ExcludeProjectOnboardingStatuses)
 		if err != nil {
 			return "", nil, argIdx, err
 		}

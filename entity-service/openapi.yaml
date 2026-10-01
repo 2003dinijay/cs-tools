@@ -2781,7 +2781,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProjectUpdateResponse'
         "400":
-          description: Bad request — no field provided, or an invalid value.
+          description: >-
+            Bad request — no field provided, or an invalid value. The message names
+            the value and lists the accepted ones.
           content:
             application/json:
               schema:
@@ -2826,7 +2828,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/SearchProjectsResponse'
         "400":
-          description: Bad request.
+          description: >-
+            Bad request. The message names the invalid value and lists the accepted
+            ones, e.g. `excludeClosureStates: "suspended" is not a valid closure
+            state; use one of Open, Restricted, Suspended`.
           content:
             application/json:
               schema:
@@ -11815,6 +11820,29 @@ components:
         sortOrder:
           type: string
           enum: [asc, desc]
+        endDateFrom:
+          type: string
+          format: date
+          description: Only projects ending on or after this date (yyyy-MM-dd).
+        endDateTo:
+          type: string
+          format: date
+          description: Only projects ending on or before this date (yyyy-MM-dd).
+        onboardingStatus:
+          type: array
+          items:
+            type: string
+          description: >-
+            Only projects whose onboarding status is any of these, e.g. "In-Progress".
+            Case and separators are ignored; an unknown value returns 400.
+        subRegion:
+          type: string
+          description: Only projects whose account has this sub-region (case-insensitive).
+        arrTodayGte:
+          type: string
+          description: >-
+            Only projects whose account ARR is at least this value. ServiceNow only;
+            Postgres returns 400 because account ARR is not stored yet.
         excludeClosureStates:
           type: array
           items:

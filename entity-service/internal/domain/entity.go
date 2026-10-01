@@ -1289,10 +1289,10 @@ type SearchProjectsRequest struct {
 	// ClosureStatus filters by overall closure state: Open, Suspended or Restricted.
 	ClosureStatus string `json:"closureStatus"`
 	// EndDateFrom filters projects with an end date on or after this date
-	// (yyyy-MM-dd, ServiceNow data source only).
+	// (yyyy-MM-dd).
 	EndDateFrom string `json:"endDateFrom"`
 	// EndDateTo filters projects with an end date on or before this date
-	// (yyyy-MM-dd, ServiceNow data source only).
+	// (yyyy-MM-dd).
 	EndDateTo string `json:"endDateTo"`
 	// SortBy is the field to sort results by. Only "endDate" is accepted.
 	SortBy string `json:"sortBy"`
@@ -1305,13 +1305,12 @@ type SearchProjectsRequest struct {
 	// (project_repo.go).
 	AccountID string `json:"accountId"`
 	// OnboardingStatus filters to projects whose onboarding status is one of
-	// the given values (ServiceNow data source only).
+	// the given values.
 	OnboardingStatus []string `json:"onboardingStatus"`
 	// ArrTodayGte filters to projects whose linked account's current ARR is
-	// greater than or equal to this value (ServiceNow data source only).
+	// greater than or equal to this value. ServiceNow only; Postgres returns 400.
 	ArrTodayGte string `json:"arrTodayGte"`
-	// SubRegion filters to projects whose linked account is in this sub-region
-	// (ServiceNow data source only).
+	// SubRegion filters to projects whose linked account is in this sub-region.
 	SubRegion string `json:"subRegion"`
 	// ExcludeClosureStates filters out projects whose closure state (see
 	// ProjectClosureFields.ClosureState — "Open"/"Suspended"/"Restricted") is
