@@ -7263,6 +7263,23 @@ type SLAStatus struct {
 	// of the SLA clock itself.
 	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
 	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
+	// AssigneeName/AssigneeEmail/TeamEmail/TeamLeadName exist purely for
+	// csm-notification-service's own SLA breach-alert EMAIL reaction (the
+	// Chat alert above needs none of these) -- one email to the case's
+	// assigned engineer, one to the case's team email group, both
+	// addressed by these fields. AssigneeName/AssigneeEmail resolve
+	// work_item.assigned_to_id the same way GetCaseByID's own
+	// AssignedEngineer join does; "" when the case has no assignee.
+	// TeamEmail/TeamLeadName resolve from the SAME "group" row Team
+	// already comes from (account.cre_team_id) -- "group".group_email and
+	// "group".manager_id -> "user".name respectively; "" when the case has
+	// no account, the account has no CRE team, or that team has no
+	// group_email/manager_id set. All four are best-effort display/routing
+	// enrichment, not part of the SLA clock itself.
+	AssigneeName  string `json:"assigneeName,omitempty"`
+	AssigneeEmail string `json:"assigneeEmail,omitempty"`
+	TeamEmail     string `json:"teamEmail,omitempty"`
+	TeamLeadName  string `json:"teamLeadName,omitempty"`
 }
 
 // SearchSLAStatusResponse is the response for GET /sla-status — every
