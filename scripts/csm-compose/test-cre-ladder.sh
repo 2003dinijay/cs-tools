@@ -167,8 +167,17 @@ NOTE
 
 scenario_ack() {
   heading "2. Acknowledgement stops it"
-  echo "Both gestures arrive, so the outstanding calls are cancelled."
-  run --priority P0 --shift LK --cancel-after 1s | tail -6
+  cat <<'NOTE'
+Acknowledgement is BOTH gestures: a move out of NEW and a public comment.
+This sends both, so the outstanding calls are cancelled.
+
+It acknowledges once LEVEL_1 has been called, rather than at a wall-clock
+offset: a compressed ladder minute makes an offset unreliable, because this
+tool's own startup (a go build, and a token fetch in USE_TEAM_SCHEDULE mode)
+can cost more ladder time than the rung it was aiming at. -cancel-at names
+the rung instead. Use ACK_AT to pick another one.
+NOTE
+  run --priority P0 --shift LK --cancel-at "${ACK_AT:-LEVEL_1}" | tail -8
 }
 
 scenario_half_ack() {

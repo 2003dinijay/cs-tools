@@ -104,6 +104,7 @@ type config struct {
 	tick        time.Duration
 	cancelAfter time.Duration
 	cancelBy    string
+	cancelAt    string
 	maxCalls    int
 	redisAddr   string
 	incidentID  string
@@ -257,7 +258,10 @@ func parseFlags() config {
 	flag.DurationVar(&cfg.minute, "minute", time.Second, "how long one ladder minute lasts; 1s compresses a 44m P1 ladder into 44s")
 	flag.DurationVar(&cfg.tick, "tick", 200*time.Millisecond, "how often the engine scans for due calls")
 	flag.DurationVar(&cfg.cancelAfter, "cancel-after", 0, "acknowledge this far into the run; 0 runs the whole ladder")
-	flag.StringVar(&cfg.cancelBy, "cancel-by", "comment", "how to acknowledge: comment (a public comment) or status (a move out of NEW)")
+	flag.StringVar(&cfg.cancelBy, "cancel-by", "both",
+		"how to acknowledge: both (a move out of NEW AND a public comment -- the only thing that actually stops a CRE ladder), comment, or status")
+	flag.StringVar(&cfg.cancelAt, "cancel-at", "",
+		"acknowledge once the ladder has called this rung, e.g. LEVEL_2; easier than timing -cancel-after by hand, and the two are mutually exclusive")
 	flag.IntVar(&cfg.maxCalls, "max-calls", 20, "refuse to run a plan larger than this")
 	flag.StringVar(&cfg.redisAddr, "redis", envOr("REDIS_ADDR", "localhost:6379"), "Redis address holding the ladder state")
 	flag.StringVar(&cfg.incidentID, "incident-id", "", "incident id to use; defaults to a fresh one per run")
@@ -553,13 +557,58 @@ func startRecord(cfg config, at time.Time) eventbus.Record {
 // NEW a new incident's does.
 func cancelRecord(cfg config) eventbus.Record {
 	if cfg.cancelBy == "status" {
-		return envelope(cfg.incidentID, events.TypeIncidentAcknowledged, events.IncidentAcknowledgedPayload{
-			PreviousState: "NEW", NewState: "IN_PROGRESS",
-		})
+		return statusRecord(cfg)
 	}
+	return commentRecord(cfg)
+}
+
+func statusRecord(cfg config) eventbus.Record {
+	return envelope(cfg.incidentID, events.TypeIncidentAcknowledged, events.IncidentAcknowledgedPayload{
+		PreviousState: "NEW", NewState: "IN_PROGRESS",
+	})
+}
+
+func commentRecord(cfg config) eventbus.Record {
 	return envelope(cfg.incidentID, events.TypeIncidentCommentAdded, events.IncidentCommentAddedPayload{
 		CommentID: "local-comment-1", IsPublic: true,
 	})
+}
+
+// cancelRecords is every gesture this run acknowledges with.
+//
+// A CRE ladder stops on BOTH a move out of NEW and a public comment; either
+// alone is recorded and the ladder keeps climbing, which is the whole point of
+// the rule. -cancel-by comment and -cancel-by status therefore demonstrate a
+// ladder that does NOT stop -- useful, and what the half-ack scenario wants,
+// but not an acknowledgement. "both" is the default so that asking this tool
+// to acknowledge actually acknowledges.
+func cancelRecords(cfg config) []eventbus.Record {
+	switch cfg.cancelBy {
+	case "status":
+		return []eventbus.Record{statusRecord(cfg)}
+	case "comment":
+		return []eventbus.Record{commentRecord(cfg)}
+	default:
+		return []eventbus.Record{statusRecord(cfg), commentRecord(cfg)}
+	}
+}
+
+// dueByTime reports whether -cancel-after has elapsed. Separate so the
+// level-triggered path reads as the alternative it is.
+func dueByTime(cfg config, elapsed time.Duration) bool {
+	return cfg.cancelAt == "" && cfg.cancelAfter > 0 && elapsed >= cfg.cancelAfter
+}
+
+// gestureName describes what -cancel-by will send, for the run's own log.
+func gestureName(by string) string {
+	switch by {
+	case "status":
+		return "a move out of NEW (one gesture only -- the ladder keeps climbing)"
+	case "comment":
+		return "a public comment (one gesture only -- the ladder keeps climbing)"
+	default:
+		return "a move out of NEW AND a public comment"
+	}
 }
 
 func envelope(entityID string, t events.Type, payload any) eventbus.Record {
@@ -593,6 +642,7 @@ func runTicks(ctx context.Context, cfg config, engine *escalation.Engine, rdb *r
 	var lastPlaced []bool
 	var lastFailed []string
 	seen := 0
+	reachedCancelLevel := false
 
 	for {
 		select {
@@ -605,17 +655,19 @@ func runTicks(ctx context.Context, cfg config, engine *escalation.Engine, rdb *r
 			// Ladder time, expanded back out from the compressed real clock.
 			now := trigger.Add(time.Duration(float64(elapsed) / float64(cfg.minute) * float64(time.Minute)))
 
-			if !cancelled && cfg.cancelAfter > 0 && elapsed >= cfg.cancelAfter {
+			if !cancelled && (dueByTime(cfg, elapsed) || reachedCancelLevel) {
 				cancelled = true
 				at := now
 				cancelledAtLadderTime = &at
-				gesture := "a public comment"
-				if cfg.cancelBy == "status" {
-					gesture = "a move out of NEW"
-				}
-				fmt.Printf("  [%7s] ACKNOWLEDGED by %s — the engine should stop calling\n", short(elapsed), gesture)
-				if err := engine.Handle(ctx, cancelRecord(cfg)); err != nil {
-					return fmt.Errorf("acknowledging: %w", err)
+				fmt.Printf("  [%7s] ACKNOWLEDGED by %s — the engine should stop calling\n",
+					short(elapsed), gestureName(cfg.cancelBy))
+				// Each gesture is a separate event, exactly as entity-service
+				// publishes them, so the engine's own both-gestures rule is
+				// what decides whether this stops the ladder.
+				for _, r := range cancelRecords(cfg) {
+					if err := engine.Handle(ctx, r); err != nil {
+						return fmt.Errorf("acknowledging: %w", err)
+					}
 				}
 			}
 
@@ -637,6 +689,10 @@ func runTicks(ctx context.Context, cfg config, engine *escalation.Engine, rdb *r
 			lastPlaced = append(lastPlaced[:0], st.Placed...)
 			lastFailed = append(lastFailed[:0], st.Failed...)
 			for i, done := range st.Placed {
+				if done && cfg.cancelAt != "" && !cancelled &&
+					strings.EqualFold(st.Plan.Calls[i].Level.String(), cfg.cancelAt) {
+					reachedCancelLevel = true
+				}
 				if done && i >= seen {
 					c := st.Plan.Calls[i]
 					fmt.Printf("  [%7s] %-8s #%d  %-14s called %s  (ladder +%s)\n",
@@ -718,8 +774,10 @@ func printHeader(cfg config, plan escalation.Plan, trigger time.Time, to string)
 	if cfg.live && cfg.ringSeconds > 0 {
 		fmt.Printf("  ring            %ds, then Twilio gives up on the call\n", cfg.ringSeconds)
 	}
-	if cfg.cancelAfter > 0 {
-		fmt.Printf("  acknowledge at  %s into the run, by %s\n", cfg.cancelAfter, cfg.cancelBy)
+	if cfg.cancelAt != "" {
+		fmt.Printf("  acknowledge at  %s, by %s\n", strings.ToUpper(cfg.cancelAt), gestureName(cfg.cancelBy))
+	} else if cfg.cancelAfter > 0 {
+		fmt.Printf("  acknowledge at  %s into the run, by %s\n", cfg.cancelAfter, gestureName(cfg.cancelBy))
 	}
 	fmt.Printf("\n  the ladder the engine scheduled (%d calls):\n", len(plan.Calls))
 	for _, c := range plan.Calls {
