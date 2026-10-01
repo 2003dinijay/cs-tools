@@ -81,7 +81,8 @@ func MatchProductRepo(rows []domain.ProductRepoMapping, name string) (domain.Pro
 	folded := strings.ToLower(query)
 
 	// candidateNames returns the row's stored name plus its canonical
-	// (parenthetical-stripped) form when the two differ.
+	// (parenthetical-stripped) form when the two differ. Used by the prefix
+	// pass below, where "longest candidate wins" is already order-independent.
 	candidateNames := func(row domain.ProductRepoMapping) []string {
 		product := strings.TrimSpace(row.ProductName)
 		names := []string{product}
@@ -91,11 +92,19 @@ func MatchProductRepo(rows []domain.ProductRepoMapping, name string) (domain.Pro
 		return names
 	}
 
+	// Exact stored name wins first, across every row, before any row's
+	// canonical name is even considered -- checking both forms row-by-row
+	// would let an earlier row's canonical match shadow a later row's own
+	// exact stored-name match.
 	for _, row := range rows {
-		for _, candidate := range candidateNames(row) {
-			if strings.EqualFold(candidate, query) {
-				return row, true
-			}
+		if strings.EqualFold(strings.TrimSpace(row.ProductName), query) {
+			return row, true
+		}
+	}
+	for _, row := range rows {
+		product := strings.TrimSpace(row.ProductName)
+		if canon := canonicalProductName(product); canon != "" && !strings.EqualFold(canon, product) && strings.EqualFold(canon, query) {
+			return row, true
 		}
 	}
 	for _, row := range rows {
