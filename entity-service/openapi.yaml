@@ -12135,7 +12135,8 @@ components:
           description: >
             Whether this row would actually grant its person visibility into this project's
             cases: a linked contact record AND the address the row was invited under matching
-            that record's own address, compared case-insensitively. Deliberately not a
+            that record's own address, compared case-insensitively (on Postgres, the row
+            must also be REGISTERED). Deliberately not a
             restatement of `customerContactPresent` — a row invited under one address but
             linked to a contact whose own address differs is invisible to both people, and
             that does happen on genuine customer rows.

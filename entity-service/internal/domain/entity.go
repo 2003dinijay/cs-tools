@@ -4161,8 +4161,8 @@ type ProjectContact struct {
 	// Name is nil when the row has no contact record linked -- the name is only ever
 	// known from that record.
 	Name *string `json:"name"`
-	// Email falls back to the address the row was invited under when no contact record is
-	// linked, so a row whose contact record was never created stays identifiable instead
+	// Email is the linked contact record's address, falling back to the address the row
+	// was invited under when no contact record is linked, so a row whose contact record was never created stays identifiable instead
 	// of carrying no name and no address at all.
 	Email                string   `json:"email"`
 	RegistrationState    string   `json:"registrationState"`
@@ -4188,7 +4188,8 @@ type ProjectContact struct {
 	// signals, restated as an explicit boolean rather than an absence a caller has to
 	// notice). GrantsCaseAccess is the access rule the backing data source actually
 	// applies: a linked contact record AND the address the row was invited under matching
-	// that record's own address, compared case-insensitively. Deliberately not a
+	// that record's own address, compared case-insensitively (on Postgres, the row must
+	// also be REGISTERED). Deliberately not a
 	// restatement of CustomerContactPresent -- a row invited under one address but linked
 	// to a contact whose own address differs is invisible to both people, and that does
 	// happen on genuine customer rows, not only on integration/system accounts.
