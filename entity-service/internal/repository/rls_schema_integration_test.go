@@ -121,7 +121,7 @@ func TestRLSSchemaIntegration_EveryProtectedTableHasForceRowLevelSecurity(t *tes
 }
 
 // TestRLSSchemaIntegration_PolicyHelperFunctionsAreParallelSafe guards
-// migration 0176. One PARALLEL UNSAFE function anywhere in a policy makes
+// migration 0177. One PARALLEL UNSAFE function anywhere in a policy makes
 // every query on that table non-parallel, which is what made internal callers
 // several times slower than with RLS off. A later CREATE OR REPLACE FUNCTION
 // without a PARALLEL clause silently resets the label, so nothing else would
@@ -151,7 +151,7 @@ func TestRLSSchemaIntegration_PolicyHelperFunctionsAreParallelSafe(t *testing.T)
 		}
 		seen++
 		if parallel != "s" {
-			t.Errorf("policy helper function %q has proparallel = %q, want 's' (PARALLEL SAFE): see migration 0176", name, parallel)
+			t.Errorf("policy helper function %q has proparallel = %q, want 's' (PARALLEL SAFE): see migration 0177", name, parallel)
 		}
 	}
 	if err := rows.Err(); err != nil {

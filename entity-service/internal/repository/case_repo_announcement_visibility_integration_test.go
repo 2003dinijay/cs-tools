@@ -463,9 +463,9 @@ func TestAnnouncementVisibilityCreateCallRequestIntegration(t *testing.T) {
 	}
 }
 
-// TestAnnouncementVisibilityChildRowsIntegration (migration 0174): a hidden
+// TestAnnouncementVisibilityChildRowsIntegration (migration 0175): a hidden
 // announcement's comments and watchers must be hidden along with it, and a
-// caller who cannot see the announcement cannot add to it. Before 0174 a
+// caller who cannot see the announcement cannot add to it. Before 0175 a
 // project member not cleared for a security announcement could read its
 // comments by work-item UUID. (case_attachment needs no such rule: it
 // references "case", so an announcement cannot own an attachment.)

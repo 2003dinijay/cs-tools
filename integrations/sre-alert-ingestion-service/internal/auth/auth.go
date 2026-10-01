@@ -31,6 +31,8 @@ const (
 	ModeNone   = "none"
 	ModeAudit  = "audit"
 	ModeAPIKey = "apikey"
+	// ModeIntegrationUsers verifies against alerts-core's integration_users table.
+	ModeIntegrationUsers = "integration_users"
 )
 
 // ErrUnauthorized is returned by an Authenticator that rejects a request; the router answers 401.
@@ -49,9 +51,9 @@ type None struct{}
 func (None) Authenticate(*http.Request, string) error { return nil }
 
 // New returns the Authenticator for mode, erroring on an unknown one so a typo in
-// config.toml fails at startup rather than leaving the routes open. ModeNone
-// ignores keys and vendors.
-func New(mode string, keys map[string]string, vendors []string, logger *slog.Logger) (Authenticator, error) {
+// config.toml fails at startup rather than leaving the routes open. ModeNone ignores
+// every argument; ModeIntegrationUsers needs users.
+func New(mode string, keys map[string]string, vendors []string, users *IntegrationUsers, logger *slog.Logger) (Authenticator, error) {
 	switch mode {
 	case ModeNone:
 		return None{}, nil
@@ -64,7 +66,12 @@ func New(mode string, keys map[string]string, vendors []string, logger *slog.Log
 		return Audit{inner: inner, logger: logger}, nil
 	case ModeAPIKey:
 		return NewAPIKey(keys, vendors, true)
+	case ModeIntegrationUsers:
+		if users == nil {
+			return nil, fmt.Errorf("auth.mode %q needs a Cassandra session", mode)
+		}
+		return users, nil
 	default:
-		return nil, fmt.Errorf("unknown auth.mode %q (want %q, %q or %q)", mode, ModeNone, ModeAudit, ModeAPIKey)
+		return nil, fmt.Errorf("unknown auth.mode %q (want %q, %q, %q or %q)", mode, ModeNone, ModeAudit, ModeAPIKey, ModeIntegrationUsers)
 	}
 }

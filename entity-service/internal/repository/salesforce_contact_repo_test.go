@@ -197,7 +197,7 @@ func TestUpsertContactTx_NewContact(t *testing.T) {
 // "user" row back; the existing row is updated in place.
 func TestUpsertContactTx_RestoreReactivatesUser(t *testing.T) {
 	deleted := time.Date(2026, 9, 18, 6, 37, 7, 0, time.UTC)
-	ledger := scriptedRow{vals: []any{"contact", "003000000000001AAA", deleted, "DELETED", "SUCCEEDED", nil, 2, deleted, deleted}}
+	ledger := scriptedRow{vals: []any{"contact", "003000000000001AAA", deleted, "DELETED", "SUCCEEDED", nil, 2, deleted, deleted, 0}}
 	q := &scriptedQuerier{t: t, script: []scriptStep{
 		{match: "FROM salesforce_ingest_state", row: ledger},
 		{match: `FROM "user" WHERE sf_id`, row: scriptedRow{vals: []any{"user-1", "jane@acme.com"}}},

@@ -57,7 +57,7 @@ type deploymentRepo struct {
 
 // NewDeploymentRepository constructs a DeploymentRepository whose every query
 // runs under the caller identity on ctx (deployment has row-level security,
-// migration 0175).
+// migration 0176).
 func NewDeploymentRepository(db *Scoped) DeploymentRepository {
 	return &deploymentRepo{db: db}
 }

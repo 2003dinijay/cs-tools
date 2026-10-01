@@ -127,11 +127,17 @@ type fakeStepRepo struct {
 	getErr        error
 	listErr       error
 	retryAttempts []string
+	requeued      []repository.MissingParent
 }
 
-func (f *fakeStepRepo) RecordRetryAttempt(_ context.Context, stepID string, seenUpdatedOn time.Time) (bool, error) {
-	f.retryAttempts = append(f.retryAttempts, stepID+"@"+seenUpdatedOn.Format(time.RFC3339))
+func (f *fakeStepRepo) RecordRetryAttempt(_ context.Context, stepID string) (bool, error) {
+	f.retryAttempts = append(f.retryAttempts, stepID)
 	return true, nil
+}
+
+func (f *fakeStepRepo) RequeueMissingParentFailures(_ context.Context, parent repository.MissingParent) (int64, error) {
+	f.requeued = append(f.requeued, parent)
+	return 0, nil
 }
 
 func (f *fakeStepRepo) Upsert(_ context.Context, req domain.UpsertOnboardingStepRequest) (domain.OnboardingStep, error) {
@@ -985,7 +991,7 @@ func (f *fakeStepRepo) ListMissingParentFailures(_ context.Context, _ time.Durat
 	out := []domain.OnboardingStep{}
 	for _, s := range f.existing {
 		if s.Step == domain.OnboardingStepDatabase && s.Status == domain.OnboardingStepFailed &&
-			repository.IsMissingParentError(derefString(s.LastError)) && s.AttemptCount < maxAttempts && len(out) < limit {
+			repository.IsMissingParentError(derefString(s.LastError)) && s.RetryCount < maxAttempts && len(out) < limit {
 			out = append(out, s)
 		}
 	}

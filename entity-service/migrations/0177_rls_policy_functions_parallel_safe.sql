@@ -36,7 +36,7 @@
 -- plan on work_item, comment, announcement, case and time_card, and a caller
 -- with no settings still saw 0 rows everywhere.
 --
--- The deployment and deployed_product policies (0175) use is_project_member
+-- The deployment and deployed_product policies (0176) use is_project_member
 -- too, so they benefit from the same label.
 --
 -- ALTER (not CREATE OR REPLACE) on purpose: it changes only the parallel
