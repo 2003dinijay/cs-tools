@@ -476,11 +476,13 @@ func upsertMembershipTx(ctx context.Context, tx pgx.Tx, in domain.SalesforceMemb
 			return res, &apierror.NotFoundError{Msg: "project not found"}
 		}
 	} else {
+		var copies int64
 		err = tx.QueryRow(ctx, `
-		SELECT id, account_id FROM project
-		WHERE (key = $1 AND $1 <> '') OR (sf_id = $2 AND $2 <> '')
-		ORDER BY CASE WHEN key = $1 THEN 0 ELSE 1 END
-		LIMIT 1`, in.ProjectKey, in.ProjectSfID).Scan(&res.ProjectID, &projectAccountID)
+		SELECT p.id, p.account_id, count(*) FILTER (WHERE p.sf_id = $2) OVER () FROM project p
+		WHERE (p.key = $1 AND $1 <> '') OR (p.sf_id = $2 AND $2 <> '')
+		ORDER BY CASE WHEN p.key = $1 THEN 0 ELSE 1 END, `+projectReferencedOrder+`
+		LIMIT 1`, in.ProjectKey, in.ProjectSfID).Scan(&res.ProjectID, &projectAccountID, &copies)
+		warnDuplicateSfID(ctx, "project", in.ProjectSfID, res.ProjectID, copies)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return res, &apierror.NotFoundError{Msg: fmt.Sprintf("project not found for key %q / sfId %q", in.ProjectKey, in.ProjectSfID)}
 		}
@@ -492,9 +494,12 @@ func upsertMembershipTx(ctx context.Context, tx pgx.Tx, in domain.SalesforceMemb
 	// 2. account — the contact's own account by sf_id; an own contact falls
 	// back to the project's account.
 	if in.ContactAccountSfID != "" {
-		err = tx.QueryRow(ctx, `SELECT id FROM account WHERE sf_id = $1`, in.ContactAccountSfID).Scan(&res.AccountID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		accountID, err := resolveIDBySfID(ctx, tx, resolveAccountBySfIDQuery, "account", in.ContactAccountSfID)
+		if err != nil {
 			return res, fmt.Errorf("upsert membership: resolve account: %w", err)
+		}
+		if accountID != nil {
+			res.AccountID = *accountID
 		}
 	}
 	if res.AccountID == "" {
@@ -551,10 +556,15 @@ func upsertMembershipUser(ctx context.Context, tx querier, in domain.SalesforceM
 		return "", "", false, &apierror.ValidationError{Msg: "contact email is required to resolve the user"}
 	}
 
-	err = tx.QueryRow(ctx, `SELECT id, user_name FROM "user" WHERE sf_id = $1`, in.ContactSfID).Scan(&id, &userName)
+	// One copy per sf_id: active first, then oldest (an account_contact EXISTS has no index here).
+	var copies int64
+	err = tx.QueryRow(ctx, `
+		SELECT id, user_name, count(*) OVER () FROM "user" WHERE sf_id = $1
+		ORDER BY is_active IS TRUE DESC, created_on, id LIMIT 1`, in.ContactSfID).Scan(&id, &userName, &copies)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return "", "", false, fmt.Errorf("upsert membership: resolve user by sf_id: %w", err)
 	}
+	warnDuplicateSfID(ctx, "user", in.ContactSfID, id, copies)
 	if id == "" {
 		rows, qerr := tx.Query(ctx, `SELECT id, user_name FROM "user" WHERE LOWER(email) = $1 LIMIT 2`, email)
 		if qerr != nil {
@@ -777,10 +787,15 @@ func syncDerivedAdminRole(ctx context.Context, tx querier, userID, adminRole str
 // insert and on update when known, FALSE on insert and untouched on update
 // when nil.
 func upsertAccountContact(ctx context.Context, tx querier, contactSfID, accountID, userName string, isPrimary *bool, actor string) (id string, created bool, err error) {
-	err = tx.QueryRow(ctx, `SELECT id FROM account_contact WHERE sf_id = $1 AND account_id = $2`, contactSfID, accountID).Scan(&id)
+	var copies int64
+	err = tx.QueryRow(ctx, `
+		SELECT ac.id, count(*) OVER () FROM account_contact ac WHERE ac.sf_id = $1 AND ac.account_id = $2
+		ORDER BY EXISTS (SELECT 1 FROM project_contact pc WHERE pc.account_contact_id = ac.id) DESC, ac.created_on, ac.id
+		LIMIT 1`, contactSfID, accountID).Scan(&id, &copies)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return "", false, fmt.Errorf("upsert membership: resolve account_contact by sf_id: %w", err)
 	}
+	warnDuplicateSfID(ctx, "account_contact", contactSfID, id, copies)
 	if id == "" {
 		err = tx.QueryRow(ctx, `
 			SELECT id FROM account_contact WHERE account_id = $1 AND LOWER(user_name) = LOWER($2)
@@ -817,10 +832,15 @@ func upsertAccountContact(ctx context.Context, tx querier, contactSfID, accountI
 // apart from "this is our own portal write coming back".
 func upsertProjectContact(ctx context.Context, tx pgx.Tx, in domain.SalesforceMembershipUpsert, projectID, accountContactID, actor string) (id string, created bool, previousState string, err error) {
 	var prior *string
-	err = tx.QueryRow(ctx, `SELECT id, state::text FROM project_contact WHERE sf_id = $1`, in.MembershipSfID).Scan(&id, &prior)
+	var copies int64
+	err = tx.QueryRow(ctx, `
+		SELECT pc.id, pc.state::text, count(*) OVER () FROM project_contact pc WHERE pc.sf_id = $1
+		ORDER BY EXISTS (SELECT 1 FROM project_contact_group g WHERE g.project_contact_id = pc.id) DESC, pc.created_on, pc.id
+		LIMIT 1`, in.MembershipSfID).Scan(&id, &prior, &copies)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return "", false, "", fmt.Errorf("upsert membership: resolve project_contact by sf_id: %w", err)
 	}
+	warnDuplicateSfID(ctx, "project_contact", in.MembershipSfID, id, copies)
 	if id == "" {
 		err = tx.QueryRow(ctx, `
 			SELECT id, state::text FROM project_contact WHERE project_id = $1 AND account_contact_id = $2

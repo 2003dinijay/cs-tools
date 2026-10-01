@@ -245,6 +245,17 @@ later CREATED/UPDATED/RESTORED clears `deleted_on`. Never `DELETE FROM account`
 `EnsureAccount`), the partner lookup and the joins from projects/cases/global search
 still see the row.
 
+### One row per sf_id
+
+`sf_id` is not unique (csm-sync copies ServiceNow duplicates). Every ingest write
+and parent lookup (`EnsureAccount`, `EnsureProject`, `ensureOpportunity`) resolves
+ONE row and updates it by `id` (`internal/repository/sf_id_resolve.go`): the copy
+with the most kinds of child (account: cases, contacts, projects, opportunities;
+project: cases, memberships, links; opportunity: invoices, links, line items), then
+oldest, then lowest `id`. Line items, invoices and links prefer the copy under the
+same parent. More than one copy logs a warning with the count. Deletes still hit
+every copy.
+
 ## Salesforce membership ingest and onboarding steps
 
 The same `POST /salesforce/events` endpoint also ingests customer **memberships**
@@ -574,7 +585,7 @@ acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest
   `product_description`, `product_family`, `product_unit`, `eng_product_code`,
   `product_sf_id`, `classification`, `environment`, `total_price`. **Never written:**
   `development_support_hours`, `engagement_code`. With duplicate `sf_opportunity` rows
-  for one `sf_id`, the oldest owns the line items. Standalone `OpportunityLineItem`
+  for one `sf_id`, the row "One row per sf_id" picks owns the line items. Standalone `OpportunityLineItem`
   events are handled too (see "Standalone OpportunityLineItem" below).
 - **DELETED:** hard delete `sf_opportunity WHERE sf_id = $1` (FKs cascade line items
   and project links, null invoices) plus a DELETED ledger row, in one transaction;

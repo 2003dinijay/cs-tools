@@ -95,10 +95,8 @@ type AccountRepository interface {
 	// transaction. found is false when no account carries the id.
 	SoftDeleteBySfID(ctx context.Context, sfID string, state domain.UpsertSalesforceIngestStateRequest) (found bool, err error)
 	LookupUserIDByEmail(ctx context.Context, email string) (*string, error)
-	// LookupAccountIDBySfID returns the id of the account carrying this
-	// Salesforce id, or nil (no error) when there is none. sf_id is not
-	// unique (migration 0095); should more than one row carry it, the
-	// oldest wins, which is the row every earlier ingest already wrote to.
+	// LookupAccountIDBySfID returns the account row the ingest writes for this
+	// Salesforce id (resolveAccountBySfIDQuery), or nil when there is none.
 	LookupAccountIDBySfID(ctx context.Context, sfID string) (*string, error)
 }
 
@@ -308,7 +306,7 @@ const salesforceSyncActor = domain.SalesforceSyncActor
 // sf_id by an advisory lock so two concurrent events for a new account
 // cannot both insert:
 //
-//  1. update every row already carrying this sf_id;
+//  1. update the one row resolveAccountBySfIDQuery picks for this sf_id;
 //  2. else link the row with the same account number that has no sf_id yet
 //     (a ServiceNow-synced row), rather than tripping account_number_key;
 //  3. else insert.
@@ -352,17 +350,25 @@ func upsertAccountFromSalesforce(ctx context.Context, q querier, row domain.Sale
 		row.AccountVertical, row.LostReasonCategory, row.DeactivationDate,
 		row.KeepExistingPhone,
 	}
-	tag, err := q.Exec(ctx, updateAccountFromSalesforceQuery+` WHERE sf_id = $4`, args...)
+	_, n, err := updateOneBySfID(ctx, q, updateAccountBySfIDQuery, "account", row.SfID, args...)
 	if err != nil {
 		return fmt.Errorf("upsert account from salesforce: update by sf_id: %w", err)
 	}
-	if tag.RowsAffected() == 0 && row.Number != "" {
-		tag, err = q.Exec(ctx, updateAccountFromSalesforceQuery+` WHERE number = $3 AND sf_id IS NULL`, args...)
+	if n > 1 {
+		// Soft delete marks every copy, so the restore clears every copy.
+		if _, err := q.Exec(ctx, restoreAccountCopiesQuery, row.SfID, salesforceSyncActor); err != nil {
+			return fmt.Errorf("upsert account from salesforce: restore copies: %w", err)
+		}
+	}
+	linked := int64(0)
+	if n == 0 && row.Number != "" {
+		tag, err := q.Exec(ctx, updateAccountFromSalesforceQuery+` WHERE number = $3 AND sf_id IS NULL`, args...)
 		if err != nil {
 			return fmt.Errorf("upsert account from salesforce: link by number: %w", err)
 		}
+		linked = tag.RowsAffected()
 	}
-	if tag.RowsAffected() == 0 {
+	if n == 0 && linked == 0 {
 		if _, err := q.Exec(ctx, insertAccountFromSalesforceQuery, args[:30]...); err != nil {
 			return fmt.Errorf("upsert account from salesforce: insert: %w", err)
 		}
@@ -434,6 +440,18 @@ const updateAccountFromSalesforceQuery = `
 		updated_on = now(),
 		updated_by = $1,
 		sync_time_stamp = now()`
+
+// updateAccountBySfIDQuery writes the one row resolveAccountBySfIDQuery picks.
+const updateAccountBySfIDQuery = updateAccountFromSalesforceQuery + `
+	FROM (SELECT a.id, count(*) OVER () AS n FROM account a WHERE a.sf_id = $4
+		ORDER BY ` + accountReferencedOrder + ` LIMIT 1) t
+	WHERE account.id = t.id
+	RETURNING account.id::text, t.n`
+
+// restoreAccountCopiesQuery clears deleted_on on every copy of an sf_id.
+const restoreAccountCopiesQuery = `
+	UPDATE account SET deleted_on = NULL, updated_on = now(), updated_by = $2, sync_time_stamp = now()
+	WHERE sf_id = $1 AND deleted_on IS NOT NULL`
 
 // insertAccountFromSalesforceQuery creates an account Salesforce knows and
 // CSM does not. number is the Salesforce Id: nobody issues "ACC" numbers
@@ -521,13 +539,5 @@ func (r *accountRepo) LookupUserIDByEmail(ctx context.Context, email string) (*s
 }
 
 func (r *accountRepo) LookupAccountIDBySfID(ctx context.Context, sfID string) (*string, error) {
-	var id string
-	err := r.db.QueryRow(ctx, `SELECT id::text FROM account WHERE sf_id = $1 ORDER BY created_on, id LIMIT 1`, sfID).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("lookup account id by sf_id: %w", err)
-	}
-	return &id, nil
+	return resolveIDBySfID(ctx, r.db, resolveAccountBySfIDQuery, "account", sfID)
 }
