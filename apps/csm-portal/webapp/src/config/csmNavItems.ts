@@ -388,14 +388,14 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
   // tree unconditionally so CSM_PORTAL_FEATURE_OVERRIDES' WIP/hidden
   // mechanism works on it too, on top of the audience gate.
   {
-    id: "spl",
+    id: "viewer",
     label: "Sales / Solutions Architecture",
     href: "/spl/cases",
     icon: Layers,
     children: [
-      { id: "spl.cases", label: "Cases", href: "/spl/cases", icon: Layers },
+      { id: "viewer.cases", label: "Cases", href: "/spl/cases", icon: Layers },
       {
-        id: "spl.accounts",
+        id: "viewer.accounts",
         label: "Accounts",
         href: "/spl/accounts",
         icon: Building2,
@@ -405,22 +405,22 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
         // no active nav highlight at all.
         routes: ["/spl/my-accounts"],
       },
-      { id: "spl.projects", label: "Projects", href: "/spl/projects", icon: FolderKanban },
+      { id: "viewer.projects", label: "Projects", href: "/spl/projects", icon: FolderKanban },
       {
-        id: "spl.team-schedule",
+        id: "viewer.team-schedule",
         label: "Team schedule",
         href: "/spl/team-schedule",
         icon: CalendarClock,
       },
-      { id: "spl.user-scan", label: "User scan", href: "/spl/user-scan", icon: UserSearch },
+      { id: "viewer.user-scan", label: "User scan", href: "/spl/user-scan", icon: UserSearch },
       {
-        id: "spl.usage-metrics",
+        id: "viewer.usage-metrics",
         label: "Usage metrics",
         href: "/spl/usage-metrics",
         icon: BarChart3,
       },
       {
-        id: "spl.customer-health",
+        id: "viewer.customer-health",
         label: "Customer health",
         href: "/spl/customer-health",
         icon: HeartPulse,
@@ -505,8 +505,8 @@ export interface CsmNavMatch {
  *
  * On a length tie, the later match wins (`>=`, not `>`) — `flattenNavNodes`
  * yields parents before their children, and a section whose `href` is just an
- * alias for its own landing child (e.g. "spl"'s href and "spl.cases"'s href
- * are both "/spl/cases", since the section has no dedicated landing page of
+ * alias for its own landing child (e.g. "viewer"'s href and "viewer.cases"'s
+ * href are both "/spl/cases", since the section has no dedicated landing page of
  * its own) would otherwise have the parent win a same-length tie against the
  * more specific child it's aliasing — surfacing as the child never being the
  * one reported active for its own path.
