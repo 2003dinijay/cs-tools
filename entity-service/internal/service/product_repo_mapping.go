@@ -18,12 +18,30 @@ package service
 
 import (
 	"context"
+	"regexp"
 	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
+
+// trailingParenRE matches a trailing "(...)" annotation on a product name,
+// e.g. the " (Choreo)" in "WSO2 Developer Platform (Choreo)".
+var trailingParenRE = regexp.MustCompile(`\s*\([^()]*\)\s*$`)
+
+// canonicalProductName strips one trailing parenthetical annotation from
+// name. Some product_repo_mapping rows carry a human disambiguation suffix
+// that was never part of the real product catalogue name (e.g. the mapping
+// is "WSO2 Developer Platform (Choreo)" but real cases carry the product as
+// plain "WSO2 Developer Platform") -- every rule in MatchProductRepo below
+// fails against a row like that since the stored name is longer than, not a
+// prefix of, the real one. Returning this as a second candidate name lets
+// such a row match the real catalogue name without changing matching for
+// any row whose name has no such suffix.
+func canonicalProductName(name string) string {
+	return strings.TrimSpace(trailingParenRE.ReplaceAllString(name, ""))
+}
 
 // ProductRepoMappingService resolves a case product name to a GitHub repo.
 type ProductRepoMappingService struct {
@@ -62,9 +80,22 @@ func MatchProductRepo(rows []domain.ProductRepoMapping, name string) (domain.Pro
 	}
 	folded := strings.ToLower(query)
 
+	// candidateNames returns the row's stored name plus its canonical
+	// (parenthetical-stripped) form when the two differ.
+	candidateNames := func(row domain.ProductRepoMapping) []string {
+		product := strings.TrimSpace(row.ProductName)
+		names := []string{product}
+		if canon := canonicalProductName(product); canon != "" && !strings.EqualFold(canon, product) {
+			names = append(names, canon)
+		}
+		return names
+	}
+
 	for _, row := range rows {
-		if strings.EqualFold(strings.TrimSpace(row.ProductName), query) {
-			return row, true
+		for _, candidate := range candidateNames(row) {
+			if strings.EqualFold(candidate, query) {
+				return row, true
+			}
 		}
 	}
 	for _, row := range rows {
@@ -76,11 +107,12 @@ func MatchProductRepo(rows []domain.ProductRepoMapping, name string) (domain.Pro
 	var best domain.ProductRepoMapping
 	bestLen := -1
 	for _, row := range rows {
-		product := strings.TrimSpace(row.ProductName)
-		prefix := strings.ToLower(product) + " "
-		if strings.HasPrefix(folded, prefix) && len(product) > bestLen {
-			best = row
-			bestLen = len(product)
+		for _, candidate := range candidateNames(row) {
+			prefix := strings.ToLower(candidate) + " "
+			if strings.HasPrefix(folded, prefix) && len(candidate) > bestLen {
+				best = row
+				bestLen = len(candidate)
+			}
 		}
 	}
 	if bestLen < 0 {

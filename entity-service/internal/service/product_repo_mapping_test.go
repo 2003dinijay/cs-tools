@@ -29,6 +29,8 @@ func sampleMappings() []domain.ProductRepoMapping {
 		{ProductName: "Acme Gateway", Abbreviation: strPtr("acmegw"), GithubLabel: "gateway"},
 		{ProductName: "Kit", GithubLabel: "kit"},
 		{ProductName: "Kite", GithubLabel: "kite"},
+		{ProductName: "Acme Portal (Legacy)", GithubLabel: "portal"},
+		{ProductName: "WSO2 Developer Platform (Choreo)", GithubLabel: "choreo"},
 	}
 }
 
@@ -48,6 +50,8 @@ func TestMatchProductRepo(t *testing.T) {
 		{name: "short name is not a prefix of the catalogue name", query: "Server", wantHit: false},
 		{name: "unknown product", query: "Not A Product", wantHit: false},
 		{name: "blank", query: "  ", wantHit: false},
+		{name: "stored name with a trailing parenthetical annotation matches the plain real name", query: "Acme Portal", want: "portal", wantHit: true},
+		{name: "reported bug: Choreo's parenthetical-suffixed mapping matches the real catalogue name", query: "WSO2 Developer Platform", want: "choreo", wantHit: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
