@@ -318,6 +318,33 @@ superseded something) — that's a real gap if a "period X was abandoned" notice
 would need a small addition to the `ClaimScheduledTaskRunResponse` contract, not just to this
 component.
 
+## `cmd/server` is the ONLY package main in this component
+
+> **Do not add a second directory under `cmd/`, and do not add `package main`
+> anywhere else in this module. It breaks the Choreo build.**
+
+Choreo builds this with the Google Go buildpack, which picks the package to
+build by running
+
+```
+go list -f '{{if eq .Name "main"}}{{.Dir}}{{end}}' ./...
+```
+
+With exactly one result it builds that. With two it cannot choose, falls back
+to the module root, finds no `.go` files there and fails the build with
+
+```
+no Go files in /workspace
+```
+
+The failure names neither of the offending directories, so it reads like a
+broken build path rather than an extra main package. It has happened twice:
+`cmd/availdiff`, then `cmd/mockdashboard`.
+
+A development tool that needs its own entry point belongs outside this
+module, or as a test helper, or behind `GOOGLE_BUILDABLE=./cmd/server` set on
+the Choreo build — but the default assumption here is one `cmd/` directory.
+
 ## Running locally
 
 ```bash
