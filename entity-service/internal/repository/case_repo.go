@@ -804,8 +804,65 @@ const createSecurityReportAnalysisFromServiceNowQuery = `
 	FROM inserted_work_item iwi
 	JOIN inserted_security_report_analysis isra ON isra.id = iwi.id`
 
+// existingRefOrNil resolves id to itself if it exists in the given table
+// (only "deployment" or "deployed_product" -- table selects a fixed literal
+// query, never interpolated), or nil (SQL NULL) if id is empty or the row
+// doesn't exist. See CreateCaseFromServiceNow's own call site comment for
+// why this exists.
+func (r *caseRepo) existingRefOrNil(ctx context.Context, table, id string) (any, error) {
+	if id == "" {
+		return nil, nil
+	}
+	var query string
+	switch table {
+	case "deployment":
+		query = `SELECT EXISTS (SELECT 1 FROM deployment WHERE id = $1)`
+	case "deployed_product":
+		query = `SELECT EXISTS (SELECT 1 FROM deployed_product WHERE id = $1)`
+	default:
+		return nil, fmt.Errorf("existingRefOrNil: unknown table %q", table)
+	}
+	var exists bool
+	if err := r.db.QueryRow(ctx, query, id).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("check %s exists: %w", table, err)
+	}
+	if !exists {
+		return nil, nil
+	}
+	return id, nil
+}
+
 // CreateCaseFromServiceNow implements CaseRepository.
 func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
+	// deployment_id/deployed_product_id are bound from req for every type
+	// except "announcement" (see each query's own doc comment), but the FK
+	// they reference is Postgres' own deployment/deployed_product tables --
+	// which were never backfilled with ServiceNow's full history (the same
+	// gap documented on deploymentService.SearchDeployments and
+	// catalogService.snMirror). By the time this method runs, ServiceNow
+	// already has the case committed (see createCaseSNFirst's own call
+	// site): letting a missing mirror row fail this INSERT outright, as it
+	// did before this check existed, leaves a real, permanently orphaned
+	// ServiceNow case with no Postgres row at all and a raw 400 shown to the
+	// caller (confirmed live: SN case CS0446849 created 2026-09-30, no
+	// matching work_item row). Resolving each id to nil when the mirror row
+	// doesn't exist writes NULL instead -- already a tolerated state
+	// throughout this file (every LEFT JOIN here, and announcement's own
+	// unconditional NULL) -- so the case's own Postgres row still gets
+	// created, just without that one link, rather than not at all.
+	deploymentIDArg, err := r.existingRefOrNil(ctx, "deployment", req.DeploymentID)
+	if err != nil {
+		return domain.Case{}, err
+	}
+	deployedProductIDArg, err := r.existingRefOrNil(ctx, "deployed_product", req.DeployedProductID)
+	if err != nil {
+		return domain.Case{}, err
+	}
+	if (deploymentIDArg == nil && req.DeploymentID != "") || (deployedProductIDArg == nil && req.DeployedProductID != "") {
+		slog.WarnContext(ctx, "sn create case: deployment/deployed product not yet mirrored in postgres, creating case without that link",
+			"caseId", id, "snNumber", number, "type", req.Type, "deploymentId", req.DeploymentID, "deployedProductId", req.DeployedProductID)
+	}
+
 	var row pgx.Row
 	switch req.Type {
 	case "announcement":
@@ -818,28 +875,28 @@ func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.Crea
 		row = r.db.QueryRow(ctx, createServiceRequestFromServiceNowQuery,
 			id, createdBy,
 			number, wso2ID, req.Subject, req.Description,
-			req.ProjectID, req.DeploymentID, req.DeployedProductID,
+			req.ProjectID, deploymentIDArg, deployedProductIDArg,
 			state,
 		)
 	case "engagement":
 		row = r.db.QueryRow(ctx, createEngagementFromServiceNowQuery,
 			id, createdBy,
 			number, wso2ID, req.Subject, req.Description,
-			req.ProjectID, req.DeploymentID, req.DeployedProductID,
+			req.ProjectID, deploymentIDArg, deployedProductIDArg,
 			state, strings.ToUpper(string(req.EngagementType)), strings.ToUpper(string(req.EngagementPaymentType)),
 		)
 	case "security_report_analysis":
 		row = r.db.QueryRow(ctx, createSecurityReportAnalysisFromServiceNowQuery,
 			id, createdBy,
 			number, wso2ID, req.Subject, req.Description,
-			req.ProjectID, req.DeploymentID, req.DeployedProductID,
+			req.ProjectID, deploymentIDArg, deployedProductIDArg,
 			state,
 		)
 	default:
 		row = r.db.QueryRow(ctx, createCaseFromServiceNowQuery,
 			id, createdBy,
 			number, wso2ID, req.Subject, req.Description,
-			req.ProjectID, req.DeploymentID, req.DeployedProductID,
+			req.ProjectID, deploymentIDArg, deployedProductIDArg,
 			caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
 		)
 	}
@@ -1389,16 +1446,27 @@ const updateCaseQuery = `
 func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 	var c domain.Case
 	var internalID *string
+	// deploymentID/deployedProductID: normally NOT NULL by the time a case
+	// is read back here, but CreateCaseFromServiceNow's own existingRefOrNil
+	// can legitimately write NULL for either when the SN-first case's
+	// deployment/deployed product isn't yet mirrored in Postgres (see that
+	// method's own doc comment) -- a *string scan avoids the same
+	// "cannot scan NULL into *string" panic this file already guards
+	// against for internalID/severity/etc, confirmed live the first time
+	// this path could actually return NULL here.
+	var deploymentID, deployedProductID *string
 	var severity, issueType, state, workStateRaw *string
 	if err := row.Scan(
 		&c.ID, &c.Number, &internalID, &c.CreatedBy,
-		&c.ProjectID, &c.DeploymentID, &c.DeployedProductID,
+		&c.ProjectID, &deploymentID, &deployedProductID,
 		&c.Subject, &c.Description, &severity, &issueType, &state, &workStateRaw,
 		&c.CreatedOn, &c.UpdatedOn, &c.ClosedOn,
 	); err != nil {
 		return domain.Case{}, err
 	}
 	c.InternalID = stringOrEmpty(internalID)
+	c.DeploymentID = stringOrEmpty(deploymentID)
+	c.DeployedProductID = stringOrEmpty(deployedProductID)
 	if severity != nil {
 		s := caseSeverityFromEnum[*severity]
 		c.Severity = &s

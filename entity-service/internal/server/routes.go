@@ -876,12 +876,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// sr_category/catalog_item/catalog_item_category/catalog_variable/
 	// sr_category_routing_rule (migrations 000067-000071) back the service
 	// request catalog on the Postgres data source, so these routes are
-	// registered for both data sources.
+	// registered for both data sources. Under dual-write, Postgres is not
+	// trusted for reads here either -- see catalogService.snMirror's own
+	// doc comment for why (deployed_product/routing-rule data was never
+	// backfilled from ServiceNow, same gap as deployments/deployed-products/
+	// instances).
 	catalogRepo := repository.NewCatalogRepository(db)
 	var activeCatalogSvc service.CatalogService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeCatalogSvc = service.NewServiceNowCatalogService(serviceNowIntegrationServiceClient)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		snCatalogMirrorSvc := service.NewServiceNowCatalogService(serviceNowIntegrationServiceClient)
+		activeCatalogSvc = service.NewCatalogServiceWithSNFallback(catalogRepo, snCatalogMirrorSvc)
+	default:
 		activeCatalogSvc = service.NewCatalogService(catalogRepo)
 	}
 	catalogHandler := handler.NewCatalogHandler(activeCatalogSvc)
