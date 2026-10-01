@@ -1985,6 +1985,45 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /users/time-card-approvers:
+    get:
+      summary: List the real Asgardeo membership of the time-card-approver role.
+      description: >
+        Only registered when TIMECARD_APPROVER_ASGARDEO_ROLE_ID is configured — absent
+        that, this path 404s like any unknown route. Fetches the configured Asgardeo
+        role (via the SCIM operations service's GET /organizations/internal/roles/{id},
+        which proxies Asgardeo's Roles Management API v2) and returns its member users.
+        This is the authoritative list of who may approve a time card — entity-service's
+        own Postgres role/user_role tables (what POST /users/search's roleIds filter
+        reads) are a separate, syncable mirror that can drift from the real Asgardeo
+        role assignment.
+      operationId: getUsersTimeCardApprovers
+      responses:
+        "200":
+          description: The role's current member users.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeCardApproversResponse'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /users/search:
     post:
       summary: Search users with optional filters, sort, and pagination.
@@ -15132,6 +15171,25 @@ components:
         updatedOn:
           type: string
           format: date-time
+
+    TimeCardApproversResponse:
+      type: object
+      required: [approvers]
+      properties:
+        approvers:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimeCardApproverRef'
+
+    TimeCardApproverRef:
+      type: object
+      required: [id, email]
+      properties:
+        id:
+          type: string
+          description: The user's Asgardeo UUID.
+        email:
+          type: string
 
     CreateUserPayload:
       type: object

@@ -64,6 +64,18 @@ func main() {
 	// request path.
 	dir := loadDirectory()
 
+	// Role-key -> Asgardeo role id mapping (ASGARDEO_ROLE_IDS), e.g.
+	// "timecard_approver|0bbeea4f-5ada-49ba-8f19-90ae6a116daa" -- used by
+	// handlers that need a role's real Asgardeo membership via the SCIM
+	// operations service's get-by-id endpoint (see GET /users/time-card-approvers
+	// below). Optional and empty by default: an unconfigured key just means
+	// that role's SCIM-backed feature is not wired up in this deployment.
+	asgardeoRoleIDs, err := directory.ParseAsgardeoRoleIDs(os.Getenv("ASGARDEO_ROLE_IDS"))
+	if err != nil {
+		slog.Error("invalid ASGARDEO_ROLE_IDS", "err", err)
+		os.Exit(1)
+	}
+
 	// All upstream service clients (entity, updates, SCIM, and future notification
 	// channels) authenticate as the same OAuth2 client-credentials app; only the
 	// base URL and scopes differ per service.
@@ -297,7 +309,12 @@ func main() {
 	}
 	healthHandler := handler.NewHealthHandler(scimClient, updatesClient, notificationPinger, integrationPinger, engineeringPinger)
 
-	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient, dir, sftpgoAttachmentStorageEnabled).WithAccessGuard(accessGuard)
+	// timecardApproverRoleID is optional: GET /users/time-card-approvers is
+	// only registered (below) once ASGARDEO_ROLE_IDS configures a
+	// "timecard_approver" entry, same "off = route not registered, 404s like
+	// unknown" convention as this file's other optionally-wired features.
+	timecardApproverRoleID := asgardeoRoleIDs["timecard_approver"]
+	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient, dir, sftpgoAttachmentStorageEnabled, timecardApproverRoleID).WithAccessGuard(accessGuard)
 	dashboardHandler := handler.NewDashboardHandler(accessGuard)
 	caseHandler = caseHandler.WithAccessGuard(accessGuard)
 	timeCardHandler = timeCardHandler.WithAccessGuard(accessGuard)
@@ -401,6 +418,9 @@ func main() {
 	route("POST /users/search", handler.PermView, usersHandler.SearchUsers)
 	route("GET /users/{id}", handler.PermView, usersHandler.GetUser)
 	route("POST /users", handler.PermAdmin, usersHandler.CreateUser)
+	if timecardApproverRoleID != "" {
+		route("GET /users/time-card-approvers", handler.PermView, usersHandler.GetTimeCardApprovers)
+	}
 	route("POST /roles/search", handler.PermView, referenceHandler.SearchRoles)
 	route("POST /teams/search", handler.PermView, referenceHandler.SearchTeams)
 	route("GET /teams/{id}/members", handler.PermViewSharedEntity, teamHandler.GetTeamMembers)
