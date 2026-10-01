@@ -796,6 +796,11 @@ func (s *caseService) AccountDefaultWatcherEmails(ctx context.Context, projectID
 	return s.repo.AccountDefaultWatcherEmails(ctx, projectID)
 }
 
+// GetCaseEtaSharedOn implements CaseService.
+func (s *caseService) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error) {
+	return s.repo.GetCaseEtaSharedOn(ctx, caseID)
+}
+
 var validCommentType = map[domain.CommentType]bool{
 	domain.CommentTypeWorkNote: true,
 	domain.CommentTypeComment:  true,
@@ -2013,6 +2018,19 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 	// gap rather than a fix worth building speculatively.
 	if s.slaEngine != nil && req.WorkaroundProvided != nil && *req.WorkaroundProvided {
 		s.slaEngine.CompleteWorkaroundClock(ctx, req.ID)
+	}
+	// Checked via GetCaseEtaSharedOn, not a request field -- eta_shared_on
+	// has no ServiceNow equivalent and no guaranteed connection to this
+	// specific PATCH (see snCaseService.UpdateCase's own identical check
+	// for the full reasoning); this branch is where a case's fix-ETA
+	// fields themselves get edited, so it's a natural, frequent point to
+	// also pick up a fix ETA having since been shared.
+	if s.slaEngine != nil {
+		if etaSharedOn, err := s.repo.GetCaseEtaSharedOn(ctx, req.ID); err != nil {
+			slog.ErrorContext(ctx, "update case: eta shared on lookup failed", "caseId", req.ID, "error", err)
+		} else if etaSharedOn != nil {
+			s.slaEngine.CompleteFixEtaSharedClocks(ctx, req.ID)
+		}
 	}
 
 	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write

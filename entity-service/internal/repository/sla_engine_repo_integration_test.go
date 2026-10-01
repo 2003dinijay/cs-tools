@@ -307,8 +307,13 @@ func TestSLAEngineIntegration_ReviseClocksPreservesBreachedResponseClock(t *test
 func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedSLAEngineWorkItem(t, pool)
-	ctx := context.Background()
-	repo := repository.NewSLAEngineRepository(pool)
+	// WithSystemIdentity + scoped for every statement, not just the
+	// repository construction below -- see seedSLAEngineWorkItem's own
+	// comment: sla's RLS policies (migration 0142) require an identity on
+	// every statement, and a raw pool.Exec/QueryRow carries none at all.
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewSLAEngineRepository(scoped)
 
 	policy, err := repo.FindPolicyByName(ctx, "P0 - Response (Managed Services)", "RESPONSE")
 	if err != nil {
@@ -320,7 +325,7 @@ func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T
 	// Push start_on back far enough that the clock is already well past its
 	// own duration -- simulating a response that has sat unanswered for a
 	// while, not one that just crossed over this instant.
-	if _, err := pool.Exec(ctx,
+	if _, err := scoped.Exec(ctx,
 		`UPDATE sla SET start_on = NOW() - $2::interval WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID, intervalLiteral(policy.Duration+10*time.Minute)); err != nil {
 		t.Fatalf("push start_on back: %v", err)
@@ -332,7 +337,7 @@ func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T
 
 	var stage string
 	var firstPercent, firstDurationSeconds float64
-	if err := pool.QueryRow(ctx, `SELECT stage::TEXT, business_elapsed_percentage, EXTRACT(EPOCH FROM business_duration)
+	if err := scoped.QueryRow(ctx, `SELECT stage::TEXT, business_elapsed_percentage, EXTRACT(EPOCH FROM business_duration)
 		FROM sla WHERE work_item_id = $1::uuid`, slaEngineIntegrationWorkItemID).
 		Scan(&stage, &firstPercent, &firstDurationSeconds); err != nil {
 		t.Fatalf("scan after first RecomputeActive: %v", err)
@@ -345,7 +350,7 @@ func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T
 	}
 
 	// More real time passes while the clock remains BREACHED and unanswered.
-	if _, err := pool.Exec(ctx,
+	if _, err := scoped.Exec(ctx,
 		`UPDATE sla SET start_on = start_on - INTERVAL '10 minutes' WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID); err != nil {
 		t.Fatalf("push start_on back further: %v", err)
@@ -355,7 +360,7 @@ func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T
 	}
 
 	var secondPercent, secondDurationSeconds float64
-	if err := pool.QueryRow(ctx, `SELECT business_elapsed_percentage, EXTRACT(EPOCH FROM business_duration)
+	if err := scoped.QueryRow(ctx, `SELECT business_elapsed_percentage, EXTRACT(EPOCH FROM business_duration)
 		FROM sla WHERE work_item_id = $1::uuid`, slaEngineIntegrationWorkItemID).
 		Scan(&secondPercent, &secondDurationSeconds); err != nil {
 		t.Fatalf("scan after second RecomputeActive: %v", err)
@@ -377,8 +382,9 @@ func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T
 func TestSLAEngineIntegration_CompleteClockFinalizesBreachedClock(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedSLAEngineWorkItem(t, pool)
-	ctx := context.Background()
-	repo := repository.NewSLAEngineRepository(pool)
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewSLAEngineRepository(scoped)
 
 	policy, err := repo.FindPolicyByName(ctx, "P0 - Response (Managed Services)", "RESPONSE")
 	if err != nil {
@@ -387,7 +393,7 @@ func TestSLAEngineIntegration_CompleteClockFinalizesBreachedClock(t *testing.T) 
 	if _, err := repo.RegisterClock(ctx, slaEngineIntegrationWorkItemID, policy); err != nil {
 		t.Fatalf("RegisterClock setup: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
+	if _, err := scoped.Exec(ctx,
 		`UPDATE sla SET stage = 'BREACHED', has_breached = TRUE, start_on = NOW() - $2::interval WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID, intervalLiteral(policy.Duration+10*time.Minute)); err != nil {
 		t.Fatalf("force BREACHED setup: %v", err)
@@ -403,7 +409,7 @@ func TestSLAEngineIntegration_CompleteClockFinalizesBreachedClock(t *testing.T) 
 
 	var stage string
 	var percent float64
-	if err := pool.QueryRow(ctx, `SELECT stage::TEXT, business_elapsed_percentage FROM sla WHERE work_item_id = $1::uuid`,
+	if err := scoped.QueryRow(ctx, `SELECT stage::TEXT, business_elapsed_percentage FROM sla WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID).Scan(&stage, &percent); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -424,8 +430,9 @@ func TestSLAEngineIntegration_CompleteClockFinalizesBreachedClock(t *testing.T) 
 func TestSLAEngineIntegration_SetPausedPausesBreachedClock(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedSLAEngineWorkItem(t, pool)
-	ctx := context.Background()
-	repo := repository.NewSLAEngineRepository(pool)
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewSLAEngineRepository(scoped)
 
 	policy, err := repo.FindPolicyByName(ctx, "P0 - Workaround (Managed Services)", "WORKAROUND")
 	if err != nil {
@@ -434,7 +441,7 @@ func TestSLAEngineIntegration_SetPausedPausesBreachedClock(t *testing.T) {
 	if _, err := repo.RegisterClock(ctx, slaEngineIntegrationWorkItemID, policy); err != nil {
 		t.Fatalf("RegisterClock setup: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
+	if _, err := scoped.Exec(ctx,
 		`UPDATE sla SET stage = 'BREACHED', has_breached = TRUE WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID); err != nil {
 		t.Fatalf("force BREACHED setup: %v", err)
@@ -449,7 +456,7 @@ func TestSLAEngineIntegration_SetPausedPausesBreachedClock(t *testing.T) {
 	}
 
 	var stage string
-	if err := pool.QueryRow(ctx, `SELECT stage::TEXT FROM sla WHERE work_item_id = $1::uuid`,
+	if err := scoped.QueryRow(ctx, `SELECT stage::TEXT FROM sla WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID).Scan(&stage); err != nil {
 		t.Fatalf("scan: %v", err)
 	}

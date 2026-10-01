@@ -1985,6 +1985,17 @@ func (s *snCaseService) AccountDefaultWatcherEmails(ctx context.Context, project
 	return s.pgFallback.AccountDefaultWatcherEmails(ctx, projectID)
 }
 
+// GetCaseEtaSharedOn implements CaseService. eta_shared_on is a
+// Postgres-only column (see domain.CaseView.EtaSharedOn's own doc
+// comment) -- same pgFallback delegation as AccountDefaultWatcherEmails
+// just above, for the same reason.
+func (s *snCaseService) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error) {
+	if s.pgFallback == nil {
+		return nil, nil
+	}
+	return s.pgFallback.GetCaseEtaSharedOn(ctx, caseID)
+}
+
 func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 
@@ -2261,6 +2272,16 @@ func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.Case
 		slog.WarnContext(ctx, "sn get case: case tags lookup failed", "caseId", id, "error", err)
 	} else {
 		cv.Tags = tags
+	}
+
+	// EtaSharedOn has no ServiceNow equivalent at all (see its own doc
+	// comment) -- merged in from Postgres, best-effort, same "log and
+	// leave nil" posture as the tags lookup just above: a lookup hiccup
+	// must not fail the whole case read.
+	if etaSharedOn, err := s.GetCaseEtaSharedOn(ctx, id); err != nil {
+		slog.WarnContext(ctx, "sn get case: eta shared on lookup failed", "caseId", id, "error", err)
+	} else {
+		cv.EtaSharedOn = etaSharedOn
 	}
 
 	return cv, nil
@@ -3450,6 +3471,31 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	// doc comment.
 	if s.slaEngine != nil && req.WorkaroundProvided != nil && *req.WorkaroundProvided {
 		s.slaEngine.CompleteWorkaroundClock(ctx, req.ID)
+	}
+	// Independent of the WorkaroundProvided check above, same "no Event Hub
+	// dependency" reasoning -- a caller can set workaroundProvided and
+	// addPublicComment together (CompleteWorkaroundClock would then simply
+	// be redundant for that one clock, see CompleteFixEtaSharedClocks' own
+	// doc comment).
+	//
+	// Checked via GetCaseEtaSharedOn, not req.AddPublicComment directly:
+	// eta_shared_on (work_item.eta_shared_on) is the actual record of a
+	// shared fix ETA, and it has no guaranteed connection to this specific
+	// PATCH -- it has no ServiceNow equivalent field at all (see
+	// domain.CaseView.EtaSharedOn's own doc comment), so nothing about
+	// *when* ServiceNow's own "Share Fix ETA" action actually lands in
+	// Postgres is guaranteed to line up with this request's own
+	// AddPublicComment flag. Checking the persisted fact on every UpdateCase
+	// call instead (cheap, idempotent, same CompleteClock safety net as
+	// every other completion path) means a case's clocks still get
+	// completed the next time anything about it changes, even if this
+	// specific PATCH wasn't the one that shared the ETA.
+	if s.slaEngine != nil {
+		if etaSharedOn, err := s.GetCaseEtaSharedOn(ctx, req.ID); err != nil {
+			slog.WarnContext(ctx, "sn update case: eta shared on lookup failed", "caseId", req.ID, "error", err)
+		} else if etaSharedOn != nil {
+			s.slaEngine.CompleteFixEtaSharedClocks(ctx, req.ID)
+		}
 	}
 	if publishCaseAssign {
 		assigneeName := assigneeEmail

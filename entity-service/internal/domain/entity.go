@@ -2553,6 +2553,18 @@ type CaseView struct {
 	// date-only "YYYY-MM-DD" string (ServiceNow u_worst_case_fix_eta).
 	// CSM-engineer-facing only, never shared with the customer.
 	WorstCaseFixEta *string `json:"worstCaseFixEta"`
+	// EtaSharedOn is when a fix ETA was last shared with the customer (the
+	// "Share fix ETA with customer" action) -- nil when none has been shared
+	// yet. Postgres-only (work_item.eta_shared_on, migration 0021): there is
+	// no equivalent field on ServiceNow's own GET /cases/{id} response at
+	// all, unlike BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta above
+	// (which ARE real ServiceNow fields) -- this is sourced from Postgres
+	// for every data source, including the plain ServiceNow one (via
+	// CaseService.GetCaseEtaSharedOn, best-effort through pgFallback when
+	// configured). Used by SLAEngineService.CompleteFixEtaSharedClocks'
+	// own caller to detect a newly-shared ETA and complete the
+	// workaround/resolution clocks -- see that method's own doc comment.
+	EtaSharedOn *time.Time `json:"etaSharedOn,omitempty"`
 	// Tags are the free-text labels attached to the case via ServiceNow's generic
 	// platform label/label_entry mechanism (not a case-specific column). Tags
 	// themselves are managed out-of-band via AddCaseTag/RemoveCaseTag/SearchTags.

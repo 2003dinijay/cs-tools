@@ -1845,6 +1845,34 @@ regardless of severity.
   does **not** reopen a completed clock; `SLAEngineRepository` has no
   "uncomplete" operation, and a recall is rare enough that this stays a
   known, accepted gap rather than something built speculatively.
+- **Sharing a fix ETA with the customer completes BOTH the workaround and
+  resolution clocks, not just one.** The webapp's "Share fix ETA with
+  customer" action (`SetFixEtaDialog.tsx`, ServiceNow-only on the wire —
+  `req.AddPublicComment` alongside a fix-ETA date) once WSO2 has committed a
+  fix timeline to the customer, neither clock has anything further to
+  track. **The trigger is `work_item.eta_shared_on` becoming non-null, not
+  `req.AddPublicComment` itself** — that request flag has no guaranteed
+  connection to *when* the ETA-share actually lands in Postgres (whatever
+  external process populates `eta_shared_on` does so on its own schedule,
+  not synchronously with this one PATCH), so `CaseService.GetCaseEtaSharedOn`
+  (`domain.CaseView.EtaSharedOn`, sourced from Postgres on **every** data
+  source — see that field's own doc comment for why ServiceNow has no
+  equivalent column at all) is checked on every `UpdateCase` call instead,
+  on both `caseService` (Postgres) and `snCaseService` (ServiceNow, via
+  `pgFallback` when configured, else always nil/no-op). Cheap and
+  idempotent, same as every other completion check here: a case's clocks
+  get completed the next time anything about it changes, once the shared
+  fact is persisted, not strictly on the PATCH that shared it.
+  `SLAEngineService.CompleteFixEtaSharedClocks` calls `CompleteClock` for
+  both targets, same real, uncapped elapsed-time-at-this-moment semantics
+  every other completion path uses (see `SLAEngineRepository.CompleteClock`'s
+  own doc comment) — not an unconditional 100%. Independent of
+  `WorkaroundProvided`'s own hook just above: a caller can set both signals
+  at once, in which case `CompleteWorkaroundClock` simply becomes a no-op
+  for whichever of the two runs second. Postgres's own `GetCaseByID` now
+  also selects `best_case_eta`/`most_likely_eta`/`worst_case_eta`/
+  `eta_shared_on` for the first time — previously write-only columns on
+  this data source, never read back into a `CaseView` at all.
 
 ## Customer-reply state transition
 

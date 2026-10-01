@@ -65,6 +65,7 @@ type stubCaseRepo struct {
 	addCaseTag                    func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
 	setCaseWatchList              func(ctx context.Context, caseID string, userIDs []string, actorEmail string) ([]domain.WatchListUser, time.Time, error)
 	accountDefaultWatcherEmails   func(ctx context.Context, projectID string) ([]string, error)
+	getCaseEtaSharedOn            func(ctx context.Context, caseID string) (*time.Time, error)
 	projectContactEmailsByRole    func(ctx context.Context, projectID, role string) ([]string, error)
 	updateCaseAssignee            func(ctx context.Context, caseID string, userID *string, callerEmail string) (time.Time, bool, error)
 	acknowledgeCase               func(ctx context.Context, caseID, actorID, actorEmail string) (bool, domain.AssignedEngineerRef, string, time.Time, error)
@@ -203,6 +204,15 @@ func (s *stubCaseRepo) SetCaseWatchList(ctx context.Context, caseID string, user
 func (s *stubCaseRepo) AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error) {
 	if s.accountDefaultWatcherEmails != nil {
 		return s.accountDefaultWatcherEmails(ctx, projectID)
+	}
+	return nil, nil
+}
+
+// GetCaseEtaSharedOn defaults to nil (no fix ETA shared) rather than
+// panicking, same reasoning as AccountDefaultWatcherEmails above.
+func (s *stubCaseRepo) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error) {
+	if s.getCaseEtaSharedOn != nil {
+		return s.getCaseEtaSharedOn(ctx, caseID)
 	}
 	return nil, nil
 }
@@ -1290,6 +1300,7 @@ type stubMirrorCaseService struct {
 	patchCaseFieldsBundleFn       func(ctx context.Context, caseID string, req domain.UpdateCaseRequest) error
 	projectContactEmailsByRoleFn  func(ctx context.Context, projectID, role string) ([]string, error)
 	accountDefaultWatcherEmailsFn func(ctx context.Context, projectID string) ([]string, error)
+	getCaseEtaSharedOnFn          func(ctx context.Context, caseID string) (*time.Time, error)
 	// searchCaseCommentsFn backs mirrorInitialSNComments' call right after
 	// createCaseSNFirst's own Postgres insert succeeds (case_service.go) --
 	// unset in the overwhelming majority of tests here, which don't care
@@ -1309,6 +1320,13 @@ func (s *stubMirrorCaseService) ProjectContactEmailsByRole(ctx context.Context, 
 func (s *stubMirrorCaseService) AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error) {
 	if s.accountDefaultWatcherEmailsFn != nil {
 		return s.accountDefaultWatcherEmailsFn(ctx, projectID)
+	}
+	return nil, nil
+}
+
+func (s *stubMirrorCaseService) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error) {
+	if s.getCaseEtaSharedOnFn != nil {
+		return s.getCaseEtaSharedOnFn(ctx, caseID)
 	}
 	return nil, nil
 }
