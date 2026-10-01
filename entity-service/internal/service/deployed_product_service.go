@@ -72,16 +72,15 @@ type deployedProductSNCreator interface {
 }
 
 // SearchDeployedProducts implements DeployedProductService.
+//
+// Deliberately reads from Postgres even under DATA_SOURCE=postgres-servicenow-dual-write
+// -- see deploymentService.SearchDeployments' own doc comment for the
+// reasoning: only deployed products this Postgres mirror actually knows
+// about should be selectable, so case creation (whose deployed_product_id
+// FK requires a matching Postgres row) can never be offered one it would
+// then fail to link. A deployed product created before dual-write launched
+// won't appear here until Postgres is backfilled.
 func (s *deployedProductService) SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) (domain.SearchDeployedProductsResponse, error) {
-	// DATA_SOURCE=postgres-servicenow-dual-write reads from ServiceNow, not
-	// the Postgres mirror -- see deploymentService.SearchDeployments' own
-	// doc comment for why: Postgres only has deployed products created
-	// going forward through this service's own SN-first CreateDeployedProduct
-	// path, never backfilled with ServiceNow's existing catalog.
-	if s.snMirror != nil {
-		return s.snMirror.SearchDeployedProducts(ctx, req)
-	}
-
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchDeployedProductsResponse{}, err
 	}
