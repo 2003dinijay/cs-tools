@@ -52,7 +52,21 @@ first time this was got wrong.
 docker run -d --name cre-test-redis -p 127.0.0.1:16390:6379 redis:7-alpine
 ```
 
-## 1. The one command
+## 1. The commands
+
+Named scenarios, from the repo root -- these start and stop their own Redis, so
+nothing collides with the compose stack:
+
+```bash
+USE_TEAM_SCHEDULE=1 ./scripts/csm-compose/test-cre-ladder.sh p0
+USE_TEAM_SCHEDULE=1 ./scripts/csm-compose/test-cre-ladder.sh all        # ~1 min
+USE_TEAM_SCHEDULE=1 ./scripts/csm-compose/test-cre-ladder.sh realtime   # ~16 min
+USE_TEAM_SCHEDULE=1 TEAM=castor ./scripts/csm-compose/test-cre-ladder.sh p0
+```
+
+For a scenario the script does not name, run the harness directly. `ladder` is
+a **shell function you must define first**, and it only works from the service
+directory -- paste this block, then call it:
 
 ```bash
 cd integrations/csm-notification-service
@@ -65,7 +79,12 @@ ladder() {
   go run ./cmd/escalation-local --channel log --redis 127.0.0.1:16390 \
     --minute 150ms --tick 50ms --max-calls 80 "$@"
 }
+
+ladder --priority P0 --shift LK --team vega
 ```
+
+If you see `zsh: command not found: ladder`, the function was not defined in
+this shell -- paste the block again, or use the script above instead.
 
 The client id matters. entity-service reads the caller's identity from
 `x-jwt-assertion` and checks it against `AUTH_INTERNAL_CLIENT_IDS`; the

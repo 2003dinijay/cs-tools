@@ -36,7 +36,9 @@
 #   KEEP_REDIS=1 ./scripts/csm-compose/test-cre-ladder.sh # leave Redis running
 #   MINUTE=1s ./scripts/csm-compose/test-cre-ladder.sh p0 # slower clock
 #
-# Scenarios: p0 | timings | ack | half-ack | shifts | not-abt
+# Scenarios: p0 | timings | ack | half-ack | shifts | not-abt | realtime | all
+#
+# realtime is excluded from "all": it runs for about sixteen minutes.
 
 set -euo pipefail
 
@@ -182,6 +184,22 @@ scenario_p0() {
   run --priority P0 --shift LK
 }
 
+scenario_realtime() {
+  heading "A P0 at REAL timing -- about 16 minutes"
+  cat <<'NOTE'
+This is the one thing a compressed run cannot prove. The compressed clock
+scales playback speed, not the scheduled offsets, so the plan's "+8m0s" is
+already the real figure and a wrong interval shows up there immediately. What
+only a real run exercises is the wall-clock plumbing underneath: the engine's
+own ticker, and the Redis wake-index scores a due call is found by.
+
+It will sit here for about sixteen minutes. Rungs should appear at +0, +1, +4,
++8 and +12 minutes of actual wall clock. Ctrl-C is safe; the ladder is retired
+on exit.
+NOTE
+  MINUTE=1m TICK=5s run --priority P0 --shift LK
+}
+
 scenario_timings() {
   heading "1. The clock, per priority"
   cat <<'NOTE'
@@ -277,6 +295,7 @@ main() {
     half-ack) scenario_half_ack ;;
     shifts)   scenario_shifts ;;
     not-abt)  scenario_not_abt ;;
+    realtime) scenario_realtime ;;
     all)
       scenario_timings
       scenario_ack
