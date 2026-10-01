@@ -120,6 +120,8 @@ docker run --rm -p 8080:8080 --env-file .env \
 | `CASSANDRA_KEY` | yes | Cosmos DB primary or secondary key (secret) |
 | `CASSANDRA_USERNAME` | no | Defaults to the account name (first DNS label of the contact point) |
 | `CASSANDRA_PORT` | no | Default `10350` |
+| `AUTH_ENABLED` | no | `true` checks every vendor webhook against alerts-core's `integration_users` table, sent as `curl -u user:secret` or `Authorization: Bearer base64("user:secret")`; anything else gets `401`. Default `false`: every request is accepted |
+| `AUTH_AUDIT_ONLY` | no | With `AUTH_ENABLED=true`: check credentials and log `auth would reject request`, but reject nothing. The rollout step, so vendors can be given credentials one at a time without dropping alerts. Default `false` |
 | `ALERT_CORE_WAKE_URL` | no | alerts-core's `POST /alertz` URL. Empty: no wake-up, alerts-core's poll still works |
 | `ALERT_CORE_WAKE_USERNAME`, `ALERT_CORE_WAKE_SECRET` | no | An `integration_users` credential for the wake call, sent as `Bearer base64("<user>:<secret>")` and only over https. Provision with alerts-core's `cmd/user`. The secret is a secret |
 | `FALLBACK_CHAT_WEBHOOK_URLS` | no | Comma-separated Google Chat webhook URLs (secret). Empty: no cards, only logs |
@@ -148,7 +150,6 @@ default and a comment. The main knobs:
 | `server.write_timeout` | `30s` | Connection write limit; must be at least 1s above `request_wait` |
 | `server.idle_timeout` | `60s` | Idle keep-alive connections are closed after this |
 | `server.max_body_bytes` | `1048576` | Larger bodies get `413` |
-| `auth.mode` | `none` | Hook for vendor authentication; only `none` exists today |
 | `allocator.queue_size` | `5000` | Queued submissions per replica before `503` |
 | `allocator.queue_max_bytes` | `268435456` | Memory cap (256 MiB) on accepted, unfinished alerts before `503`; about half the container memory limit |
 | `allocator.max_batch` | `200` | Most ids claimed in one compare-and-set |

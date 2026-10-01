@@ -31,27 +31,16 @@ import (
 	"github.com/gocql/gocql"
 )
 
-// keyLen must match sre-alert-core-service's internal/auth.KeyLen: both read the
-// same integration_users rows.
+// keyLen must match alerts-core's internal/auth.KeyLen: both read the same integration_users rows.
 const keyLen = 32
 
-// minIterations and maxIterations bound a row's iterations before it drives a
-// PBKDF2 derivation. alerts-core's cmd/user always writes Iterations (10000);
-// a value outside this range is never legitimate and is rejected rather than
-// handed to pbkdf2.Key, which would either error or burn disproportionate CPU
-// per request — wrong secrets are never cached, so every guess re-derives.
+// minIterations/maxIterations bound a row's PBKDF2 iterations, so a bad row can't burn CPU per guess.
 const (
 	minIterations = 1_000
 	maxIterations = 200_000
 )
 
-// IntegrationUsers verifies webhooks against alerts-core's integration_users table.
-// Any enabled, unexpired row with a matching secret authenticates any vendor; the
-// table is the single place both services provision and rotate credentials.
-//
-// A verified credential is cached for cacheTTL, because the uncached path is a
-// Cassandra read plus Iterations rounds of PBKDF2 on every webhook — too much for
-// an alert storm against a Cosmos account already throttled by the alert writes.
+// IntegrationUsers checks webhooks against integration_users, caching verified credentials for cacheTTL.
 type IntegrationUsers struct {
 	session  *gocql.Session
 	timeout  time.Duration
@@ -61,17 +50,13 @@ type IntegrationUsers struct {
 	cache map[string]cacheEntry
 }
 
-// cacheEntry holds the digest of a secret already verified for username, so a
-// repeat presentation costs one SHA-256 instead of a read plus PBKDF2. The raw
-// secret is never stored. expires is capped at the row's expires_at, so a
-// credential can never be served from cache past its own expiry.
+// cacheEntry holds a verified secret's SHA-256 (never the secret), expiring by the row's expires_at.
 type cacheEntry struct {
 	digest  [32]byte
 	expires time.Time
 }
 
-// NewIntegrationUsers wraps session for read-only credential checks. A zero
-// cacheTTL disables caching, so every request re-reads and re-derives.
+// NewIntegrationUsers wraps session for read-only checks; a zero cacheTTL disables caching.
 func NewIntegrationUsers(session *gocql.Session, queryTimeout, cacheTTL time.Duration) *IntegrationUsers {
 	return &IntegrationUsers{
 		session:  session,
@@ -81,9 +66,7 @@ func NewIntegrationUsers(session *gocql.Session, queryTimeout, cacheTTL time.Dur
 	}
 }
 
-// Authenticate accepts a request whose Authorization header names an enabled,
-// unexpired integration_users row with a matching secret. The vendor is ignored:
-// one credential is valid for every route.
+// Authenticate accepts an enabled, unexpired user with a matching secret; one credential suits every vendor.
 func (a *IntegrationUsers) Authenticate(r *http.Request, _ string) error {
 	username, secret, ok := parseCredentials(r)
 	if !ok {
@@ -138,12 +121,7 @@ func (a *IntegrationUsers) cachedHit(username, secret string) bool {
 	return subtle.ConstantTimeCompare(got[:], e.digest[:]) == 1
 }
 
-// remember caches secret for username, capping the cache entry at rowExpiresAt
-// (if set) so an expired row can never be served from cache after expiring —
-// only the TTL window shrinks the cache's own staleness, not the row's validity.
-// Disabling a user or rotating its secret still takes up to cacheTTL to be
-// reflected, since neither changes expires_at; operators needing immediate
-// revocation should set auth.cache_ttl to 0 to disable caching.
+// remember caches secret capped at rowExpiresAt; a disable or rotation still takes up to cacheTTL.
 func (a *IntegrationUsers) remember(username, secret string, rowExpiresAt time.Time) {
 	if a.cacheTTL <= 0 {
 		return
@@ -170,8 +148,7 @@ func verifySecret(secret, saltB64, hashB64 string, iterations int) bool {
 	if err != nil {
 		return false
 	}
-	// crypto/pbkdf2 (Go 1.24+) rather than golang.org/x/crypto: same algorithm, so
-	// hashes written by alerts-core's cmd/user verify here, with no new dependency.
+	// Stdlib crypto/pbkdf2, same algorithm as alerts-core's x/crypto, so no new dependency.
 	got, err := pbkdf2.Key(sha256.New, secret, salt, iterations, keyLen)
 	if err != nil {
 		return false
@@ -179,9 +156,7 @@ func verifySecret(secret, saltB64, hashB64 string, iterations int) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
-// parseCredentials extracts username/secret from Bearer base64("<username>:<secret>")
-// or Basic, the same two forms alerts-core accepts. The scheme is matched
-// case-insensitively per RFC 7235, as net/http's BasicAuth already is for Basic.
+// parseCredentials reads Bearer base64("user:secret") or Basic; the scheme is case-insensitive (RFC 7235).
 func parseCredentials(r *http.Request) (username, secret string, ok bool) {
 	const prefix = "bearer "
 	if h := r.Header.Get("Authorization"); len(h) > len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
