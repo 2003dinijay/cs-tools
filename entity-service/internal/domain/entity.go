@@ -2553,6 +2553,18 @@ type CaseView struct {
 	// date-only "YYYY-MM-DD" string (ServiceNow u_worst_case_fix_eta).
 	// CSM-engineer-facing only, never shared with the customer.
 	WorstCaseFixEta *string `json:"worstCaseFixEta"`
+	// EtaSharedOn is when a fix ETA was last shared with the customer (the
+	// "Share fix ETA with customer" action) -- nil when none has been shared
+	// yet. Postgres-only (work_item.eta_shared_on, migration 0021): there is
+	// no equivalent field on ServiceNow's own GET /cases/{id} response at
+	// all, unlike BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta above
+	// (which ARE real ServiceNow fields) -- this is sourced from Postgres
+	// for every data source, including the plain ServiceNow one (via
+	// CaseService.GetCaseEtaSharedOn, best-effort through pgFallback when
+	// configured). Used by SLAEngineService.CompleteFixEtaSharedClocks'
+	// own caller to detect a newly-shared ETA and complete the
+	// workaround/resolution clocks -- see that method's own doc comment.
+	EtaSharedOn *time.Time `json:"etaSharedOn,omitempty"`
 	// Tags are the free-text labels attached to the case via ServiceNow's generic
 	// platform label/label_entry mechanism (not a case-specific column). Tags
 	// themselves are managed out-of-band via AddCaseTag/RemoveCaseTag/SearchTags.
@@ -3167,20 +3179,20 @@ type WatchListUser struct {
 	UserName string `json:"userName"`
 	Name     string `json:"name,omitempty"`
 	Email    string `json:"email,omitempty"`
-	// Locked is true when this watcher is currently one of the case's
-	// project's account's four named stakeholders (customer success manager,
-	// technical owner, secondary technical owner, account manager --
-	// CaseRepository.AccountDefaultWatcherIDs). A caller cannot remove a
-	// locked watcher via UpdateCase's WatchList field -- see
-	// caseService.updateCaseWatchList's own doc comment -- so a UI should
-	// disable the remove control for these specifically, rather than let the
-	// removal silently fail to stick. Computed live from the account's
-	// current stakeholder columns, not stamped at the time the watcher was
-	// added, so it tracks a later stakeholder change (e.g. a reassigned CSM)
-	// automatically rather than going stale. Postgres-data-source only --
+	// Locked is true when this persisted watcher also happens to currently
+	// hold one of the case's project's account's four named stakeholder
+	// roles (technical owner, secondary technical owner, account manager,
+	// renewal account manager -- CaseRepository.AccountDefaultWatcherIDs).
+	// These four are no longer auto-added to the watch list at all (see
+	// addRequestedWatchers' own doc comment) -- they're resolved fresh from
+	// the account row and emailed directly, independent of work_item_watcher
+	// -- so Locked now only ever fires for someone who was ALSO explicitly
+	// added as a watcher for an unrelated reason and happens to hold one of
+	// these roles too; it carries no "cannot be removed" guarantee any more
+	// (updateCaseWatchList applies no floor at all). Kept purely as display
+	// information, not as an enforcement signal. Postgres-data-source only --
 	// this concept has no ServiceNow-side equivalent, so a ServiceNow-backed
-	// watcher is always Locked: false, which is accurate for that data
-	// source (nothing there enforces this rule).
+	// watcher is always Locked: false.
 	Locked bool `json:"locked"`
 	// User is the canonical user reference for this watcher, a sibling of the
 	// flat id/userName/name/email fields. Its id is always null: a watch-list

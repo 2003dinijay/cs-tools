@@ -174,6 +174,27 @@ func TestSLAEngineService_CompleteWorkaroundClock(t *testing.T) {
 	}
 }
 
+// TestSLAEngineService_CompleteFixEtaSharedClocks verifies sharing a fix ETA
+// with the customer completes BOTH the workaround and resolution clocks --
+// unlike CompleteWorkaroundClock/CompleteResponseClock, which each complete
+// exactly one target.
+func TestSLAEngineService_CompleteFixEtaSharedClocks(t *testing.T) {
+	repo := newRecordingSLAEngineRepo()
+	svc := NewSLAEngineService(repo, nil)
+
+	svc.CompleteFixEtaSharedClocks(context.Background(), "case-5")
+
+	want := []string{"case-5|WORKAROUND", "case-5|RESOLUTION"}
+	if len(repo.completed) != len(want) {
+		t.Fatalf("completed = %v, want %v", repo.completed, want)
+	}
+	for i, w := range want {
+		if repo.completed[i] != w {
+			t.Errorf("completed[%d] = %q, want %q", i, repo.completed[i], w)
+		}
+	}
+}
+
 func TestSLAEngineService_ApplyCaseStateEffects(t *testing.T) {
 	tests := []struct {
 		name          string

@@ -634,6 +634,23 @@ type CaseService interface {
 	// case there simply falls back to the account's default watchers, same
 	// as an empty real result.
 	ProjectContactEmailsByRole(ctx context.Context, projectID, role string) ([]string, error)
+	// AccountDefaultWatcherEmails returns the account owning projectID's four
+	// named stakeholders' email addresses (technical owner, secondary
+	// technical owner, account manager, renewal account manager) -- see
+	// CaseRepository.AccountDefaultWatcherEmails' own doc comment for why
+	// these are resolved fresh at publish time rather than read from a
+	// persisted watch list. A project with no linked account, or no Postgres
+	// access at all (a pure ServiceNow data source with no pgFallback
+	// configured), returns an empty slice and no error.
+	AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error)
+	// GetCaseEtaSharedOn returns work_item.eta_shared_on for caseID -- see
+	// CaseRepository.GetCaseEtaSharedOn's own doc comment. Lets the plain
+	// ServiceNow data source's own GetCaseByID (which has no Postgres row of
+	// its own to read this from, unlike BestCaseFixEta/etc., which ARE real
+	// ServiceNow fields) merge in the one fix-ETA-related fact that only
+	// ever lives in Postgres. A deployment with no Postgres access at all
+	// (pgFallback nil) returns nil and no error.
+	GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error)
 	// SearchCases returns a paginated list of cases filtered by optional project IDs,
 	// deployment IDs, deployed product IDs, state keys, severity keys, and search query.
 	// A ValidationError is returned for invalid input; any other error indicates an

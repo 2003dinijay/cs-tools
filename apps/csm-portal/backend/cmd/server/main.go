@@ -64,6 +64,18 @@ func main() {
 	// request path.
 	dir := loadDirectory()
 
+	// Role-key -> Asgardeo role id mapping (ASGARDEO_ROLE_IDS), e.g.
+	// "timecard_approver|0bbeea4f-5ada-49ba-8f19-90ae6a116daa" -- used by
+	// handlers that need a role's real Asgardeo membership via the SCIM
+	// operations service's get-by-id endpoint (see GET /users/time-card-approvers
+	// below). Optional and empty by default: an unconfigured key just means
+	// that role's SCIM-backed feature is not wired up in this deployment.
+	asgardeoRoleIDs, err := directory.ParseAsgardeoRoleIDs(os.Getenv("ASGARDEO_ROLE_IDS"))
+	if err != nil {
+		slog.Error("invalid ASGARDEO_ROLE_IDS", "err", err)
+		os.Exit(1)
+	}
+
 	// All upstream service clients (entity, updates, SCIM, and future notification
 	// channels) authenticate as the same OAuth2 client-credentials app; only the
 	// base URL and scopes differ per service.
@@ -297,7 +309,12 @@ func main() {
 	}
 	healthHandler := handler.NewHealthHandler(scimClient, updatesClient, notificationPinger, integrationPinger, engineeringPinger)
 
-	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient, dir, sftpgoAttachmentStorageEnabled).WithAccessGuard(accessGuard)
+	// timecardApproverRoleID is optional: empty means ASGARDEO_ROLE_IDS has no
+	// "timecard_approver" entry, in which case GetTimeCardApprovers itself
+	// returns 404 rather than the route going unregistered -- see its own
+	// route registration below for why.
+	timecardApproverRoleID := asgardeoRoleIDs["timecard_approver"]
+	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient, dir, sftpgoAttachmentStorageEnabled, timecardApproverRoleID).WithAccessGuard(accessGuard)
 	dashboardHandler := handler.NewDashboardHandler(accessGuard)
 	caseHandler = caseHandler.WithAccessGuard(accessGuard)
 	timeCardHandler = timeCardHandler.WithAccessGuard(accessGuard)
@@ -401,6 +418,12 @@ func main() {
 	route("POST /users/search", handler.PermView, usersHandler.SearchUsers)
 	route("GET /users/{id}", handler.PermView, usersHandler.GetUser)
 	route("POST /users", handler.PermAdmin, usersHandler.CreateUser)
+	// Registered unconditionally, even when timecardApproverRoleID is empty:
+	// GetTimeCardApprovers itself returns 404 when disabled. Registering it
+	// only when configured would instead let the request fall through to the
+	// wildcard GET /users/{id} above, which rejects the literal path segment
+	// "time-card-approvers" as an invalid UUID with 400, not a clean 404.
+	route("GET /users/time-card-approvers", handler.PermView, usersHandler.GetTimeCardApprovers)
 	route("POST /roles/search", handler.PermView, referenceHandler.SearchRoles)
 	route("POST /teams/search", handler.PermView, referenceHandler.SearchTeams)
 	route("GET /teams/{id}/members", handler.PermViewSharedEntity, teamHandler.GetTeamMembers)

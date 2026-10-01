@@ -84,7 +84,16 @@ func (h *GithubDeliveryHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outcome, err := h.svc.HandleWebhook(r.Context(), service.Delivery{
+	// WithSystemIdentity: this request carries an internal CLIENT credential,
+	// not a user token, so callerIdentityMiddleware attaches no caller
+	// identity -- and githubSyncSvc's repos are Scoped-wrapped, requiring
+	// SOME identity on ctx for every write regardless of table. Without this
+	// every delivery fails with ErrNoCallerIdentity and the sync is dead.
+	//
+	// The public endpoint this moved from needed the same stamp for the same
+	// reason: it had no user token either, because GitHub cannot present one.
+	// Carried across deliberately rather than rediscovered.
+	outcome, err := h.svc.HandleWebhook(repository.WithSystemIdentity(r.Context()), service.Delivery{
 		ID: req.ID, Event: req.Event, Payload: payload,
 	})
 	if err != nil {

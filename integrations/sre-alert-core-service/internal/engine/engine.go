@@ -254,7 +254,8 @@ func (e *Engine) annotate(ctx context.Context, existing model.Incident, alertID,
 		e.deliverAndPersist(ctx, fp)
 	} else if e.chatThreadingEnabled && current.Fallback {
 		// CSM never confirmed, but this incident already reached Chat once; thread this Duplicate/OK in as a reply instead of leaving it silent until CSM recovers. Best-effort: the work note above already persisted either way.
-		if !e.notifier.NotifyChatAnnotation(ctx, current, kind, note) {
+		chatText := model.BuildChatAnnotationText(kind, alert.MetricName, alert.Source)
+		if !e.notifier.NotifyChatAnnotation(ctx, current, kind, chatText) {
 			e.logger.Warn("chat thread reply failed for annotated incident", "incident_number", incidentNumber, "alert_id", alertID, "kind", kind)
 		}
 	}

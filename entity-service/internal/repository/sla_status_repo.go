@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
 )
@@ -36,12 +35,12 @@ type SLAStatusRepository interface {
 }
 
 type slaStatusRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
 // NewSLAStatusRepository constructs an SLAStatusRepository backed by the
 // given connection pool.
-func NewSLAStatusRepository(db *pgxpool.Pool) SLAStatusRepository {
+func NewSLAStatusRepository(db *Scoped) SLAStatusRepository {
 	return &slaStatusRepo{db: db}
 }
 
@@ -173,6 +172,20 @@ func (r *slaStatusRepo) SearchActiveSLAStatuses(ctx context.Context, pagination 
 
 	var total int
 	var statuses []domain.SLAStatus
+
+	// Both queries join caseLikeStateColumn/caseLikeJoins, which LEFT JOINs
+	// the RLS-protected `announcement` table (migration 000085). This
+	// endpoint has no caller-scoped filtering of its own -- it's an
+	// internal-caller-only read (see SLAStatusRepository's doc comment) -- so
+	// Unrestricted is the correct scope here, not a resolved user scope: it
+	// still must be set explicitly, in the same transaction as each query,
+	// or a restricted announcement's state/severity columns come back NULL
+	// instead of their real values. Stamped onto ctx once, then both Scoped
+	// calls below pick it up automatically -- same convention as
+	// case_repo.go's GetCaseByID/SearchCases and global_search_repo.go's
+	// runSearch, all of which take an explicit scope rather than relying on
+	// whatever identity ctx already carries.
+	ctx = WithCallerIdentity(ctx, SearchScope{Unrestricted: true})
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.Go(func() error {

@@ -196,6 +196,14 @@ func BuildWorkNote(kind, alertID, metricName, source string) string {
 		html.EscapeString(kind), html.EscapeString(alertID), html.EscapeString(metricName), html.EscapeString(source))
 }
 
+// BuildChatAnnotationText formats a Duplicate/OK annotation's body for the Chat card, omitting the alert id since the card no longer carries a header naming the incident to repeat it against.
+func BuildChatAnnotationText(kind, metricName, source string) string {
+	metricName = firstNonEmpty(metricName, "N/A")
+	source = firstNonEmpty(source, "N/A")
+	return fmt.Sprintf("<b>%s alert received.</b><br>Metric: %s<br>Source: %s",
+		html.EscapeString(kind), html.EscapeString(metricName), html.EscapeString(source))
+}
+
 // kv preserves field order in HTML tables (Go map iteration is random).
 type kv struct {
 	key string
