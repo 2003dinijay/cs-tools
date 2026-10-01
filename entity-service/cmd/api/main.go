@@ -69,7 +69,10 @@ func main() {
 	// change-request activity to the linked issue. Same gate as the webhook --
 	// one switch turns the whole integration on or off, so it can never run
 	// half-connected.
-	githubCtx, stopGithub := context.WithCancel(context.Background())
+	// WithSystemIdentity: same reasoning as slaEngineCtx/crNoticeCtx below -- the
+	// outbound repo is a plain pool today, but stamping it now means migrating it
+	// to Scoped later cannot silently fail every tick with ErrNoCallerIdentity.
+	githubCtx, stopGithub := context.WithCancel(repository.WithSystemIdentity(context.Background()))
 	defer stopGithub()
 	if cfg.HasGithubIntegration() {
 		if pool == nil {
@@ -92,10 +95,15 @@ func main() {
 	// 000088) — see service.SLAEngineRecomputeWorker's own doc comment.
 	// Gated on pool the same way the GitHub outbound worker above is:
 	// nowhere to read/write a clock at all with no database configured.
-	slaEngineCtx, stopSLAEngine := context.WithCancel(context.Background())
+	// WithSystemIdentity: this worker runs on its own process-startup
+	// context, never an HTTP request, so there is no caller identity to
+	// inherit. sla no longer has RLS (migration 0153), but this worker still
+	// writes through the Scoped repository, which requires an identity on ctx;
+	// it is genuinely internal.
+	slaEngineCtx, stopSLAEngine := context.WithCancel(repository.WithSystemIdentity(context.Background()))
 	defer stopSLAEngine()
 	if pool != nil {
-		slaEngineWorker := service.NewSLAEngineRecomputeWorker(repository.NewSLAEngineRepository(pool), cfg.SLARecomputeInterval)
+		slaEngineWorker := service.NewSLAEngineRecomputeWorker(repository.NewSLAEngineRepository(repository.NewScoped(pool)), cfg.SLARecomputeInterval)
 		go slaEngineWorker.Run(slaEngineCtx)
 		log.Printf("sla engine recompute worker enabled (every %s)", cfg.SLARecomputeInterval)
 	}
@@ -110,7 +118,10 @@ func main() {
 	// consumer read and discard every change-request record and vice versa —
 	// a separate topic is what isolates the two volumes, where a separate
 	// consumer group would only isolate the processing.
-	crNoticeCtx, stopCRNotices := context.WithCancel(context.Background())
+	// WithSystemIdentity: same reasoning as slaEngineCtx above -- this
+	// drainer runs on its own process-startup context, never an HTTP
+	// request, and CRNoticeRepository's writes are Scoped-wrapped now too.
+	crNoticeCtx, stopCRNotices := context.WithCancel(repository.WithSystemIdentity(context.Background()))
 	defer stopCRNotices()
 	var crPublisher service.EventPublisherService
 	if cfg.CRNoticesEnabled {
@@ -130,7 +141,7 @@ func main() {
 				}),
 				service.NewEventPublishFailureService(repository.NewEventPublishFailureRepository(pool)),
 			)
-			crRepo := repository.NewCRNoticeRepository(pool)
+			crRepo := repository.NewCRNoticeRepository(repository.NewScoped(pool))
 			drainer := service.NewCRNoticeDrainer(
 				crRepo,
 				service.NewCRNoticeService(crRepo, crPublisher),
