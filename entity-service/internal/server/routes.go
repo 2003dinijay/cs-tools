@@ -1016,10 +1016,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	conversationHandler := handler.NewConversationHandler(activeConversationSvc)
 
 	var outageNotificationHandler *handler.OutageNotificationHandler
+	var outageCommunicationHandler *handler.OutageCommunicationHandler
 	if cfg.HasDatabase() {
 		outageNotificationHandler = handler.NewOutageNotificationHandler(
 			service.NewOutageNotificationService(
 				repository.NewOutageNotificationRepository(db), accessSvc))
+		outageCommunicationHandler = handler.NewOutageCommunicationHandler(
+			service.NewOutageCommunicationService(
+				repository.NewOutageCommunicationRepository(db), accessSvc))
 	}
 
 	var outageHandler *handler.OutageHandler
@@ -1451,6 +1455,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if outageNotificationHandler != nil {
 		mux.HandleFunc("POST /outage-notifications/sweep", outageNotificationHandler.SweepOutageNotifications)
 		mux.HandleFunc("GET /outages/{id}/notification-state", outageNotificationHandler.GetOutageNotificationState)
+	}
+
+	// The SECOND outage notifier, and a different flow from the one above.
+	// That is the internal-STAKEHOLDER notice; this is the SRE-facing
+	// declaration/resolution pair (ServiceNow's `Outage Communication`).
+	// They share the outage table and nothing else -- different audience,
+	// different content, different idempotency mechanism.
+	//
+	// Keyed on the outage NUMBER rather than its id, because the
+	// communication log has never carried anything else: ServiceNow's own
+	// table has a reference column that is empty on all 336 rows.
+	if outageCommunicationHandler != nil {
+		mux.HandleFunc("POST /outage-communications/sweep", outageCommunicationHandler.SweepOutageCommunications)
+		mux.HandleFunc("GET /outages/{number}/communication-log", outageCommunicationHandler.GetOutageCommunicationLog)
 	}
 
 	if outageHandler != nil {
