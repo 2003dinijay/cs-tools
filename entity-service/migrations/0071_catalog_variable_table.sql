@@ -29,3 +29,5 @@ CREATE TABLE IF NOT EXISTS catalog_variable (
     default_value VARCHAR(512),
     catalog_item_id UUID REFERENCES catalog_item(id) ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_catalog_variable_catalog_item_id ON catalog_variable (catalog_item_id);

@@ -27,8 +27,8 @@ DO $$ BEGIN
     );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
--- assignment_group_id is added later, in 0075_add_group_references.sql, once
--- the "group" table exists.
+-- assignment_group: SKIP FOR NOW, matching sc_catalog/cmdb_ci_service precedent
+-- of deferring reference fields not yet needed downstream.
 CREATE TABLE IF NOT EXISTS customer_call (
     id UUID PRIMARY KEY,
     created_on TIMESTAMPTZ NOT NULL,
@@ -62,3 +62,10 @@ CREATE TABLE IF NOT EXISTS customer_call (
     call_link TEXT,
     meeting_due_date VARCHAR(100)
 );
+
+CREATE INDEX IF NOT EXISTS idx_customer_call_assigned_to_id ON customer_call (assigned_to_id);
+CREATE INDEX IF NOT EXISTS idx_customer_call_account_contact_id ON customer_call (account_contact_id);
+CREATE INDEX IF NOT EXISTS idx_customer_call_work_item_id ON customer_call (work_item_id);
+CREATE INDEX IF NOT EXISTS idx_customer_call_call_accepted_by_id ON customer_call (call_accepted_by_id);
+CREATE INDEX IF NOT EXISTS idx_customer_call_opened_by_id ON customer_call (opened_by_id);
+CREATE INDEX IF NOT EXISTS idx_customer_call_closed_by_id ON customer_call (closed_by_id);

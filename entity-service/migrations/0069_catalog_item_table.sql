@@ -23,3 +23,5 @@ CREATE TABLE IF NOT EXISTS catalog_item (
     name VARCHAR(255) NOT NULL,
     owner_id UUID REFERENCES "user"(id) ON DELETE SET NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_catalog_item_owner_id ON catalog_item (owner_id);

@@ -23,3 +23,6 @@ CREATE TABLE IF NOT EXISTS catalog_item_category (
     catalog_item_id UUID NOT NULL REFERENCES catalog_item(id) ON DELETE CASCADE,
     sr_category_id UUID NOT NULL REFERENCES sr_category(id) ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_catalog_item_category_catalog_item_id ON catalog_item_category (catalog_item_id);
+CREATE INDEX IF NOT EXISTS idx_catalog_item_category_sr_category_id ON catalog_item_category (sr_category_id);
