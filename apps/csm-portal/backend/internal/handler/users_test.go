@@ -571,12 +571,12 @@ func TestCreateUser(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects an internal-resolving role for a non-wso2.com email, before reaching upstream", func(t *testing.T) {
+	t.Run("enforces the internal-email and external-type-disabled constraints, before reaching upstream", func(t *testing.T) {
 		teams, err := directory.ParseTeamRegistry(testTeamRegistry)
 		if err != nil {
 			t.Fatalf("ParseTeamRegistry: %v", err)
 		}
-		roles, err := directory.ParseRoles("internal,external,admin,agent")
+		roles, err := directory.ParseRoles("internal,external,admin,agent,partner,customer,partner_admin,customer_admin")
 		if err != nil {
 			t.Fatalf("ParseRoles: %v", err)
 		}
@@ -619,7 +619,7 @@ func TestCreateUser(t *testing.T) {
 			assertStatus(t, w, http.StatusCreated)
 		})
 
-		t.Run("allows a non-wso2.com email for a non-internal role", func(t *testing.T) {
+		t.Run("allows a non-wso2.com email for a role that resolves to neither internal nor external", func(t *testing.T) {
 			entityClient := &mockEntityUserClient{
 				createUserFn: func(context.Context, []byte) ([]byte, error) {
 					return []byte(`{"id":"u-1"}`), nil
@@ -627,10 +627,33 @@ func TestCreateUser(t *testing.T) {
 			}
 			h := NewUsersHandler(&mockSCIMClient{}, entityClient, dir, false)
 			r := withUser(httptest.NewRequest(http.MethodPost, "/users",
-				strings.NewReader(`{"firstName":"Jane","email":"jane@example.com","roles":["external"]}`)))
+				strings.NewReader(`{"firstName":"Jane","email":"jane@example.com","roles":["agent"]}`)))
 			w := httptest.NewRecorder()
 			h.CreateUser(w, r)
 			assertStatus(t, w, http.StatusCreated)
+		})
+
+		t.Run("rejects an external-resolving role -- creating an external-type user is temporarily disabled", func(t *testing.T) {
+			for _, role := range []string{"external", "partner", "customer", "partner_admin", "customer_admin"} {
+				t.Run(role, func(t *testing.T) {
+					called := false
+					entityClient := &mockEntityUserClient{
+						createUserFn: func(context.Context, []byte) ([]byte, error) {
+							called = true
+							return []byte(`{}`), nil
+						},
+					}
+					h := NewUsersHandler(&mockSCIMClient{}, entityClient, dir, false)
+					r := withUser(httptest.NewRequest(http.MethodPost, "/users",
+						strings.NewReader(`{"firstName":"Jane","email":"jane@example.com","roles":["`+role+`"]}`)))
+					w := httptest.NewRecorder()
+					h.CreateUser(w, r)
+					assertStatus(t, w, http.StatusBadRequest)
+					if called {
+						t.Fatal("entity service must not be called when an external-resolving role is requested")
+					}
+				})
+			}
 		})
 	})
 

@@ -4180,6 +4180,17 @@ created resolved to `user_type = NOT_AVAILABLE` — checked directly against sta
 (128 such users). The type selector fixes that by granting `internal`/`external`; this check is what
 stops it from being pointed at the wrong email.
 
+**Creating an EXTERNAL-type user via `POST /users` is temporarily disabled.** `externalUserTypeRoles`
+(next to `internalUserTypeRoles`) is `["external", "partner", "customer", "partner_admin",
+"customer_admin"]` — every role name `recompute_user_type`'s trigger maps to `user_type = EXTERNAL` —
+and `requestsExternalUserType` rejects any of them with a `*apierror.ValidationError` regardless of
+email. This only affects `POST /users`: the Salesforce membership/contact ingest (its own, separate
+`upsertMembershipUser`/`SalesforceContactRepository` write path, not `UserRepository.CreateUser`) is
+unaffected and keeps creating external users exactly as before. `apps/csm-portal/backend`'s
+`UsersHandler.CreateUser` mirrors the same check for a fast 400, and the webapp's Add User form
+disables the "External" option in its type selector rather than offering a choice the backend will
+reject — all three are temporary, meant to come out together once external-type creation is ready.
+
 ## SearchDeployments crashed on any page containing a NULL deployment.type
 
 Reported live: `POST /deployments/search` failing with `cannot scan NULL into

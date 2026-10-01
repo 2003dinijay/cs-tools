@@ -426,16 +426,29 @@ func TestUserService_CreateUser(t *testing.T) {
 		}
 	})
 
-	t.Run("allows a non-wso2.com email for a non-internal role", func(t *testing.T) {
+	t.Run("allows a non-wso2.com email for a role that resolves to neither internal nor external", func(t *testing.T) {
 		repo := stubUserRepo{
 			createUser: func(_ context.Context, req domain.CreateUserRequest, actor string) (domain.User, error) {
 				return domain.User{ID: userDetailTestID, Email: req.Email}, nil
 			},
 		}
 		ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "admin@example.com"))
-		req := domain.CreateUserRequest{FirstName: "Jane", LastName: "Doe", Email: "jane.doe@example.com", Roles: []domain.UserRole{"external"}}
+		req := domain.CreateUserRequest{FirstName: "Jane", LastName: "Doe", Email: "jane.doe@example.com", Roles: []domain.UserRole{"agent"}}
 		if _, err := NewUserService(repo).CreateUser(ctx, req); err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("rejects granting an external-resolving role -- creating an external-type user is temporarily disabled", func(t *testing.T) {
+		ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "admin@example.com"))
+		for _, role := range []domain.UserRole{"external", "partner", "customer", "partner_admin", "customer_admin", "External"} {
+			t.Run(string(role), func(t *testing.T) {
+				req := domain.CreateUserRequest{FirstName: "Jane", LastName: "Doe", Email: "jane.doe@example.com", Roles: []domain.UserRole{role}}
+				_, err := NewUserService(stubUserRepo{}).CreateUser(ctx, req)
+				if _, ok := err.(*apierror.ValidationError); !ok {
+					t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
+				}
+			})
 		}
 	})
 

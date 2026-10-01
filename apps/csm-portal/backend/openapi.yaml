@@ -1945,8 +1945,11 @@ paths:
         "400":
           description: >-
             Bad request — missing/invalid email, neither firstName nor lastName
-            supplied, an unrecognized role, or roles requests an
-            internal-resolving role (admin/internal) for a non-@wso2.com email.
+            supplied, an unrecognized role, roles requests an
+            internal-resolving role (admin/internal) for a non-@wso2.com email,
+            or roles requests an external-resolving role
+            (external/partner/customer/partner_admin/customer_admin) — creating
+            an external-type user is temporarily disabled regardless of email.
           content:
             application/json:
               schema:
@@ -15147,10 +15150,13 @@ components:
             type: string
           description: >-
             Role names to grant. Optional; omit or leave empty to create the
-            user with no roles. The Add User form sends exactly one of
-            "internal"/"external" here to set the new user's type (see
-            entity-service's own recompute_user_type trigger) — "internal" or
-            "admin" is rejected for a non-@wso2.com email.
+            user with no roles. The Add User form's "User type" selector sends
+            "internal" here (see entity-service's own recompute_user_type
+            trigger) — "internal"/"admin" is rejected for a non-@wso2.com
+            email. "external" (and the other EXTERNAL-resolving roles:
+            partner/customer/partner_admin/customer_admin) is rejected
+            unconditionally — creating an external-type user is temporarily
+            disabled, and the form's "External" option is disabled to match.
       description: At least one of firstName/lastName is required.
 
     AccountSearchPayload:
