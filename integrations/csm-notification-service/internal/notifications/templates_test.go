@@ -638,7 +638,7 @@ func TestRenderProjectContactInvitedEmail_SignInButton(t *testing.T) {
 		"reminder": RenderProjectContactInvitedReminderEmail,
 	} {
 		got := render(ProjectContactInvitedEmailData{DisplayName: "jane", Email: "jane@acme.com", ProjectName: "Acme Cloud", ProjectKey: "ACMECLOUD", PortalURL: portal})
-		for _, want := range []string{`bgcolor="#FF6700"`, "background-color:#FF6700", "color:#000000", ">Sign in to Support Portal</a>", "Button not working? Use this link:", "Sign-in email", "mailto:support@wso2.com", "Cheers!<br>The WSO2 Team", "WSO2-Logo-White.png", "WSO2-Pulse-Orange.png"} {
+		for _, want := range []string{`bgcolor="#FF6700"`, "background-color:#FF6700", "color:#000000", ">Sign in to Support Portal</a>", "Button not working? Use this link:", "Sign-in email", `href="https://www.youtube.com/watch?v=2WwZ5-qrp4Q"`, "Watch the getting-started video", "mailto:support@wso2.com", "Cheers!<br>The WSO2 Team", "WSO2-Logo-White.png", "WSO2-Pulse-Orange.png"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("%s: rendered email does not contain %q", name, want)
 			}
@@ -661,7 +661,7 @@ func TestRenderProjectContactRegisteredEmail(t *testing.T) {
 	})
 	for _, want := range []string{
 		"Hi Jane &lt;Doe&gt;,", "Welcome to the WSO2 Customer Support Portal", "<b>Acme Cloud</b>", ">ACMECLOUD</td>", "create and manage cases",
-		`href="https://youtu.be/1v5SqP6qRLc"`, "Watch the getting-started video",
+		`href="https://www.youtube.com/watch?v=2WwZ5-qrp4Q"`, "Watch the getting-started video",
 		`href="https://support.wso2.com"`, ">Go to Support Portal</a>", `bgcolor="#FF6700"`, "color:#000000", "mailto:support@wso2.com", "Cheers!",
 	} {
 		if !strings.Contains(got, want) {
