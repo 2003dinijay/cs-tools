@@ -1022,9 +1022,22 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				repository.NewOutageNotificationRepository(db), accessSvc))
 	}
 
+	// *** THE else BRANCH IS THE WHOLE FIX. *** Before it, these endpoints
+	// existed ONLY under DataSourceServiceNow, so a deployment running
+	// postgres or postgres-servicenow-dual-write registered no outage routes
+	// at all and the portal's Outages page got 404 page not found from the
+	// mux -- which is exactly what staging was serving.
+	//
+	// It also matters for the cloud status port: its sweep reads the Postgres
+	// outage table, so a portal-created outage has to land there to be seen.
+	// Creating it in ServiceNow instead leaves the sweep reading nothing and
+	// looks like a defect in the webhook port rather than a routing choice.
 	var outageHandler *handler.OutageHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		outageHandler = handler.NewOutageHandler(service.NewServiceNowOutageService(serviceNowIntegrationServiceClient))
+	} else if cfg.HasDatabase() {
+		outageHandler = handler.NewOutageHandler(
+			service.NewOutageService(repository.NewOutageRepository(db)))
 	}
 
 	// cloudStatusHandler is Postgres-only, and unconditionally so even though
@@ -1121,9 +1134,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	groupHandler := handler.NewGroupHandler(activeGroupSvc)
 
+	// Same gap as the outage handler above, and the outage form depends on
+	// it: its configuration-item picker is this search, so a nil handler here
+	// makes the create page unusable even once the outage routes exist.
 	var configurationItemHandler *handler.ConfigurationItemHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
 		configurationItemHandler = handler.NewConfigurationItemHandler(service.NewServiceNowConfigurationItemService(serviceNowIntegrationServiceClient))
+	} else if cfg.HasDatabase() {
+		configurationItemHandler = handler.NewConfigurationItemHandler(service.NewConfigurationItemService(db))
 	}
 
 	commentRepo := repository.NewCommentRepository(db)
