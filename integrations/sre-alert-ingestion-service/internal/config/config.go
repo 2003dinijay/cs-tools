@@ -278,9 +278,10 @@ type Env struct {
 	// "apikey" read it, so a bad value must not stop the other modes from starting.
 	// Parse it with ParseWebhookAPIKeys.
 	WebhookAPIKeysRaw string `env:"WEBHOOK_API_KEYS"`
-	// WakeKey is alerts-core's WAKE_API_KEY, sent as a bearer token. Empty sends
-	// no header, which only works if alerts-core has none either.
-	WakeKey string `env:"ALERT_CORE_WAKE_KEY"`
+	// WakeUsername/WakeSecret are an integration_users credential for alerts-core's
+	// wake endpoint, sent only over https. Empty sends the call unauthenticated.
+	WakeUsername string `env:"ALERT_CORE_WAKE_USERNAME"`
+	WakeSecret   string `env:"ALERT_CORE_WAKE_SECRET"`
 }
 
 // ParseWebhookAPIKeys parses <vendor>:<key> pairs separated by commas, semicolons,
@@ -330,7 +331,8 @@ func LoadEnv() (Env, error) {
 		return Env{}, fmt.Errorf("env config: %w", err)
 	}
 	e.WakeURL = strings.TrimSpace(e.WakeURL)
-	e.WakeKey = strings.TrimSpace(e.WakeKey)
+	e.WakeUsername = strings.TrimSpace(e.WakeUsername)
+	e.WakeSecret = strings.TrimSpace(e.WakeSecret)
 	urls := e.ChatWebhookURLs[:0]
 	for _, u := range e.ChatWebhookURLs {
 		if u = strings.TrimSpace(u); u != "" {
