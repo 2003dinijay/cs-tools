@@ -525,9 +525,12 @@ func (r TeamScheduleResolver) alertDuty(ctx context.Context, teamKeys []string) 
 	if err != nil {
 		return nil, err
 	}
-	out := recipientsOf(r.takePerTeam(members))
-	sortRecipients(out)
-	return out, nil
+	// NOT sortRecipients: takePerTeam has already put each team's nominees in
+	// nomination order, and sorting by email here threw that away -- T3 was
+	// called before T1 whenever T3's address happened to sort first. The
+	// tiers are an order, not three interchangeable labels, so the rung must
+	// offer them in it.
+	return recipientsOf(r.takePerTeam(members)), nil
 }
 
 func (r TeamScheduleResolver) alertTiers() []string {
@@ -541,9 +544,11 @@ func (r TeamScheduleResolver) alertTiers() []string {
 // first. Zero keeps all of them, which is "the team's nominees"; one makes it
 // "one nominee from each team".
 func (r TeamScheduleResolver) takePerTeam(members []teamMember) []teamMember {
-	if r.perTeam <= 0 {
-		return members
-	}
+	// perTeam <= 0 means "all of them", which is a question of how many to
+	// keep, not of what order to offer them in -- it used to return the rows
+	// in whatever order entity-service listed them, so "all three nominees"
+	// came back unordered while "the first two" came back T1 then T2. Sort
+	// either way and let only the truncation depend on perTeam.
 	byTeam := map[string][]teamMember{}
 	var order []string
 	for _, m := range members {
@@ -561,7 +566,7 @@ func (r TeamScheduleResolver) takePerTeam(members []teamMember) []teamMember {
 			}
 			return group[i].Email < group[j].Email
 		})
-		if len(group) > r.perTeam {
+		if r.perTeam > 0 && len(group) > r.perTeam {
 			group = group[:r.perTeam]
 		}
 		out = append(out, group...)

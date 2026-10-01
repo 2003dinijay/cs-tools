@@ -93,6 +93,7 @@ const placeholderNumber = "+10000000000"
 
 type config struct {
 	priority    string
+	team        string
 	shift       string
 	kind        string
 	to          string
@@ -245,6 +246,8 @@ func run() error {
 func parseFlags() config {
 	var cfg config
 	flag.StringVar(&cfg.priority, "priority", "CRITICAL", "incident priority: P0-P4, or CRITICAL/HIGH/MODERATE/LOW")
+	flag.StringVar(&cfg.team, "team", defaultTeam,
+		"the incident's assignment group; an ABT key (vega, castor, ...) routes an ABT rule, anything else the not-an-ABT row")
 	flag.StringVar(&cfg.shift, "shift", "LK_MORNING", "shift when reported: LK, LK_MORNING, LK_EVENING, LK_WEEKEND, USA, USA_WEEKEND")
 	flag.StringVar(&cfg.kind, "kind", "new", "what starts the ladder: new or elevated")
 	flag.StringVar(&cfg.to, "to", "", "the one number every level resolves to; required with -live")
@@ -510,6 +513,12 @@ func triggerTime(shift escalation.Shift) time.Time {
 	return now
 }
 
+// defaultTeam is the assignment group a run uses when -team is not given. It
+// is deliberately NOT an ABT key: the not-an-ABT row is the one a local run is
+// most likely to want checked, since it is the row an unmapped ServiceNow
+// group falls to in production.
+const defaultTeam = "Americas CS Team - Integraion"
+
 // startRecord builds the incident.created or incident.priority_elevated
 // envelope that starts the ladder — the same bytes Event Hub would carry.
 func startRecord(cfg config, at time.Time) eventbus.Record {
@@ -520,7 +529,7 @@ func startRecord(cfg config, at time.Time) eventbus.Record {
 			Title:       "Gateway returning 500s in production",
 			Number:      "INC0012345",
 			Account:     "Automation Test Account",
-			Team:        "Americas CS Team - Integraion",
+			Team:        cfg.team,
 			Product:     "WSO2 API Manager",
 			ABTEligible: abtFlag(cfg.notABT),
 			ElevatedAt:  at.Format(time.RFC3339),
@@ -532,7 +541,7 @@ func startRecord(cfg config, at time.Time) eventbus.Record {
 		Number:           "INC0012345",
 		Priority:         cfg.priority,
 		Account:          "Automation Test Account",
-		Team:             "Americas CS Team - Integraion",
+		Team:             cfg.team,
 		Product:          "WSO2 API Manager",
 		ABTEligible:      abtFlag(cfg.notABT),
 		ReportedAt:       at.Format(time.RFC3339),

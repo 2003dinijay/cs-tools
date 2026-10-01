@@ -19,6 +19,7 @@ package escalation
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -840,5 +841,52 @@ func TestResolve_AmericasTeamLeadIsOnePerson(t *testing.T) {
 	}
 	if len(fallback) != 1 {
 		t.Errorf("LEVEL_2 = %v, want one person even with none named", emails(fallback))
+	}
+}
+
+// The nominations are an order, not three interchangeable labels.
+//
+// T1 is called first, then T2, then T3 -- so the emails here are deliberately
+// in the OPPOSITE alphabetical order to the tiers. alertDuty used to sort the
+// recipients by email right after takePerTeam had put them in tier order,
+// which silently handed the rung back T3-first whenever the addresses happened
+// to sort that way. A real run against a seeded roster is how it was found:
+// nominating T1/T2/T3 and watching LEVEL_0 call them in email order.
+func TestResolve_AlertDutyKeepsNominationOrder(t *testing.T) {
+	stub := &stubScheduleReader{members: []teamMember{
+		member("vega", "zara@example.com", "engineer", "T1"),
+		member("vega", "mina@example.com", "engineer", "T2"),
+		member("vega", "abel@example.com", "engineer", "T3"),
+	}}
+	rc := RoutingContext{Shift: ShiftLK, AssignedCRETeam: "vega", At: time.Now()}
+
+	want := []string{"zara@example.com", "mina@example.com", "abel@example.com"}
+
+	// Both ways of configuring the rung: "all of them" (perTeam 0) and an
+	// explicit span. perTeam 0 used to skip the sort entirely, so "all three
+	// nominees" came back in whatever order entity-service listed them while
+	// "the first two" came back ordered -- the same rung disagreeing with
+	// itself depending on a number that only says how many to keep.
+	for _, perTeam := range []int{0, 3} {
+		got, err := testResolver(stub).WithAlertDuty(nil, perTeam).
+			Resolve(context.Background(), Level0, rc)
+		if err != nil {
+			t.Fatalf("perTeam=%d: %v", perTeam, err)
+		}
+		if !slices.Equal(emails(got), want) {
+			t.Errorf("perTeam=%d LEVEL_0 = %v, want T1 then T2 then T3 (%v)",
+				perTeam, emails(got), want)
+		}
+	}
+
+	// And a truncated rung takes the LOWEST tiers, not the first two
+	// alphabetically.
+	two, err := testResolver(stub).WithAlertDuty(nil, 2).
+		Resolve(context.Background(), Level0, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(emails(two), want[:2]) {
+		t.Errorf("perTeam=2 LEVEL_0 = %v, want %v", emails(two), want[:2])
 	}
 }

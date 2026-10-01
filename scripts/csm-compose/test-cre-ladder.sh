@@ -71,7 +71,7 @@ run() {
   (cd "${service_dir}" && CUSTOMER_ENTITY_BASE_URL="${ENTITY_URL}" \
       go run ./cmd/escalation-local \
       --channel log --redis "${REDIS_ADDR}" \
-      --minute "${MINUTE}" --tick "${TICK}" "$@" 2>/dev/null)
+      --minute "${MINUTE}" --tick "${TICK}" "$@" 2>${RUN_STDERR:-/dev/null})
 }
 
 heading() {
@@ -143,10 +143,14 @@ Acknowledgement is a move out of NEW AND a public comment. A status change on
 its own is what a dispatcher does while triaging a queue, so the ladder must
 keep climbing. Watch for "half acknowledged" in the log and calls continuing.
 NOTE
+  # Through run(), not a hand-rolled `go run`. This scenario used to build its
+  # own command so it could capture stderr, and in doing so it dropped run()'s
+  # CUSTOMER_ENTITY_BASE_URL handling -- so it alone resolved rungs from the
+  # real Team Schedule, every rung came back RESOLVE_FAILED, escalation-local
+  # exited 1, and `set -e` aborted the whole suite here. Scenarios 4 and 5
+  # never ran, which is the sort of thing a harness must not do quietly.
   local out
-  out="$( (cd "${service_dir}" && go run ./cmd/escalation-local \
-      --channel log --redis "${REDIS_ADDR}" --minute "${MINUTE}" --tick "${TICK}" \
-      --priority P0 --shift LK --cancel-after 1s --cancel-by status 2>&1) )"
+  out="$(RUN_STDERR=/dev/stdout run --priority P0 --shift LK --cancel-after 1s --cancel-by status)"
 
   printf '\n  the engine says:\n'
   echo "${out}" | grep -i 'half acknowledged' | sed 's/^/    /' || true
