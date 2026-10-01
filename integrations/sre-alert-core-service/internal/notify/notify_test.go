@@ -17,10 +17,21 @@
 package notify
 
 import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
+	"time"
 
 	"alert-core-service/internal/model"
 )
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 func TestIncidentSubject_TagsDelayedCSMCreation(t *testing.T) {
 	inc := model.Incident{Service: "checkout-svc", MetricName: "HighCPU", Environment: "Production"}
@@ -40,5 +51,70 @@ func TestIncidentSubject_FallsBackToServiceWhenNoMetricName(t *testing.T) {
 
 	if got, want := incidentSubject(inc), "checkout-svc"; got != want {
 		t.Fatalf("incidentSubject() = %q, want %q", got, want)
+	}
+}
+
+func TestFallbackGoogleChatCard_ThreadKeyFollowsThreadedFlag(t *testing.T) {
+	inc := model.Incident{Fingerprint: "fp-abc123", IncidentNumber: "PENDING-fp-abc1", Service: "svc", Severity: 1}
+
+	threaded := fallbackGoogleChatCard(inc, true)
+	thread, ok := threaded["thread"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected a thread field when threaded=true, got %#v", threaded)
+	}
+	if got, want := thread["threadKey"], inc.Fingerprint; got != want {
+		t.Fatalf("threadKey = %v, want %v", got, want)
+	}
+
+	unthreaded := fallbackGoogleChatCard(inc, false)
+	if _, ok := unthreaded["thread"]; ok {
+		t.Fatalf("expected no thread field when threaded=false, got %#v", unthreaded)
+	}
+}
+
+func TestNotifyChat_ThreadReplyOptionFollowsThreadingFlag(t *testing.T) {
+	tests := []struct {
+		name          string
+		threading     bool
+		wantReplyOpt  string
+		wantKeyIntact bool
+	}{
+		{name: "enabled", threading: true, wantReplyOpt: "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD", wantKeyIntact: true},
+		{name: "disabled", threading: false, wantReplyOpt: "", wantKeyIntact: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotURL string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotURL = r.URL.String()
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("{}"))
+			}))
+			defer srv.Close()
+
+			n := &Notifier{
+				logger:                  testLogger(),
+				client:                  &http.Client{},
+				fallbackChatWebhookURLs: []string{srv.URL + "/spaces/AAA/messages?key=k&token=t"},
+				maxAttempts:             1,
+				retryBaseDelay:          time.Millisecond,
+				chatThreadingEnabled:    tt.threading,
+			}
+			inc := model.Incident{Fingerprint: "fp-xyz", IncidentNumber: "PENDING-fp-xyz", Service: "svc"}
+			if ok := n.NotifyChat(context.Background(), inc); !ok {
+				t.Fatalf("NotifyChat() = false, want true")
+			}
+
+			u, err := url.Parse(gotURL)
+			if err != nil {
+				t.Fatalf("parse captured url %q: %v", gotURL, err)
+			}
+			if got := u.Query().Get("messageReplyOption"); got != tt.wantReplyOpt {
+				t.Fatalf("messageReplyOption = %q, want %q", got, tt.wantReplyOpt)
+			}
+			if tt.wantKeyIntact && u.Query().Get("key") != "k" {
+				t.Fatalf("expected the webhook's existing key= query param to survive, got %q", gotURL)
+			}
+		})
 	}
 }
