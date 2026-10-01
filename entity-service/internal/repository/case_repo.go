@@ -245,7 +245,10 @@ type CaseRepository interface {
 	// not counted. The caller applies any top-N cap.
 	AggregateCases(ctx context.Context, req domain.SearchCasesRequest, groupBy string, scope SearchScope) ([]domain.AggregateBucket, error)
 	// CreateCaseComment inserts a new comment row for the given case.
-	CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error)
+	// createdOn is nil for an ordinary comment (created_on = NOW()); pass a
+	// non-nil value to preserve a known past timestamp instead -- see the
+	// implementation's own doc comment for why (ServiceNow comment mirroring).
+	CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error)
 	// SearchCaseComments returns a paginated slice of comments for the given case
 	// together with the total count of matching rows before pagination.
 	SearchCaseComments(ctx context.Context, req domain.SearchCaseCommentsRequest) ([]domain.CaseComment, int, error)
@@ -1262,8 +1265,13 @@ var caseCommentEnumType = map[string]domain.CommentType{
 	"APPROVAL_HISTORY": domain.CommentTypeActivity,
 }
 
-// CreateCaseComment implements CaseRepository.
-func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+// CreateCaseComment implements CaseRepository. createdOn is nil for an
+// ordinary, caller-authored comment (created_on binds to NOW()); mirroring
+// a comment ServiceNow already created at a known past time (see
+// caseService.mirrorInitialSNComments) passes its own timestamp instead,
+// so SearchCaseComments' "ORDER BY created_on DESC" reflects the real
+// chronology rather than when the mirror step happened to run.
+func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error) {
 	// APPROVAL_HISTORY only ever arises from ServiceNow's own audit trail,
 	// never a caller-authored comment -- see commentService.CreateComment's
 	// identical restriction in the generic comment path.
@@ -1287,9 +1295,13 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 	// made commenting on any non-"case" work item impossible regardless of
 	// whether it genuinely existed (reported live: posting an update to a
 	// real, existing ANNOUNCEMENT case always failed with "case not found").
+	//
+	// COALESCE($5, NOW()) rather than two separate query strings: $5 is a
+	// nil *time.Time (pgx sends SQL NULL) for the ordinary path, or a real
+	// timestamp for the mirror path.
 	const query = `
 		INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
-		SELECT gen_random_uuid(), NOW(), $1, $2::comment_type_enum, w.id, $4
+		SELECT gen_random_uuid(), COALESCE($5, NOW()), $1, $2::comment_type_enum, w.id, $4
 		FROM work_item w
 		WHERE w.id = $3
 		RETURNING id, work_item_id, type, content, created_by, created_on`
@@ -1297,7 +1309,7 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 	var c domain.CaseComment
 	var typeRaw, createdByEmail string
 	err := r.db.QueryRow(ctx, query,
-		req.CreatedBy, typeEnum, req.CaseID, req.Content,
+		req.CreatedBy, typeEnum, req.CaseID, req.Content, createdOn,
 	).Scan(&c.ID, &c.CaseID, &typeRaw, &c.Content, &createdByEmail, &c.CreatedOn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.CaseComment{}, &apierror.ValidationError{Msg: "case not found: " + req.CaseID}
