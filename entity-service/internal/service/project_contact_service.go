@@ -25,12 +25,13 @@ import (
 )
 
 type projectContactService struct {
-	repo repository.ProjectContactRepository
+	repo   repository.ProjectContactRepository
+	access AccessService
 }
 
 // NewProjectContactService constructs a ProjectContactService backed by Postgres.
-func NewProjectContactService(repo repository.ProjectContactRepository) ProjectContactService {
-	return &projectContactService{repo: repo}
+func NewProjectContactService(repo repository.ProjectContactRepository, access AccessService) ProjectContactService {
+	return &projectContactService{repo: repo, access: access}
 }
 
 func projectContactRowToDomain(row repository.ProjectContactRow) domain.ProjectContact {
@@ -90,7 +91,7 @@ func (s *projectContactService) SearchProjectContacts(ctx context.Context, proje
 		return domain.SearchProjectContactsResponse{}, err
 	}
 
-	callerEmail, err := resolveCallerEmail(ctx)
+	callerEmail, err := resolveContactCaller(ctx, s.access)
 	if err != nil {
 		return domain.SearchProjectContactsResponse{}, err
 	}
@@ -122,7 +123,7 @@ func (s *projectContactService) GetProjectContact(ctx context.Context, projectID
 		return domain.ProjectContact{}, err
 	}
 
-	callerEmail, err := resolveCallerEmail(ctx)
+	callerEmail, err := resolveContactCaller(ctx, s.access)
 	if err != nil {
 		return domain.ProjectContact{}, err
 	}

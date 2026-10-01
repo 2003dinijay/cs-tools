@@ -1417,15 +1417,14 @@ type SearchProjectsResponse struct {
 	HasMore  bool          `json:"hasMore"`
 }
 
-// --- opportunities, invoices, project-opportunity links (ServiceNow data source only) ---
+// --- opportunities, invoices, project-opportunity links ---
 //
 // Sourced from ServiceNow's Salesforce-sync tables (u_sf_opportunity, u_sf_invoice,
-// u_sf_link_opportunity) via the Ballerina entity-service's generic Table API reads -- there
-// is no scoped-app resource and no Postgres equivalent for any of these three. Read-only: no
-// write path is exposed for any of them.
+// u_sf_link_opportunity), or on Postgres from sf_opportunity, sf_invoice and
+// sf_opportunity_link. Read-only: no write path is exposed for any of them.
 
-// Opportunity is a sales opportunity, optionally linked to an account (ServiceNow data source
-// only). Every field but ID is nilable: ServiceNow can omit any of them entirely for a
+// Opportunity is a sales opportunity, optionally linked to an account.
+// Every field but ID is nilable: ServiceNow can omit any of them entirely for a
 // sparsely-populated row.
 type Opportunity struct {
 	ID   string  `json:"id"`
@@ -1435,12 +1434,11 @@ type Opportunity struct {
 	EulaVersion        *string    `json:"eulaVersion"`
 	EulaVersionDecimal *string    `json:"eulaVersionDecimal"`
 	// Stage is the opportunity's sales stage (e.g. "50 - Closed Won"), nil when absent
-	// (ServiceNow data source only).
+	//.
 	Stage *string `json:"stage"`
 }
 
-// SearchOpportunitiesRequest is the input for searching opportunities (ServiceNow data
-// source only).
+// SearchOpportunitiesRequest is the input for searching opportunities.
 type SearchOpportunitiesRequest struct {
 	Pagination Pagination `json:"pagination"`
 	// AccountID filters to opportunities linked to this account. Platform UUID, converted to
@@ -1457,8 +1455,8 @@ type SearchOpportunitiesResponse struct {
 	HasMore       bool          `json:"hasMore"`
 }
 
-// Invoice is a billing invoice, optionally linked to an opportunity (ServiceNow data source
-// only). Every field but ID is nilable: ServiceNow can omit any of them entirely for a
+// Invoice is a billing invoice, optionally linked to an opportunity.
+// Every field but ID is nilable: ServiceNow can omit any of them entirely for a
 // sparsely-populated row.
 type Invoice struct {
 	ID             string  `json:"id"`
@@ -1480,7 +1478,7 @@ type Invoice struct {
 	SfID *string `json:"sfId"`
 }
 
-// SearchInvoicesRequest is the input for searching invoices (ServiceNow data source only).
+// SearchInvoicesRequest is the input for searching invoices.
 type SearchInvoicesRequest struct {
 	Pagination Pagination `json:"pagination"`
 	// OpportunityID filters to invoices linked to this opportunity. Platform UUID, converted
@@ -1497,7 +1495,7 @@ type SearchInvoicesResponse struct {
 	HasMore  bool      `json:"hasMore"`
 }
 
-// ProjectOpportunityLink links a project to an opportunity (ServiceNow data source only). A
+// ProjectOpportunityLink links a project to an opportunity. A
 // project may have more than one linked opportunity -- one row per link. Every field but ID
 // is nilable: ServiceNow can omit either reference entirely for a sparsely-populated row.
 type ProjectOpportunityLink struct {
@@ -1506,8 +1504,8 @@ type ProjectOpportunityLink struct {
 	Opportunity *EntityRef `json:"opportunity"`
 }
 
-// SearchProjectOpportunityLinksRequest is the input for searching project-opportunity links
-// (ServiceNow data source only). At least one of ProjectID/OpportunityID should be supplied by
+// SearchProjectOpportunityLinksRequest is the input for searching project-opportunity links.
+// At least one of ProjectID/OpportunityID should be supplied by
 // the caller; an entirely unfiltered search is allowed but returns every link row.
 type SearchProjectOpportunityLinksRequest struct {
 	Pagination Pagination `json:"pagination"`

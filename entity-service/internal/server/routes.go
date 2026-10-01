@@ -464,23 +464,23 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeAccountContactSvc = service.NewServiceNowAccountContactService(serviceNowIntegrationServiceClient)
 	} else {
-		activeAccountContactSvc = service.NewAccountContactService(accountContactRepo)
+		activeAccountContactSvc = service.NewAccountContactService(accountContactRepo, accessSvc)
 	}
 	accountContactHandler := handler.NewAccountContactHandler(activeAccountContactSvc)
 
+	// Postgres modes read the Salesforce-ingested sf_* tables in the same shapes.
 	var opportunityHandler *handler.OpportunityHandler
-	if cfg.DataSource == config.DataSourceServiceNow {
-		opportunityHandler = handler.NewOpportunityHandler(service.NewServiceNowOpportunityService(serviceNowIntegrationServiceClient))
-	}
-
 	var invoiceHandler *handler.InvoiceHandler
-	if cfg.DataSource == config.DataSourceServiceNow {
-		invoiceHandler = handler.NewInvoiceHandler(service.NewServiceNowInvoiceService(serviceNowIntegrationServiceClient))
-	}
-
 	var projectOpportunityLinkHandler *handler.ProjectOpportunityLinkHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
+		opportunityHandler = handler.NewOpportunityHandler(service.NewServiceNowOpportunityService(serviceNowIntegrationServiceClient))
+		invoiceHandler = handler.NewInvoiceHandler(service.NewServiceNowInvoiceService(serviceNowIntegrationServiceClient))
 		projectOpportunityLinkHandler = handler.NewProjectOpportunityLinkHandler(service.NewServiceNowProjectOpportunityLinkService(serviceNowIntegrationServiceClient))
+	} else {
+		sfReadRepo := repository.NewSalesforceReadRepository(db)
+		opportunityHandler = handler.NewOpportunityHandler(service.NewOpportunityService(sfReadRepo, accessSvc))
+		invoiceHandler = handler.NewInvoiceHandler(service.NewInvoiceService(sfReadRepo, accessSvc))
+		projectOpportunityLinkHandler = handler.NewProjectOpportunityLinkHandler(service.NewProjectOpportunityLinkService(sfReadRepo, accessSvc))
 	}
 
 	// snWritebackDispatcher is the single shared SNWritebackDispatcher for
@@ -512,7 +512,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if cfg.DataSource == config.DataSourceServiceNow {
 		activeProjectContactSvc = service.NewServiceNowProjectContactService(serviceNowIntegrationServiceClient)
 	} else {
-		activeProjectContactSvc = service.NewProjectContactService(projectContactRepo)
+		activeProjectContactSvc = service.NewProjectContactService(projectContactRepo, accessSvc)
 	}
 	projectContactHandler := handler.NewProjectContactHandler(activeProjectContactSvc)
 

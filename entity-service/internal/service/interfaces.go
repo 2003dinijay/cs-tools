@@ -497,7 +497,7 @@ type AccountContactService interface {
 }
 
 // OpportunityService defines the operations available on the opportunity entity.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// Postgres modes read sf_opportunity, internal callers only.
 type OpportunityService interface {
 	// SearchOpportunities returns a paginated list of opportunities matching the
 	// filters in req.
@@ -508,7 +508,7 @@ type OpportunityService interface {
 }
 
 // InvoiceService defines the operations available on the invoice entity.
-// All methods require the ServiceNow data source; there is no Postgres fallback.
+// Postgres modes read sf_invoice, internal callers only.
 type InvoiceService interface {
 	// SearchInvoices returns a paginated list of invoices matching the filters in req.
 	SearchInvoices(ctx context.Context, req domain.SearchInvoicesRequest) (domain.SearchInvoicesResponse, error)
@@ -518,9 +518,8 @@ type InvoiceService interface {
 }
 
 // ProjectOpportunityLinkService defines the operations available on
-// project-opportunity links. ServiceNow data source only; there is no Postgres
-// fallback, and no by-id fetch -- the underlying ServiceNow data has no
-// single-record endpoint for this resource (search only).
+// project-opportunity links. Postgres modes read sf_opportunity_link, internal
+// callers only. No by-id fetch -- ServiceNow has no single-record endpoint for it.
 type ProjectOpportunityLinkService interface {
 	// SearchProjectOpportunityLinks returns a paginated list of project-opportunity
 	// links matching the filters in req.

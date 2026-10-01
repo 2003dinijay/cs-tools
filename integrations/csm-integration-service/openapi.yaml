@@ -1905,6 +1905,7 @@ components:
                 type: boolean
               roles:
                 type: array
+                description: Project roles, e.g. PORTAL_USER, SECURITY_CONTACT, BUSINESS_CONTACT.
                 items:
                   type: string
         offset:

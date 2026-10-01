@@ -2415,7 +2415,7 @@ paths:
   /accounts/{id}/contacts/search:
     post:
       summary: Search contacts for an account.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: Needs a user token, or an allow-listed internal client on Postgres.
       operationId: searchAccountContacts
       parameters:
         - name: id
@@ -2460,9 +2460,8 @@ paths:
     post:
       summary: Search opportunities.
       description: >
-        ServiceNow data source only; there is no Postgres equivalent. Sourced from
-        Salesforce-sync data via the ServiceNow Table API — no scoped-app endpoint
-        exists for this resource.
+        On Postgres, read from the Salesforce-ingested sf_* tables and limited to
+        internal callers (403 otherwise); on ServiceNow, from the Table API.
       operationId: searchOpportunities
       requestBody:
         required: false
@@ -2493,7 +2492,7 @@ paths:
   /opportunities/{id}:
     get:
       summary: Get an opportunity by ID.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: Postgres reads sf_opportunity, internal callers only (403 otherwise).
       operationId: getOpportunity
       parameters:
         - name: id
@@ -2532,9 +2531,8 @@ paths:
     post:
       summary: Search invoices.
       description: >
-        ServiceNow data source only; there is no Postgres equivalent. Sourced from
-        Salesforce-sync data via the ServiceNow Table API — no scoped-app endpoint
-        exists for this resource.
+        On Postgres, read from the Salesforce-ingested sf_* tables and limited to
+        internal callers (403 otherwise); on ServiceNow, from the Table API.
       operationId: searchInvoices
       requestBody:
         required: false
@@ -2565,7 +2563,7 @@ paths:
   /invoices/{id}:
     get:
       summary: Get an invoice by ID.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: Postgres reads sf_invoice, internal callers only (403 otherwise).
       operationId: getInvoice
       parameters:
         - name: id
@@ -2604,9 +2602,8 @@ paths:
     post:
       summary: Search project-opportunity links.
       description: >
-        ServiceNow data source only; there is no Postgres equivalent. Sourced from
-        Salesforce-sync data via the ServiceNow Table API — no scoped-app endpoint
-        exists for this resource. A project can have more than one linked
+        On Postgres, read from the Salesforce-ingested sf_* tables and limited to
+        internal callers (403 otherwise); on ServiceNow, from the Table API. A project can have more than one linked
         opportunity — one row per link — so this always returns a list. No by-id
         fetch: the underlying data has no single-record endpoint.
       operationId: searchProjectOpportunityLinks
@@ -3235,7 +3232,7 @@ paths:
   /projects/{id}/contacts/search:
     post:
       summary: Search contacts for a project.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: Needs a user token, or an allow-listed internal client on Postgres.
       operationId: searchProjectContacts
       parameters:
         - name: id
