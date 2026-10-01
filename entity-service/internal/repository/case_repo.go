@@ -2378,10 +2378,10 @@ func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]dom
 	// "Case-like work_item types" fixes already guard against elsewhere).
 	rows, err := q.Query(ctx, `
 		SELECT u.id, u.user_name, COALESCE(u.name, CONCAT_WS(' ', u.first_name, u.last_name)), u.email,
-		       COALESCE(u.id = acct.customer_success_manager_id, false)
-		           OR COALESCE(u.id = acct.technical_owner_id, false)
+		       COALESCE(u.id = acct.technical_owner_id, false)
 		           OR COALESCE(u.id = acct.secondary_technical_owner_id, false)
-		           OR COALESCE(u.id = acct.account_manager_id, false) AS locked
+		           OR COALESCE(u.id = acct.account_manager_id, false)
+		           OR COALESCE(u.id = acct.renewal_account_manager_id, false) AS locked
 		FROM work_item_watcher w
 		JOIN "user" u ON u.id = w.user_id
 		LEFT JOIN work_item wi ON wi.id = w.work_item_id
