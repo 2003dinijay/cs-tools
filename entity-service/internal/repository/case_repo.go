@@ -388,15 +388,24 @@ type CaseRepository interface {
 	// caseID does not exist; a ValidationError if any userID does not
 	// exist.
 	SetCaseWatchList(ctx context.Context, caseID string, userIDs []string, callerEmail string) ([]domain.WatchListUser, time.Time, error)
-	// AccountDefaultWatcherIDs returns the account owning projectID's four
-	// named stakeholder ids -- technical_owner_id, secondary_technical_owner_id,
-	// account_manager_id, renewal_account_manager_id (migration 0012) --
-	// whichever are set, deduplicated, in that order. customer_success_manager_id
-	// is deliberately excluded: unlike the other four, the CSM is not meant to
+	// AccountDefaultWatcherEmails returns the account owning projectID's
+	// four named stakeholders' email addresses -- technical_owner_id,
+	// secondary_technical_owner_id, account_manager_id,
+	// renewal_account_manager_id (migration 0012), whichever are set and
+	// have an email on file, deduplicated. customer_success_manager_id is
+	// deliberately excluded: unlike the other four, the CSM is not meant to
 	// receive these default case notifications. A project with no linked
 	// account, or a project id that does not exist, returns an empty slice
-	// rather than an error: this is a default watch list, not a requirement.
-	AccountDefaultWatcherIDs(ctx context.Context, projectID string) ([]string, error)
+	// rather than an error: this is a default watch list, not a
+	// requirement. Used to compute a case.* event's email
+	// Recipients fresh at publish time: these four are deliberately never
+	// persisted into work_item_watcher (see SetCaseWatchList's own callers'
+	// doc comments) specifically so a later stakeholder reassignment is
+	// reflected on the very next notification, not stuck on whoever held the
+	// role when the case was created or last had its watch list edited. A
+	// stakeholder with no email on file is silently excluded, same as
+	// watchListUserEmails does for an explicit watcher.
+	AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error)
 	// ProjectContactEmailsByRole returns the distinct project_contact.email
 	// addresses for projectID whose contact currently holds role (a
 	// project_role_enum label, e.g. "SECURITY_CONTACT" or "PORTAL_USER") via
@@ -2454,8 +2463,9 @@ type rowsQuerier interface {
 // by), so results are ordered by user_name for a stable, deterministic
 // response instead.
 func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]domain.WatchListUser, error) {
-	// locked mirrors AccountDefaultWatcherIDs' own four columns, joined
-	// live rather than cross-checked against a snapshot -- see
+	// locked mirrors AccountDefaultWatcherEmails' own four stakeholder
+	// columns (minus the email resolution), joined live rather than
+	// cross-checked against a snapshot -- see
 	// WatchListUser.Locked's own doc comment on why that's deliberate.
 	// LEFT JOINs throughout so a case with no project, or a project with no
 	// account, still returns every watcher with locked=false rather than
@@ -2464,10 +2474,10 @@ func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]dom
 	// "Case-like work_item types" fixes already guard against elsewhere).
 	rows, err := q.Query(ctx, `
 		SELECT u.id, u.user_name, COALESCE(u.name, CONCAT_WS(' ', u.first_name, u.last_name)), u.email,
-		       COALESCE(u.id = acct.customer_success_manager_id, false)
-		           OR COALESCE(u.id = acct.technical_owner_id, false)
+		       COALESCE(u.id = acct.technical_owner_id, false)
 		           OR COALESCE(u.id = acct.secondary_technical_owner_id, false)
-		           OR COALESCE(u.id = acct.account_manager_id, false) AS locked
+		           OR COALESCE(u.id = acct.account_manager_id, false)
+		           OR COALESCE(u.id = acct.renewal_account_manager_id, false) AS locked
 		FROM work_item_watcher w
 		JOIN "user" u ON u.id = w.user_id
 		LEFT JOIN work_item wi ON wi.id = w.work_item_id
@@ -2546,36 +2556,39 @@ func (r *caseRepo) SetCaseWatchList(ctx context.Context, caseID string, userIDs 
 	return watchers, updatedOn, nil
 }
 
-// AccountDefaultWatcherIDs implements CaseRepository.
-func (r *caseRepo) AccountDefaultWatcherIDs(ctx context.Context, projectID string) ([]string, error) {
-	var towID, stowID, amID, ramID *string
+// AccountDefaultWatcherEmails implements CaseRepository.
+func (r *caseRepo) AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error) {
+	var towEmail, stowEmail, amEmail, ramEmail *string
 	err := r.db.QueryRow(ctx, `
-		SELECT a.technical_owner_id, a.secondary_technical_owner_id,
-		       a.account_manager_id, a.renewal_account_manager_id
+		SELECT tow.email, stow.email, am.email, ram.email
 		FROM project p
 		JOIN account a ON a.id = p.account_id
+		LEFT JOIN "user" tow ON tow.id = a.technical_owner_id
+		LEFT JOIN "user" stow ON stow.id = a.secondary_technical_owner_id
+		LEFT JOIN "user" am ON am.id = a.account_manager_id
+		LEFT JOIN "user" ram ON ram.id = a.renewal_account_manager_id
 		WHERE p.id = $1`, projectID,
-	).Scan(&towID, &stowID, &amID, &ramID)
+	).Scan(&towEmail, &stowEmail, &amEmail, &ramEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("account default watcher ids: %w", err)
+		return nil, fmt.Errorf("account default watcher emails: %w", err)
 	}
 
-	ids := make([]string, 0, 4)
+	emails := make([]string, 0, 4)
 	seen := make(map[string]struct{}, 4)
-	for _, id := range []*string{towID, stowID, amID, ramID} {
-		if id == nil || *id == "" {
+	for _, email := range []*string{towEmail, stowEmail, amEmail, ramEmail} {
+		if email == nil || *email == "" {
 			continue
 		}
-		if _, dup := seen[*id]; dup {
+		if _, dup := seen[*email]; dup {
 			continue
 		}
-		seen[*id] = struct{}{}
-		ids = append(ids, *id)
+		seen[*email] = struct{}{}
+		emails = append(emails, *email)
 	}
-	return ids, nil
+	return emails, nil
 }
 
 // ProjectContactEmailsByRole implements CaseRepository.
