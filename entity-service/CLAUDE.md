@@ -245,6 +245,11 @@ later CREATED/UPDATED/RESTORED clears `deleted_on`. Never `DELETE FROM account`
 `EnsureAccount`), the partner lookup and the joins from projects/cases/global search
 still see the row.
 
+### One row per sf_id
+
+`sf_id` is not unique, so every ingest write and parent lookup updates ONE row by `id`;
+the tie-break lives in `internal/repository/sf_id_resolve.go`. Deletes still hit every copy.
+
 ## Salesforce membership ingest and onboarding steps
 
 The same `POST /salesforce/events` endpoint also ingests customer **memberships**
@@ -574,7 +579,7 @@ acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest
   `product_description`, `product_family`, `product_unit`, `eng_product_code`,
   `product_sf_id`, `classification`, `environment`, `total_price`. **Never written:**
   `development_support_hours`, `engagement_code`. With duplicate `sf_opportunity` rows
-  for one `sf_id`, the oldest owns the line items. Standalone `OpportunityLineItem`
+  for one `sf_id`, the row "One row per sf_id" picks owns the line items. Standalone `OpportunityLineItem`
   events are handled too (see "Standalone OpportunityLineItem" below).
 - **DELETED:** hard delete `sf_opportunity WHERE sf_id = $1` (FKs cascade line items
   and project links, null invoices) plus a DELETED ledger row, in one transaction;
@@ -890,12 +895,11 @@ easy to wire up for real once both exist.
   `CLAUDE.md`).
 
   **`Recipients` depends on `req.Type`.** For `case`/`engagement`/
-  `service_request`/`security_report_analysis` it's still the case's own
-  resolved watch list emails only (this service has no other notion of who
-  should be emailed for these types) — which, on the Postgres/dual-write
-  data source, already includes the account's four default-watcher
-  stakeholders once `addAccountDefaultWatchers` has run (see
-  `CaseRepository.AccountDefaultWatcherIDs` below). For `announcement`,
+  `service_request`/`security_report_analysis` it's the case's own resolved
+  watch list emails, unioned with the account's four default-watcher
+  stakeholders resolved fresh via `CaseRepository.AccountDefaultWatcherEmails`
+  — see "Case watch list" below for why those four are resolved at publish
+  time rather than read from the persisted watch list. For `announcement`,
   `publishCaseCreatedEvent` instead resolves the audience via
   `CaseService.ProjectContactEmailsByRole` — every `project_contact`
   currently holding the `SECURITY_CONTACT` project role when
@@ -903,10 +907,10 @@ easy to wire up for real once both exist.
   `PORTAL_USER` — bypassing the watch-list mechanism entirely, since a
   project contact often has no matching `"user"` row to add as a
   `work_item_watcher` (`work_item_watcher.user_id` is `NOT NULL`). Falls
-  back to the case's own watch-list emails (the account's default
-  watchers) when no contact holds the requested role for that project — a
-  project with nobody in the requested role must still notify someone, not
-  silently notify no one. `ProjectContactEmailsByRole` is Postgres-only
+  back to the case's own watch-list emails (still unioned with the account's
+  default watchers) when no contact holds the requested role for that
+  project — a project with nobody in the requested role must still notify
+  someone, not silently notify no one. `ProjectContactEmailsByRole` is Postgres-only
   (`project_contact`/`project_role` have no ServiceNow equivalent); on
   `snCaseService` it delegates to `pgFallback` when configured, else
   returns empty (no error) — same "can't resolve, skip" posture as every
@@ -1726,6 +1730,44 @@ regardless of severity.
   on its own ticker, default 45s — frequent enough that a 50/75/100%
   crossing is visible well within `csm-notification-service`'s own
   `SLA_TICK_INTERVAL` poll cadence.
+- **A BREACHED clock is not terminal — it keeps being recomputed, and stays
+  completable, until its own genuine finishing event.** A real, reported bug
+  had `RecomputeActive` stop touching a row the instant it first flipped to
+  `BREACHED` (its `WHERE` clause only ever matched `IN_PROGRESS`), freezing
+  `business_elapsed_percentage`/`business_duration` forever at whatever the
+  breaching tick happened to compute — e.g. a response SLA observed stuck at
+  "59m" elapsed long after real time had moved well past that, because
+  nothing ever recomputed it again. `CompleteClock`/`SetPaused` had the
+  matching half of the same bug: both excluded `BREACHED` via
+  `slaEngineActiveStageFilter`, so a RESPONSE clock that breached before a
+  support engineer ever replied silently ignored that reply's own
+  `CompleteClock` call — matching zero rows instead of finally finalizing
+  it. Fixed by giving `CompleteClock`/`SetPaused` their own, narrower
+  `slaEngineOpenStageFilter` (excludes only `ACHIEVED`/`CANCELLED`/
+  `COMPLETED` — the stages a clock genuinely never leaves — not `BREACHED`
+  too), and widening `RecomputeActive`'s own `WHERE` to `stage IN
+  ('IN_PROGRESS', 'BREACHED')` (still excluding `PAUSED`, for the same
+  "pause must actually stop accumulation" reason it always did).
+  `business_elapsed_percentage` is no longer capped at 100 either, in both
+  `RecomputeActive` and `CompleteClock` — a clock now shows its real,
+  uncapped overrun (e.g. 134%) for as long as it stays unanswered/BREACHED,
+  and still shows that same true number once it's finally completed,
+  instead of an identical-looking 100% regardless of how late the real
+  completion actually was. The webapp's `CaseSlaTable` already handles a
+  percentage above 100 correctly (clamps the progress-bar fill, shows the
+  real number as text), confirmed before uncapping this.
+- **A case closing now finalizes all three clock types, not just
+  resolution.** `ApplyCaseStateEffects`'s `CaseStateClosed` branch used to
+  only resume+complete `resolution` and merely pause `workaround` forever
+  (a documented, carried-forward gap from the old deleted design) — and
+  never touched `response` at all, leaving a case closed before anyone ever
+  replied with its response clock permanently `IN_PROGRESS`/`BREACHED`.
+  Closing now resumes+completes `workaround` the same way `resolution`
+  already was, and completes `response` directly (it's never paused at any
+  state) — all three unconditionally, every close, since `CompleteClock`'s
+  own stage filter is a no-op for whichever clock(s) already reached a
+  genuine completion (an engineer's reply, an earlier close) before this
+  ran.
 - **`RegisterCaseClocks`/`ReviseCaseClocks`/`CompleteResponseClock`/
   `ApplyCaseStateEffects`** are all called directly, in-process, from
   `snCaseService`'s own case-lifecycle hooks (create/severity-change/
@@ -2081,33 +2123,67 @@ changed.
   `work_item_watcher` — deliberately replaced: that design still routed the
   default watch list through ServiceNow-shaped concepts (email vs. UUID
   resolution, `userRepo.GetUserByEmail` lookups) for something this schema
-  can answer directly.
+  can answer directly. `createCaseSNFirst` calls `addRequestedWatchers`
+  right after `CreateCaseFromServiceNow` succeeds and before
+  `publishCaseCreatedEvent`: it persists `req.WatchList` (whatever the
+  caller explicitly asked for) via `CaseRepository.SetCaseWatchList`,
+  nothing more — `req.WatchList` itself is unaffected by any of this; it's
+  still forwarded to ServiceNow as part of the create request the normal
+  way, this addition is purely about what the Postgres mirror also
+  guarantees.
 
-  **Every case now gets its account's four named stakeholders as watchers,
-  unconditionally, from a pure Postgres lookup — no ServiceNow involved.**
-  `account.technical_owner_id`/`secondary_technical_owner_id`/
-  `account_manager_id`/`renewal_account_manager_id` (migration 0012)
-  are already `"user"` ids, so there's no email/UUID ambiguity to resolve
-  at all. `customer_success_manager_id` is deliberately excluded — unlike
-  the other four, the CSM is not meant to receive these default case
-  notifications (an earlier version of this lookup wrongly included it and
-  omitted `renewal_account_manager_id`; fixed at explicit request).
-  `createCaseSNFirst` calls `addAccountDefaultWatchers` right after
-  `CreateCaseFromServiceNow` succeeds and before `publishCaseCreatedEvent`;
-  it resolves those four ids for the case's project via
-  `CaseRepository.AccountDefaultWatcherIDs` (a `project JOIN account`,
-  whichever of the four are set, deduplicated) and writes them with the
-  same `CaseRepository.SetCaseWatchList` the `UpdateCase` branch above
-  already uses. A project with no linked account, or an account with none
-  of the four roles set, is a normal state (an empty slice, `SetCaseWatchList`
-  never called) — not an error. A repository failure here is logged, not
-  returned: ServiceNow already has the case by this point, so a missing
-  default watch list must not be reported as a failed create, same posture
-  as every other post-ServiceNow-success step in this file (event
-  publishing included). `req.WatchList` itself is unaffected by any of
-  this — it's still forwarded to ServiceNow as part of the create request
-  the normal way; this addition is purely about what the Postgres mirror
-  also guarantees.
+  **The account's four named stakeholders are never persisted into
+  `work_item_watcher` at all, on either the create or the update path —
+  they're resolved fresh, straight from the account row, every time a
+  `case.*` event is about to be emailed.** An earlier version of this
+  auto-added `account.technical_owner_id`/`secondary_technical_owner_id`/
+  `account_manager_id`/`renewal_account_manager_id` (migration 0012,
+  `customer_success_manager_id` deliberately excluded — unlike the other
+  four, the CSM is not meant to receive these default case notifications)
+  as real watch-list rows on every create and merged them back in,
+  unremovable, on every update (`addAccountDefaultWatchers`/
+  `updateCaseWatchList`'s own "mandatory stakeholder floor"). Replaced at
+  explicit product request: a stakeholder reassignment on the account (the
+  account's own `technical_owner_id` etc. changing) had no effect on a
+  case's already-persisted watch list, so every case created before the
+  reassignment kept emailing the OLD stakeholder indefinitely — and a
+  case's "Watchers" list in both portals showed four people who were never
+  really watching *that* case specifically, just standing in for "whoever
+  holds this account role right now." `resolveCaseDefaultWatcherEmails`
+  (`sn_case_service.go`, shared by every `case.*` publisher — see
+  "Recipients depends on req.Type" above) calls
+  `CaseRepository.AccountDefaultWatcherEmails` (a `project JOIN account`
+  straight to `"user".email`, no id-to-email round trip) and unions the
+  result into that event's `Recipients`, fresh, every single send — so a
+  reassignment is reflected on the very next notification with no case
+  edit required, and a departed stakeholder stops being emailed the moment
+  the account itself is updated. `addRequestedWatchers` (create) and
+  `updateCaseWatchList` (update) now persist only what the caller
+  explicitly asked for — no merge, no floor, no exemption from
+  `validateWatchListProjectMembership` for a submitted id (nothing exempt
+  to submit any more). `domain.WatchListUser.Locked` still exists but is
+  now purely informational, not enforced — see its own doc comment.
+
+  **A persisted (explicitly-added) watcher is re-checked for live project
+  membership immediately before each `case.*` email goes out, for
+  everything except case creation.** `validateWatchListProjectMembership`
+  only ever ran once, when a watcher was first added — someone who later
+  left the project (deactivated, or never finished registering) kept being
+  emailed indefinitely, since nothing re-checked. `filterActiveWatchListUsers`/
+  `isActiveProjectWatcher` (`case_service.go`) re-run that same two-part
+  check (INTERNAL staff, or a REGISTERED `project_contact` on the case's
+  project) against `cv.WatchList`/`before.WatchList` right before each of
+  `publishCommentAddedEvent`/`publishStatusChangedEvent`/
+  `publishSeverityChangedEvent`/`publishCaseAssigned`'s own Postgres-path
+  call sites, silently dropping (logged at INFO, not an error) anyone no
+  longer eligible. Deliberately NOT applied to case creation — a watcher
+  requested in the same `CreateCase` call couldn't possibly have gone stale
+  within that same request — and deliberately NOT applied on the
+  plain-ServiceNow data source, which has no Postgres `project_contact`
+  table to check a ServiceNow-sourced watch list's (non-Postgres-UUID)
+  ids against in the first place. A repository error while checking a
+  given watcher keeps that watcher rather than risk silently dropping a
+  real recipient over a transient failure.
 - **Account contacts** (`account_contact`, migration 0026) and **project
   contacts** (`project_contact` + `project_contact_group`/`project_group`/
   `project_group_role`/`project_role`, migrations 000022-000025): new

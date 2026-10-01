@@ -122,14 +122,7 @@ func NewProjectMembershipWriteService(deps MembershipWriteDeps) ProjectMembershi
 // one of the portal backends, and deliberately does not re-derive that
 // authorization from a forwarded user token.
 func (s *projectMembershipWriteService) requireInternalCaller(ctx context.Context) error {
-	scope, err := s.deps.Access.ResolveScope(ctx)
-	if err != nil {
-		return err
-	}
-	if !scope.Unrestricted {
-		return &apierror.ForbiddenError{Msg: "membership writes are only available to internal services"}
-	}
-	return nil
+	return RequireInternalCaller(ctx, s.deps.Access, "membership writes are only available to internal services")
 }
 
 // Membership write operation names. They key the caller-facing message a

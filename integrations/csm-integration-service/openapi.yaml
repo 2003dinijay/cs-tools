@@ -226,7 +226,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProjectUpdateResponse'
         "400":
-          description: BadRequest
+          description: >-
+            BadRequest. Entity-service's validation message is passed through when
+            it is safe to show, e.g. `sortBy: "name" is not a valid sort field; use
+            endDate`; otherwise "Invalid request payload."
           content:
             application/json:
               schema:
@@ -281,7 +284,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProjectSearchResponse'
         "400":
-          description: BadRequest
+          description: >-
+            BadRequest. Entity-service's validation message is passed through when
+            it is safe to show, e.g. `sortBy: "name" is not a valid sort field; use
+            endDate`; otherwise "Invalid request payload."
           content:
             application/json:
               schema:
@@ -1858,6 +1864,25 @@ components:
         searchQuery:
           type: string
           description: Case-insensitive match against name, key, and subscription type.
+        endDateFrom:
+          type: string
+          format: date
+          description: Only projects ending on or after this date (yyyy-MM-dd).
+        endDateTo:
+          type: string
+          format: date
+          description: Only projects ending on or before this date (yyyy-MM-dd).
+        onboardingStatus:
+          type: array
+          items:
+            type: string
+          description: Only projects whose onboarding status is any of these, e.g. "In-Progress".
+        subRegion:
+          type: string
+          description: Only projects whose account has this sub-region (case-insensitive).
+        arrTodayGte:
+          type: string
+          description: Minimum account ARR. Rejected with 400 on the Postgres data source.
 
     ProjectSearchResponse:
       type: object

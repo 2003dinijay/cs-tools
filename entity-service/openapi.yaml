@@ -2781,7 +2781,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProjectUpdateResponse'
         "400":
-          description: Bad request — no field provided, or an invalid value.
+          description: >-
+            Bad request — no field provided, or an invalid value. The message names
+            the value and lists the accepted ones.
           content:
             application/json:
               schema:
@@ -2826,7 +2828,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/SearchProjectsResponse'
         "400":
-          description: Bad request.
+          description: >-
+            Bad request. The message names the invalid value and lists the accepted
+            ones, e.g. `excludeClosureStates: "suspended" is not a valid closure
+            state; use one of Open, Restricted, Suspended`.
           content:
             application/json:
               schema:
@@ -8166,6 +8171,130 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /outage-communications/sweep:
+    post:
+      summary: Evaluate which outages owe an SRE communication email.
+      description: >-
+        Postgres data source only. The port of ServiceNow's
+        `Outage Communication` flow — the SRE-facing pair of emails that
+        announce an outage and then announce its resolution.
+
+
+        Distinct from `/outage-notifications/sweep`, which is the internal
+        STAKEHOLDER notifier. Different flow, different audience, different
+        content.
+
+
+        POST because it is not read-only: every decision is written to the
+        communication log before it is returned. That log row is this port's
+        idempotency guard — ServiceNow relies on "Run Trigger: Once" and
+        writes no state to the outage at all, which a sweep cannot inherit.
+        Recording first means a crash loses an email rather than repeating
+        it, matching the internal notifier's choice.
+
+
+        *** ONLY `type=outage` IS EVER DECLARED. *** ServiceNow's step 4
+        requires it, so a DEGRADATION or PLANNED outage produces no email.
+        Reproduced deliberately.
+
+
+        Internal callers only.
+      operationId: sweepOutageCommunications
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+          description: Maximum outages to evaluate in this sweep.
+      responses:
+        "200":
+          description: >-
+            The emails to send. An empty `decisions` list is the normal
+            steady state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutageCommunicationSweepResponse'
+        "400":
+          description: Bad request — limit is not an integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /outages/{number}/communication-log:
+    get:
+      summary: What has been emailed about one outage, newest first.
+      description: >-
+        Postgres data source only. Operational visibility over the outage
+        communication log.
+
+
+        Keyed on the outage NUMBER rather than its id: ServiceNow's table
+        carries a reference column that is empty on every row, so the number
+        string has always been the only link.
+
+
+        The log is SHARED — it also holds rows written by the outage-update
+        flow and historical rows from flows that no longer run, so entries
+        carry `emailType` verbatim plus a normalised `emailTypeNorm`.
+
+
+        Full email bodies are deliberately NOT returned; this answers
+        "did we send, and when".
+
+
+        Internal callers only.
+      operationId: getOutageCommunicationLog
+      parameters:
+        - name: number
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The outage number, e.g. OUT0001234.
+      responses:
+        "200":
+          description: The outage's communication history, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OutageCommunicationLogEntry'
+        "400":
+          description: Bad request — the outage number is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /outage-notifications/sweep:
     post:
       summary: Evaluate which internal-stakeholder outage emails are due.
@@ -11691,6 +11820,29 @@ components:
         sortOrder:
           type: string
           enum: [asc, desc]
+        endDateFrom:
+          type: string
+          format: date
+          description: Only projects ending on or after this date (yyyy-MM-dd).
+        endDateTo:
+          type: string
+          format: date
+          description: Only projects ending on or before this date (yyyy-MM-dd).
+        onboardingStatus:
+          type: array
+          items:
+            type: string
+          description: >-
+            Only projects whose onboarding status is any of these, e.g. "In-Progress".
+            Case and separators are ignored; an unknown value returns 400.
+        subRegion:
+          type: string
+          description: Only projects whose account has this sub-region (case-insensitive).
+        arrTodayGte:
+          type: string
+          description: >-
+            Only projects whose account ARR is at least this value. ServiceNow only;
+            Postgres returns 400 because account ARR is not stored yet.
         excludeClosureStates:
           type: array
           items:
@@ -17706,6 +17858,83 @@ components:
           type: integer
           description: account_relationship rows deleted.
 
+    OutageCommunicationSweepResponse:
+      type: object
+      required: [evaluated, decisions]
+      properties:
+        evaluated:
+          type: integer
+          description: How many outages the sweep considered.
+        decisions:
+          type: array
+          description: >-
+            The emails owed, each already recorded in the communication log.
+            Empty is the normal steady state.
+          items:
+            $ref: '#/components/schemas/OutageCommunicationDecision'
+    OutageCommunicationDecision:
+      type: object
+      required: [outageId, number, kind]
+      properties:
+        outageId:
+          type: string
+          format: uuid
+        number:
+          type: string
+          example: OUT0001234
+        kind:
+          type: string
+          enum: [DECLARED, RESOLVED]
+          description: >-
+            Which email is owed. There is no update arm — the "Update" rows
+            in the log belong to a different flow.
+        reason:
+          type: string
+          description: >-
+            The ServiceNow branch that selected this, in the flow's own
+            words, so a decision can be traced back to a step.
+          example: Declare Outage
+        subject:
+          type: string
+          description: >-
+            For a RESOLVED decision this is the declaration's subject,
+            reused so the two emails thread.
+        body:
+          type: string
+    OutageCommunicationLogEntry:
+      type: object
+      required: [id, outageNumber, sentOn]
+      properties:
+        id:
+          type: string
+          format: uuid
+        outageNumber:
+          type: string
+          example: OUT0001234
+        emailType:
+          type: string
+          description: >-
+            Verbatim as written. Historical values are inconsistent —
+            "Declared" and "Declare" both occur, alongside "Update" and
+            "RCA" from other flows — so match on emailTypeNorm instead.
+          example: Declared
+        emailTypeNorm:
+          type: string
+          description: Normalised for matching; DECLARED, RESOLVED, UPDATE or RCA.
+          example: DECLARED
+        outageStatus:
+          type: string
+          example: sent
+        subject:
+          type: string
+        recipients:
+          type: string
+        mainContent:
+          type: string
+          description: The one-line summary; the full body is not returned.
+        sentOn:
+          type: string
+          format: date-time
     ErrorResponse:
       type: object
       properties:

@@ -1289,10 +1289,10 @@ type SearchProjectsRequest struct {
 	// ClosureStatus filters by overall closure state: Open, Suspended or Restricted.
 	ClosureStatus string `json:"closureStatus"`
 	// EndDateFrom filters projects with an end date on or after this date
-	// (yyyy-MM-dd, ServiceNow data source only).
+	// (yyyy-MM-dd).
 	EndDateFrom string `json:"endDateFrom"`
 	// EndDateTo filters projects with an end date on or before this date
-	// (yyyy-MM-dd, ServiceNow data source only).
+	// (yyyy-MM-dd).
 	EndDateTo string `json:"endDateTo"`
 	// SortBy is the field to sort results by. Only "endDate" is accepted.
 	SortBy string `json:"sortBy"`
@@ -1305,13 +1305,12 @@ type SearchProjectsRequest struct {
 	// (project_repo.go).
 	AccountID string `json:"accountId"`
 	// OnboardingStatus filters to projects whose onboarding status is one of
-	// the given values (ServiceNow data source only).
+	// the given values.
 	OnboardingStatus []string `json:"onboardingStatus"`
 	// ArrTodayGte filters to projects whose linked account's current ARR is
-	// greater than or equal to this value (ServiceNow data source only).
+	// greater than or equal to this value. ServiceNow only; Postgres returns 400.
 	ArrTodayGte string `json:"arrTodayGte"`
-	// SubRegion filters to projects whose linked account is in this sub-region
-	// (ServiceNow data source only).
+	// SubRegion filters to projects whose linked account is in this sub-region.
 	SubRegion string `json:"subRegion"`
 	// ExcludeClosureStates filters out projects whose closure state (see
 	// ProjectClosureFields.ClosureState — "Open"/"Suspended"/"Restricted") is
@@ -3168,20 +3167,20 @@ type WatchListUser struct {
 	UserName string `json:"userName"`
 	Name     string `json:"name,omitempty"`
 	Email    string `json:"email,omitempty"`
-	// Locked is true when this watcher is currently one of the case's
-	// project's account's four named stakeholders (customer success manager,
-	// technical owner, secondary technical owner, account manager --
-	// CaseRepository.AccountDefaultWatcherIDs). A caller cannot remove a
-	// locked watcher via UpdateCase's WatchList field -- see
-	// caseService.updateCaseWatchList's own doc comment -- so a UI should
-	// disable the remove control for these specifically, rather than let the
-	// removal silently fail to stick. Computed live from the account's
-	// current stakeholder columns, not stamped at the time the watcher was
-	// added, so it tracks a later stakeholder change (e.g. a reassigned CSM)
-	// automatically rather than going stale. Postgres-data-source only --
+	// Locked is true when this persisted watcher also happens to currently
+	// hold one of the case's project's account's four named stakeholder
+	// roles (technical owner, secondary technical owner, account manager,
+	// renewal account manager -- CaseRepository.AccountDefaultWatcherIDs).
+	// These four are no longer auto-added to the watch list at all (see
+	// addRequestedWatchers' own doc comment) -- they're resolved fresh from
+	// the account row and emailed directly, independent of work_item_watcher
+	// -- so Locked now only ever fires for someone who was ALSO explicitly
+	// added as a watcher for an unrelated reason and happens to hold one of
+	// these roles too; it carries no "cannot be removed" guarantee any more
+	// (updateCaseWatchList applies no floor at all). Kept purely as display
+	// information, not as an enforcement signal. Postgres-data-source only --
 	// this concept has no ServiceNow-side equivalent, so a ServiceNow-backed
-	// watcher is always Locked: false, which is accurate for that data
-	// source (nothing there enforces this rule).
+	// watcher is always Locked: false.
 	Locked bool `json:"locked"`
 	// User is the canonical user reference for this watcher, a sibling of the
 	// flat id/userName/name/email fields. Its id is always null: a watch-list
