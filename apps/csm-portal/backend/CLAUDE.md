@@ -44,7 +44,8 @@ selector is the one caller-facing use of it today — it sends exactly one of `[
 since entity-service derives `user_type` from role membership rather than a plain settable column (see
 that repo's own `recompute_user_type` trigger, migration 0011). There is still no Asgardeo-backed way
 to browse/assign a fuller role set at account-creation time, so nothing beyond that one required choice
-is exposed here.
+is exposed here. "External" is currently disabled in that selector and rejected server-side if sent
+anyway — see the constraint below.
 
 **Constraint: an internal-type user must have a `@wso2.com` email.** Found live: the Add User form sent
 no `roles` at all, so every user it created resolved to `user_type = NOT_AVAILABLE` (the trigger's
@@ -60,6 +61,14 @@ identical check against `req.Roles`/`req.Email` and is what actually protects th
 `POST /users` is entity-service's own route and this backend is not its only conceivable caller. The
 two lists (`internalUserTypeRoles` here, its unexported twin there) are kept in sync by hand, the same
 way `wso2EmailDomain` itself already is between the two repos.
+
+**Constraint: creating an external-type user is temporarily disabled.** `requestsExternalUserType`
+(same file, `externalUserTypeRoles = ["external", "partner", "customer", "partner_admin",
+"customer_admin"]` — every role name entity-service's trigger maps to `user_type = EXTERNAL`) rejects
+the request with 400 regardless of email, mirroring entity-service's own identical, authoritative
+check. The Add User form's type selector disables its "External" option for the same reason rather
+than offering a choice the backend will reject. All three layers (here, entity-service, the webapp)
+are meant to come out together once external-type creation is ready.
 
 ## Security Center access (PermViewSecurityCenter)
 
