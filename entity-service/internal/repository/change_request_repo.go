@@ -1008,7 +1008,11 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	wiQuery := fmt.Sprintf(`UPDATE work_item SET %s WHERE id = $%d AND type = 'CHANGE_REQUEST' RETURNING id`, strings.Join(wiSets, ", "), wiIdx)
 	var wiID string
 	if err := tx.QueryRow(ctx, wiQuery, wiArgs...).Scan(&wiID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) || IsRLSPolicyViolation(err) {
+			// A member moving the change request to a project they do not
+			// belong to fails work_item's WITH CHECK (SQLSTATE 42501):
+			// refused on purpose, so not-found, like the change_request
+			// UPDATE below, never a 500.
 			return "", &apierror.NotFoundError{Msg: "change request not found"}
 		}
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {

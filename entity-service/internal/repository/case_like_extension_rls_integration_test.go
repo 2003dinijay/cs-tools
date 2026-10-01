@@ -28,10 +28,12 @@ package repository_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
@@ -132,8 +134,10 @@ func TestCaseLikeExtensionRLSIntegration_MemberSeesAllThreeStrangerSeesNone(t *t
 		t.Run(c.name+"/stranger gets not-found", func(t *testing.T) {
 			ctx := context.Background()
 			scope := repository.SearchScope{Unrestricted: false, ViewerEmail: cleStranger}
-			if _, err := repo.GetCaseByID(ctx, c.id, scope); err == nil {
-				t.Fatalf("GetCaseByID(%s) as a non-member: want a NotFoundError, got success", c.name)
+			_, err := repo.GetCaseByID(ctx, c.id, scope)
+			var notFound *apierror.NotFoundError
+			if !errors.As(err, &notFound) {
+				t.Fatalf("GetCaseByID(%s) as a non-member: err = %v, want *apierror.NotFoundError", c.name, err)
 			}
 		})
 	}
