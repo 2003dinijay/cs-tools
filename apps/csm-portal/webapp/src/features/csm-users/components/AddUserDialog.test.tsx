@@ -87,20 +87,16 @@ describe("AddUserDialog", () => {
     );
   });
 
-  it("allows External with a non-wso2.com email and sends the external role", async () => {
+  it("disables the External option and marks it not available", () => {
     renderDialog();
     fillNameAndEmail("jane@example.com");
-    selectUserType("External (customer/partner)");
+    fireEvent.mouseDown(screen.getByLabelText(/user type/i));
 
-    const submit = screen.getByRole("button", { name: /add user/i });
-    expect(submit).toBeEnabled();
-    fireEvent.click(submit);
-
-    await waitFor(() =>
-      expect(postMock).toHaveBeenCalledWith(
-        "/users",
-        expect.objectContaining({ email: "jane@example.com", roles: ["external"] }),
-      ),
-    );
+    // MUI blocks a real click on a disabled option via CSS pointer-events,
+    // which fireEvent.click (no hit-testing in jsdom) can't exercise -- the
+    // aria-disabled assertion is what CaseActionBar.test.tsx's own disabled
+    // MenuItem tests rely on for the same reason, see ChangeCaseTypeDialog.test.tsx.
+    const externalOption = screen.getByRole("option", { name: /external.*currently unavailable/i });
+    expect(externalOption).toHaveAttribute("aria-disabled", "true");
   });
 });

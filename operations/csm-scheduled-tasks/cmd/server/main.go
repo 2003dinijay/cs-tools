@@ -46,6 +46,8 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/ledger"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/opencases"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/outagecomm"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/outagecommtask"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/outagenotify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/outagenotifytask"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/registry"
@@ -118,6 +120,22 @@ func main() {
 	})
 	if err != nil {
 		slog.Error("failed to construct entity-service outage-notification client", "err", err)
+		os.Exit(1)
+	}
+
+	// Outage COMMUNICATION -- the SRE-facing declaration/resolution pair,
+	// and a different ServiceNow flow from the stakeholder notifier above.
+	// Its own client because it is its own endpoint; the two sweeps answer
+	// different questions and will diverge.
+	outageCommClient, err := outagecomm.NewClient(outagecomm.Config{
+		BaseURL:      entityServiceBaseURL,
+		TokenURL:     oauthTokenURL,
+		ClientID:     oauthClientID,
+		ClientSecret: oauthClientSecret,
+		Scopes:       entityServiceScopes,
+	})
+	if err != nil {
+		slog.Error("failed to construct entity-service outage-communication client", "err", err)
 		os.Exit(1)
 	}
 
@@ -244,6 +262,9 @@ func main() {
 	const outageNotifyTaskName = "outage_internal_notification"
 	outageNotifyTo, outageNotifyCc := recipientsFor(recipientOverrides, outageNotifyTaskName)
 
+	const outageCommTaskName = "outage_communication"
+	outageCommTo, outageCommCc := recipientsFor(recipientOverrides, outageCommTaskName)
+
 	const staleCasesTaskName = "stale_cases_report"
 	staleCasesTo, staleCasesCc := recipientsFor(recipientOverrides, staleCasesTaskName)
 	// Fixed, not env-configurable — unlike HOUSEKEEPING_RETENTION_DAYS, there's
@@ -344,6 +365,29 @@ func main() {
 			),
 			To: outageNotifyTo,
 			Cc: outageNotifyCc,
+		},
+		// The SECOND outage notifier. Same cadence, different flow: this one
+		// announces an outage to the SRE group and then announces its
+		// resolution, where the task above mails internal stakeholders a
+		// one-line notice.
+		//
+		// *** IT IS SAFE TO DEPLOY BEFORE IT IS CONFIGURED. *** With no
+		// SUB_CRON_RECIPIENTS entry the `to` list is empty, and the handler
+		// returns before it sweeps -- so no email goes out AND no
+		// communication-log row is written. That ordering matters: sweeping
+		// with nowhere to deliver would mark outages as announced to nobody
+		// and they would never be announced again.
+		//
+		// It is also inert until digiops-cs maps outage.outage_communication:
+		// without that column the repository degrades to "nothing to send".
+		{
+			Name:     outageCommTaskName,
+			Schedule: scheduleFor(scheduleOverrides, outageCommTaskName, "*/5 * * * *"),
+			Handler: outagecommtask.SendCommunications(
+				outageCommClient, emailClient, outageCommTo, outageCommCc, alertsEnabled,
+			),
+			To: outageCommTo,
+			Cc: outageCommCc,
 		},
 	}
 

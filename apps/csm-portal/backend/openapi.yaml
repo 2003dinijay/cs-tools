@@ -1945,8 +1945,11 @@ paths:
         "400":
           description: >-
             Bad request — missing/invalid email, neither firstName nor lastName
-            supplied, an unrecognized role, or roles requests an
-            internal-resolving role (admin/internal) for a non-@wso2.com email.
+            supplied, an unrecognized role, roles requests an
+            internal-resolving role (admin/internal) for a non-@wso2.com email,
+            or roles requests an external-resolving role
+            (external/partner/customer/partner_admin/customer_admin) — creating
+            an external-type user is temporarily disabled regardless of email.
           content:
             application/json:
               schema:
@@ -1977,6 +1980,61 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /users/time-card-approvers:
+    get:
+      summary: List the real Asgardeo membership of the time-card-approver role.
+      description: >
+        Returns 404 unless ASGARDEO_ROLE_IDS contains a timecard_approver|<role-id>
+        mapping. Fetches the configured Asgardeo role (via the SCIM operations
+        service's GET /organizations/internal/roles/{id}, which proxies Asgardeo's
+        Roles Management API v2) and returns its member users. This is the
+        authoritative list of who may approve a time card — entity-service's own
+        Postgres role/user_role tables (what POST /users/search's roleIds filter
+        reads) are a separate, syncable mirror that can drift from the real Asgardeo
+        role assignment.
+      operationId: getUsersTimeCardApprovers
+      responses:
+        "200":
+          description: The role's current member users.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeCardApproversResponse'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not Found — no timecard_approver entry is configured in ASGARDEO_ROLE_IDS.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "502":
+          description: >-
+            Bad Gateway — the SCIM operations service rejected this backend's own
+            request (e.g. its OAuth2 app lacks a roles-read scope). Reported as 502
+            rather than 401/403 so it is never mistaken for the caller's own
+            permissions being denied.
           content:
             application/json:
               schema:
@@ -15130,6 +15188,25 @@ components:
           type: string
           format: date-time
 
+    TimeCardApproversResponse:
+      type: object
+      required: [approvers]
+      properties:
+        approvers:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimeCardApproverRef'
+
+    TimeCardApproverRef:
+      type: object
+      required: [id, email]
+      properties:
+        id:
+          type: string
+          description: The user's Asgardeo UUID.
+        email:
+          type: string
+
     CreateUserPayload:
       type: object
       required: [email]
@@ -15147,10 +15224,13 @@ components:
             type: string
           description: >-
             Role names to grant. Optional; omit or leave empty to create the
-            user with no roles. The Add User form sends exactly one of
-            "internal"/"external" here to set the new user's type (see
-            entity-service's own recompute_user_type trigger) — "internal" or
-            "admin" is rejected for a non-@wso2.com email.
+            user with no roles. The Add User form's "User type" selector sends
+            "internal" here (see entity-service's own recompute_user_type
+            trigger) — "internal"/"admin" is rejected for a non-@wso2.com
+            email. "external" (and the other EXTERNAL-resolving roles:
+            partner/customer/partner_admin/customer_admin) is rejected
+            unconditionally — creating an external-type user is temporarily
+            disabled, and the form's "External" option is disabled to match.
       description: At least one of firstName/lastName is required.
 
     AccountSearchPayload:
@@ -17438,6 +17518,8 @@ components:
 
     ChangeRequestApprover:
       type: object
+      required:
+        - createdOn
       properties:
         id:
           type: string
@@ -17450,9 +17532,21 @@ components:
             Approver-level status as reported by the backing data source
             (e.g. "APPROVED", "NOT_REQUIRED", "REQUESTED"); open string set,
             not a fixed enum.
+        createdOn:
+          type: string
+          nullable: true
+          description: >-
+            When this approval was requested. Null on the ServiceNow-backed data
+            source, which has no equivalent field.
         respondedOn:
           type: string
           nullable: true
+        comments:
+          type: string
+          nullable: true
+          description: >-
+            The approver's own comment on their decision, if any. Null on the
+            ServiceNow-backed data source, same reason as createdOn above.
 
     ChangeRequestApproval:
       type: object

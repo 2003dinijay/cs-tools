@@ -83,6 +83,10 @@ func TestIsExpired(t *testing.T) {
 		"unset (zero time) never expires": {time.Time{}, false},
 		"future expiry is not expired":    {now.Add(time.Hour), false},
 		"past expiry is expired":          {now.Add(-time.Hour), true},
+		// Cosmos DB returns an unset expires_at as the epoch; without this, every
+		// user provisioned without -ttl is rejected as expired.
+		"cosmos epoch reads as unset": {time.Unix(0, 0), false},
+		"just after epoch is expiry":  {time.Unix(1, 0), true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -114,9 +118,7 @@ func TestParseCredentials(t *testing.T) {
 		}
 	})
 
-	// RFC 7235 makes the scheme case-insensitive, and net/http's BasicAuth already
-	// treats "basic" that way. A proxy that normalises header casing must not turn
-	// a valid credential into a 401.
+	// RFC 7235 makes the scheme case-insensitive, so a proxy normalising header casing must not turn a valid credential into a 401.
 	t.Run("scheme is case-insensitive", func(t *testing.T) {
 		token := base64.StdEncoding.EncodeToString([]byte("alice:s3cr3t"))
 		for _, scheme := range []string{"Bearer ", "bearer ", "BEARER ", "BeArEr "} {

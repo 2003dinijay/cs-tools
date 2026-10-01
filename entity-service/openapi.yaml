@@ -2136,8 +2136,11 @@ paths:
         '400':
           description: >
             Bad request — missing/invalid email, neither firstName nor
-            lastName supplied, or roles requests an internal-resolving role
-            (admin/internal) for a non-@wso2.com email.
+            lastName supplied, roles requests an internal-resolving role
+            (admin/internal) for a non-@wso2.com email, or roles requests an
+            external-resolving role (external/partner/customer/partner_admin/
+            customer_admin) — creating an external-type user is temporarily
+            disabled regardless of email.
           content:
             application/json:
               schema:
@@ -2415,7 +2418,7 @@ paths:
   /accounts/{id}/contacts/search:
     post:
       summary: Search contacts for an account.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: Needs a user token, or an allow-listed internal client on Postgres.
       operationId: searchAccountContacts
       parameters:
         - name: id
@@ -2460,9 +2463,8 @@ paths:
     post:
       summary: Search opportunities.
       description: >
-        ServiceNow data source only; there is no Postgres equivalent. Sourced from
-        Salesforce-sync data via the ServiceNow Table API — no scoped-app endpoint
-        exists for this resource.
+        On Postgres, read from the Salesforce-ingested sf_* tables and limited to
+        internal callers (403 otherwise); on ServiceNow, from the Table API.
       operationId: searchOpportunities
       requestBody:
         required: false
@@ -2483,6 +2485,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal caller (Postgres data source).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -2493,7 +2507,7 @@ paths:
   /opportunities/{id}:
     get:
       summary: Get an opportunity by ID.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: Postgres reads sf_opportunity, internal callers only (403 otherwise).
       operationId: getOpportunity
       parameters:
         - name: id
@@ -2521,6 +2535,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal caller (Postgres data source).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -2532,9 +2558,8 @@ paths:
     post:
       summary: Search invoices.
       description: >
-        ServiceNow data source only; there is no Postgres equivalent. Sourced from
-        Salesforce-sync data via the ServiceNow Table API — no scoped-app endpoint
-        exists for this resource.
+        On Postgres, read from the Salesforce-ingested sf_* tables and limited to
+        internal callers (403 otherwise); on ServiceNow, from the Table API.
       operationId: searchInvoices
       requestBody:
         required: false
@@ -2555,6 +2580,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal caller (Postgres data source).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -2565,7 +2602,7 @@ paths:
   /invoices/{id}:
     get:
       summary: Get an invoice by ID.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: Postgres reads sf_invoice, internal callers only (403 otherwise).
       operationId: getInvoice
       parameters:
         - name: id
@@ -2593,6 +2630,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal caller (Postgres data source).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -2604,9 +2653,8 @@ paths:
     post:
       summary: Search project-opportunity links.
       description: >
-        ServiceNow data source only; there is no Postgres equivalent. Sourced from
-        Salesforce-sync data via the ServiceNow Table API — no scoped-app endpoint
-        exists for this resource. A project can have more than one linked
+        On Postgres, read from the Salesforce-ingested sf_* tables and limited to
+        internal callers (403 otherwise); on ServiceNow, from the Table API. A project can have more than one linked
         opportunity — one row per link — so this always returns a list. No by-id
         fetch: the underlying data has no single-record endpoint.
       operationId: searchProjectOpportunityLinks
@@ -2625,6 +2673,18 @@ paths:
                 $ref: '#/components/schemas/SearchProjectOpportunityLinksResponse'
         "400":
           description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal caller (Postgres data source).
           content:
             application/json:
               schema:
@@ -2693,11 +2753,12 @@ paths:
     patch:
       summary: Update a project's closure-state fields or hasAgent/hasKbReferences toggles.
       description: >
-        ServiceNow data source only; there is no Postgres equivalent. At least one
-        field must be provided. closureState itself is not settable — it is derived
-        automatically from the three closure sub-state fields by an SN business
-        rule, so setting one of those and re-fetching the project is how a caller
-        observes the resulting overall status.
+        At least one field must be provided. closureState itself is not settable — it
+        is derived from the three closure sub-states (by an SN business rule, or on
+        Postgres by the same rule in the same transaction) and returned. Sub-states
+        are accepted and returned in ServiceNow Title Case, e.g. "Pending Notified".
+        On Postgres, an allow-listed internal client may call without
+        x-user-id-token, and suspensionProcessState is accepted but not stored.
       operationId: updateProject
       parameters:
         - name: id
@@ -2720,13 +2781,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProjectUpdateResponse'
         "400":
-          description: Bad request — no field provided, or an invalid value.
+          description: >-
+            Bad request — no field provided, or an invalid value. The message names
+            the value and lists the accepted ones.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
-          description: Missing or invalid x-user-id-token header (ServiceNow data source only).
+          description: Missing or invalid x-user-id-token header, and not an allow-listed internal client.
           content:
             application/json:
               schema:
@@ -2765,7 +2828,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/SearchProjectsResponse'
         "400":
-          description: Bad request.
+          description: >-
+            Bad request. The message names the invalid value and lists the accepted
+            ones, e.g. `excludeClosureStates: "suspended" is not a valid closure
+            state; use one of Open, Restricted, Suspended`.
           content:
             application/json:
               schema:
@@ -3235,7 +3301,7 @@ paths:
   /projects/{id}/contacts/search:
     post:
       summary: Search contacts for a project.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: Needs a user token, or an allow-listed internal client on Postgres.
       operationId: searchProjectContacts
       parameters:
         - name: id
@@ -8195,6 +8261,130 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /outage-communications/sweep:
+    post:
+      summary: Evaluate which outages owe an SRE communication email.
+      description: >-
+        Postgres data source only. The port of ServiceNow's
+        `Outage Communication` flow — the SRE-facing pair of emails that
+        announce an outage and then announce its resolution.
+
+
+        Distinct from `/outage-notifications/sweep`, which is the internal
+        STAKEHOLDER notifier. Different flow, different audience, different
+        content.
+
+
+        POST because it is not read-only: every decision is written to the
+        communication log before it is returned. That log row is this port's
+        idempotency guard — ServiceNow relies on "Run Trigger: Once" and
+        writes no state to the outage at all, which a sweep cannot inherit.
+        Recording first means a crash loses an email rather than repeating
+        it, matching the internal notifier's choice.
+
+
+        *** ONLY `type=outage` IS EVER DECLARED. *** ServiceNow's step 4
+        requires it, so a DEGRADATION or PLANNED outage produces no email.
+        Reproduced deliberately.
+
+
+        Internal callers only.
+      operationId: sweepOutageCommunications
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+          description: Maximum outages to evaluate in this sweep.
+      responses:
+        "200":
+          description: >-
+            The emails to send. An empty `decisions` list is the normal
+            steady state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutageCommunicationSweepResponse'
+        "400":
+          description: Bad request — limit is not an integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /outages/{number}/communication-log:
+    get:
+      summary: What has been emailed about one outage, newest first.
+      description: >-
+        Postgres data source only. Operational visibility over the outage
+        communication log.
+
+
+        Keyed on the outage NUMBER rather than its id: ServiceNow's table
+        carries a reference column that is empty on every row, so the number
+        string has always been the only link.
+
+
+        The log is SHARED — it also holds rows written by the outage-update
+        flow and historical rows from flows that no longer run, so entries
+        carry `emailType` verbatim plus a normalised `emailTypeNorm`.
+
+
+        Full email bodies are deliberately NOT returned; this answers
+        "did we send, and when".
+
+
+        Internal callers only.
+      operationId: getOutageCommunicationLog
+      parameters:
+        - name: number
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The outage number, e.g. OUT0001234.
+      responses:
+        "200":
+          description: The outage's communication history, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OutageCommunicationLogEntry'
+        "400":
+          description: Bad request — the outage number is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /outage-notifications/sweep:
     post:
       summary: Evaluate which internal-stakeholder outage emails are due.
@@ -11234,7 +11424,11 @@ components:
         At least one of firstName/lastName is required. userType is never
         accepted here -- it is derived by the database from role membership.
         Granting a role that resolves to userType INTERNAL (admin/internal)
-        for a non-@wso2.com email is rejected with 400. Postgres-only.
+        for a non-@wso2.com email is rejected with 400. Granting a role that
+        resolves to userType EXTERNAL (external/partner/customer/partner_admin/
+        customer_admin) is rejected with 400 regardless of email -- creating
+        an external-type user via this endpoint is temporarily disabled.
+        Postgres-only.
 
     SNUser:
       type: object
@@ -11558,11 +11752,13 @@ components:
         isPartner:
           type: boolean
           nullable: true
-          description: Whether this account is itself a partner organization. ServiceNow data source only.
+          description: Whether this account is itself a partner organization (on Postgres, classification is Partner).
         hasPrimaryPartner:
           type: boolean
           nullable: true
-          description: Whether this account has a primary partner account set. ServiceNow data source only.
+          description: >-
+            Whether this account has a primary partner account set. Postgres approximates
+            this as having any partner in account_relationship.
 
     SNSupportTierRef:
       type: object
@@ -11635,11 +11831,13 @@ components:
         isPartner:
           type: boolean
           nullable: true
-          description: Whether this account is itself a partner organization. ServiceNow data source only.
+          description: Whether this account is itself a partner organization (on Postgres, classification is Partner).
         hasPrimaryPartner:
           type: boolean
           nullable: true
-          description: Whether this account has a primary partner account set. ServiceNow data source only.
+          description: >-
+            Whether this account has a primary partner account set. Postgres approximates
+            this as having any partner in account_relationship.
 
     SearchAccountsResponse:
       type: object
@@ -11701,6 +11899,40 @@ components:
         searchQuery:
           type: string
           description: Case-insensitive match against name, key, and subscription_type.
+        closureStatus:
+          type: string
+          enum: [Open, Suspended, Restricted]
+          description: Only projects with this overall closure state.
+        sortBy:
+          type: string
+          enum: [endDate]
+          description: Sort field. Postgres puts projects with no end date last.
+        sortOrder:
+          type: string
+          enum: [asc, desc]
+        endDateFrom:
+          type: string
+          format: date
+          description: Only projects ending on or after this date (yyyy-MM-dd).
+        endDateTo:
+          type: string
+          format: date
+          description: Only projects ending on or before this date (yyyy-MM-dd).
+        onboardingStatus:
+          type: array
+          items:
+            type: string
+          description: >-
+            Only projects whose onboarding status is any of these, e.g. "In-Progress".
+            Case and separators are ignored; an unknown value returns 400.
+        subRegion:
+          type: string
+          description: Only projects whose account has this sub-region (case-insensitive).
+        arrTodayGte:
+          type: string
+          description: >-
+            Only projects whose account ARR is at least this value. ServiceNow only;
+            Postgres returns 400 because account ARR is not stored yet.
         excludeClosureStates:
           type: array
           items:
@@ -11708,7 +11940,7 @@ components:
             enum: [Open, Suspended, Restricted]
           description: >-
             Excludes projects whose closure state is any of the given values.
-            Supported on both data sources (case-insensitive on Postgres).
+            Supported on both data sources.
         excludeSubscriptionTypes:
           type: array
           items:
@@ -11773,8 +12005,8 @@ components:
           type: boolean
           nullable: true
           description: >
-            Whether this project's linked account is itself a partner organization.
-            ServiceNow data source only.
+            Whether this project's linked account is itself a partner organization
+            (on Postgres, classification is Partner).
 
     ProjectDetailsView:
       type: object
@@ -11911,6 +12143,12 @@ components:
           type: string
         key:
           type: string
+        sfId:
+          type: string
+          nullable: true
+          description: >
+            Salesforce id. Null when the backing data source has no value
+            recorded for this project.
         subscriptionType:
           type: string
           enum:
@@ -11942,13 +12180,34 @@ components:
             When the project record was created. Distinct from startDate, which
             moves forward on each renewal.
         account:
+          type: object
           nullable: true
-          description: Null when the project has no linked account.
-          allOf:
-            - $ref: '#/components/schemas/EntityRef'
+          description: Null when the project has no linked account. arrToday is ServiceNow only.
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            region:
+              type: string
+              nullable: true
+            subRegion:
+              type: string
+              nullable: true
+            arrToday:
+              type: string
+              nullable: true
+            isPartner:
+              type: boolean
+              nullable: true
+        onboardingStatus:
+          type: string
+          nullable: true
+          description: Hyphenated Title Case, e.g. "In-Progress".
         closureState:
           type: string
           nullable: true
+          description: Open, Suspended or Restricted. Sub-states are Title Case too, e.g. "Pending Notified".
         endDateClosureState:
           type: string
           nullable: true
@@ -11961,6 +12220,7 @@ components:
         complianceViolationDate:
           type: string
           nullable: true
+          description: yyyy-MM-dd.
         suspensionProcessState:
           type: object
           additionalProperties: true
@@ -11969,7 +12229,7 @@ components:
             Free-form, per-dimension Account Closure Process (ACP) suspension-process
             state (event type + action results) written by an existing ServiceNow
             suspension flow. This is opaque JSON passed through as-is — its shape is
-            not defined or validated by this layer.
+            not defined or validated by this layer. Always null on Postgres.
 
     SearchProjectsResponse:
       type: object
@@ -11994,8 +12254,7 @@ components:
       description: >
         At least one field must be provided. hasAgent and hasKbReferences are
         simple toggles; the closure-state fields track sub-states of an
-        Account Closure Process and are only applicable to projects sourced
-        from ServiceNow.
+        Account Closure Process.
       properties:
         hasAgent:
           type: boolean
@@ -12125,7 +12384,8 @@ components:
           description: >
             Whether this row would actually grant its person visibility into this project's
             cases: a linked contact record AND the address the row was invited under matching
-            that record's own address, compared case-insensitively. Deliberately not a
+            that record's own address, compared case-insensitively (on Postgres, the row
+            must also be REGISTERED). Deliberately not a
             restatement of `customerContactPresent` — a row invited under one address but
             linked to a contact whose own address differs is invisible to both people, and
             that does happen on genuine customer rows.
@@ -15327,6 +15587,8 @@ components:
 
     ChangeRequestApprover:
       type: object
+      required:
+        - createdOn
       properties:
         id:
           type: string
@@ -15338,9 +15600,23 @@ components:
           description: >-
             Approver response status. Open string set (e.g. APPROVED, NOT_REQUIRED,
             REQUESTED, REJECTED, CANCELLED, NO_CONSENSUS); not a fixed enum.
+        createdOn:
+          type: string
+          nullable: true
+          description: >-
+            When this approval was requested. Always present on the Postgres data
+            source; always null on the ServiceNow-backed one (the Choreo
+            GET /change-requests/{id}/approvals response carries no equivalent
+            field).
         respondedOn:
           type: string
           nullable: true
+        comments:
+          type: string
+          nullable: true
+          description: >-
+            The approver's own comment on their decision, if any. Always null on
+            the ServiceNow-backed data source, same reason as createdOn above.
 
     ChangeRequestApproval:
       type: object
@@ -17717,6 +17993,83 @@ components:
           type: integer
           description: account_relationship rows deleted.
 
+    OutageCommunicationSweepResponse:
+      type: object
+      required: [evaluated, decisions]
+      properties:
+        evaluated:
+          type: integer
+          description: How many outages the sweep considered.
+        decisions:
+          type: array
+          description: >-
+            The emails owed, each already recorded in the communication log.
+            Empty is the normal steady state.
+          items:
+            $ref: '#/components/schemas/OutageCommunicationDecision'
+    OutageCommunicationDecision:
+      type: object
+      required: [outageId, number, kind]
+      properties:
+        outageId:
+          type: string
+          format: uuid
+        number:
+          type: string
+          example: OUT0001234
+        kind:
+          type: string
+          enum: [DECLARED, RESOLVED]
+          description: >-
+            Which email is owed. There is no update arm — the "Update" rows
+            in the log belong to a different flow.
+        reason:
+          type: string
+          description: >-
+            The ServiceNow branch that selected this, in the flow's own
+            words, so a decision can be traced back to a step.
+          example: Declare Outage
+        subject:
+          type: string
+          description: >-
+            For a RESOLVED decision this is the declaration's subject,
+            reused so the two emails thread.
+        body:
+          type: string
+    OutageCommunicationLogEntry:
+      type: object
+      required: [id, outageNumber, sentOn]
+      properties:
+        id:
+          type: string
+          format: uuid
+        outageNumber:
+          type: string
+          example: OUT0001234
+        emailType:
+          type: string
+          description: >-
+            Verbatim as written. Historical values are inconsistent —
+            "Declared" and "Declare" both occur, alongside "Update" and
+            "RCA" from other flows — so match on emailTypeNorm instead.
+          example: Declared
+        emailTypeNorm:
+          type: string
+          description: Normalised for matching; DECLARED, RESOLVED, UPDATE or RCA.
+          example: DECLARED
+        outageStatus:
+          type: string
+          example: sent
+        subject:
+          type: string
+        recipients:
+          type: string
+        mainContent:
+          type: string
+          description: The one-line summary; the full body is not returned.
+        sentOn:
+          type: string
+          format: date-time
     ErrorResponse:
       type: object
       properties:

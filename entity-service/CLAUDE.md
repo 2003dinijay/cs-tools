@@ -263,6 +263,11 @@ later CREATED/UPDATED/RESTORED clears `deleted_on`. Never `DELETE FROM account`
 `EnsureAccount`), the partner lookup and the joins from projects/cases/global search
 still see the row.
 
+### One row per sf_id
+
+`sf_id` is not unique, so every ingest write and parent lookup updates ONE row by `id`;
+the tie-break lives in `internal/repository/sf_id_resolve.go`. Deletes still hit every copy.
+
 ## Salesforce membership ingest and onboarding steps
 
 The same `POST /salesforce/events` endpoint also ingests customer **memberships**
@@ -403,6 +408,8 @@ publishes) while still suppressing the portal's own echo (RE-INVITED →
 RE-INVITED is unchanged, so it does not). Do not put the insert-only condition
 back.
 
+**Contact who already signed in:** Salesforce saves their new membership as REGISTERED. It still gets `project_contact.invited` (existing-account email) when the row is new (created < 24 h ago in Salesforce) or comes back from DEACTIVATED, but not on RESTORED. The portal invite stores the REGISTERED state Salesforce returns and publishes.
+
 `project_contact.registered` (`events.ProjectContactRegisteredPayload`) is published the same way, only on an
 existing row moving INVITED / RE-INVITED → REGISTERED; csm-notification-service sends the Welcome email (step `WELCOME_EMAIL`).
 
@@ -535,14 +542,14 @@ membership-ingest-enabled service, publisher included) only when
 `cmd/api/main.go` calls on shutdown, before the producers close. Every tick (the
 first one after one interval) it reads DATABASE steps with status FAILED, a
 `last_error` starting "project not found" / "account not found", `updated_on`
-older than the interval and `attempt_count` < 12
+older than the interval and `retry_count` < 12
 (`OnboardingStepRepository.ListMissingParentFailures`), and re-runs
 `ingestMembership` for each as UPDATED (`RetryMembershipIngest`), 30s timeout each,
-at most 100 per tick. A failed re-run re-records the step with `attempt_count` + 1;
-when it failed before the ingest recorded anything (e.g. the Sales Entity fetch),
-the job itself counts the attempt (`RecordRetryAttempt`: attempt + 1, `updated_on =
-now()`, `last_error` kept, only while the step is still FAILED with the `updated_on`
-the job read). So a parent that never arrives stops being retried after about an
+at most 100 per tick. Each failed re-run counts one retry (`RecordRetryAttempt`:
+`retry_count` + 1, `updated_on = now()`, `last_error` kept, while still FAILED);
+redeliveries and new events never add to `retry_count` (migration 0174), and a
+successful project/account ingest resets it on the rows whose error names that parent
+(`RequeueMissingParentFailures`). So a parent that never arrives stops being retried after about an
 hour at the default. FAILED ledger rows are read the same way
 (`SalesforceIngestStateRepository.ListMissingParentFailures`, which applies the
 registered-retrier, missing-parent and attempt-cap filters in SQL before the batch
@@ -590,7 +597,7 @@ acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest
   `product_description`, `product_family`, `product_unit`, `eng_product_code`,
   `product_sf_id`, `classification`, `environment`, `total_price`. **Never written:**
   `development_support_hours`, `engagement_code`. With duplicate `sf_opportunity` rows
-  for one `sf_id`, the oldest owns the line items. Standalone `OpportunityLineItem`
+  for one `sf_id`, the row "One row per sf_id" picks owns the line items. Standalone `OpportunityLineItem`
   events are handled too (see "Standalone OpportunityLineItem" below).
 - **DELETED:** hard delete `sf_opportunity WHERE sf_id = $1` (FKs cascade line items
   and project links, null invoices) plus a DELETED ledger row, in one transaction;
@@ -906,12 +913,11 @@ easy to wire up for real once both exist.
   `CLAUDE.md`).
 
   **`Recipients` depends on `req.Type`.** For `case`/`engagement`/
-  `service_request`/`security_report_analysis` it's still the case's own
-  resolved watch list emails only (this service has no other notion of who
-  should be emailed for these types) — which, on the Postgres/dual-write
-  data source, already includes the account's four default-watcher
-  stakeholders once `addAccountDefaultWatchers` has run (see
-  `CaseRepository.AccountDefaultWatcherIDs` below). For `announcement`,
+  `service_request`/`security_report_analysis` it's the case's own resolved
+  watch list emails, unioned with the account's four default-watcher
+  stakeholders resolved fresh via `CaseRepository.AccountDefaultWatcherEmails`
+  — see "Case watch list" below for why those four are resolved at publish
+  time rather than read from the persisted watch list. For `announcement`,
   `publishCaseCreatedEvent` instead resolves the audience via
   `CaseService.ProjectContactEmailsByRole` — every `project_contact`
   currently holding the `SECURITY_CONTACT` project role when
@@ -919,10 +925,10 @@ easy to wire up for real once both exist.
   `PORTAL_USER` — bypassing the watch-list mechanism entirely, since a
   project contact often has no matching `"user"` row to add as a
   `work_item_watcher` (`work_item_watcher.user_id` is `NOT NULL`). Falls
-  back to the case's own watch-list emails (the account's default
-  watchers) when no contact holds the requested role for that project — a
-  project with nobody in the requested role must still notify someone, not
-  silently notify no one. `ProjectContactEmailsByRole` is Postgres-only
+  back to the case's own watch-list emails (still unioned with the account's
+  default watchers) when no contact holds the requested role for that
+  project — a project with nobody in the requested role must still notify
+  someone, not silently notify no one. `ProjectContactEmailsByRole` is Postgres-only
   (`project_contact`/`project_role` have no ServiceNow equivalent); on
   `snCaseService` it delegates to `pgFallback` when configured, else
   returns empty (no error) — same "can't resolve, skip" posture as every
@@ -1753,6 +1759,21 @@ hardcoded id). Both are resolved via `LEFT JOIN`s added to
 enrichment, not part of the SLA clock itself; a work item with no
 project/account simply reports the zero value for each.
 
+**`AssigneeName`/`AssigneeEmail`/`TeamEmail`/`TeamLeadName` exist purely for
+`csm-notification-service`'s own SLA breach-alert EMAIL reaction** (the
+assignee/team-group emails sent alongside the existing Chat alert — see that
+repo's own `CLAUDE.md`, "SLA breach-alerting engine") — not used by anything
+in this service itself. `AssigneeEmail`/`AssigneeName` resolve via a
+`LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id`; `TeamEmail` is
+`"group".group_email` (the same `"group"` row `team` already joins through)
+and `TeamLeadName` resolves via a second `LEFT JOIN "user" teamlead ON
+teamlead.id = cre.manager_id` — the group's manager, not a dedicated "team
+lead" column, since none exists on this schema today. All four are
+best-effort, same posture as `ProjectOnboardingStatus`/`IsEvaluationAccount`
+above: a work item with no assignee/group simply reports empty strings. A
+dedicated team table may replace the `"group"` lookup for `TeamEmail`/
+`TeamLeadName` later — noted, not yet needed.
+
 ## CSM-native SLA clock engine
 
 `internal/service/sla_engine_service.go` (`SLAEngineService`) is what actually
@@ -1787,6 +1808,44 @@ regardless of severity.
   on its own ticker, default 45s — frequent enough that a 50/75/100%
   crossing is visible well within `csm-notification-service`'s own
   `SLA_TICK_INTERVAL` poll cadence.
+- **A BREACHED clock is not terminal — it keeps being recomputed, and stays
+  completable, until its own genuine finishing event.** A real, reported bug
+  had `RecomputeActive` stop touching a row the instant it first flipped to
+  `BREACHED` (its `WHERE` clause only ever matched `IN_PROGRESS`), freezing
+  `business_elapsed_percentage`/`business_duration` forever at whatever the
+  breaching tick happened to compute — e.g. a response SLA observed stuck at
+  "59m" elapsed long after real time had moved well past that, because
+  nothing ever recomputed it again. `CompleteClock`/`SetPaused` had the
+  matching half of the same bug: both excluded `BREACHED` via
+  `slaEngineActiveStageFilter`, so a RESPONSE clock that breached before a
+  support engineer ever replied silently ignored that reply's own
+  `CompleteClock` call — matching zero rows instead of finally finalizing
+  it. Fixed by giving `CompleteClock`/`SetPaused` their own, narrower
+  `slaEngineOpenStageFilter` (excludes only `ACHIEVED`/`CANCELLED`/
+  `COMPLETED` — the stages a clock genuinely never leaves — not `BREACHED`
+  too), and widening `RecomputeActive`'s own `WHERE` to `stage IN
+  ('IN_PROGRESS', 'BREACHED')` (still excluding `PAUSED`, for the same
+  "pause must actually stop accumulation" reason it always did).
+  `business_elapsed_percentage` is no longer capped at 100 either, in both
+  `RecomputeActive` and `CompleteClock` — a clock now shows its real,
+  uncapped overrun (e.g. 134%) for as long as it stays unanswered/BREACHED,
+  and still shows that same true number once it's finally completed,
+  instead of an identical-looking 100% regardless of how late the real
+  completion actually was. The webapp's `CaseSlaTable` already handles a
+  percentage above 100 correctly (clamps the progress-bar fill, shows the
+  real number as text), confirmed before uncapping this.
+- **A case closing now finalizes all three clock types, not just
+  resolution.** `ApplyCaseStateEffects`'s `CaseStateClosed` branch used to
+  only resume+complete `resolution` and merely pause `workaround` forever
+  (a documented, carried-forward gap from the old deleted design) — and
+  never touched `response` at all, leaving a case closed before anyone ever
+  replied with its response clock permanently `IN_PROGRESS`/`BREACHED`.
+  Closing now resumes+completes `workaround` the same way `resolution`
+  already was, and completes `response` directly (it's never paused at any
+  state) — all three unconditionally, every close, since `CompleteClock`'s
+  own stage filter is a no-op for whichever clock(s) already reached a
+  genuine completion (an engineer's reply, an earlier close) before this
+  ran.
 - **`RegisterCaseClocks`/`ReviseCaseClocks`/`CompleteResponseClock`/
   `ApplyCaseStateEffects`** are all called directly, in-process, from
   `snCaseService`'s own case-lifecycle hooks (create/severity-change/
@@ -1864,6 +1923,34 @@ regardless of severity.
   does **not** reopen a completed clock; `SLAEngineRepository` has no
   "uncomplete" operation, and a recall is rare enough that this stays a
   known, accepted gap rather than something built speculatively.
+- **Sharing a fix ETA with the customer completes BOTH the workaround and
+  resolution clocks, not just one.** The webapp's "Share fix ETA with
+  customer" action (`SetFixEtaDialog.tsx`, ServiceNow-only on the wire —
+  `req.AddPublicComment` alongside a fix-ETA date) once WSO2 has committed a
+  fix timeline to the customer, neither clock has anything further to
+  track. **The trigger is `work_item.eta_shared_on` becoming non-null, not
+  `req.AddPublicComment` itself** — that request flag has no guaranteed
+  connection to *when* the ETA-share actually lands in Postgres (whatever
+  external process populates `eta_shared_on` does so on its own schedule,
+  not synchronously with this one PATCH), so `CaseService.GetCaseEtaSharedOn`
+  (`domain.CaseView.EtaSharedOn`, sourced from Postgres on **every** data
+  source — see that field's own doc comment for why ServiceNow has no
+  equivalent column at all) is checked on every `UpdateCase` call instead,
+  on both `caseService` (Postgres) and `snCaseService` (ServiceNow, via
+  `pgFallback` when configured, else always nil/no-op). Cheap and
+  idempotent, same as every other completion check here: a case's clocks
+  get completed the next time anything about it changes, once the shared
+  fact is persisted, not strictly on the PATCH that shared it.
+  `SLAEngineService.CompleteFixEtaSharedClocks` calls `CompleteClock` for
+  both targets, same real, uncapped elapsed-time-at-this-moment semantics
+  every other completion path uses (see `SLAEngineRepository.CompleteClock`'s
+  own doc comment) — not an unconditional 100%. Independent of
+  `WorkaroundProvided`'s own hook just above: a caller can set both signals
+  at once, in which case `CompleteWorkaroundClock` simply becomes a no-op
+  for whichever of the two runs second. Postgres's own `GetCaseByID` now
+  also selects `best_case_eta`/`most_likely_eta`/`worst_case_eta`/
+  `eta_shared_on` for the first time — previously write-only columns on
+  this data source, never read back into a `CaseView` at all.
 
 ## Customer-reply state transition
 
@@ -2142,33 +2229,67 @@ changed.
   `work_item_watcher` — deliberately replaced: that design still routed the
   default watch list through ServiceNow-shaped concepts (email vs. UUID
   resolution, `userRepo.GetUserByEmail` lookups) for something this schema
-  can answer directly.
+  can answer directly. `createCaseSNFirst` calls `addRequestedWatchers`
+  right after `CreateCaseFromServiceNow` succeeds and before
+  `publishCaseCreatedEvent`: it persists `req.WatchList` (whatever the
+  caller explicitly asked for) via `CaseRepository.SetCaseWatchList`,
+  nothing more — `req.WatchList` itself is unaffected by any of this; it's
+  still forwarded to ServiceNow as part of the create request the normal
+  way, this addition is purely about what the Postgres mirror also
+  guarantees.
 
-  **Every case now gets its account's four named stakeholders as watchers,
-  unconditionally, from a pure Postgres lookup — no ServiceNow involved.**
-  `account.technical_owner_id`/`secondary_technical_owner_id`/
-  `account_manager_id`/`renewal_account_manager_id` (migration 0012)
-  are already `"user"` ids, so there's no email/UUID ambiguity to resolve
-  at all. `customer_success_manager_id` is deliberately excluded — unlike
-  the other four, the CSM is not meant to receive these default case
-  notifications (an earlier version of this lookup wrongly included it and
-  omitted `renewal_account_manager_id`; fixed at explicit request).
-  `createCaseSNFirst` calls `addAccountDefaultWatchers` right after
-  `CreateCaseFromServiceNow` succeeds and before `publishCaseCreatedEvent`;
-  it resolves those four ids for the case's project via
-  `CaseRepository.AccountDefaultWatcherIDs` (a `project JOIN account`,
-  whichever of the four are set, deduplicated) and writes them with the
-  same `CaseRepository.SetCaseWatchList` the `UpdateCase` branch above
-  already uses. A project with no linked account, or an account with none
-  of the four roles set, is a normal state (an empty slice, `SetCaseWatchList`
-  never called) — not an error. A repository failure here is logged, not
-  returned: ServiceNow already has the case by this point, so a missing
-  default watch list must not be reported as a failed create, same posture
-  as every other post-ServiceNow-success step in this file (event
-  publishing included). `req.WatchList` itself is unaffected by any of
-  this — it's still forwarded to ServiceNow as part of the create request
-  the normal way; this addition is purely about what the Postgres mirror
-  also guarantees.
+  **The account's four named stakeholders are never persisted into
+  `work_item_watcher` at all, on either the create or the update path —
+  they're resolved fresh, straight from the account row, every time a
+  `case.*` event is about to be emailed.** An earlier version of this
+  auto-added `account.technical_owner_id`/`secondary_technical_owner_id`/
+  `account_manager_id`/`renewal_account_manager_id` (migration 0012,
+  `customer_success_manager_id` deliberately excluded — unlike the other
+  four, the CSM is not meant to receive these default case notifications)
+  as real watch-list rows on every create and merged them back in,
+  unremovable, on every update (`addAccountDefaultWatchers`/
+  `updateCaseWatchList`'s own "mandatory stakeholder floor"). Replaced at
+  explicit product request: a stakeholder reassignment on the account (the
+  account's own `technical_owner_id` etc. changing) had no effect on a
+  case's already-persisted watch list, so every case created before the
+  reassignment kept emailing the OLD stakeholder indefinitely — and a
+  case's "Watchers" list in both portals showed four people who were never
+  really watching *that* case specifically, just standing in for "whoever
+  holds this account role right now." `resolveCaseDefaultWatcherEmails`
+  (`sn_case_service.go`, shared by every `case.*` publisher — see
+  "Recipients depends on req.Type" above) calls
+  `CaseRepository.AccountDefaultWatcherEmails` (a `project JOIN account`
+  straight to `"user".email`, no id-to-email round trip) and unions the
+  result into that event's `Recipients`, fresh, every single send — so a
+  reassignment is reflected on the very next notification with no case
+  edit required, and a departed stakeholder stops being emailed the moment
+  the account itself is updated. `addRequestedWatchers` (create) and
+  `updateCaseWatchList` (update) now persist only what the caller
+  explicitly asked for — no merge, no floor, no exemption from
+  `validateWatchListProjectMembership` for a submitted id (nothing exempt
+  to submit any more). `domain.WatchListUser.Locked` still exists but is
+  now purely informational, not enforced — see its own doc comment.
+
+  **A persisted (explicitly-added) watcher is re-checked for live project
+  membership immediately before each `case.*` email goes out, for
+  everything except case creation.** `validateWatchListProjectMembership`
+  only ever ran once, when a watcher was first added — someone who later
+  left the project (deactivated, or never finished registering) kept being
+  emailed indefinitely, since nothing re-checked. `filterActiveWatchListUsers`/
+  `isActiveProjectWatcher` (`case_service.go`) re-run that same two-part
+  check (INTERNAL staff, or a REGISTERED `project_contact` on the case's
+  project) against `cv.WatchList`/`before.WatchList` right before each of
+  `publishCommentAddedEvent`/`publishStatusChangedEvent`/
+  `publishSeverityChangedEvent`/`publishCaseAssigned`'s own Postgres-path
+  call sites, silently dropping (logged at INFO, not an error) anyone no
+  longer eligible. Deliberately NOT applied to case creation — a watcher
+  requested in the same `CreateCase` call couldn't possibly have gone stale
+  within that same request — and deliberately NOT applied on the
+  plain-ServiceNow data source, which has no Postgres `project_contact`
+  table to check a ServiceNow-sourced watch list's (non-Postgres-UUID)
+  ids against in the first place. A repository error while checking a
+  given watcher keeps that watcher rather than risk silently dropping a
+  real recipient over a transient failure.
 - **Account contacts** (`account_contact`, migration 0026) and **project
   contacts** (`project_contact` + `project_contact_group`/`project_group`/
   `project_group_role`/`project_role`, migrations 000022-000025): new
@@ -2415,12 +2536,49 @@ v5 can't scan a binary-format timestamptz into a `*string`
 (`it_service_repo.go`/`service_offering_repo.go`) backing `POST /services/
 search` and `POST /service-offerings/search`, previously ServiceNow-only.
 
+**`AssignedTeamID` is now read** — `work_item.assignment_group_id` (migration
+0075, a FK into `group`), via `changeRequestFromJoins`' own `"group" ag`
+join, back as `domain.ChangeRequest.AssignedTeam`. A real, reported bug: the
+CSM Portal's own action bar at the time required `assignedTeam` to be set
+before it would let a change request advance to Assess at all, and since
+this was never read, *no* change request could ever be promoted past New
+through the portal on this data source — confirmed live against a real
+change request with a genuine ServiceNow Assignment group ("Devops"), whose
+`AssignedEngineer` synced and displayed correctly while `AssignedTeam`
+always showed empty. This proved `csm-sync-service` already populates
+`work_item.assignment_group_id` for change requests the same way it does
+for every other `work_item` type, so the fix is read-only — no create/patch
+write-path changes were needed alongside it.
+
+**That frontend gate was itself later found to be stale and removed.** It
+was carried over unchanged from when New→Assess sent a ServiceNow "Request
+Approval" action (which genuinely needed a team) and was never re-verified
+after that transition became a plain, ungated `{state: "assess"}` PATCH (see
+"New→Assess is a plain, ungated state change" below) — there is no evidence
+the plain state change itself requires a team. `ChangeRequestActionBar.tsx`'s
+`TARGET_BLOCKED_REASON` no longer has an `assess` entry.
+
+**Writing `AssignedTeamID` is now wired too.** `PatchChangeRequestRequest.
+AssignedTeamID` sets `work_item.assignment_group_id` the same way
+`AssignedEngineerID` sets `assigned_to_id` immediately above it in
+`PatchChangeRequest`; a `23503` FK violation maps to the friendly field name
+`assignedTeamId` via `changeRequestPatchFKField`, same convention as every
+other FK column on this PATCH. Verified live against the local compose
+stack: setting it to a real seeded `"group"` row round-trips correctly and
+survives a reload; setting it to a well-formed but unknown id produces a
+clean `assignedTeamId does not refer to an existing record` validation error
+instead of a raw Postgres error. Writing it at **create** time
+(`CreateChangeRequestRequest.GroupID`) remains unwired — a separate,
+different field with no confirmed equivalence to this one (see this file's
+own comment on `CreateChangeRequestFromServiceNow`). Filtering search
+results by it (the parsed filter array's `assignmentGroupId`) is also still
+unwired — see `changeRequestWhereClause`'s own comment.
+
 **Fields still with no real column anywhere, left unset rather than
 guessed at** (see `ChangeRequestRepository`'s own doc comment for the full
-list): `ConfigurationItemID`, `GroupID`, and `AssignedTeamID` (no CMDB/group
-tables exist in this schema at all); `Type`
-(`domain.ChangeRequestType` — standard/normal/emergency/... — has **no**
-relationship to `change_request.change_request_type`, whose real enum
+list): `ConfigurationItemID` (no CMDB table exists in this schema at all);
+`Type` (`domain.ChangeRequestType` — standard/normal/emergency/... — has
+**no** relationship to `change_request.change_request_type`, whose real enum
 values are `INFRA`/`GENERAL`, a completely different classification, not a
 subset of the domain enum); `ApprovedBy`/`ApprovedOn` on
 `domain.ChangeRequest` (no approver/date columns exist). `Duration`
@@ -2512,21 +2670,66 @@ the one value ServiceNow's real workflow always assigns on create.
 shared with `PatchChangeRequestRequest`) but has no effect at creation and
 is intentionally ignored by this insert.
 
-**The New→Assess promote action had a second, related bug**: it sends
-`{requestApproval: true}` rather than `{state: "assess"}` (see
-`ChangeRequestActionBar.tsx`/`buildTransitionPatch` on the frontend), and
-`PatchChangeRequest`'s handling of `RequestApproval` only ever recorded
-`change_request.approval = 'REQUESTED'` — it never advanced `state`. Before
-`LegalNextStates` was populated at all, this was unreachable (the button
-never appeared for any state, New included), so the gap was invisible.
-Populating `LegalNextStates` made it reachable for the first time, and it
-became a real, visible dead end: clicking "Request Approval" got a
-successful response, but the record's own state (and therefore its next
-legal action) never left New, so the same button just reappeared.
-`PatchChangeRequest` now also sets `state = 'ASSESS'` when
-`RequestApproval` is true and `req.State` wasn't itself separately
-provided (the frontend only ever sends one or the other, never both, so
-this can't double-write the column).
+**New→Assess is a plain, ungated state change — `RequestApproval` has
+nothing to do with it.** An earlier revision of this section documented the
+New→Assess promote action as sending `{requestApproval: true}` (see
+`ChangeRequestActionBar.tsx`/`buildTransitionPatch` on the frontend) rather
+than `{state: "assess"}`, and had `PatchChangeRequest` locally force
+`state = 'ASSESS'` whenever `RequestApproval` was true and `req.State`
+wasn't itself separately provided — modeling New→Assess as a special
+"request approval" ceremony, gated on the record actually being in New
+(rejecting with a `ConflictError` otherwise). **Checked against the real
+ServiceNow instance and confirmed wrong**: New→Assess is a plain, direct,
+ungated state change — like picking a new value from a dropdown — with no
+relationship to approval at all. The frontend now sends a plain
+`{state: "assess"}` for this transition, exactly like every other one, and
+`PatchChangeRequest` handles it generically via its existing
+`if req.State != nil { ... }` branch, with no special casing for New→Assess.
+
+`RequestApproval` is now a pure bookkeeping flag: `{requestApproval: true}`
+still sets `change_request.approval = 'REQUESTED'` (other code/displays may
+still care about that field), but has **no state-transition side effect at
+all**, and is no longer gated on the caller's current state — it can be sent
+against a change request in any state and only ever touches `approval`.
+
+The one real approval-gated transition remains **Assess→Authorize**, handled
+entirely by the separate `POST /change-requests/{id}/approvals/decision`
+endpoint (`DecideChangeRequestApproval`) — unrelated to `RequestApproval` and
+unchanged by any of this.
+
+**That cascade did not actually exist when this section was first written.**
+An earlier revision of this same fix claimed `DecideChangeRequestApproval`
+"already cascades `change_request.state` forward on approval" — that claim
+was false, based on a misread of an unrelated earlier test, and was never
+actually verified. Live testing (after the direct "Change state -> Authorize"
+button was removed, leaving the Approvers section the only path to Authorize)
+showed approving did nothing at all to `change_request.state`. Fixed
+properly: `DecideChangeRequestApproval` now applies the same
+first-responder-wins quorum rule `buildChangeRequestApprovals` uses at read
+time — a single approval, provided nobody on the same stage has rejected,
+both (1) advances `change_request.state` from Assess to Authorize and (2)
+cancels every other still-`requested` approver on that same stage, matching
+real ServiceNow's own observed behavior on a genuine multi-approver group
+(confirmed live: only the 1-2 who actually responded were left
+Approved/Rejected, every other pending approver on the same group was moved
+to Cancelled, not left sitting at Requested indefinitely). A rejection never
+does either. Still deliberately scoped to Assess→Authorize only — a decision
+on an Authorize-stage approver still cancels its own siblings, but has no
+state-cascade effect yet.
+
+`domain.ChangeRequestApprover` also gained `CreatedOn`/`Comments` (both
+`*string`, both read from `approval_stage_approver.created_on`/`.comments`
+via `changeRequestApprovalApproversQuery`) to support a full UI redesign:
+the CSM Portal's own Approvers list used to nest approvers under a
+collapsible per-stage accordion card — reported live as confusing (an
+approver looking for their own pending decision gained nothing from first
+finding "their" stage card and expanding it) — and now renders as one flat
+table (State/Approver/Assignment group/Comments/Created/Approved on),
+matching real ServiceNow's own Approvers list layout exactly, with every
+approver from every stage shown together rather than grouped. Both new
+fields are always null on the ServiceNow-backed data source: the Choreo
+`GET /change-requests/{id}/approvals` response has no equivalent fields to
+populate them from.
 
 **Linking happens entirely through `PATCH`, never at creation** —
 `CreateChangeRequestRequest` has no project/case field at all;
@@ -4195,6 +4398,17 @@ the CSM portal's Add User form sent no `roles` at all until it gained a type sel
 created resolved to `user_type = NOT_AVAILABLE` — checked directly against staging before this shipped
 (128 such users). The type selector fixes that by granting `internal`/`external`; this check is what
 stops it from being pointed at the wrong email.
+
+**Creating an EXTERNAL-type user via `POST /users` is temporarily disabled.** `externalUserTypeRoles`
+(next to `internalUserTypeRoles`) is `["external", "partner", "customer", "partner_admin",
+"customer_admin"]` — every role name `recompute_user_type`'s trigger maps to `user_type = EXTERNAL` —
+and `requestsExternalUserType` rejects any of them with a `*apierror.ValidationError` regardless of
+email. This only affects `POST /users`: the Salesforce membership/contact ingest (its own, separate
+`upsertMembershipUser`/`SalesforceContactRepository` write path, not `UserRepository.CreateUser`) is
+unaffected and keeps creating external users exactly as before. `apps/csm-portal/backend`'s
+`UsersHandler.CreateUser` mirrors the same check for a fast 400, and the webapp's Add User form
+disables the "External" option in its type selector rather than offering a choice the backend will
+reject — all three are temporary, meant to come out together once external-type creation is ready.
 
 ## SearchDeployments crashed on any page containing a NULL deployment.type
 

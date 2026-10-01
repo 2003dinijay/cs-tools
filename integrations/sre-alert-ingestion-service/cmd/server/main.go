@@ -14,8 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Command server wires Cassandra, the allocator and the vendor transforms, then serves the
-// vendor webhook routes and health endpoints.
+// Command server wires Cassandra, the allocator and vendor transforms, then serves the webhook routes.
 package main
 
 import (
@@ -52,6 +51,9 @@ const chatTimeout = 10 * time.Second
 // dbFailureInterval is the window fallback.cards_per_minute applies to.
 const dbFailureInterval = time.Minute
 
+// authCacheTTL is how long a verified credential is reused, capped at the row's expires_at.
+const authCacheTTL = 60 * time.Second
+
 // snsConfirmTimeout bounds the SubscribeURL fetch; emailTimeout bounds each email-service call.
 const (
 	snsConfirmTimeout = 10 * time.Second
@@ -77,19 +79,6 @@ func main() {
 		logger.Error("failed to load vendor config", "error", err)
 		os.Exit(1)
 	}
-	// After the registry, which auth.New validates the configured keys against.
-	authn, err := auth.New(cfg.Auth.Mode, envCfg.WebhookAPIKeys, registry.Names(), base.With("component", "auth"))
-	if err != nil {
-		logger.Error("failed to initialise auth hook", "error", err)
-		os.Exit(1)
-	}
-	switch cfg.Auth.Mode {
-	case auth.ModeNone:
-		logger.Warn("auth.mode is \"none\": vendor routes are unauthenticated")
-	case auth.ModeAudit:
-		logger.Warn("auth.mode is \"audit\": keys are checked but nothing is rejected",
-			"vendors_with_keys", len(envCfg.WebhookAPIKeys), "vendors", len(registry.Names()))
-	}
 
 	cassCfg, err := cassandra.ConfigFromEnv()
 	if err != nil {
@@ -104,6 +93,26 @@ func main() {
 		os.Exit(1)
 	}
 	defer session.Close()
+
+	if cfg.LegacyAuthSection {
+		logger.Warn("config.toml has an [auth] section, which is no longer read; set AUTH_ENABLED (and AUTH_AUDIT_ONLY) in the environment instead")
+	}
+	// After the session: AUTH_ENABLED checks webhooks against alerts-core's integration_users.
+	var authn auth.Authenticator = auth.None{}
+	switch {
+	case envCfg.AuthEnabled && envCfg.AuthAuditOnly:
+		authn = auth.NewAudit(auth.NewIntegrationUsers(session, cfg.Store.QueryTimeout.Duration(), authCacheTTL),
+			base.With("component", "auth"))
+		logger.Warn("AUTH_AUDIT_ONLY is set: credentials are checked but nothing is rejected")
+	case envCfg.AuthEnabled:
+		authn = auth.NewIntegrationUsers(session, cfg.Store.QueryTimeout.Duration(), authCacheTTL)
+		logger.Info("auth enabled: vendor webhooks are checked against integration_users")
+	default:
+		logger.Warn("AUTH_ENABLED is not true: vendor routes are unauthenticated")
+		if envCfg.AuthAuditOnly {
+			logger.Warn("AUTH_AUDIT_ONLY is set but ignored, since AUTH_ENABLED is not true")
+		}
+	}
 
 	store := cassandra.NewStore(session, cfg.Store.QueryTimeout.Duration(), cfg.Store.ClaimTimeout.Duration())
 	if err := store.SeedSeq(context.Background()); err != nil {
@@ -123,7 +132,7 @@ func main() {
 		SummaryInterval:  dbFailureInterval,
 		HTTPTimeout:      chatTimeout,
 	})
-	waker := corewake.New(base.With("component", "corewake"), envCfg.WakeURL, envCfg.WakeKey, cfg.Wake.Timeout.Duration())
+	waker := corewake.New(base.With("component", "corewake"), envCfg.WakeURL, envCfg.WakeUsername, envCfg.WakeSecret, cfg.Wake.Timeout.Duration())
 
 	sns, err := newSNSConfirmer(base.With("component", "snsconfirm"))
 	if err != nil {
@@ -187,8 +196,7 @@ func main() {
 	}
 }
 
-// newSNSConfirmer builds the AWS SNS subscription handler. Email is optional: without
-// EMAIL_BASE_URL, confirmations are still auto-confirmed and logged.
+// newSNSConfirmer builds the SNS subscription handler; without EMAIL_BASE_URL it still auto-confirms.
 func newSNSConfirmer(logger *slog.Logger) (*snsconfirm.Handler, error) {
 	teams, err := snsconfirm.LoadConfig()
 	if err != nil {
@@ -211,8 +219,7 @@ func newSNSConfirmer(logger *slog.Logger) (*snsconfirm.Handler, error) {
 	return snsconfirm.New(logger, teams, mailer, snsConfirmTimeout), nil
 }
 
-// connectWithRetry retries with exponential backoff so a transient startup outage doesn't
-// crash-loop the pod.
+// connectWithRetry backs off exponentially so a transient startup outage doesn't crash-loop the pod.
 func connectWithRetry(logger *slog.Logger, cfg cassandra.Config, ccfg config.CassandraConfig, queryTimeout time.Duration) (*gocql.Session, error) {
 	var session *gocql.Session
 	attempt := 0

@@ -92,16 +92,29 @@ const MENU_ORDER: readonly string[] = [...FORWARD_ORDER, "rollback", "canceled"]
  * States this bar never offers, no matter what `legalNextStates` contains.
  *
  * Do not delete this filter because "the list doesn't include them anyway".
- * Neither state is human-enterable in the backing system: of its 38 UI
- * actions on the change-request table, none sets either one. Both are reached
- * only by automation — rollback is written by the workflow that handles a
- * rejected review, customer approval by the approval process itself. Setting
- * either by hand from here would leave a record sitting in an approval state
- * with no approver record behind it, which is an audit hole rather than a
- * shortcut. The exclusion is deliberately unconditional so a future backend
- * change that starts returning them cannot silently reopen it.
+ * `rollback`/`customer_approval`: neither state is human-enterable in the
+ * backing system — of its 38 UI actions on the change-request table, none
+ * sets either one. Both are reached only by automation — rollback is written
+ * by the workflow that handles a rejected review, customer approval by the
+ * approval process itself. Setting either by hand from here would leave a
+ * record sitting in an approval state with no approver record behind it,
+ * which is an audit hole rather than a shortcut.
+ *
+ * `authorize` is a different case: it IS reachable by a human action, just
+ * never this one. It's the automatic side effect of an approver approving in
+ * the Approvers section (`ChangeRequestApprovals.tsx` / the decide-approval
+ * endpoint), which already correctly cascades the change request's own state
+ * forward on approval — not "automation-only" the way the other two are, but
+ * gated by a real human decision made somewhere else in the UI, not here.
+ * Offering it as a directly-clickable button/menu item from here would let
+ * someone skip the actual approval process entirely and land the record in
+ * Authorize with no approval behind it — the same audit hole as above, by a
+ * different route.
+ *
+ * The exclusion is deliberately unconditional so a future backend change that
+ * starts returning any of these cannot silently reopen it.
  */
-const NEVER_OFFERED_TARGETS: readonly string[] = ["rollback", "customer_approval"];
+const NEVER_OFFERED_TARGETS: readonly string[] = ["rollback", "customer_approval", "authorize"];
 
 /** Sort key for a target: curated order first, uncurated states after. */
 function menuRank(target: string): number {
@@ -115,17 +128,20 @@ function menuRank(target: string): number {
  * backing system checks on write — offering it anyway just round-trips into a
  * rejection, so it renders disabled with the reason instead.
  *
- * Deliberately a per-target map rather than a special case for `assess`: the
- * same situation (legal transition, unmet prerequisite) can apply to any
- * target.
+ * Deliberately a per-target map rather than a special case for any one
+ * target: the same situation (legal transition, unmet prerequisite) can
+ * apply to any target. Empty today — New → Assess used to have an entry here
+ * (`assignedTeam` required) from when that transition sent a ServiceNow
+ * "Request Approval" action, but it is now a plain `{ state: "assess" }`
+ * PATCH with no relationship to approval, and no other transition has an
+ * analogous unmet-prerequisite requirement — so there is currently nothing to
+ * block. Left in place (rather than removed outright) for the next target
+ * that genuinely needs it.
  */
 const TARGET_BLOCKED_REASON: Record<
   string,
   (cr: BeChangeRequestDetail) => string | null
-> = {
-  assess: (cr) =>
-    cr.assignedTeam ? null : "Set an assigned team before requesting approval",
-};
+> = {};
 
 interface ChangeRequestActionBarProps {
   cr: BeChangeRequestDetail;

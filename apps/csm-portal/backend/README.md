@@ -227,6 +227,7 @@ fatal**, so a typo stops a deploy instead of silently emptying a page. They prev
 |---|---|
 | `CSM_TEAM_REGISTRY` | Team catalogue. `teamKey\|Display Name\|FAMILY\|groupId` rows separated by `,`; `FAMILY` and `groupId` are optional. Optional overall — unset means no teams (startup warns) |
 | `CSM_USER_ROLES` | Assignable-role allow-list, comma-separated. Optional; unset uses the built-in list |
+| `ASGARDEO_ROLE_IDS` | Role-key → Asgardeo role id mapping, `roleKey\|asgardeoRoleId` rows separated by `,` (e.g. `timecard_approver\|0bbeea4f-5ada-49ba-8f19-90ae6a116daa`). Optional overall and per-key — an unconfigured key just means that role's SCIM-backed feature (e.g. `GET /users/time-card-approvers`) 404s rather than being disabled at the route level |
 
 ```bash
 # FAMILY is one of CRE-ABT, CRE, SRE-ABT, SRE (case insensitive). Any other
@@ -283,6 +284,7 @@ configured at all, nobody can use the portal.
 | `AUTH_USAGE_METRICS_VIEWER_ROLES` | view |
 | `AUTH_TIMECARD_APPROVER_ROLES` | view, time_cards_and_updates, and approving/rejecting a time card (`PATCH /time-cards/{id}` with `state` set — `cs_engineer` does NOT grant this) |
 | `AUTH_DASHBOARD_DESIGNER_ROLES` | view |
+| `AUTH_WORKNOTE_CREATOR_ROLES` | posting a `work_note`-type comment on a case only (`POST /cases/{id}/comments`) — not a customer-visible reply, and none of `write`'s other actions. `cs_engineer`/`admin` already grant this via `write`; unset is a normal, supported state (like `AUTH_SALES_SOLUTIONS_ROLES`), not a misconfiguration — startup does not warn about it |
 
 ```bash
 # Several token roles can grant one portal role; any one is enough.
@@ -402,6 +404,7 @@ backend/
 - `POST /users/search` — Search users; optional `filters` (`searchQuery`, `roles`, `userNames`, `emails`, `active`) and `sortBy` (`field`, `order`); response shape depends on data source (`User` for postgres, `SNUser` for ServiceNow)
 - `GET /users/{id}` — Get one user's full profile (both data sources); adds `teams` (derived from `groups`) and, for external contacts only, `externalAccount` (`exists`/`locked`, from SCIM's "external" org search). For an internal (WSO2 staff) target, `roles` is replaced with the same portal-role vocabulary `GET /users/me` reports (`viewer`/`escalator`/.../`admin`), sourced from that user's own SCIM role assignment (filtered to this portal's `app-csm-*` roles) rather than entity-service's own role data — entity-service's `roles` is left as-is for an external contact, a genuinely different vocabulary. All three enrichments (teams, externalAccount, roles) are best-effort — absent/unchanged rather than failing the request if their lookup fails
 - `POST /users` — Create a new user (`firstName`, `lastName`, `email` required to have at least one of firstName/lastName; optional `roles`, validated against the configured role allow-list). **Admin-only** (`admin` permission — see "Access control" above); Postgres data source only. `roles` is also how a caller sets the new user's type (entity-service derives `userType` from role membership) — the Add User form sends exactly one of `internal`/`external`. Granting `internal`/`admin` for a non-`@wso2.com` email is rejected with 400
+- `GET /users/time-card-approvers` — Lists the real Asgardeo membership (`{id, email}` per member) of the configured `timecard_approver` role, via the SCIM operations service — authoritative over, and potentially different from, entity-service's own Postgres `role`/`user_role` tables. Returns 404 unless `ASGARDEO_ROLE_IDS` configures a `timecard_approver` entry; a SCIM 401/403 (e.g. a missing roles-read scope on this backend's own SCIM credentials) is reported as 502, never passed through as the caller's own 401/403 (see "Listing time card approvers via SCIM" in `CLAUDE.md`)
 
 ### Accounts
 

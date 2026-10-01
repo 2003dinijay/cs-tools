@@ -38,6 +38,7 @@ func testAccessConfig() AccessConfig {
 		TimecardApprover:     []string{"test-timecard-approver"},
 		DashboardDesigner:    []string{"test-dashboard-designer"},
 		SalesSolutions:       []string{"test-sales-solutions"},
+		WorknoteCreator:      []string{"test-worknote-creator"},
 	}
 }
 
@@ -408,5 +409,32 @@ func TestAccessGuard_ManagePlaybooksIsAdminOnly(t *testing.T) {
 	// The CS engineer keeps everything else in PLG, including running a playbook.
 	if status, _ := serveWithRoles(g, PermUsePlg, []string{"test-cs-engineer"}); status != http.StatusNoContent {
 		t.Errorf("cs engineer lost PermUsePlg: status = %d, want 204", status)
+	}
+}
+
+// TestAccessGuard_CreateWorkNoteIsForWorknoteCreatorsCsEngineersAndAdmins pins
+// PermCreateWorkNote's deliberately wider holder set than PermWrite's (see
+// the constant's own doc comment) -- it's the route-level floor for POST
+// /cases/{id}/comments, with CaseHandler itself narrowing back to full
+// PermWrite for anything that isn't a work_note.
+func TestAccessGuard_CreateWorkNoteIsForWorknoteCreatorsCsEngineersAndAdmins(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	for _, role := range []string{"test-worknote-creator", "test-cs-engineer", "test-admin"} {
+		if status, _ := serveWithRoles(g, PermCreateWorkNote, []string{role}); status != http.StatusNoContent {
+			t.Errorf("%s: status = %d, want 204", role, status)
+		}
+	}
+	for _, role := range []string{
+		"test-viewer", "test-escalator", "test-attachment-downloader",
+		"test-usage-metrics-viewer", "test-timecard-approver", "test-dashboard-designer",
+	} {
+		if status, _ := serveWithRoles(g, PermCreateWorkNote, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s must not hold PermCreateWorkNote: status = %d, want 403", role, status)
+		}
+	}
+	// worknote_creator holds ONLY this -- not the broader PermWrite a
+	// customer-visible reply (or any other write) needs.
+	if status, _ := serveWithRoles(g, PermWrite, []string{"test-worknote-creator"}); status != http.StatusForbidden {
+		t.Errorf("worknote_creator must not hold PermWrite: status = %d, want 403", status)
 	}
 }
