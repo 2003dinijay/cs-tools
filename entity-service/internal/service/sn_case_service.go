@@ -3451,6 +3451,14 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	if s.slaEngine != nil && req.WorkaroundProvided != nil && *req.WorkaroundProvided {
 		s.slaEngine.CompleteWorkaroundClock(ctx, req.ID)
 	}
+	// Independent of the WorkaroundProvided check above, same "no Event Hub
+	// dependency" reasoning -- a caller can set workaroundProvided and
+	// addPublicComment together (CompleteWorkaroundClock would then simply
+	// be redundant for that one clock, see CompleteFixEtaSharedClocks' own
+	// doc comment).
+	if s.slaEngine != nil && req.AddPublicComment != nil && *req.AddPublicComment {
+		s.slaEngine.CompleteFixEtaSharedClocks(ctx, req.ID)
+	}
 	if publishCaseAssign {
 		assigneeName := assigneeEmail
 		if snResp.Case.AssignedTo != nil && snResp.Case.AssignedTo.Name != "" {

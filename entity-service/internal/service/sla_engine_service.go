@@ -116,6 +116,24 @@ type SLAEngineService interface {
 	// ever paused this clock, on any state including Closed, since it had
 	// no signal of its own to complete it on.
 	CompleteWorkaroundClock(ctx context.Context, caseID string)
+	// CompleteFixEtaSharedClocks marks the case's CSM-authored "workaround"
+	// AND "resolution" clocks ACHIEVED -- called when a PATCH shares a fix
+	// ETA with the customer (req.AddPublicComment true alongside a fix-ETA
+	// date, the webapp's "Share fix ETA with customer" action; ServiceNow
+	// data source only -- see case_service.go's own UpdateCase rejection
+	// list, AddPublicComment has no Postgres equivalent). Once WSO2 has
+	// committed a fix timeline to the customer, neither clock has anything
+	// further to track: "complete" here means the same real, uncapped
+	// elapsed-time-at-this-moment semantics CompleteWorkaroundClock/
+	// ApplyCaseStateEffects already use (see repository.
+	// SLAEngineRepository.CompleteClock's own doc comment) -- not an
+	// unconditional 100%, and not a no-op if one or both already happen to
+	// be BREACHED. A clock already ACHIEVED/CANCELLED/COMPLETED (an earlier
+	// workaround/close) is simply unaffected, so calling this alongside
+	// CompleteWorkaroundClock on the same PATCH (a caller can set
+	// workaroundProvided and addPublicComment together) is safe -- whichever
+	// one runs first wins, the second is a no-op for that clock.
+	CompleteFixEtaSharedClocks(ctx context.Context, caseID string)
 	// ApplyCaseStateEffects pauses/resumes the case's CSM-authored
 	// "workaround"/"resolution" clocks in reaction to a state-changing PATCH
 	// -- see the old design's applyCaseStateSLAEffects for the exact
@@ -282,6 +300,16 @@ func (s *slaEngineService) CompleteResponseClock(ctx context.Context, caseID str
 func (s *slaEngineService) CompleteWorkaroundClock(ctx context.Context, caseID string) {
 	if _, err := s.repo.CompleteClock(ctx, caseID, slaClockTypeTarget[slaClockTypeWorkaround]); err != nil {
 		slog.ErrorContext(ctx, "sla engine: complete workaround clock failed", "caseId", caseID, "err", err)
+	}
+}
+
+// CompleteFixEtaSharedClocks implements SLAEngineService.
+func (s *slaEngineService) CompleteFixEtaSharedClocks(ctx context.Context, caseID string) {
+	if _, err := s.repo.CompleteClock(ctx, caseID, slaClockTypeTarget[slaClockTypeWorkaround]); err != nil {
+		slog.ErrorContext(ctx, "sla engine: complete workaround clock on fix eta shared failed", "caseId", caseID, "err", err)
+	}
+	if _, err := s.repo.CompleteClock(ctx, caseID, slaClockTypeTarget[slaClockTypeResolution]); err != nil {
+		slog.ErrorContext(ctx, "sla engine: complete resolution clock on fix eta shared failed", "caseId", caseID, "err", err)
 	}
 }
 

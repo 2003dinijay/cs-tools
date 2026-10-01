@@ -1845,6 +1845,21 @@ regardless of severity.
   does **not** reopen a completed clock; `SLAEngineRepository` has no
   "uncomplete" operation, and a recall is rare enough that this stays a
   known, accepted gap rather than something built speculatively.
+- **Sharing a fix ETA with the customer completes BOTH the workaround and
+  resolution clocks, not just one.** `req.AddPublicComment` (ServiceNow data
+  source only — see `case_service.go`'s own `UpdateCase` rejection list,
+  this has no Postgres equivalent) alongside a fix-ETA date is the webapp's
+  "Share fix ETA with customer" action (`SetFixEtaDialog.tsx`): once WSO2
+  has committed a fix timeline to the customer, neither clock has anything
+  further to track. `SLAEngineService.CompleteFixEtaSharedClocks`
+  (`snCaseService.UpdateCase` only — `AddPublicComment` can't reach the
+  Postgres path at all) calls `CompleteClock` for both targets, same real,
+  uncapped elapsed-time-at-this-moment semantics every other completion
+  path uses (see `SLAEngineRepository.CompleteClock`'s own doc comment) —
+  not an unconditional 100%. Independent of `WorkaroundProvided`'s own hook
+  just above: a caller can set both fields on the same PATCH (the webapp's
+  dialog doesn't), in which case `CompleteWorkaroundClock` simply becomes a
+  no-op for whichever of the two runs second.
 
 ## Customer-reply state transition
 

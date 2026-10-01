@@ -308,7 +308,8 @@ func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T
 	pool := caseStatsPool(t)
 	seedSLAEngineWorkItem(t, pool)
 	ctx := context.Background()
-	repo := repository.NewSLAEngineRepository(pool)
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewSLAEngineRepository(scoped)
 
 	policy, err := repo.FindPolicyByName(ctx, "P0 - Response (Managed Services)", "RESPONSE")
 	if err != nil {
@@ -378,7 +379,8 @@ func TestSLAEngineIntegration_CompleteClockFinalizesBreachedClock(t *testing.T) 
 	pool := caseStatsPool(t)
 	seedSLAEngineWorkItem(t, pool)
 	ctx := context.Background()
-	repo := repository.NewSLAEngineRepository(pool)
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewSLAEngineRepository(scoped)
 
 	policy, err := repo.FindPolicyByName(ctx, "P0 - Response (Managed Services)", "RESPONSE")
 	if err != nil {
@@ -425,7 +427,8 @@ func TestSLAEngineIntegration_SetPausedPausesBreachedClock(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedSLAEngineWorkItem(t, pool)
 	ctx := context.Background()
-	repo := repository.NewSLAEngineRepository(pool)
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewSLAEngineRepository(scoped)
 
 	policy, err := repo.FindPolicyByName(ctx, "P0 - Workaround (Managed Services)", "WORKAROUND")
 	if err != nil {
