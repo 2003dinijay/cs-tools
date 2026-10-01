@@ -273,6 +273,11 @@ func (s *projectMembershipWriteService) Invite(ctx context.Context, projectID st
 		if err != nil {
 			return domain.SalesforceMembershipUpsert{}, domain.UpsertOnboardingStepRequest{}, err
 		}
+		if rec.StoredState == domain.MembershipStateRegistered {
+			// The contact has signed in before, so Salesforce saved REGISTERED;
+			// store that too, so the echo finds no INVITED -> REGISTERED Welcome.
+			in.State, rec.State = rec.StoredState, rec.StoredState
+		}
 		written = rec
 		return in, membershipStep(in, rec), nil
 	})
@@ -660,6 +665,9 @@ type salesforceWriteRecord struct {
 	Roles             []string
 	CreatedContact    bool
 	CreatedMembership bool
+	// StoredState is the state Salesforce returned after this write ("" when
+	// it returned none); its automation may differ from the requested state.
+	StoredState string
 	// The rest is what project_contact.invited needs, captured here because
 	// the Salesforce contact and the project are both already in hand at
 	// that point and neither is worth re-reading after the commit.
@@ -767,6 +775,7 @@ func (s *projectMembershipWriteService) writeSalesforce(ctx context.Context, wc 
 			return domain.SalesforceMembershipUpsert{}, rec, err
 		}
 		rec.CreatedMembership = true
+		rec.StoredState = storedMembershipState(membership)
 	default:
 		var state *string
 		var roles *[]string
@@ -798,6 +807,7 @@ func (s *projectMembershipWriteService) writeSalesforce(ctx context.Context, wc 
 			}
 			if strings.TrimSpace(updated.ID) != "" {
 				membership = updated
+				rec.StoredState = storedMembershipState(membership)
 			}
 		}
 	}
@@ -895,6 +905,16 @@ func (s *projectMembershipWriteService) writeSalesforce(ctx context.Context, wc 
 	}, rec, nil
 }
 
+// storedMembershipState is the membership's Salesforce state when it is a
+// known one, else "".
+func storedMembershipState(pc salesentity.ProjectContact) string {
+	state, err := normalizeMembershipState(derefString(pc.State))
+	if err != nil {
+		return ""
+	}
+	return state
+}
+
 // membershipStep is the DATABASE onboarding step a portal write records, in
 // the same transaction as the rows themselves.
 func membershipStep(in domain.SalesforceMembershipUpsert, rec salesforceWriteRecord) domain.UpsertOnboardingStepRequest {
@@ -923,7 +943,8 @@ func (s *projectMembershipWriteService) publishInvited(ctx context.Context, m do
 	if s.deps.Publisher == nil {
 		return
 	}
-	if m.State != domain.MembershipStateInvited && m.State != domain.MembershipStateReInvited {
+	// REGISTERED here is a new membership of a contact who already signed in.
+	if m.State != domain.MembershipStateInvited && m.State != domain.MembershipStateReInvited && m.State != domain.MembershipStateRegistered {
 		return
 	}
 	payload, err := json.Marshal(events.ProjectContactInvitedPayload{
