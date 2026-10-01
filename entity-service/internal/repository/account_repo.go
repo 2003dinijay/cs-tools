@@ -66,9 +66,12 @@ type AccountRow struct {
 	SreTeamName                 *string
 	HasAgent                    *bool
 	HasKbReferences             *bool
-	CreatedOn                   time.Time
-	CreatedBy                   string
-	UpdatedOn                   time.Time
+	// HasPartner approximates ServiceNow's primary partner: any partner link in
+	// account_relationship (there is no "primary" marker).
+	HasPartner bool
+	CreatedOn  time.Time
+	CreatedBy  string
+	UpdatedOn  time.Time
 }
 
 // AccountRepository defines the persistence operations for the account table.
@@ -135,6 +138,9 @@ const accountSelectColumns = `
 	csm.id, COALESCE(csm.name, NULLIF(TRIM(CONCAT_WS(' ', csm.first_name, csm.last_name)), '')), csm.email,
 	cre.id, cre.name, sre.id, sre.name,
 	a.ai_gen_response_enabled, a.smart_knowledge_base_suggestions_enabled,
+	EXISTS (SELECT 1 FROM account_relationship ar
+	         WHERE (ar.to_account_id = a.id AND NOT ar.is_reverse_relationship AND ar.relationship_label = '` + relationshipLabelPartnerOf + `')
+	            OR (ar.from_account_id = a.id AND ar.is_reverse_relationship AND ar.relationship_label = '` + relationshipLabelCustomerOf + `')),
 	a.created_on, a.created_by, a.updated_on`
 
 const accountFromJoins = `
@@ -157,7 +163,7 @@ func scanAccountRow(row interface{ Scan(...any) error }) (AccountRow, error) {
 		&a.RenewalAccountManagerID, &a.RenewalAccountManagerName, &a.RenewalAccountManagerEmail,
 		&a.CustomerSuccessManagerID, &a.CustomerSuccessManagerName, &a.CustomerSuccessManagerEmail,
 		&a.CreTeamID, &a.CreTeamName, &a.SreTeamID, &a.SreTeamName,
-		&a.HasAgent, &a.HasKbReferences,
+		&a.HasAgent, &a.HasKbReferences, &a.HasPartner,
 		&a.CreatedOn, &a.CreatedBy, &a.UpdatedOn,
 	)
 	return a, err

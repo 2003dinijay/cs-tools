@@ -43,6 +43,10 @@ func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchPr
 	if err := validateSearchQuery(req.SearchQuery); err != nil {
 		return domain.SearchProjectsResponse{}, err
 	}
+	// Same rules as ServiceNow; the repository relies on them for its ORDER BY whitelist.
+	if err := validateProjectSearchFilters(req); err != nil {
+		return domain.SearchProjectsResponse{}, err
+	}
 	if req.AccountID != "" {
 		if err := validateUUIDs("accountId", []string{req.AccountID}); err != nil {
 			return domain.SearchProjectsResponse{}, err
@@ -61,22 +65,18 @@ func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchPr
 	views := make([]domain.ProjectView, len(projects))
 	for i, p := range projects {
 		views[i] = domain.ProjectView{
-			ID:               p.ID,
-			Name:             p.Name,
-			Key:              p.Key,
-			SubscriptionType: p.SubscriptionType,
-			// StartDate/EndDate are already *time.Time on domain.Project
-			// (nil when the column is NULL), so they pass straight through
-			// instead of being re-boxed through a local copy. StartDate was
-			// previously dropped entirely here despite ProjectView having a
-			// real field for it.
-			StartDate: p.StartDate,
-			EndDate:   p.EndDate,
-			CreatedOn: p.CreatedOn,
-			// ClosureState was previously dropped here the same way StartDate
-			// used to be (see the comment above) -- domain.Project already
-			// carried it from the repository, ProjectView just never read it.
-			ProjectClosureFields: domain.ProjectClosureFields{ClosureState: p.ClosureState},
+			ID:                   p.ID,
+			Name:                 p.Name,
+			Key:                  p.Key,
+			SfID:                 nilIfEmpty(&p.SfID),
+			SubscriptionType:     p.SubscriptionType,
+			StartDate:            p.StartDate,
+			EndDate:              p.EndDate,
+			CreatedOn:            p.CreatedOn,
+			ActiveCasesCount:     p.ActiveCasesCount,
+			Account:              p.Account,
+			ProjectClosureFields: p.ProjectClosureFields,
+			OnboardingStatus:     p.OnboardingStatus,
 		}
 	}
 

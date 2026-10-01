@@ -2418,7 +2418,7 @@ paths:
   /accounts/{id}/contacts/search:
     post:
       summary: Search contacts for an account.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: Needs a user token, or an allow-listed internal client on Postgres.
       operationId: searchAccountContacts
       parameters:
         - name: id
@@ -2463,9 +2463,8 @@ paths:
     post:
       summary: Search opportunities.
       description: >
-        ServiceNow data source only; there is no Postgres equivalent. Sourced from
-        Salesforce-sync data via the ServiceNow Table API — no scoped-app endpoint
-        exists for this resource.
+        On Postgres, read from the Salesforce-ingested sf_* tables and limited to
+        internal callers (403 otherwise); on ServiceNow, from the Table API.
       operationId: searchOpportunities
       requestBody:
         required: false
@@ -2486,6 +2485,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal caller (Postgres data source).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -2496,7 +2507,7 @@ paths:
   /opportunities/{id}:
     get:
       summary: Get an opportunity by ID.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: Postgres reads sf_opportunity, internal callers only (403 otherwise).
       operationId: getOpportunity
       parameters:
         - name: id
@@ -2524,6 +2535,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal caller (Postgres data source).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -2535,9 +2558,8 @@ paths:
     post:
       summary: Search invoices.
       description: >
-        ServiceNow data source only; there is no Postgres equivalent. Sourced from
-        Salesforce-sync data via the ServiceNow Table API — no scoped-app endpoint
-        exists for this resource.
+        On Postgres, read from the Salesforce-ingested sf_* tables and limited to
+        internal callers (403 otherwise); on ServiceNow, from the Table API.
       operationId: searchInvoices
       requestBody:
         required: false
@@ -2558,6 +2580,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal caller (Postgres data source).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -2568,7 +2602,7 @@ paths:
   /invoices/{id}:
     get:
       summary: Get an invoice by ID.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: Postgres reads sf_invoice, internal callers only (403 otherwise).
       operationId: getInvoice
       parameters:
         - name: id
@@ -2596,6 +2630,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal caller (Postgres data source).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -2607,9 +2653,8 @@ paths:
     post:
       summary: Search project-opportunity links.
       description: >
-        ServiceNow data source only; there is no Postgres equivalent. Sourced from
-        Salesforce-sync data via the ServiceNow Table API — no scoped-app endpoint
-        exists for this resource. A project can have more than one linked
+        On Postgres, read from the Salesforce-ingested sf_* tables and limited to
+        internal callers (403 otherwise); on ServiceNow, from the Table API. A project can have more than one linked
         opportunity — one row per link — so this always returns a list. No by-id
         fetch: the underlying data has no single-record endpoint.
       operationId: searchProjectOpportunityLinks
@@ -2628,6 +2673,18 @@ paths:
                 $ref: '#/components/schemas/SearchProjectOpportunityLinksResponse'
         "400":
           description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not an internal caller (Postgres data source).
           content:
             application/json:
               schema:
@@ -2696,11 +2753,12 @@ paths:
     patch:
       summary: Update a project's closure-state fields or hasAgent/hasKbReferences toggles.
       description: >
-        ServiceNow data source only; there is no Postgres equivalent. At least one
-        field must be provided. closureState itself is not settable — it is derived
-        automatically from the three closure sub-state fields by an SN business
-        rule, so setting one of those and re-fetching the project is how a caller
-        observes the resulting overall status.
+        At least one field must be provided. closureState itself is not settable — it
+        is derived from the three closure sub-states (by an SN business rule, or on
+        Postgres by the same rule in the same transaction) and returned. Sub-states
+        are accepted and returned in ServiceNow Title Case, e.g. "Pending Notified".
+        On Postgres, an allow-listed internal client may call without
+        x-user-id-token, and suspensionProcessState is accepted but not stored.
       operationId: updateProject
       parameters:
         - name: id
@@ -2729,7 +2787,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
-          description: Missing or invalid x-user-id-token header (ServiceNow data source only).
+          description: Missing or invalid x-user-id-token header, and not an allow-listed internal client.
           content:
             application/json:
               schema:
@@ -3238,7 +3296,7 @@ paths:
   /projects/{id}/contacts/search:
     post:
       summary: Search contacts for a project.
-      description: ServiceNow data source only; there is no Postgres equivalent.
+      description: Needs a user token, or an allow-listed internal client on Postgres.
       operationId: searchProjectContacts
       parameters:
         - name: id
@@ -11475,11 +11533,13 @@ components:
         isPartner:
           type: boolean
           nullable: true
-          description: Whether this account is itself a partner organization. ServiceNow data source only.
+          description: Whether this account is itself a partner organization (on Postgres, classification is Partner).
         hasPrimaryPartner:
           type: boolean
           nullable: true
-          description: Whether this account has a primary partner account set. ServiceNow data source only.
+          description: >-
+            Whether this account has a primary partner account set. Postgres approximates
+            this as having any partner in account_relationship.
 
     SNSupportTierRef:
       type: object
@@ -11552,11 +11612,13 @@ components:
         isPartner:
           type: boolean
           nullable: true
-          description: Whether this account is itself a partner organization. ServiceNow data source only.
+          description: Whether this account is itself a partner organization (on Postgres, classification is Partner).
         hasPrimaryPartner:
           type: boolean
           nullable: true
-          description: Whether this account has a primary partner account set. ServiceNow data source only.
+          description: >-
+            Whether this account has a primary partner account set. Postgres approximates
+            this as having any partner in account_relationship.
 
     SearchAccountsResponse:
       type: object
@@ -11618,6 +11680,17 @@ components:
         searchQuery:
           type: string
           description: Case-insensitive match against name, key, and subscription_type.
+        closureStatus:
+          type: string
+          enum: [Open, Suspended, Restricted]
+          description: Only projects with this overall closure state.
+        sortBy:
+          type: string
+          enum: [endDate]
+          description: Sort field. Postgres puts projects with no end date last.
+        sortOrder:
+          type: string
+          enum: [asc, desc]
         excludeClosureStates:
           type: array
           items:
@@ -11625,7 +11698,7 @@ components:
             enum: [Open, Suspended, Restricted]
           description: >-
             Excludes projects whose closure state is any of the given values.
-            Supported on both data sources (case-insensitive on Postgres).
+            Supported on both data sources.
         excludeSubscriptionTypes:
           type: array
           items:
@@ -11690,8 +11763,8 @@ components:
           type: boolean
           nullable: true
           description: >
-            Whether this project's linked account is itself a partner organization.
-            ServiceNow data source only.
+            Whether this project's linked account is itself a partner organization
+            (on Postgres, classification is Partner).
 
     ProjectDetailsView:
       type: object
@@ -11828,6 +11901,12 @@ components:
           type: string
         key:
           type: string
+        sfId:
+          type: string
+          nullable: true
+          description: >
+            Salesforce id. Null when the backing data source has no value
+            recorded for this project.
         subscriptionType:
           type: string
           enum:
@@ -11859,13 +11938,34 @@ components:
             When the project record was created. Distinct from startDate, which
             moves forward on each renewal.
         account:
+          type: object
           nullable: true
-          description: Null when the project has no linked account.
-          allOf:
-            - $ref: '#/components/schemas/EntityRef'
+          description: Null when the project has no linked account. arrToday is ServiceNow only.
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            region:
+              type: string
+              nullable: true
+            subRegion:
+              type: string
+              nullable: true
+            arrToday:
+              type: string
+              nullable: true
+            isPartner:
+              type: boolean
+              nullable: true
+        onboardingStatus:
+          type: string
+          nullable: true
+          description: Hyphenated Title Case, e.g. "In-Progress".
         closureState:
           type: string
           nullable: true
+          description: Open, Suspended or Restricted. Sub-states are Title Case too, e.g. "Pending Notified".
         endDateClosureState:
           type: string
           nullable: true
@@ -11878,6 +11978,7 @@ components:
         complianceViolationDate:
           type: string
           nullable: true
+          description: yyyy-MM-dd.
         suspensionProcessState:
           type: object
           additionalProperties: true
@@ -11886,7 +11987,7 @@ components:
             Free-form, per-dimension Account Closure Process (ACP) suspension-process
             state (event type + action results) written by an existing ServiceNow
             suspension flow. This is opaque JSON passed through as-is — its shape is
-            not defined or validated by this layer.
+            not defined or validated by this layer. Always null on Postgres.
 
     SearchProjectsResponse:
       type: object
@@ -11911,8 +12012,7 @@ components:
       description: >
         At least one field must be provided. hasAgent and hasKbReferences are
         simple toggles; the closure-state fields track sub-states of an
-        Account Closure Process and are only applicable to projects sourced
-        from ServiceNow.
+        Account Closure Process.
       properties:
         hasAgent:
           type: boolean
@@ -12042,7 +12142,8 @@ components:
           description: >
             Whether this row would actually grant its person visibility into this project's
             cases: a linked contact record AND the address the row was invited under matching
-            that record's own address, compared case-insensitively. Deliberately not a
+            that record's own address, compared case-insensitively (on Postgres, the row
+            must also be REGISTERED). Deliberately not a
             restatement of `customerContactPresent` — a row invited under one address but
             linked to a contact whose own address differs is invisible to both people, and
             that does happen on genuine customer rows.
