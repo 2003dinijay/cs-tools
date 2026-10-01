@@ -246,6 +246,15 @@ type CaseRepository interface {
 	AggregateCases(ctx context.Context, req domain.SearchCasesRequest, groupBy string, scope SearchScope) ([]domain.AggregateBucket, error)
 	// CreateCaseComment inserts a new comment row for the given case.
 	CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error)
+	// CreateCaseCommentMirrored is CreateCaseComment for a comment that
+	// already happened at a known past time -- ServiceNow's own
+	// case-creation business rules generate a case's first comment(s)
+	// before this service ever learns about them (see
+	// caseService.mirrorInitialSNComments), so mirroring one into Postgres
+	// must preserve ServiceNow's own createdOn rather than stamping NOW(),
+	// which SearchCaseComments' own "ORDER BY cc.created_on DESC" would
+	// otherwise misorder relative to the source chronology.
+	CreateCaseCommentMirrored(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn time.Time) (domain.CaseComment, error)
 	// SearchCaseComments returns a paginated slice of comments for the given case
 	// together with the total count of matching rows before pagination.
 	SearchCaseComments(ctx context.Context, req domain.SearchCaseCommentsRequest) ([]domain.CaseComment, int, error)
@@ -1253,6 +1262,41 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 	// source's own convention -- see caseService.CreateCaseComment), not a
 	// UUID FK, so the reference carries no id here, matching this file's
 	// other email-only CreatedBy references (e.g. SearchCaseView.CreatedBy).
+	c.CreatedBy = domain.NewUserReference("", createdByEmail, "")
+	return c, nil
+}
+
+// CreateCaseCommentMirrored implements CaseRepository. Identical to
+// CreateCaseComment except created_on is bound from createdOn instead of
+// NOW() -- see the interface doc comment on why.
+func (r *caseRepo) CreateCaseCommentMirrored(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn time.Time) (domain.CaseComment, error) {
+	if req.Type == domain.CommentTypeActivity {
+		return domain.CaseComment{}, &apierror.ValidationError{Msg: `type "activity" is not writable through this endpoint`}
+	}
+	typeEnum, ok := caseCommentTypeEnum[req.Type]
+	if !ok {
+		return domain.CaseComment{}, &apierror.ValidationError{Msg: "type contains invalid value: " + string(req.Type)}
+	}
+
+	const query = `
+		INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
+		SELECT gen_random_uuid(), $5, $1, $2::comment_type_enum, w.id, $4
+		FROM work_item w
+		WHERE w.id = $3
+		RETURNING id, work_item_id, type, content, created_by, created_on`
+
+	var c domain.CaseComment
+	var typeRaw, createdByEmail string
+	err := r.db.QueryRow(ctx, query,
+		req.CreatedBy, typeEnum, req.CaseID, req.Content, createdOn,
+	).Scan(&c.ID, &c.CaseID, &typeRaw, &c.Content, &createdByEmail, &c.CreatedOn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.CaseComment{}, &apierror.ValidationError{Msg: "case not found: " + req.CaseID}
+	}
+	if err != nil {
+		return domain.CaseComment{}, fmt.Errorf("create mirrored case comment: %w", err)
+	}
+	c.Type = caseCommentEnumType[typeRaw]
 	c.CreatedBy = domain.NewUserReference("", createdByEmail, "")
 	return c, nil
 }

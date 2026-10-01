@@ -60,6 +60,7 @@ type stubCaseRepo struct {
 	updateCase                    func(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error)
 	createCaseFromServiceNow      func(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error)
 	createCaseComment             func(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error)
+	createCaseCommentMirrored     func(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn time.Time) (domain.CaseComment, error)
 	createCase                    func(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
 	getCaseByID                   func(ctx context.Context, id string, scope repository.SearchScope) (domain.CaseView, error)
 	addCaseTag                    func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
@@ -108,6 +109,19 @@ func (s *stubCaseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRe
 	panic("SearchCases called unexpectedly: the unsupported-field check should have short-circuited before reaching the repository")
 }
 func (s *stubCaseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+	if s.createCaseComment != nil {
+		return s.createCaseComment(ctx, req)
+	}
+	panic("not implemented")
+}
+func (s *stubCaseRepo) CreateCaseCommentMirrored(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn time.Time) (domain.CaseComment, error) {
+	if s.createCaseCommentMirrored != nil {
+		return s.createCaseCommentMirrored(ctx, req, createdOn)
+	}
+	// Most tests exercising mirrorInitialSNComments only care about
+	// createCaseComment's own assertions (CaseID/Type/Content/CreatedBy);
+	// defaulting to it here means they don't also have to stub this
+	// mirror-specific variant just to avoid a panic.
 	if s.createCaseComment != nil {
 		return s.createCaseComment(ctx, req)
 	}
@@ -2075,9 +2089,15 @@ func TestCaseService_CreateCase_SNSuccessCreatesPostgresRowWithMatchingIdentity(
 // comment table. createCaseSNFirst must now fetch whatever comments
 // ServiceNow already has for the case right after its own Postgres insert
 // succeeds, and write each one (except "activity", which CreateCaseComment
-// itself refuses) into Postgres via the plain repo.
+// itself refuses) into Postgres via CreateCaseCommentMirrored -- also
+// proving each one's ServiceNow createdOn is preserved rather than
+// stamped NOW(), which SearchCaseComments' "ORDER BY created_on DESC"
+// would otherwise misorder relative to the real chronology (CodeRabbit
+// caught this on PR #2204).
 func TestCaseService_CreateCase_MirrorsInitialServiceNowComments(t *testing.T) {
 	const snID = "44444444-4444-4444-4444-444444444444"
+	firstCommentOn := time.Date(2026, 9, 30, 9, 50, 24, 0, time.UTC)
+	secondCommentOn := time.Date(2026, 9, 30, 9, 50, 25, 0, time.UTC)
 	mirror := &stubMirrorCaseService{
 		createCase: func(_ context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
 			return domain.CreateCaseResponse{
@@ -2094,11 +2114,13 @@ func TestCaseService_CreateCase_MirrorsInitialServiceNowComments(t *testing.T) {
 						ID: "c1", Type: domain.CommentTypeComment,
 						Content:   "<p><strong>Description:</strong></p><p>Something is broken.</p>",
 						CreatedBy: &domain.UserReference{Email: "jane.doe@example.com", Name: "Jane Doe"},
+						CreatedOn: firstCommentOn,
 					},
 					{
 						ID: "c2", Type: domain.CommentTypeComment,
 						Content:   "Change request (CHG0039108) has been created.",
 						CreatedBy: &domain.UserReference{Email: "system", Name: "system"},
+						CreatedOn: secondCommentOn,
 					},
 					{
 						// ServiceNow's own audit trail -- must be skipped, not
@@ -2110,18 +2132,22 @@ func TestCaseService_CreateCase_MirrorsInitialServiceNowComments(t *testing.T) {
 		},
 	}
 
+	type mirroredCall struct {
+		req       domain.CreateCaseCommentRequest
+		createdOn time.Time
+	}
 	var mu sync.Mutex
-	var mirrored []domain.CreateCaseCommentRequest
+	var mirrored []mirroredCall
 	repo := &stubCaseRepo{
 		createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
 			respState := domain.CaseStateOpen
 			return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy, State: &respState}, nil
 		},
-		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest) (domain.CaseComment, error) {
+		createCaseCommentMirrored: func(_ context.Context, req domain.CreateCaseCommentRequest, createdOn time.Time) (domain.CaseComment, error) {
 			mu.Lock()
-			mirrored = append(mirrored, req)
+			mirrored = append(mirrored, mirroredCall{req: req, createdOn: createdOn})
 			mu.Unlock()
-			return domain.CaseComment{ID: "mirrored", CaseID: req.CaseID, Type: req.Type, Content: req.Content}, nil
+			return domain.CaseComment{ID: "mirrored", CaseID: req.CaseID, Type: req.Type, Content: req.Content, CreatedOn: createdOn}, nil
 		},
 	}
 	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
@@ -2136,11 +2162,17 @@ func TestCaseService_CreateCase_MirrorsInitialServiceNowComments(t *testing.T) {
 	if len(mirrored) != 2 {
 		t.Fatalf("mirrored %d comments, want 2 (the activity-typed one must be skipped): %+v", len(mirrored), mirrored)
 	}
-	if mirrored[0].CaseID != snID || mirrored[0].Content != "<p><strong>Description:</strong></p><p>Something is broken.</p>" || mirrored[0].CreatedBy != "jane.doe@example.com" {
-		t.Errorf("mirrored[0] = %+v, want the description comment attributed to jane.doe@example.com", mirrored[0])
+	if mirrored[0].req.CaseID != snID || mirrored[0].req.Content != "<p><strong>Description:</strong></p><p>Something is broken.</p>" || mirrored[0].req.CreatedBy != "jane.doe@example.com" {
+		t.Errorf("mirrored[0].req = %+v, want the description comment attributed to jane.doe@example.com", mirrored[0].req)
 	}
-	if mirrored[1].CreatedBy != "system" {
-		t.Errorf("mirrored[1].CreatedBy = %q, want %q", mirrored[1].CreatedBy, "system")
+	if !mirrored[0].createdOn.Equal(firstCommentOn) {
+		t.Errorf("mirrored[0].createdOn = %v, want ServiceNow's own %v (not NOW())", mirrored[0].createdOn, firstCommentOn)
+	}
+	if mirrored[1].req.CreatedBy != "system" {
+		t.Errorf("mirrored[1].req.CreatedBy = %q, want %q", mirrored[1].req.CreatedBy, "system")
+	}
+	if !mirrored[1].createdOn.Equal(secondCommentOn) {
+		t.Errorf("mirrored[1].createdOn = %v, want ServiceNow's own %v (not NOW())", mirrored[1].createdOn, secondCommentOn)
 	}
 }
 

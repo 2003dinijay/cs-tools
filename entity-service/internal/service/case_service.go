@@ -702,12 +702,18 @@ func (s *caseService) mirrorInitialSNComments(ctx context.Context, caseID string
 		if c.CreatedBy != nil && c.CreatedBy.Email != "" {
 			createdBy = c.CreatedBy.Email
 		}
-		if _, err := s.repo.CreateCaseComment(ctx, domain.CreateCaseCommentRequest{
+		// CreateCaseCommentMirrored (not the plain CreateCaseComment every
+		// other call site uses) preserves c.CreatedOn -- ServiceNow's own
+		// timestamp for this comment, not when this mirror step happens to
+		// run. SearchCaseComments orders by created_on DESC, so stamping
+		// NOW() here instead would misorder mirrored comments relative to
+		// their real ServiceNow chronology (CodeRabbit caught this on PR #2204).
+		if _, err := s.repo.CreateCaseCommentMirrored(ctx, domain.CreateCaseCommentRequest{
 			CaseID:    caseID,
 			Type:      c.Type,
 			Content:   c.Content,
 			CreatedBy: createdBy,
-		}); err != nil {
+		}, c.CreatedOn); err != nil {
 			slog.ErrorContext(ctx, "sn create case: mirror initial ServiceNow comment failed", "caseId", caseID, "commentId", c.ID, "error", err)
 		}
 	}
