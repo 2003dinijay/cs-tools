@@ -166,10 +166,17 @@ services:
     ports:
       - "19094:9094"
     healthcheck:
+      # Each probe starts a whole JVM (kafka-broker-api-versions.sh), which on a
+      # laptop-sized Docker VM pins several cores while it JIT-compiles. So probe
+      # quickly only while starting up (start_interval, within start_period), then
+      # rarely once healthy, or the healthcheck itself becomes the stack's largest
+      # steady CPU consumer and starves the UI under test.
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
-      interval: 5s
-      timeout: 10s
-      retries: 20
+      interval: 60s
+      timeout: 20s
+      retries: 5
+      start_period: 90s
+      start_interval: 5s
 
   # One-shot: creates the topics this stack needs (auto-create is enabled
   # above too, but explicit creation makes first-boot deterministic).
