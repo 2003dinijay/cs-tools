@@ -1677,6 +1677,21 @@ hardcoded id). Both are resolved via `LEFT JOIN`s added to
 enrichment, not part of the SLA clock itself; a work item with no
 project/account simply reports the zero value for each.
 
+**`AssigneeName`/`AssigneeEmail`/`TeamEmail`/`TeamLeadName` exist purely for
+`csm-notification-service`'s own SLA breach-alert EMAIL reaction** (the
+assignee/team-group emails sent alongside the existing Chat alert — see that
+repo's own `CLAUDE.md`, "SLA breach-alerting engine") — not used by anything
+in this service itself. `AssigneeEmail`/`AssigneeName` resolve via a
+`LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id`; `TeamEmail` is
+`"group".group_email` (the same `"group"` row `team` already joins through)
+and `TeamLeadName` resolves via a second `LEFT JOIN "user" teamlead ON
+teamlead.id = cre.manager_id` — the group's manager, not a dedicated "team
+lead" column, since none exists on this schema today. All four are
+best-effort, same posture as `ProjectOnboardingStatus`/`IsEvaluationAccount`
+above: a work item with no assignee/group simply reports empty strings. A
+dedicated team table may replace the `"group"` lookup for `TeamEmail`/
+`TeamLeadName` later — noted, not yet needed.
+
 ## CSM-native SLA clock engine
 
 `internal/service/sla_engine_service.go` (`SLAEngineService`) is what actually

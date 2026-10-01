@@ -81,6 +81,8 @@ const activeSLAStatusFromJoins = `
 	LEFT JOIN product_version pv ON pv.id = dp.version_id
 	LEFT JOIN account a ON a.id = wi.account_id
 	LEFT JOIN "group" cre ON cre.id = a.cre_team_id
+	LEFT JOIN "user" teamlead ON teamlead.id = cre.manager_id
+	LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id
 	LEFT JOIN project p ON p.id = wi.project_id
 	LEFT JOIN project_type pt ON pt.id = p.project_type_id
 	WHERE wi.type = ANY(` + caseLikeWorkItemTypes + `)`
@@ -118,12 +120,14 @@ func scanSLAStatus(row interface{ Scan(...any) error }) (domain.SLAStatus, error
 	var s domain.SLAStatus
 	var target, severity, caseType string
 	var caseNumber, wso2CaseID, caseTitle, productName, state, teamName, onboardingStatus *string
+	var teamEmail, teamLeadName, assigneeName, assigneeEmail *string
 	var stage string
 	var isEvaluation bool
 	err := row.Scan(
 		&s.CaseID, &target, &s.BusinessElapsedPercent, &s.HasBreached, &stage, &s.StartedOn,
 		&caseNumber, &wso2CaseID, &caseTitle, &caseType,
 		&productName, &severity, &state, &teamName, &onboardingStatus, &isEvaluation,
+		&teamEmail, &teamLeadName, &assigneeName, &assigneeEmail,
 	)
 	if err != nil {
 		return domain.SLAStatus{}, err
@@ -139,6 +143,10 @@ func scanSLAStatus(row interface{ Scan(...any) error }) (domain.SLAStatus, error
 	s.Team = stringOrEmpty(teamName)
 	s.ProjectOnboardingStatus = stringOrEmpty(onboardingStatus)
 	s.IsEvaluationAccount = isEvaluation
+	s.TeamEmail = stringOrEmpty(teamEmail)
+	s.TeamLeadName = stringOrEmpty(teamLeadName)
+	s.AssigneeName = stringOrEmpty(assigneeName)
+	s.AssigneeEmail = stringOrEmpty(assigneeEmail)
 	if sev, ok := caseSeverityFromEnum[severity]; ok {
 		s.Priority = strings.ToUpper(string(sev))
 	}
@@ -156,7 +164,9 @@ func (r *slaStatusRepo) SearchActiveSLAStatuses(ctx context.Context, pagination 
 		       wi.number, wi.wso2_id, wi.subject, wi.type::TEXT,
 		       prod.name || COALESCE(' ' || pv.version, ''), COALESCE(c.severity::TEXT, ''),
 		       ` + caseLikeStateColumn + `,
-		       cre.name, p.onboarding_status::TEXT, COALESCE(pt.name = $3, FALSE)
+		       cre.name, p.onboarding_status::TEXT, COALESCE(pt.name = $3, FALSE),
+		       cre.group_email, COALESCE(teamlead.name, NULLIF(TRIM(CONCAT_WS(' ', teamlead.first_name, teamlead.last_name)), '')),
+		       COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')), ae.email
 		` + activeSLAStatusFromJoins + `
 		ORDER BY als.work_item_id, als.target
 		LIMIT $1 OFFSET $2`

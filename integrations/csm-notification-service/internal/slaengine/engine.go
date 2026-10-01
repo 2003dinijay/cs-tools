@@ -59,7 +59,7 @@ type eventPublisher interface {
 // this alert needs directly, so there's no second per-clock lookup to
 // build it from.
 type chatSender interface {
-	SendSLABreachAlert(ctx context.Context, audience, clockType, tier, caseNumber, wso2CaseID, caseTitle, caseType, productName, team, severity, state, openedAt, caseLink string) error
+	SendSLABreachAlert(ctx context.Context, audience, clockType, tier, caseNumber, wso2CaseID, caseTitle, caseType, productName, team, teamLeadName, severity, state, openedAt, caseLink string) error
 	HasAudienceSpace(audience string) bool
 }
 
@@ -68,6 +68,12 @@ type chatSender interface {
 // internal/dispatch's own, larger linkResolver interface).
 type linkResolver interface {
 	CSMLink(caseID string) string
+}
+
+// emailSender abstracts notifications.EmailClient's SendEmail for
+// testability — see sendBreachEmails.
+type emailSender interface {
+	SendEmail(ctx context.Context, to, cc, bcc, replyTo []string, subject, htmlBody string, attachments []notifications.EmailAttachment) error
 }
 
 // tierSequence is the fixed set of elapsed-percentage checkpoints this
@@ -110,11 +116,40 @@ type Engine struct {
 	pub    eventPublisher
 	chat   chatSender
 	links  linkResolver
+	email  emailSender
+
+	// emailSendingEnabled/emailDebugMode/emailDebugRecipients mirror
+	// dispatch.Dispatcher's own three email-specific controls exactly
+	// (EMAIL_SENDING_ENABLED/EMAIL_DEBUG_MODE/EMAIL_DEBUG_RECIPIENTS, the
+	// same env vars, read once in cmd/server/main.go and passed to both
+	// this Engine and dispatch.NewDispatcher) — see sendBreachEmails for
+	// where they're applied. This engine deliberately does NOT have its
+	// own defaultCSMEmailCC equivalent: the breach emails below are
+	// addressed directly (assignee, team) rather than split into a
+	// customer/CSM portal-link group the way dispatch.sendPerGroup's
+	// case.* emails are, so there is no "CSM-portal group" to CC in the
+	// first place.
+	emailSendingEnabled  bool
+	emailDebugMode       bool
+	emailDebugRecipients []string
 }
 
-// NewEngine constructs an Engine.
-func NewEngine(entity *EntityClient, store *TierStore, pub *eventbus.Producer, chat *notifications.GoogleChatClient, links *recipientlinks.Resolver) *Engine {
-	return &Engine{entity: entity, store: store, pub: pub, chat: chat, links: links}
+// NewEngine constructs an Engine. emailSendingEnabled/emailDebugMode/
+// emailDebugRecipients gate sendBreachEmails exactly the way the same
+// three values gate every email dispatch.Dispatcher sends — see Engine's
+// own doc comment on those fields.
+func NewEngine(entity *EntityClient, store *TierStore, pub *eventbus.Producer, chat *notifications.GoogleChatClient, links *recipientlinks.Resolver, email *notifications.EmailClient, emailSendingEnabled, emailDebugMode bool, emailDebugRecipients []string) *Engine {
+	return &Engine{
+		entity:               entity,
+		store:                store,
+		pub:                  pub,
+		chat:                 chat,
+		links:                links,
+		email:                email,
+		emailSendingEnabled:  emailSendingEnabled,
+		emailDebugMode:       emailDebugMode,
+		emailDebugRecipients: emailDebugRecipients,
+	}
 }
 
 // Tick polls every currently-active SLA clock and processes each — a failed
@@ -275,6 +310,17 @@ func (e *Engine) alertTier(ctx context.Context, s SLAStatus, tier int) error {
 	if err := e.sendBreachAlert(ctx, s, tier); err != nil {
 		return fmt.Errorf("send sla breach alert: %w", err)
 	}
+	// Best-effort, deliberately not folded into this function's own error
+	// return: alertTier failing causes processStatus to release this
+	// tier's claim and retry the WHOLE tier on the next Tick, including
+	// the Chat alert above, which has no idempotency of its own beyond the
+	// claim itself — propagating a transient email failure here would
+	// resend an already-successfully-delivered Chat alert, the exact class
+	// of duplicate-send bug this codebase has hit (and fixed) more than
+	// once elsewhere (see dispatch.go's beginRecord/endRecord history). A
+	// failed breach email is logged and otherwise swallowed; the Chat
+	// alert and tier advancement are unaffected either way.
+	e.sendBreachEmails(ctx, s, tier)
 	slog.InfoContext(ctx, "slaengine: sla tier reached", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier)
 	return nil
 }
@@ -312,11 +358,80 @@ func (e *Engine) sendBreachAlert(ctx context.Context, s SLAStatus, tier int) err
 	caseLink := e.links.CSMLink(s.CaseID)
 	var errs []error
 	for _, audience := range audiences {
-		if err := e.chat.SendSLABreachAlert(ctx, audience, s.ClockType, tierLabel(tier), caseNumber, s.WSO2CaseID, s.CaseTitle, s.CaseType, s.Product, s.Team, s.Priority, s.State, openedAt, caseLink); err != nil {
+		if err := e.chat.SendSLABreachAlert(ctx, audience, s.ClockType, tierLabel(tier), caseNumber, s.WSO2CaseID, s.CaseTitle, s.CaseType, s.Product, s.Team, s.TeamLeadName, s.Priority, s.State, openedAt, caseLink); err != nil {
 			errs = append(errs, fmt.Errorf("audience %q: %w", audience, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// sendBreachEmails sends the same tier crossing as two separate emails —
+// one to the case's assigned engineer, one to the case's team email group
+// — on top of (not instead of) the Chat alert above. Best-effort by
+// design: see alertTier's own call site for why a failure here must never
+// propagate and trigger a retry of the whole tier. Either recipient is
+// skipped silently (logged at INFO, not WARN/ERROR) when entity-service
+// couldn't resolve it (s.AssigneeEmail/s.TeamEmail empty) — a case with no
+// assignee, or a team with no configured group_email, is a normal state,
+// not a misconfiguration this engine can fix.
+func (e *Engine) sendBreachEmails(ctx context.Context, s SLAStatus, tier int) {
+	if e.email == nil || !e.emailSendingEnabled {
+		return
+	}
+	caseLink := e.links.CSMLink(s.CaseID)
+	data := notifications.SLABreachEmailData{
+		ClockType:    s.ClockType,
+		Tier:         tierLabel(tier),
+		Severity:     s.Priority,
+		CaseNumber:   s.CaseNumber,
+		WSO2CaseID:   s.WSO2CaseID,
+		CaseTitle:    s.CaseTitle,
+		CaseType:     s.CaseType,
+		Product:      s.Product,
+		Team:         s.Team,
+		TeamLeadName: s.TeamLeadName,
+		State:        s.State,
+		CaseLink:     caseLink,
+	}
+	if s.StartedOn != nil && !s.StartedOn.IsZero() {
+		data.OpenedAt = s.StartedOn.UTC().Format("2006-01-02 15:04:05") + " (UTC)"
+	}
+	subject := notifications.SLABreachEmailSubject(s.ClockType, data.Tier, s.Priority, s.CaseNumber, s.WSO2CaseID)
+
+	send := func(real string, render func(intendedFor string) string) {
+		if real == "" {
+			slog.InfoContext(ctx, "slaengine: sla breach email recipient not resolved, skipping", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier)
+			return
+		}
+		to := []string{real}
+		var intendedFor string
+		if e.emailDebugMode {
+			if len(e.emailDebugRecipients) == 0 {
+				slog.WarnContext(ctx, "slaengine: EMAIL_DEBUG_MODE=true but EMAIL_DEBUG_RECIPIENTS is empty; not sending breach email",
+					"caseId", s.CaseID, "clockType", s.ClockType, "tier", tier)
+				return
+			}
+			intendedFor = real
+			to = e.emailDebugRecipients
+		}
+		body := render(intendedFor)
+		if err := e.email.SendEmail(ctx, to, nil, nil, nil, subject, body, nil); err != nil {
+			slog.ErrorContext(ctx, "slaengine: failed to send sla breach email", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "err", err)
+			return
+		}
+		slog.InfoContext(ctx, "slaengine: sla breach email sent", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier)
+	}
+
+	send(s.AssigneeEmail, func(intendedFor string) string {
+		d := data
+		d.IntendedFor = intendedFor
+		return notifications.RenderSLABreachAssigneeEmail(s.AssigneeName, d)
+	})
+	send(s.TeamEmail, func(intendedFor string) string {
+		d := data
+		d.IntendedFor = intendedFor
+		return notifications.RenderSLABreachTeamEmail(s.TeamLeadName, d)
+	})
 }
 
 // RunTicker calls Tick every interval until ctx is done. Run from its own

@@ -185,6 +185,15 @@ type Dispatcher struct {
 	// handleIncidentCreated's own doc comment.
 	callSendingEnabled bool
 
+	// defaultCSMEmailCC (DEFAULT_CSM_EMAIL_CC) is CC'd on every case.*
+	// email's CSM-portal-link group ONLY — never the customer-portal
+	// group, and never during EMAIL_DEBUG_MODE (a debug run must not leak
+	// to this real, shared inbox just because it's redirecting the `to`
+	// list to a test address) — see sendPerGroup's own doc comment for
+	// exactly how the CSM group is identified (caseLink == the csmLink
+	// argument each caller passes, from linkResolver.CSMLink).
+	defaultCSMEmailCC []string
+
 	// defaultOnCallNumber is handleIncidentCreated's fallback value for its
 	// payload's own CallTo when a publisher omits it — see that function's
 	// doc comment for why a publisher (e.g. entity-service) might not know
@@ -244,7 +253,7 @@ type recordState struct {
 // Dispatcher.emailDebugMode's, and Dispatcher.callSendingEnabled's doc
 // comments for what those three controls do, and
 // Dispatcher.defaultOnCallNumber's doc comment for the call fallback value.
-func NewDispatcher(email emailSender, googleChat googleChatSender, call callSender, links linkResolver, emailSendingEnabled bool, emailDebugMode bool, emailDebugRecipients []string, callSendingEnabled bool, defaultOnCallNumber string) *Dispatcher {
+func NewDispatcher(email emailSender, googleChat googleChatSender, call callSender, links linkResolver, emailSendingEnabled bool, emailDebugMode bool, emailDebugRecipients []string, callSendingEnabled bool, defaultOnCallNumber string, defaultCSMEmailCC []string) *Dispatcher {
 	return &Dispatcher{
 		email:                email,
 		googleChat:           googleChat,
@@ -255,6 +264,7 @@ func NewDispatcher(email emailSender, googleChat googleChatSender, call callSend
 		emailDebugRecipients: emailDebugRecipients,
 		callSendingEnabled:   callSendingEnabled,
 		defaultOnCallNumber:  defaultOnCallNumber,
+		defaultCSMEmailCC:    defaultCSMEmailCC,
 		done:                 make(map[string]bool),
 		records:              make(map[string]*recordState),
 		identityExisted:      make(map[string]bool),
@@ -493,7 +503,7 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 		caseRef := displayCaseRef(p.CaseNumber, p.CaseID)
 		subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, p.CaseTitle)
 		var emailErr error
-		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
+		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, d.links.CSMLink(p.CaseID), func(caseLink, intendedFor string) (string, []notifications.InlineImage) {
 			return notifications.RenderCaseCreatedEmail(notifications.CaseCreatedEmailData{
 				ReporterName:              p.ReporterName,
 				ProjectName:               p.ProjectName,
@@ -507,6 +517,7 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 				IncidentImpactDescription: p.IncidentImpactDescription,
 				CaseLink:                  caseLink,
 				CommentLink:               commentLinkFor(caseLink, ""),
+				IntendedFor:               intendedFor,
 			})
 		})
 		if emailErr != nil {
@@ -606,16 +617,16 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 	}
 	baseKey := recordBaseKey(record)
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, p.CaseTitle)
-	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
+	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, d.links.CSMLink(p.CaseID), func(caseLink, intendedFor string) (string, []notifications.InlineImage) {
 		if p.IsInternalNote {
 			// See events.CommentAddedPayload.IsInternalNote's own doc
 			// comment: a distinct layout, and WSO2CaseID (not CaseNumber)
 			// as the case reference — this audience is always wso2.com
 			// staff, who recognize the internal reference, not ServiceNow's
 			// own case number.
-			return notifications.RenderInternalNoteEmail(p.Name, displayInternalRef(p.WSO2CaseID, p.CaseID), p.CaseTitle, p.CaseComment, commentLinkFor(caseLink, p.CommentID), caseLink)
+			return notifications.RenderInternalNoteEmail(p.Name, displayInternalRef(p.WSO2CaseID, p.CaseID), p.CaseTitle, p.CaseComment, commentLinkFor(caseLink, p.CommentID), caseLink, intendedFor)
 		}
-		return notifications.RenderCommentAddedEmail(p.Name, displayCaseRef(p.CaseNumber, p.CaseID), p.CaseTitle, p.CaseComment, commentLinkFor(caseLink, p.CommentID), caseLink)
+		return notifications.RenderCommentAddedEmail(p.Name, displayCaseRef(p.CaseNumber, p.CaseID), p.CaseTitle, p.CaseComment, commentLinkFor(caseLink, p.CommentID), caseLink, intendedFor)
 	})
 	if record.NoMoreRetries {
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
@@ -645,8 +656,8 @@ func (d *Dispatcher) handleStatusChanged(ctx context.Context, record eventbus.Re
 		title = "Status changed to " + p.NewStatus
 	}
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, title)
-	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
-		return notifications.RenderStatusChangedEmail(caseRef, p.NewStatus, caseLink, commentLinkFor(caseLink, "")), nil
+	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, d.links.CSMLink(p.CaseID), func(caseLink, intendedFor string) (string, []notifications.InlineImage) {
+		return notifications.RenderStatusChangedEmail(caseRef, p.NewStatus, caseLink, commentLinkFor(caseLink, ""), intendedFor), nil
 	})
 	if record.NoMoreRetries {
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
@@ -699,12 +710,14 @@ func (d *Dispatcher) handleCRApprovalRequested(ctx context.Context, record event
 			"changeRequestId", p.ChangeRequestID, "recipients", len(recipients))
 		return nil
 	}
+	var intendedFor string
 	if d.emailDebugMode {
 		if len(d.emailDebugRecipients) == 0 {
 			slog.WarnContext(ctx, "dispatch: email debug mode on with no debug recipients, skipping CR approval notice",
 				"changeRequestId", p.ChangeRequestID)
 			return nil
 		}
+		intendedFor = strings.Join(recipients, ", ")
 		recipients = d.emailDebugRecipients
 	}
 
@@ -717,6 +730,7 @@ func (d *Dispatcher) handleCRApprovalRequested(ctx context.Context, record event
 		RequesterName: p.RequesterName,
 		ProjectName:   p.ProjectName,
 		Link:          d.links.ChangeRequestLink(p.Audience, p.ChangeRequestID, p.ProjectID),
+		IntendedFor:   intendedFor,
 	})
 
 	// A customer audience goes in BCC, an internal one in To.
@@ -764,8 +778,8 @@ func (d *Dispatcher) handleCaseAssigned(ctx context.Context, record eventbus.Rec
 		title = "Case assigned"
 	}
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, title)
-	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
-		return notifications.RenderCaseAssignedEmail(p.AssigneeName, p.AssigneeEmail, caseRef, caseLink, commentLinkFor(caseLink, "")), nil
+	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, d.links.CSMLink(p.CaseID), func(caseLink, intendedFor string) (string, []notifications.InlineImage) {
+		return notifications.RenderCaseAssignedEmail(p.AssigneeName, p.AssigneeEmail, caseRef, caseLink, commentLinkFor(caseLink, ""), intendedFor), nil
 	})
 	if record.NoMoreRetries {
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
@@ -868,8 +882,8 @@ func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.
 		}
 		subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, title)
 		var emailErr error
-		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
-			return notifications.RenderSeverityChangedEmail(caseRef, emailOldLabel, emailNewLabel, caseLink, commentLinkFor(caseLink, "")), nil
+		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, d.links.CSMLink(p.CaseID), func(caseLink, intendedFor string) (string, []notifications.InlineImage) {
+			return notifications.RenderSeverityChangedEmail(caseRef, emailOldLabel, emailNewLabel, caseLink, commentLinkFor(caseLink, ""), intendedFor), nil
 		})
 		if emailErr != nil {
 			errs = append(errs, emailErr)
@@ -1163,7 +1177,11 @@ func maskPhone(phone string) string {
 // retrying won't fix a missing debug-recipient config) if emailDebugMode is
 // true but emailDebugRecipients is empty — sending to zero recipients would
 // either be rejected by the email provider or silently do nothing, neither
-// of which is better than not calling it at all.
+// of which is better than not calling it at all. render's second argument,
+// intendedFor, is only ever non-empty on a debug-redirected send (the
+// group's real, pre-redirect recipients, joined) — a real send always
+// passes "", so every template's "Sent to:" row is omitted entirely rather
+// than shown on production mail.
 // inlineImageExtensions maps an InlineImage's ContentType to the file
 // extension its EmailAttachment.ContentName is given — email-service
 // requires a contentName on every attachment, but an inline image's name is
@@ -1204,7 +1222,17 @@ func inlineAttachments(images []notifications.InlineImage) []notifications.Email
 	return attachments
 }
 
-func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, groupUserIDs map[string][]string, subject string, render func(caseLink string) (string, []notifications.InlineImage)) ([]string, error) {
+// sendPerGroup sends one email per distinct resolved link group — see
+// groupByLink's own doc comment. csmLink (linkResolver.CSMLink(caseID),
+// resolved by every caller the same way) identifies which of the (at most
+// two) groups is the CSM-portal one: only that group's SendEmail call gets
+// d.defaultCSMEmailCC on its cc list, and only when emailDebugMode is
+// false — a debug run redirects `to` to a safe test list specifically so
+// nothing goes to a real mailbox, and CC'ing the real, shared default
+// inbox regardless would defeat that. The customer-portal group (any
+// caseLink other than csmLink) never gets this CC, under any
+// circumstances — see Dispatcher.defaultCSMEmailCC's own doc comment.
+func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, groupUserIDs map[string][]string, subject, csmLink string, render func(caseLink, intendedFor string) (string, []notifications.InlineImage)) ([]string, error) {
 	var errs []error
 	var owned []string
 	for _, caseLink := range slices.Sorted(maps.Keys(groups)) {
@@ -1218,6 +1246,11 @@ func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, g
 			owned = append(owned, caseLink)
 			continue
 		}
+		var cc []string
+		if caseLink == csmLink && len(d.defaultCSMEmailCC) > 0 {
+			cc = d.defaultCSMEmailCC
+		}
+		var intendedFor string
 		if d.emailDebugMode {
 			if len(d.emailDebugRecipients) == 0 {
 				slog.WarnContext(ctx, "dispatch: EMAIL_DEBUG_MODE=true but EMAIL_DEBUG_RECIPIENTS is empty; not sending",
@@ -1227,10 +1260,12 @@ func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, g
 			}
 			slog.InfoContext(ctx, "dispatch: EMAIL_DEBUG_MODE=true; redirecting email to configured debug recipients",
 				"subject", subject, "realRecipientCount", len(to), "debugRecipientCount", len(d.emailDebugRecipients))
+			intendedFor = strings.Join(to, ", ")
 			to = d.emailDebugRecipients
+			cc = nil
 		}
-		htmlBody, images := render(caseLink)
-		if err := d.email.SendEmail(ctx, to, nil, nil, nil, subject, htmlBody, inlineAttachments(images)); err != nil {
+		htmlBody, images := render(caseLink, intendedFor)
+		if err := d.email.SendEmail(ctx, to, cc, nil, nil, subject, htmlBody, inlineAttachments(images)); err != nil {
 			errs = append(errs, err)
 			d.forget(key)
 			continue
@@ -1381,12 +1416,14 @@ func (d *Dispatcher) handleCRPlanDateNotice(ctx context.Context, record eventbus
 			"changeRequestId", p.ChangeRequestID, "recipients", len(recipients))
 		return nil
 	}
+	var intendedFor string
 	if d.emailDebugMode {
 		if len(d.emailDebugRecipients) == 0 {
 			slog.WarnContext(ctx, "dispatch: email debug mode on with no debug recipients, skipping plan date notice",
 				"changeRequestId", p.ChangeRequestID)
 			return nil
 		}
+		intendedFor = strings.Join(recipients, ", ")
 		recipients = d.emailDebugRecipients
 	}
 
@@ -1398,6 +1435,7 @@ func (d *Dispatcher) handleCRPlanDateNotice(ctx context.Context, record eventbus
 		ShortDescription: p.ShortDescription,
 		Description:      p.Description,
 		Link:             d.links.ChangeRequestLink(p.Audience, p.ChangeRequestID, p.ProjectID),
+		IntendedFor:      intendedFor,
 	})
 
 	// Customer contacts go in BCC for the same reason as the approval notice:
@@ -1554,6 +1592,7 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 		slog.InfoContext(ctx, "dispatch: email sending disabled (EMAIL_SENDING_ENABLED=false); not sending invitation", logAttrs...)
 	default:
 		to := []string{p.Email}
+		var intendedFor string
 		if d.emailDebugMode {
 			if len(d.emailDebugRecipients) == 0 {
 				d.recordOnboardingStep(ctx, p, entity.OnboardingStepEmail, entity.OnboardingStepSkipped, nil)
@@ -1565,6 +1604,7 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 			// invitee — so a staging deployment can't invite a real
 			// customer contact by accident.
 			slog.InfoContext(ctx, "dispatch: EMAIL_DEBUG_MODE=true; redirecting invitation to configured debug recipients", append(logAttrs, "debugRecipientCount", len(d.emailDebugRecipients))...)
+			intendedFor = p.Email
 			to = d.emailDebugRecipients
 		}
 		if d.onboarding.Email == nil {
@@ -1644,6 +1684,7 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 			ProjectKey:  p.ProjectKey,
 			Roles:       p.Roles,
 			PortalURL:   d.onboarding.PortalURL,
+			IntendedFor: intendedFor,
 		}
 		// The "existing" wording only when the identity step actually ran
 		// this record and said so. With identity disabled nothing here can
@@ -1743,8 +1784,10 @@ func (d *Dispatcher) handleProjectContactRegistered(ctx context.Context, record 
 		return fail(fmt.Errorf("dispatch: welcome email enabled but no onboarding-step ledger configured; cannot check whether it was already sent"))
 	}
 	to := []string{p.Email}
+	var intendedFor string
 	if d.emailDebugMode {
 		slog.InfoContext(ctx, "dispatch: EMAIL_DEBUG_MODE=true; redirecting welcome email to configured debug recipients", append(logAttrs, "debugRecipientCount", len(d.emailDebugRecipients))...)
+		intendedFor = p.Email
 		to = d.emailDebugRecipients
 	}
 
@@ -1770,6 +1813,7 @@ func (d *Dispatcher) handleProjectContactRegistered(ctx context.Context, record 
 		ProjectName: projectName,
 		ProjectKey:  p.ProjectKey,
 		PortalURL:   d.onboarding.PortalURL,
+		IntendedFor: intendedFor,
 	})
 	subject := "Welcome to WSO2 Support for " + projectName
 	if err := d.onboarding.Email.SendEmailFrom(ctx, d.onboarding.EmailFrom, to, nil, nil, d.onboarding.ReplyTo, subject, body, nil); err != nil {

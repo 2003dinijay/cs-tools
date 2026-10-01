@@ -348,7 +348,7 @@ func TestEscapeHTML_EncodesNonASCIIAsNumericEntity(t *testing.T) {
 // caught: the line used to substitute a raw UUID (project id) there
 // instead.
 func TestRenderCommentAddedEmail_UsesCaseNumberNotRawID(t *testing.T) {
-	out, _ := RenderCommentAddedEmail("Jane Doe", "CS0023001", "Something broke", "Working on it", "https://x/comment", "https://x/case")
+	out, _ := RenderCommentAddedEmail("Jane Doe", "CS0023001", "Something broke", "Working on it", "https://x/comment", "https://x/case", "")
 	if !strings.Contains(out, "CS0023001") {
 		t.Error("rendered email doesn't contain the case number")
 	}
@@ -361,7 +361,7 @@ func TestRenderCommentAddedEmail_UsesCaseNumberNotRawID(t *testing.T) {
 // "commented on case" — matching an existing internal WSO2-support email
 // format recipients (always wso2.com staff) are already used to.
 func TestRenderInternalNoteEmail_NoReplyStrapAndUsesWorkNoteWording(t *testing.T) {
-	out, _ := RenderInternalNoteEmail("Jane Doe", "WSO2-1000", "Something broke", "Internal only", "https://x/comment", "https://x/case")
+	out, _ := RenderInternalNoteEmail("Jane Doe", "WSO2-1000", "Something broke", "Internal only", "https://x/comment", "https://x/case", "")
 	if !strings.Contains(out, "added work note") {
 		t.Error("rendered email doesn't use the internal-note wording")
 	}
@@ -426,7 +426,7 @@ func TestRenderCaseCreatedEmail_OmitsPriorityAndProductRowsWhenEmpty(t *testing.
 // so this checks the same class of mistake can't happen here (e.g. the
 // old severity accidentally substituted into the new severity's slot).
 func TestRenderSeverityChangedEmail_ContainsOldAndNewSeverity(t *testing.T) {
-	out := RenderSeverityChangedEmail("CS0023001", "High (P2)", "Low (P4)", "https://x/case", "https://x/comment")
+	out := RenderSeverityChangedEmail("CS0023001", "High (P2)", "Low (P4)", "https://x/case", "https://x/comment", "")
 	if !strings.Contains(out, "CS0023001") {
 		t.Error("rendered email doesn't contain the case number")
 	}

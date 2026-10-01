@@ -140,7 +140,7 @@ type fakeChatSender struct {
 	hasAudienceSpace func(string) bool
 }
 
-func (f *fakeChatSender) SendSLABreachAlert(_ context.Context, audience, clockType, tier, caseNumber, _, _, _, _, _, _, _, _, _ string) error {
+func (f *fakeChatSender) SendSLABreachAlert(_ context.Context, audience, clockType, tier, caseNumber, _, _, _, _, _, _, _, _, _, _ string) error {
 	f.calls = append(f.calls, chatCall{audience, clockType, tier, caseNumber})
 	return f.err
 }
