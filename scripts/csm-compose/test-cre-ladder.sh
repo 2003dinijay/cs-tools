@@ -49,11 +49,34 @@ REDIS_ADDR="127.0.0.1:${REDIS_PORT}"
 MINUTE="${MINUTE:-150ms}"
 TICK="${TICK:-60ms}"
 
+# Which ABT the incident is assigned to. An ABT key routes an ABT rule (R2 on
+# LK, whose LEVEL_0 is that team's own T1/T2/T3 nominees); anything else routes
+# the not-an-ABT row. Only consulted in USE_TEAM_SCHEDULE mode -- the local
+# roster has one fixed recipient per rung and no notion of a team.
+TEAM="${TEAM:-vega}"
+
+# R2 at P0 plans 33 calls, well past escalation-local's own default cap of 20,
+# so the realistic scenario refused to run at all. The cap is a guard against a
+# runaway plan, not a statement about this one.
+MAX_CALLS="${MAX_CALLS:-60}"
+
 # Empty means "use the local roster". Set USE_TEAM_SCHEDULE=1 to resolve real
-# people from entity-service instead -- which needs it running AND the
-# x-jwt-assertion gap closed, or every rung returns RESOLVE_FAILED.
+# people from entity-service instead.
+#
+# That path needs a token whose client_id entity-service lists in
+# AUTH_INTERNAL_CLIENT_IDS -- it reads the caller's identity from
+# x-jwt-assertion, which only Choreo's gateway sets in a real deployment. The
+# service's own .env carries the real Asgardeo client id, which the local
+# container does NOT trust, so every rung came back RESOLVE_FAILED and the
+# cause was invisible. Default to the dev client the compose stack's mock-oidc
+# mints and entity-service accepts; override any of these to point elsewhere.
 ENTITY_URL=""
-[ -n "${USE_TEAM_SCHEDULE:-}" ] && ENTITY_URL="${CUSTOMER_ENTITY_BASE_URL:-http://localhost:8081}"
+if [ -n "${USE_TEAM_SCHEDULE:-}" ]; then
+  ENTITY_URL="${CUSTOMER_ENTITY_BASE_URL:-http://localhost:8081}"
+  export OAUTH2_CLIENT_ID="${OAUTH2_CLIENT_ID:-csm-notification-service-dev-client}"
+  export OAUTH2_CLIENT_SECRET="${OAUTH2_CLIENT_SECRET:-dev-secret}"
+  export OAUTH2_TOKEN_URL="${OAUTH2_TOKEN_URL:-http://localhost:9100/oauth2/token}"
+fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 service_dir="${repo_root}/integrations/csm-notification-service"
@@ -68,9 +91,12 @@ run() {
   # authenticate yet, so every rung comes back RESOLVE_FAILED and no ladder is
   # scheduled at all. Blank it and the local roster answers instead, which is
   # what a dry run wants: you see which rung fires, not which person.
+  local team_args=()
+  [ -n "${USE_TEAM_SCHEDULE:-}" ] && team_args=(--team "${TEAM}")
   (cd "${service_dir}" && CUSTOMER_ENTITY_BASE_URL="${ENTITY_URL}" \
       go run ./cmd/escalation-local \
-      --channel log --redis "${REDIS_ADDR}" \
+      --channel log --redis "${REDIS_ADDR}" --max-calls "${MAX_CALLS}" \
+      "${team_args[@]+"${team_args[@]}"}" \
       --minute "${MINUTE}" --tick "${TICK}" "$@" 2>${RUN_STDERR:-/dev/null})
 }
 
@@ -110,6 +136,15 @@ cleanup() {
 scenario_p0() {
   heading "A P0 incident, raised during business hours"
   echo "The whole ladder, start to finish. Nothing is dialled."
+  if [ -n "${USE_TEAM_SCHEDULE:-}" ]; then
+    echo "resolver: the real Team Schedule, incident assigned to ${TEAM}"
+    echo "          LEVEL_0 is that ABT's own T1/T2/T3 nominees"
+  else
+    echo "resolver: the local stand-in roster -- one fixed recipient per rung."
+    echo "          It has no rule table, so this shows the CLOCK and the rung"
+    echo "          order, not which row of R1a-R6 an incident routes by."
+    echo "          Re-run with USE_TEAM_SCHEDULE=1 for real people and rules."
+  fi
   run --priority P0 --shift LK
 }
 
