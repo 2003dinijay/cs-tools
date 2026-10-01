@@ -71,6 +71,9 @@ type AuthConfig struct {
 	// CacheTTL is how long a verified integration_users credential is reused before
 	// re-reading the row; 0 disables the cache. Only used by "integration_users".
 	CacheTTL Duration `toml:"cache_ttl"`
+	// AuditOnly checks credentials and logs what would be rejected, but rejects
+	// nothing. The rollout step for "integration_users"; "audit" already implies it.
+	AuditOnly bool `toml:"audit_only"`
 }
 
 // AllocatorConfig tunes the id allocator: queue depth before 503, alerts claimed
@@ -271,33 +274,35 @@ type Env struct {
 	// ChatWebhookURLs are Google Chat incoming webhooks for rejected-webhook and DB-failure
 	// cards. Empty disables the cards (local dev); rejections and failures are still logged.
 	ChatWebhookURLs []string `env:"FALLBACK_CHAT_WEBHOOK_URLS" envSeparator:","`
-	// WebhookAPIKeysRaw is the unparsed value; read WebhookAPIKeys instead.
+	// WebhookAPIKeysRaw is WEBHOOK_API_KEYS, unparsed: only auth.mode "audit" and
+	// "apikey" read it, so a bad value must not stop the other modes from starting.
+	// Parse it with ParseWebhookAPIKeys.
 	WebhookAPIKeysRaw string `env:"WEBHOOK_API_KEYS"`
-	// WebhookAPIKeys maps vendor to secret, for auth.mode "audit" and "apikey".
-	WebhookAPIKeys map[string]string `env:"-"`
 	// WakeKey is alerts-core's WAKE_API_KEY, sent as a bearer token. Empty sends
 	// no header, which only works if alerts-core has none either.
 	WakeKey string `env:"ALERT_CORE_WAKE_KEY"`
 }
 
-// ParseWebhookAPIKeys parses comma-separated <vendor>:<key> pairs. Blank entries
-// are skipped; only the first colon splits, so a key may contain colons, not commas.
+// ParseWebhookAPIKeys parses <vendor>:<key> pairs separated by commas, semicolons,
+// newlines or spaces, tolerating quotes around the value or any entry, since those
+// are how the value tends to get pasted into a console. Only the first colon splits,
+// so a key may contain colons. Errors name the entry's position and vendor, never
+// its key: this runs at startup and its error goes to the logs.
 func ParseWebhookAPIKeys(raw string) (map[string]string, error) {
+	isSep := func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	}
 	keys := make(map[string]string)
-	for _, pair := range strings.Split(raw, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		vendor, key, found := strings.Cut(pair, ":")
-		vendor, key = strings.TrimSpace(vendor), strings.TrimSpace(key)
+	for i, pair := range strings.FieldsFunc(unquote(raw), isSep) {
+		vendor, key, found := strings.Cut(unquote(pair), ":")
+		vendor, key = unquote(vendor), unquote(key)
 		switch {
 		case !found:
-			return nil, fmt.Errorf("webhook api keys: entry %q is not <vendor>:<key>", pair)
+			return nil, fmt.Errorf("webhook api keys: entry %d has no \"<vendor>:\" prefix", i+1)
 		case vendor == "":
-			return nil, fmt.Errorf("webhook api keys: entry with an empty vendor name")
+			return nil, fmt.Errorf("webhook api keys: entry %d has an empty vendor name", i+1)
 		case key == "":
-			return nil, fmt.Errorf("webhook api keys: empty key for vendor %q", vendor)
+			return nil, fmt.Errorf("webhook api keys: entry %d (%q) has an empty key", i+1, vendor)
 		}
 		if _, dup := keys[vendor]; dup {
 			return nil, fmt.Errorf("webhook api keys: vendor %q listed twice", vendor)
@@ -305,6 +310,17 @@ func ParseWebhookAPIKeys(raw string) (map[string]string, error) {
 		keys[vendor] = key
 	}
 	return keys, nil
+}
+
+// unquote trims whitespace and one layer of matching surrounding quotes, unless the
+// quote also appears inside: `"a","b"` is two quoted entries, not one quoted value.
+func unquote(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] &&
+		!strings.ContainsRune(s[1:len(s)-1], rune(s[0])) {
+		s = strings.TrimSpace(s[1 : len(s)-1])
+	}
+	return s
 }
 
 // LoadEnv parses Env, trimming blanks out of the comma-separated Chat webhook list.
@@ -322,10 +338,5 @@ func LoadEnv() (Env, error) {
 		}
 	}
 	e.ChatWebhookURLs = urls
-	keys, err := ParseWebhookAPIKeys(e.WebhookAPIKeysRaw)
-	if err != nil {
-		return Env{}, err
-	}
-	e.WebhookAPIKeys = keys
 	return e, nil
 }
