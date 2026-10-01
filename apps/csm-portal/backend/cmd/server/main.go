@@ -331,7 +331,13 @@ func main() {
 	route("POST /cases", handler.PermWrite, caseHandler.CreateCase)
 	route("GET /cases/{id}", handler.PermViewSharedEntity, caseHandler.GetCase)
 	route("PATCH /cases/{id}", handler.PermWrite, caseHandler.PatchCase)
-	route("POST /cases/{id}/comments", handler.PermWrite, caseHandler.CreateCaseComment)
+	// PermCreateWorkNote, not PermWrite -- the route-level floor is
+	// deliberately broader (includes worknote_creator) since a work_note is
+	// a narrower action than every other write this handler's siblings
+	// guard; CreateCaseComment itself requires full PermWrite for any
+	// comment that isn't a work_note -- see PermCreateWorkNote's own doc
+	// comment.
+	route("POST /cases/{id}/comments", handler.PermCreateWorkNote, caseHandler.CreateCaseComment)
 	route("POST /cases/{id}/request-update", handler.PermWrite, caseHandler.RequestCaseUpdate)
 	route("GET /case-update-request-templates", handler.PermView, caseHandler.GetCaseUpdateRequestTemplates)
 	route("POST /cases/{id}/comments/search", handler.PermViewSharedEntity, caseHandler.SearchCaseComments)
@@ -837,7 +843,8 @@ func loadDirectory() *directory.Directory {
 //	AUTH_VIEWER_ROLES, AUTH_ESCALATOR_ROLES,
 //	AUTH_ATTACHMENT_DOWNLOADER_ROLES, AUTH_USAGE_METRICS_VIEWER_ROLES,
 //	AUTH_SUPPORT_ENGINEER_ROLES, AUTH_ADMIN_ROLES, AUTH_TIMECARD_APPROVER_ROLES,
-//	AUTH_DASHBOARD_DESIGNER_ROLES, AUTH_SALES_SOLUTIONS_ROLES
+//	AUTH_DASHBOARD_DESIGNER_ROLES, AUTH_SALES_SOLUTIONS_ROLES,
+//	AUTH_WORKNOTE_CREATOR_ROLES
 //	    Each is a comma-separated list of role names; a caller whose token's
 //	    "roles" claim holds any one of them has that role.
 //
@@ -847,11 +854,15 @@ func loadDirectory() *directory.Directory {
 // nobody, and startup warns naming each one, since with none configured at all
 // nobody can use the portal.
 //
-// AUTH_SALES_SOLUTIONS_ROLES is unlike the rest: leaving it unset does not
-// warn, since a deployment that hasn't provisioned a Sales/Solutions-
-// Architecture role yet is a normal, expected state (CS Portal alone still
-// works fine) rather than a misconfiguration nobody can use the portal at
-// all without — see AccessConfig.SalesSolutions's own doc comment.
+// AUTH_SALES_SOLUTIONS_ROLES and AUTH_WORKNOTE_CREATOR_ROLES are unlike the
+// rest: leaving either unset does not warn. sales_solutions is a normal,
+// expected unconfigured state (CS Portal alone still works fine) rather than
+// a misconfiguration nobody can use the portal at all without — see
+// AccessConfig.SalesSolutions's own doc comment. worknote_creator is
+// unconfigured-safe for a different reason: CsEngineer/Admin already hold
+// PermCreateWorkNote regardless (see AccessConfig.WorknoteCreator's own doc
+// comment), so leaving it empty is purely "this extra role isn't provisioned
+// yet," never a state that locks anyone out of work notes.
 func loadAccessConfig() handler.AccessConfig {
 	var unset []string
 	roles := func(name string) []string {
@@ -873,11 +884,13 @@ func loadAccessConfig() handler.AccessConfig {
 		Admin:             roles("AUTH_ADMIN_ROLES"),
 		TimecardApprover:  roles("AUTH_TIMECARD_APPROVER_ROLES"),
 		DashboardDesigner: roles("AUTH_DASHBOARD_DESIGNER_ROLES"),
-		// Unlike the roles above, an unset AUTH_SALES_SOLUTIONS_ROLES is a
-		// normal, supported state (CS Portal alone still works without it),
-		// so this deliberately bypasses the roles() helper to avoid adding
-		// it to the unset-variable warning below.
-		SalesSolutions: splitComma(os.Getenv("AUTH_SALES_SOLUTIONS_ROLES")),
+		// Unlike the roles above, an unset AUTH_SALES_SOLUTIONS_ROLES or
+		// AUTH_WORKNOTE_CREATOR_ROLES is a normal, supported state (see this
+		// function's own doc comment for why each is), so both deliberately
+		// bypass the roles() helper to avoid adding themselves to the
+		// unset-variable warning below.
+		SalesSolutions:  splitComma(os.Getenv("AUTH_SALES_SOLUTIONS_ROLES")),
+		WorknoteCreator: splitComma(os.Getenv("AUTH_WORKNOTE_CREATOR_ROLES")),
 	}
 	if len(unset) > 0 {
 		slog.Warn("access-control role variables are unset, so no token role grants them", "variables", unset)
