@@ -154,6 +154,8 @@ func (r scanRow) Scan(dest ...any) error {
 			*d = v.(*string)
 		case *int:
 			*d = v.(int)
+		case *int64:
+			*d = v.(int64)
 		}
 	}
 	return nil
