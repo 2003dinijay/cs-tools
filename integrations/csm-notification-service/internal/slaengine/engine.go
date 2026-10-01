@@ -377,7 +377,19 @@ func (e *Engine) sendBreachAlert(ctx context.Context, s SLAStatus, tier int) err
 // skipped silently (logged at INFO, not WARN/ERROR) when entity-service
 // couldn't resolve it (s.AssigneeEmail/s.TeamEmail empty) — a case with no
 // assignee, or a team with no configured group_email, is a normal state,
-// not a misconfiguration this engine can fix.
+// not a misconfiguration this engine can fix; production has no real
+// address to send to in that case regardless of recipient.
+//
+// The team recipient is the one exception, and only while emailDebugMode
+// is on: when s.Team (the team's name) is known but s.TeamEmail isn't (the
+// team itself resolved, its group just has no configured group_email yet —
+// common while entity-service's team data is still being backfilled), the
+// email is still sent to e.emailDebugRecipients, with the body's "Sent to"
+// line naming the team directly — so confirming the routing itself works
+// doesn't depend on every test environment also having every team's
+// group_email filled in. An unassigned case's assignee has no equivalent
+// name worth surfacing this way, so that recipient is skipped the same in
+// debug mode as in production — see the send closure's own doc comment.
 //
 // Claims (caseID, clockType, tier) via e.store.ClaimEmail before sending
 // anything: alertTier now attempts this regardless of whether the Chat
@@ -426,9 +438,39 @@ func (e *Engine) sendBreachEmails(ctx context.Context, s SLAStatus, tier int) {
 	}
 	subject := notifications.SLABreachEmailSubject(s.ClockType, data.Tier, s.Priority, caseNumber, s.WSO2CaseID)
 
-	send := func(real string, render func(intendedFor string) string) {
+	// recipientRole ("assignee"/"team") is logged on every outcome below
+	// specifically so a skip/failure is attributable to one recipient or
+	// the other — without it, both calls log an identical line (same
+	// caseId/clockType/tier), making "which recipient was this about"
+	// unanswerable from the log alone, a real gap hit while diagnosing a
+	// missing breach email live.
+	//
+	// unresolvedLabel, when non-empty, names who this recipient WOULD have
+	// been (e.g. the team name) even though real is empty — real
+	// production has nowhere to send regardless, but a debug deployment
+	// can still show it: sent to the configured debug recipients, with the
+	// body's "Sent to" line naming unresolvedLabel directly, so testing
+	// whether team routing itself resolved correctly doesn't depend on
+	// this environment also having that team's group_email configured.
+	// Assignee passes "" here — an unassigned case has no name worth
+	// surfacing this way, see sendBreachEmails' own doc comment.
+	send := func(recipientRole, real, unresolvedLabel string, render func(intendedFor string) string) {
 		if real == "" {
-			slog.InfoContext(ctx, "slaengine: sla breach email recipient not resolved, skipping", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier)
+			if !e.emailDebugMode || unresolvedLabel == "" {
+				slog.InfoContext(ctx, "slaengine: sla breach email recipient not resolved, skipping", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "recipient", recipientRole)
+				return
+			}
+			if len(e.emailDebugRecipients) == 0 {
+				slog.WarnContext(ctx, "slaengine: EMAIL_DEBUG_MODE=true but EMAIL_DEBUG_RECIPIENTS is empty; not sending breach email",
+					"caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "recipient", recipientRole)
+				return
+			}
+			body := render(unresolvedLabel + " (no email on file)")
+			if err := e.email.SendEmail(ctx, e.emailDebugRecipients, nil, nil, nil, subject, body, nil); err != nil {
+				slog.ErrorContext(ctx, "slaengine: failed to send sla breach email", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "recipient", recipientRole, "err", err)
+				return
+			}
+			slog.InfoContext(ctx, "slaengine: sla breach email sent", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "recipient", recipientRole, "unresolvedLabel", unresolvedLabel)
 			return
 		}
 		to := []string{real}
@@ -436,7 +478,7 @@ func (e *Engine) sendBreachEmails(ctx context.Context, s SLAStatus, tier int) {
 		if e.emailDebugMode {
 			if len(e.emailDebugRecipients) == 0 {
 				slog.WarnContext(ctx, "slaengine: EMAIL_DEBUG_MODE=true but EMAIL_DEBUG_RECIPIENTS is empty; not sending breach email",
-					"caseId", s.CaseID, "clockType", s.ClockType, "tier", tier)
+					"caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "recipient", recipientRole)
 				return
 			}
 			intendedFor = real
@@ -444,18 +486,18 @@ func (e *Engine) sendBreachEmails(ctx context.Context, s SLAStatus, tier int) {
 		}
 		body := render(intendedFor)
 		if err := e.email.SendEmail(ctx, to, nil, nil, nil, subject, body, nil); err != nil {
-			slog.ErrorContext(ctx, "slaengine: failed to send sla breach email", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "err", err)
+			slog.ErrorContext(ctx, "slaengine: failed to send sla breach email", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "recipient", recipientRole, "err", err)
 			return
 		}
-		slog.InfoContext(ctx, "slaengine: sla breach email sent", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier)
+		slog.InfoContext(ctx, "slaengine: sla breach email sent", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "recipient", recipientRole)
 	}
 
-	send(s.AssigneeEmail, func(intendedFor string) string {
+	send("assignee", s.AssigneeEmail, "", func(intendedFor string) string {
 		d := data
 		d.IntendedFor = intendedFor
 		return notifications.RenderSLABreachAssigneeEmail(s.AssigneeName, d)
 	})
-	send(s.TeamEmail, func(intendedFor string) string {
+	send("team", s.TeamEmail, s.Team, func(intendedFor string) string {
 		d := data
 		d.IntendedFor = intendedFor
 		return notifications.RenderSLABreachTeamEmail(s.TeamLeadName, d)

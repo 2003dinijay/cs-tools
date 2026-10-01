@@ -513,6 +513,91 @@ func TestEngine_SendBreachEmails_FallsBackToCaseIDWhenCaseNumberEmpty(t *testing
 	}
 }
 
+// TestEngine_SendBreachEmails_UnresolvedTeamStillSendsInDebugMode verifies a
+// team that resolved by name (s.Team) but has no configured group_email
+// (s.TeamEmail empty) still gets a debug-mode email — to the configured
+// debug recipients, naming the team directly in the body — rather than
+// being silently skipped the same way a genuinely unknown team would be.
+// Lets a tester confirm team routing resolved correctly without needing
+// every team's group_email populated in every test environment.
+func TestEngine_SendBreachEmails_UnresolvedTeamStillSendsInDebugMode(t *testing.T) {
+	entity := &fakeStatusLister{statuses: []SLAStatus{{
+		CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 50,
+		Team: "Atlas",
+	}}}
+	store := newFakeTierStore()
+	store.tiers["CASE-1|response"] = 0
+	e := newTestEngine(entity, store, &fakePublisher{})
+	email := &fakeEmailSender{}
+	e.email = email
+	e.emailSendingEnabled = true
+	e.emailDebugMode = true
+	e.emailDebugRecipients = []string{"debug@example.test"}
+
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(email.calls) != 1 {
+		t.Fatalf("email calls = %d, want 1 (team only — no assignee resolved)", len(email.calls))
+	}
+	sent := email.calls[0]
+	if len(sent.to) != 1 || sent.to[0] != "debug@example.test" {
+		t.Errorf("to = %v, want only the configured debug recipient", sent.to)
+	}
+	if !strings.Contains(sent.body, "Atlas") {
+		t.Errorf("body does not name the unresolved team (%q) anywhere", "Atlas")
+	}
+}
+
+// TestEngine_SendBreachEmails_UnresolvedTeamNeverSendsOutsideDebugMode
+// verifies the same unresolved-team case sends nothing at all when
+// EMAIL_DEBUG_MODE is off — production genuinely has no real address to
+// send a team email to, debug or not.
+func TestEngine_SendBreachEmails_UnresolvedTeamNeverSendsOutsideDebugMode(t *testing.T) {
+	entity := &fakeStatusLister{statuses: []SLAStatus{{
+		CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 50,
+		Team: "Atlas",
+	}}}
+	store := newFakeTierStore()
+	store.tiers["CASE-1|response"] = 0
+	e := newTestEngine(entity, store, &fakePublisher{})
+	email := &fakeEmailSender{}
+	e.email = email
+	e.emailSendingEnabled = true
+
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(email.calls) != 0 {
+		t.Fatalf("email calls = %d, want 0 — production has no real team email to send to", len(email.calls))
+	}
+}
+
+// TestEngine_SendBreachEmails_UnresolvedAssigneeNeverSendsEvenInDebugMode
+// verifies the assignee recipient does NOT get this same unresolved-label
+// treatment — an unassigned case has no name worth surfacing, unlike a
+// team, so it stays skipped in debug mode exactly as in production.
+func TestEngine_SendBreachEmails_UnresolvedAssigneeNeverSendsEvenInDebugMode(t *testing.T) {
+	entity := &fakeStatusLister{statuses: []SLAStatus{{
+		CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 50,
+	}}}
+	store := newFakeTierStore()
+	store.tiers["CASE-1|response"] = 0
+	e := newTestEngine(entity, store, &fakePublisher{})
+	email := &fakeEmailSender{}
+	e.email = email
+	e.emailSendingEnabled = true
+	e.emailDebugMode = true
+	e.emailDebugRecipients = []string{"debug@example.test"}
+
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(email.calls) != 0 {
+		t.Fatalf("email calls = %d, want 0 — no assignee and no team to send to", len(email.calls))
+	}
+}
+
 // TestEngine_Tick_JoinsErrorsAcrossStatusesButProcessesBoth verifies one
 // clock's failure doesn't stop another clock in the same poll from being
 // processed.
