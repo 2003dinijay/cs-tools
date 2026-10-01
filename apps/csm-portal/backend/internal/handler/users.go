@@ -20,11 +20,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/scim"
@@ -462,9 +464,31 @@ func (h *UsersHandler) GetTimeCardApprovers(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Registered unconditionally (see cmd/server/main.go) so a disabled
+	// deployment 404s cleanly here rather than falling through to the
+	// wildcard GET /users/{id} route, which would reject the literal segment
+	// "time-card-approvers" as an invalid UUID with 400 instead.
+	if h.timecardApproverRoleID == "" {
+		writeError(w, http.StatusNotFound, ErrMsgNotFound)
+		return
+	}
+
 	members, err := h.scim.GetRole(r.Context(), h.timecardApproverRoleID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "scim GetRole (time card approvers) failed", "userID", user.UserID, "err", err)
+		// A 401/403 here means this backend's own SCIM client credentials lack
+		// the scope to read Asgardeo roles (see ASGARDEO_ROLE_IDS's own doc
+		// comment) -- a deployment/configuration problem, not anything about
+		// the calling portal user's own permissions. mapUpstreamErrorGeneric's
+		// usual 401/403 pass-through would tell an ordinary viewer "you don't
+		// have permission" for what is actually a backend misconfiguration an
+		// admin needs to fix, so those two codes are reported as a sanitized
+		// 502 instead; every other status still goes through the usual mapping.
+		var apiErr *apierror.Error
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
+			writeError(w, http.StatusBadGateway, "Failed to list time card approvers.")
+			return
+		}
 		mapUpstreamErrorGeneric(w, err, "Failed to list time card approvers.")
 		return
 	}

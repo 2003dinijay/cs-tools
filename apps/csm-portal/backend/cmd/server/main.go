@@ -309,10 +309,10 @@ func main() {
 	}
 	healthHandler := handler.NewHealthHandler(scimClient, updatesClient, notificationPinger, integrationPinger, engineeringPinger)
 
-	// timecardApproverRoleID is optional: GET /users/time-card-approvers is
-	// only registered (below) once ASGARDEO_ROLE_IDS configures a
-	// "timecard_approver" entry, same "off = route not registered, 404s like
-	// unknown" convention as this file's other optionally-wired features.
+	// timecardApproverRoleID is optional: empty means ASGARDEO_ROLE_IDS has no
+	// "timecard_approver" entry, in which case GetTimeCardApprovers itself
+	// returns 404 rather than the route going unregistered -- see its own
+	// route registration below for why.
 	timecardApproverRoleID := asgardeoRoleIDs["timecard_approver"]
 	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient, dir, sftpgoAttachmentStorageEnabled, timecardApproverRoleID).WithAccessGuard(accessGuard)
 	dashboardHandler := handler.NewDashboardHandler(accessGuard)
@@ -418,9 +418,12 @@ func main() {
 	route("POST /users/search", handler.PermView, usersHandler.SearchUsers)
 	route("GET /users/{id}", handler.PermView, usersHandler.GetUser)
 	route("POST /users", handler.PermAdmin, usersHandler.CreateUser)
-	if timecardApproverRoleID != "" {
-		route("GET /users/time-card-approvers", handler.PermView, usersHandler.GetTimeCardApprovers)
-	}
+	// Registered unconditionally, even when timecardApproverRoleID is empty:
+	// GetTimeCardApprovers itself returns 404 when disabled. Registering it
+	// only when configured would instead let the request fall through to the
+	// wildcard GET /users/{id} above, which rejects the literal path segment
+	// "time-card-approvers" as an invalid UUID with 400, not a clean 404.
+	route("GET /users/time-card-approvers", handler.PermView, usersHandler.GetTimeCardApprovers)
 	route("POST /roles/search", handler.PermView, referenceHandler.SearchRoles)
 	route("POST /teams/search", handler.PermView, referenceHandler.SearchTeams)
 	route("GET /teams/{id}/members", handler.PermViewSharedEntity, teamHandler.GetTeamMembers)

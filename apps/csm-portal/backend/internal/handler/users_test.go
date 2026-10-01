@@ -26,6 +26,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/scim"
@@ -748,8 +749,24 @@ func TestGetTimeCardApprovers(t *testing.T) {
 		}
 	})
 
+	t.Run("returns 404 when no role id is configured, rather than falling through to GetUser", func(t *testing.T) {
+		h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{}, testDirectory(t), false, "")
+		r := withUser(httptest.NewRequest(http.MethodGet, "/users/time-card-approvers", nil))
+		w := httptest.NewRecorder()
+		h.GetTimeCardApprovers(w, r)
+		assertStatus(t, w, http.StatusNotFound)
+		assertErrorMessage(t, w, ErrMsgNotFound)
+	})
+
+	// A SCIM 401/403 means this backend's own credentials lack a roles-read
+	// scope, not that the caller lacks permission -- excluded from the shared
+	// upstreamErrorsGeneric table (which asserts the ordinary 401->401/403->403
+	// pass-through) and asserted separately below.
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
 		for _, tc := range upstreamErrorsGeneric("Failed to list time card approvers.") {
+			if tc.wantCode == http.StatusUnauthorized || tc.wantCode == http.StatusForbidden {
+				continue
+			}
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				scimClient := &mockSCIMClient{
@@ -764,6 +781,24 @@ func TestGetTimeCardApprovers(t *testing.T) {
 				assertStatus(t, w, tc.wantCode)
 				assertErrorMessage(t, w, tc.wantMsg)
 				assertContentType(t, w, "application/json")
+			})
+		}
+	})
+
+	t.Run("a SCIM 401 or 403 is reported as a sanitized 502, never the caller's own 401/403", func(t *testing.T) {
+		for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+			t.Run(http.StatusText(code), func(t *testing.T) {
+				scimClient := &mockSCIMClient{
+					getRoleFn: func(context.Context, string) ([]scim.RoleMember, error) {
+						return nil, &apierror.Error{StatusCode: code, Body: "scim detail that must not leak"}
+					},
+				}
+				h := NewUsersHandler(scimClient, &mockEntityUserClient{}, testDirectory(t), false, "role-1")
+				r := withUser(httptest.NewRequest(http.MethodGet, "/users/time-card-approvers", nil))
+				w := httptest.NewRecorder()
+				h.GetTimeCardApprovers(w, r)
+				assertStatus(t, w, http.StatusBadGateway)
+				assertErrorMessage(t, w, "Failed to list time card approvers.")
 			})
 		}
 	})

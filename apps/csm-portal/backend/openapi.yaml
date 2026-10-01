@@ -1989,12 +1989,12 @@ paths:
     get:
       summary: List the real Asgardeo membership of the time-card-approver role.
       description: >
-        Only registered when TIMECARD_APPROVER_ASGARDEO_ROLE_ID is configured — absent
-        that, this path 404s like any unknown route. Fetches the configured Asgardeo
-        role (via the SCIM operations service's GET /organizations/internal/roles/{id},
-        which proxies Asgardeo's Roles Management API v2) and returns its member users.
-        This is the authoritative list of who may approve a time card — entity-service's
-        own Postgres role/user_role tables (what POST /users/search's roleIds filter
+        Returns 404 unless ASGARDEO_ROLE_IDS contains a timecard_approver|<role-id>
+        mapping. Fetches the configured Asgardeo role (via the SCIM operations
+        service's GET /organizations/internal/roles/{id}, which proxies Asgardeo's
+        Roles Management API v2) and returns its member users. This is the
+        authoritative list of who may approve a time card — entity-service's own
+        Postgres role/user_role tables (what POST /users/search's roleIds filter
         reads) are a separate, syncable mirror that can drift from the real Asgardeo
         role assignment.
       operationId: getUsersTimeCardApprovers
@@ -2017,8 +2017,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not Found — no timecard_approver entry is configured in ASGARDEO_ROLE_IDS.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "502":
+          description: >-
+            Bad Gateway — the SCIM operations service rejected this backend's own
+            request (e.g. its OAuth2 app lacks a roles-read scope). Reported as 502
+            rather than 401/403 so it is never mistaken for the caller's own
+            permissions being denied.
           content:
             application/json:
               schema:

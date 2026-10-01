@@ -89,9 +89,23 @@ role lookup later is a config row plus a small handler, not a redesign. Parsed o
 assignable-role allow-list) is a different, narrower concept than "which roles have a SCIM-backed
 membership lookup wired up" — this is Asgardeo role *ids* for a specific feature, not organisation
 vocabulary every caller needs. No default and no required keys: an unconfigured `timecard_approver`
-entry just means `GET /users/time-card-approvers` is not registered at all (`timecardApproverRoleID == ""`
-in `main.go`) — the route 404s like any unknown path, the same "off = not registered" convention this
-file's other optionally-wired features (`ENGINEERING_ENTITY_BASE_URL`, the `CSM_MIGRATION_*` flags) use.
+entry means `timecardApproverRoleID == ""` in `main.go`, and `GetTimeCardApprovers` itself returns 404
+in that case. **The route is registered unconditionally**, deliberately unlike this file's other
+optionally-wired features (`ENGINEERING_ENTITY_BASE_URL`, the `CSM_MIGRATION_*` flags), which skip
+registration entirely when off: `GET /users/time-card-approvers` collides with the wildcard
+`GET /users/{id}` route, so leaving it unregistered would have the request fall through to `GetUser`,
+which rejects the literal segment `"time-card-approvers"` as an invalid UUID with 400 — a confusing
+status for "this feature isn't configured." Registering it unconditionally and 404ing from inside the
+handler gives a clean, correct status either way.
+
+**A SCIM 401/403 is never passed through to the caller as 401/403.** A failure fetching the role (e.g.
+this backend's own OAuth2 app lacking a roles-read scope on `SCIM_SCOPES` — see the "Operational
+follow-up" note on the PR that added the SCIM operations service's role endpoint) is this backend's own
+credentials problem, not anything about the calling portal user's permissions — `mapUpstreamErrorGeneric`'s
+usual 401/403 pass-through would otherwise tell an ordinary `viewer` "you don't have permission" for what
+is really a deployment misconfiguration. `GetTimeCardApprovers` checks for those two codes specifically
+and reports a sanitized 502 instead; every other SCIM failure status still goes through the normal
+`mapUpstreamErrorGeneric` mapping.
 
 ## Security Center access (PermViewSecurityCenter)
 
