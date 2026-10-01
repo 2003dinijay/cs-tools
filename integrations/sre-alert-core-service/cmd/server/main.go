@@ -101,18 +101,19 @@ func main() {
 		Scopes:       splitComma(os.Getenv("CSM_INTEGRATION_SCOPES")),
 	})
 	notifier := notify.New(base.With("component", "notify"), csmClient, notify.Config{
-		CallerID:         mustEnv(logger, "CSM_CALLER_ID"),
-		UnknownServiceID: mustEnv(logger, "CSM_UNKNOWN_SERVICE_ID"),
-		ServiceCacheTTL:  depCfg.Notify.ServiceCacheTTL.Duration(),
-		MaxAttempts:      depCfg.Notify.MaxAttempts,
-		RetryBaseDelay:   depCfg.Notify.RetryBaseDelay.Duration(),
-		HTTPTimeout:      depCfg.Notify.HTTPTimeout.Duration(),
+		CallerID:             mustEnv(logger, "CSM_CALLER_ID"),
+		UnknownServiceID:     mustEnv(logger, "CSM_UNKNOWN_SERVICE_ID"),
+		ServiceCacheTTL:      depCfg.Notify.ServiceCacheTTL.Duration(),
+		MaxAttempts:          depCfg.Notify.MaxAttempts,
+		RetryBaseDelay:       depCfg.Notify.RetryBaseDelay.Duration(),
+		HTTPTimeout:          depCfg.Notify.HTTPTimeout.Duration(),
+		ChatThreadingEnabled: depCfg.Notify.ChatThreadingEnabled,
 	})
 	eng := engine.New(base.With("component", "engine"), alerts, incidents, notifier, defaults, depCfg.Notify.MaxCSMAttempts, depCfg.Notify.StateCheckInterval.Duration(), depCfg.Engine.DedupWindow.Duration(), engine.CSMRetryConfig{
 		BaseDelay:  depCfg.Notify.CSMRetryBaseDelay.Duration(),
 		Multiplier: depCfg.Notify.CSMRetryMultiplier,
 		MaxDelay:   depCfg.Notify.CSMRetryMaxDelay.Duration(),
-	})
+	}, depCfg.Notify.ChatThreadingEnabled)
 	poller, err := poll.New(base.With("component", "poll"), session, eng, processorLease, poll.Settings{
 		Interval:            depCfg.Poll.Interval.Duration(),
 		Concurrency:         depCfg.Poll.Concurrency,

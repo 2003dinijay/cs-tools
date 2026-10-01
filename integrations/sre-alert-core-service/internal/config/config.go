@@ -93,6 +93,8 @@ type NotifyConfig struct {
 	CSMRetryMultiplier float64 `toml:"csm_retry_multiplier"`
 	// CSMRetryMaxDelay caps how long the exponential CSM retry wait can grow to.
 	CSMRetryMaxDelay Duration `toml:"csm_retry_max_delay"`
+	// ChatThreadingEnabled threads every Chat fallback message for the same alert fingerprint into one Google Chat thread, instead of posting a new top-level message each time the incident recurs.
+	ChatThreadingEnabled bool `toml:"chat_threading_enabled"`
 }
 
 // ServerConfig tunes how long the HTTP server waits for in-flight requests to drain during a graceful shutdown before forcing the process to exit.
@@ -139,16 +141,17 @@ func defaults() Config {
 			QueryTimeout:       Duration(10 * time.Second),
 		},
 		Notify: NotifyConfig{
-			MaxAttempts:        3,
-			RetryBaseDelay:     Duration(200 * time.Millisecond),
-			HTTPTimeout:        Duration(10 * time.Second),
-			RetrySweepInterval: Duration(30 * time.Second),
-			MaxCSMAttempts:     20,
-			ServiceCacheTTL:    Duration(15 * time.Minute),
-			StateCheckInterval: Duration(1 * time.Minute),
-			CSMRetryBaseDelay:  Duration(30 * time.Second),
-			CSMRetryMultiplier: 3,
-			CSMRetryMaxDelay:   Duration(time.Hour),
+			MaxAttempts:          3,
+			RetryBaseDelay:       Duration(200 * time.Millisecond),
+			HTTPTimeout:          Duration(10 * time.Second),
+			RetrySweepInterval:   Duration(30 * time.Second),
+			MaxCSMAttempts:       20,
+			ServiceCacheTTL:      Duration(15 * time.Minute),
+			StateCheckInterval:   Duration(1 * time.Minute),
+			CSMRetryBaseDelay:    Duration(30 * time.Second),
+			CSMRetryMultiplier:   3,
+			CSMRetryMaxDelay:     Duration(time.Hour),
+			ChatThreadingEnabled: true,
 		},
 		Server: ServerConfig{
 			ShutdownGrace: Duration(15 * time.Second),

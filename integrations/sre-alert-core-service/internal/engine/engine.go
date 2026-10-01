@@ -53,6 +53,7 @@ type incidentStore interface {
 type notifier interface {
 	NotifyCSM(ctx context.Context, inc model.Incident) (incidentID, incidentNumber string, ok bool, permanent bool)
 	NotifyChat(ctx context.Context, inc model.Incident) (ok bool)
+	NotifyChatAnnotation(ctx context.Context, inc model.Incident, kind, note string) (ok bool)
 	PushWorkNote(ctx context.Context, incidentID, note string) error
 	IncidentState(ctx context.Context, incidentNumber string) (open bool, found bool, err error)
 }
@@ -72,6 +73,8 @@ type Engine struct {
 	dedupWindow time.Duration
 	// csmRetry bounds how RetrySweep backs off CSM retries during a prolonged outage.
 	csmRetry CSMRetryConfig
+	// chatThreadingEnabled gates forwarding Duplicate/OK annotations to Chat (threaded by fingerprint) while an incident is stuck in chat-fallback; see notify.Notifier.chatThreadingEnabled.
+	chatThreadingEnabled bool
 	// locks is per-fingerprint so distinct incidents never serialize; racing callers re-read the row under lock.
 	locks *fpLocks
 }
@@ -83,12 +86,12 @@ type CSMRetryConfig struct {
 	MaxDelay   time.Duration
 }
 
-// New wires the engine's collaborators, alert defaults, CSM attempt cap, state-check throttle, dedup window, and CSM retry backoff together.
-func New(logger *slog.Logger, alerts alertReader, incidents incidentStore, n notifier, defaults model.Defaults, maxCSMAttempts int, stateCheckInterval time.Duration, dedupWindow time.Duration, csmRetry CSMRetryConfig) *Engine {
+// New wires the engine's collaborators, alert defaults, CSM attempt cap, state-check throttle, dedup window, CSM retry backoff, and chat threading together.
+func New(logger *slog.Logger, alerts alertReader, incidents incidentStore, n notifier, defaults model.Defaults, maxCSMAttempts int, stateCheckInterval time.Duration, dedupWindow time.Duration, csmRetry CSMRetryConfig, chatThreadingEnabled bool) *Engine {
 	return &Engine{
 		logger: logger, alerts: alerts, incidents: incidents, notifier: n, defaults: defaults,
 		maxCSMAttempts: maxCSMAttempts, stateCheckInterval: stateCheckInterval, dedupWindow: dedupWindow,
-		csmRetry: csmRetry, locks: newFPLocks(),
+		csmRetry: csmRetry, chatThreadingEnabled: chatThreadingEnabled, locks: newFPLocks(),
 	}
 }
 
@@ -249,6 +252,11 @@ func (e *Engine) annotate(ctx context.Context, existing model.Incident, alertID,
 	// Push now if CSM already has this incident, else it stays in PendingNotes for RetrySweep; deliverAndPersist re-locks itself, so it must run after unlock.
 	if incidentID != "" {
 		e.deliverAndPersist(ctx, fp)
+	} else if e.chatThreadingEnabled && current.Fallback {
+		// CSM never confirmed, but this incident already reached Chat once; thread this Duplicate/OK in as a reply instead of leaving it silent until CSM recovers. Best-effort: the work note above already persisted either way.
+		if !e.notifier.NotifyChatAnnotation(ctx, current, kind, note) {
+			e.logger.Warn("chat thread reply failed for annotated incident", "incident_number", incidentNumber, "alert_id", alertID, "kind", kind)
+		}
 	}
 	e.logger.Info("alert recorded on existing incident", "incident_number", incidentNumber, "alert_id", alertID, "kind", kind)
 	return Processed
