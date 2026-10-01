@@ -606,6 +606,19 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 		return domain.CreateCaseResponse{}, err
 	}
 
+	// ServiceNow's own case-creation business rules already generate the
+	// case's first comment (a journal entry mirroring Title/Description --
+	// for a service_request, the catalog item's variables too -- plus, for
+	// some catalog items, a system-authored comment like a triggered Change
+	// Request) before this method ever asked for one. SearchCaseComments on
+	// this data source reads Postgres's own "comment" table exclusively, so
+	// without this mirror step that ServiceNow-generated entry would be
+	// permanently invisible here -- a real, reported gap: "the first comment
+	// should be the title and description" worked wherever comments are read
+	// live from ServiceNow (plain DATA_SOURCE=servicenow), but not under
+	// dual-write, where nothing ever copied it into Postgres.
+	s.mirrorInitialSNComments(ctx, c.ID)
+
 	// Every case gets its account's four named stakeholders as watchers,
 	// merged with whatever the caller's own req.WatchList already asked for
 	// -- a pure Postgres lookup, independent of ServiceNow entirely (no
@@ -654,6 +667,50 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 			State:      responseState,
 		},
 	}, nil
+}
+
+// mirrorInitialSNComments copies the comments ServiceNow's own case-creation
+// business rules already generated for the just-created case (the journal
+// entry mirroring Title/Description -- plus a catalog item's variables for a
+// service_request, and sometimes a system-authored comment like a triggered
+// Change Request) into Postgres's own comment table. See createCaseSNFirst's
+// call site for why this is needed: SearchCaseComments reads Postgres
+// exclusively on this data source, so without this step ServiceNow's own
+// auto-generated entries would never appear here at all.
+//
+// Best-effort: a failure here must not fail the case creation response,
+// since ServiceNow and Postgres both already have the case row by this
+// point -- same "log, don't return" posture as every other post-create side
+// effect in createCaseSNFirst (addAccountDefaultWatchers, publishCaseCreatedEvent).
+func (s *caseService) mirrorInitialSNComments(ctx context.Context, caseID string) {
+	resp, err := s.snMirror.SearchCaseComments(ctx, domain.SearchCaseCommentsRequest{
+		CaseID:     caseID,
+		Pagination: domain.Pagination{Limit: 20, Offset: 0},
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "sn create case: fetch ServiceNow's initial comments for mirroring failed", "caseId", caseID, "error", err)
+		return
+	}
+	for _, c := range resp.Comments {
+		// "activity" (APPROVAL_HISTORY) is ServiceNow's own audit trail and
+		// is never writable through CreateCaseComment -- see that method's
+		// identical restriction. Skipped, not an error.
+		if c.Type == domain.CommentTypeActivity {
+			continue
+		}
+		createdBy := "system"
+		if c.CreatedBy != nil && c.CreatedBy.Email != "" {
+			createdBy = c.CreatedBy.Email
+		}
+		if _, err := s.repo.CreateCaseComment(ctx, domain.CreateCaseCommentRequest{
+			CaseID:    caseID,
+			Type:      c.Type,
+			Content:   c.Content,
+			CreatedBy: createdBy,
+		}); err != nil {
+			slog.ErrorContext(ctx, "sn create case: mirror initial ServiceNow comment failed", "caseId", caseID, "commentId", c.ID, "error", err)
+		}
+	}
 }
 
 // mergeUnique returns the union of a and b, deduplicated, preserving the
