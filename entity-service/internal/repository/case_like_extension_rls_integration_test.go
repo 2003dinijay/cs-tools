@@ -36,14 +36,14 @@ import (
 )
 
 const (
-	cleProjectID   = "70000000-0000-0000-0000-000000000001"
-	cleAccountID   = "71111111-0000-0000-0000-000000000001"
-	cleContactID   = "72222222-0000-0000-0000-000000000001"
-	cleEngagement  = "73333333-0000-0000-0000-000000000001"
-	cleServiceReq  = "73333333-0000-0000-0000-000000000002"
-	cleSecReport   = "73333333-0000-0000-0000-000000000003"
-	cleMember      = "cle-member@test.local"
-	cleStranger    = "cle-stranger@test.local"
+	cleProjectID  = "70000000-0000-0000-0000-000000000001"
+	cleAccountID  = "71111111-0000-0000-0000-000000000001"
+	cleContactID  = "72222222-0000-0000-0000-000000000001"
+	cleEngagement = "73333333-0000-0000-0000-000000000001"
+	cleServiceReq = "73333333-0000-0000-0000-000000000002"
+	cleSecReport  = "73333333-0000-0000-0000-000000000003"
+	cleMember     = "cle-member@test.local"
+	cleStranger   = "cle-stranger@test.local"
 )
 
 // seedCaseLikeExtensionFixture creates one project with one REGISTERED

@@ -19,6 +19,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -127,6 +128,48 @@ func TestParseWebhookAPIKeys(t *testing.T) {
 	} {
 		if _, err := ParseWebhookAPIKeys(raw); err == nil {
 			t.Errorf("%s: %q should be rejected", name, raw)
+		}
+	}
+}
+
+// The value is often pasted into a console: quotes, newlines and stray spaces must
+// not silently hand keys to the wrong vendors.
+func TestParseWebhookAPIKeys_PasteFormats(t *testing.T) {
+	for name, raw := range map[string]string{
+		"quoted whole value":  `"aws:k1,datadog:k2"`,
+		"single quotes":       `'aws:k1,datadog:k2'`,
+		"newline separated":   "aws:k1\ndatadog:k2",
+		"crlf separated":      "aws:k1\r\ndatadog:k2",
+		"semicolon separated": "aws:k1;datadog:k2",
+		"space after comma":   "aws:k1, datadog:k2",
+		"quoted entries":      `"aws:k1","datadog:k2"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			keys, err := ParseWebhookAPIKeys(raw)
+			if err != nil || len(keys) != 2 || keys["aws"] != "k1" || keys["datadog"] != "k2" {
+				t.Errorf("keys = %v, err = %v", keys, err)
+			}
+		})
+	}
+}
+
+// The error goes to the startup log, so it must never contain key material.
+func TestParseWebhookAPIKeys_ErrorsNeverContainTheKey(t *testing.T) {
+	const secret = "s3cr3tKeyMaterial"
+	for _, raw := range []string{
+		secret,                         // bare key pasted with no vendor prefix
+		"aws:k1," + secret,             // one good entry, then a bare key
+		":" + secret,                   // empty vendor
+		secret + ":",                   // trailing colon: the key lands in the vendor half
+		secret + ":a," + secret + ":b", // a repeated "vendor" that is really a key
+	} {
+		_, err := ParseWebhookAPIKeys(raw)
+		if err == nil {
+			t.Errorf("%q should be rejected", raw)
+			continue
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error leaks the key: %v", err)
 		}
 	}
 }

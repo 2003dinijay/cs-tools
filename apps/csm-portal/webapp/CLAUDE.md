@@ -60,6 +60,13 @@ redaction section below describes for its own frontend mitigation: entity-servic
 enforces the identical rule server-side (see that repo's own `CLAUDE.md`), and is what actually
 protects the database regardless of what this form does or doesn't check.
 
+**"External" is temporarily disabled** (`USER_TYPE_OPTIONS`'s own `disabled: true`, rendered via
+`MenuItem`'s `disabled` prop with "— currently unavailable" appended to the label) — both
+entity-service and `apps/csm-portal/backend` reject creating an external-type user regardless of what
+this form sends, so there is currently only one real, selectable choice in this dropdown. This is
+meant to come out once external-type creation is ready; see entity-service's own `CLAUDE.md` for the
+full reasoning.
+
 ## Code organization
 
 Feature-based: each `src/features/<name>/` folder owns its own `api/` (React Query hooks), `components/`, `pages/`, `types/`, `utils/`. Tests are colocated as `<File>.test.tsx` next to the file under test, not in a separate `__tests__` tree.

@@ -385,6 +385,8 @@ publishes) while still suppressing the portal's own echo (RE-INVITED →
 RE-INVITED is unchanged, so it does not). Do not put the insert-only condition
 back.
 
+**Contact who already signed in:** Salesforce saves their new membership as REGISTERED. It still gets `project_contact.invited` (existing-account email) when the row is new (created < 24 h ago in Salesforce) or comes back from DEACTIVATED, but not on RESTORED. The portal invite stores the REGISTERED state Salesforce returns and publishes.
+
 `project_contact.registered` (`events.ProjectContactRegisteredPayload`) is published the same way, only on an
 existing row moving INVITED / RE-INVITED → REGISTERED; csm-notification-service sends the Welcome email (step `WELCOME_EMAIL`).
 
@@ -2340,20 +2342,40 @@ search` and `POST /service-offerings/search`, previously ServiceNow-only.
 **`AssignedTeamID` is now read** — `work_item.assignment_group_id` (migration
 0075, a FK into `group`), via `changeRequestFromJoins`' own `"group" ag`
 join, back as `domain.ChangeRequest.AssignedTeam`. A real, reported bug: the
-CSM Portal's own action bar requires `assignedTeam` to be set before it will
-let a change request advance to Assess at all, and since this was never
-read, *no* change request could ever be promoted past New through the
-portal on this data source — confirmed live against a real change request
-with a genuine ServiceNow Assignment group ("Devops"), whose `AssignedEngineer`
-synced and displayed correctly while `AssignedTeam` always showed empty.
-This proved `csm-sync-service` already populates
+CSM Portal's own action bar at the time required `assignedTeam` to be set
+before it would let a change request advance to Assess at all, and since
+this was never read, *no* change request could ever be promoted past New
+through the portal on this data source — confirmed live against a real
+change request with a genuine ServiceNow Assignment group ("Devops"), whose
+`AssignedEngineer` synced and displayed correctly while `AssignedTeam`
+always showed empty. This proved `csm-sync-service` already populates
 `work_item.assignment_group_id` for change requests the same way it does
 for every other `work_item` type, so the fix is read-only — no create/patch
-write-path changes were needed alongside it. Writing it (create's `GroupID`,
-or `PatchChangeRequestRequest.AssignedTeamID`) and filtering search results
-by it (the parsed filter array's `assignmentGroupId`) both remain unwired,
-deliberately out of scope for this fix — see `ChangeRequestRepository`'s own
-doc comment.
+write-path changes were needed alongside it.
+
+**That frontend gate was itself later found to be stale and removed.** It
+was carried over unchanged from when New→Assess sent a ServiceNow "Request
+Approval" action (which genuinely needed a team) and was never re-verified
+after that transition became a plain, ungated `{state: "assess"}` PATCH (see
+"New→Assess is a plain, ungated state change" below) — there is no evidence
+the plain state change itself requires a team. `ChangeRequestActionBar.tsx`'s
+`TARGET_BLOCKED_REASON` no longer has an `assess` entry.
+
+**Writing `AssignedTeamID` is now wired too.** `PatchChangeRequestRequest.
+AssignedTeamID` sets `work_item.assignment_group_id` the same way
+`AssignedEngineerID` sets `assigned_to_id` immediately above it in
+`PatchChangeRequest`; a `23503` FK violation maps to the friendly field name
+`assignedTeamId` via `changeRequestPatchFKField`, same convention as every
+other FK column on this PATCH. Verified live against the local compose
+stack: setting it to a real seeded `"group"` row round-trips correctly and
+survives a reload; setting it to a well-formed but unknown id produces a
+clean `assignedTeamId does not refer to an existing record` validation error
+instead of a raw Postgres error. Writing it at **create** time
+(`CreateChangeRequestRequest.GroupID`) remains unwired — a separate,
+different field with no confirmed equivalence to this one (see this file's
+own comment on `CreateChangeRequestFromServiceNow`). Filtering search
+results by it (the parsed filter array's `assignmentGroupId`) is also still
+unwired — see `changeRequestWhereClause`'s own comment.
 
 **Fields still with no real column anywhere, left unset rather than
 guessed at** (see `ChangeRequestRepository`'s own doc comment for the full
@@ -4179,6 +4201,17 @@ the CSM portal's Add User form sent no `roles` at all until it gained a type sel
 created resolved to `user_type = NOT_AVAILABLE` — checked directly against staging before this shipped
 (128 such users). The type selector fixes that by granting `internal`/`external`; this check is what
 stops it from being pointed at the wrong email.
+
+**Creating an EXTERNAL-type user via `POST /users` is temporarily disabled.** `externalUserTypeRoles`
+(next to `internalUserTypeRoles`) is `["external", "partner", "customer", "partner_admin",
+"customer_admin"]` — every role name `recompute_user_type`'s trigger maps to `user_type = EXTERNAL` —
+and `requestsExternalUserType` rejects any of them with a `*apierror.ValidationError` regardless of
+email. This only affects `POST /users`: the Salesforce membership/contact ingest (its own, separate
+`upsertMembershipUser`/`SalesforceContactRepository` write path, not `UserRepository.CreateUser`) is
+unaffected and keeps creating external users exactly as before. `apps/csm-portal/backend`'s
+`UsersHandler.CreateUser` mirrors the same check for a fast 400, and the webapp's Add User form
+disables the "External" option in its type selector rather than offering a choice the backend will
+reject — all three are temporary, meant to come out together once external-type creation is ready.
 
 ## SearchDeployments crashed on any page containing a NULL deployment.type
 

@@ -72,6 +72,16 @@ func main() {
 		logger.Error("failed to read environment", "error", err)
 		os.Exit(1)
 	}
+	// Only the env-key modes read WEBHOOK_API_KEYS, so only they fail on a bad value.
+	var keys map[string]string
+	if cfg.Auth.Mode == auth.ModeAudit || cfg.Auth.Mode == auth.ModeAPIKey {
+		if keys, err = config.ParseWebhookAPIKeys(envCfg.WebhookAPIKeysRaw); err != nil {
+			logger.Error("failed to read WEBHOOK_API_KEYS", "error", err)
+			os.Exit(1)
+		}
+	} else if envCfg.WebhookAPIKeysRaw != "" {
+		logger.Warn("WEBHOOK_API_KEYS is set but ignored", "auth_mode", cfg.Auth.Mode)
+	}
 	registry, err := vendors.New()
 	if err != nil {
 		logger.Error("failed to load vendor config", "error", err)
@@ -94,10 +104,14 @@ func main() {
 
 	// After the session: ModeIntegrationUsers reads alerts-core's integration_users table.
 	users := auth.NewIntegrationUsers(session, cfg.Store.QueryTimeout.Duration(), cfg.Auth.CacheTTL.Duration())
-	authn, err := auth.New(cfg.Auth.Mode, envCfg.WebhookAPIKeys, registry.Names(), users, base.With("component", "auth"))
+	authn, err := auth.New(cfg.Auth.Mode, keys, registry.Names(), users, base.With("component", "auth"))
 	if err != nil {
 		logger.Error("failed to initialise auth hook", "error", err)
 		os.Exit(1)
+	}
+	if cfg.Auth.AuditOnly && cfg.Auth.Mode != auth.ModeNone {
+		authn = auth.NewAudit(authn, base.With("component", "auth"))
+		logger.Warn("auth.audit_only is set: credentials are checked but nothing is rejected", "auth_mode", cfg.Auth.Mode)
 	}
 	switch cfg.Auth.Mode {
 	case auth.ModeNone:

@@ -541,7 +541,7 @@ func TestAnnouncementVisibilityChildRowsIntegration(t *testing.T) {
 		ctx := repository.WithCallerIdentity(context.Background(), member("av-general@test.local"))
 		_, err := repo.CreateCaseComment(ctx, domain.CreateCaseCommentRequest{
 			CaseID: avSecurityID, CreatedBy: "av-general@test.local", Type: domain.CommentTypeComment, Content: "should be refused",
-		})
+		}, nil)
 		if err == nil {
 			t.Fatal("CreateCaseComment on a hidden security announcement succeeded, want an error")
 		}

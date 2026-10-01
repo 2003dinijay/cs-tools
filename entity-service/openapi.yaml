@@ -2136,8 +2136,11 @@ paths:
         '400':
           description: >
             Bad request — missing/invalid email, neither firstName nor
-            lastName supplied, or roles requests an internal-resolving role
-            (admin/internal) for a non-@wso2.com email.
+            lastName supplied, roles requests an internal-resolving role
+            (admin/internal) for a non-@wso2.com email, or roles requests an
+            external-resolving role (external/partner/customer/partner_admin/
+            customer_admin) — creating an external-type user is temporarily
+            disabled regardless of email.
           content:
             application/json:
               schema:
@@ -11144,7 +11147,11 @@ components:
         At least one of firstName/lastName is required. userType is never
         accepted here -- it is derived by the database from role membership.
         Granting a role that resolves to userType INTERNAL (admin/internal)
-        for a non-@wso2.com email is rejected with 400. Postgres-only.
+        for a non-@wso2.com email is rejected with 400. Granting a role that
+        resolves to userType EXTERNAL (external/partner/customer/partner_admin/
+        customer_admin) is rejected with 400 regardless of email -- creating
+        an external-type user via this endpoint is temporarily disabled.
+        Postgres-only.
 
     SNUser:
       type: object
@@ -15237,6 +15244,8 @@ components:
 
     ChangeRequestApprover:
       type: object
+      required:
+        - createdOn
       properties:
         id:
           type: string

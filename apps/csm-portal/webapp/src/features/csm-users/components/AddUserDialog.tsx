@@ -44,10 +44,19 @@ export interface AddUserDialogProps {
  * `type` field on the wire. `external` (not `customer`/`partner`/...) is the
  * role every externally-onboarded contact actually holds; the finer-grained
  * ones are refinements applied elsewhere, not choices this form makes.
+ *
+ * `external` is disabled for now -- the backend rejects it too (see
+ * entity-service's own `requestsExternalUserType`) -- so this list only ever
+ * offers one real, selectable choice until that's lifted.
  */
 const USER_TYPE_OPTIONS = [
-  { value: "internal", label: "Internal (WSO2 staff)", role: "internal" },
-  { value: "external", label: "External (customer/partner)", role: "external" },
+  { value: "internal", label: "Internal (WSO2 staff)", role: "internal", disabled: false },
+  {
+    value: "external",
+    label: "External (customer/partner) — currently unavailable",
+    role: "external",
+    disabled: true,
+  },
 ] as const;
 
 type NewUserType = (typeof USER_TYPE_OPTIONS)[number]["value"];
@@ -168,7 +177,7 @@ export default function AddUserDialog({ open, onClose, onCreated }: AddUserDialo
               required
             >
               {USER_TYPE_OPTIONS.map((option) => (
-                <MenuItem key={option.value} value={option.value}>
+                <MenuItem key={option.value} value={option.value} disabled={option.disabled}>
                   {option.label}
                 </MenuItem>
               ))}
