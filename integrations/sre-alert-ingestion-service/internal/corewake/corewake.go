@@ -65,7 +65,16 @@ func New(logger *slog.Logger, wakeURL, username, secret string, timeout time.Dur
 			logger.Warn("ALERT_CORE_WAKE_URL is not https; wake calls will be sent without credentials")
 		}
 	}
-	c := &Client{logger: logger, url: wakeURL, username: username, secret: secret, secure: secure, http: &http.Client{Timeout: timeout}}
+	// Redirects are never followed: Go keeps Authorization on a same-host redirect even
+	// from https to http, so following one could send the secret in cleartext. A 3xx
+	// is returned as-is and logged as an unexpected status.
+	client := &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	c := &Client{logger: logger, url: wakeURL, username: username, secret: secret, secure: secure, http: client}
 	c.idle = sync.NewCond(&c.mu)
 	return c
 }

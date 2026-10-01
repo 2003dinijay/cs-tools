@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -119,7 +120,7 @@ func authHeader(t *testing.T, tlsServer bool, username, secret string) (string, 
 	defer srv.Close()
 
 	c := New(discard(), srv.URL, username, secret, time.Second)
-	c.http = srv.Client() // trust the test server's certificate
+	c.http.Transport = srv.Client().Transport // trust the test cert, keep the redirect policy
 	c.Wake()
 	c.Wait(context.Background())
 	return got, seen
@@ -143,5 +144,34 @@ func TestWake_WithholdsCredentialOverHTTP(t *testing.T) {
 func TestWake_NoCredentialSendsNoHeader(t *testing.T) {
 	if _, seen := authHeader(t, true, "", ""); seen {
 		t.Error("no credential configured, but an Authorization header was sent")
+	}
+}
+
+// CodeRabbit: an https endpoint redirecting to http on the same host must not get the
+// credential replayed in cleartext. Go would forward Authorization on that redirect.
+func TestWake_DoesNotFollowRedirectsWithCredential(t *testing.T) {
+	var leaked atomic.Bool
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked.Store(true)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer plain.Close()
+
+	var logs strings.Builder
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/alertz", http.StatusFound)
+	}))
+	defer secure.Close()
+
+	c := New(slog.New(slog.NewTextHandler(&logs, nil)), secure.URL+"/alertz", "alert-ingestion", "s3cr3t", time.Second)
+	c.http.Transport = secure.Client().Transport
+	c.Wake()
+	c.Wait(context.Background())
+
+	if leaked.Load() {
+		t.Fatal("redirect was followed to plain http, so the credential could cross in cleartext")
+	}
+	if !strings.Contains(logs.String(), "status=302") {
+		t.Errorf("the 3xx should be logged as an unexpected status, logs: %s", logs.String())
 	}
 }
