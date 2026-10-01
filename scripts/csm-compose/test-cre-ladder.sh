@@ -93,11 +93,45 @@ run() {
   # what a dry run wants: you see which rung fires, not which person.
   local team_args=()
   [ -n "${USE_TEAM_SCHEDULE:-}" ] && team_args=(--team "${TEAM}")
+
+  # RUN_STDERR sends stderr somewhere specific -- the half-ack scenario wants
+  # it inline, because the line it checks for is an engine log.
+  if [ -n "${RUN_STDERR:-}" ]; then
+    (cd "${service_dir}" && CUSTOMER_ENTITY_BASE_URL="${ENTITY_URL}" \
+        go run ./cmd/escalation-local \
+        --channel log --redis "${REDIS_ADDR}" --max-calls "${MAX_CALLS}" \
+        "${team_args[@]+"${team_args[@]}"}" \
+        --minute "${MINUTE}" --tick "${TICK}" "$@" 2>"${RUN_STDERR}")
+    return
+  fi
+
+  # Otherwise capture stderr rather than discard it, and show it only if the
+  # run fails.
+  #
+  # It cannot simply be left on the terminal: escalation-local writes the
+  # engine's own INFO logs there, and a few hundred slog lines bury the
+  # formatted ladder each scenario exists to show. It must not be thrown away
+  # either -- a compile error or a failed rung then produced an empty scenario
+  # and no reason, which is the review finding this answers. Quiet when it
+  # works, complete when it does not.
+  # `|| status=$?` rather than a bare call then `$?`: under `set -e` a failing
+  # subshell aborts the script at that line, so the status check never ran and
+  # the diagnostics were still never printed. Making it a compound command is
+  # what lets the failure be handled here instead of ending the run.
+  local err status=0
+  err="$(mktemp)"
   (cd "${service_dir}" && CUSTOMER_ENTITY_BASE_URL="${ENTITY_URL}" \
       go run ./cmd/escalation-local \
       --channel log --redis "${REDIS_ADDR}" --max-calls "${MAX_CALLS}" \
       "${team_args[@]+"${team_args[@]}"}" \
-      --minute "${MINUTE}" --tick "${TICK}" "$@" 2>${RUN_STDERR:-/dev/null})
+      --minute "${MINUTE}" --tick "${TICK}" "$@" 2>"${err}") || status=$?
+  if [ "${status}" -ne 0 ]; then
+    echo >&2
+    echo "  the run failed (exit ${status}); its diagnostics follow:" >&2
+    sed 's/^/    /' "${err}" >&2
+  fi
+  rm -f "${err}"
+  return "${status}"
 }
 
 heading() {
