@@ -650,6 +650,10 @@ func TestRenderProjectContactInvitedEmail_SignInButton(t *testing.T) {
 		if n := strings.Count(got, "text-decoration:underline"); n != 1 {
 			t.Errorf("%s: %d underlined links, want 1 (the fallback)", name, n)
 		}
+		// The video belongs in the Welcome email only; invitations keep one action.
+		if strings.Contains(got, "getting-started video") {
+			t.Errorf("%s: invitation should not carry the getting-started video link", name)
+		}
 	}
 }
 
