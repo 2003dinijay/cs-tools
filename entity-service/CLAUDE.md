@@ -2340,20 +2340,40 @@ search` and `POST /service-offerings/search`, previously ServiceNow-only.
 **`AssignedTeamID` is now read** — `work_item.assignment_group_id` (migration
 0075, a FK into `group`), via `changeRequestFromJoins`' own `"group" ag`
 join, back as `domain.ChangeRequest.AssignedTeam`. A real, reported bug: the
-CSM Portal's own action bar requires `assignedTeam` to be set before it will
-let a change request advance to Assess at all, and since this was never
-read, *no* change request could ever be promoted past New through the
-portal on this data source — confirmed live against a real change request
-with a genuine ServiceNow Assignment group ("Devops"), whose `AssignedEngineer`
-synced and displayed correctly while `AssignedTeam` always showed empty.
-This proved `csm-sync-service` already populates
+CSM Portal's own action bar at the time required `assignedTeam` to be set
+before it would let a change request advance to Assess at all, and since
+this was never read, *no* change request could ever be promoted past New
+through the portal on this data source — confirmed live against a real
+change request with a genuine ServiceNow Assignment group ("Devops"), whose
+`AssignedEngineer` synced and displayed correctly while `AssignedTeam`
+always showed empty. This proved `csm-sync-service` already populates
 `work_item.assignment_group_id` for change requests the same way it does
 for every other `work_item` type, so the fix is read-only — no create/patch
-write-path changes were needed alongside it. Writing it (create's `GroupID`,
-or `PatchChangeRequestRequest.AssignedTeamID`) and filtering search results
-by it (the parsed filter array's `assignmentGroupId`) both remain unwired,
-deliberately out of scope for this fix — see `ChangeRequestRepository`'s own
-doc comment.
+write-path changes were needed alongside it.
+
+**That frontend gate was itself later found to be stale and removed.** It
+was carried over unchanged from when New→Assess sent a ServiceNow "Request
+Approval" action (which genuinely needed a team) and was never re-verified
+after that transition became a plain, ungated `{state: "assess"}` PATCH (see
+"New→Assess is a plain, ungated state change" below) — there is no evidence
+the plain state change itself requires a team. `ChangeRequestActionBar.tsx`'s
+`TARGET_BLOCKED_REASON` no longer has an `assess` entry.
+
+**Writing `AssignedTeamID` is now wired too.** `PatchChangeRequestRequest.
+AssignedTeamID` sets `work_item.assignment_group_id` the same way
+`AssignedEngineerID` sets `assigned_to_id` immediately above it in
+`PatchChangeRequest`; a `23503` FK violation maps to the friendly field name
+`assignedTeamId` via `changeRequestPatchFKField`, same convention as every
+other FK column on this PATCH. Verified live against the local compose
+stack: setting it to a real seeded `"group"` row round-trips correctly and
+survives a reload; setting it to a well-formed but unknown id produces a
+clean `assignedTeamId does not refer to an existing record` validation error
+instead of a raw Postgres error. Writing it at **create** time
+(`CreateChangeRequestRequest.GroupID`) remains unwired — a separate,
+different field with no confirmed equivalence to this one (see this file's
+own comment on `CreateChangeRequestFromServiceNow`). Filtering search
+results by it (the parsed filter array's `assignmentGroupId`) is also still
+unwired — see `changeRequestWhereClause`'s own comment.
 
 **Fields still with no real column anywhere, left unset rather than
 guessed at** (see `ChangeRequestRepository`'s own doc comment for the full

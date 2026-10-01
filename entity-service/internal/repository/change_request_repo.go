@@ -18,6 +18,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -58,13 +59,19 @@ import (
 // back as domain.ChangeRequest.AssignedTeam via changeRequestFromJoins' own
 // "group" ag join -- see changeRequestSelectColumns' own doc comment for the
 // real bug this fixes (Assess could never be requested for any change
-// request, since the frontend requires it set first). Writing it is still
-// unwired on both create and PatchChangeRequest -- csm-sync-service already
-// owns populating it from ServiceNow's own Assignment group field for every
-// work_item type, the same way it does assigned_to_id, so there has been no
-// need for this repository to write it itself. Filtering search results by
-// it (the parsed filter array's assignmentGroupId) is also still unwired --
-// see changeRequestWhereClause's own comment.
+// request, since the frontend requires it set first). Writing it via
+// PatchChangeRequestRequest.AssignedTeamID is now wired too (addWI sets
+// assignment_group_id, same shape as AssignedEngineerID immediately above
+// it; a 23503 on the FK is mapped to the friendly field name "assignedTeamId"
+// via changeRequestPatchFKField, the same convention every other FK column
+// on this PATCH already uses) -- csm-sync-service still separately populates
+// it from ServiceNow's own Assignment group field for every work_item type
+// the same way it does assigned_to_id, but a caller can now also set it
+// directly through this API. Writing it at create time
+// (CreateChangeRequestRequest.GroupID) remains unwired -- see this file's
+// own doc comment on CreateChangeRequestFromServiceNow. Filtering search
+// results by it (the parsed filter array's assignmentGroupId) is also still
+// unwired -- see changeRequestWhereClause's own comment.
 //
 // The remaining fields on the request/response contract have no
 // established mapping and are always left unset rather than guessed at:
@@ -932,6 +939,7 @@ var changeRequestPatchFKField = map[string]string{
 	"work_item_deployment_id_fkey":       "deploymentId",
 	"work_item_deployed_product_id_fkey": "deployedProductId",
 	"work_item_assigned_to_id_fkey":      "assignedEngineerId",
+	"work_item_assignment_group_id_fkey": "assignedTeamId",
 }
 
 // changeRequestPatchCRFKField mirrors changeRequestPatchFKField for the
@@ -978,7 +986,9 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 	if req.AssignedEngineerID != nil {
 		addWI("assigned_to_id = $%d::uuid", *req.AssignedEngineerID)
 	}
-	// AssignedTeamID has no wired mapping here -- see this file's own package doc comment.
+	if req.AssignedTeamID != nil {
+		addWI("assignment_group_id = $%d::uuid", *req.AssignedTeamID)
+	}
 
 	wiArgs = append(wiArgs, id)
 	wiQuery := fmt.Sprintf(`UPDATE work_item SET %s WHERE id = $%d AND type = 'CHANGE_REQUEST' RETURNING id`, strings.Join(wiSets, ", "), wiIdx)
@@ -1577,12 +1587,47 @@ const decideChangeRequestApprovalQuery = `
 // Approval) is a separate, deferred piece of work, so a decision on an
 // Authorize-stage approver still cancels its own siblings but has no state
 // cascade effect at all yet.
+//
+// Three correctness issues caught on CodeRabbit review of this method, all
+// fixed here:
+//
+//  1. Concurrency: two decisions on the same change request (a concurrent
+//     approval/rejection race, or two approvals racing each other's sibling
+//     cancellation) were not serialized at all, so one could read a stale
+//     "no rejection yet" snapshot or deadlock against the other. Every
+//     decision now locks the change_request row (SELECT ... FOR UPDATE)
+//     before touching any approver row, for both approvals and rejections.
+//  2. change_request.state is nullable (see this file's own CLAUDE.md on
+//     pre-existing NULL-state records) and used to be scanned into a plain
+//     string, which would crash on such a record instead of simply leaving
+//     the decision recorded with no cascade.
+//  3. The cascade used to key off change_request.state == "ASSESS" alone,
+//     with no check on which stage was actually being decided -- approving
+//     a pending Authorize-stage approver while the record happened to still
+//     read ASSESS would incorrectly advance it too. It now also confirms
+//     stageID is the Assess-position stage (the earliest by created_on/id,
+//     the same ordinal changeRequestApprovalStagePosition uses at read
+//     time) before advancing; an Authorize-stage decision still cancels its
+//     own siblings regardless.
 func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id, approverUserID, decision, actorEmail string) (string, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("decide change request approval: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// Locks the change_request row before any approver row is touched,
+	// serializing every decision against it -- approvals and rejections
+	// alike -- so the hasRejection/isAssessStage checks below always see a
+	// consistent snapshot and two concurrent approvals can't deadlock
+	// cancelling each other's sibling rows. A change request that doesn't
+	// exist yields no row here; the approver UPDATE just below still
+	// produces the real pgx.ErrNoRows for that case, so this lock query's
+	// own ErrNoRows is swallowed rather than treated as a fault.
+	var lockedID string
+	if err := tx.QueryRow(ctx, `SELECT id FROM change_request WHERE id = $1 FOR UPDATE`, id).Scan(&lockedID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("decide change request approval: lock change request: %w", err)
+	}
 
 	var approvalID string
 	var stageID *string
@@ -1620,14 +1665,32 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 			// The one real change_request.state cascade this repository
 			// attempts: Assess -> Authorize. Deliberately scoped this
 			// narrow -- see this method's own doc comment for why
-			// Authorize's own outgoing gate isn't attempted here.
-			var currentState string
-			if err := tx.QueryRow(ctx, `SELECT state FROM change_request WHERE id = $1 FOR UPDATE`, id).Scan(&currentState); err != nil {
-				return "", fmt.Errorf("decide change request approval: check current state: %w", err)
+			// Authorize's own outgoing gate isn't attempted here. Gated on
+			// stageID actually being the Assess-position stage (position 0,
+			// same ordinal changeRequestApprovalStagePosition uses), not
+			// merely on change_request.state reading ASSESS -- see this
+			// method's own doc comment, point 3.
+			var isAssessStage bool
+			if err := tx.QueryRow(ctx, `
+				SELECT NOT EXISTS (
+					SELECT 1 FROM approval_stage earlier
+					WHERE earlier.work_item_id = $1
+					  AND (earlier.created_on, earlier.id) < (SELECT created_on, id FROM approval_stage WHERE id = $2)
+				)`, id, *stageID).Scan(&isAssessStage); err != nil {
+				return "", fmt.Errorf("decide change request approval: check stage position: %w", err)
 			}
-			if currentState == "ASSESS" {
-				if _, err := tx.Exec(ctx, `UPDATE change_request SET state = 'AUTHORIZE' WHERE id = $1`, id); err != nil {
-					return "", fmt.Errorf("decide change request approval: advance state: %w", err)
+			if isAssessStage {
+				// Nullable (see this method's own doc comment, point 2) --
+				// a NULL state simply has nothing to cascade from, not a
+				// scan failure.
+				var currentState sql.NullString
+				if err := tx.QueryRow(ctx, `SELECT state FROM change_request WHERE id = $1`, id).Scan(&currentState); err != nil {
+					return "", fmt.Errorf("decide change request approval: check current state: %w", err)
+				}
+				if currentState.Valid && currentState.String == "ASSESS" {
+					if _, err := tx.Exec(ctx, `UPDATE change_request SET state = 'AUTHORIZE' WHERE id = $1`, id); err != nil {
+						return "", fmt.Errorf("decide change request approval: advance state: %w", err)
+					}
 				}
 			}
 		}
