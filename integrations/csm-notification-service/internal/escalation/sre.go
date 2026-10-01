@@ -42,9 +42,11 @@ import (
 // Which ladder an incident climbs is decided by its assignment group: an
 // incident assigned to an SRE team climbs the SRE ladder, and everything else
 // - including an incident whose team cannot be placed at all - climbs the CRE
-// one. See LadderClassifier. A CRE incident at a priority in the SRE
-// section's trigger.crePriorities (P0 by default) climbs BOTH: the two run
-// side by side, each in its own engine and its own store namespace.
+// one. Which ladders an incident climbs is the configuration's routing
+// section (routing.go): by default an SRE team's incident, a CRE team's P0,
+// and any monitoring-raised incident climb this one, and the last two climb
+// the CRE one as well -- side by side, each in its own engine and its own
+// store namespace.
 type Ladder string
 
 const (
@@ -53,6 +55,13 @@ const (
 	LadderCRE Ladder = ""
 	LadderSRE Ladder = "SRE"
 )
+
+// TeamFamilyResolver is implemented by a Resolver that can tell the family of
+// an incident's team (sre, cre or none), which routing decides on. A resolver
+// that cannot falls back to LadderClassifier, then to "cre" for any named team.
+type TeamFamilyResolver interface {
+	TeamFamily(ctx context.Context, rc RoutingContext) (string, error)
+}
 
 // LadderClassifier is implemented by a Resolver that can tell which ladder an
 // incident belongs to. A Resolver that cannot (RosterResolver,

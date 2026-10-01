@@ -40,7 +40,11 @@
 # length of the run.
 #
 # Usage:
-#   -t  team       the incident's assignment group                     (default apollo)
+#   -t  team       the incident's assignment group; none for an incident
+#                  assigned to no team                                  (default apollo)
+#   -x  contact    how it was raised: AZURE, SITE_247, SENTINEL are
+#                  monitoring sources, which climb the SRE ladder
+#                  whatever the team; EMAIL, PHONE ... are people       (default none)
 #   -p  priority   P0..P4, CRITICAL/HIGH/MODERATE/LOW, a comma list of
 #                  those, or "all" for P0..P4                           (default HIGH)
 #   -s  shift      when it was reported: LK, LK_MORNING, LK_EVENING,
@@ -79,12 +83,13 @@ CANCEL_AFTER=0
 CANCEL_BY=assign
 KIND=new
 INTERACTIVE=false
+CONTACT=
 MINUTE=1s
 L4=false
 
 usage() { sed -n '/^# Usage:/,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//;$d'; exit "${1:-0}"; }
 
-while getopts ":t:p:s:o:l:c:a:k:m:4ih" opt; do
+while getopts ":t:p:s:o:l:c:a:k:x:m:4ih" opt; do
   case $opt in
     t) TEAM=$OPTARG ;;
     p) PRIORITIES=$OPTARG ;;
@@ -95,6 +100,7 @@ while getopts ":t:p:s:o:l:c:a:k:m:4ih" opt; do
     a) CANCEL_BY=$OPTARG ;;
     k) KIND=$OPTARG ;;
     i) INTERACTIVE=true ;;
+    x) CONTACT=$OPTARG ;;
     m) MINUTE=$OPTARG ;;
     4) L4=true ;;
     h) usage 0 ;;
@@ -142,19 +148,24 @@ TOKEN="$(curl -sf -m 5 -u "$CLIENT_ID:$CLIENT_SECRET" -d grant_type=client_crede
 (exec 3<>"/dev/tcp/${REDIS_ADDR%%:*}/${REDIS_ADDR##*:}") 2>/dev/null \
   || fail "Redis is not reachable at $REDIS_ADDR (docker compose up -d redis)"
 
+if [[ "$TEAM" == none ]]; then
+  FAMILY=NONE
+else
 FAMILY="$(curl -sf -m 5 -H "x-jwt-assertion: $TOKEN" "$ENTITY_URL/team-schedule/catalogue" \
   | python3 -c 'import sys,json
 t=sys.argv[1].strip().lower()
 for x in json.load(sys.stdin)["teams"]:
     if x["key"].lower()==t or x["name"].lower()==t: print(x["family"]); break' "$TEAM" 2>/dev/null)" \
   || fail "entity-service refused the rota read; is $CLIENT_ID in its AUTH_INTERNAL_CLIENT_IDS?"
+fi
 case "$FAMILY" in
+  NONE) echo "    no assignment group: only a routing rule that takes team-less incidents (monitoring) starts a ladder" ;;
   SRE) echo "    $TEAM is an SRE team: the SRE ladder, the same clock for every priority" ;;
   "")  fail "$TEAM is not a team on the rota" ;;
   *)   echo "    $TEAM is a $FAMILY team: the CRE ladder, a clock set by the priority (and the SRE one too at P0)" ;;
 esac
 if [[ "$LADDER" == auto ]]; then
-  if [[ "$FAMILY" == SRE ]]; then LADDER=sre; else LADDER=cre; fi
+  if [[ "$FAMILY" == SRE || "$FAMILY" == NONE ]]; then LADDER=sre; else LADDER=cre; fi
 fi
 LADDERS=("$LADDER")
 [[ "$LADDER" == both ]] && LADDERS=(cre sre)
@@ -176,7 +187,9 @@ curl -s -m 30 --retry 15 --retry-delay 1 --retry-connrefused -o /dev/null "http:
 # -max-calls is the harness's guard for live phone runs. Nothing here dials,
 # and a chat rung posts once, not once per attempt, so a CRE P0 ladder (21
 # attempts) must not be refused.
-ARGS=(-team "$TEAM" -shift "$SHIFT" -minute "$MINUTE" -max-calls 1000)
+TEAM_ARG="$TEAM"; [[ "$TEAM" == none ]] && TEAM_ARG=""
+ARGS=(-team "$TEAM_ARG" -shift "$SHIFT" -minute "$MINUTE" -max-calls 1000)
+[[ -n "$CONTACT" ]] && ARGS+=(-contact-type "$CONTACT")
 if [[ "$OUTPUT" == log ]]; then
   # The log channel runs the whole ladder and reaches nobody. Printed on this
   # terminal only, so the real people are shown: checking that each rung

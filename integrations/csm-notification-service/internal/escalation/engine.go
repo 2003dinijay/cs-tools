@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
@@ -77,6 +78,10 @@ type EngineConfig struct {
 	// value has no opinion on either, which is what a deployment with no
 	// configuration file gets.
 	Ladder LadderConfig
+	// Routing decides which ladders an incident climbs; both engines read the
+	// same rules and each asks only about its own ladder. The zero value is
+	// DefaultRouting.
+	Routing Routing
 	// Kind is which ladder this engine runs. The service runs one engine per
 	// ladder, each with its own channel, consumer group and store namespace,
 	// because a P0 CRE incident climbs both at once. The zero value is the
@@ -307,7 +312,14 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 	// stored. Skipping is not an error: a deployment that has narrowed which
 	// incidents it escalates has said so deliberately, and erroring would
 	// dead-letter events it simply does not want to act on.
-	if ok, why := e.cfg.Ladder.Allows(t.Priority, t.Routing.AssignedCRETeam, string(t.Routing.Shift)); !ok {
+	gate := e.cfg.Ladder
+	if t.Routing.TeamOptional {
+		// The routing rule took this incident without a known team on
+		// purpose (a monitoring-raised one, say); requireKnownTeam is the
+		// guard for everything else.
+		gate.Start.RequireKnownTeam = false
+	}
+	if ok, why := gate.Allows(t.Priority, t.Routing.AssignedCRETeam, string(t.Routing.Shift)); !ok {
 		slog.InfoContext(ctx, "escalation: configuration does not escalate this incident; skipping",
 			"incidentId", t.IncidentID, "priority", t.Priority,
 			"team", t.Routing.AssignedCRETeam, "shift", string(t.Routing.Shift),
@@ -425,34 +437,59 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 }
 
 // claims decides whether this engine's ladder runs for a trigger, and stamps
-// the trigger with that ladder when it does.
+// the trigger with that ladder and the routing rule that put it there.
 //
-//	CRE engine  every incident not assigned to an SRE team
-//	SRE engine  every incident assigned to an SRE team, whatever its priority,
-//	            and a CRE incident at a priority in trigger.crePriorities (P0)
+// The decision is the configuration's routing rules (routing.go), not code:
+// the incident's team family, contact type and priority are matched against
+// them, and this engine claims the incident when a rule names its ladder.
 //
-// So a P0 CRE incident is claimed by both, and runs two ladders side by side.
-// An elevation reaches the SRE engine only for that second case: an SRE
-// incident's ladder never restarts because its priority changed.
+// One thing stays in code because it is a property of the SRE ladder rather
+// than of routing: its clock does not depend on priority, so an elevation
+// matters to it only through a rule that conditions on priority (a CRE
+// incident reaching P0). Anything else would restart a ladder for nothing.
 func (e *Engine) claims(ctx context.Context, t *Trigger) bool {
-	ladder := e.classify(ctx, *t)
-	if e.cfg.Kind != LadderSRE {
-		t.Routing.Ladder = LadderCRE
-		return ladder != LadderSRE
+	family := e.teamFamily(ctx, *t)
+	key := LadderKeyCRE
+	if e.cfg.Kind == LadderSRE {
+		key = LadderKeySRE
 	}
-	alsoCRE := ladder != LadderSRE && e.cfg.Ladder.Start.AlsoForCRE(t.Priority)
-	if t.Kind == TriggerPriorityElevated && !alsoCRE {
+	rule, ok := e.cfg.Routing.Match(RouteInput{
+		Team: family, ContactType: t.Routing.ContactType, Priority: t.Priority,
+	}, key)
+	if !ok {
 		return false
 	}
-	if ladder != LadderSRE && !alsoCRE {
+	if e.cfg.Kind == LadderSRE && t.Kind == TriggerPriorityElevated && len(rule.When.Priority) == 0 {
 		return false
 	}
-	t.Routing.Ladder = LadderSRE
-	if alsoCRE {
-		slog.InfoContext(ctx, "escalation: CRE incident at a priority that also calls SRE; starting the SRE ladder too",
-			"incidentId", t.IncidentID, "priority", t.Priority, "team", t.Routing.AssignedCRETeam)
-	}
+	t.Routing.Ladder = e.cfg.Kind
+	t.Routing.RouteRule = rule.Name
+	t.Routing.TeamOptional = rule.AdmitsNoTeam()
+	slog.InfoContext(ctx, "escalation: routing put the incident on this ladder",
+		"incidentId", t.IncidentID, "ladder", key, "rule", rule.Name,
+		"teamFamily", family, "contactType", t.Routing.ContactType, "priority", t.Priority)
 	return true
+}
+
+// teamFamily asks the resolver which family the incident's team belongs to.
+// A resolver that cannot say falls back to the ladder classifier, and then to
+// "cre" for any named team -- the ladder every incident climbed before the
+// SRE one existed. A failure to ask is treated the same way.
+func (e *Engine) teamFamily(ctx context.Context, t Trigger) string {
+	if r, ok := e.resolver.(TeamFamilyResolver); ok {
+		family, err := r.TeamFamily(ctx, t.Routing)
+		if err == nil {
+			return family
+		}
+		slog.WarnContext(ctx, "escalation: could not tell the incident's team family; routing it as CRE",
+			"incidentId", t.IncidentID, "team", t.Routing.AssignedCRETeam, "err", err)
+	} else if e.classify(ctx, t) == LadderSRE {
+		return TeamFamilySRE
+	}
+	if strings.TrimSpace(t.Routing.AssignedCRETeam) == "" {
+		return TeamFamilyNone
+	}
+	return TeamFamilyCRE
 }
 
 // classify asks the resolver which ladder this incident climbs. A resolver
@@ -907,6 +944,7 @@ func triggerFromCreated(incidentID string, p events.IncidentCreatedPayload) Trig
 			Product:         p.Product,
 			ABTEligible:     p.ABTEligible,
 			AssignedCRETeam: p.Team,
+			ContactType:     p.ContactType,
 			Shift:           ShiftAt(at),
 			At:              at,
 		},

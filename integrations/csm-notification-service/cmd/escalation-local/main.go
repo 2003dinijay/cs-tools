@@ -108,6 +108,7 @@ type config struct {
 	cancelBy    string
 	cancelAt    string
 	interactive bool
+	contactType string
 	maxCalls    int
 	redisAddr   string
 	incidentID  string
@@ -293,6 +294,7 @@ func parseFlags() config {
 		"how to acknowledge: both (a move out of NEW AND a public comment -- the only thing that actually stops a CRE ladder), comment, status, or assign (an engineer assigned -- what stops an SRE ladder)")
 	flag.StringVar(&cfg.cancelAt, "cancel-at", "",
 		"acknowledge once the ladder has called this rung, e.g. LEVEL_2; easier than timing -cancel-after by hand, and the two are mutually exclusive")
+	flag.StringVar(&cfg.contactType, "contact-type", "", "how the incident was raised: AZURE, SITE_247, SENTINEL (monitoring) or EMAIL, PHONE ...; routing reads it")
 	flag.BoolVar(&cfg.interactive, "interactive", false, "acknowledge by typing while the ladder runs: a (assign), s (leave NEW), c (public comment), then Enter")
 	flag.IntVar(&cfg.maxCalls, "max-calls", 20, "refuse to run a plan larger than this")
 	flag.StringVar(&cfg.redisAddr, "redis", envOr("REDIS_ADDR", "localhost:6379"), "Redis address holding the ladder state")
@@ -668,6 +670,7 @@ func startRecord(cfg config, at time.Time) eventbus.Record {
 		Priority:         cfg.priority,
 		Account:          "Automation Test Account",
 		Team:             cfg.team,
+		ContactType:      cfg.contactType,
 		Product:          "WSO2 API Manager",
 		ABTEligible:      abtFlag(cfg.notABT),
 		ReportedAt:       at.Format(time.RFC3339),

@@ -81,6 +81,16 @@ func (s Shift) IsRotation() bool {
 // field is drawn from the incident record except Shift, which is derived from
 // when the incident was reported.
 type RoutingContext struct {
+	// ContactType is how the incident was raised (AZURE, SITE_247, SENTINEL,
+	// EMAIL, ...). Routing reads it: a monitoring-raised incident climbs the
+	// SRE ladder.
+	ContactType string `json:",omitempty"`
+	// RouteRule names the routing rule that put the incident on this ladder,
+	// for the log line and the plan.
+	RouteRule string `json:",omitempty"`
+	// TeamOptional is set when that rule deliberately takes incidents with no
+	// known team, overriding trigger.requireKnownTeam.
+	TeamOptional bool `json:",omitempty"`
 	// Product is the WSO2 product on the incident; empty when absent, which
 	// rules R7, R8, R13 and R14 route on explicitly (and which section 12.0
 	// treats as an erroneous scenario worth emailing about).

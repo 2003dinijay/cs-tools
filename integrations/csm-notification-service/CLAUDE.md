@@ -327,17 +327,36 @@ channel, its own consumer group (`INCIDENT_ESCALATION_CONSUMER_GROUP`,
 before this existed are still found). One engine per ladder because **a P0 CRE
 incident climbs both at once**: sharing one namespace would make the second
 SETNX look like a redelivery, and sharing one wake index would let each tick
-place the other ladder's calls over its own channel. Which engine claims an
-incident is `Engine.claims`:
+place the other ladder's calls over its own channel.
 
-    CRE engine  every incident not assigned to an SRE team
-    SRE engine  every incident assigned to an SRE team, whatever its priority,
-                AND a CRE incident at a priority in sre.trigger.crePriorities
-                (default [P0]), including one elevated to it later
+**Which ladders an incident climbs is configuration, not code**: the file's
+top-level `routing:` section (`routing.go`). `Engine.claims` matches the
+incident's team family (`sre` / `cre` / `none`, from
+`TeamScheduleResolver.TeamFamily`), `contactType` and priority against the
+rules, and an engine claims the incident when a matching rule names its ladder
+-- so one incident can climb both. A rule with **no** `team` condition
+(`monitoring`) deliberately takes team-less incidents and overrides that
+ladder's `trigger.requireKnownTeam`; a rule that merely lists `none` among its
+teams (`cre-team`) matches them but leaves the decision to that ladder's own
+`requireKnownTeam`, so the CRE side keeps control of CRE. Absent, `DefaultRouting` applies:
+
+    cre-team      team [cre, none]                       -> cre
+    sre-abt-team  team [sre]                             -> sre   (sheet "Yes" rows)
+    cre-p0        team [cre], priority [P0]              -> sre
+    monitoring    contactType [AZURE, SITE_247, SENTINEL]-> sre   (sheet "No" rows)
+
+`contactType` comes from entity-service's `incident.created`
+(`IncidentCreatedPayload.ContactType`, the incident view's label, falling back
+to the create request's); it is compared ignoring punctuation, so `SITE_247`
+matches the database's `SITE_24_7`. The one rule kept in code is a property of
+the SRE ladder, not of routing: its clock ignores priority, so an elevation
+starts an SRE ladder only through a rule that conditions on priority.
+`crePriorities` (the earlier SRE-only setting) is gone -- an unknown key, so a
+file still carrying it fails to load rather than being silently ignored.
 
 An incident is an SRE team's when its assignment group (after
 `sre.teams.aliases`) is in `sre.teams.abts`; with no list configured, the Team
-Schedule catalogue's team `family` answers (`TeamScheduleResolver.LadderFor`).
+Schedule catalogue's team `family` answers.
 
     LEVEL_0  L1 support   at once
     LEVEL_1  L2 support   +interval (5m)
@@ -365,7 +384,7 @@ does not depend on priority. The voice message and card say "assign the
 incident to yourself", and the rule is reported as `SRE_TIERS`.
 
 **Configuration** is the file's `sre:` section, the same shape as `cre:` plus
-`trigger.crePriorities`, `timing` and `teams.abts`/`teams.aliases`. Each
+`timing` and `teams.abts`/`teams.aliases`; who climbs it is `routing:`. Each
 ladder's own keys are refused on the other (a `timing:` under `cre:` is an
 error, not ignored), and a team in both `cre.teams.abts` and `sre.teams.abts` is
 an error -- its lead would still be called on every CRE ladder's
@@ -377,9 +396,9 @@ them through `TeamScheduleResolver.WithPhoneBook`. A chat-only ladder needs
 neither.
 
 **Not on this branch**: the alert service's side of the handoff. The upstream
-`sre-alert-ingestion-service` does not create CSM incidents at all today, so
-nothing yet sets an SRE assignment group on an alert-born incident; the SRE
-ladder runs for any incident assigned to an SRE team however it got there.
+`sre-alert-ingestion-service` does not create CSM incidents at all today. When
+it does, an incident it raises with a monitoring contact type climbs the SRE
+ladder through the `monitoring` rule even with no assignment group.
 
 **Wiring** (`cmd/server/main.go`): inside the Redis block, started only when
 the ladder has somebody to resolve rungs from (`escalationStartProblem`): the

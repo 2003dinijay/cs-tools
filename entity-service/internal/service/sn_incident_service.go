@@ -952,7 +952,15 @@ func publishIncidentCreatedEvent(ctx context.Context, publisher EventPublisherSe
 		Number:           number,
 		ReportedAt:       snTimeToRFC3339(ctx, "sn create incident", "createdOn", createdOn),
 	}
+	// How it was raised, from the request until the view below says otherwise:
+	// it decides whether a monitoring-raised incident climbs the SRE ladder.
+	if req.ContactType != nil {
+		event.ContactType = string(*req.ContactType)
+	}
 	if view, verr := fetchIncidentView(ctx, fetch, incidentID); verr == nil {
+		if view.ContactType != nil && *view.ContactType != "" {
+			event.ContactType = *view.ContactType
+		}
 		if view.Priority != nil {
 			event.Priority = *view.Priority
 		}

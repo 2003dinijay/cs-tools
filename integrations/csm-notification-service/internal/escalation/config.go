@@ -51,6 +51,11 @@ type Config struct {
 	// without stopping the other.
 	CRE LadderConfig `yaml:"cre"`
 	SRE LadderConfig `yaml:"sre"`
+
+	// Routing decides which ladders an incident climbs: an SRE team's, a CRE
+	// team's, a CRE P0, a monitoring-raised incident. Absent means
+	// DefaultRouting, which is the behaviour before this was configurable.
+	Routing Routing `yaml:"routing"`
 }
 
 // LadderConfig is one ladder's behaviour.
@@ -149,29 +154,6 @@ type StartWhen struct {
 	// could produce it. Refusing is louder and cheaper than calling the wrong
 	// people.
 	RequireKnownTeam bool `yaml:"requireKnownTeam"`
-	// CREPriorities is the SRE ladder's second way in: an incident assigned
-	// to a CRE team at one of these priorities climbs the SRE ladder as well
-	// as its own. SRE only.
-	//
-	// Most SRE incidents arrive by the alert flow and are assigned to an SRE
-	// team already; a P0 raised on the CRE side is the exception, and it
-	// needs both teams at once. Absent means [P0]; an explicit empty list
-	// turns the second way in off.
-	CREPriorities []string `yaml:"crePriorities"`
-}
-
-// defaultCREPriorities is which CRE incidents also climb the SRE ladder when
-// the file does not say.
-var defaultCREPriorities = []string{"P0"}
-
-// AlsoForCRE reports whether a CRE incident at this priority also climbs the
-// SRE ladder. Priority labels (CATASTROPHIC) and codes (P0) are both accepted.
-func (s StartWhen) AlsoForCRE(priority string) bool {
-	list := s.CREPriorities
-	if list == nil {
-		list = defaultCREPriorities
-	}
-	return contains(list, priority) || contains(list, priorityAliases[strings.ToUpper(strings.TrimSpace(priority))])
 }
 
 // Heads names the two people the top of the ladder reaches.
@@ -324,6 +306,9 @@ func (c *Config) validate() error {
 	if err := c.SRE.validate("sre"); err != nil {
 		return err
 	}
+	if err := c.Routing.validate(); err != nil {
+		return err
+	}
 	// A team is an ABT or an SRE team, never both. Listed as both, its
 	// incidents would climb the SRE ladder while its lead was still being
 	// called on every CRE ladder's all_team_leads rung.
@@ -385,9 +370,6 @@ func (l *LadderConfig) validate(name string) error {
 	} else {
 		if l.Timing != (SRETiming{}) {
 			return fmt.Errorf("%s: timing is an SRE setting; the CRE clock is the per-priority policy", name)
-		}
-		if l.Start.CREPriorities != nil {
-			return fmt.Errorf("%s: trigger.crePriorities is an SRE setting", name)
 		}
 	}
 	return nil

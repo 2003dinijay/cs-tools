@@ -15,6 +15,52 @@
 
 enabled: true
 
+# Which ladders an incident climbs. Both engines read these rules; each asks
+# only about its own ladder, so an incident can climb both.
+#
+# An incident climbs every ladder named by any rule it matches. A rule matches
+# when every condition it states matches; a condition left out matches
+# anything. Change who goes where here, not in code.
+#
+#   team         sre  -- assigned to an SRE team (sre.teams.abts)
+#                cre  -- assigned to any other team the rota knows
+#                none -- no assignment group, or one the rota does not know
+#   contactType  how the incident was raised: AZURE, SITE_247, SENTINEL are
+#                monitoring sources; EMAIL, PHONE, SELF_SERVICE ... are people.
+#                Punctuation is ignored (SITE_247 matches SITE_24_7).
+#   priority     codes or labels: P0 also matches CATASTROPHIC.
+#
+# A rule with NO team condition (monitoring) takes incidents with no known team
+# on purpose and overrides that ladder's trigger.requireKnownTeam. A rule that
+# names none among its teams (cre-team) only matches them: that ladder's own
+# requireKnownTeam still decides.
+# Omit this whole section and these same four rules apply.
+routing:
+  rules:
+    # A CRE team's incident, and one assigned to no team -- the CRE rule table
+    # has rows for "assigned to no ABT". cre.trigger.requireKnownTeam below
+    # still refuses the team-less ones locally.
+    - name: cre-team
+      when: { team: [cre, none] }
+      ladders: [cre]
+
+    # The SRE rules sheet's "Is assigned to an SRE ABT team = Yes" rows.
+    - name: sre-abt-team
+      when: { team: [sre] }
+      ladders: [sre]
+
+    # A P0 raised on the CRE side needs both teams at once.
+    - name: cre-p0
+      when: { team: [cre], priority: [P0] }
+      ladders: [sre]
+
+    # The SRE rules sheet's "= No" rows: raised by monitoring, climbs the SRE
+    # ladder by zone with no team preference -- and, on a CRE team, the CRE
+    # ladder as well (through cre-team).
+    - name: monitoring
+      when: { contactType: [AZURE, SITE_247, SENTINEL] }
+      ladders: [sre]
+
 cre:
   enabled: true
 
@@ -221,8 +267,9 @@ cre:
 # then the order of teams.abts below. It stops when an engineer is assigned, or
 # the incident leaves NEW. A public comment alone does not stop it.
 #
-# No priority gate: every SRE incident gets a ladder. The rules sheet this
-# follows is "SRE Notification Escalation rules.xlsx".
+# No priority gate: every SRE incident gets a ladder. Which incidents are SRE
+# incidents is the routing section at the top. The rules this follows are in
+# "SRE Notification Escalation rules .xlsx" (R1-R7).
 sre:
   enabled: true
 
@@ -238,12 +285,6 @@ sre:
     shifts: []
     requireKnownTeam: true
 
-    # The second way onto this ladder: an incident assigned to a CRE team at
-    # one of these priorities climbs the SRE ladder AS WELL AS the CRE one,
-    # side by side. Most SRE incidents arrive assigned to an SRE team by the
-    # alert flow; a P0 raised on the CRE side needs both teams at once.
-    # Omitted means [P0]; [] turns it off.
-    crePriorities: [P0]
 
   # The clock. One call per rung, the same for every priority.
   timing:

@@ -686,6 +686,9 @@ func main() {
 						// Which incidents get a ladder, and what one may spend.
 						Ladder: l.cfg,
 						Kind:   l.kind,
+						// Which ladders an incident climbs: the file's
+						// routing section, shared by both engines.
+						Routing: escalationCfg.Routing,
 					},
 				)
 

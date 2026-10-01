@@ -95,6 +95,40 @@ func (r TeamScheduleResolver) LadderFor(ctx context.Context, rc RoutingContext) 
 	return LadderCRE, nil
 }
 
+// TeamFamily implements TeamFamilyResolver: which family the incident's
+// assignment group belongs to, for routing.
+//
+//	sre   an SRE team -- the configured sre.teams.abts, or the catalogue's SRE
+//	      family when none are configured
+//	cre   any other team the rota knows
+//	none  no assignment group, or one neither the configuration nor the rota
+//	      knows
+func (r TeamScheduleResolver) TeamFamily(ctx context.Context, rc RoutingContext) (string, error) {
+	key := r.keyOf(rc.AssignedCRETeam)
+	if key == "" {
+		return TeamFamilyNone, nil
+	}
+	if r.isSRETeam(key) {
+		return TeamFamilySRE, nil
+	}
+	if contains(r.abtTeamKeys, key) || key == r.americasTeamKey {
+		return TeamFamilyCRE, nil
+	}
+	cat, err := r.entity.ScheduleCatalogue(ctx)
+	if err != nil {
+		return TeamFamilyNone, err
+	}
+	for _, t := range cat.Teams {
+		if strings.EqualFold(t.Key, key) {
+			if strings.EqualFold(t.Family, familySRE) {
+				return TeamFamilySRE, nil
+			}
+			return TeamFamilyCRE, nil
+		}
+	}
+	return TeamFamilyNone, nil
+}
+
 // sreTier is the rota tier each SRE rung reads.
 var sreTier = map[Level]string{Level0: "L1", Level1: "L2", Level2: "L3"}
 

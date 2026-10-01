@@ -317,6 +317,12 @@ type CaseCreatedPayload struct {
 type IncidentCreatedPayload struct {
 	Title            string `json:"title"`
 	ShortDescription string `json:"shortDescription"`
+	// ContactType is how the incident was raised, as the incident view spells
+	// it: AZURE, SITE_247 or SENTINEL when a monitoring source raised it,
+	// EMAIL, PHONE, SELF_SERVICE and so on when a person did. The SRE ladder
+	// reads it: a monitoring-raised incident climbs the SRE ladder whatever
+	// team it is assigned to, or when it is assigned to none. Optional.
+	ContactType string `json:"contactType,omitempty"`
 
 	// The remaining fields feed csm-notification-service's call-escalation
 	// ladder (its internal/escalation), which needs the priority that keys

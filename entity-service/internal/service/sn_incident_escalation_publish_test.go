@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -511,5 +512,48 @@ func TestPublishIncidentAssigned_SameAssigneePublishesNothing(t *testing.T) {
 	}
 	if _, published := findPublishCall(publisher.calls, events.TypeIncidentAssigned); published {
 		t.Error("a no-op re-assignment published incident.assigned")
+	}
+}
+
+// How the incident was raised routes it: a monitoring source (Azure, Site24x7,
+// Sentinel) puts it on the SRE ladder whatever its team. The view's own
+// contact type is what the event carries.
+func TestPublishIncidentCreated_CarriesTheContactType(t *testing.T) {
+	body := strings.Replace(incidentEnrichmentBody, `"state":`, `"contactType": {"id": "1", "label": "Azure"}, "state":`, 1)
+	client := newTestIncidentEnrichmentClient(t, body, http.StatusOK)
+	publisher := &mockEventPublisher{}
+	svc := NewServiceNowIncidentService(client, publisher)
+
+	if _, err := svc.CreateIncident(contextWithUserIDToken("token"), validCreateIncidentRequest()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var p events.IncidentCreatedPayload
+	if err := json.Unmarshal(findPublished(t, publisher.calls, events.TypeIncidentCreated).payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.ContactType != "AZURE" {
+		t.Errorf("contactType = %q, want AZURE -- a monitoring-raised incident climbs the SRE ladder", p.ContactType)
+	}
+}
+
+// When the view cannot be read, the request's own contact type still goes out,
+// so a monitoring-raised incident is not routed as if a person had raised it.
+func TestPublishIncidentCreated_ContactTypeFallsBackToTheRequest(t *testing.T) {
+	client := newTestIncidentEnrichmentClient(t, "", http.StatusInternalServerError)
+	publisher := &mockEventPublisher{}
+	svc := NewServiceNowIncidentService(client, publisher)
+
+	req := validCreateIncidentRequest()
+	site := domain.IncidentContactTypeSite247
+	req.ContactType = &site
+	if _, err := svc.CreateIncident(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var p events.IncidentCreatedPayload
+	if err := json.Unmarshal(findPublished(t, publisher.calls, events.TypeIncidentCreated).payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.ContactType != "SITE_247" {
+		t.Errorf("contactType = %q, want SITE_247 from the request", p.ContactType)
 	}
 }

@@ -454,8 +454,6 @@ enabled: true
 sre:
   enabled: true
   channel: chat
-  trigger:
-    crePriorities: [P0, P1]
   timing:
     interval: 2m
     includeL4: true
@@ -471,17 +469,106 @@ sre:
 	if p.Levels[Level1].NotificationInterval != 2*time.Minute || p.Levels[Level3].NotificationCount != 1 {
 		t.Fatalf("timing = %+v; want 2m rungs with L4", p)
 	}
-	if !cfg.SRE.Start.AlsoForCRE("CRITICAL") || cfg.SRE.Start.AlsoForCRE("P2") {
-		t.Fatal("crePriorities should accept P1 by its label and refuse P2")
+}
+
+// --- routing: which ladders an incident climbs is configuration -------------
+
+func TestRouting_DefaultRules(t *testing.T) {
+	var r Routing // zero value: DefaultRouting
+	for _, tc := range []struct {
+		in       RouteInput
+		cre, sre bool
+	}{
+		{RouteInput{Team: "sre", Priority: "HIGH"}, false, true},                         // sheet "Yes" rows
+		{RouteInput{Team: "cre", Priority: "HIGH"}, true, false},                         // a CRE incident
+		{RouteInput{Team: "cre", Priority: "P0"}, true, true},                            // CRE P0: both
+		{RouteInput{Team: "cre", Priority: "CATASTROPHIC"}, true, true},                  // label = code
+		{RouteInput{Team: "none", Priority: "P0"}, true, false},                          // no team, no monitoring
+		{RouteInput{Team: "none", ContactType: "AZURE", Priority: "LOW"}, true, true},    // sheet "No" rows
+		{RouteInput{Team: "cre", ContactType: "SITE_24_7", Priority: "LOW"}, true, true}, // monitoring on a CRE team: both
+		{RouteInput{Team: "none", ContactType: "EMAIL"}, true, false},                    // a person raised it
+	} {
+		_, cre := r.Match(tc.in, LadderKeyCRE)
+		_, sre := r.Match(tc.in, LadderKeySRE)
+		if cre != tc.cre || sre != tc.sre {
+			t.Errorf("%+v: cre=%v sre=%v; want cre=%v sre=%v", tc.in, cre, sre, tc.cre, tc.sre)
+		}
 	}
 }
 
-func TestConfig_CREPrioritiesDefaultIsP0(t *testing.T) {
-	if !(StartWhen{}).AlsoForCRE("P0") || (StartWhen{}).AlsoForCRE("P1") {
-		t.Fatal("absent crePriorities should mean [P0]")
+func TestRouting_FromTheFileReplacesTheDefaults(t *testing.T) {
+	cfg, err := loadYAML(t, `
+routing:
+  rules:
+    - name: monitoring-only
+      when: { contactType: [SENTINEL] }
+      ladders: [sre]
+`)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if (StartWhen{CREPriorities: []string{}}).AlsoForCRE("P0") {
-		t.Fatal("an explicit empty crePriorities should turn the second way in off")
+	if _, ok := cfg.Routing.Match(RouteInput{Team: "sre"}, LadderKeySRE); ok {
+		t.Fatal("an SRE team matched; the file's rules should replace the defaults entirely")
+	}
+	rule, ok := cfg.Routing.Match(RouteInput{Team: "none", ContactType: "sentinel"}, LadderKeySRE)
+	if !ok || rule.Name != "monitoring-only" || !rule.AdmitsNoTeam() {
+		t.Fatalf("rule = %+v, %v; want monitoring-only, admitting no team", rule, ok)
+	}
+}
+
+func TestRouting_InvalidRulesAreRefused(t *testing.T) {
+	for name, body := range map[string]string{
+		"no name":         "routing:\n  rules:\n    - ladders: [sre]\n",
+		"no ladders":      "routing:\n  rules:\n    - name: x\n",
+		"unknown ladder":  "routing:\n  rules:\n    - name: x\n      ladders: [ops]\n",
+		"unknown team":    "routing:\n  rules:\n    - name: x\n      when: { team: [ops] }\n      ladders: [sre]\n",
+		"duplicate name":  "routing:\n  rules:\n    - name: x\n      ladders: [sre]\n    - name: x\n      ladders: [cre]\n",
+		"misspelled when": "routing:\n  rules:\n    - name: x\n      when: { contacttype: [AZURE] }\n      ladders: [sre]\n",
+	} {
+		if _, err := loadYAML(t, body); err == nil {
+			t.Errorf("%s: loaded; want an error", name)
+		}
+	}
+}
+
+// The engines follow the routing rules: a monitoring-raised incident with no
+// team climbs the SRE ladder, past sre.trigger.requireKnownTeam.
+func TestEngines_MonitoringRaisedIncidentClimbsSRE(t *testing.T) {
+	ctx := context.Background()
+	mk := func(team, priority, contact string) eventbus.Record {
+		return record(t, events.TypeIncidentCreated, events.IncidentCreatedPayload{
+			Title: "CPU alert", ShortDescription: "from monitoring", Number: "INC0099002",
+			Priority: priority, Team: team, ContactType: contact, ReportedAt: testClock.Format(time.RFC3339),
+		})
+	}
+	for _, tc := range []struct {
+		name, team, priority, contact string
+		cre, sre                      bool
+	}{
+		{"no team, AZURE", "", "LOW", "AZURE", false, true},
+		{"CRE team, SITE_247", "Atlas", "LOW", "SITE_247", true, true},
+		{"SRE team, SENTINEL", "Apollo", "HIGH", "SENTINEL", false, true},
+		{"no team, EMAIL", "", "LOW", "EMAIL", false, false},
+	} {
+		creStore, sreStore := newMemStore(), newMemStore()
+		cre, sre := ladderEngine(LadderCRE, &fakeChat{}, creStore), ladderEngine(LadderSRE, &fakeChat{}, sreStore)
+		// requireKnownTeam on both, as the local file sets it.
+		cre.cfg.Ladder.Start.RequireKnownTeam = true
+		sre.cfg.Ladder.Start.RequireKnownTeam = true
+		for _, e := range []*Engine{cre, sre} {
+			if err := e.Handle(ctx, mk(tc.team, tc.priority, tc.contact)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, gotCRE, _ := creStore.Get(ctx, testIncidentID)
+		st, gotSRE, _ := sreStore.Get(ctx, testIncidentID)
+		if gotCRE != tc.cre || gotSRE != tc.sre {
+			t.Errorf("%s: CRE=%v SRE=%v; want CRE=%v SRE=%v", tc.name, gotCRE, gotSRE, tc.cre, tc.sre)
+			continue
+		}
+		if gotSRE && tc.team == "" && st.Plan.Calls[0].Recipient.Email != "a-l1@example.com" {
+			t.Errorf("%s: L1 = %s; want the zone's L1, Apollo first", tc.name, st.Plan.Calls[0].Recipient.Email)
+		}
 	}
 }
 
@@ -491,6 +578,7 @@ func TestConfig_RefusesMisplacedAndOverlappingSettings(t *testing.T) {
 		"CRE rules under sre":  "sre:\n  rules:\n    - id: R1\n      shift: LK\n      assignedToABT: any\n      levels: [rota_members]\n",
 		"bad duration":         "sre:\n  timing:\n    interval: five\n",
 		"team in both lists":   "cre:\n  teams:\n    abts: [apollo]\nsre:\n  teams:\n    abts: [apollo]\n",
+		"old crePriorities":    "sre:\n  trigger:\n    crePriorities: [P0]\n",
 	} {
 		if _, err := loadYAML(t, body); err == nil {
 			t.Errorf("%s: loaded; want an error", name)
