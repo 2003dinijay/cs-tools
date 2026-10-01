@@ -1871,15 +1871,18 @@ func lowerAll(values []string) []string {
 
 var onboardingStatusKeyStripper = strings.NewReplacer("-", "", "_", "", " ", "")
 
-// onboardingStatusEnumLabels translates projectOnboardingStatus filter values
+// onboardingStatusNames lists the accepted onboarding statuses for error messages.
+var onboardingStatusNames = []string{"Cancelled", "Completed", "Expired", "In-Progress", "Not-Applicable", "Not-Started", "On-Hold"}
+
+// onboardingStatusEnumLabels translates field's onboarding status filter values
 // to onboarding_status_enum labels. An unknown value is a ValidationError
 // rather than a silent no-match: for notIn that would widen the result set.
-func onboardingStatusEnumLabels(values []string) ([]string, error) {
+func onboardingStatusEnumLabels(field string, values []string) ([]string, error) {
 	out := make([]string, 0, len(values))
 	for _, v := range values {
 		label, ok := onboardingStatusLabels[onboardingStatusKeyStripper.Replace(strings.ToLower(strings.TrimSpace(v)))]
 		if !ok {
-			return nil, &apierror.ValidationError{Msg: "projectOnboardingStatus contains invalid value: " + v}
+			return nil, apierror.InvalidValue(field, v, "onboarding status", onboardingStatusNames)
 		}
 		out = append(out, label)
 	}
@@ -2060,7 +2063,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	// the LEFT JOIN below). A case whose project has no status set (NULL)
 	// satisfies notIn -- "not in progress" is true of it -- but never in.
 	if len(req.Parsed.ProjectOnboardingStatuses) > 0 {
-		labels, err := onboardingStatusEnumLabels(req.Parsed.ProjectOnboardingStatuses)
+		labels, err := onboardingStatusEnumLabels("projectOnboardingStatus", req.Parsed.ProjectOnboardingStatuses)
 		if err != nil {
 			return "", nil, argIdx, err
 		}
@@ -2069,7 +2072,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 		argIdx++
 	}
 	if len(req.Parsed.ExcludeProjectOnboardingStatuses) > 0 {
-		labels, err := onboardingStatusEnumLabels(req.Parsed.ExcludeProjectOnboardingStatuses)
+		labels, err := onboardingStatusEnumLabels("projectOnboardingStatus", req.Parsed.ExcludeProjectOnboardingStatuses)
 		if err != nil {
 			return "", nil, argIdx, err
 		}

@@ -20,9 +20,12 @@ package service
 import (
 	"context"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
+
+const errArrTodayGteUnsupported = "arrTodayGte is not supported on this data source yet: account ARR is not stored; remove the filter"
 
 type projectService struct {
 	repo   repository.ProjectRepository
@@ -46,6 +49,10 @@ func (s *projectService) SearchProjects(ctx context.Context, req domain.SearchPr
 	// Same rules as ServiceNow; the repository relies on them for its ORDER BY whitelist.
 	if err := validateProjectSearchFilters(req); err != nil {
 		return domain.SearchProjectsResponse{}, err
+	}
+	// No account ARR column yet: reject rather than return unfiltered results.
+	if req.ArrTodayGte != "" {
+		return domain.SearchProjectsResponse{}, &apierror.ValidationError{Msg: errArrTodayGteUnsupported}
 	}
 	if req.AccountID != "" {
 		if err := validateUUIDs("accountId", []string{req.AccountID}); err != nil {

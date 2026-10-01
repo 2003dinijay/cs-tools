@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -120,8 +122,9 @@ func projectSearchOrderBy(sortBy, sortOrder string) string {
 	return "p.created_on DESC, p.id"
 }
 
-// SearchProjects implements ProjectRepository.
-func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProjectsRequest, scope SearchScope) ([]domain.Project, int, error) {
+// buildProjectSearchWhere renders SearchProjects' WHERE clause and its bound
+// arguments. It expects aliases p (project), pt (project_type) and a (account).
+func buildProjectSearchWhere(req domain.SearchProjectsRequest, scope SearchScope) (string, []any, int, error) {
 	filterArgs := []any{}
 	argIdx := 1
 
@@ -216,7 +219,49 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		argIdx++
 	}
 
-	countQuery := "SELECT COUNT(*) FROM project p LEFT JOIN project_type pt ON pt.id = p.project_type_id " + where
+	// endDateFrom/endDateTo: inclusive yyyy-MM-dd bounds (validated by the
+	// service); a project with no end date never matches a bound.
+	if req.EndDateFrom != "" {
+		where += fmt.Sprintf(" AND p.end_date >= $%d::date", argIdx)
+		filterArgs = append(filterArgs, req.EndDateFrom)
+		argIdx++
+	}
+	if req.EndDateTo != "" {
+		where += fmt.Sprintf(" AND p.end_date <= $%d::date", argIdx)
+		filterArgs = append(filterArgs, req.EndDateTo)
+		argIdx++
+	}
+
+	// onboardingStatus: any of the given ServiceNow labels, compared ignoring
+	// case and separators, as the case search's projectOnboardingStatus does.
+	if len(req.OnboardingStatus) > 0 {
+		labels, err := onboardingStatusEnumLabels("onboardingStatus", req.OnboardingStatus)
+		if err != nil {
+			return "", nil, argIdx, err
+		}
+		where += fmt.Sprintf(" AND p.onboarding_status = ANY($%d::text[]::onboarding_status_enum[])", argIdx)
+		filterArgs = append(filterArgs, labels)
+		argIdx++
+	}
+
+	// subRegion: the linked account's sub-region, exact but case-insensitive.
+	if sub := strings.TrimSpace(req.SubRegion); sub != "" {
+		where += fmt.Sprintf(" AND LOWER(TRIM(a.sub_region)) = LOWER($%d)", argIdx)
+		filterArgs = append(filterArgs, sub)
+		argIdx++
+	}
+
+	return where, filterArgs, argIdx, nil
+}
+
+// SearchProjects implements ProjectRepository.
+func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProjectsRequest, scope SearchScope) ([]domain.Project, int, error) {
+	where, filterArgs, argIdx, err := buildProjectSearchWhere(req, scope)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	countQuery := "SELECT COUNT(*) FROM project p LEFT JOIN project_type pt ON pt.id = p.project_type_id LEFT JOIN account a ON a.id = p.account_id " + where
 
 	dataQuery := fmt.Sprintf(
 		`SELECT p.id, p.account_id, p.sf_id, p.name, p.key, pt.name,
@@ -490,6 +535,9 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 
 // UpdateProject implements ProjectRepository.
 func (r *projectRepo) UpdateProject(ctx context.Context, id string, req domain.ProjectUpdateRequest, updatedBy string) (domain.ProjectUpdateResult, error) {
+	if err := validateClosureFields(req); err != nil {
+		return domain.ProjectUpdateResult{}, err
+	}
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return domain.ProjectUpdateResult{}, fmt.Errorf("update project: begin tx: %w", err)
@@ -619,6 +667,54 @@ func closureEnumLabel(v *string) *string {
 }
 
 var nonAlnumRun = regexp.MustCompile(`[^a-z0-9]+`)
+
+// Enum labels of the three closure sub-state columns (migrations 0014, 0175).
+var (
+	endDateClosureLabels = []string{"OPEN", "NOTIFIED", "CLOSURE_NOTICES", "RESTRICTED", "CLOSED", "SUSPENDED",
+		"PENDING_NOTIFIED", "PENDING_CLOSURE_NOTICES", "PENDING_CLOSED", "PENDING_RESTRICTED"}
+	invoiceDueDateClosureLabels = []string{"OPEN", "NOTIFIED", "NOTICED", "RESTRICTED", "SUSPENDED",
+		"PENDING_NOTIFIED", "PENDING_SUSPENDED", "PENDING_NOTICED", "PENDING_RESTRICTED",
+		"NOTIFIED_AND_PREVIOUSLY_PAID", "NOTICED_AND_PREVIOUSLY_PAID", "RESTRICTED_AND_PREVIOUSLY_PAID",
+		"SUSPENDED_AND_PREVIOUSLY_PAID", "PENDING_NOTIFIED_AND_PREVIOUSLY_PAID", "PENDING_NOTICED_AND_PREVIOUSLY_PAID",
+		"PENDING_RESTRICTED_AND_PREVIOUSLY_PAID", "PENDING_SUSPENDED_AND_PREVIOUSLY_PAID"}
+	complianceViolationClosureLabels = []string{"OPEN", "SUSPENDED"}
+)
+
+// validateClosureFields rejects a PATCH closure value with no enum label,
+// naming the value and the accepted values in the Title Case reads return.
+func validateClosureFields(req domain.ProjectUpdateRequest) error {
+	fields := []struct {
+		name   string
+		value  *string
+		labels []string
+	}{
+		{"endDateClosureState", req.EndDateClosureState, endDateClosureLabels},
+		{"invoiceDueDateClosureState", req.InvoiceDueDateClosureState, invoiceDueDateClosureLabels},
+		{"complianceViolationClosureState", req.ComplianceViolationClosureState, complianceViolationClosureLabels},
+	}
+	for _, f := range fields {
+		if f.value == nil || slices.Contains(f.labels, *closureEnumLabel(f.value)) {
+			continue
+		}
+		names := make([]string, len(f.labels))
+		for i, l := range f.labels {
+			names[i] = closureDisplayName(l)
+		}
+		sort.Strings(names)
+		return apierror.InvalidValue(f.name, *f.value, "closure state", names)
+	}
+	return nil
+}
+
+// closureDisplayName renders an enum label the way reads return it:
+// PENDING_NOTIFIED -> "Pending Notified".
+func closureDisplayName(label string) string {
+	words := strings.Split(strings.ToLower(label), "_")
+	for i, w := range words {
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
+}
 
 // projectTypeNameToSubscriptionType converts a project_type.name label (e.g.
 // "Cloud Support", migrations 0031/0032) to the domain SubscriptionType
