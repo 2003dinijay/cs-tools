@@ -1,4 +1,4 @@
-# CSM GitHub Webhook — working notes
+# CSM Webhooks — working notes
 
 The public endpoint GitHub posts issue and issue-comment webhooks to. It
 verifies the HMAC signature and forwards the delivery to entity-service.

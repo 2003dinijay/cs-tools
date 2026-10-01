@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: CSM GitHub Webhook
+  title: CSM Webhooks
   version: "1.0.0"
   description: >-
     The public endpoint GitHub posts issue and issue-comment webhooks to. It

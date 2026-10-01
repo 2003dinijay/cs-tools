@@ -1,8 +1,8 @@
 schemaVersion: 1.2
 
 endpoints:
-  - name: csm-github-webhook
-    displayName: CSM GitHub Webhook
+  - name: csm-webhooks
+    displayName: CSM Webhooks
     service:
       basePath: /
       port: 8080
