@@ -29,12 +29,33 @@ import (
 )
 
 // slaEngineActiveStageFilter names the terminal sla.stage values a "sla" row
-// can never leave -- shared by every write below so a row this engine has
-// already finished with is never resurrected by a later, out-of-order call
-// (e.g. a retried case-create hook after a slow first attempt already
-// registered the clock, or a state-transition hook firing after the case
-// was already closed and its resolution clock completed).
+// can never leave -- shared by RegisterClock/ReviseClocks' own insert guard
+// so a row this engine has already finished registering against is never
+// resurrected by a later, out-of-order call (e.g. a retried case-create hook
+// after a slow first attempt already registered the clock). Used only for
+// that "is there already a clock for this (work_item, target) pair" check --
+// NOT by CompleteClock/SetPaused, which use the narrower
+// slaEngineOpenStageFilter below, since BREACHED is very much not finished
+// from their point of view.
 const slaEngineActiveStageFilter = `NOT IN ('ACHIEVED', 'BREACHED', 'CANCELLED', 'COMPLETED')`
+
+// slaEngineOpenStageFilter names the only truly final sla.stage values --
+// the ones a clock can never leave because its own disposition already
+// happened (a reply came in, a workaround was provided, a case closed, or
+// the clock was deliberately cancelled on a severity change). Deliberately
+// excludes BREACHED, unlike slaEngineActiveStageFilter above: a clock whose
+// wall-clock duration merely ran out without yet being satisfied is NOT
+// finished -- it must keep being recomputed (RecomputeActive) and must
+// still be completable or pausable by its own real event, whenever that
+// event finally happens, with the TRUE elapsed time at that moment however
+// far past 100% it has climbed. Treating BREACHED as terminal here was a
+// real, reported bug: once a response SLA breached, a later qualifying
+// comment's CompleteResponseClock call silently matched zero rows, leaving
+// the clock -- and its business_elapsed_percentage/business_duration --
+// frozen forever at whatever RecomputeActive last wrote before excluding it
+// too (see RecomputeActive's own doc comment for its matching half of this
+// fix).
+const slaEngineOpenStageFilter = `NOT IN ('ACHIEVED', 'CANCELLED', 'COMPLETED')`
 
 // slaEngineRevisionBlockStages names the stages that must block a fresh
 // registration for the given clock TARGET on a severity revision
@@ -139,27 +160,40 @@ type SLAEngineRepository interface {
 	// row was actually inserted.
 	RegisterClock(ctx context.Context, workItemID string, policy SLAPolicyRef) (bool, error)
 
-	// CompleteClock marks the active source='CSM' clock for
-	// (workItemID, target) ACHIEVED (end_on=now, business_elapsed_percentage
-	// set to the clock's real elapsed percentage at completion time, not
+	// CompleteClock marks the source='CSM' clock for (workItemID, target)
+	// ACHIEVED (end_on=now, business_elapsed_percentage set to the clock's
+	// real, uncapped elapsed percentage at completion time, not
 	// unconditionally 100 -- see this method's own implementation comment).
+	// Matches a clock in ANY not-yet-final stage, including BREACHED -- a
+	// clock whose window already ran out is still completable by its own
+	// real finishing event, with whatever real overrun percentage that
+	// event happened at (see slaEngineOpenStageFilter's own doc comment).
 	// Returns whether a row was found and updated -- false (not an error) when no
 	// such clock was ever registered, e.g. a LOW/Query-severity case, which
 	// never gets a "response" clock's workaround/resolution siblings, or a
 	// case whose policy lookup found nothing at create time.
 	CompleteClock(ctx context.Context, workItemID, target string) (bool, error)
 
-	// SetPaused pauses (true) or resumes (false) the active source='CSM'
-	// clock for (workItemID, target). Idempotent and a no-op (not an error)
-	// when no such clock exists, same reasoning as CompleteClock.
+	// SetPaused pauses (true) or resumes (false) the source='CSM' clock for
+	// (workItemID, target), matching any not-yet-final stage including
+	// BREACHED (see slaEngineOpenStageFilter) -- so an already-breached
+	// clock can still be paused while its case waits on the customer,
+	// rather than continuing to silently accumulate elapsed time. Idempotent
+	// and a no-op (not an error) when no such clock exists, same reasoning
+	// as CompleteClock.
 	SetPaused(ctx context.Context, workItemID, target string, paused bool) (bool, error)
 
-	// RecomputeActive recomputes business_elapsed_percentage for every
-	// source='CSM' row currently IN_PROGRESS (deliberately narrower than
-	// slaEngineActiveStageFilter -- see this method's own doc comment on
-	// its implementation for why PAUSED is excluded too), flips has_breached
-	// and stage to BREACHED once elapsed time reaches the policy duration,
-	// and returns how many rows were touched.
+	// RecomputeActive recomputes business_elapsed_percentage (uncapped --
+	// it keeps climbing past 100 for as long as a clock remains BREACHED)
+	// for every source='CSM' row currently IN_PROGRESS or BREACHED
+	// (deliberately narrower than slaEngineOpenStageFilter -- see this
+	// method's own doc comment on its implementation for why PAUSED is
+	// excluded too), flips has_breached and stage to BREACHED once elapsed
+	// time first reaches the policy duration, and returns how many rows
+	// were touched. Including BREACHED here (not just IN_PROGRESS) is what
+	// keeps a breached clock's elapsed time/percentage moving until its own
+	// real completing event finalizes it, instead of freezing forever at
+	// whatever value the tick that first crossed 100% happened to compute.
 	RecomputeActive(ctx context.Context) (int, error)
 
 	// ReviseClocks marks every source='CSM' clock for workItemID CANCELLED,
@@ -368,13 +402,28 @@ func (r *slaEngineRepo) RegisterClock(ctx context.Context, workItemID string, po
 // for a clock that has since completed. Computing all three here means an
 // early completion reads (and alerts) as what it actually was, on every
 // column the UI shows.
+//
+// business_elapsed_percentage is no longer capped at 100 -- a clock
+// completed well past its deadline (e.g. a support engineer replying long
+// after a response SLA breached) now shows its real overrun (e.g. 134%)
+// rather than an identical-looking 100%, matching RecomputeActive's own
+// uncapped formula below so the two never disagree on a clock that was
+// BREACHED right up until this call finalized it. Still floored at 0 --
+// GREATEST(0, ...) -- for the same reason it always was: a clock processed
+// a moment before its own start_on (clock skew, or a near-simultaneous
+// register+complete) must not show a negative percentage.
+//
+// Matches on slaEngineOpenStageFilter, not slaEngineActiveStageFilter --
+// see that constant's own doc comment: a BREACHED clock is exactly the
+// case this needs to still match, so its real completing event (whenever
+// it finally happens) finalizes it instead of silently matching zero rows.
 func (r *slaEngineRepo) CompleteClock(ctx context.Context, workItemID, target string) (bool, error) {
 	const query = `
 		UPDATE sla s
 		SET stage = 'ACHIEVED'::sla_stage_enum, end_on = NOW(),
-		    business_elapsed_percentage = LEAST(100, GREATEST(0,
+		    business_elapsed_percentage = GREATEST(0,
 		        EXTRACT(EPOCH FROM (NOW() - s.start_on)) / NULLIF(EXTRACT(EPOCH FROM s.duration), 0) * 100
-		    )),
+		    ),
 		    business_duration = NOW() - s.start_on,
 		    remaining_business_duration = GREATEST(s.duration - (NOW() - s.start_on), INTERVAL '0'),
 		    updated_on = NOW(), updated_by = $3
@@ -383,7 +432,7 @@ func (r *slaEngineRepo) CompleteClock(ctx context.Context, workItemID, target st
 		  AND s.work_item_id = $1::uuid
 		  AND s.source = 'CSM'
 		  AND sp.target::TEXT = $2
-		  AND s.stage::TEXT ` + slaEngineActiveStageFilter
+		  AND s.stage::TEXT ` + slaEngineOpenStageFilter
 
 	tag, err := r.db.Exec(ctx, query, workItemID, target, sqlActorLiteral)
 	if err != nil {
@@ -393,6 +442,13 @@ func (r *slaEngineRepo) CompleteClock(ctx context.Context, workItemID, target st
 }
 
 // SetPaused implements SLAEngineRepository.
+//
+// Matches on slaEngineOpenStageFilter, not slaEngineActiveStageFilter --
+// a BREACHED clock must still be pausable (e.g. a workaround/resolution
+// clock that breached while the case was still open, which then moves to
+// AWAITING_INFO) so RecomputeActive actually stops touching it rather than
+// continuing to climb its elapsed time while the case waits on the
+// customer; see slaEngineOpenStageFilter's own doc comment.
 func (r *slaEngineRepo) SetPaused(ctx context.Context, workItemID, target string, paused bool) (bool, error) {
 	const query = `
 		UPDATE sla s
@@ -404,7 +460,7 @@ func (r *slaEngineRepo) SetPaused(ctx context.Context, workItemID, target string
 		  AND s.work_item_id = $1::uuid
 		  AND s.source = 'CSM'
 		  AND sp.target::TEXT = $2
-		  AND s.stage::TEXT ` + slaEngineActiveStageFilter
+		  AND s.stage::TEXT ` + slaEngineOpenStageFilter
 
 	tag, err := r.db.Exec(ctx, query, workItemID, target, paused, sqlActorLiteral)
 	if err != nil {
@@ -415,12 +471,28 @@ func (r *slaEngineRepo) SetPaused(ctx context.Context, workItemID, target string
 
 // RecomputeActive implements SLAEngineRepository.
 //
-// Deliberately scoped to stage = 'IN_PROGRESS' rather than the broader
-// slaEngineActiveStageFilter (NOT IN the four terminal stages, which would
-// also match PAUSED): a paused clock's whole point is to stop accumulating
-// elapsed time, so recomputing its percentage against wall-clock "now" would
-// silently undo SetPaused's own effect the very next tick. Excluding PAUSED
-// here is what makes pause actually pause.
+// Scoped to stage IN ('IN_PROGRESS', 'BREACHED') -- deliberately still
+// narrower than slaEngineOpenStageFilter, which would also match PAUSED: a
+// paused clock's whole point is to stop accumulating elapsed time, so
+// recomputing its percentage against wall-clock "now" would silently undo
+// SetPaused's own effect the very next tick. Excluding PAUSED here is what
+// makes pause actually pause.
+//
+// BREACHED is included here -- unlike an earlier version of this query,
+// which stopped touching a row the moment it first flipped to BREACHED --
+// specifically so a clock that has already breached keeps accumulating
+// real elapsed time/percentage until its own genuine completing event
+// (CompleteClock) finally finalizes it, however much later that is. That
+// earlier version was a real, reported bug: a response SLA observed live
+// froze at its business_duration/business_elapsed_percentage from the
+// exact tick it crossed 100% (e.g. stuck at "59m" forever), never
+// reflecting that real time kept passing while the case sat unanswered.
+// business_elapsed_percentage is no longer capped at 100 for the same
+// reason CompleteClock's own cap was dropped -- see that method's doc
+// comment; a clock still climbs past 100% here for as long as it remains
+// BREACHED, and CompleteClock later reads the exact same uncapped value at
+// whatever moment it actually finishes. Still floored at 0 (GREATEST(0,
+// ...)) for the same clock-skew reason CompleteClock keeps that floor.
 //
 // No business-hours calendar: elapsed is flat wall-clock time since
 // start_on, exactly as crude as the deleted sla_clocks map this replaces
@@ -432,9 +504,9 @@ func (r *slaEngineRepo) SetPaused(ctx context.Context, workItemID, target string
 func (r *slaEngineRepo) RecomputeActive(ctx context.Context) (int, error) {
 	const query = `
 		UPDATE sla
-		SET business_elapsed_percentage = LEAST(100, GREATEST(0,
+		SET business_elapsed_percentage = GREATEST(0,
 		        EXTRACT(EPOCH FROM (NOW() - start_on)) / NULLIF(EXTRACT(EPOCH FROM duration), 0) * 100
-		    )),
+		    ),
 		    business_duration = NOW() - start_on,
 		    remaining_business_duration = GREATEST(duration - (NOW() - start_on), INTERVAL '0'),
 		    has_breached = has_breached OR (EXTRACT(EPOCH FROM (NOW() - start_on)) >= EXTRACT(EPOCH FROM duration)),
@@ -445,7 +517,7 @@ func (r *slaEngineRepo) RecomputeActive(ctx context.Context) (int, error) {
 		    END,
 		    updated_on = NOW(), updated_by = $1
 		WHERE source = 'CSM'
-		  AND stage = 'IN_PROGRESS'
+		  AND stage IN ('IN_PROGRESS', 'BREACHED')
 		  AND start_on IS NOT NULL
 		  AND duration IS NOT NULL`
 

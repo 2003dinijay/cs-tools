@@ -194,10 +194,10 @@ func TestSLAEngineService_ApplyCaseStateEffects(t *testing.T) {
 			nil,
 		},
 		{
-			"closed resumes+completes resolution, pauses workaround only",
+			"closed resumes+completes all three clocks",
 			domain.CaseStateClosed,
-			[]string{"case-6|RESOLUTION|false", "case-6|WORKAROUND|true"},
-			[]string{"case-6|RESOLUTION"},
+			[]string{"case-6|RESOLUTION|false", "case-6|WORKAROUND|false"},
+			[]string{"case-6|RESOLUTION", "case-6|WORKAROUND", "case-6|RESPONSE"},
 		},
 		{
 			"work in progress resumes both",
