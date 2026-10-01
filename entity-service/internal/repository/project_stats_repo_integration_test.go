@@ -47,8 +47,8 @@ func seedProjectStats(t *testing.T, pool *pgxpool.Pool) {
 	cleanup := func() {
 		_, _ = scoped.Exec(ctx, `DELETE FROM time_card WHERE created_by = 'stats-test'`)
 		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE created_by = 'stats-test'`)
-		_, _ = pool.Exec(ctx, `DELETE FROM deployed_product WHERE created_by = 'stats-test'`)
-		_, _ = pool.Exec(ctx, `DELETE FROM deployment WHERE created_by = 'stats-test'`)
+		_, _ = scoped.Exec(ctx, `DELETE FROM deployed_product WHERE created_by = 'stats-test'`) // RLS-protected since 0175
+		_, _ = scoped.Exec(ctx, `DELETE FROM deployment WHERE created_by = 'stats-test'`)
 		_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE user_name = 'stats-test@example.com'`)
 		_, _ = pool.Exec(ctx, `DELETE FROM project WHERE id = $1`, statsProjectID)
 	}
