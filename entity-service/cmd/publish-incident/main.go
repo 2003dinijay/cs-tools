@@ -54,6 +54,8 @@ func main() {
 	account := flag.String("account", "Acme Corporation", "account")
 	product := flag.String("product", "", "product; the consumer routes the Chat space by it")
 	reportedAt := flag.String("reported-at", "", "RFC3339 report time; decides the shift. Defaults to now")
+	contactType := flag.String("contact-type", "", "how the incident was raised: AZURE, SITE_247, SENTINEL (monitoring) or EMAIL, PHONE ...; routing reads it")
+	event := flag.String("event", "created", "what to publish: created, or a stop gesture for an existing -incident-id: assigned, acknowledged (left NEW), comment (public)")
 	flag.Parse()
 
 	reported := time.Now().UTC()
@@ -68,7 +70,32 @@ func main() {
 
 	incidentID := *id
 	if incidentID == "" {
+		if *event != "created" {
+			fmt.Fprintln(os.Stderr, "-event", *event, "needs the -incident-id of the incident to acknowledge")
+			os.Exit(1)
+		}
 		incidentID = fmt.Sprintf("local-inc-%d", time.Now().Unix())
+	}
+
+	// The stop gestures, each as entity-service itself publishes it.
+	if *event != "created" {
+		var (
+			typ  events.Type
+			body any
+		)
+		switch *event {
+		case "assigned":
+			typ, body = events.TypeIncidentAssigned, events.IncidentAssignedPayload{AssigneeID: "local-engineer", AssigneeName: "Local Engineer"}
+		case "acknowledged":
+			typ, body = events.TypeIncidentAcknowledged, events.IncidentAcknowledgedPayload{PreviousState: "NEW", NewState: "IN_PROGRESS"}
+		case "comment":
+			typ, body = events.TypeIncidentCommentAdded, events.IncidentCommentAddedPayload{CommentID: fmt.Sprintf("local-comment-%d", time.Now().Unix()), IsPublic: true}
+		default:
+			fmt.Fprintln(os.Stderr, "-event must be created, assigned, acknowledged or comment")
+			os.Exit(1)
+		}
+		publishOne(*broker, *topic, incidentID, typ, body)
+		return
 	}
 
 	payload, err := json.Marshal(events.IncidentCreatedPayload{
@@ -78,6 +105,7 @@ func main() {
 		Priority:         *priority,
 		Account:          *account,
 		Team:             *team,
+		ContactType:      *contactType,
 		ReportedAt:       reported.Format(time.RFC3339),
 	})
 	if err != nil {
@@ -129,4 +157,30 @@ func lastN(s string, n int) string {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+// publishOne puts one event about an existing incident on the topic.
+func publishOne(broker, topic, incidentID string, typ events.Type, body any) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "encode payload:", err)
+		os.Exit(1)
+	}
+	envelope, err := json.Marshal(events.Envelope{Type: typ, EntityID: incidentID, Payload: payload})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "encode envelope:", err)
+		os.Exit(1)
+	}
+	producer := eventbus.NewProducer(eventbus.Config{
+		Broker: broker, Topic: topic, ConnectionString: os.Getenv("EVENT_HUB_CONNECTION_STRING"),
+	})
+	defer producer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := producer.Publish(ctx, []byte(incidentID), envelope); err != nil {
+		fmt.Fprintln(os.Stderr, "publish:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("published %s for %s to %s\n", typ, incidentID, topic)
+	fmt.Printf("payload: %s\n", payload)
 }
