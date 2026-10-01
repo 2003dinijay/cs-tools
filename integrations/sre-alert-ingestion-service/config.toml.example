@@ -37,7 +37,15 @@ max_body_bytes = 1048576
 #   "audit"  check keys and log mismatches, reject nothing. Use while reconfiguring
 #            vendors, so enabling auth cannot drop alerts.
 #   "apikey" require a key from WEBHOOK_API_KEYS. Startup fails if a vendor has none.
+#   "integration_users"
+#            require a credential from alerts-core's integration_users table, sent
+#            as Basic auth or Bearer base64("<user>:<secret>"). Provision with
+#            alerts-core's cmd/user.
 mode = "none"
+
+# How long a verified integration_users credential is reused before the row is read
+# again; 0 disables the cache. Only used by "integration_users".
+cache_ttl = "60s"
 
 [allocator]
 # Alerts waiting to be claimed; when full, new webhooks get 503 immediately.
