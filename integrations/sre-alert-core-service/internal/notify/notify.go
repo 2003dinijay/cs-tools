@@ -458,34 +458,13 @@ func fallbackGoogleChatCard(inc model.Incident, threaded bool) map[string]any {
 	return card
 }
 
-// annotationStyle picks the header color and label for a Duplicate/OK annotation card; unrecognized kinds still render legibly instead of silently reusing the Duplicate style.
-func annotationStyle(kind string) (color, label string) {
-	switch kind {
-	case "OK":
-		return "#0f9d58", "RESOLVED | Incident Cleared"
-	case "Duplicate":
-		return "#f4b400", "DUPLICATE | Repeat Alert"
-	default:
-		return "#f4b400", strings.ToUpper(kind) + " | Incident Update"
-	}
-}
-
-// annotationGoogleChatCard renders a Duplicate/OK annotation as a reply distinct from fallbackGoogleChatCard's "Priority Incident Reported" header, so a threaded Duplicate or OK doesn't look like a brand new page. note is model.BuildWorkNote's HTML output, already naming the kind.
-func annotationGoogleChatCard(inc model.Incident, kind, note string, threaded bool) map[string]any {
-	color, label := annotationStyle(kind)
-	subtitle := "#" + inc.IncidentNumber + " | " + inc.Service
-	if inc.Environment != "" {
-		subtitle += " | " + inc.Environment
-	}
+// annotationGoogleChatCard renders a Duplicate/OK annotation as a reply distinct from fallbackGoogleChatCard's "Priority Incident Reported" header, so a threaded Duplicate or OK doesn't look like a brand new page. note is model.BuildChatAnnotationText's HTML output, already naming the kind in bold.
+func annotationGoogleChatCard(inc model.Incident, _, note string, threaded bool) map[string]any {
 	card := map[string]any{
 		"cardsV2": []map[string]any{
 			{
 				"cardId": inc.IncidentNumber,
 				"card": map[string]any{
-					"header": map[string]any{
-						"title":    "<font color='" + color + "'><b>" + label + "</b></font>",
-						"subtitle": subtitle,
-					},
 					"sections": []map[string]any{
 						{
 							"widgets": []map[string]any{
