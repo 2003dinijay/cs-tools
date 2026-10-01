@@ -70,6 +70,43 @@ check. The Add User form's type selector disables its "External" option for the 
 than offering a choice the backend will reject. All three layers (here, entity-service, the webapp)
 are meant to come out together once external-type creation is ready.
 
+## Listing time card approvers via SCIM (GET /users/time-card-approvers)
+
+Who may approve a time card is granted by real Asgardeo role membership (see `AUTH_TIMECARD_APPROVER_ROLES`
+in "Access control" above), but `POST /users/search`'s `roleIds` filter — the only other way to list
+"who holds role X" — reads entity-service's own Postgres `role`/`user_role` tables instead, a separate,
+syncable mirror that is not guaranteed to agree with Asgardeo's real membership at any given moment.
+`GetTimeCardApprovers` (`internal/handler/users.go`) answers the question directly: it calls
+`scim.Client.GetRole` with a configured Asgardeo role id and returns that role's real `users` list
+(`{id, email}` per member), authoritative rather than a potentially-stale mirror.
+
+**`ASGARDEO_ROLE_IDS`** (`internal/directory.ParseAsgardeoRoleIDs`) is a comma-separated
+`roleKey|asgardeoRoleId` list, e.g. `timecard_approver|0bbeea4f-5ada-49ba-8f19-90ae6a116daa` — a
+general role-key → Asgardeo-role-id mapping, not a single-purpose env var, so a second SCIM-backed
+role lookup later is a config row plus a small handler, not a redesign. Parsed once at startup
+(`cmd/server/main.go`, right after `loadDirectory()`) into a plain `map[string]string`; deliberately
+**not** folded into `directory.Directory` itself, since that type's own charter (team registry +
+assignable-role allow-list) is a different, narrower concept than "which roles have a SCIM-backed
+membership lookup wired up" — this is Asgardeo role *ids* for a specific feature, not organisation
+vocabulary every caller needs. No default and no required keys: an unconfigured `timecard_approver`
+entry means `timecardApproverRoleID == ""` in `main.go`, and `GetTimeCardApprovers` itself returns 404
+in that case. **The route is registered unconditionally**, deliberately unlike this file's other
+optionally-wired features (`ENGINEERING_ENTITY_BASE_URL`, the `CSM_MIGRATION_*` flags), which skip
+registration entirely when off: `GET /users/time-card-approvers` collides with the wildcard
+`GET /users/{id}` route, so leaving it unregistered would have the request fall through to `GetUser`,
+which rejects the literal segment `"time-card-approvers"` as an invalid UUID with 400 — a confusing
+status for "this feature isn't configured." Registering it unconditionally and 404ing from inside the
+handler gives a clean, correct status either way.
+
+**A SCIM 401/403 is never passed through to the caller as 401/403.** A failure fetching the role (e.g.
+this backend's own OAuth2 app lacking a roles-read scope on `SCIM_SCOPES` — see the "Operational
+follow-up" note on the PR that added the SCIM operations service's role endpoint) is this backend's own
+credentials problem, not anything about the calling portal user's permissions — `mapUpstreamErrorGeneric`'s
+usual 401/403 pass-through would otherwise tell an ordinary `viewer` "you don't have permission" for what
+is really a deployment misconfiguration. `GetTimeCardApprovers` checks for those two codes specifically
+and reports a sanitized 502 instead; every other SCIM failure status still goes through the normal
+`mapUpstreamErrorGeneric` mapping.
+
 ## Security Center access (PermViewSecurityCenter)
 
 Security Center (the webapp's Security reports + Vulnerabilities tabs) is restricted to `cs_engineer`
@@ -184,7 +221,7 @@ Each upstream service has its own client package under `internal/`:
 | Package | Upstream | Notes |
 |---------|----------|-------|
 | `entity` | Multiple entity services (see below) | Hosts `CustomerEntityClient` (this repo's entity-service; most case/account/project endpoints, raw `[]byte` passthrough) and `EngineeringEntityClient` (a separate internal engineering entity service; `CreateGitIssue`, typed request/response, plus `Health(ctx)` backing `GET /health/dependencies` — see "Health endpoints" above). `EngineeringEntityClient` is constructed in `cmd/server/main.go` only when `ENGINEERING_ENTITY_BASE_URL` is set, and then `CaseHandler.CreateCaseGithubIssue` uses it (via `WithEngineeringClient`) instead of the entity service: the target is the case product's `product_repo_mapping` row (looked up through the entity service's `GET /products/github-repo`; `repoOverride` is ignored), and after filing it writes the issue URL to the case as a best-effort work note |
-| `scim` | SCIM service | User/group lookups. Two orgs: `SearchUser` queries the "internal" org (WSO2 staff — phone number, last password update). `SearchExternalUser` queries the "external" org (customer/partner contacts — existence + lock status, mirroring `infra-operations/operations/asgardeo-user-check`'s `{exists, locked}` contract). `GetUser` calls the latter only when the entity response's `userType` isn't `internal`, and treats a lookup failure as best-effort — logged, response returned unchanged, never a failed request |
+| `scim` | SCIM service | User/group/role lookups. Two orgs: `SearchUser` queries the "internal" org (WSO2 staff — phone number, last password update). `SearchExternalUser` queries the "external" org (customer/partner contacts — existence + lock status, mirroring `infra-operations/operations/asgardeo-user-check`'s `{exists, locked}` contract). `GetUser` calls the latter only when the entity response's `userType` isn't `internal`, and treats a lookup failure as best-effort — logged, response returned unchanged, never a failed request. `GetRole(ctx, roleID)` fetches an Asgardeo role's real member users (internal org only) via the SCIM operations service's `GET /organizations/internal/roles/{id}` — a plain get-by-id, not a search, so the caller supplies the role's own Asgardeo id directly (see `ASGARDEO_ROLE_IDS` below); a member's SCIM `display` (`"<domain>/<email>"`, e.g. `"DEFAULT/jane@wso2.com"`) is unwrapped to a bare email |
 | `updates` | Updates service | Product update levels; returns typed structs (not raw passthrough) |
 | `csmnotification` | `integrations/csm-notification-service` | Health check only today (`Health(ctx)`, backing `GET /health/dependencies` — see "Health endpoints" below). Optional: unconfigured (`CSM_NOTIFICATION_SERVICE_BASE_URL` unset) means this dependency reports `not_configured` |
 | `csmintegration` | `integrations/csm-integration-service` | Same shape and same one purpose as `csmnotification` above, for `integrations/csm-integration-service` |
