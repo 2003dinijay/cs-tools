@@ -513,6 +513,69 @@ func TestEngine_SendBreachEmails_FallsBackToCaseIDWhenCaseNumberEmpty(t *testing
 	}
 }
 
+// TestEngine_SendBreachEmails_DebugModeRedirectsToDebugRecipientsOnly
+// verifies neither breach email ever reaches the real assignee/team
+// addresses while EMAIL_DEBUG_MODE is on — only the configured debug
+// recipients do, matching dispatch.go's own EMAIL_DEBUG_MODE contract for
+// every other email in this service.
+func TestEngine_SendBreachEmails_DebugModeRedirectsToDebugRecipientsOnly(t *testing.T) {
+	entity := &fakeStatusLister{statuses: []SLAStatus{{
+		CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 50,
+		AssigneeEmail: "assignee@example.test", TeamEmail: "team@example.test",
+	}}}
+	store := newFakeTierStore()
+	store.tiers["CASE-1|response"] = 0
+	e := newTestEngine(entity, store, &fakePublisher{})
+	email := &fakeEmailSender{}
+	e.email = email
+	e.emailSendingEnabled = true
+	e.emailDebugMode = true
+	e.emailDebugRecipients = []string{"debug@example.test"}
+
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(email.calls) != 2 {
+		t.Fatalf("email calls = %d, want 2 (assignee + team)", len(email.calls))
+	}
+	for _, c := range email.calls {
+		if len(c.to) != 1 || c.to[0] != "debug@example.test" {
+			t.Errorf("to = %v, want only the configured debug recipient", c.to)
+		}
+		for _, addr := range c.to {
+			if addr == "assignee@example.test" || addr == "team@example.test" {
+				t.Errorf("real address %q leaked into To while EMAIL_DEBUG_MODE is on", addr)
+			}
+		}
+	}
+}
+
+// TestEngine_SendBreachEmails_DebugModeSkipsWhenNoDebugRecipientsConfigured
+// verifies a misconfigured debug mode (no EMAIL_DEBUG_RECIPIENTS) skips the
+// send rather than falling back to the real address — the same posture
+// dispatch.go's sendPerGroup takes for the same misconfiguration.
+func TestEngine_SendBreachEmails_DebugModeSkipsWhenNoDebugRecipientsConfigured(t *testing.T) {
+	entity := &fakeStatusLister{statuses: []SLAStatus{{
+		CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 50,
+		AssigneeEmail: "assignee@example.test", TeamEmail: "team@example.test",
+	}}}
+	store := newFakeTierStore()
+	store.tiers["CASE-1|response"] = 0
+	e := newTestEngine(entity, store, &fakePublisher{})
+	email := &fakeEmailSender{}
+	e.email = email
+	e.emailSendingEnabled = true
+	e.emailDebugMode = true
+	e.emailDebugRecipients = nil
+
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(email.calls) != 0 {
+		t.Fatalf("email calls = %d, want 0 (skipped, not sent to the real address)", len(email.calls))
+	}
+}
+
 // TestEngine_SendBreachEmails_UnresolvedTeamStillSendsInDebugMode verifies a
 // team that resolved by name (s.Team) but has no configured group_email
 // (s.TeamEmail empty) still gets a debug-mode email — to the configured

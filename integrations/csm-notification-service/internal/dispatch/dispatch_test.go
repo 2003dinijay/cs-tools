@@ -1785,6 +1785,54 @@ func TestDispatcher_Handle_CRApprovalRequested_DebugMode(t *testing.T) {
 	}
 }
 
+// TestDispatcher_Handle_CRPlanDateNotice_DebugMode verifies the debug
+// redirect applies here too, for both the internal (visible To) and
+// customer (BCC) branches — only the configured debug recipients ever see
+// either send, never the real audience, in either branch.
+func TestDispatcher_Handle_CRPlanDateNotice_DebugMode(t *testing.T) {
+	t.Run("internal audience — To is redirected", func(t *testing.T) {
+		mock := &mockEmailSender{}
+		d := NewDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}, &mockLinkResolver{},
+			true, true, []string{"debug@wso2.com"}, true, "", nil)
+
+		if err := d.Handle(context.Background(), planDateRecord("customer_proposed", "internal", "")); err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+		if len(mock.calls) != 1 {
+			t.Fatalf("sent %d emails, want 1", len(mock.calls))
+		}
+		sent := mock.calls[0]
+		if len(sent.to) != 1 || sent.to[0] != "debug@wso2.com" {
+			t.Errorf("to = %v, want only the debug recipient", sent.to)
+		}
+		if len(sent.bcc) != 0 {
+			t.Errorf("bcc = %v, want none — the real recipient must not appear anywhere in this send", sent.bcc)
+		}
+	})
+
+	t.Run("customer audience — BCC is redirected, not the real recipient", func(t *testing.T) {
+		mock := &mockEmailSender{}
+		d := NewDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}, &mockLinkResolver{},
+			true, true, []string{"debug@wso2.com"}, true, "", nil)
+
+		if err := d.Handle(context.Background(), planDateRecord("accepted", "customer", "PROJ-1")); err != nil {
+			t.Fatalf("Handle() error = %v", err)
+		}
+		if len(mock.calls) != 1 {
+			t.Fatalf("sent %d emails, want 1", len(mock.calls))
+		}
+		sent := mock.calls[0]
+		if len(sent.bcc) != 1 || sent.bcc[0] != "debug@wso2.com" {
+			t.Errorf("bcc = %v, want only the debug recipient, not the real customer audience", sent.bcc)
+		}
+		for _, addr := range append([]string{}, sent.to...) {
+			if addr == testRecipient {
+				t.Errorf("real recipient %q leaked into To during debug mode", testRecipient)
+			}
+		}
+	})
+}
+
 // TestDispatcher_Handle_CRApprovalRequested_CustomerAudienceIsBCC guards a real
 // exposure. ServiceNow sent one email per recipient, so no customer contact
 // ever saw who else was notified; collapsing that into one message must not
