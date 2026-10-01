@@ -18,6 +18,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -1577,12 +1578,47 @@ const decideChangeRequestApprovalQuery = `
 // Approval) is a separate, deferred piece of work, so a decision on an
 // Authorize-stage approver still cancels its own siblings but has no state
 // cascade effect at all yet.
+//
+// Three correctness issues caught on CodeRabbit review of this method, all
+// fixed here:
+//
+//  1. Concurrency: two decisions on the same change request (a concurrent
+//     approval/rejection race, or two approvals racing each other's sibling
+//     cancellation) were not serialized at all, so one could read a stale
+//     "no rejection yet" snapshot or deadlock against the other. Every
+//     decision now locks the change_request row (SELECT ... FOR UPDATE)
+//     before touching any approver row, for both approvals and rejections.
+//  2. change_request.state is nullable (see this file's own CLAUDE.md on
+//     pre-existing NULL-state records) and used to be scanned into a plain
+//     string, which would crash on such a record instead of simply leaving
+//     the decision recorded with no cascade.
+//  3. The cascade used to key off change_request.state == "ASSESS" alone,
+//     with no check on which stage was actually being decided -- approving
+//     a pending Authorize-stage approver while the record happened to still
+//     read ASSESS would incorrectly advance it too. It now also confirms
+//     stageID is the Assess-position stage (the earliest by created_on/id,
+//     the same ordinal changeRequestApprovalStagePosition uses at read
+//     time) before advancing; an Authorize-stage decision still cancels its
+//     own siblings regardless.
 func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id, approverUserID, decision, actorEmail string) (string, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("decide change request approval: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// Locks the change_request row before any approver row is touched,
+	// serializing every decision against it -- approvals and rejections
+	// alike -- so the hasRejection/isAssessStage checks below always see a
+	// consistent snapshot and two concurrent approvals can't deadlock
+	// cancelling each other's sibling rows. A change request that doesn't
+	// exist yields no row here; the approver UPDATE just below still
+	// produces the real pgx.ErrNoRows for that case, so this lock query's
+	// own ErrNoRows is swallowed rather than treated as a fault.
+	var lockedID string
+	if err := tx.QueryRow(ctx, `SELECT id FROM change_request WHERE id = $1 FOR UPDATE`, id).Scan(&lockedID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("decide change request approval: lock change request: %w", err)
+	}
 
 	var approvalID string
 	var stageID *string
@@ -1620,14 +1656,32 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 			// The one real change_request.state cascade this repository
 			// attempts: Assess -> Authorize. Deliberately scoped this
 			// narrow -- see this method's own doc comment for why
-			// Authorize's own outgoing gate isn't attempted here.
-			var currentState string
-			if err := tx.QueryRow(ctx, `SELECT state FROM change_request WHERE id = $1 FOR UPDATE`, id).Scan(&currentState); err != nil {
-				return "", fmt.Errorf("decide change request approval: check current state: %w", err)
+			// Authorize's own outgoing gate isn't attempted here. Gated on
+			// stageID actually being the Assess-position stage (position 0,
+			// same ordinal changeRequestApprovalStagePosition uses), not
+			// merely on change_request.state reading ASSESS -- see this
+			// method's own doc comment, point 3.
+			var isAssessStage bool
+			if err := tx.QueryRow(ctx, `
+				SELECT NOT EXISTS (
+					SELECT 1 FROM approval_stage earlier
+					WHERE earlier.work_item_id = $1
+					  AND (earlier.created_on, earlier.id) < (SELECT created_on, id FROM approval_stage WHERE id = $2)
+				)`, id, *stageID).Scan(&isAssessStage); err != nil {
+				return "", fmt.Errorf("decide change request approval: check stage position: %w", err)
 			}
-			if currentState == "ASSESS" {
-				if _, err := tx.Exec(ctx, `UPDATE change_request SET state = 'AUTHORIZE' WHERE id = $1`, id); err != nil {
-					return "", fmt.Errorf("decide change request approval: advance state: %w", err)
+			if isAssessStage {
+				// Nullable (see this method's own doc comment, point 2) --
+				// a NULL state simply has nothing to cascade from, not a
+				// scan failure.
+				var currentState sql.NullString
+				if err := tx.QueryRow(ctx, `SELECT state FROM change_request WHERE id = $1`, id).Scan(&currentState); err != nil {
+					return "", fmt.Errorf("decide change request approval: check current state: %w", err)
+				}
+				if currentState.Valid && currentState.String == "ASSESS" {
+					if _, err := tx.Exec(ctx, `UPDATE change_request SET state = 'AUTHORIZE' WHERE id = $1`, id); err != nil {
+						return "", fmt.Errorf("decide change request approval: advance state: %w", err)
+					}
 				}
 			}
 		}

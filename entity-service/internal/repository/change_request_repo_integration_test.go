@@ -200,7 +200,7 @@ func TestChangeRequestIntegration_DecideApprovalCascadesAssessToAuthorize(t *tes
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	repo := repository.NewChangeRequestRepository(pool)
 	seedApprovalUserForDecisionTest(t, pool)
@@ -237,7 +237,7 @@ func TestChangeRequestIntegration_DecideApprovalRejectionDoesNotCascade(t *testi
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	repo := repository.NewChangeRequestRepository(pool)
 	seedApprovalUserForDecisionTest(t, pool)
@@ -274,7 +274,7 @@ func TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess(t *t
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	repo := repository.NewChangeRequestRepository(pool)
 	seedApprovalUserForDecisionTest(t, pool)
@@ -316,7 +316,7 @@ func TestChangeRequestIntegration_DecideApprovalCancelsSiblingApprovers(t *testi
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	repo := repository.NewChangeRequestRepository(pool)
 	seedApprovalUserForDecisionTest(t, pool,
