@@ -95,7 +95,15 @@ export default function CreateOutagePage(): JSX.Element {
   const isTypeValid = type !== UNSET;
   // The picker shows wall-clock in the user's timezone; the contract is UTC.
   const beginUtc = zonedInputToBackendUtc(begin);
-  const isBeginValid = !!beginDate && !!beginUtc;
+
+  // *** BEGIN IS NOT REQUIRED UP FRONT. *** The single action supplies "now"
+  // when the field is empty, so demanding it before submit would block the
+  // one-press flow this page exists for. A begin that HAS been typed still
+  // has to be a real instant -- that is the Planned and backdated case, and
+  // silently replacing a half-typed value with now would be worse than
+  // refusing it.
+  const hasTypedBegin = begin.trim().length > 0;
+  const isBeginValid = !hasTypedBegin || (!!beginDate && !!beginUtc);
   const isShortDescriptionValid = shortDescription.trim().length > 0;
   const needsAcknowledgement = !!configurationItemId && !acknowledged;
   const canSubmit =
@@ -106,15 +114,30 @@ export default function CreateOutagePage(): JSX.Element {
     !needsAcknowledgement &&
     !postOutage.isPending;
 
+  // *** ONE ACTION: BEGIN THE OUTAGE. *** ServiceNow's form pairs "Begin
+  // Outage" with Save; this page has no Save, because an outage being created
+  // here is one that is starting. The button stamps now and submits in the
+  // same press.
+  //
+  // It does NOT force "now" over a begin that was typed. Planned outages are
+  // scheduled ahead and an outage is routinely noticed minutes after it
+  // started; overwriting either would publish a start time that never
+  // happened, and duration is published on the public status page.
   const handleSubmit = (): void => {
     if (!canSubmit) {
       setTouched(true);
       return;
     }
 
+    const resolvedBegin = beginUtc ?? zonedInputToBackendUtc(formatDateTimeLocal(new Date()));
+    if (!resolvedBegin) {
+      setTouched(true);
+      return;
+    }
+
     const payload: BeCreateOutagePayload = {
       type: type as BeOutageType,
-      begin: beginUtc as string,
+      begin: resolvedBegin,
       shortDescription: shortDescription.trim(),
     };
     const endUtc = end ? zonedInputToBackendUtc(end) : null;
@@ -215,7 +238,7 @@ export default function CreateOutagePage(): JSX.Element {
             <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
               <Box sx={{ flex: "1 1 220px" }}>
                 <DatePickers.DateTimePicker
-                  label="Begin"
+                  label="Begin (optional)"
                   value={beginDate}
                   onChange={(next) =>
                     setBegin(
@@ -228,9 +251,11 @@ export default function CreateOutagePage(): JSX.Element {
                     textField: {
                       size: "small",
                       fullWidth: true,
-                      required: true,
                       error: touched && !isBeginValid,
-                      helperText: touched && !isBeginValid ? "Required" : undefined,
+                      helperText:
+                        touched && !isBeginValid
+                          ? "Not a valid date and time."
+                          : "Leave blank to start now. Set it for a planned outage, or one that began earlier.",
                     },
                   }}
                 />
@@ -342,19 +367,12 @@ export default function CreateOutagePage(): JSX.Element {
               It only fills the field. Submitting is still Create outage, so
               a mis-stamp is corrected before anything is written. */}
           <Button
-            variant="outlined"
-            onClick={() => setBegin(formatDateTimeLocal(new Date()))}
-            disabled={postOutage.isPending}
-          >
-            Begin outage
-          </Button>
-          <Button
             variant="contained"
             onClick={handleSubmit}
             disabled={!canSubmit}
             loading={postOutage.isPending}
           >
-            Create outage
+            Begin outage
           </Button>
         </Box>
       </Card>
