@@ -389,7 +389,7 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
   // mechanism works on it too, on top of the audience gate.
   {
     id: "spl",
-    label: "Support Portal Lite",
+    label: "Sales / Solutions Architecture",
     href: "/spl/cases",
     icon: Layers,
     children: [
