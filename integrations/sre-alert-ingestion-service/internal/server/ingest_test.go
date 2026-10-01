@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"sre-alert-ingestion-service/internal/auth"
 	"sre-alert-ingestion-service/internal/model"
 	"sre-alert-ingestion-service/internal/vendors"
 )
@@ -79,7 +80,7 @@ func newIngestServer(t *testing.T, sub Submitter, rejects RejectNotifier) *Serve
 	}
 	return New(Options{
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Auth:         allowAll{},
+		Auth:         auth.None{},
 		Pipeline:     NewIngestor(reg, sub, time.Second),
 		Rejects:      rejects,
 		Vendors:      reg.Names(),
@@ -122,6 +123,21 @@ func TestIngest_PrometheusBatchSubmittedTogether(t *testing.T) {
 	}
 	if len(sub.calls) != 1 || len(sub.calls[0]) != 3 {
 		t.Errorf("want one submission of 3 alerts, got %d submissions", len(sub.calls))
+	}
+}
+
+func TestIngest_ServiceNowForwardStoresCanonicalAlerts(t *testing.T) {
+	sub := &fakeSubmitter{}
+	body := `[{"source":"AWS","severity":"Critical","unique_identifier":"a1"},{"source":"Azure","severity":"OK","unique_identifier":"z1"}]`
+	rec := do(t, newIngestServer(t, sub, nil), "POST", VendorRoutePrefix+"servicenow", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
+	}
+	if m := decode(t, rec); m["count"] != float64(2) {
+		t.Errorf("body = %v", m)
+	}
+	if sub.vendor != "servicenow" || len(sub.calls) != 1 || sub.calls[0][0].Source != "AWS" || sub.calls[0][1].UniqueIdentifier != "z1" {
+		t.Errorf("submitted %+v for %s", sub.calls, sub.vendor)
 	}
 }
 

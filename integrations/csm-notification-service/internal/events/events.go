@@ -102,6 +102,10 @@ const (
 	// (internal/entity.RecordOnboardingStep). Keyed by the Salesforce
 	// membership Id — see ProjectContactInvitedPayload.
 	TypeProjectContactInvited Type = "project_contact.invited"
+
+	// TypeProjectContactRegistered is published by entity-service when a
+	// membership moves into REGISTERED; dispatch sends the Welcome email.
+	TypeProjectContactRegistered Type = "project_contact.registered"
 )
 
 // KnownTypes lists every Type this service accepts, in the order they're
@@ -111,7 +115,7 @@ var KnownTypes = []Type{
 	TypeCaseCreated, TypeCommentAdded, TypeStatusChanged, TypeCaseAssigned, TypeCaseAcknowledged, TypeSeverityChanged, TypeIncidentCreated,
 	TypeSLATierReached, TypeCaseBillableStatusChanged,
 	TypeCRApprovalRequested, TypeCRPlanDateNotice,
-	TypeProjectContactInvited,
+	TypeProjectContactInvited, TypeProjectContactRegistered,
 }
 
 // Envelope is the wire shape of every record on the event bus: Payload's
@@ -473,4 +477,18 @@ type ProjectContactInvitedPayload struct {
 	// nothing about whether the account was just created — see
 	// dispatch.handleProjectContactInvited.
 	IsResend bool `json:"isResend,omitempty"`
+}
+
+// ProjectContactRegisteredPayload is TypeProjectContactRegistered's payload.
+// Mirrors entity-service's copy exactly (decoded with DisallowUnknownFields).
+type ProjectContactRegisteredPayload struct {
+	MembershipSfID    string `json:"membershipSfId"`
+	ContactSfID       string `json:"contactSfId"`
+	Email             string `json:"email"`
+	GivenName         string `json:"givenName"`
+	FamilyName        string `json:"familyName"`
+	ProjectName       string `json:"projectName"`
+	ProjectKey        string `json:"projectKey"`
+	IsIntegrationUser bool   `json:"isIntegrationUser,omitempty"`
+	EventModifiedOn   string `json:"eventModifiedOn,omitempty"`
 }

@@ -367,7 +367,7 @@ type deployedProductRepo struct {
 
 // NewDeployedProductRepository constructs a DeployedProductRepository whose
 // every query runs under the caller identity on ctx (deployed_product has
-// row-level security, migration 0172).
+// row-level security, migration 0175).
 func NewDeployedProductRepository(db *Scoped) DeployedProductRepository {
 	return &deployedProductRepo{db: db}
 }
@@ -393,12 +393,20 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 		argIdx++
 	}
 
-	// TODO(phase 2): req.ProductCategories is not applied here. The deployed_product
-	// schema has no category column today, so deployedProductService rejects any
-	// non-empty ProductCategories before this method is ever called (see
-	// deployed_product_service.go) rather than silently ignoring it. Filter it in here
-	// once the Postgres cohort's product-category modeling lands, and drop that
-	// rejection at the same time.
+	// deployed_product.product_category (deployed_product_category_enum:
+	// PDP/MS/PS/CL/PC) is already selected below -- the request's own
+	// lowercase values (SearchDeployedProductsRequest.ProductCategories'
+	// doc comment: e.g. "pdp") are upper-cased before the enum cast, same
+	// convention every other enum-array filter in this codebase uses.
+	if len(req.ProductCategories) > 0 {
+		categories := make([]string, len(req.ProductCategories))
+		for i, c := range req.ProductCategories {
+			categories[i] = strings.ToUpper(c)
+		}
+		where += fmt.Sprintf(" AND dp.product_category = ANY($%d::text[]::deployed_product_category_enum[])", argIdx)
+		filterArgs = append(filterArgs, categories)
+		argIdx++
+	}
 
 	countQuery := "SELECT COUNT(*) FROM deployed_product dp " + where
 

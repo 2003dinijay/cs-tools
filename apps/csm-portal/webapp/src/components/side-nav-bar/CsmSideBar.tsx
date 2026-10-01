@@ -109,15 +109,14 @@ function pickActiveId(pathname: string): string {
 
 /**
  * Active id for the Sales/SA view's flat nav (see the "sales-sa" branch
- * below): the matched `spl.*` node, or "spl.accounts" (that view's own
- * landing page — see RootLanding in App.tsx) for any route this nav has no
- * entry for, e.g. /spl/projects/:id/sla-report/:sysId or the bare "/"
- * redirect. Cases (a still-unmerged sibling PR) would otherwise leave the
- * rail with nothing highlighted.
+ * below): the matched `spl.*` node, or "spl.cases" (that view's own landing
+ * page — see RootLanding in App.tsx) for any route this nav has no entry
+ * for, e.g. /spl/projects/:id/sla-report/:sysId or the bare "/" redirect,
+ * which would otherwise leave the rail with nothing highlighted.
  */
 function pickSplActiveId(pathname: string): string {
   const match = navNodeMatchForPath(pathname);
-  return match?.node.id.startsWith("spl.") ? match.node.id : "spl.accounts";
+  return match?.node.id.startsWith("spl.") ? match.node.id : "spl.cases";
 }
 
 export default function CsmSideBar({

@@ -953,6 +953,9 @@ const (
 	OnboardingStepDatabase     OnboardingStepName = "DATABASE"
 	OnboardingStepEmail        OnboardingStepName = "EMAIL"
 	OnboardingStepRegistration OnboardingStepName = "REGISTRATION"
+	// OnboardingStepWelcomeEmail is the Welcome email csm-notification-service
+	// sends after registration.
+	OnboardingStepWelcomeEmail OnboardingStepName = "WELCOME_EMAIL"
 )
 
 // OnboardingStepStatus is the onboarding_step.status enum.
@@ -4552,7 +4555,9 @@ type ChangeRequestApprover struct {
 	ID          string  `json:"id"`
 	Name        string  `json:"name"`
 	Status      string  `json:"status"`
+	CreatedOn   *string `json:"createdOn"`
 	RespondedOn *string `json:"respondedOn"`
+	Comments    *string `json:"comments"`
 }
 
 // ChangeRequestApproval represents a single approval stage (e.g. Assess, Authorize,

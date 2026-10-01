@@ -66,7 +66,7 @@ type instanceRepo struct {
 
 // NewInstanceRepository constructs an InstanceRepository whose queries run under
 // the caller identity on ctx (it joins deployment and deployed_product, which
-// have row-level security, migration 0172).
+// have row-level security, migration 0175).
 func NewInstanceRepository(db *Scoped) InstanceRepository {
 	return &instanceRepo{db: db}
 }

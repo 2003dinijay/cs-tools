@@ -876,12 +876,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// sr_category/catalog_item/catalog_item_category/catalog_variable/
 	// sr_category_routing_rule (migrations 000067-000071) back the service
 	// request catalog on the Postgres data source, so these routes are
-	// registered for both data sources.
+	// registered for both data sources. Under dual-write, Postgres is not
+	// trusted for reads here either -- see catalogService.snMirror's own
+	// doc comment for why (deployed_product/routing-rule data was never
+	// backfilled from ServiceNow, same gap as deployments/deployed-products/
+	// instances).
 	catalogRepo := repository.NewCatalogRepository(repository.NewScoped(db))
 	var activeCatalogSvc service.CatalogService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeCatalogSvc = service.NewServiceNowCatalogService(serviceNowIntegrationServiceClient)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		snCatalogMirrorSvc := service.NewServiceNowCatalogService(serviceNowIntegrationServiceClient)
+		activeCatalogSvc = service.NewCatalogServiceWithSNFallback(catalogRepo, snCatalogMirrorSvc)
+	default:
 		activeCatalogSvc = service.NewCatalogService(catalogRepo)
 	}
 	catalogHandler := handler.NewCatalogHandler(activeCatalogSvc)
@@ -1007,6 +1015,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		activeConversationSvc = service.NewConversationService(conversationRepo)
 	}
 	conversationHandler := handler.NewConversationHandler(activeConversationSvc)
+
+	var outageNotificationHandler *handler.OutageNotificationHandler
+	if cfg.HasDatabase() {
+		outageNotificationHandler = handler.NewOutageNotificationHandler(
+			service.NewOutageNotificationService(
+				repository.NewOutageNotificationRepository(db), accessSvc))
+	}
 
 	var outageHandler *handler.OutageHandler
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -1435,6 +1450,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /incidents/aggregate", internalOnly(accessSvc, incidentHandler.AggregateIncidents))
 	mux.HandleFunc("POST /incidents/{id}/activities/search", internalOnly(accessSvc, incidentHandler.SearchIncidentActivities))
 	mux.HandleFunc("POST /incidents/{id}/specialist-handoffs", internalOnly(accessSvc, incidentHandler.HandOffIncidentToSpecialist))
+
+	// Postgres-backed, and deliberately separate from outageHandler above:
+	// that one is the ServiceNow-backed outage entity API, this is only the
+	// internal-stakeholder notification sweep. They will converge when the
+	// outage entity itself moves to Postgres.
+	if outageNotificationHandler != nil {
+		mux.HandleFunc("POST /outage-notifications/sweep", outageNotificationHandler.SweepOutageNotifications)
+		mux.HandleFunc("GET /outages/{id}/notification-state", outageNotificationHandler.GetOutageNotificationState)
+	}
 
 	if outageHandler != nil {
 		mux.HandleFunc("POST /outages", outageHandler.CreateOutage)

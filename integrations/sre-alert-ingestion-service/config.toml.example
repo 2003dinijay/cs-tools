@@ -32,9 +32,12 @@ idle_timeout = "60s"
 max_body_bytes = 1048576
 
 [auth]
-# Vendor-route auth hook. "integration_users" verifies every request against alerts-core's
-# alertintegration.integration_users table (see that repo's cmd/user/PROVISION.md).
-mode = "integration_users"
+# Vendor-route auth hook:
+#   "none"   accept everything; the routes are public.
+#   "audit"  check keys and log mismatches, reject nothing. Use while reconfiguring
+#            vendors, so enabling auth cannot drop alerts.
+#   "apikey" require a key from WEBHOOK_API_KEYS. Startup fails if a vendor has none.
+mode = "none"
 
 [allocator]
 # Alerts waiting to be claimed; when full, new webhooks get 503 immediately.
@@ -70,7 +73,7 @@ connect_base_delay = "2s"
 connect_timeout = "10s"
 
 [wake]
-# Timeout for the fire-and-forget POST /alert to alerts-core.
+# Timeout for the fire-and-forget POST /alertz to alerts-core.
 timeout = "2s"
 
 [reject]
