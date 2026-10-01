@@ -395,10 +395,17 @@ E.164) or `INCIDENT_ESCALATION_TEST_CALL_TO` (every call to one number) fill
 them through `TeamScheduleResolver.WithPhoneBook`. A chat-only ladder needs
 neither.
 
-**Not on this branch**: the alert service's side of the handoff. The upstream
-`sre-alert-ingestion-service` does not create CSM incidents at all today. When
-it does, an incident it raises with a monitoring contact type climbs the SRE
-ladder through the `monitoring` rule even with no assignment group.
+**Where alert-born incidents come from, and the gap.** `sre-alert-core-service`
+creates the CSM incident (`engine.deliverAndPersist` -> `notify.NotifyCSM` ->
+`POST /incidents` on csm-integration-service, which passes the body through
+to entity-service), and entity-service publishes `incident.created` from
+`publishIncidentCreatedEvent` on the `servicenow` and dual-write data sources
+(plain `postgres` returns 503 and publishes nothing, which is why the local
+end-to-end tools publish the event themselves). Its create request sets
+neither `assignmentGroupId` nor `contactType`, so unless ServiceNow fills the
+group in itself, an alert-born incident matches no SRE routing rule and gets
+no ladder. Setting both from the alert's `Source` and its service's support
+group is a separate change in `sre-alert-core-service`, not part of this one.
 
 **Wiring** (`cmd/server/main.go`): inside the Redis block, started only when
 the ladder has somebody to resolve rungs from (`escalationStartProblem`): the
