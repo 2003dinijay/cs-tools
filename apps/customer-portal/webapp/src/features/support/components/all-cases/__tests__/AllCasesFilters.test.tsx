@@ -100,4 +100,62 @@ describe("ListFilters", () => {
     // Filter key for Status is 'statusIds' (multi-select — value is an array)
     expect(mockOnFilterChange).toHaveBeenCalledWith("statusIds", expect.arrayContaining(["1"]));
   });
+
+  // Regression test: entity-service's "user"/contact rows carry no
+  // email-uniqueness constraint, so the same real person can reach this
+  // filter twice with their email differently cased or spaced between the
+  // two rows -- reported live as the same name appearing more than once in
+  // the "Created By" dropdown.
+  it("de-duplicates Created By options whose email differs only by case or whitespace", async () => {
+    const contacts = [
+      {
+        id: "1",
+        email: "jane.doe@wso2.com",
+        firstName: "Jane",
+        lastName: "Doe",
+        isCsAdmin: false,
+        isCsIntegrationUser: false,
+        isSecurityContact: false,
+        membershipStatus: "active",
+      },
+      {
+        id: "2",
+        email: "Jane.Doe@wso2.com ",
+        firstName: "Jane",
+        lastName: "Doe",
+        isCsAdmin: false,
+        isCsIntegrationUser: false,
+        isSecurityContact: false,
+        membershipStatus: "active",
+      },
+      {
+        id: "3",
+        email: "john.smith@wso2.com",
+        firstName: "John",
+        lastName: "Smith",
+        isCsAdmin: false,
+        isCsIntegrationUser: false,
+        isSecurityContact: false,
+        membershipStatus: "active",
+      },
+    ];
+
+    render(
+      <ThemeProvider theme={theme}>
+        <ListFilters
+          filters={defaultFilters}
+          filterMetadata={mockCaseMetadata}
+          contacts={contacts}
+          onFilterChange={mockOnFilterChange}
+        />
+      </ThemeProvider>,
+    );
+
+    const createdBySelect = screen.getByRole("combobox", { name: /Created By/i });
+    fireEvent.mouseDown(createdBySelect);
+
+    const janeOptions = await screen.findAllByText("Jane Doe");
+    expect(janeOptions).toHaveLength(1);
+    expect(screen.getAllByText("John Smith")).toHaveLength(1);
+  });
 });

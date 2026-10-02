@@ -144,12 +144,26 @@ export default function ListFilters({
             );
           }
           if (isCreatedByFilter) {
-            return (
-              contacts?.map((contact) => ({
-                label: `${contact.firstName} ${contact.lastName}`.trim() || contact.email,
-                value: contact.email,
-              })) ?? []
-            );
+            // De-duplicated by normalized email (trim + lower-case), not raw
+            // string equality: entity-service's own user/contact rows carry
+            // no email-uniqueness constraint, so the same real person can
+            // reach this list twice with their email differently cased or
+            // spaced between the two rows -- reported live as the same name
+            // appearing more than once in this dropdown. First occurrence
+            // wins; the dropdown's own value is still the real, unmodified
+            // email of that first row.
+            const seen = new Set<string>();
+            const deduped: ProjectContact[] = [];
+            for (const contact of contacts ?? []) {
+              const key = contact.email.trim().toLowerCase();
+              if (!key || seen.has(key)) continue;
+              seen.add(key);
+              deduped.push(contact);
+            }
+            return deduped.map((contact) => ({
+              label: `${contact.firstName} ${contact.lastName}`.trim() || contact.email,
+              value: contact.email,
+            }));
           }
           if (!def.metadataKey) return [];
           const metadataOptions = filterMetadata?.[def.metadataKey];
