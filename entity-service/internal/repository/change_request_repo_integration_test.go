@@ -711,6 +711,12 @@ func TestChangeRequestIntegration_PatchAssessWithTeamAlreadyOnRecordSucceeds(t *
 	repo := repository.NewChangeRequestRepository(scoped)
 	seedChangeRequestForAssessGateTest(t, scoped)
 	seedAssessGateGroup(t, pool)
+	// A non-empty group: the Assess provisioning path now rejects an empty
+	// one outright (see TestChangeRequestIntegration_PatchAssessRejectsEmptyGroup),
+	// so this test -- about the team-already-on-record path specifically --
+	// needs a real member for its own second PatchChangeRequest call to
+	// reach "succeeds" at all.
+	seedTeamMembersForAssessGateTest(t, pool, changeRequestAssessGateMemberUserID)
 	t.Cleanup(func() {
 		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
 	})
@@ -863,5 +869,120 @@ func TestChangeRequestIntegration_PatchAssessDoesNotReprovisionWhenStageExists(t
 	}
 	if approverCount != 2 {
 		t.Fatalf("approval_stage_approver rows after two assess patches = %d, want exactly 2 (not re-seeded)", approverCount)
+	}
+}
+
+// TestChangeRequestIntegration_PatchAssessRejectsEmptyGroup is the
+// regression guard for a CodeRabbit-caught gap: the approval_stage used to
+// be created before team_member was ever queried, so an assigned team with
+// no members still committed an empty, un-approvable stage -- the change
+// request would be stuck in Assess forever, since "no approval_stage exists
+// yet" is exactly the condition that gates (re-)provisioning. A team with no
+// members must instead reject the whole PATCH with a ValidationError and
+// leave no approval_stage behind at all.
+func TestChangeRequestIntegration_PatchAssessRejectsEmptyGroup(t *testing.T) {
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssessGateTest(t, scoped)
+	seedAssessGateGroup(t, pool)
+	// Deliberately no seedTeamMembersForAssessGateTest call -- the group
+	// exists (so assignedTeamId itself is valid) but has zero members.
+	t.Cleanup(func() {
+		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
+	})
+
+	teamID := changeRequestAssessGateGroupID
+	assess := domain.ChangeRequestStateAssess
+	_, err = repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
+		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &assess}, "cr-assess-gate-test")
+	if err == nil {
+		t.Fatal("PatchChangeRequest(state=assess) with an empty assigned team succeeded, want a ValidationError")
+	}
+	var valErr *apierror.ValidationError
+	if !errors.As(err, &valErr) {
+		t.Fatalf("PatchChangeRequest(state=assess) with an empty assigned team error = %v (%T), want *apierror.ValidationError", err, err)
+	}
+
+	var gotState string
+	if scanErr := scoped.QueryRow(sys,
+		`SELECT state::TEXT FROM change_request WHERE id = $1`, changeRequestAssessGateTestID).Scan(&gotState); scanErr != nil {
+		t.Fatalf("read back state: %v", scanErr)
+	}
+	if gotState != "NEW" {
+		t.Fatalf("state after a rejected assess patch = %q, want unchanged \"NEW\"", gotState)
+	}
+
+	var stageCount int
+	if scanErr := scoped.QueryRow(sys,
+		`SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID).Scan(&stageCount); scanErr != nil {
+		t.Fatalf("count approval_stage: %v", scanErr)
+	}
+	if stageCount != 0 {
+		t.Fatalf("approval_stage rows after a rejected assess patch = %d, want 0 (no empty stage left behind)", stageCount)
+	}
+}
+
+// TestChangeRequestIntegration_PatchAssessDeduplicatesGroupMembers is the
+// regression guard for a second CodeRabbit catch: team_member has no unique
+// constraint on (user_id, group_id), so a duplicated membership row must
+// still provision exactly one requested approval_stage_approver per person,
+// never two.
+func TestChangeRequestIntegration_PatchAssessDeduplicatesGroupMembers(t *testing.T) {
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssessGateTest(t, scoped)
+	seedAssessGateGroup(t, pool)
+	seedTeamMembersForAssessGateTest(t, pool, changeRequestAssessGateMemberUserID)
+	t.Cleanup(func() {
+		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
+	})
+
+	// A second team_member row for the SAME user against the SAME group --
+	// seedTeamMembersForAssessGateTest's own cleanup (DELETE ... WHERE
+	// user_id = $1) already covers this row too, since it shares the user id.
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id)
+		 VALUES (gen_random_uuid(), now(), now(), 'cr-assess-gate-test', 'cr-assess-gate-test', $1::uuid, $2, $3::uuid)`,
+		seededGroupID, changeRequestAssessGateMemberUserID, changeRequestAssessGateGroupID); err != nil {
+		t.Fatalf("seed duplicate team_member row: %v", err)
+	}
+
+	teamID := changeRequestAssessGateGroupID
+	assess := domain.ChangeRequestStateAssess
+	if _, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
+		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &assess}, "cr-assess-gate-test"); err != nil {
+		t.Fatalf("PatchChangeRequest(assignedTeamId=%s, state=assess): %v", teamID, err)
+	}
+
+	var approverCount int
+	if scanErr := scoped.QueryRow(sys,
+		`SELECT COUNT(*) FROM approval_stage_approver asa JOIN approval_stage ast ON ast.id = asa.stage_id WHERE ast.work_item_id = $1`,
+		changeRequestAssessGateTestID).Scan(&approverCount); scanErr != nil {
+		t.Fatalf("count approval_stage_approver: %v", scanErr)
+	}
+	if approverCount != 1 {
+		t.Fatalf("approval_stage_approver rows for a user with a duplicated team_member row = %d, want exactly 1", approverCount)
 	}
 }

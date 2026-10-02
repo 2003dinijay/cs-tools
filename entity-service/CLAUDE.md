@@ -2532,6 +2532,26 @@ duplicate the stage or re-seed approvers over whatever
 everything about an existing stage from the moment this provisioning step
 creates it.
 
+**Two correctness issues caught on CodeRabbit review of this same addition,
+both fixed here:**
+
+1. **An assigned team with no members used to still create an empty stage.**
+   The original ordering created `approval_stage` first, then queried
+   `team_member` — if that query came back empty, the transaction still
+   committed a stage with zero approvers, and since "no `approval_stage`
+   exists yet" is exactly the condition this whole block gates on, a later
+   `{state: "assess"}` PATCH would never retry provisioning either: the
+   change request was left stuck in Assess with an approval nobody could
+   ever decide. Fixed by querying and validating `team_member` **before**
+   creating the stage: an empty result now rejects the whole PATCH with a
+   `ValidationError` ("the assigned team has no members to provision as
+   Assess approvers") and leaves no `approval_stage` row behind at all,
+   rather than committing a dead-end one.
+2. **`team_member` has no unique constraint on `(user_id, group_id)`.** A
+   duplicated membership row would have queued one `approval_stage_approver`
+   INSERT per duplicate, seeding two `requested` rows for the same person.
+   The query is now `SELECT DISTINCT user_id`, not `SELECT user_id`.
+
 **`team_member.group_id` is the real column for this, and it is distinct
 from `team_member.team_id`.** `team_member` carries both: `team_id`
 (`NOT NULL`) is the hand-curated internal team registry's own FK (`team`,

@@ -1260,15 +1260,6 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 				return "", fmt.Errorf("patch change request: escalate identity for approver provisioning: %w", err)
 			}
 
-			var stageID string
-			if err := tx.QueryRow(ctx,
-				`INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id)
-				 VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1, $2, $3::uuid)
-				 RETURNING id`,
-				actorEmail, id, *effectiveAssignedTeamID).Scan(&stageID); err != nil {
-				return "", fmt.Errorf("patch change request: create approval stage: %w", err)
-			}
-
 			// team_member.group_id (distinct from its own team_id, the
 			// hand-curated internal registry's own FK) is exactly what
 			// identifies membership of a "group" row -- the same table
@@ -1278,8 +1269,19 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			// group-derived column in this schema. team_member carries no
 			// RLS of its own (confirmed against rlsProtectedTables), so the
 			// identity escalation above makes no difference to this read --
-			// it's here only for the two INSERTs around it.
-			memberRows, err := tx.Query(ctx, `SELECT user_id FROM team_member WHERE group_id = $1::uuid`, *effectiveAssignedTeamID)
+			// it's here only for the stage/approver INSERTs below.
+			//
+			// Queried -- and validated as non-empty -- BEFORE the stage is
+			// created (CodeRabbit catch): creating an empty stage first and
+			// finding no members after would still commit the empty stage,
+			// since "no approval_stage exists yet" is exactly what gates
+			// provisioning -- leaving the change request stuck in Assess
+			// with an approval_stage nobody can ever decide, since a later
+			// PATCH would skip provisioning entirely. DISTINCT guards
+			// against team_member having no unique constraint on
+			// (user_id, group_id); a duplicate row must not seed two
+			// requested approver rows for the same person.
+			memberRows, err := tx.Query(ctx, `SELECT DISTINCT user_id FROM team_member WHERE group_id = $1::uuid`, *effectiveAssignedTeamID)
 			if err != nil {
 				return "", fmt.Errorf("patch change request: list assignment group members: %w", err)
 			}
@@ -1295,6 +1297,18 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			memberRows.Close()
 			if err := memberRows.Err(); err != nil {
 				return "", fmt.Errorf("patch change request: assignment group members: %w", err)
+			}
+			if len(memberIDs) == 0 {
+				return "", &apierror.ValidationError{Msg: "the assigned team has no members to provision as Assess approvers"}
+			}
+
+			var stageID string
+			if err := tx.QueryRow(ctx,
+				`INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id)
+				 VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1, $2, $3::uuid)
+				 RETURNING id`,
+				actorEmail, id, *effectiveAssignedTeamID).Scan(&stageID); err != nil {
+				return "", fmt.Errorf("patch change request: create approval stage: %w", err)
 			}
 
 			for _, uid := range memberIDs {
