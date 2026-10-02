@@ -106,11 +106,15 @@ describe("ListFilters", () => {
   // filter twice with their email differently cased or spaced between the
   // two rows -- reported live as the same name appearing more than once in
   // the "Created By" dropdown.
-  it("de-duplicates Created By options whose email differs only by case or whitespace", async () => {
+  it("de-duplicates Created By options whose email differs only by case or whitespace, and submits the trimmed value", async () => {
     const contacts = [
+      // The "messy" (trailing-space, differently-cased) row is listed FIRST
+      // on purpose: it's the one that must NOT win the dedup, since its raw
+      // email would otherwise become the submitted filter value and the
+      // backend matches createdBy by exact string equality.
       {
-        id: "1",
-        email: "jane.doe@wso2.com",
+        id: "2",
+        email: "Jane.Doe@wso2.com ",
         firstName: "Jane",
         lastName: "Doe",
         isCsAdmin: false,
@@ -119,8 +123,8 @@ describe("ListFilters", () => {
         membershipStatus: "active",
       },
       {
-        id: "2",
-        email: "Jane.Doe@wso2.com ",
+        id: "1",
+        email: "jane.doe@wso2.com",
         firstName: "Jane",
         lastName: "Doe",
         isCsAdmin: false,
@@ -157,5 +161,15 @@ describe("ListFilters", () => {
     const janeOptions = await screen.findAllByText("Jane Doe");
     expect(janeOptions).toHaveLength(1);
     expect(screen.getAllByText("John Smith")).toHaveLength(1);
+
+    fireEvent.click(janeOptions[0]);
+
+    // Only whitespace is trimmed, not case -- the fix deliberately doesn't
+    // guess at normalizing case, since the real stored value's casing isn't
+    // confirmed to always be lowercase. The one thing that must never
+    // happen: submitting the untrimmed value with its trailing space.
+    const [, submittedValues] = mockOnFilterChange.mock.calls.at(-1)!;
+    expect(submittedValues).not.toContain("Jane.Doe@wso2.com ");
+    expect(submittedValues).toContain("Jane.Doe@wso2.com");
   });
 });

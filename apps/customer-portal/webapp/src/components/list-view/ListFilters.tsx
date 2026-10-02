@@ -162,7 +162,13 @@ export default function ListFilters({
             }
             return deduped.map((contact) => ({
               label: `${contact.firstName} ${contact.lastName}`.trim() || contact.email,
-              value: contact.email,
+              // Trimmed: the surviving row after dedup above isn't
+              // necessarily the "clean" one if a messy-email duplicate was
+              // seen first, and the backend's createdBy filter matches
+              // wi.created_by by exact string equality (no case/whitespace
+              // normalization there) -- an un-trimmed value here would
+              // silently match nothing.
+              value: contact.email.trim(),
             }));
           }
           if (!def.metadataKey) return [];
