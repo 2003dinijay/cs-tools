@@ -25,7 +25,7 @@
 // instead of Quill for visual consistency with the rest of this codebase
 // (e.g. CsmCaseCommentInput). It only existed as dead code here because no
 // SPL-side role used to grant canAddWorkNotes -- see PermissionProvider.tsx.
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useParams } from "react-router";
 import DOMPurify from "dompurify";
 import {
@@ -79,6 +79,13 @@ export default function CaseDetailPage() {
   const { notice, showSuccess, showWarning, showError, clear } = useCaseNotice();
   const { canAddWorkNotes } = usePermissions();
   const postWorkNote = usePostWorkNote(caseId);
+  // postWorkNote.isPending only reflects in a render once TanStack Query's
+  // notifyManager flushes it via setTimeout(0) -- not synchronously with the
+  // click that triggered it (unlike plain useState, which React 18 flushes
+  // before the next discrete event). A second rapid click on Post can still
+  // see isPending === false and double-submit. This ref is checked/set
+  // synchronously, so it closes that gap regardless of render timing.
+  const workNoteSubmissionInFlight = useRef(false);
 
   const [composerOpen, setComposerOpen] = useState(false);
   const [worknoteHtml, setWorknoteHtml] = useState("");
@@ -89,19 +96,23 @@ export default function CaseDetailPage() {
   const isStateClosed = data?.state === CASE_CLOSED_STATE;
 
   const submitWorkNote = () => {
+    if (workNoteSubmissionInFlight.current) return;
     if (isEmptyHtml(worknoteHtml)) {
       showWarning("A work note cannot be empty.");
       return;
     }
     const sanitized = DOMPurify.sanitize(worknoteHtml);
+    workNoteSubmissionInFlight.current = true;
     postWorkNote.mutate(sanitized, {
       onSuccess: () => {
+        workNoteSubmissionInFlight.current = false;
         showSuccess("Work note added successfully.");
         setWorknoteHtml("");
         setResetTrigger((t) => t + 1);
         setComposerOpen(false);
       },
       onError: () => {
+        workNoteSubmissionInFlight.current = false;
         showError("Failed to add work note. Please try again.");
       },
     });
