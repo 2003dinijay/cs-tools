@@ -222,7 +222,7 @@ func TestAnnouncementVisibilityIntegration(t *testing.T) {
 		wantSecurityViaTag bool
 	}{
 		{"General Access", scoped("av-general@test.local"), true, false, false},
-		{"Security Only", scoped("av-secure-only@test.local"), false, true, true},
+		{"Security Only", scoped("av-secure-only@test.local"), true, true, true},
 		{"Full Access", scoped("av-full-access@test.local"), true, true, true},
 		{"Lead User Group", scoped("av-lead@test.local"), true, false, false},
 		{"Business Contact Group alone", scoped("av-biz-contact-alone@test.local"), false, false, false},
@@ -269,7 +269,7 @@ func TestAnnouncementVisibilitySearchCasesIntegration(t *testing.T) {
 		wantCount int
 	}{
 		{"General Access sees 1 (general only)", repository.SearchScope{ProjectIDs: []string{avProjectID}, ViewerEmail: "av-general@test.local"}, 1},
-		{"Security Only sees 2 (security + tag-only security)", repository.SearchScope{ProjectIDs: []string{avProjectID}, ViewerEmail: "av-secure-only@test.local"}, 2},
+		{"Security Only sees 3 (all: general + security + tag-only security)", repository.SearchScope{ProjectIDs: []string{avProjectID}, ViewerEmail: "av-secure-only@test.local"}, 3},
 		{"Full Access sees 3 (all)", repository.SearchScope{ProjectIDs: []string{avProjectID}, ViewerEmail: "av-full-access@test.local"}, 3},
 		{"Business Contact alone sees 0", repository.SearchScope{ProjectIDs: []string{avProjectID}, ViewerEmail: "av-biz-contact-alone@test.local"}, 0},
 		{"Internal caller sees 3 (all)", repository.SearchScope{Unrestricted: true}, 3},
@@ -522,7 +522,7 @@ func TestAnnouncementVisibilityChildRowsIntegration(t *testing.T) {
 		{"General Access, general announcement", member("av-general@test.local"), avGeneralID, true},
 		{"General Access, security announcement", member("av-general@test.local"), avSecurityID, false},
 		{"Security Only, security announcement", member("av-secure-only@test.local"), avSecurityID, true},
-		{"Security Only, general announcement", member("av-secure-only@test.local"), avGeneralID, false},
+		{"Security Only, general announcement", member("av-secure-only@test.local"), avGeneralID, true},
 		{"Internal, security announcement", repository.SearchScope{Unrestricted: true}, avSecurityID, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
