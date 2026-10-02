@@ -2404,16 +2404,23 @@ type CaseFeedback struct {
 
 // AttachmentDetails is entity-service's response for GET /attachments/{id}.
 type AttachmentDetails struct {
-	ID          string    `json:"id"`
-	ReferenceID string    `json:"referenceId"`
-	Name        string    `json:"name"`
-	Type        string    `json:"type"`
-	SizeBytes   int       `json:"sizeBytes"`
-	Description *string   `json:"description"`
-	CreatedBy   string    `json:"createdBy"`
-	CreatedOn   time.Time `json:"createdOn"`
-	DownloadURL *string   `json:"downloadUrl"`
-	PreviewURL  *string   `json:"previewUrl"`
+	ID          string `json:"id"`
+	ReferenceID string `json:"referenceId"`
+	// ReferenceType identifies which entity type ReferenceID points at. Nil
+	// when entity-service's own lookup doesn't report one -- a caller
+	// authorizing access per referenced resource must treat a nil value as
+	// unknown and fail closed (see entity-service's own
+	// domain.AttachmentDetails.ReferenceType doc comment, and
+	// authorizeAttachmentAccess in internal/handler/attachments.go).
+	ReferenceType *ReferenceType `json:"referenceType"`
+	Name          string         `json:"name"`
+	Type          string         `json:"type"`
+	SizeBytes     int            `json:"sizeBytes"`
+	Description   *string        `json:"description"`
+	CreatedBy     string         `json:"createdBy"`
+	CreatedOn     time.Time      `json:"createdOn"`
+	DownloadURL   *string        `json:"downloadUrl"`
+	PreviewURL    *string        `json:"previewUrl"`
 	// Content is nil for a CSM-native (Postgres) data source attachment:
 	// entity-service holds no bytes for it, only its storage key. Always
 	// non-nil for ServiceNow-sourced attachments.
