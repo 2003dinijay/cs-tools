@@ -32,6 +32,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/validate"
 )
 
 type caseService struct {
@@ -497,9 +498,22 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 		}
 		req.CreatedBy = user.ID
 	}
+	// Same watcher eligibility check as createCaseSNFirst, before anything is
+	// written. (It re-reads the caller via resolveActor; that is one extra
+	// lookup, and only when a watch list was actually submitted.)
+	watcherIDs, err := s.validateCreateWatchList(ctx, &req)
+	if err != nil {
+		return domain.CreateCaseResponse{}, err
+	}
 	c, err := s.repo.CreateCase(ctx, req)
 	if err != nil {
 		return domain.CreateCaseResponse{}, err
+	}
+	if len(watcherIDs) > 0 {
+		// updated_by on the watcher write is the caller's email, taken from
+		// the token validateCreateWatchList already accepted.
+		callerEmail, _ := emailFromJWT(middleware.UserIDTokenFromContext(ctx))
+		s.addRequestedWatchers(ctx, c.ID, callerEmail, watcherIDs)
 	}
 	state := ""
 	if c.State != nil {
@@ -554,6 +568,16 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 // which is exactly why this pilot could not have unblocked CreateCase any
 // other way.
 func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+	// Validated before the first upstream call, so a rejected watch list
+	// creates nothing anywhere. On success req.WatchList is rewritten to the
+	// watchers' emails (the shape the upstream create declares, which keeps it
+	// from resolving ids with the caller's own token) and watcherIDs holds
+	// their user ids for the watcher rows below.
+	watcherIDs, err := s.validateCreateWatchList(ctx, &req)
+	if err != nil {
+		return domain.CreateCaseResponse{}, err
+	}
+
 	snResp, err := s.snMirror.CreateCase(ctx, req)
 	if err != nil {
 		// ServiceNow never accepted the case — nothing is written to
@@ -627,7 +651,7 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	// via resolveCaseDefaultWatcherEmails), so a later stakeholder
 	// reassignment is reflected on the very next notification rather than
 	// staying stuck on whoever held the role at creation time.
-	s.addRequestedWatchers(ctx, c.ID, c.CreatedBy, req.WatchList)
+	s.addRequestedWatchers(ctx, c.ID, c.CreatedBy, watcherIDs)
 
 	// Only now — Postgres has confirmed the row this mode's reads actually
 	// depend on — is it safe to publish. See publishCaseCreatedEvent's doc
@@ -774,6 +798,188 @@ func (s *caseService) addRequestedWatchers(ctx context.Context, caseID, callerEm
 	}
 	if _, _, err := s.repo.SetCaseWatchList(ctx, caseID, requestedWatcherIDs, callerEmail); err != nil {
 		slog.ErrorContext(ctx, "create case: adding requested watchers failed", "caseId", caseID, "error", err)
+	}
+}
+
+// Page size for the project-contact scan in validateCreateWatchList.
+const watchListContactPageSize = 200
+
+// errInvalidCreateWatchList is deliberately generic: it must not reveal which
+// entry failed, because entries identify other people.
+const errInvalidCreateWatchList = "watchList contains a user who cannot be added as a watcher on this project"
+
+// validateCreateWatchList applies, once and before anything is created, the
+// same eligibility rule updateCaseWatchList applies to an edit, but in a fixed
+// number of queries rather than one per watcher:
+//
+//   - A REGISTERED contact of the case's project is always eligible (the same
+//     REGISTERED-only bar as validateWatchListProjectMembership).
+//   - An INTERNAL user who is not a contact is eligible only when the caller
+//     is itself an internal user. An external caller (a customer) may add
+//     registered project contacts and nothing else.
+//   - The caller is identified from the validated user token. A request with no
+//     token cannot be classified, so it is rejected as unauthenticated rather
+//     than given the permissive rule. A token whose user has no platform record
+//     is treated as external, the narrowest rule.
+//
+// Entries are all emails or all user ids (a mixed list is a validation error,
+// as before). Any entry that fails the rule rejects the whole request with a
+// message that does not echo it; a failed lookup fails the request too.
+//
+// On success req.WatchList is replaced with the accepted watchers' emails and
+// the return value is their user ids (entries with no linked user are omitted
+// from it), so neither the upstream create nor the watcher rows need a second
+// lookup. An empty list is returned untouched.
+func (s *caseService) validateCreateWatchList(ctx context.Context, req *domain.CreateCaseRequest) ([]string, error) {
+	values := req.WatchList
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	byID, err := classifyWatchList("watchList", values)
+	if err != nil {
+		return nil, err
+	}
+
+	actor, err := s.resolveActor(ctx)
+	var notFound *apierror.NotFoundError
+	switch {
+	case err == nil:
+	case errors.As(err, &notFound):
+		actor = domain.User{}
+	default:
+		return nil, err
+	}
+	callerIsInternal := actor.UserType == domain.UserTypeInternal
+
+	type watcher struct{ email, userID string }
+	contactsByKey := map[string]watcher{}
+	for offset := 0; ; offset += watchListContactPageSize {
+		rows, total, err := s.projectContactRepo.SearchProjectContacts(ctx, req.ProjectID, domain.SearchProjectContactsRequest{
+			Pagination: domain.Pagination{Limit: watchListContactPageSize, Offset: offset},
+		}, "")
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if row.RegistrationState != "REGISTERED" {
+				continue
+			}
+			w := watcher{email: row.Email}
+			if row.ResolvedEmail != nil && *row.ResolvedEmail != "" {
+				w.email = *row.ResolvedEmail
+			}
+			if row.ResolvedUserID != nil {
+				w.userID = *row.ResolvedUserID
+			}
+			contactsByKey[strings.ToLower(row.Email)] = w
+			if row.ResolvedEmail != nil {
+				contactsByKey[strings.ToLower(*row.ResolvedEmail)] = w
+			}
+			if w.userID != "" {
+				contactsByKey[strings.ToLower(w.userID)] = w
+			}
+		}
+		if len(rows) < watchListContactPageSize || offset+len(rows) >= total {
+			break
+		}
+	}
+
+	accepted := make(map[string]watcher, len(values))
+	var remainder []string
+	for _, v := range values {
+		key := strings.ToLower(v)
+		if w, ok := contactsByKey[key]; ok {
+			accepted[key] = w
+		} else {
+			remainder = append(remainder, v)
+		}
+	}
+
+	if len(remainder) > 0 {
+		if callerIsInternal {
+			filters := domain.SearchUsersFilters{}
+			lowered := make([]string, len(remainder))
+			for i, v := range remainder {
+				lowered[i] = strings.ToLower(v)
+			}
+			if byID {
+				filters.UserIDs = lowered
+			} else {
+				filters.Emails = lowered
+			}
+			users, _, err := s.userRepo.SearchUsers(ctx, domain.SearchUsersRequest{
+				Pagination: domain.Pagination{Limit: len(remainder), Offset: 0},
+				Filters:    filters,
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, u := range users {
+				if u.UserType != domain.UserTypeInternal || u.Email == "" {
+					continue
+				}
+				w := watcher{email: u.Email, userID: u.ID}
+				accepted[strings.ToLower(u.Email)] = w
+				accepted[strings.ToLower(u.ID)] = w
+			}
+		}
+		rejected := 0
+		for _, v := range remainder {
+			if _, ok := accepted[strings.ToLower(v)]; !ok {
+				rejected++
+			}
+		}
+		if rejected > 0 {
+			// Count only: entries identify people (CWE-532).
+			slog.WarnContext(ctx, "create case: watch list rejected, entries not eligible as watchers",
+				"requested", len(values), "rejected", rejected, "callerInternal", callerIsInternal)
+			return nil, &apierror.ValidationError{Msg: errInvalidCreateWatchList}
+		}
+	}
+
+	emails := make([]string, 0, len(values))
+	ids := make([]string, 0, len(values))
+	seenEmail := make(map[string]struct{}, len(values))
+	seenID := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		w := accepted[strings.ToLower(v)]
+		if _, dup := seenEmail[strings.ToLower(w.email)]; !dup {
+			seenEmail[strings.ToLower(w.email)] = struct{}{}
+			emails = append(emails, w.email)
+		}
+		if w.userID != "" {
+			if _, dup := seenID[w.userID]; !dup {
+				seenID[w.userID] = struct{}{}
+				ids = append(ids, w.userID)
+			}
+		}
+	}
+	req.WatchList = emails
+	return ids, nil
+}
+
+// classifyWatchList reports whether every entry is a user id (true) or every
+// entry is an email address (false). A mixed list, or an entry that is neither,
+// is a validation error that does not echo the entry.
+func classifyWatchList(field string, values []string) (allIDs bool, err error) {
+	allEmail, allUUID := true, true
+	for _, v := range values {
+		if !emailRE.MatchString(v) {
+			allEmail = false
+		}
+		if !validate.IsUUID(v) {
+			allUUID = false
+		}
+	}
+	switch {
+	case allUUID:
+		return true, nil
+	case allEmail:
+		return false, nil
+	}
+	return false, &apierror.ValidationError{
+		Msg: fmt.Sprintf("%s items must all be email addresses or all be user identifiers", field),
 	}
 }
 

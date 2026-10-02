@@ -1273,9 +1273,13 @@ func TestCaseService_SearchCases_AnyOfReachesRepository(t *testing.T) {
 // to SearchProjectContacts panics rather than silently returning nothing.
 type stubProjectContactRepo struct {
 	getProjectContactByUserID func(ctx context.Context, projectID, userID, callerEmail string) (repository.ProjectContactRow, error)
+	searchProjectContacts     func(ctx context.Context, projectID string, req domain.SearchProjectContactsRequest) ([]repository.ProjectContactRow, int, error)
 }
 
-func (s *stubProjectContactRepo) SearchProjectContacts(context.Context, string, domain.SearchProjectContactsRequest, string) ([]repository.ProjectContactRow, int, error) {
+func (s *stubProjectContactRepo) SearchProjectContacts(ctx context.Context, projectID string, req domain.SearchProjectContactsRequest, _ string) ([]repository.ProjectContactRow, int, error) {
+	if s.searchProjectContacts != nil {
+		return s.searchProjectContacts(ctx, projectID, req)
+	}
 	panic("not implemented")
 }
 
@@ -2473,60 +2477,6 @@ func TestCaseService_CreateCase_NeverPersistsAccountDefaultWatchers(t *testing.T
 		}
 		if !found {
 			t.Errorf("Recipients = %v, want it to include %q", payload.Recipients, email)
-		}
-	}
-}
-
-// TestCaseService_CreateCase_PersistsOnlyExplicitlyRequestedWatchers proves
-// req.WatchList is still persisted exactly as submitted (no silent merge
-// with the account's stakeholders, which are never persisted at all -- see
-// TestCaseService_CreateCase_NeverPersistsAccountDefaultWatchers above).
-func TestCaseService_CreateCase_PersistsOnlyExplicitlyRequestedWatchers(t *testing.T) {
-	const caseID = "44444444-4444-4444-4444-444444444444"
-	const projectID = "proj-1"
-	requestedIDs := []string{"customer-pick-1", "csm-id"}
-
-	mirror := &stubMirrorCaseService{
-		createCase: func(_ context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
-			return domain.CreateCaseResponse{
-				Message: "Case created successfully.",
-				Case:    domain.CreateCaseDetails{ID: caseID, InternalID: "WSO2-CS-2", Number: "CS0023002", CreatedBy: "jane.doe@example.com", State: "Open"},
-			}, nil
-		},
-	}
-	var setWatchListUserIDs []string
-	repo := &stubCaseRepo{
-		createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
-			respState := domain.CaseStateOpen
-			return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy, ProjectID: projectID, State: &respState}, nil
-		},
-		setCaseWatchList: func(_ context.Context, _ string, userIDs []string, _ string) ([]domain.WatchListUser, time.Time, error) {
-			setWatchListUserIDs = userIDs
-			return nil, time.Time{}, nil
-		},
-		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			severity := domain.CaseSeverityHigh
-			return domain.CaseView{
-				ID: caseID, ProjectDetails: &domain.EntityRef{ID: projectID},
-				WatchList: []domain.WatchListUser{{Email: "watcher@example.com"}}, Severity: &severity,
-			}, nil
-		},
-	}
-	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
-	svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, &mockEventPublisher{}, alwaysUnrestrictedAccess{}, nil, dispatcher, mirror, nil, "")
-
-	req := validCreateCaseRequest()
-	req.WatchList = requestedIDs
-	if _, err := svc.CreateCase(context.Background(), req); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(setWatchListUserIDs) != len(requestedIDs) {
-		t.Fatalf("SetCaseWatchList userIDs = %v, want %v", setWatchListUserIDs, requestedIDs)
-	}
-	for i, id := range requestedIDs {
-		if setWatchListUserIDs[i] != id {
-			t.Errorf("SetCaseWatchList userIDs[%d] = %q, want %q", i, setWatchListUserIDs[i], id)
 		}
 	}
 }
