@@ -46,14 +46,17 @@ func TestPGOutageServiceLive(t *testing.T) {
 		t.Skip("PG_OUTAGE_TEST_DSN not set; this test needs a real database")
 	}
 
-	ctx := context.Background()
+	// WithSystemIdentity: the outage repository reads work_item (RLS-protected)
+	// through the caller's identity, and this test stands in for an internal
+	// caller, as the CSM portal is.
+	ctx := repository.WithSystemIdentity(context.Background())
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	defer pool.Close()
 
-	repo := repository.NewOutageRepository(pool)
+	repo := repository.NewOutageRepository(repository.NewScoped(pool))
 	svc := NewOutageService(repo)
 
 	// An offering with no cloud monitor, so the publication gate does not
