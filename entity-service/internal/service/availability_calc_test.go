@@ -63,16 +63,16 @@ func approx(t *testing.T, name string, got, want float64) {
 	}
 }
 
-// *** THE TEST THAT CATCHES THE MOST LIKELY WRONG PORT. ***
-// Every piece of product documentation says a planned outage "reduces agreed
-// service time". The V2 source does no such thing: the accumulator skips any
-// type that is not exactly "outage", so a planned outage changes NOTHING —
-// not downtime, not AST, not the count.
+// A planned outage that overlaps NOTHING changes nothing.
 //
-// An implementation that subtracted planned time from AST would produce
-// availability BELOW 100 here, and one that treated it as downtime would too.
-// Both are the obvious reading of the field names.
-func TestCalculateAvailability_PlannedOutageChangesNothing(t *testing.T) {
+// *** NARROWER THAN IT FIRST LOOKED. *** This test was originally written as
+// "a planned outage changes nothing", full stop, and that claim was wrong:
+// processOutages subtracts planned windows from any outage they overlap (see
+// TestCalculateAvailability_PlannedOutageCutsIntoRealOutages). What remains
+// true, and is what this now asserts, is that a planned window with no real
+// outage inside it does not reduce AST and is not itself downtime -- which
+// is still the opposite of what the product documentation describes.
+func TestCalculateAvailability_PlannedOutageAloneChangesNothing(t *testing.T) {
 	begin, end := availDay()
 
 	withPlanned := CalculateAvailability(AvailabilityInputs{
@@ -278,13 +278,16 @@ func TestCalculateAvailability_EmptyScheduleYields100NotNaN(t *testing.T) {
 	approx(t, "absoluteAvailability", got.AbsoluteAvailability, 75)
 }
 
-// Overlapping outages are summed, NOT merged. ServiceNow runs a separate
-// AvailabilityOutageProcessor to coalesce overlaps before the accumulator
-// ever sees them; this function is the accumulator, so it must double-count
-// and the caller must coalesce. Asserted so that a later change which
-// "helpfully" merges here is caught, because the merge belongs upstream
-// where it can be tested against the processor's own rules.
-func TestCalculateAvailability_OverlapsAreNotMergedHere(t *testing.T) {
+// *** OVERLAPPING OUTAGES MERGE. THIS TEST USED TO ASSERT THE OPPOSITE. ***
+// The first version of this port skipped AvailabilityOutageProcessor and
+// summed overlaps, and this test asserted 4h with a comment explaining that
+// coalescing was "upstream's job" -- a correct diagnosis of a gap that was
+// never closed. Two outages 01:00-03:00 and 02:00-04:00 are three hours of
+// downtime, not four.
+//
+// Summing overstates downtime exactly when a service is worst affected,
+// because several overlapping incidents is what a bad day looks like.
+func TestCalculateAvailability_OverlappingOutagesAreMerged(t *testing.T) {
 	begin, end := availDay()
 	got := CalculateAvailability(AvailabilityInputs{
 		Begin: begin, End: end, TargetPercent: 100,
@@ -293,8 +296,129 @@ func TestCalculateAvailability_OverlapsAreNotMergedHere(t *testing.T) {
 			{Begin: availAt(2, 0), End: availAt(4, 0), Type: OutageTypeOutage},
 		},
 	})
-	if got.AbsoluteDowntime != 4*time.Hour {
-		t.Fatalf("absoluteDowntime = %v, want 4h (2+2, summed not merged — "+
-			"coalescing is AvailabilityOutageProcessor's job upstream)", got.AbsoluteDowntime)
+	if got.AbsoluteDowntime != 3*time.Hour {
+		t.Fatalf("absoluteDowntime = %v, want 3h (merged, not 2+2 summed)", got.AbsoluteDowntime)
+	}
+	// And the COUNT collapses with them: two records, one interval. MTBF
+	// and MTRS divide by this.
+	if got.AbsoluteCount != 1 {
+		t.Errorf("absoluteCount = %d, want 1 — merged intervals count once", got.AbsoluteCount)
+	}
+}
+
+// Touching counts as overlapping: ServiceNow's test is `begin <= end`, so
+// an outage ending at 12:00 and one starting at 12:00 are one interval.
+func TestCalculateAvailability_TouchingOutagesMerge(t *testing.T) {
+	begin, end := availDay()
+	got := CalculateAvailability(AvailabilityInputs{
+		Begin: begin, End: end, TargetPercent: 100,
+		Outages: []AvailabilityOutage{
+			{Begin: availAt(10, 0), End: availAt(12, 0), Type: OutageTypeOutage},
+			{Begin: availAt(12, 0), End: availAt(13, 0), Type: OutageTypeOutage},
+		},
+	})
+	if got.AbsoluteDowntime != 3*time.Hour {
+		t.Errorf("absoluteDowntime = %v, want 3h", got.AbsoluteDowntime)
+	}
+	if got.AbsoluteCount != 1 {
+		t.Errorf("absoluteCount = %d, want 1 — abutting intervals merge", got.AbsoluteCount)
+	}
+}
+
+// *** A PLANNED OUTAGE CUTS INTO A REAL ONE. ***
+// The correction that matters most. An earlier version of this port claimed
+// a planned outage "contributes exactly zero and changes nothing" -- true of
+// the accumulator in isolation, false of the system. processOutages
+// subtracts planned windows from the outages they overlap BEFORE the
+// accumulator runs, so planned maintenance really does excuse downtime that
+// happens inside it.
+//
+// The four cases are ServiceNow's own, named in _checkPlannedOutageOverlap.
+func TestCalculateAvailability_PlannedOutageCutsIntoRealOutages(t *testing.T) {
+	begin, end := availDay()
+
+	cases := []struct {
+		name    string
+		outages []AvailabilityOutage
+		want    time.Duration
+		count   int
+	}{
+		{
+			// CASE 1: planned sits in the middle -- the outage is SPLIT and
+			// becomes two counted intervals, not one.
+			name: "planned in the middle splits the outage",
+			outages: []AvailabilityOutage{
+				{Begin: availAt(10, 0), End: availAt(16, 0), Type: OutageTypeOutage},
+				{Begin: availAt(12, 0), End: availAt(14, 0), Type: OutageTypePlanned},
+			},
+			want: 4 * time.Hour, count: 2,
+		},
+		{
+			// CASE 2: the outage is wholly inside the window -- deleted.
+			name: "outage wholly inside the planned window disappears",
+			outages: []AvailabilityOutage{
+				{Begin: availAt(12, 30), End: availAt(13, 30), Type: OutageTypeOutage},
+				{Begin: availAt(12, 0), End: availAt(14, 0), Type: OutageTypePlanned},
+			},
+			want: 0, count: 0,
+		},
+		{
+			// CASE 3: the outage runs past the end of the window.
+			name: "outage starting inside the window is trimmed at its end",
+			outages: []AvailabilityOutage{
+				{Begin: availAt(13, 0), End: availAt(16, 0), Type: OutageTypeOutage},
+				{Begin: availAt(12, 0), End: availAt(14, 0), Type: OutageTypePlanned},
+			},
+			want: 2 * time.Hour, count: 1,
+		},
+		{
+			// CASE 4: the outage starts before the window.
+			name: "outage ending inside the window is trimmed at its start",
+			outages: []AvailabilityOutage{
+				{Begin: availAt(10, 0), End: availAt(13, 0), Type: OutageTypeOutage},
+				{Begin: availAt(12, 0), End: availAt(14, 0), Type: OutageTypePlanned},
+			},
+			want: 2 * time.Hour, count: 1,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := CalculateAvailability(AvailabilityInputs{
+				Begin: begin, End: end, TargetPercent: 100, Outages: c.outages,
+			})
+			if got.AbsoluteDowntime != c.want {
+				t.Errorf("absoluteDowntime = %v, want %v", got.AbsoluteDowntime, c.want)
+			}
+			if got.AbsoluteCount != c.count {
+				t.Errorf("absoluteCount = %d, want %d", got.AbsoluteCount, c.count)
+			}
+		})
+	}
+}
+
+// Abutting planned windows must not leave a sliver of downtime at the seam.
+//
+// NOTE: this does NOT verify that planned windows are pre-merged -- a
+// mutation removing that pre-merge survives, because interval subtraction
+// composes and the order does not matter. It verifies the OUTCOME, which is
+// what anyone reading the status page cares about.
+func TestCalculateAvailability_AbuttingPlannedWindowsLeaveNoSliver(t *testing.T) {
+	begin, end := availDay()
+	got := CalculateAvailability(AvailabilityInputs{
+		Begin: begin, End: end, TargetPercent: 100,
+		Outages: []AvailabilityOutage{
+			{Begin: availAt(10, 0), End: availAt(16, 0), Type: OutageTypeOutage},
+			{Begin: availAt(11, 0), End: availAt(13, 0), Type: OutageTypePlanned},
+			{Begin: availAt(13, 0), End: availAt(15, 0), Type: OutageTypePlanned},
+		},
+	})
+	// 10:00-11:00 and 15:00-16:00 survive. Two hours, two intervals, and
+	// crucially nothing at the 13:00 seam.
+	if got.AbsoluteDowntime != 2*time.Hour {
+		t.Fatalf("absoluteDowntime = %v, want 2h", got.AbsoluteDowntime)
+	}
+	if got.AbsoluteCount != 2 {
+		t.Errorf("absoluteCount = %d, want 2", got.AbsoluteCount)
 	}
 }

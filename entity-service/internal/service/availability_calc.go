@@ -48,7 +48,6 @@
 package service
 
 import (
-	"sort"
 	"time"
 )
 
@@ -157,13 +156,17 @@ func CalculateAvailability(in AvailabilityInputs) AvailabilityResult {
 		schedule = AlwaysOn{}
 	}
 
-	// Outages are trimmed to the period, so order only affects which ones
-	// land in a segment, never the total. Sorted anyway to match V2's
-	// orderBy('begin') — a caller slicing by index later gets the same
-	// slice ServiceNow would have.
-	outages := make([]AvailabilityOutage, len(in.Outages))
-	copy(outages, in.Outages)
-	sort.Slice(outages, func(i, j int) bool { return outages[i].Begin.Before(outages[j].Begin) })
+	// *** THE PROCESSOR RUNS FIRST, AND SKIPPING IT WAS THIS PORT'S WORST
+	// BUG. *** V2 calls processOutages() before segmentation, and it does
+	// two things the accumulator cannot: it MERGES overlapping outages
+	// rather than summing them, and it SUBTRACTS planned windows from the
+	// real outages they overlap. Without it, two overlapping two-hour
+	// outages read as four hours of downtime instead of three, and planned
+	// maintenance excuses nothing.
+	//
+	// What comes back is already trimmed to the period, already disjoint,
+	// and contains OUTAGE entries only.
+	outages := processAvailabilityOutages(in.Outages, in.Begin, in.End)
 
 	absDown, absCount := accumulateOutages(outages, nil, in.Begin, in.End)
 	schedDown, schedCount := accumulateOutages(outages, schedule, in.Begin, in.End)
