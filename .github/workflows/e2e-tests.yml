@@ -18,10 +18,11 @@
 #
 # The suite signs itself in: the `auth` setup project performs a real
 # username/password/TOTP login and writes the session every spec replays, so no
-# session file needs provisioning here. It needs the credentials below as
-# secrets; without them the sign-in skips, every spec skips, and the job would
-# report a green tick meaning "nothing ran" — the guard step turns that into a
-# failure instead.
+# session file needs provisioning here. It needs the credentials below —
+# usernames as repo VARIABLES, passwords and TOTP seeds as SECRETS. Without them
+# the sign-in skips, every spec skips, and the job would report a green tick
+# meaning "nothing ran"; the "Verify credentials" step turns that into an
+# explicit failure instead.
 #
 # ⚠️ These specs run against a REAL deployed backend. Creation specs write
 # records that cannot be deleted, so they are gated behind
@@ -42,6 +43,13 @@ name: Customer Portal E2E Tests
 on:
   workflow_dispatch:
 
+# Least privilege, declared explicitly: without a `permissions` block the
+# GITHUB_TOKEN inherits the repository/organisation default, which is commonly
+# read-write across every scope. This workflow only reads the repository — the
+# checkout — and writes nothing back. Artifact upload uses the Actions runtime
+# token rather than GITHUB_TOKEN, so it is unaffected by this.
+permissions:
+  contents: read
 
 env:
   TZ: Asia/Kolkata 
@@ -91,12 +99,86 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
           
+      - name: Verify configuration and credentials
+        # Without this the job is worse than useless: the auth setup project
+        # SKIPS when its credentials are absent, every spec then skips on the
+        # missing session, and Playwright exits 0 — a green tick meaning
+        # "nothing ran", which is indistinguishable from success in the checks
+        # UI. Only the identity actually being used is required, so configuring
+        # one account does not oblige you to configure both.
+        env:
+          # No fallback: see the check below.
+          E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
+          E2E_LOGIN_IDENTITY: ${{ vars.E2E_LOGIN_IDENTITY != '' && vars.E2E_LOGIN_IDENTITY || 'admin' }}
+          E2E_USERNAME: ${{ vars.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          E2E_TOTP_SECRET: ${{ secrets.E2E_TOTP_SECRET }}
+          E2E_PORTAL_USERNAME: ${{ secrets.E2E_PORTAL_USERNAME }}
+          E2E_PORTAL_PASSWORD: ${{ secrets.E2E_PORTAL_PASSWORD }}
+          E2E_PORTAL_TOTP_SECRET: ${{ secrets.E2E_PORTAL_TOTP_SECRET }}
+        run: |
+          set -eu
+
+          # The target is REQUIRED, with no localhost default. A runner serves
+          # nothing on localhost: the dev server is not started, and could not
+          # be — public/config.js is git-ignored, so a preview build boots
+          # without runtime config. Defaulting there would point the whole suite
+          # at a dead URL and fail as a wall of connection errors.
+          if [ -z "${E2E_BASE_URL:-}" ]; then
+            echo "::error::E2E_BASE_URL is not set. Add it as a repository or"
+            echo "environment VARIABLE naming the deployment to test, e.g."
+            echo "https://support-stg.wso2.com — it must be the environment the"
+            echo "configured credentials belong to."
+            exit 1
+          fi
+          echo "Target: $E2E_BASE_URL"
+
+          identity="${E2E_LOGIN_IDENTITY:-admin}"
+
+          # Mirrors loginIdentity() in tests/e2e/auth/credentials.ts, which
+          # accepts exactly these two and throws on anything else — caught here
+          # so a typo fails in a second rather than after a browser install.
+          case "$identity" in
+            admin)
+              prefix="E2E"
+              user="${E2E_USERNAME:-}"
+              pass="${E2E_PASSWORD:-}"
+              totp="${E2E_TOTP_SECRET:-}"
+              ;;
+            portal)
+              prefix="E2E_PORTAL"
+              user="${E2E_PORTAL_USERNAME:-}"
+              pass="${E2E_PORTAL_PASSWORD:-}"
+              totp="${E2E_PORTAL_TOTP_SECRET:-}"
+              ;;
+            *)
+              echo "::error::E2E_LOGIN_IDENTITY is '$identity'; expected 'admin' or 'portal'."
+              exit 1
+              ;;
+          esac
+
+          missing=""
+          [ -n "$user" ] || missing="$missing ${prefix}_USERNAME"
+          [ -n "$pass" ] || missing="$missing ${prefix}_PASSWORD"
+          [ -n "$totp" ] || missing="$missing ${prefix}_TOTP_SECRET"
+
+          if [ -n "$missing" ]; then
+            echo "::error::Missing credentials for identity '$identity':$missing"
+            echo "Set the username as a repository VARIABLE and the password and"
+            echo "TOTP seed as SECRETS, then re-run."
+            exit 1
+          fi
+
+          # The username is a variable, so naming it here is safe and says which
+          # account the run will use.
+          echo "Credentials present for identity '$identity' ($user)."
+
       - name: Report clock skew vs target
         continue-on-error: true
         env:
-          # Declared here too: env set on the test step is not visible to this
-          # one, so without it `curl "$E2E_BASE_URL"` runs against an empty URL.
-          E2E_BASE_URL: ${{ vars.E2E_BASE_URL != '' && vars.E2E_BASE_URL || 'http://localhost:3000' }}
+          # Declared here too: env set on one step is not visible to another.
+          # Validated as non-empty by the step above, so no fallback.
+          E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
         run: |
           echo "Runner UTC : $(date -u)"
           echo "Runner $TZ : $(date)"
@@ -111,13 +193,15 @@ jobs:
         env:
           # Target environment, from a repo/environment VARIABLE — it is not a
           # credential, and keeping it visible means a failing run shows which
-          # deployment it ran against. The minted session is scoped to this
-          # origin, so it must match the deployment the credentials belong to.
-          E2E_BASE_URL: ${{ vars.E2E_BASE_URL != '' && vars.E2E_BASE_URL || 'http://localhost:3000' }}
-          # Skip booting the local vite dev server — CI runs against a deployed
-          # environment. Set the repo VARIABLE to an empty string to have
-          # Playwright start `pnpm run dev` itself.
-          E2E_NO_WEBSERVER: ${{ vars.E2E_NO_WEBSERVER != '' && vars.E2E_NO_WEBSERVER || '1' }}
+          # deployment it ran against. Required: the step above fails the job
+          # when it is unset. The minted session is scoped to this origin, so it
+          # must match the deployment the credentials belong to.
+          E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
+          # Always 1. CI runs against a deployed environment and never boots the
+          # vite dev server — it could not serve a working app anyway, since
+          # public/config.js is git-ignored. Not configurable, so an empty
+          # variable cannot silently turn this into a localhost run.
+          E2E_NO_WEBSERVER: "1"
           # "admin" (default) or "portal" — see tests/e2e/auth/credentials.ts.
           E2E_LOGIN_IDENTITY: ${{ vars.E2E_LOGIN_IDENTITY != '' && vars.E2E_LOGIN_IDENTITY || 'admin' }}
           # The account to sign in as. A variable, not a secret: it identifies
