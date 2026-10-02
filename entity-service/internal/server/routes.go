@@ -214,7 +214,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// configured.
 	var scheduleHandler *handler.ScheduleHandler
 
-	accountRepo := repository.NewAccountRepository(db)
+	accountRepo := repository.NewAccountRepository(repository.NewScoped(db))
 	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
 
 	// teamHandler has no ServiceNow-backed counterpart to switch on — see
@@ -263,7 +263,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// repository serves EnsureAccount's read even while the Account
 		// branch (the write side) is off, and the salesforce_ingest_state
 		// ledger is where every non-membership family records its version.
-		projectIngestRepo := repository.NewSalesforceProjectRepository(db)
+		projectIngestRepo := repository.NewSalesforceProjectRepository(repository.NewScoped(db))
 		ingestSupport := service.SalesforceIngestSupport{
 			Accounts: accountRepo,
 			States:   repository.NewSalesforceIngestStateRepository(db),
@@ -338,7 +338,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			stepRepo := repository.NewOnboardingStepRepository(db)
 			membershipIngestSvc = service.NewSalesforceEventServiceWithMembershipIngest(
 				accountIngestRepo, salesEntityClient, ingestSupport, service.MembershipIngest{
-					Memberships: repository.NewProjectMembershipRepository(db),
+					Memberships: repository.NewProjectMembershipRepository(repository.NewScoped(db)),
 					Steps:       stepRepo,
 					SalesEntity: salesEntityClient,
 					Contacts:    repository.NewSalesforceContactRepository(db),
@@ -430,7 +430,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var projectMembershipHandler *handler.ProjectMembershipHandler
 	if db != nil && cfg.HasPortalMembershipWrites() && salesEntityClient != nil {
 		projectMembershipHandler = handler.NewProjectMembershipHandler(service.NewProjectMembershipWriteService(service.MembershipWriteDeps{
-			Memberships: repository.NewProjectMembershipRepository(db),
+			Memberships: repository.NewProjectMembershipRepository(repository.NewScoped(db)),
 			Steps:       repository.NewOnboardingStepRepository(db),
 			SalesEntity: salesEntityClient,
 			Publisher:   projectEventPublisher,
@@ -497,7 +497,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		snWritebackDispatcher = service.NewSNWritebackDispatcher(repository.NewSNWritebackFailureRepository(db))
 	}
 
-	projectRepo := repository.NewProjectRepository(db)
+	projectRepo := repository.NewProjectRepository(repository.NewScoped(db))
 	pgProjectSvc := service.NewProjectService(projectRepo, accessSvc)
 	var activeProjectSvc service.ProjectService
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -1041,7 +1041,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		outageHandler = handler.NewOutageHandler(service.NewServiceNowOutageService(serviceNowIntegrationServiceClient))
 	} else if cfg.HasDatabase() {
 		outageHandler = handler.NewOutageHandler(
-			service.NewOutageService(repository.NewOutageRepository(db)))
+			service.NewOutageService(repository.NewOutageRepository(repository.NewScoped(db))))
 	}
 
 	// cloudStatusHandler is Postgres-only, and unconditionally so even though
