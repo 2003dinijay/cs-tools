@@ -343,8 +343,21 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 
 	st := LadderState{Plan: plan, Placed: make([]bool, len(plan.Calls))}
 	if replace {
-		if err := e.retireRunning(ctx, t.IncidentID); err != nil {
+		previous, hadOne, err := e.retireRunning(ctx, t.IncidentID)
+		if err != nil {
 			return err
+		}
+		// An acknowledgement is about the incident, not about the ladder that
+		// happened to be climbing when it arrived. Under RequireBothGestures a
+		// responder's two gestures can straddle an elevation -- they move it
+		// out of NEW, somebody raises the priority, then they comment -- and a
+		// fresh state would forget the first half. The move out of NEW cannot
+		// happen twice, so the second gesture would never complete the pair
+		// and the replacement ladder would keep climbing past an incident
+		// somebody had already picked up.
+		if hadOne {
+			st.SawStateChange = previous.SawStateChange
+			st.SawPublicComment = previous.SawPublicComment
 		}
 		if err := e.store.Save(ctx, t.IncidentID, st); err != nil {
 			return fmt.Errorf("escalation: replace ladder for %s: %w", t.IncidentID, err)
@@ -355,20 +368,24 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 			return fmt.Errorf("escalation: claim ladder for %s: %w", t.IncidentID, err)
 		}
 		if !created {
-			slog.InfoContext(ctx, "escalation: ladder already running; ignoring duplicate trigger",
-				"incidentId", t.IncidentID)
-			return nil
+			return e.resumeRunning(ctx, t.IncidentID)
 		}
 	}
 
-	// Seed every call's wake entry. A failure part-way leaves the ladder
-	// partially scheduled; the record is retried, and because the state write
-	// above already happened, the retry re-seeds the same members — ZADD is
-	// idempotent for an unchanged score, so re-seeding is harmless.
-	for i, c := range plan.Calls {
-		if err := e.store.AddWake(ctx, wakeMember(t.IncidentID, i), c.At); err != nil {
-			return fmt.Errorf("escalation: schedule call %d for %s: %w", i, t.IncidentID, err)
-		}
+	// Seed a wake for every call. If this fails part-way the ladder is left
+	// short of wakes, and Tick only ever looks at wakes that exist -- so the
+	// missing calls would simply never be made, silently. The redelivery of
+	// this record is what repairs that, through resumeRunning.
+	seeded, err := e.seedPendingWakes(ctx, t.IncidentID, st)
+	if err != nil {
+		return err
+	}
+	if seeded != len(plan.Calls) {
+		// A ladder written moments ago has nothing placed and nothing failed,
+		// so this cannot happen. If it ever does, the ladder is short of calls
+		// and somebody needs to know which incident.
+		slog.WarnContext(ctx, "escalation: ladder scheduled with fewer wakes than calls",
+			"incidentId", t.IncidentID, "seeded", seeded, "calls", len(plan.Calls))
 	}
 	// One line that answers "which ladder, and by which path" without anyone
 	// re-deriving section 5.0's table from four fields by hand. levels is the
@@ -385,21 +402,78 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 	return nil
 }
 
-// retireRunning drops any outstanding wake entries for an incident, used when
-// an elevation replaces a running ladder. The old ladder's state is not
-// deleted here — Save overwrites it immediately after.
-func (e *Engine) retireRunning(ctx context.Context, incidentID string) error {
+// seedPendingWakes writes a wake entry for every call still waiting to be
+// made, and reports how many it wrote.
+//
+// The predicate is pendingMembers': not yet placed, and not permanently
+// failed. ZADD with an unchanged score is idempotent, so a member that is
+// already there costs nothing -- which is what makes this safe to run over a
+// ladder that is only partly seeded, without first asking which wakes exist.
+func (e *Engine) seedPendingWakes(ctx context.Context, incidentID string, st LadderState) (int, error) {
+	seeded := 0
+	for i, placed := range st.Placed {
+		if placed || st.failure(i) != "" || i >= len(st.Plan.Calls) {
+			continue
+		}
+		if err := e.store.AddWake(ctx, wakeMember(incidentID, i), st.Plan.Calls[i].At); err != nil {
+			return seeded, fmt.Errorf("escalation: schedule call %d for %s: %w", i, incidentID, err)
+		}
+		seeded++
+	}
+	return seeded, nil
+}
+
+// resumeRunning handles a trigger for an incident that already has a ladder.
+//
+// Create claims the incident, and the wakes are seeded after it. Those are two
+// writes, and a failure between them leaves a ladder whose later calls have no
+// wake to fire them -- which Tick cannot detect, because it only walks wakes
+// that exist. Returning here on the strength of "someone already owns this"
+// would make that state permanent.
+//
+// So the redelivery re-seeds the running ladder's own pending calls rather
+// than the incoming trigger's: whatever is stored is the ladder that is
+// actually climbing, and the duplicate trigger has no authority to re-plan it.
+// Re-seeding is idempotent, so the common case -- a plain duplicate, nothing
+// broken -- costs one pass and changes nothing.
+func (e *Engine) resumeRunning(ctx context.Context, incidentID string) error {
 	st, found, err := e.store.Get(ctx, incidentID)
 	if err != nil {
 		return fmt.Errorf("escalation: load running ladder for %s: %w", incidentID, err)
 	}
 	if !found {
+		// Completed, cancelled or replaced between Create and this read. There
+		// is no ladder to repair and nothing to schedule.
+		slog.InfoContext(ctx, "escalation: duplicate trigger for a ladder that has since finished",
+			"incidentId", incidentID)
 		return nil
 	}
-	if err := e.store.RemoveWakes(ctx, pendingMembers(incidentID, st)...); err != nil {
-		return fmt.Errorf("escalation: retire running ladder for %s: %w", incidentID, err)
+	seeded, err := e.seedPendingWakes(ctx, incidentID, st)
+	if err != nil {
+		return err
 	}
+	slog.InfoContext(ctx, "escalation: ladder already running; re-seeded its pending wakes",
+		"incidentId", incidentID, "pending", seeded, "reachedLevel", st.ReachedLevel())
 	return nil
+}
+
+// retireRunning drops any outstanding wake entries for an incident, used when
+// an elevation replaces a running ladder. The old ladder's state is not
+// deleted here — Save overwrites it immediately after — but it is returned,
+// because some of what it recorded outlives the ladder that recorded it. See
+// the acknowledgement flags in start.
+func (e *Engine) retireRunning(ctx context.Context, incidentID string) (LadderState, bool, error) {
+	st, found, err := e.store.Get(ctx, incidentID)
+	if err != nil {
+		return LadderState{}, false, fmt.Errorf("escalation: load running ladder for %s: %w", incidentID, err)
+	}
+	if !found {
+		return LadderState{}, false, nil
+	}
+	if err := e.store.RemoveWakes(ctx, pendingMembers(incidentID, st)...); err != nil {
+		return LadderState{}, false, fmt.Errorf("escalation: retire running ladder for %s: %w", incidentID, err)
+	}
+	return st, true, nil
 }
 
 // cancelBy stops a running ladder because the incident was acknowledged, by
