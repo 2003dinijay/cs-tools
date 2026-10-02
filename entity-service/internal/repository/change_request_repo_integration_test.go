@@ -54,6 +54,30 @@ const (
 	// unknownGroupID is a well-formed UUID that is not the id of any "group"
 	// row -- used to exercise assignment_group_id's FK violation path.
 	unknownGroupID = "36666666-aaaa-0000-0000-000000000000"
+
+	// changeRequestAssessGateTestID is its own id, distinct from every other
+	// test's change request above, so the Assess-gate/approver-provisioning
+	// tests below never race any of them over the same work_item row.
+	changeRequestAssessGateTestID = "36666666-0000-0000-0000-000000000007"
+
+	// changeRequestAssessGateMemberUserID{,2} are seeded as team_member rows
+	// against changeRequestAssessGateGroupID (distinct from every other
+	// test's own user ids) to exercise Assess's auto-provisioned approvers.
+	changeRequestAssessGateMemberUserID  = "36666666-0000-0000-0000-000000000008"
+	changeRequestAssessGateMemberUserID2 = "36666666-0000-0000-0000-000000000009"
+
+	// changeRequestAssessGateGroupID is its own dedicated "group" row,
+	// deliberately NOT seededGroupID -- the membership-provisioning tests
+	// below assert the *exact, exhaustive* set of a group's members, which
+	// is unsafe to share with seededGroupID: that fixture is reused by other
+	// tests (and by hand during local manual verification) for its mere FK
+	// validity, with no guarantee nothing else ever attaches a team_member
+	// row to it. A real collision of exactly this kind was hit once already
+	// (a manual verification session left two real users' team_member rows
+	// pointed at seededGroupID, inflating this test's own membership count
+	// until that residue was cleaned up) -- a dedicated, test-owned group
+	// makes that structurally impossible instead of merely unlikely.
+	changeRequestAssessGateGroupID = "36666666-0000-0000-0000-00000000000a"
 )
 
 // seedApprovalUserForDecisionTest inserts one "user" row per given id --
@@ -525,5 +549,440 @@ func TestChangeRequestIntegration_PatchAssignedTeamIDUnknownTeamIsValidationErro
 	}
 	if gotAssignmentGroupID != nil {
 		t.Fatalf("work_item.assignment_group_id = %v after a failed patch, want unchanged NULL", *gotAssignmentGroupID)
+	}
+}
+
+// seedChangeRequestForAssessGateTest inserts a minimal NEW-state work_item/
+// change_request pair with no assigned team -- the starting point for every
+// test below.
+func seedChangeRequestForAssessGateTest(t *testing.T, pool *repository.Scoped) {
+	t.Helper()
+	// work_item and change_request are RLS-protected; seed/cleanup as internal.
+	ctx := repository.WithSystemIdentity(context.Background())
+
+	cleanup := func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM work_item WHERE id = $1`, changeRequestAssessGateTestID)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type)
+		 VALUES ($1, now(), now(), 'cr-assess-gate-test', 'cr-assess-gate-test', 'CRASSESS01', 'assess gate test', 'CHANGE_REQUEST')`,
+		changeRequestAssessGateTestID); err != nil {
+		t.Fatalf("seed work_item: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO change_request (id, state) VALUES ($1, 'NEW'::change_request_state_enum)`,
+		changeRequestAssessGateTestID); err != nil {
+		t.Fatalf("seed change_request: %v", err)
+	}
+}
+
+// seedAssessGateGroup inserts changeRequestAssessGateGroupID's own "group"
+// row -- a dedicated fixture for the tests below, deliberately not
+// seededGroupID (see that constant's own doc comment on the collision this
+// avoids).
+func seedAssessGateGroup(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+
+	cleanup := func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM "group" WHERE id = $1`, changeRequestAssessGateGroupID)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name)
+		 VALUES ($1, now(), now(), 'cr-assess-gate-test', 'cr-assess-gate-test', 'Assess Gate Test Group')`,
+		changeRequestAssessGateGroupID); err != nil {
+		t.Fatalf("seed group: %v", err)
+	}
+}
+
+// seedTeamMembersForAssessGateTest inserts one "user" row and one
+// team_member row (keyed by group_id, not team_id -- see
+// PatchChangeRequest's own doc comment on why) per given user id, so they
+// resolve as members of changeRequestAssessGateGroupID for the
+// auto-provisioning tests below. Callers must seed that group row first
+// (seedAssessGateGroup) -- group_id's FK requires it to already exist.
+func seedTeamMembersForAssessGateTest(t *testing.T, pool *pgxpool.Pool, userIDs ...string) {
+	t.Helper()
+	ctx := context.Background()
+
+	for i, userID := range userIDs {
+		id := userID
+		userCleanup := func() {
+			_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, id)
+		}
+		userCleanup()
+		t.Cleanup(userCleanup)
+
+		email := fmt.Sprintf("cr-assess-gate-member-%d@example.com", i+1)
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user)
+			 VALUES ($1, now(), now(), 'cr-assess-gate-test', 'cr-assess-gate-test', $2, 'Assess Gate Member', 'Assess', 'Gate Member', $2, true, false)`,
+			id, email); err != nil {
+			t.Fatalf("seed team member user %s: %v", id, err)
+		}
+
+		memberCleanup := func() {
+			_, _ = pool.Exec(ctx, `DELETE FROM team_member WHERE user_id = $1`, id)
+		}
+		memberCleanup()
+		t.Cleanup(memberCleanup)
+
+		// team_member.team_id is NOT NULL, but no test here exercises the
+		// internal team registry -- the one seeded team row
+		// (scripts/csm-compose/seed-entity-service.sql's "Example Corp ABT",
+		// id 901) satisfies the column's NOT NULL constraint without
+		// implying anything about this test's own group_id-keyed membership
+		// (changeRequestAssessGateGroupID, a wholly separate "group" row).
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id)
+			 VALUES (gen_random_uuid(), now(), now(), 'cr-assess-gate-test', 'cr-assess-gate-test', $1::uuid, $2, $3::uuid)`,
+			seededGroupID, id, changeRequestAssessGateGroupID); err != nil {
+			t.Fatalf("seed team_member for user %s: %v", id, err)
+		}
+	}
+}
+
+// TestChangeRequestIntegration_PatchAssessRequiresAssignedTeam is the
+// regression guard for the compulsory gate: PatchChangeRequest must reject a
+// {state: "assess"} patch with a clean ValidationError when the change
+// request has no assigned team and the request itself doesn't supply one --
+// never a silent state change with nothing to assign the Assess stage to.
+func TestChangeRequestIntegration_PatchAssessRequiresAssignedTeam(t *testing.T) {
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssessGateTest(t, scoped)
+
+	assess := domain.ChangeRequestStateAssess
+	_, err = repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
+		domain.PatchChangeRequestRequest{State: &assess}, "cr-assess-gate-test")
+	if err == nil {
+		t.Fatal("PatchChangeRequest(state=assess) with no assigned team succeeded, want a ValidationError")
+	}
+	var valErr *apierror.ValidationError
+	if !errors.As(err, &valErr) {
+		t.Fatalf("PatchChangeRequest(state=assess) with no assigned team error = %v (%T), want *apierror.ValidationError", err, err)
+	}
+
+	var gotState string
+	if scanErr := scoped.QueryRow(sys,
+		`SELECT state::TEXT FROM change_request WHERE id = $1`, changeRequestAssessGateTestID).Scan(&gotState); scanErr != nil {
+		t.Fatalf("read back state: %v", scanErr)
+	}
+	if gotState != "NEW" {
+		t.Fatalf("state after a rejected assess patch = %q, want unchanged \"NEW\"", gotState)
+	}
+}
+
+// TestChangeRequestIntegration_PatchAssessWithTeamAlreadyOnRecordSucceeds
+// confirms the compulsory gate accepts a team set by an earlier, separate
+// PATCH (the real flow: the Edit dialog saves assignedTeamId first, then
+// "Move to Assess" is sent as its own request with no assignedTeamId at
+// all) -- not just a team supplied in the very same request.
+func TestChangeRequestIntegration_PatchAssessWithTeamAlreadyOnRecordSucceeds(t *testing.T) {
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssessGateTest(t, scoped)
+	seedAssessGateGroup(t, pool)
+	// A non-empty group: the Assess provisioning path now rejects an empty
+	// one outright (see TestChangeRequestIntegration_PatchAssessRejectsEmptyGroup),
+	// so this test -- about the team-already-on-record path specifically --
+	// needs a real member for its own second PatchChangeRequest call to
+	// reach "succeeds" at all.
+	seedTeamMembersForAssessGateTest(t, pool, changeRequestAssessGateMemberUserID)
+	t.Cleanup(func() {
+		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
+	})
+
+	teamID := changeRequestAssessGateGroupID
+	if _, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
+		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID}, "cr-assess-gate-test"); err != nil {
+		t.Fatalf("PatchChangeRequest(assignedTeamId=%s): %v", teamID, err)
+	}
+
+	assess := domain.ChangeRequestStateAssess
+	updated, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
+		domain.PatchChangeRequestRequest{State: &assess}, "cr-assess-gate-test")
+	if err != nil {
+		t.Fatalf("PatchChangeRequest(state=assess) with a team already on the record: %v", err)
+	}
+	if updated.State == nil || *updated.State != string(assess) {
+		t.Fatalf("state after patch = %v, want %q", updated.State, assess)
+	}
+}
+
+// TestChangeRequestIntegration_PatchAssessProvisionsApproversFromGroupMembers
+// is the regression guard for the auto-provisioning feature: the moment a
+// change request enters Assess, every team_member row keyed to the assigned
+// team's group_id must become a Requested approval_stage_approver on a
+// freshly created Assess-stage approval_stage -- not an empty Approvals tab
+// with nobody to approve it.
+func TestChangeRequestIntegration_PatchAssessProvisionsApproversFromGroupMembers(t *testing.T) {
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssessGateTest(t, scoped)
+	seedAssessGateGroup(t, pool)
+	seedTeamMembersForAssessGateTest(t, pool, changeRequestAssessGateMemberUserID, changeRequestAssessGateMemberUserID2)
+	t.Cleanup(func() {
+		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
+	})
+
+	teamID := changeRequestAssessGateGroupID
+	assess := domain.ChangeRequestStateAssess
+	if _, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
+		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &assess}, "cr-assess-gate-test"); err != nil {
+		t.Fatalf("PatchChangeRequest(assignedTeamId=%s, state=assess): %v", teamID, err)
+	}
+
+	var stageID, stageGroupID string
+	if scanErr := scoped.QueryRow(sys,
+		`SELECT id, assignment_group_id::TEXT FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID).
+		Scan(&stageID, &stageGroupID); scanErr != nil {
+		t.Fatalf("read back approval_stage: %v", scanErr)
+	}
+	if stageGroupID != teamID {
+		t.Fatalf("approval_stage.assignment_group_id = %q, want %q", stageGroupID, teamID)
+	}
+
+	rows, err := scoped.Query(sys,
+		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1 ORDER BY approver_user_id`, stageID)
+	if err != nil {
+		t.Fatalf("query approval_stage_approver: %v", err)
+	}
+	defer rows.Close()
+	gotApprovers := map[string]string{}
+	for rows.Next() {
+		var uid, status string
+		if err := rows.Scan(&uid, &status); err != nil {
+			t.Fatalf("scan approval_stage_approver: %v", err)
+		}
+		gotApprovers[uid] = status
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("approval_stage_approver rows: %v", err)
+	}
+
+	want := map[string]string{
+		changeRequestAssessGateMemberUserID:  "requested",
+		changeRequestAssessGateMemberUserID2: "requested",
+	}
+	if len(gotApprovers) != len(want) {
+		t.Fatalf("approval_stage_approver rows = %+v, want exactly %+v", gotApprovers, want)
+	}
+	for uid, wantStatus := range want {
+		if gotApprovers[uid] != wantStatus {
+			t.Fatalf("approver %s status = %q, want %q", uid, gotApprovers[uid], wantStatus)
+		}
+	}
+}
+
+// TestChangeRequestIntegration_PatchAssessDoesNotReprovisionWhenStageExists
+// confirms a second {state: "assess"} patch against a change request that
+// already has an approval_stage (e.g. a resend, or an unrelated field edit
+// sent while already in Assess) never creates a duplicate stage or
+// re-seeds approvers -- DecideChangeRequestApproval owns everything about
+// an existing stage from the moment it's created.
+func TestChangeRequestIntegration_PatchAssessDoesNotReprovisionWhenStageExists(t *testing.T) {
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssessGateTest(t, scoped)
+	seedAssessGateGroup(t, pool)
+	seedTeamMembersForAssessGateTest(t, pool, changeRequestAssessGateMemberUserID, changeRequestAssessGateMemberUserID2)
+	t.Cleanup(func() {
+		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
+	})
+
+	teamID := changeRequestAssessGateGroupID
+	assess := domain.ChangeRequestStateAssess
+	if _, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
+		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &assess}, "cr-assess-gate-test"); err != nil {
+		t.Fatalf("PatchChangeRequest(assignedTeamId=%s, state=assess) #1: %v", teamID, err)
+	}
+	if _, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
+		domain.PatchChangeRequestRequest{State: &assess}, "cr-assess-gate-test"); err != nil {
+		t.Fatalf("PatchChangeRequest(state=assess) #2 (resend): %v", err)
+	}
+
+	var stageCount int
+	if scanErr := scoped.QueryRow(sys,
+		`SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID).Scan(&stageCount); scanErr != nil {
+		t.Fatalf("count approval_stage: %v", scanErr)
+	}
+	if stageCount != 1 {
+		t.Fatalf("approval_stage rows after two assess patches = %d, want exactly 1", stageCount)
+	}
+
+	var approverCount int
+	if scanErr := scoped.QueryRow(sys,
+		`SELECT COUNT(*) FROM approval_stage_approver asa JOIN approval_stage ast ON ast.id = asa.stage_id WHERE ast.work_item_id = $1`,
+		changeRequestAssessGateTestID).Scan(&approverCount); scanErr != nil {
+		t.Fatalf("count approval_stage_approver: %v", scanErr)
+	}
+	if approverCount != 2 {
+		t.Fatalf("approval_stage_approver rows after two assess patches = %d, want exactly 2 (not re-seeded)", approverCount)
+	}
+}
+
+// TestChangeRequestIntegration_PatchAssessRejectsEmptyGroup is the
+// regression guard for a CodeRabbit-caught gap: the approval_stage used to
+// be created before team_member was ever queried, so an assigned team with
+// no members still committed an empty, un-approvable stage -- the change
+// request would be stuck in Assess forever, since "no approval_stage exists
+// yet" is exactly the condition that gates (re-)provisioning. A team with no
+// members must instead reject the whole PATCH with a ValidationError and
+// leave no approval_stage behind at all.
+func TestChangeRequestIntegration_PatchAssessRejectsEmptyGroup(t *testing.T) {
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssessGateTest(t, scoped)
+	seedAssessGateGroup(t, pool)
+	// Deliberately no seedTeamMembersForAssessGateTest call -- the group
+	// exists (so assignedTeamId itself is valid) but has zero members.
+	t.Cleanup(func() {
+		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
+	})
+
+	teamID := changeRequestAssessGateGroupID
+	assess := domain.ChangeRequestStateAssess
+	_, err = repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
+		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &assess}, "cr-assess-gate-test")
+	if err == nil {
+		t.Fatal("PatchChangeRequest(state=assess) with an empty assigned team succeeded, want a ValidationError")
+	}
+	var valErr *apierror.ValidationError
+	if !errors.As(err, &valErr) {
+		t.Fatalf("PatchChangeRequest(state=assess) with an empty assigned team error = %v (%T), want *apierror.ValidationError", err, err)
+	}
+
+	var gotState string
+	if scanErr := scoped.QueryRow(sys,
+		`SELECT state::TEXT FROM change_request WHERE id = $1`, changeRequestAssessGateTestID).Scan(&gotState); scanErr != nil {
+		t.Fatalf("read back state: %v", scanErr)
+	}
+	if gotState != "NEW" {
+		t.Fatalf("state after a rejected assess patch = %q, want unchanged \"NEW\"", gotState)
+	}
+
+	var stageCount int
+	if scanErr := scoped.QueryRow(sys,
+		`SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID).Scan(&stageCount); scanErr != nil {
+		t.Fatalf("count approval_stage: %v", scanErr)
+	}
+	if stageCount != 0 {
+		t.Fatalf("approval_stage rows after a rejected assess patch = %d, want 0 (no empty stage left behind)", stageCount)
+	}
+}
+
+// TestChangeRequestIntegration_PatchAssessDeduplicatesGroupMembers is the
+// regression guard for a second CodeRabbit catch: team_member has no unique
+// constraint on (user_id, group_id), so a duplicated membership row must
+// still provision exactly one requested approval_stage_approver per person,
+// never two.
+func TestChangeRequestIntegration_PatchAssessDeduplicatesGroupMembers(t *testing.T) {
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssessGateTest(t, scoped)
+	seedAssessGateGroup(t, pool)
+	seedTeamMembersForAssessGateTest(t, pool, changeRequestAssessGateMemberUserID)
+	t.Cleanup(func() {
+		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
+	})
+
+	// A second team_member row for the SAME user against the SAME group --
+	// seedTeamMembersForAssessGateTest's own cleanup (DELETE ... WHERE
+	// user_id = $1) already covers this row too, since it shares the user id.
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id)
+		 VALUES (gen_random_uuid(), now(), now(), 'cr-assess-gate-test', 'cr-assess-gate-test', $1::uuid, $2, $3::uuid)`,
+		seededGroupID, changeRequestAssessGateMemberUserID, changeRequestAssessGateGroupID); err != nil {
+		t.Fatalf("seed duplicate team_member row: %v", err)
+	}
+
+	teamID := changeRequestAssessGateGroupID
+	assess := domain.ChangeRequestStateAssess
+	if _, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
+		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &assess}, "cr-assess-gate-test"); err != nil {
+		t.Fatalf("PatchChangeRequest(assignedTeamId=%s, state=assess): %v", teamID, err)
+	}
+
+	var approverCount int
+	if scanErr := scoped.QueryRow(sys,
+		`SELECT COUNT(*) FROM approval_stage_approver asa JOIN approval_stage ast ON ast.id = asa.stage_id WHERE ast.work_item_id = $1`,
+		changeRequestAssessGateTestID).Scan(&approverCount); scanErr != nil {
+		t.Fatalf("count approval_stage_approver: %v", scanErr)
+	}
+	if approverCount != 1 {
+		t.Fatalf("approval_stage_approver rows for a user with a duplicated team_member row = %d, want exactly 1", approverCount)
 	}
 }

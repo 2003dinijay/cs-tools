@@ -2472,13 +2472,22 @@ always showed empty. This proved `csm-sync-service` already populates
 for every other `work_item` type, so the fix is read-only — no create/patch
 write-path changes were needed alongside it.
 
-**That frontend gate was itself later found to be stale and removed.** It
-was carried over unchanged from when New→Assess sent a ServiceNow "Request
-Approval" action (which genuinely needed a team) and was never re-verified
-after that transition became a plain, ungated `{state: "assess"}` PATCH (see
-"New→Assess is a plain, ungated state change" below) — there is no evidence
-the plain state change itself requires a team. `ChangeRequestActionBar.tsx`'s
-`TARGET_BLOCKED_REASON` no longer has an `assess` entry.
+**That frontend gate was briefly believed stale, removed, then confirmed
+real and reinstated — with real teeth this time.** It was carried over
+unchanged from when New→Assess sent a ServiceNow "Request Approval" action
+(which genuinely needed a team), and since that transition became a plain,
+ungated `{state: "assess"}` PATCH (see "New→Assess is a plain, ungated state
+change" below) it looked like a stale leftover with nothing left to gate —
+removed for exactly that reason. **This was then confirmed wrong by explicit
+product decision**: an assigned team is still compulsory before Assess, for
+a different and still-current reason — see the approver auto-provisioning
+paragraph below, which needs a team to have anyone to provision at all.
+`ChangeRequestActionBar.tsx`'s `TARGET_BLOCKED_REASON` has an `assess` entry
+again. This time the requirement is **also enforced server-side**, in
+`PatchChangeRequest` itself — not just the frontend courtesy check — so no
+direct API caller can bypass it: a `{state: "assess"}` PATCH with no
+`assignedTeamId` in the same request, and none already on the record, is
+rejected with a `ValidationError` before anything is written.
 
 **Writing `AssignedTeamID` is now wired too.** `PatchChangeRequestRequest.
 AssignedTeamID` sets `work_item.assignment_group_id` the same way
@@ -2495,6 +2504,72 @@ different field with no confirmed equivalence to this one (see this file's
 own comment on `CreateChangeRequestFromServiceNow`). Filtering search
 results by it (the parsed filter array's `assignmentGroupId`) is also still
 unwired — see `changeRequestWhereClause`'s own comment.
+
+**The moment a change request actually enters Assess, the assigned team's
+own members are auto-provisioned as that stage's approvers.** By explicit
+product decision: a real change request was found live sitting in Assess
+with its own Approvals tab completely empty — "no approval stages recorded
+for this change request" — with no way for anyone to ever approve it into
+Authorize, because nothing anywhere writes `approval_stage`/
+`approval_stage_approver` rows on this data source; those are normally only
+ever populated by `csm-sync-service` mirroring ServiceNow's own
+`sysapproval_group`/`sysapproval_approver` tables, and this particular
+record evidently had none synced (or none in ServiceNow at all — the two
+cases can't be told apart from here). `PatchChangeRequest` now closes that
+gap itself: whenever a `{state: "assess"}` patch succeeds and the work item
+has no `approval_stage` row yet, it creates one (`assignment_group_id` = the
+effective assigned team from this same request or already on the record),
+then inserts one `requested` `approval_stage_approver` row for every
+`team_member` whose **`group_id`** (not `team_id` — see below) matches that
+team, all inside the same transaction as the state write. `GetChangeRequestApprovals`
+needed no changes at all — it already renders whatever `approval_stage`/
+`approval_stage_approver` rows exist, regardless of who wrote them.
+
+Scoped to "no `approval_stage` exists yet" so a resent `{state: "assess"}`
+(a retry, or an unrelated field edit while already in Assess) can never
+duplicate the stage or re-seed approvers over whatever
+`DecideChangeRequestApproval` has since done to it — that method owns
+everything about an existing stage from the moment this provisioning step
+creates it.
+
+**Two correctness issues caught on CodeRabbit review of this same addition,
+both fixed here:**
+
+1. **An assigned team with no members used to still create an empty stage.**
+   The original ordering created `approval_stage` first, then queried
+   `team_member` — if that query came back empty, the transaction still
+   committed a stage with zero approvers, and since "no `approval_stage`
+   exists yet" is exactly the condition this whole block gates on, a later
+   `{state: "assess"}` PATCH would never retry provisioning either: the
+   change request was left stuck in Assess with an approval nobody could
+   ever decide. Fixed by querying and validating `team_member` **before**
+   creating the stage: an empty result now rejects the whole PATCH with a
+   `ValidationError` ("the assigned team has no members to provision as
+   Assess approvers") and leaves no `approval_stage` row behind at all,
+   rather than committing a dead-end one.
+2. **`team_member` has no unique constraint on `(user_id, group_id)`.** A
+   duplicated membership row would have queued one `approval_stage_approver`
+   INSERT per duplicate, seeding two `requested` rows for the same person.
+   The query is now `SELECT DISTINCT user_id`, not `SELECT user_id`.
+
+**`team_member.group_id` is the real column for this, and it is distinct
+from `team_member.team_id`.** `team_member` carries both: `team_id`
+(`NOT NULL`) is the hand-curated internal team registry's own FK (`team`,
+migration 0033 — what `POST /groups/search`/`GetUserGroups` read), while
+`group_id` (nullable) is a separate FK into the same `"group"` table
+`work_item.assignment_group_id`/`approval_stage.assignment_group_id`
+reference. These are two distinct tables with two distinct id spaces in
+general — checked directly: `team_member.group_id` was unpopulated (0 of
+160 rows) in the local compose stack's own seed data, and only one `team`
+row happens to share an id with a `"group"` row at all (the local seed
+script's own "Example Corp ABT" fixture, deliberately given matching ids
+purely for that one fixture's convenience, not a general guarantee). Do not
+substitute `team_id` for this lookup even though the one local test fixture
+would appear to work either way — `group_id` is the column whose FK
+actually points at the same `"group"` row the rest of this feature uses
+everywhere else, and is presumably populated in real synced environments by
+`csm-sync-service` mirroring ServiceNow's own `sys_user_grmember`, the same
+way `assignment_group_id` itself is populated from `sys_user_group`.
 
 **Fields still with no real column anywhere, left unset rather than
 guessed at** (see `ChangeRequestRepository`'s own doc comment for the full
