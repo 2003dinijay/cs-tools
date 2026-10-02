@@ -772,9 +772,58 @@ func (s *caseService) addRequestedWatchers(ctx context.Context, caseID, callerEm
 	if len(requestedWatcherIDs) == 0 {
 		return
 	}
+	requestedWatcherIDs = s.resolveWatcherEmailsToUserIDs(ctx, requestedWatcherIDs)
+	if len(requestedWatcherIDs) == 0 {
+		return
+	}
 	if _, _, err := s.repo.SetCaseWatchList(ctx, caseID, requestedWatcherIDs, callerEmail); err != nil {
 		slog.ErrorContext(ctx, "create case: adding requested watchers failed", "caseId", caseID, "error", err)
 	}
+}
+
+// resolveWatcherEmailsToUserIDs maps a watch list submitted as email addresses
+// (the Customer Portal contract) to platform user ids, which is what
+// work_item_watcher.user_id stores. A list that is not entirely emails (user
+// ids from the CSM portal, or anything else) is returned unchanged, so the
+// id-based path behaves exactly as before. An email with no matching platform
+// user is dropped, and a lookup failure drops the whole list: this runs after
+// the case already exists upstream, so it must never fail the create. Both
+// cases are logged by count only, since the values are personal data.
+func (s *caseService) resolveWatcherEmailsToUserIDs(ctx context.Context, values []string) []string {
+	for _, v := range values {
+		if !emailRE.MatchString(v) {
+			return values
+		}
+	}
+	users, _, err := s.userRepo.SearchUsers(ctx, domain.SearchUsersRequest{
+		Pagination: domain.Pagination{Limit: len(values), Offset: 0},
+		Filters:    domain.SearchUsersFilters{Emails: values},
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "create case: resolving requested watcher emails failed, no watchers added", "requested", len(values), "error", err)
+		return nil
+	}
+	byEmail := make(map[string]string, len(users))
+	for _, u := range users {
+		byEmail[strings.ToLower(u.Email)] = u.ID
+	}
+	ids := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		id, ok := byEmail[strings.ToLower(v)]
+		if !ok {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if dropped := len(values) - len(ids); dropped > 0 {
+		slog.WarnContext(ctx, "create case: some requested watcher emails did not match a platform user and were not added", "requested", len(values), "unresolved_or_duplicate", dropped)
+	}
+	return ids
 }
 
 // GetCaseByID implements CaseService.
