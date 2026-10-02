@@ -1373,6 +1373,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("PATCH /cases/{id}", caseHandler.PatchCase)
 	mux.HandleFunc("POST /cases", caseHandler.CreateCase)
 	mux.HandleFunc("POST /cases/search", caseHandler.SearchCases)
+	// One-shot read of every announcement case for the CSM announcement
+	// registry (it groups the whole set, so paging 50 at a time through
+	// /cases/search was ~100 slow queries). Postgres-backed case data only;
+	// where this route is absent the registry falls back to paging
+	// /cases/search. Internal callers only.
+	if cfg.DataSource != config.DataSourceServiceNow {
+		announcementRegistryHandler := handler.NewAnnouncementRegistryHandler(
+			service.NewAnnouncementRegistryService(repository.NewAnnouncementRegistryRepository(repository.NewScoped(db)), accessSvc))
+		mux.HandleFunc("POST /announcements/registry/cases", internalOnly(accessSvc, announcementRegistryHandler.SearchRegistryCases))
+	}
 	mux.HandleFunc("POST /cases/aggregate", caseHandler.AggregateCases)
 	mux.HandleFunc("POST /cases/feedback/search", feedbackHandler.SearchFeedback)
 	mux.HandleFunc("POST /cases/feedback/aggregate", feedbackHandler.AggregateFeedback)

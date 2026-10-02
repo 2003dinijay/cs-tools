@@ -2177,6 +2177,13 @@ func validateCaseFieldValues(g domain.CaseFilterGroup) error {
 // defaults, returning the request with Parsed populated. SearchCases and
 // AggregateCases share it, so an aggregate rejects exactly what a search would.
 func (s *caseService) prepareCaseSearch(ctx context.Context, req domain.SearchCasesRequest) (domain.SearchCasesRequest, error) {
+	return prepareCaseSearchFilters(ctx, req)
+}
+
+// prepareCaseSearchFilters is prepareCaseSearch without the receiver (the body
+// never used it), so other services -- the announcement registry -- apply the
+// exact same validation and filter parsing as /cases/search.
+func prepareCaseSearchFilters(ctx context.Context, req domain.SearchCasesRequest) (domain.SearchCasesRequest, error) {
 	if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 		return domain.SearchCasesRequest{}, err
 	}
