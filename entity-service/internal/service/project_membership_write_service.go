@@ -240,11 +240,15 @@ func (s *projectMembershipWriteService) Invite(ctx context.Context, projectID st
 	if err != nil {
 		return domain.ProjectMembership{}, err
 	}
-	if len(roles) == 0 {
+	if len(roles) == 0 && !req.IsCsIntegrationUser {
 		// An invitation granting nothing is a mistake, not a valid state:
 		// the person would be provisioned an identity and see an empty
 		// portal. A role change may legitimately clear the list (see
-		// UpdateRoles); a first invitation may not.
+		// UpdateRoles); a first invitation may not -- except for a CS
+		// integration user (see CreateProjectMembershipRequest.IsCsIntegrationUser's
+		// own doc comment), which by definition gets no Asgardeo identity
+		// and no invitation e-mail, so "sees an empty portal" never applies
+		// to it in the first place.
 		return domain.ProjectMembership{}, &apierror.ValidationError{Msg: "roles must contain at least one role"}
 	}
 

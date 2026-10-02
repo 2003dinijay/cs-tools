@@ -527,6 +527,38 @@ func TestMembershipWrite_InviteRejectsBadInput(t *testing.T) {
 	}
 }
 
+// TestMembershipWrite_InviteAllowsNoRolesForAnIntegrationUser is a regression
+// test for a real, reported bug: the Customer Portal's Add Contact form
+// correctly sends zero human-facing roles for a CS integration user (it has
+// no Asgardeo identity and never signs in, so Portal user/Lead/Security
+// Contact/Admin are all meaningless for it) -- but Invite's own "roles must
+// contain at least one role" guard used to reject every such request
+// unconditionally, since it only ever checked the role list, never
+// IsCsIntegrationUser. A non-integration contact with zero roles must still
+// be rejected -- that's still a mistake, just not for an integration user.
+func TestMembershipWrite_InviteAllowsNoRolesForAnIntegrationUser(t *testing.T) {
+	h := newInternalWriteHarness(t)
+	req := inviteReq() // no roles
+	req.IsCsIntegrationUser = true
+
+	if _, err := h.svc.Invite(context.Background(), writeProjectID, req); err != nil {
+		t.Fatalf("Invite() error = %v, want nil for a roleless integration user", err)
+	}
+	if len(h.repo.upserts) != 1 {
+		t.Fatalf("upserts = %d, want 1", len(h.repo.upserts))
+	}
+	if !h.repo.upserts[0].IsCsIntegrationUser {
+		t.Error("membership upsert isCsIntegrationUser = false, want true")
+	}
+
+	h2 := newInternalWriteHarness(t)
+	_, err := h2.svc.Invite(context.Background(), writeProjectID, inviteReq()) // no roles, not an integration user
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("err = %v, want ValidationError for a roleless non-integration contact", err)
+	}
+}
+
 // TestMembershipWrite_InviteConflictsWithAnActiveMembership: re-inviting
 // somebody who is already on the project is a 409; a DEACTIVATED membership
 // is instead brought back as a RE-INVITED one.
