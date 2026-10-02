@@ -4109,12 +4109,15 @@ paths:
         Internal callers only. Backs the CSM announcement registry, which groups the
         whole matching set before it paginates, so it needs every row rather than a
         page. Same request shape as POST /cases/search, except that type is always
-        announcement whatever the request says, anyOf is rejected, and pagination and
-        sortBy are ignored. Returns every match newest-updated first, with total equal
-        to the number returned. More than 10,000 matches is a 400 rather than a
-        truncated list. Available on the Postgres data source only; on the ServiceNow
-        data source the route does not exist and the registry pages POST /cases/search
-        instead.
+        announcement whatever the request says, anyOf is rejected, groupBy is ignored,
+        and pagination is ignored. sortBy is validated like /cases/search but does not
+        change the order: results are always newest-updated first (updatedOn
+        descending, id as tie-break). Only the fields the registry reads are populated
+        (id, number, internalId, type, subject, state, createdOn, updatedOn, createdBy
+        and project); every other field of the case view is null. total equals the
+        number returned. More than 10,000 matches is a 400 rather than a truncated
+        list. Available on the Postgres data source only; on the ServiceNow data source
+        the route does not exist and the registry pages POST /cases/search instead.
       operationId: searchAnnouncementRegistryCases
       requestBody:
         required: true
@@ -4147,12 +4150,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: The caller's identity could not be resolved to a scope (for example no verified identity on the request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
   /cases/aggregate:
     post:
       summary: >-

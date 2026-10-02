@@ -117,6 +117,20 @@ func TestAnnouncementRegistryRepoMatchesPagedSearchIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("exactly the bound is allowed, one over is an error", func(t *testing.T) {
+		all, err := regRepo.SearchAnnouncementCases(ctx, requests["one project"], scope, 10000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := len(all)
+		if got, err := regRepo.SearchAnnouncementCases(ctx, requests["one project"], scope, n); err != nil || len(got) != n {
+			t.Fatalf("maxRows == %d matches: got %d rows, err %v; want all %d rows and no error", n, len(got), err, n)
+		}
+		if _, err := regRepo.SearchAnnouncementCases(ctx, requests["one project"], scope, n-1); !errors.Is(err, repository.ErrTooManyRegistryRows) {
+			t.Fatalf("maxRows == %d with %d matches: want ErrTooManyRegistryRows, got %v", n-1, n, err)
+		}
+	})
+
 	t.Run("more rows than the bound is an error, not a truncated list", func(t *testing.T) {
 		_, err := regRepo.SearchAnnouncementCases(ctx, requests["one project"], scope, 5)
 		if !errors.Is(err, repository.ErrTooManyRegistryRows) {

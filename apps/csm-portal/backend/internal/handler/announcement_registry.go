@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
@@ -44,6 +45,11 @@ type entityAnnouncementRegistryClient interface {
 type registryOneShotCasesClient interface {
 	SearchAnnouncementRegistryCases(ctx context.Context, body []byte) ([]byte, error)
 }
+
+// The assertion in fetchAllMatchingCases is a runtime one, so a rename or a
+// changed signature on the real client would silently send every registry load
+// back through the slow paged loop. This makes that a compile error instead.
+var _ registryOneShotCasesClient = (*entity.CustomerEntityClient)(nil)
 
 // AnnouncementRegistryHandler backs the Announcements tab's registry list —
 // see SearchAnnouncementRegistry's own doc comment for what it actually does

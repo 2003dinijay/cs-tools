@@ -18,6 +18,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -46,7 +47,7 @@ type AnnouncementRegistryRepository interface {
 
 // ErrTooManyRegistryRows is returned by SearchAnnouncementCases when the
 // result would exceed maxRows.
-var ErrTooManyRegistryRows = fmt.Errorf("too many matching announcements")
+var ErrTooManyRegistryRows = errors.New("too many matching announcements")
 
 type announcementRegistryRepo struct {
 	db *Scoped
@@ -66,6 +67,12 @@ func NewAnnouncementRegistryRepository(db *Scoped) AnnouncementRegistryRepositor
 // before (updatedOn descending, id as tie-break). The select list is cut down
 // to what the registry reads, so Postgres drops the joins nothing references.
 func (r *announcementRegistryRepo) SearchAnnouncementCases(ctx context.Context, req domain.SearchCasesRequest, scope SearchScope, maxRows int) ([]domain.SearchCaseView, error) {
+	// Every row below is labelled an announcement, so refuse a request that
+	// does not filter to announcements only (the service forces this; a future
+	// caller that skips the service must not get other case types mislabelled).
+	if len(req.Parsed.Types) != 1 || !strings.EqualFold(req.Parsed.Types[0], "announcement") {
+		return nil, fmt.Errorf("announcement registry search requires a type filter of exactly announcement, got %v", req.Parsed.Types)
+	}
 	// Same explicit identity stamp as caseRepo.SearchCases.
 	ctx = WithCallerIdentity(ctx, scope)
 	where, args, argIdx, err := buildCaseSearchWhere(req, scope)
