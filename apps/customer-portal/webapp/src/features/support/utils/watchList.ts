@@ -20,6 +20,20 @@ import type { ProjectContact } from "@features/settings/types/users";
 const REGISTERED_STATUS = "REGISTERED";
 
 /**
+ * Whether a project contact has completed registration. Invited, re-invited and
+ * deactivated contacts are not registered, and the backend rejects a case with
+ * a watcher who is not a registered contact of the project.
+ *
+ * @param {ProjectContact} contact - The project contact.
+ * @returns {boolean} True when the contact's membership status is REGISTERED.
+ */
+export function isRegisteredContact(
+  contact: Pick<ProjectContact, "membershipStatus">,
+): boolean {
+  return (contact.membershipStatus ?? "").trim().toUpperCase() === REGISTERED_STATUS;
+}
+
+/**
  * Whether a project contact may be offered (and pre-selected) as a case watcher.
  *
  * The backend rejects a case-creation request when any watcher is not a
@@ -44,8 +58,7 @@ export function isEligibleWatcher(
     | "isSecurityContact"
   >,
 ): boolean {
-  const isRegistered =
-    (contact.membershipStatus ?? "").trim().toUpperCase() === REGISTERED_STATUS;
+  const isRegistered = isRegisteredContact(contact);
   const hasEligibleRole =
     contact.isCsAdmin ||
     contact.isCsIntegrationUser ||

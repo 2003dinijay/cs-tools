@@ -16,7 +16,7 @@
 
 
 import { describe, expect, it } from "vitest";
-import { isEligibleWatcher } from "@features/support/utils/watchList";
+import { isEligibleWatcher, isRegisteredContact } from "@features/support/utils/watchList";
 
 const base = {
   isCsAdmin: false,
@@ -74,6 +74,21 @@ describe("isEligibleWatcher", () => {
           ...role,
         }),
       ).toBe(true);
+    },
+  );
+});
+
+describe("isRegisteredContact", () => {
+  it.each(["REGISTERED", "registered", "  Registered "])("accepts %j", (membershipStatus) => {
+    expect(isRegisteredContact({ membershipStatus })).toBe(true);
+  });
+
+  it.each(["INVITED", "RE-INVITED", "DEACTIVATED", "", undefined])(
+    "rejects %j",
+    (membershipStatus) => {
+      expect(
+        isRegisteredContact({ membershipStatus: membershipStatus as string }),
+      ).toBe(false);
     },
   );
 });
