@@ -71,14 +71,24 @@ function out(s) {
   used += s.length; gs.info(s);
 }
 
-/* A GlideDuration column is a datetime offset from the epoch. getNumericValue
-   on the element gives milliseconds; seconds is what a human and a Go test
-   can both read. */
+/* A GlideDuration column is stored as a datetime offset from 1970-01-01, so
+   its seconds-since-epoch IS its length in seconds.
+ *
+ * *** THE FIRST VERSION OF THIS RETURNED 0 FOR EVERY FIELD. *** It used
+ * gr.getElement(field).getNumericValue(), which came back empty on this
+ * instance for every duration column — including on a row reading 79.35%
+ * availability, which is impossible. The whole dump shipped with
+ * absDownSecs/astSecs/mtbfSecs all zero, and the Go golden test was briefly
+ * written to SKIP any case whose ast did not match its period: with every
+ * ast zero that skipped all 68 cases and reported a clean pass having
+ * verified nothing.
+ *
+ * Reading the stored string and re-parsing it is slower and it works. */
 function durSecs(gr, field) {
   try {
-    var v = gr.getElement(field);
-    if (!v || !v.getNumericValue) return 0;
-    return Math.round(v.getNumericValue() / 1000);
+    var raw = gr.getValue(field);
+    if (!raw) return 0;
+    return Math.round(new GlideDateTime(raw).getNumericValue() / 1000);
   } catch (e) { return 0; }
 }
 

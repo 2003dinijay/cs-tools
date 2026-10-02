@@ -55,6 +55,35 @@ import (
 
 const goldenPath = "testdata/availability_golden.jsonl"
 
+// *** ROWS WHERE SERVICENOW DISAGREES WITH ITSELF. ***
+// Not tolerated discrepancies — rows proven stale by ServiceNow's own other
+// rows. Each needs the evidence written out, because "the golden test has
+// an exclusion list" is how a real bug gets parked.
+//
+// The suite would otherwise be 67/68, and the one failure is not the port.
+var knownStaleRows = map[string]string{
+	// Four rows are fed by one identical outage, 1758077536..1758089278
+	// (11742s). Three agree with this calculator to five decimals:
+	//
+	//   daily  2025-09-17 00:00   SN 86.40972   mine 86.40972
+	//   daily  2025-09-16 18:30   SN 86.40972   mine 86.40972
+	//   weekly 2025-09-14 18:30   SN 98.05853   mine 98.05853
+	//   weekly 2025-09-15 00:00   SN 98.80456   mine 98.05853  <- this row
+	//
+	// The two weekly rows cover the same seven-day length and the same
+	// single outage, which is wholly inside both — so they CANNOT
+	// legitimately differ, and ServiceNow holds both. This row's figure is
+	// exactly what an outage ending 4512s earlier would produce, so it is a
+	// snapshot taken before the outage was extended and never recalculated.
+	// "Recalculate Availability" fires on an end change; it evidently did
+	// not reach this row.
+	//
+	// Worth carrying beyond this test: some of the 212,904 rows being
+	// migrated are stale in the same way, so the mirrored history is not
+	// self-consistent.
+	"db394b511b483a500bb3da47b04bcbf9": "stale: its sibling weekly row, same outage and same window length, agrees with this calculator; this one matches an outage 4512s shorter",
+}
+
 type goldenCase struct {
 	Kind       string  `json:"kind"`
 	Row        string  `json:"row"`
@@ -141,10 +170,28 @@ func TestAvailability_GoldenAgainstServiceNow(t *testing.T) {
 		t.Fatal("golden data contains no cases with downtime; it cannot " +
 			"distinguish this calculator from one that always returns 100")
 	}
+	var withDurations int
+	for _, c := range cases {
+		if c.Want.ASTSecs > 0 {
+			withDurations++
+		}
+	}
 	t.Logf("replaying %d cases (%d with downtime) from ServiceNow", len(cases), downtimeCases)
+	if withDurations == 0 {
+		t.Logf("*** DURATIONS NOT VERIFIED: every case has astSecs=0, which is " +
+			"script 49's durSecs() helper failing, not real data. " +
+			"Percentages, counts and met_commitment ARE verified, and " +
+			"absolute_availability pins the downtime to five decimals. " +
+			"Fix durSecs and re-dump to compare the raw durations too. ***")
+	} else if withDurations < len(cases) {
+		t.Logf("durations verified on %d of %d cases", withDurations, len(cases))
+	}
 
 	for _, c := range cases {
 		t.Run(c.Type+"/"+c.Row, func(t *testing.T) {
+			if why, stale := knownStaleRows[c.Row]; stale {
+				t.Skipf("KNOWN-STALE SERVICENOW ROW — %s", why)
+			}
 			outages := make([]AvailabilityOutage, 0, len(c.Outages))
 			for _, o := range c.Outages {
 				outages = append(outages, AvailabilityOutage{
@@ -167,19 +214,38 @@ func TestAvailability_GoldenAgainstServiceNow(t *testing.T) {
 				TargetPercent: c.Target,
 			})
 
+			// *** THE DUMP'S DURATION FIELDS CAME BACK ZERO. ***
+			// Script 49's durSecs() helper failed against this instance —
+			// every astSecs/absDownSecs/mtbfSecs is 0, including on a case
+			// reading 79.35% availability, which is impossible. So the
+			// stored durations are NOT usable as expectations.
+			//
+			// The first version of this test skipped any case whose ast did
+			// not equal the period. With every ast zero that skipped all 68
+			// and reported a clean pass having verified nothing — the exact
+			// failure mode a golden harness exists to prevent. Now the
+			// durations are simply not compared, loudly, and everything
+			// else still is.
+			//
+			// *** WHAT IS STILL VERIFIED IS THE PART THAT MATTERS. ***
+			// absolute_availability is 100*(period-downtime)/period, so
+			// matching it to five decimals pins the downtime to within
+			// a fraction of a second. The counts pin the merge behaviour.
+			// Those two are also exactly what the dashboard publishes.
 			period := c.EndEpoch - c.StartEpoch
-			if c.Want.ASTSecs != period {
-				t.Skipf("stored ast is %ds for a %ds period, so this "+
-					"commitment has a narrower schedule than 24x7; the "+
-					"golden harness does not reconstruct spans", c.Want.ASTSecs, period)
+			if c.Want.ASTSecs > 0 {
+				if c.Want.ASTSecs != period {
+					t.Skipf("stored ast is %ds for a %ds period, so this "+
+						"commitment has a narrower schedule than 24x7; the "+
+						"golden harness does not reconstruct spans", c.Want.ASTSecs, period)
+				}
+				checkSecs(t, "absolute_downtime", got.AbsoluteDowntime, c.Want.AbsDownSecs)
+				checkSecs(t, "scheduled_downtime", got.ScheduledDowntime, c.Want.SchedDownSecs)
+				checkSecs(t, "ast", got.ScheduledTotal, c.Want.ASTSecs)
+				checkSecs(t, "allowed_downtime", got.AllowedDowntime, c.Want.AllowedSecs)
+				checkSecs(t, "mtbf", got.MTBF, c.Want.MTBFSecs)
+				checkSecs(t, "mtrs", got.MTRS, c.Want.MTRSSecs)
 			}
-
-			checkSecs(t, "absolute_downtime", got.AbsoluteDowntime, c.Want.AbsDownSecs)
-			checkSecs(t, "scheduled_downtime", got.ScheduledDowntime, c.Want.SchedDownSecs)
-			checkSecs(t, "ast", got.ScheduledTotal, c.Want.ASTSecs)
-			checkSecs(t, "allowed_downtime", got.AllowedDowntime, c.Want.AllowedSecs)
-			checkSecs(t, "mtbf", got.MTBF, c.Want.MTBFSecs)
-			checkSecs(t, "mtrs", got.MTRS, c.Want.MTRSSecs)
 
 			checkPct(t, "absolute_availability", got.AbsoluteAvailability, c.Want.AbsAvail)
 			checkPct(t, "scheduled_availability", got.ScheduledAvailability, c.Want.SchedAvail)
