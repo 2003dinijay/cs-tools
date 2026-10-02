@@ -437,6 +437,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			Failures:    eventPublishFailureSvc,
 			Access:      accessSvc,
 			Invitations: service.NewInvitationValidator(salesEntityClient, repository.NewAccountPartnerRepository(db)),
+			Admins:      repository.NewAccountAdminRepository(db),
 		}))
 	}
 

@@ -1339,14 +1339,9 @@ which is accurate: retrying is both safe and the right thing to do.
 
 ### The four endpoints
 
-All four are **internal-caller-only** via `AccessService.ResolveScope`
-(`AccessScope.Unrestricted`, i.e. `AUTH_INTERNAL_CLIENT_IDS`), exactly as the
-onboarding-step endpoints are — anyone else gets 403 before anything
-downstream is touched. A portal END USER must never call them directly:
-whether this particular customer admin may invite this particular person into
-this particular project is the portal backend's decision, made against the
-account it has already scoped the session to. This service deliberately does
-not re-derive that from a forwarded user token.
+Authorized like case writes (`authorizeMembershipWrite`): trusted callers pass; a customer must be
+REGISTERED on the project (else 404) and hold `customer_admin`/`partner_admin` (else 403), and their
+own email replaces `inviterEmail`. No `AUTH_INTERNAL_CLIENT_IDS` entry is needed for the portal.
 
 `{id}` is the CSM project UUID, so these sit beside the search and get already
 in that namespace. `{email}` keys the membership — the way the Customer Portal
