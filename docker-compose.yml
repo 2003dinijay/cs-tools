@@ -496,7 +496,13 @@ services:
       # apps/csm-portal/README.md), which is what the verification checks
       # for.
       EMAIL_SENDING_ENABLED: "false"
-      CALL_SENDING_ENABLED: "false"
+      # Off unless trigger-escalation.sh -c call|both turns it on for one run.
+      CALL_SENDING_ENABLED: ${CALL_SENDING_ENABLED:-false}
+      # Twilio, only used when a call channel is chosen. Supplied by
+      # trigger-escalation.sh from the service's own .env, never committed.
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
       # The escalation ladder. REDIS_ADDR is what makes the engine exist at
       # all: without it cmd/server never builds one, and an incident.created
       # is consumed and ignored.
@@ -518,10 +524,17 @@ services:
       # nobody, and says so at startup.
       GOOGLE_CHAT_SPACES: ${GOOGLE_CHAT_SPACES:-}
       INCIDENT_ESCALATION_ROSTER: ${INCIDENT_ESCALATION_ROSTER:-}
+      # Resolve rungs from the Team Schedule -- the rule table escalation.yaml
+      # and rules.go describe. Unset, the server falls back to the stand-in
+      # roster above, which routes by the retired fourteen-row table: a local
+      # run then reported rule=R13 for an incident R5 should have routed.
+      INCIDENT_ESCALATION_RESOLVER: ${INCIDENT_ESCALATION_RESOLVER:-team-schedule}
       PORT: "8080"
     volumes:
       - csm-dev-certs:/certs:ro
-      - ./scripts/csm-compose/escalation.yaml:/config/escalation.yaml:ro
+      # ESCALATION_CONFIG_FILE lets trigger-escalation.sh mount a per-run copy
+      # (a different channel, your own number); unset, the committed file.
+      - ${ESCALATION_CONFIG_FILE:-./scripts/csm-compose/escalation.yaml}:/config/escalation.yaml:ro
     ports:
       - "127.0.0.1:8083:8080"
 

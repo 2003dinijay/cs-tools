@@ -120,7 +120,13 @@ VALUES
    md5('seed-team-cre-leadership')::uuid, md5('seed-cs-head')::uuid, 'cs_head')
 ON CONFLICT (id) DO NOTHING;
 
--- Alert-duty nominees (T1/T2/T3) for every ABT team.
+-- Alert-duty nominees (T1/T2/T3) for every ABT team, and for Americas.
+--
+-- Americas is not an ABT (team.type is cre), but its nominees are LEVEL_0 on
+-- the whole night: R5 calls them, and R6 calls them alongside a rota member.
+-- Selected by key rather than by type because "migration" is type cre too and
+-- has no nomination of its own. Without these a night-time run resolved
+-- LEVEL_0 to nobody -- NO_RECIPIENTS -- and its first call was LEVEL_1.
 --
 -- LEVEL_0 on the business-hours rules IS these people: R2 calls the incident's
 -- own ABT's three, and R3 -- an incident on no ABT -- calls one from each ABT,
@@ -139,7 +145,7 @@ UPDATE team_member m
    SET alert_tier = NULL, updated_on = now(), updated_by = 'seed:alert-duty'
   FROM team t
  WHERE t.id = m.team_id
-   AND t.type IN ('cre-abt', 'sre-abt')
+   AND (t.type IN ('cre-abt', 'sre-abt') OR t.key = 'americas')
    AND m.alert_tier IS NOT NULL;
 
 WITH ranked AS (
@@ -147,7 +153,7 @@ WITH ranked AS (
          ROW_NUMBER() OVER (PARTITION BY tm.team_id ORDER BY tm.user_id) AS rn
     FROM team_member tm
     JOIN team t ON t.id = tm.team_id
-   WHERE t.type IN ('cre-abt', 'sre-abt')
+   WHERE (t.type IN ('cre-abt', 'sre-abt') OR t.key = 'americas')
      AND tm.role = 'engineer'
 )
 UPDATE team_member m
