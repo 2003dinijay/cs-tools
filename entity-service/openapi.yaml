@@ -2870,8 +2870,8 @@ paths:
 
         Postgres data source only, and registered only when
         CSM_MIGRATION_PORTAL_WRITES_ENABLED is exactly "true" — the path 404s otherwise.
-        Internal callers only (AUTH_INTERNAL_CLIENT_IDS); a portal end user is 403. The
-        calling portal backend decides who may invite whom.
+        A customer must be REGISTERED on the project (else 404) and hold customer_admin or
+        partner_admin (else 403); their own email is the inviter. Internal callers pass.
       operationId: inviteProjectContact
       tags: [Projects]
       parameters:
@@ -2902,7 +2902,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an allow-listed internal service.
+          description: The caller is a customer without customer_admin or partner_admin.
           content:
             application/json:
               schema:
@@ -2951,7 +2951,7 @@ paths:
 
 
         Registered and gated exactly like the invitation: Postgres data source,
-        CSM_MIGRATION_PORTAL_WRITES_ENABLED exactly "true", internal callers only.
+        CSM_MIGRATION_PORTAL_WRITES_ENABLED exactly "true", same authorization as the invitation.
       operationId: validateProjectContact
       tags: [Projects]
       parameters:
@@ -2982,7 +2982,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an allow-listed internal service.
+          description: The caller is a customer without customer_admin or partner_admin.
           content:
             application/json:
               schema:
@@ -3021,7 +3021,7 @@ paths:
         Here contactId is the contact's E-MAIL ADDRESS (URL-encoded), not a user id — the
         same key the invite and role-change operations use. Postgres data source only,
         registered only when CSM_MIGRATION_PORTAL_WRITES_ENABLED is exactly "true".
-        Internal callers only.
+        Same authorization as POST /projects/{id}/contacts.
       operationId: resendProjectContactInvitation
       tags: [Projects]
       parameters:
@@ -3049,7 +3049,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an allow-listed internal service.
+          description: The caller is a customer without customer_admin or partner_admin.
           content:
             application/json:
               schema:
@@ -3154,8 +3154,8 @@ paths:
         Here contactId is the contact's E-MAIL ADDRESS (URL-encoded), not a user id —
         the key a membership is addressed by, unlike the GET on this same path, which
         takes the contact's platform user id. Postgres data source only, registered
-        only when CSM_MIGRATION_PORTAL_WRITES_ENABLED is exactly "true". Internal
-        callers only.
+        only when CSM_MIGRATION_PORTAL_WRITES_ENABLED is exactly "true". Same
+        authorization as POST /projects/{id}/contacts.
       operationId: updateProjectContactRoles
       tags: [Projects]
       parameters:
@@ -3193,7 +3193,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an allow-listed internal service.
+          description: The caller is a customer without customer_admin or partner_admin.
           content:
             application/json:
               schema:
@@ -3239,7 +3239,7 @@ paths:
 
         Here contactId is the contact's E-MAIL ADDRESS (URL-encoded), not a user id.
         Postgres data source only, registered only when
-        CSM_MIGRATION_PORTAL_WRITES_ENABLED is exactly "true". Internal callers only.
+        CSM_MIGRATION_PORTAL_WRITES_ENABLED is exactly "true". Same authorization as POST /projects/{id}/contacts.
       operationId: deactivateProjectContact
       tags: [Projects]
       parameters:
@@ -3267,7 +3267,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an allow-listed internal service.
+          description: The caller is a customer without customer_admin or partner_admin.
           content:
             application/json:
               schema:
