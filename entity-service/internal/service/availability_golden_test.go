@@ -38,6 +38,24 @@ import (
 // The data comes from discovery script 49, which dumps real periods, the
 // real outages that fed them, and ServiceNow's own computed answers.
 //
+// *** THE DUMP IS FROM wso2sndev, NOT PRODUCTION. *** That bounds what this
+// proves, and the bound is worth stating precisely rather than glossing:
+//
+//   PROVEN, and instance-independent -- the ARITHMETIC. Merging overlaps,
+//   trimming to period boundaries, the availability/count formulas. These
+//   are engine behaviour, identical on any instance, and 67 real cases
+//   agree to five decimal places.
+//
+//   NOT PROVEN -- behaviour against CONFIGURATION dev does not have. Every
+//   dev commitment is 24x7 with a target of 100, so no case here exercises
+//   a narrow schedule, a maintenance window, a target below 100, or a
+//   planned outage overlapping a real one. If production carries any of
+//   those, this suite says nothing about them and the unit tests are the
+//   only cover.
+//
+// Re-running script 49 against production would close that gap, and is the
+// single highest-value thing left to do on this port.
+//
 // ── WHY v1 ROWS CAN JUDGE A v2 PORT ─────────────────────────────────────
 // The instance runs v1 and this is a v2 port, which looks disqualifying.
 // It is not, for FIXED period types, because the engines agree where it
