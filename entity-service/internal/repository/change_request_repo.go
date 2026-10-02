@@ -957,6 +957,35 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 	}
 	defer tx.Rollback(ctx)
 
+	// New->Assess is compulsorily gated on an assigned team -- a real,
+	// reported bug: this used to be a frontend-only courtesy check
+	// (ChangeRequestActionBar.tsx's TARGET_BLOCKED_REASON), easily bypassed
+	// by any direct API caller, and it was carried over stale from an
+	// earlier, since-disproven model of this transition. Confirmed by
+	// explicit product decision that assignedTeamId IS genuinely required to
+	// move to Assess -- enforced here, not just in the UI, so this can never
+	// be skipped. Accepts either a team supplied in this same request or one
+	// already on the record (e.g. set via a prior PATCH through the Edit
+	// dialog, then "Move to Assess" sent as its own separate request).
+	var effectiveAssignedTeamID *string
+	if req.State != nil && strings.EqualFold(string(*req.State), "assess") {
+		if req.AssignedTeamID != nil {
+			effectiveAssignedTeamID = req.AssignedTeamID
+		} else {
+			var existing *string
+			if err := tx.QueryRow(ctx, `SELECT assignment_group_id::text FROM work_item WHERE id = $1`, id).Scan(&existing); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return domain.ChangeRequest{}, &apierror.NotFoundError{Msg: "change request not found"}
+				}
+				return domain.ChangeRequest{}, fmt.Errorf("patch change request: check existing assigned team: %w", err)
+			}
+			effectiveAssignedTeamID = existing
+		}
+		if effectiveAssignedTeamID == nil || *effectiveAssignedTeamID == "" {
+			return domain.ChangeRequest{}, &apierror.ValidationError{Msg: "assignedTeamId is required before moving a change request to Assess"}
+		}
+	}
+
 	wiSets := []string{"updated_on = NOW()", "updated_by = $1"}
 	wiArgs := []any{actorEmail}
 	wiIdx := 2
@@ -1158,6 +1187,67 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 				return domain.ChangeRequest{}, &apierror.ValidationError{Msg: field + " does not refer to an existing record"}
 			}
 			return domain.ChangeRequest{}, fmt.Errorf("patch change request: %w", err)
+		}
+	}
+
+	// The moment a change request actually enters Assess, the assigned
+	// team's own members are provisioned as its Assess-stage approvers --
+	// by explicit product decision, so there is always someone to approve
+	// once a request reaches Assess, instead of landing in the Approvals
+	// tab with nobody listed. Scoped to "no approval_stage exists for this
+	// work item yet" so a later no-op {state: "assess"} PATCH (or any other
+	// field edit while already in Assess) can never duplicate the stage or
+	// re-seed approvers for a group that may since have changed; the
+	// Assess->Authorize cascade (DecideChangeRequestApproval) owns
+	// everything about this stage from here on.
+	if req.State != nil && strings.EqualFold(string(*req.State), "assess") {
+		var existingStages int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, id).Scan(&existingStages); err != nil {
+			return domain.ChangeRequest{}, fmt.Errorf("patch change request: check existing approval stages: %w", err)
+		}
+		if existingStages == 0 {
+			var stageID string
+			if err := tx.QueryRow(ctx,
+				`INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id)
+				 VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1, $2, $3::uuid)
+				 RETURNING id`,
+				actorEmail, id, *effectiveAssignedTeamID).Scan(&stageID); err != nil {
+				return domain.ChangeRequest{}, fmt.Errorf("patch change request: create approval stage: %w", err)
+			}
+
+			// team_member.group_id (distinct from its own team_id, the
+			// hand-curated internal registry's own FK) is exactly what
+			// identifies membership of a "group" row -- the same table
+			// work_item.assignment_group_id/approval_stage.assignment_group_id
+			// both reference. Populated by csm-sync-service mirroring
+			// ServiceNow's own sys_user_grmember, same as every other
+			// group-derived column in this schema.
+			memberRows, err := tx.Query(ctx, `SELECT user_id FROM team_member WHERE group_id = $1::uuid`, *effectiveAssignedTeamID)
+			if err != nil {
+				return domain.ChangeRequest{}, fmt.Errorf("patch change request: list assignment group members: %w", err)
+			}
+			var memberIDs []string
+			for memberRows.Next() {
+				var uid string
+				if err := memberRows.Scan(&uid); err != nil {
+					memberRows.Close()
+					return domain.ChangeRequest{}, fmt.Errorf("patch change request: scan assignment group member: %w", err)
+				}
+				memberIDs = append(memberIDs, uid)
+			}
+			memberRows.Close()
+			if err := memberRows.Err(); err != nil {
+				return domain.ChangeRequest{}, fmt.Errorf("patch change request: assignment group members: %w", err)
+			}
+
+			for _, uid := range memberIDs {
+				if _, err := tx.Exec(ctx,
+					`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, work_item_id, stage_id, approver_user_id, status)
+					 VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1, $2, $3, $4::uuid, 'requested')`,
+					actorEmail, id, stageID, uid); err != nil {
+					return domain.ChangeRequest{}, fmt.Errorf("patch change request: seed approval stage approver: %w", err)
+				}
+			}
 		}
 	}
 
