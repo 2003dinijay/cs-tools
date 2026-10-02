@@ -504,13 +504,13 @@ func TestMembershipWrite_CommitFailureRecordsTheOrphan(t *testing.T) {
 
 func TestMembershipWrite_InviteRejectsBadInput(t *testing.T) {
 	cases := []struct {
-		name string
-		req  domain.CreateProjectMembershipRequest
+		name                string
+		req                 domain.CreateProjectMembershipRequest
+		wantNoSalesforceHit bool // false for "no roles": see its own comment below
 	}{
-		{"no email", domain.CreateProjectMembershipRequest{Roles: []string{"Portal user"}}},
-		{"malformed email", domain.CreateProjectMembershipRequest{Email: "not-an-address", Roles: []string{"Portal user"}}},
-		{"no roles", domain.CreateProjectMembershipRequest{Email: writeEmail}},
-		{"unknown role", domain.CreateProjectMembershipRequest{Email: writeEmail, Roles: []string{"Billing Contact"}}},
+		{"no email", domain.CreateProjectMembershipRequest{Roles: []string{"Portal user"}}, true},
+		{"malformed email", domain.CreateProjectMembershipRequest{Email: "not-an-address", Roles: []string{"Portal user"}}, true},
+		{"unknown role", domain.CreateProjectMembershipRequest{Email: writeEmail, Roles: []string{"Billing Contact"}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -520,10 +520,62 @@ func TestMembershipWrite_InviteRejectsBadInput(t *testing.T) {
 			if !errors.As(err, &ve) {
 				t.Fatalf("err = %v, want ValidationError", err)
 			}
-			if len(h.se.contactSearchs) != 0 {
+			if tc.wantNoSalesforceHit && len(h.se.contactSearchs) != 0 {
 				t.Error("input is rejected before Salesforce is called")
 			}
 		})
+	}
+}
+
+// TestMembershipWrite_InviteRejectsNoRolesAfterResolvingTheContact covers the
+// "no roles" case on its own, since its behavior genuinely differs from the
+// other bad-input cases above: the zero-roles check can only be applied
+// after Salesforce's REAL contact classification is known (see
+// salesforceWriteIntent.ValidateContactType's own doc comment) -- a caller
+// cannot bypass it by merely claiming IsCsIntegrationUser on an existing,
+// real contact. So unlike a malformed email or an unknown role, this
+// request DOES reach Salesforce (a search, and a create for a
+// not-yet-existing address) before being refused, and still writes no
+// project membership.
+func TestMembershipWrite_InviteRejectsNoRolesAfterResolvingTheContact(t *testing.T) {
+	h := newInternalWriteHarness(t)
+	_, err := h.svc.Invite(context.Background(), writeProjectID, domain.CreateProjectMembershipRequest{Email: writeEmail})
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("err = %v, want ValidationError", err)
+	}
+	if len(h.se.contactSearchs) != 1 {
+		t.Errorf("contact searches = %d, want 1 (the contact must be resolved before the roles check runs)", len(h.se.contactSearchs))
+	}
+	if len(h.se.pcSearches) != 0 {
+		t.Error("no project-membership search/write may happen once the roles check refuses the request")
+	}
+}
+
+// TestMembershipWrite_InviteIgnoresTheClaimedIntegrationFlagForAnExistingContact
+// is the regression test for the CodeRabbit finding this fix addresses: a
+// caller cannot invite an EXISTING, real (non-integration) Salesforce
+// contact with zero roles just by setting IsCsIntegrationUser: true in the
+// request -- Salesforce's own stored classification must win, exactly as
+// CreateProjectMembershipRequest.IsCsIntegrationUser's own doc comment
+// already promises for every other effect of that flag.
+func TestMembershipWrite_InviteIgnoresTheClaimedIntegrationFlagForAnExistingContact(t *testing.T) {
+	h := newInternalWriteHarness(t)
+	h.se.contact = &salesentity.Contact{
+		ID: sampleStr(writeContactSfID), Email: sampleStr(writeEmail),
+		IsCsIntegrationUser: boolPtr(false), // Salesforce says: a real human contact
+	}
+
+	_, err := h.svc.Invite(context.Background(), writeProjectID, domain.CreateProjectMembershipRequest{
+		Email:               writeEmail,
+		IsCsIntegrationUser: true, // the caller's claim -- must not override Salesforce's own record
+	})
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("err = %v, want ValidationError (an existing non-integration contact still needs at least one role)", err)
+	}
+	if len(h.se.pcSearches) != 0 || len(h.se.createdPC) != 0 {
+		t.Error("no project membership may be created for a refused invitation")
 	}
 }
 
