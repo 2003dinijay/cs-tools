@@ -349,7 +349,7 @@ export default function SlaReportPage(): JSX.Element {
 
   const handleRowClick = (rowData: CaseDataList) => {
     // This report's case rows are still ServiceNow-sourced (see
-    // postgresSplReportsClient's own doc comment on the backend -- report
+    // postgresReportsClient's own doc comment on the backend -- report
     // case data isn't part of the accounts/projects/cases entity-service
     // merge), so caseSysId is a bare ServiceNow sysid, not entity-service's
     // own dashed UUID -- sysidToUuid converts it to what SPL's own
