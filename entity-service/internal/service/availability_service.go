@@ -1,0 +1,241 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package service
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
+)
+
+// The availability sweep: the Go replacement for ServiceNow's nightly
+// "Calculate Availability" job.
+//
+// *** THIS IS THE PRODUCER HALF, AND IT IS THE HALF THAT WAS MISSING. ***
+// The Cloud Status Dashboard's three endpoints are already ported and read
+// service_availability out of Postgres. Nothing in Postgres WRITES it:
+// csm-sync-service mirrors the rows from ServiceNow, so at cutover the
+// dashboard's uptime figures would simply stop advancing — with no error
+// anywhere, because reading a table nobody updates looks exactly like
+// reading a table where nothing happened.
+
+// AvailabilitySweepResult reports what one run did.
+type AvailabilitySweepResult struct {
+	Subjects int `json:"subjects"`
+	Rows     int `json:"rows"`
+	Failed   int `json:"failed"`
+}
+
+// AvailabilityService recomputes availability for every committed subject.
+type AvailabilityService interface {
+	Sweep(ctx context.Context, now time.Time) (AvailabilitySweepResult, error)
+}
+
+type availabilityService struct {
+	repo repository.AvailabilityRepository
+}
+
+// NewAvailabilityService constructs the sweep.
+func NewAvailabilityService(repo repository.AvailabilityRepository) AvailabilityService {
+	return &availabilityService{repo: repo}
+}
+
+// Sweep recomputes every period for every subject.
+//
+// One subject failing does not abort the run. ServiceNow's calculator
+// swallows per-subject errors too (`catch (e) { gs.info(...) }`), and the
+// reasoning holds here for a different reason: this writes the numbers a
+// customer-facing status page reads, and one offering with bad data must not
+// freeze every other offering's uptime at yesterday's value.
+func (s *availabilityService) Sweep(ctx context.Context, now time.Time) (AvailabilitySweepResult, error) {
+	subjects, err := s.repo.Subjects(ctx)
+	if err != nil {
+		return AvailabilitySweepResult{}, fmt.Errorf("availability: load subjects: %w", err)
+	}
+
+	var res AvailabilitySweepResult
+	res.Subjects = len(subjects)
+
+	for _, subject := range subjects {
+		written, err := s.sweepSubject(ctx, subject, now)
+		if err != nil {
+			res.Failed++
+			// The commitment id, never the offering name: this log line
+			// goes to a shared sink and an offering name is close enough to
+			// customer-identifying to keep out of it.
+			slog.ErrorContext(ctx, "availability: subject failed",
+				"commitment", subject.ServiceCommitmentID, "err", err)
+			continue
+		}
+		res.Rows += written
+	}
+	return res, nil
+}
+
+func (s *availabilityService) sweepSubject(
+	ctx context.Context, subject repository.AvailabilitySubject, now time.Time,
+) (int, error) {
+	subjectID := subject.SubjectID()
+	if subjectID == "" {
+		// Neither an offering nor a CI. ServiceNow's "Only Offering or CI"
+		// rule should prevent it, and digiops-cs migration 0124 adds a CHECK
+		// that enforces it — but the mirror can be mid-backfill, so this
+		// reports rather than panics on a nil deref.
+		return 0, fmt.Errorf("commitment %s has neither a service offering nor a CI", subject.ServiceCommitmentID)
+	}
+
+	loc := loadCommitmentLocation(ctx, subject.Timezone)
+	schedule, err := s.scheduleFor(ctx, subject)
+	if err != nil {
+		return 0, err
+	}
+
+	segments := AvailabilitySegmentsFor(now, loc)
+
+	// Outages are fetched ONCE over the widest window and reused, rather
+	// than queried per segment. Eight segments per subject times ~146
+	// subjects is 1,168 queries a run against a table the dashboard is also
+	// reading; one query per subject is 146. The calculator trims to each
+	// segment itself, so the result is identical.
+	widest := segments[0]
+	for _, seg := range segments {
+		if seg.Begin.Before(widest.Begin) {
+			widest.Begin = seg.Begin
+		}
+		if seg.End.After(widest.End) {
+			widest.End = seg.End
+		}
+	}
+	outageRows, err := s.repo.OutagesFor(ctx, subjectID, widest.Begin, widest.End)
+	if err != nil {
+		return 0, err
+	}
+	outages := make([]AvailabilityOutage, 0, len(outageRows))
+	for _, o := range outageRows {
+		outages = append(outages, AvailabilityOutage{
+			Begin: o.Begin, End: o.End, Type: normaliseOutageType(o.Type),
+		})
+	}
+
+	var fixed, rolling []repository.ComputedAvailabilityRow
+	var rollingTypes []string
+
+	for _, seg := range segments {
+		result := CalculateAvailability(AvailabilityInputs{
+			Begin: seg.Begin, End: seg.End,
+			Outages:       outages,
+			Schedule:      schedule,
+			TargetPercent: subject.TargetPercent,
+		})
+
+		row := repository.ComputedAvailabilityRow{
+			ServiceOfferingID:   subject.ServiceOfferingID,
+			CmdbCiID:            subject.CmdbCiID,
+			ServiceCommitmentID: subject.ServiceCommitmentID,
+			Type:                seg.Type,
+			Begin:               seg.Begin,
+			End:                 seg.End,
+			TimeZone:            subject.Timezone,
+			AbsoluteDowntime:    result.AbsoluteDowntime,
+			ScheduledDowntime:   result.ScheduledDowntime,
+			ScheduledTotal:      result.ScheduledTotal,
+			AbsoluteAvail:       result.AbsoluteAvailability,
+			ScheduledAvail:      result.ScheduledAvailability,
+			AbsoluteCount:       result.AbsoluteCount,
+			ScheduledCount:      result.ScheduledCount,
+			MTBF:                result.MTBF,
+			MTRS:                result.MTRS,
+			AllowedDowntime:     result.AllowedDowntime,
+			CommitmentMet:       result.CommitmentMet,
+		}
+
+		if seg.Rolling {
+			rolling = append(rolling, row)
+			rollingTypes = append(rollingTypes, seg.Type)
+			continue
+		}
+		fixed = append(fixed, row)
+	}
+
+	if err := s.repo.UpsertFixed(ctx, fixed); err != nil {
+		return 0, err
+	}
+	if err := s.repo.ReplaceRolling(ctx, subjectID, subject.ServiceCommitmentID, rollingTypes, rolling); err != nil {
+		return len(fixed), err
+	}
+	return len(fixed) + len(rolling), nil
+}
+
+// normaliseOutageType maps the Postgres enum onto the lowercase values the
+// calculator compares against.
+//
+// *** THE TWO VOCABULARIES ARE NOT THE SAME SIZE. *** Postgres has
+// DEGRADATION | OUTAGE | PLANNED; ServiceNow's availability engine knows
+// only outage and planned. DEGRADATION maps to neither on purpose — it falls
+// through to a value the accumulator ignores, which is exactly what
+// ServiceNow does with it. 115 of the instance's 635 outages are
+// degradations and none of them has ever moved a percentage.
+func normaliseOutageType(t string) string {
+	switch t {
+	case "OUTAGE", "outage":
+		return OutageTypeOutage
+	case "PLANNED", "planned":
+		return OutageTypePlanned
+	default:
+		return t
+	}
+}
+
+// loadCommitmentLocation resolves the commitment's timezone.
+//
+// Falls back to UTC rather than to the host's local zone. A scheduled task's
+// local zone is whatever the container was built with, so defaulting to it
+// would make the period boundaries depend on the deployment — the single
+// most confusing possible failure, because the numbers would be subtly wrong
+// and nothing would look broken.
+func loadCommitmentLocation(ctx context.Context, name string) *time.Location {
+	if name == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		slog.WarnContext(ctx, "availability: unknown commitment timezone, using UTC",
+			"timezone", name, "err", err)
+		return time.UTC
+	}
+	return loc
+}
+
+func (s *availabilityService) scheduleFor(
+	ctx context.Context, subject repository.AvailabilitySubject,
+) (AvailabilitySchedule, error) {
+	// No schedule means unrestricted. ServiceNow treats a null schedule and
+	// a 24x7 one identically, and every commitment on the instance today
+	// points at the stock "24 x 7" record — which is why every stored row
+	// has an AST of exactly 24 hours.
+	if subject.ScheduleID == nil {
+		return AlwaysOn{}, nil
+	}
+	spans, err := s.repo.ScheduleSpans(ctx, *subject.ScheduleID)
+	if err != nil {
+		return nil, err
+	}
+	return NewSpanSchedule(spans)
+}
