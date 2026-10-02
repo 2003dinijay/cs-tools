@@ -247,10 +247,9 @@ func (s *snDeploymentService) createDeploymentSNFirstDetails(ctx context.Context
 	if err != nil {
 		return "", "", "", time.Time{}, err
 	}
-	createdOn, err = time.Parse(snCreatedOnLayout, snResp.Deployment.CreatedOn)
-	if err != nil {
-		return "", "", "", time.Time{}, fmt.Errorf("sn create deployment: parse createdOn %q: %w", snResp.Deployment.CreatedOn, err)
-	}
+	// The reply's createdOn is deliberately ignored: it is a wall-clock time in
+	// a non-UTC zone, and parsing it as UTC would store created_on hours in the
+	// future. The current time is used instead.
 	// deployment.number is NOT NULL UNIQUE on the Postgres side (see
 	// createDeploymentSNFirst's own doc comment) -- an empty id/number here
 	// would either fail the Postgres insert with an opaque constraint
@@ -259,10 +258,56 @@ func (s *snDeploymentService) createDeploymentSNFirstDetails(ctx context.Context
 	if snResp.Deployment.ID == "" {
 		return "", "", "", time.Time{}, &apierror.ValidationError{Msg: "sn create deployment: response id is required"}
 	}
-	if snResp.Deployment.Number == "" {
-		return "", "", "", time.Time{}, &apierror.ValidationError{Msg: "sn create deployment: response number is required"}
+	number = snResp.Deployment.Number
+	if number == "" {
+		// The create reply carries id/createdOn/createdBy but no number
+		// (observed live). The record already exists in SN at this point, so
+		// look the number up by id rather than failing and orphaning it. The
+		// scripted API is shared with the live customer portal and must not
+		// change, hence the fix lives here.
+		number, err = s.fetchDeploymentNumber(ctx, req, snResp.Deployment.ID)
+		if err != nil {
+			return "", "", "", time.Time{}, err
+		}
+		if number == "" {
+			return "", "", "", time.Time{}, &apierror.ValidationError{Msg: "sn create deployment: response number is required"}
+		}
 	}
-	return sysidToUUID(snResp.Deployment.ID), snResp.Deployment.Number, snResp.Deployment.CreatedBy, createdOn, nil
+	return sysidToUUID(snResp.Deployment.ID), number, snResp.Deployment.CreatedBy, time.Now().UTC(), nil
+}
+
+// fetchDeploymentNumber reads back the number of a just-created deployment.
+// There is no get-by-id endpoint on the SN side, so it pages through the
+// existing /deployments/search (scoped to the deployment's project only: the
+// upstream proxy accepts no other filter) and picks the row whose id matches sysid. Errors name sysid so an operator
+// can find the SN record if Postgres never got its row.
+func (s *snDeploymentService) fetchDeploymentNumber(ctx context.Context, req domain.CreateDeploymentRequest, sysid string) (string, error) {
+	token := middleware.UserIDTokenFromContext(ctx)
+	const pageLimit = 50 // the data source rejects search limits above 50
+	for offset := 0; ; offset += pageLimit {
+		payload := snDeploymentSearchPayload{
+			Filters: snDeploymentFilters{
+				ProjectIDs: []string{uuidToSysid(req.ProjectID)},
+			},
+			Pagination: snProjectPagination{Limit: pageLimit, Offset: offset},
+		}
+		raw, err := s.client.Post(ctx, "/deployments/search", token, payload)
+		if err != nil {
+			return "", fmt.Errorf("sn create deployment: fetch number for created deployment %s: %w", sysid, err)
+		}
+		var page snDeploymentsResponse
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return "", fmt.Errorf("sn create deployment: fetch number for created deployment %s: parse response: %w", sysid, err)
+		}
+		for _, d := range page.Deployments {
+			if strings.EqualFold(d.ID, sysid) {
+				return d.Number, nil
+			}
+		}
+		if len(page.Deployments) < pageLimit || offset+pageLimit >= page.TotalRecords {
+			return "", nil
+		}
+	}
 }
 
 // snUpdateDeploymentPayload is the Choreo PATCH /deployments/{id} request body.

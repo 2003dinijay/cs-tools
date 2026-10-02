@@ -461,40 +461,37 @@ describe("CsmChangeRequestDetailPage — Move to Assess (New -> Assess)", () => 
   });
 
   /**
-   * New -> Assess used to be blocked here when the CR had no assigned team,
-   * from when this transition sent a ServiceNow "Request Approval" action.
-   * It is now a plain, ungated `{ state: "assess" }` PATCH with no
-   * relationship to approval, so the button must stay enabled regardless of
-   * `assignedTeam`.
+   * New -> Assess is compulsorily gated on an assigned team, by explicit
+   * product decision: the team's own members become the Assess-stage
+   * approvers the moment the transition lands, so there is no valid way to
+   * enter Assess with no team to assign that stage to. The backend itself
+   * rejects this PATCH with no team regardless of what the button does --
+   * this is the UI-side half that keeps the click from round-tripping into
+   * that rejection.
    */
-  it("leaves Move to Assess enabled and clickable when the state allows it but there is no assigned team", () => {
+  it("shows a disabled Move to Assess button when the state allows it but there is no assigned team", () => {
     mockQueryResult({
       data: { ...BASE_CR, legalNextStates: ["assess"], assignedTeam: null },
     });
     renderPage();
     const button = screen.getByRole("button", { name: /move to assess/i });
-    expect(button).toBeEnabled();
+    expect(button).toBeDisabled();
     fireEvent.click(button);
-    expect(patchMutateMock).toHaveBeenCalledWith(
-      { id: "chg-1", patch: { state: "assess" } },
-      expect.objectContaining({ onError: expect.any(Function) }),
-    );
+    expect(patchMutateMock).not.toHaveBeenCalled();
   });
 
-  it("renders no blocked-reason tooltip wrapper for Move to Assess when there is no assigned team", () => {
+  it("exposes the blocked reason to keyboard users via a focusable, labeled wrapper", () => {
     mockQueryResult({
       data: { ...BASE_CR, legalNextStates: ["assess"], assignedTeam: null },
     });
-    const { container } = renderPage();
-    // The blocked-reason wrapper (rendered only when a target has a non-null
-    // blockedReason) sets `aria-label="<label>: <reason>"` -- a plain enabled
-    // button never does, so this is the reliable signal. `tabindex="0"` is
-    // not: MUI's own Button sets it on every enabled button regardless of
-    // any wrapper.
-    expect(container.querySelector('[aria-label^="Move to Assess:"]')).toBeNull();
-    expect(
-      screen.getByRole("button", { name: /move to assess/i }),
-    ).toHaveAccessibleName("Move to Assess");
+    renderPage();
+    const button = screen.getByRole("button", { name: /move to assess/i });
+    const focusTarget = button.closest('[tabindex="0"]');
+    expect(focusTarget).not.toBeNull();
+    expect(focusTarget).toHaveAttribute(
+      "aria-label",
+      "Move to Assess: Set an assigned team before moving to Assess",
+    );
   });
 
   it("leaves Move to Assess enabled when both the state and the assigned team allow it", () => {
