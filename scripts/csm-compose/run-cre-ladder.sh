@@ -47,6 +47,8 @@ When it was reported -- pick one; the engine derives the shift from it
       --shift SHIFT         LK | LK_MORNING | LK_EVENING | LK_WEEKEND | USA | USA_WEEKEND
   -t, --at TIME             IST: HH:MM (next weekday) or YYYY-MM-DDTHH:MM
       --weekend             with --at HH:MM, the next Saturday/Sunday instead
+      --elevated            start it as a priority elevation (incident.priority_elevated
+                            to --severity) instead of a new incident
                                                                           default --shift LK
 
 How a rung reaches people
@@ -89,6 +91,7 @@ ABT=""
 SHIFT=""
 AT=""
 WEEKEND=""
+ELEVATED=""
 CHANNEL=log
 LIVE=""
 TO=""
@@ -120,6 +123,7 @@ while [ $# -gt 0 ]; do
     --shift)        need "$@"; SHIFT="$2"; shift 2 ;;
     -t|--at)        need "$@"; AT="$2"; shift 2 ;;
     --weekend)      WEEKEND=1; shift ;;
+    --elevated)     ELEVATED=1; shift ;;
     -c|--channel)   need "$@"; CHANNEL="$2"; shift 2 ;;
     --live)         LIVE=1; shift ;;
     --to)           need "$@"; TO="$2"; shift 2 ;;
@@ -277,6 +281,7 @@ else
   args+=(--shift "${SHIFT}")
 fi
 [ -n "${LIVE}" ]   && args+=(--live --to "${TO}")
+[ -n "${ELEVATED}" ] && args+=(--kind elevated)
 [ -n "${ACK_AT}" ] && args+=(--cancel-at "${ACK_AT}" --cancel-by "${ACK_BY}")
 
 when="${SHIFT:+shift ${SHIFT}}"
@@ -294,7 +299,7 @@ speed="real time -- about ${LADDER_LEN} minutes if nobody acknowledges"
 
 cat <<SUMMARY
 ------------------------------------------------------------------------------
- severity     ${SEVERITY} (${PRIORITY})
+ severity     ${SEVERITY} (${PRIORITY})${ELEVATED:+ -- raised to this by a priority elevation}
  assigned to  ${ABT:-UNASSIGNED -- no ABT}
  reported     ${when}  (the engine derives the shift)
  reaches      ${reach}
