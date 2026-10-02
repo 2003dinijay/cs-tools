@@ -78,7 +78,7 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 		{"usage metrics viewer can view only", []string{"test-usage-metrics-viewer"}, []Permission{PermView}},
 		{"timecard approver can view, use time cards and updates, and approve", []string{"test-timecard-approver"}, []Permission{PermView, PermTimeCardsAndUpdates, PermApproveTimeCard}},
 		{"dashboard designer can view only", []string{"test-dashboard-designer"}, []Permission{PermView}},
-		{"sales solutions role alone grants none of these -- it holds PermViewSharedEntity/PermSPLAccess instead, tested separately", []string{"test-sales-solutions"}, nil},
+		{"sales solutions role alone grants none of these -- it holds PermViewSharedEntity/PermViewerAccess instead, tested separately", []string{"test-sales-solutions"}, nil},
 		{"roles combine", []string{"test-viewer", "test-escalator", "test-attachment-downloader"}, []Permission{PermView, PermEscalate, PermDownloadAttachment}},
 		{"unrelated roles grant nothing", []string{"wso2-everyone", "admin", "agent", "customer"}, nil},
 		{"no roles", nil, nil},
@@ -123,7 +123,7 @@ func TestAccessGuard_PermViewSharedEntityScope(t *testing.T) {
 		}
 	})
 
-	t.Run("sales_solutions holds PermViewSharedEntity but not plain PermView or PermSPLAccess", func(t *testing.T) {
+	t.Run("sales_solutions holds PermViewSharedEntity but not plain PermView or PermViewerAccess", func(t *testing.T) {
 		roles := []string{"test-sales-solutions"}
 		if status, _ := serveWithRoles(g, PermViewSharedEntity, roles); status != http.StatusNoContent {
 			t.Errorf("PermViewSharedEntity: status = %d, want 204", status)
@@ -131,30 +131,30 @@ func TestAccessGuard_PermViewSharedEntityScope(t *testing.T) {
 		if status, _ := serveWithRoles(g, PermView, roles); status != http.StatusForbidden {
 			t.Errorf("PermView: status = %d, want 403 -- sales_solutions must not gain every PermView route", status)
 		}
-		// PermSPLAccess is Viewer-gated, not sales_solutions -- see
-		// PermSPLAccess's own doc comment.
-		if status, _ := serveWithRoles(g, PermSPLAccess, roles); status != http.StatusForbidden {
-			t.Errorf("PermSPLAccess: status = %d, want 403 (Viewer-gated, not sales_solutions)", status)
+		// PermViewerAccess is Viewer-gated, not sales_solutions -- see
+		// PermViewerAccess's own doc comment.
+		if status, _ := serveWithRoles(g, PermViewerAccess, roles); status != http.StatusForbidden {
+			t.Errorf("PermViewerAccess: status = %d, want 403 (Viewer-gated, not sales_solutions)", status)
 		}
 	})
 
-	// Guards PermSPLAccess's grant (Viewer, unconditionally) -- see
-	// PermSPLAccess's own doc comment for why.
-	t.Run("plain viewer holds PermSPLAccess", func(t *testing.T) {
-		if status, _ := serveWithRoles(g, PermSPLAccess, []string{"test-viewer"}); status != http.StatusNoContent {
-			t.Errorf("PermSPLAccess: status = %d, want 204", status)
+	// Guards PermViewerAccess's grant (Viewer, unconditionally) -- see
+	// PermViewerAccess's own doc comment for why.
+	t.Run("plain viewer holds PermViewerAccess", func(t *testing.T) {
+		if status, _ := serveWithRoles(g, PermViewerAccess, []string{"test-viewer"}); status != http.StatusNoContent {
+			t.Errorf("PermViewerAccess: status = %d, want 204", status)
 		}
 	})
 
-	// PermSPLAccess is the audience check, not the nav-default choice --
+	// PermViewerAccess is the audience check, not the nav-default choice --
 	// a caller holding both viewer and cs_engineer still passes it, even
 	// though usePortalView.ts's cs_engineer-first precedence means they'd
-	// default to the CS/ABT nav in the webapp. See PermSPLAccess's own doc
+	// default to the CS/ABT nav in the webapp. See PermViewerAccess's own doc
 	// comment for why the backend deliberately doesn't exclude cs_engineer
 	// here.
-	t.Run("viewer alongside cs_engineer still holds PermSPLAccess", func(t *testing.T) {
-		if status, _ := serveWithRoles(g, PermSPLAccess, []string{"test-viewer", "test-cs-engineer"}); status != http.StatusNoContent {
-			t.Errorf("PermSPLAccess: status = %d, want 204", status)
+	t.Run("viewer alongside cs_engineer still holds PermViewerAccess", func(t *testing.T) {
+		if status, _ := serveWithRoles(g, PermViewerAccess, []string{"test-viewer", "test-cs-engineer"}); status != http.StatusNoContent {
+			t.Errorf("PermViewerAccess: status = %d, want 204", status)
 		}
 	})
 }

@@ -176,29 +176,29 @@ func main() {
 	// it too.
 	accessGuard := handler.NewAccessGuard(loadAccessConfig())
 
-	// SupportPortalLite — off by default; see loadSPLConfig. Ported
+	// SupportPortalLite — off by default; see loadViewerConfig. Ported
 	// from digiops-cs/apps/support-portal-lite's Ballerina backend, which is
 	// being retired.
-	splEnabled, splCfg := loadSPLConfig()
-	var splHandlers *splHandlerSet
-	if splEnabled {
+	viewerEnabled, viewerCfg := loadViewerConfig()
+	var viewerHandlers *viewerHandlerSet
+	if viewerEnabled {
 		salesEntityClient := entity.NewSalesEntityClient(entity.SalesEntityConfig{
-			BaseURL:      splCfg.salesEntityBaseURL,
+			BaseURL:      viewerCfg.salesEntityBaseURL,
 			TokenURL:     oauth2TokenURL,
 			ClientID:     oauth2ClientID,
 			ClientSecret: oauth2ClientSecret,
 		})
 		snClient := servicenow.NewClient(servicenow.Config{
-			BaseURL:              splCfg.snHost,
-			Username:             splCfg.snUsername,
-			Password:             splCfg.snPassword,
-			EscalationTemplateID: splCfg.snEscalationTemplateID,
-			TeamScheduleURL:      splCfg.teamScheduleURL,
+			BaseURL:              viewerCfg.snHost,
+			Username:             viewerCfg.snUsername,
+			Password:             viewerCfg.snPassword,
+			EscalationTemplateID: viewerCfg.snEscalationTemplateID,
+			TeamScheduleURL:      viewerCfg.teamScheduleURL,
 		})
 		driveClient := googledrive.NewClient(googledrive.Config{
-			ClientID:     splCfg.driveClientID,
-			ClientSecret: splCfg.driveClientSecret,
-			RefreshToken: splCfg.driveRefreshToken,
+			ClientID:     viewerCfg.driveClientID,
+			ClientSecret: viewerCfg.driveClientSecret,
+			RefreshToken: viewerCfg.driveRefreshToken,
 		})
 		// A live DB ping happens here, unlike every other client above —
 		// this backend's standing convention (see loadDashboards,
@@ -211,7 +211,7 @@ func main() {
 		// cause is obvious. A 30s deadline bounds the ping so a hung network
 		// doesn't hang startup forever.
 		riskCtx, riskCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		riskClient, err := risk.NewClient(riskCtx, risk.Config{DSN: splCfg.riskMySQLDSN})
+		riskClient, err := risk.NewClient(riskCtx, risk.Config{DSN: viewerCfg.riskMySQLDSN})
 		riskCancel()
 		if err != nil {
 			slog.Error("failed to connect to SPL_RISK_MYSQL_DSN", "err", err)
@@ -229,22 +229,22 @@ func main() {
 		// /spl/* contract. Only attachments (no entity-service storage path)
 		// and account escalations (CreateEscalation is an explicit stub on
 		// this data source) remain ServiceNow-backed and SPL-specific.
-		splPostgresLookups := handler.NewPostgresSplLookupsClient(customerEntityClient, snClient)
-		splPostgresReports := handler.NewPostgresSplReportsClient(customerEntityClient, snClient)
-		splPostgresUsageMetrics := handler.NewPostgresSplUsageMetricsClient(customerEntityClient)
+		postgresLookups := handler.NewPostgresLookupsClient(customerEntityClient, snClient)
+		postgresReports := handler.NewPostgresReportsClient(customerEntityClient, snClient)
+		postgresUsageMetrics := handler.NewPostgresUsageMetricsClient(customerEntityClient)
 
-		splHandlers = &splHandlerSet{
-			cases:          handler.NewSplCaseHandler(snClient, accessGuard),
-			reports:        handler.NewSplReportsHandler(splPostgresReports, accessGuard),
-			schedule:       handler.NewSplScheduleHandler(snClient, accessGuard, splCfg.teamScheduleURL),
-			attachments:    handler.NewSplAttachmentsHandler(snClient, accessGuard),
-			lookups:        handler.NewSplLookupsHandler(splPostgresLookups, accessGuard),
-			usageMetrics:   handler.NewUsageMetricsHandler(splPostgresUsageMetrics, accessGuard),
-			files:          handler.NewSplFilesHandler(driveClient, accessGuard),
+		viewerHandlers = &viewerHandlerSet{
+			cases:          handler.NewViewerCaseHandler(snClient, accessGuard),
+			reports:        handler.NewReportsHandler(postgresReports, accessGuard),
+			schedule:       handler.NewViewerScheduleHandler(snClient, accessGuard, viewerCfg.teamScheduleURL),
+			attachments:    handler.NewAttachmentsHandler(snClient, accessGuard),
+			lookups:        handler.NewLookupsHandler(postgresLookups, accessGuard),
+			usageMetrics:   handler.NewUsageMetricsHandler(postgresUsageMetrics, accessGuard),
+			files:          handler.NewFilesHandler(driveClient, accessGuard),
 			customerHealth: handler.NewCustomerHealthHandler(riskClient, snClient, accessGuard),
-			userInfo:       handler.NewSplUserInfoHandler(customerEntityClient, accessGuard),
+			userInfo:       handler.NewUserInfoHandler(customerEntityClient, accessGuard),
 			userScan:       handler.NewSplUserScanHandler(salesEntityClient, customerEntityClient, accessGuard),
-			accountEsc:     handler.NewSplAccountHandler(snClient, accessGuard),
+			accountEsc:     handler.NewViewerAccountHandler(snClient, accessGuard),
 		}
 		slog.Info("SPL_ENABLED is on: SupportPortalLite's /spl/* endpoints are active")
 	}
@@ -561,7 +561,7 @@ func main() {
 	// Called manually today; not yet wired into real incident/case creation.
 	route("POST /notifications/google-chat/alerts", handler.PermWrite, notificationHandler.PostGoogleChatAlert)
 
-	// SupportPortalLite — see splHandlers above. Registered only when
+	// SupportPortalLite — see viewerHandlers above. Registered only when
 	// SPL_ENABLED is on, so an unconfigured deployment sees no new routes at
 	// all. None of the routes below carry a /spl/ prefix: SPL and
 	// csm-portal are the same backend, so the prefix only ever existed to
@@ -582,60 +582,60 @@ func main() {
 	// Case attachments are unmerged for the same no-entity-service-equivalent
 	// reason.
 	//
-	// Every route below is registered with PermSPLAccess, the blanket SPL
+	// Every route below is registered with PermViewerAccess, the blanket SPL
 	// audience gate (formerly SPL_ALLOWED_GROUPS's raw-Asgardeo-groups
-	// check -- see PermSPLAccess's own doc comment). EscalateCase,
+	// check -- see PermViewerAccess's own doc comment). EscalateCase,
 	// DownloadAttachment, and every usage-metrics route additionally check
 	// a narrower permission (PermEscalate/PermDownloadAttachment/
 	// PermUsageMetricsViewer) inside the handler itself, the same layered
 	// shape SPL_ADD_ESCALATION_GROUPS/SPL_DOWNLOAD_ATTACHMENT_GROUPS/
 	// SPL_USAGE_METRICS_GROUPS enforced on top of SPL_ALLOWED_GROUPS
-	// before -- see requireSPLPermission's own doc comment for why that
+	// before -- see requireViewerPermission's own doc comment for why that
 	// second check couldn't just move to route-level registration like
 	// every other route in this file.
-	if splHandlers != nil {
-		route("GET /accounts/{accountId}/escalations", handler.PermSPLAccess, splHandlers.accountEsc.GetAccountEscalations)
-		route("POST /accounts/{accountId}/cases/{caseId}/escalate", handler.PermSPLAccess, splHandlers.accountEsc.EscalateCase)
-		route("GET /cases/{caseId}/attachments-info", handler.PermSPLAccess, splHandlers.cases.GetAttachmentsInfo)
-		route("GET /attachments/{attachmentId}/download", handler.PermSPLAccess, splHandlers.attachments.DownloadAttachment)
-		route("GET /products", handler.PermSPLAccess, splHandlers.lookups.GetProducts)
-		route("GET /abt-teams", handler.PermSPLAccess, splHandlers.lookups.GetABTTeams)
-		route("GET /generate-sla-report", handler.PermSPLAccess, splHandlers.reports.GenerateSLAReport)
-		route("GET /report-details", handler.PermSPLAccess, splHandlers.reports.GetReportDetails)
-		route("GET /generate-timelogs-breakdown-report", handler.PermSPLAccess, splHandlers.reports.GenerateTimelogsBreakdownReport)
-		route("GET /abt-team-schedule", handler.PermSPLAccess, splHandlers.schedule.GetABTTeamSchedule)
-		route("GET /user-info", handler.PermSPLAccess, splHandlers.userInfo.GetUserInfo)
-		route("POST /scan-user", handler.PermSPLAccess, splHandlers.userScan.ScanUser)
-		route("GET /files", handler.PermSPLAccess, splHandlers.files.ListFiles)
-		route("GET /files/search", handler.PermSPLAccess, splHandlers.files.SearchFolder)
-		route("GET /usage-metrics/projects", handler.PermSPLAccess, splHandlers.usageMetrics.GetProjects)
-		route("POST /usage-metrics/instances/metrics/search", handler.PermSPLAccess, splHandlers.usageMetrics.SearchInstanceMetrics)
-		route("POST /usage-metrics/instances/metrics/stats", handler.PermSPLAccess, splHandlers.usageMetrics.GetInstanceMetricsStats)
-		route("POST /usage-metrics/instances/usages/search", handler.PermSPLAccess, splHandlers.usageMetrics.SearchInstanceUsages)
-		route("POST /usage-metrics/instances/usages/stats", handler.PermSPLAccess, splHandlers.usageMetrics.GetInstanceUsagesStats)
-		route("POST /usage-metrics/deployments/search", handler.PermSPLAccess, splHandlers.usageMetrics.SearchDeployments)
-		route("POST /usage-metrics/projects/search", handler.PermSPLAccess, splHandlers.usageMetrics.SearchProjects)
-		route("POST /usage-metrics/deployed-products/search", handler.PermSPLAccess, splHandlers.usageMetrics.SearchDeployedProducts)
-		route("POST /usage-metrics/instances/search", handler.PermSPLAccess, splHandlers.usageMetrics.SearchInstances)
-		route("POST /usage-metrics/deployed-products/{id}/metrics/search", handler.PermSPLAccess, splHandlers.usageMetrics.GetDeployedProductMetrics)
-		route("POST /usage-metrics/deployed-products/{id}/metrics/usage-counts/search", handler.PermSPLAccess, splHandlers.usageMetrics.GetDeployedProductUsageCounts)
-		route("POST /customer-health/summary", handler.PermSPLAccess, splHandlers.customerHealth.GetSummary)
-		route("POST /customer-health/accounts/{accountSysId}/init-health-tracking", handler.PermSPLAccess, splHandlers.customerHealth.InitHealthTracking)
-		route("GET /customer-health/accounts/{accountId}", handler.PermSPLAccess, splHandlers.customerHealth.GetAccountDetail)
-		route("POST /customer-health/projects/{projectSysId}/risk", handler.PermSPLAccess, splHandlers.customerHealth.OpenRisk)
-		route("PUT /customer-health/risks/{riskId}/close", handler.PermSPLAccess, splHandlers.customerHealth.CloseRisk)
-		route("POST /customer-health/projects/{projectSysId}/mark-healthy", handler.PermSPLAccess, splHandlers.customerHealth.MarkHealthy)
-		route("POST /customer-health/projects/{projectSysId}/revert-review", handler.PermSPLAccess, splHandlers.customerHealth.RevertReview)
-		route("GET /customer-health/accounts/{accountSysId}/health-status", handler.PermSPLAccess, splHandlers.customerHealth.GetAccountHealthStatus)
-		route("GET /customer-health/accounts/{accountSysId}/health-summary", handler.PermSPLAccess, splHandlers.customerHealth.GetAccountHealthSummary)
-		route("GET /customer-health/projects/{projectSysId}/risk-history", handler.PermSPLAccess, splHandlers.customerHealth.GetProjectRiskHistory)
-		route("POST /customer-health/risks/{riskId}/action-items", handler.PermSPLAccess, splHandlers.customerHealth.CreateActionItem)
-		route("PUT /customer-health/action-items/{actionItemId}/status", handler.PermSPLAccess, splHandlers.customerHealth.UpdateActionItemStatus)
-		route("PUT /customer-health/action-items/{actionItemId}", handler.PermSPLAccess, splHandlers.customerHealth.UpdateActionItem)
-		route("GET /customer-health/risks/{riskId}/action-items", handler.PermSPLAccess, splHandlers.customerHealth.GetActionItemsByRisk)
-		route("GET /customer-health/accounts/{accountSysId}/action-items", handler.PermSPLAccess, splHandlers.customerHealth.GetActionItemsByAccount)
-		route("POST /customer-health/action-items/{actionItemId}/comments", handler.PermSPLAccess, splHandlers.customerHealth.CreateActionItemComment)
-		route("GET /customer-health/action-items/{actionItemId}/comments", handler.PermSPLAccess, splHandlers.customerHealth.GetActionItemComments)
+	if viewerHandlers != nil {
+		route("GET /accounts/{accountId}/escalations", handler.PermViewerAccess, viewerHandlers.accountEsc.GetAccountEscalations)
+		route("POST /accounts/{accountId}/cases/{caseId}/escalate", handler.PermViewerAccess, viewerHandlers.accountEsc.EscalateCase)
+		route("GET /cases/{caseId}/attachments-info", handler.PermViewerAccess, viewerHandlers.cases.GetAttachmentsInfo)
+		route("GET /attachments/{attachmentId}/download", handler.PermViewerAccess, viewerHandlers.attachments.DownloadAttachment)
+		route("GET /products", handler.PermViewerAccess, viewerHandlers.lookups.GetProducts)
+		route("GET /abt-teams", handler.PermViewerAccess, viewerHandlers.lookups.GetABTTeams)
+		route("GET /generate-sla-report", handler.PermViewerAccess, viewerHandlers.reports.GenerateSLAReport)
+		route("GET /report-details", handler.PermViewerAccess, viewerHandlers.reports.GetReportDetails)
+		route("GET /generate-timelogs-breakdown-report", handler.PermViewerAccess, viewerHandlers.reports.GenerateTimelogsBreakdownReport)
+		route("GET /abt-team-schedule", handler.PermViewerAccess, viewerHandlers.schedule.GetABTTeamSchedule)
+		route("GET /user-info", handler.PermViewerAccess, viewerHandlers.userInfo.GetUserInfo)
+		route("POST /scan-user", handler.PermViewerAccess, viewerHandlers.userScan.ScanUser)
+		route("GET /files", handler.PermViewerAccess, viewerHandlers.files.ListFiles)
+		route("GET /files/search", handler.PermViewerAccess, viewerHandlers.files.SearchFolder)
+		route("GET /usage-metrics/projects", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetProjects)
+		route("POST /usage-metrics/instances/metrics/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchInstanceMetrics)
+		route("POST /usage-metrics/instances/metrics/stats", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetInstanceMetricsStats)
+		route("POST /usage-metrics/instances/usages/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchInstanceUsages)
+		route("POST /usage-metrics/instances/usages/stats", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetInstanceUsagesStats)
+		route("POST /usage-metrics/deployments/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchDeployments)
+		route("POST /usage-metrics/projects/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchProjects)
+		route("POST /usage-metrics/deployed-products/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchDeployedProducts)
+		route("POST /usage-metrics/instances/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchInstances)
+		route("POST /usage-metrics/deployed-products/{id}/metrics/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetDeployedProductMetrics)
+		route("POST /usage-metrics/deployed-products/{id}/metrics/usage-counts/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetDeployedProductUsageCounts)
+		route("POST /customer-health/summary", handler.PermViewerAccess, viewerHandlers.customerHealth.GetSummary)
+		route("POST /customer-health/accounts/{accountSysId}/init-health-tracking", handler.PermViewerAccess, viewerHandlers.customerHealth.InitHealthTracking)
+		route("GET /customer-health/accounts/{accountId}", handler.PermViewerAccess, viewerHandlers.customerHealth.GetAccountDetail)
+		route("POST /customer-health/projects/{projectSysId}/risk", handler.PermViewerAccess, viewerHandlers.customerHealth.OpenRisk)
+		route("PUT /customer-health/risks/{riskId}/close", handler.PermViewerAccess, viewerHandlers.customerHealth.CloseRisk)
+		route("POST /customer-health/projects/{projectSysId}/mark-healthy", handler.PermViewerAccess, viewerHandlers.customerHealth.MarkHealthy)
+		route("POST /customer-health/projects/{projectSysId}/revert-review", handler.PermViewerAccess, viewerHandlers.customerHealth.RevertReview)
+		route("GET /customer-health/accounts/{accountSysId}/health-status", handler.PermViewerAccess, viewerHandlers.customerHealth.GetAccountHealthStatus)
+		route("GET /customer-health/accounts/{accountSysId}/health-summary", handler.PermViewerAccess, viewerHandlers.customerHealth.GetAccountHealthSummary)
+		route("GET /customer-health/projects/{projectSysId}/risk-history", handler.PermViewerAccess, viewerHandlers.customerHealth.GetProjectRiskHistory)
+		route("POST /customer-health/risks/{riskId}/action-items", handler.PermViewerAccess, viewerHandlers.customerHealth.CreateActionItem)
+		route("PUT /customer-health/action-items/{actionItemId}/status", handler.PermViewerAccess, viewerHandlers.customerHealth.UpdateActionItemStatus)
+		route("PUT /customer-health/action-items/{actionItemId}", handler.PermViewerAccess, viewerHandlers.customerHealth.UpdateActionItem)
+		route("GET /customer-health/risks/{riskId}/action-items", handler.PermViewerAccess, viewerHandlers.customerHealth.GetActionItemsByRisk)
+		route("GET /customer-health/accounts/{accountSysId}/action-items", handler.PermViewerAccess, viewerHandlers.customerHealth.GetActionItemsByAccount)
+		route("POST /customer-health/action-items/{actionItemId}/comments", handler.PermViewerAccess, viewerHandlers.customerHealth.CreateActionItemComment)
+		route("GET /customer-health/action-items/{actionItemId}/comments", handler.PermViewerAccess, viewerHandlers.customerHealth.GetActionItemComments)
 	}
 
 	// Built once and reused on both listeners below: Auth() does a real JWKS
@@ -1268,26 +1268,26 @@ func splitComma(s string) []string {
 	return result
 }
 
-// splHandlerSet holds every SupportPortalLite handler, constructed
-// only when SPL_ENABLED is on. See loadSPLConfig for the environment
+// viewerHandlerSet holds every SupportPortalLite handler, constructed
+// only when SPL_ENABLED is on. See loadViewerConfig for the environment
 // variables backing each field.
-type splHandlerSet struct {
-	cases          *handler.SplCaseHandler
-	reports        *handler.SplReportsHandler
-	schedule       *handler.SplScheduleHandler
-	attachments    *handler.SplAttachmentsHandler
-	lookups        *handler.SplLookupsHandler
+type viewerHandlerSet struct {
+	cases          *handler.ViewerCaseHandler
+	reports        *handler.ReportsHandler
+	schedule       *handler.ViewerScheduleHandler
+	attachments    *handler.AttachmentsHandler
+	lookups        *handler.LookupsHandler
 	usageMetrics   *handler.UsageMetricsHandler
-	files          *handler.SplFilesHandler
+	files          *handler.FilesHandler
 	customerHealth *handler.CustomerHealthHandler
-	userInfo       *handler.SplUserInfoHandler
+	userInfo       *handler.UserInfoHandler
 	userScan       *handler.SplUserScanHandler
-	accountEsc     *handler.SplAccountHandler
+	accountEsc     *handler.ViewerAccountHandler
 }
 
-// splConfig holds every environment value SupportPortalLite's /spl/*
-// endpoints need, resolved by loadSPLConfig.
-type splConfig struct {
+// viewerConfig holds every environment value SupportPortalLite's /spl/*
+// endpoints need, resolved by loadViewerConfig.
+type viewerConfig struct {
 	snHost                 string
 	snUsername             string
 	snPassword             string
@@ -1300,7 +1300,7 @@ type splConfig struct {
 	salesEntityBaseURL     string
 }
 
-// loadSPLConfig resolves SupportPortalLite's (/spl/*) configuration.
+// loadViewerConfig resolves SupportPortalLite's (/spl/*) configuration.
 //
 //	SPL_ENABLED  Any strconv.ParseBool-true value (1, t, T, TRUE, true,
 //	             True). Off by default — unset, empty, or any other value
@@ -1322,9 +1322,9 @@ type splConfig struct {
 // service name to key on. See .env.example for what each variable
 // configures.
 //
-// Returns (false, zero splConfig) when the flag is off, so the caller never
-// touches the returned splConfig in that case.
-func loadSPLConfig() (bool, splConfig) {
+// Returns (false, zero viewerConfig) when the flag is off, so the caller never
+// touches the returned viewerConfig in that case.
+func loadViewerConfig() (bool, viewerConfig) {
 	enabled := false
 	if raw := strings.TrimSpace(os.Getenv("SPL_ENABLED")); raw != "" {
 		parsed, err := strconv.ParseBool(raw)
@@ -1335,10 +1335,10 @@ func loadSPLConfig() (bool, splConfig) {
 		enabled = parsed
 	}
 	if !enabled {
-		return false, splConfig{}
+		return false, viewerConfig{}
 	}
 
-	return true, splConfig{
+	return true, viewerConfig{
 		snHost:                 mustHTTPSBaseURL("SERVICENOW_HOST", mustEnv("SERVICENOW_HOST")),
 		snUsername:             mustEnv("SERVICENOW_USERNAME"),
 		snPassword:             mustEnv("SERVICENOW_PASSWORD"),
