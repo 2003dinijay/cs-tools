@@ -30,8 +30,7 @@
 -- the CS prefix MUST draw from the same sequence, or two types would mint
 -- the same CS number and the second insert would fail.
 
-BEGIN;
-SET LOCAL lock_timeout = '5s';
+SET lock_timeout = '5s';
 
 -- The series catalogue. A table rather than a CASE inside the function:
 -- the prefix, width and backing sequence of every series are then queryable
@@ -185,4 +184,4 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMIT;
+RESET lock_timeout;
