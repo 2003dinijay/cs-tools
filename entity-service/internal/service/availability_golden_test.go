@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -46,15 +48,17 @@ import (
 //   are engine behaviour, identical on any instance, and 67 real cases
 //   agree to five decimal places.
 //
-//   NOT PROVEN -- behaviour against CONFIGURATION dev does not have. Every
-//   dev commitment is 24x7 with a target of 100, so no case here exercises
-//   a narrow schedule, a maintenance window, a target below 100, or a
-//   planned outage overlapping a real one. If production carries any of
-//   those, this suite says nothing about them and the unit tests are the
-//   only cover.
+//   NOT PROVEN -- cases the data does not contain. Measured across both
+//   files, 136 cases: 24 are multi-outage and 8 have genuinely OVERLAPPING
+//   outages (so the merge IS covered), but *** ZERO contain a planned
+//   outage. *** Every commitment in both instances is 24x7 with a target
+//   of 100, so nothing here exercises a narrow schedule, a maintenance
+//   window, or a sub-100 target either.
 //
-// Re-running script 49 against production would close that gap, and is the
-// single highest-value thing left to do on this port.
+//   That is not a guess. Deleting the planned-subtraction step makes every
+//   one of these 136 cases still pass, while the unit tests fail -- so for
+//   planned-overlap behaviour the unit tests are the ONLY cover, and they
+//   were written from the source rather than verified against it.
 //
 // ── WHY v1 ROWS CAN JUDGE A v2 PORT ─────────────────────────────────────
 // The instance runs v1 and this is a v2 port, which looks disqualifying.
@@ -71,7 +75,7 @@ import (
 // fail for its absence. It must also not quietly pass as though verified —
 // hence the explicit skip message rather than silence.
 
-const goldenPath = "testdata/availability_golden.jsonl"
+const goldenGlob = "testdata/availability_golden*.jsonl"
 
 // *** ROWS WHERE SERVICENOW DISAGREES WITH ITSELF. ***
 // Not tolerated discrepancies — rows proven stale by ServiceNow's own other
@@ -103,6 +107,7 @@ var knownStaleRows = map[string]string{
 }
 
 type goldenCase struct {
+	Source     string  `json:"-"`
 	Kind       string  `json:"kind"`
 	Row        string  `json:"row"`
 	Type       string  `json:"type"`
@@ -135,38 +140,54 @@ type goldenCase struct {
 
 func loadGoldenCases(t *testing.T) []goldenCase {
 	t.Helper()
-	f, err := os.Open(goldenPath)
-	if os.IsNotExist(err) {
-		t.Skipf("no golden data at %s — run discovery script 49 against "+
+	paths, err := filepath.Glob(goldenGlob)
+	if err != nil {
+		t.Fatalf("glob %s: %v", goldenGlob, err)
+	}
+	if len(paths) == 0 {
+		t.Skipf("no golden data matching %s — run discovery script 49 against "+
 			"ServiceNow and paste its JSON lines in. UNTIL THEN THIS PORT IS "+
 			"VERIFIED ONLY AGAINST A READING OF THE SOURCE, NOT AGAINST "+
-			"PRODUCTION.", goldenPath)
+			"PRODUCTION.", goldenGlob)
 	}
-	if err != nil {
-		t.Fatalf("open %s: %v", goldenPath, err)
-	}
-	defer func() { _ = f.Close() }()
+	sort.Strings(paths)
 
 	var cases []goldenCase
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), 1<<22)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		// The script's own header lines start with '#'.
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	for _, path := range paths {
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatalf("open %s: %v", path, err)
 		}
-		var c goldenCase
-		if err := json.Unmarshal([]byte(line), &c); err != nil {
-			t.Fatalf("malformed golden line: %v\n%s", err, line)
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 1<<20), 1<<22)
+		n := 0
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			// The script's own header lines start with '#'.
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			var c goldenCase
+			if err := json.Unmarshal([]byte(line), &c); err != nil {
+				t.Fatalf("malformed golden line in %s: %v\n%s", path, err, line)
+			}
+			// Tag by file so a failure names the instance it came from.
+			c.Source = strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "availability_golden"), ".jsonl")
+			if c.Source == "" {
+				c.Source = "dev"
+			}
+			c.Source = strings.TrimPrefix(c.Source, "_")
+			cases = append(cases, c)
+			n++
 		}
-		cases = append(cases, c)
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatalf("read %s: %v", goldenPath, err)
+		if err := sc.Err(); err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		_ = f.Close()
+		t.Logf("%s: %d cases", filepath.Base(path), n)
 	}
 	if len(cases) == 0 {
-		t.Fatalf("%s has no cases; a file with only comments is not verification", goldenPath)
+		t.Fatalf("golden files contain no cases; files with only comments are not verification")
 	}
 	return cases
 }
@@ -206,7 +227,7 @@ func TestAvailability_GoldenAgainstServiceNow(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		t.Run(c.Type+"/"+c.Row, func(t *testing.T) {
+		t.Run(c.Source+"/"+c.Type+"/"+c.Row, func(t *testing.T) {
 			if why, stale := knownStaleRows[c.Row]; stale {
 				t.Skipf("KNOWN-STALE SERVICENOW ROW — %s", why)
 			}
@@ -261,7 +282,37 @@ func TestAvailability_GoldenAgainstServiceNow(t *testing.T) {
 				checkSecs(t, "scheduled_downtime", got.ScheduledDowntime, c.Want.SchedDownSecs)
 				checkSecs(t, "ast", got.ScheduledTotal, c.Want.ASTSecs)
 				checkSecs(t, "allowed_downtime", got.AllowedDowntime, c.Want.AllowedSecs)
-				checkSecs(t, "mtbf", got.MTBF, c.Want.MTBFSecs)
+				// *** v1 AND v2 DISAGREE ON MTBF WHEN NOTHING FAILED, AND
+				// THE PORT DELIBERATELY FOLLOWS v2. ***
+				//
+				//   v1 (AvailabilitySummarizer, what the instance runs):
+				//       var mtDen = sc;
+				//       if (mtDen == 0) mtDen = 1;
+				//       mtbf = (ast - scheduled) / mtDen;   // -> AST
+				//
+				//   v2 (AvailabilityCalculatorV2, what this ports):
+				//       var mtbf = 0;
+				//       if (count != 0) { mtbf = ... }      // -> 0
+				//
+				// So a clean period stores mtbf = the whole period under v1
+				// and 0 under v2. Every case WITH downtime agrees exactly,
+				// because there the two engines compute the same thing --
+				// this is purely the zero-failure case.
+				//
+				// Recognised by shape rather than by row id: any row whose
+				// scheduled count is zero AND whose stored mtbf equals its
+				// ast is v1's formula, and nothing else produces that. A row
+				// id list would silently stop matching on the next dump.
+				//
+				// Mean time BETWEEN failures with no failures is genuinely
+				// undefined, so neither answer is wrong. Flagged rather than
+				// decided: nothing reads mtbf today -- the dashboard's three
+				// endpoints take absolute_availability only -- so this is
+				// visible in the stored column and nowhere else.
+				v1ZeroFailureMTBF := c.Want.SchedCount == 0 && c.Want.MTBFSecs == c.Want.ASTSecs
+				if !v1ZeroFailureMTBF {
+					checkSecs(t, "mtbf", got.MTBF, c.Want.MTBFSecs)
+				}
 				checkSecs(t, "mtrs", got.MTRS, c.Want.MTRSSecs)
 			}
 
