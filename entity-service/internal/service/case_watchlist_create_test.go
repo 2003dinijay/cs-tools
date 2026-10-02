@@ -287,3 +287,74 @@ func TestCreateWatchList_EmptyListUntouched(t *testing.T) {
 		t.Fatalf("contactsCalls=%d userSearches=%d setCalled=%v mirrorCalls=%d", h.contactsCalls, h.userSearches, h.setCalled, h.mirrorCalls)
 	}
 }
+
+// pgOnlyRun drives CreateCase on the pure-Postgres path (no upstream mirror).
+func (h *wlHarness) pgOnlyRun(t *testing.T, watchList []string) error {
+	t.Helper()
+	const caseID = "66666666-6666-6666-6666-666666666666"
+	repo := &stubCaseRepo{
+		createCase: func(_ context.Context, _ domain.CreateCaseRequest) (domain.Case, error) {
+			h.mirrorCalls++ // counts repo creates on this path
+			st := domain.CaseStateOpen
+			return domain.Case{ID: caseID, Number: "CS0000002", State: &st}, nil
+		},
+		setCaseWatchList: func(_ context.Context, _ string, ids []string, _ string) ([]domain.WatchListUser, time.Time, error) {
+			h.setCalled = true
+			h.setIDs = ids
+			return nil, time.Time{}, nil
+		},
+	}
+	users := stubUserRepo{
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: "caller", Email: "jane.doe@example.com", UserType: h.callerType}, nil
+		},
+		searchUsers: func(_ context.Context, req domain.SearchUsersRequest) ([]domain.User, int, error) {
+			h.userSearches++
+			return h.users, len(h.users), h.usersErr
+		},
+	}
+	contacts := &stubProjectContactRepo{
+		searchProjectContacts: func(_ context.Context, _ string, req domain.SearchProjectContactsRequest) ([]repository.ProjectContactRow, int, error) {
+			h.contactsCalls++
+			rows, total := h.contacts(req.Pagination.Offset)
+			return rows, total, nil
+		},
+	}
+	svc := NewCaseService(repo, users, nil, alwaysUnrestrictedAccess{}, contacts)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	req := validCreateCaseRequest()
+	req.WatchList = watchList
+	_, err := svc.CreateCase(ctx, req)
+	return err
+}
+
+func TestCreateWatchList_PostgresOnly_ValidatedAndPersisted(t *testing.T) {
+	h := &wlHarness{callerType: domain.UserTypeCustomer,
+		contacts: fixedContacts(registeredContact("jane.doe@example.com", wlContactID), registeredContact("john.roe@example.com", wlContact2))}
+	if err := h.pgOnlyRun(t, []string{"john.roe@example.com", "Jane.Doe@example.com"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.mirrorCalls != 1 || !h.setCalled || len(h.setIDs) != 2 || h.setIDs[0] != wlContact2 || h.setIDs[1] != wlContactID {
+		t.Fatalf("creates=%d setCalled=%v ids=%v, want 1 create and the 2 validated ids in order", h.mirrorCalls, h.setCalled, h.setIDs)
+	}
+}
+
+func TestCreateWatchList_PostgresOnly_IneligibleWatcherCreatesNothing(t *testing.T) {
+	h := &wlHarness{callerType: domain.UserTypeCustomer,
+		contacts: fixedContacts(registeredContact("jane.doe@example.com", wlContactID))}
+	err := h.pgOnlyRun(t, []string{"jane.doe@example.com", "stranger@example.com"})
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) || h.mirrorCalls != 0 || h.setCalled {
+		t.Fatalf("err=%v creates=%d setCalled=%v, want a ValidationError and nothing written", err, h.mirrorCalls, h.setCalled)
+	}
+}
+
+func TestCreateWatchList_PostgresOnly_EmptyListUnchanged(t *testing.T) {
+	h := &wlHarness{contactsErr: errors.New("must not be called")}
+	if err := h.pgOnlyRun(t, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.mirrorCalls != 1 || h.setCalled || h.contactsCalls != 0 {
+		t.Fatalf("creates=%d setCalled=%v contactsCalls=%d", h.mirrorCalls, h.setCalled, h.contactsCalls)
+	}
+}

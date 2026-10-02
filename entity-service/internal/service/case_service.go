@@ -498,9 +498,22 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 		}
 		req.CreatedBy = user.ID
 	}
+	// Same watcher eligibility check as createCaseSNFirst, before anything is
+	// written. (It re-reads the caller via resolveActor; that is one extra
+	// lookup, and only when a watch list was actually submitted.)
+	watcherIDs, err := s.validateCreateWatchList(ctx, &req)
+	if err != nil {
+		return domain.CreateCaseResponse{}, err
+	}
 	c, err := s.repo.CreateCase(ctx, req)
 	if err != nil {
 		return domain.CreateCaseResponse{}, err
+	}
+	if len(watcherIDs) > 0 {
+		// updated_by on the watcher write is the caller's email, taken from
+		// the token validateCreateWatchList already accepted.
+		callerEmail, _ := emailFromJWT(middleware.UserIDTokenFromContext(ctx))
+		s.addRequestedWatchers(ctx, c.ID, callerEmail, watcherIDs)
 	}
 	state := ""
 	if c.State != nil {
