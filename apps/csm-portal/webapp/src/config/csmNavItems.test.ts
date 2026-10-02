@@ -139,6 +139,13 @@ describe("navNodeMatchForPath", () => {
   it("returns undefined for an unknown route", () => {
     expect(navNodeMatchForPath("/nothing-here")).toBeUndefined();
   });
+
+  it("prefers a child over its parent on an equal-length prefix tie (spl's href aliases spl.cases')", () => {
+    expect(navNodeMatchForPath("/spl/cases")).toMatchObject({
+      node: { id: "spl.cases" },
+      prefix: "/spl/cases",
+    });
+  });
 });
 
 describe("navSectionForPath", () => {

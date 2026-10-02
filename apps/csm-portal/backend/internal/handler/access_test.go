@@ -38,6 +38,7 @@ func testAccessConfig() AccessConfig {
 		TimecardApprover:     []string{"test-timecard-approver"},
 		DashboardDesigner:    []string{"test-dashboard-designer"},
 		SalesSolutions:       []string{"test-sales-solutions"},
+		WorknoteCreator:      []string{"test-worknote-creator"},
 	}
 }
 
@@ -62,8 +63,8 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 	// tested separately below -- escalating and approving a time card are
 	// each a dedicated responsibility cs_engineer does not share, the same
 	// way PermAdmin doesn't.
-	csEngineerPerms := []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermDownloadAttachment, PermWrite, PermViewSecurityCenter}
-	all := append(append([]Permission{}, csEngineerPerms...), PermAdmin, PermEscalate, PermApproveTimeCard)
+	csEngineerPerms := []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermDownloadAttachment, PermWrite, PermViewSecurityCenter, PermUsePlg}
+	all := append(append([]Permission{}, csEngineerPerms...), PermAdmin, PermEscalate, PermApproveTimeCard, PermManagePlaybooks)
 	tests := []struct {
 		name  string
 		roles []string
@@ -122,16 +123,38 @@ func TestAccessGuard_PermViewSharedEntityScope(t *testing.T) {
 		}
 	})
 
-	t.Run("sales_solutions holds PermViewSharedEntity and PermSPLAccess but not plain PermView", func(t *testing.T) {
+	t.Run("sales_solutions holds PermViewSharedEntity but not plain PermView or PermSPLAccess", func(t *testing.T) {
 		roles := []string{"test-sales-solutions"}
 		if status, _ := serveWithRoles(g, PermViewSharedEntity, roles); status != http.StatusNoContent {
 			t.Errorf("PermViewSharedEntity: status = %d, want 204", status)
 		}
-		if status, _ := serveWithRoles(g, PermSPLAccess, roles); status != http.StatusNoContent {
-			t.Errorf("PermSPLAccess: status = %d, want 204", status)
-		}
 		if status, _ := serveWithRoles(g, PermView, roles); status != http.StatusForbidden {
 			t.Errorf("PermView: status = %d, want 403 -- sales_solutions must not gain every PermView route", status)
+		}
+		// PermSPLAccess is Viewer-gated, not sales_solutions -- see
+		// PermSPLAccess's own doc comment.
+		if status, _ := serveWithRoles(g, PermSPLAccess, roles); status != http.StatusForbidden {
+			t.Errorf("PermSPLAccess: status = %d, want 403 (Viewer-gated, not sales_solutions)", status)
+		}
+	})
+
+	// Guards PermSPLAccess's grant (Viewer, unconditionally) -- see
+	// PermSPLAccess's own doc comment for why.
+	t.Run("plain viewer holds PermSPLAccess", func(t *testing.T) {
+		if status, _ := serveWithRoles(g, PermSPLAccess, []string{"test-viewer"}); status != http.StatusNoContent {
+			t.Errorf("PermSPLAccess: status = %d, want 204", status)
+		}
+	})
+
+	// PermSPLAccess is the audience check, not the nav-default choice --
+	// a caller holding both viewer and cs_engineer still passes it, even
+	// though usePortalView.ts's cs_engineer-first precedence means they'd
+	// default to the CS/ABT nav in the webapp. See PermSPLAccess's own doc
+	// comment for why the backend deliberately doesn't exclude cs_engineer
+	// here.
+	t.Run("viewer alongside cs_engineer still holds PermSPLAccess", func(t *testing.T) {
+		if status, _ := serveWithRoles(g, PermSPLAccess, []string{"test-viewer", "test-cs-engineer"}); status != http.StatusNoContent {
+			t.Errorf("PermSPLAccess: status = %d, want 204", status)
 		}
 	})
 }
@@ -293,7 +316,7 @@ func TestAccessGuard_SecurityCenterIsForCsEngineersAndAdmins(t *testing.T) {
 
 func TestAccessGuard_UnconfiguredRolesAreHeldByNobody(t *testing.T) {
 	g := NewAccessGuard(AccessConfig{})
-	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermAdmin, PermViewSecurityCenter, PermApproveTimeCard} {
+	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermAdmin, PermViewSecurityCenter, PermApproveTimeCard, PermUsePlg, PermManagePlaybooks} {
 		if status, _ := serveWithRoles(g, perm, []string{"test-admin", "test-viewer", ""}); status != http.StatusForbidden {
 			t.Errorf("permission %d with no roles configured: status = %d, want 403", perm, status)
 		}
@@ -342,5 +365,76 @@ func TestAccessGuard_ApproveTimeCardIsForApproversAndAdminsOnly(t *testing.T) {
 		if status, _ := serveWithRoles(g, PermApproveTimeCard, []string{role}); status != http.StatusForbidden {
 			t.Errorf("%s: status = %d, want 403", role, status)
 		}
+	}
+}
+
+// TestAccessGuard_PlgIsForCsEngineersAndAdmins pins PermUsePlg as narrower than
+// PermView: every portal role holds PermView, but PLG is a worklist staff act
+// on, and a view-only role that could open it would meet a 403 on every control.
+func TestAccessGuard_PlgIsForCsEngineersAndAdmins(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	for _, role := range []string{"test-cs-engineer", "test-admin"} {
+		if status, _ := serveWithRoles(g, PermUsePlg, []string{role}); status != http.StatusNoContent {
+			t.Errorf("%s: status = %d, want 204", role, status)
+		}
+	}
+	for _, role := range []string{
+		"test-viewer", "test-escalator", "test-attachment-downloader",
+		"test-usage-metrics-viewer", "test-timecard-approver", "test-dashboard-designer",
+	} {
+		if status, _ := serveWithRoles(g, PermUsePlg, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s holds PermView but must not hold PermUsePlg: status = %d, want 403", role, status)
+		}
+	}
+}
+
+// TestAccessGuard_ManagePlaybooksIsAdminOnly pins the one split inside PLG: a CS
+// engineer works the queue and runs playbooks, but authoring a template is
+// admin's. It is separate from PermAdmin on purpose — see the constant's own
+// doc comment — so this asserts the CS engineer is denied rather than asserting
+// the two permissions are interchangeable.
+func TestAccessGuard_ManagePlaybooksIsAdminOnly(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	if status, _ := serveWithRoles(g, PermManagePlaybooks, []string{"test-admin"}); status != http.StatusNoContent {
+		t.Errorf("admin: status = %d, want 204", status)
+	}
+	for _, role := range []string{
+		"test-cs-engineer", "test-viewer", "test-escalator", "test-attachment-downloader",
+		"test-usage-metrics-viewer", "test-timecard-approver", "test-dashboard-designer",
+	} {
+		if status, _ := serveWithRoles(g, PermManagePlaybooks, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s must not manage playbooks: status = %d, want 403", role, status)
+		}
+	}
+	// The CS engineer keeps everything else in PLG, including running a playbook.
+	if status, _ := serveWithRoles(g, PermUsePlg, []string{"test-cs-engineer"}); status != http.StatusNoContent {
+		t.Errorf("cs engineer lost PermUsePlg: status = %d, want 204", status)
+	}
+}
+
+// TestAccessGuard_CreateWorkNoteIsForWorknoteCreatorsCsEngineersAndAdmins pins
+// PermCreateWorkNote's deliberately wider holder set than PermWrite's (see
+// the constant's own doc comment) -- it's the route-level floor for POST
+// /cases/{id}/comments, with CaseHandler itself narrowing back to full
+// PermWrite for anything that isn't a work_note.
+func TestAccessGuard_CreateWorkNoteIsForWorknoteCreatorsCsEngineersAndAdmins(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	for _, role := range []string{"test-worknote-creator", "test-cs-engineer", "test-admin"} {
+		if status, _ := serveWithRoles(g, PermCreateWorkNote, []string{role}); status != http.StatusNoContent {
+			t.Errorf("%s: status = %d, want 204", role, status)
+		}
+	}
+	for _, role := range []string{
+		"test-viewer", "test-escalator", "test-attachment-downloader",
+		"test-usage-metrics-viewer", "test-timecard-approver", "test-dashboard-designer",
+	} {
+		if status, _ := serveWithRoles(g, PermCreateWorkNote, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s must not hold PermCreateWorkNote: status = %d, want 403", role, status)
+		}
+	}
+	// worknote_creator holds ONLY this -- not the broader PermWrite a
+	// customer-visible reply (or any other write) needs.
+	if status, _ := serveWithRoles(g, PermWrite, []string{"test-worknote-creator"}); status != http.StatusForbidden {
+		t.Errorf("worknote_creator must not hold PermWrite: status = %d, want 403", status)
 	}
 }

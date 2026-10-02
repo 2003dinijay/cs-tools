@@ -4,6 +4,13 @@ Go HTTP server (`net/http`, standard library only) that owns all core CS-platfor
 
 ## Architecture
 
+> **`cmd/` holds exactly one directory: `cmd/api`.** Never add a second
+> `package main` there — Choreo's build picks this service's main package from
+> `cmd/`, and a second directory fails the pipeline. It also drags dev-only
+> code into everything `go build ./...`, `go vet` and gosec walk. Put one-off
+> verification tooling in an env-var-guarded `TestServe*Harness` in
+> `internal/server/`, or in `scripts/`, or keep it out of the repo.
+
 Strict four-layer stack — no shortcuts across layers:
 
 ```
@@ -50,8 +57,13 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `SALES_ENTITY_CLIENT_SECRET` | no* | — | Choreo connection client secret |
 | `SALES_ENTITY_SCOPES` | no | — | Optional space-separated OAuth2 scopes for REST `sales/sales-entity-service` |
 | `CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED` | no | `false` | Must be `"true"` for `POST /users/me/memberships/register` to be registered at all (see "Membership registration" below). Off = the route 404s and nothing on that path can write to Salesforce |
-| `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes (see "Salesforce membership ingest" below). The Account branch is unaffected |
-| `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Keep it off while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; `account_vertical` and `secondary_technical_owner_id` are kept when Salesforce sends none |
+| `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes, the Contact writer included (see "Salesforce membership ingest" and "The Contact writer" below). The Account branch is unaffected |
+| `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Keep it off while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; the SE-1 columns are kept when Salesforce sends none; see "Salesforce Account ingest" for the full column set |
+| `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Opportunity` envelopes (`sf_opportunity` plus its `sf_opportunity_product` line items, see "Salesforce Opportunity ingest" below) and `Linked_Opportunity__c`, `Invoice__c` and standalone `OpportunityLineItem` envelopes (`sf_opportunity_link`, `sf_invoice`, `sf_opportunity_product`); off, they are acknowledged and ignored. Keep it off while csm-sync-service still copies these tables from ServiceNow: the two writers use different row ids and `sf_id` is not unique, so both on means duplicate rows |
+| `CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project__c` envelopes (see "Salesforce Project ingest" below); off, they are acknowledged and ignored. Update-only unless the insert switch is on too |
+| `CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED` | no | `false` | With the project flag on, lets the Project ingest and `EnsureProject` insert projects CSM does not have. Keep it off while csm-sync-service still inserts `project` rows (different id schemes and a UNIQUE `key`: its insert would fail forever); turn it on at cutover |
+| `CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED` | no | `false` | Must be `"true"` for the partner-link refresh (`account_relationship` "Is Partner Of" / "Is Customer Of") to run after Account events and partner-contact membership events, and for `POST /salesforce/accounts/{sfId}/refresh-partners` to be registered (see "Salesforce partner relationships" below). Keep it off while csm-sync-service still copies `account_relationship` from ServiceNow |
+| `SALESFORCE_INGEST_RETRY_INTERVAL` | no | `5m` | How often the Salesforce ingest retry worker re-runs memberships whose DATABASE step FAILED because their project or account was not in CSM yet, and how old such a failure must be before it is re-run (see "Salesforce ingest ledger and the delayed-retry job" below). `0` disables the job, and so does an unparseable or negative value (logged as a warning; it fails closed rather than falling back to `5m`). Only runs when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true` |
 | `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `false` | Must be `"true"` to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
 
 \* `DB_USER`/`DB_PASSWORD`/`DB_NAME` are required when `DATA_SOURCE=postgres`
@@ -184,12 +196,59 @@ against Choreo id `sales/sales-entity-service` (not GraphQL
 `sales/entity-graphql-service`). Token is refreshed on 401. An empty
 search result on CREATED/UPDATED/RESTORED is a 503 so the caller can retry
 (the event can arrive before Salesforce commits). This service does not call
-Salesforce REST; the REST sales entity-service does. REST Customer has no AccountNumber,
-Account_Vertical__c, or Technical_Owner_2 — `number` falls back to Salesforce
-Id and those other columns stay null.
+Salesforce REST; the REST sales entity-service does.
 Non-Account entities return 204 and are ignored (do not 400 — ASB would
-retry forever). DELETED soft-deletes by setting `deactivation_date`; never
-`DELETE FROM account` (project → account is `ON DELETE CASCADE`).
+retry forever).
+
+**What the Account branch writes** (`upsertAccount` + `mapSalesEntityCustomer` in
+`salesforce_event_service.go`, `UpsertFromSalesforce` in `account_repo.go`). The
+UPDATE lists only Salesforce-owned columns; `account_repo_salesforce_test.go` pins
+the list.
+
+- Plain assignment (a value cleared in Salesforce clears here): `name`, `sf_id`,
+  `industry`, `region`, `global_pod`, `phone` (a value over 64 characters keeps the
+  stored phone), `sales_region`, `sub_region`, `life_cycle` (`status`),
+  `naics_industry`, `sub_industry`, `classification`, `technical_owner_id`, the
+  billing address (`street`, `city`, `state_province`, `postal_code`, `country`),
+  `account_manager_id` (`owner.email`), `activation_date`, `lost_date`, `lost_reason`.
+- `COALESCE(new, stored)`: `customer_success_manager_id` (`csmEmail`),
+  `secondary_technical_owner_id`, `renewal_account_manager_id`
+  (`renewalManager.email`), `account_vertical`, `lost_reason_category`,
+  `deactivation_date`. Sales Entity sends these only after its "customer fields"
+  change (SE-1 in `docs/customer-onboarding/SALESFORCE_SYNC_PLAN.md`); until then they
+  keep the ServiceNow sync's value. Switch them to plain assignment once SE-1 ships.
+- Never written: `number` on an existing row (a new row gets the Salesforce Id,
+  decision D9), `cre_team_id`, `sre_team_id`, `support_tier`, `support_timezone`,
+  `suspension_process_state`, the two AI flags, `drive_location`.
+- Person references resolve by email against `"user"` (`LookupUserIDByEmail`); an
+  email with no user writes NULL and logs a WARN with the role and email.
+- A value longer than its VARCHAR column (`accountColumnLimits`) or a date that does
+  not parse (`2006-01-02`) is written as NULL with a WARN, so one bad field cannot
+  fail the event.
+- A customer with no name is acknowledged (204, no retry, no dead letter), logged,
+  and recorded FAILED in `salesforce_ingest_state`.
+
+**Duplicate guard and ledger.** CREATED/UPDATED/RESTORED run `shouldSkipIngest`
+with entity `account` and the customer's `lastModifiedDate`, then write the account
+row and a SUCCEEDED ledger row in one transaction; a failed write records FAILED
+(best effort) and returns the error so Service Bus redelivers. `EnsureAccount`
+writes without the guard (the row is known to be missing).
+
+**DELETED** sets `account.deleted_on` (migration 0171, decision D7) and writes a
+DELETED ledger row in one transaction, stamped with the current time or the recorded
+version when that is later (Salesforce's clock can run ahead of ours), so the row
+really becomes DELETED and the RESTORED that follows is not skipped. No Sales Entity
+read. `deactivation_date` is not touched: it is Salesforce's contract end date. Any
+later CREATED/UPDATED/RESTORED clears `deleted_on`. Never `DELETE FROM account`
+(project → account is `ON DELETE CASCADE`). `SearchAccounts` excludes
+`deleted_on IS NOT NULL`; `GetAccountByID`, `LookupAccountIDBySfID` (so
+`EnsureAccount`), the partner lookup and the joins from projects/cases/global search
+still see the row.
+
+### One row per sf_id
+
+`sf_id` is not unique, so every ingest write and parent lookup updates ONE row by `id`;
+the tie-break lives in `internal/repository/sf_id_resolve.go`. Deletes still hit every copy.
 
 ## Salesforce membership ingest and onboarding steps
 
@@ -200,7 +259,8 @@ The same `POST /salesforce/events` endpoint also ingests customer **memberships*
 acknowledges those entities with 204 and ignores them (the behaviour before this
 branch existed). On, it uses `NewSalesforceEventServiceWithMembershipIngest`
 with a `service.MembershipIngest` (membership repo, onboarding-step repo, the
-same `salesentity.Client`, and the optional `eventPublisher`). This is the
+same `salesentity.Client`, the Contact writer's `SalesforceContactRepository`,
+and the optional `eventPublisher`). This is the
 **only** writer of customer memberships into Postgres: the customer portal and
 the hourly reconcile job never write these tables themselves, they replay the
 envelope (`{eventType, entity: "Project_Contact__c", referenceId}`) to this
@@ -213,9 +273,9 @@ an alias of `Project_Contact__c`, and the raw value is logged):
 | Entity | Event | Action |
 |---|---|---|
 | `Project_Contact__c` | CREATED / UPDATED / RESTORED | `GetProjectContact` (REST `POST /project-contacts/search`) then `GetContact` (`POST /contacts/search`) → `ProjectMembershipRepository.Upsert` in one transaction → DATABASE step → publish `project_contact.invited` if the state is INVITED / RE-INVITED. It is published to **`PROJECT_EVENT_HUB_TOPIC`** (default `project-events`), not the shared `EVENT_HUB_TOPIC`: onboarding gets its own topic so a case-event backlog cannot delay an invitation, and its dead-letter queue can be watched on its own. Same broker and credentials, same failure recording — only the topic differs, and csm-notification-service consumes it with its own consumer group. |
-| `Project_Contact__c` | DELETED | `project_contact.state = DEACTIVATED` for that `sf_id`; unknown id is a no-op (still 204). Never `DELETE FROM` |
-| `Contact` | UPDATED | `GetContact`, then the CREATED/UPDATED path above for each of its `memberships` (name / email / `isCsAdmin` / `isCsIntegrationUser` changes propagate); every membership is attempted, the first error is returned |
-| `Contact` | CREATED / DELETED | no-op |
+| `Project_Contact__c` | DELETED | `project_contact.state = DEACTIVATED` for that `sf_id`, and in the same transaction the user's account-level admin role is re-derived (`syncDerivedAdminRole`; the contact is read for its classification and `isCsAdmin`, and an unreadable contact leaves the roles alone); unknown id is a no-op (still 204). Never `DELETE FROM` |
+| `Contact` | CREATED / UPDATED / RESTORED | The Contact writer (below): `GetContact` once, write `"user"` / `account_contact` / contact-derived roles + ledger, then the CREATED/UPDATED path above for each of its `memberships` **with the fetched contact** (no second read); every membership is attempted, the first error is returned |
+| `Contact` | DELETED | No fetch: `account_contact.is_active` and `"user".is_active` = FALSE by `sf_id`, ledger stamped DELETED. Never a hard delete |
 | anything else | any | 204, ignored |
 
 An empty sales-entity-service result is a 503 (the ASB event can arrive before
@@ -238,19 +298,30 @@ back-filled instead of duplicated:
 
 1. `project` by `key` (the Salesforce subscription key), then by `sf_id` → 404.
 2. `account` by `sf_id = contact.customerId`; a non-PARTNER membership falls
-   back to the project's own account → 404.
+   back to the project's own account → 404. (The Contact writer, which runs
+   first on a Contact event, ensures the contact's account with
+   `EnsureAccount`; this step does not.)
 3. `"user"` by `sf_id`, else by `LOWER(email)` — exactly one (`"user".email` is
    not unique; two matches are a 409 rather than a guess) — else inserted with
    `user_name = lower(email)`, `is_active = true`, `is_system_user =
    isCsIntegrationUser`. An existing row gets name / email / `is_system_user`
    refreshed, **never `user_name`** (it is the join key to `account_contact`).
-4. Global roles (`user_role`, `mapGlobalRoles`): always `external`; `partner`
-   for a PARTNER CONTACT else `customer`. Nothing is revoked here. An
-   integration user gets no global roles at all. A role name missing from the
-   `role` table is a 503 naming it — the ServiceNow sync seeds those rows.
-   The admin role is **not** decided at this step any more — see step 8.
+4. Global roles (`user_role`, `mapGlobalRoles`): always `external`, plus
+   `partner` when the **contact's account classification** is `Partner`
+   (case-insensitive) and `customer` otherwise — decision D1, the ServiceNow
+   script's basis; it used to follow the membership type (`PARTNER CONTACT`).
+   `{customer, partner}` is a managed pair (`ManagedGlobalRoles`): the other
+   half is revoked, so a reclassified account flips the role. When the
+   classification is unknown (a portal write that has just created the
+   contact) the contact is a customer and nothing is revoked. An integration
+   user gets no global roles at all and nothing is revoked. A role name
+   missing from the `role` table is a 503 naming it — the ServiceNow sync
+   seeds those rows. The admin role is **not** decided at this step — see
+   step 8.
 5. `account_contact` by (`sf_id`, account), else (account, `LOWER(user_name)`),
-   else inserted (`is_active = true`, `is_primary_contact = false`).
+   else inserted (`is_active = true`). `is_primary_contact` is Salesforce's
+   `isPrimaryContact` on insert and update; when Sales Entity sends none it is
+   FALSE on insert and left alone on update (the portal writes send none).
 6. `project_contact` by `sf_id`, else (project, account_contact), else
    inserted; `email` and `state` (`INVITED` / `REGISTERED` / `RE-INVITED` /
    `DEACTIVATED`, `normalizeMembershipState`; anything else is a 400) updated.
@@ -259,17 +330,25 @@ back-filled instead of duplicated:
    `Portal user` → `General Access`; `Security Contact` → `Security Only`;
    `Lead` additionally → `Lead User Group`; `Admin` additionally → `Admin`
    (the group carrying the `ADMIN` project role, migration 0128 — `Admin`
-   used to be global-only and recorded nothing per project); unknown roles are
-   logged as `ignoredRoles` and never fail the ingest. The row set is
-   replaced. A missing `project_group` row is a 503.
-8. The derived account-level admin roles (`syncDerivedAdminRole`), run
-   **after** step 7 so the membership just written counts: one aggregate over
-   every membership this user holds, deciding `customer_admin` and
-   `partner_admin` **separately** — each from the live ADMIN memberships that
-   can support it — then granting each role it earned and revoking each one it
-   did not. The contact's own `isCsAdmin` is an additional grant of the role
-   *this* membership maps to. See "Admin is a project role" below for the two
-   bugs this replaced.
+   used to be global-only and recorded nothing per project); `Business
+   Contact` additionally → `Business Contact  Group` (**two spaces**, the name
+   ServiceNow gave it and the one stored in `project_group`, matched exactly;
+   it carries the `BUSINESS_CONTACT` project role), so a contact can be, say,
+   Portal user + Business Contact. The six labels with no CSM group (Business
+   Owner / Promoter / Detractor, Technical Owner / Champion / Detractor) are
+   ignored by decision D2; they and any unknown label are logged once per
+   membership (`ignoredRoles` at info level, `unknownRoles` as a warning) and
+   never fail the ingest. The row set is replaced. A missing `project_group`
+   row is a 503. `salesforceRolesForGroups` maps the group back to `Business
+   Contact`, so a portal deactivation that writes the stored roles back to
+   Salesforce keeps it; the portal writes do not accept it as input.
+8. The derived account-level admin role (`syncDerivedAdminRole`), run
+   **after** step 7 so the membership just written counts: the user is an
+   admin when any of their live memberships carries the ADMIN project role or
+   the contact's `isCsAdmin` is set; the role is `partner_admin` for a
+   Partner-classified account and `customer_admin` otherwise (the same basis
+   as step 4), and the other one is always revoked. See "Admin is a project
+   role" below for the bugs this replaced.
 
 The DATABASE `onboarding_step` is written **inside the same transaction**
 (`upsertOnboardingStep` takes a `querier`, satisfied by both the pool and a
@@ -311,12 +390,75 @@ publishes) while still suppressing the portal's own echo (RE-INVITED →
 RE-INVITED is unchanged, so it does not). Do not put the insert-only condition
 back.
 
+**Contact who already signed in:** Salesforce saves their new membership as REGISTERED. It still gets `project_contact.invited` (existing-account email) when the row is new (created < 24 h ago in Salesforce) or comes back from DEACTIVATED, but not on RESTORED. The portal invite stores the REGISTERED state Salesforce returns and publishes.
+
+`project_contact.registered` (`events.ProjectContactRegisteredPayload`) is published the same way, only on an
+existing row moving INVITED / RE-INVITED → REGISTERED; csm-notification-service sends the Welcome email (step `WELCOME_EMAIL`).
+
 **Schema prerequisite**: the `sf_id` columns on `"user"`, `account_contact`
 and `project_contact` come from the csm-sync migration 0076, which is not in
 this repo's `migrations/`; the ingest fails at the first `SELECT ... sf_id`
 without it. `role` must contain `external`, `customer`, `partner`,
-`customer_admin`, `partner_admin`; `project_group` must contain the four
-groups above.
+`customer_admin`, `partner_admin`; `project_group` must contain the groups
+above (`Business Contact  Group` included, for a membership carrying that
+label).
+
+### The Contact writer
+
+Before it, a Contact event only refreshed the contact's existing memberships,
+so a contact with no membership (how a commercial or billing contact is
+onboarded) wrote nothing to CSM. The Contact writer
+(`internal/service/salesforce_contact_ingest.go`,
+`repository.SalesforceContactRepository`) owns a contact's `"user"` and
+`account_contact` rows and the contact-derived part of `user_role`, under the
+same `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` flag; the membership
+upsert stays the only writer of `project_contact`.
+
+CREATED / UPDATED / RESTORED (`ingestContact`):
+
+1. `GetContact` once. Sales Entity fields read beyond the membership path's:
+   `isPrimaryContact`, `accountId` (else `account.id`), `account.classification`.
+   `userActive` is decoded ahead of the Sales Entity release that exposes it
+   and is not written yet.
+2. Duplicate guard: `shouldSkipIngest` on the ledger (entity
+   `domain.SalesforceIngestEntityContact` = `contact`) with the contact's
+   `lastModifiedDate`. A duplicate skips the contact write but **not** the
+   membership fan-out, so a membership that failed on the first delivery is
+   retried by the redelivery (each membership has its own guard).
+3. No account on the contact: logged, nothing written (account_contact needs
+   one), fan-out still runs. Otherwise `EnsureAccount` on the contact's
+   account; a failure (`NotFoundError` when the account is not in CSM and the
+   Account ingest is off) records the ledger FAILED and fails the event, so
+   Service Bus redelivers it, and the delayed-retry job re-runs it through
+   `RetryContactIngest` once the account lands. A contact with no email (400)
+   or a failed write also fails the event (not retried by the job).
+4. One transaction, under a transaction-scoped advisory lock on the contact
+   `sf_id`: `"user"` via `upsertMembershipUser` (by `sf_id`, then unique email;
+   `user_name` never renamed; a user this writer soft-deleted — ledger
+   DELETED — is reactivated, nobody else's `is_active` is touched); global
+   roles via `syncGlobalRoles` with the managed `{customer, partner}` pair;
+   `account_contact` via `upsertAccountContact` with `is_primary_contact`;
+   the account move — the contact's active `account_contact` rows on other
+   accounts go `is_active = FALSE`, **unless** the contact still holds a live
+   (non-DEACTIVATED) membership on a project of that account (a partner
+   contact legitimately keeps a row there); `syncDerivedAdminRole`; the ledger
+   row SUCCEEDED.
+5. Fan out to `contact.memberships` through `ingestMembership`, passing the
+   fetched contact (re-read only if it is not the membership's own contact).
+   The fan-out re-points each membership at the new account's
+   `account_contact`.
+
+Integration users keep the ingest's behaviour: a `"user"` with
+`is_system_user = TRUE` and an `account_contact`, no global roles, no admin
+decision.
+
+DELETED (`deactivateContact`): no fetch (Salesforce hides deleted records).
+`account_contact.is_active` and `"user".is_active` go FALSE by `sf_id`, and the
+ledger row is stamped DELETED, keeping its recorded version (or now, for a
+contact never ingested), so a later RESTORED is not skipped as a duplicate.
+Nothing is hard-deleted: `project_contact` and `onboarding_step` reference these
+rows. Roles are left alone (Salesforce deletes the memberships with their own
+events).
 
 **Onboarding steps API** (`onboarding_step`, migration 0118; Postgres-only,
 404 without a pool, like `scheduled_task_run`): one row per
@@ -338,6 +480,254 @@ write was based on.
 - `POST /onboarding-steps/search` — `{filters: {projectId?, membershipSfIds?,
   statuses?}, pagination}` → `{steps, total, limit, offset}`, newest first,
   `normalizePagination` (limit 20, max 50).
+
+## Salesforce ingest ledger and the delayed-retry job
+
+`salesforce_ingest_state` (migration 0170) is the per-record ledger of the
+Salesforce ingest for every object that is not a membership (memberships keep
+using `onboarding_step`). One row per (`entity`, `sf_id`), where `entity` is the
+CSM table the record lands in (`domain.SalesforceIngestEntityAccount` = `account`,
+`domain.SalesforceIngestEntityContact` = `contact` for the Contact writer, which
+writes two tables; more to come per family); `status` ∈ SUCCEEDED / FAILED (CHECK constraint),
+`event_modified_on` = the Salesforce `LastModifiedDate` the last write was based on,
+`attempt_count` = consecutive failures (up while the row stays FAILED, back to 1 on
+a success or on the first failure after one, so a record Salesforce saves often
+never reaches the retry cap by succeeding). `repository.SalesforceIngestStateRepository`
+(`Get`, `Upsert`, `ListMissingParentFailures`, `RecordRetryAttempt`) is generic over `entity`; a repository that writes
+its own rows in a transaction records the ledger in that same transaction through
+`upsertSalesforceIngestState(ctx, q querier, ...)`, like `upsertOnboardingStep`. The
+upsert only moves the outcome columns when the incoming version is at least as new,
+or the recorded row was stamped DELETED.
+
+`shouldSkipIngest` (`internal/service/salesforce_ingest_guard.go`) is the duplicate
+guard on that ledger, with `ingestMembership`'s three rules: skip when a SUCCEEDED
+row's `event_modified_on` is not before the incoming version; a missing or
+unparseable `LastModifiedDate` skips the guard (warning logged) and uses
+`time.Now().UTC()`; a row last written by DELETED never blocks. FAILED rows never block.
+
+`EnsureAccount(ctx, sfID)` on the Salesforce event service returns a parent
+account's CSM id for a child ingest: it reads `account.id` by `sf_id`
+(`SalesforceIngestSupport.Accounts`, wired regardless of flags); when absent and the
+Account ingest is on it runs the ordinary `upsertAccount` and reads again; when
+absent and the Account ingest is off it returns `NotFoundError`
+`account not found for sfId "<sfId>"` — the prefix `repository.IsMissingParentError`
+matches, so every child family's FAILED row is picked up by the delayed-retry job.
+
+**The delayed-retry job** (`SalesforceIngestRetryWorker`,
+`internal/service/salesforce_ingest_retry_worker.go`). Service Bus redelivers a
+failed envelope five times within seconds, but a new project reaches CSM through
+the ServiceNow sync up to five minutes later, so a membership on a brand-new project
+dead-letters before its project exists. Started from `routes.go` (it needs the
+membership-ingest-enabled service, publisher included) only when
+`CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true` and
+`SALESFORCE_INGEST_RETRY_INTERVAL` > 0; stopped by the `closePublishers` func
+`cmd/api/main.go` calls on shutdown, before the producers close. Every tick (the
+first one after one interval) it reads DATABASE steps with status FAILED, a
+`last_error` starting "project not found" / "account not found", `updated_on`
+older than the interval and `retry_count` < 12
+(`OnboardingStepRepository.ListMissingParentFailures`), and re-runs
+`ingestMembership` for each as UPDATED (`RetryMembershipIngest`), 30s timeout each,
+at most 100 per tick. Each failed re-run counts one retry (`RecordRetryAttempt`:
+`retry_count` + 1, `updated_on = now()`, `last_error` kept, while still FAILED);
+redeliveries and new events never add to `retry_count` (migration 0174), and a
+successful project/account ingest resets it on the rows whose error names that parent
+(`RequeueMissingParentFailures`). So a parent that never arrives stops being retried after about an
+hour at the default. FAILED ledger rows are read the same way
+(`SalesforceIngestStateRepository.ListMissingParentFailures`, which applies the
+registered-retrier, missing-parent and attempt-cap filters in SQL before the batch
+limit, so a backlog of rows the job would skip cannot starve eligible ones) and handed to
+`EntityRetriers[entity]`; `opportunity`, `linked_opportunity`, `invoice` and `opportunity_line_item` register one each
+(`RetryOpportunityIngest`, `RetryLinkedOpportunityIngest`, `RetryInvoiceIngest`, `RetryOpportunityLineItemIngest`) when `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true`, `project` one
+(`RetryProjectIngest`) when `CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED=true`, and `contact` always
+registers one (`RetryContactIngest`: the whole Contact writer as UPDATED, fan-out
+included; it runs under the membership flag the job already requires), and
+`account_partners` registers one (`RetryPartnerRefresh`) when
+`CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true`. Other
+entities are only counted (the Account ingest records FAILED rows but has no parent to wait for, so it
+registers none).
+
+## Salesforce Opportunity ingest
+
+`POST /salesforce/events` acts on `Opportunity` envelopes when
+`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true` (off by default: they are
+acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest.go`
+(attached to the event service with `WithOpportunityIngest` in `routes.go`),
+`internal/repository/sf_opportunity_repo.go`, `GetOpportunity` in
+`internal/salesentity/opportunity.go`. Plan: `docs/customer-onboarding/SALESFORCE_SYNC_PLAN.md` §7.
+
+- **CREATED / UPDATED / RESTORED:** `POST /opportunities/search {id, limit: 1}` on the
+  REST Sales Entity (empty result = `ServiceUnavailableError`, so Service Bus
+  retries), then `shouldSkipIngest` on the ledger with entity `opportunity`, then
+  `EnsureAccount(customerId)`, then one transaction that writes `sf_opportunity`, its
+  line items and the SUCCEEDED ledger row.
+- **`sf_opportunity`** by `sf_id` (not unique): advisory lock `"sf-opportunity:"+sfId`,
+  update every row with the `sf_id`, else insert with `gen_random_uuid()`;
+  `created_by`/`updated_by` = `salesforce-sync`, `sync_time_stamp = now()`. Written:
+  `name`, `account_id`, `stage`, `is_won`, `close_date` (= `supportAccountEndDateRollUp`,
+  not Salesforce `CloseDate`: what the ServiceNow script stored, decision D6),
+  `eula_version`, `eula_version_decimal` (first `\d+\.\d+` in the version; `3.4` when
+  the version is empty; NULL when it has no decimal). When Sales Entity does not send
+  the `eulaVersion` key at all (a build without the field) both EULA columns are kept.
+  **Never written:** `type`, `owner`, `engagement_code`, `query_hour_state`
+  (ServiceNow-derived; `TestSfOpportunitySQL_NeverTouchesServiceNowColumns` pins the
+  column lists). Values longer than their VARCHAR (migration 0080) are truncated and logged.
+- **Line items (derived path):** the embedded `subscriptionLineItems` replace the
+  opportunity's `sf_opportunity_product` rows as a set, in the same transaction:
+  update by `line_item_sf_id` (else insert), then delete the rows under this
+  `opportunity_id` the list does not mention. Written: `name`, `product_name`,
+  `quantity`, `service_start_date`, `service_end_date`, `product_code`,
+  `product_description`, `product_family`, `product_unit`, `eng_product_code`,
+  `product_sf_id`, `classification`, `environment`, `total_price`. **Never written:**
+  `development_support_hours`, `engagement_code`. With duplicate `sf_opportunity` rows
+  for one `sf_id`, the row "One row per sf_id" picks owns the line items. Standalone `OpportunityLineItem`
+  events are handled too (see "Standalone OpportunityLineItem" below).
+- **DELETED:** hard delete `sf_opportunity WHERE sf_id = $1` (FKs cascade line items
+  and project links, null invoices) plus a DELETED ledger row, in one transaction;
+  a never-ingested opportunity is acknowledged and logged.
+- **Failures:** an error after the fetch writes a FAILED ledger row (best effort,
+  outside the rolled-back transaction). A missing account (Account ingest off) fails
+  with `NotFoundError` "account not found for sfId ..." so the delayed-retry job
+  re-runs it; with the Account ingest on, `EnsureAccount` ingests the account first.
+  The retry job itself only runs while the membership ingest is on.
+- **Duplicate guard:** the REST Sales Entity does not return `lastModifiedDate` for
+  opportunities yet, so today the guard is skipped with a warning and the idempotent
+  upsert runs on every event; it starts working once Sales Entity sends the field.
+- **`Linked_Opportunity__c`** (also `Linked_Opportunity`), same flag:
+  `internal/service/salesforce_linked_opportunity_ingest.go` (`WithLinkedOpportunityIngest`),
+  `internal/repository/sf_opportunity_link_repo.go`, `GetLinkedOpportunity` on
+  `POST /linked-opportunities/search`. CREATED/UPDATED/RESTORED: guard with entity
+  `linked_opportunity`, resolve the opportunity through the shared `ensureOpportunity`
+  (see "Invoice__c" below; the script's `_initOpportunity`), the project through
+  `EnsureProject` (missing project with inserts off = `NotFoundError`, re-run by the retry
+  job, which registers `RetryLinkedOpportunityIngest`), then upsert `sf_opportunity_link` by
+  `link_sf_id` under lock `"sf-opportunity-link:"+id`: `number` (= Name), `opportunity_id`,
+  `project_id`, `sync_time_stamp`. A link without a project or opportunity id is recorded
+  FAILED and acknowledged. DELETED: hard delete by the 18-character `link_sf_id` plus a
+  DELETED ledger row; a never-ingested link is acknowledged.
+
+## Salesforce Project ingest
+
+`POST /salesforce/events` acts on `Project__c` envelopes when
+`CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED=true` (off by default: acknowledged and
+ignored). Code: `internal/service/salesforce_project_ingest.go` (`WithProjectIngest` in
+`routes.go`), `internal/repository/salesforce_project_repo.go`, `GetProject` in
+`internal/salesentity/project.go`. Plan: `docs/customer-onboarding/SALESFORCE_SYNC_PLAN.md` §6.
+
+- **CREATED / UPDATED / RESTORED:** `POST /projects/search {id, limit: 1}` (empty result =
+  `ServiceUnavailableError`), `shouldSkipIngest` with entity `project` (Sales Entity sends
+  `lastModifiedDate`, so the guard works), `EnsureAccount(customerId)`, `project_type_id` by
+  exact `project_type.name` (unknown label = NULL + warning; types are never created), then
+  one transaction: advisory lock `"project-sf:"+sfId`, resolve the row by `sf_id`, else by
+  `key` (the `sf_id` is stamped on a key match), update, ledger row.
+- **Written (only):** `sf_id`, `key`, `name`, `account_id` (kept when Salesforce names no
+  account), `start_date`, `end_date`, `description`, `project_type_id`,
+  `compliance_violation_date`, `onboarding_go_live_date` (`Go_Live_Date__c`: CSM owns it and
+  writes it to Salesforce, decision D4, so this mirrors it back), plus `updated_on`/`updated_by`.
+  Closure states, `wso2_closure_state`, hour counters, onboarding fields, credentials,
+  `number`, `is_active` are never in the UPDATE (`TestSalesforceProjectSQL_ColumnList`).
+- **Update-only by default:** with `CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED` off a
+  project CSM does not have is `NotFoundError` "project not found for sfId ..." plus a FAILED
+  ledger row, which the delayed-retry job re-runs. On, it is inserted with
+  `gen_random_uuid()` and `is_active = TRUE`.
+- **Empty `Project_Key__c` (decision D5):** refused: FAILED ledger row with the reason,
+  event acknowledged (no retry can fix it).
+- **DELETED:** `is_active = FALSE` on every row with the (18-character) `sf_id` plus a DELETED
+  ledger row. RESTORED, or any upsert whose previous ledger row is a successful DELETED (or a
+  failed RESTORED), sets `is_active = TRUE` again, in a separate statement touching only
+  rows where it is FALSE.
+- **`EnsureProject(sfId)`:** lookup by `sf_id` (`SalesforceIngestSupport.Projects`,
+  flag-independent); when missing and the project flag and insert switch are both on, the
+  project is fetched and upserted first. Otherwise `NotFoundError`. The membership ingest
+  calls it when its upsert fails with "project not found" and retries the membership once;
+  with inserts off it keeps the original error for the retry job.
+
+### Invoice__c (same flag)
+
+`Invoice__c` (also accepted as `Invoice`) envelopes are handled under
+`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` too. Code:
+`internal/service/salesforce_invoice_ingest.go` (`WithInvoiceIngest`),
+`internal/repository/sf_invoice_repo.go`, `GetInvoice` in `internal/salesentity/invoice.go`,
+and `ensureOpportunity` in `internal/service/salesforce_opportunity_ensure.go` (shared by
+the linked-opportunity, invoice and line-item families).
+
+- **CREATED / UPDATED / RESTORED:** `POST /invoices/search {id, limit: 1}` (empty =
+  retryable), guard on entity `invoice` (Sales Entity sends `lastModifiedDate`), then
+  `ensureOpportunity(opportunityId)` — look up `sf_opportunity` by `sf_id`, and when
+  missing run the Opportunity branch inline (which ensures the account) **without the
+  duplicate guard**, as `EnsureAccount` and `EnsureProject` do: a missing row means the
+  ledger's "already written" is stale (a cascade or an out-of-band delete), so the
+  opportunity is re-ingested at its current version — then one
+  transaction under `"sf-invoice:"+sfId`: update every `sf_invoice` row with the `sf_id`,
+  else insert, plus the SUCCEEDED ledger row. Every data column is written (`name`,
+  `description`, `classification` — VARCHAR(40), truncated with a warning —
+  `opportunity_id`, `invoiced_amount`, `invoice_date`, `invoiced_due_date`,
+  `original_invoice_due_date` = `originalInvoiceDueDate ?? dueDate`, `invoiced_paid_date`,
+  `service_start_date`, `service_end_date`, `sync_time_stamp`). An invoice with no
+  `opportunityId` is written with a NULL `opportunity_id` and a warning. Auto-created
+  invoices are included (the standalone search does not filter them).
+- **DELETED:** hard delete by `sf_id` (widened to 18 characters) plus a DELETED ledger
+  row; a never-ingested invoice is acknowledged.
+- **Never from the Opportunity event:** the invoices embedded in an Opportunity lack the
+  invoice date, the parent id and the original due date, and leave out auto-created
+  invoices, so they are ignored (plan §7).
+- **Retry:** `invoice` registers `RetryInvoiceIngest` with the delayed-retry job when the
+  flag is on; a missing account under the inline Opportunity ingest fails with the
+  "account not found ..." prefix it matches.
+
+### Standalone OpportunityLineItem (same flag)
+
+`OpportunityLineItem` envelopes are handled under
+`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` too. Code:
+`internal/service/salesforce_opportunity_line_item_ingest.go` (`WithOpportunityLineItemIngest`),
+`internal/repository/sf_opportunity_line_item_repo.go`, `GetOpportunityLineItem` in
+`internal/salesentity/opportunity_line_item.go`.
+
+- **CREATED / UPDATED / RESTORED:** `POST /opportunity-line-items/search {id, limit: 1}`
+  (empty = retryable; no `opportunityId` = retryable), guard on entity
+  `opportunity_line_item`, `ensureOpportunity(opportunityId)`, then one transaction under
+  the **parent opportunity's** lock `"sf-opportunity:"+opportunitySfId` (the lock the
+  derived set replace holds, so the two paths cannot both insert one line item) that runs
+  the derived path's own UPDATE-by-`line_item_sf_id`-else-INSERT with the same mapping
+  (`mapSalesEntityLineItem`) plus the ledger row. `development_support_hours` and
+  `engagement_code` are never written.
+- **DELETED:** hard delete by `line_item_sf_id` (18 characters), under the owning
+  opportunity's lock when the row is stored; a never-ingested line item is acknowledged.
+- **Retry:** `opportunity_line_item` registers `RetryOpportunityLineItemIngest` when the
+  flag is on.
+
+## Salesforce partner relationships
+
+The partner links in `account_relationship` ("partner **Is Partner Of** customer",
+read by the invitation validator through `AccountPartnerRepository`) are refreshed
+from Salesforce when `CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true` (off by
+default). Code: `RefreshPartners` in `internal/service/salesforce_partner_ingest.go`
+(attached with `WithPartnerIngest` in `routes.go`),
+`internal/repository/account_partner_write_repo.go`, `GetCustomerPartners` in
+`internal/salesentity/partners.go`. Plan: `docs/customer-onboarding/SALESFORCE_SYNC_PLAN.md`
+§4 and decision D8 (store a copy).
+
+- **Read:** `POST /customer-search {ids: [id], isRealTime: true, includePartners: true}`.
+  A response without the `partners` key (or with `null`) is a `ServiceUnavailableError`,
+  never "no partners": an older Sales Entity build must not wipe the stored links.
+- **Write:** `EnsureAccount` for the customer and every partner first (a missing one is
+  ingested when the Account ingest is on, else the refresh fails with "account not
+  found ..." before writing anything), then one transaction under the advisory lock
+  `"account-partners:"+customerSfId`: insert each missing forward row (`from` = partner,
+  `to` = customer, `Is Partner Of` / `Is Customer Of`, `is_reverse_relationship = false`)
+  and its mirror (`from` = customer, `to` = partner, labels swapped, `true`), delete the
+  forward and reverse partner rows whose partner left the set, and record a SUCCEEDED
+  ledger row with entity `account_partners` (sf_id = the customer). Rows of any other
+  label are never touched; `relationship_type_id` stays NULL (the reader matches labels).
+- **Callers, all behind the one flag:** every Account CREATED/UPDATED/RESTORED after the
+  upsert, including a replay the duplicate guard skipped (a partner change does not move
+  the account's `LastModifiedDate`; a failure fails the event so Service Bus redelivers
+  it); every membership event whose contact's account differs from the project's account
+  (best effort: logged and recorded FAILED, never failing the membership); the internal
+  route `POST /salesforce/accounts/{sfId}/refresh-partners` (internal callers only,
+  registered only with the flag on; answers the stored set); and the delayed-retry job
+  (`RetryPartnerRefresh` under `account_partners`).
+- **Not built yet:** the nightly sweep over every account (TODO in `RefreshPartners`); it
+  is the only way to catch a partner added in Salesforce with no related save.
 
 ## Membership registration (`POST /users/me/memberships/register`)
 
@@ -505,12 +895,11 @@ easy to wire up for real once both exist.
   `CLAUDE.md`).
 
   **`Recipients` depends on `req.Type`.** For `case`/`engagement`/
-  `service_request`/`security_report_analysis` it's still the case's own
-  resolved watch list emails only (this service has no other notion of who
-  should be emailed for these types) — which, on the Postgres/dual-write
-  data source, already includes the account's four default-watcher
-  stakeholders once `addAccountDefaultWatchers` has run (see
-  `CaseRepository.AccountDefaultWatcherIDs` below). For `announcement`,
+  `service_request`/`security_report_analysis` it's the case's own resolved
+  watch list emails, unioned with the account's four default-watcher
+  stakeholders resolved fresh via `CaseRepository.AccountDefaultWatcherEmails`
+  — see "Case watch list" below for why those four are resolved at publish
+  time rather than read from the persisted watch list. For `announcement`,
   `publishCaseCreatedEvent` instead resolves the audience via
   `CaseService.ProjectContactEmailsByRole` — every `project_contact`
   currently holding the `SECURITY_CONTACT` project role when
@@ -518,10 +907,10 @@ easy to wire up for real once both exist.
   `PORTAL_USER` — bypassing the watch-list mechanism entirely, since a
   project contact often has no matching `"user"` row to add as a
   `work_item_watcher` (`work_item_watcher.user_id` is `NOT NULL`). Falls
-  back to the case's own watch-list emails (the account's default
-  watchers) when no contact holds the requested role for that project — a
-  project with nobody in the requested role must still notify someone, not
-  silently notify no one. `ProjectContactEmailsByRole` is Postgres-only
+  back to the case's own watch-list emails (still unioned with the account's
+  default watchers) when no contact holds the requested role for that
+  project — a project with nobody in the requested role must still notify
+  someone, not silently notify no one. `ProjectContactEmailsByRole` is Postgres-only
   (`project_contact`/`project_role` have no ServiceNow equivalent); on
   `snCaseService` it delegates to `pgFallback` when configured, else
   returns empty (no error) — same "can't resolve, skip" posture as every
@@ -996,9 +1385,17 @@ by the ingest's duplicate guard.
   it apart from a failed check; a valid answer carries the Salesforce contact
   the invitation would adopt, if any. The Customer Portal calls it before
   showing the invite form.
-- **Change roles** replaces the Salesforce `Role__c` picklist and, with it,
-  the membership's project groups. The state is untouched (the PATCH sends
-  only `role`). An empty list is accepted and removes every group.
+- **Change roles** replaces the portal-managed labels of the Salesforce
+  `Role__c` picklist (Portal user, Security Contact, Lead, Admin) and, with
+  them, the membership's project groups. `Role__c` is PATCHed as a whole list,
+  so `mergePortalManagedRoles` keeps every other label already on the fetched
+  Salesforce membership (Business Contact, the six D2 labels, anything
+  unknown) after the requested ones; the groups are derived from that merged
+  list, so a Business Contact keeps `Business Contact  Group`. When the fetched
+  membership carries neither `roles` nor `role`, the write fails (503) rather
+  than overwrite blind. A re-invitation PATCHes roles the same way. The state is
+  untouched (the PATCH sends only `role`). An empty list is accepted and removes
+  every portal-managed role.
 - **Deactivate** sets `DEACTIVATED` in both systems. Never a delete:
   DEACTIVATED is a real value of both the Salesforce picklist and
   `project_contact_state_enum`, and it is what the portal does today. The
@@ -1114,27 +1511,27 @@ project under that account, and nothing outside it.
   `mapProjectGroups` maps Salesforce `Admin` → that group, alongside the
   existing PORTAL_USER / LEAD_USER / SECURITY_CONTACT mappings.
 - `mapGlobalRoles` no longer decides admin at all. It returns `external` plus
-  `customer`/`partner` exactly as before, and separately reports **which** of
-  the two admin roles this contact would hold
-  (`SalesforceMembershipUpsert.AdminRoleName`) — never whether they hold it.
+  `customer`/`partner` (from the contact's account classification, decision
+  D1), and separately reports **which** of the two admin roles this contact
+  would hold (`SalesforceMembershipUpsert.AdminRoleName`: `partner_admin` for
+  a Partner-classified account, else `customer_admin`) — never whether they
+  hold it.
 - `syncDerivedAdminRole` (step 8 of the upsert, after the project groups are
-  written) decides that, as **one query over the user's memberships** that
-  answers for both managed roles at once:
+  written; also the Contact writer, and the membership DELETED path) decides
+  that, as **one query over the user's memberships**:
 
   ```sql
-  SELECT
-    COALESCE(bool_or(ac.account_id  = p.account_id), FALSE),  -- earns customer_admin
-    COALESCE(bool_or(ac.account_id <> p.account_id), FALSE)   -- earns partner_admin
-  FROM "user" u
-  JOIN account_contact ac ON LOWER(ac.user_name) = LOWER(u.user_name)
-  JOIN project_contact pc ON pc.account_contact_id = ac.id
-  JOIN project p ON p.id = pc.project_id
-  JOIN project_contact_group pcg ON pcg.project_contact_id = pc.id
-  JOIN project_group_role pgr ON pgr.project_group_id = pcg.project_group_id
-  JOIN project_role pr ON pr.id = pgr.project_role_id
-  WHERE u.id = $1
-    AND pr.role = 'ADMIN'::project_role_enum
-    AND (pc.state IS NULL OR pc.state <> 'DEACTIVATED'::project_contact_state_enum)
+  SELECT EXISTS (
+    SELECT 1
+    FROM "user" u
+    JOIN account_contact ac ON LOWER(ac.user_name) = LOWER(u.user_name)
+    JOIN project_contact pc ON pc.account_contact_id = ac.id
+    JOIN project_contact_group pcg ON pcg.project_contact_id = pc.id
+    JOIN project_group_role pgr ON pgr.project_group_id = pcg.project_group_id
+    JOIN project_role pr ON pr.id = pgr.project_role_id
+    WHERE u.id = $1
+      AND pr.role = 'ADMIN'::project_role_enum
+      AND (pc.state IS NULL OR pc.state <> 'DEACTIVATED'::project_contact_state_enum))
   ```
 
   It binds only the user id — nothing about the membership in hand — which is
@@ -1143,26 +1540,32 @@ project under that account, and nothing outside it.
   the write rather than quietly deciding "not an admin", which would revoke a
   real admin's role on a transient error.
 
-  **Each role is decided on its own evidence**, and that split is the second
-  bug fixed here. A membership is a partner one exactly when the contact's
-  account is not the project's (`ac.account_id <> p.account_id`, the same test
-  `membershipByEmail` applies), so only an ADMIN membership of that kind can
-  support `partner_admin`, and only one of the other kind can support
-  `customer_admin`. An earlier version asked a single "is this user an admin
-  anywhere" question and then kept whichever role the membership in hand
-  mapped to: processing a **non-admin partner membership** for someone who was
-  a customer admin on their own account would grant them `partner_admin`, which
-  no ADMIN membership supported, and revoke the `customer_admin` they had
-  earned. The contact's own Salesforce `isCsAdmin` remains an additional grant
-  of the role this membership maps to, never a revocation condition.
+  **Which role is the contact's, not the membership's.** The admin role (like
+  `customer`/`partner`) follows the contact's account classification, so it
+  no longer matters which membership is in hand: every writer passes the same
+  `AdminRoleName` for the same contact, the user holds that one role when
+  they are an admin, and the other is revoked. An earlier version split the
+  answer by `ac.account_id <> p.account_id` per membership, which disagreed
+  with ServiceNow for a partner's employee on the partner's own project and
+  gave `partner_admin` to a related contact on another account's project;
+  before that, a single "admin anywhere" answer combined with the role of the
+  membership in hand let a non-admin partner membership trade one role for
+  the other. The contact's own Salesforce `isCsAdmin` is an additional grant,
+  never a revocation condition.
 
 A deactivated membership's `ADMIN` role does not count, which is how
 deactivating someone's last admin project drops their account-level role
-without erasing anything.
+without erasing anything. A membership DELETED in Salesforce re-derives the
+role in the same transaction as the deactivation.
 
 ### Account roles on the contacts search
 
-`POST /projects/{id}/contacts/search` now returns each contact's
+`POST /projects/{id}/contacts/search` lists only live memberships: DEACTIVATED
+rows (the ingest's soft delete; ServiceNow hard-deleted them, so no portal ever
+listed one) are left out of both the page and `total`. The change-request notice
+recipients (`cr_notice_repo.go` `ProjectContactEmails`) and the SLA-status
+customer-admin check (`project_stats_repo.go` `hasCustomerAdminContactExists`)
+leave them out the same way. It returns each contact's
 **`accountRoles`** alongside their project `roles` — a separate list, never
 merged: `roles` is what they may do on *this* project, `accountRoles` what they
 are across the account. It is read from `user_role`/`role` (where
@@ -1278,6 +1681,21 @@ hardcoded id). Both are resolved via `LEFT JOIN`s added to
 enrichment, not part of the SLA clock itself; a work item with no
 project/account simply reports the zero value for each.
 
+**`AssigneeName`/`AssigneeEmail`/`TeamEmail`/`TeamLeadName` exist purely for
+`csm-notification-service`'s own SLA breach-alert EMAIL reaction** (the
+assignee/team-group emails sent alongside the existing Chat alert — see that
+repo's own `CLAUDE.md`, "SLA breach-alerting engine") — not used by anything
+in this service itself. `AssigneeEmail`/`AssigneeName` resolve via a
+`LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id`; `TeamEmail` is
+`"group".group_email` (the same `"group"` row `team` already joins through)
+and `TeamLeadName` resolves via a second `LEFT JOIN "user" teamlead ON
+teamlead.id = cre.manager_id` — the group's manager, not a dedicated "team
+lead" column, since none exists on this schema today. All four are
+best-effort, same posture as `ProjectOnboardingStatus`/`IsEvaluationAccount`
+above: a work item with no assignee/group simply reports empty strings. A
+dedicated team table may replace the `"group"` lookup for `TeamEmail`/
+`TeamLeadName` later — noted, not yet needed.
+
 ## CSM-native SLA clock engine
 
 `internal/service/sla_engine_service.go` (`SLAEngineService`) is what actually
@@ -1312,6 +1730,44 @@ regardless of severity.
   on its own ticker, default 45s — frequent enough that a 50/75/100%
   crossing is visible well within `csm-notification-service`'s own
   `SLA_TICK_INTERVAL` poll cadence.
+- **A BREACHED clock is not terminal — it keeps being recomputed, and stays
+  completable, until its own genuine finishing event.** A real, reported bug
+  had `RecomputeActive` stop touching a row the instant it first flipped to
+  `BREACHED` (its `WHERE` clause only ever matched `IN_PROGRESS`), freezing
+  `business_elapsed_percentage`/`business_duration` forever at whatever the
+  breaching tick happened to compute — e.g. a response SLA observed stuck at
+  "59m" elapsed long after real time had moved well past that, because
+  nothing ever recomputed it again. `CompleteClock`/`SetPaused` had the
+  matching half of the same bug: both excluded `BREACHED` via
+  `slaEngineActiveStageFilter`, so a RESPONSE clock that breached before a
+  support engineer ever replied silently ignored that reply's own
+  `CompleteClock` call — matching zero rows instead of finally finalizing
+  it. Fixed by giving `CompleteClock`/`SetPaused` their own, narrower
+  `slaEngineOpenStageFilter` (excludes only `ACHIEVED`/`CANCELLED`/
+  `COMPLETED` — the stages a clock genuinely never leaves — not `BREACHED`
+  too), and widening `RecomputeActive`'s own `WHERE` to `stage IN
+  ('IN_PROGRESS', 'BREACHED')` (still excluding `PAUSED`, for the same
+  "pause must actually stop accumulation" reason it always did).
+  `business_elapsed_percentage` is no longer capped at 100 either, in both
+  `RecomputeActive` and `CompleteClock` — a clock now shows its real,
+  uncapped overrun (e.g. 134%) for as long as it stays unanswered/BREACHED,
+  and still shows that same true number once it's finally completed,
+  instead of an identical-looking 100% regardless of how late the real
+  completion actually was. The webapp's `CaseSlaTable` already handles a
+  percentage above 100 correctly (clamps the progress-bar fill, shows the
+  real number as text), confirmed before uncapping this.
+- **A case closing now finalizes all three clock types, not just
+  resolution.** `ApplyCaseStateEffects`'s `CaseStateClosed` branch used to
+  only resume+complete `resolution` and merely pause `workaround` forever
+  (a documented, carried-forward gap from the old deleted design) — and
+  never touched `response` at all, leaving a case closed before anyone ever
+  replied with its response clock permanently `IN_PROGRESS`/`BREACHED`.
+  Closing now resumes+completes `workaround` the same way `resolution`
+  already was, and completes `response` directly (it's never paused at any
+  state) — all three unconditionally, every close, since `CompleteClock`'s
+  own stage filter is a no-op for whichever clock(s) already reached a
+  genuine completion (an engineer's reply, an earlier close) before this
+  ran.
 - **`RegisterCaseClocks`/`ReviseCaseClocks`/`CompleteResponseClock`/
   `ApplyCaseStateEffects`** are all called directly, in-process, from
   `snCaseService`'s own case-lifecycle hooks (create/severity-change/
@@ -1344,6 +1800,79 @@ regardless of severity.
   "does the referenced Postgres row exist yet at this call site"
   check — see `TestCaseService_CreateCase_RegistersSLAClocksOnlyAfterPostgresSucceeds`
   for the regression test.
+- **The same "wired into `snCaseService` only" gap existed for every other
+  `SLAEngineService` hook too, not just registration — all now fixed in
+  `caseService` directly.** `snCaseService.applyResponseSLAOnComment`/
+  `applyCaseStateSLAEffects`/`reviseCaseSLAClocks` are the plain-ServiceNow-
+  mode's own hooks; `caseService.createCaseCommentAs`/`UpdateCase` (the
+  active, Postgres-primary path in dual-write mode) had no equivalents at
+  all — a support engineer's reply never completed the response clock, no
+  state transition ever paused/resumed/completed workaround or resolution,
+  and no severity change ever revised a case's clocks, for any dual-write
+  case, full stop. Each is now its own hook on `caseService`:
+  - **`completeResponseSLAOnComment`** (`createCaseCommentAs`) — gated on
+    the same `CSEngineerRole` (`CS_ENGINEER_ROLE`) config
+    `snCaseService.applyResponseSLAOnComment` already uses, shared rather
+    than duplicated: "CS engineer" and "support engineer" are the same
+    real-world role, just checked against a different role vocabulary here
+    (`repository.UserRepository.GetUserRoles`, Postgres' own `user_role`
+    table) than `snCaseService`'s own lookup. Resolves the
+    comment author via `userRepo.GetUserByEmail` then `GetUserRoles` —
+    tolerates both failing (the M2M `CreateCaseCommentAs` path has no
+    guaranteed user row, per that method's own doc comment) by skipping,
+    the same "can't confirm, skip" posture `CSEngineerRole` itself uses
+    when unconfigured.
+  - **`ApplyCaseStateEffects`** (`UpdateCase`) — fires unconditionally
+    whenever `req.State != nil`, not gated on a genuine change, matching
+    `snCaseService`'s own call site exactly: every effect it applies is
+    idempotent, so a no-op re-PATCH just harmlessly re-applies the same
+    effect.
+  - **`ReviseCaseClocks`** (`UpdateCase`) — gated on a genuine severity
+    change (unlike the state hook above), reusing the same `GetCaseByID`
+    fetch the `case.severity_changed` publish already does, rather than a
+    second round trip.
+- **The workaround clock could never actually complete, on either code
+  path, until now — a separate, previously-accepted gap this also
+  closes.** `ApplyCaseStateEffects` only ever pauses/resumes the workaround
+  clock (even on close, per its own doc comment — there was no "workaround
+  provided" signal wired into it). `WorkaroundProvided` (a real field on
+  `UpdateCaseRequest`/`CaseView`, the "Provide Workaround" action) is the
+  one genuine such signal that exists anywhere in the domain model, and
+  it simply wasn't connected to the SLA engine at all. `SLAEngineService`
+  now has its own `CompleteWorkaroundClock`, called from both `caseService.
+  updateCaseFields` and `snCaseService.UpdateCase` whenever
+  `WorkaroundProvided` is set to `true` — `false` (a recall) deliberately
+  does **not** reopen a completed clock; `SLAEngineRepository` has no
+  "uncomplete" operation, and a recall is rare enough that this stays a
+  known, accepted gap rather than something built speculatively.
+- **Sharing a fix ETA with the customer completes BOTH the workaround and
+  resolution clocks, not just one.** The webapp's "Share fix ETA with
+  customer" action (`SetFixEtaDialog.tsx`, ServiceNow-only on the wire —
+  `req.AddPublicComment` alongside a fix-ETA date) once WSO2 has committed a
+  fix timeline to the customer, neither clock has anything further to
+  track. **The trigger is `work_item.eta_shared_on` becoming non-null, not
+  `req.AddPublicComment` itself** — that request flag has no guaranteed
+  connection to *when* the ETA-share actually lands in Postgres (whatever
+  external process populates `eta_shared_on` does so on its own schedule,
+  not synchronously with this one PATCH), so `CaseService.GetCaseEtaSharedOn`
+  (`domain.CaseView.EtaSharedOn`, sourced from Postgres on **every** data
+  source — see that field's own doc comment for why ServiceNow has no
+  equivalent column at all) is checked on every `UpdateCase` call instead,
+  on both `caseService` (Postgres) and `snCaseService` (ServiceNow, via
+  `pgFallback` when configured, else always nil/no-op). Cheap and
+  idempotent, same as every other completion check here: a case's clocks
+  get completed the next time anything about it changes, once the shared
+  fact is persisted, not strictly on the PATCH that shared it.
+  `SLAEngineService.CompleteFixEtaSharedClocks` calls `CompleteClock` for
+  both targets, same real, uncapped elapsed-time-at-this-moment semantics
+  every other completion path uses (see `SLAEngineRepository.CompleteClock`'s
+  own doc comment) — not an unconditional 100%. Independent of
+  `WorkaroundProvided`'s own hook just above: a caller can set both signals
+  at once, in which case `CompleteWorkaroundClock` simply becomes a no-op
+  for whichever of the two runs second. Postgres's own `GetCaseByID` now
+  also selects `best_case_eta`/`most_likely_eta`/`worst_case_eta`/
+  `eta_shared_on` for the first time — previously write-only columns on
+  this data source, never read back into a `CaseView` at all.
 
 ## Customer-reply state transition
 
@@ -1622,33 +2151,67 @@ changed.
   `work_item_watcher` — deliberately replaced: that design still routed the
   default watch list through ServiceNow-shaped concepts (email vs. UUID
   resolution, `userRepo.GetUserByEmail` lookups) for something this schema
-  can answer directly.
+  can answer directly. `createCaseSNFirst` calls `addRequestedWatchers`
+  right after `CreateCaseFromServiceNow` succeeds and before
+  `publishCaseCreatedEvent`: it persists `req.WatchList` (whatever the
+  caller explicitly asked for) via `CaseRepository.SetCaseWatchList`,
+  nothing more — `req.WatchList` itself is unaffected by any of this; it's
+  still forwarded to ServiceNow as part of the create request the normal
+  way, this addition is purely about what the Postgres mirror also
+  guarantees.
 
-  **Every case now gets its account's four named stakeholders as watchers,
-  unconditionally, from a pure Postgres lookup — no ServiceNow involved.**
-  `account.technical_owner_id`/`secondary_technical_owner_id`/
-  `account_manager_id`/`renewal_account_manager_id` (migration 0012)
-  are already `"user"` ids, so there's no email/UUID ambiguity to resolve
-  at all. `customer_success_manager_id` is deliberately excluded — unlike
-  the other four, the CSM is not meant to receive these default case
-  notifications (an earlier version of this lookup wrongly included it and
-  omitted `renewal_account_manager_id`; fixed at explicit request).
-  `createCaseSNFirst` calls `addAccountDefaultWatchers` right after
-  `CreateCaseFromServiceNow` succeeds and before `publishCaseCreatedEvent`;
-  it resolves those four ids for the case's project via
-  `CaseRepository.AccountDefaultWatcherIDs` (a `project JOIN account`,
-  whichever of the four are set, deduplicated) and writes them with the
-  same `CaseRepository.SetCaseWatchList` the `UpdateCase` branch above
-  already uses. A project with no linked account, or an account with none
-  of the four roles set, is a normal state (an empty slice, `SetCaseWatchList`
-  never called) — not an error. A repository failure here is logged, not
-  returned: ServiceNow already has the case by this point, so a missing
-  default watch list must not be reported as a failed create, same posture
-  as every other post-ServiceNow-success step in this file (event
-  publishing included). `req.WatchList` itself is unaffected by any of
-  this — it's still forwarded to ServiceNow as part of the create request
-  the normal way; this addition is purely about what the Postgres mirror
-  also guarantees.
+  **The account's four named stakeholders are never persisted into
+  `work_item_watcher` at all, on either the create or the update path —
+  they're resolved fresh, straight from the account row, every time a
+  `case.*` event is about to be emailed.** An earlier version of this
+  auto-added `account.technical_owner_id`/`secondary_technical_owner_id`/
+  `account_manager_id`/`renewal_account_manager_id` (migration 0012,
+  `customer_success_manager_id` deliberately excluded — unlike the other
+  four, the CSM is not meant to receive these default case notifications)
+  as real watch-list rows on every create and merged them back in,
+  unremovable, on every update (`addAccountDefaultWatchers`/
+  `updateCaseWatchList`'s own "mandatory stakeholder floor"). Replaced at
+  explicit product request: a stakeholder reassignment on the account (the
+  account's own `technical_owner_id` etc. changing) had no effect on a
+  case's already-persisted watch list, so every case created before the
+  reassignment kept emailing the OLD stakeholder indefinitely — and a
+  case's "Watchers" list in both portals showed four people who were never
+  really watching *that* case specifically, just standing in for "whoever
+  holds this account role right now." `resolveCaseDefaultWatcherEmails`
+  (`sn_case_service.go`, shared by every `case.*` publisher — see
+  "Recipients depends on req.Type" above) calls
+  `CaseRepository.AccountDefaultWatcherEmails` (a `project JOIN account`
+  straight to `"user".email`, no id-to-email round trip) and unions the
+  result into that event's `Recipients`, fresh, every single send — so a
+  reassignment is reflected on the very next notification with no case
+  edit required, and a departed stakeholder stops being emailed the moment
+  the account itself is updated. `addRequestedWatchers` (create) and
+  `updateCaseWatchList` (update) now persist only what the caller
+  explicitly asked for — no merge, no floor, no exemption from
+  `validateWatchListProjectMembership` for a submitted id (nothing exempt
+  to submit any more). `domain.WatchListUser.Locked` still exists but is
+  now purely informational, not enforced — see its own doc comment.
+
+  **A persisted (explicitly-added) watcher is re-checked for live project
+  membership immediately before each `case.*` email goes out, for
+  everything except case creation.** `validateWatchListProjectMembership`
+  only ever ran once, when a watcher was first added — someone who later
+  left the project (deactivated, or never finished registering) kept being
+  emailed indefinitely, since nothing re-checked. `filterActiveWatchListUsers`/
+  `isActiveProjectWatcher` (`case_service.go`) re-run that same two-part
+  check (INTERNAL staff, or a REGISTERED `project_contact` on the case's
+  project) against `cv.WatchList`/`before.WatchList` right before each of
+  `publishCommentAddedEvent`/`publishStatusChangedEvent`/
+  `publishSeverityChangedEvent`/`publishCaseAssigned`'s own Postgres-path
+  call sites, silently dropping (logged at INFO, not an error) anyone no
+  longer eligible. Deliberately NOT applied to case creation — a watcher
+  requested in the same `CreateCase` call couldn't possibly have gone stale
+  within that same request — and deliberately NOT applied on the
+  plain-ServiceNow data source, which has no Postgres `project_contact`
+  table to check a ServiceNow-sourced watch list's (non-Postgres-UUID)
+  ids against in the first place. A repository error while checking a
+  given watcher keeps that watcher rather than risk silently dropping a
+  real recipient over a transient failure.
 - **Account contacts** (`account_contact`, migration 0026) and **project
   contacts** (`project_contact` + `project_contact_group`/`project_group`/
   `project_group_role`/`project_role`, migrations 000022-000025): new
@@ -3796,6 +4359,33 @@ orphaned `"user"` row with no roles.
 The acting caller is resolved from `x-user-id-token` (`emailFromJWT`, the same helper `GetMe` uses)
 and stamped as `created_by`/`updated_by` — this service still has no notion of "admin" itself;
 restricting who may call this is `apps/csm-portal/backend`'s job (see that repo's own `CLAUDE.md`).
+
+**`userService.CreateUser` also rejects granting an internal-resolving role to a non-`@wso2.com`
+email.** `internalUserTypeRoles` (`user_service.go`, next to `emailRE`) is `["admin", "internal"]` —
+the same two names `recompute_user_type`'s trigger maps to `user_type = INTERNAL` — and
+`requestsInternalUserType` checks `req.Roles` against it case-insensitively before `repo.CreateUser`
+runs; a match with `req.Email` not ending in `wso2EmailDomain` (`@wso2.com`, the same constant
+`sn_case_service.go`'s `filterWso2Emails` already uses) is a `*apierror.ValidationError`. This is the
+real enforcement boundary for that rule: `apps/csm-portal/backend`'s own `UsersHandler.CreateUser` runs
+an identical, independently-maintained check for a fast 400 before ever reaching this service, but
+this one is what actually protects the database — `POST /users` is this service's own route, and
+nothing about role-name validation here should assume a single, trusted caller (see this file's own
+note on `domain.UserRole` not being validated against a fixed enum for the same reasoning). Found live:
+the CSM portal's Add User form sent no `roles` at all until it gained a type selector, so every user it
+created resolved to `user_type = NOT_AVAILABLE` — checked directly against staging before this shipped
+(128 such users). The type selector fixes that by granting `internal`/`external`; this check is what
+stops it from being pointed at the wrong email.
+
+**Creating an EXTERNAL-type user via `POST /users` is temporarily disabled.** `externalUserTypeRoles`
+(next to `internalUserTypeRoles`) is `["external", "partner", "customer", "partner_admin",
+"customer_admin"]` — every role name `recompute_user_type`'s trigger maps to `user_type = EXTERNAL` —
+and `requestsExternalUserType` rejects any of them with a `*apierror.ValidationError` regardless of
+email. This only affects `POST /users`: the Salesforce membership/contact ingest (its own, separate
+`upsertMembershipUser`/`SalesforceContactRepository` write path, not `UserRepository.CreateUser`) is
+unaffected and keeps creating external users exactly as before. `apps/csm-portal/backend`'s
+`UsersHandler.CreateUser` mirrors the same check for a fast 400, and the webapp's Add User form
+disables the "External" option in its type selector rather than offering a choice the backend will
+reject — all three are temporary, meant to come out together once external-type creation is ready.
 
 ## SearchDeployments crashed on any page containing a NULL deployment.type
 

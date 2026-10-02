@@ -68,6 +68,7 @@ func main() {
 		ClientSecret: os.Getenv("OAUTH2_CLIENT_SECRET"),
 		Scopes:       splitComma(os.Getenv("EMAIL_SCOPES")),
 		FromAddress:  os.Getenv("EMAIL_FROM_ADDRESS"),
+		ReplyTo:      splitComma(emailReplyTo()),
 	})
 
 	// Google Chat is likewise optional per deployment; a missing or malformed
@@ -270,7 +271,13 @@ func main() {
 	// dispatch.Dispatcher.defaultOnCallNumber.
 	defaultOnCallNumber := os.Getenv("INCIDENT_DEFAULT_CALL_TO")
 
-	dispatcher := dispatch.NewDispatcher(emailClient, googleChatClient, twilioClient, linkResolver, emailSendingEnabled, emailDebugMode, emailDebugRecipients, callSendingEnabled, defaultOnCallNumber).
+	// DEFAULT_CSM_EMAIL_CC is CC'd on every case.* email's CSM-portal-link
+	// group only (never the customer-portal group, never during
+	// EMAIL_DEBUG_MODE) — see dispatch.Dispatcher.defaultCSMEmailCC's own
+	// doc comment.
+	defaultCSMEmailCC := splitComma(os.Getenv("DEFAULT_CSM_EMAIL_CC"))
+
+	dispatcher := dispatch.NewDispatcher(emailClient, googleChatClient, twilioClient, linkResolver, emailSendingEnabled, emailDebugMode, emailDebugRecipients, callSendingEnabled, defaultOnCallNumber, defaultCSMEmailCC).
 		WithOnboarding(loadOnboardingConfig(customerEntityClient, emailClient))
 
 	// The main consumer's OnExhausted: publish the exhausted record to the
@@ -442,7 +449,7 @@ func main() {
 		// exists.
 		slaProducer = eventbus.NewProducer(eventBusCfg)
 
-		slaEngine := slaengine.NewEngine(slaEntityClient, slaengine.NewTierStore(redisClient), slaProducer, googleChatClient, linkResolver)
+		slaEngine := slaengine.NewEngine(slaEntityClient, slaengine.NewTierStore(redisClient), slaProducer, googleChatClient, linkResolver, emailClient, emailSendingEnabled, emailDebugMode, emailDebugRecipients)
 
 		// SLA_TICK_INTERVAL defaults far above the old wake-index engine's
 		// 15s: that interval made sense for firing a precomputed due date
@@ -572,6 +579,7 @@ func loadOnboardingConfig(steps *entity.CustomerEntityClient, emailClient *notif
 		EmailEnabled:    emailEnabled,
 		PortalURL:       portalURL,
 		EmailFrom:       emailFrom,
+		ReplyTo:         emailClient.ReplyTo(),
 	}
 }
 
@@ -629,6 +637,15 @@ func envBool(key string, def bool) bool {
 	default:
 		return def
 	}
+}
+
+// emailReplyTo reads EMAIL_REPLY_TO: unset means support@wso2.com, set but
+// empty means no Reply-To.
+func emailReplyTo() string {
+	if v, ok := os.LookupEnv("EMAIL_REPLY_TO"); ok {
+		return v
+	}
+	return "support@wso2.com"
 }
 
 func envOrDefault(key, def string) string {

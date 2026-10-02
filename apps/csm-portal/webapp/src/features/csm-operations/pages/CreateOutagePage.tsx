@@ -331,6 +331,23 @@ export default function CreateOutagePage(): JSX.Element {
           <Button variant="outlined" onClick={() => navigate(backTarget)}>
             Cancel
           </Button>
+          {/* *** "Begin Outage" STAMPS Begin WITH NOW. *** ServiceNow's own
+              Create New Outage form carries this action beside Save, with
+              Begin and End left as ordinary fields: the button is a shortcut
+              for the common case, not a replacement for the fields. An
+              outage noticed twenty minutes late still needs its real start
+              time typed, and removing the field would silently understate
+              every such outage's duration on the public status page.
+
+              It only fills the field. Submitting is still Create outage, so
+              a mis-stamp is corrected before anything is written. */}
+          <Button
+            variant="outlined"
+            onClick={() => setBegin(formatDateTimeLocal(new Date()))}
+            disabled={postOutage.isPending}
+          >
+            Begin outage
+          </Button>
           <Button
             variant="contained"
             onClick={handleSubmit}

@@ -99,6 +99,8 @@ type onboardingStepRecorder interface {
 	// invitation has already gone out, for this membership version" check
 	// (see Dispatcher.invitationAlreadySent).
 	SucceededEmailStep(ctx context.Context, membershipSfID string) (*entity.RecordedOnboardingStep, error)
+	// SucceededStep is the same lookup for any step (the Welcome guard).
+	SucceededStep(ctx context.Context, membershipSfID string, step entity.OnboardingStep) (*entity.RecordedOnboardingStep, error)
 }
 
 // OnboardingConfig is everything handleProjectContactInvited needs beyond
@@ -130,6 +132,8 @@ type OnboardingConfig struct {
 	// EmailFrom is the invitation's sender (ONBOARD_EMAIL_FROM); "" means
 	// Email's own FromAddress.
 	EmailFrom string
+	// ReplyTo (EMAIL_REPLY_TO) goes on onboarding emails only.
+	ReplyTo []string
 }
 
 // Dispatcher turns a published events.Envelope into an actual notification
@@ -180,6 +184,15 @@ type Dispatcher struct {
 	// for incident.created's Twilio call specifically — see
 	// handleIncidentCreated's own doc comment.
 	callSendingEnabled bool
+
+	// defaultCSMEmailCC (DEFAULT_CSM_EMAIL_CC) is CC'd on every case.*
+	// email's CSM-portal-link group ONLY — never the customer-portal
+	// group, and never during EMAIL_DEBUG_MODE (a debug run must not leak
+	// to this real, shared inbox just because it's redirecting the `to`
+	// list to a test address) — see sendPerGroup's own doc comment for
+	// exactly how the CSM group is identified (caseLink == the csmLink
+	// argument each caller passes, from linkResolver.CSMLink).
+	defaultCSMEmailCC []string
 
 	// defaultOnCallNumber is handleIncidentCreated's fallback value for its
 	// payload's own CallTo when a publisher omits it — see that function's
@@ -240,7 +253,7 @@ type recordState struct {
 // Dispatcher.emailDebugMode's, and Dispatcher.callSendingEnabled's doc
 // comments for what those three controls do, and
 // Dispatcher.defaultOnCallNumber's doc comment for the call fallback value.
-func NewDispatcher(email emailSender, googleChat googleChatSender, call callSender, links linkResolver, emailSendingEnabled bool, emailDebugMode bool, emailDebugRecipients []string, callSendingEnabled bool, defaultOnCallNumber string) *Dispatcher {
+func NewDispatcher(email emailSender, googleChat googleChatSender, call callSender, links linkResolver, emailSendingEnabled bool, emailDebugMode bool, emailDebugRecipients []string, callSendingEnabled bool, defaultOnCallNumber string, defaultCSMEmailCC []string) *Dispatcher {
 	return &Dispatcher{
 		email:                email,
 		googleChat:           googleChat,
@@ -251,6 +264,7 @@ func NewDispatcher(email emailSender, googleChat googleChatSender, call callSend
 		emailDebugRecipients: emailDebugRecipients,
 		callSendingEnabled:   callSendingEnabled,
 		defaultOnCallNumber:  defaultOnCallNumber,
+		defaultCSMEmailCC:    defaultCSMEmailCC,
 		done:                 make(map[string]bool),
 		records:              make(map[string]*recordState),
 		identityExisted:      make(map[string]bool),
@@ -414,6 +428,8 @@ func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {
 		return d.handleCRPlanDateNotice(ctx, record, env.Payload)
 	case events.TypeProjectContactInvited:
 		return d.handleProjectContactInvited(ctx, record, env.Payload)
+	case events.TypeProjectContactRegistered:
+		return d.handleProjectContactRegistered(ctx, record, env.Payload)
 	case events.TypeSLATierReached:
 		// Published by internal/slaengine's own Engine.Tick (a poller, not
 		// a consumer of this topic) — nothing here reacts to it yet; it
@@ -487,7 +503,7 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 		caseRef := displayCaseRef(p.CaseNumber, p.CaseID)
 		subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, p.CaseTitle)
 		var emailErr error
-		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
+		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, d.links.CSMLink(p.CaseID), func(caseLink, intendedFor string) (string, []notifications.InlineImage) {
 			return notifications.RenderCaseCreatedEmail(notifications.CaseCreatedEmailData{
 				ReporterName:              p.ReporterName,
 				ProjectName:               p.ProjectName,
@@ -501,6 +517,7 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 				IncidentImpactDescription: p.IncidentImpactDescription,
 				CaseLink:                  caseLink,
 				CommentLink:               commentLinkFor(caseLink, ""),
+				IntendedFor:               intendedFor,
 			})
 		})
 		if emailErr != nil {
@@ -600,16 +617,16 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 	}
 	baseKey := recordBaseKey(record)
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, p.CaseTitle)
-	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
+	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, d.links.CSMLink(p.CaseID), func(caseLink, intendedFor string) (string, []notifications.InlineImage) {
 		if p.IsInternalNote {
 			// See events.CommentAddedPayload.IsInternalNote's own doc
 			// comment: a distinct layout, and WSO2CaseID (not CaseNumber)
 			// as the case reference — this audience is always wso2.com
 			// staff, who recognize the internal reference, not ServiceNow's
 			// own case number.
-			return notifications.RenderInternalNoteEmail(p.Name, displayInternalRef(p.WSO2CaseID, p.CaseID), p.CaseTitle, p.CaseComment, commentLinkFor(caseLink, p.CommentID), caseLink)
+			return notifications.RenderInternalNoteEmail(p.Name, displayInternalRef(p.WSO2CaseID, p.CaseID), p.CaseTitle, p.CaseComment, commentLinkFor(caseLink, p.CommentID), caseLink, intendedFor)
 		}
-		return notifications.RenderCommentAddedEmail(p.Name, displayCaseRef(p.CaseNumber, p.CaseID), p.CaseTitle, p.CaseComment, commentLinkFor(caseLink, p.CommentID), caseLink)
+		return notifications.RenderCommentAddedEmail(p.Name, displayCaseRef(p.CaseNumber, p.CaseID), p.CaseTitle, p.CaseComment, commentLinkFor(caseLink, p.CommentID), caseLink, intendedFor)
 	})
 	if record.NoMoreRetries {
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
@@ -639,8 +656,8 @@ func (d *Dispatcher) handleStatusChanged(ctx context.Context, record eventbus.Re
 		title = "Status changed to " + p.NewStatus
 	}
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, title)
-	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
-		return notifications.RenderStatusChangedEmail(caseRef, p.NewStatus, caseLink, commentLinkFor(caseLink, "")), nil
+	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, d.links.CSMLink(p.CaseID), func(caseLink, intendedFor string) (string, []notifications.InlineImage) {
+		return notifications.RenderStatusChangedEmail(caseRef, p.NewStatus, caseLink, commentLinkFor(caseLink, ""), intendedFor), nil
 	})
 	if record.NoMoreRetries {
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
@@ -693,12 +710,14 @@ func (d *Dispatcher) handleCRApprovalRequested(ctx context.Context, record event
 			"changeRequestId", p.ChangeRequestID, "recipients", len(recipients))
 		return nil
 	}
+	var intendedFor string
 	if d.emailDebugMode {
 		if len(d.emailDebugRecipients) == 0 {
 			slog.WarnContext(ctx, "dispatch: email debug mode on with no debug recipients, skipping CR approval notice",
 				"changeRequestId", p.ChangeRequestID)
 			return nil
 		}
+		intendedFor = strings.Join(recipients, ", ")
 		recipients = d.emailDebugRecipients
 	}
 
@@ -711,6 +730,7 @@ func (d *Dispatcher) handleCRApprovalRequested(ctx context.Context, record event
 		RequesterName: p.RequesterName,
 		ProjectName:   p.ProjectName,
 		Link:          d.links.ChangeRequestLink(p.Audience, p.ChangeRequestID, p.ProjectID),
+		IntendedFor:   intendedFor,
 	})
 
 	// A customer audience goes in BCC, an internal one in To.
@@ -758,8 +778,8 @@ func (d *Dispatcher) handleCaseAssigned(ctx context.Context, record eventbus.Rec
 		title = "Case assigned"
 	}
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, title)
-	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
-		return notifications.RenderCaseAssignedEmail(p.AssigneeName, p.AssigneeEmail, caseRef, caseLink, commentLinkFor(caseLink, "")), nil
+	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, d.links.CSMLink(p.CaseID), func(caseLink, intendedFor string) (string, []notifications.InlineImage) {
+		return notifications.RenderCaseAssignedEmail(p.AssigneeName, p.AssigneeEmail, caseRef, caseLink, commentLinkFor(caseLink, ""), intendedFor), nil
 	})
 	if record.NoMoreRetries {
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
@@ -862,8 +882,8 @@ func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.
 		}
 		subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, title)
 		var emailErr error
-		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, func(caseLink string) (string, []notifications.InlineImage) {
-			return notifications.RenderSeverityChangedEmail(caseRef, emailOldLabel, emailNewLabel, caseLink, commentLinkFor(caseLink, "")), nil
+		_, emailErr = d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, d.links.CSMLink(p.CaseID), func(caseLink, intendedFor string) (string, []notifications.InlineImage) {
+			return notifications.RenderSeverityChangedEmail(caseRef, emailOldLabel, emailNewLabel, caseLink, commentLinkFor(caseLink, ""), intendedFor), nil
 		})
 		if emailErr != nil {
 			errs = append(errs, emailErr)
@@ -1157,7 +1177,11 @@ func maskPhone(phone string) string {
 // retrying won't fix a missing debug-recipient config) if emailDebugMode is
 // true but emailDebugRecipients is empty — sending to zero recipients would
 // either be rejected by the email provider or silently do nothing, neither
-// of which is better than not calling it at all.
+// of which is better than not calling it at all. render's second argument,
+// intendedFor, is only ever non-empty on a debug-redirected send (the
+// group's real, pre-redirect recipients, joined) — a real send always
+// passes "", so every template's "Sent to:" row is omitted entirely rather
+// than shown on production mail.
 // inlineImageExtensions maps an InlineImage's ContentType to the file
 // extension its EmailAttachment.ContentName is given — email-service
 // requires a contentName on every attachment, but an inline image's name is
@@ -1198,7 +1222,17 @@ func inlineAttachments(images []notifications.InlineImage) []notifications.Email
 	return attachments
 }
 
-func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, groupUserIDs map[string][]string, subject string, render func(caseLink string) (string, []notifications.InlineImage)) ([]string, error) {
+// sendPerGroup sends one email per distinct resolved link group — see
+// groupByLink's own doc comment. csmLink (linkResolver.CSMLink(caseID),
+// resolved by every caller the same way) identifies which of the (at most
+// two) groups is the CSM-portal one: only that group's SendEmail call gets
+// d.defaultCSMEmailCC on its cc list, and only when emailDebugMode is
+// false — a debug run redirects `to` to a safe test list specifically so
+// nothing goes to a real mailbox, and CC'ing the real, shared default
+// inbox regardless would defeat that. The customer-portal group (any
+// caseLink other than csmLink) never gets this CC, under any
+// circumstances — see Dispatcher.defaultCSMEmailCC's own doc comment.
+func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, groupUserIDs map[string][]string, subject, csmLink string, render func(caseLink, intendedFor string) (string, []notifications.InlineImage)) ([]string, error) {
 	var errs []error
 	var owned []string
 	for _, caseLink := range slices.Sorted(maps.Keys(groups)) {
@@ -1212,6 +1246,11 @@ func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, g
 			owned = append(owned, caseLink)
 			continue
 		}
+		var cc []string
+		if caseLink == csmLink && len(d.defaultCSMEmailCC) > 0 {
+			cc = d.defaultCSMEmailCC
+		}
+		var intendedFor string
 		if d.emailDebugMode {
 			if len(d.emailDebugRecipients) == 0 {
 				slog.WarnContext(ctx, "dispatch: EMAIL_DEBUG_MODE=true but EMAIL_DEBUG_RECIPIENTS is empty; not sending",
@@ -1221,10 +1260,12 @@ func (d *Dispatcher) sendPerGroup(ctx context.Context, baseKey string, groups, g
 			}
 			slog.InfoContext(ctx, "dispatch: EMAIL_DEBUG_MODE=true; redirecting email to configured debug recipients",
 				"subject", subject, "realRecipientCount", len(to), "debugRecipientCount", len(d.emailDebugRecipients))
+			intendedFor = strings.Join(to, ", ")
 			to = d.emailDebugRecipients
+			cc = nil
 		}
-		htmlBody, images := render(caseLink)
-		if err := d.email.SendEmail(ctx, to, nil, nil, nil, subject, htmlBody, inlineAttachments(images)); err != nil {
+		htmlBody, images := render(caseLink, intendedFor)
+		if err := d.email.SendEmail(ctx, to, cc, nil, nil, subject, htmlBody, inlineAttachments(images)); err != nil {
 			errs = append(errs, err)
 			d.forget(key)
 			continue
@@ -1375,12 +1416,14 @@ func (d *Dispatcher) handleCRPlanDateNotice(ctx context.Context, record eventbus
 			"changeRequestId", p.ChangeRequestID, "recipients", len(recipients))
 		return nil
 	}
+	var intendedFor string
 	if d.emailDebugMode {
 		if len(d.emailDebugRecipients) == 0 {
 			slog.WarnContext(ctx, "dispatch: email debug mode on with no debug recipients, skipping plan date notice",
 				"changeRequestId", p.ChangeRequestID)
 			return nil
 		}
+		intendedFor = strings.Join(recipients, ", ")
 		recipients = d.emailDebugRecipients
 	}
 
@@ -1392,6 +1435,7 @@ func (d *Dispatcher) handleCRPlanDateNotice(ctx context.Context, record eventbus
 		ShortDescription: p.ShortDescription,
 		Description:      p.Description,
 		Link:             d.links.ChangeRequestLink(p.Audience, p.ChangeRequestID, p.ProjectID),
+		IntendedFor:      intendedFor,
 	})
 
 	// Customer contacts go in BCC for the same reason as the approval notice:
@@ -1548,6 +1592,7 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 		slog.InfoContext(ctx, "dispatch: email sending disabled (EMAIL_SENDING_ENABLED=false); not sending invitation", logAttrs...)
 	default:
 		to := []string{p.Email}
+		var intendedFor string
 		if d.emailDebugMode {
 			if len(d.emailDebugRecipients) == 0 {
 				d.recordOnboardingStep(ctx, p, entity.OnboardingStepEmail, entity.OnboardingStepSkipped, nil)
@@ -1559,6 +1604,7 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 			// invitee — so a staging deployment can't invite a real
 			// customer contact by accident.
 			slog.InfoContext(ctx, "dispatch: EMAIL_DEBUG_MODE=true; redirecting invitation to configured debug recipients", append(logAttrs, "debugRecipientCount", len(d.emailDebugRecipients))...)
+			intendedFor = p.Email
 			to = d.emailDebugRecipients
 		}
 		if d.onboarding.Email == nil {
@@ -1638,6 +1684,7 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 			ProjectKey:  p.ProjectKey,
 			Roles:       p.Roles,
 			PortalURL:   d.onboarding.PortalURL,
+			IntendedFor: intendedFor,
 		}
 		// The "existing" wording only when the identity step actually ran
 		// this record and said so. With identity disabled nothing here can
@@ -1655,20 +1702,17 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 			// have opened the first email that they already have an
 			// account -- and the "new" one would welcome them a second
 			// time. The reminder claims neither.
-			subject = fmt.Sprintf("[WSO2 Support] Reminder: your invitation to %s", data.ProjectName)
+			subject = "Reminder: " + invitationSubject(data.ProjectName)
 			body = notifications.RenderProjectContactInvitedReminderEmail(data)
 		case d.onboarding.IdentityEnabled && existed:
-			subject = fmt.Sprintf("[WSO2 Support] %s has been added to your account", data.ProjectName)
+			subject = invitationSubject(data.ProjectName)
 			body = notifications.RenderProjectContactInvitedExistingEmail(data)
 		default:
 			data.AccountCreated = d.onboarding.IdentityEnabled
-			subject = fmt.Sprintf("[WSO2 Support] You have been given access to %s", data.ProjectName)
-			if data.AccountCreated {
-				subject = fmt.Sprintf("[WSO2 Support] Welcome: you now have access to %s", data.ProjectName)
-			}
+			subject = invitationSubject(data.ProjectName)
 			body = notifications.RenderProjectContactInvitedNewEmail(data)
 		}
-		if err := d.onboarding.Email.SendEmailFrom(ctx, d.onboarding.EmailFrom, to, nil, nil, nil, subject, body, nil); err != nil {
+		if err := d.onboarding.Email.SendEmailFrom(ctx, d.onboarding.EmailFrom, to, nil, nil, d.onboarding.ReplyTo, subject, body, nil); err != nil {
 			err = fmt.Errorf("dispatch: send invitation for membership %s: %w", p.MembershipSfID, err)
 			d.recordOnboardingStep(ctx, p, entity.OnboardingStepEmail, entity.OnboardingStepFailed, err)
 			return err
@@ -1677,6 +1721,106 @@ func (d *Dispatcher) handleProjectContactInvited(ctx context.Context, record eve
 		slog.InfoContext(ctx, "dispatch: invitation email sent", append(logAttrs, "existingAccount", d.onboarding.IdentityEnabled && existed, "resend", p.IsResend)...)
 	}
 
+	return nil
+}
+
+// invitationSubject is the subject of the new and existing-account invitations.
+func invitationSubject(projectName string) string {
+	return "Invitation To Use WSO2 Support for " + projectName
+}
+
+// handleProjectContactRegistered sends the Welcome email after a contact's
+// first sign-in. Same flags as the invitation; WELCOME_EMAIL guards duplicates.
+func (d *Dispatcher) handleProjectContactRegistered(ctx context.Context, record eventbus.Record, raw json.RawMessage) error {
+	var p events.ProjectContactRegisteredPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("dispatch: decode project_contact.registered payload: %w", err)
+	}
+	logAttrs := []any{"membershipSfId", p.MembershipSfID, "contactSfId", p.ContactSfID, "projectKey", p.ProjectKey}
+	recordStep := func(status entity.OnboardingStepStatus, lastErr error) {
+		d.writeOnboardingStep(ctx, entity.OnboardingStepRequest{
+			MembershipSfID:  p.MembershipSfID,
+			Step:            entity.OnboardingStepWelcomeEmail,
+			Status:          status,
+			EventType:       string(events.TypeProjectContactRegistered),
+			EventModifiedOn: parseEventModifiedOn(p.EventModifiedOn),
+			Email:           p.Email,
+			ContactSfID:     p.ContactSfID,
+		}, lastErr)
+	}
+	skip := func(msg string) error {
+		// A SKIPPED write may replace SUCCEEDED for the same version, so a replay must not overwrite a sent Welcome.
+		if d.onboarding.Steps != nil {
+			sent, err := d.onboarding.Steps.SucceededStep(ctx, p.MembershipSfID, entity.OnboardingStepWelcomeEmail)
+			if err != nil {
+				return fmt.Errorf("dispatch: check welcome email already sent for membership %s: %w", p.MembershipSfID, err)
+			}
+			if sent != nil {
+				slog.InfoContext(ctx, "dispatch: welcome email already recorded as sent; not recording a skip", logAttrs...)
+				return nil
+			}
+		}
+		recordStep(entity.OnboardingStepSkipped, nil)
+		slog.InfoContext(ctx, msg, logAttrs...)
+		return nil
+	}
+	fail := func(err error) error {
+		recordStep(entity.OnboardingStepFailed, err)
+		return err
+	}
+
+	switch {
+	case p.IsIntegrationUser:
+		return skip("dispatch: project_contact.registered for an integration user; welcome email skipped")
+	case !d.onboarding.EmailEnabled:
+		return skip("dispatch: welcome email disabled (CSM_MIGRATION_ONBOARD_EMAIL_ENABLED != true); skipping")
+	case !d.emailSendingEnabled:
+		return skip("dispatch: email sending disabled (EMAIL_SENDING_ENABLED=false); not sending welcome email")
+	case d.emailDebugMode && len(d.emailDebugRecipients) == 0:
+		return skip("dispatch: EMAIL_DEBUG_MODE=true but EMAIL_DEBUG_RECIPIENTS is empty; not sending welcome email")
+	case d.onboarding.Email == nil:
+		return fail(fmt.Errorf("dispatch: welcome email enabled but no email client configured"))
+	case d.onboarding.Steps == nil:
+		return fail(fmt.Errorf("dispatch: welcome email enabled but no onboarding-step ledger configured; cannot check whether it was already sent"))
+	}
+	to := []string{p.Email}
+	var intendedFor string
+	if d.emailDebugMode {
+		slog.InfoContext(ctx, "dispatch: EMAIL_DEBUG_MODE=true; redirecting welcome email to configured debug recipients", append(logAttrs, "debugRecipientCount", len(d.emailDebugRecipients))...)
+		intendedFor = p.Email
+		to = d.emailDebugRecipients
+	}
+
+	key := recordBaseKey(record) + "/welcome"
+	if !d.claim(key) {
+		return fmt.Errorf("dispatch: welcome email for membership %s is already in progress", p.MembershipSfID)
+	}
+	defer d.forget(key)
+
+	// One Welcome per membership: any SUCCEEDED row means it already went out.
+	sent, err := d.onboarding.Steps.SucceededStep(ctx, p.MembershipSfID, entity.OnboardingStepWelcomeEmail)
+	if err != nil {
+		return fmt.Errorf("dispatch: check welcome email already sent for membership %s: %w", p.MembershipSfID, err)
+	}
+	if sent != nil {
+		slog.InfoContext(ctx, "dispatch: welcome email already recorded as sent; not sending again", logAttrs...)
+		return nil
+	}
+
+	projectName := displayProjectName(p.ProjectName, p.ProjectKey)
+	body := notifications.RenderProjectContactRegisteredEmail(notifications.ProjectContactRegisteredEmailData{
+		DisplayName: inviteeDisplayName(p.GivenName, p.FamilyName, p.Email),
+		ProjectName: projectName,
+		ProjectKey:  p.ProjectKey,
+		PortalURL:   d.onboarding.PortalURL,
+		IntendedFor: intendedFor,
+	})
+	subject := "Welcome to WSO2 Support for " + projectName
+	if err := d.onboarding.Email.SendEmailFrom(ctx, d.onboarding.EmailFrom, to, nil, nil, d.onboarding.ReplyTo, subject, body, nil); err != nil {
+		return fail(fmt.Errorf("dispatch: send welcome email for membership %s: %w", p.MembershipSfID, err))
+	}
+	recordStep(entity.OnboardingStepSucceeded, nil)
+	slog.InfoContext(ctx, "dispatch: welcome email sent", logAttrs...)
 	return nil
 }
 
@@ -1764,19 +1908,23 @@ func parseLedgerTime(s string) (time.Time, bool) {
 // timestamp (entity-service could not parse the Salesforce date) does this
 // fall back to the processing time.
 func (d *Dispatcher) recordOnboardingStep(ctx context.Context, p events.ProjectContactInvitedPayload, step entity.OnboardingStep, status entity.OnboardingStepStatus, lastErr error) {
-	if d.onboarding.Steps == nil {
-		slog.WarnContext(ctx, "dispatch: no onboarding-step recorder configured; step outcome not recorded",
-			"membershipSfId", p.MembershipSfID, "step", step, "status", status)
-		return
-	}
-	req := entity.OnboardingStepRequest{
+	d.writeOnboardingStep(ctx, entity.OnboardingStepRequest{
 		MembershipSfID:  p.MembershipSfID,
 		Step:            step,
 		Status:          status,
 		EventType:       string(events.TypeProjectContactInvited),
-		EventModifiedOn: onboardingEventModifiedOn(p),
+		EventModifiedOn: parseEventModifiedOn(p.EventModifiedOn),
 		Email:           p.Email,
 		ContactSfID:     p.ContactSfID,
+	}, lastErr)
+}
+
+// writeOnboardingStep is recordOnboardingStep's event-agnostic core.
+func (d *Dispatcher) writeOnboardingStep(ctx context.Context, req entity.OnboardingStepRequest, lastErr error) {
+	if d.onboarding.Steps == nil {
+		slog.WarnContext(ctx, "dispatch: no onboarding-step recorder configured; step outcome not recorded",
+			"membershipSfId", req.MembershipSfID, "step", req.Step, "status", req.Status)
+		return
 	}
 	if lastErr != nil {
 		req.LastError = lastErr.Error()
@@ -1793,21 +1941,21 @@ func (d *Dispatcher) recordOnboardingStep(ctx context.Context, p events.ProjectC
 	defer cancel()
 	if err := d.onboarding.Steps.RecordOnboardingStep(recordCtx, req); err != nil {
 		slog.ErrorContext(ctx, "dispatch: failed to record onboarding step; continuing",
-			"membershipSfId", p.MembershipSfID, "step", step, "status", status, "err", err)
+			"membershipSfId", req.MembershipSfID, "step", req.Step, "status", req.Status, "err", err)
 		return
 	}
-	slog.InfoContext(ctx, "dispatch: onboarding step recorded", "membershipSfId", p.MembershipSfID, "step", step, "status", status)
+	slog.InfoContext(ctx, "dispatch: onboarding step recorded", "membershipSfId", req.MembershipSfID, "step", req.Step, "status", req.Status)
 }
 
 // recordOnboardingStepTimeout bounds one best-effort ledger write.
 const recordOnboardingStepTimeout = 5 * time.Second
 
-// onboardingEventModifiedOn returns the payload's Salesforce timestamp, or
+// parseEventModifiedOn returns the payload's Salesforce timestamp, or
 // the processing time when the payload has none (events.Validate has already
 // rejected a malformed one).
-func onboardingEventModifiedOn(p events.ProjectContactInvitedPayload) time.Time {
-	if p.EventModifiedOn != "" {
-		if ts, err := time.Parse(time.RFC3339Nano, p.EventModifiedOn); err == nil {
+func parseEventModifiedOn(eventModifiedOn string) time.Time {
+	if eventModifiedOn != "" {
+		if ts, err := time.Parse(time.RFC3339Nano, eventModifiedOn); err == nil {
 			return ts.UTC()
 		}
 	}

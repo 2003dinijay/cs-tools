@@ -114,9 +114,10 @@ func seedApprovalUserForDecisionTest(t *testing.T, pool *pgxpool.Pool, userIDs .
 // pair in the given state -- enough for PatchChangeRequest's own read (via
 // GetChangeRequestByID at the end of a successful patch) to resolve, since
 // every other join in changeRequestFromJoins is a LEFT JOIN.
-func seedChangeRequestForApprovalTest(t *testing.T, pool *pgxpool.Pool, state string) {
+func seedChangeRequestForApprovalTest(t *testing.T, pool *repository.Scoped, state string) {
 	t.Helper()
-	ctx := context.Background()
+	// work_item and change_request are RLS-protected; seed/cleanup as internal.
+	ctx := repository.WithSystemIdentity(context.Background())
 
 	cleanup := func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM work_item WHERE id = $1`, changeRequestApprovalTestID)
@@ -163,21 +164,23 @@ func TestChangeRequestIntegration_RequestApprovalIsBookkeepingOnly(t *testing.T)
 	}
 	defer pool.Close()
 
-	repo := repository.NewChangeRequestRepository(pool)
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
 
 	for _, seedState := range []string{"NEW", "REVIEW", "CLOSED"} {
 		t.Run(seedState, func(t *testing.T) {
-			seedChangeRequestForApprovalTest(t, pool, seedState)
+			seedChangeRequestForApprovalTest(t, scoped, seedState)
 
 			yes := true
-			_, err := repo.PatchChangeRequest(context.Background(), changeRequestApprovalTestID,
+			_, err := repo.PatchChangeRequest(sys, changeRequestApprovalTestID,
 				domain.PatchChangeRequestRequest{RequestApproval: &yes}, "cr-approval-test")
 			if err != nil {
 				t.Fatalf("PatchChangeRequest(requestApproval=true) on a %s-state change request: %v", seedState, err)
 			}
 
 			var gotState, gotApproval *string
-			if scanErr := pool.QueryRow(context.Background(),
+			if scanErr := scoped.QueryRow(sys,
 				`SELECT state::TEXT, approval::TEXT FROM change_request WHERE id = $1`, changeRequestApprovalTestID).
 				Scan(&gotState, &gotApproval); scanErr != nil {
 				t.Fatalf("read back state/approval: %v", scanErr)
@@ -199,9 +202,10 @@ func TestChangeRequestIntegration_RequestApprovalIsBookkeepingOnly(t *testing.T)
 // has something real to act on. Each entry in approverUserIDs gets its own
 // requested approver row; the returned stage id lets a test seed additional
 // rows (e.g. a second approver already rejected) directly.
-func seedApprovalStageForDecisionTest(t *testing.T, pool *pgxpool.Pool, approverUserIDs ...string) string {
+func seedApprovalStageForDecisionTest(t *testing.T, pool *repository.Scoped, approverUserIDs ...string) string {
 	t.Helper()
-	ctx := context.Background()
+	// approval_stage and approval_stage_approver are RLS-protected; seed/cleanup as internal.
+	ctx := repository.WithSystemIdentity(context.Background())
 
 	stageID := "36666666-0000-0000-0000-000000000002"
 	mustExec := func(sql string, args ...any) {
@@ -214,7 +218,7 @@ func seedApprovalStageForDecisionTest(t *testing.T, pool *pgxpool.Pool, approver
 	          VALUES ($1, now(), now(), 'cr-approval-test', 'cr-approval-test', $2, 'requested')`,
 		stageID, changeRequestApprovalTestID)
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM approval_stage WHERE id = $1`, stageID)
+		_, _ = pool.Exec(ctx, `DELETE FROM approval_stage WHERE id = $1`, stageID)
 	})
 
 	for i, userID := range approverUserIDs {
@@ -243,18 +247,20 @@ func TestChangeRequestIntegration_DecideApprovalCascadesAssessToAuthorize(t *tes
 	}
 	t.Cleanup(pool.Close)
 
-	repo := repository.NewChangeRequestRepository(pool)
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
 	seedApprovalUserForDecisionTest(t, pool)
-	seedChangeRequestForApprovalTest(t, pool, "ASSESS")
-	seedApprovalStageForDecisionTest(t, pool, changeRequestApprovalApproverUserID)
+	seedChangeRequestForApprovalTest(t, scoped, "ASSESS")
+	seedApprovalStageForDecisionTest(t, scoped, changeRequestApprovalApproverUserID)
 
-	if _, err := repo.DecideChangeRequestApproval(context.Background(), changeRequestApprovalTestID,
+	if _, err := repo.DecideChangeRequestApproval(sys, changeRequestApprovalTestID,
 		changeRequestApprovalApproverUserID, "approved", "cr-approval-test"); err != nil {
 		t.Fatalf("DecideChangeRequestApproval(approved): %v", err)
 	}
 
 	var gotState string
-	if scanErr := pool.QueryRow(context.Background(),
+	if scanErr := scoped.QueryRow(sys,
 		`SELECT state::TEXT FROM change_request WHERE id = $1`, changeRequestApprovalTestID).Scan(&gotState); scanErr != nil {
 		t.Fatalf("read back state: %v", scanErr)
 	}
@@ -280,18 +286,20 @@ func TestChangeRequestIntegration_DecideApprovalRejectionDoesNotCascade(t *testi
 	}
 	t.Cleanup(pool.Close)
 
-	repo := repository.NewChangeRequestRepository(pool)
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
 	seedApprovalUserForDecisionTest(t, pool)
-	seedChangeRequestForApprovalTest(t, pool, "ASSESS")
-	seedApprovalStageForDecisionTest(t, pool, changeRequestApprovalApproverUserID)
+	seedChangeRequestForApprovalTest(t, scoped, "ASSESS")
+	seedApprovalStageForDecisionTest(t, scoped, changeRequestApprovalApproverUserID)
 
-	if _, err := repo.DecideChangeRequestApproval(context.Background(), changeRequestApprovalTestID,
+	if _, err := repo.DecideChangeRequestApproval(sys, changeRequestApprovalTestID,
 		changeRequestApprovalApproverUserID, "rejected", "cr-approval-test"); err != nil {
 		t.Fatalf("DecideChangeRequestApproval(rejected): %v", err)
 	}
 
 	var gotState string
-	if scanErr := pool.QueryRow(context.Background(),
+	if scanErr := scoped.QueryRow(sys,
 		`SELECT state::TEXT FROM change_request WHERE id = $1`, changeRequestApprovalTestID).Scan(&gotState); scanErr != nil {
 		t.Fatalf("read back state: %v", scanErr)
 	}
@@ -317,18 +325,20 @@ func TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess(t *t
 	}
 	t.Cleanup(pool.Close)
 
-	repo := repository.NewChangeRequestRepository(pool)
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
 	seedApprovalUserForDecisionTest(t, pool)
-	seedChangeRequestForApprovalTest(t, pool, "AUTHORIZE")
-	seedApprovalStageForDecisionTest(t, pool, changeRequestApprovalApproverUserID)
+	seedChangeRequestForApprovalTest(t, scoped, "AUTHORIZE")
+	seedApprovalStageForDecisionTest(t, scoped, changeRequestApprovalApproverUserID)
 
-	if _, err := repo.DecideChangeRequestApproval(context.Background(), changeRequestApprovalTestID,
+	if _, err := repo.DecideChangeRequestApproval(sys, changeRequestApprovalTestID,
 		changeRequestApprovalApproverUserID, "approved", "cr-approval-test"); err != nil {
 		t.Fatalf("DecideChangeRequestApproval(approved): %v", err)
 	}
 
 	var gotState string
-	if scanErr := pool.QueryRow(context.Background(),
+	if scanErr := scoped.QueryRow(sys,
 		`SELECT state::TEXT FROM change_request WHERE id = $1`, changeRequestApprovalTestID).Scan(&gotState); scanErr != nil {
 		t.Fatalf("read back state: %v", scanErr)
 	}
@@ -359,19 +369,21 @@ func TestChangeRequestIntegration_DecideApprovalCancelsSiblingApprovers(t *testi
 	}
 	t.Cleanup(pool.Close)
 
-	repo := repository.NewChangeRequestRepository(pool)
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
 	seedApprovalUserForDecisionTest(t, pool,
 		changeRequestApprovalApproverUserID, changeRequestApprovalApproverUserID2, changeRequestApprovalApproverUserID3)
-	seedChangeRequestForApprovalTest(t, pool, "ASSESS")
-	stageID := seedApprovalStageForDecisionTest(t, pool,
+	seedChangeRequestForApprovalTest(t, scoped, "ASSESS")
+	stageID := seedApprovalStageForDecisionTest(t, scoped,
 		changeRequestApprovalApproverUserID, changeRequestApprovalApproverUserID2, changeRequestApprovalApproverUserID3)
 
-	if _, err := repo.DecideChangeRequestApproval(context.Background(), changeRequestApprovalTestID,
+	if _, err := repo.DecideChangeRequestApproval(sys, changeRequestApprovalTestID,
 		changeRequestApprovalApproverUserID, "approved", "cr-approval-test"); err != nil {
 		t.Fatalf("DecideChangeRequestApproval(approved): %v", err)
 	}
 
-	rows, err := pool.Query(context.Background(),
+	rows, err := scoped.Query(sys,
 		`SELECT approver_user_id, status FROM approval_stage_approver WHERE stage_id = $1`, stageID)
 	if err != nil {
 		t.Fatalf("read back approver statuses: %v", err)
@@ -401,7 +413,7 @@ func TestChangeRequestIntegration_DecideApprovalCancelsSiblingApprovers(t *testi
 	}
 
 	var gotState string
-	if scanErr := pool.QueryRow(context.Background(),
+	if scanErr := scoped.QueryRow(sys,
 		`SELECT state::TEXT FROM change_request WHERE id = $1`, changeRequestApprovalTestID).Scan(&gotState); scanErr != nil {
 		t.Fatalf("read back change request state: %v", scanErr)
 	}
@@ -414,9 +426,10 @@ func TestChangeRequestIntegration_DecideApprovalCancelsSiblingApprovers(t *testi
 // change_request pair for the AssignedTeamID tests below, following the same
 // shape as seedChangeRequestForApprovalTest but under its own id so the two
 // test groups can never collide.
-func seedChangeRequestForAssignedTeamTest(t *testing.T, pool *pgxpool.Pool) {
+func seedChangeRequestForAssignedTeamTest(t *testing.T, pool *repository.Scoped) {
 	t.Helper()
-	ctx := context.Background()
+	// work_item and change_request are RLS-protected; seed/cleanup as internal.
+	ctx := repository.WithSystemIdentity(context.Background())
 
 	cleanup := func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM work_item WHERE id = $1`, changeRequestAssignedTeamTestID)
@@ -454,11 +467,13 @@ func TestChangeRequestIntegration_PatchAssignedTeamID(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	repo := repository.NewChangeRequestRepository(pool)
-	seedChangeRequestForAssignedTeamTest(t, pool)
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssignedTeamTest(t, scoped)
+	sys := repository.WithSystemIdentity(context.Background())
 
 	teamID := seededGroupID
-	updated, err := repo.PatchChangeRequest(context.Background(), changeRequestAssignedTeamTestID,
+	updated, err := repo.PatchChangeRequest(sys, changeRequestAssignedTeamTestID,
 		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID}, "cr-assigned-team-test")
 	if err != nil {
 		t.Fatalf("PatchChangeRequest(assignedTeamId=%s): %v", teamID, err)
@@ -471,7 +486,7 @@ func TestChangeRequestIntegration_PatchAssignedTeamID(t *testing.T) {
 	// confirm the column itself -- not just the in-memory return value --
 	// actually changed.
 	var gotAssignmentGroupID string
-	if scanErr := pool.QueryRow(context.Background(),
+	if scanErr := scoped.QueryRow(sys,
 		`SELECT assignment_group_id::TEXT FROM work_item WHERE id = $1`, changeRequestAssignedTeamTestID).
 		Scan(&gotAssignmentGroupID); scanErr != nil {
 		t.Fatalf("read back assignment_group_id: %v", scanErr)
@@ -482,7 +497,7 @@ func TestChangeRequestIntegration_PatchAssignedTeamID(t *testing.T) {
 
 	// GetChangeRequestByID, the way a caller would actually re-read the
 	// change request, must agree too.
-	fetched, err := repo.GetChangeRequestByID(context.Background(), changeRequestAssignedTeamTestID)
+	fetched, err := repo.GetChangeRequestByID(sys, changeRequestAssignedTeamTestID)
 	if err != nil {
 		t.Fatalf("GetChangeRequestByID: %v", err)
 	}
@@ -506,11 +521,13 @@ func TestChangeRequestIntegration_PatchAssignedTeamIDUnknownTeamIsValidationErro
 	}
 	t.Cleanup(pool.Close)
 
-	repo := repository.NewChangeRequestRepository(pool)
-	seedChangeRequestForAssignedTeamTest(t, pool)
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssignedTeamTest(t, scoped)
+	sys := repository.WithSystemIdentity(context.Background())
 
 	badTeamID := unknownGroupID
-	_, err = repo.PatchChangeRequest(context.Background(), changeRequestAssignedTeamTestID,
+	_, err = repo.PatchChangeRequest(sys, changeRequestAssignedTeamTestID,
 		domain.PatchChangeRequestRequest{AssignedTeamID: &badTeamID}, "cr-assigned-team-test")
 	if err == nil {
 		t.Fatal("PatchChangeRequest(assignedTeamId=<unknown>) succeeded, want a ValidationError")
@@ -525,7 +542,7 @@ func TestChangeRequestIntegration_PatchAssignedTeamIDUnknownTeamIsValidationErro
 
 	// The column must be left untouched by the rolled-back transaction.
 	var gotAssignmentGroupID *string
-	if scanErr := pool.QueryRow(context.Background(),
+	if scanErr := scoped.QueryRow(sys,
 		`SELECT assignment_group_id::TEXT FROM work_item WHERE id = $1`, changeRequestAssignedTeamTestID).
 		Scan(&gotAssignmentGroupID); scanErr != nil {
 		t.Fatalf("read back assignment_group_id: %v", scanErr)
@@ -538,9 +555,10 @@ func TestChangeRequestIntegration_PatchAssignedTeamIDUnknownTeamIsValidationErro
 // seedChangeRequestForAssessGateTest inserts a minimal NEW-state work_item/
 // change_request pair with no assigned team -- the starting point for every
 // test below.
-func seedChangeRequestForAssessGateTest(t *testing.T, pool *pgxpool.Pool) {
+func seedChangeRequestForAssessGateTest(t *testing.T, pool *repository.Scoped) {
 	t.Helper()
-	ctx := context.Background()
+	// work_item and change_request are RLS-protected; seed/cleanup as internal.
+	ctx := repository.WithSystemIdentity(context.Background())
 
 	cleanup := func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM work_item WHERE id = $1`, changeRequestAssessGateTestID)
@@ -646,11 +664,13 @@ func TestChangeRequestIntegration_PatchAssessRequiresAssignedTeam(t *testing.T) 
 	}
 	t.Cleanup(pool.Close)
 
-	repo := repository.NewChangeRequestRepository(pool)
-	seedChangeRequestForAssessGateTest(t, pool)
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssessGateTest(t, scoped)
 
 	assess := domain.ChangeRequestStateAssess
-	_, err = repo.PatchChangeRequest(context.Background(), changeRequestAssessGateTestID,
+	_, err = repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
 		domain.PatchChangeRequestRequest{State: &assess}, "cr-assess-gate-test")
 	if err == nil {
 		t.Fatal("PatchChangeRequest(state=assess) with no assigned team succeeded, want a ValidationError")
@@ -661,7 +681,7 @@ func TestChangeRequestIntegration_PatchAssessRequiresAssignedTeam(t *testing.T) 
 	}
 
 	var gotState string
-	if scanErr := pool.QueryRow(context.Background(),
+	if scanErr := scoped.QueryRow(sys,
 		`SELECT state::TEXT FROM change_request WHERE id = $1`, changeRequestAssessGateTestID).Scan(&gotState); scanErr != nil {
 		t.Fatalf("read back state: %v", scanErr)
 	}
@@ -686,21 +706,23 @@ func TestChangeRequestIntegration_PatchAssessWithTeamAlreadyOnRecordSucceeds(t *
 	}
 	t.Cleanup(pool.Close)
 
-	repo := repository.NewChangeRequestRepository(pool)
-	seedChangeRequestForAssessGateTest(t, pool)
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssessGateTest(t, scoped)
 	seedAssessGateGroup(t, pool)
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
+		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
 	})
 
 	teamID := changeRequestAssessGateGroupID
-	if _, err := repo.PatchChangeRequest(context.Background(), changeRequestAssessGateTestID,
+	if _, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
 		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID}, "cr-assess-gate-test"); err != nil {
 		t.Fatalf("PatchChangeRequest(assignedTeamId=%s): %v", teamID, err)
 	}
 
 	assess := domain.ChangeRequestStateAssess
-	updated, err := repo.PatchChangeRequest(context.Background(), changeRequestAssessGateTestID,
+	updated, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
 		domain.PatchChangeRequestRequest{State: &assess}, "cr-assess-gate-test")
 	if err != nil {
 		t.Fatalf("PatchChangeRequest(state=assess) with a team already on the record: %v", err)
@@ -727,23 +749,25 @@ func TestChangeRequestIntegration_PatchAssessProvisionsApproversFromGroupMembers
 	}
 	t.Cleanup(pool.Close)
 
-	repo := repository.NewChangeRequestRepository(pool)
-	seedChangeRequestForAssessGateTest(t, pool)
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssessGateTest(t, scoped)
 	seedAssessGateGroup(t, pool)
 	seedTeamMembersForAssessGateTest(t, pool, changeRequestAssessGateMemberUserID, changeRequestAssessGateMemberUserID2)
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
+		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
 	})
 
 	teamID := changeRequestAssessGateGroupID
 	assess := domain.ChangeRequestStateAssess
-	if _, err := repo.PatchChangeRequest(context.Background(), changeRequestAssessGateTestID,
+	if _, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
 		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &assess}, "cr-assess-gate-test"); err != nil {
 		t.Fatalf("PatchChangeRequest(assignedTeamId=%s, state=assess): %v", teamID, err)
 	}
 
 	var stageID, stageGroupID string
-	if scanErr := pool.QueryRow(context.Background(),
+	if scanErr := scoped.QueryRow(sys,
 		`SELECT id, assignment_group_id::TEXT FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID).
 		Scan(&stageID, &stageGroupID); scanErr != nil {
 		t.Fatalf("read back approval_stage: %v", scanErr)
@@ -752,7 +776,7 @@ func TestChangeRequestIntegration_PatchAssessProvisionsApproversFromGroupMembers
 		t.Fatalf("approval_stage.assignment_group_id = %q, want %q", stageGroupID, teamID)
 	}
 
-	rows, err := pool.Query(context.Background(),
+	rows, err := scoped.Query(sys,
 		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1 ORDER BY approver_user_id`, stageID)
 	if err != nil {
 		t.Fatalf("query approval_stage_approver: %v", err)
@@ -801,27 +825,29 @@ func TestChangeRequestIntegration_PatchAssessDoesNotReprovisionWhenStageExists(t
 	}
 	t.Cleanup(pool.Close)
 
-	repo := repository.NewChangeRequestRepository(pool)
-	seedChangeRequestForAssessGateTest(t, pool)
+	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewChangeRequestRepository(scoped)
+	seedChangeRequestForAssessGateTest(t, scoped)
 	seedAssessGateGroup(t, pool)
 	seedTeamMembersForAssessGateTest(t, pool, changeRequestAssessGateMemberUserID, changeRequestAssessGateMemberUserID2)
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
+		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
 	})
 
 	teamID := changeRequestAssessGateGroupID
 	assess := domain.ChangeRequestStateAssess
-	if _, err := repo.PatchChangeRequest(context.Background(), changeRequestAssessGateTestID,
+	if _, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
 		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &assess}, "cr-assess-gate-test"); err != nil {
 		t.Fatalf("PatchChangeRequest(assignedTeamId=%s, state=assess) #1: %v", teamID, err)
 	}
-	if _, err := repo.PatchChangeRequest(context.Background(), changeRequestAssessGateTestID,
+	if _, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
 		domain.PatchChangeRequestRequest{State: &assess}, "cr-assess-gate-test"); err != nil {
 		t.Fatalf("PatchChangeRequest(state=assess) #2 (resend): %v", err)
 	}
 
 	var stageCount int
-	if scanErr := pool.QueryRow(context.Background(),
+	if scanErr := scoped.QueryRow(sys,
 		`SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID).Scan(&stageCount); scanErr != nil {
 		t.Fatalf("count approval_stage: %v", scanErr)
 	}
@@ -830,7 +856,7 @@ func TestChangeRequestIntegration_PatchAssessDoesNotReprovisionWhenStageExists(t
 	}
 
 	var approverCount int
-	if scanErr := pool.QueryRow(context.Background(),
+	if scanErr := scoped.QueryRow(sys,
 		`SELECT COUNT(*) FROM approval_stage_approver asa JOIN approval_stage ast ON ast.id = asa.stage_id WHERE ast.work_item_id = $1`,
 		changeRequestAssessGateTestID).Scan(&approverCount); scanErr != nil {
 		t.Fatalf("count approval_stage_approver: %v", scanErr)

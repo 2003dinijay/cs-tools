@@ -23,7 +23,7 @@ export interface ScanUserRequest {
   isPartner: boolean;
 }
 
-// Mirrors the Go backend's SplScanInformation (internal/handler/spl_user_scan.go)
+// Mirrors the Go backend's SplScanInformation (internal/handler/user_scan.go)
 // — Issue/Solution/Documentation/InvitationUrl all carry `json:"...,omitempty"`,
 // so an unset field is omitted from the response (comes through as
 // `undefined`), never an explicit `null`. Information itself is a Go value
@@ -52,7 +52,7 @@ export interface ScanResponseItem {
  * `POST /scan-user` — analyzes a Sales/SA-supplied email + subscription
  * key against both the sales-side and CS-side entity services, returning a
  * per-system (Salesforce, ServiceNow) validation breakdown. See
- * internal/handler/spl_user_scan.go's SplUserScanHandler for the full
+ * internal/handler/user_scan.go's SplUserScanHandler for the full
  * business logic this reports on.
  */
 export function useScanUser(): UseMutationResult<

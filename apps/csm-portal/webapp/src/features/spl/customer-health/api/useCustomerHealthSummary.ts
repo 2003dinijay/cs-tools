@@ -21,7 +21,7 @@
 // pattern, which this rewrite intentionally does not carry over).
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useBackendApi } from "@api/backend/client";
-import type { AccountSummary } from "./splCustomerHealthTypes";
+import type { AccountSummary } from "./customerHealthTypes";
 
 export interface CustomerHealthSummaryPayload {
   offset: number;

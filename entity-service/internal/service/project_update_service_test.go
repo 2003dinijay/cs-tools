@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
@@ -88,26 +89,62 @@ func testProjectUserRepo() stubUserRepo {
 	}
 }
 
-// TestPgProjectUpdateService_RejectsSuspensionProcessState locks in that
-// suspensionProcessState is rejected with a ValidationError rather than
-// silently dropped -- it has no Postgres column anywhere for project (see
-// pgProjectUpdateService's own doc comment) -- and that the repository is
-// never called in that case.
-func TestPgProjectUpdateService_RejectsSuspensionProcessState(t *testing.T) {
-	repo := &stubProjectUpdateRepo{}
-	svc := NewProjectUpdateService(repo, testProjectUserRepo())
-	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+// TestPgProjectUpdateService_IgnoresSuspensionProcessState pins that the parked field is
+// accepted but never handed to the repository, alone or alongside a stored field.
+func TestPgProjectUpdateService_IgnoresSuspensionProcessState(t *testing.T) {
+	open := "Open"
+	for name, req := range map[string]domain.ProjectUpdateRequest{
+		"alone":            {SuspensionProcessState: []byte(`{"a":1}`)},
+		"with a sub-state": {SuspensionProcessState: []byte(`{"a":1}`), EndDateClosureState: &open},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := &stubProjectUpdateRepo{}
+			svc := NewProjectUpdateService(repo, testProjectUserRepo(), nil)
+			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
-	_, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{
-		SuspensionProcessState: []byte(`{"a":1}`),
-	})
-
-	var valErr *apierror.ValidationError
-	if !errors.As(err, &valErr) {
-		t.Fatalf("UpdateProject() error = %v, want *apierror.ValidationError", err)
+			if _, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", req); err != nil {
+				t.Fatalf("UpdateProject() error = %v, want success", err)
+			}
+			if !repo.called || repo.gotReq.SuspensionProcessState != nil {
+				t.Fatalf("repo called = %v with suspensionProcessState %s, want called without it", repo.called, repo.gotReq.SuspensionProcessState)
+			}
+		})
 	}
-	if repo.called {
-		t.Fatal("UpdateProject() called the repository despite an unsupported field")
+}
+
+// TestPgProjectUpdateService_CallerResolution pins decision 4: an allow-listed internal
+// client may PATCH without a user token; any other tokenless caller is refused.
+func TestPgProjectUpdateService_CallerResolution(t *testing.T) {
+	open := "Open"
+	m2mCtx := auth.WithIdentity(context.Background(), auth.Identity{Validated: true, ClientID: "csm-integration"})
+	cases := []struct {
+		name    string
+		ctx     context.Context
+		access  AccessService
+		wantBy  string
+		wantErr bool
+	}{
+		{"internal client without token", m2mCtx, stubAccess{scope: AccessScope{Unrestricted: true}}, "csm-integration", false},
+		{"restricted caller without token", m2mCtx, stubAccess{scope: AccessScope{ProjectIDs: []string{"p"}}}, "", true},
+		{"no access service wired", m2mCtx, nil, "", true},
+		{"user token unchanged", contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com")), stubAccess{err: errors.New("must not be consulted")}, "jane.doe@example.com", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &stubProjectUpdateRepo{}
+			svc := NewProjectUpdateService(repo, testProjectUserRepo(), tc.access)
+			_, err := svc.UpdateProject(tc.ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{EndDateClosureState: &open})
+			if tc.wantErr {
+				var unauth *apierror.UnauthorizedError
+				if !errors.As(err, &unauth) || repo.called {
+					t.Fatalf("err = %v, repo.called = %v; want UnauthorizedError and no write", err, repo.called)
+				}
+				return
+			}
+			if err != nil || repo.gotByWhom != tc.wantBy {
+				t.Fatalf("err = %v, updatedBy = %q; want nil, %q", err, repo.gotByWhom, tc.wantBy)
+			}
+		})
 	}
 }
 
@@ -115,7 +152,7 @@ func TestPgProjectUpdateService_RejectsSuspensionProcessState(t *testing.T) {
 // ServiceNow-mode contract's own "at least one field must be provided" rule.
 func TestPgProjectUpdateService_RequiresAtLeastOneField(t *testing.T) {
 	repo := &stubProjectUpdateRepo{}
-	svc := NewProjectUpdateService(repo, testProjectUserRepo())
+	svc := NewProjectUpdateService(repo, testProjectUserRepo(), nil)
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	_, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{})
@@ -146,7 +183,7 @@ func TestPgProjectUpdateService_PlainPostgresUpdatesFieldsAndNeverCallsSN(t *tes
 			return wantResult, nil
 		},
 	}
-	svc := NewProjectUpdateService(repo, testProjectUserRepo())
+	svc := NewProjectUpdateService(repo, testProjectUserRepo(), nil)
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	resp, err := svc.UpdateProject(ctx, wantResult.ID, domain.ProjectUpdateRequest{
@@ -186,7 +223,7 @@ func TestPgProjectUpdateService_DualWriteDispatchesExactlyOneMirrorCallOnSuccess
 	mirror := &stubProjectMirror{err: errors.New("sn unreachable")}
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
-	svc := NewProjectUpdateServiceWithSNWriteback(repo, testProjectUserRepo(), dispatcher, mirror)
+	svc := NewProjectUpdateServiceWithSNWriteback(repo, testProjectUserRepo(), nil, dispatcher, mirror)
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	id := "11111111-1111-1111-1111-111111111111"

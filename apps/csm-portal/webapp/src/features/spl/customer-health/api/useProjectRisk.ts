@@ -16,7 +16,7 @@
 
 import { useMutation, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useBackendApi, BackendApiError } from "@api/backend/client";
-import type { ProjectRisk } from "./splCustomerHealthTypes";
+import type { ProjectRisk } from "./customerHealthTypes";
 
 // POST /customer-health/projects/{projectSysId}/risk
 export function useOpenProjectRisk() {

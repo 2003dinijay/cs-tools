@@ -38,7 +38,6 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/dashboard"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/githubissue"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/googledrive"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/handler"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
@@ -57,7 +56,6 @@ func main() {
 	middleware.ConfigureLogger()
 
 	dashboard.SetActive(loadDashboards())
-	githubissue.SetActive(loadGithubIssueRepoOptions())
 
 	// Reference data is resolved once, here, and then only ever read from
 	// memory: the team registry (key <-> display name <-> backing group id <->
@@ -65,6 +63,18 @@ func main() {
 	// configuration alone, so nothing about them needs an upstream call on the
 	// request path.
 	dir := loadDirectory()
+
+	// Role-key -> Asgardeo role id mapping (ASGARDEO_ROLE_IDS), e.g.
+	// "timecard_approver|0bbeea4f-5ada-49ba-8f19-90ae6a116daa" -- used by
+	// handlers that need a role's real Asgardeo membership via the SCIM
+	// operations service's get-by-id endpoint (see GET /users/time-card-approvers
+	// below). Optional and empty by default: an unconfigured key just means
+	// that role's SCIM-backed feature is not wired up in this deployment.
+	asgardeoRoleIDs, err := directory.ParseAsgardeoRoleIDs(os.Getenv("ASGARDEO_ROLE_IDS"))
+	if err != nil {
+		slog.Error("invalid ASGARDEO_ROLE_IDS", "err", err)
+		os.Exit(1)
+	}
 
 	// All upstream service clients (entity, updates, SCIM, and future notification
 	// channels) authenticate as the same OAuth2 client-credentials app; only the
@@ -105,7 +115,6 @@ func main() {
 		caseHandler.WithEngineeringClient(engineeringEntityClient)
 		slog.Info("GitHub issues are created through the engineering entity service")
 	}
-	metadataHandler := handler.NewMetadataHandler()
 	accountHandler := handler.NewAccountHandler(customerEntityClient)
 	projectHandler := handler.NewProjectHandler(customerEntityClient)
 	teamHandler := handler.NewTeamHandler(customerEntityClient)
@@ -300,7 +309,12 @@ func main() {
 	}
 	healthHandler := handler.NewHealthHandler(scimClient, updatesClient, notificationPinger, integrationPinger, engineeringPinger)
 
-	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient, dir, sftpgoAttachmentStorageEnabled).WithAccessGuard(accessGuard)
+	// timecardApproverRoleID is optional: empty means ASGARDEO_ROLE_IDS has no
+	// "timecard_approver" entry, in which case GetTimeCardApprovers itself
+	// returns 404 rather than the route going unregistered -- see its own
+	// route registration below for why.
+	timecardApproverRoleID := asgardeoRoleIDs["timecard_approver"]
+	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient, dir, sftpgoAttachmentStorageEnabled, timecardApproverRoleID).WithAccessGuard(accessGuard)
 	dashboardHandler := handler.NewDashboardHandler(accessGuard)
 	caseHandler = caseHandler.WithAccessGuard(accessGuard)
 	timeCardHandler = timeCardHandler.WithAccessGuard(accessGuard)
@@ -334,7 +348,13 @@ func main() {
 	route("POST /cases", handler.PermWrite, caseHandler.CreateCase)
 	route("GET /cases/{id}", handler.PermViewSharedEntity, caseHandler.GetCase)
 	route("PATCH /cases/{id}", handler.PermWrite, caseHandler.PatchCase)
-	route("POST /cases/{id}/comments", handler.PermWrite, caseHandler.CreateCaseComment)
+	// PermCreateWorkNote, not PermWrite -- the route-level floor is
+	// deliberately broader (includes worknote_creator) since a work_note is
+	// a narrower action than every other write this handler's siblings
+	// guard; CreateCaseComment itself requires full PermWrite for any
+	// comment that isn't a work_note -- see PermCreateWorkNote's own doc
+	// comment.
+	route("POST /cases/{id}/comments", handler.PermCreateWorkNote, caseHandler.CreateCaseComment)
 	route("POST /cases/{id}/request-update", handler.PermWrite, caseHandler.RequestCaseUpdate)
 	route("GET /case-update-request-templates", handler.PermView, caseHandler.GetCaseUpdateRequestTemplates)
 	route("POST /cases/{id}/comments/search", handler.PermViewSharedEntity, caseHandler.SearchCaseComments)
@@ -368,7 +388,6 @@ func main() {
 	route("POST /call-requests/search", handler.PermView, caseHandler.SearchAllCallRequests)
 	route("PATCH /cases/{caseId}/call-requests/{callRequestId}", handler.PermWrite, caseHandler.PatchCallRequest)
 	route("POST /cases/{id}/github-issues", handler.PermWrite, caseHandler.CreateCaseGithubIssue)
-	route("GET /metadata", handler.PermView, metadataHandler.GetMetadata)
 	route("POST /cases/{id}/tags", handler.PermWrite, caseHandler.AddCaseTag)
 	route("DELETE /cases/{id}/tags/{tagId}", handler.PermWrite, caseHandler.RemoveCaseTag)
 	route("POST /tags/search", handler.PermView, caseHandler.SearchTags)
@@ -399,6 +418,12 @@ func main() {
 	route("POST /users/search", handler.PermView, usersHandler.SearchUsers)
 	route("GET /users/{id}", handler.PermView, usersHandler.GetUser)
 	route("POST /users", handler.PermAdmin, usersHandler.CreateUser)
+	// Registered unconditionally, even when timecardApproverRoleID is empty:
+	// GetTimeCardApprovers itself returns 404 when disabled. Registering it
+	// only when configured would instead let the request fall through to the
+	// wildcard GET /users/{id} above, which rejects the literal path segment
+	// "time-card-approvers" as an invalid UUID with 400, not a clean 404.
+	route("GET /users/time-card-approvers", handler.PermView, usersHandler.GetTimeCardApprovers)
 	route("POST /roles/search", handler.PermView, referenceHandler.SearchRoles)
 	route("POST /teams/search", handler.PermView, referenceHandler.SearchTeams)
 	route("GET /teams/{id}/members", handler.PermViewSharedEntity, teamHandler.GetTeamMembers)
@@ -440,6 +465,7 @@ func main() {
 	}
 	route("PATCH /projects/{id}", handler.PermWrite, projectHandler.UpdateProject)
 	route("POST /products/search", handler.PermView, productHandler.SearchProducts)
+	route("GET /products/github-repo", handler.PermView, productHandler.GetProductRepoMapping)
 	route("POST /products/{id}/versions/search", handler.PermView, productHandler.SearchProductVersions)
 	route("POST /deployments", handler.PermWrite, deploymentHandler.PostDeployment)
 	route("POST /deployments/search", handler.PermView, deploymentHandler.SearchDeployments)
@@ -636,13 +662,13 @@ func main() {
 	// its own copy: it reaches the same service as the same OAuth2 application
 	// as every other upstream client above. PLG_* overrides exist but are not
 	// normally set.
-	if err := plg.Mount(mux, os.Getenv("PLG_CONFIG_FILE"), plgconfig.EntityDefaults{
+	if err := plg.Mount(os.Getenv("PLG_CONFIG_FILE"), plgconfig.EntityDefaults{
 		BaseURL:      customerEntityCfg.BaseURL,
 		TokenURL:     oauth2TokenURL,
 		ClientID:     oauth2ClientID,
 		ClientSecret: oauth2ClientSecret,
 		Scope:        os.Getenv("CUSTOMER_ENTITY_SCOPES"),
-	}); err != nil {
+	}, route); err != nil {
 		slog.Error("failed to mount PLG", "err", err)
 		os.Exit(1)
 	}
@@ -790,28 +816,6 @@ func loadDashboards() *dashboard.Registry {
 	return registry
 }
 
-// loadGithubIssueRepoOptions resolves the "Open Git issue" dialog's
-// repository catalogue from GITHUB_ISSUE_REPO_OPTIONS (a JSON array — see
-// githubissue.ParseRepoOptions for the shape and validation) and exits the
-// process on any failure to parse it.
-//
-// This used to be a hardcoded array in the frontend, which is how a real case
-// filed with "Asgardeo" selected landed in the wrong GitHub repository: the
-// owner/repo mapping lived in code no config reviewer would think to check.
-// Fatal on malformed content, same rationale as loadDashboards: an operator
-// error here should stop the deploy, not silently ship an empty or
-// half-populated dropdown. Unset is legal and yields no options — a
-// deployment that has not configured this yet must still start.
-func loadGithubIssueRepoOptions() []githubissue.RepoOption {
-	options, err := githubissue.ParseRepoOptions(os.Getenv("GITHUB_ISSUE_REPO_OPTIONS"))
-	if err != nil {
-		slog.Error("invalid GITHUB_ISSUE_REPO_OPTIONS", "err", err)
-		os.Exit(1)
-	}
-	slog.Info("loaded github issue repo options", "count", len(options))
-	return options
-}
-
 // loadDirectory resolves the reference catalogues from environment
 // configuration, once, at startup:
 //
@@ -862,7 +866,8 @@ func loadDirectory() *directory.Directory {
 //	AUTH_VIEWER_ROLES, AUTH_ESCALATOR_ROLES,
 //	AUTH_ATTACHMENT_DOWNLOADER_ROLES, AUTH_USAGE_METRICS_VIEWER_ROLES,
 //	AUTH_SUPPORT_ENGINEER_ROLES, AUTH_ADMIN_ROLES, AUTH_TIMECARD_APPROVER_ROLES,
-//	AUTH_DASHBOARD_DESIGNER_ROLES, AUTH_SALES_SOLUTIONS_ROLES
+//	AUTH_DASHBOARD_DESIGNER_ROLES, AUTH_SALES_SOLUTIONS_ROLES,
+//	AUTH_WORKNOTE_CREATOR_ROLES
 //	    Each is a comma-separated list of role names; a caller whose token's
 //	    "roles" claim holds any one of them has that role.
 //
@@ -872,11 +877,15 @@ func loadDirectory() *directory.Directory {
 // nobody, and startup warns naming each one, since with none configured at all
 // nobody can use the portal.
 //
-// AUTH_SALES_SOLUTIONS_ROLES is unlike the rest: leaving it unset does not
-// warn, since a deployment that hasn't provisioned a Sales/Solutions-
-// Architecture role yet is a normal, expected state (CS Portal alone still
-// works fine) rather than a misconfiguration nobody can use the portal at
-// all without — see AccessConfig.SalesSolutions's own doc comment.
+// AUTH_SALES_SOLUTIONS_ROLES and AUTH_WORKNOTE_CREATOR_ROLES are unlike the
+// rest: leaving either unset does not warn. sales_solutions is a normal,
+// expected unconfigured state (CS Portal alone still works fine) rather than
+// a misconfiguration nobody can use the portal at all without — see
+// AccessConfig.SalesSolutions's own doc comment. worknote_creator is
+// unconfigured-safe for a different reason: CsEngineer/Admin already hold
+// PermCreateWorkNote regardless (see AccessConfig.WorknoteCreator's own doc
+// comment), so leaving it empty is purely "this extra role isn't provisioned
+// yet," never a state that locks anyone out of work notes.
 func loadAccessConfig() handler.AccessConfig {
 	var unset []string
 	roles := func(name string) []string {
@@ -898,11 +907,13 @@ func loadAccessConfig() handler.AccessConfig {
 		Admin:             roles("AUTH_ADMIN_ROLES"),
 		TimecardApprover:  roles("AUTH_TIMECARD_APPROVER_ROLES"),
 		DashboardDesigner: roles("AUTH_DASHBOARD_DESIGNER_ROLES"),
-		// Unlike the roles above, an unset AUTH_SALES_SOLUTIONS_ROLES is a
-		// normal, supported state (CS Portal alone still works without it),
-		// so this deliberately bypasses the roles() helper to avoid adding
-		// it to the unset-variable warning below.
-		SalesSolutions: splitComma(os.Getenv("AUTH_SALES_SOLUTIONS_ROLES")),
+		// Unlike the roles above, an unset AUTH_SALES_SOLUTIONS_ROLES or
+		// AUTH_WORKNOTE_CREATOR_ROLES is a normal, supported state (see this
+		// function's own doc comment for why each is), so both deliberately
+		// bypass the roles() helper to avoid adding themselves to the
+		// unset-variable warning below.
+		SalesSolutions:  splitComma(os.Getenv("AUTH_SALES_SOLUTIONS_ROLES")),
+		WorknoteCreator: splitComma(os.Getenv("AUTH_WORKNOTE_CREATOR_ROLES")),
 	}
 	if len(unset) > 0 {
 		slog.Warn("access-control role variables are unset, so no token role grants them", "variables", unset)
