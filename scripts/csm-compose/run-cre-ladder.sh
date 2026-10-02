@@ -103,8 +103,11 @@ MAX_CALLS=80
 ASSUME_YES=""
 KEEP_REDIS=""
 
-REDIS_NAME="cre-ladder-run-redis"
+# One Redis per run, named after its port, so several real-time runs can go
+# side by side in separate terminals -- the full test matrix is hours of wall
+# clock one at a time. Give each terminal its own REDIS_PORT.
 REDIS_PORT="${REDIS_PORT:-16393}"
+REDIS_NAME="cre-ladder-run-redis-${REDIS_PORT}"
 ENTITY_URL="${CUSTOMER_ENTITY_BASE_URL_OVERRIDE:-http://localhost:8081}"
 TOKEN_URL="http://localhost:9100/oauth2/token"
 
@@ -251,7 +254,25 @@ esac
 
 # -- redis --------------------------------------------------------------------
 
+# The ladder is a separate process, and it must never outlive this script.
+#
+# It used to be `go run` in the foreground. Ctrl-C reached it, because the
+# terminal signals the whole process group; anything else did not -- `kill`,
+# a closed terminal, a timeout -- and left both `go run` and the harness binary
+# running. An orphan keeps climbing its ladder, and with -c chat or --live keeps
+# posting and calling after you believe the test is over. Worse, it reconnects
+# when a later run reuses its Redis port, and the two then share one ladder
+# store. So the binary is built first and started here, its pid is kept, and
+# every way out of this script stops it before Redis is removed.
+child=""
+bin_dir=""
 cleanup() {
+  if [ -n "${child}" ] && kill -0 "${child}" 2>/dev/null; then
+    kill "${child}" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "${child}" 2>/dev/null || break; sleep 0.5; done
+    kill -9 "${child}" 2>/dev/null || true
+  fi
+  [ -n "${bin_dir}" ] && rm -rf "${bin_dir}"
   if [ -n "${KEEP_REDIS}" ]; then
     echo; echo "redis left running as ${REDIS_NAME} on 127.0.0.1:${REDIS_PORT}"
     return
@@ -259,6 +280,11 @@ cleanup() {
   docker rm -f "${REDIS_NAME}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+# Turn a signal into an exit, so the EXIT trap above runs for it too.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+trap 'exit 142' ALRM
 
 if ! docker ps --format '{{.Names}}' | grep -qx "${REDIS_NAME}"; then
   docker rm -f "${REDIS_NAME}" >/dev/null 2>&1 || true
@@ -309,4 +335,8 @@ cat <<SUMMARY
 SUMMARY
 
 cd "${service_dir}"
-go run ./cmd/escalation-local "${args[@]}"
+bin_dir="$(mktemp -d)"
+go build -o "${bin_dir}/escalation-local" ./cmd/escalation-local
+"${bin_dir}/escalation-local" "${args[@]}" &
+child=$!
+wait "${child}"
