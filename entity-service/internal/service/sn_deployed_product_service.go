@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -281,15 +282,20 @@ func (s *snDeployedProductService) createDeployedProductSNFirstDetails(ctx conte
 	// a non-UTC zone, and parsing it as UTC would store created_on hours in the
 	// future. The current time is used instead.
 	// deployed_product.number is NOT NULL UNIQUE on the Postgres side (see
-	// createDeployedProductSNFirst's own doc comment) -- an empty id/number
-	// here would either fail the Postgres insert with an opaque constraint
-	// violation or, worse, succeed with a blank number that later collides
-	// with a real one. Caught here, before it ever reaches the repository.
+	// createDeployedProductSNFirst's own doc comment), so a reply without an
+	// id/number cannot be stored. The create has already happened upstream by
+	// now, so this is a partial creation needing reconciliation, not a
+	// rejected client request: reported as a downstream error and logged,
+	// never as a validation error. Nothing reaches the repository.
 	if snResp.DeployedProduct.ID == "" {
-		return "", "", "", time.Time{}, &apierror.ValidationError{Msg: "sn create deployed product: response id is required"}
+		slog.ErrorContext(ctx, "sn create deployed product: create reply carried no id; nothing written to Postgres",
+			"deploymentId", req.DeploymentID)
+		return "", "", "", time.Time{}, &apierror.DownstreamError{Msg: "The upstream service returned an invalid response to the deployed product create request."}
 	}
 	if snResp.DeployedProduct.Number == "" {
-		return "", "", "", time.Time{}, &apierror.ValidationError{Msg: "sn create deployed product: response number is required"}
+		slog.ErrorContext(ctx, "sn create deployed product: ServiceNow deployed product created but the create reply carried no number; nothing written to Postgres, needs reconciliation",
+			"deployedProductId", snResp.DeployedProduct.ID, "deploymentId", req.DeploymentID)
+		return "", "", "", time.Time{}, &apierror.DownstreamError{Msg: "The deployed product was created but its number was not returned by the upstream service, so it could not be stored. It needs to be reconciled."}
 	}
 	return sysidToUUID(snResp.DeployedProduct.ID), snResp.DeployedProduct.Number, snResp.DeployedProduct.CreatedBy, time.Now().UTC(), nil
 }

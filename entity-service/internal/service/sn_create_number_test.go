@@ -99,13 +99,20 @@ func TestCreateDeploymentSNFirstDetails_NumberInReply_UsedWithoutExtraCall(t *te
 	}
 }
 
-func TestCreateDeploymentSNFirstDetails_NoNumber_ValidationError(t *testing.T) {
+func TestCreateDeploymentSNFirstDetails_NoNumber_DownstreamError(t *testing.T) {
 	var calls int32
 	svc := &snDeploymentService{client: newTestSNClient(t, createHandler("/deployments", createReply("deployment", ""), &calls))}
 	_, _, _, _, err := svc.createDeploymentSNFirstDetails(t.Context(), testCreateDeploymentReq())
+	var de *apierror.DownstreamError
+	if !errors.As(err, &de) {
+		t.Fatalf("want DownstreamError, got %T: %v", err, err)
+	}
 	var ve *apierror.ValidationError
-	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, "response number is required") {
-		t.Fatalf("want ValidationError, got %v", err)
+	if errors.As(err, &ve) {
+		t.Fatalf("a created-upstream reply without a number must not be a ValidationError: %v", err)
+	}
+	if strings.Contains(de.Msg, testDeploySysid) {
+		t.Fatalf("caller-safe message leaks the upstream id: %q", de.Msg)
 	}
 	if calls != 1 {
 		t.Fatalf("expected no lookup after a missing number, got %d requests", calls)
@@ -139,13 +146,20 @@ func TestCreateDeployedProductSNFirstDetails_NumberInReply_Used(t *testing.T) {
 	}
 }
 
-func TestCreateDeployedProductSNFirstDetails_NoNumber_ValidationError(t *testing.T) {
+func TestCreateDeployedProductSNFirstDetails_NoNumber_DownstreamError(t *testing.T) {
 	var calls int32
 	svc := &snDeployedProductService{client: newTestSNClient(t, createHandler("/deployed-products", createReply("deployedProduct", ""), &calls))}
 	_, _, _, _, err := svc.createDeployedProductSNFirstDetails(t.Context(), testCreateDeployedProductReq())
+	var de *apierror.DownstreamError
+	if !errors.As(err, &de) {
+		t.Fatalf("want DownstreamError, got %T: %v", err, err)
+	}
 	var ve *apierror.ValidationError
-	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, "response number is required") {
-		t.Fatalf("want ValidationError, got %v", err)
+	if errors.As(err, &ve) {
+		t.Fatalf("a created-upstream reply without a number must not be a ValidationError: %v", err)
+	}
+	if strings.Contains(de.Msg, testDeploySysid) {
+		t.Fatalf("caller-safe message leaks the upstream id: %q", de.Msg)
 	}
 }
 
