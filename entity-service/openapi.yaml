@@ -2870,8 +2870,8 @@ paths:
 
         Postgres data source only, and registered only when
         CSM_MIGRATION_PORTAL_WRITES_ENABLED is exactly "true" — the path 404s otherwise.
-        Authorized like case writes: a customer must be REGISTERED on the project (else 404)
-        and hold customer_admin or partner_admin (else 403); their own email is the inviter.
+        A customer must be REGISTERED on the project (else 404) and hold customer_admin or
+        partner_admin (else 403); their own email is the inviter. Internal callers pass.
       operationId: inviteProjectContact
       tags: [Projects]
       parameters:
@@ -2951,7 +2951,7 @@ paths:
 
 
         Registered and gated exactly like the invitation: Postgres data source,
-        CSM_MIGRATION_PORTAL_WRITES_ENABLED exactly "true", internal callers only.
+        CSM_MIGRATION_PORTAL_WRITES_ENABLED exactly "true", same authorization as the invitation.
       operationId: validateProjectContact
       tags: [Projects]
       parameters:
@@ -3154,8 +3154,8 @@ paths:
         Here contactId is the contact's E-MAIL ADDRESS (URL-encoded), not a user id —
         the key a membership is addressed by, unlike the GET on this same path, which
         takes the contact's platform user id. Postgres data source only, registered
-        only when CSM_MIGRATION_PORTAL_WRITES_ENABLED is exactly "true". Internal
-        callers only.
+        only when CSM_MIGRATION_PORTAL_WRITES_ENABLED is exactly "true". Same
+        authorization as POST /projects/{id}/contacts.
       operationId: updateProjectContactRoles
       tags: [Projects]
       parameters:
@@ -8199,7 +8199,7 @@ paths:
         Reproduced deliberately.
 
 
-        Same authorization as POST /projects/{id}/contacts.
+        Internal callers only.
       operationId: sweepOutageCommunications
       parameters:
         - name: limit
@@ -8260,7 +8260,7 @@ paths:
         "did we send, and when".
 
 
-        Same authorization as POST /projects/{id}/contacts.
+        Internal callers only.
       operationId: getOutageCommunicationLog
       parameters:
         - name: number

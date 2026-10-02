@@ -1339,7 +1339,7 @@ which is accurate: retrying is both safe and the right thing to do.
 
 ### The four endpoints
 
-Authorized like case writes (`authorizeMembershipWrite`): trusted callers pass; a customer must be
+Authorized by `authorizeMembershipWrite`: trusted callers pass; a customer must be
 REGISTERED on the project (else 404) and hold `customer_admin`/`partner_admin` (else 403), and their
 own email replaces `inviterEmail`. No `AUTH_INTERNAL_CLIENT_IDS` entry is needed for the portal.
 
