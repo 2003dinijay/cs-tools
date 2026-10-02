@@ -70,6 +70,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        "413":
+          description: >-
+            The body exceeded the 2 MiB cap. Answered explicitly rather than
+            truncating: a truncated body would fail the HMAC and be reported
+            as a signature failure, pointing at the wrong cause.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         "500":
           description: >-
             Forwarding to entity-service failed. GitHub retries, which is the

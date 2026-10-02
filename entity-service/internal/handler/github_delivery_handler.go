@@ -28,6 +28,13 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
 
+// maxGithubDeliveryBody caps the forwarded envelope. It is 3 MiB against the
+// public component's own 2 MiB cap on GitHub's body, leaving room for the
+// {id, event, payload} wrapper and for JSON escaping to inflate the payload
+// on re-encode. Deliberately NOT the generic 1 MiB default, which a valid
+// large delivery would exceed.
+const maxGithubDeliveryBody = int64(3 << 20)
+
 // GithubDeliveryHandler applies a GitHub delivery that something else has
 // already authenticated.
 //
@@ -70,7 +77,14 @@ func (h *GithubDeliveryHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req githubDeliveryRequest
-	if !decodeRequest(w, r, &req) {
+	// A LARGER CAP THAN THE DEFAULT, DELIBERATELY. The public webhook
+	// accepts a GitHub body up to 2 MiB, then wraps it in
+	// an {id, event, payload} envelope before forwarding -- so a legitimate
+	// delivery just under that cap arrives here larger than decodeRequest's
+	// 1 MiB default. It would be rejected with a 400 that the public
+	// component could only report as a forwarding failure, with nothing
+	// anywhere naming the size as the cause.
+	if !decodeRequestWithLimit(w, r, &req, maxGithubDeliveryBody, "delivery payload too large") {
 		return
 	}
 	if req.ID == "" || req.Event == "" {

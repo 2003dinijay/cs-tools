@@ -419,6 +419,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: >-
+            The delivery could not be applied. The caller returns 500 in turn
+            so GitHub retries: a delivery dropped here is dropped for good,
+            since nothing else re-reads GitHub's event stream.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /event-publish-failures:
     post:

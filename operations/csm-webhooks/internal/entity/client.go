@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"time"
 
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 )
 
@@ -73,7 +74,18 @@ func NewClient(cfg Config) *Client {
 		TokenURL:     cfg.TokenURL,
 		Scopes:       cfg.Scopes,
 	}
-	httpClient := cc.Client(context.Background())
+	// The token fetch gets its own bounded client. cc.Client stores this
+	// context in the token source, and the transport fetches the token
+	// BEFORE it sends the delivery -- so without oauth2.HTTPClient here that
+	// fetch runs on http.DefaultClient, which has no timeout at all. The 30s
+	// below applies only to the delivery request, never to the token one, and
+	// Deliver's own ctx cannot reach the token source either. A token
+	// endpoint that accepts the connection and then stalls would hold the
+	// webhook handler open indefinitely.
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{
+		Timeout: 15 * time.Second,
+	})
+	httpClient := cc.Client(ctx)
 	httpClient.Timeout = 30 * time.Second
 	return &Client{http: httpClient, baseURL: cfg.BaseURL}
 }

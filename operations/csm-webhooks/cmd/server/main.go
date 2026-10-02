@@ -43,6 +43,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/operations/csm-webhooks/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-webhooks/internal/webhook"
@@ -76,7 +77,25 @@ func main() {
 		port = "8080"
 	}
 	slog.Info("CSM GitHub Webhook started", "addr", ":"+port)
-	srv := &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 10 * 1e9}
+	// Every timeout is set, not just the header one. ReadHeaderTimeout
+	// bounds the headers alone: a client that sends valid headers and then
+	// dribbles the body a byte at a time holds a goroutine open forever,
+	// and the 2 MiB cap does not help -- it limits how much arrives, never
+	// how long it takes. Choreo's gateway does not promise a deadline or
+	// request buffering either, so the bound has to live here.
+	//
+	// WriteTimeout exceeds the entity-service client's own 30s timeout on
+	// purpose: the forward has to be allowed to fail on its own terms and
+	// return a 500 GitHub can retry, rather than having the response
+	// connection cut out from under it first.
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      45 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server failed", "err", err)
 		os.Exit(1)
@@ -85,8 +104,23 @@ func main() {
 
 func handle(secret string, client *entity.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBody))
+		// MaxBytesReader, not io.LimitReader. A LimitReader stops at the cap
+		// and reports success, so an oversized delivery would arrive here
+		// truncated, fail the HMAC over those partial bytes, and be logged
+		// as "webhook signature rejected" -- the one message guaranteed to
+		// send whoever reads it looking at the secret instead of the size.
+		r.Body = http.MaxBytesReader(w, r.Body, maxWebhookBody)
+		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				slog.Warn("webhook body too large",
+					"delivery", r.Header.Get(webhook.DeliveryHeader),
+					"event", r.Header.Get(webhook.EventHeader),
+					"limit", maxWebhookBody)
+				writeJSON(w, http.StatusRequestEntityTooLarge, `{"message":"request body too large"}`)
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, `{"message":"could not read the request body"}`)
 			return
 		}
