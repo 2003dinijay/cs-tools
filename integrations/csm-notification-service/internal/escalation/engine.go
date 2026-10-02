@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
@@ -159,7 +160,14 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 			// before a real run caught it. A PortalLinks with no base URL
 			// simply returns an empty link, which the card renders as no link,
 			// so there is no nil to get wrong any more.
-			n := chatNotifier{chat: chat, defaultProduct: defaultChatProduct, links: links}
+			// The file wins over INCIDENT_ESCALATION_CHAT_AUDIENCE, as it does
+			// over INCIDENT_ESCALATION_CHANNEL; both fall back to "Incident
+			// Monitor" inside the notifier.
+			room := cfg.Ladder.Chat.Audience
+			if strings.TrimSpace(room) == "" {
+				room = defaultChatProduct
+			}
+			n := chatNotifier{chat: chat, audience: room, links: links}
 			e.notifiers = append(e.notifiers, n)
 		}
 	}
@@ -810,7 +818,19 @@ func pendingMembers(incidentID string, st LadderState) []string {
 // isPermanent reports whether a call error is one that retrying cannot fix:
 // the provider accepted the request and rejected its content. Anything else —
 // a network failure, a 5xx, a timeout — is transient and stays scheduled.
+// undeliverable is a delivery that no retry can make succeed: the
+// configuration has nowhere to send it. Permanent, so the engine records the
+// reason against the call and the ladder carries on, instead of retrying
+// every tick.
+type undeliverable struct{ reason, detail string }
+
+func (u *undeliverable) Error() string { return u.detail }
+
 func isPermanent(err error) bool {
+	var u *undeliverable
+	if errors.As(err, &u) {
+		return true
+	}
 	var upstream *apierror.Error
 	if errors.As(err, &upstream) {
 		return upstream.StatusCode >= 400 && upstream.StatusCode < 500
@@ -835,6 +855,10 @@ var twilioCodePattern = regexp.MustCompile(`"code"\s*:\s*(\d+)`)
 // the message, which echoes the phone number back into places this service
 // keeps numbers out of.
 func permanentReason(err error) string {
+	var u *undeliverable
+	if errors.As(err, &u) {
+		return u.reason
+	}
 	var upstream *apierror.Error
 	if !errors.As(err, &upstream) {
 		return "REJECTED"

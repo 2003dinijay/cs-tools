@@ -181,6 +181,18 @@ cre:
     # team; leave it 0 and it calls all of them.
     perTeam: 3
 
+  # Where a rung's Google Chat card goes: an audience key from
+  # GOOGLE_CHAT_SPACES (an entry {"audience": "...", "webhookUrl": "..."}).
+  # "Incident Monitor" is the room every other incident alert in this service
+  # posts to. Empty falls back to INCIDENT_ESCALATION_CHAT_AUDIENCE, then to
+  # "Incident Monitor".
+  #
+  # An audience with no room is recorded on the rung as NO_CHAT_SPACE rather
+  # than reported as posted. Cards used to route by the incident's product,
+  # which no audience is named after, so every one was silently dropped.
+  chat:
+    audience: "Incident Monitor"
+
   # What stops a ladder.
   acknowledgement:
     # Acknowledgement is BOTH gestures: the incident moved out of NEW AND a

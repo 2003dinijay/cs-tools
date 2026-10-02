@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/chataudience"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
 )
 
@@ -195,6 +196,10 @@ func (v voiceNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall)
 // chatSender abstracts the Google Chat client for testability.
 type chatSender interface {
 	SendEscalationAlert(ctx context.Context, a notifications.EscalationAlert) error
+	// HasAudienceSpace reports whether GOOGLE_CHAT_SPACES has a room for the
+	// audience. Asked before every rung, because the client itself treats an
+	// unknown audience as a quiet success.
+	HasAudienceSpace(audience string) bool
 }
 
 // incidentLinker builds the portal link a card points at.
@@ -215,31 +220,50 @@ type incidentLinker interface {
 // genuinely notified and the card is still in the room. Nothing is suppressed
 // silently: the status says which it was.
 type chatNotifier struct {
-	chat           chatSender
-	links          incidentLinker
-	defaultProduct string
+	chat  chatSender
+	links incidentLinker
+	// audience is the room every rung card goes to. Empty -- a notifier built
+	// as a struct literal, as tests do -- means "Incident Monitor", so the zero
+	// value routes the same as an unconfigured deployment.
+	audience string
+}
+
+// roomFor is the audience a card goes to.
+func (n chatNotifier) roomFor() string {
+	if a := strings.TrimSpace(n.audience); a != "" {
+		return a
+	}
+	return chataudience.IncidentMonitor
 }
 
 func (chatNotifier) Channel() Channel { return ChannelChat }
 
 func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) (Delivery, error) {
+	// Before anything else, and on every attempt. With no room for the
+	// audience the client would report success and post nothing, so the rung
+	// was logged "posted" -- and a rung's later attempts said "already posted
+	// for this rung" about a card that never existed. Permanent: the
+	// configuration will not grow a room on the next tick.
+	room := n.roomFor()
+	if !n.chat.HasAudienceSpace(room) {
+		return Delivery{Channel: ChannelChat}, &undeliverable{
+			reason: "NO_CHAT_SPACE",
+			detail: fmt.Sprintf("no Google Chat space for audience %q in GOOGLE_CHAT_SPACES", room),
+		}
+	}
 	if call.Ordinal > 1 {
 		return Delivery{Channel: ChannelChat, Status: "already posted for this rung"}, nil
 	}
 
 	t := plan.Trigger
 	nextRung, nextIn := plan.NextRungAfter(call)
-	product := t.Routing.Product
-	if product == "" {
-		product = n.defaultProduct
-	}
 	portal := ""
 	if n.links != nil {
 		portal = n.links.IncidentLink(t.IncidentID)
 	}
 
 	alert := notifications.EscalationAlert{
-		Product:       product,
+		Audience:      room,
 		Rung:          call.Level.String(),
 		RungRole:      call.Level.Role(),
 		Attempt:       call.Ordinal,
@@ -275,7 +299,7 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 	if err := n.chat.SendEscalationAlert(ctx, alert); err != nil {
 		return Delivery{Channel: ChannelChat}, err
 	}
-	return Delivery{Channel: ChannelChat, Status: "posted"}, nil
+	return Delivery{Channel: ChannelChat, Status: "posted to " + room}, nil
 }
 
 // elapsedSince renders how long an incident has gone unattended, which is the

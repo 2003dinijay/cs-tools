@@ -71,6 +71,23 @@ type LadderConfig struct {
 	// the shipped transcription of the spreadsheet; a deployment overrides a
 	// row here rather than waiting for a release.
 	Rules []Rule `yaml:"rules"`
+
+	Chat Chat `yaml:"chat"`
+}
+
+// Chat is where a ladder's rung cards are posted.
+type Chat struct {
+	// Audience is the GOOGLE_CHAT_SPACES key every rung card goes to. Empty
+	// falls back to INCIDENT_ESCALATION_CHAT_AUDIENCE, then to
+	// "Incident Monitor" -- the room every other incident alert in this
+	// service posts to.
+	//
+	// Configured rather than derived. The card used to route by the
+	// incident's product, which no audience is ever named after, so on a
+	// deployment with Chat set up correctly every card was silently dropped.
+	// An audience missing from GOOGLE_CHAT_SPACES is now a recorded failure,
+	// NO_CHAT_SPACE, not a quiet success.
+	Audience string `yaml:"audience"`
 }
 
 // StartWhen decides which incidents get a ladder at all.
