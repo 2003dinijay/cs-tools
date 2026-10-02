@@ -27,9 +27,11 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/chataudience"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
+	"os"
 )
 
 // callPlacer abstracts notifications.TwilioClient's two call methods.
@@ -147,6 +149,12 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 		}
 	}
 	if cfg.Channel.Uses(ChannelChat) {
+		// The ladder's own webhook, when configured, replaces the shared
+		// client -- and must be resolved before deciding chat is unavailable,
+		// since a deployment may have a webhook for the ladder and no
+		// GOOGLE_CHAT_SPACES at all.
+		var room string
+		chat, room = ladderChat(cfg.Ladder.Chat, chat, defaultChatProduct, os.Getenv)
 		if chat == nil {
 			e.missingChannels = append(e.missingChannels, ChannelChat)
 		} else {
@@ -160,13 +168,6 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 			// before a real run caught it. A PortalLinks with no base URL
 			// simply returns an empty link, which the card renders as no link,
 			// so there is no nil to get wrong any more.
-			// The file wins over INCIDENT_ESCALATION_CHAT_AUDIENCE, as it does
-			// over INCIDENT_ESCALATION_CHANNEL; both fall back to "Incident
-			// Monitor" inside the notifier.
-			room := cfg.Ladder.Chat.Audience
-			if strings.TrimSpace(room) == "" {
-				room = defaultChatProduct
-			}
 			n := chatNotifier{chat: chat, audience: room, links: links}
 			e.notifiers = append(e.notifiers, n)
 		}
@@ -1017,4 +1018,37 @@ func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
 			"incidentId", plan.Trigger.IncidentID,
 			"cap", s.MaxCallsPerLadder, "callsDropped", dropped)
 	}
+}
+
+// ladderChat picks the Chat client and room a ladder's rung cards go to.
+//
+// The room is chat.audience, then INCIDENT_ESCALATION_CHAT_AUDIENCE
+// (fallbackRoom), then "Incident Monitor"; the file wins over the environment,
+// as it does for the channel. With chat.webhookUrlEnv set, the ladder gets a
+// client of its own holding just that one space, and shared -- built from
+// GOOGLE_CHAT_SPACES -- is not used. Named but empty yields a client with no
+// spaces, so every rung records NO_CHAT_SPACE instead of silently going to
+// another room. getenv is a parameter so tests need not touch the process
+// environment.
+func ladderChat(c Chat, shared *notifications.GoogleChatClient, fallbackRoom string, getenv func(string) string) (*notifications.GoogleChatClient, string) {
+	room := strings.TrimSpace(c.Audience)
+	if room == "" {
+		room = strings.TrimSpace(fallbackRoom)
+	}
+	if room == "" {
+		room = chataudience.IncidentMonitor
+	}
+	name := strings.TrimSpace(c.WebhookURLEnv)
+	if name == "" {
+		return shared, room
+	}
+	url := strings.TrimSpace(getenv(name))
+	if url == "" {
+		slog.Error("escalation: chat.webhookUrlEnv names a variable that is not set; every rung will be recorded NO_CHAT_SPACE",
+			"variable", name)
+		return notifications.NewGoogleChatClient(notifications.GoogleChatConfig{}), room
+	}
+	return notifications.NewGoogleChatClient(notifications.GoogleChatConfig{
+		AudienceSpaces: []notifications.GoogleChatAudienceSpace{{Audience: room, WebhookURL: url}},
+	}), room
 }

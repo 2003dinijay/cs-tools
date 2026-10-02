@@ -167,6 +167,12 @@ cre_abts="$(awk '
   }' "${config_file}")"
 [ -n "${cre_abts}" ] || die "could not read the CRE abts list from ${config_file}"
 
+chat_webhook_env="$(awk '
+  /^cre:/ {in_cre=1; next}
+  /^[a-z]+:/ {in_cre=0}
+  in_cre && /^[[:space:]]*webhookUrlEnv:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]*#.*/, ""); gsub(/"/, ""); print; exit }
+' "${config_file}")"
+
 if [ -n "${ABT}" ]; then
   ABT="$(printf '%s' "${ABT}" | tr '[:upper:]' '[:lower:]')"
   case ",${cre_abts}," in
@@ -248,7 +254,7 @@ confirm() {
 }
 
 case "${CHANNEL}" in
-  chat|both) confirm "--channel ${CHANNEL} posts a card per rung to a REAL Google Chat space (GOOGLE_CHAT_SPACES in the service's .env), which colleagues can see." ;;
+  chat|both) confirm "--channel ${CHANNEL} posts a card per rung to a REAL Google Chat space (${chat_webhook_env:-GOOGLE_CHAT_SPACES} in the service's .env), which colleagues can see." ;;
 esac
 [ -n "${LIVE}" ] && confirm "--live places REAL Twilio calls. Every rung rings ${TO}. This costs money."
 
@@ -308,6 +314,12 @@ else
 fi
 [ -n "${LIVE}" ]   && args+=(--live --to "${TO}")
 [ -n "${ELEVATED}" ] && args+=(--kind elevated)
+# The room comes from escalation.yaml's cre.chat.webhookUrlEnv -- the NAME of a
+# variable in the service's .env, which the harness loads. This tool does not
+# read the YAML itself, so the name is handed over explicitly.
+case "${CHANNEL}" in
+  chat|both) [ -n "${chat_webhook_env}" ] && args+=(--chat-webhook-env "${chat_webhook_env}") ;;
+esac
 [ -n "${ACK_AT}" ] && args+=(--cancel-at "${ACK_AT}" --cancel-by "${ACK_BY}")
 
 when="${SHIFT:+shift ${SHIFT}}"

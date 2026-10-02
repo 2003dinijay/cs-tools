@@ -130,8 +130,12 @@ uses_chat=""; uses_call=""
 case "$CHANNEL" in chat|both) uses_chat=1 ;; esac
 case "$CHANNEL" in call|both) uses_call=1 ;; esac
 
-if [[ -n "$uses_chat" && -z "${GOOGLE_CHAT_SPACES:-}" ]]; then
-  echo "-c $CHANNEL needs GOOGLE_CHAT_SPACES: export it, or point ESCALATION_ENV_FILE at the .env that has it." >&2
+if [[ -z "${CRE_CHAT_WEBHOOK_URL:-}" && -f "$ENV_FILE" ]]; then
+  CRE_CHAT_WEBHOOK_URL="$(grep '^CRE_CHAT_WEBHOOK_URL=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+  export CRE_CHAT_WEBHOOK_URL
+fi
+if [[ -n "$uses_chat" && -z "${CRE_CHAT_WEBHOOK_URL:-}" && -z "${GOOGLE_CHAT_SPACES:-}" ]]; then
+  echo "-c $CHANNEL needs CRE_CHAT_WEBHOOK_URL (escalation.yaml chat.webhookUrlEnv) or GOOGLE_CHAT_SPACES: export it, or point ESCALATION_ENV_FILE at the .env that has it." >&2
   exit 1
 fi
 

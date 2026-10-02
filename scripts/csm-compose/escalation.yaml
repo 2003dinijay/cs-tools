@@ -188,16 +188,21 @@ cre:
     # team; leave it 0 and it calls all of them.
     perTeam: 3
 
-  # Where a rung's Google Chat card goes: an audience key from
-  # GOOGLE_CHAT_SPACES (an entry {"audience": "...", "webhookUrl": "..."}).
-  # "Incident Monitor" is the room every other incident alert in this service
-  # posts to. Empty falls back to INCIDENT_ESCALATION_CHAT_AUDIENCE, then to
-  # "Incident Monitor".
+  # Where a rung's Google Chat card goes.
   #
-  # An audience with no room is recorded on the rung as NO_CHAT_SPACE rather
-  # than reported as posted. Cards used to route by the incident's product,
-  # which no audience is named after, so every one was silently dropped.
+  # webhookUrlEnv is the NAME of the environment variable that holds this
+  # ladder's webhook URL -- never the URL. The URL carries the space's key and
+  # token, and this file is public; the URL goes in the service's git-ignored
+  # .env locally and in a secret when deployed. To move the ladder to another
+  # room, point this at a different variable. A URL written here is refused
+  # at startup. If the named variable is empty, every rung is recorded
+  # NO_CHAT_SPACE -- there is no quiet fallback to another room.
+  #
+  # Leave webhookUrlEnv empty to route by audience instead, through
+  # GOOGLE_CHAT_SPACES ({"audience": "...", "webhookUrl": "..."}). With a
+  # webhook set, audience only names the room in the logs.
   chat:
+    webhookUrlEnv: CRE_CHAT_WEBHOOK_URL
     audience: "Incident Monitor"
 
   # What stops a ladder.

@@ -19,6 +19,7 @@ package escalation
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -88,7 +89,28 @@ type Chat struct {
 	// An audience missing from GOOGLE_CHAT_SPACES is now a recorded failure,
 	// NO_CHAT_SPACE, not a quiet success.
 	Audience string `yaml:"audience"`
+
+	// WebhookURLEnv is the NAME of an environment variable holding this
+	// ladder's own Google Chat webhook URL -- never the URL itself. When set,
+	// rung cards go straight to that space and GOOGLE_CHAT_SPACES is not
+	// consulted; Audience then only labels the room in logs.
+	//
+	// The URL carries the space's key and token, so anyone holding it can post
+	// to the room, and this file is committed to a public repository. Naming
+	// the variable keeps the choice of room in configuration -- changing it is
+	// still a file edit, not a release -- while the secret stays in .env
+	// locally and in a secret store when deployed. A value that is not a
+	// variable name is refused at load, so a URL pasted here by mistake fails
+	// before it can be committed.
+	//
+	// Named but empty is NOT a fallback to GOOGLE_CHAT_SPACES: every rung is
+	// recorded NO_CHAT_SPACE and startup says which variable is missing.
+	// Quietly posting to some other room is worse than visibly posting nowhere.
+	WebhookURLEnv string `yaml:"webhookUrlEnv"`
 }
+
+// envVarName is what chat.webhookUrlEnv must look like.
+var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // StartWhen decides which incidents get a ladder at all.
 //
@@ -283,6 +305,13 @@ func (l *LadderConfig) validate(name string) error {
 	if l.Safety.MaxCallsPerLadder < 0 {
 		return fmt.Errorf("%s: safety.maxCallsPerLadder is negative", name)
 	}
+	// Never echo the value: if it is not a variable name it is most likely the
+	// webhook URL itself, which is a secret.
+	if v := strings.TrimSpace(l.Chat.WebhookURLEnv); v != "" && !envVarName.MatchString(v) {
+		return fmt.Errorf("%s: chat.webhookUrlEnv must be the NAME of an environment variable "+
+			"that holds the webhook URL, not the URL itself -- this file is committed", name)
+	}
+
 	// A cap keyed by a shift name that does not exist would read as a cap and
 	// do nothing -- the same failure KnownFields(true) exists to prevent, which
 	// cannot see inside a map's keys.

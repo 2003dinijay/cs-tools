@@ -92,33 +92,34 @@ import (
 const placeholderNumber = "+10000000000"
 
 type config struct {
-	priority     string
-	team         string
-	at           string
-	weekend      bool
-	shift        string
-	kind         string
-	to           string
-	live         bool
-	ssml         bool
-	notABT       bool
-	minute       time.Duration
-	tick         time.Duration
-	cancelAfter  time.Duration
-	cancelBy     string
-	cancelAt     string
-	maxCalls     int
-	redisAddr    string
-	incidentID   string
-	showTwiML    bool
-	ringSeconds  int
-	speak        bool
-	channel      string
-	chatProduct  string
-	chatAudience string
-	sayVoice     string
-	keep         bool
-	cleanup      bool
+	priority       string
+	team           string
+	at             string
+	weekend        bool
+	shift          string
+	kind           string
+	to             string
+	live           bool
+	ssml           bool
+	notABT         bool
+	minute         time.Duration
+	tick           time.Duration
+	cancelAfter    time.Duration
+	cancelBy       string
+	cancelAt       string
+	maxCalls       int
+	redisAddr      string
+	incidentID     string
+	showTwiML      bool
+	ringSeconds    int
+	speak          bool
+	channel        string
+	chatProduct    string
+	chatAudience   string
+	chatWebhookEnv string
+	sayVoice       string
+	keep           bool
+	cleanup        bool
 }
 
 func main() {
@@ -190,7 +191,10 @@ func run() error {
 		escalation.NewStore(rdb),
 		nil, // no entity-service locally; the summary is printed here instead
 		firstNonEmpty(cfg.chatAudience, cfg.chatProduct),
-		escalation.EngineConfig{CallSendingEnabled: true, UseSSML: cfg.ssml, Channel: channel},
+		escalation.EngineConfig{CallSendingEnabled: true, UseSSML: cfg.ssml, Channel: channel,
+			Ladder: escalation.LadderConfig{Chat: escalation.Chat{
+				Audience: cfg.chatAudience, WebhookURLEnv: cfg.chatWebhookEnv,
+			}}},
 	)
 
 	// The trigger instant decides the effective shift (the engine derives it
@@ -284,6 +288,9 @@ func parseFlags() config {
 	flag.StringVar(&cfg.chatAudience, "chat-audience", "",
 		"which GOOGLE_CHAT_SPACES audience a rung card goes to; empty means \"Incident Monitor\"")
 	flag.StringVar(&cfg.chatProduct, "chat-product", "", "deprecated: use -chat-audience")
+	flag.StringVar(&cfg.chatWebhookEnv, "chat-webhook-env", "",
+		"name of the environment variable holding this ladder's Google Chat webhook URL "+
+			"(escalation.yaml chat.webhookUrlEnv); overrides GOOGLE_CHAT_SPACES for rung cards")
 	flag.BoolVar(&cfg.speak, "speak", false, "speak each call's message aloud through the local synthesiser instead of only printing it; needs no Twilio account")
 	flag.StringVar(&cfg.sayVoice, "say-voice", "Aman", "which local voice to speak with (macOS: `say -v '?'` lists them)")
 	flag.IntVar(&cfg.ringSeconds, "ring-seconds", 5, "how long each live call may ring before Twilio gives up; 0 uses Twilio's 60s default")
