@@ -1078,9 +1078,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		cloudStatusHandler = handler.NewCloudStatusHandler(
 			service.NewCloudStatusService(repository.NewCloudStatusRepository(db), cfg.CloudStatusServiceIDs),
 		)
-		availabilityHandler = handler.NewAvailabilityHandler(
-			service.NewAvailabilityService(repository.NewAvailabilityRepository(db)),
-		)
+		availabilitySvc, err := service.NewAvailabilityService(
+			repository.NewAvailabilityRepository(db), cfg.AvailabilityTimezone)
+		if err != nil {
+			// A bad zone mis-dates every row the sweep writes, so this is a
+			// startup error rather than a fallback.
+			log.Fatalf("availability service: %v", err)
+		}
+		availabilityHandler = handler.NewAvailabilityHandler(availabilitySvc)
 	}
 	// globalHandler is wired for both data sources now: GetSystemMetadata has
 	// a Postgres-backed implementation (globalService, reusing

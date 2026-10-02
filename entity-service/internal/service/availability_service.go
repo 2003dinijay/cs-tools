@@ -48,13 +48,46 @@ type AvailabilityService interface {
 	Sweep(ctx context.Context, now time.Time) (AvailabilitySweepResult, error)
 }
 
+// DefaultAvailabilityTimezone is the zone period boundaries resolve in.
+//
+// *** NOT THE COMMITMENT'S TIMEZONE, AND THAT IS MEASURED, NOT ASSUMED. ***
+// Every commitment on both instances records GMT, and an earlier version of
+// this service passed that straight to the segment builder. Checked against
+// the real stored periods, that reproduces ZERO of production's 68 boundaries
+// and 27 of dev's 68. Asia/Colombo reproduces 68 of 68 on production.
+//
+// The reason is in the ServiceNow source. v1 — which is what both instances
+// actually run — applies the commitment timezone ONLY to the GlideSchedule
+// (`answer.setTimeZone(tz)`); its period boundaries come from
+// gs.beginningOfDay() and friends, which resolve in the SYSTEM zone,
+// glide.sys.default.tz = Asia/Colombo. Only v2 sets the session zone from
+// the commitment, and v2 has never been switched on.
+//
+// So honouring commitment.timezone would silently re-date four years of
+// history by five and a half hours, move outages between days on the
+// dashboard's daily chart, and stop the natural-key upsert matching any
+// mirrored row. The zone is therefore explicit configuration with the
+// observed production default, rather than inherited from a field nothing
+// has ever honoured.
+const DefaultAvailabilityTimezone = "Asia/Colombo"
+
 type availabilityService struct {
 	repo repository.AvailabilityRepository
+	loc  *time.Location
 }
 
-// NewAvailabilityService constructs the sweep.
-func NewAvailabilityService(repo repository.AvailabilityRepository) AvailabilityService {
-	return &availabilityService{repo: repo}
+// NewAvailabilityService constructs the sweep. An empty timezone uses
+// DefaultAvailabilityTimezone; an unknown one is a startup error rather than
+// a silent fallback, because the wrong zone mis-dates every row it writes.
+func NewAvailabilityService(repo repository.AvailabilityRepository, timezone string) (AvailabilityService, error) {
+	if timezone == "" {
+		timezone = DefaultAvailabilityTimezone
+	}
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return nil, fmt.Errorf("availability: unknown timezone %q: %w", timezone, err)
+	}
+	return &availabilityService{repo: repo, loc: loc}, nil
 }
 
 // Sweep recomputes every period for every subject.
@@ -101,13 +134,13 @@ func (s *availabilityService) sweepSubject(
 		return 0, fmt.Errorf("commitment %s has neither a service offering nor a CI", subject.ServiceCommitmentID)
 	}
 
-	loc := loadCommitmentLocation(ctx, subject.Timezone)
 	schedule, err := s.scheduleFor(ctx, subject)
 	if err != nil {
 		return 0, err
 	}
 
-	segments := AvailabilitySegmentsFor(now, loc)
+	// s.loc, NOT the commitment's zone — see DefaultAvailabilityTimezone.
+	segments := AvailabilitySegmentsFor(now, s.loc)
 
 	// Outages are fetched ONCE over the widest window and reused, rather
 	// than queried per segment. Eight segments per subject times ~146
@@ -201,26 +234,6 @@ func normaliseOutageType(t string) string {
 	default:
 		return t
 	}
-}
-
-// loadCommitmentLocation resolves the commitment's timezone.
-//
-// Falls back to UTC rather than to the host's local zone. A scheduled task's
-// local zone is whatever the container was built with, so defaulting to it
-// would make the period boundaries depend on the deployment — the single
-// most confusing possible failure, because the numbers would be subtly wrong
-// and nothing would look broken.
-func loadCommitmentLocation(ctx context.Context, name string) *time.Location {
-	if name == "" {
-		return time.UTC
-	}
-	loc, err := time.LoadLocation(name)
-	if err != nil {
-		slog.WarnContext(ctx, "availability: unknown commitment timezone, using UTC",
-			"timezone", name, "err", err)
-		return time.UTC
-	}
-	return loc
 }
 
 func (s *availabilityService) scheduleFor(

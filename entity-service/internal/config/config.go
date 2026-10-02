@@ -52,8 +52,14 @@ const (
 
 // Config holds all environment-driven settings for the service.
 type Config struct {
-	DBHost     string
-	DBPort     string
+	DBHost string
+	DBPort string
+	// AvailabilityTimezone is the zone the availability sweep resolves its
+	// period boundaries in. Empty uses service.DefaultAvailabilityTimezone
+	// (Asia/Colombo), which is what ServiceNow's running engine actually
+	// uses — it is the system zone, NOT the commitment's recorded one.
+	AvailabilityTimezone string
+
 	DBUser     string
 	DBPassword string
 	DBName     string
@@ -396,6 +402,7 @@ func Load() *Config {
 	cfg := &Config{
 		DBHost:                                   getEnvOrDefault("DB_HOST", "localhost"),
 		DBPort:                                   getEnvOrDefault("DB_PORT", "5432"),
+		AvailabilityTimezone:                     os.Getenv("AVAILABILITY_TIMEZONE"),
 		DBUser:                                   os.Getenv("DB_USER"),
 		DBPassword:                               os.Getenv("DB_PASSWORD"),
 		DBName:                                   os.Getenv("DB_NAME"),

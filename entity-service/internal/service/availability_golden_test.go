@@ -351,3 +351,65 @@ func checkPct(t *testing.T, name string, got, want float64) {
 		t.Errorf("%s = %.6f, ServiceNow says %.6f", name, got, want)
 	}
 }
+
+// *** THE SEGMENT BUILDER, CHECKED AGAINST REAL STORED PERIODS. ***
+// The golden test above feeds ServiceNow's OWN start/end into the
+// calculator, so it never checks that this port would have CHOSEN those
+// boundaries. That gap hid a bug worth catching: the service used to pass
+// the commitment's timezone to the segment builder, and every commitment
+// on both instances records GMT. Measured against the stored periods, GMT
+// reproduces ZERO of production's 68 and Asia/Colombo reproduces all 68.
+//
+// The cause is in the source: v1 — what both instances run — applies the
+// commitment zone only to the GlideSchedule, while its period boundaries
+// come from gs.beginningOfDay(), which resolves in the system zone. Only
+// v2 sets the session zone per commitment, and v2 is switched off.
+//
+// Dev is deliberately not asserted: its history spans a convention change,
+// so it carries both 00:00 and 18:30 boundaries and no single zone can
+// reproduce all of it. Production is uniform, which is what makes it a
+// usable fixture.
+func TestAvailabilitySegments_ReproduceStoredProductionBoundaries(t *testing.T) {
+	loc, err := time.LoadLocation(DefaultAvailabilityTimezone)
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+
+	var checked, matched int
+	for _, c := range loadGoldenCases(t) {
+		if c.Source != "prod" {
+			continue
+		}
+		checked++
+		begin := time.Unix(c.StartEpoch, 0).UTC()
+		end := time.Unix(c.EndEpoch, 0).UTC()
+		mid := begin.Add(end.Sub(begin) / 2)
+
+		var found bool
+		for _, seg := range AvailabilitySegmentsFor(mid, loc) {
+			if !strings.EqualFold(seg.Type, c.Type) {
+				continue
+			}
+			found = true
+			if !seg.Begin.Equal(begin) || !seg.End.Equal(end) {
+				t.Errorf("%s period containing %s: built [%s, %s), ServiceNow stored [%s, %s)",
+					c.Type, mid.Format(time.RFC3339),
+					seg.Begin.Format(time.RFC3339), seg.End.Format(time.RFC3339),
+					begin.Format(time.RFC3339), end.Format(time.RFC3339))
+			} else {
+				matched++
+			}
+		}
+		if !found {
+			t.Errorf("no %s segment emitted at all for %s", c.Type, mid.Format(time.RFC3339))
+		}
+	}
+
+	if checked == 0 {
+		t.Skip("no production cases loaded")
+	}
+	if matched != checked {
+		t.Fatalf("reproduced %d of %d stored production boundaries", matched, checked)
+	}
+	t.Logf("reproduced all %d stored production period boundaries in %s", checked, DefaultAvailabilityTimezone)
+}
