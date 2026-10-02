@@ -65,11 +65,11 @@ export default function CasesPage() {
         <Search searchOption="case" setShowTable={setShowTable} />
       </Box>
       {caseState === "" && showTable && (
-        <Box sx={{ mt: 4, width: "100%", maxWidth: 1050, mx: "auto" }}>
+        <Box sx={{ mt: 5, width: "100%", maxWidth: 1050, mx: "auto" }}>
           <Typography align="left" gutterBottom variant="h6">
             Overall Case Summary
           </Typography>
-          <Grid container spacing={3} justifyContent="center" sx={{ mt: 2 }}>
+          <Grid container spacing={3} justifyContent="center" sx={{ mt: 4 }}>
             {STATES.map((state, i) => (
               <Grid key={state} size={{ xs: 12, sm: 6, md: 4 }} sx={{ display: "flex", justifyContent: "center" }}>
                 <CaseStateCard
