@@ -650,6 +650,10 @@ func TestRenderProjectContactInvitedEmail_SignInButton(t *testing.T) {
 		if n := strings.Count(got, "text-decoration:underline"); n != 1 {
 			t.Errorf("%s: %d underlined links, want 1 (the fallback)", name, n)
 		}
+		// The video belongs in the Welcome email only; invitations keep one action.
+		if strings.Contains(got, "getting-started video") {
+			t.Errorf("%s: invitation should not carry the getting-started video link", name)
+		}
 	}
 }
 
@@ -661,7 +665,7 @@ func TestRenderProjectContactRegisteredEmail(t *testing.T) {
 	})
 	for _, want := range []string{
 		"Hi Jane &lt;Doe&gt;,", "Welcome to the WSO2 Customer Support Portal", "<b>Acme Cloud</b>", ">ACMECLOUD</td>", "create and manage cases",
-		`href="https://youtu.be/1v5SqP6qRLc"`, "Watch the getting-started video",
+		`href="https://www.youtube.com/watch?v=2WwZ5-qrp4Q"`, "Watch the getting-started video",
 		`href="https://support.wso2.com"`, ">Go to Support Portal</a>", `bgcolor="#FF6700"`, "color:#000000", "mailto:support@wso2.com", "Cheers!",
 	} {
 		if !strings.Contains(got, want) {
