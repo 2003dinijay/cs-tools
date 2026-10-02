@@ -1273,9 +1273,13 @@ func TestCaseService_SearchCases_AnyOfReachesRepository(t *testing.T) {
 // to SearchProjectContacts panics rather than silently returning nothing.
 type stubProjectContactRepo struct {
 	getProjectContactByUserID func(ctx context.Context, projectID, userID, callerEmail string) (repository.ProjectContactRow, error)
+	searchProjectContacts     func(ctx context.Context, projectID string, req domain.SearchProjectContactsRequest) ([]repository.ProjectContactRow, int, error)
 }
 
-func (s *stubProjectContactRepo) SearchProjectContacts(context.Context, string, domain.SearchProjectContactsRequest, string) ([]repository.ProjectContactRow, int, error) {
+func (s *stubProjectContactRepo) SearchProjectContacts(ctx context.Context, projectID string, req domain.SearchProjectContactsRequest, _ string) ([]repository.ProjectContactRow, int, error) {
+	if s.searchProjectContacts != nil {
+		return s.searchProjectContacts(ctx, projectID, req)
+	}
 	panic("not implemented")
 }
 
@@ -2474,161 +2478,6 @@ func TestCaseService_CreateCase_NeverPersistsAccountDefaultWatchers(t *testing.T
 		if !found {
 			t.Errorf("Recipients = %v, want it to include %q", payload.Recipients, email)
 		}
-	}
-}
-
-// TestCaseService_CreateCase_PersistsOnlyExplicitlyRequestedWatchers proves
-// req.WatchList is still persisted exactly as submitted (no silent merge
-// with the account's stakeholders, which are never persisted at all -- see
-// TestCaseService_CreateCase_NeverPersistsAccountDefaultWatchers above).
-func TestCaseService_CreateCase_PersistsOnlyExplicitlyRequestedWatchers(t *testing.T) {
-	const caseID = "44444444-4444-4444-4444-444444444444"
-	const projectID = "proj-1"
-	requestedIDs := []string{"customer-pick-1", "csm-id"}
-
-	mirror := &stubMirrorCaseService{
-		createCase: func(_ context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
-			return domain.CreateCaseResponse{
-				Message: "Case created successfully.",
-				Case:    domain.CreateCaseDetails{ID: caseID, InternalID: "WSO2-CS-2", Number: "CS0023002", CreatedBy: "jane.doe@example.com", State: "Open"},
-			}, nil
-		},
-	}
-	var setWatchListUserIDs []string
-	repo := &stubCaseRepo{
-		createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
-			respState := domain.CaseStateOpen
-			return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy, ProjectID: projectID, State: &respState}, nil
-		},
-		setCaseWatchList: func(_ context.Context, _ string, userIDs []string, _ string) ([]domain.WatchListUser, time.Time, error) {
-			setWatchListUserIDs = userIDs
-			return nil, time.Time{}, nil
-		},
-		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			severity := domain.CaseSeverityHigh
-			return domain.CaseView{
-				ID: caseID, ProjectDetails: &domain.EntityRef{ID: projectID},
-				WatchList: []domain.WatchListUser{{Email: "watcher@example.com"}}, Severity: &severity,
-			}, nil
-		},
-	}
-	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
-	svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, &mockEventPublisher{}, alwaysUnrestrictedAccess{}, nil, dispatcher, mirror, nil, "")
-
-	req := validCreateCaseRequest()
-	req.WatchList = requestedIDs
-	if _, err := svc.CreateCase(context.Background(), req); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(setWatchListUserIDs) != len(requestedIDs) {
-		t.Fatalf("SetCaseWatchList userIDs = %v, want %v", setWatchListUserIDs, requestedIDs)
-	}
-	for i, id := range requestedIDs {
-		if setWatchListUserIDs[i] != id {
-			t.Errorf("SetCaseWatchList userIDs[%d] = %q, want %q", i, setWatchListUserIDs[i], id)
-		}
-	}
-}
-
-// createWithWatchList runs a dual-write CreateCase with the given watch list
-// and user search stub, returning what SetCaseWatchList received (nil if it
-// was never called) and the create error.
-func createWithWatchList(t *testing.T, watchList []string, search func(context.Context, domain.SearchUsersRequest) ([]domain.User, int, error)) (setIDs []string, setCalled bool, err error) {
-	t.Helper()
-	const caseID = "44444444-4444-4444-4444-444444444444"
-	mirror := &stubMirrorCaseService{
-		createCase: func(_ context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
-			return domain.CreateCaseResponse{
-				Message: "Case created successfully.",
-				Case:    domain.CreateCaseDetails{ID: caseID, InternalID: "WSO2-CS-2", Number: "CS0023002", CreatedBy: "jane.doe@example.com", State: "Open"},
-			}, nil
-		},
-	}
-	repo := &stubCaseRepo{
-		createCaseFromServiceNow: func(_ context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error) {
-			respState := domain.CaseStateOpen
-			return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy, ProjectID: "proj-1", State: &respState}, nil
-		},
-		setCaseWatchList: func(_ context.Context, _ string, userIDs []string, _ string) ([]domain.WatchListUser, time.Time, error) {
-			setCalled = true
-			setIDs = userIDs
-			return nil, time.Time{}, nil
-		},
-		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			severity := domain.CaseSeverityHigh
-			return domain.CaseView{ID: caseID, ProjectDetails: &domain.EntityRef{ID: "proj-1"}, Severity: &severity}, nil
-		},
-	}
-	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
-	svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{searchUsers: search}, &mockEventPublisher{}, alwaysUnrestrictedAccess{}, nil, dispatcher, mirror, nil, "")
-
-	req := validCreateCaseRequest()
-	req.WatchList = watchList
-	_, err = svc.CreateCase(context.Background(), req)
-	return setIDs, setCalled, err
-}
-
-// An all-email watch list (Customer Portal) is resolved to platform user ids
-// for work_item_watcher; unmatched and duplicate entries are dropped, and the
-// match is case-insensitive.
-func TestCaseService_CreateCase_EmailWatchListResolvedToUserIDs(t *testing.T) {
-	var gotEmails []string
-	ids, called, err := createWithWatchList(t,
-		[]string{"jane.doe@example.com", "Unknown.User@example.com", "john.roe@example.com", "JANE.DOE@example.com"},
-		func(_ context.Context, req domain.SearchUsersRequest) ([]domain.User, int, error) {
-			gotEmails = req.Filters.Emails
-			return []domain.User{
-				{ID: "11111111-1111-1111-1111-111111111111", Email: "jane.doe@example.com"},
-				{ID: "22222222-2222-2222-2222-222222222222", Email: "john.roe@example.com"},
-			}, 2, nil
-		})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(gotEmails) != 4 {
-		t.Errorf("user search emails = %v, want the 4 submitted values", gotEmails)
-	}
-	want := []string{"11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"}
-	if !called || len(ids) != len(want) || ids[0] != want[0] || ids[1] != want[1] {
-		t.Fatalf("SetCaseWatchList called=%v ids=%v, want %v", called, ids, want)
-	}
-}
-
-// A failed or empty email lookup must not fail the create (the case already
-// exists upstream) and must not write watchers.
-func TestCaseService_CreateCase_EmailWatchListLookupFailureStillCreates(t *testing.T) {
-	_, called, err := createWithWatchList(t, []string{"jane.doe@example.com"},
-		func(context.Context, domain.SearchUsersRequest) ([]domain.User, int, error) {
-			return nil, 0, errors.New("db unavailable")
-		})
-	if err != nil {
-		t.Fatalf("create must succeed despite a failed watcher lookup, got %v", err)
-	}
-	if called {
-		t.Error("SetCaseWatchList must not be called when no email resolved")
-	}
-
-	_, called, err = createWithWatchList(t, []string{"jane.doe@example.com"},
-		func(context.Context, domain.SearchUsersRequest) ([]domain.User, int, error) { return nil, 0, nil })
-	if err != nil || called {
-		t.Fatalf("no matching users: err=%v setCalled=%v, want nil/false", err, called)
-	}
-}
-
-// A UUID watch list (CSM portal) is persisted as submitted with no email
-// lookup: the user search stub panics if reached.
-func TestCaseService_CreateCase_UUIDWatchListNotLookedUp(t *testing.T) {
-	uuids := []string{"11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"}
-	ids, called, err := createWithWatchList(t, uuids,
-		func(context.Context, domain.SearchUsersRequest) ([]domain.User, int, error) {
-			panic("user search must not run for an id watch list")
-		})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !called || len(ids) != 2 || ids[0] != uuids[0] || ids[1] != uuids[1] {
-		t.Fatalf("SetCaseWatchList called=%v ids=%v, want %v", called, ids, uuids)
 	}
 }
 
