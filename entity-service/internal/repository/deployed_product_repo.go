@@ -475,6 +475,7 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 					SupportEoLDate: pvEoLDate,
 				}
 			}
+			dp.Category = lowercaseCategory(dp.Category)
 			result = append(result, dp)
 		}
 		if err := rows.Err(); err != nil {
@@ -489,6 +490,21 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 	}
 
 	return deployedProducts, total, nil
+}
+
+// lowercaseCategory converts deployed_product_category_enum's UPPER-case
+// label ("MS", "PDP", ...) read from the database into the lower-case code
+// the rest of the contract uses: the search request's ProductCategories
+// filter values and ProjectFeatures.SrProductCategories/
+// DefaultCaseProductCategories are all lower case, and clients compare the
+// returned category against them case-sensitively. A nil (NULL) category
+// stays nil, never an empty string. The input is not mutated.
+func lowercaseCategory(c *string) *string {
+	if c == nil {
+		return nil
+	}
+	v := strings.ToLower(*c)
+	return &v
 }
 
 // SearchProjectsByProductVersion implements DeployedProductRepository.

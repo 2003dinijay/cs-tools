@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -98,12 +97,16 @@ type OutagePatch struct {
 	Actor             string
 }
 
+// outageRepo runs every statement under the caller's own identity, never a
+// system one: outageSelect LEFT JOINs work_item (RLS-protected) for the linked
+// incident's number and subject, so an internal caller gets them and a
+// customer, who cannot see that work_item, gets them blank.
 type outageRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
-// NewOutageRepository constructs the repository over the pool.
-func NewOutageRepository(db *pgxpool.Pool) OutageRepository {
+// NewOutageRepository constructs the repository over the scoped pool.
+func NewOutageRepository(db *Scoped) OutageRepository {
 	return &outageRepo{db: db}
 }
 
@@ -263,6 +266,30 @@ func formatOutageInterval(d time.Duration) string {
 // above ServiceNow's current OUT0001887 and cannot collide with numbers
 // ServiceNow keeps allocating while dual-write is on.
 func (r *outageRepo) Create(ctx context.Context, in OutageWrite) (domain.Outage, error) {
+	// *** ONE TRANSACTION, BECAUSE A PARTIAL CREATE IS WHAT ACTUALLY
+	// HAPPENED. *** On the first live run the insert succeeded and the
+	// read-back failed on a bad column, leaving an outage row behind with no
+	// caller aware of it -- and an orphan outage on an in-scope offering is
+	// not inert: the next cloud status sweep posts a real outage_begin for it
+	// to a shared dashboard. The seeded journal entries belong in the same
+	// transaction for the same reason.
+	id, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (string, error) {
+		return insertOutage(ctx, tx, in)
+	})
+	if err != nil {
+		return domain.Outage{}, err
+	}
+
+	detail, err := r.GetByID(ctx, id)
+	if err != nil {
+		return domain.Outage{}, err
+	}
+	return detail.Outage, nil
+}
+
+// insertOutage is Create's transactional body: the outage row and its seeded
+// journal entries, run inside tx. It returns the new outage's id.
+func insertOutage(ctx context.Context, tx pgx.Tx, in OutageWrite) (string, error) {
 	const insertSQL = `
 INSERT INTO outage (id, number, type, start_on, end_on, name,
                     service_offering_id, work_item_id,
@@ -276,26 +303,13 @@ VALUES (gen_random_uuid(),
         NOW(), $9, NOW(), $9)
 RETURNING id::text`
 
-	// *** ONE TRANSACTION, BECAUSE A PARTIAL CREATE IS WHAT ACTUALLY
-	// HAPPENED. *** On the first live run the insert succeeded and the
-	// read-back failed on a bad column, leaving an outage row behind with no
-	// caller aware of it -- and an orphan outage on an in-scope offering is
-	// not inert: the next cloud status sweep posts a real outage_begin for it
-	// to a shared dashboard. The seeded journal entries belong in the same
-	// transaction for the same reason.
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return domain.Outage{}, fmt.Errorf("create outage: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	var id string
 	if err := tx.QueryRow(ctx, insertSQL,
 		strings.ToUpper(in.Type), in.Begin, in.End, in.ShortDescription,
 		in.ServiceOfferingID, in.IncidentID,
 		in.ExternalCommunication, in.InternalCommunication, in.Actor,
 	).Scan(&id); err != nil {
-		return domain.Outage{}, fmt.Errorf("create outage: %w", err)
+		return "", fmt.Errorf("create outage: %w", err)
 	}
 
 	// A seeded communication is a journal entry too, not only a column on the
@@ -303,24 +317,15 @@ RETURNING id::text`
 	// would make the text invisible where people look for it.
 	if in.ExternalCommunication != nil && strings.TrimSpace(*in.ExternalCommunication) != "" {
 		if _, err := insertCommunication(ctx, tx, id, domain.OutageCommunicationChannelExternal, *in.ExternalCommunication, in.Actor); err != nil {
-			return domain.Outage{}, err
+			return "", err
 		}
 	}
 	if in.InternalCommunication != nil && strings.TrimSpace(*in.InternalCommunication) != "" {
 		if _, err := insertCommunication(ctx, tx, id, domain.OutageCommunicationChannelInternal, *in.InternalCommunication, in.Actor); err != nil {
-			return domain.Outage{}, err
+			return "", err
 		}
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return domain.Outage{}, fmt.Errorf("create outage: commit: %w", err)
-	}
-
-	detail, err := r.GetByID(ctx, id)
-	if err != nil {
-		return domain.Outage{}, err
-	}
-	return detail.Outage, nil
+	return id, nil
 }
 
 // GetByID returns one outage plus its per-channel journal counts.
@@ -551,7 +556,7 @@ SELECT m.cloud_offering::text FROM cloud_monitor m
 	return true, &slug, nil
 }
 
-// rowQuerier is the sliver of pgxpool.Pool and pgx.Tx this file shares, so a
+// rowQuerier is the sliver of Scoped and pgx.Tx this file shares, so a
 // journal insert reads the same whether it is standalone or inside a create.
 type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row

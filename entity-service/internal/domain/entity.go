@@ -1945,8 +1945,9 @@ type DeployedProductVersionRef struct {
 
 // DeployedProductView is the enriched search result for a deployed product.
 // It embeds deployment, product, and version as named refs and uses createdOn/updatedOn naming.
-// Cores, TPS, Category, and Updates are SN-only fields; they are always null/empty for the
-// Postgres path.
+// Category is a lower-case code ("ms", "pc", "pdp", ...) on every data source, matching
+// SearchDeployedProductsRequest.ProductCategories and the project metadata's product
+// category lists.
 type DeployedProductView struct {
 	ID         string                     `json:"id"`
 	Deployment EntityRef                  `json:"deployment"`

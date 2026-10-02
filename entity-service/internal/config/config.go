@@ -168,10 +168,6 @@ type Config struct {
 	GithubBaseURL string
 	// GithubToken authenticates our calls out to GitHub.
 	GithubToken string
-	// GithubWebhookSecret is the HMAC key GitHub signs deliveries with. This
-	// IS the authentication on the webhook endpoint, so an empty value makes
-	// VerifySignature refuse everything rather than accept everything.
-	GithubWebhookSecret string
 	// GithubIntegrationLogin is our own GitHub account. Events it sent are our
 	// own writes coming back, and are dropped by identity rather than by
 	// pattern-matching the comment body.
@@ -419,7 +415,6 @@ func Load() *Config {
 		GithubIntegrationEnabled:                 os.Getenv("GITHUB_INTEGRATION_ENABLED") == "true",
 		GithubBaseURL:                            getEnvOrDefault("GITHUB_API_BASE_URL", "https://api.github.com"),
 		GithubToken:                              os.Getenv("GITHUB_TOKEN"),
-		GithubWebhookSecret:                      os.Getenv("GITHUB_WEBHOOK_SECRET"),
 		GithubIntegrationLogin:                   os.Getenv("GITHUB_INTEGRATION_LOGIN"),
 		GithubOutboundInterval:                   envDuration("GITHUB_OUTBOUND_INTERVAL", 15*time.Second),
 		CSMPortalBaseURL:                         os.Getenv("CSM_PORTAL_BASE_URL"),
@@ -742,12 +737,16 @@ func (c *Config) DSN() string {
 }
 
 // HasGithubIntegration reports whether the GitHub sync is both switched on and
-// configured well enough to run. The webhook secret is required rather than
-// optional: without it the endpoint could not authenticate a caller, and an
-// endpoint that mutates change requests must never be reachable unverified.
+// configured well enough to run.
+//
+// *** GITHUB_WEBHOOK_SECRET IS NO LONGER PART OF THIS, AND ITS ABSENCE HERE
+// IS NOT AN OVERSIGHT. *** The HMAC check moved to
+// operations/csm-webhooks along with the public endpoint, so this
+// service never sees a signature and holding the secret would only imply it
+// did. What still gates the integration is the outbound half: a token to
+// call GitHub with, and the login whose own events must be ignored as ours.
 func (c *Config) HasGithubIntegration() bool {
 	return c.GithubIntegrationEnabled &&
-		c.GithubWebhookSecret != "" &&
 		c.GithubToken != "" &&
 		c.GithubIntegrationLogin != ""
 }
