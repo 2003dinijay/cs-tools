@@ -1066,12 +1066,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// them unregistered gives an honest 404 instead.
 	var cloudStatusDashboardHandler *handler.CloudStatusDashboardHandler
 	var cloudStatusHandler *handler.CloudStatusHandler
+	// availabilityHandler is the PRODUCER for the three dashboard endpoints
+	// above. They read service_availability; until now nothing in Postgres
+	// wrote it -- csm-sync-service mirrors ServiceNow's output, so at cutover
+	// the uptime figures would stop advancing with no error anywhere.
+	var availabilityHandler *handler.AvailabilityHandler
 	if db != nil {
 		cloudStatusDashboardHandler = handler.NewCloudStatusDashboardHandler(
 			service.NewCloudStatusDashboardService(repository.NewCloudStatusDashboardRepository(db)),
 		)
 		cloudStatusHandler = handler.NewCloudStatusHandler(
 			service.NewCloudStatusService(repository.NewCloudStatusRepository(db), cfg.CloudStatusServiceIDs),
+		)
+		availabilityHandler = handler.NewAvailabilityHandler(
+			service.NewAvailabilityService(repository.NewAvailabilityRepository(db)),
 		)
 	}
 	// globalHandler is wired for both data sources now: GetSystemMetadata has
@@ -1523,6 +1531,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("GET /cloud-status/availabilities", cloudStatusDashboardHandler.Availabilities)
 		mux.HandleFunc("GET /cloud-status/availability-history", cloudStatusDashboardHandler.AvailabilityHistory)
 		mux.HandleFunc("GET /cloud-status/incidents/{id}", cloudStatusDashboardHandler.IncidentDetail)
+	}
+	if availabilityHandler != nil {
+		// Internal, and it WRITES: every other /cloud-status route is a read
+		// the dashboard makes, this one recomputes and replaces rows.
+		mux.HandleFunc("POST /internal/availability/sweep", availabilityHandler.Sweep)
 	}
 	if cloudStatusHandler != nil {
 		mux.HandleFunc("POST /internal/cloud-status/sweep", cloudStatusHandler.Sweep)
