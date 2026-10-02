@@ -132,6 +132,38 @@ func AvailabilitySegmentsFor(now time.Time, loc *time.Location) []AvailabilitySe
 //
 // Go puts Sunday at 0, so a Monday-based week needs the rotation below:
 // Monday -> 0, Tuesday -> 1, ... Sunday -> 6.
+// PreviousFixedSegments are the daily, weekly, monthly and annual periods
+// that ended most recently before now: yesterday, last week, last month and
+// last year.
+//
+// *** WITHOUT THESE A FIXED ROW FREEZES AT WHATEVER THE SWEEP SAW. ***
+// AvailabilitySegmentsFor only yields the periods containing now, so a daily
+// sweep writes today's row once, part-way through the day, and never touches
+// it again: an outage later that day never reaches it, and the same is true
+// of the last day of every week, month and year. ServiceNow does not have
+// this hole. Measured on staging's copy of service_availability, its fixed
+// rows are last written a median 15.5h after the period ENDS -- exactly the
+// next 10:00 UTC run -- so each run finalises the period that just closed as
+// well as starting the current one. Recomputing these every run is a
+// superset of that (idempotent: rows are keyed on their own start), and also
+// picks up an outage edited after the period closed.
+func PreviousFixedSegments(now time.Time, loc *time.Location) []AvailabilitySegment {
+	if loc == nil {
+		loc = time.UTC
+	}
+	n := now.In(loc)
+	startOfToday := time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, loc)
+	startOfWeek := startOfToday.AddDate(0, 0, -weekdayOffset(startOfToday))
+	startOfMonth := time.Date(n.Year(), n.Month(), 1, 0, 0, 0, 0, loc)
+	startOfYear := time.Date(n.Year(), 1, 1, 0, 0, 0, 0, loc)
+	return []AvailabilitySegment{
+		{Type: AvailabilityTypeDaily, Begin: startOfToday.AddDate(0, 0, -1), End: startOfToday},
+		{Type: AvailabilityTypeWeekly, Begin: startOfWeek.AddDate(0, 0, -7), End: startOfWeek},
+		{Type: AvailabilityTypeMonthly, Begin: startOfMonth.AddDate(0, -1, 0), End: startOfMonth},
+		{Type: AvailabilityTypeAnnually, Begin: startOfYear.AddDate(-1, 0, 0), End: startOfYear},
+	}
+}
+
 func weekdayOffset(t time.Time) int {
 	return (int(t.Weekday()) + 6) % 7
 }

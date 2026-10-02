@@ -130,6 +130,8 @@ func NewAvailabilityRepository(db *pgxpool.Pool) AvailabilityRepository {
 // Unpublished offerings are skipped, but one with an EMPTY state is kept:
 // V2's encoded query is `service_offering.state=published^ORservice_offering
 // .state=`, so null and "published" behave alike and everything else is out.
+// An empty ServiceNow state arrives as NULL: service_state_enum has no empty
+// value, and comparing the enum to an empty string is an error, not false.
 const availabilitySubjectsSQL = `
     SELECT soc.service_offering_id,
            soc.cmdb_ci_id,
@@ -142,7 +144,7 @@ const availabilitySubjectsSQL = `
       LEFT JOIN service_offering so ON so.id = soc.service_offering_id
      WHERE sc.type = 'AVAILABILITY'
        AND (soc.cmdb_ci_id IS NOT NULL
-            OR so.state IS NULL OR so.state = '' OR so.state = 'PUBLISHED')
+            OR so.state IS NULL OR so.state = 'PUBLISHED')
      ORDER BY soc.service_offering_id, soc.service_commitment_id`
 
 func (r *availabilityRepository) Subjects(ctx context.Context) ([]AvailabilitySubject, error) {

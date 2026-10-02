@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -140,11 +141,12 @@ func (s *availabilityService) sweepSubject(
 	}
 
 	// s.loc, NOT the commitment's zone — see DefaultAvailabilityTimezone.
-	segments := AvailabilitySegmentsFor(now, s.loc)
+	segments := append(AvailabilitySegmentsFor(now, s.loc), PreviousFixedSegments(now, s.loc)...)
 
 	// Outages are fetched ONCE over the widest window and reused, rather
-	// than queried per segment. Eight segments per subject times ~146
-	// subjects is 1,168 queries a run against a table the dashboard is also
+	// than queried per segment. Twelve segments per subject (the eight
+	// containing now plus the four just-closed fixed periods) times ~146
+	// subjects is 1,752 queries a run against a table the dashboard is also
 	// reading; one query per subject is 146. The calculator trims to each
 	// segment itself, so the result is identical.
 	widest := segments[0]
@@ -189,8 +191,8 @@ func (s *availabilityService) sweepSubject(
 			AbsoluteDowntime:    result.AbsoluteDowntime,
 			ScheduledDowntime:   result.ScheduledDowntime,
 			ScheduledTotal:      result.ScheduledTotal,
-			AbsoluteAvail:       result.AbsoluteAvailability,
-			ScheduledAvail:      result.ScheduledAvailability,
+			AbsoluteAvail:       roundAvailability(result.AbsoluteAvailability),
+			ScheduledAvail:      roundAvailability(result.ScheduledAvailability),
 			AbsoluteCount:       result.AbsoluteCount,
 			ScheduledCount:      result.ScheduledCount,
 			MTBF:                result.MTBF,
@@ -251,4 +253,22 @@ func (s *availabilityService) scheduleFor(
 		return nil, err
 	}
 	return NewSpanSchedule(spans)
+}
+
+// availabilityStoredDecimals is the scale ServiceNow stores availability
+// percentages at: every downtime row in staging's copy of service_availability
+// has at most five decimals (99.99946, 98.92976, 99.9954), whatever the
+// commitment's precision says. /monitors passes the stored value straight
+// through, so an unrounded 99.99945987654321 would reach the status page.
+const availabilityStoredDecimals = 5
+
+// roundAvailability rounds half away from zero to availabilityStoredDecimals.
+// NaN and the infinities pass through untouched, so the calculator's own
+// guards still see them.
+func roundAvailability(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return v
+	}
+	p := math.Pow(10, availabilityStoredDecimals)
+	return math.Round(v*p) / p
 }

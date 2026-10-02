@@ -182,3 +182,59 @@ func TestAvailabilitySegments_MonthAndYearBoundaries(t *testing.T) {
 		t.Errorf("annually = [%v, %v), want all of 2026", y.Begin, y.End)
 	}
 }
+
+// The just-closed fixed periods, which the sweep rewrites alongside the
+// current ones so a period's last hours are never lost.
+func TestAvailabilitySegments_PreviousFixedPeriods(t *testing.T) {
+	colombo, err := time.LoadLocation("Asia/Colombo")
+	if err != nil {
+		t.Skip("tzdata unavailable")
+	}
+	// Thursday 2026-10-01 08:30 Colombo (03:00 UTC, when the sub-cron runs).
+	now := time.Date(2026, 10, 1, 3, 0, 0, 0, time.UTC)
+	got := map[string]AvailabilitySegment{}
+	for _, s := range PreviousFixedSegments(now, colombo) {
+		if s.Rolling {
+			t.Errorf("%s: a closed fixed period must not be rolling", s.Type)
+		}
+		got[s.Type] = s
+	}
+	want := map[string][2]time.Time{
+		AvailabilityTypeDaily:    {time.Date(2026, 9, 30, 0, 0, 0, 0, colombo), time.Date(2026, 10, 1, 0, 0, 0, 0, colombo)},
+		AvailabilityTypeWeekly:   {time.Date(2026, 9, 21, 0, 0, 0, 0, colombo), time.Date(2026, 9, 28, 0, 0, 0, 0, colombo)},
+		AvailabilityTypeMonthly:  {time.Date(2026, 9, 1, 0, 0, 0, 0, colombo), time.Date(2026, 10, 1, 0, 0, 0, 0, colombo)},
+		AvailabilityTypeAnnually: {time.Date(2025, 1, 1, 0, 0, 0, 0, colombo), time.Date(2026, 1, 1, 0, 0, 0, 0, colombo)},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d previous segments, want %d", len(got), len(want))
+	}
+	for typ, w := range want {
+		s := got[typ]
+		if !s.Begin.Equal(w[0]) || !s.End.Equal(w[1]) {
+			t.Errorf("%s = [%v, %v), want [%v, %v)", typ, s.Begin, s.End, w[0], w[1])
+		}
+	}
+	// Each closed period must end exactly where the current one begins:
+	// no gap for an outage to fall into, no overlap to count it twice.
+	current := segmentsByType(t, now, colombo)
+	for typ := range want {
+		if !got[typ].End.Equal(current[typ].Begin) {
+			t.Errorf("%s: previous ends %v but current begins %v", typ, got[typ].End, current[typ].Begin)
+		}
+	}
+}
+
+func TestRoundAvailability(t *testing.T) {
+	cases := map[float64]float64{
+		99.99945987654321: 99.99946, // the asgardeo value staging showed unrounded on /monitors
+		99.99981995884774: 99.99982,
+		98.92975963977676: 98.92976,
+		100:               100,
+		0:                 0,
+	}
+	for in, want := range cases {
+		if got := roundAvailability(in); got != want {
+			t.Errorf("roundAvailability(%v) = %v, want %v", in, got, want)
+		}
+	}
+}
