@@ -301,11 +301,12 @@ const (
 // seedAnnouncementSecurityFallbackFixture creates a SEPARATE project from
 // seedAnnouncementVisibilityFixtures' own -- deliberately with only a
 // General Access (PORTAL_USER) contact and no Security Only/Full Access
-// contact at all -- plus one security announcement in it, to prove that a
-// project with no security contact does NOT fall back to showing its
-// security announcements to ordinary portal users (migration 0178 removed
-// the 0149 fallback). The main fixture's own project cannot exercise this:
-// it deliberately includes a Security Only contact.
+// contact at all -- plus one security announcement in it, to exercise the
+// fallback migration 0149 added: a security announcement in a project
+// with no security contact is visible to ordinary portal users instead of
+// being invisible to everyone but internal callers. The main fixture's own
+// project cannot exercise this: it deliberately includes a Security Only
+// contact, so project_has_security_contact is always true there.
 func seedAnnouncementSecurityFallbackFixture(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := repository.WithSystemIdentity(context.Background())
@@ -368,14 +369,14 @@ func seedAnnouncementSecurityFallbackFixture(t *testing.T, pool *pgxpool.Pool) {
 	mustExecScoped(`INSERT INTO announcement (id, announcement_type) VALUES ($1, 'SECURITY')`, avNoSecAnnouncementID)
 }
 
-// TestAnnouncementSecurityNotVisibleToPortalUsersWithoutSecurityContactIntegration
-// pins migration 0178's rule: a security announcement is visible to a
-// project's SECURITY_CONTACT holders and to internal callers ONLY. Migration
-// 0149 used to let ordinary portal users (PORTAL_USER/LEAD_USER) see it when
-// the project had no security contact at all; that fallback was removed on
-// purpose, so a project with nobody in the security role simply shows its
-// security announcements to staff alone.
-func TestAnnouncementSecurityNotVisibleToPortalUsersWithoutSecurityContactIntegration(t *testing.T) {
+// TestAnnouncementSecurityFallbackNoSecurityContactIntegration is the
+// regression test for migration 0149's own fallback: a security
+// announcement in a project with no SECURITY_CONTACT at all must be
+// visible to that project's ordinary portal users, not just internal
+// callers -- confirmed live against this database copy (several real
+// projects have PORTAL_USER contacts but no security contact) before this
+// migration was written.
+func TestAnnouncementSecurityFallbackNoSecurityContactIntegration(t *testing.T) {
 	pool := announcementVisibilityPool(t)
 	seedAnnouncementSecurityFallbackFixture(t, pool)
 	repo := repository.NewCaseRepository(repository.NewScoped(pool))
@@ -383,8 +384,8 @@ func TestAnnouncementSecurityNotVisibleToPortalUsersWithoutSecurityContactIntegr
 	if !announcementVisible(t, repo, avNoSecAnnouncementID, repository.SearchScope{Unrestricted: true}) {
 		t.Error("internal caller: security announcement in a no-security-contact project = not visible, want visible")
 	}
-	if announcementVisible(t, repo, avNoSecAnnouncementID, repository.SearchScope{ProjectIDs: []string{avNoSecProjectID}, ViewerEmail: "av-nosec-portal-user@test.local"}) {
-		t.Error("PORTAL_USER, no security contact in project: security announcement = visible, want not visible (the 0149 fallback was removed)")
+	if !announcementVisible(t, repo, avNoSecAnnouncementID, repository.SearchScope{ProjectIDs: []string{avNoSecProjectID}, ViewerEmail: "av-nosec-portal-user@test.local"}) {
+		t.Error("PORTAL_USER, no security contact in project: security announcement = not visible, want visible (the fallback)")
 	}
 	if announcementVisible(t, repo, avNoSecAnnouncementID, repository.SearchScope{ProjectIDs: []string{avNoSecProjectID}, ViewerEmail: "nobody@nowhere.local"}) {
 		t.Error("unrelated caller: security announcement in a no-security-contact project = visible, want not visible")

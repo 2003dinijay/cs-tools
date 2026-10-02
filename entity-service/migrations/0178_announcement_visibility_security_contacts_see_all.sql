@@ -18,29 +18,29 @@
 --
 --   internal staff           -> general AND security announcements
 --   SECURITY_CONTACT holders -> general AND security announcements
---   PORTAL_USER / LEAD_USER  -> general announcements ONLY
+--   PORTAL_USER / LEAD_USER  -> general announcements, plus security
+--                               announcements ONLY in a project that has no
+--                               security contact at all
 --   anyone else              -> nothing
 --
--- Two changes against the policy migration 0149 left behind:
+-- One change against the policy migration 0149 left behind: a security
+-- contact now also sees general announcements. Before, the policy matched on
+-- a single role per announcement, so a contact holding only SECURITY_CONTACT
+-- (the "Security Only" project group) saw security announcements and nothing
+-- else, which cut a security contact off from ordinary service notices sent
+-- to their own project. A contact holding several roles (e.g. "Full Access" =
+-- Portal user + Security Contact) already saw both and is unaffected.
 --
--- 1. A security contact now also sees general announcements. Before, the
---    policy matched on a single role per announcement, so a contact holding
---    only SECURITY_CONTACT (the "Security Only" project group) saw security
---    announcements and nothing else, which cut a security contact off from
---    ordinary service notices sent to their own project. A contact holding
---    several roles (e.g. "Full Access" = Portal user + Security Contact)
---    already saw both and is unaffected.
+-- 0149's fallback is kept exactly as it was: when a project has NO security
+-- contact (project_has_security_contact(), which ignores DEACTIVATED
+-- contacts), its ordinary portal users see the security announcements too,
+-- rather than nobody but staff seeing them. As soon as the project has a
+-- security contact, ordinary portal users stop seeing them.
 --
--- 2. The 0149 fallback is removed: a security announcement in a project with
---    NO security contact is no longer shown to that project's ordinary portal
---    users. They see general announcements only, in every project. The cost
---    is deliberate and worth knowing: a project with nobody holding the
---    security role shows its security announcements to staff alone until a
---    security contact is added.
---
--- LEAD_USER keeps general access only (migration 000085's reasoning stands:
--- "can escalate a case" implies nothing about security-bulletin eligibility),
--- and BUSINESS_CONTACT alone still contributes nothing.
+-- LEAD_USER keeps the same access as PORTAL_USER (migration 000085's
+-- reasoning stands: "can escalate a case" implies nothing extra about
+-- security-bulletin eligibility), and BUSINESS_CONTACT alone still
+-- contributes nothing.
 --
 -- announcement_is_security() is untouched: it still decides general-vs-
 -- security from announcement_type OR the "Security Announcement" tag, so
@@ -56,10 +56,6 @@
 -- Comments and watchers on an announcement follow this automatically: their
 -- policies (migration 0175) require the announcement row itself to be
 -- visible, so no change is needed there.
---
--- project_has_security_contact() (migration 0149) is no longer used by any
--- policy. It is left in place rather than dropped here, so removing it stays
--- a separate, deliberate change.
 --
 -- ALTER POLICY replaces the expression in place: there is no moment at which
 -- the table has no policy (which, under FORCE ROW LEVEL SECURITY, would hide
@@ -80,7 +76,10 @@ ALTER POLICY announcement_visibility ON announcement
           pr.role = 'SECURITY_CONTACT'
           OR (
             pr.role IN ('PORTAL_USER', 'LEAD_USER')
-            AND NOT announcement_is_security(announcement.id, announcement.announcement_type)
+            AND (
+              NOT announcement_is_security(announcement.id, announcement.announcement_type)
+              OR NOT project_has_security_contact(wi.project_id)
+            )
           )
         )
     )
