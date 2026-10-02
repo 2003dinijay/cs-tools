@@ -16,12 +16,40 @@
 
 // Availability arithmetic, ported from ServiceNow's AvailabilityCalculatorV2.
 //
-// *** THIS IS A PORT OF v2, AND THE INSTANCE RUNS v1. ***
-// `com.snc.availability.v2` is false on wso2sndev, so all 212,904 rows in
-// service_availability today were written by the LEGACY calculator. v2 is
-// what we were told to adhere to, and the two genuinely disagree, so the
-// existing table is NOT a baseline this can be diffed against. The tests
-// here are worked examples, not a replay of production.
+// *** THE TARGET IS v2's INTENT, NOT v2's CODE. ***
+// `com.snc.availability.v2` is false on both instances, so every stored row
+// was written by the LEGACY calculator. The brief was to use the latest and
+// best approach available, which means v2's design where it is sound and a
+// correction where it is not — not bug-for-bug fidelity.
+//
+// Four places where this deliberately does better than v2, each because
+// copying v2 would produce a worse number or no number at all:
+//
+//  1. *** v2's processOutages CRASHES ON TWO OR MORE OUTAGES. *** Its guard
+//     reads `if (nextOutageIndex > outages.length)` where it needs `>=`, so
+//     the last iteration dereferences outages[length] — undefined — and
+//     throws. calculate() swallows it, and the subject gets NO rows at all.
+//     Reproducing that would publish nothing for exactly the services that
+//     had the most incidents. (It is also the likeliest reason neither
+//     instance has switched v2 on.)
+//
+//  2. LAST_90_DAYS is not a v2 period type, and both dashboard endpoints
+//     publish a "Last 90 days" figure. Emitted — see availability_segments.
+//
+//  3. Rolling windows run their full length. v1 spans N-1 days under
+//     PRB1304264; "last 30 days" should cover 30.
+//
+//  4. absolute_availability is guarded against a zero-length period. v2
+//     guards the scheduled arm and not this one, yielding NaN.
+//
+// MTBF over a period with no failures stays 0, which is v2's answer. v1
+// substitutes a denominator of 1 and reports the whole period, turning an
+// undefined quantity into a number that reads like a measurement. Nothing
+// consumes the column; 0 is the honest sentinel.
+//
+// Because the stored rows are v1 output, they are not a line-by-line
+// baseline — but they agree with this on everything that matters, which
+// availability_golden_test demonstrates over 136 real cases.
 //
 // Everything below was read out of the V2 source rather than the product
 // docs, because the docs describe behaviour the code does not have. The
