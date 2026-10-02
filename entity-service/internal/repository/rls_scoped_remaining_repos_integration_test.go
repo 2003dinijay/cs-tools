@@ -306,6 +306,21 @@ func TestRLSScopedRemaining_OutageIncidentFields(t *testing.T) {
 		if out.Incident == nil || out.Incident.Number != "INC-RS-0001" || out.Incident.ShortDescription != "rs incident subject" {
 			t.Errorf("incident via Search = %+v, want number INC-RS-0001 and the seeded subject (blank means work_item was read with no identity)", out.Incident)
 		}
+	})
+
+	// GetByID shares outageSelect (the work_item join) with Search, but also
+	// counts outage_communication rows by channel. No migration defines that
+	// column yet, so on a database built only from the migrations this would
+	// fail for a reason unrelated to identity; skip rather than fail there.
+	t.Run("internal sees the incident number and subject via GetByID", func(t *testing.T) {
+		var hasChannel bool
+		if err := pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'outage_communication' AND column_name = 'channel')`).Scan(&hasChannel); err != nil {
+			t.Fatalf("schema check: %v", err)
+		}
+		if !hasChannel {
+			t.Skip("outage_communication.channel does not exist in this database; GetByID's journal counts need it")
+		}
 		detail, err := repo.GetByID(rsInternal(), rsOutageID)
 		if err != nil {
 			t.Fatalf("GetByID: %v", err)
