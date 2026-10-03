@@ -284,11 +284,19 @@ type stubUserRepo struct {
 	getUserGroups        func(ctx context.Context, id string) ([]domain.UserGroupRef, error)
 	getUserProjectAccess func(ctx context.Context, email string) ([]domain.UserContactAccess, error)
 	createUser           func(ctx context.Context, req domain.CreateUserRequest, actor string) (domain.User, error)
+	updateUserTimeZone   func(ctx context.Context, userID, timezone string) (time.Time, error)
 }
 
 func (s stubUserRepo) CreateUser(ctx context.Context, req domain.CreateUserRequest, actor string) (domain.User, error) {
 	if s.createUser != nil {
 		return s.createUser(ctx, req, actor)
+	}
+	panic("not implemented")
+}
+
+func (s stubUserRepo) UpdateUserTimeZone(ctx context.Context, userID, timezone string) (time.Time, error) {
+	if s.updateUserTimeZone != nil {
+		return s.updateUserTimeZone(ctx, userID, timezone)
 	}
 	panic("not implemented")
 }
