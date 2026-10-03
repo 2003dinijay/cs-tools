@@ -38,6 +38,9 @@ func (f *fakeReferenceDataRepo) GetProjectByID(context.Context, string) (bool, *
 func (f *fakeReferenceDataRepo) EnumLabels(context.Context, []string) (map[string][]string, error) {
 	return f.enums, nil
 }
+func (f *fakeReferenceDataRepo) ListTimeZones(context.Context) ([]repository.TimeZoneRow, error) {
+	return nil, nil
+}
 
 // The call-request endpoints reject upper-case state values ("invalid state"),
 // so the ids the metadata offers must be the lowercase domain ids -- each one
