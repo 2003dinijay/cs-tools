@@ -259,3 +259,22 @@ func TestIncidentReportIntegration_RetryAfterFailure(t *testing.T) {
 		t.Errorf("tasks = %d after retry, want 1", tasks)
 	}
 }
+
+// MissingSchema is empty on a database with every migration, and names the
+// trigger when it is gone.
+func TestIncidentReportIntegration_MissingSchema(t *testing.T) {
+	pool := incidentReportTestPool(t)
+	ctx := context.Background()
+	repo := repository.NewIncidentReportRepository(repository.NewScoped(pool))
+	if missing, err := repo.MissingSchema(ctx); err != nil || len(missing) != 0 {
+		t.Fatalf("with 0181 applied: missing=%v err=%v, want none", missing, err)
+	}
+	irExec(t, pool, `DROP TRIGGER incident_outbox ON incident`)
+	t.Cleanup(func() {
+		irExec(t, pool, `CREATE TRIGGER incident_outbox AFTER UPDATE ON incident FOR EACH ROW EXECUTE FUNCTION trg_event_outbox()`)
+	})
+	missing, err := repo.MissingSchema(ctx)
+	if err != nil || len(missing) != 1 || missing[0] != "incident trigger incident_outbox" {
+		t.Errorf("without the trigger: missing=%v err=%v, want [incident trigger incident_outbox]", missing, err)
+	}
+}
