@@ -1578,6 +1578,127 @@ const updateCaseQuery = `
 	FROM updated_work_item uwi
 	JOIN updated_case uc ON uc.id = uwi.id`
 
+const updateSecurityReportAnalysisQuery = `
+	WITH updated_sra AS (
+		UPDATE security_report_analysis
+		SET state       = CASE WHEN $2 <> '' THEN $2::security_report_analysis_state_enum ELSE state END,
+		    closed_on   = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    cause       = CASE WHEN $3 <> '' THEN $3::security_report_analysis_cause_enum ELSE cause END,
+		    close_notes = COALESCE($4, close_notes)
+		WHERE id = $1
+		RETURNING id, state, closed_on
+	),
+	updated_work_item AS (
+		UPDATE work_item
+		SET updated_on = NOW()
+		WHERE id = $1 AND EXISTS (SELECT 1 FROM updated_sra)
+		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
+		          subject, description, created_on, updated_on
+	)
+	SELECT uwi.id, uwi.number, uwi.wso2_id, uwi.created_by, uwi.project_id, uwi.deployment_id, uwi.deployed_product_id,
+	       uwi.subject, uwi.description,
+	       NULL::TEXT, NULL::TEXT, usra.state::TEXT, NULL::TEXT,
+	       uwi.created_on, uwi.updated_on, usra.closed_on
+	FROM updated_work_item uwi
+	JOIN updated_sra usra ON usra.id = uwi.id`
+
+const updateServiceRequestQuery = `
+	WITH updated_sr AS (
+		UPDATE service_request
+		SET state       = CASE WHEN $2 <> '' THEN $2::service_request_state_enum ELSE state END,
+		    closed_on   = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    cause       = CASE WHEN $3 <> '' THEN $3::service_request_cause_enum ELSE cause END,
+		    close_notes = COALESCE($4, close_notes)
+		WHERE id = $1
+		RETURNING id, state, closed_on
+	),
+	updated_work_item AS (
+		UPDATE work_item
+		SET updated_on = NOW()
+		WHERE id = $1 AND EXISTS (SELECT 1 FROM updated_sr)
+		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
+		          subject, description, created_on, updated_on
+	)
+	SELECT uwi.id, uwi.number, uwi.wso2_id, uwi.created_by, uwi.project_id, uwi.deployment_id, uwi.deployed_product_id,
+	       uwi.subject, uwi.description,
+	       NULL::TEXT, NULL::TEXT, usr.state::TEXT, NULL::TEXT,
+	       uwi.created_on, uwi.updated_on, usr.closed_on
+	FROM updated_work_item uwi
+	JOIN updated_sr usr ON usr.id = uwi.id`
+
+const updateEngagementQuery = `
+	WITH updated_eng AS (
+		UPDATE engagement
+		SET state       = CASE WHEN $2 <> '' THEN $2::engagement_state_enum ELSE state END,
+		    closed_on   = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    cause       = CASE WHEN $3 <> '' THEN $3::engagement_cause_enum ELSE cause END,
+		    close_notes = COALESCE($4, close_notes)
+		WHERE id = $1
+		RETURNING id, state, closed_on
+	),
+	updated_work_item AS (
+		UPDATE work_item
+		SET updated_on = NOW()
+		WHERE id = $1 AND EXISTS (SELECT 1 FROM updated_eng)
+		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
+		          subject, description, created_on, updated_on
+	)
+	SELECT uwi.id, uwi.number, uwi.wso2_id, uwi.created_by, uwi.project_id, uwi.deployment_id, uwi.deployed_product_id,
+	       uwi.subject, uwi.description,
+	       NULL::TEXT, NULL::TEXT, ueng.state::TEXT, NULL::TEXT,
+	       uwi.created_on, uwi.updated_on, ueng.closed_on
+	FROM updated_work_item uwi
+	JOIN updated_eng ueng ON ueng.id = uwi.id`
+
+const updateAnnouncementQuery = `
+	WITH updated_ann AS (
+		UPDATE announcement
+		SET state       = CASE WHEN $2 <> '' THEN $2::announcement_state_enum ELSE state END,
+		    closed_on   = CASE WHEN $2 = 'CLOSE' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSE' THEN NULL ELSE closed_on END,
+		    cause       = CASE WHEN $3 <> '' THEN $3::announcement_cause_enum ELSE cause END,
+		    close_notes = COALESCE($4, close_notes)
+		WHERE id = $1
+		RETURNING id, state, closed_on
+	),
+	updated_work_item AS (
+		UPDATE work_item
+		SET updated_on = NOW()
+		WHERE id = $1 AND EXISTS (SELECT 1 FROM updated_ann)
+		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
+		          subject, description, created_on, updated_on
+	)
+	SELECT uwi.id, uwi.number, uwi.wso2_id, uwi.created_by, uwi.project_id, uwi.deployment_id, uwi.deployed_product_id,
+	       uwi.subject, uwi.description,
+	       NULL::TEXT, NULL::TEXT,
+	       CASE WHEN uann.state::TEXT = 'CLOSE' THEN 'CLOSED' ELSE uann.state::TEXT END,
+	       NULL::TEXT,
+	       uwi.created_on, uwi.updated_on, uann.closed_on
+	FROM updated_work_item uwi
+	JOIN updated_ann uann ON uann.id = uwi.id`
+
+// validateUpdateCaseFieldsForType validates that fields only applicable to "case"
+// (severity, workState, resolutionCode) are not provided when updating non-case
+// work items, and validates that announcement state only uses "open" or "closed".
+func validateUpdateCaseFieldsForType(workItemType string, req domain.UpdateCaseRequest, state string) error {
+	if workItemType != "CASE" {
+		if req.Severity != nil {
+			return &apierror.ValidationError{Msg: "severity is only supported for cases"}
+		}
+		if req.WorkState != nil {
+			return &apierror.ValidationError{Msg: "workState is only supported for cases"}
+		}
+		if req.ResolutionCode != nil {
+			return &apierror.ValidationError{Msg: "resolutionCode is only supported for cases"}
+		}
+	}
+	if workItemType == "ANNOUNCEMENT" {
+		if state != "" && state != "OPEN" && state != "CLOSED" {
+			return &apierror.ValidationError{Msg: "announcements only support state open or closed"}
+		}
+	}
+	return nil
+}
+
 // scanUpdatedCase is shared by both branches of UpdateCase below.
 func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 	var c domain.Case
@@ -1649,6 +1770,19 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 		cause = string(*req.Cause)
 	}
 
+	var workItemType string
+	err := r.db.QueryRow(ctx, `SELECT type::TEXT FROM work_item WHERE id = $1 AND type = ANY(`+caseLikeWorkItemTypes+`)`, req.ID).Scan(&workItemType)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+	}
+	if err != nil {
+		return domain.Case{}, nil, fmt.Errorf("update case: read type: %w", err)
+	}
+
+	if err := validateUpdateCaseFieldsForType(workItemType, req, state); err != nil {
+		return domain.Case{}, nil, err
+	}
+
 	// state=closed: a case cannot close while any child case (work_item.parent_id
 	// pointing at it; the case detail's "Child cases" list) is still open. The
 	// case detail's link dialog states this rule; nothing on this data source
@@ -1672,70 +1806,120 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 		}
 	}
 
-	// workState=ongoing: an engineer may hold only one ONGOING case. The
-	// mirrored data source enforces the same rule, so accepting a second one
-	// here would only ever surface later as a failed mirror write. Checked in
-	// a transaction serialized per assignee.
-	if req.WorkState != nil && workState == "ONGOING" {
-		return r.updateCaseEnforcingOneOngoing(ctx, req, state, severity, workState, resolutionCode, cause)
-	}
+	switch workItemType {
+	case "CASE":
+		// workState=ongoing: an engineer may hold only one ONGOING case. The
+		// mirrored data source enforces the same rule, so accepting a second one
+		// here would only ever surface later as a failed mirror write. Checked in
+		// a transaction serialized per assignee.
+		if req.WorkState != nil && workState == "ONGOING" {
+			return r.updateCaseEnforcingOneOngoing(ctx, req, state, severity, workState, resolutionCode, cause)
+		}
 
-	// req.Severity == nil: severity can't change, so there's nothing to
-	// race on — skip the transaction/lock overhead entirely.
-	if req.Severity == nil {
-		c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes))
+		// req.Severity == nil: severity can't change, so there's nothing to
+		// race on — skip the transaction/lock overhead entirely.
+		if req.Severity == nil {
+			c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes))
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+			}
+			if err != nil {
+				return domain.Case{}, nil, fmt.Errorf("update case: %w", err)
+			}
+			return c, c.Severity, nil
+		}
+
+		// req.Severity != nil: lock the row first so the previous severity this
+		// returns is accurate even under a concurrent update to the same case —
+		// see this method's own interface doc comment for why that matters.
+		var c domain.Case
+		var previousSeverityRaw *string
+		err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+			if err := tx.QueryRow(ctx, `SELECT severity::TEXT FROM "case" WHERE id = $1 FOR UPDATE`, req.ID).Scan(&previousSeverityRaw); err != nil {
+				return err
+			}
+			var txErr error
+			c, txErr = scanUpdatedCase(tx.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes))
+			if txErr != nil {
+				return txErr
+			}
+
+			// Recompute time-card billability only on a genuine LOW/S4 boundary
+			// crossing (not every severity change) -- see
+			// recomputeTimeCardsBillable's own doc comment for why this runs
+			// inside this same transaction, under the row lock just taken
+			// above, rather than as a separate call after commit. Best-effort:
+			// logged, never allowed to roll back a severity change that
+			// otherwise succeeded.
+			oldLow := previousSeverityRaw != nil && caseSeverityFromEnum[*previousSeverityRaw] == domain.CaseSeverityLow
+			newLow := c.Severity != nil && *c.Severity == domain.CaseSeverityLow
+			if oldLow != newLow {
+				if _, err := recomputeTimeCardsBillable(ctx, tx, req.ID, newLow); err != nil {
+					slog.ErrorContext(ctx, "update case: recompute time cards billable failed", "caseId", req.ID, "error", err)
+				}
+			}
+			return nil
+		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
 		}
 		if err != nil {
 			return domain.Case{}, nil, fmt.Errorf("update case: %w", err)
 		}
-		return c, c.Severity, nil
-	}
+		var previousSeverity *domain.CaseSeverity
+		if previousSeverityRaw != nil {
+			s := caseSeverityFromEnum[*previousSeverityRaw]
+			previousSeverity = &s
+		}
+		return c, previousSeverity, nil
 
-	// req.Severity != nil: lock the row first so the previous severity this
-	// returns is accurate even under a concurrent update to the same case —
-	// see this method's own interface doc comment for why that matters.
-	var c domain.Case
-	var previousSeverityRaw *string
-	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `SELECT severity::TEXT FROM "case" WHERE id = $1 FOR UPDATE`, req.ID).Scan(&previousSeverityRaw); err != nil {
-			return err
+	case "SECURITY_REPORT_ANALYSIS":
+		c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateSecurityReportAnalysisQuery, req.ID, state, cause, req.CloseNotes))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
 		}
-		var txErr error
-		c, txErr = scanUpdatedCase(tx.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes))
-		if txErr != nil {
-			return txErr
+		if err != nil {
+			return domain.Case{}, nil, fmt.Errorf("update case: security report analysis: %w", err)
 		}
+		return c, nil, nil
 
-		// Recompute time-card billability only on a genuine LOW/S4 boundary
-		// crossing (not every severity change) -- see
-		// recomputeTimeCardsBillable's own doc comment for why this runs
-		// inside this same transaction, under the row lock just taken
-		// above, rather than as a separate call after commit. Best-effort:
-		// logged, never allowed to roll back a severity change that
-		// otherwise succeeded.
-		oldLow := previousSeverityRaw != nil && caseSeverityFromEnum[*previousSeverityRaw] == domain.CaseSeverityLow
-		newLow := c.Severity != nil && *c.Severity == domain.CaseSeverityLow
-		if oldLow != newLow {
-			if _, err := recomputeTimeCardsBillable(ctx, tx, req.ID, newLow); err != nil {
-				slog.ErrorContext(ctx, "update case: recompute time cards billable failed", "caseId", req.ID, "error", err)
-			}
+	case "SERVICE_REQUEST":
+		c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateServiceRequestQuery, req.ID, state, cause, req.CloseNotes))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
 		}
-		return nil
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+		if err != nil {
+			return domain.Case{}, nil, fmt.Errorf("update case: service request: %w", err)
+		}
+		return c, nil, nil
+
+	case "ENGAGEMENT":
+		c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateEngagementQuery, req.ID, state, cause, req.CloseNotes))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+		}
+		if err != nil {
+			return domain.Case{}, nil, fmt.Errorf("update case: engagement: %w", err)
+		}
+		return c, nil, nil
+
+	case "ANNOUNCEMENT":
+		annState := state
+		if annState == "CLOSED" {
+			annState = "CLOSE"
+		}
+		c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateAnnouncementQuery, req.ID, annState, cause, req.CloseNotes))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+		}
+		if err != nil {
+			return domain.Case{}, nil, fmt.Errorf("update case: announcement: %w", err)
+		}
+		return c, nil, nil
+
+	default:
+		return domain.Case{}, nil, &apierror.ValidationError{Msg: fmt.Sprintf("unsupported work item type: %s", workItemType)}
 	}
-	if err != nil {
-		return domain.Case{}, nil, fmt.Errorf("update case: %w", err)
-	}
-	var previousSeverity *domain.CaseSeverity
-	if previousSeverityRaw != nil {
-		s := caseSeverityFromEnum[*previousSeverityRaw]
-		previousSeverity = &s
-	}
-	return c, previousSeverity, nil
 }
 
 // CreateCaseAttachment implements CaseRepository.
