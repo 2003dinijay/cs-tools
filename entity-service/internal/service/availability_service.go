@@ -264,7 +264,7 @@ func (s *availabilityService) scheduleFor(
 	if err != nil {
 		return nil, err
 	}
-	return NewSpanSchedule(spans)
+	return NewSpanSchedule(spans, s.loc)
 }
 
 // availabilityStoredDecimals is the scale ServiceNow stores availability
