@@ -1414,6 +1414,15 @@ func (r *changeRequestRepo) CreateChangeRequest(ctx context.Context, req domain.
 		req.IsPlanningVisibleToCustomers, req.AffectedServicesText, req.AffectedComponentsText, req.RollbackDurationText,
 	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
 	if err != nil {
+		// change_request_write_internal_only (migration 0145) permits only an
+		// internal caller to INSERT -- POST /change-requests is gated
+		// internalOnly at the route (routes.go), so this should not be
+		// reachable in practice, but map it the same defensive way
+		// PatchChangeRequest already does rather than leaving a theoretical
+		// 42501 to surface as a raw 500.
+		if IsRLSPolicyViolation(err) {
+			return domain.CreateChangeRequestResponse{}, &apierror.NotFoundError{Msg: "change request not found"}
+		}
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 			switch pgErr.Code {
 			case "23503": // foreign_key_violation -- one of the referenced IDs does not exist

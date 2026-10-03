@@ -502,6 +502,14 @@ func (r *problemRepo) CreateProblem(ctx context.Context, req domain.CreateProble
 		category,
 	).Scan(&outID, &outNumber, &outSubject, &outDescription, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
 	if err != nil {
+		// problem_deny_all_insert (migration 0148) permits only an internal
+		// caller -- problem has no project concept at all, same as incident.
+		// POST /problems is already gated internalOnly at the route, so this
+		// should not be reachable in practice, but map it defensively rather
+		// than leaving a theoretical 42501 to surface as a raw 500.
+		if IsRLSPolicyViolation(err) {
+			return domain.ProblemDetail{}, &apierror.NotFoundError{Msg: "problem not found"}
+		}
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 			switch pgErr.Code {
 			case "22001": // string_data_right_truncation -- e.g. subject over work_item.subject's VARCHAR(512)

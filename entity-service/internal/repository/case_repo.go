@@ -799,6 +799,17 @@ const createSecurityReportAnalysisPortalQuery = `
 
 // mapCreateCaseError turns the database errors CreateCase can hit into API errors.
 func mapCreateCaseError(err error) error {
+	// createCaseTx runs with the caller's own identity (never WithSystemIdentity
+	// -- case creation is meant to work for a registered project member, not
+	// just internal callers, unlike change_request/incident/problem's
+	// internal-only INSERT policies). A caller who is not a member of
+	// req.ProjectID has their work_item INSERT rejected by RLS (SQLSTATE
+	// 42501, once work_item's own RLS lands) -- mapped to NotFoundError, the
+	// same "can't tell 'doesn't exist' from 'isn't yours'" convention every
+	// other RLS-protected write in this codebase already follows.
+	if IsRLSPolicyViolation(err) {
+		return &apierror.NotFoundError{Msg: "case not found"}
+	}
 	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 		switch pgErr.Code {
 		case "23503": // foreign_key_violation -- one of the referenced IDs does not exist

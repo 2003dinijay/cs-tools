@@ -797,6 +797,15 @@ func (r *incidentRepo) CreateIncident(ctx context.Context, req domain.CreateInci
 		req.CorrelationID, req.Environment,
 	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
 	if err != nil {
+		// incident_deny_all_insert (migration 0148) permits only an internal
+		// caller -- incident has no project concept at all, so there is no
+		// project-member OR-branch the way case/change_request have.
+		// POST /incidents is already gated internalOnly at the route, so this
+		// should not be reachable in practice, but map it defensively rather
+		// than leaving a theoretical 42501 to surface as a raw 500.
+		if IsRLSPolicyViolation(err) {
+			return domain.CreateIncidentResponse{}, &apierror.NotFoundError{Msg: "incident not found"}
+		}
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 			switch pgErr.Code {
 			case "23503": // foreign_key_violation -- one of the referenced IDs does not exist
