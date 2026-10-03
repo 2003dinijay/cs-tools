@@ -838,36 +838,64 @@ access to Salesforce; `*salesentity.Client` satisfies both.
 
 Seven call sites publish today, all ServiceNow-data-source-only (`DATA_SOURCE=servicenow`;
 there is no Postgres-backed equivalent for any of them). There is also one
-Postgres-only exception, but it is **not** an Event Hub publish at all:
-`caseService.UpdateCase` detects when a severity update crosses the LOW
-boundary (entering it should make every time card on the case billable,
-leaving it non-billable — LOW is WSO2's own support-policy "S4/Queries"
-tier, same mapping `sla_policy.go` uses) and reacts by calling
-`CaseRepository.SetTimeCardsBillableForCase(ctx, caseID, isBillable)`
-directly — a single `UPDATE time_card SET is_billable = $1 WHERE case_id =
-$2`, best-effort (logged, never fails the severity update itself). This
-used to be designed as an `events.TypeCaseBillableStatusChanged` publish for
-csm-notification-service to react to (and was committed that way, commented
-out, for a while — see git history on `detectBillableStatusChange` if that
-design is ever revisited), but a same-database write entity-service already
-has transactional access to has nothing to gain from an event-hub round
-trip through a separate service with no database of its own — that type and
-its consumer (`csm-notification-service`'s own `internal/timecardengine`)
-have both been removed entirely, not just left unwired. `time_card`
-(migration 0041) already has a real `is_billable` column and full Postgres
-CRUD (`time_card_repo.go`/`time_card_service.go`) — the "Postgres has no
-time_cards table/repo/service" premise this design used to rest on was
-stale by the time this was revisited.
+Postgres-only exception, but it is **not** an Event Hub publish at all, and
+it lives entirely in `case_repo.go`, not the service layer:
+`CaseRepository.UpdateCase`'s severity branch and `AddCaseTag`'s "patch"
+branch both call `recomputeTimeCardsBillable`, which sets every time_card
+row under a case to `isLow && !hasPatchTag` — entering LOW/S4 severity
+(WSO2's own support-policy tier, same mapping `sla_policy.go` uses) makes a
+case's time cards billable, leaving it makes them non-billable, *unless* the
+case carries a `"patch"` tag (case/whitespace-insensitive), in which case
+they stay non-billable regardless — WSO2 still covers a patch under support
+even for an otherwise best-efforts S4 case.
 
-`caseService.AddCaseTag` calls `detectPatchTagBillableOverride`, which
-applies the same direct `SetTimeCardsBillableForCase` write when a case
-tagged `"patch"` (case/whitespace-insensitive) is currently at LOW
-severity — WSO2 still covers a patch under support even for an otherwise
-best-efforts S4 case, so such a case's time cards become non-billable
-regardless, overriding the normal "entering S4 makes time cards billable"
-rule. One-directionally: removing the tag (or adding any other label) never
-reverses it — only ever sets `isBillable=false`, never back to `true`,
-since there's no natural "un-patch" signal to react to.
+This used to be designed as an `events.TypeCaseBillableStatusChanged`
+publish for csm-notification-service to react to (committed that way,
+commented out, for a while), but a same-database write entity-service
+already has transactional access to has nothing to gain from an event-hub
+round trip through a separate service with no database of its own — that
+type and its consumer (`csm-notification-service`'s own
+`internal/timecardengine`) have both been removed entirely. An intermediate
+revision then called this directly from the **service** layer
+(`caseService.detectBillableStatusChange`/`detectPatchTagBillableOverride`,
+via a plain `CaseRepository.SetTimeCardsBillableForCase(ctx, caseID,
+isBillable)`), which a CodeRabbit review on the PR caught two real bugs in:
+
+1. **The patch override wasn't checked live.** `detectBillableStatusChange`
+   computed `isBillable` from the severity transition alone, with no idea
+   whether a `"patch"` tag already existed — so a case tagged `"patch"`
+   *before* it ever crossed into LOW still got marked billable on that
+   crossing, and leaving-then-re-entering LOW after an earlier override had
+   the same effect. Fixed by `caseHasPatchTag` checking `work_item_tag`/`tag`
+   fresh, every time a LOW-boundary crossing happens or a `"patch"` tag is
+   added — never relying on a value computed at some earlier, possibly
+   stale, point in time.
+2. **No ordering guarantee between the severity write and the time-card
+   write.** The service-layer version ran `SetTimeCardsBillableForCase` as
+   a separate call *after* `UpdateCase`/`AddCaseTag` had already committed —
+   two concurrent severity-changing requests on the same case could
+   interleave such that the slower one's (now-stale) time-card write landed
+   *after* the faster one's, leaving the final committed severity
+   disagreeing with the final time-card billable state. Fixed by moving the
+   recompute **inside** `UpdateCase`'s existing transaction (which already
+   takes `SELECT severity::TEXT FROM "case" WHERE id = $1 FOR UPDATE` before
+   writing — this reuses, not adds, that lock) and `AddCaseTag`'s own
+   transaction (which now takes the identical lock on its `"patch"` branch
+   before checking/writing) — the same case row's lock serializes two
+   otherwise-racing writers against each other exactly like
+   `AcknowledgeCase`'s own "first write wins" pattern already does, so
+   whichever transaction commits last is also the one whose
+   fresh-within-that-transaction read determines the final state. Both
+   writes are still best-effort within their own transaction (a failure is
+   logged, never allowed to roll back the severity/tag change that already
+   succeeded) — the fix is ordering and freshness, not changing that
+   posture.
+
+`time_card` (migration 0041) already has a real `is_billable` column and
+full Postgres CRUD (`time_card_repo.go`/`time_card_service.go`) — the
+"Postgres has no time_cards table/repo/service" premise the original,
+commented-out event design rested on was stale by the time any of this was
+revisited.
 
 - **`snCaseService.CreateCase`** publishes `case.created` via a private
   `publishCaseCreated` helper, called after the SN create call succeeds.
@@ -2104,17 +2132,15 @@ changed.
 
 - **Case tags** (`tag`/`work_item_tag`, migration 0026): `CaseService.
   AddCaseTag`/`RemoveCaseTag`/`SearchTags` in `case_service.go` were a
-  detection-only stub that always returned 503 — see
-  `detectPatchTagBillableOverride`'s own doc comment for that history — and
-  now actually persist. `AddCaseTag` finds-or-creates a tag by name
-  (case-insensitively; `tag.name` has no `UNIQUE` constraint, so a race
-  between two first-uses of the same never-before-seen label can produce a
-  cosmetic duplicate row, not a correctness bug) and attaches it to the
-  case's underlying `work_item`, idempotently. The `detectPatchTagBillableOverride`
-  "patch tag on a LOW-severity case" override now actually flips the case's
-  time cards too (see "Event Hub publishing" above) — both of the
-  conditions it used to be blocked on (case tags having real storage, and a
-  reaction existing for the billable flip) are resolved now.
+  detection-only stub that always returned 503 — now actually persist.
+  `AddCaseTag` finds-or-creates a tag by name (case-insensitively;
+  `tag.name` has no `UNIQUE` constraint, so a race between two first-uses
+  of the same never-before-seen label can produce a cosmetic duplicate row,
+  not a correctness bug) and attaches it to the case's underlying
+  `work_item`, idempotently. A `"patch"` label on a case currently at
+  LOW/S4 severity also flips the case's time cards non-billable, inside the
+  same transaction as the attach — see "Event Hub publishing" above
+  (`recomputeTimeCardsBillable`) for the full design and the race it fixes.
 - **Case watch list** (`work_item_watcher`, migration 0042):
   `UpdateCase`'s `WatchList` field, previously rejected outright on this
   data source, now has its own branch (`updateCaseWatchList`) — split out
@@ -3364,10 +3390,11 @@ real ones. `SearchCaseView.Severity`/`IssueType` were already `*string`
 (so already correct); only its `State` needed the same fix. Fixed by
 making all five (`Case.Severity/IssueType/State`, `CaseView.Severity/
 IssueType/State`, `SearchCaseView.State`) pointers, and
-`CaseRepository.UpdateCase`'s `previousSeverity` return value too (used by
-`caseService.detectBillableStatusChange` for the LOW-severity-boundary
-check, which now treats a nil severity as "not LOW" on either side of the
-comparison rather than crashing or silently comparing against `""`).
+`CaseRepository.UpdateCase`'s `previousSeverity` return value too (used for
+its own internal LOW-severity-boundary check — see "Event Hub publishing"
+above, `recomputeTimeCardsBillable` — which treats a nil severity as "not
+LOW" on either side of the comparison rather than crashing or silently
+comparing against `""`).
 
 The ServiceNow-backed path (`sn_case_service.go`) always supplies a real
 value for these three, so its many read sites (map lookups keyed by
