@@ -18,9 +18,11 @@ package repository_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -89,8 +91,12 @@ func TestOutageCommunicationChannelLive(t *testing.T) {
 		t.Errorf("public comments = %+v, want only the external one", comments)
 	}
 
-	// A channel outside the three is refused by the constraint, not stored.
-	if _, err := pool.Exec(ctx, `INSERT INTO outage_communication (outage_id, channel, comment) VALUES ($1, 'private', 'x')`, outageID); err == nil {
-		t.Error("an unknown channel was accepted; outage_communication_channel_chk should reject it")
+	// A channel outside the three is refused by THAT constraint. Any error is
+	// not enough: an insert failing for an unrelated reason (a new NOT NULL
+	// column, say) would pass this with the constraint gone.
+	_, err = pool.Exec(ctx, `INSERT INTO outage_communication (outage_id, channel, comment) VALUES ($1, 'private', 'x')`, outageID)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != "outage_communication_channel_chk" {
+		t.Errorf("unknown channel: got err %v, want an outage_communication_channel_chk violation (23514)", err)
 	}
 }
