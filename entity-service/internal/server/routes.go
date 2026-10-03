@@ -882,11 +882,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// sr_category/catalog_item/catalog_item_category/catalog_variable/
 	// sr_category_routing_rule (migrations 000067-000071) back the service
 	// request catalog on the Postgres data source, so these routes are
-	// registered for both data sources. Under dual-write, Postgres is not
-	// trusted for reads here either -- see catalogService.snMirror's own
-	// doc comment for why (deployed_product/routing-rule data was never
+	// registered for both data sources. Under dual-write, SearchCatalogs
+	// still reads from ServiceNow -- see catalogService.snMirror's own doc
+	// comment for why (deployed_product/routing-rule data was never
 	// backfilled from ServiceNow, same gap as deployments/deployed-products/
-	// instances).
+	// instances). GetCatalogItemVariables is the exception: catalog_variable's
+	// extra fields and its catalog_variable_choice table (migration 0125) are
+	// kept current by a separate sync service, so that one read goes to
+	// Postgres under dual-write too -- see catalogService.GetCatalogItemVariables'
+	// own doc comment.
 	catalogRepo := repository.NewCatalogRepository(repository.NewScoped(db))
 	var activeCatalogSvc service.CatalogService
 	switch cfg.DataSource {
@@ -1455,7 +1459,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("GET /cases/{id}/escalations", caseEscalationHandler.SearchCaseEscalations)
 	mux.HandleFunc("POST /cases/{id}/escalations", caseEscalationHandler.CreateCaseEscalation)
 
-	mux.HandleFunc("POST /change-requests", changeRequestHandler.CreateChangeRequest)
+	// internalOnly: migration 0145's change_request_write_internal_only RLS
+	// policy only ever permits an internal caller to INSERT into
+	// change_request (CreateChangeRequestRequest has no projectId field at
+	// all to check membership against) -- same posture already established
+	// for POST /incidents and POST /problems below. A non-internal caller
+	// reaching changeRequestService.CreateChangeRequest's plain-Postgres
+	// path would otherwise fail the RLS check with a raw 42501 (mapped to a
+	// clean NotFoundError, but still a request that was never going to
+	// succeed) -- gating here rejects it before any write is attempted.
+	mux.HandleFunc("POST /change-requests", internalOnly(accessSvc, changeRequestHandler.CreateChangeRequest))
 	mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
 	mux.HandleFunc("POST /change-requests/aggregate", changeRequestHandler.AggregateChangeRequests)
 	mux.HandleFunc("GET /change-requests/{id}", changeRequestHandler.GetChangeRequest)

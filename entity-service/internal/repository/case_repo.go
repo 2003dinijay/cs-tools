@@ -233,6 +233,17 @@ const caseLikeCloseNotesColumn = `COALESCE(c.close_notes, eng.close_notes, sr.cl
 const caseLikeResolvedOnColumn = `COALESCE(c.resolved_on, eng.resolved_on, sr.resolved_on, sra.resolved_on, ann.resolved_on)`
 const caseLikeClosedOnColumn = `COALESCE(c.closed_on, eng.closed_on, sr.closed_on, sra.closed_on, ann.closed_on)`
 
+// caseLikeWorkStateColumn/caseLikeResolutionCodeColumn cover the four
+// case-like tables that carry these columns (migration 0184 added them to
+// engagement/service_request/security_report_analysis, using the same enum
+// types as "case"). announcement has neither.
+const caseLikeWorkStateColumn = `COALESCE(c.work_state::TEXT, eng.work_state::TEXT, sr.work_state::TEXT, sra.work_state::TEXT)`
+const caseLikeResolutionCodeColumn = `COALESCE(c.resolution_code::TEXT, eng.resolution_code::TEXT, sr.resolution_code::TEXT, sra.resolution_code::TEXT)`
+
+// workStateWorkItemTypes are the case-like work_item types that carry a work
+// state and resolution code: all of caseLikeWorkItemTypes except ANNOUNCEMENT.
+const workStateWorkItemTypes = `'{CASE,ENGAGEMENT,SERVICE_REQUEST,SECURITY_REPORT_ANALYSIS}'::work_item_type_enum[]`
+
 // caseLikeJoins LEFT-joins every case-like work_item extension table other
 // than "case" itself (each caller already joins "case" under its own alias,
 // since some callers need it INNER/LEFT differently and some don't select
@@ -529,25 +540,35 @@ func NewCaseRepository(db *Scoped) CaseRepository {
 }
 
 // CreateCase implements CaseRepository.
-// CreateCase implements CaseRepository.
 //
-// A case is a work_item row (type CASE) plus a "case" extension row sharing its
-// id (migrations 0021/0023), written in one transaction. The old version
-// inserted into a "cases" table that does not exist.
+// A case-like record is a work_item row plus its type-specific extension row
+// (migrations 0021/0023/0024) sharing its id, written in one transaction via
+// one CTE query per type -- the same shared-primary-key pattern
+// CreateCaseFromServiceNow's five query consts already use, just generating
+// identity instead of taking it from ServiceNow's response. The old version
+// of this method only ever wrote a "CASE" row and inserted into a "cases"
+// table that does not exist for the rest.
 //
 // The row's identifiers follow the synced data: work_item.created_by holds the
 // creator's EMAIL (6,995 of 8,066 staging cases), so it is taken from the user
 // row of req.CreatedBy (a user id), which is also stored as opened_by_user_id.
-// A missing user yields no row, reported as a validation error rather than a
-// bare foreign-key failure.
+// A missing user yields no row (the "creator" CTE is empty, so the whole
+// chain returns zero rows), reported as a validation error rather than a bare
+// foreign-key failure.
 //
-// work_item.number/wso2_id (both NOT NULL) come from
+// work_item.number (every type) and wso2_id (the five case-like types all
+// require one, per work_item_wso2_id_required_by_type) come from
 // next_portal_work_item_number()/next_portal_wso2_id() (migration 0140),
 // which resolves the product decision this method used to defer (see
 // CLAUDE.md, "CreateCase and case numbers"): a portal-created record gets a
 // visually distinct number/id rather than one drawn from the same series
 // ServiceNow's still-running sync allocates from, so the two can never
-// collide.
+// collide. service_request/engagement/security_report_analysis/announcement
+// were previously rejected outright on this data source
+// (caseService.CreateCase's own "supported only for dual-write" check,
+// updated alongside this) purely because this method had nowhere to write
+// them -- now that it does, that restriction only applies to the plain
+// ServiceNow-less gap that no longer exists.
 func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
 	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (domain.Case, error) {
 		return createCaseTx(ctx, tx, req)
@@ -556,76 +577,250 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 
 // createCaseTx is CreateCase's body, extracted so it can run inside
 // r.db.InTx's closure (Scoped.InTx pulls caller identity from ctx and sets
-// it once for the whole transaction).
+// it once for the whole transaction). Dispatches on req.Type the same way
+// CreateCaseFromServiceNow does, reusing scanUpdatedCase to decode the
+// result since every *PortalQuery below ends in the identical trailing
+// SELECT shape that helper already expects.
 func createCaseTx(ctx context.Context, tx pgx.Tx, req domain.CreateCaseRequest) (domain.Case, error) {
-	const insertWorkItem = `
-		INSERT INTO work_item (
-			id, number, wso2_id, created_on, updated_on, created_by, updated_by,
-			type, project_id, deployment_id, deployed_product_id,
-			subject, description, opened_by_user_id, account_id
+	var row pgx.Row
+	switch req.Type {
+	case "announcement":
+		row = tx.QueryRow(ctx, createAnnouncementPortalQuery,
+			req.CreatedBy, req.ProjectID,
+			req.Subject, req.Description,
+			announcementTypeEnumValue(req.IsSecurityAnnouncement),
 		)
-		SELECT gen_random_uuid(), next_portal_work_item_number(), next_portal_wso2_id($2::uuid),
-		       NOW(), NOW(), u.email, u.email,
-		       'CASE'::work_item_type_enum, $2::uuid, $3::uuid, $4::uuid,
-		       $5, $6, u.id, p.account_id
-		FROM "user" u
-		LEFT JOIN project p ON p.id = $2::uuid
-		WHERE u.id = $1::uuid
-		RETURNING id::TEXT, number, wso2_id, created_by, project_id::TEXT, deployment_id::TEXT,
-		          deployed_product_id::TEXT, subject, description, created_on, updated_on`
-
-	var (
-		c          domain.Case
-		internalID *string
-		desc       *string
-	)
-	err := tx.QueryRow(ctx, insertWorkItem,
-		req.CreatedBy, req.ProjectID, req.DeploymentID, req.DeployedProductID,
-		req.Subject, req.Description,
-	).Scan(
-		&c.ID, &c.Number, &internalID, &c.CreatedBy, &c.ProjectID, &c.DeploymentID,
-		&c.DeployedProductID, &c.Subject, &desc, &c.CreatedOn, &c.UpdatedOn,
-	)
+	case "service_request":
+		row = tx.QueryRow(ctx, createServiceRequestPortalQuery,
+			req.CreatedBy, req.ProjectID, req.DeploymentID, req.DeployedProductID,
+			req.Subject, req.Description,
+		)
+	case "engagement":
+		row = tx.QueryRow(ctx, createEngagementPortalQuery,
+			req.CreatedBy, req.ProjectID, req.DeploymentID, req.DeployedProductID,
+			req.Subject, req.Description,
+			strings.ToUpper(string(req.EngagementType)), strings.ToUpper(string(req.EngagementPaymentType)),
+		)
+	case "security_report_analysis":
+		row = tx.QueryRow(ctx, createSecurityReportAnalysisPortalQuery,
+			req.CreatedBy, req.ProjectID, req.DeploymentID, req.DeployedProductID,
+			req.Subject, req.Description,
+		)
+	default: // "case"
+		row = tx.QueryRow(ctx, createCasePortalQuery,
+			req.CreatedBy, req.ProjectID, req.DeploymentID, req.DeployedProductID,
+			req.Subject, req.Description,
+			caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
+		)
+	}
+	c, err := scanUpdatedCase(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Case{}, &apierror.ValidationError{Msg: "creating user not found: " + req.CreatedBy}
 	}
 	if err != nil {
 		return domain.Case{}, mapCreateCaseError(err)
 	}
-	c.InternalID = stringOrEmpty(internalID)
-	c.Description = stringOrEmpty(desc)
-
-	// severity is case_severity_enum's S0..S4 (see caseSeverityToEnum); NULLIF
-	// keeps an unset value NULL instead of failing the cast.
-	const insertCase = `
-		INSERT INTO "case" (id, severity, issue_type, state)
-		VALUES ($1::uuid, NULLIF($2, '')::case_severity_enum, NULLIF($3, '')::case_issue_type_enum, 'OPEN'::case_state_enum)
-		RETURNING severity::TEXT, issue_type::TEXT, state::TEXT, closed_on`
-
-	var severity, issueType, state *string
-	if err := tx.QueryRow(ctx, insertCase,
-		c.ID, caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
-	).Scan(&severity, &issueType, &state, &c.ClosedOn); err != nil {
-		return domain.Case{}, mapCreateCaseError(err)
-	}
-	if severity != nil {
-		sev := caseSeverityFromEnum[*severity]
-		c.Severity = &sev
-	}
-	if issueType != nil {
-		it := domain.CaseIssueType(strings.ToLower(*issueType))
-		c.IssueType = &it
-	}
-	if state != nil {
-		st := domain.CaseState(strings.ToLower(*state))
-		c.State = &st
-	}
-
 	return c, nil
 }
 
+// createCasePortalQuery is CreateCase's (the plain-Postgres, caller-initiated
+// path) query for req.Type == "case" -- structurally identical to
+// createCaseFromServiceNowQuery except identity (id/number/wso2_id) is
+// generated here instead of supplied by the caller, and created_by/
+// opened_by_user_id/account_id are resolved from req.CreatedBy (a user id)
+// via the "creator" CTE rather than taken as already-resolved values, since
+// there is no ServiceNow response to have resolved them from. severity uses
+// the same NULLIF(...,'') tolerance the pre-dispatch version of this method
+// already relied on, for an unset req.Severity.
+const createCasePortalQuery = `
+	WITH creator AS (
+		SELECT id, email FROM "user" WHERE id = $1::uuid
+	),
+	inserted_work_item AS (
+		INSERT INTO work_item (
+			id, created_on, updated_on, created_by, updated_by,
+			number, wso2_id, subject, description, type,
+			project_id, deployment_id, deployed_product_id, opened_by_user_id, account_id
+		)
+		SELECT gen_random_uuid(), NOW(), NOW(), creator.email, creator.email,
+		       next_portal_work_item_number(), next_portal_wso2_id($2::uuid), $5, $6, 'CASE'::work_item_type_enum,
+		       $2::uuid, $3::uuid, $4::uuid, creator.id, p.account_id
+		FROM creator
+		LEFT JOIN project p ON p.id = $2::uuid
+		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
+		          subject, description, created_on, updated_on
+	),
+	inserted_case AS (
+		INSERT INTO "case" (id, severity, issue_type, state)
+		SELECT id, NULLIF($7, '')::case_severity_enum, NULLIF($8, '')::case_issue_type_enum, 'OPEN'::case_state_enum
+		FROM inserted_work_item
+		RETURNING id, severity, issue_type, state, work_state, closed_on
+	)
+	SELECT iwi.id, iwi.number, iwi.wso2_id, iwi.created_by, iwi.project_id, iwi.deployment_id, iwi.deployed_product_id,
+	       iwi.subject, iwi.description, ic.severity::TEXT, ic.issue_type::TEXT, ic.state::TEXT, ic.work_state::TEXT,
+	       iwi.created_on, iwi.updated_on, ic.closed_on
+	FROM inserted_work_item iwi
+	JOIN inserted_case ic ON ic.id = iwi.id`
+
+// createAnnouncementPortalQuery is createCasePortalQuery's counterpart for
+// req.Type == "announcement" -- same relationship createAnnouncementFromServiceNowQuery
+// has to createCaseFromServiceNowQuery (no deployment/deployed-product concept,
+// announcement_type instead of severity/issue_type).
+const createAnnouncementPortalQuery = `
+	WITH creator AS (
+		SELECT id, email FROM "user" WHERE id = $1::uuid
+	),
+	inserted_work_item AS (
+		INSERT INTO work_item (
+			id, created_on, updated_on, created_by, updated_by,
+			number, wso2_id, subject, description, type,
+			project_id, deployment_id, deployed_product_id, opened_by_user_id, account_id
+		)
+		SELECT gen_random_uuid(), NOW(), NOW(), creator.email, creator.email,
+		       next_portal_work_item_number(), next_portal_wso2_id($2::uuid), $3, $4, 'ANNOUNCEMENT'::work_item_type_enum,
+		       $2::uuid, NULL, NULL, creator.id, p.account_id
+		FROM creator
+		LEFT JOIN project p ON p.id = $2::uuid
+		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
+		          subject, description, created_on, updated_on
+	),
+	inserted_announcement AS (
+		INSERT INTO announcement (id, state, announcement_type)
+		SELECT id, 'OPEN'::announcement_state_enum, $5::announcement_type_enum
+		FROM inserted_work_item
+		RETURNING id, state, closed_on
+	)
+	SELECT iwi.id, iwi.number, iwi.wso2_id, iwi.created_by,
+	       iwi.project_id, COALESCE(iwi.deployment_id::TEXT, ''), COALESCE(iwi.deployed_product_id::TEXT, ''),
+	       iwi.subject, iwi.description,
+	       NULL::TEXT, NULL::TEXT, ia.state::TEXT, NULL::TEXT,
+	       iwi.created_on, iwi.updated_on, ia.closed_on
+	FROM inserted_work_item iwi
+	JOIN inserted_announcement ia ON ia.id = iwi.id`
+
+// createServiceRequestPortalQuery is createCasePortalQuery's counterpart for
+// req.Type == "service_request" -- same relationship createServiceRequestFromServiceNowQuery
+// has to createCaseFromServiceNowQuery. Starts at 'OPEN'::service_request_state_enum,
+// the same initial label the case/engagement/security_report_analysis state
+// enums all share (confirmed against the live enum catalog, not guessed).
+const createServiceRequestPortalQuery = `
+	WITH creator AS (
+		SELECT id, email FROM "user" WHERE id = $1::uuid
+	),
+	inserted_work_item AS (
+		INSERT INTO work_item (
+			id, created_on, updated_on, created_by, updated_by,
+			number, wso2_id, subject, description, type,
+			project_id, deployment_id, deployed_product_id, opened_by_user_id, account_id
+		)
+		SELECT gen_random_uuid(), NOW(), NOW(), creator.email, creator.email,
+		       next_portal_work_item_number(), next_portal_wso2_id($2::uuid), $5, $6, 'SERVICE_REQUEST'::work_item_type_enum,
+		       $2::uuid, $3::uuid, $4::uuid, creator.id, p.account_id
+		FROM creator
+		LEFT JOIN project p ON p.id = $2::uuid
+		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
+		          subject, description, created_on, updated_on
+	),
+	inserted_service_request AS (
+		INSERT INTO service_request (id, state)
+		SELECT id, 'OPEN'::service_request_state_enum
+		FROM inserted_work_item
+		RETURNING id, state, closed_on
+	)
+	SELECT iwi.id, iwi.number, iwi.wso2_id, iwi.created_by,
+	       iwi.project_id, iwi.deployment_id, iwi.deployed_product_id,
+	       iwi.subject, iwi.description,
+	       NULL::TEXT, NULL::TEXT, isr.state::TEXT, NULL::TEXT,
+	       iwi.created_on, iwi.updated_on, isr.closed_on
+	FROM inserted_work_item iwi
+	JOIN inserted_service_request isr ON isr.id = iwi.id`
+
+// createEngagementPortalQuery is createCasePortalQuery's counterpart for
+// req.Type == "engagement" -- same relationship createEngagementFromServiceNowQuery
+// has to createCaseFromServiceNowQuery, including engagement.type/payment_type
+// being genuinely required columns (validateCreateCaseRequest already
+// enforces req.EngagementType/req.EngagementPaymentType are set for this type
+// on both paths).
+const createEngagementPortalQuery = `
+	WITH creator AS (
+		SELECT id, email FROM "user" WHERE id = $1::uuid
+	),
+	inserted_work_item AS (
+		INSERT INTO work_item (
+			id, created_on, updated_on, created_by, updated_by,
+			number, wso2_id, subject, description, type,
+			project_id, deployment_id, deployed_product_id, opened_by_user_id, account_id
+		)
+		SELECT gen_random_uuid(), NOW(), NOW(), creator.email, creator.email,
+		       next_portal_work_item_number(), next_portal_wso2_id($2::uuid), $5, $6, 'ENGAGEMENT'::work_item_type_enum,
+		       $2::uuid, $3::uuid, $4::uuid, creator.id, p.account_id
+		FROM creator
+		LEFT JOIN project p ON p.id = $2::uuid
+		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
+		          subject, description, created_on, updated_on
+	),
+	inserted_engagement AS (
+		INSERT INTO engagement (id, state, type, payment_type)
+		SELECT id, 'OPEN'::engagement_state_enum, $7::engagement_type_enum, $8::engagement_payment_type_enum
+		FROM inserted_work_item
+		RETURNING id, state, closed_on
+	)
+	SELECT iwi.id, iwi.number, iwi.wso2_id, iwi.created_by,
+	       iwi.project_id, iwi.deployment_id, iwi.deployed_product_id,
+	       iwi.subject, iwi.description,
+	       NULL::TEXT, NULL::TEXT, ieng.state::TEXT, NULL::TEXT,
+	       iwi.created_on, iwi.updated_on, ieng.closed_on
+	FROM inserted_work_item iwi
+	JOIN inserted_engagement ieng ON ieng.id = iwi.id`
+
+// createSecurityReportAnalysisPortalQuery is createCasePortalQuery's
+// counterpart for req.Type == "security_report_analysis" -- same relationship
+// createSecurityReportAnalysisFromServiceNowQuery has to createCaseFromServiceNowQuery.
+const createSecurityReportAnalysisPortalQuery = `
+	WITH creator AS (
+		SELECT id, email FROM "user" WHERE id = $1::uuid
+	),
+	inserted_work_item AS (
+		INSERT INTO work_item (
+			id, created_on, updated_on, created_by, updated_by,
+			number, wso2_id, subject, description, type,
+			project_id, deployment_id, deployed_product_id, opened_by_user_id, account_id
+		)
+		SELECT gen_random_uuid(), NOW(), NOW(), creator.email, creator.email,
+		       next_portal_work_item_number(), next_portal_wso2_id($2::uuid), $5, $6, 'SECURITY_REPORT_ANALYSIS'::work_item_type_enum,
+		       $2::uuid, $3::uuid, $4::uuid, creator.id, p.account_id
+		FROM creator
+		LEFT JOIN project p ON p.id = $2::uuid
+		RETURNING id, number, wso2_id, created_by, project_id, deployment_id, deployed_product_id,
+		          subject, description, created_on, updated_on
+	),
+	inserted_security_report_analysis AS (
+		INSERT INTO security_report_analysis (id, state)
+		SELECT id, 'OPEN'::security_report_analysis_state_enum
+		FROM inserted_work_item
+		RETURNING id, state, closed_on
+	)
+	SELECT iwi.id, iwi.number, iwi.wso2_id, iwi.created_by,
+	       iwi.project_id, iwi.deployment_id, iwi.deployed_product_id,
+	       iwi.subject, iwi.description,
+	       NULL::TEXT, NULL::TEXT, isra.state::TEXT, NULL::TEXT,
+	       iwi.created_on, iwi.updated_on, isra.closed_on
+	FROM inserted_work_item iwi
+	JOIN inserted_security_report_analysis isra ON isra.id = iwi.id`
+
 // mapCreateCaseError turns the database errors CreateCase can hit into API errors.
 func mapCreateCaseError(err error) error {
+	// createCaseTx runs with the caller's own identity (never WithSystemIdentity
+	// -- case creation is meant to work for a registered project member, not
+	// just internal callers, unlike change_request/incident/problem's
+	// internal-only INSERT policies). A caller who is not a member of
+	// req.ProjectID has their work_item INSERT rejected by RLS (SQLSTATE
+	// 42501, once work_item's own RLS lands) -- mapped to NotFoundError, the
+	// same "can't tell 'doesn't exist' from 'isn't yours'" convention every
+	// other RLS-protected write in this codebase already follows.
+	if IsRLSPolicyViolation(err) {
+		return &apierror.NotFoundError{Msg: "case not found"}
+	}
 	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 		switch pgErr.Code {
 		case "23503": // foreign_key_violation -- one of the referenced IDs does not exist
@@ -1079,9 +1274,9 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 
 	err := r.db.QueryRow(ctx,
 		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT, ann.announcement_type::TEXT,
-		        wi.description, c.severity::TEXT, c.issue_type::TEXT, c.work_state::TEXT,
+		        wi.description, c.severity::TEXT, c.issue_type::TEXT, `+caseLikeWorkStateColumn+`,
 		        `+caseLikeStateColumn+`, `+caseLikeCauseColumn+`, `+caseLikeCloseNotesColumn+`,
-		        c.resolution_code::TEXT, c.current_escalation_level::TEXT, c.is_escalated,
+		        `+caseLikeResolutionCodeColumn+`, c.current_escalation_level::TEXT, c.is_escalated,
 		        wi.created_on, wi.updated_on, `+caseLikeClosedOnColumn+`, `+caseLikeResolvedOnColumn+`,
 		        wi.subject,
 		        wi.best_case_eta, wi.most_likely_eta, wi.worst_case_eta, wi.eta_shared_on,
@@ -1581,12 +1776,14 @@ const updateCaseQuery = `
 const updateSecurityReportAnalysisQuery = `
 	WITH updated_sra AS (
 		UPDATE security_report_analysis
-		SET state       = CASE WHEN $2 <> '' THEN $2::security_report_analysis_state_enum ELSE state END,
-		    closed_on   = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    cause       = CASE WHEN $3 <> '' THEN $3::security_report_analysis_cause_enum ELSE cause END,
-		    close_notes = COALESCE($4, close_notes)
+		SET state           = CASE WHEN $2 <> '' THEN $2::security_report_analysis_state_enum ELSE state END,
+		    closed_on       = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    cause           = CASE WHEN $3 <> '' THEN $3::security_report_analysis_cause_enum ELSE cause END,
+		    close_notes     = COALESCE($4, close_notes),
+		    work_state      = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
+		    resolution_code = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
-		RETURNING id, state, closed_on
+		RETURNING id, state, work_state, closed_on
 	),
 	updated_work_item AS (
 		UPDATE work_item
@@ -1597,7 +1794,7 @@ const updateSecurityReportAnalysisQuery = `
 	)
 	SELECT uwi.id, uwi.number, uwi.wso2_id, uwi.created_by, uwi.project_id, uwi.deployment_id, uwi.deployed_product_id,
 	       uwi.subject, uwi.description,
-	       NULL::TEXT, NULL::TEXT, usra.state::TEXT, NULL::TEXT,
+	       NULL::TEXT, NULL::TEXT, usra.state::TEXT, usra.work_state::TEXT,
 	       uwi.created_on, uwi.updated_on, usra.closed_on
 	FROM updated_work_item uwi
 	JOIN updated_sra usra ON usra.id = uwi.id`
@@ -1605,12 +1802,14 @@ const updateSecurityReportAnalysisQuery = `
 const updateServiceRequestQuery = `
 	WITH updated_sr AS (
 		UPDATE service_request
-		SET state       = CASE WHEN $2 <> '' THEN $2::service_request_state_enum ELSE state END,
-		    closed_on   = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    cause       = CASE WHEN $3 <> '' THEN $3::service_request_cause_enum ELSE cause END,
-		    close_notes = COALESCE($4, close_notes)
+		SET state           = CASE WHEN $2 <> '' THEN $2::service_request_state_enum ELSE state END,
+		    closed_on       = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    cause           = CASE WHEN $3 <> '' THEN $3::service_request_cause_enum ELSE cause END,
+		    close_notes     = COALESCE($4, close_notes),
+		    work_state      = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
+		    resolution_code = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
-		RETURNING id, state, closed_on
+		RETURNING id, state, work_state, closed_on
 	),
 	updated_work_item AS (
 		UPDATE work_item
@@ -1621,7 +1820,7 @@ const updateServiceRequestQuery = `
 	)
 	SELECT uwi.id, uwi.number, uwi.wso2_id, uwi.created_by, uwi.project_id, uwi.deployment_id, uwi.deployed_product_id,
 	       uwi.subject, uwi.description,
-	       NULL::TEXT, NULL::TEXT, usr.state::TEXT, NULL::TEXT,
+	       NULL::TEXT, NULL::TEXT, usr.state::TEXT, usr.work_state::TEXT,
 	       uwi.created_on, uwi.updated_on, usr.closed_on
 	FROM updated_work_item uwi
 	JOIN updated_sr usr ON usr.id = uwi.id`
@@ -1629,12 +1828,14 @@ const updateServiceRequestQuery = `
 const updateEngagementQuery = `
 	WITH updated_eng AS (
 		UPDATE engagement
-		SET state       = CASE WHEN $2 <> '' THEN $2::engagement_state_enum ELSE state END,
-		    closed_on   = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    cause       = CASE WHEN $3 <> '' THEN $3::engagement_cause_enum ELSE cause END,
-		    close_notes = COALESCE($4, close_notes)
+		SET state           = CASE WHEN $2 <> '' THEN $2::engagement_state_enum ELSE state END,
+		    closed_on       = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    cause           = CASE WHEN $3 <> '' THEN $3::engagement_cause_enum ELSE cause END,
+		    close_notes     = COALESCE($4, close_notes),
+		    work_state      = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
+		    resolution_code = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
-		RETURNING id, state, closed_on
+		RETURNING id, state, work_state, closed_on
 	),
 	updated_work_item AS (
 		UPDATE work_item
@@ -1645,7 +1846,7 @@ const updateEngagementQuery = `
 	)
 	SELECT uwi.id, uwi.number, uwi.wso2_id, uwi.created_by, uwi.project_id, uwi.deployment_id, uwi.deployed_product_id,
 	       uwi.subject, uwi.description,
-	       NULL::TEXT, NULL::TEXT, ueng.state::TEXT, NULL::TEXT,
+	       NULL::TEXT, NULL::TEXT, ueng.state::TEXT, ueng.work_state::TEXT,
 	       uwi.created_on, uwi.updated_on, ueng.closed_on
 	FROM updated_work_item uwi
 	JOIN updated_eng ueng ON ueng.id = uwi.id`
@@ -1676,27 +1877,50 @@ const updateAnnouncementQuery = `
 	FROM updated_work_item uwi
 	JOIN updated_ann uann ON uann.id = uwi.id`
 
-// validateUpdateCaseFieldsForType validates that fields only applicable to "case"
-// (severity, workState, resolutionCode) are not provided when updating non-case
-// work items, and validates that announcement state only uses "open" or "closed".
+// validateUpdateCaseFieldsForType rejects fields the work item's type has no
+// column for, and restricts announcement state to "open" or "closed".
+//
+// severity is "case"-only. workState and resolutionCode are on every
+// case-like type except announcement (migration 0184), matching ServiceNow,
+// where u_work_state and resolution_code live on the one case table that
+// holds all of these types.
 func validateUpdateCaseFieldsForType(workItemType string, req domain.UpdateCaseRequest, state string) error {
-	if workItemType != "CASE" {
-		if req.Severity != nil {
-			return &apierror.ValidationError{Msg: "severity is only supported for cases"}
-		}
-		if req.WorkState != nil {
-			return &apierror.ValidationError{Msg: "workState is only supported for cases"}
-		}
-		if req.ResolutionCode != nil {
-			return &apierror.ValidationError{Msg: "resolutionCode is only supported for cases"}
-		}
+	if workItemType != "CASE" && req.Severity != nil {
+		return &apierror.ValidationError{Msg: "severity is only supported for cases"}
 	}
 	if workItemType == "ANNOUNCEMENT" {
+		if req.WorkState != nil {
+			return &apierror.ValidationError{Msg: "workState is not supported for announcements"}
+		}
+		if req.ResolutionCode != nil {
+			return &apierror.ValidationError{Msg: "resolutionCode is not supported for announcements"}
+		}
 		if state != "" && state != "OPEN" && state != "CLOSED" {
 			return &apierror.ValidationError{Msg: "announcements only support state open or closed"}
 		}
 	}
 	return nil
+}
+
+// caseLikeExtensionUpdate returns the update statement and its arguments for
+// a non-"case" case-like work item, plus a label for error messages. "case"
+// itself goes through updateCaseQuery, which also handles severity.
+func caseLikeExtensionUpdate(workItemType string, req domain.UpdateCaseRequest, state, workState, resolutionCode, cause string) (query string, args []any, label string, ok bool) {
+	switch workItemType {
+	case "SECURITY_REPORT_ANALYSIS":
+		return updateSecurityReportAnalysisQuery, []any{req.ID, state, cause, req.CloseNotes, workState, resolutionCode}, "security report analysis", true
+	case "SERVICE_REQUEST":
+		return updateServiceRequestQuery, []any{req.ID, state, cause, req.CloseNotes, workState, resolutionCode}, "service request", true
+	case "ENGAGEMENT":
+		return updateEngagementQuery, []any{req.ID, state, cause, req.CloseNotes, workState, resolutionCode}, "engagement", true
+	case "ANNOUNCEMENT":
+		annState := state
+		if annState == "CLOSED" {
+			annState = "CLOSE"
+		}
+		return updateAnnouncementQuery, []any{req.ID, annState, cause, req.CloseNotes}, "announcement", true
+	}
+	return "", nil, "", false
 }
 
 // scanUpdatedCase is shared by both branches of UpdateCase below.
@@ -1712,16 +1936,24 @@ func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 	// against for internalID/severity/etc, confirmed live the first time
 	// this path could actually return NULL here.
 	var deploymentID, deployedProductID *string
+	// projectID/description: work_item.project_id and .description are both
+	// nullable, and synced data has NULLs in each (8,414 and 510 case-like
+	// rows on the staging copy checked) -- scanned straight into
+	// domain.Case's plain strings, every update to such a row failed with
+	// "cannot scan NULL into *string" after the write had already happened.
+	var projectID, description *string
 	var severity, issueType, state, workStateRaw *string
 	if err := row.Scan(
 		&c.ID, &c.Number, &internalID, &c.CreatedBy,
-		&c.ProjectID, &deploymentID, &deployedProductID,
-		&c.Subject, &c.Description, &severity, &issueType, &state, &workStateRaw,
+		&projectID, &deploymentID, &deployedProductID,
+		&c.Subject, &description, &severity, &issueType, &state, &workStateRaw,
 		&c.CreatedOn, &c.UpdatedOn, &c.ClosedOn,
 	); err != nil {
 		return domain.Case{}, err
 	}
 	c.InternalID = stringOrEmpty(internalID)
+	c.ProjectID = stringOrEmpty(projectID)
+	c.Description = stringOrEmpty(description)
 	c.DeploymentID = stringOrEmpty(deploymentID)
 	c.DeployedProductID = stringOrEmpty(deployedProductID)
 	if severity != nil {
@@ -1813,7 +2045,7 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 		// here would only ever surface later as a failed mirror write. Checked in
 		// a transaction serialized per assignee.
 		if req.WorkState != nil && workState == "ONGOING" {
-			return r.updateCaseEnforcingOneOngoing(ctx, req, state, severity, workState, resolutionCode, cause)
+			return r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause)
 		}
 
 		// req.Severity == nil: severity can't change, so there's nothing to
@@ -1873,52 +2105,24 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 		}
 		return c, previousSeverity, nil
 
-	case "SECURITY_REPORT_ANALYSIS":
-		c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateSecurityReportAnalysisQuery, req.ID, state, cause, req.CloseNotes))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
-		}
-		if err != nil {
-			return domain.Case{}, nil, fmt.Errorf("update case: security report analysis: %w", err)
-		}
-		return c, nil, nil
-
-	case "SERVICE_REQUEST":
-		c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateServiceRequestQuery, req.ID, state, cause, req.CloseNotes))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
-		}
-		if err != nil {
-			return domain.Case{}, nil, fmt.Errorf("update case: service request: %w", err)
-		}
-		return c, nil, nil
-
-	case "ENGAGEMENT":
-		c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateEngagementQuery, req.ID, state, cause, req.CloseNotes))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
-		}
-		if err != nil {
-			return domain.Case{}, nil, fmt.Errorf("update case: engagement: %w", err)
-		}
-		return c, nil, nil
-
-	case "ANNOUNCEMENT":
-		annState := state
-		if annState == "CLOSED" {
-			annState = "CLOSE"
-		}
-		c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateAnnouncementQuery, req.ID, annState, cause, req.CloseNotes))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
-		}
-		if err != nil {
-			return domain.Case{}, nil, fmt.Errorf("update case: announcement: %w", err)
-		}
-		return c, nil, nil
-
 	default:
-		return domain.Case{}, nil, &apierror.ValidationError{Msg: fmt.Sprintf("unsupported work item type: %s", workItemType)}
+		query, args, label, ok := caseLikeExtensionUpdate(workItemType, req, state, workState, resolutionCode, cause)
+		if !ok {
+			return domain.Case{}, nil, &apierror.ValidationError{Msg: fmt.Sprintf("unsupported work item type: %s", workItemType)}
+		}
+		// Same one-Ongoing-per-engineer rule as "case": ServiceNow keeps the
+		// work state of every case-like type in one field on one table.
+		if req.WorkState != nil && workState == "ONGOING" {
+			return r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause)
+		}
+		c, err := scanUpdatedCase(r.db.QueryRow(ctx, query, args...))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
+		}
+		if err != nil {
+			return domain.Case{}, nil, fmt.Errorf("update case: %s: %w", label, err)
+		}
+		return c, nil, nil
 	}
 }
 
@@ -2538,7 +2742,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	dataQuery := fmt.Sprintf(
 		`SELECT wi.id, wi.number, wi.wso2_id,
 		        wi.type::TEXT, wi.subject, wi.description, c.severity::TEXT, c.issue_type::TEXT, `+caseLikeStateColumn+`,
-		        eng.type::TEXT, c.work_state::TEXT, c.current_escalation_level::TEXT, wi.created_on, wi.updated_on,
+		        eng.type::TEXT, `+caseLikeWorkStateColumn+`, c.current_escalation_level::TEXT, wi.created_on, wi.updated_on,
 		        wi.created_by,
 		        p.id, p.name,
 		        d.id, d.name,
@@ -3617,20 +3821,31 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 	return activity, total, nil
 }
 
-// updateCaseEnforcingOneOngoing is UpdateCase's workState=ONGOING path. It
-// takes a transaction-scoped advisory lock keyed on the case's assignee (two
-// concurrent requests for two different cases of the same engineer share no
-// row to lock), rejects the update with a ConflictError naming the engineer's
-// other ONGOING case, then runs the normal update in the same transaction.
-// An unassigned case has no engineer to conflict with and proceeds.
-func (r *caseRepo) updateCaseEnforcingOneOngoing(ctx context.Context, req domain.UpdateCaseRequest, state, severity, workState, resolutionCode, cause string) (domain.Case, *domain.CaseSeverity, error) {
+// updateCaseEnforcingOneOngoing is UpdateCase's workState=ONGOING path, for
+// every type in workStateWorkItemTypes. It takes a transaction-scoped
+// advisory lock keyed on the work item's assignee (two concurrent requests
+// for two different work items of the same engineer share no row to lock),
+// rejects the update with a ConflictError naming the engineer's other ONGOING
+// work item of any of those types, then runs the type's normal update in the
+// same transaction. An unassigned work item has no engineer to conflict with
+// and proceeds.
+func (r *caseRepo) updateCaseEnforcingOneOngoing(ctx context.Context, req domain.UpdateCaseRequest, workItemType, state, severity, workState, resolutionCode, cause string) (domain.Case, *domain.CaseSeverity, error) {
+	query, args, label := updateCaseQuery, []any{req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes}, "case"
+	if workItemType != "CASE" {
+		var ok bool
+		query, args, label, ok = caseLikeExtensionUpdate(workItemType, req, state, workState, resolutionCode, cause)
+		if !ok {
+			return domain.Case{}, nil, &apierror.ValidationError{Msg: fmt.Sprintf("unsupported work item type: %s", workItemType)}
+		}
+	}
+
 	// r.db.InTx (Scoped) sets the caller identity, commits on a nil return
 	// and rolls back on any error, exactly the lifecycle the hand-written
 	// Begin/Commit it replaces had.
 	var c domain.Case
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
 		var assignee *string
-		err := tx.QueryRow(ctx, `SELECT assigned_to_id::TEXT FROM work_item WHERE id = $1 AND type = 'CASE'`, req.ID).Scan(&assignee)
+		err := tx.QueryRow(ctx, `SELECT assigned_to_id::TEXT FROM work_item WHERE id = $1 AND type = ANY(`+workStateWorkItemTypes+`)`, req.ID).Scan(&assignee)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &apierror.NotFoundError{Msg: "case not found"}
 		}
@@ -3644,9 +3859,15 @@ func (r *caseRepo) updateCaseEnforcingOneOngoing(ctx context.Context, req domain
 			var otherNumber string
 			err := tx.QueryRow(ctx, `
 				SELECT wi.number
-				FROM work_item wi JOIN "case" c ON c.id = wi.id
+				FROM work_item wi
+				LEFT JOIN "case" c ON c.id = wi.id
+				LEFT JOIN engagement eng ON eng.id = wi.id
+				LEFT JOIN service_request sr ON sr.id = wi.id
+				LEFT JOIN security_report_analysis sra ON sra.id = wi.id
 				WHERE wi.assigned_to_id = $1::uuid AND wi.id <> $2::uuid
-				  AND c.work_state = 'ONGOING' AND c.state <> 'CLOSED'
+				  AND wi.type = ANY(`+workStateWorkItemTypes+`)
+				  AND `+caseLikeWorkStateColumn+` = 'ONGOING'
+				  AND COALESCE(c.state::TEXT, eng.state::TEXT, sr.state::TEXT, sra.state::TEXT) <> 'CLOSED'
 				ORDER BY wi.updated_on DESC LIMIT 1`, *assignee, req.ID).Scan(&otherNumber)
 			if err == nil {
 				return &apierror.ConflictError{Msg: "Cannot set work state to Ongoing: the assigned engineer already has an Ongoing case: " + otherNumber}
@@ -3657,9 +3878,9 @@ func (r *caseRepo) updateCaseEnforcingOneOngoing(ctx context.Context, req domain
 		}
 
 		var scanErr error
-		c, scanErr = scanUpdatedCase(tx.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes))
+		c, scanErr = scanUpdatedCase(tx.QueryRow(ctx, query, args...))
 		if scanErr != nil {
-			return fmt.Errorf("update case: %w", scanErr)
+			return fmt.Errorf("update case: %s: %w", label, scanErr)
 		}
 		return nil
 	})
@@ -3678,7 +3899,7 @@ var caseAggregateColumns = map[string]struct{ key, label string }{
 	"type":           {"wi.type::TEXT", "wi.type::TEXT"},
 	"engagementType": {"eng.type::TEXT", "eng.type::TEXT"},
 	"issueType":      {"c.issue_type::TEXT", "c.issue_type::TEXT"},
-	"workState":      {"c.work_state::TEXT", "c.work_state::TEXT"},
+	"workState":      {caseLikeWorkStateColumn, caseLikeWorkStateColumn},
 	"account":        {"wi.account_id::TEXT", "a.name"},
 }
 

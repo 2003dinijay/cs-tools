@@ -2530,15 +2530,15 @@ v5 can't scan a binary-format timestamptz into a `*string`
 ... cannot scan timestamptz ... in binary format"). Fixed the same way
 `PlannedStartOn`/`PlannedEndOn` already were: scan into an intermediate
 `time.Time`, then `.UTC().Format(time.RFC3339)` into the string field.
-`CreateChangeRequest` and both approval methods (`GetChangeRequestApprovals`,
-`DecideChangeRequestApproval`) are not, for two different reasons:
+Both approval methods (`GetChangeRequestApprovals`, `DecideChangeRequestApproval`)
+are not -- see below for why. (`CreateChangeRequest` used to be on this list
+too, blocked on the same `work_item.number` gap `CaseRepository.CreateCase`
+had; both are now implemented, via `next_portal_work_item_number()` -- see
+"CreateCase and case numbers" above and `ChangeRequestRepository.CreateChangeRequest`'s
+own doc comment. Unlike case, `change_request` is excluded from
+`work_item_wso2_id_required_by_type`, so no `wso2_id` generation is needed
+here at all.)
 
-- **`CreateChangeRequest`**: `work_item.number` has no DB default and no
-  backing sequence anywhere in `migrations/` — the exact same blocker
-  `CaseRepository.CreateCase` has (see "Fixing the plural/singular
-  table-name mismatch" below). Deferred for the same reason: generating it
-  needs a product decision (sequence + migration vs. Go-side generation,
-  and the exact number format) this change doesn't make unilaterally.
 - **`GetChangeRequestApprovals`/`DecideChangeRequestApproval`**: these
   model multiple approval *stages*, each with multiple *approvers* and
   per-approver status (`domain.ChangeRequestApproval`/`ChangeRequestApprover`).
@@ -3167,20 +3167,52 @@ an unknown creator is a validation error. Verified against the real schema with
 `PREPARE` on staging and end to end on a local database built from all
 migrations.
 
-**Still not usable, deliberately:** nothing generates `work_item.number`
-(NOT NULL, unique) or `wso2_id`, so the insert is refused and the repository
-returns `ServiceUnavailableError` ("case numbers are not generated") rather than
-an opaque 500. Do not guess these -- the decision (a DB sequence + default vs
-Go-side generation) is still open. What the data says, for whoever decides:
-- `number` is `CS` + 7 digits in **one series shared by every work-item type**
-  (cases, service requests, engagements, security reports, announcements), max
-  `CS0442200` when checked. ServiceNow allocated them and the sync is still
-  running, so a locally generated number can collide with a synced one. The
-  leftover `cases_number_seq`/`cases_wso2_id_seq` sequences (both 63) are not
-  attached to any column.
-- `wso2_id` is `<project key>-<per-project counter>` (prefix equals
-  `project.key` for 1,101 of 1,233 linked cases; the rest are renamed or
-  malformed keys) and the counters have gaps.
+**Resolved by migration `0140_portal_created_work_item_numbering.sql`**, which
+this section used to say was still an open product decision. `number` for
+every work_item type comes from `next_portal_work_item_number()`
+(`'CS-PORTAL-' || a zero-padded sequence value`, `portal_work_item_number_seq`)
+-- a visually distinct prefix rules out any collision with ServiceNow's own
+still-running `CS` + 7-digit sync, the same reasoning migrations `0113`/`0115`
+already used for GitHub-sourced records (`CHG-GH-...`/`SR-GH-...`). `wso2_id`
+(required, by `work_item_wso2_id_required_by_type`, only for the five
+case-like types -- CASE/SERVICE_REQUEST/ENGAGEMENT/SECURITY_REPORT_ANALYSIS/
+ANNOUNCEMENT) comes from `next_portal_wso2_id(project_id)`
+(`'<project.key>-PORTAL-' || a per-project counter column`,
+`project.portal_wso2_id_counter`) -- the real prefix stays recognizable as
+belonging to the project, with a distinct marker inside the id rather than a
+wholesale distinct prefix, since the counter (unlike `number`) is per-project,
+not global. Both functions `RAISE EXCEPTION` on a bad input (an unknown
+`project_id` for the latter), mapped by `mapCreateCaseError`'s existing
+`P0001` branch to a `ValidationError`.
+
+`CaseRepository.CreateCase` (`case_repo.go`'s `createCaseTx`) now dispatches
+on `req.Type` to one of five `*PortalQuery` consts (`createCasePortalQuery`/
+`createAnnouncementPortalQuery`/`createServiceRequestPortalQuery`/
+`createEngagementPortalQuery`/`createSecurityReportAnalysisPortalQuery`),
+each a near-identical CTE to its already-existing `*FromServiceNowQuery`
+sibling (used by the dual-write mirror path, `CreateCaseFromServiceNow`) --
+the only real difference is identity: `gen_random_uuid()`/
+`next_portal_work_item_number()`/`next_portal_wso2_id($N)` generate it here,
+rather than taking it from a prior ServiceNow response. Every initial state
+literal (`'OPEN'`) was confirmed against the live enum catalog for each of
+the five state enums, not assumed from case's own convention.
+`caseService.CreateCase`'s own type switch no longer treats
+announcement/service_request/engagement/security_report_analysis as
+dual-write-only -- all five types work identically on the plain `postgres`
+data source and `postgres-servicenow-dual-write` alike now.
+
+What the data still says, for context on the format choice:
+- Real synced `number` is `CS` + 7 digits in **one series shared by every
+  work-item type** (cases, service requests, engagements, security reports,
+  announcements), max `CS0442200` when checked. ServiceNow allocated them and
+  the sync is still running, so a locally generated number in that same
+  series could collide with a synced one -- the whole reason for a visually
+  distinct prefix instead. The leftover `cases_number_seq`/`cases_wso2_id_seq`
+  sequences (both 63) were never attached to any column and were dropped by
+  migration `0140` itself (`DROP SEQUENCE IF EXISTS`), not reused.
+- Real synced `wso2_id` is `<project key>-<per-project counter>` (prefix
+  equals `project.key` for 1,101 of 1,233 linked cases; the rest are renamed
+  or malformed keys) and the counters have gaps.
 - The migrations define a `work_item_wso2_id_required_by_type` CHECK (a case-like
   type needs a `wso2_id`) that **staging does not have** -- staging's schema is
   built by the sync service's own migration list, which differs from this
@@ -3296,8 +3328,9 @@ across whichever of the five extension tables actually matches (exactly one
 ever does, since each is a shared-PK extension keyed to a specific
 `wi.type`) — `announcement_state_enum`'s `CLOSE` (not `CLOSED`) is
 normalized to match the other four's vocabulary. `severity`/`issue_type`/
-`work_state`/`resolution_code`/`current_escalation_level`/`is_escalated`
-remain `"case"`-only, since no other extension table has those columns.
+`current_escalation_level`/`is_escalated` remain `"case"`-only, since no
+other extension table has those columns. `work_state`/`resolution_code` are
+not: see "Work state and resolution code on non-case types" below.
 `GetCaseByID` also now populates `Cause`/`ResolutionCode`/`ResolutionNotes`/
 `ResolvedOn`/`EscalationLevel`/`IsEscalated` for the first time — real
 columns that were simply never selected before, not previously believed
@@ -3575,11 +3608,30 @@ have an `"attachment"` kind entry.
 
 **`UpdateConversation` is implemented** (a plain `conversation.state` enum
 write, no `work_item.number` generation needed for an update) but
-**`CreateConversation`/`CreateProblem`/`CreateIncident` are not**: all three
-need `work_item.number`, which has no DB default or backing sequence
-anywhere in `migrations/` -- the same blocker `CaseRepository.CreateCase`
-already has. **`UpdateProblem`/`UpdateIncident`/`HandOffIncidentToSpecialist`
-are also not implemented**: `UpdateProblem.Transition` is validated
+**`CreateConversation` is not**: it needs `work_item.number`, which has no
+DB default or backing sequence anywhere in `migrations/` -- the same blocker
+`CaseRepository.CreateCase` used to have.
+
+**`CreateProblem`/`CreateIncident` are now implemented on the plain-Postgres
+data source too**, via `next_portal_work_item_number()` (migration 0140 --
+see "CreateCase and case numbers" above): `ProblemRepository.CreateProblem`/
+`IncidentRepository.CreateIncident`, called from `problemService`/
+`incidentService`'s own `CreateProblem`/`CreateIncident` when `s.snMirror ==
+nil`, alongside the pre-existing `createProblemSNFirst`/`createIncidentSNFirst`
+dual-write paths (which already worked this whole time under
+`DATA_SOURCE=postgres-servicenow-dual-write`, taking id/number from
+ServiceNow's own response instead of generating them -- the plain-Postgres
+gap this closes was specific to a deployment with no ServiceNow mirror at
+all). Neither needs `wso2_id`: both are excluded from
+`work_item_wso2_id_required_by_type`. `problem.state` has no column default
+of its own (unlike `incident.state`, which defaults to `'NEW'`), so
+`CreateProblem`'s portal path hardcodes it to `'NEW'::problem_state_enum`
+explicitly. `CreateConversation` was not attempted alongside these -- no
+reported need for it yet, and extending the same fix to it is a similarly
+small, mechanical follow-up should one come up.
+
+**`UpdateProblem`/`UpdateIncident`/`HandOffIncidentToSpecialist` are also not
+implemented**: `UpdateProblem.Transition` is validated
 server-side by ServiceNow's own workflow engine with no fixed, confirmed
 transition rule set to reimplement (see that field's own doc comment --
 deliberately not a closed enum for exactly this reason);
@@ -4200,10 +4252,17 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   don't specify one. Only active categories with at least one available item are returned;
   an unknown deployed product is a 404.
 - `GetCatalogItemVariables` 404s unless the item is linked to that catalog.
-  `catalog_variable` has no columns for `readOnly`/`hidden`/`maxLength`/
-  `referenceTable`/`validation`/`choices`, so those stay at their zero value
-  (TODO: choice-based variables render as free text until a choices table
-  exists). A NULL `is_active` counts as active.
+  `catalog_variable`'s `read_only`/`hidden`/`reference_table`/`max_length`/
+  `validation_name`/`validation_regex`/`validation_message` columns and the
+  sibling `catalog_variable_choice` table (migration 0125) back
+  `readOnly`/`hidden`/`maxLength`/`referenceTable`/`validation`/`choices` on
+  this data source now -- a NULL `read_only`/`hidden` reads as `false`, and
+  `Choices` is only set when the variable has at least one `is_inactive IS NOT
+  TRUE` choice row (an inactive choice is excluded entirely, not flagged). This
+  data is kept current by a separate sync service, not written here. A NULL
+  `is_active` counts as active. Under `postgres-servicenow-dual-write`, this
+  one endpoint reads Postgres directly (unlike `SearchCatalogs`, which still
+  falls back to ServiceNow -- see `catalogService.snMirror`'s own doc comment).
 
 ## Case search filters on the Postgres data source
 
@@ -4809,6 +4868,39 @@ Missing a `sysidToUUID()` call on a response ID means callers receive a bare sys
 
 - **Security fixes in PRs** — when a change is made to fix a security issue (gosec findings, input sanitization, etc.), do not mention it in the PR title or description; describe the change in neutral functional terms only
 - **Run govulncheck on every change** — `govulncheck ./...` (install once: `go install golang.org/x/vuln/cmd/govulncheck@latest`) must report no vulnerabilities before opening a PR. Most findings here are Go standard-library CVEs tied to the toolchain patch version pinned in `go.mod`'s `go` directive — bump it to the latest `1.26.x` patch (and run `go mod tidy` so the toolchain download matches) rather than working around the symptom. A finding in a third-party module (e.g. `golang.org/x/text`, pulled in transitively via `pgx`) is fixed with `go get <module>@<fixed-version>`
+
+## Work state and resolution code on non-case types (migration 0184)
+
+PR #2289 made `UpdateCase` write the right extension table for each case-like
+type, and rejected `severity`/`workState`/`resolutionCode` for every type but
+`case`. ServiceNow disagrees for two of the three: every case-like record lives
+in `sn_customerservice_case`, and on wso2sndev in-progress service requests,
+engagements and security report analyses carry `u_work_state` (1 = Ongoing,
+2 = Paused), and closed ones carry `resolution_code`. Announcements carry
+neither. Severity (`priority` 9–14) is effectively case-only; service requests
+use `priority` 1–4, a different scale, which this does not model.
+
+With `workState` rejected, the portal's Start progress left a service request
+in Work in Progress with an empty work state, shown as "Paused", and public
+replies stayed locked, since both the BFF and the webapp require `ongoing`.
+
+- **Migration 0184** adds `work_state case_work_state_enum` and
+  `resolution_code case_resolution_code_enum` (the "case" enum types) to
+  `service_request`, `engagement` and `security_report_analysis`. Applied by
+  hand like 0179-0181; the sync service does not create or fill them yet.
+- **`validateUpdateCaseFieldsForType`**: `severity` stays case-only;
+  `workState`/`resolutionCode` are rejected only for announcements.
+- **Update queries** for the three types write both columns (`$5`/`$6`) and
+  return `work_state`. `caseLikeExtensionUpdate` builds the statement and
+  arguments for every non-case type, shared by `UpdateCase` and the
+  one-Ongoing path.
+- **One Ongoing per engineer** now spans case, service request, engagement and
+  security report analysis (`workStateWorkItemTypes`), matching the webapp's
+  own conflict lookup, which searches every case-like type.
+- **Reads** (`GetCaseByID`, `SearchCases`, the `workState` filter and
+  aggregate) use `caseLikeWorkStateColumn`/`caseLikeResolutionCodeColumn`.
+- **Dual write** needed no change: the ServiceNow mirror for state, work state
+  and resolution fields already PATCHes the shared case record, whatever its type.
 
 ## Incident report flows (migration 0181)
 
