@@ -258,6 +258,7 @@ func (s *stubCaseRepo) MarkCaseFixIssued(ctx context.Context, caseID string) (ti
 	}
 	panic("not implemented")
 }
+
 func (s *stubCaseRepo) SearchCaseActivities(context.Context, domain.SearchCaseActivitiesRequest) ([]domain.CaseActivity, int, error) {
 	panic("not implemented")
 }
