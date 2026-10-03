@@ -964,7 +964,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		snIncidentMirrorSvc := service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, nil)
 		activeIncidentSvc = service.NewIncidentServiceWithSNMirror(incidentRepo, userRepo, snIncidentMirrorSvc, eventPublisher, snWritebackDispatcher)
 	default:
-		activeIncidentSvc = service.NewIncidentService(incidentRepo)
+		// DATA_SOURCE=postgres: the platform creates incidents itself, so it publishes incident.created
+		// (what the call-escalation ladders start from) and takes work notes, with no ServiceNow behind it.
+		activeIncidentSvc = service.NewIncidentServiceWithPublisher(incidentRepo, userRepo, eventPublisher)
 	}
 	incidentHandler := handler.NewIncidentHandler(activeIncidentSvc)
 

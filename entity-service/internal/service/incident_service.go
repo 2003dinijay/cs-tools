@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -223,6 +224,15 @@ func NewIncidentService(repo repository.IncidentRepository) IncidentService {
 	return &incidentService{repo: repo}
 }
 
+// NewIncidentServiceWithPublisher is NewIncidentService for DATA_SOURCE=postgres when the platform
+// creates incidents itself, with no ServiceNow behind it: CreateIncident publishes incident.created once
+// the Postgres insert commits (the event the call-escalation ladders start from) and keeps the create's
+// notes as comments, and UpdateIncident writes work notes and comments. userRepo resolves a forwarded
+// end-user token to its user; a service caller with none is incidentSystemActorEmail.
+func NewIncidentServiceWithPublisher(repo repository.IncidentRepository, userRepo repository.UserRepository, eventPublisher EventPublisherService) IncidentService {
+	return &incidentService{repo: repo, userRepo: userRepo, eventPublisher: eventPublisher}
+}
+
 // NewIncidentServiceWithSNMirror is NewIncidentService plus the wiring
 // DATA_SOURCE=postgres-servicenow-dual-write needs for incident CREATE and
 // UPDATE: a synchronous, ServiceNow-first creation path (createIncidentSNFirst,
@@ -394,23 +404,52 @@ func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateI
 // (s.snMirror == nil, no ServiceNow at all) -- unblocked by migration 0140's
 // next_portal_work_item_number(), the same product decision that used to
 // defer this (see CLAUDE.md, "CreateCase and case numbers"). createdBy is
-// resolved from the caller's own JWT email claim -- the same
-// middleware.UserIDTokenFromContext + emailFromJWT chain
-// problemService.createProblemSNFirst already uses -- since there is no
-// ServiceNow response to take it from on this path. Unlike createIncidentSNFirst,
-// there is no publishIncidentCreatedEvent call here yet: that helper's own
-// payload assumes the ServiceNow-sourced fields this path never has (see its
-// own doc comment) -- left as a follow-up rather than guessed at.
+// the caller's own JWT email claim when a user token is forwarded, else
+// incidentSystemActorEmail -- a service creating incidents (alert-born SRE
+// incidents) forwards none, and the route is internal-only. Like
+// createIncidentSNFirst, it publishes incident.created only after the insert
+// commits: the payload is built from the request alone (Title,
+// ShortDescription), so nothing ServiceNow-sourced is missing here. Notes on
+// the request become the incident's first comments (recordCreateNotes).
 func (s *incidentService) createIncidentPortal(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
-	token := middleware.UserIDTokenFromContext(ctx)
-	if token == "" {
-		return domain.CreateIncidentResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	// A service caller (sre-alert-core-service, through csm-integration-service) forwards no end-user
+	// token; POST /incidents is internal-only at the route, so it is recorded as the system actor rather
+	// than refused -- the same rule resolveActor applies to work notes, for the same M2M pipeline.
+	createdBy := incidentSystemActorEmail
+	if token := middleware.UserIDTokenFromContext(ctx); token != "" {
+		email, err := emailFromJWT(token)
+		if err != nil {
+			return domain.CreateIncidentResponse{}, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
+		}
+		createdBy = email
 	}
-	createdBy, err := emailFromJWT(token)
+	resp, err := s.repo.CreateIncident(ctx, req, createdBy)
 	if err != nil {
-		return domain.CreateIncidentResponse{}, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
+		return domain.CreateIncidentResponse{}, err
 	}
-	return s.repo.CreateIncident(ctx, req, createdBy)
+	s.recordCreateNotes(ctx, resp.Incident.ID, req, createdBy)
+	// Only after the insert committed, so a consumer can always read what it was told about.
+	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID)
+	return resp, nil
+}
+
+// recordCreateNotes keeps a create request's work notes and comments, which the incident row has no
+// column for, as the incident's first comments -- an alert-born incident's work note is the alert
+// itself. Best-effort: the incident already exists, and failing the create now would only make the
+// caller retry into its own duplicate check, losing the notes just the same.
+func (s *incidentService) recordCreateNotes(ctx context.Context, incidentID string, req domain.CreateIncidentRequest, createdBy string) {
+	for _, note := range []struct {
+		text *string
+		kind domain.CommentType
+	}{{req.WorkNotes, domain.CommentTypeWorkNote}, {req.AdditionalComments, domain.CommentTypeComment}} {
+		if note.text == nil || strings.TrimSpace(*note.text) == "" {
+			continue
+		}
+		if _, err := s.repo.CreateIncidentComment(ctx, incidentID, note.kind, *note.text, createdBy); err != nil {
+			slog.ErrorContext(ctx, "create incident: incident created but its initial note was not saved",
+				"incidentId", incidentID, "commentType", note.kind, "error", err)
+		}
+	}
 }
 
 // createIncidentSNFirst implements CreateIncident's
@@ -509,7 +548,8 @@ func (s *incidentService) createIncidentSNFirst(ctx context.Context, req domain.
 // with a request carrying only ID plus the field(s) actually being
 // mirrored -- no narrow patcher interface needed, unlike case's.
 func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateIncidentRequest) (domain.UpdateIncidentResponse, error) {
-	if s.snWriteback == nil {
+	if s.snWriteback == nil && s.eventPublisher == nil && s.userRepo == nil {
+		// NewIncidentService: a plain read-only Postgres instance that does not create incidents either.
 		return domain.UpdateIncidentResponse{}, &apierror.ServiceUnavailableError{
 			Msg: "updating an incident is not available on this data source yet",
 		}
@@ -552,12 +592,16 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 	}
 
 	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write
-	// only (guaranteed by the s.snWriteback == nil guard above). Postgres has
+	// only (guaranteed by the s.snWriteback == nil return above). Postgres has
 	// already committed both comment rows by this point; this fires after,
 	// asynchronously, and never affects this response. mirrorReq carries only
 	// ID plus the field(s) this call actually set -- never forwards req
 	// itself -- so this can never accidentally carry an unsupported field
 	// into the mirror call.
+	if s.snWriteback == nil {
+		// DATA_SOURCE=postgres creating its own incidents: there is no ServiceNow copy to keep in step.
+		return domain.UpdateIncidentResponse{Message: "Incident updated successfully", Incident: view}, nil
+	}
 	mirrorReq := domain.UpdateIncidentRequest{ID: req.ID, WorkNotes: req.WorkNotes, AdditionalComments: req.AdditionalComments}
 	s.snWriteback.Dispatch(ctx, "incident", req.ID, "update",
 		map[string]any{"id": req.ID, "workNotes": req.WorkNotes, "additionalComments": req.AdditionalComments},

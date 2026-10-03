@@ -950,7 +950,14 @@ revisited.
   `CaseCreatedPayload.CaseType`) — those types notify by email only, per
   the same explicit request. See that service's own `CLAUDE.md`.
 - **`snIncidentService.CreateIncident`** publishes `incident.created` via
-  `publishIncidentCreated`, called the same way. No enrichment round trip is
+  `publishIncidentCreated`, called the same way. **`DATA_SOURCE=postgres`
+  creates incidents itself** (`NewIncidentServiceWithPublisher`, with no
+  ServiceNow behind it): it publishes `incident.created` after the insert,
+  records a caller with no user token -- an alert-born SRE incident from
+  `sre-alert-core-service` via csm-integration-service -- as
+  `system-m2m@wso2.com`, keeps the request's `workNotes`/`additionalComments`
+  as the incident's first comments, and takes later work notes through
+  `PATCH /incidents/{id}` (comments only; no ServiceNow mirror). No enrichment round trip is
   needed here: `req.Subject`/`req.AdditionalComments` already carry
   everything the payload needs (`Title`/`ShortDescription`, the latter
   falling back to `Subject` when `AdditionalComments` is absent).
