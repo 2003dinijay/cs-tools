@@ -3773,7 +3773,7 @@ backs both endpoints:
 
 **Left empty with a TODO comment, not fabricated** (per this codebase's
 existing convention of flagging genuine data-source gaps rather than
-inventing data): `SystemMetadataResponse.TimeZones`/`FeedbackEmojis` (static
+inventing data): `SystemMetadataResponse.FeedbackEmojis` (static
 ServiceNow-side config, not project/case data); `SeverityBasedAllocationTime`
 (no SLA-allocation-time table exists);
 `ProjectFeatures.AcceptedSeverityValues` and every `Has*Access`/product-
@@ -3782,7 +3782,28 @@ columns exist anywhere in the Postgres schema -- checked directly against
 the `project` table's full column list, not just assumed). (`CallRequestStates`
 used to be on this list; `customer_call` -- migration 0073 -- has since
 landed, so it's now read live from `customer_call_state_enum` like every other
-choice list. See "Call requests and the service-request catalog" below.)
+choice list. See "Call requests and the service-request catalog" below.
+`TimeZones` used to be on this list too; see below.)
+
+**`SystemMetadataResponse.TimeZones` is now read from a real `timezone`
+table** (`value`, `label`, `utc_offset`, `dst`; 39 rows at the time this was
+wired up) via `ReferenceDataRepository.ListTimeZones`, mapped `value -> id`/
+`label -> label` into the same `{id, label}` `domain.ChoiceListItem` shape
+the ServiceNow-backed response already used -- no wire-contract change.
+**This table is not declared anywhere in this repo's own `migrations/`** --
+same "built outside this directory" class as several tables documented in
+"Staging schema drift" below; its existence and exact column names/types
+were confirmed by querying the live staging database directly (`information_schema.columns`),
+not by finding a migration for it. Deliberately not reconciled against the
+ServiceNow choice list's own 54-entry version (confirmed, by hand, against a
+live HAR capture of the ServiceNow-backed `GET /metadata` response) -- the
+two lists disagree in both size and some labels (e.g. ServiceNow's separate
+`Asia/Shanghai`="China" and `Asia/Singapore`="Singapore / Malaysia /
+Philippines" entries are one consolidated `Asia/Singapore` row here), which
+is this table's own deliberate, independent curation, not a migration gap to
+fix. `utc_offset`/`dst` exist on the table but have no slot in
+`ChoiceListItem` -- left unread rather than widening that contract for data
+nothing consumes yet.
 
 **`GlobalService.GlobalSearch` (`POST /search`) still has no Postgres
 implementation** -- cross-entity project+case search is a materially larger
