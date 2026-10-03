@@ -115,9 +115,20 @@ func resolutionCodeChoices(ctx context.Context, labels []string) []domain.Choice
 // resolution codes, domain.CaseCause's values match the enum's own labels by
 // identity (verified against validCaseCause), so the raw label doubles as
 // the id with no lookup table needed.
-func causeChoices(labels []string) []domain.ChoiceListItem {
+//
+// A label with no entry in snCauseKey is skipped and logged: migration 0108
+// added case_cause_enum's USER_MISTAKE value with no matching ServiceNow
+// picklist entry, so offering it here would let a caller pick a cause the
+// dual-write mirror's own patchCaseFields then rejects with "cause contains
+// invalid value" -- a choice list must never offer a value the write path
+// can't actually accept.
+func causeChoices(ctx context.Context, labels []string) []domain.ChoiceListItem {
 	out := make([]domain.ChoiceListItem, 0, len(labels))
 	for _, l := range labels {
+		if _, ok := snCauseKey[domain.CaseCause(l)]; !ok {
+			slog.WarnContext(ctx, "project metadata: case_cause_enum label has no ServiceNow mapping", "label", l)
+			continue
+		}
 		out = append(out, domain.ChoiceListItem{ID: l, Label: humanizeSnakeCase(strings.ToLower(l))})
 	}
 	return out
@@ -208,7 +219,7 @@ func (s *projectMetadataService) GetProjectMetadata(ctx context.Context, project
 		EngagementTypes:             choiceListFromLabels(labels[engagementTypeEnumType]),
 		EngagementPaymentTypes:      choiceListFromLabels(labels[engagementPaymentTypeEnumType]),
 		ResolutionCodes:             resolutionCodeChoices(ctx, labels[caseResolutionCodeEnumType]),
-		Causes:                      causeChoices(labels[caseCauseEnumType]),
+		Causes:                      causeChoices(ctx, labels[caseCauseEnumType]),
 		Features:                    features,
 	}, nil
 }

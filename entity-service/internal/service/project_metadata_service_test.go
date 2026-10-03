@@ -85,7 +85,10 @@ func TestGetProjectMetadata_ResolutionCodesUseCanonicalDomainValues(t *testing.T
 			"ABRUPTLY_CLOSED_DUE_TO_NON_RESPONSIVENESS_THROUGH_AUTO_CLOSURE",
 			"SOME_FUTURE_CODE",
 		},
-		caseCauseEnumType: {"PRODUCT_BUG", "USER_ERROR_RUNTIME"},
+		// USER_MISTAKE (migration 0108) has no snCauseKey entry -- the
+		// dual-write mirror's own patchCaseFields would reject it, so it
+		// must be filtered out here too (see causeChoices's own doc comment).
+		caseCauseEnumType: {"PRODUCT_BUG", "USER_ERROR_RUNTIME", "USER_MISTAKE"},
 	}}
 	resp, err := NewProjectMetadataService(repo).GetProjectMetadata(context.Background(), testUUID)
 	if err != nil {
