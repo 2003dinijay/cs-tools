@@ -4332,10 +4332,14 @@ above), `groups` (the teams from `team_member`, from which the BFF derives the
 profile's team block) and, for customers only (`user_type` EXTERNAL, emitted as
 `customer`), `projectAccess`.
 
-- **It is a dedicated type, not `SNUserDetail`.** That type always sends `lockedOut`,
-  `timeZone` and per-project `notificationsEnabled`, none of which this schema stores,
-  and the page shows a "Locked out: No" chip whenever `lockedOut` is present, so
-  reusing it would assert something unknowable. Those fields are omitted.
+- **It is a dedicated type, not `SNUserDetail`.** That type always sends `lockedOut`
+  and per-project `notificationsEnabled`, neither of which this schema stores, and the
+  page shows a "Locked out: No" chip whenever `lockedOut` is present, so reusing it
+  would assert something unknowable. Those two fields are omitted. `timeZone` is a
+  separate case — `"user".timezone` is a real column (see "GET/PATCH /users/me and
+  the timezone column" below) — but `UserDetail` doesn't carry it today either, since
+  nothing has asked for a user's timezone on this specific (by-id, not-self) profile
+  read; only `GetMe`/`PatchMe` expose it so far.
 - **`projectAccess`** is one row per `project_contact` invited under the user's email:
   `contactEmail` is the row's email, `contactRecordPresent` is `account_contact_id IS NOT
   NULL`, `contactRecordEmail` is the linked `account_contact.user_name` (it differs from
@@ -4349,6 +4353,32 @@ profile's team block) and, for customers only (`user_type` EXTERNAL, emitted as
 - Enrichment failures are errors, not silently partial profiles (the ServiceNow adapter
   degrades to empty blocks; a database error here is a real fault).
 - Like the other user routes this does no per-caller scoping; the BFF gates it.
+
+## GET/PATCH /users/me and the timezone column
+
+`"user".timezone` (`character varying`) is a real column, confirmed directly
+against the live database — it is **not declared anywhere in this repo's own
+`migrations/`**, same "built outside this directory" class as the `timezone`
+reference table (see "GET /metadata and GET /projects/{id}/metadata" above).
+`GetMe` was already wiring `domain.User.Timezone` through to its own response
+(`GetUserMeResponse.TimeZone`) before this was fixed — it just always came
+back `nil`, since `userColumns`/`prefixUserColumns`/`scanUser` never selected
+the column at all. Both now do.
+
+**`PATCH /users/me` didn't exist on this data source until now.**
+`UserService` (the Postgres interface) had no `PatchMe` method whatsoever —
+unlike `GetMe`, which has always had a real Postgres implementation
+alongside the ServiceNow one, this route was registered only inside the
+`snUserHandler != nil` branch in `routes.go`, so a Postgres deployment 404'd
+on it outright. `UserService.PatchMe`/`UserRepository.UpdateUserTimeZone`
+now exist, resolving the caller the exact same way `GetMe` does
+(`x-user-id-token`'s email claim → `GetUserByEmail`, never a caller-supplied
+id) and writing `"user".timezone` for that row alone — a user can only ever
+update their own timezone through this endpoint, same as the ServiceNow
+path's own scoping. `timezone` is free text with no FK/enum tying it to the
+`timezone` reference table, so any non-empty value is accepted as-is; only
+a blank value is rejected (`"timeZone is required"`, mirroring
+`snUserService.PatchMe`'s own validation).
 
 ## POST /users creates a new "user" row (Postgres-only)
 
