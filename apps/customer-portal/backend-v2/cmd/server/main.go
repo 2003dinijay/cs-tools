@@ -212,9 +212,6 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// GET/PATCH /users/me — see internal/entity/users.go's own GetMe/PatchMe
-	// for exactly what each entity-service data source does and doesn't
-	// support (both are served on both data sources now).
 	mux.HandleFunc("GET /users/me", userHandler.GetMe)
 	mux.HandleFunc("PATCH /users/me", userHandler.PatchMe)
 

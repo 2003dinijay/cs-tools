@@ -21,10 +21,7 @@ import (
 	"net/http"
 )
 
-// GetMe calls GET /users/me. Registered on both entity-service data sources
-// (see cs-tools/entity-service/internal/server/routes.go) -- Roles/Groups
-// come back empty on a Postgres-mode deployment (no group-membership table
-// to resolve them from there), but the call itself does not 404.
+// GetMe calls GET /users/me.
 func (c *Client) GetMe(ctx context.Context) (GetUserMeResponse, error) {
 	var out GetUserMeResponse
 	err := c.getJSON(ctx, "/users/me", &out)
@@ -50,11 +47,7 @@ func (c *Client) RegisterInvitedMemberships(ctx context.Context) error {
 // PatchMe calls PATCH /users/me to update the caller's timezone -- phone
 // number is a separate, SCIM-only field this backend updates directly
 // against Asgardeo (see UserHandler.PatchMe), never through entity-service
-// at all, since neither entity-service data source has anywhere to store
-// one. Registered on both entity-service data sources (see
-// cs-tools/entity-service/internal/server/routes.go) -- this used to 404 on
-// a Postgres-mode deployment, fixed once entity-service's own "user" table
-// turned out to already have a (previously unused) timezone column.
+// at all, since entity-service has nowhere to store one.
 func (c *Client) PatchMe(ctx context.Context, req PatchUserMeRequest) (PatchUserMeResponse, error) {
 	var out PatchUserMeResponse
 	err := c.patchJSON(ctx, "/users/me", req, &out)
