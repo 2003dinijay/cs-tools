@@ -19,6 +19,8 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"github.com/jackc/pgx/v5/pgconn"
 	"strings"
 	"testing"
 	"time"
@@ -248,9 +250,34 @@ type fakeIncidentReportRepo struct {
 	attempts map[int64]int
 	done     []int64
 	failures []int64
+
+	// schema check: missingFor[i] is what the i-th MissingSchema call
+	// returns; past the end, nothing is missing.
+	missingFor   [][]string
+	schemaChecks int
+	pendingCalls int
+	pendingErr   error
+	calls        []string
+}
+
+func (f *fakeIncidentReportRepo) MissingSchema(context.Context) ([]string, error) {
+	f.calls = append(f.calls, "schema")
+	i := f.schemaChecks
+	f.schemaChecks++
+	if i < len(f.missingFor) {
+		return f.missingFor[i], nil
+	}
+	return nil, nil
 }
 
 func (f *fakeIncidentReportRepo) PendingChanges(context.Context, int) ([]int64, error) {
+	f.calls = append(f.calls, "pending")
+	f.pendingCalls++
+	if f.pendingErr != nil {
+		err := f.pendingErr
+		f.pendingErr = nil // one fault, then healthy
+		return nil, err
+	}
 	return f.pending, nil
 }
 
@@ -298,5 +325,58 @@ func TestIncidentReportDrainer_ParksAfterMaxAttempts(t *testing.T) {
 	}
 	if repo.attempts[7] != 3 {
 		t.Errorf("attempts = %d, want 3", repo.attempts[7])
+	}
+}
+
+// Deployed ahead of migration 0181, the drainer must not poll the outbox at
+// all: it waits, re-checking, and starts by itself once the schema appears.
+func TestIncidentReportDrainer_WaitsForMigrationBeforePolling(t *testing.T) {
+	repo := &fakeIncidentReportRepo{missingFor: [][]string{
+		{"event_outbox.last_attempt_on", "incident trigger incident_outbox"},
+		{"incident trigger incident_outbox"},
+	}}
+	d := NewIncidentReportDrainer(repo, NewIncidentReportService(), time.Millisecond, IncidentReportMaxAttempts)
+	d.SchemaRecheck = time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	d.Run(ctx)
+
+	if repo.schemaChecks < 3 {
+		t.Fatalf("schema checked %d times, want at least 3 (missing, missing, present)", repo.schemaChecks)
+	}
+	if repo.calls[0] != "schema" || repo.calls[1] != "schema" || repo.calls[2] != "schema" {
+		t.Errorf("polled the outbox before the schema was present: calls = %v", repo.calls[:3])
+	}
+	if repo.pendingCalls == 0 {
+		t.Error("never started polling after the schema appeared")
+	}
+}
+
+// If the schema disappears under a running drainer, it goes back to waiting
+// instead of failing every poll.
+func TestIncidentReportDrainer_SchemaFaultReturnsToWaiting(t *testing.T) {
+	repo := &fakeIncidentReportRepo{pendingErr: &pgconn.PgError{Code: "42703"}}
+	d := NewIncidentReportDrainer(repo, NewIncidentReportService(), time.Millisecond, IncidentReportMaxAttempts)
+	d.SchemaRecheck = time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	d.Run(ctx)
+
+	if repo.schemaChecks < 2 {
+		t.Errorf("schema checked %d times, want a re-check after the 42703 fault", repo.schemaChecks)
+	}
+	if repo.pendingCalls < 2 {
+		t.Errorf("polled %d times, want polling to resume after the re-check", repo.pendingCalls)
+	}
+}
+
+func TestIsSchemaFault(t *testing.T) {
+	for code, want := range map[string]bool{"42703": true, "42P01": true, "42883": true, "23505": false, "40001": false} {
+		if got := isSchemaFault(fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: code})); got != want {
+			t.Errorf("isSchemaFault(%s) = %v, want %v", code, got, want)
+		}
+	}
+	if isSchemaFault(errors.New("plain")) {
+		t.Error("a non-database error is not a schema fault")
 	}
 }

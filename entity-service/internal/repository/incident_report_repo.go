@@ -108,6 +108,10 @@ type IncidentReportRepository interface {
 	// attempts reach maxAttempts the row is marked published so it stops
 	// being retried; last_error keeps the reason. Returns whether it parked.
 	RecordFailure(ctx context.Context, outboxID int64, cause string, maxAttempts int) (bool, error)
+	// MissingSchema lists the parts of migration 0181 that are not in the
+	// database: the three event_outbox retry columns and the incident_outbox
+	// trigger. Empty means the drainer can run.
+	MissingSchema(ctx context.Context) ([]string, error)
 }
 
 type incidentReportRepository struct {
@@ -296,4 +300,43 @@ func (t incidentReportTx) SetIncidentReport(ctx context.Context, incidentID, rep
 		return fmt.Errorf("incidentreport: touch work_item for incident %s: %w", incidentID, err)
 	}
 	return nil
+}
+
+// MissingSchema implements IncidentReportRepository.
+//
+// Checked at drainer start and after any schema fault, so deploying this code
+// ahead of migration 0181 idles the drainer with one clear log line instead
+// of failing every poll (which is what staging saw on 2026-10-03).
+func (r *incidentReportRepository) MissingSchema(ctx context.Context) ([]string, error) {
+	ctx = WithSystemIdentity(ctx)
+	rows, err := r.db.Query(ctx, `
+		SELECT need FROM (VALUES
+			('event_outbox.attempts'),
+			('event_outbox.last_error'),
+			('event_outbox.last_attempt_on'),
+			('incident trigger incident_outbox')
+		) AS v(need)
+		WHERE NOT (
+			CASE WHEN need LIKE 'event_outbox.%' THEN EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = current_schema() AND table_name = 'event_outbox'
+				  AND column_name = split_part(need, '.', 2))
+			ELSE EXISTS (
+				SELECT 1 FROM pg_trigger
+				WHERE tgname = 'incident_outbox' AND tgrelid = to_regclass('incident') AND NOT tgisinternal)
+			END)
+		ORDER BY need`)
+	if err != nil {
+		return nil, fmt.Errorf("incidentreport: check schema: %w", err)
+	}
+	defer rows.Close()
+	var missing []string
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return nil, fmt.Errorf("incidentreport: scan schema check: %w", err)
+		}
+		missing = append(missing, m)
+	}
+	return missing, rows.Err()
 }

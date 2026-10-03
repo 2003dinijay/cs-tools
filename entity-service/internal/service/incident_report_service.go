@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
@@ -214,7 +215,18 @@ type IncidentReportDrainer struct {
 	Service     IncidentReportService
 	Interval    time.Duration
 	MaxAttempts int
+	// SchemaRecheck is how often to look again for migration 0181 while it
+	// is missing (default incidentReportSchemaRecheck).
+	SchemaRecheck time.Duration
 }
+
+const (
+	// incidentReportSchemaRecheck paces the idle check while migration 0181
+	// is missing; incidentReportSchemaReminder is how often that state is
+	// logged again after the first time.
+	incidentReportSchemaRecheck  = 5 * time.Minute
+	incidentReportSchemaReminder = time.Hour
+)
 
 // NewIncidentReportDrainer constructs the poller.
 func NewIncidentReportDrainer(repo repository.IncidentReportRepository, svc IncidentReportService, interval time.Duration, maxAttempts int) *IncidentReportDrainer {
@@ -227,11 +239,25 @@ func NewIncidentReportDrainer(repo repository.IncidentReportRepository, svc Inci
 // failing row.
 func (d *IncidentReportDrainer) Run(ctx context.Context) {
 	slog.InfoContext(ctx, "incidentreport: drainer started", "interval", d.Interval.String())
+	if !d.waitForSchema(ctx) {
+		slog.InfoContext(ctx, "incidentreport: drainer stopped")
+		return
+	}
 	for {
 		n, err := d.drainOnce(ctx)
 		if ctx.Err() != nil {
 			slog.InfoContext(ctx, "incidentreport: drainer stopped")
 			return
+		}
+		if err != nil && isSchemaFault(err) {
+			// The schema went away under a running drainer (a table
+			// recreated, a migration rolled back): go back to waiting
+			// rather than failing every poll.
+			if !d.waitForSchema(ctx) {
+				slog.InfoContext(ctx, "incidentreport: drainer stopped")
+				return
+			}
+			continue
 		}
 		if err != nil {
 			// Keep polling: a transient database error must not take the
@@ -248,6 +274,58 @@ func (d *IncidentReportDrainer) Run(ctx context.Context) {
 		case <-time.After(d.Interval):
 		}
 	}
+}
+
+// waitForSchema blocks until migration 0181 is present, returning false only
+// if ctx ends first. While it is missing it logs once, then once an hour, and
+// checks again every SchemaRecheck: deploying the code before the migration
+// idles the flows quietly and they start by themselves once it is applied --
+// no restart, no error every poll.
+func (d *IncidentReportDrainer) waitForSchema(ctx context.Context) bool {
+	recheck := d.SchemaRecheck
+	if recheck <= 0 {
+		recheck = incidentReportSchemaRecheck
+	}
+	var lastLogged time.Time
+	waited := false
+	for {
+		missing, err := d.Repo.MissingSchema(ctx)
+		switch {
+		case err == nil && len(missing) == 0:
+			if waited {
+				slog.InfoContext(ctx, "incidentreport: migration 0181 is present, incident report flows starting")
+			}
+			return true
+		case lastLogged.IsZero() || time.Since(lastLogged) >= incidentReportSchemaReminder:
+			if err != nil {
+				slog.ErrorContext(ctx, "incidentreport: cannot check for migration 0181; incident report flows idle", "err", err)
+			} else {
+				slog.ErrorContext(ctx, "incidentreport: migration 0181 not applied; incident report flows idle until it is",
+					"missing", missing, "recheck", recheck.String())
+			}
+			lastLogged = time.Now()
+		}
+		waited = true
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(recheck):
+		}
+	}
+}
+
+// isSchemaFault reports whether err is a missing table, column or function
+// -- the database lacking this code's migration, not a bad row.
+func isSchemaFault(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	switch pgErr.Code {
+	case "42703", "42P01", "42883": // undefined_column, undefined_table, undefined_function
+		return true
+	}
+	return false
 }
 
 // drainOnce processes one batch and returns how many rows it applied.
