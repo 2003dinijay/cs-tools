@@ -17,6 +17,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -39,6 +40,10 @@ func NewAvailabilityHandler(svc service.AvailabilityService) *AvailabilityHandle
 	return &AvailabilityHandler{svc: svc}
 }
 
+// availabilitySweepTimeout bounds one sweep. Matches the five minutes the
+// csm-scheduled-tasks client waits for a reply.
+const availabilitySweepTimeout = 5 * time.Minute
+
 // Sweep handles POST /internal/availability/sweep.
 //
 // The clock is taken HERE rather than inside the service so the whole run
@@ -47,7 +52,16 @@ func NewAvailabilityHandler(svc service.AvailabilityService) *AvailabilityHandle
 // against tomorrow — producing two different daily periods in one sweep,
 // with no error and no obvious symptom beyond a day that never fills in.
 func (h *AvailabilityHandler) Sweep(w http.ResponseWriter, r *http.Request) {
-	resp, err := h.svc.Sweep(r.Context(), time.Now().UTC())
+	// Detached from the request deadline, with a limit of its own. The
+	// router's Timeout middleware cancels every request context at 30s and
+	// the server's write timeout is 15s; either would stop a long run
+	// part-way, leaving some offerings recomputed and the rest stale until
+	// the next night. Detached, the sweep always finishes, even if the
+	// caller has stopped waiting. A run takes about a second today (146
+	// offerings, measured on staging data at 10x its history).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), availabilitySweepTimeout)
+	defer cancel()
+	resp, err := h.svc.Sweep(ctx, time.Now().UTC())
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

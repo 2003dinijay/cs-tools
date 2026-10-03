@@ -279,3 +279,33 @@ func TestAvailability_SweepFeedsTheDashboard(t *testing.T) {
 		}
 	}
 }
+
+// service_availability has no CI column, so a commitment held by a CI must
+// fail visibly rather than write rows with no subject; offerings beside it
+// are still written.
+func TestAvailabilitySweep_CIOnlySubjectFails(t *testing.T) {
+	str := func(s string) *string { return &s }
+	repo := &captureAvailabilityRepo{subjects: []repository.AvailabilitySubject{
+		{ServiceOfferingID: str("o-1"), ServiceCommitmentID: "c1", TargetPercent: 100},
+		{CmdbCiID: str("ci-1"), ServiceCommitmentID: "c2", TargetPercent: 100},
+	}}
+	svc, err := NewAvailabilityService(repo, "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := svc.Sweep(context.Background(), time.Date(2026, 10, 2, 3, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if res.Failed != 1 {
+		t.Errorf("failed = %d, want 1 (the CI-only subject)", res.Failed)
+	}
+	for _, r := range repo.written {
+		if r.ServiceOfferingID == nil {
+			t.Fatalf("a row was written with no offering: %+v", r)
+		}
+	}
+	if len(repo.written) == 0 {
+		t.Error("the offering subject beside it was not written")
+	}
+}

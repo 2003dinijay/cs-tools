@@ -1540,7 +1540,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if availabilityHandler != nil {
 		// Internal, and it WRITES: every other /cloud-status route is a read
 		// the dashboard makes, this one recomputes and replaces rows.
-		mux.HandleFunc("POST /internal/availability/sweep", availabilityHandler.Sweep)
+		// internalOnly: auth.Middleware only validates a token, so without
+		// this a customer's user token could trigger the recompute.
+		mux.HandleFunc("POST /internal/availability/sweep", internalOnly(accessSvc, availabilityHandler.Sweep))
 	}
 	if cloudStatusHandler != nil {
 		mux.HandleFunc("POST /internal/cloud-status/sweep", cloudStatusHandler.Sweep)

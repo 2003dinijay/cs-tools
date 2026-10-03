@@ -134,6 +134,18 @@ func (s *availabilityService) sweepSubject(
 		// reports rather than panics on a nil deref.
 		return 0, fmt.Errorf("commitment %s has neither a service offering nor a CI", subject.ServiceCommitmentID)
 	}
+	if subject.ServiceOfferingID == nil {
+		// *** A CI-ONLY SUBJECT CANNOT BE STORED, SO IT FAILS. ***
+		// ServiceNow lets a commitment hold a CI instead of an offering, but
+		// service_availability (migration 0084) has no cmdb_ci column: a row
+		// written for it would carry no subject at all, and the natural-key
+		// and rolling deletes could not tell two such subjects apart. None
+		// exists today -- all 146 staging links are offerings, and
+		// cmdb_ci_id is empty on every one -- so this only fires if one
+		// appears, and then visibly, in the sweep's failed count.
+		return 0, fmt.Errorf("commitment %s is held by a CI (%s), not a service offering: service_availability has no CI column to store it",
+			subject.ServiceCommitmentID, subjectID)
+	}
 
 	schedule, err := s.scheduleFor(ctx, subject)
 	if err != nil {

@@ -240,12 +240,16 @@ func (r *availabilityRepository) ScheduleSpans(ctx context.Context, scheduleID s
 // state of the world, so this deletes by the natural key inside the
 // transaction and then inserts, rather than relying on ON CONFLICT against
 // a constraint that does not exist.
+// Plain equality on service_offering_id, not IS NOT DISTINCT FROM: every
+// subject the sweep writes is an offering (CI-only subjects fail before they
+// reach here), and equality lets Postgres use the (service_offering_id,
+// type, start_on) index instead of reading every row of the type.
 const deleteByNaturalKeySQL = `
     DELETE FROM service_availability
      WHERE service_commitment_id = $1::uuid
        AND type = $2
        AND start_on = $3
-       AND service_offering_id IS NOT DISTINCT FROM $4::uuid`
+       AND service_offering_id = $4::uuid`
 
 const insertAvailabilitySQL = `
     INSERT INTO service_availability (
@@ -297,7 +301,7 @@ func (r *availabilityRepository) writeRows(
 			`DELETE FROM service_availability
               WHERE service_commitment_id = $1::uuid
                 AND type = ANY($2)
-                AND service_offering_id IS NOT DISTINCT FROM $3::uuid`,
+                AND service_offering_id = $3::uuid`,
 			commitmentID, rollingTypes, subjectID); err != nil {
 			return fmt.Errorf("clear rolling availability: %w", err)
 		}
