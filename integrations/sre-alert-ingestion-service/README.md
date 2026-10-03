@@ -7,7 +7,7 @@ order and turns them into incidents. This service does not create incidents and 
 alerts-core's own tables (`alert_cursor`, `incidents_*`, `processor_lease`).
 
 ```
-vendor ──POST──▶ ingestion (transform → allocator: CAS-claim ids → insert + read back) ──▶ alerts
+vendor ──POST──▶ ingestion (transform → allocator: CAS-claim ids → insert) ──▶ alerts
                                            │                                               ▲
                                            └── POST /alertz (wake-up) ──▶ alerts-core ──reads┘
 ```
@@ -20,9 +20,11 @@ vendor ──POST──▶ ingestion (transform → allocator: CAS-claim ids →
 - **Ids**: every replica claims ranges of ids from the `alert_seq` row with a lightweight
   transaction (compare-and-set), so ids never repeat across replicas. One claim covers everything
   queued at that moment (up to `allocator.max_batch`), so a burst costs a handful of transactions.
+  Each replica starts a claim from the value it last set, so `alert_seq` is only read after a
+  restart or a failed claim.
   Ids are only claimed for alerts that have a free writer (`allocator.write_concurrency`); the
   rest wait in the queue, unclaimed.
-- **Writes**: each alert is inserted, then read back. When Cosmos DB throttles ("Request rate is
+- **Writes**: each alert is inserted (read back as well with `store.read_back`). When Cosmos DB throttles ("Request rate is
   large"), the write is retried on the same id after the delay Cosmos asks for, until
   `store.write_deadline` (5m from the claim); throttling doesn't use up `store.insert_attempts`.
   After the deadline, or `store.insert_attempts` other failures, a `VOID: <reason>` filler row is
@@ -36,7 +38,7 @@ vendor ──POST──▶ ingestion (transform → allocator: CAS-claim ids →
   logs a CRITICAL error.
 - **Memory**: everything accepted but not finished is capped at `allocator.queue_max_bytes`; past
   it, new webhooks get `503` at once.
-- **Response**: `201` only after every alert in the request has been written and read back.
+- **Response**: `201` only after every alert in the request has been written.
 - **Wake-up**: one `POST /alertz` to alerts-core per written batch. Calls are coalesced so at most
   one is in flight. If it fails, alerts-core's own 10-second poll still picks the rows up.
 - **Chat cards** (Google Chat, cardsV2): a *rejected webhook* card (at most one per vendor + error
@@ -156,6 +158,7 @@ default and a comment. The main knobs:
 | `allocator.write_concurrency` | `16` | Parallel inserts per replica; ids are only claimed for free writers |
 | `store.insert_attempts` | `5` | Attempts for errors other than throttling before the filler row (`insert_base_delay` 250ms, doubling) |
 | `store.write_deadline` | `5m` | How long, from the claim, a throttled write keeps retrying; must stay under alerts-core's `gap_timeout` (10m) |
+| `store.read_back` | `false` | Read each row back before `201`. Costs 2 RU per alert; a Cosmos DB write is durable once acknowledged |
 | `store.claim_timeout` | `5s` | Timeout for the `alert_seq` read and compare-and-set (inserts use `store.query_timeout`, 1.5s) |
 | `reject.window` | `15m` | Rejected-webhook card window: one per vendor + error class, 10 in total, per replica |
 | `fallback.cards_per_minute` | `5` | DB-failure cards per minute, per replica, before summarising |
