@@ -132,6 +132,12 @@ describe("UsageAndMetricsTabContent deployment tab scroll affordance", () => {
     expect(screen.getByRole("button", { name: "Scroll deployment tabs right" })).toBeInTheDocument();
   });
 
+  it("works when ResizeObserver is unavailable", () => {
+    vi.stubGlobal("ResizeObserver", undefined);
+
+    expect(renderContent).not.toThrow();
+  });
+
   it("shows a left arrow (not right) when scrolled to the end", () => {
     renderContent();
     const scrollEl = getTabScrollContainer();

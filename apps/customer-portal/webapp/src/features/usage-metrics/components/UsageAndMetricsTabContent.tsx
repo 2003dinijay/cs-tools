@@ -120,12 +120,14 @@ export default function UsageAndMetricsTabContent(): JSX.Element {
     updateTabScrollAffordance();
     window.addEventListener("resize", updateTabScrollAffordance);
     const scroller = tabScrollRef.current;
-    const resizeObserver = new ResizeObserver(updateTabScrollAffordance);
-    if (scroller) resizeObserver.observe(scroller);
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(updateTabScrollAffordance);
+    if (scroller) resizeObserver?.observe(scroller);
 
     return () => {
       window.removeEventListener("resize", updateTabScrollAffordance);
-      resizeObserver.disconnect();
+      resizeObserver?.disconnect();
     };
   }, [deploymentTabs, updateTabScrollAffordance]);
 
