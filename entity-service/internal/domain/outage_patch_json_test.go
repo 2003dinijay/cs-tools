@@ -63,6 +63,28 @@ func TestPatchOutageRequestEnd(t *testing.T) {
 	}
 }
 
+func TestPatchOutageRequestEndCaseInsensitive(t *testing.T) {
+	// encoding/json binds "End" to the End field, so the reopen check must too.
+	req, err := decodeStrict(t, `{"End": null}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.End == nil || *req.End != nil {
+		t.Fatalf(`{"End": null} must decode as reopen, got %v`, req.End)
+	}
+
+	// Two spellings: the struct decode would keep the last (a close) while a
+	// key lookup saw the null (a reopen). Neither is safe to guess.
+	for _, body := range []string{
+		`{"end": null, "End": "2026-10-03T14:37:20Z"}`,
+		`{"End": "2026-10-03T14:37:20Z", "end": null}`,
+	} {
+		if _, err := decodeStrict(t, body); err == nil {
+			t.Errorf("%s: conflicting spellings of end must be rejected", body)
+		}
+	}
+}
+
 func TestPatchOutageRequestRejectsUnknownFields(t *testing.T) {
 	if _, err := decodeStrict(t, `{"end": null, "bogus": 1}`); err == nil {
 		t.Fatal("an unknown field must still be rejected")

@@ -19,6 +19,8 @@ package domain
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"strings"
 )
 
 // UnmarshalJSON keeps an explicit `"end": null` distinct from an omitted end.
@@ -45,7 +47,23 @@ func (r *PatchOutageRequest) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &keys); err != nil {
 		return err
 	}
-	if raw, ok := keys["end"]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+	// Match "end" the way the struct decode just did -- case-insensitively,
+	// so {"End": null} reopens too. Two spellings in one body ({"end": null,
+	// "End": "..."}) are rejected rather than resolved: the struct decode keeps
+	// whichever came last, this map cannot see order, and guessing wrong turns
+	// a close into a reopen.
+	var endRaw json.RawMessage
+	matches := 0
+	for k, v := range keys {
+		if strings.EqualFold(k, "end") {
+			endRaw = v
+			matches++
+		}
+	}
+	if matches > 1 {
+		return fmt.Errorf(`"end" is given %d times with different capitalisation`, matches)
+	}
+	if matches == 1 && bytes.Equal(bytes.TrimSpace(endRaw), []byte("null")) {
 		var reopen *string
 		p.End = &reopen
 	}

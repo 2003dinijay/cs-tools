@@ -44,7 +44,6 @@ import (
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/engine"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/entitycases"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/housekeeping"
-	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/httpsec"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/ledger"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/notify"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/opencases"
@@ -266,12 +265,13 @@ func main() {
 	// same variable csm-notification-service builds its case links from. Both
 	// outage emails link to /operations/outages/{id} under it. Optional: unset
 	// sends them without the link, which is worth a warning but not an exit,
-	// since the email is still correct without it. A set but non-https value
-	// is a misconfiguration and stops startup like EMAIL_BASE_URL does.
+	// since the email is still correct without it. A set but non-https value,
+	// or one carrying a query or fragment, is a misconfiguration and stops
+	// startup like EMAIL_BASE_URL does.
 	csmPortalWebBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("CSM_PORTAL_WEB_BASE_URL")), "/")
 	if csmPortalWebBaseURL == "" {
 		slog.Warn("CSM_PORTAL_WEB_BASE_URL is not set; outage emails will carry no link to the outage")
-	} else if err := httpsec.RequireSecureURL(csmPortalWebBaseURL); err != nil {
+	} else if err := notify.CheckPortalBaseURL(csmPortalWebBaseURL); err != nil {
 		slog.Error("CSM_PORTAL_WEB_BASE_URL is invalid", "err", err)
 		os.Exit(1)
 	}

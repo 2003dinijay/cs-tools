@@ -19,6 +19,7 @@ package notify
 import (
 	_ "embed"
 	"fmt"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/httpsec"
 	"html"
 	"net/url"
 	"strconv"
@@ -260,6 +261,29 @@ func OutageLink(portalBaseURL, outageID string) string {
 		return ""
 	}
 	return base + "/operations/outages/" + url.PathEscape(outageID)
+}
+
+// CheckPortalBaseURL validates CSM_PORTAL_WEB_BASE_URL for OutageLink, which
+// appends the outage route to it as a string. On top of https (loopback
+// exempt), it must be a bare origin or path: a query or fragment would land
+// before the appended route ("https://x/?a=b/operations/outages/{id}") and
+// every emailed link would open the wrong page; credentials have no business
+// in a link mailed to a list.
+func CheckPortalBaseURL(raw string) error {
+	if err := httpsec.RequireSecureURL(raw); err != nil {
+		return err
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") {
+		return fmt.Errorf("must not contain a query string or fragment")
+	}
+	if u.User != nil {
+		return fmt.Errorf("must not contain credentials")
+	}
+	return nil
 }
 
 // outageLinkHTML is the "View outage" line both outage emails carry. The URL

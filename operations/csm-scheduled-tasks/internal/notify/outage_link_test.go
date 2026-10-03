@@ -58,3 +58,28 @@ func TestRenderOutageNotificationLink(t *testing.T) {
 		t.Fatal("link is not attribute-escaped")
 	}
 }
+
+func TestCheckPortalBaseURL(t *testing.T) {
+	for _, ok := range []string{
+		"https://csm-stg.apps.wso2.com",
+		"https://csm-stg.apps.wso2.com/",
+		"https://host.example/portal",
+		"http://localhost:5173", // loopback exempt, as everywhere in httpsec
+	} {
+		if err := CheckPortalBaseURL(ok); err != nil {
+			t.Errorf("%q rejected: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"http://csm-stg.apps.wso2.com",       // not https
+		"https://csm-stg.apps.wso2.com/?x=1", // query lands before the route
+		"https://csm-stg.apps.wso2.com/?",    // empty query is still a '?'
+		"https://csm-stg.apps.wso2.com/#top", // fragment swallows the route
+		"https://csm-stg.apps.wso2.com/#",
+		"https://user:pw@csm-stg.apps.wso2.com", // credentials in a mailed link
+	} {
+		if err := CheckPortalBaseURL(bad); err == nil {
+			t.Errorf("%q accepted, want rejected", bad)
+		}
+	}
+}
