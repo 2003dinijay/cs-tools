@@ -8945,8 +8945,8 @@ paths:
     get:
       summary: Get system-wide reference metadata (time zones, project types, feedback emojis).
       description: >
-        Postgres: projectTypes come from project_type; timeZones and feedbackEmojies have no
-        Postgres source yet and come back empty.
+        Postgres: projectTypes come from project_type and timeZones come from timezone;
+        feedbackEmojies has no Postgres source yet and comes back empty.
       operationId: getSystemMetadata
       responses:
         "200":
