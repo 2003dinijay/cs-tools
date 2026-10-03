@@ -303,6 +303,12 @@ fi
 
 # -- the run ------------------------------------------------------------------
 
+# The harness prefers REDIS_URL over --redis, and loads the service's .env,
+# which sets REDIS_URL -- so without this every run lands on that one shared
+# Redis, and runs (or a ladder an earlier run left behind) work each other's
+# incidents. .env only fills variables that are unset, so this one wins.
+export REDIS_URL="redis://127.0.0.1:${REDIS_PORT}"
+
 args=(--priority "${PRIORITY}" --channel "${CHANNEL}"
       --redis "127.0.0.1:${REDIS_PORT}" --minute "${MINUTE}" --tick "${TICK}"
       --max-calls "${MAX_CALLS}" --team "${ABT}")
