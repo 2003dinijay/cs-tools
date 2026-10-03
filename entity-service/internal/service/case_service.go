@@ -1210,6 +1210,13 @@ func (s *caseService) SearchCaseComments(ctx context.Context, req domain.SearchC
 	}, nil
 }
 
+// externalCloseDefaultNotes is the closeNotes value an external caller's
+// case close is defaulted to when they didn't (and, per the Customer
+// Portal's own close dialog, never would) supply one -- see UpdateCase's own
+// doc comment on why a default is used instead of exempting the field
+// outright.
+const externalCloseDefaultNotes = "Closed by the customer."
+
 // UpdateCase implements CaseService.
 func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
@@ -1314,17 +1321,6 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are only allowed when state is closed or solution_proposed"}
 		}
 	}
-	// Dual-write only: closed / solution_proposed require all three
-	// resolution fields. The mirrored data source enforces this too;
-	// enforcing it here keeps the stores from diverging (a Postgres-only
-	// close with no resolution data can never be mirrored). Plain Postgres
-	// mode keeps its current, looser behaviour.
-	if s.snWriteback != nil && req.State != nil && (*req.State == domain.CaseStateClosed || *req.State == domain.CaseStateSolutionProposed) {
-		if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
-			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
-		}
-	}
-
 	if req.WatchList != nil {
 		return s.updateCaseWatchList(ctx, req)
 	}
@@ -1389,6 +1385,87 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			slog.ErrorContext(ctx, "update case: enrich case for case.status_changed publish/activity failed", "caseId", req.ID)
 		} else {
 			before = &cv
+		}
+	}
+
+	// Dual-write only: closing (or proposing a solution for) a plain "case"
+	// requires all three resolution fields -- but only for an INTERNAL
+	// caller (WSO2 staff). The mirrored ServiceNow write enforces this too;
+	// enforcing it here keeps the stores from diverging (a Postgres-only
+	// close with no resolution data can never be mirrored). Plain Postgres
+	// mode keeps its current, looser behaviour.
+	//
+	// Scoped to type == "case" specifically -- found live as a real bug:
+	// closing an engagement/service_request/security_report_analysis/
+	// announcement (the other four case-like work_item types, see
+	// "Case-like work_item types" elsewhere in this codebase) hit this same
+	// requirement even though resolution_code/cause/close_notes are
+	// "case"-only columns (see updateCaseQuery) -- there is no way for any
+	// other type to ever satisfy it, and the webapp's own close flow for
+	// those types never collects these fields in the first place. A fetch
+	// failure above (before == nil) can't confirm the type, so this still
+	// conservatively requires the fields rather than silently exempting a
+	// case whose type just couldn't be read.
+	//
+	// Also scoped to an internal caller -- found live as a second, related
+	// bug: resolutionCode/cause are WSO2's own case-resolution taxonomy
+	// (e.g. "Product Bug", "Infrastructure Network"), support-engineer
+	// vocabulary a customer closing their own case was never meant to
+	// classify their issue with. The Customer Portal's own close dialog
+	// should never ask an external caller for this -- only an internal
+	// (WSO2 staff) caller closing a case should be required to supply it.
+	//
+	// "Internal" is scope.Unrestricted OR scope.HasInternalAccess, not just
+	// Unrestricted alone -- a caller whose email also carries an active
+	// EXTERNAL "user" row (a mixed identity) resolves to a non-Unrestricted,
+	// project-scoped AccessScope under accessService.scopeForUser's own
+	// "external wins" rule for data-VISIBILITY scoping, but is still
+	// genuinely WSO2 staff and must still be required to classify the
+	// case -- see AccessScope.HasInternalAccess's own doc comment (a
+	// CodeRabbit-caught gap in an earlier version of this fix, which used
+	// Unrestricted alone and let such a caller bypass the requirement). A
+	// ResolveScope failure here can't confirm the caller is external, so it
+	// conservatively keeps requiring the fields, same posture as the type
+	// check just above.
+	//
+	// An external caller is not simply exempted, either -- a second
+	// CodeRabbit-caught gap: the comment above this block already asserts
+	// "the mirrored data source enforces this too", i.e. ServiceNow's own
+	// case-closure workflow genuinely requires these fields (confirmed via
+	// snResolutionCodeKey/snCauseKey, which both exist and both already
+	// cover the two defaults used below). Leaving them nil for an external
+	// caller would make the best-effort, asynchronous ServiceNow mirror
+	// write fail outright, leaving the mirrored case open/unresolved while
+	// Postgres shows it closed -- the exact divergence this requirement
+	// exists to prevent. So a missing field is defaulted instead of
+	// skipped: "solved by customer" / "unknown cause" / a generic note are
+	// real, valid values on both sides, not nulls -- sparing the customer
+	// an internal-classification question they can't answer while still
+	// keeping both stores in sync.
+	if s.snWriteback != nil && req.State != nil && (*req.State == domain.CaseStateClosed || *req.State == domain.CaseStateSolutionProposed) {
+		if before == nil || before.Type == nil || *before.Type == "case" {
+			isInternalCaller := true
+			if scope, err := s.access.ResolveScope(ctx); err == nil {
+				isInternalCaller = scope.Unrestricted || scope.HasInternalAccess
+			}
+			if isInternalCaller {
+				if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
+					return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
+				}
+			} else {
+				if req.ResolutionCode == nil {
+					code := domain.CaseResolutionCodeSolvedByCustomer
+					req.ResolutionCode = &code
+				}
+				if req.Cause == nil {
+					cause := domain.CaseCauseUnknown
+					req.Cause = &cause
+				}
+				if req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
+					notes := externalCloseDefaultNotes
+					req.CloseNotes = &notes
+				}
+			}
 		}
 	}
 

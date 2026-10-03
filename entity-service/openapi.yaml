@@ -20088,6 +20088,8 @@ components:
         - caseTypes
         - engagementTypes
         - engagementPaymentTypes
+        - resolutionCodes
+        - causes
         - features
       properties:
         caseStates:
@@ -20140,6 +20142,18 @@ components:
             $ref: '#/components/schemas/ChoiceListItem'
         engagementPaymentTypes:
           type: array
+          items:
+            $ref: '#/components/schemas/ChoiceListItem'
+        resolutionCodes:
+          type: array
+          description: >
+            Valid values for PATCH /cases/{id}'s `resolutionCode`, required alongside
+            `cause` and `closeNotes` when closing (or proposing a solution for) a case.
+          items:
+            $ref: '#/components/schemas/ChoiceListItem'
+        causes:
+          type: array
+          description: Valid values for PATCH /cases/{id}'s `cause`.
           items:
             $ref: '#/components/schemas/ChoiceListItem'
         features:

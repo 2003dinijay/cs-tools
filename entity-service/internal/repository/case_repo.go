@@ -152,6 +152,13 @@ var caseResolutionCodeFromEnum = map[string]domain.CaseResolutionCode{
 	"ABRUPTLY_CLOSED_DUE_TO_NON_RESPONSIVENESS_THROUGH_AUTO_CLOSURE": domain.CaseResolutionCodeAbruptlyClosedDueToNonResponsiveness,
 }
 
+// CaseResolutionCodeFromEnum exports caseResolutionCodeFromEnum's lookup for
+// the service package (project_metadata_service.go's resolution-code choice
+// list) -- same "" -for-unrecognized contract as CallRequestStateFromEnum.
+func CaseResolutionCodeFromEnum(enumLabel string) domain.CaseResolutionCode {
+	return caseResolutionCodeFromEnum[enumLabel]
+}
+
 // caseLikeWorkItemTypes is validCaseType's (case_service.go) five values,
 // spelled as the real work_item_type_enum labels: the work_item types
 // GetCaseByID/SearchCases treat as "a case" -- each is a shared-PK
