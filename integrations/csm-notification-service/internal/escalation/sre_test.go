@@ -236,6 +236,98 @@ func TestResolveSRE_NobodyOnTheTierClimbs(t *testing.T) {
 	}
 }
 
+// handoverReader is a rota that changes hands at one instant: before it the
+// stub's own holders are on duty, from it the after set.
+type handoverReader struct {
+	*stubScheduleReader
+	handover time.Time
+	after    []onDutyAssignment
+}
+
+func (h handoverReader) OnDutyAt(ctx context.Context, at time.Time) ([]onDutyAssignment, error) {
+	if at.Before(h.handover) {
+		return h.stubScheduleReader.OnDutyAt(ctx, at)
+	}
+	return h.after, nil
+}
+
+// An incident reported at 13:25 opens L2 at 13:30 and L3 at 13:35, both
+// inside TZ2. Each rung must reach TZ2's holder, not whoever held the tier on
+// TZ1 when the incident arrived -- and a tier TZ1 had nobody on must still
+// find TZ2's holder rather than leave the rung empty.
+func TestBuildPlan_SRERungsResolveWhenTheyOpen(t *testing.T) {
+	reported := ist(2026, 10, 8, 13, 25)
+	rota := handoverReader{
+		stubScheduleReader: &stubScheduleReader{onDuty: []onDutyAssignment{
+			held("tz1-l1", "apollo", "SRE_TZ1_L1", ""),
+			held("tz1-l2", "apollo", "SRE_TZ1", "L2"),
+			// TZ1 has no L3 today.
+		}},
+		handover: ist(2026, 10, 8, 13, 30),
+		after: []onDutyAssignment{
+			held("tz2-l1", "apollo", "SRE_TZ2_L1", ""),
+			held("tz2-l2", "apollo", "SRE_TZ2", "L2"),
+			held("tz2-l3", "apollo", "SRE_TZ2", "L3"),
+		},
+	}
+	tr := Trigger{
+		IncidentID: testIncidentID, Priority: "S0", Kind: TriggerNewIncident, At: reported,
+		Routing: RoutingContext{AssignedCRETeam: "apollo", Ladder: LadderSRE, At: reported},
+	}
+	plan, err := BuildPlan(context.Background(), tr, DefaultPolicy, NewTeamScheduleResolver(rota, sreTeams, nil), ChannelLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		level Level
+		after time.Duration
+		email string
+	}{
+		{Level0, 0, "tz1-l1@example.com"},
+		{Level1, 5 * time.Minute, "tz2-l2@example.com"},
+		{Level2, 10 * time.Minute, "tz2-l3@example.com"},
+	}
+	if len(plan.Calls) != len(want) || len(plan.Issues) != 0 {
+		t.Fatalf("calls=%+v issues=%+v; want %d calls and no issues", plan.Calls, plan.Issues, len(want))
+	}
+	for i, w := range want {
+		c := plan.Calls[i]
+		if c.Level != w.level || c.At.Sub(reported) != w.after || c.Recipient.Email != w.email {
+			t.Errorf("call %d = %s +%s %s; want %s +%s %s",
+				i, c.Level, c.At.Sub(reported), c.Recipient.Email, w.level, w.after, w.email)
+		}
+	}
+}
+
+// atRecorder notes the instant each level was resolved for.
+type atRecorder map[Level]time.Time
+
+func (r atRecorder) Resolve(_ context.Context, level Level, rc RoutingContext) ([]Recipient, error) {
+	r[level] = rc.At
+	return []Recipient{{Name: "x", Email: "x@example.com", Phone: "+10000000000"}}, nil
+}
+
+// The CRE ladder keeps resolving every rung at the report instant: its rungs
+// are fixed by the shift the incident arrived in.
+func TestBuildPlan_CRERungsResolveAtTheReportInstant(t *testing.T) {
+	rec := atRecorder{}
+	tr := Trigger{
+		IncidentID: testIncidentID, Priority: "P1", Kind: TriggerNewIncident, At: testClock,
+		Routing: RoutingContext{AssignedCRETeam: "atlas", At: testClock},
+	}
+	if _, err := BuildPlan(context.Background(), tr, DefaultPolicy, rec, ChannelLog); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec) < 2 {
+		t.Fatalf("resolved %d levels; want a multi-rung CRE ladder", len(rec))
+	}
+	for level, at := range rec {
+		if !at.Equal(testClock) {
+			t.Errorf("CRE %s resolved at %s; want the report instant %s", level, at, testClock)
+		}
+	}
+}
+
 func TestResolveSRE_PhoneBookFillsNumbers(t *testing.T) {
 	r := sreResolver(morningRota()).WithPhoneBook(PhoneBook{TestCallTo: "+94770000000"})
 	got, err := r.Resolve(context.Background(), Level0, RoutingContext{AssignedCRETeam: "apollo", Ladder: LadderSRE, At: testClock})

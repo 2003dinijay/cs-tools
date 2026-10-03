@@ -367,8 +367,13 @@ Schedule catalogue's team `family` answers.
 priority gate** -- `PolicyFor` gates only the CRE ladder on priority; an SRE
 incident at PLANNING still gets its clock. The clock is `sre.timing`
 (`SRETiming.Policy`); without a file, `INCIDENT_ESCALATION_SRE_L4` still turns
-L4 on. A rung is whoever holds that **tier** on an SRE window at the trigger
-instant (on-duty `tier`, else the window's own), picked in this order: the
+L4 on. A rung is whoever holds that **tier** on an SRE window at the instant
+**that rung opens** (on-duty `tier`, else the window's own) -- not the report
+instant: a ladder reported at 13:25 opens L2 at 13:30, inside TZ2, and asked
+at 13:25 it called TZ1's L2 after they had gone home, or nobody when TZ1 had
+no holder for the tier. `BuildPlan` sets `RoutingContext.At` to the rung's
+opening time for the SRE ladder only; the CRE ladder keeps the report instant,
+its rungs being fixed by the shift the incident arrived in. Picked in this order: the
 incident's own SRE team; then the zone whose L1 block is live -- weekdays
 12:00-15:00 IST the TZ1 and TZ2 escalation windows are both live, and the SRE
 team confirmed only one person is called; then `sre.teams.abts` order; then

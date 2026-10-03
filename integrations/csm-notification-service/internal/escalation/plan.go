@@ -166,7 +166,18 @@ func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolic
 		attempts := attemptsByLevel[level]
 		opensAt := t.At.Add(attempts[0].After)
 
-		recipients, err := r.Resolve(ctx, level, t.Routing)
+		// An SRE rung calls whoever holds its tier when it opens, not when
+		// the incident was reported: a ladder reported at 13:25 opens L2 at
+		// 13:30, inside TZ2, and TZ1's L2 has gone home by then. Asked at the
+		// report instant, it called the wrong zone, or nobody when the
+		// earlier window had no holder for that tier. The CRE ladder keeps
+		// the report instant; its rungs are ranks and rota pairs fixed by
+		// the shift the incident arrived in.
+		rc := t.Routing
+		if rc.Ladder == LadderSRE {
+			rc.At = opensAt
+		}
+		recipients, err := r.Resolve(ctx, level, rc)
 		if err != nil {
 			plan.Issues = append(plan.Issues, PlanIssue{
 				Level: level, At: opensAt, Reason: "RESOLVE_FAILED", Detail: err.Error(),
