@@ -28,7 +28,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
@@ -86,11 +85,11 @@ type ProjectRepository interface {
 }
 
 type projectRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
-// NewProjectRepository constructs a ProjectRepository backed by the given connection pool.
-func NewProjectRepository(db *pgxpool.Pool) ProjectRepository {
+// NewProjectRepository constructs a ProjectRepository backed by the given scoped connection pool.
+func NewProjectRepository(db *Scoped) ProjectRepository {
 	return &projectRepo{db: db}
 }
 
@@ -256,6 +255,12 @@ func buildProjectSearchWhere(req domain.SearchProjectsRequest, scope SearchScope
 
 // SearchProjects implements ProjectRepository.
 func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProjectsRequest, scope SearchScope) ([]domain.Project, int, error) {
+	// WithCallerIdentity from the explicit scope parameter -- see
+	// CaseRepository.GetCaseByID's identical stamp. The per-project case count
+	// below reads work_item (RLS-protected), so it is counted through the same
+	// identity that scopes the project list: all of it for an internal caller,
+	// only what a customer's own project membership lets them see otherwise.
+	ctx = WithCallerIdentity(ctx, scope)
 	where, filterArgs, argIdx, err := buildProjectSearchWhere(req, scope)
 	if err != nil {
 		return nil, 0, err
@@ -372,6 +377,8 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 
 // GetProjectByID implements ProjectRepository.
 func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope SearchScope) (domain.ProjectDetailsView, error) {
+	// WithCallerIdentity from the explicit scope parameter, as in SearchProjects.
+	ctx = WithCallerIdentity(ctx, scope)
 	var v domain.ProjectDetailsView
 	// account.ai_gen_response_enabled/smart_knowledge_base_suggestions_enabled
 	// are nullable BOOLEAN columns, but ProjectAccountRef.AgentEnabled/
@@ -538,19 +545,26 @@ func (r *projectRepo) UpdateProject(ctx context.Context, id string, req domain.P
 	if err := validateClosureFields(req); err != nil {
 		return domain.ProjectUpdateResult{}, err
 	}
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return domain.ProjectUpdateResult{}, fmt.Errorf("update project: begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	// WithSystemIdentity: this writes only project and account, neither
+	// RLS-protected, and carries no caller-visible rows. The service already
+	// authorized the caller (resolveUpdatedBy); this only gives Scoped the
+	// identity it requires, including for an allow-listed client the identity
+	// middleware could not resolve to a scope.
+	ctx = WithSystemIdentity(ctx)
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (domain.ProjectUpdateResult, error) {
+		return updateProjectTx(ctx, tx, id, req, updatedBy)
+	})
+}
 
+// updateProjectTx is UpdateProject's body, run inside tx.
+func updateProjectTx(ctx context.Context, tx pgx.Tx, id string, req domain.ProjectUpdateRequest, updatedBy string) (domain.ProjectUpdateResult, error) {
 	// Lock the row first (mirrors CaseRepository.UpdateCase's own
 	// lock-before-read reasoning) so the account_id this reads is accurate
 	// even under a concurrent update to the same project, and so a
 	// nonexistent id is caught as NotFoundError before either UPDATE below
 	// runs.
 	var accountID *string
-	err = tx.QueryRow(ctx, `SELECT account_id FROM project WHERE id = $1 FOR UPDATE`, id).Scan(&accountID)
+	err := tx.QueryRow(ctx, `SELECT account_id FROM project WHERE id = $1 FOR UPDATE`, id).Scan(&accountID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProjectUpdateResult{}, &apierror.NotFoundError{Msg: "project not found"}
 	}
@@ -634,10 +648,6 @@ func (r *projectRepo) UpdateProject(ctx context.Context, id string, req domain.P
 		if tag.RowsAffected() != 1 {
 			return domain.ProjectUpdateResult{}, fmt.Errorf("update project: linked account %s disappeared under transaction", *accountID)
 		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return domain.ProjectUpdateResult{}, fmt.Errorf("update project: commit tx: %w", err)
 	}
 
 	// SuspensionProcessState has no column, so it stays nil.

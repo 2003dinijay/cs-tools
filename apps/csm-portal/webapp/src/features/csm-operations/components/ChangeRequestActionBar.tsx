@@ -130,18 +130,28 @@ function menuRank(target: string): number {
  *
  * Deliberately a per-target map rather than a special case for any one
  * target: the same situation (legal transition, unmet prerequisite) can
- * apply to any target. Empty today — New → Assess used to have an entry here
- * (`assignedTeam` required) from when that transition sent a ServiceNow
- * "Request Approval" action, but it is now a plain `{ state: "assess" }`
- * PATCH with no relationship to approval, and no other transition has an
- * analogous unmet-prerequisite requirement — so there is currently nothing to
- * block. Left in place (rather than removed outright) for the next target
- * that genuinely needs it.
+ * apply to any target.
+ *
+ * `assess` requires `assignedTeam` — by explicit product decision, confirmed
+ * compulsory: the assigned team's own members are what populate the Assess
+ * stage's approvers the moment the transition lands (see
+ * `PatchChangeRequest`'s own doc comment in `change_request_repo.go`), so
+ * there is no such thing as entering Assess with no team to assign that
+ * stage to. This was previously removed as a stale leftover from when
+ * New → Assess sent a ServiceNow "Request Approval" action — that removal
+ * was wrong: the requirement is real under the current plain
+ * `{ state: "assess" }` PATCH too, just enforced for a different reason now
+ * (who gets provisioned as an approver), and the backend itself rejects the
+ * transition with no team regardless of what this map does — this entry is
+ * what keeps the button from round-tripping into that rejection.
  */
 const TARGET_BLOCKED_REASON: Record<
   string,
   (cr: BeChangeRequestDetail) => string | null
-> = {};
+> = {
+  assess: (cr) =>
+    cr.assignedTeam ? null : "Set an assigned team before moving to Assess",
+};
 
 interface ChangeRequestActionBarProps {
   cr: BeChangeRequestDetail;

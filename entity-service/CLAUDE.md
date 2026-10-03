@@ -856,36 +856,64 @@ access to Salesforce; `*salesentity.Client` satisfies both.
 
 Ten call sites publish today, all ServiceNow-data-source-only (`DATA_SOURCE=servicenow`;
 there is no Postgres-backed equivalent for any of them). There is also one
-Postgres-only, currently-inert exception: `caseService.UpdateCase`
-(`case_service.go`) detects when a severity update crosses the LOW boundary
-(entering it should make every time card on the case billable, leaving it
-non-billable — LOW is WSO2's own support-policy "S4/Queries" tier, same
-mapping `sla_policy.go` uses) and logs it, but its actual
-`events.TypeCaseBillableStatusChanged` publish is commented out — see that
-type's own doc comment in `internal/events/events.go` for why (no consumer
-exists yet; Postgres has no `time_cards` table/repo/service at all today, a
-prerequisite for the intended reaction). `caseService` gained a `publisher
-EventPublisherService` field for this (nil the same way `snCaseService`'s
-own `publisher` can be), wired from `routes.go`'s existing `eventPublisher`
-var.
+Postgres-only exception, but it is **not** an Event Hub publish at all, and
+it lives entirely in `case_repo.go`, not the service layer:
+`CaseRepository.UpdateCase`'s severity branch and `AddCaseTag`'s "patch"
+branch both call `recomputeTimeCardsBillable`, which sets every time_card
+row under a case to `isLow && !hasPatchTag` — entering LOW/S4 severity
+(WSO2's own support-policy tier, same mapping `sla_policy.go` uses) makes a
+case's time cards billable, leaving it makes them non-billable, *unless* the
+case carries a `"patch"` tag (case/whitespace-insensitive), in which case
+they stay non-billable regardless — WSO2 still covers a patch under support
+even for an otherwise best-efforts S4 case.
 
-**Special case, detects and logs only — no behavior change yet**:
-`caseService.AddCaseTag` calls `detectPatchTagBillableOverride`, which
-*detects and logs* (nothing more) when a case tagged `"patch"`
-(case/whitespace-insensitive) is currently at LOW severity — the eventual
-intent is that WSO2 still covers a patch under support even for an
-otherwise best-efforts S4 case, so such a case's time cards should one day
-become non-billable regardless (one-directionally: removing the tag would
-never reverse it), overriding the normal "entering S4 makes time cards
-billable" rule. **Today this changes nothing**: no time card's billable
-status is altered, no event is published, and no tag is ever persisted.
-**TEMPORARY**: case tags have no real Postgres storage at all yet (no
-`case_tags` table/repo — `AddCaseTag`/`RemoveCaseTag`/`SearchTags` are
-ServiceNow-only, see `sn_case_service.go`'s own real implementations), so
-`AddCaseTag` on this data source still always returns a 503 regardless of
-this detection — added at explicit request, ahead of both real tag storage
-and a real time-card reaction, so the rule's logic is demonstrable now and
-easy to wire up for real once both exist.
+This used to be designed as an `events.TypeCaseBillableStatusChanged`
+publish for csm-notification-service to react to (committed that way,
+commented out, for a while), but a same-database write entity-service
+already has transactional access to has nothing to gain from an event-hub
+round trip through a separate service with no database of its own — that
+type and its consumer (`csm-notification-service`'s own
+`internal/timecardengine`) have both been removed entirely. An intermediate
+revision then called this directly from the **service** layer
+(`caseService.detectBillableStatusChange`/`detectPatchTagBillableOverride`,
+via a plain `CaseRepository.SetTimeCardsBillableForCase(ctx, caseID,
+isBillable)`), which a CodeRabbit review on the PR caught two real bugs in:
+
+1. **The patch override wasn't checked live.** `detectBillableStatusChange`
+   computed `isBillable` from the severity transition alone, with no idea
+   whether a `"patch"` tag already existed — so a case tagged `"patch"`
+   *before* it ever crossed into LOW still got marked billable on that
+   crossing, and leaving-then-re-entering LOW after an earlier override had
+   the same effect. Fixed by `caseHasPatchTag` checking `work_item_tag`/`tag`
+   fresh, every time a LOW-boundary crossing happens or a `"patch"` tag is
+   added — never relying on a value computed at some earlier, possibly
+   stale, point in time.
+2. **No ordering guarantee between the severity write and the time-card
+   write.** The service-layer version ran `SetTimeCardsBillableForCase` as
+   a separate call *after* `UpdateCase`/`AddCaseTag` had already committed —
+   two concurrent severity-changing requests on the same case could
+   interleave such that the slower one's (now-stale) time-card write landed
+   *after* the faster one's, leaving the final committed severity
+   disagreeing with the final time-card billable state. Fixed by moving the
+   recompute **inside** `UpdateCase`'s existing transaction (which already
+   takes `SELECT severity::TEXT FROM "case" WHERE id = $1 FOR UPDATE` before
+   writing — this reuses, not adds, that lock) and `AddCaseTag`'s own
+   transaction (which now takes the identical lock on its `"patch"` branch
+   before checking/writing) — the same case row's lock serializes two
+   otherwise-racing writers against each other exactly like
+   `AcknowledgeCase`'s own "first write wins" pattern already does, so
+   whichever transaction commits last is also the one whose
+   fresh-within-that-transaction read determines the final state. Both
+   writes are still best-effort within their own transaction (a failure is
+   logged, never allowed to roll back the severity/tag change that already
+   succeeded) — the fix is ordering and freshness, not changing that
+   posture.
+
+`time_card` (migration 0041) already has a real `is_billable` column and
+full Postgres CRUD (`time_card_repo.go`/`time_card_service.go`) — the
+"Postgres has no time_cards table/repo/service" premise the original,
+commented-out event design rested on was stale by the time any of this was
+revisited.
 
 - **`snCaseService.CreateCase`** publishes `case.created` via a private
   `publishCaseCreated` helper, called after the SN create call succeeds.
@@ -1417,14 +1445,9 @@ which is accurate: retrying is both safe and the right thing to do.
 
 ### The four endpoints
 
-All four are **internal-caller-only** via `AccessService.ResolveScope`
-(`AccessScope.Unrestricted`, i.e. `AUTH_INTERNAL_CLIENT_IDS`), exactly as the
-onboarding-step endpoints are — anyone else gets 403 before anything
-downstream is touched. A portal END USER must never call them directly:
-whether this particular customer admin may invite this particular person into
-this particular project is the portal backend's decision, made against the
-account it has already scoped the session to. This service deliberately does
-not re-derive that from a forwarded user token.
+Authorized by `authorizeMembershipWrite`: trusted callers pass; a customer must be
+REGISTERED on the project (else 404) and hold `customer_admin`/`partner_admin` (else 403), and their
+own email replaces `inviterEmail`. No `AUTH_INTERNAL_CLIENT_IDS` entry is needed for the portal.
 
 `{id}` is the CSM project UUID, so these sit beside the search and get already
 in that namespace. `{email}` keys the membership — the way the Customer Portal
@@ -2187,17 +2210,15 @@ changed.
 
 - **Case tags** (`tag`/`work_item_tag`, migration 0026): `CaseService.
   AddCaseTag`/`RemoveCaseTag`/`SearchTags` in `case_service.go` were a
-  detection-only stub that always returned 503 — see
-  `detectPatchTagBillableOverride`'s own doc comment for that history — and
-  now actually persist. `AddCaseTag` finds-or-creates a tag by name
-  (case-insensitively; `tag.name` has no `UNIQUE` constraint, so a race
-  between two first-uses of the same never-before-seen label can produce a
-  cosmetic duplicate row, not a correctness bug) and attaches it to the
-  case's underlying `work_item`, idempotently. The `detectPatchTagBillableOverride`
-  "patch tag on a LOW-severity case" detection still only logs — condition
-  (a) it was blocked on (case tags having real storage) is now true, but
-  condition (b) (a consumer for `events.TypeCaseBillableStatusChanged`)
-  still doesn't exist.
+  detection-only stub that always returned 503 — now actually persist.
+  `AddCaseTag` finds-or-creates a tag by name (case-insensitively;
+  `tag.name` has no `UNIQUE` constraint, so a race between two first-uses
+  of the same never-before-seen label can produce a cosmetic duplicate row,
+  not a correctness bug) and attaches it to the case's underlying
+  `work_item`, idempotently. A `"patch"` label on a case currently at
+  LOW/S4 severity also flips the case's time cards non-billable, inside the
+  same transaction as the attach — see "Event Hub publishing" above
+  (`recomputeTimeCardsBillable`) for the full design and the race it fixes.
 - **Case watch list** (`work_item_watcher`, migration 0042):
   `UpdateCase`'s `WatchList` field, previously rejected outright on this
   data source, now has its own branch (`updateCaseWatchList`) — split out
@@ -2550,13 +2571,22 @@ always showed empty. This proved `csm-sync-service` already populates
 for every other `work_item` type, so the fix is read-only — no create/patch
 write-path changes were needed alongside it.
 
-**That frontend gate was itself later found to be stale and removed.** It
-was carried over unchanged from when New→Assess sent a ServiceNow "Request
-Approval" action (which genuinely needed a team) and was never re-verified
-after that transition became a plain, ungated `{state: "assess"}` PATCH (see
-"New→Assess is a plain, ungated state change" below) — there is no evidence
-the plain state change itself requires a team. `ChangeRequestActionBar.tsx`'s
-`TARGET_BLOCKED_REASON` no longer has an `assess` entry.
+**That frontend gate was briefly believed stale, removed, then confirmed
+real and reinstated — with real teeth this time.** It was carried over
+unchanged from when New→Assess sent a ServiceNow "Request Approval" action
+(which genuinely needed a team), and since that transition became a plain,
+ungated `{state: "assess"}` PATCH (see "New→Assess is a plain, ungated state
+change" below) it looked like a stale leftover with nothing left to gate —
+removed for exactly that reason. **This was then confirmed wrong by explicit
+product decision**: an assigned team is still compulsory before Assess, for
+a different and still-current reason — see the approver auto-provisioning
+paragraph below, which needs a team to have anyone to provision at all.
+`ChangeRequestActionBar.tsx`'s `TARGET_BLOCKED_REASON` has an `assess` entry
+again. This time the requirement is **also enforced server-side**, in
+`PatchChangeRequest` itself — not just the frontend courtesy check — so no
+direct API caller can bypass it: a `{state: "assess"}` PATCH with no
+`assignedTeamId` in the same request, and none already on the record, is
+rejected with a `ValidationError` before anything is written.
 
 **Writing `AssignedTeamID` is now wired too.** `PatchChangeRequestRequest.
 AssignedTeamID` sets `work_item.assignment_group_id` the same way
@@ -2573,6 +2603,72 @@ different field with no confirmed equivalence to this one (see this file's
 own comment on `CreateChangeRequestFromServiceNow`). Filtering search
 results by it (the parsed filter array's `assignmentGroupId`) is also still
 unwired — see `changeRequestWhereClause`'s own comment.
+
+**The moment a change request actually enters Assess, the assigned team's
+own members are auto-provisioned as that stage's approvers.** By explicit
+product decision: a real change request was found live sitting in Assess
+with its own Approvals tab completely empty — "no approval stages recorded
+for this change request" — with no way for anyone to ever approve it into
+Authorize, because nothing anywhere writes `approval_stage`/
+`approval_stage_approver` rows on this data source; those are normally only
+ever populated by `csm-sync-service` mirroring ServiceNow's own
+`sysapproval_group`/`sysapproval_approver` tables, and this particular
+record evidently had none synced (or none in ServiceNow at all — the two
+cases can't be told apart from here). `PatchChangeRequest` now closes that
+gap itself: whenever a `{state: "assess"}` patch succeeds and the work item
+has no `approval_stage` row yet, it creates one (`assignment_group_id` = the
+effective assigned team from this same request or already on the record),
+then inserts one `requested` `approval_stage_approver` row for every
+`team_member` whose **`group_id`** (not `team_id` — see below) matches that
+team, all inside the same transaction as the state write. `GetChangeRequestApprovals`
+needed no changes at all — it already renders whatever `approval_stage`/
+`approval_stage_approver` rows exist, regardless of who wrote them.
+
+Scoped to "no `approval_stage` exists yet" so a resent `{state: "assess"}`
+(a retry, or an unrelated field edit while already in Assess) can never
+duplicate the stage or re-seed approvers over whatever
+`DecideChangeRequestApproval` has since done to it — that method owns
+everything about an existing stage from the moment this provisioning step
+creates it.
+
+**Two correctness issues caught on CodeRabbit review of this same addition,
+both fixed here:**
+
+1. **An assigned team with no members used to still create an empty stage.**
+   The original ordering created `approval_stage` first, then queried
+   `team_member` — if that query came back empty, the transaction still
+   committed a stage with zero approvers, and since "no `approval_stage`
+   exists yet" is exactly the condition this whole block gates on, a later
+   `{state: "assess"}` PATCH would never retry provisioning either: the
+   change request was left stuck in Assess with an approval nobody could
+   ever decide. Fixed by querying and validating `team_member` **before**
+   creating the stage: an empty result now rejects the whole PATCH with a
+   `ValidationError` ("the assigned team has no members to provision as
+   Assess approvers") and leaves no `approval_stage` row behind at all,
+   rather than committing a dead-end one.
+2. **`team_member` has no unique constraint on `(user_id, group_id)`.** A
+   duplicated membership row would have queued one `approval_stage_approver`
+   INSERT per duplicate, seeding two `requested` rows for the same person.
+   The query is now `SELECT DISTINCT user_id`, not `SELECT user_id`.
+
+**`team_member.group_id` is the real column for this, and it is distinct
+from `team_member.team_id`.** `team_member` carries both: `team_id`
+(`NOT NULL`) is the hand-curated internal team registry's own FK (`team`,
+migration 0033 — what `POST /groups/search`/`GetUserGroups` read), while
+`group_id` (nullable) is a separate FK into the same `"group"` table
+`work_item.assignment_group_id`/`approval_stage.assignment_group_id`
+reference. These are two distinct tables with two distinct id spaces in
+general — checked directly: `team_member.group_id` was unpopulated (0 of
+160 rows) in the local compose stack's own seed data, and only one `team`
+row happens to share an id with a `"group"` row at all (the local seed
+script's own "Example Corp ABT" fixture, deliberately given matching ids
+purely for that one fixture's convenience, not a general guarantee). Do not
+substitute `team_id` for this lookup even though the one local test fixture
+would appear to work either way — `group_id` is the column whose FK
+actually points at the same `"group"` row the rest of this feature uses
+everywhere else, and is presumably populated in real synced environments by
+`csm-sync-service` mirroring ServiceNow's own `sys_user_grmember`, the same
+way `assignment_group_id` itself is populated from `sys_user_group`.
 
 **Fields still with no real column anywhere, left unset rather than
 guessed at** (see `ChangeRequestRepository`'s own doc comment for the full
@@ -3372,10 +3468,11 @@ real ones. `SearchCaseView.Severity`/`IssueType` were already `*string`
 (so already correct); only its `State` needed the same fix. Fixed by
 making all five (`Case.Severity/IssueType/State`, `CaseView.Severity/
 IssueType/State`, `SearchCaseView.State`) pointers, and
-`CaseRepository.UpdateCase`'s `previousSeverity` return value too (used by
-`caseService.detectBillableStatusChange` for the LOW-severity-boundary
-check, which now treats a nil severity as "not LOW" on either side of the
-comparison rather than crashing or silently comparing against `""`).
+`CaseRepository.UpdateCase`'s `previousSeverity` return value too (used for
+its own internal LOW-severity-boundary check — see "Event Hub publishing"
+above, `recomputeTimeCardsBillable` — which treats a nil severity as "not
+LOW" on either side of the comparison rather than crashing or silently
+comparing against `""`).
 
 The ServiceNow-backed path (`sn_case_service.go`) always supplies a real
 value for these three, so its many read sites (map lookups keyed by
@@ -3781,7 +3878,7 @@ backs both endpoints:
 
 **Left empty with a TODO comment, not fabricated** (per this codebase's
 existing convention of flagging genuine data-source gaps rather than
-inventing data): `SystemMetadataResponse.TimeZones`/`FeedbackEmojis` (static
+inventing data): `SystemMetadataResponse.FeedbackEmojis` (static
 ServiceNow-side config, not project/case data); `SeverityBasedAllocationTime`
 (no SLA-allocation-time table exists);
 `ProjectFeatures.AcceptedSeverityValues` and every `Has*Access`/product-
@@ -3790,7 +3887,28 @@ columns exist anywhere in the Postgres schema -- checked directly against
 the `project` table's full column list, not just assumed). (`CallRequestStates`
 used to be on this list; `customer_call` -- migration 0073 -- has since
 landed, so it's now read live from `customer_call_state_enum` like every other
-choice list. See "Call requests and the service-request catalog" below.)
+choice list. See "Call requests and the service-request catalog" below.
+`TimeZones` used to be on this list too; see below.)
+
+**`SystemMetadataResponse.TimeZones` is now read from a real `timezone`
+table** (`value`, `label`, `utc_offset`, `dst`; 39 rows at the time this was
+wired up) via `ReferenceDataRepository.ListTimeZones`, mapped `value -> id`/
+`label -> label` into the same `{id, label}` `domain.ChoiceListItem` shape
+the ServiceNow-backed response already used -- no wire-contract change.
+**This table is not declared anywhere in this repo's own `migrations/`** --
+same "built outside this directory" class as several tables documented in
+"Staging schema drift" below; its existence and exact column names/types
+were confirmed by querying the live staging database directly (`information_schema.columns`),
+not by finding a migration for it. Deliberately not reconciled against the
+ServiceNow choice list's own 54-entry version (confirmed, by hand, against a
+live HAR capture of the ServiceNow-backed `GET /metadata` response) -- the
+two lists disagree in both size and some labels (e.g. ServiceNow's separate
+`Asia/Shanghai`="China" and `Asia/Singapore`="Singapore / Malaysia /
+Philippines" entries are one consolidated `Asia/Singapore` row here), which
+is this table's own deliberate, independent curation, not a migration gap to
+fix. `utc_offset`/`dst` exist on the table but have no slot in
+`ChoiceListItem` -- left unread rather than widening that contract for data
+nothing consumes yet.
 
 **`GlobalService.GlobalSearch` (`POST /search`) still has no Postgres
 implementation** -- cross-entity project+case search is a materially larger
@@ -4340,10 +4458,14 @@ above), `groups` (the teams from `team_member`, from which the BFF derives the
 profile's team block) and, for customers only (`user_type` EXTERNAL, emitted as
 `customer`), `projectAccess`.
 
-- **It is a dedicated type, not `SNUserDetail`.** That type always sends `lockedOut`,
-  `timeZone` and per-project `notificationsEnabled`, none of which this schema stores,
-  and the page shows a "Locked out: No" chip whenever `lockedOut` is present, so
-  reusing it would assert something unknowable. Those fields are omitted.
+- **It is a dedicated type, not `SNUserDetail`.** That type always sends `lockedOut`
+  and per-project `notificationsEnabled`, neither of which this schema stores, and the
+  page shows a "Locked out: No" chip whenever `lockedOut` is present, so reusing it
+  would assert something unknowable. Those two fields are omitted. `timeZone` is a
+  separate case — `"user".timezone` is a real column (see "GET/PATCH /users/me and
+  the timezone column" below) — but `UserDetail` doesn't carry it today either, since
+  nothing has asked for a user's timezone on this specific (by-id, not-self) profile
+  read; only `GetMe`/`PatchMe` expose it so far.
 - **`projectAccess`** is one row per `project_contact` invited under the user's email:
   `contactEmail` is the row's email, `contactRecordPresent` is `account_contact_id IS NOT
   NULL`, `contactRecordEmail` is the linked `account_contact.user_name` (it differs from
@@ -4357,6 +4479,32 @@ profile's team block) and, for customers only (`user_type` EXTERNAL, emitted as
 - Enrichment failures are errors, not silently partial profiles (the ServiceNow adapter
   degrades to empty blocks; a database error here is a real fault).
 - Like the other user routes this does no per-caller scoping; the BFF gates it.
+
+## GET/PATCH /users/me and the timezone column
+
+`"user".timezone` (`character varying`) is a real column, confirmed directly
+against the live database — it is **not declared anywhere in this repo's own
+`migrations/`**, same "built outside this directory" class as the `timezone`
+reference table (see "GET /metadata and GET /projects/{id}/metadata" above).
+`GetMe` was already wiring `domain.User.Timezone` through to its own response
+(`GetUserMeResponse.TimeZone`) before this was fixed — it just always came
+back `nil`, since `userColumns`/`prefixUserColumns`/`scanUser` never selected
+the column at all. Both now do.
+
+**`PATCH /users/me` didn't exist on this data source until now.**
+`UserService` (the Postgres interface) had no `PatchMe` method whatsoever —
+unlike `GetMe`, which has always had a real Postgres implementation
+alongside the ServiceNow one, this route was registered only inside the
+`snUserHandler != nil` branch in `routes.go`, so a Postgres deployment 404'd
+on it outright. `UserService.PatchMe`/`UserRepository.UpdateUserTimeZone`
+now exist, resolving the caller the exact same way `GetMe` does
+(`x-user-id-token`'s email claim → `GetUserByEmail`, never a caller-supplied
+id) and writing `"user".timezone` for that row alone — a user can only ever
+update their own timezone through this endpoint, same as the ServiceNow
+path's own scoping. `timezone` is free text with no FK/enum tying it to the
+`timezone` reference table, so any non-empty value is accepted as-is; only
+a blank value is rejected (`"timeZone is required"`, mirroring
+`snUserService.PatchMe`'s own validation).
 
 ## POST /users creates a new "user" row (Postgres-only)
 
@@ -4661,3 +4809,40 @@ Missing a `sysidToUUID()` call on a response ID means callers receive a bare sys
 
 - **Security fixes in PRs** — when a change is made to fix a security issue (gosec findings, input sanitization, etc.), do not mention it in the PR title or description; describe the change in neutral functional terms only
 - **Run govulncheck on every change** — `govulncheck ./...` (install once: `go install golang.org/x/vuln/cmd/govulncheck@latest`) must report no vulnerabilities before opening a PR. Most findings here are Go standard-library CVEs tied to the toolchain patch version pinned in `go.mod`'s `go` directive — bump it to the latest `1.26.x` patch (and run `go mod tidy` so the toolchain download matches) rather than working around the symptom. A finding in a third-party module (e.g. `golang.org/x/text`, pulled in transitively via `pgx`) is fixed with `go get <module>@<fixed-version>`
+
+## Incident report flows (migration 0181)
+
+Ports two ServiceNow flows, both "Incident Updated where State changes to X", one step each:
+
+| SN flow | Trigger | Postgres effect |
+|---|---|---|
+| Create Incident Report Task | state → `IN_PROGRESS` | inserts `work_item` (type `INCIDENT_TASK`, number from `next_portal_work_item_number()`) + `incident_task`: subject `[Incident Report] Create the incident report for <number>`, service / assignment group / assignee copied from the incident, priority `CRITICAL`, type `INCIDENT_REPORT`, state `OPEN` |
+| Incident Report Generator | state → `RESOLVED` | overwrites `incident.incident_report` with SN's HTML template: number, priority label, created time (UTC) filled; Timeline … Next Steps left as `-` |
+
+**Postgres only, by design.** In dual-write mode ServiceNow's own flows keep writing ServiceNow;
+this writes the side the portal reads. It never calls ServiceNow (the drainer has no user token,
+and SN has no incident-task create endpoint).
+
+**Mechanism.** 0181 attaches 0051's `trg_event_outbox` to `incident` (AFTER UPDATE only — like
+SN, an incident *inserted* already In Progress creates no task). `IncidentReportDrainer`
+(`internal/service/incident_report_service.go`) reads `entity_type = 'incident'` rows.
+
+**Unlike the CR / cloud-status drainers, nothing is marked done at claim time.** Each row is
+locked (`FOR UPDATE SKIP LOCKED`), applied, and marked published in ONE transaction; a crash or
+failed write rolls all of it back and the row is retried. 0181 adds `attempts`, `last_error`,
+`last_attempt_on` to `event_outbox` for this: backoff 30s doubling to a 1h cap, parked after
+`IncidentReportMaxAttempts` (10, ≈3h). Re-drive a parked row with
+`UPDATE event_outbox SET published_on = NULL, attempts = 0 WHERE id = …`.
+
+The generator's own write is an incident UPDATE too, so it lands in the outbox — with only
+`incident_report` in its diff, which the drainer acknowledges as a no-op. Do not "fix" that by
+filtering in the trigger.
+
+**No on/off switch, like the ServiceNow flows.** The drainer starts whenever there is a database
+pool (`INCIDENT_REPORT_POLL_INTERVAL`, default 5s, is the only setting) — even with
+`DATA_SOURCE=servicenow`, because a drainer that is off lets the trigger's rows pile up and replays
+them as stale tasks when it comes on. Always running means there is never such a backlog, so there
+is no start cutoff and no age limit: a change is applied however late, and an outage only delays.
+
+Tests: `incident_report_service_test.go` (unit), `incident_report_integration_test.go`
+(`INCIDENT_REPORT_TEST_DSN`, real DB with all migrations: both flows, rollback, backoff, retry).

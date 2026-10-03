@@ -39,6 +39,7 @@ import (
 
 	"github.com/adhocore/gronx"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/announcementpublish"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/availability"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/cloudstatus"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/engine"
 	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/entitycases"
@@ -137,6 +138,35 @@ func main() {
 	if err != nil {
 		slog.Error("failed to construct entity-service outage-communication client", "err", err)
 		os.Exit(1)
+	}
+
+	// The availability sweep's own client. Same deployment and credentials
+	// again, and a separate client for the same reason as the others: a
+	// distinct endpoint whose timeout differs materially. This one allows
+	// five minutes where the neighbouring sweeps allow sixty seconds --
+	// ~146 subjects, each with a twelve-month outage query and up to eight
+	// rows written, is a normal run here rather than a sign of trouble.
+	//
+	// *** OFF UNLESS AVAILABILITY_RECALC_ENABLED=true. *** ServiceNow's
+	// "Calculate Availability" job still writes service_availability (mirrored
+	// in by csm-sync-service), and that table has no unique constraint on a
+	// period's natural key: with both running, matching periods can end up
+	// with two rows. Turning this on is a paired change with switching
+	// ServiceNow's job off -- the same shape as CLOUD_STATUS_ENABLED.
+	availabilityEnabled := envBool("AVAILABILITY_RECALC_ENABLED", false)
+	var availabilityClient *availability.Client
+	if availabilityEnabled {
+		availabilityClient, err = availability.NewClient(availability.Config{
+			BaseURL:      entityServiceBaseURL,
+			TokenURL:     oauthTokenURL,
+			ClientID:     oauthClientID,
+			ClientSecret: oauthClientSecret,
+			Scopes:       entityServiceScopes,
+		})
+		if err != nil {
+			slog.Error("failed to construct entity-service availability client", "err", err)
+			os.Exit(1)
+		}
 	}
 
 	// Same entity-service deployment and credentials again — a fourth,
@@ -261,6 +291,9 @@ func main() {
 
 	const outageNotifyTaskName = "outage_internal_notification"
 	outageNotifyTo, outageNotifyCc := recipientsFor(recipientOverrides, outageNotifyTaskName)
+
+	const availabilityTaskName = "availability_recalculation"
+	availabilityTo, availabilityCc := recipientsFor(recipientOverrides, availabilityTaskName)
 
 	const outageCommTaskName = "outage_communication"
 	outageCommTo, outageCommCc := recipientsFor(recipientOverrides, outageCommTaskName)
@@ -406,6 +439,40 @@ func main() {
 			Handler:  cloudstatus.DeliverDue(cloudStatusClient, cloudStatusWebhook),
 			To:       cloudStatusTo,
 			Cc:       cloudStatusCc,
+		})
+	}
+
+	// Recomputes every committed service offering's uptime and rewrites
+	// service_availability -- the Go port of ServiceNow's "Calculate
+	// Availability" job, which has run nightly since 2022 and whose
+	// 212,904 rows the Cloud Status Dashboard reads on every page load.
+	//
+	// *** THIS IS THE PRODUCER FOR THREE ALREADY-PORTED ENDPOINTS. ***
+	// /cloud-status/monitors, /availabilities and /availability-history
+	// all read that table, and nothing in Postgres has ever written it:
+	// csm-sync-service mirrors ServiceNow's output. At cutover the
+	// dashboard's figures would simply stop advancing, with no error
+	// anywhere, because reading a table nobody updates looks exactly
+	// like reading a table where nothing happened.
+	//
+	// *** 03:00 UTC, NOT 10:00. *** ServiceNow fires at 10:00 UTC and
+	// computes the PREVIOUS day under the legacy engine. v2 computes
+	// TODAY, continuously, so the hour no longer carries that meaning
+	// and the only thing it needs to be is quiet. 03:00 UTC is 08:30 in
+	// Asia/Colombo -- before the working day, after the overnight
+	// batch window.
+	//
+	// Registering this is a paired change with disabling ServiceNow's
+	// "Calculate Availability" job: two writers on one table, keyed
+	// differently, would double every subject's rows. Hence
+	// AVAILABILITY_RECALC_ENABLED, default false (see the client above).
+	if availabilityEnabled {
+		tasks = append(tasks, registry.Task{
+			Name:     availabilityTaskName,
+			Schedule: scheduleFor(scheduleOverrides, availabilityTaskName, "0 3 * * *"),
+			Handler:  availability.RecalculateAvailability(availabilityClient),
+			To:       availabilityTo,
+			Cc:       availabilityCc,
 		})
 	}
 

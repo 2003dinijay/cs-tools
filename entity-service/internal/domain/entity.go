@@ -345,12 +345,16 @@ type SearchSNUsersResponse struct {
 
 // GetUserMeResponse is the response for GET /users/me from the ServiceNow data source.
 type GetUserMeResponse struct {
-	ID        string   `json:"id"`
-	Email     string   `json:"email"`
-	FirstName *string  `json:"firstName,omitempty"`
-	LastName  string   `json:"lastName"`
-	TimeZone  *string  `json:"timeZone,omitempty"`
-	Roles     []string `json:"roles"`
+	ID        string  `json:"id"`
+	Email     string  `json:"email"`
+	FirstName *string `json:"firstName,omitempty"`
+	LastName  string  `json:"lastName"`
+	TimeZone  *string `json:"timeZone,omitempty"`
+	// UserType distinguishes staff from customer/partner contacts, matching SNUser's own
+	// field. Exposed for the same reason it is on SNUser -- a caller may need to tell them
+	// apart -- and also drives whether Groups below is populated.
+	UserType UserType `json:"userType,omitempty"`
+	Roles    []string `json:"roles"`
 	// Groups is every group the caller belongs to, which is what a caller
 	// holding the team registry needs to resolve their team. Empty when the
 	// membership lookup failed — it is best-effort and never fails the
@@ -1584,7 +1588,13 @@ type ProjectMetadataResponse struct {
 	CaseTypes                   []ReferenceTableItem `json:"caseTypes"`
 	EngagementTypes             []ChoiceListItem     `json:"engagementTypes"`
 	EngagementPaymentTypes      []ChoiceListItem     `json:"engagementPaymentTypes"`
-	Features                    ProjectFeatures      `json:"features"`
+	// ResolutionCodes/Causes back the resolution fields PATCH /cases/{id}
+	// requires when closing (or proposing a solution for) a plain "case" --
+	// see UpdateCase's own comment on that requirement. ID is the value to
+	// send back on resolutionCode/cause; Label is a display string.
+	ResolutionCodes []ChoiceListItem `json:"resolutionCodes"`
+	Causes          []ChoiceListItem `json:"causes"`
+	Features        ProjectFeatures  `json:"features"`
 }
 
 // ProjectStatsOutstandingCount groups the outstanding-work-item counts
@@ -1945,8 +1955,9 @@ type DeployedProductVersionRef struct {
 
 // DeployedProductView is the enriched search result for a deployed product.
 // It embeds deployment, product, and version as named refs and uses createdOn/updatedOn naming.
-// Cores, TPS, Category, and Updates are SN-only fields; they are always null/empty for the
-// Postgres path.
+// Category is a lower-case code ("ms", "pc", "pdp", ...) on every data source, matching
+// SearchDeployedProductsRequest.ProductCategories and the project metadata's product
+// category lists.
 type DeployedProductView struct {
 	ID         string                     `json:"id"`
 	Deployment EntityRef                  `json:"deployment"`
