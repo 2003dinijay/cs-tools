@@ -960,7 +960,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		snIncidentMirrorSvc := service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, nil)
 		activeIncidentSvc = service.NewIncidentServiceWithSNMirror(incidentRepo, userRepo, snIncidentMirrorSvc, eventPublisher, snWritebackDispatcher)
 	default:
-		activeIncidentSvc = service.NewIncidentService(incidentRepo)
+		activeIncidentSvc = service.NewIncidentService(incidentRepo, eventPublisher)
 	}
 	incidentHandler := handler.NewIncidentHandler(activeIncidentSvc)
 

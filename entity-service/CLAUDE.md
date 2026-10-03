@@ -967,6 +967,14 @@ revisited.
   `csm-notification-service` at all. Consuming events and sending
   emails/Chat alerts/calls is never this service's job — only publishing
   the raw fact that something happened is.
+- **`incidentService.createIncidentPortal`** (plain `DATA_SOURCE=postgres`)
+  publishes the same `incident.created`, through the same
+  `publishIncidentCreatedEvent` the dual-write path uses, once the insert
+  has committed. That create reproduces ServiceNow's
+  `IncidentUtils.createIncident`: state New, priority from impact × urgency
+  (`incidentPriorityFor`), the optional fields it sets (subcategory,
+  assigned engineer, `cmdb_ci_id`, watch list), and `additionalComments` /
+  `workNotes` as COMMENT / WORK_NOTE rows, all in one transaction.
 - **`snCaseService.CreateCaseComment`** publishes `case.comment_added` via
   `publishCommentAdded`, called after the SN comment-create call succeeds.
   Enriches via `GetCaseByID` for `ProjectID`/`CaseTitle`/`Recipients`, the
