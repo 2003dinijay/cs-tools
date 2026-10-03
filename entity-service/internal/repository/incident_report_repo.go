@@ -26,7 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// IncidentOutboxEntityType is the event_outbox entity_type migration 0178's
+// IncidentOutboxEntityType is the event_outbox entity_type migration 0181's
 // trigger writes for incident row changes (trg_event_outbox uses
 // TG_TABLE_NAME).
 const IncidentOutboxEntityType = "incident"
@@ -92,7 +92,7 @@ type IncidentReportTx interface {
 // Unlike ClaimChanges (cr_notice_repo.go), a row is marked published only in
 // the transaction that applied its effect, never at claim time: a crash or a
 // failed write leaves the row unpublished and the next pass retries it. See
-// migration 0178 for why the incident flows need that and the notices do not.
+// migration 0181 for why the incident flows need that and the notices do not.
 type IncidentReportRepository interface {
 	// PendingChanges lists unpublished incident outbox ids that are due,
 	// oldest first: a row that failed before waits out its backoff
@@ -281,7 +281,7 @@ func (t incidentReportTx) CreateReportTask(ctx context.Context, task NewIncident
 //
 // Touches work_item.updated_on/updated_by too, as any other edit of the
 // incident would. incident itself has no audit columns (they live on
-// work_item), so this UPDATE on incident fires the 0178 trigger with only
+// work_item), so this UPDATE on incident fires the 0181 trigger with only
 // incident_report in its diff -- which carries no state change and is
 // ignored by the drainer, not looped on.
 func (t incidentReportTx) SetIncidentReport(ctx context.Context, incidentID, report, updatedBy string) error {

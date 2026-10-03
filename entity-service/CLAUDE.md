@@ -4654,7 +4654,7 @@ Missing a `sysidToUUID()` call on a response ID means callers receive a bare sys
 - **Security fixes in PRs** — when a change is made to fix a security issue (gosec findings, input sanitization, etc.), do not mention it in the PR title or description; describe the change in neutral functional terms only
 - **Run govulncheck on every change** — `govulncheck ./...` (install once: `go install golang.org/x/vuln/cmd/govulncheck@latest`) must report no vulnerabilities before opening a PR. Most findings here are Go standard-library CVEs tied to the toolchain patch version pinned in `go.mod`'s `go` directive — bump it to the latest `1.26.x` patch (and run `go mod tidy` so the toolchain download matches) rather than working around the symptom. A finding in a third-party module (e.g. `golang.org/x/text`, pulled in transitively via `pgx`) is fixed with `go get <module>@<fixed-version>`
 
-## Incident report flows (migration 0178)
+## Incident report flows (migration 0181)
 
 Ports two ServiceNow flows, both "Incident Updated where State changes to X", one step each:
 
@@ -4667,13 +4667,13 @@ Ports two ServiceNow flows, both "Incident Updated where State changes to X", on
 this writes the side the portal reads. It never calls ServiceNow (the drainer has no user token,
 and SN has no incident-task create endpoint).
 
-**Mechanism.** 0178 attaches 0051's `trg_event_outbox` to `incident` (AFTER UPDATE only — like
+**Mechanism.** 0181 attaches 0051's `trg_event_outbox` to `incident` (AFTER UPDATE only — like
 SN, an incident *inserted* already In Progress creates no task). `IncidentReportDrainer`
 (`internal/service/incident_report_service.go`) reads `entity_type = 'incident'` rows.
 
 **Unlike the CR / cloud-status drainers, nothing is marked done at claim time.** Each row is
 locked (`FOR UPDATE SKIP LOCKED`), applied, and marked published in ONE transaction; a crash or
-failed write rolls all of it back and the row is retried. 0178 adds `attempts`, `last_error`,
+failed write rolls all of it back and the row is retried. 0181 adds `attempts`, `last_error`,
 `last_attempt_on` to `event_outbox` for this: backoff 30s doubling to a 1h cap, parked after
 `IncidentReportMaxAttempts` (10, ≈3h). Re-drive a parked row with
 `UPDATE event_outbox SET published_on = NULL, attempts = 0 WHERE id = …`.

@@ -185,7 +185,7 @@ func main() {
 	// "Create Incident Report Task" and "Incident Report Generator". Always
 	// on wherever there is a database -- like the ServiceNow flows, there is
 	// no switch. Running even with DATA_SOURCE=servicenow is deliberate: the
-	// 0178 trigger records incident changes whenever the table is written,
+	// 0181 trigger records incident changes whenever the table is written,
 	// and a drainer that is off lets them pile up, to be replayed as stale
 	// tasks the day it comes on. Writes Postgres only, never ServiceNow, so it
 	// needs no caller token and no publisher.

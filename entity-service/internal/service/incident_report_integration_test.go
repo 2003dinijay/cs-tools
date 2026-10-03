@@ -27,7 +27,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
-// End-to-end against a real database with every migration applied: the 0178
+// End-to-end against a real database with every migration applied: the 0181
 // trigger records the state change, the drainer applies the flow, and the
 // outbox row is marked done only when the write commits.
 //
