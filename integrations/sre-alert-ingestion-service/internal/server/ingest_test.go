@@ -285,3 +285,23 @@ func TestIngest_SNSConfirmationAnswers200WithoutStoring(t *testing.T) {
 		t.Errorf("notification: status = %d, submits = %d; want 201 and stored", rec.Code, len(sub.calls))
 	}
 }
+
+// SNS posts every notification to the URL it subscribed, so the subscriber's ?team= arrives on each
+// alarm too; it is stamped on the stored alerts for the core's assignment-group routing.
+func TestIngest_StampsTheSubscribersTeamOnEveryAlert(t *testing.T) {
+	sub := &fakeSubmitter{}
+	body := `{"Type":"Notification","TopicArn":"arn:aws:sns:us-east-1:111:apollo-alerts","Message":"{\"AlarmName\":\"a\",\"AlarmArn\":\"arn:aws:cloudwatch:us-east-1:111:alarm:a\",\"NewStateValue\":\"ALARM\"}"}`
+	rec := do(t, newIngestServer(t, sub, nil), "POST", VendorRoutePrefix+"aws?team=Apollo", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
+	}
+	if len(sub.calls) != 1 || sub.calls[0][0].SourceTeam != "Apollo" {
+		t.Fatalf("submitted %+v; want SourceTeam Apollo", sub.calls)
+	}
+
+	sub = &fakeSubmitter{}
+	do(t, newIngestServer(t, sub, nil), "POST", VendorRoutePrefix+"aws", body)
+	if len(sub.calls) != 1 || sub.calls[0][0].SourceTeam != "" {
+		t.Fatalf("submitted %+v; want no SourceTeam without ?team=", sub.calls)
+	}
+}

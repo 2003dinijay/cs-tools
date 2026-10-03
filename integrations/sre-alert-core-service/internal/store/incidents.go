@@ -34,6 +34,7 @@ var incidentColumns = []string{
 	"metric_name", "description", "category", "environment", "source", "alert_ids", "alert_count", "work_notes",
 	"pending_notes", "first_seen", "last_seen", "state_checked_at", "fallback", "csm_confirmed", "csm_attempts",
 	"csm_permanently_failed", "csm_last_attempt_at", "version",
+	"assignment_group", "source_topic", "source_account", "source_team",
 }
 
 // Bounds unbounded lists so a flapping alert can't blow past Cosmos's row-size limit; AlertCount keeps growing regardless.
@@ -155,6 +156,7 @@ func (r *IncidentRepo) Upsert(ctx context.Context, alertID string, a model.Alert
 			FirstSeen:      now,
 			LastSeen:       now,
 		}
+		inc.TakeRouting(a)
 		stmt, names := qb.Insert("incidents_processed").Columns(incidentColumns...).Unique().ToCql()
 		applied, err := r.session.Query(stmt, names).WithContext(ctx).BindStruct(inc).ExecCASRelease()
 		if err != nil {

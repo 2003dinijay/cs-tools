@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sre-alert-ingestion-service/internal/model"
 	"strings"
 
 	"sre-alert-ingestion-service/internal/vendors/jsonnum"
@@ -65,16 +66,7 @@ var ErrInvalidStructure = errors.New("INVALID ELASTICSEARCH ALERT PAYLOAD STRUCT
 
 // Alert is the canonical alert model handed to the core component. Field order
 // and JSON keys match the structure the core accepts.
-type Alert struct {
-	Service          string `json:"service"`
-	MetricName       string `json:"metric_name"`
-	Severity         string `json:"severity"`
-	Category         string `json:"category"`
-	Environment      string `json:"environment"`
-	Source           string `json:"source"`
-	UniqueIdentifier string `json:"unique_identifier"`
-	Description      string `json:"description"`
-}
+type Alert = model.Alert
 
 // Config holds Tier-2 operator overrides (the analog of the ServiceNow
 // "edge.api.elasticsearch.alert.config" system property). Any field left empty

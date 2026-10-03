@@ -32,6 +32,22 @@ notifications independently until they're actually delivered.
   `CSM_UNKNOWN_SERVICE_ID` when there's no match. Open/closed state is always read
   back from CSM, never inferred locally, and that check is throttled
   (`state_check_interval`) so an alert storm doesn't hammer CSM with status polls.
+- **Assignment group and contact type.** These two fields are what route an incident
+  onto the SRE escalation ladder; an incident with neither gets no ladder. The group is
+  taken from the most specific signal the first alert carries, in this order:
+  1. the group the alert names for itself (an AWS alarm's `AlarmDescription`
+     `"assignment_group"`), as a group id or as a name mapped in
+     `CSM_ASSIGNMENT_GROUP_ROUTES` (`"group:<name>"`);
+  2. the matched CMDB service's support group;
+  3. the team the webhook was subscribed for, the URL's `?team=` (`"team:<name>"`);
+  4. the topic it was sent from, an AWS SNS `TopicArn` (`"topic:<arn>"`);
+  5. the account it was sent from, an AWS account id (`"account:<id>"`);
+  6. `CSM_DEFAULT_ASSIGNMENT_GROUP_ID`.
+
+  The log line `assignment group chosen` names the step that decided (`by=`). The
+  contact type is set when the alert's source has one in CSM's enum (Azure → `AZURE`,
+  Site24x7 → `SITE_247`, Sentinel → `SENTINEL`); AWS and the rest have none and route
+  by the group alone.
 - **Duplicate-create protection.** Before creating an incident, and again before
   every retry, the service searches CSM by `correlationId` (the dedup tag CSM
   stores on its own `correlation_id` field) so a lost create response never causes

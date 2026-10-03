@@ -19,6 +19,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"sre-alert-ingestion-service/internal/model"
@@ -77,6 +78,12 @@ func (in *Ingestor) Ingest(ctx context.Context, req Request) Result {
 	req.Body = nil // not needed while Submit waits
 	if err != nil {
 		return Result{Status: http.StatusBadRequest, Error: err.Error()}
+	}
+	// The subscriber's ?team= says who the webhook was set up for; the core routes by it.
+	if team := strings.TrimSpace(req.Team); team != "" {
+		for i := range alerts {
+			alerts[i].SourceTeam = team
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, in.waitTimeout)

@@ -30,4 +30,15 @@ type Alert struct {
 	Source           string `json:"source"`
 	UniqueIdentifier string `json:"unique_identifier"`
 	Description      string `json:"description"`
+	// AssignmentGroup is a CSM assignment group the alert names for itself (an AWS alarm's
+	// AlarmDescription "assignment_group"); the core resolves it to a group id. Optional.
+	AssignmentGroup string `json:"assignment_group,omitempty"`
+	// SourceTopic and SourceAccount say where the alert was sent from -- for AWS, the SNS
+	// TopicArn and the AWS account id. The core maps them to an assignment group when the
+	// alert names none and its service has no support group. Optional.
+	SourceTopic   string `json:"source_topic,omitempty"`
+	SourceAccount string `json:"source_account,omitempty"`
+	// SourceTeam is the webhook URL's ?team= parameter -- for AWS, the team the SNS subscription
+	// was set up for, since SNS posts every notification to the URL it subscribed. Optional.
+	SourceTeam string `json:"source_team,omitempty"`
 }

@@ -95,6 +95,7 @@ func (f *fakeIncidents) Upsert(_ context.Context, alertID string, a model.Alert,
 			FirstSeen:      now,
 			LastSeen:       now,
 		}
+		inc.TakeRouting(a)
 		f.byFP[fp] = inc
 		return inc, true, nil
 	}

@@ -196,3 +196,59 @@ func TestTransform_MetricNameDefaultWhenNoAlarmName(t *testing.T) {
 		t.Errorf("MetricName = %q, want Unknown Metric (hardcoded default)", a.MetricName)
 	}
 }
+
+// The core routes an alert-born incident to an assignment group by, in order: the group the alarm
+// names, its service's support group, then the SNS topic and AWS account it came from. Everything
+// but the service's group has to come out of the AWS payload here.
+func TestTransform_CarriesRoutingSignals(t *testing.T) {
+	alarm := sampleAlarm(map[string]any{
+		"AlarmDescription": `{"service":"choreo","assignment_group":" SRE - Apollo "}`,
+		"AWSAccountId":     "111122223333",
+	})
+	a, err := Transform(snsEnvelope(alarm), Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.AssignmentGroup != "SRE - Apollo" {
+		t.Errorf("AssignmentGroup = %q, want the trimmed AlarmDescription value", a.AssignmentGroup)
+	}
+	if a.SourceTopic != "arn:aws:sns:us-east-1:123456789012:alerts" {
+		t.Errorf("SourceTopic = %q, want the envelope's TopicArn", a.SourceTopic)
+	}
+	if a.SourceAccount != "111122223333" {
+		t.Errorf("SourceAccount = %q, want the alarm's AWSAccountId", a.SourceAccount)
+	}
+}
+
+// Without AWSAccountId the account comes from the AlarmArn; without a usable Message, from the TopicArn.
+func TestTransform_SourceAccountFallsBack(t *testing.T) {
+	a, err := Transform(snsEnvelope(sampleAlarm(nil)), Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.SourceAccount != "123456789012" || a.AssignmentGroup != "" {
+		t.Errorf("SourceAccount = %q, AssignmentGroup = %q; want the AlarmArn's account and no group", a.SourceAccount, a.AssignmentGroup)
+	}
+
+	raw := []byte(`{"Type":"Notification","TopicArn":"arn:aws:sns:eu-west-1:444455556666:sre-artemis","Message":"not json"}`)
+	a, err = Transform(raw, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.SourceTopic != "arn:aws:sns:eu-west-1:444455556666:sre-artemis" || a.SourceAccount != "444455556666" {
+		t.Errorf("parse-error alert: topic %q account %q; want both from the TopicArn", a.SourceTopic, a.SourceAccount)
+	}
+}
+
+func TestArnAccount(t *testing.T) {
+	for arn, want := range map[string]string{
+		"arn:aws:cloudwatch:us-east-1:123456789012:alarm:HighCPU": "123456789012",
+		"arn:aws:sns:us-east-1:123456789012:alerts":               "123456789012",
+		"not-an-arn": "",
+		"":           "",
+	} {
+		if got := arnAccount(arn); got != want {
+			t.Errorf("arnAccount(%q) = %q, want %q", arn, got, want)
+		}
+	}
+}

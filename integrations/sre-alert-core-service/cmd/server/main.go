@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -100,15 +101,23 @@ func main() {
 		ClientSecret: mustEnv(logger, "CSM_INTEGRATION_CLIENT_SECRET"),
 		Scopes:       splitComma(os.Getenv("CSM_INTEGRATION_SCOPES")),
 	})
-	notifier := notify.New(base.With("component", "notify"), csmClient, notify.Config{
-		CallerID:             mustEnv(logger, "CSM_CALLER_ID"),
-		UnknownServiceID:     mustEnv(logger, "CSM_UNKNOWN_SERVICE_ID"),
-		ServiceCacheTTL:      depCfg.Notify.ServiceCacheTTL.Duration(),
-		MaxAttempts:          depCfg.Notify.MaxAttempts,
-		RetryBaseDelay:       depCfg.Notify.RetryBaseDelay.Duration(),
-		HTTPTimeout:          depCfg.Notify.HTTPTimeout.Duration(),
-		ChatThreadingEnabled: depCfg.Notify.ChatThreadingEnabled,
-	})
+	notifyCfg := notify.Config{
+		CallerID:         mustEnv(logger, "CSM_CALLER_ID"),
+		UnknownServiceID: mustEnv(logger, "CSM_UNKNOWN_SERVICE_ID"),
+		// Optional: the group an incident is assigned to when its service has no support group.
+		DefaultAssignmentGroupID: os.Getenv("CSM_DEFAULT_ASSIGNMENT_GROUP_ID"),
+		AssignmentGroupRoutes:    assignmentGroupRoutes(logger),
+		ServiceCacheTTL:          depCfg.Notify.ServiceCacheTTL.Duration(),
+		MaxAttempts:              depCfg.Notify.MaxAttempts,
+		RetryBaseDelay:           depCfg.Notify.RetryBaseDelay.Duration(),
+		HTTPTimeout:              depCfg.Notify.HTTPTimeout.Duration(),
+		ChatThreadingEnabled:     depCfg.Notify.ChatThreadingEnabled,
+	}
+	if err := notify.ValidateGroupIDs(notifyCfg); err != nil {
+		logger.Error("invalid assignment group configuration", "error", err)
+		os.Exit(1)
+	}
+	notifier := notify.New(base.With("component", "notify"), csmClient, notifyCfg)
 	eng := engine.New(base.With("component", "engine"), alerts, incidents, notifier, defaults, depCfg.Notify.MaxCSMAttempts, depCfg.Notify.StateCheckInterval.Duration(), depCfg.Engine.DedupWindow.Duration(), engine.CSMRetryConfig{
 		BaseDelay:  depCfg.Notify.CSMRetryBaseDelay.Duration(),
 		Multiplier: depCfg.Notify.CSMRetryMultiplier,
@@ -215,6 +224,21 @@ func main() {
 }
 
 // mustEnv exits the process if name is unset; used for required config with no safe default.
+// assignmentGroupRoutes reads CSM_ASSIGNMENT_GROUP_ROUTES, a JSON object of routing key -> CSM group id.
+// Optional; one that does not parse stops startup rather than routing every incident to the default.
+func assignmentGroupRoutes(logger *slog.Logger) map[string]string {
+	raw := strings.TrimSpace(os.Getenv("CSM_ASSIGNMENT_GROUP_ROUTES"))
+	if raw == "" {
+		return nil
+	}
+	var routes map[string]string
+	if err := json.Unmarshal([]byte(raw), &routes); err != nil {
+		logger.Error("CSM_ASSIGNMENT_GROUP_ROUTES is not a JSON object of string to string", "error", err)
+		os.Exit(1)
+	}
+	return routes
+}
+
 func mustEnv(logger *slog.Logger, name string) string {
 	v := os.Getenv(name)
 	if v == "" {

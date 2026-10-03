@@ -40,27 +40,38 @@ type Alert struct {
 	Source           string `json:"source"`
 	UniqueIdentifier string `json:"unique_identifier"`
 	Description      string `json:"description"`
+	// AssignmentGroup, SourceTopic and SourceAccount are the ingestion service's routing signals
+	// (see its model.Alert): a group the alert names itself, and where it was sent from.
+	AssignmentGroup string `json:"assignment_group,omitempty"`
+	SourceTopic     string `json:"source_topic,omitempty"`
+	SourceAccount   string `json:"source_account,omitempty"`
+	SourceTeam      string `json:"source_team,omitempty"`
 }
 
 // Incident dedups alerts by fingerprint; Severity is numeric (1=Critical..5=OK); db tags drive gocqlx binding.
 type Incident struct {
 	Fingerprint string `json:"fingerprint" db:"fingerprint"`
 	// IncidentID is CSM's UUID for PATCH; empty until confirmed. IncidentNumber is the human-readable display id.
-	IncidentID     string   `json:"incident_id" db:"incident_id"`
-	IncidentNumber string   `json:"incident_number" db:"incident_number"`
-	Status         string   `json:"status" db:"status"`
-	Severity       int      `json:"severity" db:"severity"`
-	Impact         string   `json:"impact" db:"impact"`
-	Urgency        string   `json:"urgency" db:"urgency"`
-	Service        string   `json:"service" db:"service"`
-	MetricName     string   `json:"metric_name" db:"metric_name"`
-	Description    string   `json:"description" db:"description"`
-	Category       string   `json:"category" db:"category"`
-	Environment    string   `json:"environment" db:"environment"`
-	Source         string   `json:"source" db:"source"`
-	AlertIDs       []string `json:"alert_ids" db:"alert_ids"`
-	AlertCount     int      `json:"alert_count" db:"alert_count"`
-	WorkNotes      []string `json:"work_notes" db:"work_notes"`
+	IncidentID     string `json:"incident_id" db:"incident_id"`
+	IncidentNumber string `json:"incident_number" db:"incident_number"`
+	Status         string `json:"status" db:"status"`
+	Severity       int    `json:"severity" db:"severity"`
+	Impact         string `json:"impact" db:"impact"`
+	Urgency        string `json:"urgency" db:"urgency"`
+	Service        string `json:"service" db:"service"`
+	MetricName     string `json:"metric_name" db:"metric_name"`
+	Description    string `json:"description" db:"description"`
+	Category       string `json:"category" db:"category"`
+	Environment    string `json:"environment" db:"environment"`
+	Source         string `json:"source" db:"source"`
+	// The first alert's routing signals, kept so every CSM create attempt (including retries) assigns the same group.
+	AssignmentGroup string   `json:"assignment_group" db:"assignment_group"`
+	SourceTopic     string   `json:"source_topic" db:"source_topic"`
+	SourceAccount   string   `json:"source_account" db:"source_account"`
+	SourceTeam      string   `json:"source_team" db:"source_team"`
+	AlertIDs        []string `json:"alert_ids" db:"alert_ids"`
+	AlertCount      int      `json:"alert_count" db:"alert_count"`
+	WorkNotes       []string `json:"work_notes" db:"work_notes"`
 	// PendingNotes is the FIFO subset not yet confirmed by CSM; kept separate because WorkNotes is tail-trimmed.
 	PendingNotes []string  `json:"pending_notes" db:"pending_notes"`
 	FirstSeen    time.Time `json:"first_seen" db:"first_seen"`
@@ -80,6 +91,14 @@ type Incident struct {
 }
 
 // CSMRetryDue reports whether enough time has passed since the last CSM attempt, growing the wait exponentially (base, base*mult, ...) capped at maxDelay.
+// TakeRouting copies an alert's routing signals onto a new incident; the incident keeps the first alert's.
+func (i *Incident) TakeRouting(a Alert) {
+	i.AssignmentGroup = a.AssignmentGroup
+	i.SourceTopic = a.SourceTopic
+	i.SourceAccount = a.SourceAccount
+	i.SourceTeam = a.SourceTeam
+}
+
 func (i Incident) CSMRetryDue(now time.Time, base time.Duration, multiplier float64, maxDelay time.Duration) bool {
 	if i.CSMAttempts == 0 {
 		return true // never attempted yet

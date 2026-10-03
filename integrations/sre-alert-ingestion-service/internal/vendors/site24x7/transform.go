@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sre-alert-ingestion-service/internal/model"
 	"strings"
 
 	"sre-alert-ingestion-service/internal/vendors/jsonnum"
@@ -55,16 +56,7 @@ var ErrMissingBody = errors.New("MISSING REQUEST BODY DATA")
 var ErrMissingStatus = errors.New("MISSING REQUIRED FIELD: STATUS")
 
 // Alert is the canonical alert model handed to the core component.
-type Alert struct {
-	Service          string `json:"service"`
-	MetricName       string `json:"metric_name"`
-	Severity         string `json:"severity"`
-	Category         string `json:"category"`
-	Environment      string `json:"environment"`
-	Source           string `json:"source"`
-	UniqueIdentifier string `json:"unique_identifier"`
-	Description      string `json:"description"`
-}
+type Alert = model.Alert
 
 // Config is the operator-supplied "edge.api.site24x7.alert.config" system
 // property, reproduced exactly:

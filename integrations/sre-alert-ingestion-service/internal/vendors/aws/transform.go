@@ -40,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sre-alert-ingestion-service/internal/model"
 	"strings"
 
 	"sre-alert-ingestion-service/internal/vendors/jsonnum"
@@ -66,16 +67,7 @@ var defaults = map[string]string{
 var ErrMissingBody = errors.New("MISSING REQUEST BODY DATA")
 
 // Alert is the canonical alert model handed to the core component.
-type Alert struct {
-	Service          string `json:"service"`
-	MetricName       string `json:"metric_name"`
-	Severity         string `json:"severity"`
-	Category         string `json:"category"`
-	Environment      string `json:"environment"`
-	Source           string `json:"source"`
-	UniqueIdentifier string `json:"unique_identifier"`
-	Description      string `json:"description"`
-}
+type Alert = model.Alert
 
 // Config holds operator overrides (the analog of the ServiceNow
 // "edge.api.aws.alert.config" system property). Keyed lowercase, matching
@@ -122,6 +114,10 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Category:    configValue(cfg, "category"),
 		Environment: configValue(cfg, "environment"),
 		Source:      configValue(cfg, "source"),
+		// Where the notification came from, for the core's assignment-group routing; known
+		// even when the Message itself cannot be parsed.
+		SourceTopic:   vendorutil.Str(envelope, "TopicArn"),
+		SourceAccount: arnAccount(vendorutil.Str(envelope, "TopicArn")),
 	}
 
 	messageRaw := vendorutil.Str(envelope, "Message")
@@ -161,8 +157,26 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Source:           base.Source,
 		UniqueIdentifier: vendorutil.Str(messageObj, "AlarmArn"),
 		Description:      prettyJSON([]byte(messageRaw)),
+		// An alarm may name its own CSM assignment group in AlarmDescription; it beats every
+		// other routing signal the core has.
+		AssignmentGroup: strings.TrimSpace(vendorutil.Str(alarmDesc, "assignment_group")),
+		SourceTopic:     base.SourceTopic,
+		SourceAccount: vendorutil.FirstNonEmpty(
+			vendorutil.Str(messageObj, "AWSAccountId"),
+			arnAccount(vendorutil.Str(messageObj, "AlarmArn")),
+			base.SourceAccount,
+		),
 	}
 	return alert, nil
+}
+
+// arnAccount returns the account id of an ARN (arn:partition:service:region:account:resource), or "".
+func arnAccount(arn string) string {
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) < 6 || parts[0] != "arn" {
+		return ""
+	}
+	return parts[4]
 }
 
 // configValue applies the 2-tier resolution: operator config, then the
