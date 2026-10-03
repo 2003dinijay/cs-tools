@@ -14,8 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider, createTheme } from "@wso2/oxygen-ui";
 import UsageAndMetricsTabContent from "../UsageAndMetricsTabContent";
 
@@ -30,6 +30,24 @@ const deployments = Array.from({ length: 8 }, (_, i) => ({
   instanceCount: 1,
   productCount: 1,
 }));
+
+let resizeObserverCallback: ResizeObserverCallback | undefined;
+const resizeObserverObserve = vi.fn();
+const resizeObserverDisconnect = vi.fn();
+
+class ResizeObserverMock {
+  constructor(callback: ResizeObserverCallback) {
+    resizeObserverCallback = callback;
+  }
+
+  observe(target: Element): void {
+    resizeObserverObserve(target);
+  }
+
+  disconnect(): void {
+    resizeObserverDisconnect();
+  }
+}
 
 vi.mock("@api/usePostProjectDeploymentsSearch", () => ({
   usePostProjectDeploymentsSearchAll: () => ({ data: deployments }),
@@ -54,6 +72,13 @@ vi.mock("@features/usage-metrics/components/DeploymentUsageUploadDialog", () => 
 // 0 for scrollWidth/clientWidth/scrollLeft by default, so each test defines
 // them directly on the scroll container to simulate a specific scroll state.
 describe("UsageAndMetricsTabContent deployment tab scroll affordance", () => {
+  beforeEach(() => {
+    resizeObserverCallback = undefined;
+    resizeObserverObserve.mockClear();
+    resizeObserverDisconnect.mockClear();
+    vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+  });
+
   function mockScrollContainer(el: HTMLElement, overrides: Partial<Pick<HTMLElement, "scrollWidth" | "clientWidth" | "scrollLeft">>) {
     Object.defineProperty(el, "scrollWidth", { configurable: true, value: overrides.scrollWidth ?? 0 });
     Object.defineProperty(el, "clientWidth", { configurable: true, value: overrides.clientWidth ?? 0 });
@@ -94,6 +119,17 @@ describe("UsageAndMetricsTabContent deployment tab scroll affordance", () => {
 
     expect(screen.getByRole("button", { name: "Scroll deployment tabs right" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Scroll deployment tabs left" })).not.toBeInTheDocument();
+  });
+
+  it("recalculates the affordance when the tab scroller resizes", () => {
+    renderContent();
+    const scrollEl = getTabScrollContainer();
+    mockScrollContainer(scrollEl, { scrollWidth: 1200, clientWidth: 400, scrollLeft: 0 });
+
+    act(() => resizeObserverCallback?.([], {} as ResizeObserver));
+
+    expect(resizeObserverObserve).toHaveBeenCalledWith(scrollEl);
+    expect(screen.getByRole("button", { name: "Scroll deployment tabs right" })).toBeInTheDocument();
   });
 
   it("shows a left arrow (not right) when scrolled to the end", () => {

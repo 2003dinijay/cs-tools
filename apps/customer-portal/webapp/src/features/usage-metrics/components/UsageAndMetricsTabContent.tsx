@@ -114,12 +114,19 @@ export default function UsageAndMetricsTabContent(): JSX.Element {
   );
 
   // Re-check once the actual tab buttons have rendered (deploymentTabs
-  // arrives asynchronously) and on resize -- a container that fit every tab
-  // at a wider viewport may not after the window shrinks, and vice versa.
+  // arrives asynchronously), on window resize, and when the scroller itself
+  // resizes. The latter covers layout changes such as expanding the sidebar.
   useEffect(() => {
     updateTabScrollAffordance();
     window.addEventListener("resize", updateTabScrollAffordance);
-    return () => window.removeEventListener("resize", updateTabScrollAffordance);
+    const scroller = tabScrollRef.current;
+    const resizeObserver = new ResizeObserver(updateTabScrollAffordance);
+    if (scroller) resizeObserver.observe(scroller);
+
+    return () => {
+      window.removeEventListener("resize", updateTabScrollAffordance);
+      resizeObserver.disconnect();
+    };
   }, [deploymentTabs, updateTabScrollAffordance]);
 
   const defaultTab = deploymentTabs[0]?.id ?? "";
