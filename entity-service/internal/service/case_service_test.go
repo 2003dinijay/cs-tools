@@ -76,6 +76,7 @@ type stubCaseRepo struct {
 	setCaseTagSNSysID             func(ctx context.Context, caseID, tagID, snSysID string) error
 	getCaseTagSNSysID             func(ctx context.Context, caseID, tagID string) (*string, error)
 	markCaseFixIssued             func(ctx context.Context, caseID string) (time.Time, bool, error)
+	setTimeCardsBillableForCase   func(ctx context.Context, caseID string, isBillable bool) (int64, error)
 }
 
 func (s *stubCaseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
@@ -257,6 +258,16 @@ func (s *stubCaseRepo) MarkCaseFixIssued(ctx context.Context, caseID string) (ti
 		return s.markCaseFixIssued(ctx, caseID)
 	}
 	panic("not implemented")
+}
+
+// SetTimeCardsBillableForCase defaults to "0 rows updated, no error" rather
+// than panicking -- most existing tests exercise severity/tag changes that
+// don't care about this side effect.
+func (s *stubCaseRepo) SetTimeCardsBillableForCase(ctx context.Context, caseID string, isBillable bool) (int64, error) {
+	if s.setTimeCardsBillableForCase != nil {
+		return s.setTimeCardsBillableForCase(ctx, caseID, isBillable)
+	}
+	return 0, nil
 }
 func (s *stubCaseRepo) SearchCaseActivities(context.Context, domain.SearchCaseActivitiesRequest) ([]domain.CaseActivity, int, error) {
 	panic("not implemented")
@@ -1662,6 +1673,92 @@ func TestCaseService_UpdateCase_PublishesSeverityChanged(t *testing.T) {
 	}
 	if payload.OldSeverity != "LOW" || payload.NewSeverity != "CRITICAL" {
 		t.Errorf("payload severities = %q -> %q, want LOW -> CRITICAL", payload.OldSeverity, payload.NewSeverity)
+	}
+}
+
+// TestCaseService_UpdateCase_SeverityLeavingLowMakesTimeCardsBillable is the
+// regression guard for detectBillableStatusChange's direct, in-process
+// reaction (CaseRepository.SetTimeCardsBillableForCase) replacing the
+// previously-commented-out case.billable_status_changed event publish — see
+// that repository method's own doc comment for why this runs as a direct
+// write rather than an event-hub round trip.
+func TestCaseService_UpdateCase_SeverityLeavingLowMakesTimeCardsBillable(t *testing.T) {
+	newSeverity := domain.CaseSeverityCritical
+	oldSeverity := domain.CaseSeverityLow
+	var gotCaseID string
+	var gotIsBillable bool
+	var calls int
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{
+				ID: testDeploymentUUID, Number: "CS0001",
+				ProjectDetails: &domain.EntityRef{ID: "proj-1", Name: "Project One"},
+				WatchList:      []domain.WatchListUser{{Email: "watcher@example.com"}},
+			}, nil
+		},
+		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+			os := oldSeverity
+			return domain.Case{ID: req.ID, Severity: req.Severity}, &os, nil
+		},
+		setTimeCardsBillableForCase: func(_ context.Context, caseID string, isBillable bool) (int64, error) {
+			calls++
+			gotCaseID, gotIsBillable = caseID, isBillable
+			return 3, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+
+	if _, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, Severity: &newSeverity}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("expected exactly 1 SetTimeCardsBillableForCase call, got %d", calls)
+	}
+	if gotCaseID != testDeploymentUUID || gotIsBillable != false {
+		t.Errorf("SetTimeCardsBillableForCase(%q, %v), want (%q, false)", gotCaseID, gotIsBillable, testDeploymentUUID)
+	}
+}
+
+// TestCaseService_UpdateCase_SeverityEnteringLowMakesTimeCardsNonBillable is
+// TestCaseService_UpdateCase_SeverityLeavingLowMakesTimeCardsBillable's
+// mirror image: crossing INTO Low/S4 makes the case's time cards billable
+// (WSO2's own support-policy tier, see detectBillableStatusChange's own doc
+// comment).
+func TestCaseService_UpdateCase_SeverityEnteringLowMakesTimeCardsNonBillable(t *testing.T) {
+	newSeverity := domain.CaseSeverityLow
+	oldSeverity := domain.CaseSeverityCritical
+	var gotIsBillable bool
+	var calls int
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{
+				ID: testDeploymentUUID, Number: "CS0001",
+				ProjectDetails: &domain.EntityRef{ID: "proj-1", Name: "Project One"},
+				WatchList:      []domain.WatchListUser{{Email: "watcher@example.com"}},
+			}, nil
+		},
+		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+			os := oldSeverity
+			return domain.Case{ID: req.ID, Severity: req.Severity}, &os, nil
+		},
+		setTimeCardsBillableForCase: func(_ context.Context, caseID string, isBillable bool) (int64, error) {
+			calls++
+			gotIsBillable = isBillable
+			return 2, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+
+	if _, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, Severity: &newSeverity}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("expected exactly 1 SetTimeCardsBillableForCase call, got %d", calls)
+	}
+	if !gotIsBillable {
+		t.Errorf("gotIsBillable = false, want true (entering LOW/S4)")
 	}
 }
 
@@ -3397,6 +3494,72 @@ func TestCaseService_CreateCase_Announcement_SNFailureLeavesPostgresUntouched(t 
 	_, err := svc.CreateCase(context.Background(), validAnnouncementCreateCaseRequest())
 	if err == nil {
 		t.Fatal("expected an error when ServiceNow never accepts the announcement")
+	}
+}
+
+// TestCaseService_AddCaseTag_PatchTagOnLowSeverityMakesTimeCardsNonBillable
+// is the regression guard for detectPatchTagBillableOverride's direct,
+// in-process reaction (CaseRepository.SetTimeCardsBillableForCase)
+// replacing the previously-commented-out case.billable_status_changed
+// event publish.
+func TestCaseService_AddCaseTag_PatchTagOnLowSeverityMakesTimeCardsNonBillable(t *testing.T) {
+	lowSeverity := domain.CaseSeverityLow
+	var gotCaseID string
+	var gotIsBillable bool
+	var calls int
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ID: testDeploymentUUID, Severity: &lowSeverity}, nil
+		},
+		addCaseTag: func(_ context.Context, caseID, label, actorEmail string) (domain.Tag, error) {
+			return domain.Tag{ID: "t-1", Label: label}, nil
+		},
+		setTimeCardsBillableForCase: func(_ context.Context, caseID string, isBillable bool) (int64, error) {
+			calls++
+			gotCaseID, gotIsBillable = caseID, isBillable
+			return 1, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+
+	if _, err := svc.AddCaseTagAs(context.Background(), testDeploymentUUID, "Patch", "jane.doe@example.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("expected exactly 1 SetTimeCardsBillableForCase call, got %d", calls)
+	}
+	if gotCaseID != testDeploymentUUID || gotIsBillable != false {
+		t.Errorf("SetTimeCardsBillableForCase(%q, %v), want (%q, false)", gotCaseID, gotIsBillable, testDeploymentUUID)
+	}
+}
+
+// TestCaseService_AddCaseTag_NonPatchTagDoesNotTouchTimeCardBillability
+// proves the override is scoped to the "patch" label only -- any other tag
+// on a LOW-severity case must not touch time-card billability at all.
+func TestCaseService_AddCaseTag_NonPatchTagDoesNotTouchTimeCardBillability(t *testing.T) {
+	lowSeverity := domain.CaseSeverityLow
+	var calls int
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ID: testDeploymentUUID, Severity: &lowSeverity}, nil
+		},
+		addCaseTag: func(_ context.Context, caseID, label, actorEmail string) (domain.Tag, error) {
+			return domain.Tag{ID: "t-1", Label: label}, nil
+		},
+		setTimeCardsBillableForCase: func(context.Context, string, bool) (int64, error) {
+			calls++
+			return 0, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+
+	if _, err := svc.AddCaseTagAs(context.Background(), testDeploymentUUID, "regression", "jane.doe@example.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if calls != 0 {
+		t.Errorf("expected SetTimeCardsBillableForCase not to be called for a non-patch tag, got %d calls", calls)
 	}
 }
 

@@ -46,9 +46,6 @@ type caseService struct {
 	projectContactRepo repository.ProjectContactRepository
 	// publisher is nil when Event Hub is not configured — see
 	// snCaseService.publisher's own doc comment for the same convention.
-	// Currently only ever read by UpdateCase's (inert — see
-	// events.TypeCaseBillableStatusChanged's own doc comment)
-	// case.billable_status_changed detection.
 	publisher EventPublisherService
 	access    AccessService
 	// snWriteback/snMirror back CreateCase, UpdateCase, and CreateCaseComment's
@@ -2309,18 +2306,22 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 // detectBillableStatusChange checks whether a severity update just crossed
 // the LOW boundary in either direction — entering LOW means every time
 // card on this case should become billable, leaving it means they should
-// become non-billable (see events.CaseBillableStatusChangedPayload's own
-// doc comment for why LOW is the one severity that matters here). A
-// Postgres-backed case's Type is always "case" and can never change (see
-// this file's own UpdateCase, which rejects req.Type entirely on this data
-// source), so unlike the ServiceNow data source this reduces to a single
-// severity comparison — no Type-transition case to handle.
+// become non-billable (WSO2's own support-policy tier for LOW severity,
+// see sla_policy.go). A Postgres-backed case's Type is always "case" and
+// can never change (see this file's own UpdateCase, which rejects
+// req.Type entirely on this data source), so unlike the ServiceNow data
+// source this reduces to a single severity comparison — no Type-transition
+// case to handle.
 //
-// Publishing events.TypeCaseBillableStatusChanged is commented out below
-// rather than live — see that type's own doc comment: nothing consumes it
-// yet (Postgres has no time_cards table/repo/service at all today), so
-// publishing now would produce an event nothing acts on. The detection
-// itself is real; only the actual Publish call is inert.
+// Flips the case's time cards directly via CaseRepository.
+// SetTimeCardsBillableForCase rather than publishing an event for
+// csm-notification-service to react to — see that repository method's own
+// doc comment for why: this is a same-database write entity-service
+// already has transactional access to, not a notification to an external
+// system, so there's nothing an event-hub round trip would buy here.
+// Best-effort (log and continue): the severity update itself has already
+// succeeded by the time this runs, so a failure here must never undo or
+// fail that.
 func (s *caseService) detectBillableStatusChange(ctx context.Context, caseID string, oldSeverity, newSeverity *domain.CaseSeverity) {
 	oldLow := oldSeverity != nil && *oldSeverity == domain.CaseSeverityLow
 	newLow := newSeverity != nil && *newSeverity == domain.CaseSeverityLow
@@ -2329,23 +2330,12 @@ func (s *caseService) detectBillableStatusChange(ctx context.Context, caseID str
 	}
 	isBillable := newLow
 
-	// TODO: enable once a consumer exists for events.TypeCaseBillableStatusChanged
-	// (bulk-flipping every time card's IsBillable for caseId) — see that
-	// type's own doc comment for what's still missing.
-	//
-	// payload, err := json.Marshal(events.CaseBillableStatusChangedPayload{CaseID: caseID, IsBillable: isBillable})
-	// if err != nil {
-	// 	slog.ErrorContext(ctx, "case update: encode case.billable_status_changed payload failed", "caseId", caseID, "error", err)
-	// 	return
-	// }
-	// if s.publisher == nil {
-	// 	return
-	// }
-	// if err := s.publisher.Publish(ctx, events.TypeCaseBillableStatusChanged, caseID, payload); err != nil {
-	// 	slog.ErrorContext(ctx, "case update: publish case.billable_status_changed failed", "caseId", caseID)
-	// }
-
-	slog.InfoContext(ctx, "case update: severity crossed the billable boundary, event hub publish not yet enabled", "caseId", caseID, "isBillable", isBillable)
+	updated, err := s.repo.SetTimeCardsBillableForCase(ctx, caseID, isBillable)
+	if err != nil {
+		slog.ErrorContext(ctx, "case update: set time cards billable failed", "caseId", caseID, "error", err)
+		return
+	}
+	slog.InfoContext(ctx, "case update: severity crossed the billable boundary, time cards updated", "caseId", caseID, "isBillable", isBillable, "timeCardsUpdated", updated)
 }
 
 // validateCaseFieldValues rejects malformed ids and unknown enum spellings in the
@@ -2909,11 +2899,9 @@ func (s *caseService) GetAttachment(_ context.Context, _ string) (domain.Attachm
 // detectPatchTagBillableOverride's own doc comment for that history) — it
 // now actually attaches label to caseID, idempotently (a repeat call for an
 // already-attached label, case-insensitively, returns the existing tag
-// rather than erroring or duplicating). The "patch" + LOW-severity detection
-// still only logs: (a) case tags having real storage is now true, but (b)
-// no consumer exists yet for events.TypeCaseBillableStatusChanged (bulk-
-// flipping every time card's IsBillable for caseId), so the actual publish
-// stays commented out in detectPatchTagBillableOverride until that exists.
+// rather than erroring or duplicating). The "patch" + LOW-severity override
+// now actually flips the case's time cards too — see
+// detectPatchTagBillableOverride's own doc comment.
 func (s *caseService) AddCaseTag(ctx context.Context, caseID, label string) (domain.Tag, error) {
 	actor, err := s.resolveActor(ctx)
 	if err != nil {
@@ -3008,23 +2996,19 @@ func (s *caseService) addCaseTagAs(ctx context.Context, caseID, label, actorEmai
 // persist the tag (see AddCaseTag's own doc comment). It is a special case
 // of detectBillableStatusChange's normal "entering LOW/S4 severity makes
 // time cards billable" rule: a case tagged "patch" while at LOW severity
-// should eventually have its time cards non-billable regardless — WSO2
-// still covers a patch under support even for an otherwise best-efforts S4
-// case — but nothing in this codebase acts on that yet (see the TODO
-// below). Label matching is case/whitespace-insensitive, same reasoning as
-// this codebase's other free-text label lookups (e.g.
-// slaSeverityLabelAndColor in csm-notification-service). Unlike
-// detectBillableStatusChange, the eventual reaction is meant to be
-// one-directional: removing the tag (or adding any other label) should
-// never reverse it — only ever set isBillable=false, never back to true,
-// since there's no natural "un-patch" event to react to.
+// should have its time cards non-billable regardless — WSO2 still covers a
+// patch under support even for an otherwise best-efforts S4 case. Label
+// matching is case/whitespace-insensitive, same reasoning as this
+// codebase's other free-text label lookups (e.g. slaSeverityLabelAndColor
+// in csm-notification-service). Unlike detectBillableStatusChange, this
+// override is one-directional: removing the tag (or adding any other
+// label) never reverses it — only ever sets isBillable=false, never back
+// to true, since there's no natural "un-patch" signal to react to.
 //
-// Same commented-out-publish posture as detectBillableStatusChange: logs
-// only, since there is still no time_cards consumer to act on
-// events.TypeCaseBillableStatusChanged (see that type's own doc comment).
-// AddCaseTag itself now succeeds (see its own doc comment) -- the remaining
-// gap is purely the missing consumer, not the tag storage this was
-// originally blocked on.
+// Flips the case's time cards directly via CaseRepository.
+// SetTimeCardsBillableForCase, same as detectBillableStatusChange — see
+// that repository method's own doc comment for why this is a direct,
+// in-process write rather than an event-hub round trip.
 func (s *caseService) detectPatchTagBillableOverride(ctx context.Context, caseID, label string) {
 	if !strings.EqualFold(strings.TrimSpace(label), "patch") {
 		return
@@ -3042,25 +3026,12 @@ func (s *caseService) detectPatchTagBillableOverride(ctx context.Context, caseID
 		return
 	}
 
-	// TODO: enable once (a) case tags have real Postgres storage so
-	// AddCaseTag can actually succeed, and (b) a consumer exists for
-	// events.TypeCaseBillableStatusChanged (bulk-flipping every time
-	// card's IsBillable for caseId) — see that type's own doc comment for
-	// what's still missing there.
-	//
-	// payload, err := json.Marshal(events.CaseBillableStatusChangedPayload{CaseID: caseID, IsBillable: false})
-	// if err != nil {
-	// 	slog.ErrorContext(ctx, "add case tag: encode case.billable_status_changed payload failed", "caseId", caseID, "error", err)
-	// 	return
-	// }
-	// if s.publisher == nil {
-	// 	return
-	// }
-	// if err := s.publisher.Publish(ctx, events.TypeCaseBillableStatusChanged, caseID, payload); err != nil {
-	// 	slog.ErrorContext(ctx, "add case tag: publish case.billable_status_changed failed", "caseId", caseID)
-	// }
-
-	slog.InfoContext(ctx, "add case tag: patch tag detected on an S4 case, time cards would need to become non-billable once a real tag/time-card path exists (detection only, no action taken)", "caseId", caseID, "isBillable", false)
+	updated, err := s.repo.SetTimeCardsBillableForCase(ctx, caseID, false)
+	if err != nil {
+		slog.ErrorContext(ctx, "add case tag: set time cards billable failed", "caseId", caseID, "error", err)
+		return
+	}
+	slog.InfoContext(ctx, "add case tag: patch tag detected on an S4 case, time cards updated", "caseId", caseID, "isBillable", false, "timeCardsUpdated", updated)
 }
 
 // RemoveCaseTag implements CaseService.

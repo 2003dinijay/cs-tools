@@ -500,6 +500,16 @@ type CaseRepository interface {
 	// its own -- no explicit row lock or transaction is needed, unlike
 	// SetCaseWatchList. Returns a NotFoundError if caseID does not exist.
 	MarkCaseFixIssued(ctx context.Context, caseID string) (fixIssued time.Time, alreadySet bool, err error)
+	// SetTimeCardsBillableForCase bulk-updates every time_card row under
+	// caseID to isBillable, in one UPDATE -- see
+	// caseService.detectBillableStatusChange's own doc comment for why this
+	// reaction happens as a direct, in-process write here rather than via an
+	// event-hub round trip: it's a same-database write this service already
+	// has transactional access to, not a notification to an external
+	// system, so there's nothing an async hop would buy beyond latency and a
+	// new failure mode. Returns the number of rows updated (0 is not an
+	// error -- a case with no time cards yet is a normal state).
+	SetTimeCardsBillableForCase(ctx context.Context, caseID string, isBillable bool) (int64, error)
 	// SearchCaseActivities returns a paginated, newest-first feed combining
 	// the case's comments (comment, migration 0040) and complete
 	// attachments (case_attachment, migration 0106) into one merged
@@ -2735,6 +2745,15 @@ func (r *caseRepo) MarkCaseFixIssued(ctx context.Context, caseID string) (time.T
 		return time.Time{}, false, fmt.Errorf("mark case fix issued: read existing: %w", err)
 	}
 	return fixIssued, true, nil
+}
+
+// SetTimeCardsBillableForCase implements CaseRepository.
+func (r *caseRepo) SetTimeCardsBillableForCase(ctx context.Context, caseID string, isBillable bool) (int64, error) {
+	tag, err := r.db.Exec(ctx, `UPDATE time_card SET is_billable = $1 WHERE case_id = $2`, isBillable, caseID)
+	if err != nil {
+		return 0, fmt.Errorf("set time cards billable for case: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // UpdateCaseParent implements CaseRepository.
