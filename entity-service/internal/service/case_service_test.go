@@ -4184,6 +4184,41 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 			t.Fatal("mirror.patchCaseFields was never called")
 		}
 	})
+
+	// TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem's
+	// own "closed without resolution fields is rejected" case covers type
+	// "case" (the stub's getCaseByID returns no Type at all, which this
+	// requirement conservatively treats as "case" -- see UpdateCase's own
+	// comment on that fallback). This is the regression test for a real,
+	// reported bug: the exact same requirement fired for every other
+	// case-like type too -- engagement/service_request/
+	// security_report_analysis/announcement -- even though
+	// resolutionCode/cause/closeNotes have no backing column for any of
+	// them, and no close flow for those types ever collects them. Closing a
+	// Security Report (security_report_analysis) with no resolution fields
+	// must succeed.
+	t.Run("closing a non-case type without resolution fields is allowed", func(t *testing.T) {
+		repo := &stubCaseRepo{
+			getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
+				st := domain.CaseStateOpen
+				typ := "security_report_analysis"
+				return domain.CaseView{ID: id, State: &st, Type: &typ}, nil
+			},
+			updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+				st := *req.State
+				return domain.Case{ID: req.ID, State: &st}, nil, nil
+			},
+		}
+		dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+		mirror := &stubMirrorCaseService{patchCaseFieldsFn: func(_ context.Context, _ string, _ *domain.CaseState, _ *domain.CaseSeverity, _ *domain.CaseWorkState, _ *bool, _ *caseResolutionFields) (domain.UpdatedCase, error) {
+			return domain.UpdatedCase{}, nil
+		}}
+		svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, dispatcher, mirror, nil, "")
+
+		if _, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, State: &closed}); err != nil {
+			t.Fatalf("unexpected error closing a security report with no resolution fields: %v", err)
+		}
+	})
 }
 
 func TestCaseService_AggregateCases_GroupsAndCapsBuckets(t *testing.T) {

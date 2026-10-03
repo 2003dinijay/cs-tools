@@ -1306,17 +1306,6 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are only allowed when state is closed or solution_proposed"}
 		}
 	}
-	// Dual-write only: closed / solution_proposed require all three
-	// resolution fields. The mirrored data source enforces this too;
-	// enforcing it here keeps the stores from diverging (a Postgres-only
-	// close with no resolution data can never be mirrored). Plain Postgres
-	// mode keeps its current, looser behaviour.
-	if s.snWriteback != nil && req.State != nil && (*req.State == domain.CaseStateClosed || *req.State == domain.CaseStateSolutionProposed) {
-		if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
-			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
-		}
-	}
-
 	if req.WatchList != nil {
 		return s.updateCaseWatchList(ctx, req)
 	}
@@ -1381,6 +1370,31 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			slog.ErrorContext(ctx, "update case: enrich case for case.status_changed publish/activity failed", "caseId", req.ID)
 		} else {
 			before = &cv
+		}
+	}
+
+	// Dual-write only: closing (or proposing a solution for) a plain "case"
+	// requires all three resolution fields. The mirrored ServiceNow write
+	// enforces this too; enforcing it here keeps the stores from diverging
+	// (a Postgres-only close with no resolution data can never be mirrored).
+	// Plain Postgres mode keeps its current, looser behaviour.
+	//
+	// Scoped to type == "case" specifically -- found live as a real bug:
+	// closing an engagement/service_request/security_report_analysis/
+	// announcement (the other four case-like work_item types, see
+	// "Case-like work_item types" elsewhere in this codebase) hit this same
+	// requirement even though resolution_code/cause/close_notes are
+	// "case"-only columns (see updateCaseQuery) -- there is no way for any
+	// other type to ever satisfy it, and the webapp's own close flow for
+	// those types never collects these fields in the first place. A fetch
+	// failure above (before == nil) can't confirm the type, so this still
+	// conservatively requires the fields rather than silently exempting a
+	// case whose type just couldn't be read.
+	if s.snWriteback != nil && req.State != nil && (*req.State == domain.CaseStateClosed || *req.State == domain.CaseStateSolutionProposed) {
+		if before == nil || before.Type == nil || *before.Type == "case" {
+			if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
+				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
+			}
 		}
 	}
 
