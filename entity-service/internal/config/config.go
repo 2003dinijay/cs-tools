@@ -313,6 +313,13 @@ type Config struct {
 	// promptness, not correctness.
 	CloudStatusPollInterval time.Duration
 
+	// IncidentReportPollInterval is how often IncidentReportDrainer looks for
+	// incident changes in event_outbox (INCIDENT_REPORT_POLL_INTERVAL,
+	// default 5s). Same envDuration convention as CRNoticePollInterval. The
+	// drainer itself has no on/off switch: like the ServiceNow flows it
+	// ports, it runs wherever the data is.
+	IncidentReportPollInterval time.Duration
+
 	AuthIssuer             string
 	AuthJWKSURL            string
 	AuthUserTokenAudiences []string
@@ -440,6 +447,7 @@ func Load() *Config {
 		CloudStatusServiceIDs:                         splitComma(os.Getenv("CLOUD_STATUS_SERVICE_IDS")),
 		CloudStatusDrainerEnabled:                     os.Getenv("CLOUD_STATUS_DRAINER_ENABLED") == "true",
 		CloudStatusPollInterval:                       envDuration("CLOUD_STATUS_POLL_INTERVAL", 10*time.Second),
+		IncidentReportPollInterval:                    envDuration("INCIDENT_REPORT_POLL_INTERVAL", 5*time.Second),
 		SalesforceIngestRetryInterval:                 envDurationOrOff("SALESFORCE_INGEST_RETRY_INTERVAL", 5*time.Minute),
 		SalesEntityBaseURL:                            os.Getenv("SALES_ENTITY_BASE_URL"),
 		SalesEntityTokenURL:                           os.Getenv("SALES_ENTITY_TOKEN_URL"),
