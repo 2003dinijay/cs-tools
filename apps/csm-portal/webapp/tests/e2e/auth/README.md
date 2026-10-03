@@ -40,17 +40,17 @@ default; override with `E2E_BASE_URL`). It deliberately has its own
 `pnpm run dev` itself — it only ever points at a stack you already started.
 
 ```bash
-# Defaults (jane.doe@example.com / cs_engineer / engineer.json) — jane.doe is
-# a user entity-service's local seed data already recognizes; GET /users/me
-# resolves a caller's roles/groups/teams from entity-service's own stored
-# record for that email, NOT from the ID token's groups claim, so an email
-# with no matching entity-service user 404s here regardless of what's typed
-# into mock-oidc's Groups field. Pick (or ask the entity-service owner to
-# seed) an email that already exists there.
+# Defaults (jane.doe@example.com / cs_engineer / crApprover.json) — jane.doe
+# is a user entity-service's local seed data already recognizes; GET
+# /users/me resolves a caller's roles/groups/teams from entity-service's own
+# stored record for that email, NOT from the ID token's groups claim, so an
+# email with no matching entity-service user 404s here regardless of what's
+# typed into mock-oidc's Groups field. Pick (or ask the entity-service owner
+# to seed) an email that already exists there.
 pnpm run test:e2e:auth
 
 # A specific identity/role
-E2E_AUTH_EMAIL=jane.doe@example.com E2E_AUTH_GROUPS=cs_engineer E2E_AUTH_ROLE=engineer \
+E2E_AUTH_EMAIL=jane.doe@example.com E2E_AUTH_GROUPS=cs_engineer E2E_AUTH_ROLE=crApprover \
   pnpm run test:e2e:auth
 ```
 
@@ -63,11 +63,14 @@ Env vars (all optional):
   portal's actual role/team/group gating comes from entity-service's stored
   record for the email above, not from this value.
 - `E2E_AUTH_ROLE` — the output filename, `tests/e2e/storageState/<role>.json`
-  (default `engineer`). Not restricted to the two roles
-  `fixtures/test.ts`'s `withRole` currently knows about (`"approver" |
-  "engineer"`) — generating `cr-engineer.json` here is fine, but a spec can't
-  call `withRole(test, "cr-engineer")` until that union type is widened to
-  include it.
+  (default `crApprover` — the one role this script itself owns end to end;
+  never `"approver"`/`"engineer"`, both captured by hand against a real
+  staging backend, which a plain local-stack run of this script would
+  otherwise silently overwrite with a token that only works locally). Not
+  restricted to the roles `fixtures/test.ts`'s `withRole` currently knows
+  about (`"approver" | "engineer" | "crApprover"`) — generating a new name
+  here is fine, but a spec can't call `withRole(test, "<newRole>")` until
+  that union type is widened to include it.
 
 Re-run any time to mint a fresh bundle — mock-oidc's tokens carry a 1-hour
 TTL (see that service's own `signJWT` calls), so there's no "stale bundle"

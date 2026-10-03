@@ -20,6 +20,15 @@ GO_IMAGE="golang:1.26-alpine"
 # below runs inside the same golang:1.26-alpine container this session
 # already uses for Go work locally, with the module cache mounted as a
 # volume so repeated runs don't re-download dependencies.
+#
+# Deliberately no --network here: neither csm-portal/backend's own unit
+# tests nor entity-service's unit tests (the two callers of this helper)
+# touch Postgres, so neither needs the compose network to exist. Docker
+# refuses to start a container on a named network that isn't there, which
+# would otherwise block every push once the local stack is torn down --
+# only the dedicated Change Request integration-test invocation below
+# actually talks to Postgres, and it sets --network on its own separate
+# docker run call instead of going through this shared helper.
 run_go_test() {
     dir="$1"
     shift
@@ -27,7 +36,6 @@ run_go_test() {
         -v "$REPO_ROOT/$dir":/src \
         -v csm_pre_push_gomod:/go/pkg/mod \
         -w /src \
-        --network csm-platform-net \
         "$GO_IMAGE" go test "$@"
 }
 
@@ -79,10 +87,13 @@ run_webapp_tests() {
     # Browser-level coverage of the same lifecycle (compulsory-team gate,
     # Assess-entry auto-provisioning, approve/cancel-sibling cascade, terminal
     # display) against the real UI — only when the local docker-compose stack
-    # (webapp + mock-oidc) is actually reachable, since there's no sense
+    # (webapp + mock-oidc + the entity-service API the lifecycle spec's CR
+    # calls actually land on) is actually reachable, since there's no sense
     # minting a session or driving a browser against a stack that isn't up.
-    # Unlike the unit tests above, this needs a live backend to exercise.
-    if curl -sf -o /dev/null http://localhost:3001 && curl -sf -o /dev/null http://localhost:9100/healthz; then
+    # Checking only webapp+mock-oidc let this start the spec with the API
+    # itself down (e.g. mid-rebuild) — it would then fail every CR call and
+    # block the push on a false negative instead of skipping cleanly.
+    if curl -sf -o /dev/null http://localhost:3001 && curl -sf -o /dev/null http://localhost:9100/healthz && curl -sf -o /dev/null http://localhost:8081/health; then
         echo "[pre-push] local webapp + mock-oidc detected — running Change Request E2E lifecycle spec..."
         (cd "$REPO_ROOT/$WEBAPP_DIR" && \
             E2E_NO_WEBSERVER=1 E2E_AUTH_EMAIL=jane.doe@example.com E2E_AUTH_GROUPS=cs_engineer E2E_AUTH_ROLE=crApprover \
@@ -149,10 +160,23 @@ while read local_ref local_sha remote_ref remote_sha; do
         run_webapp_tests
         run_entity_service_tests
     else
-        CHANGED_FILES="$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null)"
-        echo "$CHANGED_FILES" | grep -q "^$BACKEND_DIR/" && run_backend_tests
-        echo "$CHANGED_FILES" | grep -q "^$WEBAPP_DIR/" && run_webapp_tests
-        echo "$CHANGED_FILES" | grep -q "^$ENTITY_SERVICE_DIR/" && run_entity_service_tests
+        if ! CHANGED_FILES="$(git diff --name-only "$remote_sha" "$local_sha" 2>&1)"; then
+            # git diff itself failed (e.g. a force-push whose remote_sha isn't
+            # reachable locally) -- CHANGED_FILES then holds diff's own error
+            # text, not a file list, so every grep below would simply match
+            # nothing and this would silently skip every component's tests
+            # while still printing "All required tests passed." Fail safe
+            # instead: run every component unconditionally, same as a brand
+            # new remote branch.
+            echo "[pre-push] could not compute changed files ($CHANGED_FILES) — running every component's tests to be safe."
+            run_backend_tests
+            run_webapp_tests
+            run_entity_service_tests
+        else
+            echo "$CHANGED_FILES" | grep -q "^$BACKEND_DIR/" && run_backend_tests
+            echo "$CHANGED_FILES" | grep -q "^$WEBAPP_DIR/" && run_webapp_tests
+            echo "$CHANGED_FILES" | grep -q "^$ENTITY_SERVICE_DIR/" && run_entity_service_tests
+        fi
     fi
 done
 

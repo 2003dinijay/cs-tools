@@ -88,6 +88,18 @@ async function resetFixtures(): Promise<void> {
     -- members become pending approvers" demonstration into a demonstration
     -- of that unrelated exclusion instead.
     UPDATE change_request SET state = 'ASSESS'::change_request_state_enum, requested_by_user_id = NULL WHERE id = '${CR_PENDING_APPROVAL}';
+    -- The "approve cascades to Authorize" test below approves Jane's row,
+    -- which (since entity-service also auto-provisions an Authorize-stage
+    -- now, not just Assess) creates a SECOND approval_stage + a fresh pair
+    -- of approver rows for this same work item, under new gen_random_uuid()
+    -- ids neither upsert below ever matches. Left alone, those accumulate
+    -- across runs -- the Approvals table ends up with two rows per approver,
+    -- and Playwright's strict-mode approverRow("Jane Doe") then matches more
+    -- than one and fails. Delete anything that isn't this fixture's own
+    -- known seeded stage/approvers before re-seeding them.
+    DELETE FROM approval_stage_approver WHERE work_item_id = '${CR_PENDING_APPROVAL}'
+      AND id NOT IN ('${JANE_APPROVER_ROW}', '${JOHN_APPROVER_ROW}');
+    DELETE FROM approval_stage WHERE work_item_id = '${CR_PENDING_APPROVAL}' AND id <> '${STAGE_ID}';
     INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, raw_status)
       VALUES ('${STAGE_ID}', now(), now(), 'seed', 'seed', '${CR_PENDING_APPROVAL}', '${APOLLO_GROUP_ID}', 'requested')
       ON CONFLICT (id) DO UPDATE SET raw_status = 'requested';

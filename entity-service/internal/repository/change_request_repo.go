@@ -1004,45 +1004,6 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 // timeCardRepo.createTimeCardTx). Returns the change request's id (== the
 // work_item id) on success.
 func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.PatchChangeRequestRequest, actorEmail string) (string, error) {
-	// On-hold gate: a change request currently on hold must not advance via
-	// a state-changing PATCH. See entity-service's own CLAUDE.md "Change
-	// requests" -> "On hold" for the ServiceNow provenance (the real
-	// "Change Request - Normal" workflow gates nearly every stage transition
-	// behind an "Is this on hold?" check, something this schema had no
-	// concept of at all before change_request.is_on_hold/migration 0178).
-	//
-	// Checked against the CURRENTLY STORED value, read fresh here before any
-	// write in this transaction runs -- never against whatever OnHold this
-	// very request's own crSets may be about to set below. That is
-	// deliberate: {state: X, onHold: false} in the SAME PATCH is explicitly
-	// allowed ("take it off hold and advance in one call", e.g. an approver
-	// clearing a hold and immediately promoting the record in one action),
-	// so a request that is ALSO turning OnHold off is excluded from this
-	// gate rather than rejected by it. Only a state change against a record
-	// that is on hold and NOT simultaneously being taken off hold in this
-	// same request is refused. The gate only ever fires when req.State is
-	// non-nil -- a PATCH that doesn't touch State (e.g. editing Description)
-	// is never affected by it regardless of the record's on-hold status, and
-	// taking a record OFF hold (OnHold: false) with no state change at all
-	// is never blocked by anything here either.
-	//
-	// Runs under the caller's own (not yet escalated) identity, same as the
-	// New->Assess team check just below -- work_item_visibility's/
-	// change_request's own SELECT policies already allow any project member
-	// to read their own row.
-	if req.State != nil && !(req.OnHold != nil && !*req.OnHold) {
-		var currentlyOnHold *bool
-		if err := tx.QueryRow(ctx, `SELECT is_on_hold FROM change_request WHERE id = $1`, id).Scan(&currentlyOnHold); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return "", &apierror.NotFoundError{Msg: "change request not found"}
-			}
-			return "", fmt.Errorf("patch change request: check on-hold state: %w", err)
-		}
-		if currentlyOnHold != nil && *currentlyOnHold {
-			return "", &apierror.ValidationError{Msg: "change request is on hold; take it off hold (onHold: false) before changing its state"}
-		}
-	}
-
 	// New->Assess is compulsorily gated on an assigned team -- a real,
 	// reported bug: this used to be a frontend-only courtesy check
 	// (ChangeRequestActionBar.tsx's TARGET_BLOCKED_REASON), easily bypassed
@@ -1128,6 +1089,58 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			return "", &apierror.ValidationError{Msg: field + " does not refer to an existing record"}
 		}
 		return "", fmt.Errorf("patch change request work_item: %w", err)
+	}
+
+	// On-hold gate: a change request currently on hold must not advance via
+	// a state-changing PATCH. See entity-service's own CLAUDE.md "Change
+	// requests" -> "On hold" for the ServiceNow provenance (the real
+	// "Change Request - Normal" workflow gates nearly every stage transition
+	// behind an "Is this on hold?" check, something this schema had no
+	// concept of at all before change_request.is_on_hold/migration 0178).
+	//
+	// Locked with FOR UPDATE and checked here, AFTER work_item's own UPDATE
+	// above, rather than at the top of this function before anything is
+	// written -- a plain, unlocked SELECT run before any write leaves a
+	// window for a concurrent onHold:true-only PATCH to commit in between
+	// this read and this transaction's own later writes, letting a
+	// state-changing PATCH land against a record that is actually on hold
+	// by the time it commits (CodeRabbit catch). FOR UPDATE alone at the
+	// OLD, earlier position would have fixed that race but introduced a
+	// worse one: every PATCH -- state-changing or not -- always writes
+	// work_item first (wiSets above always includes at least updated_on/
+	// updated_by) and change_request second (crSets below, whenever it's
+	// non-empty), so locking change_request before work_item here would
+	// make this one code path take the OPPOSITE lock order from every other
+	// PATCH, and two transactions taking a shared pair of locks in opposite
+	// orders is exactly how Postgres deadlocks. Running the gate here, after
+	// work_item is already locked, keeps the order the same
+	// (work_item -> change_request) as every other PATCH unconditionally
+	// takes.
+	//
+	// Checked against the CURRENTLY STORED value -- never against whatever
+	// OnHold this very request's own crSets may be about to set below. That
+	// is deliberate: {state: X, onHold: false} in the SAME PATCH is
+	// explicitly allowed ("take it off hold and advance in one call", e.g.
+	// an approver clearing a hold and immediately promoting the record in
+	// one action), so a request that is ALSO turning OnHold off is excluded
+	// from this gate rather than rejected by it. Only a state change against
+	// a record that is on hold and NOT simultaneously being taken off hold
+	// in this same request is refused. The gate only ever fires when
+	// req.State is non-nil -- a PATCH that doesn't touch State (e.g. editing
+	// Description) is never affected by it regardless of the record's
+	// on-hold status, and taking a record OFF hold (OnHold: false) with no
+	// state change at all is never blocked by anything here either.
+	if req.State != nil && (req.OnHold == nil || *req.OnHold) {
+		var currentlyOnHold *bool
+		if err := tx.QueryRow(ctx, `SELECT is_on_hold FROM change_request WHERE id = $1 FOR UPDATE`, id).Scan(&currentlyOnHold); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return "", &apierror.NotFoundError{Msg: "change request not found"}
+			}
+			return "", fmt.Errorf("patch change request: check on-hold state: %w", err)
+		}
+		if currentlyOnHold != nil && *currentlyOnHold {
+			return "", &apierror.ValidationError{Msg: "change request is on hold; take it off hold (onHold: false) before changing its state"}
+		}
 	}
 
 	crSets := []string{}
@@ -2491,9 +2504,37 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 						// applies to every publishXxx helper (see
 						// CLAUDE.md's "Change requests" section for this
 						// specific case).
-						if err := provisionApprovalStage(ctx, tx, id, assignedTeamID, actorEmail, changeRequestAuthorizeCheckpoint); err != nil {
+						//
+						// Run inside a SAVEPOINT (pgx's Tx.Begin on an
+						// already-open Tx issues one), not directly against
+						// the outer tx (CodeRabbit catch): provisionApprovalStage's
+						// own ValidationError returns (empty group,
+						// requester-only group) happen before any SQL write
+						// and are harmless either way, but a failure at the
+						// DATABASE level inside it (a constraint violation,
+						// a bad cast) poisons the whole surrounding Postgres
+						// transaction -- every later statement, including
+						// this method's own eventual COMMIT, would then fail
+						// with "current transaction is aborted", silently
+						// rolling back the very approval decision this
+						// best-effort block exists to protect. Rolling back
+						// just the savepoint on failure undoes only
+						// provisioning's own half-written statements and
+						// leaves the outer transaction (and everything it
+						// already did) healthy.
+						sp, spErr := tx.Begin(ctx)
+						if spErr != nil {
+							return "", fmt.Errorf("decide change request approval: open authorize-provisioning savepoint: %w", spErr)
+						}
+						if err := provisionApprovalStage(ctx, sp, id, assignedTeamID, actorEmail, changeRequestAuthorizeCheckpoint); err != nil {
+							if rbErr := sp.Rollback(ctx); rbErr != nil {
+								slog.WarnContext(ctx, "decide change request approval: rolling back authorize-provisioning savepoint failed",
+									"changeRequestId", id, "error", rbErr)
+							}
 							slog.WarnContext(ctx, "decide change request approval: authorize-stage provisioning failed, continuing without it",
 								"changeRequestId", id, "error", err)
+						} else if err := sp.Commit(ctx); err != nil {
+							return "", fmt.Errorf("decide change request approval: release authorize-provisioning savepoint: %w", err)
 						}
 					}
 				}

@@ -2720,6 +2720,23 @@ nothing else — Assess has no cascade of its own):
    exists to prevent, just for this one specific, narrow precondition
    failure on this one specific entry point, logged rather than silent.
 
+   **Caught on review, fixed before merge**: "logged and swallowed" only
+   actually held for `provisionApprovalStage`'s own `ValidationError`
+   returns (empty group, requester-only group), which happen before any SQL
+   write runs. A failure at the *database* level inside it instead — a
+   constraint violation, a bad cast — poisons the whole surrounding
+   Postgres transaction: every later statement, including this method's own
+   eventual `COMMIT`, would then fail with "current transaction is
+   aborted," silently rolling back the very approval decision this
+   best-effort block exists to protect — defeating its entire stated
+   purpose for exactly the class of failure it was least prepared for. The
+   call is now wrapped in its own `SAVEPOINT` (`tx.Begin(ctx)` on an
+   already-open pgx `Tx` issues one): a failure rolls back only that
+   savepoint — undoing just provisioning's own half-written statements —
+   and the outer transaction, decision and all, commits normally; only a
+   genuine failure to open or release the savepoint itself (vanishingly
+   rare — e.g. the connection dying) propagates as a real error.
+
 **The third approval checkpoint, Review ("Internal Review" in real
 ServiceNow's own workflow), gets the identical auto-provisioning treatment as
 Assess and Authorize** — the same gap, two lifecycle steps later, at the
@@ -3084,11 +3101,29 @@ mirror and the system it models.
   `OnHold`/`OnHoldReason` are fully combinable — including with `State`
   itself, which is exactly what the simultaneous-clear-and-advance behavior
   below depends on.
-- **The gate** (`patchChangeRequestTx`, right before the New→Assess team
-  gate): a PATCH that sets `state` is rejected with a `ValidationError` when
-  `change_request.is_on_hold` is **currently** `true` — read fresh inside the
-  same transaction, before any write runs, never from whatever this same
-  PATCH's own `crSets` might also be setting. **The one deliberate
+- **The gate** (`patchChangeRequestTx`, immediately after `work_item`'s own
+  `UPDATE ... RETURNING id` succeeds — **not** before any write runs, see
+  below for why): a PATCH that sets `state` is rejected with a
+  `ValidationError` when `change_request.is_on_hold` is **currently**
+  `true` — read fresh inside the same transaction, locked `FOR UPDATE`,
+  never from whatever this same PATCH's own `crSets` might also be setting.
+
+  **Caught on review, fixed before merge**: an earlier revision ran this
+  check first, as a plain unlocked `SELECT`, before `work_item` was ever
+  touched. That left a real race — a concurrent `{onHold: true}`-only PATCH
+  could commit in the window between this read and this transaction's own
+  later writes, letting a state-changing PATCH land against a record that
+  was actually on hold by the time it committed. The fix isn't simply
+  adding `FOR UPDATE` at that same early spot, though: every PATCH,
+  state-changing or not, always writes `work_item` first (`wiSets` above
+  always includes at least `updated_on`/`updated_by`) and `change_request`
+  second (`crSets`, whenever it's non-empty) — so locking `change_request`
+  at the old, earlier position would make this one code path take the
+  *opposite* lock order from every other PATCH, and two transactions taking
+  the same pair of locks in opposite orders is exactly how Postgres
+  deadlocks. Moving the gate to run after `work_item` is already locked
+  keeps the order consistently `work_item` → `change_request` everywhere.
+  **The one deliberate
   exception**: `{state: X, onHold: false}` in the same request is allowed
   straight through — "take it off hold and advance in one call" (an
   approver clearing a hold and immediately promoting the record) is a

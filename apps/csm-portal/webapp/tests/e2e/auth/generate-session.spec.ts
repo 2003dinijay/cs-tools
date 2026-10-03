@@ -82,7 +82,14 @@ const GROUPS = process.env.E2E_AUTH_GROUPS ?? "cs_engineer";
 // by itself let a spec call `withRole(test, "<newRole>")` — that type is a
 // closed union in fixtures/test.ts and still needs widening there once a
 // real spec needs it. This script only owns producing the file on disk.
-const ROLE = process.env.E2E_AUTH_ROLE ?? "engineer";
+// "crApprover" (not "approver"/"engineer"): those two are captured by hand
+// against a real staging backend (see fixtures/test.ts's own doc comment),
+// and a plain, no-args run of this script would otherwise silently
+// overwrite one of them with a token that only works against the local
+// stack — breaking every staging-targeted spec using that role.
+// "crApprover" is this script's own, local-stack-only role, so it's the
+// only safe no-args default.
+const ROLE = process.env.E2E_AUTH_ROLE ?? "crApprover";
 
 test("mint a session bundle for a test identity via the real sign-in flow", async ({
   page,
