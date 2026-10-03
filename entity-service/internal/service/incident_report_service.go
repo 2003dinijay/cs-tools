@@ -162,9 +162,13 @@ var incidentReportSections = []string{
 }
 
 // renderIncidentReport is the Update Record step of "Incident Report
-// Generator": the same HTML ServiceNow writes, with the data pills replaced
-// by their values. Identification time is the incident's creation time, in
-// UTC (ServiceNow rendered it in the instance's zone, unlabelled).
+// Generator", reproducing what ServiceNow actually STORED, not the flow
+// definition's markup. The one Generator-written report on staging
+// (INC0015592, 2024-11-07, the week the flow was active) shows ServiceNow's
+// editor drops the definition's font-size spans and data-tinymcerootblock
+// attribute and keeps a trailing break after the last value; identification
+// time is the incident's creation time in UTC, unlabelled. That stored text
+// is the golden case in TestIncidentReport_Template.
 func renderIncidentReport(src repository.IncidentReportSource) string {
 	priority := "-"
 	if src.Priority != nil {
@@ -177,23 +181,21 @@ func renderIncidentReport(src repository.IncidentReportSource) string {
 	values := []string{
 		src.Number,
 		priority,
-		src.CreatedOn.UTC().Format("2006-01-02 15:04:05") + " UTC",
+		src.CreatedOn.UTC().Format("2006-01-02 15:04:05"),
 	}
 
 	var b strings.Builder
-	b.WriteString(`<p data-tinymcerootblock="">`)
+	b.WriteString(`<p>`)
 	for i, heading := range incidentReportSections {
-		if i > 0 {
-			b.WriteString(`<br /><br />`)
-		}
-		b.WriteString(`<span style="font-size: 12pt;"><strong>`)
+		b.WriteString(`<strong>`)
 		b.WriteString(html.EscapeString(heading))
-		b.WriteString(`</strong></span><br />`)
+		b.WriteString(`</strong><br />`)
 		value := "-"
 		if i < len(values) && values[i] != "" {
 			value = values[i]
 		}
 		b.WriteString(html.EscapeString(value))
+		b.WriteString(`<br /><br />`)
 	}
 	b.WriteString(`</p>`)
 	return b.String()

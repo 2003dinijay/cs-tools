@@ -165,22 +165,19 @@ func TestIncidentReport_TaskWithoutAssignment(t *testing.T) {
 	}
 }
 
-// The Update Record step's template: three filled headings, six placeholders,
-// in ServiceNow's order.
+// GOLDEN: the one report ServiceNow's Generator wrote on staging, for
+// INC0015592 (created 2024-11-07 07:36:00 UTC, priority 5 - Planning), copied
+// byte for byte from incident.incident_report.
 func TestIncidentReport_Template(t *testing.T) {
-	got := renderIncidentReport(sampleIncidentSource())
-	want := `<p data-tinymcerootblock="">` +
-		`<span style="font-size: 12pt;"><strong>Incident Number</strong></span><br />INC0012345<br /><br />` +
-		`<span style="font-size: 12pt;"><strong>Incident Severity Level</strong></span><br />2 - High<br /><br />` +
-		`<span style="font-size: 12pt;"><strong>Incident Identification Time</strong></span><br />2026-10-02 08:47:41 UTC<br /><br />` +
-		`<span style="font-size: 12pt;"><strong>Timeline</strong></span><br />-<br /><br />` +
-		`<span style="font-size: 12pt;"><strong>Affected Users or Customers</strong></span><br />-<br /><br />` +
-		`<span style="font-size: 12pt;"><strong>Affected Functionality</strong></span><br />-<br /><br />` +
-		`<span style="font-size: 12pt;"><strong>Cause(s) if known</strong></span><br />-<br /><br />` +
-		`<span style="font-size: 12pt;"><strong>Initial Response Actions Taken</strong></span><br />-<br /><br />` +
-		`<span style="font-size: 12pt;"><strong>Next Steps</strong></span><br />-</p>`
-	if got != want {
-		t.Errorf("template mismatch\n got: %s\nwant: %s", got, want)
+	src := repository.IncidentReportSource{
+		IncidentID: incidentReportTestID,
+		Number:     "INC0015592",
+		Priority:   strPtr("PLANNING"),
+		CreatedOn:  time.Date(2024, 11, 7, 7, 36, 0, 0, time.UTC),
+	}
+	want := `<p><strong>Incident Number</strong><br />INC0015592<br /><br /><strong>Incident Severity Level</strong><br />5 - Planning<br /><br /><strong>Incident Identification Time</strong><br />2024-11-07 07:36:00<br /><br /><strong>Timeline</strong><br />-<br /><br /><strong>Affected Users or Customers</strong><br />-<br /><br /><strong>Affected Functionality</strong><br />-<br /><br /><strong>Cause(s) if known</strong><br />-<br /><br /><strong>Initial Response Actions Taken</strong><br />-<br /><br /><strong>Next Steps</strong><br />-<br /><br /></p>`
+	if got := renderIncidentReport(src); got != want {
+		t.Errorf("template differs from ServiceNow's stored report\n got: %s\nwant: %s", got, want)
 	}
 }
 
@@ -189,7 +186,7 @@ func TestIncidentReport_TemplatePriorityAndEscaping(t *testing.T) {
 	src.Priority = nil
 	src.Number = `INC<1>&"x"`
 	got := renderIncidentReport(src)
-	if !strings.Contains(got, `<strong>Incident Severity Level</strong></span><br />-<br />`) {
+	if !strings.Contains(got, `<strong>Incident Severity Level</strong><br />-<br />`) {
 		t.Errorf("missing priority should render as -: %s", got)
 	}
 	if !strings.Contains(got, `INC&lt;1&gt;&amp;&#34;x&#34;`) {

@@ -156,10 +156,10 @@ func TestIncidentReportIntegration_BothFlows(t *testing.T) {
 		t.Fatalf("read report: %v", err)
 	}
 	for _, want := range []string{
-		"<strong>Incident Number</strong></span><br />INC-IR-0001",
-		"<strong>Incident Severity Level</strong></span><br />2 - High",
-		"<strong>Incident Identification Time</strong></span><br />2026-10-02 08:47:41 UTC",
-		"<strong>Next Steps</strong></span><br />-</p>",
+		"<strong>Incident Number</strong><br />INC-IR-0001",
+		"<strong>Incident Severity Level</strong><br />2 - High",
+		"<strong>Incident Identification Time</strong><br />2026-10-02 08:47:41<br />",
+		"<strong>Next Steps</strong><br />-<br /><br /></p>",
 	} {
 		if !strings.Contains(report, want) {
 			t.Errorf("report missing %q:\n%s", want, report)
