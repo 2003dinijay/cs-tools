@@ -132,6 +132,15 @@ type ChangeRequestRepository interface {
 	// identified by id, using actorEmail as work_item.updated_by. Returns a
 	// NotFoundError if id does not exist.
 	PatchChangeRequest(ctx context.Context, id string, req domain.PatchChangeRequestRequest, actorEmail string) (domain.ChangeRequest, error)
+	// CreateChangeRequest inserts a new change request row (both work_item
+	// and change_request) for the plain-Postgres data source (no ServiceNow
+	// at all) -- createChangeRequestPortalQuery's own doc comment has the
+	// full field-by-field reasoning, which mirrors CreateChangeRequestFromServiceNow's
+	// exactly except identity (id/number) is generated here via
+	// gen_random_uuid()/next_portal_work_item_number() instead of being
+	// supplied by a prior ServiceNow response, and createdBy is the calling
+	// user's own resolved email rather than ServiceNow's echoed value.
+	CreateChangeRequest(ctx context.Context, req domain.CreateChangeRequestRequest, createdBy string) (domain.CreateChangeRequestResponse, error)
 	// CreateChangeRequestFromServiceNow inserts a new change request row
 	// (both work_item and change_request), for
 	// DATA_SOURCE=postgres-servicenow-dual-write's SN-first change request
@@ -971,6 +980,39 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 // timeCardRepo.createTimeCardTx). Returns the change request's id (== the
 // work_item id) on success.
 func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.PatchChangeRequestRequest, actorEmail string) (string, error) {
+	// New->Assess is compulsorily gated on an assigned team -- a real,
+	// reported bug: this used to be a frontend-only courtesy check
+	// (ChangeRequestActionBar.tsx's TARGET_BLOCKED_REASON), easily bypassed
+	// by any direct API caller, and it was carried over stale from an
+	// earlier, since-disproven model of this transition. Confirmed by
+	// explicit product decision that assignedTeamId IS genuinely required to
+	// move to Assess -- enforced here, not just in the UI, so this can never
+	// be skipped. Accepts either a team supplied in this same request or one
+	// already on the record (e.g. set via a prior PATCH through the Edit
+	// dialog, then "Move to Assess" sent as its own separate request). The
+	// SELECT below runs under the caller's own (not yet escalated) identity
+	// -- work_item_visibility's USING clause (migration 0147) already allows
+	// any project member to read their own row, so this needs no escalation
+	// of its own.
+	var effectiveAssignedTeamID *string
+	if req.State != nil && strings.EqualFold(string(*req.State), "assess") {
+		if req.AssignedTeamID != nil {
+			effectiveAssignedTeamID = req.AssignedTeamID
+		} else {
+			var existing *string
+			if err := tx.QueryRow(ctx, `SELECT assignment_group_id::text FROM work_item WHERE id = $1`, id).Scan(&existing); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return "", &apierror.NotFoundError{Msg: "change request not found"}
+				}
+				return "", fmt.Errorf("patch change request: check existing assigned team: %w", err)
+			}
+			effectiveAssignedTeamID = existing
+		}
+		if effectiveAssignedTeamID == nil || *effectiveAssignedTeamID == "" {
+			return "", &apierror.ValidationError{Msg: "assignedTeamId is required before moving a change request to Assess"}
+		}
+	}
+
 	wiSets := []string{"updated_on = NOW()", "updated_by = $1"}
 	wiArgs := []any{actorEmail}
 	wiIdx := 2
@@ -1192,7 +1234,212 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		}
 	}
 
+	// The moment a change request actually enters Assess, the assigned
+	// team's own members are provisioned as its Assess-stage approvers --
+	// by explicit product decision, so there is always someone to approve
+	// once a request reaches Assess, instead of landing in the Approvals
+	// tab with nobody listed. Scoped to "no approval_stage exists for this
+	// work item yet" so a later no-op {state: "assess"} PATCH (or any other
+	// field edit while already in Assess) can never duplicate the stage or
+	// re-seed approvers for a group that may since have changed; the
+	// Assess->Authorize cascade (DecideChangeRequestApproval) owns
+	// everything about this stage from here on.
+	if req.State != nil && strings.EqualFold(string(*req.State), "assess") {
+		// approval_stage_visibility's SELECT policy (migration 0145) already
+		// allows any member of the change request's own project to see this
+		// count, so -- like the assigned-team check above -- this still runs
+		// under the caller's own identity, no escalation needed yet.
+		var existingStages int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, id).Scan(&existingStages); err != nil {
+			return "", fmt.Errorf("patch change request: check existing approval stages: %w", err)
+		}
+		if existingStages == 0 {
+			// approval_stage/approval_stage_approver's own INSERT policies
+			// (migration 0145) are internal-only -- a real project member's
+			// own identity cannot write either table directly. Escalating
+			// here is safe: the caller's project membership for THIS change
+			// request has already been confirmed by the work_item/
+			// change_request writes above, under their own, unescalated
+			// identity, before this point is ever reached. setCallerIdentity
+			// re-sets the same session-local GUCs Scoped.InTx set at the
+			// start of this transaction -- its own doc comment's "LOCAL
+			// scoping" note means this takes effect for the remainder of
+			// THIS transaction only, same as every other statement here.
+			if err := setCallerIdentity(ctx, tx, SearchScope{Unrestricted: true}); err != nil {
+				return "", fmt.Errorf("patch change request: escalate identity for approver provisioning: %w", err)
+			}
+
+			// team_member.group_id (distinct from its own team_id, the
+			// hand-curated internal registry's own FK) is exactly what
+			// identifies membership of a "group" row -- the same table
+			// work_item.assignment_group_id/approval_stage.assignment_group_id
+			// both reference. Populated by csm-sync-service mirroring
+			// ServiceNow's own sys_user_grmember, same as every other
+			// group-derived column in this schema. team_member carries no
+			// RLS of its own (confirmed against rlsProtectedTables), so the
+			// identity escalation above makes no difference to this read --
+			// it's here only for the stage/approver INSERTs below.
+			//
+			// Queried -- and validated as non-empty -- BEFORE the stage is
+			// created (CodeRabbit catch): creating an empty stage first and
+			// finding no members after would still commit the empty stage,
+			// since "no approval_stage exists yet" is exactly what gates
+			// provisioning -- leaving the change request stuck in Assess
+			// with an approval_stage nobody can ever decide, since a later
+			// PATCH would skip provisioning entirely. DISTINCT guards
+			// against team_member having no unique constraint on
+			// (user_id, group_id); a duplicate row must not seed two
+			// requested approver rows for the same person.
+			memberRows, err := tx.Query(ctx, `SELECT DISTINCT user_id FROM team_member WHERE group_id = $1::uuid`, *effectiveAssignedTeamID)
+			if err != nil {
+				return "", fmt.Errorf("patch change request: list assignment group members: %w", err)
+			}
+			var memberIDs []string
+			for memberRows.Next() {
+				var uid string
+				if err := memberRows.Scan(&uid); err != nil {
+					memberRows.Close()
+					return "", fmt.Errorf("patch change request: scan assignment group member: %w", err)
+				}
+				memberIDs = append(memberIDs, uid)
+			}
+			memberRows.Close()
+			if err := memberRows.Err(); err != nil {
+				return "", fmt.Errorf("patch change request: assignment group members: %w", err)
+			}
+			if len(memberIDs) == 0 {
+				return "", &apierror.ValidationError{Msg: "the assigned team has no members to provision as Assess approvers"}
+			}
+
+			var stageID string
+			if err := tx.QueryRow(ctx,
+				`INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id)
+				 VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1, $2, $3::uuid)
+				 RETURNING id`,
+				actorEmail, id, *effectiveAssignedTeamID).Scan(&stageID); err != nil {
+				return "", fmt.Errorf("patch change request: create approval stage: %w", err)
+			}
+
+			for _, uid := range memberIDs {
+				if _, err := tx.Exec(ctx,
+					`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, work_item_id, stage_id, approver_user_id, status)
+					 VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1, $2, $3, $4::uuid, 'requested')`,
+					actorEmail, id, stageID, uid); err != nil {
+					return "", fmt.Errorf("patch change request: seed approval stage approver: %w", err)
+				}
+			}
+		}
+	}
+
 	return wiID, nil
+}
+
+// createChangeRequestPortalQuery is CreateChangeRequest's (the plain-Postgres,
+// caller-initiated path) query -- structurally identical to
+// createChangeRequestFromServiceNowQuery except id/number are generated here
+// (gen_random_uuid()/next_portal_work_item_number(), migration 0140) instead
+// of supplied by a prior ServiceNow response, and there is no wso2_id column
+// at all either way (change_request is excluded from
+// work_item_wso2_id_required_by_type, per this file's own package doc
+// comment on CreateChangeRequestFromServiceNow). state is hardcoded to NEW
+// for the identical reason given there: it is the one value the org's
+// Change Management process always assigns on creation, not a guess.
+//
+// Column/output order matches the trailing SELECT exactly.
+const createChangeRequestPortalQuery = `
+	WITH inserted_work_item AS (
+		INSERT INTO work_item (
+			id, created_on, updated_on, created_by, updated_by,
+			number, subject, description, type, assigned_to_id
+		)
+		VALUES (
+			gen_random_uuid(), NOW(), NOW(), $1, $1,
+			next_portal_work_item_number(), $2, $3, 'CHANGE_REQUEST'::work_item_type_enum, $4::uuid
+		)
+		RETURNING id, number, subject, created_on, updated_on, created_by
+	),
+	inserted_change_request AS (
+		INSERT INTO change_request (
+			id, state, service_id, service_offering_id, impact, risk, priority, change_model,
+			justification, implementation_plan, risk_impact_analysis, backout_plan, test_plan,
+			start_on, end_on, requested_by_user_id, customer_group_id,
+			is_planning_visible_to_customers, affected_services, affected_component, rollback_duration
+		)
+		SELECT id, 'NEW'::change_request_state_enum, $5::uuid, $6::uuid, $7::change_request_impact_enum, $8::change_request_risk_enum,
+		       $9::change_request_priority_enum, $10::change_request_change_model_enum,
+		       $11, $12, $13, $14, $15,
+		       $16::text::timestamptz, $17::text::timestamptz, $18::uuid, $19::uuid,
+		       $20, $21, $22, $23
+		FROM inserted_work_item
+		RETURNING id
+	)
+	SELECT iwi.id, iwi.number, iwi.subject, iwi.created_on, iwi.updated_on, iwi.created_by
+	FROM inserted_work_item iwi
+	JOIN inserted_change_request icr ON icr.id = iwi.id`
+
+// CreateChangeRequest implements ChangeRequestRepository.
+func (r *changeRequestRepo) CreateChangeRequest(ctx context.Context, req domain.CreateChangeRequestRequest, createdBy string) (domain.CreateChangeRequestResponse, error) {
+	var changeModel *string
+	if req.Type != nil {
+		v, ok := changeRequestTypeToChangeModel[*req.Type]
+		if !ok {
+			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
+		}
+		changeModel = &v
+	}
+
+	var impact, risk, priority *string
+	if req.Impact != nil {
+		v := strings.ToUpper(string(*req.Impact))
+		impact = &v
+	}
+	if req.Risk != nil {
+		v := strings.ToUpper(string(*req.Risk))
+		risk = &v
+	}
+	if req.Priority != nil {
+		v := strings.ToUpper(string(*req.Priority))
+		priority = &v
+	}
+
+	var (
+		outID, outNumber, outSubject, outCreatedBy string
+		outCreatedOn, outUpdatedOn                 time.Time
+	)
+	err := r.db.QueryRow(ctx, createChangeRequestPortalQuery,
+		createdBy, req.Subject, req.Description, req.AssignedEngineerID,
+		req.ServiceID, req.ServiceOfferingID, impact, risk, priority, changeModel,
+		req.Justification, req.ImplementationPlan, req.RiskImpactAnalysis, req.BackoutPlan, req.TestPlan,
+		req.PlannedStartDate, req.PlannedEndDate, req.RequestedByID, req.CustomerGroupID,
+		req.IsPlanningVisibleToCustomers, req.AffectedServicesText, req.AffectedComponentsText, req.RollbackDurationText,
+	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
+	if err != nil {
+		// change_request_write_internal_only (migration 0145) permits only an
+		// internal caller to INSERT -- POST /change-requests is gated
+		// internalOnly at the route (routes.go), so this should not be
+		// reachable in practice, but map it the same defensive way
+		// PatchChangeRequest already does rather than leaving a theoretical
+		// 42501 to surface as a raw 500.
+		if IsRLSPolicyViolation(err) {
+			return domain.CreateChangeRequestResponse{}, &apierror.NotFoundError{Msg: "change request not found"}
+		}
+		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "23503": // foreign_key_violation -- one of the referenced IDs does not exist
+				return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
+			case "P0001": // raise_exception from integrity triggers
+				return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: pgErr.Message}
+			}
+		}
+		return domain.CreateChangeRequestResponse{}, fmt.Errorf("create change request: %w", err)
+	}
+
+	resp := domain.CreateChangeRequestResponse{Message: "Change request created successfully."}
+	resp.ChangeRequest.ID = outID
+	resp.ChangeRequest.Number = outNumber
+	resp.ChangeRequest.CreatedOn = outCreatedOn.UTC().Format(time.RFC3339)
+	resp.ChangeRequest.CreatedBy = outCreatedBy
+	return resp, nil
 }
 
 // createChangeRequestFromServiceNowQuery inserts both halves of a change

@@ -144,7 +144,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// webhook endpoint is not registered merely because a database exists --
 	// it authenticates by HMAC rather than by bearer token, and an endpoint
 	// that mutates change requests should appear only when asked for.
-	var githubWebhookHandler *handler.GithubWebhookHandler
+	var githubDeliveryHandler *handler.GithubDeliveryHandler
 	var githubServiceRequestHandler *handler.GithubServiceRequestHandler
 
 	// Assigned inside the GitHub-integration block below and read further down,
@@ -187,7 +187,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				cfg.GithubIntegrationLogin,
 				githubLabels,
 			)
-			githubWebhookHandler = handler.NewGithubWebhookHandler(githubSyncSvc, cfg.GithubWebhookSecret)
+			githubDeliveryHandler = handler.NewGithubDeliveryHandler(githubSyncSvc, cfg.AuthInternalClientIDs)
 			githubServiceRequestHandler = handler.NewGithubServiceRequestHandler(githubSyncSvc, cfg.AuthInternalClientIDs)
 		}
 	}
@@ -215,7 +215,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var scheduleHandler *handler.ScheduleHandler
 	var teamMemberHandler *handler.TeamMemberHandler
 
-	accountRepo := repository.NewAccountRepository(db)
+	accountRepo := repository.NewAccountRepository(repository.NewScoped(db))
 	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
 
 	// teamHandler has no ServiceNow-backed counterpart to switch on — see
@@ -264,7 +264,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// repository serves EnsureAccount's read even while the Account
 		// branch (the write side) is off, and the salesforce_ingest_state
 		// ledger is where every non-membership family records its version.
-		projectIngestRepo := repository.NewSalesforceProjectRepository(db)
+		projectIngestRepo := repository.NewSalesforceProjectRepository(repository.NewScoped(db))
 		ingestSupport := service.SalesforceIngestSupport{
 			Accounts: accountRepo,
 			States:   repository.NewSalesforceIngestStateRepository(db),
@@ -339,7 +339,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			stepRepo := repository.NewOnboardingStepRepository(db)
 			membershipIngestSvc = service.NewSalesforceEventServiceWithMembershipIngest(
 				accountIngestRepo, salesEntityClient, ingestSupport, service.MembershipIngest{
-					Memberships: repository.NewProjectMembershipRepository(db),
+					Memberships: repository.NewProjectMembershipRepository(repository.NewScoped(db)),
 					Steps:       stepRepo,
 					SalesEntity: salesEntityClient,
 					Contacts:    repository.NewSalesforceContactRepository(db),
@@ -431,13 +431,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var projectMembershipHandler *handler.ProjectMembershipHandler
 	if db != nil && cfg.HasPortalMembershipWrites() && salesEntityClient != nil {
 		projectMembershipHandler = handler.NewProjectMembershipHandler(service.NewProjectMembershipWriteService(service.MembershipWriteDeps{
-			Memberships: repository.NewProjectMembershipRepository(db),
+			Memberships: repository.NewProjectMembershipRepository(repository.NewScoped(db)),
 			Steps:       repository.NewOnboardingStepRepository(db),
 			SalesEntity: salesEntityClient,
 			Publisher:   projectEventPublisher,
 			Failures:    eventPublishFailureSvc,
 			Access:      accessSvc,
 			Invitations: service.NewInvitationValidator(salesEntityClient, repository.NewAccountPartnerRepository(db)),
+			Admins:      repository.NewAccountAdminRepository(db),
 		}))
 	}
 
@@ -498,7 +499,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		snWritebackDispatcher = service.NewSNWritebackDispatcher(repository.NewSNWritebackFailureRepository(db))
 	}
 
-	projectRepo := repository.NewProjectRepository(db)
+	projectRepo := repository.NewProjectRepository(repository.NewScoped(db))
 	pgProjectSvc := service.NewProjectService(projectRepo, accessSvc)
 	var activeProjectSvc service.ProjectService
 	if cfg.DataSource == config.DataSourceServiceNow {
@@ -881,11 +882,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// sr_category/catalog_item/catalog_item_category/catalog_variable/
 	// sr_category_routing_rule (migrations 000067-000071) back the service
 	// request catalog on the Postgres data source, so these routes are
-	// registered for both data sources. Under dual-write, Postgres is not
-	// trusted for reads here either -- see catalogService.snMirror's own
-	// doc comment for why (deployed_product/routing-rule data was never
+	// registered for both data sources. Under dual-write, SearchCatalogs
+	// still reads from ServiceNow -- see catalogService.snMirror's own doc
+	// comment for why (deployed_product/routing-rule data was never
 	// backfilled from ServiceNow, same gap as deployments/deployed-products/
-	// instances).
+	// instances). GetCatalogItemVariables is the exception: catalog_variable's
+	// extra fields and its catalog_variable_choice table (migration 0125) are
+	// kept current by a separate sync service, so that one read goes to
+	// Postgres under dual-write too -- see catalogService.GetCatalogItemVariables'
+	// own doc comment.
 	catalogRepo := repository.NewCatalogRepository(repository.NewScoped(db))
 	var activeCatalogSvc service.CatalogService
 	switch cfg.DataSource {
@@ -1047,7 +1052,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		outageHandler = handler.NewOutageHandler(service.NewServiceNowOutageService(serviceNowIntegrationServiceClient))
 	} else if cfg.HasDatabase() {
 		outageHandler = handler.NewOutageHandler(
-			service.NewOutageService(repository.NewOutageRepository(db)))
+			service.NewOutageService(repository.NewOutageRepository(repository.NewScoped(db))))
 	}
 
 	// cloudStatusHandler is Postgres-only, and unconditionally so even though
@@ -1071,6 +1076,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// them unregistered gives an honest 404 instead.
 	var cloudStatusDashboardHandler *handler.CloudStatusDashboardHandler
 	var cloudStatusHandler *handler.CloudStatusHandler
+	// availabilityHandler is the PRODUCER for the three dashboard endpoints
+	// above. They read service_availability; until now nothing in Postgres
+	// wrote it -- csm-sync-service mirrors ServiceNow's output, so at cutover
+	// the uptime figures would stop advancing with no error anywhere.
+	var availabilityHandler *handler.AvailabilityHandler
 	if db != nil {
 		cloudStatusDashboardHandler = handler.NewCloudStatusDashboardHandler(
 			service.NewCloudStatusDashboardService(repository.NewCloudStatusDashboardRepository(db)),
@@ -1078,6 +1088,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		cloudStatusHandler = handler.NewCloudStatusHandler(
 			service.NewCloudStatusService(repository.NewCloudStatusRepository(db), cfg.CloudStatusServiceIDs),
 		)
+		availabilitySvc, err := service.NewAvailabilityService(
+			repository.NewAvailabilityRepository(db), cfg.AvailabilityTimezone)
+		if err != nil {
+			// A bad zone mis-dates every row the sweep writes, so this is a
+			// startup error rather than a fallback.
+			log.Fatalf("availability service: %v", err)
+		}
+		availabilityHandler = handler.NewAvailabilityHandler(availabilitySvc)
 	}
 	// globalHandler is wired for both data sources now: GetSystemMetadata has
 	// a Postgres-backed implementation (globalService, reusing
@@ -1235,8 +1253,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if slaStatusHandler != nil {
 		mux.HandleFunc("GET /sla-status", slaStatusHandler.SearchActiveSLAStatuses)
 	}
-	if githubWebhookHandler != nil {
-		mux.HandleFunc("POST /webhooks/github", githubWebhookHandler.Handle)
+	if githubDeliveryHandler != nil {
+		mux.HandleFunc("POST /github/deliveries", githubDeliveryHandler.Handle)
 		mux.HandleFunc("POST /github/service-requests", githubServiceRequestHandler.Create)
 	}
 
@@ -1314,6 +1332,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	} else {
 		mux.HandleFunc("GET /users/{id}", userHandler.GetUser)
 		mux.HandleFunc("GET /users/me", userHandler.GetMe)
+		mux.HandleFunc("PATCH /users/me", userHandler.PatchMe)
 		mux.HandleFunc("POST /users/search", userHandler.SearchUsers)
 		mux.HandleFunc("POST /users", userHandler.CreateUser)
 	}
@@ -1394,6 +1413,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("PATCH /cases/{id}", caseHandler.PatchCase)
 	mux.HandleFunc("POST /cases", caseHandler.CreateCase)
 	mux.HandleFunc("POST /cases/search", caseHandler.SearchCases)
+	// One-shot read of every announcement case for the CSM announcement
+	// registry (it groups the whole set, so paging 50 at a time through
+	// /cases/search was ~100 slow queries). Postgres-backed case data only;
+	// where this route is absent the registry falls back to paging
+	// /cases/search. Internal callers only.
+	if cfg.DataSource != config.DataSourceServiceNow {
+		announcementRegistryHandler := handler.NewAnnouncementRegistryHandler(
+			service.NewAnnouncementRegistryService(repository.NewAnnouncementRegistryRepository(repository.NewScoped(db)), accessSvc))
+		mux.HandleFunc("POST /announcements/registry/cases", internalOnly(accessSvc, announcementRegistryHandler.SearchRegistryCases))
+	}
 	mux.HandleFunc("POST /cases/aggregate", caseHandler.AggregateCases)
 	mux.HandleFunc("POST /cases/feedback/search", feedbackHandler.SearchFeedback)
 	mux.HandleFunc("POST /cases/feedback/aggregate", feedbackHandler.AggregateFeedback)
@@ -1430,7 +1459,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("GET /cases/{id}/escalations", caseEscalationHandler.SearchCaseEscalations)
 	mux.HandleFunc("POST /cases/{id}/escalations", caseEscalationHandler.CreateCaseEscalation)
 
-	mux.HandleFunc("POST /change-requests", changeRequestHandler.CreateChangeRequest)
+	// internalOnly: migration 0145's change_request_write_internal_only RLS
+	// policy only ever permits an internal caller to INSERT into
+	// change_request (CreateChangeRequestRequest has no projectId field at
+	// all to check membership against) -- same posture already established
+	// for POST /incidents and POST /problems below. A non-internal caller
+	// reaching changeRequestService.CreateChangeRequest's plain-Postgres
+	// path would otherwise fail the RLS check with a raw 42501 (mapped to a
+	// clean NotFoundError, but still a request that was never going to
+	// succeed) -- gating here rejects it before any write is attempted.
+	mux.HandleFunc("POST /change-requests", internalOnly(accessSvc, changeRequestHandler.CreateChangeRequest))
 	mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
 	mux.HandleFunc("POST /change-requests/aggregate", changeRequestHandler.AggregateChangeRequests)
 	mux.HandleFunc("GET /change-requests/{id}", changeRequestHandler.GetChangeRequest)
@@ -1533,6 +1571,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("GET /cloud-status/availabilities", cloudStatusDashboardHandler.Availabilities)
 		mux.HandleFunc("GET /cloud-status/availability-history", cloudStatusDashboardHandler.AvailabilityHistory)
 		mux.HandleFunc("GET /cloud-status/incidents/{id}", cloudStatusDashboardHandler.IncidentDetail)
+	}
+	if availabilityHandler != nil {
+		// Internal, and it WRITES: every other /cloud-status route is a read
+		// the dashboard makes, this one recomputes and replaces rows.
+		// internalOnly: auth.Middleware only validates a token, so without
+		// this a customer's user token could trigger the recompute.
+		mux.HandleFunc("POST /internal/availability/sweep", internalOnly(accessSvc, availabilityHandler.Sweep))
 	}
 	if cloudStatusHandler != nil {
 		mux.HandleFunc("POST /internal/cloud-status/sweep", cloudStatusHandler.Sweep)

@@ -45,6 +45,9 @@ set -euo pipefail
 REDIS_NAME="${REDIS_NAME:-cre-ladder-redis}"
 REDIS_PORT="${REDIS_PORT:-16379}"
 REDIS_ADDR="127.0.0.1:${REDIS_PORT}"
+# The harness prefers REDIS_URL over --redis and loads the service's .env,
+# which sets it; pin it here so the tests use their own Redis, not that one.
+export REDIS_URL="redis://${REDIS_ADDR}"
 
 # One ladder minute in wall-clock time. 150ms turns a 44-minute P1 ladder into
 # about seven seconds; unset it to watch the real thing.

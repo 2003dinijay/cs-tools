@@ -31,7 +31,12 @@ import (
 type fakeChat struct {
 	posted []notifications.EscalationAlert
 	err    error
+	// noRoom lists audiences GOOGLE_CHAT_SPACES has no space for. Empty means
+	// every audience has one, which is what the older tests assume.
+	noRoom map[string]bool
 }
+
+func (f *fakeChat) HasAudienceSpace(audience string) bool { return !f.noRoom[audience] }
 
 func (f *fakeChat) SendEscalationAlert(_ context.Context, a notifications.EscalationAlert) error {
 	if f.err != nil {
@@ -52,7 +57,7 @@ func chatEngine(t *testing.T, chat chatSender, store ladderStore, notes incident
 	return &Engine{
 		policies:  DefaultPolicy,
 		resolver:  fullResolver(),
-		notifiers: []notifier{chatNotifier{chat: chat, links: fakeLinks{}, defaultProduct: "WSO2 API Manager"}},
+		notifiers: []notifier{chatNotifier{chat: chat, links: fakeLinks{}, audience: "WSO2 API Manager"}},
 		store:     store,
 		notes:     notes,
 		cfg:       EngineConfig{CallSendingEnabled: true, Channel: ChannelChat},
@@ -165,8 +170,8 @@ func TestChatNotifier_CardCarriesTheContext(t *testing.T) {
 	if !strings.Contains(card.PortalURL, testIncidentID) {
 		t.Errorf("portalURL = %q; it should open this incident", card.PortalURL)
 	}
-	if card.Product != "WSO2 API Manager" {
-		t.Errorf("product = %q; the card must route to a space", card.Product)
+	if card.Audience != "WSO2 API Manager" {
+		t.Errorf("audience = %q; the card must route to the configured room", card.Audience)
 	}
 }
 
@@ -223,7 +228,7 @@ func TestBothChannels_EachIsAttemptedIndependently(t *testing.T) {
 		resolver: fullResolver(),
 		notifiers: []notifier{
 			voiceNotifier{calls: caller},
-			chatNotifier{chat: chat, links: fakeLinks{}, defaultProduct: "WSO2 API Manager"},
+			chatNotifier{chat: chat, links: fakeLinks{}, audience: "WSO2 API Manager"},
 		},
 		store: store,
 		notes: &fakeNotes{},
@@ -316,7 +321,7 @@ func TestChatNotifier_NilLinkResolverDoesNotPanic(t *testing.T) {
 		EngineConfig{CallSendingEnabled: true, Channel: ChannelChat})
 
 	// The constructor is what has to be safe; swap in the fake to deliver.
-	e.notifiers = []notifier{chatNotifier{chat: chat, defaultProduct: "WSO2 API Manager"}}
+	e.notifiers = []notifier{chatNotifier{chat: chat, audience: "WSO2 API Manager"}}
 	e.store = newMemStore()
 	e.notes = &fakeNotes{}
 	e.clock = func() time.Time { return testClock }
@@ -493,7 +498,7 @@ func TestChatNotifier_CardCarriesTheClock(t *testing.T) {
 func TestChatNotifier_QuotesTheVoiceMessage(t *testing.T) {
 	chat := &fakeChat{}
 	e := chatEngine(t, chat, newMemStore(), &fakeNotes{})
-	e.notifiers = []notifier{chatNotifier{chat: chat, links: fakeLinks{}, defaultProduct: "WSO2 API Manager"}}
+	e.notifiers = []notifier{chatNotifier{chat: chat, links: fakeLinks{}}}
 
 	at := ist(2026, 9, 9, 10, 0)
 	if err := e.Handle(context.Background(), createdEvent(t, "CRITICAL", at)); err != nil {
@@ -520,5 +525,69 @@ func TestChatNotifier_QuotesTheVoiceMessage(t *testing.T) {
 	}
 	if strings.Contains(got, "<speak") || strings.Contains(got, "<say-as") {
 		t.Errorf("voice script = %q; want the spoken words, not the SSML wire format", got)
+	}
+}
+
+// A rung card goes to the configured room, never to the incident's product.
+//
+// It used to route by product -- t.Routing.Product -- as the audience key.
+// Chat routes by audience now, and no audience is ever named after a product,
+// so with GOOGLE_CHAT_SPACES set up correctly every card was dropped. The
+// zero value must route to "Incident Monitor", so a notifier built without an
+// audience behaves like a deployment that never set one.
+func TestChatNotifier_RoutesToTheConfiguredRoomNotTheProduct(t *testing.T) {
+	plan := Plan{Trigger: Trigger{
+		IncidentID: "INC-1", Priority: "P0", At: time.Now(),
+		Routing: RoutingContext{Product: "WSO2 API Manager", Shift: ShiftLK},
+	}}
+	call := PlannedCall{Level: Level0, Ordinal: 1, Recipient: Recipient{Name: "Someone"}}
+
+	for _, tc := range []struct{ configured, want string }{
+		{"CRE Escalations", "CRE Escalations"},
+		{"", "Incident Monitor"},
+	} {
+		chat := &fakeChat{}
+		d, err := chatNotifier{chat: chat, audience: tc.configured}.Deliver(context.Background(), plan, call)
+		if err != nil {
+			t.Fatalf("audience %q: %v", tc.configured, err)
+		}
+		if len(chat.posted) != 1 || chat.posted[0].Audience != tc.want {
+			t.Fatalf("audience %q: posted %+v, want one card to %q", tc.configured, chat.posted, tc.want)
+		}
+		if !strings.Contains(d.Status, tc.want) {
+			t.Errorf("status = %q; it should name the room it posted to", d.Status)
+		}
+	}
+}
+
+// A room that does not exist is a recorded failure, not a quiet success.
+//
+// The Chat client treats an unconfigured audience as success (warn, return
+// nil), so a rung was logged "posted" while reaching nobody, and its later
+// attempts said "already posted for this rung" about a card that never
+// existed. Reported by someone watching their space for a card that never
+// came. It must also be permanent: the configuration does not change between
+// ticks, and retrying every five seconds would only fill the log.
+func TestChatNotifier_MissingRoomIsAPermanentFailure(t *testing.T) {
+	chat := &fakeChat{noRoom: map[string]bool{"Incident Monitor": true}}
+	n := chatNotifier{chat: chat}
+	plan := Plan{Trigger: Trigger{IncidentID: "INC-1", Priority: "P0", At: time.Now(),
+		Routing: RoutingContext{Shift: ShiftLK}}}
+
+	for _, ordinal := range []int{1, 2, 3} {
+		call := PlannedCall{Level: Level2, Ordinal: ordinal, Recipient: Recipient{Name: "Someone"}}
+		_, err := n.Deliver(context.Background(), plan, call)
+		if err == nil {
+			t.Fatalf("attempt %d: no error; a card to a missing room was reported as delivered", ordinal)
+		}
+		if !isPermanent(err) {
+			t.Errorf("attempt %d: %v is not permanent; it would be retried every tick", ordinal, err)
+		}
+		if got := permanentReason(err); got != "NO_CHAT_SPACE" {
+			t.Errorf("attempt %d: reason = %q, want NO_CHAT_SPACE", ordinal, got)
+		}
+	}
+	if len(chat.posted) != 0 {
+		t.Errorf("posted %d card(s) to a room that does not exist", len(chat.posted))
 	}
 }

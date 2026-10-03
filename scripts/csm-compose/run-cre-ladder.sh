@@ -47,6 +47,8 @@ When it was reported -- pick one; the engine derives the shift from it
       --shift SHIFT         LK | LK_MORNING | LK_EVENING | LK_WEEKEND | USA | USA_WEEKEND
   -t, --at TIME             IST: HH:MM (next weekday) or YYYY-MM-DDTHH:MM
       --weekend             with --at HH:MM, the next Saturday/Sunday instead
+      --elevated            start it as a priority elevation (incident.priority_elevated
+                            to --severity) instead of a new incident
                                                                           default --shift LK
 
 How a rung reaches people
@@ -89,6 +91,7 @@ ABT=""
 SHIFT=""
 AT=""
 WEEKEND=""
+ELEVATED=""
 CHANNEL=log
 LIVE=""
 TO=""
@@ -100,8 +103,11 @@ MAX_CALLS=80
 ASSUME_YES=""
 KEEP_REDIS=""
 
-REDIS_NAME="cre-ladder-run-redis"
+# One Redis per run, named after its port, so several real-time runs can go
+# side by side in separate terminals -- the full test matrix is hours of wall
+# clock one at a time. Give each terminal its own REDIS_PORT.
 REDIS_PORT="${REDIS_PORT:-16393}"
+REDIS_NAME="cre-ladder-run-redis-${REDIS_PORT}"
 ENTITY_URL="${CUSTOMER_ENTITY_BASE_URL_OVERRIDE:-http://localhost:8081}"
 TOKEN_URL="http://localhost:9100/oauth2/token"
 
@@ -120,6 +126,7 @@ while [ $# -gt 0 ]; do
     --shift)        need "$@"; SHIFT="$2"; shift 2 ;;
     -t|--at)        need "$@"; AT="$2"; shift 2 ;;
     --weekend)      WEEKEND=1; shift ;;
+    --elevated)     ELEVATED=1; shift ;;
     -c|--channel)   need "$@"; CHANNEL="$2"; shift 2 ;;
     --live)         LIVE=1; shift ;;
     --to)           need "$@"; TO="$2"; shift 2 ;;
@@ -159,6 +166,12 @@ cre_abts="$(awk '
     sub(/.*\[/, ""); sub(/\].*/, ""); gsub(/[[:space:]]/, ""); print; exit
   }' "${config_file}")"
 [ -n "${cre_abts}" ] || die "could not read the CRE abts list from ${config_file}"
+
+chat_webhook_env="$(awk '
+  /^cre:/ {in_cre=1; next}
+  /^[a-z]+:/ {in_cre=0}
+  in_cre && /^[[:space:]]*webhookUrlEnv:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]*#.*/, ""); gsub(/"/, ""); print; exit }
+' "${config_file}")"
 
 if [ -n "${ABT}" ]; then
   ABT="$(printf '%s' "${ABT}" | tr '[:upper:]' '[:lower:]')"
@@ -241,13 +254,31 @@ confirm() {
 }
 
 case "${CHANNEL}" in
-  chat|both) confirm "--channel ${CHANNEL} posts a card per rung to a REAL Google Chat space (GOOGLE_CHAT_SPACES in the service's .env), which colleagues can see." ;;
+  chat|both) confirm "--channel ${CHANNEL} posts a card per rung to a REAL Google Chat space (${chat_webhook_env:-GOOGLE_CHAT_SPACES} in the service's .env), which colleagues can see." ;;
 esac
 [ -n "${LIVE}" ] && confirm "--live places REAL Twilio calls. Every rung rings ${TO}. This costs money."
 
 # -- redis --------------------------------------------------------------------
 
+# The ladder is a separate process, and it must never outlive this script.
+#
+# It used to be `go run` in the foreground. Ctrl-C reached it, because the
+# terminal signals the whole process group; anything else did not -- `kill`,
+# a closed terminal, a timeout -- and left both `go run` and the harness binary
+# running. An orphan keeps climbing its ladder, and with -c chat or --live keeps
+# posting and calling after you believe the test is over. Worse, it reconnects
+# when a later run reuses its Redis port, and the two then share one ladder
+# store. So the binary is built first and started here, its pid is kept, and
+# every way out of this script stops it before Redis is removed.
+child=""
+bin_dir=""
 cleanup() {
+  if [ -n "${child}" ] && kill -0 "${child}" 2>/dev/null; then
+    kill "${child}" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "${child}" 2>/dev/null || break; sleep 0.5; done
+    kill -9 "${child}" 2>/dev/null || true
+  fi
+  [ -n "${bin_dir}" ] && rm -rf "${bin_dir}"
   if [ -n "${KEEP_REDIS}" ]; then
     echo; echo "redis left running as ${REDIS_NAME} on 127.0.0.1:${REDIS_PORT}"
     return
@@ -255,6 +286,11 @@ cleanup() {
   docker rm -f "${REDIS_NAME}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+# Turn a signal into an exit, so the EXIT trap above runs for it too.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+trap 'exit 142' ALRM
 
 if ! docker ps --format '{{.Names}}' | grep -qx "${REDIS_NAME}"; then
   docker rm -f "${REDIS_NAME}" >/dev/null 2>&1 || true
@@ -267,6 +303,12 @@ fi
 
 # -- the run ------------------------------------------------------------------
 
+# The harness prefers REDIS_URL over --redis, and loads the service's .env,
+# which sets REDIS_URL -- so without this every run lands on that one shared
+# Redis, and runs (or a ladder an earlier run left behind) work each other's
+# incidents. .env only fills variables that are unset, so this one wins.
+export REDIS_URL="redis://127.0.0.1:${REDIS_PORT}"
+
 args=(--priority "${PRIORITY}" --channel "${CHANNEL}"
       --redis "127.0.0.1:${REDIS_PORT}" --minute "${MINUTE}" --tick "${TICK}"
       --max-calls "${MAX_CALLS}" --team "${ABT}")
@@ -277,6 +319,13 @@ else
   args+=(--shift "${SHIFT}")
 fi
 [ -n "${LIVE}" ]   && args+=(--live --to "${TO}")
+[ -n "${ELEVATED}" ] && args+=(--kind elevated)
+# The room comes from escalation.yaml's cre.chat.webhookUrlEnv -- the NAME of a
+# variable in the service's .env, which the harness loads. This tool does not
+# read the YAML itself, so the name is handed over explicitly.
+case "${CHANNEL}" in
+  chat|both) [ -n "${chat_webhook_env}" ] && args+=(--chat-webhook-env "${chat_webhook_env}") ;;
+esac
 [ -n "${ACK_AT}" ] && args+=(--cancel-at "${ACK_AT}" --cancel-by "${ACK_BY}")
 
 when="${SHIFT:+shift ${SHIFT}}"
@@ -294,7 +343,7 @@ speed="real time -- about ${LADDER_LEN} minutes if nobody acknowledges"
 
 cat <<SUMMARY
 ------------------------------------------------------------------------------
- severity     ${SEVERITY} (${PRIORITY})
+ severity     ${SEVERITY} (${PRIORITY})${ELEVATED:+ -- raised to this by a priority elevation}
  assigned to  ${ABT:-UNASSIGNED -- no ABT}
  reported     ${when}  (the engine derives the shift)
  reaches      ${reach}
@@ -304,4 +353,8 @@ cat <<SUMMARY
 SUMMARY
 
 cd "${service_dir}"
-go run ./cmd/escalation-local "${args[@]}"
+bin_dir="$(mktemp -d)"
+go build -o "${bin_dir}/escalation-local" ./cmd/escalation-local
+"${bin_dir}/escalation-local" "${args[@]}" &
+child=$!
+wait "${child}"

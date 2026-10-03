@@ -92,37 +92,39 @@ import (
 const placeholderNumber = "+10000000000"
 
 type config struct {
-	priority    string
-	team        string
-	at          string
-	weekend     bool
-	shift       string
-	kind        string
-	to          string
-	live        bool
-	ssml        bool
-	notABT      bool
-	minute      time.Duration
-	tick        time.Duration
-	cancelAfter time.Duration
-	cancelBy    string
-	cancelAt    string
-	interactive bool
-	contactType string
-	maxCalls    int
-	redisAddr   string
-	incidentID  string
-	showTwiML   bool
-	ringSeconds int
-	speak       bool
-	channel     string
-	chatProduct string
-	sayVoice    string
-	keep        bool
-	cleanup     bool
-	sreL4       bool
-	ladder      string
-	realNames   bool
+	priority       string
+	team           string
+	at             string
+	weekend        bool
+	shift          string
+	kind           string
+	to             string
+	live           bool
+	ssml           bool
+	notABT         bool
+	minute         time.Duration
+	tick           time.Duration
+	cancelAfter    time.Duration
+	cancelBy       string
+	cancelAt       string
+	maxCalls       int
+	redisAddr      string
+	incidentID     string
+	showTwiML      bool
+	ringSeconds    int
+	speak          bool
+	channel        string
+	chatProduct    string
+	chatAudience   string
+	chatWebhookEnv string
+	sayVoice       string
+	keep           bool
+	cleanup        bool
+	interactive    bool
+	contactType    string
+	sreL4          bool
+	ladder         string
+	realNames      bool
 }
 
 // kind is the ladder this run exercises. The service runs one engine per
@@ -202,11 +204,14 @@ func run() error {
 		escalation.PortalLinks{},
 		escalation.NewStore(rdb),
 		nil, // no entity-service locally; the summary is printed here instead
-		cfg.chatProduct,
+		firstNonEmpty(cfg.chatAudience, cfg.chatProduct),
 		escalation.EngineConfig{
 			CallSendingEnabled: true, UseSSML: cfg.ssml, Channel: channel,
-			Kind:   cfg.ladderKind(),
-			Ladder: escalation.LadderConfig{Timing: escalation.SRETiming{IncludeL4: cfg.sreL4}},
+			Kind: cfg.ladderKind(),
+			Ladder: escalation.LadderConfig{
+				Timing: escalation.SRETiming{IncludeL4: cfg.sreL4},
+				Chat:   escalation.Chat{Audience: cfg.chatAudience, WebhookURLEnv: cfg.chatWebhookEnv},
+			},
 		},
 	)
 
@@ -300,7 +305,12 @@ func parseFlags() config {
 	flag.StringVar(&cfg.redisAddr, "redis", envOr("REDIS_ADDR", "localhost:6379"), "Redis address holding the ladder state")
 	flag.StringVar(&cfg.incidentID, "incident-id", "", "incident id to use; defaults to a fresh one per run")
 	flag.StringVar(&cfg.channel, "channel", "call", "how a rung reaches people: call, chat, or both")
-	flag.StringVar(&cfg.chatProduct, "chat-product", "", "which GOOGLE_CHAT_SPACES product routes the card; empty uses the default space")
+	flag.StringVar(&cfg.chatAudience, "chat-audience", "",
+		"which GOOGLE_CHAT_SPACES audience a rung card goes to; empty means \"Incident Monitor\"")
+	flag.StringVar(&cfg.chatProduct, "chat-product", "", "deprecated: use -chat-audience")
+	flag.StringVar(&cfg.chatWebhookEnv, "chat-webhook-env", "",
+		"name of the environment variable holding this ladder's Google Chat webhook URL "+
+			"(escalation.yaml chat.webhookUrlEnv); overrides GOOGLE_CHAT_SPACES for rung cards")
 	flag.BoolVar(&cfg.speak, "speak", false, "speak each call's message aloud through the local synthesiser instead of only printing it; needs no Twilio account")
 	flag.StringVar(&cfg.sayVoice, "say-voice", "Aman", "which local voice to speak with (macOS: `say -v '?'` lists them)")
 	flag.IntVar(&cfg.ringSeconds, "ring-seconds", 5, "how long each live call may ring before Twilio gives up; 0 uses Twilio's 60s default")
@@ -392,10 +402,26 @@ func localChatClient(cfg config) *notifications.GoogleChatClient {
 	if raw == "" {
 		return nil
 	}
+	// Strict, like the server's own parser. This used to accept anything that
+	// was valid JSON, so an entry still in the old {"product": …} shape loaded
+	// with an empty audience that nothing could ever match -- every card was
+	// dropped while the server, given the same value, refused it outright.
+	// The same .env now fails the same way in both, and says why.
 	var spaces []notifications.GoogleChatAudienceSpace
-	if err := json.Unmarshal([]byte(raw), &spaces); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: GOOGLE_CHAT_SPACES does not parse; --channel chat will have no notifier\n")
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&spaces); err != nil {
+		hint := ""
+		if strings.Contains(raw, `"product"`) {
+			hint = ` -- an entry uses "product"; Chat routes by audience now, so rename it to "audience" (e.g. "Incident Monitor")`
+		}
+		fmt.Fprintf(os.Stderr, "warning: GOOGLE_CHAT_SPACES does not parse (%v)%s; --channel chat will have no notifier\n", err, hint)
 		return nil
+	}
+	for i, s := range spaces {
+		if strings.TrimSpace(s.Audience) == "" {
+			fmt.Fprintf(os.Stderr, "warning: GOOGLE_CHAT_SPACES entry %d has no audience and can never be posted to\n", i)
+		}
 	}
 	return notifications.NewGoogleChatClient(notifications.GoogleChatConfig{AudienceSpaces: spaces})
 }
@@ -1289,4 +1315,14 @@ func loadDotEnv(path string) {
 func abtFlag(notABT bool) *bool {
 	eligible := !notABT
 	return &eligible
+}
+
+// firstNonEmpty is the first argument that is not blank.
+func firstNonEmpty(vs ...string) string {
+	for _, v := range vs {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }

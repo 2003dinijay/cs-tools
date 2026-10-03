@@ -291,37 +291,48 @@ describe("ChangeRequestActionBar — pending state", () => {
  * transition stays enabled either way, so a future reintroduction of that
  * gate (correctly or by accident) doesn't slip back in unnoticed.
  */
-describe("ChangeRequestActionBar — assess has no unmet-prerequisite gate", () => {
-  it("leaves the assess transition enabled when the CR has no assigned team", () => {
+describe("ChangeRequestActionBar — per-target blocked reasons", () => {
+  it("disables the assess transition when the CR has no assigned team", () => {
     const { onAction } = renderBar({
       state: "new",
       legalNextStates: ["assess"],
       assignedTeam: null,
     });
     const button = screen.getByRole("button", { name: /move to assess/i });
-    expect(button).toBeEnabled();
+    expect(button).toBeDisabled();
     fireEvent.click(button);
-    expect(onAction).toHaveBeenCalledWith("assess");
+    expect(onAction).not.toHaveBeenCalled();
   });
 
-  it("leaves the assess transition enabled when the CR has an assigned team", () => {
+  it("exposes the blocked reason to keyboard users via a focusable, labelled wrapper", () => {
+    renderBar({ state: "new", legalNextStates: ["assess"], assignedTeam: null });
+    const focusTarget = screen
+      .getByRole("button", { name: /move to assess/i })
+      .closest('[tabindex="0"]');
+    expect(focusTarget).not.toBeNull();
+    expect(focusTarget).toHaveAttribute(
+      "aria-label",
+      "Move to Assess: Set an assigned team before moving to Assess",
+    );
+  });
+
+  it("leaves the transition enabled once the prerequisite is met", () => {
     renderBar({ state: "new", legalNextStates: ["assess"] });
     expect(screen.getByRole("button", { name: /move to assess/i })).toBeEnabled();
   });
 
-  it("does not render a blocked-reason tooltip wrapper for assess regardless of assigned team", () => {
-    const { container } = renderBar({
+  it("blocks only the target with the unmet prerequisite, leaving the others clickable", () => {
+    // `assess` is blocked *and* is first in FORWARD_ORDER, so it stays the
+    // promoted (disabled) primary while `scheduled` stays usable behind the
+    // menu — a blocked target must not take the rest of the bar down with it.
+    const { onAction } = renderBar({
       state: "new",
-      legalNextStates: ["assess"],
+      legalNextStates: ["scheduled", "assess"],
       assignedTeam: null,
     });
-    // The blocked-reason wrapper (rendered only when `blockedReason` returns
-    // non-null) sets `aria-label="<label>: <reason>"` — a plain enabled
-    // button never does, so this is the reliable signal, unlike `tabindex`
-    // (every real `<button>` is natively focusable regardless).
-    expect(container.querySelector('[aria-label^="Move to Assess:"]')).toBeNull();
-    expect(
-      screen.getByRole("button", { name: /move to assess/i }),
-    ).toHaveAccessibleName("Move to Assess");
+    expect(screen.getByRole("button", { name: /move to assess/i })).toBeDisabled();
+    openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^schedule$/i }));
+    expect(onAction).toHaveBeenCalledWith("scheduled");
   });
 });

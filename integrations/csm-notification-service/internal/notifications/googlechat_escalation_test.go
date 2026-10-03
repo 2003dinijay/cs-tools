@@ -27,7 +27,7 @@ import (
 
 func sampleAlert() EscalationAlert {
 	return EscalationAlert{
-		Product: "WSO2 API Manager", Rung: "LEVEL_2", RungRole: "ABT lead",
+		Audience: "WSO2 API Manager", Rung: "LEVEL_2", RungRole: "ABT lead",
 		Attempt: 1, Priority: "P1", IncidentRef: "INC0012345",
 		Title: "Gateway returning 500s in production", RecipientName: "Siluni Perera",
 		Instruction: "Update the ticket status to Work In Progress to stop further notifications.",

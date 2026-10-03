@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -66,6 +67,9 @@ type TeamScheduleResolver struct {
 	// rotaMembersToCall caps the rota rungs per shift; absent or 0 means
 	// everyone on duty, which is the normal case.
 	rotaMembersToCall map[Shift]int
+	// rotaTeamKeys narrows the rota rungs to these teams; empty means this
+	// ladder's ABT teams plus Americas. See TeamKeys.RotaTeams.
+	rotaTeamKeys []string
 	// unassignedTeamLead is how the "Team lead" rung answers when there is no
 	// ABT to take a lead from: "pool" or "none". See TeamKeys.
 	unassignedTeamLead string
@@ -171,6 +175,7 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 		teamLeadsToCall: teams.TeamLeadsToCall,
 
 		rotaMembersToCall:       normaliseRotaCaps(teams.RotaMembersToCall),
+		rotaTeamKeys:            lowerKeys(teams.RotaTeams),
 		unassignedTeamLead:      unassignedLeadMode(teams.UnassignedTeamLead),
 		unassignedTeamLeadCount: unassignedLeadCount(teams.UnassignedTeamLeadCount),
 		tiers:                   alertTiers,
@@ -246,6 +251,18 @@ type TeamKeys struct {
 	// longest-since-called, the same fairness the "Team leads" rung uses, so a
 	// cap does not always spare the same names.
 	RotaMembersToCall map[string]int `yaml:"rotaMembersToCall"`
+	// RotaTeams is whose rota a rota rung may reach. Empty -- the default --
+	// means this ladder's own ABT teams plus Americas.
+	//
+	// The Team Schedule holds every rota, the SRE teams' included, and the
+	// rota rungs used to take whoever it said was on duty. So a CRE ladder's
+	// first responders on the morning, weekend and evening rotas were mostly
+	// Apollo and Artemis engineers: ten of eleven on a weekday morning. SRE
+	// is reached only through its own ladder, on a P0, one person per rung --
+	// never as a CRE rota member. With the SRE rotas excluded the rota counts
+	// match the rules sheet exactly: seven on a weekday evening, three on a
+	// weekend day.
+	RotaTeams []string `yaml:"rotaTeams"`
 	// UnassignedTeamLead is who the "Team lead" rung reaches when the incident
 	// is on no ABT -- R3, R4b, and R1 when the incident carries no team at all.
 	//
@@ -517,6 +534,54 @@ func (r TeamScheduleResolver) americasKeys() []string {
 var alertTiers = []string{"T1", "T2", "T3"}
 
 // rotaMembers is everybody rostered at that instant, in a stable order.
+// onDutyHere is who is on duty at the instant, limited to this ladder's teams.
+//
+// The rota rungs read the Team Schedule's on-duty list, which covers every
+// rota -- the SRE teams' included. Taken whole, a CRE ladder's first
+// responders were mostly SRE engineers. See TeamKeys.RotaTeams.
+func (r TeamScheduleResolver) onDutyHere(ctx context.Context, at time.Time) ([]onDutyAssignment, error) {
+	onDuty, err := r.entity.OnDutyAt(ctx, at)
+	if err != nil {
+		return nil, err
+	}
+	known := map[string]bool{}
+	var out []onDutyAssignment
+	for _, a := range onDuty {
+		key := teamKeyFor(a.TeamKey)
+		ok, seen := known[key]
+		if !seen {
+			ok = r.rotaTeamCounts(ctx, key)
+			known[key] = ok
+		}
+		if ok {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+// rotaTeamCounts reports whether a team's rota belongs to this ladder.
+func (r TeamScheduleResolver) rotaTeamCounts(ctx context.Context, key string) bool {
+	if key == "" {
+		return false
+	}
+	if len(r.rotaTeamKeys) > 0 {
+		return slices.Contains(r.rotaTeamKeys, key)
+	}
+	return key == r.americasTeamKey || r.isABT(ctx, key)
+}
+
+// lowerKeys normalises configured team keys the way teamKeyFor does.
+func lowerKeys(in []string) []string {
+	var out []string
+	for _, k := range in {
+		if k = teamKeyFor(k); k != "" {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 // normaliseRotaCaps upper-cases the configured shift keys so the map can be
 // looked up by Shift directly.
 func normaliseRotaCaps(in map[string]int) map[Shift]int {
@@ -531,7 +596,7 @@ func normaliseRotaCaps(in map[string]int) map[Shift]int {
 }
 
 func (r TeamScheduleResolver) rotaMembers(ctx context.Context, at time.Time, shift Shift) ([]Recipient, error) {
-	onDuty, err := r.entity.OnDutyAt(ctx, at)
+	onDuty, err := r.onDutyHere(ctx, at)
 	if err != nil {
 		return nil, err
 	}
@@ -563,7 +628,7 @@ func (r TeamScheduleResolver) rotaMembers(ctx context.Context, at time.Time, shi
 // arbitrary pick would make a retry reach somebody different from the first
 // attempt and make the rung untestable.
 func (r TeamScheduleResolver) rotaPair(ctx context.Context, at time.Time, teamKey string) ([]Recipient, error) {
-	onDuty, err := r.entity.OnDutyAt(ctx, at)
+	onDuty, err := r.onDutyHere(ctx, at)
 	if err != nil {
 		return nil, err
 	}

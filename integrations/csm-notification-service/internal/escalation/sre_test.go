@@ -366,7 +366,7 @@ func ladderEngine(kind Ladder, chat *fakeChat, store *memStore) *Engine {
 	return &Engine{
 		policies:  policies,
 		resolver:  sreResolver(morningRota()),
-		notifiers: []notifier{chatNotifier{chat: chat, links: fakeLinks{}, defaultProduct: "WSO2 API Manager"}},
+		notifiers: []notifier{chatNotifier{chat: chat, links: fakeLinks{}}},
 		store:     store,
 		notes:     &fakeNotes{},
 		cfg:       cfg,

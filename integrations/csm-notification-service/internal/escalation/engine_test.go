@@ -44,6 +44,11 @@ type memStore struct {
 	states   map[string]LadderState
 	wakes    map[string]time.Time
 	failSave bool
+	// failAddWakeAfter makes AddWake start failing once it has written this
+	// many entries, leaving a ladder part-seeded the way a Redis blip would.
+	// Zero never fails.
+	failAddWakeAfter int
+	wakesWritten     int
 	// called records the round-robin history the evening pairing reads.
 	called map[string]time.Time
 }
@@ -97,6 +102,10 @@ func (m *memStore) Delete(_ context.Context, id string) error {
 }
 
 func (m *memStore) AddWake(_ context.Context, member string, at time.Time) error {
+	if m.failAddWakeAfter > 0 && m.wakesWritten >= m.failAddWakeAfter {
+		return errors.New("wake store unavailable")
+	}
+	m.wakesWritten++
 	m.wakes[member] = at
 	return nil
 }
@@ -510,6 +519,98 @@ func TestEngine_AcknowledgementWithNoLadderIsANoOp(t *testing.T) {
 	}
 	if len(notes.notes) != 0 {
 		t.Error("nothing should be written for an incident with no ladder")
+	}
+}
+
+// A responder's two gestures can straddle an elevation: they move the incident
+// out of NEW, somebody raises the priority, and only then do they comment. The
+// move out of NEW cannot happen twice, so if the replacement ladder forgets it,
+// the pair can never complete and the ladder climbs past an incident that was
+// picked up before it even started.
+func TestEngine_ElevationKeepsAnEarlierAcknowledgementGesture(t *testing.T) {
+	store, caller, notes := newMemStore(), &fakeCaller{}, &fakeNotes{}
+	e := testEngine(store, caller, notes, enabled())
+	at := ist(2026, 9, 9, 10, 0)
+
+	if err := e.Handle(context.Background(), createdEvent(t, "LOW", at)); err != nil {
+		t.Fatal(err)
+	}
+	// Gesture one, before the elevation: out of NEW, no comment yet.
+	if err := e.Handle(context.Background(), record(t, events.TypeIncidentAcknowledged,
+		events.IncidentAcknowledgedPayload{PreviousState: "NEW", NewState: "IN_PROGRESS"})); err != nil {
+		t.Fatal(err)
+	}
+	if st, _, _ := store.Get(context.Background(), testIncidentID); !st.SawStateChange {
+		t.Fatal("expected the move out of NEW to have been recorded")
+	}
+
+	elevated := record(t, events.TypeIncidentPriorityElevated, events.IncidentPriorityElevatedPayload{
+		OldPriority: "LOW",
+		NewPriority: "CRITICAL",
+		Number:      "INC0012345",
+		Team:        "Atlas",
+		ABTEligible: abtYes(),
+		ElevatedAt:  at.Add(time.Minute).Format(time.RFC3339),
+	})
+	if err := e.Handle(context.Background(), elevated); err != nil {
+		t.Fatal(err)
+	}
+
+	st, found, _ := store.Get(context.Background(), testIncidentID)
+	if !found {
+		t.Fatal("expected the replacement ladder to be stored")
+	}
+	if !st.SawStateChange {
+		t.Error("the replacement ladder forgot the move out of NEW; the pair can never complete now")
+	}
+	if st.SawPublicComment {
+		t.Error("nothing has commented yet, so the replacement must still be waiting for one")
+	}
+
+	// Gesture two, after the elevation. On its own this is half an
+	// acknowledgement; together with the remembered first half it is whole,
+	// and the ladder must stop.
+	if err := e.Handle(context.Background(), record(t, events.TypeIncidentCommentAdded,
+		events.IncidentCommentAddedPayload{CommentID: "c-1", IsPublic: true})); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.wakes) != 0 {
+		t.Errorf("the replacement ladder is still scheduled: %d wake(s) left", len(store.wakes))
+	}
+}
+
+// Claiming the incident and seeding its wakes are two writes, and a failure
+// between them leaves calls with no wake to fire them. Tick walks wakes, so it
+// cannot notice the ones that are missing -- the ladder simply goes quiet part
+// way up. The redelivery has to repair that; before it did, returning early on
+// "already running" made the gap permanent.
+func TestEngine_RedeliveryRepairsAPartlySeededLadder(t *testing.T) {
+	store, caller, notes := newMemStore(), &fakeCaller{}, &fakeNotes{}
+	store.failAddWakeAfter = 3 // the wake store dies after three entries
+	e := testEngine(store, caller, notes, enabled())
+	at := ist(2026, 9, 9, 10, 0)
+
+	if err := e.Handle(context.Background(), createdEvent(t, "LOW", at)); err == nil {
+		t.Fatal("expected the wake-store failure to surface rather than being swallowed")
+	}
+	st, found, _ := store.Get(context.Background(), testIncidentID)
+	if !found {
+		t.Fatal("the incident was claimed, so its ladder state must be stored")
+	}
+	total := len(st.Plan.Calls)
+	partial := len(store.wakes)
+	if partial == 0 || partial >= total {
+		t.Fatalf("wanted a part-seeded ladder, got %d of %d wakes", partial, total)
+	}
+
+	// The store recovers and the record is redelivered.
+	store.failAddWakeAfter = 0
+	if err := e.Handle(context.Background(), createdEvent(t, "LOW", at)); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.wakes) != total {
+		t.Errorf("redelivery left the ladder short: %d of %d wakes (was %d before)",
+			len(store.wakes), total, partial)
 	}
 }
 

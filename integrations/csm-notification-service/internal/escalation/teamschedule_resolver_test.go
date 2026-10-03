@@ -945,3 +945,65 @@ func TestResolve_UnassignedIncidentStillReachesATeamLead(t *testing.T) {
 		t.Errorf("LEVEL_1 for castor = %v, want castor's own lead", emails(own))
 	}
 }
+
+// A CRE rota rung reaches CRE people only.
+//
+// The Team Schedule's on-duty list covers every rota, the SRE teams' included,
+// and the rota rungs used to take it whole: a real run's weekday-morning
+// LEVEL_0 was ten Apollo and Artemis engineers and one CRE engineer, and each
+// got a card in the room. SRE is reached through its own ladder, on a P0, one
+// person per rung -- never as a CRE rota member.
+func TestResolve_RotaRungsReachOnlyThisLaddersTeams(t *testing.T) {
+	cre := TeamKeys{
+		ABTs:       []string{"atlas", "castor", "draco", "phoenix", "rigel", "sirius", "vega"},
+		Americas:   "americas",
+		Leadership: "cre-leadership",
+	}
+	onDuty := []onDutyAssignment{
+		onDutyFor("u1", "apollo.on@example.com", "apollo"),       // SRE
+		onDutyFor("u2", "artemis.on@example.com", "artemis"),     // SRE
+		onDutyFor("u3", "vega.on@example.com", "vega"),           // CRE ABT
+		onDutyFor("u4", "castor.on@example.com", "castor"),       // CRE ABT
+		onDutyFor("u5", "americas.on@example.com", "americas"),   // night team
+		onDutyFor("u6", "migration.on@example.com", "migration"), // type cre, not an ABT
+	}
+	want := map[string]bool{"vega.on@example.com": true, "castor.on@example.com": true, "americas.on@example.com": true}
+	at := time.Now()
+
+	// R1a: every rota member on duty -- of this ladder's teams.
+	got, err := NewTeamScheduleResolver(&stubScheduleReader{onDuty: onDuty}, cre, nil).
+		Resolve(context.Background(), Level0, RoutingContext{Shift: ShiftLKMorning, AssignedCRETeam: "vega", At: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("R1a LEVEL_0 = %v, want only %v", emails(got), want)
+	}
+	for _, r := range got {
+		if !want[r.Email] {
+			t.Errorf("R1a LEVEL_0 reached %s, who is not on this ladder's rota", r.Email)
+		}
+	}
+
+	// R4a: own rota member first, then ONE other -- and the other is CRE too.
+	pair, err := NewTeamScheduleResolver(&stubScheduleReader{onDuty: onDuty}, cre, nil).
+		Resolve(context.Background(), Level0, RoutingContext{Shift: ShiftLKEvening, AssignedCRETeam: "vega", At: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pair) != 2 || pair[0].Email != "vega.on@example.com" || !want[pair[1].Email] {
+		t.Errorf("R4a LEVEL_0 = %v, want vega's own member then one other CRE member", emails(pair))
+	}
+
+	// An explicit rotaTeams list replaces the default.
+	only := cre
+	only.RotaTeams = []string{"Castor"}
+	got, err = NewTeamScheduleResolver(&stubScheduleReader{onDuty: onDuty}, only, nil).
+		Resolve(context.Background(), Level0, RoutingContext{Shift: ShiftLKMorning, AssignedCRETeam: "vega", At: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Email != "castor.on@example.com" {
+		t.Errorf("rotaTeams [Castor]: LEVEL_0 = %v, want castor only", emails(got))
+	}
+}

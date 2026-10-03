@@ -41,9 +41,12 @@ import (
 // while the card shows everyone which rung an incident has reached and who is
 // being asked to pick it up.
 type EscalationAlert struct {
-	// Product routes the card to a space, the same way every other alert in
-	// this package routes.
-	Product string
+	// Audience is the GOOGLE_CHAT_SPACES key the card is posted to. It used to
+	// be the incident's product, from when Chat routed by product; routing is
+	// by audience now, and no audience is ever named after a product, so every
+	// card was dropped. The escalation ladder sets it from its own
+	// configuration (escalation.yaml chat.audience).
+	Audience string
 	// Rung is the level being contacted, e.g. "LEVEL_2".
 	Rung string
 	// RungRole names who that rung is, e.g. "ABT team leads".
@@ -140,13 +143,17 @@ func (c *GoogleChatClient) SendEscalationAlert(ctx context.Context, a Escalation
 	// unchanged behaviour under the renamed API, not a new routing scheme
 	// invented during a rebase.
 	//
-	// NOTE: sendCardToAudience treats an unconfigured audience as a no-op
-	// success (warn, return nil). For an announcement that is right -- a
-	// not-yet-onboarded team must not fail the whole delivery. For a rung of
-	// a climbing escalation it is not: the ladder would report the rung as
-	// delivered while reaching nobody. Worth revisiting once the escalation
-	// ladder's own audience mapping is decided.
-	return c.sendCardToAudience(ctx, a.Product, buildEscalationCard(a))
+	// sendCardToAudience treats an unconfigured audience as a no-op success
+	// (warn, return nil). Right for an announcement -- a not-yet-onboarded
+	// team must not fail the whole delivery -- and wrong for a rung, which
+	// would then be recorded as delivered while reaching nobody. The
+	// escalation notifier therefore checks HasAudienceSpace itself before it
+	// gets here and records NO_CHAT_SPACE instead; see
+	// escalation.chatNotifier.Deliver.
+	if strings.TrimSpace(a.Audience) == "" {
+		return fmt.Errorf("notifications: audience is required")
+	}
+	return c.sendCardToAudience(ctx, a.Audience, buildEscalationCard(a))
 }
 
 // buildEscalationCard assembles the card, split from the send so its exact
