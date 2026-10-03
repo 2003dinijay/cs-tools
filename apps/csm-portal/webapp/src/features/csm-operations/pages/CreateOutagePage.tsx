@@ -90,7 +90,11 @@ export default function CreateOutagePage(): JSX.Element {
 
   const beginDate = parseDateTimeLocal(begin);
   const endDate = parseDateTimeLocal(end);
-  const endBeforeBegin = !!beginDate && !!endDate && endDate.getTime() < beginDate.getTime();
+  // A blank begin becomes "now" on submit, so an end already in the past
+  // would land before it.
+  const effectiveBegin = begin.trim() ? beginDate : new Date();
+  const endBeforeBegin =
+    !!effectiveBegin && !!endDate && endDate.getTime() < effectiveBegin.getTime();
 
   const isTypeValid = type !== UNSET;
   // The picker shows wall-clock in the user's timezone; the contract is UTC.
@@ -276,7 +280,11 @@ export default function CreateOutagePage(): JSX.Element {
                       size: "small",
                       fullWidth: true,
                       error: endBeforeBegin,
-                      helperText: endBeforeBegin ? "End must be after begin." : undefined,
+                      helperText: endBeforeBegin
+                        ? begin.trim()
+                          ? "End must be after begin."
+                          : "End must be after now, since begin is blank."
+                        : undefined,
                     },
                   }}
                 />
@@ -356,16 +364,6 @@ export default function CreateOutagePage(): JSX.Element {
           <Button variant="outlined" onClick={() => navigate(backTarget)}>
             Cancel
           </Button>
-          {/* *** "Begin Outage" STAMPS Begin WITH NOW. *** ServiceNow's own
-              Create New Outage form carries this action beside Save, with
-              Begin and End left as ordinary fields: the button is a shortcut
-              for the common case, not a replacement for the fields. An
-              outage noticed twenty minutes late still needs its real start
-              time typed, and removing the field would silently understate
-              every such outage's duration on the public status page.
-
-              It only fills the field. Submitting is still Create outage, so
-              a mis-stamp is corrected before anything is written. */}
           <Button
             variant="contained"
             onClick={handleSubmit}
