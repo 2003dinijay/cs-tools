@@ -1374,10 +1374,11 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	}
 
 	// Dual-write only: closing (or proposing a solution for) a plain "case"
-	// requires all three resolution fields. The mirrored ServiceNow write
-	// enforces this too; enforcing it here keeps the stores from diverging
-	// (a Postgres-only close with no resolution data can never be mirrored).
-	// Plain Postgres mode keeps its current, looser behaviour.
+	// requires all three resolution fields -- but only for an INTERNAL
+	// caller (WSO2 staff). The mirrored ServiceNow write enforces this too;
+	// enforcing it here keeps the stores from diverging (a Postgres-only
+	// close with no resolution data can never be mirrored). Plain Postgres
+	// mode keeps its current, looser behaviour.
 	//
 	// Scoped to type == "case" specifically -- found live as a real bug:
 	// closing an engagement/service_request/security_report_analysis/
@@ -1390,10 +1391,30 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// failure above (before == nil) can't confirm the type, so this still
 	// conservatively requires the fields rather than silently exempting a
 	// case whose type just couldn't be read.
+	//
+	// Also scoped to an internal caller -- found live as a second, related
+	// bug: resolutionCode/cause are WSO2's own case-resolution taxonomy
+	// (e.g. "Product Bug", "Infrastructure Network"), support-engineer
+	// vocabulary a customer closing their own case was never meant to
+	// classify their issue with. The Customer Portal's own close dialog
+	// should never ask an external caller for this -- only an internal
+	// (WSO2 staff) caller closing a case should be required to supply it.
+	// scope.Unrestricted is exactly entity-service's existing internal/
+	// external distinction (see AccessService.ResolveScope's own doc
+	// comment) -- an external/customer caller is exempted; a resolution
+	// failure here can't confirm the caller is external, so it
+	// conservatively keeps requiring the fields, same posture as the type
+	// check just above.
 	if s.snWriteback != nil && req.State != nil && (*req.State == domain.CaseStateClosed || *req.State == domain.CaseStateSolutionProposed) {
 		if before == nil || before.Type == nil || *before.Type == "case" {
-			if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
-				return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
+			requireResolutionFields := true
+			if scope, err := s.access.ResolveScope(ctx); err == nil && !scope.Unrestricted {
+				requireResolutionFields = false
+			}
+			if requireResolutionFields {
+				if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
+					return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
+				}
 			}
 		}
 	}

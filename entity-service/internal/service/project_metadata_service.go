@@ -41,6 +41,8 @@ const (
 	timeCardStateEnumType         = "time_card_state_enum"         // migrations/0041_time_card_tables.sql
 	conversationStateEnumType     = "conversation_state_enum"      // migrations/0057_conversation_table.sql
 	callRequestStateEnumType      = "customer_call_state_enum"     // migrations/0073_customer_call_table.sql
+	caseResolutionCodeEnumType    = "case_resolution_code_enum"    // migrations/0023_case_table.sql
+	caseCauseEnumType             = "case_cause_enum"              // migrations/0023_case_table.sql
 )
 
 // projectMetadataEnumTypes is every enum EnumLabels is asked for in one
@@ -50,6 +52,7 @@ var projectMetadataEnumTypes = []string{
 	deploymentTypeEnumType, engagementTypeEnumType, engagementPaymentTypeEnumType,
 	changeRequestStateEnumType, changeRequestImpactEnumType,
 	timeCardStateEnumType, conversationStateEnumType, callRequestStateEnumType,
+	caseResolutionCodeEnumType, caseCauseEnumType,
 }
 
 // caseTypeRefItems is the fixed vocabulary case_service.go's own
@@ -85,6 +88,37 @@ func callRequestStateChoices(labels []string) []domain.ChoiceListItem {
 			continue
 		}
 		out = append(out, domain.ChoiceListItem{ID: st.ID, Label: st.Label})
+	}
+	return out
+}
+
+// resolutionCodeChoices converts case_resolution_code_enum labels to choice
+// items keyed by the canonical domain.CaseResolutionCode value PATCH
+// /cases/{id} actually accepts (repository.CaseResolutionCodeFromEnum) --
+// not the raw label itself, which doesn't always match (see that function's
+// own doc comment on the one long-form exception). A label with no domain
+// mapping is skipped and logged, same posture as callRequestStateChoices.
+func resolutionCodeChoices(ctx context.Context, labels []string) []domain.ChoiceListItem {
+	out := make([]domain.ChoiceListItem, 0, len(labels))
+	for _, l := range labels {
+		code := repository.CaseResolutionCodeFromEnum(l)
+		if code == "" {
+			slog.WarnContext(ctx, "project metadata: case_resolution_code_enum label has no domain mapping", "label", l)
+			continue
+		}
+		out = append(out, domain.ChoiceListItem{ID: string(code), Label: humanizeSnakeCase(strings.ToLower(string(code)))})
+	}
+	return out
+}
+
+// causeChoices converts case_cause_enum labels to choice items. Unlike
+// resolution codes, domain.CaseCause's values match the enum's own labels by
+// identity (verified against validCaseCause), so the raw label doubles as
+// the id with no lookup table needed.
+func causeChoices(labels []string) []domain.ChoiceListItem {
+	out := make([]domain.ChoiceListItem, 0, len(labels))
+	for _, l := range labels {
+		out = append(out, domain.ChoiceListItem{ID: l, Label: humanizeSnakeCase(strings.ToLower(l))})
 	}
 	return out
 }
@@ -173,6 +207,8 @@ func (s *projectMetadataService) GetProjectMetadata(ctx context.Context, project
 		CaseTypes:                   caseTypeRefItems,
 		EngagementTypes:             choiceListFromLabels(labels[engagementTypeEnumType]),
 		EngagementPaymentTypes:      choiceListFromLabels(labels[engagementPaymentTypeEnumType]),
+		ResolutionCodes:             resolutionCodeChoices(ctx, labels[caseResolutionCodeEnumType]),
+		Causes:                      causeChoices(labels[caseCauseEnumType]),
 		Features:                    features,
 	}, nil
 }
