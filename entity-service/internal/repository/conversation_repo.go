@@ -84,12 +84,16 @@ func conversationStateFromEnum(enumValue string) domain.ConversationState {
 	return domain.ConversationState(enumValue)
 }
 
-const conversationFromJoins = `
+// conversationCountJoins carries only the joins the WHERE clause needs; the
+// creator lookup is left out of the count so it is not evaluated per row.
+const conversationCountJoins = `
 	FROM work_item wi
 	JOIN conversation c ON c.id = wi.id
 	LEFT JOIN project p ON p.id = wi.project_id
-	LEFT JOIN work_item case_wi ON case_wi.id = wi.parent_id
-	LEFT JOIN "user" u ON LOWER(u.email) = LOWER(wi.created_by)`
+	LEFT JOIN work_item case_wi ON case_wi.id = wi.parent_id`
+
+var conversationFromJoins = conversationCountJoins + `
+	` + userByEmailJoin("u", "wi.created_by")
 
 // conversationMessageStats batch-fetches each conversation's earliest
 // comment content and total comment count, avoiding one query per
@@ -185,7 +189,7 @@ func (r *conversationRepo) SearchConversations(ctx context.Context, req domain.S
 		sortDir = "ASC"
 	}
 
-	countQuery := "SELECT COUNT(*) " + conversationFromJoins + " " + where
+	countQuery := "SELECT COUNT(*) " + conversationCountJoins + " " + where
 	dataQuery := fmt.Sprintf(
 		`SELECT wi.id, wi.number, p.id, p.name, case_wi.id, case_wi.number, c.state::TEXT,
 		        wi.created_on, u.id, wi.created_by, u.name, u.first_name, u.last_name
