@@ -14,9 +14,37 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { useState, useEffect, useMemo, type JSX } from "react";
-import { type TopBannerItem, topBannersConfig } from "@config/topBannersConfig";
+import DOMPurify from "dompurify";
+import { useEffect, useMemo, useState, type JSX } from "react";
+import { getTopBanners, type TopBannerItem } from "@config/topBannersConfig";
 import { useLogger } from "@hooks/useLogger";
+
+const FALLBACK_STORAGE_KEY = "top_banner_fallback_v1";
+
+// setTimeout stores its delay as a signed 32-bit int; larger values fire immediately.
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
+/** Epoch ms for a valid startsAt/expiresAt, or null when absent or unparseable. */
+function parseTimestamp(value: string | undefined): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+// Dedicated instance so the hook and the allowed `target` attribute do not
+// leak into other DOMPurify usage in the app. Default DOMPurify strips
+// `target`, which would turn banner links meant to open in a new tab into
+// same-tab navigations; keep it and force a safe `rel`.
+const purifier = DOMPurify(window);
+purifier.addHook("afterSanitizeAttributes", (node) => {
+  if (node.tagName === "A" && node.getAttribute("target") === "_blank") {
+    node.setAttribute("rel", "noopener noreferrer");
+  }
+});
+
+function sanitizeBannerHtml(html: string): string {
+  return purifier.sanitize(html, { ADD_ATTR: ["target"] });
+}
 
 function isDismissed(storageKey: string): boolean {
   try {
@@ -34,50 +62,18 @@ function persistDismissal(storageKey: string): void {
   }
 }
 
-// setTimeout stores its delay as a signed 32-bit int; larger values fire immediately.
-const MAX_TIMEOUT_MS = 2 ** 31 - 1;
-
-/** Epoch ms for a valid startsAt/expiresAt, or null when absent or unparseable. */
-function parseTimestamp(value: string | undefined): number | null {
-  if (!value) return null;
-  const ms = Date.parse(value);
-  return Number.isNaN(ms) ? null : ms;
-}
-
-interface BannerProps {
-  banner: TopBannerItem;
-}
-
-const FALLBACK_STORAGE_KEY = "top_banner_fallback_v1";
-
-function Banner({ banner }: BannerProps): JSX.Element | null {
-  const { html, closeable } = banner;
+function Banner({ banner }: { banner: TopBannerItem }): JSX.Element | null {
+  const { closeable } = banner;
   const resolvedStorageKey = banner.storageKey || FALLBACK_STORAGE_KEY;
   const logger = useLogger();
   const [closedByUser, setClosedByUser] = useState(false);
-
-  useEffect(() => {
-    if (closeable && !banner.storageKey) {
-      logger.warn(
-        "A top banner has closeable: true but no storageKey set. " +
-          "A fallback key is being used — dismiss state may persist incorrectly.",
-      );
-    }
-  }, [closeable, banner.storageKey, logger]);
-
-  const startMs = useMemo(
-    () => parseTimestamp(banner.startsAt),
-    [banner.startsAt],
-  );
-  const expiryMs = useMemo(
-    () => parseTimestamp(banner.expiresAt),
-    [banner.expiresAt],
-  );
+  const sanitizedHtml = useMemo(() => sanitizeBannerHtml(banner.html), [banner.html]);
+  const startMs = useMemo(() => parseTimestamp(banner.startsAt), [banner.startsAt]);
+  const expiryMs = useMemo(() => parseTimestamp(banner.expiresAt), [banner.expiresAt]);
   const [now, setNow] = useState(() => Date.now());
 
   // startsAt >= expiresAt: the window is empty, the banner never shows.
-  const emptyWindow =
-    startMs !== null && expiryMs !== null && startMs >= expiryMs;
+  const emptyWindow = startMs !== null && expiryMs !== null && startMs >= expiryMs;
   const inWindow =
     !emptyWindow &&
     (startMs === null || now >= startMs) &&
@@ -147,7 +143,16 @@ function Banner({ banner }: BannerProps): JSX.Element | null {
     [closeable, inWindow, resolvedStorageKey],
   );
 
-  if (!inWindow || closedByUser || dismissed) return null;
+  useEffect(() => {
+    if (closeable && !banner.storageKey) {
+      logger.warn(
+        "A top banner has closeable: true but no storageKey set. " +
+          "A fallback key is being used; dismiss state may persist incorrectly.",
+      );
+    }
+  }, [closeable, banner.storageKey, logger]);
+
+  if (!inWindow || closedByUser || dismissed || !sanitizedHtml) return null;
 
   const handleClose = (): void => {
     persistDismissal(resolvedStorageKey);
@@ -156,8 +161,10 @@ function Banner({ banner }: BannerProps): JSX.Element | null {
 
   return (
     <div style={{ position: "relative", overflow: "hidden" }}>
-      {/* biome-ignore lint/security/noDangerouslySetInnerHtml: operator-controlled config HTML */}
-      <div dangerouslySetInnerHTML={{ __html: html }} />
+      <div
+        style={{ display: "block", lineHeight: 0, fontSize: 0, overflow: "hidden" }}
+        dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+      />
       {closeable && (
         <div
           style={{
@@ -200,19 +207,19 @@ function Banner({ banner }: BannerProps): JSX.Element | null {
 }
 
 /**
- * Renders all enabled top banners defined in CUSTOMER_PORTAL_TOP_BANNERS in config.js.
- * Banners are rendered top-to-bottom in array order.
- * Each banner independently tracks its own dismiss state via its storageKey.
+ * Renders all enabled top banners (CSM_PORTAL_TOP_BANNERS, plus the legacy
+ * CSM_PORTAL_TOP_BANNER_* keys) top-to-bottom in order. Each banner tracks its
+ * own dismiss state via its storageKey. Banner HTML is sanitized.
  */
 export default function TopBanners(): JSX.Element | null {
-  const banners = topBannersConfig.filter((b) => b.enabled);
+  const banners = getTopBanners();
 
   if (banners.length === 0) return null;
 
   return (
     <>
       {banners.map((banner, index) => (
-        <Banner key={banner.storageKey || index} banner={banner} />
+        <Banner key={`${index}:${banner.storageKey}`} banner={banner} />
       ))}
     </>
   );
