@@ -207,9 +207,10 @@ type incidentService struct {
 	// own doc comment. Set only via NewIncidentServiceWithSNMirror. Backs
 	// UpdateIncident's best-effort async ServiceNow mirror write.
 	snWriteback *SNWritebackDispatcher
-	// eventPublisher is nil in every mode except
-	// DATA_SOURCE=postgres-servicenow-dual-write. createIncidentSNFirst
-	// publishes incident.created itself, after CreateIncidentFromServiceNow
+	// eventPublisher publishes incident.created after a create has committed
+	// to Postgres: createIncidentPortal (plain Postgres) and
+	// createIncidentSNFirst (dual-write) both do. createIncidentSNFirst
+	// publishes it itself, after CreateIncidentFromServiceNow
 	// succeeds -- the mirror IncidentService above is always constructed
 	// with its own publisher=nil in this mode, specifically so it never
 	// publishes prematurely (before the Postgres insert this mode's reads
@@ -219,8 +220,8 @@ type incidentService struct {
 }
 
 // NewIncidentService constructs an IncidentService backed by Postgres.
-func NewIncidentService(repo repository.IncidentRepository) IncidentService {
-	return &incidentService{repo: repo}
+func NewIncidentService(repo repository.IncidentRepository, eventPublisher EventPublisherService) IncidentService {
+	return &incidentService{repo: repo, eventPublisher: eventPublisher}
 }
 
 // NewIncidentServiceWithPublisher is NewIncidentService for DATA_SOURCE=postgres when the platform
@@ -290,6 +291,10 @@ func (s *incidentService) resolveActor(ctx context.Context) (domain.User, error)
 	email, err := emailFromJWT(token)
 	if err != nil {
 		return domain.User{}, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
+	}
+	if s.userRepo == nil {
+		// NewIncidentService carries no user repository; comment.created_by is free text, so the email will do.
+		return domain.User{Email: email}, nil
 	}
 	return s.userRepo.GetUserByEmail(ctx, email)
 }
@@ -369,8 +374,8 @@ func (s *incidentService) SearchIncidentActivities(ctx context.Context, req doma
 // CreateIncident implements IncidentService.
 //
 // Under DATA_SOURCE=postgres-servicenow-dual-write (snMirror != nil), this
-// delegates to createIncidentSNFirst instead of the plain Postgres path's
-// ServiceUnavailableError below -- see that method's own doc comment.
+// delegates to createIncidentSNFirst -- see that method's own doc comment.
+// Otherwise it is createIncidentPortal, the native Postgres create.
 func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
 	if s.snMirror != nil {
 		// ConfigurationItemID has no backing column on this data source at
@@ -393,43 +398,70 @@ func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateI
 		}
 		return s.createIncidentSNFirst(ctx, req)
 	}
-	if req.ConfigurationItemID != nil {
-		return domain.CreateIncidentResponse{}, &apierror.ValidationError{Msg: "configurationItemId is not supported for this data source"}
-	}
 	return s.createIncidentPortal(ctx, req)
 }
 
 // createIncidentPortal implements CreateIncident's plain-Postgres path
-// (s.snMirror == nil, no ServiceNow at all) -- unblocked by migration 0140's
-// next_portal_work_item_number(), the same product decision that used to
-// defer this (see CLAUDE.md, "CreateCase and case numbers"). createdBy is
-// the caller's own JWT email claim when a user token is forwarded, else
-// incidentSystemActorEmail -- a service creating incidents (alert-born SRE
-// incidents) forwards none, and the route is internal-only. Like
-// createIncidentSNFirst, it publishes incident.created only after the insert
-// commits: the payload is built from the request alone (Title,
-// ShortDescription), so nothing ServiceNow-sourced is missing here. Notes on
-// the request become the incident's first comments, in the same transaction
-// as the incident itself (IncidentRepository.CreateIncident).
+// (s.snMirror == nil, no ServiceNow at all). It reproduces ServiceNow's
+// IncidentUtils.createIncident, the script include behind the ServiceNow
+// path's POST:
+//
+//   - state New (the column default) and priority from impact x urgency
+//     (incidentPriorityFor);
+//   - every optional field IncidentUtils sets when present, including
+//     subcategory, assigned engineer, configuration item and watch list;
+//   - additionalComments and workNotes written as journal entries (COMMENT /
+//     WORK_NOTE rows) once the record exists, not as fields on it;
+//   - incident.created published after the insert commits, the event the
+//     ServiceNow path publishes and csm-notification-service consumes.
+//
+// The number is the portal's own (next_portal_work_item_number, migration
+// 0140), as for every other type created natively; INC numbers come with the
+// native numbering cutover (migration 0180).
+//
+// The actor is the caller's validated identity (actorOf): the user's email,
+// or the client id of a machine caller such as alert ingestion, which has no
+// user token to forward.
 func (s *incidentService) createIncidentPortal(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
-	// A service caller (sre-alert-core-service, through csm-integration-service) forwards no end-user
-	// token; POST /incidents is internal-only at the route, so it is recorded as the system actor rather
-	// than refused -- the same rule resolveActor applies to work notes, for the same M2M pipeline.
-	createdBy := incidentSystemActorEmail
-	if token := middleware.UserIDTokenFromContext(ctx); token != "" {
-		email, err := emailFromJWT(token)
-		if err != nil {
-			return domain.CreateIncidentResponse{}, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
-		}
-		createdBy = email
+	if err := validateCreateIncidentRequest(req); err != nil {
+		return domain.CreateIncidentResponse{}, err
 	}
-	resp, err := s.repo.CreateIncident(ctx, req, createdBy)
+
+	var subcategoryValue *string
+	if req.Subcategory != nil {
+		v := snIncidentSubcategoryKeyMap[*req.Subcategory]
+		subcategoryValue = &v
+	}
+
+	resp, err := s.repo.CreateIncident(ctx, req, incidentPriorityFor(req.Impact, req.Urgency), subcategoryValue, actorOf(ctx))
 	if err != nil {
 		return domain.CreateIncidentResponse{}, err
 	}
-	// Only after the insert committed, so a consumer can always read what it was told about.
 	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID)
 	return resp, nil
+}
+
+// incidentPriorityFor is ServiceNow's stock priority lookup (dl_u_priority):
+// impact x urgency to priority, as an incident_priority_enum label. The
+// create form's preview (webapp utils/incidentPriorityMatrix.ts) shows the
+// same matrix.
+//
+//	impact \ urgency   HIGH       MEDIUM     LOW
+//	HIGH              CRITICAL   HIGH       MODERATE
+//	MEDIUM            HIGH       MODERATE   LOW
+//	LOW               MODERATE   LOW        PLANNING
+func incidentPriorityFor(impact domain.IncidentImpact, urgency domain.IncidentUrgency) string {
+	rank := func(v string) int {
+		switch v {
+		case "HIGH":
+			return 0
+		case "MEDIUM":
+			return 1
+		default:
+			return 2
+		}
+	}
+	return [...]string{"CRITICAL", "HIGH", "MODERATE", "LOW", "PLANNING"}[rank(string(impact))+rank(string(urgency))]
 }
 
 // createIncidentSNFirst implements CreateIncident's

@@ -51,6 +51,7 @@ type stubCaseRepo struct {
 	aggregateCases                func(ctx context.Context, req domain.SearchCasesRequest, groupBy string) ([]domain.AggregateBucket, error)
 	searchCases                   func(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error)
 	createCaseAttachment          func(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error)
+	createCaseAttachmentFromSN    func(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string, createdOn time.Time) (domain.Attachment, error)
 	searchCaseAttachments         func(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error)
 	getCaseAttachmentByID         func(ctx context.Context, id string) (domain.Attachment, error)
 	deleteCaseAttachment          func(ctx context.Context, id string) error
@@ -129,6 +130,12 @@ func (s *stubCaseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequ
 func (s *stubCaseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error) {
 	if s.createCaseAttachment != nil {
 		return s.createCaseAttachment(ctx, req)
+	}
+	panic("not implemented")
+}
+func (s *stubCaseRepo) CreateCaseAttachmentFromServiceNow(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string, createdOn time.Time) (domain.Attachment, error) {
+	if s.createCaseAttachmentFromSN != nil {
+		return s.createCaseAttachmentFromSN(ctx, req, id, sizeBytes, uploadedBy, createdOn)
 	}
 	panic("not implemented")
 }

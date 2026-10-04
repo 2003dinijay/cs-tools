@@ -91,7 +91,7 @@ func TestIncidentNotesIntegration_CreateSavesTheIncidentWithItsWorkNote(t *testi
 	ctx := seedNotesFixture(t, pool)
 	repo := repository.NewIncidentRepository(repository.NewScoped(pool))
 
-	resp, err := repo.CreateIncident(ctx, notesTestRequest("AWS alarm: CPU > 90%"), notesTestActor)
+	resp, err := repo.CreateIncident(ctx, notesTestRequest("AWS alarm: CPU > 90%"), "CRITICAL", nil, notesTestActor)
 	if err != nil {
 		t.Fatalf("CreateIncident: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestIncidentNotesIntegration_CreateRollsBackWhenItsNoteFails(t *testing.T) 
 	ctx := seedNotesFixture(t, pool)
 	repo := repository.NewIncidentRepository(repository.NewScoped(pool))
 
-	if _, err := repo.CreateIncident(ctx, notesTestRequest("bad note \x00"), notesTestActor); err == nil {
+	if _, err := repo.CreateIncident(ctx, notesTestRequest("bad note \x00"), "CRITICAL", nil, notesTestActor); err == nil {
 		t.Fatal("CreateIncident succeeded with a note Postgres rejects")
 	}
 	if n := countRows(t, ctx, pool, `SELECT count(*) FROM work_item WHERE created_by = $1`, notesTestActor); n != 0 {
@@ -120,7 +120,7 @@ func TestIncidentNotesIntegration_UpdateSavesBothNotesOrNeither(t *testing.T) {
 	pool := caseStatsPool(t)
 	ctx := seedNotesFixture(t, pool)
 	repo := repository.NewIncidentRepository(repository.NewScoped(pool))
-	resp, err := repo.CreateIncident(ctx, notesTestRequest(""), notesTestActor)
+	resp, err := repo.CreateIncident(ctx, notesTestRequest(""), "CRITICAL", nil, notesTestActor)
 	if err != nil {
 		t.Fatalf("CreateIncident: %v", err)
 	}

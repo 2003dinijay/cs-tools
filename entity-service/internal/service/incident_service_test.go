@@ -80,7 +80,7 @@ func TestIncidentPriorityToEnum(t *testing.T) {
 // unconfigured methods panic if called -- same convention as stubCaseRepo
 // (case_service_test.go).
 type stubIncidentRepo struct {
-	createIncident               func(ctx context.Context, req domain.CreateIncidentRequest, createdBy string) (domain.CreateIncidentResponse, error)
+	createIncident               func(ctx context.Context, req domain.CreateIncidentRequest, priority string, subcategoryValue *string, createdBy string) (domain.CreateIncidentResponse, error)
 	createIncidentFromServiceNow func(ctx context.Context, req domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error)
 	createIncidentComment        func(ctx context.Context, incidentID string, commentType domain.CommentType, content, createdBy string) (domain.CaseComment, error)
 	getIncidentByID              func(ctx context.Context, id string) (domain.IncidentView, error)
@@ -131,9 +131,9 @@ func (s *stubIncidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req
 	}
 	panic("CreateIncidentFromServiceNow called unexpectedly: Postgres must stay untouched when ServiceNow never accepts the incident")
 }
-func (s *stubIncidentRepo) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest, createdBy string) (domain.CreateIncidentResponse, error) {
+func (s *stubIncidentRepo) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest, priority string, subcategoryValue *string, createdBy string) (domain.CreateIncidentResponse, error) {
 	if s.createIncident != nil {
-		return s.createIncident(ctx, req, createdBy)
+		return s.createIncident(ctx, req, priority, subcategoryValue, createdBy)
 	}
 	panic("CreateIncident called unexpectedly")
 }
@@ -446,7 +446,7 @@ func newTestIncidentView(id string) domain.IncidentView {
 // constructs), UpdateIncident must still 503, exactly as the original stub
 // always did.
 func TestIncidentService_UpdateIncident_UnsupportedOnPlainDataSource(t *testing.T) {
-	svc := NewIncidentService(&stubIncidentRepo{})
+	svc := NewIncidentService(&stubIncidentRepo{}, nil)
 	workNotes := "investigating"
 	_, err := svc.UpdateIncident(context.Background(), domain.UpdateIncidentRequest{ID: testDeploymentUUID, WorkNotes: &workNotes})
 	var se *apierror.ServiceUnavailableError
