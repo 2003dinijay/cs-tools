@@ -359,8 +359,30 @@ type Config struct {
 	// projects, and no user token at all is refused. Which real client ids
 	// go in this list is a deployment decision, not something this file
 	// prescribes.
+	//
+	// A client id landing in this set by mistake grants it unconditional
+	// access to every project and case with no RLS restriction at all --
+	// see AuthCustomerPortalClientIDsRaw below for the one guard against the
+	// worst version of that mistake this file can make for itself.
 	AuthInternalClientIDsRaw string
 	AuthInternalClientIDs    map[string]bool
+	// AuthCustomerPortalClientIDsRaw is AUTH_CUSTOMER_PORTAL_CLIENT_IDS, the
+	// client id(s) of customer-facing BFFs (apps/customer-portal/backend-v2
+	// and any successor) -- callers that must never be unconditionally
+	// trusted, because every request they forward is on behalf of an
+	// external customer who must stay scoped to their own registered
+	// projects.
+	//
+	// Load cross-checks this against AuthInternalClientIDsRaw: a client id
+	// present in both is removed from AuthInternalClientIDs, not the other
+	// way around, so a customer-facing BFF's id accidentally copied into
+	// AUTH_INTERNAL_CLIENT_IDS can never grant it unrestricted access --
+	// the mistake is neutralized instead of crashing startup, since a
+	// config typo should not be what takes the whole service down. The
+	// overlap is still logged (slog.Warn) so it shows up in deploy logs
+	// rather than silently doing nothing.
+	AuthCustomerPortalClientIDsRaw string
+	AuthCustomerPortalClientIDs    map[string]bool
 	// SalesEntity* is the Choreo connection to REST sales/sales-entity-service
 	// (POST /customer-search), not GraphQL sales/entity-graphql-service and not
 	// Salesforce. The four connection fields are all-or-nothing like Event Hub.
@@ -461,6 +483,7 @@ func Load() *Config {
 		AuthUserTokenAudiences:                        splitComma(os.Getenv("AUTH_USER_TOKEN_AUDIENCES")),
 		AuthClockSkew:                                 envDuration("AUTH_CLOCK_SKEW", 30*time.Second),
 		AuthInternalClientIDsRaw:                      os.Getenv("AUTH_INTERNAL_CLIENT_IDS"),
+		AuthCustomerPortalClientIDsRaw:                os.Getenv("AUTH_CUSTOMER_PORTAL_CLIENT_IDS"),
 		CustomerRoles:                                 splitComma(os.Getenv("CUSTOMER_ROLES")),
 		CSEngineerRole:                                os.Getenv("CS_ENGINEER_ROLE"),
 		SLARecomputeInterval:                          envDuration("SLA_RECOMPUTE_INTERVAL", 45*time.Second),
@@ -487,6 +510,8 @@ func Load() *Config {
 		EscalationEL5CEOGroupID:                       os.Getenv("ESCALATION_EL5_CEO_GROUP_ID"),
 	}
 	cfg.AuthInternalClientIDs = ParseInternalClientIDs(cfg.AuthInternalClientIDsRaw)
+	cfg.AuthCustomerPortalClientIDs = ParseInternalClientIDs(cfg.AuthCustomerPortalClientIDsRaw)
+	removeOverlappingCustomerPortalClientIDs(cfg.AuthInternalClientIDs, cfg.AuthCustomerPortalClientIDs)
 	// Set outside the literal so its longer key does not realign every field above.
 	cfg.CSMMigrationSalesforceOpportunityIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED") == "true"
 	cfg.CSMMigrationSalesforceProjectIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED") == "true"
@@ -505,6 +530,24 @@ func ParseInternalClientIDs(raw string) map[string]bool {
 		out[id] = true
 	}
 	return out
+}
+
+// removeOverlappingCustomerPortalClientIDs deletes from internalIDs any id
+// that also appears in customerPortalIDs, mutating internalIDs in place --
+// so a client id entered in both AUTH_INTERNAL_CLIENT_IDS and
+// AUTH_CUSTOMER_PORTAL_CLIENT_IDS (by mistake, or by copy-pasting the wrong
+// list) ends up treated as a customer-portal caller, never as an
+// unconditionally-trusted one. Logged via slog.Warn so the mistake is at
+// least visible at startup instead of silently granting no access where
+// someone expected unrestricted access.
+func removeOverlappingCustomerPortalClientIDs(internalIDs, customerPortalIDs map[string]bool) {
+	for id := range customerPortalIDs {
+		if internalIDs[id] {
+			delete(internalIDs, id)
+			slog.Warn("client id present in both AUTH_INTERNAL_CLIENT_IDS and AUTH_CUSTOMER_PORTAL_CLIENT_IDS; treating it as a customer-portal client id, not an internal one",
+				"clientId", id)
+		}
+	}
 }
 
 func getEnvOrDefault(key, defaultVal string) string {

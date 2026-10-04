@@ -3995,6 +3995,20 @@ whatever user token it forwards -- there's no third case, so a plain
 allow-list is all `ResolveScope` needs. Which real client ids belong in it is
 a deployment decision this file doesn't prescribe.
 
+**`AUTH_CUSTOMER_PORTAL_CLIENT_IDS`** exists purely as a guard against the
+worst version of that deployment mistake: a customer-facing BFF's client id
+(`apps/customer-portal/backend-v2`, or any successor) accidentally landing in
+`AUTH_INTERNAL_CLIENT_IDS` grants it unconditional access to every project and
+case, with no RLS restriction -- that id is still trusted as "internal," so
+`app.is_internal` is set true for every request it forwards regardless of
+which customer it's actually acting on behalf of. `config.Load` cross-checks
+the two lists and removes any id present in both from the internal set
+(`removeOverlappingCustomerPortalClientIDs`), logging a `slog.Warn` so the
+mistake is visible in deploy logs rather than either crashing startup over a
+config typo or silently doing nothing. Leaving `AUTH_CUSTOMER_PORTAL_CLIENT_IDS`
+empty simply disables the cross-check; it grants nothing to the ids listed
+there on its own.
+
 ### Where this is actually enforced
 
 `AccessService` is wired into, and enforced by:

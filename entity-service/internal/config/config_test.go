@@ -445,6 +445,42 @@ func TestParseInternalClientIDs(t *testing.T) {
 	}
 }
 
+// TestRemoveOverlappingCustomerPortalClientIDs pins the mistake this guards
+// against: a client id entered in both AUTH_INTERNAL_CLIENT_IDS and
+// AUTH_CUSTOMER_PORTAL_CLIENT_IDS must end up treated as customer-portal-only,
+// never as unconditionally trusted -- see AuthCustomerPortalClientIDsRaw's own
+// doc comment for why the overlap is resolved this way instead of failing
+// startup.
+func TestRemoveOverlappingCustomerPortalClientIDs(t *testing.T) {
+	internal := ParseInternalClientIDs("csm-be, shared-oops, sla-engine")
+	customerPortal := ParseInternalClientIDs("customer-portal-be, shared-oops")
+
+	removeOverlappingCustomerPortalClientIDs(internal, customerPortal)
+
+	if internal["shared-oops"] {
+		t.Error("a client id present in both lists must be removed from the internal set")
+	}
+	if !internal["csm-be"] || !internal["sla-engine"] {
+		t.Errorf("non-overlapping internal client ids must survive untouched, got %v", internal)
+	}
+	if !customerPortal["shared-oops"] || !customerPortal["customer-portal-be"] {
+		t.Errorf("the customer-portal set itself must not be mutated, got %v", customerPortal)
+	}
+}
+
+// TestRemoveOverlappingCustomerPortalClientIDs_NoOverlap guards against a
+// regression that drops client ids even when the two lists never intersect.
+func TestRemoveOverlappingCustomerPortalClientIDs_NoOverlap(t *testing.T) {
+	internal := ParseInternalClientIDs("csm-be")
+	customerPortal := ParseInternalClientIDs("customer-portal-be")
+
+	removeOverlappingCustomerPortalClientIDs(internal, customerPortal)
+
+	if !internal["csm-be"] {
+		t.Errorf("a non-overlapping internal client id must not be removed, got %v", internal)
+	}
+}
+
 // TestLoad_CSMMigrationPortalWritesEnabled pins the kill switch's parsing:
 // only the exact string "true" turns the portal membership writes on, so a
 // typo, a "1", or a "TRUE" leaves them off rather than half-enabling a write
