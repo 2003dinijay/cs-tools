@@ -37,15 +37,19 @@ Go HTTP server (`net/http`, Go 1.26+) that acts as a backend-for-frontend (BFF) 
 Admin-only (`PermAdmin`, see "Access control" above) — the CSM portal's Add User UI is the one
 caller. `UsersHandler.CreateUser` (`internal/handler/users.go`) validates `roles` against
 `Directory.IsValidRole` (the same startup-resolved `CSM_USER_ROLES` allow-list `POST /roles/search`
-serves) before forwarding the request body unchanged to the entity service's own `POST /users` —
-entity-service deliberately does not validate role names itself (see that repo's own `domain.UserRole`
-doc comment), so this is the one place that does. `roles` is optional; the Add User form's "User type"
-selector is the one caller-facing use of it today — it sends exactly one of `["internal"]`/`["external"]`,
-since entity-service derives `user_type` from role membership rather than a plain settable column (see
-that repo's own `recompute_user_type` trigger, migration 0011). There is still no Asgardeo-backed way
-to browse/assign a fuller role set at account-creation time, so nothing beyond that one required choice
-is exposed here. "External" is currently disabled in that selector and rejected server-side if sent
-anyway — see the constraint below.
+serves) before forwarding a rebuilt body (see `buildEntityCreateUserBody`) carrying just
+`firstName`/`lastName`/`email`/`roles` to the entity service's own `POST /users` — entity-service
+deliberately does not validate role names itself (see that repo's own `domain.UserRole` doc comment),
+so this is the one place that does. `roles` is optional; the Add User form's "User type" selector is
+the one caller-facing use of it — it sends exactly one of `["internal"]`/`["external"]`, since
+entity-service derives `user_type` from role membership rather than a plain settable column (see that
+repo's own `recompute_user_type` trigger, migration 0011). "External" is currently disabled in that
+selector and rejected server-side if sent anyway — see the constraint below.
+
+A separate, unrelated field on the same request, `grantRoles`, is the Asgardeo-backed way to also put
+the new user into one or more portal-permission roles (`cs_engineer`, `escalator`, ...) at creation
+time — see "Granting portal roles on user creation" below for the full mechanism. It is validated and
+acted on independently of `roles`/`CSM_USER_ROLES` and never reaches entity-service at all.
 
 **Constraint: an internal-type user must have a `@wso2.com` email.** Found live: the Add User form sent
 no `roles` at all, so every user it created resolved to `user_type = NOT_AVAILABLE` (the trigger's
@@ -80,23 +84,77 @@ syncable mirror that is not guaranteed to agree with Asgardeo's real membership 
 `scim.Client.GetRole` with a configured Asgardeo role id and returns that role's real `users` list
 (`{id, email}` per member), authoritative rather than a potentially-stale mirror.
 
-**`ASGARDEO_ROLE_IDS`** (`internal/directory.ParseAsgardeoRoleIDs`) is a comma-separated
-`roleKey|asgardeoRoleId` list, e.g. `timecard_approver|0bbeea4f-5ada-49ba-8f19-90ae6a116daa` — a
-general role-key → Asgardeo-role-id mapping, not a single-purpose env var, so a second SCIM-backed
-role lookup later is a config row plus a small handler, not a redesign. Parsed once at startup
-(`cmd/server/main.go`, right after `loadDirectory()`) into a plain `map[string]string`; deliberately
-**not** folded into `directory.Directory` itself, since that type's own charter (team registry +
-assignable-role allow-list) is a different, narrower concept than "which roles have a SCIM-backed
-membership lookup wired up" — this is Asgardeo role *ids* for a specific feature, not organisation
-vocabulary every caller needs. No default and no required keys: an unconfigured `timecard_approver`
-entry means `timecardApproverRoleID == ""` in `main.go`, and `GetTimeCardApprovers` itself returns 404
-in that case. **The route is registered unconditionally**, deliberately unlike this file's other
-optionally-wired features (`ENGINEERING_ENTITY_BASE_URL`, the `CSM_MIGRATION_*` flags), which skip
-registration entirely when off: `GET /users/time-card-approvers` collides with the wildcard
-`GET /users/{id}` route, so leaving it unregistered would have the request fall through to `GetUser`,
-which rejects the literal segment `"time-card-approvers"` as an invalid UUID with 400 — a confusing
-status for "this feature isn't configured." Registering it unconditionally and 404ing from inside the
-handler gives a clean, correct status either way.
+**`ASGARDEO_ROLE_IDS`** (`internal/directory.ParseRoleIDs`) is a JSON object string, e.g.
+`{"example-timecard-approver-role":"11111111-1111-1111-1111-111111111111"}` — a general
+real-role-name → role-id mapping, not a single-purpose env var, so a second SCIM-backed role lookup
+later is a config row plus a small handler, not a redesign. **Keyed by the real role name exactly as
+it appears on the token's `roles` claim** (the same strings `AUTH_<ROLE>_ROLES` already lists), not an
+invented portal-role key — `AUTH_<ROLE>_ROLES` can list more than one real name granting the same
+portal permission, and only a real name identifies a specific role an id can actually belong to.
+JSON rather than this package's usual flat `key|value,key|value` form specifically because the key
+here is an opaque, deployment-specific role name that may itself contain punctuation (e.g.
+`example.namespaced-role`) — delimiter-splitting that reliably would need its own escaping, which JSON
+already provides. Parsed once at startup (`cmd/server/main.go`, right after `loadDirectory()`) into a
+plain `map[string]string`; deliberately **not** folded into `directory.Directory` itself, since that
+type's own charter (team registry + assignable-role allow-list) is a different, narrower concept than
+"which roles have a SCIM-backed lookup wired up" — this is role *ids* for a specific feature, not
+organisation vocabulary every caller needs.
+
+`handler.ResolveGrantableRoles(accessCfg, roleIDsByName)` (`internal/handler/grantable_roles.go`) is
+what bridges this real-name-keyed map back to the portal-role vocabulary (`cs_engineer`, `escalator`,
+...): for each portal role, it checks `AccessConfig`'s own configured real name(s) against this map and
+keeps the portal role only if at least one resolves to a known id — the stable `[]handler.GrantableRole{Key,
+RoleID}` list every caller downstream actually works with. No default and no required keys: a real name
+with no entry here just means that role has no SCIM-backed feature wired up in this deployment —
+`timecardApproverRoleIDs` in `main.go` is derived from this same resolved list
+(`handler.RoleIDsForKey(grantableRoles, "timecard_approver")`), not a second, parallel lookup into the
+raw map. It is a slice, not a single id: `AUTH_TIMECARD_APPROVER_ROLES` can list more than one real role
+name, each resolved to its own id, and an approver holding any one of them must still show up — unlike
+granting (`RoleIDForKey`, singular, used by `CreateUser`), which only ever needs one specific role to add
+a new user to, reading membership must not silently miss someone who only holds the second configured
+role. `GetTimeCardApprovers` queries `scim.Client.GetRole` once per configured id and merges the results,
+deduplicated by member id. **`GET /users/time-card-approvers` is registered unconditionally**, deliberately
+unlike this file's other optionally-wired features (`ENGINEERING_ENTITY_BASE_URL`, the `CSM_MIGRATION_*`
+flags), which skip registration entirely when off: it collides with the wildcard `GET /users/{id}` route, so
+leaving it unregistered would have the request fall through to `GetUser`, which rejects the literal
+segment `"time-card-approvers"` as an invalid UUID with 400 — a confusing status for "this feature isn't
+configured." Registering it unconditionally and 404ing from inside the handler (when
+`timecardApproverRoleIDs` is empty) gives a clean, correct status either way.
+
+## Granting portal roles on user creation (`grantRoles`, `GET /roles/grantable`)
+
+`POST /users`' own `roles` field only ever controls entity-service's `user_type` (internal/external) —
+it has no connection to the Asgardeo-backed portal permissions `AUTH_<ROLE>_ROLES` grants
+(`cs_engineer`, `escalator`, ...). Before this, there was no way for the Add User flow to also put a new
+user into one of those roles; an admin had to do it by hand, outside the portal. `createUserRequest`'s
+separate `grantRoles` field (portal role keys, e.g. `["cs_engineer"]`) closes that gap:
+`CreateUser` resolves each key against `UsersHandler.grantableRoles` (set once at startup via
+`WithGrantableRoles`, the same `[]handler.GrantableRole` `ResolveGrantableRoles` produces) up front —
+before anything is created, so an unknown key is a clean 400 — then, once the entity-service user
+exists, calls `scim.Client.AddRoleMembers(ctx, roleID, []string{req.Email})` once per resolved role.
+
+**`grantRoles` never reaches entity-service.** `createUserRequest` is still parsed in full (so
+`grantRoles` can be validated), but the body actually forwarded to entity-service is rebuilt from
+scratch (`buildEntityCreateUserBody`) carrying only `firstName`/`lastName`/`email`/`roles` —
+entity-service's own decoder rejects unknown fields, so the raw request body (which does carry
+`grantRoles`) can't be forwarded unchanged the way most of this handler's other POST/PATCH bodies are.
+Same "rebuild from what was actually validated" precedent `CreateCaseComment`'s own work_note rebuild
+follows in `cases.go`.
+
+**The SCIM grant is best-effort, after the fact.** By the time `AddRoleMembers` runs, the platform user
+already exists — a SCIM failure (an unreachable SCIM service, a role the configured credentials can't
+write to) is logged and does **not** fail the create response, the same posture `ensureUserProvisioned`
+(`cases.go`) takes for the mirror-image direction of this same mechanism (provisioning a platform user
+on demand for a worknote/escalation author who already holds the Asgardeo role but has no platform row
+yet). A failed grant here leaves the user created but without the intended role — recoverable by hand,
+unlike a failed *create*, which leaves nothing to recover.
+
+**`GET /roles/grantable`** (`handler.GrantableRolesHandler`, admin-only — the same `PermAdmin` gate
+`POST /users` itself sits behind) reports just the resolved portal role keys, never the real role
+name/id behind them, so the webapp's Add User dialog can render a checkbox per grantable role without
+ever learning anything about the identity provider's own vocabulary. The webapp maps each key to a
+display label itself (`grantableRoleLabels.ts`) — this backend has no notion of a human-readable role
+name at all.
 
 **A SCIM 401/403 is never passed through to the caller as 401/403.** A failure fetching the role (e.g.
 this backend's own OAuth2 app lacking a roles-read scope on `SCIM_SCOPES` — see the "Operational

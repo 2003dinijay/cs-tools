@@ -1720,6 +1720,23 @@ export interface BeCreateUserPayload {
   lastName?: string;
   email: string;
   roles?: string[];
+  /**
+   * Portal role keys (see `GET /roles/grantable`) to additionally grant via
+   * SCIM once the user is created — admin-only, same as this whole endpoint.
+   * Distinct from `roles` above: this never reaches entity-service, it only
+   * controls which identity-provider role(s) the new user is added to.
+   */
+  grantRoles?: string[];
+}
+
+/** One portal role key `GET /roles/grantable` reports as grantable in this
+ * deployment — pass `key` back in `BeCreateUserPayload.grantRoles`. */
+export interface BeGrantableRole {
+  key: string;
+}
+
+export interface BeGrantableRolesResponse {
+  roles: BeGrantableRole[];
 }
 
 export interface BeUserSearchFilters {
