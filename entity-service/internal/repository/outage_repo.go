@@ -73,7 +73,13 @@ type OutageWrite struct {
 	IncidentID            *string
 	ExternalCommunication *string
 	InternalCommunication *string
-	Actor                 string
+	// NotifyInternalStakeholders and OutageCommunication are the email
+	// opt-ins; Impact and State are nil for "not set".
+	NotifyInternalStakeholders bool
+	OutageCommunication        bool
+	Impact                     *string
+	State                      *string
+	Actor                      string
 }
 
 // OutagePatch carries an update whose timestamps are ALREADY PARSED.
@@ -96,7 +102,13 @@ type OutagePatch struct {
 	ShortDescription  *string
 	ServiceOfferingID *string
 	IncidentID        *string
-	Actor             string
+	// nil leaves a field alone. For Impact and State a non-nil empty string
+	// clears the column (NULL), so the email prints the line blank again.
+	NotifyInternalStakeholders *bool
+	OutageCommunication        *bool
+	Impact                     *string
+	State                      *string
+	Actor                      string
 }
 
 // outageRepo runs every statement under the caller's own identity, never a
@@ -135,7 +147,11 @@ SELECT o.id::text,
        o.created_on,
        COALESCE(o.created_by, ''),
        o.updated_on,
-       COALESCE(o.updated_by, '')
+       COALESCE(o.updated_by, ''),
+       COALESCE(o.notify_internal_stakeholders, FALSE),
+       COALESCE(o.outage_communication, FALSE),
+       o.impact,
+       o.state
   FROM outage o
   LEFT JOIN service_offering so ON so.id = o.service_offering_id
   LEFT JOIN LATERAL (
@@ -164,7 +180,8 @@ func scanOutage(row pgx.Row) (domain.Outage, error) {
 	if err := row.Scan(&out.ID, &out.Number, &typ, &begin, &end, &out.ShortDescription,
 		&offeringID, &offeringName, &cloud,
 		&incID, &incNumber, &incShort, &incState,
-		&createdOn, &out.CreatedBy, &updatedOn, &out.UpdatedBy); err != nil {
+		&createdOn, &out.CreatedBy, &updatedOn, &out.UpdatedBy,
+		&out.NotifyInternalStakeholders, &out.OutageCommunication, &out.Impact, &out.State); err != nil {
 		return domain.Outage{}, err
 	}
 
@@ -296,12 +313,12 @@ func insertOutage(ctx context.Context, tx pgx.Tx, in OutageWrite) (string, error
 INSERT INTO outage (id, number, type, start_on, end_on, name,
                     service_offering_id, work_item_id,
                     external_outage_communications, internal_outage_communications,
-                    notify_internal_stakeholders, duration,
+                    notify_internal_stakeholders, outage_communication, impact, state, duration,
                     created_on, created_by, updated_on, updated_by)
 VALUES (gen_random_uuid(),
         'OUT' || LPAD(nextval('outage_number_seq')::text, 7, '0'),
         $1::outage_type_enum, $2, $3, $4,
-        $5::uuid, $6::uuid, $7, $8, FALSE,
+        $5::uuid, $6::uuid, $7, $8, $10, $11, $12, $13,
         -- ServiceNow's "Outage Calculations" business rule: duration is
         -- end - begin, and NULL while either is missing. Readers such as the
         -- outage-communication email take it from this column, so an outage
@@ -315,6 +332,7 @@ RETURNING id::text`
 		strings.ToUpper(in.Type), in.Begin, in.End, in.ShortDescription,
 		in.ServiceOfferingID, in.IncidentID,
 		in.ExternalCommunication, in.InternalCommunication, in.Actor,
+		in.NotifyInternalStakeholders, in.OutageCommunication, in.Impact, in.State,
 	).Scan(&id); err != nil {
 		return "", fmt.Errorf("create outage: %w", err)
 	}
@@ -525,6 +543,20 @@ func (r *outageRepo) Update(ctx context.Context, patch OutagePatch) (domain.Outa
 	}
 	if patch.IncidentID != nil {
 		set("work_item_id = $%d::uuid", *patch.IncidentID)
+	}
+	if patch.NotifyInternalStakeholders != nil {
+		set("notify_internal_stakeholders = $%d", *patch.NotifyInternalStakeholders)
+	}
+	if patch.OutageCommunication != nil {
+		set("outage_communication = $%d", *patch.OutageCommunication)
+	}
+	// NULLIF: an empty string is "clear it", stored as NULL like ServiceNow's
+	// unset value rather than as a blank the email would print identically.
+	if patch.Impact != nil {
+		set("impact = NULLIF($%d, '')", *patch.Impact)
+	}
+	if patch.State != nil {
+		set("state = NULLIF($%d, '')", *patch.State)
 	}
 
 	if len(sets) == 0 {

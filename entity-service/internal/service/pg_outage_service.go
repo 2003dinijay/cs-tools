@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -140,6 +141,14 @@ func (s *pgOutageService) CreateOutage(ctx context.Context, req domain.CreateOut
 	if err := s.requirePublicationAck(ctx, req.ConfigurationItemID, req.AcknowledgePublicPublication); err != nil {
 		return domain.CreateOutageResponse{}, err
 	}
+	impact, err := normaliseOutageLabel(req.Impact, "impact")
+	if err != nil {
+		return domain.CreateOutageResponse{}, err
+	}
+	state, err := normaliseOutageLabel(req.State, "state")
+	if err != nil {
+		return domain.CreateOutageResponse{}, err
+	}
 
 	out, err := s.repo.Create(ctx, repository.OutageWrite{
 		Type:                  string(req.Type),
@@ -150,7 +159,12 @@ func (s *pgOutageService) CreateOutage(ctx context.Context, req domain.CreateOut
 		IncidentID:            req.IncidentID,
 		ExternalCommunication: req.ExternalCommunication,
 		InternalCommunication: req.InternalCommunication,
-		Actor:                 actorOf(ctx),
+		// Unticked unless the caller ticks it, as on ServiceNow's form.
+		NotifyInternalStakeholders: req.NotifyInternalStakeholders != nil && *req.NotifyInternalStakeholders,
+		OutageCommunication:        req.OutageCommunication != nil && *req.OutageCommunication,
+		Impact:                     nonEmpty(impact),
+		State:                      nonEmpty(state),
+		Actor:                      actorOf(ctx),
 	})
 	if err != nil {
 		return domain.CreateOutageResponse{}, err
@@ -269,12 +283,25 @@ func (s *pgOutageService) UpdateOutage(ctx context.Context, req domain.PatchOuta
 		}
 	}
 
+	impact, err := normaliseOutageLabel(req.Impact, "impact")
+	if err != nil {
+		return domain.PatchOutageResponse{}, err
+	}
+	state, err := normaliseOutageLabel(req.State, "state")
+	if err != nil {
+		return domain.PatchOutageResponse{}, err
+	}
+
 	patch := repository.OutagePatch{
-		ID:                req.ID,
-		ShortDescription:  req.ShortDescription,
-		ServiceOfferingID: req.ConfigurationItemID,
-		IncidentID:        req.IncidentID,
-		Actor:             actorOf(ctx),
+		ID:                         req.ID,
+		ShortDescription:           req.ShortDescription,
+		ServiceOfferingID:          req.ConfigurationItemID,
+		IncidentID:                 req.IncidentID,
+		NotifyInternalStakeholders: req.NotifyInternalStakeholders,
+		OutageCommunication:        req.OutageCommunication,
+		Impact:                     impact,
+		State:                      state,
+		Actor:                      actorOf(ctx),
 	}
 	if req.Type != nil {
 		t := string(*req.Type)
@@ -446,4 +473,32 @@ func effectiveInstant(patched *time.Time, stored string) (*time.Time, error) {
 		return nil, err
 	}
 	return &t, nil
+}
+
+// outageLabelMaxRunes is the width of outage.impact and outage.state
+// (VARCHAR(40), migration 0116).
+const outageLabelMaxRunes = 40
+
+// normaliseOutageLabel trims Impact or State and enforces the column width,
+// so an over-long value is a 400 naming the field rather than a 500 from the
+// database. nil stays nil (not provided); "" stays "" (cleared on update,
+// unset on create).
+func normaliseOutageLabel(v *string, field string) (*string, error) {
+	if v == nil {
+		return nil, nil
+	}
+	t := strings.TrimSpace(*v)
+	if utf8.RuneCountInString(t) > outageLabelMaxRunes {
+		return nil, &apierror.ValidationError{Msg: fmt.Sprintf("%s must be %d characters or fewer", field, outageLabelMaxRunes)}
+	}
+	return &t, nil
+}
+
+// nonEmpty drops a cleared value on create, where "" and absent both mean
+// "not set" and the column should stay NULL.
+func nonEmpty(v *string) *string {
+	if v == nil || *v == "" {
+		return nil
+	}
+	return v
 }

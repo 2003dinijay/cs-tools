@@ -4440,6 +4440,14 @@ export interface BeOutage {
   affectedConfigurationItems: BeOutageConfigurationItemRef[] | null;
   publishesToStatusPage: boolean;
   statusPageCloud: string | null;
+  /** Opt-in for the internal-stakeholder notification email. */
+  notifyInternalStakeholders?: boolean;
+  /** Opt-in for the SRE outage-communication email. */
+  outageCommunication?: boolean;
+  /** "Impact:" line of the outage-communication email. */
+  impact?: string | null;
+  /** "Current Status:" line of the outage-communication email. */
+  state?: string | null;
   createdOn: string;
   createdBy: string;
   updatedOn: string;
@@ -4479,6 +4487,10 @@ export interface BeCreateOutagePayload {
   externalCommunication?: string;
   internalCommunication?: string;
   acknowledgePublicPublication?: boolean;
+  notifyInternalStakeholders?: boolean;
+  outageCommunication?: boolean;
+  impact?: string;
+  state?: string;
 }
 
 /** `POST /outages` response. */
@@ -4502,6 +4514,12 @@ export interface BePatchOutagePayload {
   configurationItemId?: string | null;
   incidentId?: string | null;
   acknowledgePublicPublication?: boolean;
+  notifyInternalStakeholders?: boolean;
+  outageCommunication?: boolean;
+  /** An empty string clears it. */
+  impact?: string;
+  /** An empty string clears it. */
+  state?: string;
 }
 
 /** `PATCH /outages/{id}` response. */

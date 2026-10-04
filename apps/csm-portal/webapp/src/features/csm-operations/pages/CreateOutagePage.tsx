@@ -37,6 +37,9 @@ import { useSearchConfigurationItems } from "@api/useSearchConfigurationItems";
 import { useSearchIncidentsForSelect } from "@features/csm-operations/api/useSearchIncidentsForSelect";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
 import OutagePublicationNotice from "@features/csm-operations/components/OutagePublicationNotice";
+import OutageNotificationFields, {
+  type OutageNotificationValues,
+} from "@features/csm-operations/components/OutageNotificationFields";
 import { outageTypeLabel } from "@features/csm-operations/utils/outages";
 import { formatDateTimeLocal, parseDateTimeLocal, zonedInputToBackendUtc } from "@utils/dateTime";
 import type { BeConfigurationItem, BeCreateOutagePayload, BeIncident, BeOutageType } from "@api/backend/types";
@@ -86,6 +89,14 @@ export default function CreateOutagePage(): JSX.Element {
   const [externalCommunication, setExternalCommunication] = useState("");
   const [internalCommunication, setInternalCommunication] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
+  // Unticked by default, as on ServiceNow's form: an outage mails no one until
+  // someone opts it in.
+  const [notifications, setNotifications] = useState<OutageNotificationValues>({
+    notifyInternalStakeholders: false,
+    outageCommunication: false,
+    impact: "",
+    state: "",
+  });
   const [touched, setTouched] = useState(false);
   // *** A HALF-TYPED BEGIN NEVER REACHES onChange. *** MUI X's field only
   // publishes once every section of a date is filled; until then it keeps the
@@ -182,6 +193,10 @@ export default function CreateOutagePage(): JSX.Element {
     if (externalCommunication.trim()) payload.externalCommunication = externalCommunication.trim();
     if (internalCommunication.trim()) payload.internalCommunication = internalCommunication.trim();
     if (configurationItemId) payload.acknowledgePublicPublication = acknowledged;
+    if (notifications.notifyInternalStakeholders) payload.notifyInternalStakeholders = true;
+    if (notifications.outageCommunication) payload.outageCommunication = true;
+    if (notifications.impact.trim()) payload.impact = notifications.impact.trim();
+    if (notifications.state.trim()) payload.state = notifications.state.trim();
 
     postOutage.mutate(payload, {
       onSuccess: (created) =>
@@ -323,6 +338,12 @@ export default function CreateOutagePage(): JSX.Element {
               </Box>
             </Box>
           </DatePickers.LocalizationProvider>
+
+          <OutageNotificationFields
+            value={notifications}
+            onChange={setNotifications}
+            disabled={postOutage.isPending}
+          />
 
           <Typography variant="caption" color="text.secondary">
             Linking

@@ -111,3 +111,36 @@ describe("CreateOutagePage — Begin outage with a blank Begin", () => {
     expect(screen.getByText("Finish the date and time, or clear it to start now.")).toBeInTheDocument();
   });
 });
+
+describe("CreateOutagePage — email opt-ins", () => {
+  beforeEach(() => postOutageMutateMock.mockReset());
+
+  it("sends neither opt-in nor label when left untouched, as ServiceNow's unticked boxes", () => {
+    render(<CreateOutagePage />);
+    fillRequired();
+    fireEvent.click(screen.getByRole("button", { name: "Begin outage" }));
+
+    const payload = postOutageMutateMock.mock.calls[0][0];
+    expect(payload).not.toHaveProperty("notifyInternalStakeholders");
+    expect(payload).not.toHaveProperty("outageCommunication");
+    expect(payload).not.toHaveProperty("impact");
+    expect(payload).not.toHaveProperty("state");
+  });
+
+  it("sends both opt-ins and the trimmed labels when set", () => {
+    render(<CreateOutagePage />);
+    fillRequired();
+    fireEvent.click(screen.getByLabelText(/Notify internal stakeholders/));
+    fireEvent.click(screen.getByLabelText(/Outage communication/));
+    fireEvent.change(screen.getByLabelText("Impact"), { target: { value: " 2 - High " } });
+    fireEvent.change(screen.getByLabelText("Current status"), { target: { value: "Investigating" } });
+    fireEvent.click(screen.getByRole("button", { name: "Begin outage" }));
+
+    expect(postOutageMutateMock.mock.calls[0][0]).toMatchObject({
+      notifyInternalStakeholders: true,
+      outageCommunication: true,
+      impact: "2 - High",
+      state: "Investigating",
+    });
+  });
+});
