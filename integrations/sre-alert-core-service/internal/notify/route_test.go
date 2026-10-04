@@ -96,7 +96,6 @@ func TestAssignmentGroup_TakesTheMostSpecificSignal(t *testing.T) {
 			"group:SRE - Apollo":                             "grp-apollo",
 			"Topic:arn:aws:sns:us-east-1:111:artemis-alerts": "grp-artemis",
 			"account:222":                                    "grp-account",
-			"team:Apollo":                                    "grp-team-apollo",
 		},
 	})
 	full := model.Incident{
@@ -117,8 +116,7 @@ func TestAssignmentGroup_TakesTheMostSpecificSignal(t *testing.T) {
 		{"a bare sys_id is not used as an id", model.Incident{AssignmentGroup: "0123456789abcdef0123456789abcdef"}, "grp-service", "grp-service", "service"},
 		{"unrouted name falls through to the service", model.Incident{AssignmentGroup: "Nobody Knows"}, "grp-service", "grp-service", "service"},
 		{"service's support group", model.Incident{SourceTopic: full.SourceTopic}, "grp-service", "grp-service", "service"},
-		{"team its webhook was subscribed for", model.Incident{SourceTeam: "apollo", SourceTopic: full.SourceTopic}, "", "grp-team-apollo", "team"},
-		{"topic it was sent from", model.Incident{SourceTeam: "unmapped", SourceTopic: full.SourceTopic, SourceAccount: "222"}, "", "grp-artemis", "topic"},
+		{"topic it was sent from", model.Incident{SourceTopic: full.SourceTopic, SourceAccount: "222"}, "", "grp-artemis", "topic"},
 		{"account it was sent from", model.Incident{SourceTopic: "arn:aws:sns:us-east-1:222:other", SourceAccount: "222"}, "", "grp-account", "account"},
 		{"nothing matches: the default", model.Incident{SourceAccount: "999"}, "", "grp-default", "default"},
 	}
@@ -156,14 +154,14 @@ func TestLooksLikeGroupID(t *testing.T) {
 func TestValidateGroupIDs(t *testing.T) {
 	ok := Config{
 		DefaultAssignmentGroupID: "01234567-89ab-cdef-0123-456789abcdef",
-		AssignmentGroupRoutes:    map[string]string{"team:Apollo": "11111111-2222-3333-4444-555555555555"},
+		AssignmentGroupRoutes:    map[string]string{"account:487629103847": "11111111-2222-3333-4444-555555555555"},
 	}
 	if err := ValidateGroupIDs(ok); err != nil {
 		t.Fatalf("valid config refused: %v", err)
 	}
 	for name, bad := range map[string]Config{
 		"sys_id default":   {DefaultAssignmentGroupID: "0123456789abcdef0123456789abcdef"},
-		"name as a value":  {AssignmentGroupRoutes: map[string]string{"team:Apollo": "SRE - Apollo"}},
+		"name as a value":  {AssignmentGroupRoutes: map[string]string{"account:487629103847": "SRE - Apollo"}},
 		"key with no kind": {AssignmentGroupRoutes: map[string]string{"Apollo": "11111111-2222-3333-4444-555555555555"}},
 	} {
 		if err := ValidateGroupIDs(bad); err == nil {

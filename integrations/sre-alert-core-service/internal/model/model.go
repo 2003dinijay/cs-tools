@@ -45,7 +45,6 @@ type Alert struct {
 	AssignmentGroup string `json:"assignment_group,omitempty"`
 	SourceTopic     string `json:"source_topic,omitempty"`
 	SourceAccount   string `json:"source_account,omitempty"`
-	SourceTeam      string `json:"source_team,omitempty"`
 }
 
 // Incident dedups alerts by fingerprint; Severity is numeric (1=Critical..5=OK); db tags drive gocqlx binding.
@@ -68,7 +67,6 @@ type Incident struct {
 	AssignmentGroup string   `json:"assignment_group" db:"assignment_group"`
 	SourceTopic     string   `json:"source_topic" db:"source_topic"`
 	SourceAccount   string   `json:"source_account" db:"source_account"`
-	SourceTeam      string   `json:"source_team" db:"source_team"`
 	AlertIDs        []string `json:"alert_ids" db:"alert_ids"`
 	AlertCount      int      `json:"alert_count" db:"alert_count"`
 	WorkNotes       []string `json:"work_notes" db:"work_notes"`
@@ -96,7 +94,6 @@ func (i *Incident) TakeRouting(a Alert) {
 	i.AssignmentGroup = a.AssignmentGroup
 	i.SourceTopic = a.SourceTopic
 	i.SourceAccount = a.SourceAccount
-	i.SourceTeam = a.SourceTeam
 }
 
 func (i Incident) CSMRetryDue(now time.Time, base time.Duration, multiplier float64, maxDelay time.Duration) bool {

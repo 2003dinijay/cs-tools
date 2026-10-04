@@ -51,7 +51,7 @@ type Notifier struct {
 	unknownServiceID string
 	// defaultAssignmentGroupID assigns an incident no other signal routes, so it still reaches a team.
 	defaultAssignmentGroupID string
-	// groupRoutes maps "group:<name>", "team:<source team>", "topic:<source topic>" and "account:<source account>" (lower-cased) to a CSM group id.
+	// groupRoutes maps "group:<name>", "topic:<source topic>" and "account:<source account>" (lower-cased) to a CSM group id.
 	groupRoutes map[string]string
 	services    *serviceCache
 	// serviceResolveGroup collapses concurrent cache misses for the same unresolved label into one CSM search.
@@ -71,7 +71,7 @@ type Config struct {
 	// DefaultAssignmentGroupID assigns an incident that no other signal routes; empty leaves it unassigned.
 	DefaultAssignmentGroupID string
 	// AssignmentGroupRoutes maps routing keys to CSM group ids: "group:<name>" (a group an alert names
-	// for itself), "team:<source team>", "topic:<source topic>" and "account:<source account>".
+	// for itself), "topic:<source topic>" and "account:<source account>".
 	// Keys are matched ignoring case.
 	AssignmentGroupRoutes map[string]string
 	// ServiceCacheTTL bounds reuse of a resolved label->serviceId mapping.
@@ -242,8 +242,7 @@ func (n *Notifier) createRequest(inc model.Incident, svc resolvedService, tag st
 }
 
 // assignmentGroup picks the incident's group from the most specific signal it has, in order: the group the
-// alert named for itself, its service's CMDB support group, the team its webhook was subscribed for, the
-// topic it was sent from, the account it was sent from, then the configured default. by names the signal that decided ("none" when nothing did), for the log.
+// alert named for itself, its service's CMDB support group, the topic it was sent from, the account it was sent from, then the configured default. by names the signal that decided ("none" when nothing did), for the log.
 func (n *Notifier) assignmentGroup(inc model.Incident, serviceGroupID string) (id, by string) {
 	if named := strings.TrimSpace(inc.AssignmentGroup); named != "" {
 		if id := n.groupRoutes[routeKey("group", named)]; id != "" {
@@ -256,9 +255,6 @@ func (n *Notifier) assignmentGroup(inc model.Incident, serviceGroupID string) (i
 	}
 	if serviceGroupID != "" {
 		return serviceGroupID, "service"
-	}
-	if id := n.groupRoutes[routeKey("team", inc.SourceTeam)]; inc.SourceTeam != "" && id != "" {
-		return id, "team"
 	}
 	if id := n.groupRoutes[routeKey("topic", inc.SourceTopic)]; inc.SourceTopic != "" && id != "" {
 		return id, "topic"
@@ -308,7 +304,7 @@ func ValidateGroupIDs(cfg Config) error {
 	}
 	for k, v := range cfg.AssignmentGroupRoutes {
 		if _, _, ok := strings.Cut(k, ":"); !ok {
-			return fmt.Errorf("CSM_ASSIGNMENT_GROUP_ROUTES key %q has no kind (group:, team:, topic: or account:)", k)
+			return fmt.Errorf("CSM_ASSIGNMENT_GROUP_ROUTES key %q has no kind (group:, topic: or account:)", k)
 		}
 		if !looksLikeGroupID(strings.TrimSpace(v)) {
 			return fmt.Errorf("CSM_ASSIGNMENT_GROUP_ROUTES[%q] = %q is not a UUID", k, v)

@@ -39,10 +39,9 @@ notifications independently until they're actually delivered.
      `"assignment_group"`), as a group id or as a name mapped in
      `CSM_ASSIGNMENT_GROUP_ROUTES` (`"group:<name>"`);
   2. the matched CMDB service's support group;
-  3. the team the webhook was subscribed for, the URL's `?team=` (`"team:<name>"`);
-  4. the topic it was sent from, an AWS SNS `TopicArn` (`"topic:<arn>"`);
-  5. the account it was sent from, an AWS account id (`"account:<id>"`);
-  6. `CSM_DEFAULT_ASSIGNMENT_GROUP_ID`.
+  3. the topic it was sent from, an AWS SNS `TopicArn` (`"topic:<arn>"`);
+  4. the account it was sent from, an AWS account id (`"account:<id>"`);
+  5. `CSM_DEFAULT_ASSIGNMENT_GROUP_ID`.
 
   The log line `assignment group chosen` names the step that decided (`by=`). The
   contact type is set when the alert's source has one in CSM's enum (Azure → `AZURE`,

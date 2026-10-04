@@ -38,7 +38,4 @@ type Alert struct {
 	// alert names none and its service has no support group. Optional.
 	SourceTopic   string `json:"source_topic,omitempty"`
 	SourceAccount string `json:"source_account,omitempty"`
-	// SourceTeam is the webhook URL's ?team= parameter -- for AWS, the team the SNS subscription
-	// was set up for, since SNS posts every notification to the URL it subscribed. Optional.
-	SourceTeam string `json:"source_team,omitempty"`
 }

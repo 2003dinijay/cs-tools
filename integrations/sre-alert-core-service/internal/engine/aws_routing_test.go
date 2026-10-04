@@ -35,13 +35,12 @@ import (
 
 // Stored alerts exactly as sre-alert-ingestion-service writes them for one CloudWatch alarm
 // (prod-rds-cpu-utilization-high, account 487629103847, SNS topic sre-apollo-alarms), posted to
-// /aws?team=Apollo except the last; captured from that service's own transform and ingest code.
+// /aws; captured from that service's own transform and ingest code.
 const awsAlertBase = `"metric_name":"prod-rds-cpu-utilization-high","severity":"critical","category":"service_interruption","environment":"Unknown","source":"AWS","unique_identifier":"arn:aws:cloudwatch:us-east-1:487629103847:alarm:prod-rds-cpu-utilization-high","description":"(alarm message)","source_topic":"arn:aws:sns:us-east-1:487629103847:sre-apollo-alarms","source_account":"487629103847"`
 
 var awsStoredAlerts = map[string]string{
-	"named":   `{"service":"choreo-control-plane",` + awsAlertBase + `,"assignment_group":"SRE - Artemis","source_team":"Apollo"}`,
-	"service": `{"service":"choreo-control-plane",` + awsAlertBase + `,"source_team":"Apollo"}`,
-	"team":    `{"service":"no-such-service",` + awsAlertBase + `,"source_team":"Apollo"}`,
+	"named":   `{"service":"choreo-control-plane",` + awsAlertBase + `,"assignment_group":"SRE - Artemis"}`,
+	"service": `{"service":"choreo-control-plane",` + awsAlertBase + `}`,
 	"account": `{"service":"",` + awsAlertBase + `}`,
 }
 
@@ -94,10 +93,9 @@ func TestAWSAlarm_CreatesTheIncidentInItsAssignmentGroup(t *testing.T) {
 	cases := []struct {
 		alert, wantGroup, wantService string
 	}{
-		{"named", "aaaaaaaa-0000-4000-8000-000000000001", "svc-choreo"},    // the alarm names its own group: beats the service and ?team=
+		{"named", "aaaaaaaa-0000-4000-8000-000000000001", "svc-choreo"},    // the alarm names its own group: beats its service
 		{"service", "aaaaaaaa-0000-4000-8000-000000000002", "svc-choreo"},  // the CMDB service's support group
-		{"team", "aaaaaaaa-0000-4000-8000-000000000003", "svc-unknown"},    // no such service: the subscription's ?team=
-		{"account", "aaaaaaaa-0000-4000-8000-000000000004", "svc-unknown"}, // no service, no ?team=: the AWS account
+		{"account", "aaaaaaaa-0000-4000-8000-000000000004", "svc-unknown"}, // no service: the AWS account
 	}
 	for _, tc := range cases {
 		t.Run(tc.alert, func(t *testing.T) {
@@ -122,7 +120,6 @@ func TestAWSAlarm_CreatesTheIncidentInItsAssignmentGroup(t *testing.T) {
 				HTTPTimeout:      5 * time.Second,
 				AssignmentGroupRoutes: map[string]string{
 					"group:SRE - Artemis":  "aaaaaaaa-0000-4000-8000-000000000001",
-					"team:Apollo":          "aaaaaaaa-0000-4000-8000-000000000003",
 					"account:487629103847": "aaaaaaaa-0000-4000-8000-000000000004",
 				},
 				DefaultAssignmentGroupID: "aaaaaaaa-0000-4000-8000-000000000005",

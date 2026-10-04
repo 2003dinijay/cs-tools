@@ -61,8 +61,7 @@ CREATE TABLE IF NOT EXISTS alertintegration.incidents_processed (
   version                 bigint,     -- optimistic-concurrency fence; every mutating write is IF version = <value just read>
   assignment_group        text,       -- group the first alert named for itself (AWS AlarmDescription "assignment_group")
   source_topic            text,       -- where the first alert was sent from (AWS SNS TopicArn)
-  source_account          text,       -- the sender's account (AWS account id)
-  source_team             text        -- the webhook URL's ?team= (the team an SNS subscription was set up for)
+  source_account          text        -- the sender's account (AWS account id)
 ) WITH cosmosdb_cell_level_timestamp = true
   AND cosmosdb_cell_level_timestamp_tombstones = true
   AND cosmosdb_cell_level_timetolive = true;
@@ -76,7 +75,6 @@ CREATE TABLE IF NOT EXISTS alertintegration.incidents_processed (
 --   ALTER TABLE alertintegration.incidents_processed ADD assignment_group text;
 --   ALTER TABLE alertintegration.incidents_processed ADD source_topic text;
 --   ALTER TABLE alertintegration.incidents_processed ADD source_account text;
---   ALTER TABLE alertintegration.incidents_processed ADD source_team text;
 
 -- Maintained index of incidents still owing CSM/Chat delivery work, so RetrySweep never has to scan all of incidents_processed.
 CREATE TABLE IF NOT EXISTS alertintegration.incidents_pending (

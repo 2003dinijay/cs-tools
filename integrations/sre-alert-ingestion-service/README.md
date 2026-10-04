@@ -38,10 +38,8 @@ vendor ──POST──▶ ingestion (transform → allocator: CAS-claim ids →
   logs a CRITICAL error.
 - **Routing signals**: alongside the canonical fields, an alert can carry what the core
   uses to choose its CSM assignment group: `assignment_group` (an AWS alarm's
-  `AlarmDescription` JSON may name one, e.g. `{"service":"...","assignment_group":"SRE - Apollo"}`),
-  `source_team` (the webhook URL's `?team=`, stamped on every alert of the request -- SNS
-  posts each notification to the URL it subscribed), and, for AWS, `source_topic` (the
-  SNS `TopicArn`) and `source_account` (the AWS account id).
+  `AlarmDescription` JSON may name one, e.g. `{"service":"...","assignment_group":"SRE - Apollo"}`)
+  and, for AWS, `source_topic` (the SNS `TopicArn`) and `source_account` (the AWS account id).
 - **Memory**: everything accepted but not finished is capped at `allocator.queue_max_bytes`; past
   it, new webhooks get `503` at once.
 - **Response**: `201` only after every alert in the request has been written.
