@@ -20009,6 +20009,16 @@ components:
         statusPageCloud:
           type: string
           nullable: true
+        notifyInternalStakeholders:
+          type: boolean
+        outageCommunication:
+          type: boolean
+        impact:
+          type: string
+          nullable: true
+        state:
+          type: string
+          nullable: true
         createdOn:
           type: string
         createdBy:
@@ -20812,6 +20822,24 @@ components:
           type: boolean
           nullable: true
           description: Required when configurationItemId resolves to a monitored status-page cloud.
+        notifyInternalStakeholders:
+          type: boolean
+          description: >-
+            Opt-in for the internal-stakeholder outage notification (ServiceNow
+            "Notify internal stakeholders"). Omitted means false.
+        outageCommunication:
+          type: boolean
+          description: >-
+            Opt-in for the SRE outage-communication email (ServiceNow "Outage
+            communication"). Omitted means false.
+        impact:
+          type: string
+          maxLength: 40
+          description: Printed as "Impact:" in the outage-communication email.
+        state:
+          type: string
+          maxLength: 40
+          description: Printed as "Current Status:" in the outage-communication email.
 
     CreateOutageResponse:
       type: object
@@ -20844,6 +20872,24 @@ components:
           format: uuid
         acknowledgePublicPublication:
           type: boolean
+        notifyInternalStakeholders:
+          type: boolean
+          description: >-
+            Opt-in for the internal-stakeholder outage notification (ServiceNow
+            "Notify internal stakeholders"). Omit to leave it unchanged.
+        outageCommunication:
+          type: boolean
+          description: >-
+            Opt-in for the SRE outage-communication email (ServiceNow "Outage
+            communication"). Omit to leave it unchanged.
+        impact:
+          type: string
+          maxLength: 40
+          description: Printed as "Impact:" in the outage-communication email. An empty string clears it.
+        state:
+          type: string
+          maxLength: 40
+          description: Printed as "Current Status:" in the outage-communication email. An empty string clears it.
 
     PatchOutageResponse:
       type: object

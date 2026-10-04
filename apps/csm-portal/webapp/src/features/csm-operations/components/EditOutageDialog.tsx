@@ -34,6 +34,9 @@ import { useSearchConfigurationItems } from "@api/useSearchConfigurationItems";
 import { useSearchIncidentsForSelect } from "@features/csm-operations/api/useSearchIncidentsForSelect";
 import { useGetOutageMetadata } from "@features/csm-operations/api/useOutages";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
+import OutageNotificationFields, {
+  type OutageNotificationValues,
+} from "@features/csm-operations/components/OutageNotificationFields";
 import OutagePublicationNotice from "@features/csm-operations/components/OutagePublicationNotice";
 import { outageTypeLabel } from "@features/csm-operations/utils/outages";
 import type {
@@ -92,6 +95,16 @@ export default function EditOutageDialog({
   // pre-acknowledged so re-saving unrelated fields on an already-linked,
   // already-public outage doesn't re-block on a checkbox that adds nothing.
   const [acknowledged, setAcknowledged] = useState(outage.publishesToStatusPage);
+  const initialNotifications = useMemo<OutageNotificationValues>(
+    () => ({
+      notifyInternalStakeholders: outage.notifyInternalStakeholders ?? false,
+      outageCommunication: outage.outageCommunication ?? false,
+      impact: outage.impact ?? "",
+      state: outage.state ?? "",
+    }),
+    [outage.notifyInternalStakeholders, outage.outageCommunication, outage.impact, outage.state],
+  );
+  const [notifications, setNotifications] = useState<OutageNotificationValues>(initialNotifications);
 
   const isShortDescriptionValid = shortDescription.trim().length > 0;
   const configurationItemChanged = configurationItemId !== initialConfigurationItemId;
@@ -111,6 +124,20 @@ export default function EditOutageDialog({
     if (configurationItemChanged && configurationItemId) {
       next.acknowledgePublicPublication = acknowledged;
     }
+    if (notifications.notifyInternalStakeholders !== initialNotifications.notifyInternalStakeholders) {
+      next.notifyInternalStakeholders = notifications.notifyInternalStakeholders;
+    }
+    if (notifications.outageCommunication !== initialNotifications.outageCommunication) {
+      next.outageCommunication = notifications.outageCommunication;
+    }
+    // Trimmed on both sides; an emptied field is sent as "" so the backend
+    // clears it rather than leaving the old value in the email.
+    if (notifications.impact.trim() !== initialNotifications.impact.trim()) {
+      next.impact = notifications.impact.trim();
+    }
+    if (notifications.state.trim() !== initialNotifications.state.trim()) {
+      next.state = notifications.state.trim();
+    }
     return next;
   }, [
     type,
@@ -123,6 +150,8 @@ export default function EditOutageDialog({
     incidentId,
     initialIncidentId,
     acknowledged,
+    notifications,
+    initialNotifications,
   ]);
 
   const hasChanges = Object.keys(patch).length > 0;
@@ -201,6 +230,12 @@ export default function EditOutageDialog({
             getId={(i) => i.id!}
             getLabel={incidentSearchLabel}
             knownLabel={outage.incident?.number}
+          />
+
+          <OutageNotificationFields
+            value={notifications}
+            onChange={setNotifications}
+            disabled={isSaving}
           />
 
           {configurationItemChanged && (
