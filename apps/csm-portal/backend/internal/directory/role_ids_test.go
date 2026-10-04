@@ -53,6 +53,13 @@ func TestParseRoleIDs_RejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestParseRoleIDs_RejectsJSONNull(t *testing.T) {
+	_, err := ParseRoleIDs("null")
+	if err == nil {
+		t.Fatal("expected an error for JSON null, got nil")
+	}
+}
+
 func TestParseRoleIDs_RejectsEmptyID(t *testing.T) {
 	_, err := ParseRoleIDs(`{"some-role": ""}`)
 	if err == nil {

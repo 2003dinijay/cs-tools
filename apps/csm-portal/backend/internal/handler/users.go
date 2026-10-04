@@ -73,12 +73,15 @@ type UsersHandler struct {
 	// tell whether AttachmentStorageHandler's routes are reachable without
 	// probing them.
 	sftpgoAttachmentStorageEnabled bool
-	// timecardApproverRoleID is the Asgardeo role ID (TIMECARD_APPROVER_ASGARDEO_ROLE_ID)
-	// GET /users/time-card-approvers fetches via SCIM. Configured once, out of
-	// band -- see that handler's own doc comment for why this is the real,
-	// authoritative list of approvers, not entity-service's own Postgres role
-	// table.
-	timecardApproverRoleID string
+	// timecardApproverRoleIDs are every real role ID (see
+	// handler.RoleIDsForKey) GET /users/time-card-approvers fetches via SCIM
+	// and merges. Configured once, out of band -- see that handler's own doc
+	// comment for why this is the real, authoritative list of approvers, not
+	// entity-service's own Postgres role table. More than one ID is possible:
+	// AUTH_TIMECARD_APPROVER_ROLES can name several real role names, each
+	// resolved to its own ID, and an approver holding only one of them must
+	// still be listed.
+	timecardApproverRoleIDs []string
 	// access resolves the caller's token roles into the portal roles GET
 	// /users/me reports. nil (every existing call site and test) reports none;
 	// cmd/server/main.go sets it with WithAccessGuard.
@@ -113,16 +116,16 @@ func (h *UsersHandler) WithAccessGuard(g *AccessGuard) *UsersHandler {
 // mirrors the same runtime flag value main.go uses to decide whether to
 // register AttachmentStorageHandler's routes (SFTPGO_ATTACHMENT_STORAGE_ENABLED),
 // so GET /users/me can tell the frontend whether those routes are reachable.
-// timecardApproverRoleID is GetTimeCardApprovers' own config -- see that
-// handler's doc comment; pass "" when GET /users/time-card-approvers is not
-// registered (main.go only registers it once this is set).
-func NewUsersHandler(scim scimClient, entity entityUserClient, dir *directory.Directory, sftpgoAttachmentStorageEnabled bool, timecardApproverRoleID string) *UsersHandler {
+// timecardApproverRoleIDs is GetTimeCardApprovers' own config -- see that
+// handler's doc comment; pass nil/empty when GET /users/time-card-approvers
+// is not registered (main.go only registers it once this is non-empty).
+func NewUsersHandler(scim scimClient, entity entityUserClient, dir *directory.Directory, sftpgoAttachmentStorageEnabled bool, timecardApproverRoleIDs []string) *UsersHandler {
 	return &UsersHandler{
 		scim:                           scim,
 		entity:                         entity,
 		dir:                            dir,
 		sftpgoAttachmentStorageEnabled: sftpgoAttachmentStorageEnabled,
-		timecardApproverRoleID:         timecardApproverRoleID,
+		timecardApproverRoleIDs:        timecardApproverRoleIDs,
 	}
 }
 
@@ -540,13 +543,17 @@ type timeCardApproverRef struct {
 }
 
 // GetTimeCardApprovers handles GET /users/time-card-approvers. Lists the real
-// Asgardeo membership of the configured time-card-approver role via the SCIM
+// membership of every configured time-card-approver role via the SCIM
 // operations service, rather than entity-service's own Postgres `role`/
 // `user_role` tables (what POST /users/search's roleIds filter reads) --
-// approval is actually granted by Asgardeo role membership (see
+// approval is actually granted by real role membership (see
 // AUTH_TIMECARD_APPROVER_ROLES in "Access control"), and the Postgres table
-// is a separate, syncable mirror that can drift from it. Only registered
-// (see cmd/server/main.go) once TIMECARD_APPROVER_ASGARDEO_ROLE_ID is set.
+// is a separate, syncable mirror that can drift from it. AUTH_TIMECARD_APPROVER_ROLES
+// can name several real role names, each resolved to its own ID (see
+// handler.RoleIDsForKey) -- an approver is anyone holding ANY of them, so
+// every configured ID is queried and the results merged, deduplicated by
+// member ID in case the same person holds more than one. Only registered
+// (see cmd/server/main.go) once at least one ID is configured.
 func (h *UsersHandler) GetTimeCardApprovers(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -558,34 +565,42 @@ func (h *UsersHandler) GetTimeCardApprovers(w http.ResponseWriter, r *http.Reque
 	// deployment 404s cleanly here rather than falling through to the
 	// wildcard GET /users/{id} route, which would reject the literal segment
 	// "time-card-approvers" as an invalid UUID with 400 instead.
-	if h.timecardApproverRoleID == "" {
+	if len(h.timecardApproverRoleIDs) == 0 {
 		writeError(w, http.StatusNotFound, ErrMsgNotFound)
 		return
 	}
 
-	members, err := h.scim.GetRole(r.Context(), h.timecardApproverRoleID)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "scim GetRole (time card approvers) failed", "userID", user.UserID, "err", err)
-		// A 401/403 here means this backend's own SCIM client credentials lack
-		// the scope to read Asgardeo roles (see ASGARDEO_ROLE_IDS's own doc
-		// comment) -- a deployment/configuration problem, not anything about
-		// the calling portal user's own permissions. mapUpstreamErrorGeneric's
-		// usual 401/403 pass-through would tell an ordinary viewer "you don't
-		// have permission" for what is actually a backend misconfiguration an
-		// admin needs to fix, so those two codes are reported as a sanitized
-		// 502 instead; every other status still goes through the usual mapping.
-		var apiErr *apierror.Error
-		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
-			writeError(w, http.StatusBadGateway, "Failed to list time card approvers.")
+	seen := make(map[string]struct{})
+	approvers := make([]timeCardApproverRef, 0, len(h.timecardApproverRoleIDs))
+	for _, roleID := range h.timecardApproverRoleIDs {
+		members, err := h.scim.GetRole(r.Context(), roleID)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "scim GetRole (time card approvers) failed", "userID", user.UserID, "roleID", roleID, "err", err)
+			// A 401/403 here means this backend's own SCIM client credentials
+			// lack the scope to read roles (see ASGARDEO_ROLE_IDS's own doc
+			// comment) -- a deployment/configuration problem, not anything
+			// about the calling portal user's own permissions.
+			// mapUpstreamErrorGeneric's usual 401/403 pass-through would tell
+			// an ordinary viewer "you don't have permission" for what is
+			// actually a backend misconfiguration an admin needs to fix, so
+			// those two codes are reported as a sanitized 502 instead; every
+			// other status still goes through the usual mapping.
+			var apiErr *apierror.Error
+			if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
+				writeError(w, http.StatusBadGateway, "Failed to list time card approvers.")
+				return
+			}
+			mapUpstreamErrorGeneric(w, err, "Failed to list time card approvers.")
 			return
 		}
-		mapUpstreamErrorGeneric(w, err, "Failed to list time card approvers.")
-		return
-	}
 
-	approvers := make([]timeCardApproverRef, 0, len(members))
-	for _, m := range members {
-		approvers = append(approvers, timeCardApproverRef{ID: m.ID, Email: m.Email})
+		for _, m := range members {
+			if _, dup := seen[m.ID]; dup {
+				continue
+			}
+			seen[m.ID] = struct{}{}
+			approvers = append(approvers, timeCardApproverRef{ID: m.ID, Email: m.Email})
+		}
 	}
 	writeJSONValue(w, http.StatusOK, timeCardApproversResponse{Approvers: approvers})
 }

@@ -18,6 +18,7 @@ import {
   Box,
   Button,
   Checkbox,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -90,7 +91,11 @@ const EMPTY_FORM: { firstName: string; lastName: string; email: string; userType
  * same gate `POST /users` sits behind) -- the UI-side protection is simply
  * that this whole dialog only renders for an admin in the first place (see
  * `CsmUsersPage.tsx`'s `canCreateUser` gate), so no separate check is needed
- * here.
+ * here. A failed fetch is shown as its own error state with a retry action,
+ * never silently collapsed to "no roles configured" -- those two cases look
+ * identical from an empty array alone, and conflating them would let a
+ * transient fetch failure quietly remove an admin's ability to grant any
+ * portal role on this user, with nothing on screen explaining why.
  *
  * An Internal user must have a `@wso2.com` email -- entity-service enforces
  * this as the real constraint (a non-wso2.com address must never resolve to
@@ -101,7 +106,12 @@ export default function AddUserDialog({ open, onClose, onCreated }: AddUserDialo
   const [form, setForm] = useState(EMPTY_FORM);
   const [selectedGrantRoles, setSelectedGrantRoles] = useState<string[]>([]);
   const { mutate, isPending, error, reset } = usePostUser();
-  const { data: grantableRoles } = useGetGrantableRoles(open);
+  const {
+    data: grantableRoles,
+    isLoading: grantableRolesLoading,
+    isError: grantableRolesErrored,
+    refetch: refetchGrantableRoles,
+  } = useGetGrantableRoles(open);
 
   const toggleGrantRole = (key: string, checked: boolean): void => {
     setSelectedGrantRoles((prev) => (checked ? [...prev, key] : prev.filter((k) => k !== key)));
@@ -206,6 +216,24 @@ export default function AddUserDialog({ open, onClose, onCreated }: AddUserDialo
               <Typography variant="caption" color="text.secondary">
                 At least a first or last name is required.
               </Typography>
+            )}
+            {grantableRolesLoading && (
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <CircularProgress size={16} />
+                <Typography variant="body2" color="text.secondary">
+                  Loading portal roles…
+                </Typography>
+              </Box>
+            )}
+            {grantableRolesErrored && (
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <Typography variant="body2" color="error">
+                  Failed to load portal roles.
+                </Typography>
+                <Button type="button" size="small" onClick={() => refetchGrantableRoles()}>
+                  Retry
+                </Button>
+              </Box>
             )}
             {grantableRoles && grantableRoles.length > 0 && (
               <Box>

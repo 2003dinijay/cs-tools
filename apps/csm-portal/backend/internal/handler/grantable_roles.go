@@ -47,11 +47,16 @@ type GrantableRole struct {
 // result, the same "no entry means not wired up here" posture the role-ID
 // mapping itself documents.
 //
-// A portal role whose AUTH_<ROLE>_ROLES lists several real names uses
-// whichever is found first in cfg's own field order -- an edge case worth a
-// deployment keeping to one real role per permission in practice, since
-// granting "the escalator role" can only ever mean one specific role, not a
-// choice made per call.
+// A portal role whose AUTH_<ROLE>_ROLES lists several real names, more than
+// one of which has a configured ID, appears once per matching real name here
+// -- every one of them genuinely grants the permission, so a reader that
+// needs everyone who holds it (e.g. GetTimeCardApprovers, which lists real
+// role membership) must not silently see only the first. RoleIDsForKey
+// returns all of them for exactly that case; RoleIDForKey (singular) picks
+// just the first for a caller that can only ever grant one specific role per
+// call (CreateUser) -- granting "the escalator role" has to mean one role,
+// not a choice made per call, but reading "who holds it" has no such
+// constraint.
 func ResolveGrantableRoles(cfg AccessConfig, idsByRoleName map[string]string) []GrantableRole {
 	candidates := []struct {
 		key   string
@@ -74,7 +79,6 @@ func ResolveGrantableRoles(cfg AccessConfig, idsByRoleName map[string]string) []
 		for _, name := range c.names {
 			if id, ok := idsByRoleName[name]; ok {
 				resolved = append(resolved, GrantableRole{Key: c.key, RoleID: id})
-				break
 			}
 		}
 	}
@@ -118,8 +122,17 @@ func (h *GrantableRolesHandler) GetGrantableRoles(w http.ResponseWriter, r *http
 		return
 	}
 
+	// h.roles can list the same Key more than once (see ResolveGrantableRoles'
+	// own doc comment -- several real role names can back one portal role);
+	// the webapp only needs to know which keys exist, not how many real roles
+	// are behind each one.
+	seen := make(map[string]struct{}, len(h.roles))
 	refs := make([]grantableRoleRef, 0, len(h.roles))
 	for _, role := range h.roles {
+		if _, dup := seen[role.Key]; dup {
+			continue
+		}
+		seen[role.Key] = struct{}{}
 		refs = append(refs, grantableRoleRef{Key: role.Key})
 	}
 	writeJSONValue(w, http.StatusOK, grantableRolesResponse{Roles: refs})
@@ -127,9 +140,9 @@ func (h *GrantableRolesHandler) GetGrantableRoles(w http.ResponseWriter, r *http
 
 // RoleIDForKey returns the real role ID for the given portal role key, and
 // whether one was configured -- used by UsersHandler.CreateUser to resolve
-// each requested grantRoles entry, and by cmd/server/main.go to derive
-// single-role config (e.g. GetTimeCardApprovers' own role ID) from the same
-// resolved list rather than keeping a second, parallel lookup.
+// each requested grantRoles entry: granting "the escalator role" means one
+// specific role, so the first match is enough. For a caller that needs every
+// configured role for a key instead, see RoleIDsForKey.
 func RoleIDForKey(roles []GrantableRole, key string) (string, bool) {
 	for _, role := range roles {
 		if role.Key == key {
@@ -137,4 +150,19 @@ func RoleIDForKey(roles []GrantableRole, key string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// RoleIDsForKey returns every real role ID configured for the given portal
+// role key -- used by cmd/server/main.go to derive GetTimeCardApprovers' own
+// list of role IDs to read membership from. Unlike RoleIDForKey, a caller
+// reading "who holds this role" must not silently miss members of a second
+// configured real role just because granting only ever targets the first.
+func RoleIDsForKey(roles []GrantableRole, key string) []string {
+	ids := make([]string, 0, len(roles))
+	for _, role := range roles {
+		if role.Key == key {
+			ids = append(ids, role.RoleID)
+		}
+	}
+	return ids
 }

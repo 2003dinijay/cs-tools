@@ -324,14 +324,17 @@ func main() {
 	}
 	healthHandler := handler.NewHealthHandler(scimClient, updatesClient, notificationPinger, integrationPinger, engineeringPinger)
 
-	// timecardApproverRoleID is optional: empty means none of
+	// timecardApproverRoleIDs is optional: empty means none of
 	// AUTH_TIMECARD_APPROVER_ROLES' real role names has a configured ID, in
 	// which case GetTimeCardApprovers itself returns 404 rather than the
 	// route going unregistered -- see its own route registration below for
-	// why. Derived from grantableRoles (the same resolution CreateUser's own
-	// grant uses) rather than a second, parallel lookup.
-	timecardApproverRoleID, _ := handler.RoleIDForKey(grantableRoles, "timecard_approver")
-	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient, dir, sftpgoAttachmentStorageEnabled, timecardApproverRoleID).
+	// why. More than one ID is possible: AUTH_TIMECARD_APPROVER_ROLES can name
+	// several real role names, each with its own configured ID, and an
+	// approver holding any one of them must be listed. Derived from
+	// grantableRoles (the same resolution CreateUser's own grant uses) rather
+	// than a second, parallel lookup.
+	timecardApproverRoleIDs := handler.RoleIDsForKey(grantableRoles, "timecard_approver")
+	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient, dir, sftpgoAttachmentStorageEnabled, timecardApproverRoleIDs).
 		WithAccessGuard(accessGuard).
 		WithGrantableRoles(grantableRoles)
 	grantableRolesHandler := handler.NewGrantableRolesHandler(grantableRoles)
@@ -438,7 +441,7 @@ func main() {
 	route("POST /users/search", handler.PermView, usersHandler.SearchUsers)
 	route("GET /users/{id}", handler.PermView, usersHandler.GetUser)
 	route("POST /users", handler.PermAdmin, usersHandler.CreateUser)
-	// Registered unconditionally, even when timecardApproverRoleID is empty:
+	// Registered unconditionally, even when timecardApproverRoleIDs is empty:
 	// GetTimeCardApprovers itself returns 404 when disabled. Registering it
 	// only when configured would instead let the request fall through to the
 	// wildcard GET /users/{id} above, which rejects the literal path segment

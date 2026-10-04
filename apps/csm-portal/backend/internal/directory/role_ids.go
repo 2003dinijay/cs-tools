@@ -57,6 +57,14 @@ func ParseRoleIDs(raw string) (map[string]string, error) {
 	if err := json.Unmarshal([]byte(raw), &ids); err != nil {
 		return nil, fmt.Errorf("role id mapping: invalid JSON: %w", err)
 	}
+	// json.Unmarshal of the literal "null" succeeds with ids == nil and no
+	// error -- indistinguishable from "{}" to the zero-value check below, so
+	// it must be rejected explicitly. Left unchecked, ASGARDEO_ROLE_IDS=null
+	// would silently behave as "no roles configured" instead of failing
+	// startup the way any other malformed value does.
+	if ids == nil {
+		return nil, fmt.Errorf("role id mapping: configuration must not be JSON null")
+	}
 
 	for name, id := range ids {
 		if name == "" {

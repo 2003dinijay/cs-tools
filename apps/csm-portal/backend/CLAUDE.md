@@ -106,15 +106,20 @@ what bridges this real-name-keyed map back to the portal-role vocabulary (`cs_en
 keeps the portal role only if at least one resolves to a known id — the stable `[]handler.GrantableRole{Key,
 RoleID}` list every caller downstream actually works with. No default and no required keys: a real name
 with no entry here just means that role has no SCIM-backed feature wired up in this deployment —
-`timecardApproverRoleID` in `main.go` is derived from this same resolved list
-(`handler.RoleIDForKey(grantableRoles, "timecard_approver")`), not a second, parallel lookup into the
-raw map. **`GET /users/time-card-approvers` is registered unconditionally**, deliberately unlike this
-file's other optionally-wired features (`ENGINEERING_ENTITY_BASE_URL`, the `CSM_MIGRATION_*` flags),
-which skip registration entirely when off: it collides with the wildcard `GET /users/{id}` route, so
+`timecardApproverRoleIDs` in `main.go` is derived from this same resolved list
+(`handler.RoleIDsForKey(grantableRoles, "timecard_approver")`), not a second, parallel lookup into the
+raw map. It is a slice, not a single id: `AUTH_TIMECARD_APPROVER_ROLES` can list more than one real role
+name, each resolved to its own id, and an approver holding any one of them must still show up — unlike
+granting (`RoleIDForKey`, singular, used by `CreateUser`), which only ever needs one specific role to add
+a new user to, reading membership must not silently miss someone who only holds the second configured
+role. `GetTimeCardApprovers` queries `scim.Client.GetRole` once per configured id and merges the results,
+deduplicated by member id. **`GET /users/time-card-approvers` is registered unconditionally**, deliberately
+unlike this file's other optionally-wired features (`ENGINEERING_ENTITY_BASE_URL`, the `CSM_MIGRATION_*`
+flags), which skip registration entirely when off: it collides with the wildcard `GET /users/{id}` route, so
 leaving it unregistered would have the request fall through to `GetUser`, which rejects the literal
 segment `"time-card-approvers"` as an invalid UUID with 400 — a confusing status for "this feature isn't
 configured." Registering it unconditionally and 404ing from inside the handler (when
-`timecardApproverRoleID == ""`) gives a clean, correct status either way.
+`timecardApproverRoleIDs` is empty) gives a clean, correct status either way.
 
 ## Granting portal roles on user creation (`grantRoles`, `GET /roles/grantable`)
 

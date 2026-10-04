@@ -142,4 +142,35 @@ describe("AddUserDialog", () => {
     renderDialog();
     expect(screen.queryByText("Portal roles")).not.toBeInTheDocument();
   });
+
+  it("shows a loading indicator while the portal-roles fetch is in flight", async () => {
+    let resolveGet: (value: { roles: Array<{ key: string }> }) => void = () => {};
+    getMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveGet = resolve;
+      }),
+    );
+    renderDialog();
+
+    expect(screen.getByText(/loading portal roles/i)).toBeInTheDocument();
+    expect(screen.queryByText("Portal roles")).not.toBeInTheDocument();
+
+    resolveGet({ roles: [{ key: "cs_engineer" }] });
+    await screen.findByText("Portal roles");
+  });
+
+  it("shows an error with a retry action when the portal-roles fetch fails, never silently hiding the section", async () => {
+    getMock.mockReset();
+    getMock.mockRejectedValueOnce(new Error("network error"));
+    getMock.mockResolvedValueOnce({ roles: [{ key: "cs_engineer" }] });
+    renderDialog();
+
+    await screen.findByText(/failed to load portal roles/i);
+    expect(screen.queryByText("Portal roles")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+
+    await screen.findByText("Portal roles");
+    expect(screen.queryByText(/failed to load portal roles/i)).not.toBeInTheDocument();
+  });
 });

@@ -34,7 +34,7 @@ export function useGetGrantableRoles(enabled: boolean): UseQueryResult<BeGrantab
     queryKey: ["csm-users-grantable-roles"],
     queryFn: async (): Promise<BeGrantableRole[]> => {
       const res = await api.get<BeGrantableRolesResponse>("/roles/grantable");
-      return res.roles ?? [];
+      return res?.roles ?? [];
     },
     enabled,
     staleTime: 5 * 60_000,
