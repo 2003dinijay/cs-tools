@@ -20843,6 +20843,13 @@ components:
           type: string
           maxLength: 40
           description: Printed as "Current Status:" in the outage-communication email.
+        affectedConfigurationItemIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: >-
+            Service offerings this outage also affects (ServiceNow Affected CIs). They drive each one's status-page monitor and availability. Adding one with a status-page monitor needs acknowledgePublicPublication.
 
     CreateOutageResponse:
       type: object
@@ -20893,6 +20900,13 @@ components:
           type: string
           maxLength: 40
           description: Printed as "Current Status:" in the outage-communication email. An empty string clears it.
+        affectedConfigurationItemIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: >-
+            Replaces the whole affected set ([] clears it); omit to leave it alone. Newly added items must be service offerings; ones already on the outage are kept whatever their class. Only additions with a status-page monitor need acknowledgePublicPublication. Changing only this list does not update the outage itself.
 
     PatchOutageResponse:
       type: object

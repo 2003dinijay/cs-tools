@@ -42,7 +42,28 @@ vi.mock("@api/backend/client", () => ({
   },
 }));
 vi.mock("@components/AsyncEntitySelect", () => ({ default: () => null }));
-vi.mock("@features/csm-operations/components/OutagePublicationNotice", () => ({ default: () => null }));
+vi.mock("@features/csm-operations/components/OutagePublicationNotice", () => ({
+  default: ({
+    hasConfigurationItem,
+    onAcknowledgedChange,
+  }: {
+    hasConfigurationItem: boolean;
+    onAcknowledgedChange: (v: boolean) => void;
+  }) =>
+    hasConfigurationItem ? (
+      <input type="checkbox" aria-label="acknowledge publication" onChange={(e) => onAcknowledgedChange(e.target.checked)} />
+    ) : null,
+}));
+vi.mock("@components/AsyncEntityMultiSelect", () => ({
+  default: ({ label, values, onChange }: { label: string; values: string[]; onChange: (next: string[]) => void }) => (
+    <input
+      aria-label={label}
+      value={values.join(",")}
+      onChange={(e) => onChange(e.target.value ? e.target.value.split(",") : [])}
+    />
+  ),
+}));
+
 
 import CreateOutagePage from "@features/csm-operations/pages/CreateOutagePage";
 
@@ -144,3 +165,31 @@ describe("CreateOutagePage — email opt-ins", () => {
     });
   });
 });
+
+describe("CreateOutagePage — affected configuration items", () => {
+  beforeEach(() => postOutageMutateMock.mockReset());
+
+  it("sends the affected offerings, and needs the publication consent for them", () => {
+    render(<CreateOutagePage />);
+    fillRequired();
+    fireEvent.change(screen.getByLabelText("Affected configuration items"), { target: { value: "ci-a,ci-b" } });
+
+    // An affected offering can put the outage on the status page: no consent, no submit.
+    expect(screen.getByRole("button", { name: "Begin outage" })).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("acknowledge publication"));
+    fireEvent.click(screen.getByRole("button", { name: "Begin outage" }));
+
+    expect(postOutageMutateMock.mock.calls[0][0]).toMatchObject({
+      affectedConfigurationItemIds: ["ci-a", "ci-b"],
+      acknowledgePublicPublication: true,
+    });
+  });
+
+  it("sends no affected list when none is chosen", () => {
+    render(<CreateOutagePage />);
+    fillRequired();
+    fireEvent.click(screen.getByRole("button", { name: "Begin outage" }));
+    expect(postOutageMutateMock.mock.calls[0][0]).not.toHaveProperty("affectedConfigurationItemIds");
+  });
+});
+
