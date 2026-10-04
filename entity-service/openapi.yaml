@@ -115,8 +115,7 @@ paths:
         row (partner to customer) and its reverse "Is Customer Of" mirror per
         partner, missing partner accounts ingested first, rows of every other
         label untouched. The same refresh runs after Account events and after
-        partner-contact membership events. Internal callers only
-        (AUTH_INTERNAL_CLIENT_IDS). Registered only when
+        partner-contact membership events. Internal (M2M) callers only. Registered only when
         CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true, DATA_SOURCE=postgres
         and REST sales-entity-service config is present; 404 otherwise.
       operationId: refreshSalesforceAccountPartners
@@ -9032,15 +9031,19 @@ paths:
 
         On the Postgres data source, every request's tokens are validated (Asgardeo), and
         results are scoped to the caller (the same rule GET /projects/{id}, POST
-        /projects/search, GET /cases/{id}, and POST /cases/search also apply): if the
-        request's `x-jwt-assertion` client-credentials token names a client id in
-        AUTH_INTERNAL_CLIENT_IDS, the caller sees every project and case unconditionally --
-        regardless of any `x-user-id-token` the same request also carries (that token, if
-        present, is never used to scope an internal caller). Any other caller is resolved
-        purely from its `x-user-id-token`: an internal user still sees everything, a
+        /projects/search, GET /cases/{id}, and POST /cases/search also apply). The
+        request's `x-jwt-assertion` client-credentials token's client id decides how:
+        a customer-facing backend's client id is always resolved from the forwarded
+        `x-user-id-token`, checked first and never unconditionally trusted; the CSM
+        portal backend's client id sees every project and case unconditionally, but
+        only if that same user token's email also matches the configured CSM portal
+        user domain (otherwise refused, 403); a pure machine-to-machine client id sees
+        everything unconditionally regardless of any user token it also carries (never
+        used to scope). Any other caller is resolved purely from its `x-user-id-token`:
+        an internal user still sees everything, a
         customer sees only projects they are a REGISTERED contact of and the cases in
         them, and any other user type, an inactive user, or an unknown email is refused
-        (403). No user token and not an internal client id is refused (401) -- there is no
+        (403). No user token and no client id match above is refused (401) -- there is no
         legitimate caller to resolve. A token that is present but invalid is always
         rejected with 401. The project counts (`activeChatsCount`, `actionRequiredCount`,
         `outstandingCount`) are 0 on Postgres.
@@ -11041,8 +11044,8 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: >-
-        A client-credentials token whose client id appears in
-        AUTH_INTERNAL_CLIENT_IDS. Declared on the operations that verify it
+        A client-credentials token whose client id appears in the service's
+        machine-to-machine client id allow-list. Declared on the operations that verify it
         themselves; most endpoints in this service scope by caller instead and
         do not carry this requirement.
 

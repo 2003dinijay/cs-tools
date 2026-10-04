@@ -445,39 +445,84 @@ func TestParseInternalClientIDs(t *testing.T) {
 	}
 }
 
-// TestRemoveOverlappingCustomerPortalClientIDs pins the mistake this guards
-// against: a client id entered in both AUTH_INTERNAL_CLIENT_IDS and
-// AUTH_CUSTOMER_PORTAL_CLIENT_IDS must end up treated as customer-portal-only,
-// never as unconditionally trusted -- see AuthCustomerPortalClientIDsRaw's own
-// doc comment for why the overlap is resolved this way instead of failing
-// startup.
-func TestRemoveOverlappingCustomerPortalClientIDs(t *testing.T) {
-	internal := ParseInternalClientIDs("csm-be, shared-oops, sla-engine")
-	customerPortal := ParseInternalClientIDs("customer-portal-be, shared-oops")
-
-	removeOverlappingCustomerPortalClientIDs(internal, customerPortal)
-
-	if internal["shared-oops"] {
-		t.Error("a client id present in both lists must be removed from the internal set")
+// TestConfig_Validate_CSMPortalBackendClientIDAndDomainAllOrNothing pins the pairing
+// requirement: CSM_PORTAL_BACKEND_CLIENT_ID and CSM_PORTAL_USER_DOMAIN are only
+// meaningful together (ResolveScope's domain check needs both), so a
+// deployment setting only one almost certainly meant to set both.
+func TestConfig_Validate_CSMPortalBackendClientIDAndDomainAllOrNothing(t *testing.T) {
+	c := baseValidConfig()
+	c.CSMPortalBackendClientID = "csm-portal"
+	if err := c.Validate(); err == nil {
+		t.Error("CSMPortalBackendClientID with no CSMPortalUserDomain: want an error, got nil")
 	}
-	if !internal["csm-be"] || !internal["sla-engine"] {
-		t.Errorf("non-overlapping internal client ids must survive untouched, got %v", internal)
+
+	c = baseValidConfig()
+	c.CSMPortalUserDomain = "wso2.com"
+	if err := c.Validate(); err == nil {
+		t.Error("CSMPortalUserDomain with no CSMPortalBackendClientID: want an error, got nil")
 	}
-	if !customerPortal["shared-oops"] || !customerPortal["customer-portal-be"] {
-		t.Errorf("the customer-portal set itself must not be mutated, got %v", customerPortal)
+
+	c = baseValidConfig()
+	c.CSMPortalBackendClientID = "csm-portal"
+	c.CSMPortalUserDomain = "wso2.com"
+	if err := c.Validate(); err != nil {
+		t.Errorf("both set together: unexpected error: %v", err)
 	}
 }
 
-// TestRemoveOverlappingCustomerPortalClientIDs_NoOverlap guards against a
-// regression that drops client ids even when the two lists never intersect.
-func TestRemoveOverlappingCustomerPortalClientIDs_NoOverlap(t *testing.T) {
-	internal := ParseInternalClientIDs("csm-be")
-	customerPortal := ParseInternalClientIDs("customer-portal-be")
+// TestConfig_Validate_RejectsSameClientIDForCSMAndCustomerPortal pins the
+// guard against the one config value that can't be resolved by ResolveScope's
+// own ordering: CSMPortalBackendClientID and CustomerPortalBackendClientID being equal would
+// mean a single client id is both "unrestricted given a matching domain" and
+// "never unrestricted, full stop" at once -- a copy-paste mistake, not a
+// valid deployment.
+func TestConfig_Validate_RejectsSameClientIDForCSMAndCustomerPortal(t *testing.T) {
+	c := baseValidConfig()
+	c.CSMPortalBackendClientID = "shared-id"
+	c.CSMPortalUserDomain = "wso2.com"
+	c.CustomerPortalBackendClientID = "shared-id"
+	if err := c.Validate(); err == nil {
+		t.Error("CSMPortalBackendClientID == CustomerPortalBackendClientID: want an error, got nil")
+	}
+}
 
-	removeOverlappingCustomerPortalClientIDs(internal, customerPortal)
+// TestConfig_Validate_DistinctCSMAndCustomerPortalBackendClientIDsAreValid guards
+// against the above check being too broad and rejecting the normal case.
+func TestConfig_Validate_DistinctCSMAndCustomerPortalBackendClientIDsAreValid(t *testing.T) {
+	c := baseValidConfig()
+	c.CSMPortalBackendClientID = "csm-portal"
+	c.CSMPortalUserDomain = "wso2.com"
+	c.CustomerPortalBackendClientID = "customer-portal"
+	if err := c.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
 
-	if !internal["csm-be"] {
-		t.Errorf("a non-overlapping internal client id must not be removed, got %v", internal)
+// TestLoad_CSMPortalUserDomain pins CSM_PORTAL_USER_DOMAIN's one bit of
+// normalization: a value typed with a leading "@" (an easy mistake, since
+// email addresses are usually written that way) is accepted the same as one
+// without, so isCSMPortalUserDomain's own "@"+domain suffix match is never
+// built from a doubled "@@".
+func TestLoad_CSMPortalUserDomain(t *testing.T) {
+	t.Setenv("CSM_PORTAL_USER_DOMAIN", "@wso2.com")
+	if got := Load().CSMPortalUserDomain; got != "wso2.com" {
+		t.Errorf("CSMPortalUserDomain = %q, want %q (leading @ stripped)", got, "wso2.com")
+	}
+
+	t.Setenv("CSM_PORTAL_USER_DOMAIN", "wso2.com")
+	if got := Load().CSMPortalUserDomain; got != "wso2.com" {
+		t.Errorf("CSMPortalUserDomain = %q, want %q (unchanged)", got, "wso2.com")
+	}
+}
+
+// TestLoad_M2MClientIDsFieldName guards against M2M_CLIENT_IDS silently
+// going unread after the AUTH_INTERNAL_CLIENT_IDS rename -- a stale env var
+// name here would leave every M2M caller unexpectedly unauthorized.
+func TestLoad_M2MClientIDsFieldName(t *testing.T) {
+	t.Setenv("M2M_CLIENT_IDS", "svc-a,svc-b")
+	got := Load().M2MClientIDs
+	if !got["svc-a"] || !got["svc-b"] || len(got) != 2 {
+		t.Errorf("M2MClientIDs = %v, want {svc-a, svc-b}", got)
 	}
 }
 

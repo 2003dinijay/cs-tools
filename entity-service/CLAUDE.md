@@ -473,7 +473,7 @@ write was based on.
   projectContactId?}` → 200 with the row. `lastError` is dropped unless
   `status` is FAILED (a stale error must not outlive a success) and truncated
   to 1000 characters (runes). Every method requires an internal caller
-  (`AccessScope.Unrestricted`, i.e. `AUTH_INTERNAL_CLIENT_IDS`); anyone else
+  (`AccessScope.Unrestricted`, i.e. `M2MClientIDs`); anyone else
   gets 403. `created_by`/`updated_by` is `onboarding-step-api` —
   callers are internal services, no identity is derived from the request.
 - `GET /onboarding-steps/{membershipSfId}` → `{steps: [...]}` in step order; an
@@ -1370,7 +1370,7 @@ which is accurate: retrying is both safe and the right thing to do.
 
 Authorized by `authorizeMembershipWrite`: trusted callers pass; a customer must be
 REGISTERED on the project (else 404) and hold `customer_admin`/`partner_admin` (else 403), and their
-own email replaces `inviterEmail`. No `AUTH_INTERNAL_CLIENT_IDS` entry is needed for the portal.
+own email replaces `inviterEmail`. No `M2MClientIDs` entry is needed for the portal.
 
 `{id}` is the CSM project UUID, so these sit beside the search and get already
 in that namespace. `{email}` keys the membership — the way the Customer Portal
@@ -1654,7 +1654,8 @@ benefit.
 **`GET /sla-status` is internal-caller-only** (`slaStatusService.
 requireInternalCaller`, mirroring `onboarding_step_service.go`'s own helper
 of the same name/reasoning) — `AccessService.ResolveScope`'s scope must be
-`Unrestricted` (an `AUTH_INTERNAL_CLIENT_IDS` client), refused with
+`Unrestricted` (an `M2MClientIDs` client, or `CSMPortalBackendClientID` with a
+matching-domain caller), refused with
 `ForbiddenError` otherwise. This is the one Postgres-backed read in this
 file that genuinely has no narrower scope to fall back to instead: it
 returns every active case's clock — case number, title, product, severity —
@@ -3918,7 +3919,8 @@ validator (`golang-jwt/jwt/v5` + `keyfunc/v3`, same versions), against
   tried first and caused a real outage -- a JWKS refresh rate-limit/lookup
   failure rejected every internal caller -- and added no real security either,
   since the client id is only ever checked against the deployment-controlled
-  `AUTH_INTERNAL_CLIENT_IDS` allow-list, never used as a capability grant
+  deployment-controlled `M2MClientIDs`/`CSMPortalBackendClientID`/
+  `CustomerPortalBackendClientID` configs, never used as a capability grant
   derived from an unproven claim. No audience check either way.
 
 **Always on -- there is no config flag to disable it.** `AUTH_ISSUER`/
@@ -3949,23 +3951,28 @@ same way everywhere it's wired (see "Where this is actually enforced" below):
 | Request carries | Result |
 |---|---|
 | no verified identity (only possible if the auth middleware was left out of the chain -- a bug) | 503 -- never scope from an unverified token |
-| `x-jwt-assertion` client id is in `AUTH_INTERNAL_CLIENT_IDS` | **everything, unconditionally** -- regardless of any `x-user-id-token` the same request also carries |
-| not an internal client, user token, `user_type` INTERNAL (all active rows for the email) | everything |
-| not an internal client, user token, EXTERNAL (customer) | only projects where their email is a `REGISTERED` `project_contact`, and the cases in them; none registered = an empty result, never "no filter" |
-| not an internal client, user token, inactive / SYSTEM / NOT_AVAILABLE / unknown email | 403 |
-| not an internal client, no user token | 401 -- no legitimate caller to resolve |
+| `x-jwt-assertion` client id is `CustomerPortalBackendClientID` | **always** resolved from `x-user-id-token` (row below) -- checked first, never unconditionally trusted, no matter what else this id is also (mis)configured into |
+| `x-jwt-assertion` client id is `CSMPortalBackendClientID` AND `x-user-id-token`'s email ends in `CSMPortalUserDomain` | **everything, unconditionally** |
+| `x-jwt-assertion` client id is `CSMPortalBackendClientID` but the email does NOT match the domain (or there's no user token at all) | 403 -- refused outright, not resolved some other way |
+| `x-jwt-assertion` client id is in `M2MClientIDs` | **everything, unconditionally** -- regardless of any `x-user-id-token` the same request also carries |
+| none of the above, user token, `user_type` INTERNAL (all active rows for the email) | everything |
+| none of the above, user token, EXTERNAL (customer) | only projects where their email is a `REGISTERED` `project_contact`, and the cases in them; none registered = an empty result, never "no filter" |
+| none of the above, user token, inactive / SYSTEM / NOT_AVAILABLE / unknown email | 403 |
+| none of the above, no user token | 401 -- no legitimate caller to resolve |
 
-**An internal client id wins outright -- there is no comparison with the user
-token's own scope.** Every client id configured here is itself an
-already-trusted internal service (see `AUTH_INTERNAL_CLIENT_IDS` config
-below), so a user token it forwards (if any) is used only for attribution
-elsewhere (`created_by`/`updated_by`), never for scoping -- not even to widen
-or narrow anything. This is simpler than an earlier revision of this design
-(a "rescue" that only kicked in for an *unknown* forwarded email, deferring to
-the user's own scope otherwise): once real deployments settled on which
-callers are genuinely internal, there was no longer a case where an internal
-client legitimately forwards a real customer's token, so the extra nuance was
-removed. `AccessRepository` is never even queried on the internal-client path
+**`M2MClientIDs`/`CSMPortalBackendClientID` win outright once matched -- there
+is no comparison with the user token's own scope.** A user token an M2M
+caller forwards (if any) is used only for attribution elsewhere
+(`created_by`/`updated_by`), never for scoping -- not even to widen or
+narrow anything; `CSMPortalBackendClientID`'s path does carry the forwarded
+email into `AccessScope.ViewerEmail` for the same attribution purpose, since
+that path always has one (the domain check requires it). This is simpler
+than an earlier revision of this design (a "rescue" that only kicked in for
+an *unknown* forwarded email, deferring to the user's own scope otherwise):
+once real deployments settled on which callers are genuinely internal, there
+was no longer a case where an internal client legitimately forwards a real
+customer's token, so the extra nuance was removed. `AccessRepository` is
+never even queried on the `M2MClientIDs`/`CSMPortalBackendClientID` paths
 (there is a test asserting zero DB calls).
 
 `user.email` is **not unique** (staging shares emails across rows), so on the
@@ -3985,29 +3992,40 @@ whose only role is `agent` ends up `NOT_AVAILABLE` and is denied here even
 though they *do* have a `user` row. Whether `agent` should count as internal
 is a product decision, not something to guess at here.
 
-**`AUTH_INTERNAL_CLIENT_IDS`** (config.go's `ParseInternalClientIDs`) is a
-plain comma-separated set of client ids -- no `clientId=role` grammar, no
-"delegate" role: those existed in an earlier revision, when a caller that
-always forwards a user token needed a role distinct from one that sometimes
-doesn't. In practice every caller either (a) is itself trusted with
-unconditional access (an internal client id), or (b) is resolved purely from
-whatever user token it forwards -- there's no third case, so a plain
-allow-list is all `ResolveScope` needs. Which real client ids belong in it is
-a deployment decision this file doesn't prescribe.
+**Three separate configs classify a client-credentials caller**, deliberately
+not one shared allow-list -- see `AccessClientConfig`'s own doc comment:
 
-**`AUTH_CUSTOMER_PORTAL_CLIENT_IDS`** exists purely as a guard against the
-worst version of that deployment mistake: a customer-facing BFF's client id
-(`apps/customer-portal/backend-v2`, or any successor) accidentally landing in
-`AUTH_INTERNAL_CLIENT_IDS` grants it unconditional access to every project and
-case, with no RLS restriction -- that id is still trusted as "internal," so
-`app.is_internal` is set true for every request it forwards regardless of
-which customer it's actually acting on behalf of. `config.Load` cross-checks
-the two lists and removes any id present in both from the internal set
-(`removeOverlappingCustomerPortalClientIDs`), logging a `slog.Warn` so the
-mistake is visible in deploy logs rather than either crashing startup over a
-config typo or silently doing nothing. Leaving `AUTH_CUSTOMER_PORTAL_CLIENT_IDS`
-empty simply disables the cross-check; it grants nothing to the ids listed
-there on its own.
+- **`M2MClientIDs`** (`M2M_CLIENT_IDS`, config.go's `ParseInternalClientIDs`)
+  is a plain comma-separated set of client ids for pure machine-to-machine
+  callers -- no human in the loop at all (the GitHub webhook
+  delivery/service-request handlers, the Salesforce partner ingest, and
+  similar). No `clientId=role` grammar, no "delegate" role: those existed in
+  an earlier revision, when a caller that always forwards a user token
+  needed a role distinct from one that sometimes doesn't -- superseded by
+  the two singular configs below once it became clear those callers
+  (apps/csm-portal/backend, apps/customer-portal/backend-v2) needed
+  fundamentally different treatment, not just a different list entry. Which
+  real client ids belong in `M2MClientIDs` is a deployment decision this
+  file doesn't prescribe.
+- **`CSMPortalBackendClientID` + `CSMPortalUserDomain`** (`CSM_PORTAL_BACKEND_CLIENT_ID` /
+  `CSM_PORTAL_USER_DOMAIN`, singular): `apps/csm-portal/backend`'s client id,
+  unrestricted only with a matching-domain forwarded user email -- see the
+  decision table above. Must be set together or not at all
+  (`config.Validate`).
+- **`CustomerPortalBackendClientID`** (`CUSTOMER_PORTAL_BACKEND_CLIENT_ID`,
+  singular): `apps/customer-portal/backend-v2`'s client id, checked FIRST and
+  always resolved from the forwarded user token -- this is the structural fix
+  for the deployment mistake the three-config split exists to prevent: a
+  customer-facing BFF's client id ending up with unconditional,
+  RLS-bypassing access to every project and case for every customer. Because
+  `CustomerPortalBackendClientID` is checked before `M2MClientIDs` or
+  `CSMPortalBackendClientID`, even pasting this same id into `M2MClientIDs`
+  by mistake has no effect -- there is no shared list it could land in that
+  grants it anything. `config.Load` logs a `slog.Warn` if it finds this id
+  (or `CSMPortalBackendClientID`) also present in `M2MClientIDs` anyway, as a
+  hygiene signal, and `config.Validate` rejects `CSMPortalBackendClientID ==
+  CustomerPortalBackendClientID` outright at startup (an unambiguous
+  copy-paste mistake no ordering can resolve).
 
 ### Where this is actually enforced
 
@@ -4049,8 +4067,8 @@ a separate decision, not made here.
 
 **Deploy prerequisite: machine-to-machine callers.** Any service that calls a
 scoped endpoint directly with only a client-credentials token (no
-`x-user-id-token`) gets a 401 unless its client id is in
-`AUTH_INTERNAL_CLIENT_IDS`. Before rolling this out, list every direct
+`x-user-id-token`) gets a 401 unless its client id is in `M2MClientIDs`.
+Before rolling this out, list every direct
 service-to-service caller of `GET /projects/{id}`, `GET /cases/{id}`,
 `POST /projects/search`, `POST /cases/search` and `POST /search` and add the
 ones that should have unconditional access. A caller that reaches entity-service
