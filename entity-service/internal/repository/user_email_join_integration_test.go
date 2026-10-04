@@ -51,7 +51,7 @@ func seedUserEmailJoinFixture(t *testing.T) context.Context {
 	scoped := repository.NewScoped(pool)
 
 	cleanup := func() {
-		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE created_by = $1`, uejEmail)
+		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE id = ANY($1::uuid[])`, []string{uejCaseID, uejConvID, uejIncidentID})
 		_, _ = scoped.Exec(ctx, `DELETE FROM "user" WHERE id IN ($1, $2)`, uejOldUserID, uejNewUserID)
 	}
 	cleanup()

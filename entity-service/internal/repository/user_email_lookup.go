@@ -25,8 +25,9 @@ package repository
 // into one result row per match. The derived table keeps one row per
 // lowercased email, chosen deterministically: active first, then most
 // recently created, then lowest id. It is a single pass over "user" that the
-// planner hash-joins, so cost does not grow per resolved row (a per-row
-// lookup would scan "user" each time: there is no LOWER(email) index).
+// planner hash-joins, so cost does not grow per resolved row and does not
+// depend on a LOWER(email) index being present (a per-row lookup would scan
+// "user" each time without one).
 func userByEmailJoin(alias, emailExpr string) string {
 	return `LEFT JOIN (
 				SELECT DISTINCT ON (LOWER(u2.email))
