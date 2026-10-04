@@ -39,6 +39,10 @@ type scimClient interface {
 	SearchExternalUser(ctx context.Context, email string) (*scim.ExternalUserInfo, error)
 	UpdateUserPhone(ctx context.Context, userID, mobile string) (*string, error)
 	GetRole(ctx context.Context, roleID string) ([]scim.RoleMember, error)
+	// AddRoleMembers grants a role to one or more users by email -- used by
+	// CreateUser to grant each of the caller's requested grantRoles once the
+	// new platform user exists.
+	AddRoleMembers(ctx context.Context, roleID string, emails []string) error
 }
 
 // entityUserClient abstracts the entity service user operations used by UsersHandler.
@@ -79,6 +83,20 @@ type UsersHandler struct {
 	// /users/me reports. nil (every existing call site and test) reports none;
 	// cmd/server/main.go sets it with WithAccessGuard.
 	access *AccessGuard
+	// grantableRoles is which portal roles CreateUser may grant via SCIM (see
+	// ResolveGrantableRoles), each already resolved to its real role ID.
+	// nil/empty (every existing call site and test) means no grantRoles value
+	// is ever valid -- cmd/server/main.go sets it with WithGrantableRoles.
+	grantableRoles []GrantableRole
+}
+
+// WithGrantableRoles makes CreateUser able to grant the given portal roles
+// via SCIM when a caller's grantRoles field names one, and makes
+// GetGrantableRoles (a separate handler, same resolved list) report them to
+// the webapp. Returns h for chaining at the construction site.
+func (h *UsersHandler) WithGrantableRoles(roles []GrantableRole) *UsersHandler {
+	h.grantableRoles = roles
+	return h
 }
 
 // WithAccessGuard makes GET /users/me report the portal roles the caller's
@@ -399,16 +417,41 @@ func (h *UsersHandler) GetUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, enriched)
 }
 
-// createUserRequest is the POST /users request shape, parsed here only to
-// validate roles against the directory's assignable-role allow-list --
-// entity-service deliberately does not validate role names itself (see
-// domain.UserRole's own doc comment there), so this is the one place that
-// does. The body is otherwise forwarded to the entity service unchanged.
+// createUserRequest is the POST /users request shape. Roles is validated
+// against the directory's assignable-role allow-list -- entity-service
+// deliberately does not validate role names itself (see domain.UserRole's
+// own doc comment there), so this is the one place that does -- and is
+// otherwise forwarded to the entity service unchanged. GrantRoles is
+// portal-only and never reaches entity-service at all (see
+// buildEntityCreateUserBody): it names zero or more GrantableRole.Key
+// values, each granted via SCIM once the entity service user exists.
 type createUserRequest struct {
-	FirstName string   `json:"firstName"`
-	LastName  string   `json:"lastName"`
-	Email     string   `json:"email"`
-	Roles     []string `json:"roles"`
+	FirstName  string   `json:"firstName"`
+	LastName   string   `json:"lastName"`
+	Email      string   `json:"email"`
+	Roles      []string `json:"roles"`
+	GrantRoles []string `json:"grantRoles"`
+}
+
+// buildEntityCreateUserBody re-encodes req into exactly the fields
+// entity-service's own CreateUserRequest expects. entity-service's decoder
+// rejects unknown fields, so GrantRoles (meaningless there) cannot be
+// forwarded as part of the raw request body the way most of this handler's
+// other POST/PATCH bodies are -- same "rebuild from what was actually
+// validated" precedent CreateCaseComment's own work_note rebuild follows in
+// cases.go.
+func buildEntityCreateUserBody(req createUserRequest) ([]byte, error) {
+	return json.Marshal(struct {
+		FirstName string   `json:"firstName"`
+		LastName  string   `json:"lastName"`
+		Email     string   `json:"email"`
+		Roles     []string `json:"roles"`
+	}{
+		FirstName: req.FirstName,
+		LastName:  req.LastName,
+		Email:     req.Email,
+		Roles:     req.Roles,
+	})
 }
 
 // CreateUser handles POST /users. Restricted to admin via the route's
@@ -446,11 +489,41 @@ func (h *UsersHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.entity.CreateUser(r.Context(), body)
+	// Resolved up front, before anything is created, so an unknown grantRoles
+	// key fails fast with a 400 rather than after the entity service user
+	// already exists.
+	roleIDsToGrant := make([]string, 0, len(req.GrantRoles))
+	for _, key := range req.GrantRoles {
+		id, ok := RoleIDForKey(h.grantableRoles, key)
+		if !ok {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("grantRoles contains invalid value: %s", key))
+			return
+		}
+		roleIDsToGrant = append(roleIDsToGrant, id)
+	}
+
+	entityBody, err := buildEntityCreateUserBody(req)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "failed to build entity CreateUser body", "userID", user.UserID, "err", err)
+		writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+		return
+	}
+
+	result, err := h.entity.CreateUser(r.Context(), entityBody)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity CreateUser failed", "userID", user.UserID, "err", err)
 		mapUpstreamErrorGeneric(w, err, "Failed to create the user.")
 		return
+	}
+
+	// Best-effort: the platform user already exists by this point, so a SCIM
+	// failure must not be reported as a failed create -- it's logged instead,
+	// the same posture ensureUserProvisioned (cases.go) takes for the
+	// opposite direction of this same mechanism.
+	for _, roleID := range roleIDsToGrant {
+		if err := h.scim.AddRoleMembers(r.Context(), roleID, []string{req.Email}); err != nil {
+			slog.ErrorContext(r.Context(), "scim AddRoleMembers failed", "userID", user.UserID, "roleID", roleID, "err", err)
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, result)

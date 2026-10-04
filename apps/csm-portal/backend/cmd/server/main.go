@@ -64,13 +64,18 @@ func main() {
 	// request path.
 	dir := loadDirectory()
 
-	// Role-key -> Asgardeo role id mapping (ASGARDEO_ROLE_IDS), e.g.
-	// "timecard_approver|0bbeea4f-5ada-49ba-8f19-90ae6a116daa" -- used by
-	// handlers that need a role's real Asgardeo membership via the SCIM
-	// operations service's get-by-id endpoint (see GET /users/time-card-approvers
-	// below). Optional and empty by default: an unconfigured key just means
-	// that role's SCIM-backed feature is not wired up in this deployment.
-	asgardeoRoleIDs, err := directory.ParseAsgardeoRoleIDs(os.Getenv("ASGARDEO_ROLE_IDS"))
+	// Real role name -> identity-provider role id mapping (ASGARDEO_ROLE_IDS),
+	// a JSON object string, e.g.
+	// {"example-timecard-approver-role":"11111111-1111-1111-1111-111111111111"}.
+	// Keyed by the real role name (the same strings AUTH_<ROLE>_ROLES already
+	// lists), not an invented portal-role key -- see directory.ParseRoleIDs's
+	// own doc comment for why. Used by handlers that need a role's real
+	// membership via the SCIM operations service (GET
+	// /users/time-card-approvers, POST /users' own grant, GET
+	// /roles/grantable below). Optional and empty by default: a real role
+	// name with no entry here just means that role has no SCIM-backed
+	// feature wired up in this deployment.
+	roleIDsByName, err := directory.ParseRoleIDs(os.Getenv("ASGARDEO_ROLE_IDS"))
 	if err != nil {
 		slog.Error("invalid ASGARDEO_ROLE_IDS", "err", err)
 		os.Exit(1)
@@ -173,8 +178,18 @@ func main() {
 	// One guard authorises every route below (including /spl/*) and also
 	// backs the permissions GET /users/me reports, so the two cannot drift
 	// apart. Built before the SPL block below since its SPL handlers need
-	// it too.
-	accessGuard := handler.NewAccessGuard(loadAccessConfig())
+	// it too. accessCfg is also kept (not just the guard built from it) since
+	// grantableRoles below needs the same AUTH_<ROLE>_ROLES lists directly.
+	accessCfg := loadAccessConfig()
+	accessGuard := handler.NewAccessGuard(accessCfg)
+
+	// Which portal roles CreateUser may grant via SCIM when an admin adds a
+	// new user through the webapp, each already resolved to its real role ID
+	// -- see handler.ResolveGrantableRoles's own doc comment. Empty when
+	// ASGARDEO_ROLE_IDS configures none of AUTH_<ROLE>_ROLES' real role
+	// names, in which case GET /roles/grantable reports none and CreateUser
+	// rejects any grantRoles value as unknown.
+	grantableRoles := handler.ResolveGrantableRoles(accessCfg, roleIDsByName)
 
 	// SupportPortalLite — off by default; see loadViewerConfig. Ported
 	// from digiops-cs/apps/support-portal-lite's Ballerina backend, which is
@@ -309,12 +324,17 @@ func main() {
 	}
 	healthHandler := handler.NewHealthHandler(scimClient, updatesClient, notificationPinger, integrationPinger, engineeringPinger)
 
-	// timecardApproverRoleID is optional: empty means ASGARDEO_ROLE_IDS has no
-	// "timecard_approver" entry, in which case GetTimeCardApprovers itself
-	// returns 404 rather than the route going unregistered -- see its own
-	// route registration below for why.
-	timecardApproverRoleID := asgardeoRoleIDs["timecard_approver"]
-	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient, dir, sftpgoAttachmentStorageEnabled, timecardApproverRoleID).WithAccessGuard(accessGuard)
+	// timecardApproverRoleID is optional: empty means none of
+	// AUTH_TIMECARD_APPROVER_ROLES' real role names has a configured ID, in
+	// which case GetTimeCardApprovers itself returns 404 rather than the
+	// route going unregistered -- see its own route registration below for
+	// why. Derived from grantableRoles (the same resolution CreateUser's own
+	// grant uses) rather than a second, parallel lookup.
+	timecardApproverRoleID, _ := handler.RoleIDForKey(grantableRoles, "timecard_approver")
+	usersHandler := handler.NewUsersHandler(scimClient, customerEntityClient, dir, sftpgoAttachmentStorageEnabled, timecardApproverRoleID).
+		WithAccessGuard(accessGuard).
+		WithGrantableRoles(grantableRoles)
+	grantableRolesHandler := handler.NewGrantableRolesHandler(grantableRoles)
 	dashboardHandler := handler.NewDashboardHandler(accessGuard)
 	caseHandler = caseHandler.WithAccessGuard(accessGuard)
 	timeCardHandler = timeCardHandler.WithAccessGuard(accessGuard)
@@ -425,6 +445,9 @@ func main() {
 	// "time-card-approvers" as an invalid UUID with 400, not a clean 404.
 	route("GET /users/time-card-approvers", handler.PermView, usersHandler.GetTimeCardApprovers)
 	route("POST /roles/search", handler.PermView, referenceHandler.SearchRoles)
+	// Admin-only: the portal roles an admin may grant a new user via POST
+	// /users' own grantRoles field -- the Add User dialog's only caller.
+	route("GET /roles/grantable", handler.PermAdmin, grantableRolesHandler.GetGrantableRoles)
 	route("POST /teams/search", handler.PermView, referenceHandler.SearchTeams)
 	route("GET /teams/{id}/members", handler.PermViewSharedEntity, teamHandler.GetTeamMembers)
 	route("GET /accounts/{id}", handler.PermViewSharedEntity, accountHandler.GetAccount)

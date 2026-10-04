@@ -17,16 +17,21 @@
 import {
   Box,
   Button,
+  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
+  FormGroup,
   MenuItem,
   TextField,
   Typography,
 } from "@wso2/oxygen-ui";
 import { useState, type FormEvent, type JSX } from "react";
+import { useGetGrantableRoles } from "@features/csm-users/api/useGetGrantableRoles";
 import { usePostUser } from "@features/csm-users/api/usePostUser";
+import { grantableRoleLabel } from "@features/csm-users/utils/grantableRoleLabels";
 import { isPlausibleEmail } from "@features/csm-users/utils/isPlausibleEmail";
 
 export interface AddUserDialogProps {
@@ -77,9 +82,15 @@ const EMPTY_FORM: { firstName: string; lastName: string; email: string; userType
 /**
  * Admin-only "Add User" form (`POST /users`). Sets the new user's type by
  * granting the matching `internal`/`external` role (see `USER_TYPE_OPTIONS`'s
- * own doc comment) -- the only role picker this form has; there is still no
- * Asgardeo-backed way to browse/assign a fuller role set at account-creation
- * time, so nothing beyond this one required choice is exposed here.
+ * own doc comment) -- unrelated to the "Portal roles" section below, which
+ * grants zero or more additional portal permissions via SCIM.
+ *
+ * "Portal roles" is fetched from `GET /roles/grantable` only while this
+ * dialog is open, and is itself admin-only on the backend (`PermAdmin`, the
+ * same gate `POST /users` sits behind) -- the UI-side protection is simply
+ * that this whole dialog only renders for an admin in the first place (see
+ * `CsmUsersPage.tsx`'s `canCreateUser` gate), so no separate check is needed
+ * here.
  *
  * An Internal user must have a `@wso2.com` email -- entity-service enforces
  * this as the real constraint (a non-wso2.com address must never resolve to
@@ -88,11 +99,18 @@ const EMPTY_FORM: { firstName: string; lastName: string; email: string; userType
  */
 export default function AddUserDialog({ open, onClose, onCreated }: AddUserDialogProps): JSX.Element {
   const [form, setForm] = useState(EMPTY_FORM);
+  const [selectedGrantRoles, setSelectedGrantRoles] = useState<string[]>([]);
   const { mutate, isPending, error, reset } = usePostUser();
+  const { data: grantableRoles } = useGetGrantableRoles(open);
+
+  const toggleGrantRole = (key: string, checked: boolean): void => {
+    setSelectedGrantRoles((prev) => (checked ? [...prev, key] : prev.filter((k) => k !== key)));
+  };
 
   const handleClose = (): void => {
     if (isPending) return;
     setForm(EMPTY_FORM);
+    setSelectedGrantRoles([]);
     reset();
     onClose();
   };
@@ -113,10 +131,12 @@ export default function AddUserDialog({ open, onClose, onCreated }: AddUserDialo
         lastName: form.lastName.trim() || undefined,
         email: trimmedEmail,
         roles: selected ? [selected.role] : undefined,
+        grantRoles: selectedGrantRoles.length > 0 ? selectedGrantRoles : undefined,
       },
       {
         onSuccess: (created) => {
           setForm(EMPTY_FORM);
+          setSelectedGrantRoles([]);
           onCreated?.(created.id);
           onClose();
         },
@@ -186,6 +206,28 @@ export default function AddUserDialog({ open, onClose, onCreated }: AddUserDialo
               <Typography variant="caption" color="text.secondary">
                 At least a first or last name is required.
               </Typography>
+            )}
+            {grantableRoles && grantableRoles.length > 0 && (
+              <Box>
+                <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                  Portal roles
+                </Typography>
+                <FormGroup>
+                  {grantableRoles.map((role) => (
+                    <FormControlLabel
+                      key={role.key}
+                      control={
+                        <Checkbox
+                          checked={selectedGrantRoles.includes(role.key)}
+                          onChange={(e) => toggleGrantRole(role.key, e.target.checked)}
+                          disabled={isPending}
+                        />
+                      }
+                      label={grantableRoleLabel(role.key)}
+                    />
+                  ))}
+                </FormGroup>
+              </Box>
             )}
           </Box>
         </DialogContent>
