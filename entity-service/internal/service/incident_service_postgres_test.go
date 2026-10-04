@@ -29,6 +29,7 @@ import (
 type pgCreatingRepo struct {
 	stubIncidentRepo
 	createdBy string
+	createReq domain.CreateIncidentRequest
 	comments  []domain.CommentType
 	notes     []string
 	createErr error
@@ -36,11 +37,12 @@ type pgCreatingRepo struct {
 
 func newPGCreatingRepo() *pgCreatingRepo {
 	r := &pgCreatingRepo{}
-	r.createIncident = func(_ context.Context, _ domain.CreateIncidentRequest, createdBy string) (domain.CreateIncidentResponse, error) {
+	r.createIncident = func(_ context.Context, req domain.CreateIncidentRequest, createdBy string) (domain.CreateIncidentResponse, error) {
 		if r.createErr != nil {
 			return domain.CreateIncidentResponse{}, r.createErr
 		}
 		r.createdBy = createdBy
+		r.createReq = req
 		var resp domain.CreateIncidentResponse
 		resp.Incident.ID = "66666666-6666-6666-6666-666666666666"
 		resp.Incident.Number = "INC0000001"
@@ -66,8 +68,9 @@ func alertIncidentRequest() domain.CreateIncidentRequest {
 }
 
 // An alert-born incident arrives from a service (sre-alert-core-service through csm-integration-service)
-// with no end-user token. DATA_SOURCE=postgres creates it as the system actor, keeps the alert as its
-// first work note, and publishes incident.created -- what the SRE escalation ladder starts from.
+// with no end-user token. DATA_SOURCE=postgres creates it as the system actor, hands the alert to the
+// repository's create (which saves it as the first work note in the same transaction as the incident),
+// and publishes incident.created -- what the SRE escalation ladder starts from.
 func TestIncidentService_PostgresCreatesAServiceCallersIncident(t *testing.T) {
 	repo := newPGCreatingRepo()
 	publisher := &mockEventPublisher{}
@@ -83,8 +86,11 @@ func TestIncidentService_PostgresCreatesAServiceCallersIncident(t *testing.T) {
 	if repo.createdBy != incidentSystemActorEmail {
 		t.Errorf("createdBy = %q, want the system actor %q", repo.createdBy, incidentSystemActorEmail)
 	}
-	if len(repo.comments) != 1 || repo.comments[0] != domain.CommentTypeWorkNote || repo.notes[0] != "AlarmName: prod-rds-cpu-utilization-high" {
-		t.Errorf("comments = %v %q, want the alert as one work note", repo.comments, repo.notes)
+	if repo.createReq.WorkNotes == nil || *repo.createReq.WorkNotes != "AlarmName: prod-rds-cpu-utilization-high" {
+		t.Errorf("create carried work notes %v, want the alert, saved with the incident", repo.createReq.WorkNotes)
+	}
+	if len(repo.comments) != 0 {
+		t.Errorf("service wrote %d separate comment(s); the notes belong in the create's own transaction", len(repo.comments))
 	}
 	if len(publisher.calls) != 1 || publisher.calls[0].eventType != events.TypeIncidentCreated ||
 		publisher.calls[0].entityID != "66666666-6666-6666-6666-666666666666" {

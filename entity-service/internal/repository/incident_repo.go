@@ -108,6 +108,10 @@ type IncidentRepository interface {
 	// method's doc comment), so the caller (incidentService.UpdateIncident)
 	// resolves the actor and passes the email straight through.
 	CreateIncidentComment(ctx context.Context, incidentID string, commentType domain.CommentType, content, createdBy string) (domain.CaseComment, error)
+	// CreateIncidentNotes inserts a work note and/or a public comment on an incident in one
+	// transaction: both are saved or neither is, so a retried request never saves one twice.
+	// nil or blank texts are skipped.
+	CreateIncidentNotes(ctx context.Context, incidentID string, workNotes, additionalComments *string, createdBy string) error
 	// CreateIncidentFromServiceNow inserts a new incident row (both work_item
 	// and "incident"), for DATA_SOURCE=postgres-servicenow-dual-write's SN-first
 	// incident creation (see incidentService.createIncidentSNFirst's own doc
@@ -738,6 +742,38 @@ func (r *incidentRepo) CreateIncidentComment(ctx context.Context, incidentID str
 	return c, nil
 }
 
+// CreateIncidentNotes implements IncidentRepository.
+func (r *incidentRepo) CreateIncidentNotes(ctx context.Context, incidentID string, workNotes, additionalComments *string, createdBy string) error {
+	return r.db.InTx(ctx, func(tx pgx.Tx) error {
+		return insertIncidentNotesTx(ctx, tx, incidentID, workNotes, additionalComments, createdBy)
+	})
+}
+
+// insertIncidentNotesTx inserts the non-blank work note and public comment on incidentID inside tx,
+// with createIncidentCommentQuery's own existence check: an incident that is not there is a
+// ValidationError, and rolls the whole transaction back.
+func insertIncidentNotesTx(ctx context.Context, tx pgx.Tx, incidentID string, workNotes, additionalComments *string, createdBy string) error {
+	for _, note := range []struct {
+		text *string
+		kind domain.CommentType
+	}{{workNotes, domain.CommentTypeWorkNote}, {additionalComments, domain.CommentTypeComment}} {
+		if note.text == nil || strings.TrimSpace(*note.text) == "" {
+			continue
+		}
+		var id string
+		err := tx.QueryRow(ctx, `WITH c AS (`+createIncidentCommentQuery+`) SELECT id FROM c`,
+			createdBy, caseCommentTypeEnum[note.kind], incidentID, *note.text,
+		).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &apierror.ValidationError{Msg: "incident not found: " + incidentID}
+		}
+		if err != nil {
+			return fmt.Errorf("create incident %s: %w", strings.ToLower(string(note.kind)), err)
+		}
+	}
+	return nil
+}
+
 // createIncidentPortalQuery is CreateIncident's (the plain-Postgres,
 // caller-initiated path) query -- structurally identical to
 // createIncidentFromServiceNowQuery except id/number are generated here
@@ -789,13 +825,21 @@ func (r *incidentRepo) CreateIncident(ctx context.Context, req domain.CreateInci
 		outID, outNumber, outSubject, outCreatedBy string
 		outCreatedOn, outUpdatedOn                 time.Time
 	)
-	err := r.db.QueryRow(ctx, createIncidentPortalQuery,
-		createdBy, req.Subject, req.ParentID, req.AssignmentGroupID,
-		req.CallerID, string(req.Category), string(req.Impact), string(req.Urgency),
-		req.ServiceID, req.ServiceOfferingID, contactType,
-		req.ChangeRequestID, req.CausedByID, req.ParentIncidentID, req.ProblemID,
-		req.CorrelationID, req.Environment,
-	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
+	// The incident and the request's notes commit together: an incident whose initial work
+	// note (for an alert-born incident, the alert itself) failed to save is never reported
+	// as created, and so never published.
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, createIncidentPortalQuery,
+			createdBy, req.Subject, req.ParentID, req.AssignmentGroupID,
+			req.CallerID, string(req.Category), string(req.Impact), string(req.Urgency),
+			req.ServiceID, req.ServiceOfferingID, contactType,
+			req.ChangeRequestID, req.CausedByID, req.ParentIncidentID, req.ProblemID,
+			req.CorrelationID, req.Environment,
+		).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy); err != nil {
+			return err
+		}
+		return insertIncidentNotesTx(ctx, tx, outID, req.WorkNotes, req.AdditionalComments, createdBy)
+	})
 	if err != nil {
 		// incident_deny_all_insert (migration 0148) permits only an internal
 		// caller -- incident has no project concept at all, so there is no

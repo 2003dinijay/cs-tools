@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -100,6 +101,24 @@ func (s *stubIncidentRepo) GetIncidentByID(ctx context.Context, id string) (doma
 func (s *stubIncidentRepo) SearchIncidentActivities(context.Context, domain.SearchIncidentActivitiesRequest) ([]domain.CaseActivity, int, error) {
 	panic("not implemented")
 }
+
+// CreateIncidentNotes hands each non-blank note to createIncidentComment, so tests that watch that hook
+// see the same writes the transactional repository method makes.
+func (s *stubIncidentRepo) CreateIncidentNotes(ctx context.Context, incidentID string, workNotes, additionalComments *string, createdBy string) error {
+	for _, n := range []struct {
+		text *string
+		kind domain.CommentType
+	}{{workNotes, domain.CommentTypeWorkNote}, {additionalComments, domain.CommentTypeComment}} {
+		if n.text == nil || strings.TrimSpace(*n.text) == "" {
+			continue
+		}
+		if _, err := s.CreateIncidentComment(ctx, incidentID, n.kind, *n.text, createdBy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *stubIncidentRepo) CreateIncidentComment(ctx context.Context, incidentID string, commentType domain.CommentType, content, createdBy string) (domain.CaseComment, error) {
 	if s.createIncidentComment != nil {
 		return s.createIncidentComment(ctx, incidentID, commentType, content, createdBy)

@@ -19,7 +19,6 @@ package service
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -410,7 +409,8 @@ func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateI
 // createIncidentSNFirst, it publishes incident.created only after the insert
 // commits: the payload is built from the request alone (Title,
 // ShortDescription), so nothing ServiceNow-sourced is missing here. Notes on
-// the request become the incident's first comments (recordCreateNotes).
+// the request become the incident's first comments, in the same transaction
+// as the incident itself (IncidentRepository.CreateIncident).
 func (s *incidentService) createIncidentPortal(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
 	// A service caller (sre-alert-core-service, through csm-integration-service) forwards no end-user
 	// token; POST /incidents is internal-only at the route, so it is recorded as the system actor rather
@@ -427,29 +427,9 @@ func (s *incidentService) createIncidentPortal(ctx context.Context, req domain.C
 	if err != nil {
 		return domain.CreateIncidentResponse{}, err
 	}
-	s.recordCreateNotes(ctx, resp.Incident.ID, req, createdBy)
 	// Only after the insert committed, so a consumer can always read what it was told about.
 	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID)
 	return resp, nil
-}
-
-// recordCreateNotes keeps a create request's work notes and comments, which the incident row has no
-// column for, as the incident's first comments -- an alert-born incident's work note is the alert
-// itself. Best-effort: the incident already exists, and failing the create now would only make the
-// caller retry into its own duplicate check, losing the notes just the same.
-func (s *incidentService) recordCreateNotes(ctx context.Context, incidentID string, req domain.CreateIncidentRequest, createdBy string) {
-	for _, note := range []struct {
-		text *string
-		kind domain.CommentType
-	}{{req.WorkNotes, domain.CommentTypeWorkNote}, {req.AdditionalComments, domain.CommentTypeComment}} {
-		if note.text == nil || strings.TrimSpace(*note.text) == "" {
-			continue
-		}
-		if _, err := s.repo.CreateIncidentComment(ctx, incidentID, note.kind, *note.text, createdBy); err != nil {
-			slog.ErrorContext(ctx, "create incident: incident created but its initial note was not saved",
-				"incidentId", incidentID, "commentType", note.kind, "error", err)
-		}
-	}
 }
 
 // createIncidentSNFirst implements CreateIncident's
@@ -575,15 +555,9 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		return domain.UpdateIncidentResponse{}, err
 	}
 
-	if req.WorkNotes != nil {
-		if _, err := s.repo.CreateIncidentComment(ctx, req.ID, domain.CommentTypeWorkNote, *req.WorkNotes, actor.Email); err != nil {
-			return domain.UpdateIncidentResponse{}, err
-		}
-	}
-	if req.AdditionalComments != nil {
-		if _, err := s.repo.CreateIncidentComment(ctx, req.ID, domain.CommentTypeComment, *req.AdditionalComments, actor.Email); err != nil {
-			return domain.UpdateIncidentResponse{}, err
-		}
+	// Both notes commit together, so a retry after a failed second insert cannot save the first twice.
+	if err := s.repo.CreateIncidentNotes(ctx, req.ID, req.WorkNotes, req.AdditionalComments, actor.Email); err != nil {
+		return domain.UpdateIncidentResponse{}, err
 	}
 
 	view, err := s.repo.GetIncidentByID(ctx, req.ID)
