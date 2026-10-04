@@ -89,6 +89,7 @@ var KnownTypes = []Type{
 	TypeCaseCreated, TypeCommentAdded, TypeStatusChanged, TypeCaseAssigned, TypeCaseAcknowledged, TypeSeverityChanged, TypeIncidentCreated,
 	TypeSLATierReached,
 	TypeCRApprovalRequested, TypeCRPlanDateNotice,
+	TypeOutageNotificationDue, TypeOutageCommunicationDue,
 	TypeProjectContactInvited, TypeProjectContactRegistered,
 }
 

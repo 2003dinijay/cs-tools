@@ -19,9 +19,7 @@ package notify
 import (
 	_ "embed"
 	"fmt"
-	"github.com/wso2-open-operations/cs-tools/operations/csm-scheduled-tasks/internal/httpsec"
 	"html"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -230,92 +228,4 @@ func humanizeState(state string) string {
 		words[i] = strings.ToUpper(w[:1]) + w[1:]
 	}
 	return strings.Join(words, " ")
-}
-
-//go:embed templates/outage_notification.html
-var outageNotificationTemplateRaw string
-
-// OutageNotificationData is what RenderOutageNotification substitutes.
-//
-// Subject and Body arrive already rendered by entity-service, which owns the
-// wording so it can be tested against the ServiceNow original in one place.
-// This only wraps them in the house shell.
-type OutageNotificationData struct {
-	// PhaseWord is Declared / Resolved / Update, for the banner.
-	PhaseWord string
-	Number    string
-	// Message is entity-service's body text, verbatim.
-	Message string
-	// Link is the outage's page in the CSM portal; see OutageLink. Empty
-	// renders no link rather than a dead one.
-	Link string
-}
-
-// OutageLink is an outage's page in the CSM portal, the route the portal's own
-// outage list navigates to (/operations/outages/{id}). It returns "" when
-// either part is missing, so a deployment without CSM_PORTAL_WEB_BASE_URL
-// sends the email without a link instead of with a broken one.
-func OutageLink(portalBaseURL, outageID string) string {
-	base := strings.TrimRight(strings.TrimSpace(portalBaseURL), "/")
-	if base == "" || strings.TrimSpace(outageID) == "" {
-		return ""
-	}
-	return base + "/operations/outages/" + url.PathEscape(outageID)
-}
-
-// CheckPortalBaseURL validates CSM_PORTAL_WEB_BASE_URL for OutageLink, which
-// appends the outage route to it as a string. On top of https (loopback
-// exempt), it must be a bare origin or path: a query or fragment would land
-// before the appended route ("https://x/?a=b/operations/outages/{id}") and
-// every emailed link would open the wrong page; credentials have no business
-// in a link mailed to a list.
-func CheckPortalBaseURL(raw string) error {
-	if err := httpsec.RequireSecureURL(raw); err != nil {
-		return err
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return err
-	}
-	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") {
-		return fmt.Errorf("must not contain a query string or fragment")
-	}
-	if u.User != nil {
-		return fmt.Errorf("must not contain credentials")
-	}
-	return nil
-}
-
-// outageLinkHTML is the "View outage" line both outage emails carry. The URL
-// is attribute-escaped like every other substituted value.
-func outageLinkHTML(link string) string {
-	if link == "" {
-		return ""
-	}
-	return `<p style="margin:24px 0 0;"><a href="` + escapeHTML(link) +
-		`" style="font-size:14px; font-weight:600; color:rgb(71,96,146); text-decoration:underline;">View outage in the CSM portal</a></p>`
-}
-
-// OutageLinkHTML exposes outageLinkHTML to the outage-communication task,
-// whose body is built outside this package's template.
-func OutageLinkHTML(link string) string { return outageLinkHTML(link) }
-
-// RenderOutageNotification wraps one outage notice in the standard shell.
-//
-// The body it wraps is deliberately thin: the ServiceNow flow this ports sends
-// three fixed sentences carrying no outage detail at all ("Outage {n}
-// declared." and so on), and the port reproduces that rather than inventing
-// content that cannot be checked against the original. See entity-service's
-// renderOutageNotification for the full reasoning. Making these emails useful
-// is a product decision tracked separately.
-func RenderOutageNotification(data OutageNotificationData) string {
-	replacer := strings.NewReplacer(
-		"<!-- [LOGO_SRC] -->", bakeLogo(wso2LogoURL),
-		"<!-- [PHASE_WORD] -->", escapeHTML(data.PhaseWord),
-		"<!-- [NUMBER] -->", escapeHTML(data.Number),
-		"<!-- [MESSAGE] -->", escapeHTML(data.Message),
-		"<!-- [OUTAGE_LINK] -->", outageLinkHTML(data.Link),
-		"<!-- [YEAR] -->", strconv.Itoa(time.Now().Year()),
-	)
-	return replacer.Replace(outageNotificationTemplateRaw)
 }

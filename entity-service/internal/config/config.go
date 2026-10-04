@@ -231,6 +231,24 @@ type Config struct {
 	// pass came back short. A backlog drains at full speed regardless, so this
 	// governs only the idle case: notice latency against query volume.
 	CRNoticePollInterval time.Duration
+
+	// OutageEventHubTopic is where the outage notice drainer publishes the two
+	// outage emails (outage.notification_due, outage.communication_due) for
+	// csm-notification-service to send. Its own topic for the same reason as
+	// CREventHubTopic. The drainer also needs event publishing
+	// (EVENT_HUB_BROKER + EVENT_PUBLISHING_ENABLED) and a database; the
+	// recipient lists below are what actually switch each email on.
+	OutageEventHubTopic string
+	// OutageNoticePollInterval is how often the drainer runs the two outage
+	// email decisions. ServiceNow's flows are record-triggered, so this is the
+	// whole of the delay between saving an outage and its email (default 10s).
+	OutageNoticePollInterval time.Duration
+	// OutageNotificationRecipients is the audience of the internal-stakeholder
+	// notification, OutageCommunicationRecipients that of the SRE outage
+	// communication (ServiceNow resolves the group "SRE Team"). A flow with no
+	// recipients is not swept at all, so its decisions are not used up.
+	OutageNotificationRecipients  []string
+	OutageCommunicationRecipients []string
 	// CustomerRoles is a comma-separated list of ServiceNow role names
 	// (organisation-specific vocabulary, the same reasoning
 	// apps/csm-portal/backend's own CSM_TEAM_REGISTRY uses for not shipping
@@ -499,6 +517,10 @@ func Load() *Config {
 		CREventHubTopic:                               getEnvOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
 		ProjectEventHubTopic:                          getEnvOrDefault("PROJECT_EVENT_HUB_TOPIC", "project-events"),
 		CRNoticePollInterval:                          envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
+		OutageEventHubTopic:                           getEnvOrDefault("OUTAGE_EVENT_HUB_TOPIC", "outage-events"),
+		OutageNoticePollInterval:                      envDuration("OUTAGE_NOTICE_POLL_INTERVAL", 10*time.Second),
+		OutageNotificationRecipients:                  splitComma(os.Getenv("OUTAGE_NOTIFICATION_RECIPIENTS")),
+		OutageCommunicationRecipients:                 splitComma(os.Getenv("OUTAGE_COMMUNICATION_RECIPIENTS")),
 		AuthIssuer:                                    os.Getenv("AUTH_ISSUER"),
 		AuthJWKSURL:                                   os.Getenv("AUTH_JWKS_URL"),
 		AuthUserTokenAudiences:                        splitComma(os.Getenv("AUTH_USER_TOKEN_AUDIENCES")),

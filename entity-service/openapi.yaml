@@ -8408,9 +8408,12 @@ paths:
     post:
       summary: Evaluate which internal-stakeholder outage emails are due.
       description: >-
-        Postgres data source only. Backs the `outage_internal_notification`
-        sub-cron in operations/csm-scheduled-tasks, which renders and sends
-        the emails this returns.
+        Postgres data source only. entity-service's own outage notice
+        drainer runs this decision every few seconds and publishes what it
+        returns on the outage-events topic for csm-notification-service to
+        send; this endpoint remains for manual use. Sweeps take turns under
+        an advisory lock, so a call while one is running returns no
+        decisions.
 
 
         The port of ServiceNow's `Internal Stakeholders Email Notification -
