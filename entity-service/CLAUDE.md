@@ -44,6 +44,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `DB_PASSWORD` | yes*     | —       | Database password          |
 | `DB_NAME`     | yes*     | —       | Database name              |
 | `DB_SSLMODE`  | no       | —       | `disable` or `require`    |
+| `DB_SCHEMA`   | no       | `DB_USER`'s value | Pins the connection's `search_path` (`DSN`'s `options=-c search_path=...`), same purpose as `operations/csm-sync-service`'s own `DB_SCHEMA` — see that config's `withSchema`. Falling back to `DB_USER` makes explicit what Postgres' own default `search_path` (`"$user", public`) would already do implicitly |
 | `SERVER_PORT` | no       | `8080`  | Main API listen port       |
 | `HEALTH_PORT` | no       | `8081`  | Health probe listen port; `Validate` rejects it being equal to `SERVER_PORT` (see "Health probes" below) |
 | `EVENT_HUB_BROKER` | no | — | Kafka-compatible bootstrap address; feature-gates `EventPublisherService` (see "Event Hub publishing" below) |

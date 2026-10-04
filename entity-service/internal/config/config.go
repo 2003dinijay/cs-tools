@@ -64,6 +64,15 @@ type Config struct {
 	DBPassword string
 	DBName     string
 	DBSSLMode  string
+	// DBSchema pins the connection's search_path (see DSN) so a role whose
+	// native search_path would otherwise resolve to a different same-named
+	// schema, or to "public", lands in the intended one instead — same
+	// purpose as operations/csm-sync-service's own DB_SCHEMA. Left empty,
+	// DSN falls back to DBUser, matching Postgres' own default search_path
+	// of "$user", public — made explicit here rather than left implicit,
+	// since this is the one of the two services that also sets a
+	// connection-level option (jit=off) through the same mechanism.
+	DBSchema   string
 	ServerPort string
 	// HealthPort is the listen port for the separate, minimal health
 	// server (internal/server.NewHealthServer). It is deliberately NOT
@@ -414,6 +423,7 @@ func Load() *Config {
 		DBPassword:                               os.Getenv("DB_PASSWORD"),
 		DBName:                                   os.Getenv("DB_NAME"),
 		DBSSLMode:                                os.Getenv("DB_SSLMODE"),
+		DBSchema:                                 os.Getenv("DB_SCHEMA"),
 		ServerPort:                               getEnvOrDefault("SERVER_PORT", "8080"),
 		HealthPort:                               getEnvOrDefault("HEALTH_PORT", "8081"),
 		DataSource:                               DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
@@ -738,6 +748,11 @@ func (c *Config) SalesEntityConfigured() bool {
 }
 
 // DSN constructs a PostgreSQL connection string from the config fields.
+//
+// Pins search_path to DBSchema (falling back to DBUser when unset, matching
+// Postgres' own default search_path of "$user", public — made explicit here
+// rather than left to that default) via the "options" connection parameter,
+// the same mechanism operations/csm-sync-service's own withSchema uses.
 func (c *Config) DSN() string {
 	u := &url.URL{
 		Scheme: "postgres",
@@ -748,6 +763,21 @@ func (c *Config) DSN() string {
 	q := u.Query()
 	q.Set("sslmode", c.DBSSLMode)
 	u.RawQuery = q.Encode()
+
+	schema := c.DBSchema
+	if schema == "" {
+		schema = c.DBUser
+	}
+	if schema != "" {
+		// url.Values.Encode() would percent-encode the space in
+		// "-c search_path=..." as "+" (the HTML-form convention) -- pgconn's
+		// own URI parser does not decode "+" back to a space, so Postgres
+		// received a literal "+" and rejected it as an unrecognized
+		// configuration parameter (confirmed against a real connection).
+		// Escape by hand with %20 instead, which pgconn does handle.
+		opts := strings.ReplaceAll(url.QueryEscape("-c search_path="+schema), "+", "%20")
+		u.RawQuery += "&options=" + opts
+	}
 	return u.String()
 }
 

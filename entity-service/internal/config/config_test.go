@@ -17,6 +17,8 @@
 package config
 
 import (
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -597,4 +599,41 @@ func TestLoad_SalesforceIngestRetryInterval(t *testing.T) {
 			t.Errorf("SALESFORCE_INGEST_RETRY_INTERVAL=%q -> %v, want %v", value, got, want)
 		}
 	}
+}
+
+// dsnSearchPath extracts the search_path value DSN embedded in its "options"
+// query parameter, so a test can assert on the schema alone rather than the
+// whole connection string.
+func dsnSearchPath(t *testing.T, dsn string) string {
+	t.Helper()
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse DSN %q: %v", dsn, err)
+	}
+	return strings.TrimPrefix(u.Query().Get("options"), "-c search_path=")
+}
+
+// TestConfig_DSN_SchemaFallsBackToDBUser pins DSN's search_path behavior:
+// an explicit DBSchema wins, and an empty one falls back to DBUser (matching
+// Postgres' own default search_path of "$user", public, made explicit here).
+func TestConfig_DSN_SchemaFallsBackToDBUser(t *testing.T) {
+	base := baseValidConfig()
+	base.DBHost = "localhost"
+	base.DBPort = "5432"
+
+	t.Run("explicit schema wins", func(t *testing.T) {
+		c := base
+		c.DBSchema = "csm"
+		if got := dsnSearchPath(t, c.DSN()); got != "csm" {
+			t.Errorf("search_path = %q, want %q", got, "csm")
+		}
+	})
+
+	t.Run("unset schema falls back to DBUser", func(t *testing.T) {
+		c := base
+		c.DBSchema = ""
+		if got := dsnSearchPath(t, c.DSN()); got != c.DBUser {
+			t.Errorf("search_path = %q, want DBUser %q", got, c.DBUser)
+		}
+	})
 }
