@@ -286,6 +286,13 @@ configured at all, nobody can use the portal.
 | `AUTH_DASHBOARD_DESIGNER_ROLES` | view |
 | `AUTH_WORKNOTE_CREATOR_ROLES` | posting a `work_note`-type comment on a case only (`POST /cases/{id}/comments`) — not a customer-visible reply, and none of `write`'s other actions. `cs_engineer`/`admin` already grant this via `write`; unset is a normal, supported state (like `AUTH_SALES_SOLUTIONS_ROLES`), not a misconfiguration — startup does not warn about it |
 
+A worknote-creator- or escalator-only caller is provisioned a platform `"user"` record
+on first use rather than needing to go through the admin "Add User" flow first: before
+posting a work note or creating/removing a case escalation, this backend checks whether
+the caller already has one (`GET /users/me`) and, if not, creates it from the caller's
+own token (`given_name`/`family_name`/`email`), granted the `internal` role. A
+`cs_engineer`/`admin` caller is assumed already provisioned and skips this check.
+
 ```bash
 # Several token roles can grant one portal role; any one is enough.
 AUTH_ESCALATOR_ROLES=example-escalators-role,example-leads-role

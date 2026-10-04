@@ -107,6 +107,40 @@ is really a deployment misconfiguration. `GetTimeCardApprovers` checks for those
 and reports a sanitized 502 instead; every other SCIM failure status still goes through the normal
 `mapUpstreamErrorGeneric` mapping.
 
+## Provisioning a "user" row on demand (`ensureUserProvisioned`)
+
+A `worknote_creator`- or `escalator`-only caller reaches `POST /cases/{id}/comments`
+(the `!hasFullWrite` branch) or `POST /cases/{id}/escalations` purely on the strength
+of an Asgardeo role grant — unlike the admin-only "Add User" flow above, neither
+`AUTH_WORKNOTE_CREATOR_ROLES` nor `AUTH_ESCALATOR_ROLES` provisions a `"user"` row
+anywhere. Without one, entity-service's own identity resolution for the write
+(`emailFromJWT` → `GetUserByEmail`) fails it outright — a real gap for a caller whose
+only path onto the portal is one of these two narrow roles, since neither is routed
+through the entity-service-backed Salesforce membership ingest or the admin `POST
+/users` flow.
+
+`ensureUserProvisioned` (`internal/handler/ensure_user.go`) closes this: called
+immediately before the entity-service write in both `CreateCaseComment`'s
+worknote-only branch and `CreateCaseEscalation`, it calls `GetUserMe` first and, only
+on a `404` (no row at all — any other failure is logged and treated as best-effort,
+same posture as `caseIsClosed`'s own fail-open guard elsewhere in `cases.go`), creates
+one via `POST /users` using `FirstName`/`LastName`/`Email` straight off the caller's
+own validated token (`middleware.UserInfo`, which now also decodes `given_name`/
+`family_name` — see that struct's own doc comment) and `roles: ["internal"]`. Both
+work-note creation and escalation are internal-staff-only actions by construction
+(their own `AUTH_<ROLE>_ROLES` grants are organisation-internal role names), so
+`"internal"` is never a guess the way `CreateUser`'s admin-facing "User type" selector
+has to make.
+
+**`CreateCaseComment` skips calling this entirely for a caller who already holds full
+`PermWrite`** (`cs_engineer` or `admin`, via the same `hasFullWrite` the
+`PermCreateWorkNote`-narrowing check above already computes) — assumed already
+provisioned, so the overwhelmingly common path (a CS engineer's own work notes/replies)
+pays no extra `GetUserMe` round trip. `CreateCaseEscalation` has no equivalent skip:
+`cs_engineer` never holds `PermEscalate` at all (see `NewAccessGuard`'s own doc
+comment), so every caller who reaches that handler is, by construction, exactly the
+audience this exists for.
+
 ## Security Center access (PermViewSecurityCenter)
 
 Security Center (the webapp's Security reports + Vulnerabilities tabs) is restricted to `cs_engineer`
