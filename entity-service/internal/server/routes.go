@@ -831,9 +831,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	escalationRepo := repository.NewEscalationRepository(repository.NewScoped(db), escalationNotifyCfg)
 	var activeEscalationSvc service.EscalationService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeEscalationSvc = service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		// CreateEscalation mirrors to ServiceNow asynchronously, best-effort,
+		// via the shared snWritebackDispatcher -- see
+		// escalationService.CreateEscalation's own doc comment.
+		snEscalationMirrorSvc := service.NewServiceNowEscalationService(serviceNowIntegrationServiceClient)
+		activeEscalationSvc = service.NewEscalationServiceWithSNWriteback(escalationRepo, userRepo, caseRepo, accessSvc, snWritebackDispatcher, snEscalationMirrorSvc)
+	default:
 		activeEscalationSvc = service.NewEscalationService(escalationRepo, userRepo, caseRepo, accessSvc)
 	}
 	escalationHandler := handler.NewEscalationHandler(activeEscalationSvc)
@@ -1018,9 +1025,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	conversationRepo := repository.NewConversationRepository(repository.NewScoped(db))
 	var activeConversationSvc service.ConversationService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	switch cfg.DataSource {
+	case config.DataSourceServiceNow:
 		activeConversationSvc = service.NewServiceNowConversationService(serviceNowIntegrationServiceClient)
-	} else {
+	case config.DataSourcePostgresServiceNowDualWrite:
+		// UpdateConversation mirrors to ServiceNow asynchronously,
+		// best-effort, via the shared snWritebackDispatcher -- see
+		// conversationService.UpdateConversation's own doc comment.
+		// CreateConversation stays unsupported (work_item.number has no
+		// generator here) -- see conversationService's own doc comment.
+		snConversationMirrorSvc := service.NewServiceNowConversationService(serviceNowIntegrationServiceClient)
+		activeConversationSvc = service.NewConversationServiceWithSNWriteback(conversationRepo, snWritebackDispatcher, snConversationMirrorSvc)
+	default:
 		activeConversationSvc = service.NewConversationService(conversationRepo)
 	}
 	conversationHandler := handler.NewConversationHandler(activeConversationSvc)
