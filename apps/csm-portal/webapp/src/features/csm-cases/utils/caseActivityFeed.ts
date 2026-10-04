@@ -17,6 +17,7 @@
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { severityFromBe } from "@api/backend/mappers";
 import { SEVERITY_LABEL, stateLabel } from "@features/csm-dashboard/utils/abtDashboard";
+import type { Severity } from "@features/csm-dashboard/types/abtDashboard";
 import type {
   CaseAttachment,
   CaseAuditEntry,
@@ -67,12 +68,19 @@ const AUDIT_TIMESTAMP_VALUE_PATTERN =
   /^(\d{4}-\d{1,2}-\d{1,2}[T ]\d{1,2}:\d{1,2}(:\d{1,2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?|\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{1,2}(:\d{1,2})?)$/;
 
 /**
- * Display label for a severity field-change value — see
- * `CaseActivitiesFeed.tsx`'s own `severityChangeLabel` (imported, not
- * duplicated: unlike the timestamp regex above, this already lives in a
- * plain utility module, not a component, so there's no reason to fork it).
+ * Display label for a severity field-change value — mirrors
+ * `CaseActivitiesFeed.tsx`'s own (unexported) `severityChangeLabel`,
+ * duplicated for the same reason `AUDIT_TIMESTAMP_VALUE_PATTERN` above is.
+ * `severityFromBe` handles a humanized domain word ("Critical") and
+ * ServiceNow P-notation ("P1") but NOT a bare S0-S4 code — it returns
+ * `"unset"` for `severityFromBe("S1")` — so that shape is checked directly
+ * first. Anything else `severityFromBe` doesn't recognize is already
+ * human-readable text, so it passes through unchanged rather than becoming
+ * "Unset".
  */
 function severityChangeLabel(value: string): string {
+  const upper = value.trim().toUpperCase();
+  if (upper in SEVERITY_LABEL) return SEVERITY_LABEL[upper as Severity];
   const severity = severityFromBe(value);
   return severity === "unset" ? value : SEVERITY_LABEL[severity];
 }

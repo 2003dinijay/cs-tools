@@ -124,6 +124,15 @@ describe("describeAuditEntry", () => {
     expect(describeAuditEntry(entry)).toBe("Severity: Critical → High");
   });
 
+  it("maps a bare S0-S4 severity code too, which severityFromBe alone does not recognize", () => {
+    const entry = auditEntry({
+      changes: [
+        { field: "severity", fieldLabel: "Severity", previousValue: "S0", newValue: "s2" },
+      ],
+    });
+    expect(describeAuditEntry(entry)).toBe("Severity: Catastrophic → High");
+  });
+
   it("renders 'cleared' when a field's new value is absent", () => {
     const entry = auditEntry({
       changes: [{ field: "assignee", fieldLabel: "Assignee", previousValue: "Jane Doe", newValue: undefined }],

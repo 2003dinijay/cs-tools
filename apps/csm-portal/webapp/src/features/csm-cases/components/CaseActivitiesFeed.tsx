@@ -58,6 +58,7 @@ import { formatBytes } from "@utils/formatBytes";
 import { formatAbsoluteForUser } from "@utils/dateTime";
 import { severityFromBe } from "@api/backend/mappers";
 import { SEVERITY_LABEL, stateLabel } from "@features/csm-dashboard/utils/abtDashboard";
+import type { Severity } from "@features/csm-dashboard/types/abtDashboard";
 import {
   getAttachmentPreviewKind,
   type AttachmentPreviewSource,
@@ -154,15 +155,19 @@ function isTimestampLikeValue(value: string | undefined): boolean {
 /**
  * Display label for a severity field-change value. The Postgres-native write
  * path records a humanized domain word (e.g. "Critical") and an upstream
- * sync could plausibly write the raw wire form (P-notation or an S0-S4
- * code) — `severityFromBe` already normalizes every one of those shapes
- * elsewhere in this app (see `SeverityChip`'s own data source), so this
- * reuses it rather than inventing a second severity vocabulary. A value
- * `severityFromBe` doesn't recognize is already human-readable text (or at
- * least no less readable for having been left alone), so it passes through
- * unchanged rather than becoming "Unset".
+ * sync could plausibly write the raw wire form (P-notation, or a bare S0-S4
+ * code). `severityFromBe` handles the first two but NOT a bare S0-S4 code
+ * (it only matches "p0".."p4"/"catastrophic".."low" — `severityFromBe("S1")`
+ * returns `"unset"`), so that shape is checked directly first; `SeverityChip`
+ * never hits this gap because nothing currently sends it a bare code either,
+ * which is exactly why it went unnoticed until this field-change path.
+ * Anything else `severityFromBe` doesn't recognize is already
+ * human-readable text (or at least no less readable for having been left
+ * alone), so it passes through unchanged rather than becoming "Unset".
  */
 function severityChangeLabel(value: string): string {
+  const upper = value.trim().toUpperCase();
+  if (upper in SEVERITY_LABEL) return SEVERITY_LABEL[upper as Severity];
   const severity = severityFromBe(value);
   return severity === "unset" ? value : SEVERITY_LABEL[severity];
 }
