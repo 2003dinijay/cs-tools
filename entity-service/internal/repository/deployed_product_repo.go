@@ -410,15 +410,10 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 
 	countQuery := "SELECT COUNT(*) FROM deployed_product dp " + where
 
-	// update_level_info (JSONB) -- domain.DeployedProductView.Updates -- is
-	// deliberately not selected here: its actual JSON shape isn't confirmed
-	// against any real payload, so it's left unpopulated (nil, the correct
-	// "none recorded" value per that field's own doc comment) rather than
-	// guessed at. cores/tps/category, in contrast, are plain scalar columns
-	// with an unambiguous mapping, so they are selected.
 	dataQuery := fmt.Sprintf(
 		`SELECT dp.id, dp.created_on, dp.updated_on,
 		        dp.core_count, dp.tps_count, dp.product_category::TEXT,
+		        dp.description, dp.update_level_info,
 		        d.id, d.name,
 		        p.id, p.name, p.code,
 		        pv.id, pv.version, pv.release_date, pv.support_eol_date
@@ -458,9 +453,13 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 			// Version fields are nullable (LEFT JOIN).
 			var pvID, pvName *string
 			var pvReleaseDate, pvEoLDate *time.Time
+			// update_level_info is nullable JSONB; decoded below into
+			// dp.Updates once the row is scanned.
+			var updateLevelInfo []byte
 			if err := rows.Scan(
 				&dp.ID, &dp.CreatedOn, &dp.UpdatedOn,
 				&dp.Cores, &dp.TPS, &dp.Category,
+				&dp.Description, &updateLevelInfo,
 				&dp.Deployment.ID, &dp.Deployment.Name,
 				&dp.Product.ID, &dp.Product.Name, &dp.Product.Abbreviation,
 				&pvID, &pvName, &pvReleaseDate, &pvEoLDate,
@@ -476,6 +475,15 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 				}
 			}
 			dp.Category = lowercaseCategory(dp.Category)
+			if len(updateLevelInfo) > 0 {
+				var updates []domain.ProductUpdateEntry
+				if err := json.Unmarshal(updateLevelInfo, &updates); err != nil {
+					return fmt.Errorf("unmarshal deployed product update_level_info: %w", err)
+				}
+				if len(updates) > 0 {
+					dp.Updates = updates
+				}
+			}
 			result = append(result, dp)
 		}
 		if err := rows.Err(); err != nil {

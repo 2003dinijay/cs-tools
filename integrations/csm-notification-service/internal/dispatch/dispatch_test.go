@@ -181,6 +181,10 @@ func (m *mockLinkResolver) CSMLink(caseID string) string {
 // ChangeRequestLink mirrors the real resolver's audience split: a customer
 // notice links into the customer portal, under the project; everyone else
 // links into the CSM portal.
+func (m *mockLinkResolver) OutageLink(outageID string) string {
+	return "https://csm.example/operations/outages/" + outageID
+}
+
 func (m *mockLinkResolver) ChangeRequestLink(audience, changeRequestID, projectID string) string {
 	if audience == "customer" && projectID != "" {
 		return "https://customer.example/projects/" + projectID + "/operations/change-requests/" + changeRequestID

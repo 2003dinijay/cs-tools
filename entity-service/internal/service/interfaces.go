@@ -216,7 +216,7 @@ type OnboardingStepService interface {
 // the ordering that makes "both or neither" hold without a distributed
 // transaction, and why the database commits last.
 //
-// Every method is restricted to internal callers (AUTH_INTERNAL_CLIENT_IDS).
+// Every method is restricted to internal callers (an Unrestricted AccessScope).
 // The portal backends decide who may invite whom; this service does not.
 type ProjectMembershipWriteService interface {
 	// Invite adds a contact to a project: state INVITED (RE-INVITED when a
