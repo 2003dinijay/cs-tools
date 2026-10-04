@@ -71,18 +71,40 @@ func RenderOutageNotificationEmail(d OutageNotificationEmailData) string {
 	).Replace(outageNotificationTemplate)
 }
 
-// RenderOutageCommunicationEmail renders the SRE declaration/resolution email:
-// entity-service's full plain-text message, escaped then line-broken (in that
-// order, so the breaks survive), followed by the link.
+//go:embed templates/outage_communication.html
+var outageCommunicationTemplateRaw string
+
+var outageCommunicationTemplate = bakeLogo(outageCommunicationTemplateRaw)
+
+// OutageCommunicationEmailData is what RenderOutageCommunicationEmail substitutes.
+type OutageCommunicationEmailData struct {
+	// PhaseWord is Declared / Resolved, for the banner.
+	PhaseWord string
+	// Message is entity-service's full plain-text email, verbatim.
+	Message string
+	// Link is the outage's CSM portal page; empty renders no link.
+	Link string
+}
+
+// RenderOutageCommunicationEmail renders the SRE declaration/resolution email
+// in the house shell, like every other email here: entity-service's full
+// plain-text message, escaped then line-broken (in that order, so the breaks
+// survive), with the "View outage" link under it.
 //
-// The body is escaped, never interpolated: it carries the outage's short
+// The message is escaped, never interpolated: it carries the outage's short
 // description, impact and state, all operator-typed free text.
-func RenderOutageCommunicationEmail(body, link string) string {
-	withBreaks := strings.ReplaceAll(html.EscapeString(body), "\n", "<br>\n")
-	return `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;line-height:1.6;color:#17191e">` +
-		withBreaks +
-		outageLinkHTML(link) +
-		`</div>`
+//
+// The shell also ends the body the way the email service expects. It drops the
+// last characters of what it is sent; a bare "</div>" fragment, which this
+// email used to be, lost "v>" and showed "</di" at the bottom of the email.
+func RenderOutageCommunicationEmail(d OutageCommunicationEmailData) string {
+	message := strings.ReplaceAll(html.EscapeString(strings.TrimRight(d.Message, "\n")), "\n", "<br>\n")
+	return strings.NewReplacer(
+		"<!-- [PHASE_WORD] -->", escapeHTML(d.PhaseWord),
+		"<!-- [MESSAGE_HTML] -->", message,
+		"<!-- [OUTAGE_LINK] -->", outageLinkHTML(d.Link),
+		"<!-- [YEAR] -->", strconv.Itoa(time.Now().Year()),
+	).Replace(outageCommunicationTemplate)
 }
 
 // outageLinkHTML is the "View outage" line both outage emails carry.
