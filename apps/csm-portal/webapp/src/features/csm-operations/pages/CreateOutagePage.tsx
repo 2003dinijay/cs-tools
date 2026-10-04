@@ -28,7 +28,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
-import { useState, type JSX } from "react";
+import { useReducer, useRef, useState, type JSX } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
@@ -87,6 +87,17 @@ export default function CreateOutagePage(): JSX.Element {
   const [internalCommunication, setInternalCommunication] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const [touched, setTouched] = useState(false);
+  // *** A HALF-TYPED BEGIN NEVER REACHES onChange. *** MUI X's field only
+  // publishes once every section of a date is filled; until then it keeps the
+  // typed sections to itself, so `begin` stays "" and would read as "start
+  // now". beginIncomplete covers the case it DOES publish (an Invalid Date
+  // when a complete value is partly edited); the hidden input behind the field
+  // covers the other, since it is "" only while every section is empty.
+  const [beginIncomplete, setBeginIncomplete] = useState(false);
+  const beginInputRef = useRef<HTMLInputElement>(null);
+  // Re-renders after a submit-time check fails, so the End helper text is
+  // recomputed against the current time rather than the last render's.
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
 
   const beginDate = parseDateTimeLocal(begin);
   const endDate = parseDateTimeLocal(end);
@@ -107,7 +118,7 @@ export default function CreateOutagePage(): JSX.Element {
   // silently replacing a half-typed value with now would be worse than
   // refusing it.
   const hasTypedBegin = begin.trim().length > 0;
-  const isBeginValid = !hasTypedBegin || (!!beginDate && !!beginUtc);
+  const isBeginValid = !beginIncomplete && (!hasTypedBegin || (!!beginDate && !!beginUtc));
   const isShortDescriptionValid = shortDescription.trim().length > 0;
   const needsAcknowledgement = !!configurationItemId && !acknowledged;
   const canSubmit =
@@ -133,7 +144,27 @@ export default function CreateOutagePage(): JSX.Element {
       return;
     }
 
-    const resolvedBegin = beginUtc ?? zonedInputToBackendUtc(formatDateTimeLocal(new Date()));
+    // The field may hold sections the page has never seen; refuse rather than
+    // replace them with now.
+    if (!hasTypedBegin && (beginInputRef.current?.value ?? "").trim() !== "") {
+      setBeginIncomplete(true);
+      setTouched(true);
+      return;
+    }
+
+    // canSubmit was computed at the last render. With Begin blank, "now" has
+    // moved on since then, and an End that was still ahead of it may not be
+    // any more -- so the begin this submit will send is checked again here,
+    // at the same minute precision it is sent with.
+    const nowLocal = formatDateTimeLocal(new Date());
+    const submitBegin = hasTypedBegin ? beginDate : parseDateTimeLocal(nowLocal);
+    if (submitBegin && endDate && endDate.getTime() < submitBegin.getTime()) {
+      setTouched(true);
+      rerender();
+      return;
+    }
+
+    const resolvedBegin = beginUtc ?? zonedInputToBackendUtc(nowLocal);
     if (!resolvedBegin) {
       setTouched(true);
       return;
@@ -244,13 +275,14 @@ export default function CreateOutagePage(): JSX.Element {
                 <DatePickers.DateTimePicker
                   label="Begin (optional)"
                   value={beginDate}
-                  onChange={(next) =>
-                    setBegin(
-                      next instanceof Date && !Number.isNaN(next.getTime())
-                        ? formatDateTimeLocal(next)
-                        : "",
-                    )
-                  }
+                  inputRef={beginInputRef}
+                  onChange={(next) => {
+                    const complete = next instanceof Date && !Number.isNaN(next.getTime());
+                    setBegin(complete ? formatDateTimeLocal(next) : "");
+                    // null is a cleared field (start now); anything else that is
+                    // not a complete date is a partial edit.
+                    setBeginIncomplete(!complete && next !== null);
+                  }}
                   slotProps={{
                     textField: {
                       size: "small",
@@ -258,7 +290,7 @@ export default function CreateOutagePage(): JSX.Element {
                       error: touched && !isBeginValid,
                       helperText:
                         touched && !isBeginValid
-                          ? "Not a valid date and time."
+                          ? "Finish the date and time, or clear it to start now."
                           : "Leave blank to start now. Set it for a planned outage, or one that began earlier.",
                     },
                   }}
