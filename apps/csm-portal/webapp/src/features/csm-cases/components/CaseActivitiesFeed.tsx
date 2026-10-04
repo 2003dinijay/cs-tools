@@ -56,6 +56,8 @@ import RelativeTime from "@components/RelativeTime";
 import UserRefLink from "@components/UserRefLink";
 import { formatBytes } from "@utils/formatBytes";
 import { formatAbsoluteForUser } from "@utils/dateTime";
+import { severityFromBe } from "@api/backend/mappers";
+import { SEVERITY_LABEL, stateLabel } from "@features/csm-dashboard/utils/abtDashboard";
 import {
   getAttachmentPreviewKind,
   type AttachmentPreviewSource,
@@ -149,18 +151,47 @@ function isTimestampLikeValue(value: string | undefined): boolean {
   return !!value && TIMESTAMP_VALUE_PATTERN.test(value.trim());
 }
 
-/** Renders a field's value, formatting it in the user's local timezone when
- * it is itself a timestamp; otherwise the raw value is shown as-is. */
-function formatChangeValue(value: string | undefined): string | undefined {
-  if (!isTimestampLikeValue(value)) return value;
-  return formatAbsoluteForUser(value) ?? value;
+/**
+ * Display label for a severity field-change value. The Postgres-native write
+ * path records a humanized domain word (e.g. "Critical") and an upstream
+ * sync could plausibly write the raw wire form (P-notation or an S0-S4
+ * code) — `severityFromBe` already normalizes every one of those shapes
+ * elsewhere in this app (see `SeverityChip`'s own data source), so this
+ * reuses it rather than inventing a second severity vocabulary. A value
+ * `severityFromBe` doesn't recognize is already human-readable text (or at
+ * least no less readable for having been left alone), so it passes through
+ * unchanged rather than becoming "Unset".
+ */
+function severityChangeLabel(value: string): string {
+  const severity = severityFromBe(value);
+  return severity === "unset" ? value : SEVERITY_LABEL[severity];
+}
+
+/** Renders a field's value for display: a timestamp in the user's local
+ * timezone, a case state/severity through their curated labels (handles a
+ * raw enum value like "SOLUTION_PROPOSED" the same as an already-humanized
+ * one), or the raw value unchanged for anything else. */
+function formatChangeValue(
+  value: string | undefined,
+  field?: string,
+): string | undefined {
+  if (!value) return value;
+  if (isTimestampLikeValue(value)) return formatAbsoluteForUser(value) ?? value;
+  if (field === "state") return stateLabel(value);
+  if (field === "severity") return severityChangeLabel(value);
+  return value;
 }
 
 /** One "<label>: <old> → <new>" line for a field-change entry's audit strip. */
 function FieldChangeLine({
   field,
 }: {
-  field: { fieldLabel: string; previousValue?: string; newValue?: string };
+  field: {
+    field: string;
+    fieldLabel: string;
+    previousValue?: string;
+    newValue?: string;
+  };
 }): JSX.Element {
   const hadPrevious = !!field.previousValue?.trim();
   const hasNew = !!field.newValue?.trim();
@@ -170,12 +201,12 @@ function FieldChangeLine({
       {hadPrevious && (
         <>
           <Box component="span" sx={{ color: "text.secondary" }}>
-            {formatChangeValue(field.previousValue)}
+            {formatChangeValue(field.previousValue, field.field)}
           </Box>
           {" → "}
         </>
       )}
-      {hasNew ? formatChangeValue(field.newValue) : <em>cleared</em>}
+      {hasNew ? formatChangeValue(field.newValue, field.field) : <em>cleared</em>}
     </Typography>
   );
 }

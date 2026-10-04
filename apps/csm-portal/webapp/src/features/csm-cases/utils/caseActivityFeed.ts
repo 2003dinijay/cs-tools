@@ -15,6 +15,8 @@
 // under the License.
 
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
+import { severityFromBe } from "@api/backend/mappers";
+import { SEVERITY_LABEL, stateLabel } from "@features/csm-dashboard/utils/abtDashboard";
 import type {
   CaseAttachment,
   CaseAuditEntry,
@@ -64,11 +66,26 @@ export function compareFeedEntries(a: FeedEntry, b: FeedEntry): number {
 const AUDIT_TIMESTAMP_VALUE_PATTERN =
   /^(\d{4}-\d{1,2}-\d{1,2}[T ]\d{1,2}:\d{1,2}(:\d{1,2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?|\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{1,2}(:\d{1,2})?)$/;
 
-function formatAuditChangeValue(value: string): string {
-  if (!AUDIT_TIMESTAMP_VALUE_PATTERN.test(value.trim())) return value;
-  return (
-    formatBackendTimestampForDisplay(value, { dateStyle: "medium", timeStyle: "short" }) ?? value
-  );
+/**
+ * Display label for a severity field-change value — see
+ * `CaseActivitiesFeed.tsx`'s own `severityChangeLabel` (imported, not
+ * duplicated: unlike the timestamp regex above, this already lives in a
+ * plain utility module, not a component, so there's no reason to fork it).
+ */
+function severityChangeLabel(value: string): string {
+  const severity = severityFromBe(value);
+  return severity === "unset" ? value : SEVERITY_LABEL[severity];
+}
+
+function formatAuditChangeValue(value: string, field?: string): string {
+  if (AUDIT_TIMESTAMP_VALUE_PATTERN.test(value.trim())) {
+    return (
+      formatBackendTimestampForDisplay(value, { dateStyle: "medium", timeStyle: "short" }) ?? value
+    );
+  }
+  if (field === "state") return stateLabel(value);
+  if (field === "severity") return severityChangeLabel(value);
+  return value;
 }
 
 /**
@@ -85,8 +102,10 @@ export function describeAuditEntry(entry: CaseAuditEntry): string {
       .map((c) => {
         const previous = c.previousValue?.trim();
         const next = c.newValue?.trim();
-        const to = next ? formatAuditChangeValue(next) : "cleared";
-        return previous ? `${c.fieldLabel}: ${formatAuditChangeValue(previous)} → ${to}` : `${c.fieldLabel}: ${to}`;
+        const to = next ? formatAuditChangeValue(next, c.field) : "cleared";
+        return previous
+          ? `${c.fieldLabel}: ${formatAuditChangeValue(previous, c.field)} → ${to}`
+          : `${c.fieldLabel}: ${to}`;
       })
       .join("; ");
   }
