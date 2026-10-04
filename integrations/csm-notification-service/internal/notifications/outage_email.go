@@ -77,12 +77,20 @@ func RenderOutageNotificationEmail(d OutageNotificationEmailData) string {
 //
 // The body is escaped, never interpolated: it carries the outage's short
 // description, impact and state, all operator-typed free text.
+//
+// *** A WHOLE DOCUMENT, ENDING IN A NEWLINE, NOT A BARE FRAGMENT. *** Every
+// other template here is a full HTML file ending "</html>\n", and the email
+// service drops the last characters of what it is sent: on those it eats the
+// newline and the closing '>' harmlessly, but on a fragment ending "</div>" it
+// left "</di" printed at the bottom of the email. Ending like the others keeps
+// whatever it trims outside the visible body.
 func RenderOutageCommunicationEmail(body, link string) string {
 	withBreaks := strings.ReplaceAll(html.EscapeString(body), "\n", "<br>\n")
-	return `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;line-height:1.6;color:#17191e">` +
+	return "<!DOCTYPE html>\n<html>\n<body>\n" +
+		`<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;line-height:1.6;color:#17191e">` +
 		withBreaks +
 		outageLinkHTML(link) +
-		`</div>`
+		"</div>\n</body>\n</html>\n"
 }
 
 // outageLinkHTML is the "View outage" line both outage emails carry.

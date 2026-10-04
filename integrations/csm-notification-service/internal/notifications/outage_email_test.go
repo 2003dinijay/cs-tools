@@ -1,0 +1,38 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package notifications
+
+import (
+	"strings"
+	"testing"
+)
+
+// The email service trims the tail of what it is sent; a body ending in a bare
+// "</div>" showed "</di" in the received email. Both outage emails must end the
+// way every working template does.
+func TestOutageEmailsEndLikeTheOtherTemplates(t *testing.T) {
+	comm := RenderOutageCommunicationEmail("Hello Team,\nBest regards,\nSRE\n", "https://csm.example/operations/outages/x")
+	notif := RenderOutageNotificationEmail(OutageNotificationEmailData{PhaseWord: "Declared", Number: "OUT1", Message: "m", Link: "https://csm.example/operations/outages/x"})
+	for name, body := range map[string]string{"communication": comm, "notification": notif} {
+		if !strings.HasSuffix(body, "</html>\n") {
+			t.Errorf("%s email ends %q, want the template ending \"</html>\\n\"", name, body[max(0, len(body)-20):])
+		}
+	}
+	if !strings.HasPrefix(comm, "<!DOCTYPE html>") || !strings.Contains(comm, "View outage in the CSM portal</a></p></div>") {
+		t.Errorf("communication email is not a whole document around the body and link:\n%s", comm)
+	}
+}
