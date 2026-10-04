@@ -22,6 +22,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
@@ -62,6 +63,16 @@ type entityUserProvisioningClient interface {
 // ambiguity to resolve the way CreateUser's own admin-facing "User type"
 // selector has to.
 //
+// entity-service's own userService.CreateUser rejects a request whose
+// firstName and lastName are BOTH blank with a 400 ValidationError -- a real
+// risk here, since given_name/family_name are optional token claims (see
+// UserInfo's own doc comment) that can legitimately be absent depending on
+// the IdP's configured scopes. Falling into that 400 and then swallowing it
+// (this function is best-effort) would leave the caller's write to fail with
+// no path forward, exactly the gap this function exists to close. When both
+// are blank, the email's local part is used as LastName instead -- a real,
+// non-empty value entity-service accepts, not a fabricated name.
+//
 // Best-effort: a failure here is logged and otherwise swallowed. The write
 // this precedes fails on its own terms immediately afterward if the user
 // genuinely still doesn't exist -- the same failure mode as before this
@@ -78,14 +89,19 @@ func ensureUserProvisioned(ctx context.Context, entity entityUserProvisioningCli
 		return
 	}
 
+	firstName, lastName := user.FirstName, user.LastName
+	if strings.TrimSpace(firstName) == "" && strings.TrimSpace(lastName) == "" {
+		lastName = emailLocalPart(user.Email)
+	}
+
 	body, err := json.Marshal(struct {
 		FirstName string   `json:"firstName"`
 		LastName  string   `json:"lastName"`
 		Email     string   `json:"email"`
 		Roles     []string `json:"roles"`
 	}{
-		FirstName: user.FirstName,
-		LastName:  user.LastName,
+		FirstName: firstName,
+		LastName:  lastName,
 		Email:     user.Email,
 		Roles:     []string{"internal"},
 	})
@@ -97,4 +113,14 @@ func ensureUserProvisioned(ctx context.Context, entity entityUserProvisioningCli
 	if _, err := entity.CreateUser(ctx, body); err != nil {
 		slog.ErrorContext(ctx, "ensureUserProvisioned: entity CreateUser failed", "userID", user.UserID, "err", err)
 	}
+}
+
+// emailLocalPart returns the portion of email before "@", or email unchanged
+// if it carries none -- used only as ensureUserProvisioned's last-resort name
+// fallback, never as a validated/canonical form of the address.
+func emailLocalPart(email string) string {
+	if i := strings.IndexByte(email, '@'); i >= 0 {
+		return email[:i]
+	}
+	return email
 }

@@ -78,6 +78,36 @@ func TestEnsureUserProvisioned(t *testing.T) {
 		}
 	})
 
+	t.Run("no name claims at all: falls back to the email's local part so entity-service's name-required validation never rejects it", func(t *testing.T) {
+		noNameUser := &middleware.UserInfo{
+			Email:  "jane.doe@example.com",
+			UserID: "id-on-token",
+			// FirstName/LastName deliberately both zero-value -- an IdP
+			// configuration that never sends given_name/family_name.
+		}
+		var gotBody []byte
+		client := &mockEntityCaseClient{
+			getUserMeFn: func(_ context.Context) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusNotFound, Body: "not found"}
+			},
+			createUserFn: func(_ context.Context, body []byte) ([]byte, error) {
+				gotBody = body
+				return []byte(`{"id":"new-id"}`), nil
+			},
+		}
+		ensureUserProvisioned(context.Background(), client, noNameUser)
+		var req struct {
+			FirstName string `json:"firstName"`
+			LastName  string `json:"lastName"`
+		}
+		if err := json.Unmarshal(gotBody, &req); err != nil {
+			t.Fatalf("decode CreateUser body: %v", err)
+		}
+		if req.FirstName != "" || req.LastName != "jane.doe" {
+			t.Errorf("CreateUser body = %+v, want firstName empty and lastName %q (the email's local part)", req, "jane.doe")
+		}
+	})
+
 	t.Run("a non-404 GetUserMe failure skips CreateUser entirely", func(t *testing.T) {
 		client := &mockEntityCaseClient{
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
