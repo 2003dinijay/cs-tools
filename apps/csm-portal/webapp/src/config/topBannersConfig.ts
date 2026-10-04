@@ -19,6 +19,12 @@ export interface TopBannerItem {
   html: string;
   closeable: boolean;
   storageKey: string;
+  /**
+   * Optional ISO 8601 timestamp with an offset (e.g. "2026-10-10T18:00:00+05:30").
+   * From this instant on the banner is not rendered. Missing means never expires;
+   * an unparseable value is ignored (and a warning is logged when rendering).
+   */
+  expiresAt?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -29,12 +35,16 @@ function toBanner(value: unknown): TopBannerItem | null {
   if (!isRecord(value) || typeof value.html !== "string" || !value.html) {
     return null;
   }
-  return {
+  const banner: TopBannerItem = {
     enabled: value.enabled === true,
     closeable: value.closeable === true,
     storageKey: typeof value.storageKey === "string" ? value.storageKey : "",
     html: value.html,
   };
+  if (typeof value.expiresAt === "string" && value.expiresAt) {
+    banner.expiresAt = value.expiresAt;
+  }
+  return banner;
 }
 
 /**
@@ -42,7 +52,7 @@ function toBanner(value: unknown): TopBannerItem | null {
  *
  * 1. Legacy CSM_PORTAL_TOP_BANNER_HTML (placed first):
  *    - a string is one non-closeable banner, gated by CSM_PORTAL_TOP_BANNER_ENABLED;
- *    - a banner object ({ enabled, closeable, storageKey, html }) is used as-is and
+ *    - a banner object ({ enabled, closeable, storageKey, html, expiresAt? }) is used as-is and
  *      is gated by its own `enabled` field, not by CSM_PORTAL_TOP_BANNER_ENABLED.
  * 2. CSM_PORTAL_TOP_BANNERS entries, in array order.
  *

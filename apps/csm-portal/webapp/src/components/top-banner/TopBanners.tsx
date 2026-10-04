@@ -21,6 +21,16 @@ import { useLogger } from "@hooks/useLogger";
 
 const FALLBACK_STORAGE_KEY = "top_banner_fallback_v1";
 
+// setTimeout stores its delay as a signed 32-bit int; larger values fire immediately.
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
+/** Epoch ms for a valid expiresAt, or null when absent or unparseable. */
+function parseExpiry(expiresAt: string | undefined): number | null {
+  if (!expiresAt) return null;
+  const ms = Date.parse(expiresAt);
+  return Number.isNaN(ms) ? null : ms;
+}
+
 // Dedicated instance so the hook and the allowed `target` attribute do not
 // leak into other DOMPurify usage in the app. Default DOMPurify strips
 // `target`, which would turn banner links meant to open in a new tab into
@@ -60,6 +70,38 @@ function Banner({ banner }: { banner: TopBannerItem }): JSX.Element | null {
     closeable ? isDismissed(resolvedStorageKey) : false,
   );
   const sanitizedHtml = useMemo(() => sanitizeBannerHtml(banner.html), [banner.html]);
+  const expiryMs = useMemo(() => parseExpiry(banner.expiresAt), [banner.expiresAt]);
+  const [expired, setExpired] = useState(
+    () => expiryMs !== null && Date.now() >= expiryMs,
+  );
+
+  useEffect(() => {
+    if (banner.expiresAt && expiryMs === null) {
+      logger.warn(
+        `A top banner has an invalid expiresAt "${banner.expiresAt}". ` +
+          "It is ignored and the banner will not auto-hide.",
+      );
+    }
+  }, [banner.expiresAt, expiryMs, logger]);
+
+  useEffect(() => {
+    if (expiryMs === null) return undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Re-checks the clock each hop, so expiries beyond the setTimeout limit
+    // are reached in chunks and an early-firing timer cannot hide too soon.
+    const schedule = (): void => {
+      const remaining = expiryMs - Date.now();
+      if (remaining <= 0) {
+        setExpired(true);
+        return;
+      }
+      timer = setTimeout(schedule, Math.min(remaining, MAX_TIMEOUT_MS));
+    };
+    schedule();
+    return () => {
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [expiryMs]);
 
   useEffect(() => {
     if (closeable && !banner.storageKey) {
@@ -70,7 +112,7 @@ function Banner({ banner }: { banner: TopBannerItem }): JSX.Element | null {
     }
   }, [closeable, banner.storageKey, logger]);
 
-  if (closed || !sanitizedHtml) return null;
+  if (expired || closed || !sanitizedHtml) return null;
 
   const handleClose = (): void => {
     persistDismissal(resolvedStorageKey);

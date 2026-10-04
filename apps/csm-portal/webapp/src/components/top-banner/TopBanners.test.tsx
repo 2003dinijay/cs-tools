@@ -16,6 +16,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const warn = vi.fn();
@@ -203,6 +204,145 @@ describe("TopBanners", () => {
       const a = container.querySelector("a");
       expect(a?.getAttribute("target")).toBe("_blank");
       expect(a?.getAttribute("rel")).toBe("noopener noreferrer");
+    });
+  });
+
+  describe("expiresAt", () => {
+    const NOW = new Date("2026-10-10T10:00:00Z");
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("does not render a banner whose expiry is in the past", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNERS: [banner({ expiresAt: "2026-10-10T15:00:00+05:30" })],
+      });
+      render(<TopBanners />);
+      expect(screen.queryByText("banner one")).toBeNull();
+    });
+
+    it("treats now === expiresAt as expired", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNERS: [banner({ expiresAt: "2026-10-10T10:00:00Z" })],
+      });
+      render(<TopBanners />);
+      expect(screen.queryByText("banner one")).toBeNull();
+    });
+
+    it("renders a banner whose expiry is in the future", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNERS: [banner({ expiresAt: "2026-10-10T18:00:00+05:30" })],
+      });
+      render(<TopBanners />);
+      expect(screen.getByText("banner one")).toBeInTheDocument();
+    });
+
+    it("hides a mounted banner when the expiry passes, and clears its timer on unmount", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNERS: [
+          banner({ expiresAt: "2026-10-10T10:00:10Z" }),
+          banner({ storageKey: "b", html: "<div>no expiry</div>" }),
+        ],
+      });
+      const { unmount } = render(<TopBanners />);
+      expect(screen.getByText("banner one")).toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(9_000);
+      });
+      expect(screen.getByText("banner one")).toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(1_000);
+      });
+      expect(screen.queryByText("banner one")).toBeNull();
+      expect(screen.getByText("no expiry")).toBeInTheDocument();
+      unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("clears a pending timer on unmount", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNERS: [banner({ expiresAt: "2026-10-10T10:00:10Z" })],
+      });
+      const { unmount } = render(<TopBanners />);
+      expect(vi.getTimerCount()).toBe(1);
+      unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("hides a far-future expiry beyond the setTimeout limit once it arrives", () => {
+      // About 40 days out: more than 2^31-1 ms (~24.8 days).
+      setConfig({
+        CSM_PORTAL_TOP_BANNERS: [banner({ expiresAt: "2026-11-19T10:00:00Z" })],
+      });
+      render(<TopBanners />);
+      expect(screen.getByText("banner one")).toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(2 ** 31 - 1);
+      });
+      expect(screen.getByText("banner one")).toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(40 * 24 * 3600 * 1000 - (2 ** 31 - 1));
+      });
+      expect(screen.queryByText("banner one")).toBeNull();
+    });
+
+    it("ignores an unparseable value, keeps the banner and warns", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNERS: [banner({ expiresAt: "next tuesday" })],
+      });
+      render(<TopBanners />);
+      expect(screen.getByText("banner one")).toBeInTheDocument();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("never expires when expiresAt is missing", () => {
+      setConfig({ CSM_PORTAL_TOP_BANNERS: [banner()] });
+      render(<TopBanners />);
+      act(() => {
+        vi.advanceTimersByTime(365 * 24 * 3600 * 1000);
+      });
+      expect(screen.getByText("banner one")).toBeInTheDocument();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("expires even if previously dismissed state exists, and respects the object form", () => {
+      localStorage.setItem("obj_key", "dismissed");
+      setConfig({
+        CSM_PORTAL_TOP_BANNER_HTML: banner({
+          closeable: true,
+          storageKey: "obj_key",
+          expiresAt: "2026-10-10T10:00:05Z",
+        }),
+      });
+      render(<TopBanners />);
+      expect(screen.queryByText("banner one")).toBeNull();
+
+      localStorage.clear();
+      cleanup();
+      render(<TopBanners />);
+      expect(screen.getByText("banner one")).toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(5_000);
+      });
+      expect(screen.queryByText("banner one")).toBeNull();
+    });
+
+    it("has no expiry for the legacy string form", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNER_ENABLED: true,
+        CSM_PORTAL_TOP_BANNER_HTML: "<div>legacy</div>",
+      });
+      render(<TopBanners />);
+      act(() => {
+        vi.advanceTimersByTime(365 * 24 * 3600 * 1000);
+      });
+      expect(screen.getByText("legacy")).toBeInTheDocument();
     });
   });
 });
