@@ -51,11 +51,8 @@ import (
 //
 // See incidentStateToEnum/incidentPriorityToEnum for both mappings.
 //
-// CreateIncident (the plain, non-SN-first path)/UpdateIncident/
-// HandOffIncidentToSpecialist have no Postgres implementation: CreateIncident
-// needs work_item.number, which has no DB default or backing sequence
-// anywhere in migrations/ (same blocker as CaseRepository.CreateCase);
-// UpdateIncident touches several fields with no backing column at all
+// UpdateIncident/HandOffIncidentToSpecialist have no Postgres
+// implementation: UpdateIncident touches several fields with no backing column at all
 // (AssignmentGroupID, ConfigurationItemID, WatchList) alongside ones that do,
 // and would need comment-table side effects for AdditionalComments/WorkNotes
 // -- deferred as a unit rather than half-implemented;
@@ -150,7 +147,14 @@ type IncidentRepository interface {
 	// gen_random_uuid()/next_portal_work_item_number() instead of being
 	// supplied by a prior ServiceNow response, and createdBy is the calling
 	// user's own resolved email rather than ServiceNow's echoed value.
-	CreateIncident(ctx context.Context, req domain.CreateIncidentRequest, createdBy string) (domain.CreateIncidentResponse, error)
+	//
+	// priority is the incident_priority_enum label the service derived from
+	// impact x urgency; subcategoryValue is the ServiceNow choice value of
+	// req.Subcategory (incident_subcategory.value), resolved to its row here.
+	// req.AdditionalComments/WorkNotes become COMMENT/WORK_NOTE rows and
+	// req.WatchList becomes work_item_watcher rows, all in the same
+	// transaction as the record itself.
+	CreateIncident(ctx context.Context, req domain.CreateIncidentRequest, priority string, subcategoryValue *string, createdBy string) (domain.CreateIncidentResponse, error)
 }
 
 type incidentRepo struct {
@@ -739,23 +743,23 @@ func (r *incidentRepo) CreateIncidentComment(ctx context.Context, incidentID str
 }
 
 // createIncidentPortalQuery is CreateIncident's (the plain-Postgres,
-// caller-initiated path) query -- structurally identical to
-// createIncidentFromServiceNowQuery except id/number are generated here
-// (gen_random_uuid()/next_portal_work_item_number(), migration 0140) instead
-// of supplied by a prior ServiceNow response. incident.state is left to its
-// own column default ('NEW'), same reasoning createIncidentFromServiceNowQuery's
-// own doc comment gives.
+// caller-initiated path) insert of both halves of the row -- structurally
+// identical to createIncidentFromServiceNowQuery except id/number are
+// generated here (gen_random_uuid()/next_portal_work_item_number(), migration
+// 0140) instead of supplied by a prior ServiceNow response. incident.state is
+// left to its own column default ('NEW'), which is the state ServiceNow's
+// IncidentUtils.createIncident hard-sets.
 //
 // Column/output order matches the trailing SELECT exactly.
 const createIncidentPortalQuery = `
 	WITH inserted_work_item AS (
 		INSERT INTO work_item (
 			id, created_on, updated_on, created_by, updated_by,
-			number, subject, type, parent_id, assignment_group_id
+			number, subject, type, parent_id, assignment_group_id, assigned_to_id
 		)
 		VALUES (
 			gen_random_uuid(), NOW(), NOW(), $1, $1,
-			next_portal_work_item_number(), $2, 'INCIDENT'::work_item_type_enum, $3::uuid, $4::uuid
+			next_portal_work_item_number(), $2, 'INCIDENT'::work_item_type_enum, $3::uuid, $4::uuid, $18::uuid
 		)
 		RETURNING id, number, subject, created_on, updated_on, created_by
 	),
@@ -764,12 +768,14 @@ const createIncidentPortalQuery = `
 			id, caller_id, category, impact, urgency,
 			service_id, service_offering_id, contact_type,
 			change_request_id, caused_by_id, parent_incident_id, problem_id,
-			opened_on, correlation_id, environment
+			opened_on, correlation_id, environment,
+			priority, subcategory_id, cmdb_ci_id
 		)
 		SELECT id, $5::uuid, $6::incident_category_enum, $7::incident_impact_enum, $8::incident_urgency_enum,
 		       $9::uuid, $10::uuid, $11::incident_contact_type_enum,
 		       $12::uuid, $13::uuid, $14::uuid, $15::uuid,
-		       NOW(), $16, $17
+		       NOW(), $16, $17,
+		       $19::incident_priority_enum, $20::uuid, $21::uuid
 		FROM inserted_work_item
 		RETURNING id
 	)
@@ -778,25 +784,97 @@ const createIncidentPortalQuery = `
 	JOIN inserted_incident ii ON ii.id = iwi.id`
 
 // CreateIncident implements IncidentRepository.
-func (r *incidentRepo) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest, createdBy string) (domain.CreateIncidentResponse, error) {
+//
+// One transaction, in the order ServiceNow's IncidentUtils.createIncident
+// does it: the record (with its watch list) first, then the customer-visible
+// comment and the work note as journal entries against the new record.
+func (r *incidentRepo) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest, priority string, subcategoryValue *string, createdBy string) (domain.CreateIncidentResponse, error) {
 	var contactType *string
 	if req.ContactType != nil {
 		v := incidentContactTypeToEnum(*req.ContactType)
 		contactType = &v
 	}
 
-	var (
-		outID, outNumber, outSubject, outCreatedBy string
-		outCreatedOn, outUpdatedOn                 time.Time
-	)
-	err := r.db.QueryRow(ctx, createIncidentPortalQuery,
-		createdBy, req.Subject, req.ParentID, req.AssignmentGroupID,
-		req.CallerID, string(req.Category), string(req.Impact), string(req.Urgency),
-		req.ServiceID, req.ServiceOfferingID, contactType,
-		req.ChangeRequestID, req.CausedByID, req.ParentIncidentID, req.ProblemID,
-		req.CorrelationID, req.Environment,
-	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
+	resp, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (domain.CreateIncidentResponse, error) {
+		var subcategoryID *string
+		if subcategoryValue != nil {
+			var id string
+			err := tx.QueryRow(ctx,
+				`SELECT id::text FROM incident_subcategory WHERE category = $1::incident_category_enum AND value = $2`,
+				string(req.Category), *subcategoryValue,
+			).Scan(&id)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.CreateIncidentResponse{}, &apierror.ValidationError{
+					Msg: fmt.Sprintf("subcategory %s does not belong to category %s", *req.Subcategory, req.Category),
+				}
+			}
+			if err != nil {
+				return domain.CreateIncidentResponse{}, fmt.Errorf("resolve incident subcategory: %w", err)
+			}
+			subcategoryID = &id
+		}
+
+		watcherIDs, err := resolveIncidentWatchers(ctx, tx, req.WatchList)
+		if err != nil {
+			return domain.CreateIncidentResponse{}, err
+		}
+
+		var (
+			outID, outNumber, outSubject, outCreatedBy string
+			outCreatedOn, outUpdatedOn                 time.Time
+		)
+		if err := tx.QueryRow(ctx, createIncidentPortalQuery,
+			createdBy, req.Subject, req.ParentID, req.AssignmentGroupID,
+			req.CallerID, string(req.Category), string(req.Impact), string(req.Urgency),
+			req.ServiceID, req.ServiceOfferingID, contactType,
+			req.ChangeRequestID, req.CausedByID, req.ParentIncidentID, req.ProblemID,
+			req.CorrelationID, req.Environment,
+			req.AssignedEngineerID, priority, subcategoryID, req.ConfigurationItemID,
+		).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy); err != nil {
+			return domain.CreateIncidentResponse{}, err
+		}
+
+		for _, userID := range watcherIDs {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO work_item_watcher (id, work_item_id, user_id) VALUES (gen_random_uuid(), $1, $2)`,
+				outID, userID,
+			); err != nil {
+				return domain.CreateIncidentResponse{}, err
+			}
+		}
+
+		journal := []struct {
+			commentType domain.CommentType
+			content     *string
+		}{
+			{domain.CommentTypeComment, req.AdditionalComments},
+			{domain.CommentTypeWorkNote, req.WorkNotes},
+		}
+		for _, j := range journal {
+			if j.content == nil || strings.TrimSpace(*j.content) == "" {
+				continue
+			}
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
+				 VALUES (gen_random_uuid(), NOW(), $1, $2::comment_type_enum, $3, $4)`,
+				createdBy, caseCommentTypeEnum[j.commentType], outID, *j.content,
+			); err != nil {
+				return domain.CreateIncidentResponse{}, fmt.Errorf("insert incident %s: %w", j.commentType, err)
+			}
+		}
+
+		resp := domain.CreateIncidentResponse{Message: "Incident created successfully."}
+		resp.Incident.ID = outID
+		resp.Incident.Number = outNumber
+		resp.Incident.CreatedOn = outCreatedOn.UTC().Format(time.RFC3339)
+		resp.Incident.CreatedBy = outCreatedBy
+		return resp, nil
+	})
 	if err != nil {
+		var ve *apierror.ValidationError
+		if errors.As(err, &ve) {
+			return domain.CreateIncidentResponse{}, err
+		}
 		// incident_deny_all_insert (migration 0148) permits only an internal
 		// caller -- incident has no project concept at all, so there is no
 		// project-member OR-branch the way case/change_request have.
@@ -816,13 +894,41 @@ func (r *incidentRepo) CreateIncident(ctx context.Context, req domain.CreateInci
 		}
 		return domain.CreateIncidentResponse{}, fmt.Errorf("create incident: %w", err)
 	}
-
-	resp := domain.CreateIncidentResponse{Message: "Incident created successfully."}
-	resp.Incident.ID = outID
-	resp.Incident.Number = outNumber
-	resp.Incident.CreatedOn = outCreatedOn.UTC().Format(time.RFC3339)
-	resp.Incident.CreatedBy = outCreatedBy
 	return resp, nil
+}
+
+// resolveIncidentWatchers turns a create request's watch list into user ids.
+// Entries may be user ids or email addresses, the two forms ServiceNow's own
+// create path accepts (watchListEmails). Every entry must name an existing
+// user: ServiceNow resolves each one before inserting, and an unresolvable
+// entry fails the request there too. Duplicates collapse to one watcher.
+func resolveIncidentWatchers(ctx context.Context, tx pgx.Tx, entries []string) ([]string, error) {
+	seen := make(map[string]bool, len(entries))
+	ids := make([]string, 0, len(entries))
+	for _, raw := range entries {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		var id string
+		var err error
+		if strings.Contains(entry, "@") {
+			err = tx.QueryRow(ctx, `SELECT id::text FROM "user" WHERE lower(email) = lower($1) ORDER BY id LIMIT 1`, entry).Scan(&id)
+		} else {
+			err = tx.QueryRow(ctx, `SELECT id::text FROM "user" WHERE id = $1::uuid`, entry).Scan(&id)
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, &apierror.ValidationError{Msg: "watchList contains an unknown user: " + entry}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("resolve incident watcher: %w", err)
+		}
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 // createIncidentFromServiceNowQuery inserts both halves of an incident row
