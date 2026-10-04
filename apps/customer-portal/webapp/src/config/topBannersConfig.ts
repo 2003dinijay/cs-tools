@@ -19,6 +19,12 @@ export interface TopBannerItem {
   html: string;
   closeable: boolean;
   storageKey: string;
+  /**
+   * Optional ISO 8601 timestamp with a UTC offset (e.g. "2026-10-10T18:00:00+05:30").
+   * From this instant the banner is not rendered. Missing means never expires;
+   * an unparseable value is ignored (and a warning is logged when rendering).
+   */
+  expiresAt?: string;
 }
 
 export const topBannersConfig: TopBannerItem[] =

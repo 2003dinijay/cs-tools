@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { useState, useEffect, type JSX } from "react";
+import { useState, useEffect, useMemo, type JSX } from "react";
 import { type TopBannerItem, topBannersConfig } from "@config/topBannersConfig";
 import { useLogger } from "@hooks/useLogger";
 
@@ -32,6 +32,16 @@ function persistDismissal(storageKey: string): void {
   } catch {
     // ignore storage errors
   }
+}
+
+// setTimeout stores its delay as a signed 32-bit int; larger values fire immediately.
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
+/** Epoch ms for a valid expiresAt, or null when absent or unparseable. */
+function parseExpiry(expiresAt: string | undefined): number | null {
+  if (!expiresAt) return null;
+  const ms = Date.parse(expiresAt);
+  return Number.isNaN(ms) ? null : ms;
 }
 
 interface BannerProps {
@@ -57,7 +67,43 @@ function Banner({ banner }: BannerProps): JSX.Element | null {
     }
   }, [closeable, banner.storageKey, logger]);
 
-  if (closed) return null;
+  const expiryMs = useMemo(
+    () => parseExpiry(banner.expiresAt),
+    [banner.expiresAt],
+  );
+  const [expired, setExpired] = useState(
+    () => expiryMs !== null && Date.now() >= expiryMs,
+  );
+
+  useEffect(() => {
+    if (banner.expiresAt && expiryMs === null) {
+      logger.warn(
+        `A top banner has an invalid expiresAt "${banner.expiresAt}". ` +
+          "It is ignored and the banner will not auto-hide.",
+      );
+    }
+  }, [banner.expiresAt, expiryMs, logger]);
+
+  useEffect(() => {
+    if (expiryMs === null) return undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Re-checks the clock each hop, so expiries beyond the setTimeout limit
+    // are reached in chunks and an early-firing timer cannot hide too soon.
+    const schedule = (): void => {
+      const remaining = expiryMs - Date.now();
+      if (remaining <= 0) {
+        setExpired(true);
+        return;
+      }
+      timer = setTimeout(schedule, Math.min(remaining, MAX_TIMEOUT_MS));
+    };
+    schedule();
+    return () => {
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [expiryMs]);
+
+  if (expired || closed) return null;
 
   const handleClose = (): void => {
     persistDismissal(resolvedStorageKey);
