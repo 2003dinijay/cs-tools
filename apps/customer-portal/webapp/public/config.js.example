@@ -150,7 +150,7 @@ window.config = {
   //   To remove one   → delete its object, or set  enabled: false.
   //   No code changes are required — only this file needs updating.
   //
-  //   Each object supports four fields, plus an optional fifth (expiresAt):
+  //   Each object supports four fields, plus two optional ones (startsAt, expiresAt):
   //
   //   enabled {boolean}
   //     true  – banner is rendered on every page.
@@ -181,6 +181,16 @@ window.config = {
   //       automatically when closeable is true.
   //     • Recommended height: 3rem (48 px).
   //
+  //   startsAt {string}  (optional)
+  //     ISO 8601 timestamp WITH a UTC offset, e.g. "2026-10-08T09:00:00+05:30"
+  //     or "2026-10-08T03:30:00Z". The banner is not rendered before that
+  //     instant and appears from then on (still subject to enabled / closeable /
+  //     dismissal). A page that is already open shows it live when the time
+  //     arrives, no reload needed. Omit it to show the banner immediately.
+  //     An unparseable value is ignored (no start gate) and a warning is
+  //     logged. If startsAt is at or after expiresAt the banner never shows
+  //     (a warning is logged).
+  //
   //   expiresAt {string}  (optional)
   //     ISO 8601 timestamp WITH a UTC offset, e.g. "2026-10-10T18:00:00+05:30"
   //     or "2026-10-10T12:30:00Z". From that instant on the banner is not
@@ -195,6 +205,7 @@ window.config = {
       enabled: false,
       closeable: false,
       storageKey: "event_banner_2026_v1",
+      startsAt: "2026-10-08T09:00:00+05:30", // optional: show only from this time
       expiresAt: "2026-10-10T18:00:00+05:30", // optional: auto-hide after this time
       html: '<div style="background-color:#000;height:3rem"><a href="https://example.com" target="_blank"><img style="object-fit:cover;height:100%;width:100%" src="https://cdn.example.com/event-banner.png" role="presentation"></a></div>',
     },

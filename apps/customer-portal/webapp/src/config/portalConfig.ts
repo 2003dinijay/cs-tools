@@ -43,6 +43,7 @@ export interface CustomerPortalWindowConfig {
     html: string;
     closeable: boolean;
     storageKey: string;
+    startsAt?: string;
     expiresAt?: string;
   }>;
   CUSTOMER_PORTAL_ANNOUNCEMENT_BANNER_VISIBLE?: boolean;
