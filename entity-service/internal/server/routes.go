@@ -61,7 +61,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// reads go to ServiceNow itself with the forwarded x-user-id-token, so
 	// scoping there is ServiceNow's own (snProjectService/snCaseService hold a
 	// pgFallback but do not route GetProjectByID/GetCaseByID through it).
-	accessSvc := service.NewAccessService(repository.NewAccessRepository(db), cfg.AuthInternalClientIDs)
+	accessSvc := service.NewAccessService(repository.NewAccessRepository(db), service.AccessClientConfig{
+		M2MClientIDs:                  cfg.M2MClientIDs,
+		CSMPortalBackendClientID:      cfg.CSMPortalBackendClientID,
+		CSMPortalUserDomain:           cfg.CSMPortalUserDomain,
+		CustomerPortalBackendClientID: cfg.CustomerPortalBackendClientID,
+	})
 
 	var savedFilterViewHandler *handler.SavedFilterViewHandler
 	if db != nil {
@@ -187,8 +192,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 				cfg.GithubIntegrationLogin,
 				githubLabels,
 			)
-			githubDeliveryHandler = handler.NewGithubDeliveryHandler(githubSyncSvc, cfg.AuthInternalClientIDs)
-			githubServiceRequestHandler = handler.NewGithubServiceRequestHandler(githubSyncSvc, cfg.AuthInternalClientIDs)
+			githubDeliveryHandler = handler.NewGithubDeliveryHandler(githubSyncSvc, cfg.M2MClientIDs)
+			githubServiceRequestHandler = handler.NewGithubServiceRequestHandler(githubSyncSvc, cfg.M2MClientIDs)
 		}
 	}
 

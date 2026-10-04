@@ -445,6 +445,87 @@ func TestParseInternalClientIDs(t *testing.T) {
 	}
 }
 
+// TestConfig_Validate_CSMPortalBackendClientIDAndDomainAllOrNothing pins the pairing
+// requirement: CSM_PORTAL_BACKEND_CLIENT_ID and CSM_PORTAL_USER_DOMAIN are only
+// meaningful together (ResolveScope's domain check needs both), so a
+// deployment setting only one almost certainly meant to set both.
+func TestConfig_Validate_CSMPortalBackendClientIDAndDomainAllOrNothing(t *testing.T) {
+	c := baseValidConfig()
+	c.CSMPortalBackendClientID = "csm-portal"
+	if err := c.Validate(); err == nil {
+		t.Error("CSMPortalBackendClientID with no CSMPortalUserDomain: want an error, got nil")
+	}
+
+	c = baseValidConfig()
+	c.CSMPortalUserDomain = "wso2.com"
+	if err := c.Validate(); err == nil {
+		t.Error("CSMPortalUserDomain with no CSMPortalBackendClientID: want an error, got nil")
+	}
+
+	c = baseValidConfig()
+	c.CSMPortalBackendClientID = "csm-portal"
+	c.CSMPortalUserDomain = "wso2.com"
+	if err := c.Validate(); err != nil {
+		t.Errorf("both set together: unexpected error: %v", err)
+	}
+}
+
+// TestConfig_Validate_RejectsSameClientIDForCSMAndCustomerPortal pins the
+// guard against the one config value that can't be resolved by ResolveScope's
+// own ordering: CSMPortalBackendClientID and CustomerPortalBackendClientID being equal would
+// mean a single client id is both "unrestricted given a matching domain" and
+// "never unrestricted, full stop" at once -- a copy-paste mistake, not a
+// valid deployment.
+func TestConfig_Validate_RejectsSameClientIDForCSMAndCustomerPortal(t *testing.T) {
+	c := baseValidConfig()
+	c.CSMPortalBackendClientID = "shared-id"
+	c.CSMPortalUserDomain = "wso2.com"
+	c.CustomerPortalBackendClientID = "shared-id"
+	if err := c.Validate(); err == nil {
+		t.Error("CSMPortalBackendClientID == CustomerPortalBackendClientID: want an error, got nil")
+	}
+}
+
+// TestConfig_Validate_DistinctCSMAndCustomerPortalBackendClientIDsAreValid guards
+// against the above check being too broad and rejecting the normal case.
+func TestConfig_Validate_DistinctCSMAndCustomerPortalBackendClientIDsAreValid(t *testing.T) {
+	c := baseValidConfig()
+	c.CSMPortalBackendClientID = "csm-portal"
+	c.CSMPortalUserDomain = "wso2.com"
+	c.CustomerPortalBackendClientID = "customer-portal"
+	if err := c.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestLoad_CSMPortalUserDomain pins CSM_PORTAL_USER_DOMAIN's one bit of
+// normalization: a value typed with a leading "@" (an easy mistake, since
+// email addresses are usually written that way) is accepted the same as one
+// without, so isCSMPortalUserDomain's own "@"+domain suffix match is never
+// built from a doubled "@@".
+func TestLoad_CSMPortalUserDomain(t *testing.T) {
+	t.Setenv("CSM_PORTAL_USER_DOMAIN", "@wso2.com")
+	if got := Load().CSMPortalUserDomain; got != "wso2.com" {
+		t.Errorf("CSMPortalUserDomain = %q, want %q (leading @ stripped)", got, "wso2.com")
+	}
+
+	t.Setenv("CSM_PORTAL_USER_DOMAIN", "wso2.com")
+	if got := Load().CSMPortalUserDomain; got != "wso2.com" {
+		t.Errorf("CSMPortalUserDomain = %q, want %q (unchanged)", got, "wso2.com")
+	}
+}
+
+// TestLoad_M2MClientIDsFieldName guards against M2M_CLIENT_IDS silently
+// going unread after the AUTH_INTERNAL_CLIENT_IDS rename -- a stale env var
+// name here would leave every M2M caller unexpectedly unauthorized.
+func TestLoad_M2MClientIDsFieldName(t *testing.T) {
+	t.Setenv("M2M_CLIENT_IDS", "svc-a,svc-b")
+	got := Load().M2MClientIDs
+	if !got["svc-a"] || !got["svc-b"] || len(got) != 2 {
+		t.Errorf("M2MClientIDs = %v, want {svc-a, svc-b}", got)
+	}
+}
+
 // TestLoad_CSMMigrationPortalWritesEnabled pins the kill switch's parsing:
 // only the exact string "true" turns the portal membership writes on, so a
 // typo, a "1", or a "TRUE" leaves them off rather than half-enabling a write
