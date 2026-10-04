@@ -28,7 +28,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
-import { useState, type JSX } from "react";
+import { useReducer, useRef, useState, type JSX } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { BackendApiError } from "@api/backend/client";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
@@ -87,15 +87,38 @@ export default function CreateOutagePage(): JSX.Element {
   const [internalCommunication, setInternalCommunication] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const [touched, setTouched] = useState(false);
+  // *** A HALF-TYPED BEGIN NEVER REACHES onChange. *** MUI X's field only
+  // publishes once every section of a date is filled; until then it keeps the
+  // typed sections to itself, so `begin` stays "" and would read as "start
+  // now". beginIncomplete covers the case it DOES publish (an Invalid Date
+  // when a complete value is partly edited); the hidden input behind the field
+  // covers the other, since it is "" only while every section is empty.
+  const [beginIncomplete, setBeginIncomplete] = useState(false);
+  const beginInputRef = useRef<HTMLInputElement>(null);
+  // Re-renders after a submit-time check fails, so the End helper text is
+  // recomputed against the current time rather than the last render's.
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
 
   const beginDate = parseDateTimeLocal(begin);
   const endDate = parseDateTimeLocal(end);
-  const endBeforeBegin = !!beginDate && !!endDate && endDate.getTime() < beginDate.getTime();
+  // A blank begin becomes "now" on submit, so an end already in the past
+  // would land before it.
+  const effectiveBegin = begin.trim() ? beginDate : new Date();
+  const endBeforeBegin =
+    !!effectiveBegin && !!endDate && endDate.getTime() < effectiveBegin.getTime();
 
   const isTypeValid = type !== UNSET;
   // The picker shows wall-clock in the user's timezone; the contract is UTC.
   const beginUtc = zonedInputToBackendUtc(begin);
-  const isBeginValid = !!beginDate && !!beginUtc;
+
+  // *** BEGIN IS NOT REQUIRED UP FRONT. *** The single action supplies "now"
+  // when the field is empty, so demanding it before submit would block the
+  // one-press flow this page exists for. A begin that HAS been typed still
+  // has to be a real instant -- that is the Planned and backdated case, and
+  // silently replacing a half-typed value with now would be worse than
+  // refusing it.
+  const hasTypedBegin = begin.trim().length > 0;
+  const isBeginValid = !beginIncomplete && (!hasTypedBegin || (!!beginDate && !!beginUtc));
   const isShortDescriptionValid = shortDescription.trim().length > 0;
   const needsAcknowledgement = !!configurationItemId && !acknowledged;
   const canSubmit =
@@ -106,15 +129,50 @@ export default function CreateOutagePage(): JSX.Element {
     !needsAcknowledgement &&
     !postOutage.isPending;
 
+  // *** ONE ACTION: BEGIN THE OUTAGE. *** ServiceNow's form pairs "Begin
+  // Outage" with Save; this page has no Save, because an outage being created
+  // here is one that is starting. The button stamps now and submits in the
+  // same press.
+  //
+  // It does NOT force "now" over a begin that was typed. Planned outages are
+  // scheduled ahead and an outage is routinely noticed minutes after it
+  // started; overwriting either would publish a start time that never
+  // happened, and duration is published on the public status page.
   const handleSubmit = (): void => {
     if (!canSubmit) {
       setTouched(true);
       return;
     }
 
+    // The field may hold sections the page has never seen; refuse rather than
+    // replace them with now.
+    if (!hasTypedBegin && (beginInputRef.current?.value ?? "").trim() !== "") {
+      setBeginIncomplete(true);
+      setTouched(true);
+      return;
+    }
+
+    // canSubmit was computed at the last render. With Begin blank, "now" has
+    // moved on since then, and an End that was still ahead of it may not be
+    // any more -- so the begin this submit will send is checked again here,
+    // at the same minute precision it is sent with.
+    const nowLocal = formatDateTimeLocal(new Date());
+    const submitBegin = hasTypedBegin ? beginDate : parseDateTimeLocal(nowLocal);
+    if (submitBegin && endDate && endDate.getTime() < submitBegin.getTime()) {
+      setTouched(true);
+      rerender();
+      return;
+    }
+
+    const resolvedBegin = beginUtc ?? zonedInputToBackendUtc(nowLocal);
+    if (!resolvedBegin) {
+      setTouched(true);
+      return;
+    }
+
     const payload: BeCreateOutagePayload = {
       type: type as BeOutageType,
-      begin: beginUtc as string,
+      begin: resolvedBegin,
       shortDescription: shortDescription.trim(),
     };
     const endUtc = end ? zonedInputToBackendUtc(end) : null;
@@ -215,22 +273,25 @@ export default function CreateOutagePage(): JSX.Element {
             <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
               <Box sx={{ flex: "1 1 220px" }}>
                 <DatePickers.DateTimePicker
-                  label="Begin"
+                  label="Begin (optional)"
                   value={beginDate}
-                  onChange={(next) =>
-                    setBegin(
-                      next instanceof Date && !Number.isNaN(next.getTime())
-                        ? formatDateTimeLocal(next)
-                        : "",
-                    )
-                  }
+                  inputRef={beginInputRef}
+                  onChange={(next) => {
+                    const complete = next instanceof Date && !Number.isNaN(next.getTime());
+                    setBegin(complete ? formatDateTimeLocal(next) : "");
+                    // null is a cleared field (start now); anything else that is
+                    // not a complete date is a partial edit.
+                    setBeginIncomplete(!complete && next !== null);
+                  }}
                   slotProps={{
                     textField: {
                       size: "small",
                       fullWidth: true,
-                      required: true,
                       error: touched && !isBeginValid,
-                      helperText: touched && !isBeginValid ? "Required" : undefined,
+                      helperText:
+                        touched && !isBeginValid
+                          ? "Finish the date and time, or clear it to start now."
+                          : "Leave blank to start now. Set it for a planned outage, or one that began earlier.",
                     },
                   }}
                 />
@@ -251,7 +312,11 @@ export default function CreateOutagePage(): JSX.Element {
                       size: "small",
                       fullWidth: true,
                       error: endBeforeBegin,
-                      helperText: endBeforeBegin ? "End must be after begin." : undefined,
+                      helperText: endBeforeBegin
+                        ? begin.trim()
+                          ? "End must be after begin."
+                          : "End must be after now, since begin is blank."
+                        : undefined,
                     },
                   }}
                 />
@@ -331,30 +396,13 @@ export default function CreateOutagePage(): JSX.Element {
           <Button variant="outlined" onClick={() => navigate(backTarget)}>
             Cancel
           </Button>
-          {/* *** "Begin Outage" STAMPS Begin WITH NOW. *** ServiceNow's own
-              Create New Outage form carries this action beside Save, with
-              Begin and End left as ordinary fields: the button is a shortcut
-              for the common case, not a replacement for the fields. An
-              outage noticed twenty minutes late still needs its real start
-              time typed, and removing the field would silently understate
-              every such outage's duration on the public status page.
-
-              It only fills the field. Submitting is still Create outage, so
-              a mis-stamp is corrected before anything is written. */}
-          <Button
-            variant="outlined"
-            onClick={() => setBegin(formatDateTimeLocal(new Date()))}
-            disabled={postOutage.isPending}
-          >
-            Begin outage
-          </Button>
           <Button
             variant="contained"
             onClick={handleSubmit}
             disabled={!canSubmit}
             loading={postOutage.isPending}
           >
-            Create outage
+            Begin outage
           </Button>
         </Box>
       </Card>
