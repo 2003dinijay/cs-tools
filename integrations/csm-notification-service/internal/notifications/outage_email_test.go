@@ -25,14 +25,19 @@ import (
 // "</div>" showed "</di" in the received email. Both outage emails must end the
 // way every working template does.
 func TestOutageEmailsEndLikeTheOtherTemplates(t *testing.T) {
-	comm := RenderOutageCommunicationEmail("Hello Team,\nBest regards,\nSRE\n", "https://csm.example/operations/outages/x")
+	comm := RenderOutageCommunicationEmail(OutageCommunicationEmailData{PhaseWord: "Resolved", Message: "Hello Team,\nBest regards,\nSRE\n", Link: "https://csm.example/operations/outages/x"})
 	notif := RenderOutageNotificationEmail(OutageNotificationEmailData{PhaseWord: "Declared", Number: "OUT1", Message: "m", Link: "https://csm.example/operations/outages/x"})
 	for name, body := range map[string]string{"communication": comm, "notification": notif} {
 		if !strings.HasSuffix(body, "</html>\n") {
 			t.Errorf("%s email ends %q, want the template ending \"</html>\\n\"", name, body[max(0, len(body)-20):])
 		}
 	}
-	if !strings.HasPrefix(comm, "<!DOCTYPE html>") || !strings.Contains(comm, "View outage in the CSM portal</a></p></div>") {
-		t.Errorf("communication email is not a whole document around the body and link:\n%s", comm)
+	for _, want := range []string{"<!DOCTYPE html", "WSO2 Logo", "Outage Resolved", "Hello Team,<br>", "View outage in the CSM portal", "WSO2 LLC. All Rights Reserved."} {
+		if !strings.Contains(comm, want) {
+			t.Errorf("communication email missing %q (the house shell or its content)", want)
+		}
+	}
+	if strings.Contains(comm, "<!-- [") {
+		t.Error("a template placeholder was left unreplaced")
 	}
 }

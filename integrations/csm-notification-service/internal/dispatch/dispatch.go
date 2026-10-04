@@ -2039,7 +2039,11 @@ func (d *Dispatcher) handleOutageNotice(ctx context.Context, t events.Type, raw 
 			Link:      link,
 		})
 	} else {
-		body = notifications.RenderOutageCommunicationEmail(p.Body, link)
+		body = notifications.RenderOutageCommunicationEmail(notifications.OutageCommunicationEmailData{
+			PhaseWord: notifications.OutagePhaseWord(p.Kind),
+			Message:   p.Body,
+			Link:      link,
+		})
 	}
 
 	if err := d.email.SendEmail(ctx, recipients, nil, nil, nil, p.Subject, body, nil); err != nil {
