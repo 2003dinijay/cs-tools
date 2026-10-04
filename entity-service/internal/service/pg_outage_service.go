@@ -141,6 +141,13 @@ func (s *pgOutageService) CreateOutage(ctx context.Context, req domain.CreateOut
 	if err := s.requirePublicationAck(ctx, req.ConfigurationItemID, req.AcknowledgePublicPublication); err != nil {
 		return domain.CreateOutageResponse{}, err
 	}
+	affected, err := normaliseAffectedCIIDs(req.AffectedConfigurationItemIDs)
+	if err != nil {
+		return domain.CreateOutageResponse{}, err
+	}
+	if err := s.requireAffectedPublicationAck(ctx, affected, req.AcknowledgePublicPublication); err != nil {
+		return domain.CreateOutageResponse{}, err
+	}
 	impact, err := normaliseOutageLabel(req.Impact, "impact")
 	if err != nil {
 		return domain.CreateOutageResponse{}, err
@@ -164,6 +171,7 @@ func (s *pgOutageService) CreateOutage(ctx context.Context, req domain.CreateOut
 		OutageCommunication:        req.OutageCommunication != nil && *req.OutageCommunication,
 		Impact:                     nonEmpty(impact),
 		State:                      nonEmpty(state),
+		AffectedCIIDs:              affected,
 		Actor:                      actorOf(ctx),
 	})
 	if err != nil {
@@ -292,7 +300,36 @@ func (s *pgOutageService) UpdateOutage(ctx context.Context, req domain.PatchOuta
 		return domain.PatchOutageResponse{}, err
 	}
 
+	var affected *[]string
+	if req.AffectedConfigurationItemIDs != nil {
+		ids, err := normaliseAffectedCIIDs(*req.AffectedConfigurationItemIDs)
+		if err != nil {
+			return domain.PatchOutageResponse{}, err
+		}
+		// Gate only what this edit ADDS: re-saving an outage whose affected
+		// CIs already publish must not demand consent again.
+		current, err := s.repo.GetByID(ctx, req.ID)
+		if err != nil {
+			return domain.PatchOutageResponse{}, err
+		}
+		have := map[string]bool{}
+		for _, ci := range current.Outage.AffectedConfigurationItems {
+			have[strings.ToLower(ci.ID)] = true
+		}
+		var added []string
+		for _, id := range ids {
+			if !have[strings.ToLower(id)] {
+				added = append(added, id)
+			}
+		}
+		if err := s.requireAffectedPublicationAck(ctx, added, req.AcknowledgePublicPublication); err != nil {
+			return domain.PatchOutageResponse{}, err
+		}
+		affected = &ids
+	}
+
 	patch := repository.OutagePatch{
+		AffectedCIIDs:              affected,
 		ID:                         req.ID,
 		ShortDescription:           req.ShortDescription,
 		ServiceOfferingID:          req.ConfigurationItemID,
@@ -501,4 +538,34 @@ func nonEmpty(v *string) *string {
 		return nil
 	}
 	return v
+}
+
+// normaliseAffectedCIIDs validates and de-duplicates affected configuration
+// item ids, keeping first-seen order.
+func normaliseAffectedCIIDs(ids []string) ([]string, error) {
+	if err := validateUUIDs("affectedConfigurationItemIds", ids); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		key := strings.ToLower(id)
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// requireAffectedPublicationAck applies the publication gate to affected CIs:
+// an affected offering with a status-page monitor makes the outage public on
+// that cloud exactly as the main CI does, so adding one needs the same consent.
+func (s *pgOutageService) requireAffectedPublicationAck(ctx context.Context, added []string, ack *bool) error {
+	for i := range added {
+		if err := s.requirePublicationAck(ctx, &added[i], ack); err != nil {
+			return err
+		}
+	}
+	return nil
 }

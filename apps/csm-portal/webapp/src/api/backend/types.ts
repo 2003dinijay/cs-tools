@@ -4491,6 +4491,9 @@ export interface BeCreateOutagePayload {
   outageCommunication?: boolean;
   impact?: string;
   state?: string;
+  /** Service offerings this outage also affects (ServiceNow Affected CIs). On
+   *  PATCH the list replaces the whole set; [] clears it. */
+  affectedConfigurationItemIds?: string[];
 }
 
 /** `POST /outages` response. */
@@ -4520,6 +4523,9 @@ export interface BePatchOutagePayload {
   impact?: string;
   /** An empty string clears it. */
   state?: string;
+  /** Service offerings this outage also affects (ServiceNow Affected CIs). On
+   *  PATCH the list replaces the whole set; [] clears it. */
+  affectedConfigurationItemIds?: string[];
 }
 
 /** `PATCH /outages/{id}` response. */

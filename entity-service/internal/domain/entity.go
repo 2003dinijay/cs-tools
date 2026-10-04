@@ -6289,6 +6289,11 @@ type CreateOutageRequest struct {
 	// ServiceNow's choice lists for them have not been captured.
 	Impact *string `json:"impact,omitempty"`
 	State  *string `json:"state,omitempty"`
+	// AffectedConfigurationItemIDs are the service offerings this outage also
+	// affects (ServiceNow's Affected CIs, cmdb_outage_ci_mtom). They drive the
+	// status-page monitors and availability for each. Adding one that is on
+	// the status page needs acknowledgePublicPublication, as the main CI does.
+	AffectedConfigurationItemIDs []string `json:"affectedConfigurationItemIds,omitempty"`
 }
 
 // CreateOutageResponse is the response for POST /outages.
@@ -6320,6 +6325,10 @@ type PatchOutageRequest struct {
 	OutageCommunication        *bool   `json:"outageCommunication,omitempty"`
 	Impact                     *string `json:"impact,omitempty"`
 	State                      *string `json:"state,omitempty"`
+	// AffectedConfigurationItemIDs replaces the whole set when present ([]
+	// clears it); omitted leaves it alone. Only newly added offerings that
+	// publish need acknowledgePublicPublication.
+	AffectedConfigurationItemIDs *[]string `json:"affectedConfigurationItemIds,omitempty"`
 }
 
 // PatchOutageResponse is the response for PATCH /outages/{id}.

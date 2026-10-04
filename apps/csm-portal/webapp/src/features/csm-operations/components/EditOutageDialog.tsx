@@ -34,6 +34,7 @@ import { useSearchConfigurationItems } from "@api/useSearchConfigurationItems";
 import { useSearchIncidentsForSelect } from "@features/csm-operations/api/useSearchIncidentsForSelect";
 import { useGetOutageMetadata } from "@features/csm-operations/api/useOutages";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
+import AsyncEntityMultiSelect from "@components/AsyncEntityMultiSelect";
 import OutageNotificationFields, {
   type OutageNotificationValues,
 } from "@features/csm-operations/components/OutageNotificationFields";
@@ -105,11 +106,24 @@ export default function EditOutageDialog({
     [outage.notifyInternalStakeholders, outage.outageCommunication, outage.impact, outage.state],
   );
   const [notifications, setNotifications] = useState<OutageNotificationValues>(initialNotifications);
+  const initialAffected = useMemo(
+    () => (outage.affectedConfigurationItems ?? []).map((ci) => ci.id),
+    [outage.affectedConfigurationItems],
+  );
+  const affectedLabels = useMemo(
+    () => Object.fromEntries((outage.affectedConfigurationItems ?? []).map((ci) => [ci.id, ci.name || ci.id])),
+    [outage.affectedConfigurationItems],
+  );
+  const [affectedIds, setAffectedIds] = useState<string[]>(initialAffected);
 
   const isShortDescriptionValid = shortDescription.trim().length > 0;
   const configurationItemChanged = configurationItemId !== initialConfigurationItemId;
-  const needsAcknowledgement =
-    !!configurationItemId && configurationItemChanged && !acknowledged;
+  // Only ADDED affected CIs can newly put the outage on the status page.
+  const addedAffected = affectedIds.filter((id) => !initialAffected.includes(id));
+  const affectedChanged =
+    addedAffected.length > 0 || initialAffected.some((id) => !affectedIds.includes(id));
+  const publicationMayChange = (configurationItemChanged && !!configurationItemId) || addedAffected.length > 0;
+  const needsAcknowledgement = publicationMayChange && !acknowledged;
 
   const patch = useMemo<BePatchOutagePayload>(() => {
     const next: BePatchOutagePayload = {};
@@ -121,7 +135,8 @@ export default function EditOutageDialog({
       next.configurationItemId = configurationItemId || null;
     }
     if (incidentId !== initialIncidentId) next.incidentId = incidentId || null;
-    if (configurationItemChanged && configurationItemId) {
+    if (affectedChanged) next.affectedConfigurationItemIds = affectedIds;
+    if (publicationMayChange) {
       next.acknowledgePublicPublication = acknowledged;
     }
     if (notifications.notifyInternalStakeholders !== initialNotifications.notifyInternalStakeholders) {
@@ -152,6 +167,9 @@ export default function EditOutageDialog({
     acknowledged,
     notifications,
     initialNotifications,
+    affectedChanged,
+    affectedIds,
+    publicationMayChange,
   ]);
 
   const hasChanges = Object.keys(patch).length > 0;
@@ -232,15 +250,29 @@ export default function EditOutageDialog({
             knownLabel={outage.incident?.number}
           />
 
+          <AsyncEntityMultiSelect<BeConfigurationItem>
+            id="outage-edit-affected-configuration-items"
+            label="Affected configuration items"
+            placeholder="Search service offerings…"
+            values={affectedIds}
+            onChange={setAffectedIds}
+            disabled={isSaving}
+            useSearch={useSearchConfigurationItems}
+            getId={(c) => c.id}
+            getLabel={configurationItemLabel}
+            knownLabels={affectedLabels}
+            helperText="Other service offerings this outage affects. Each one's status-page monitor and availability reflect the outage."
+          />
+
           <OutageNotificationFields
             value={notifications}
             onChange={setNotifications}
             disabled={isSaving}
           />
 
-          {configurationItemChanged && (
+          {(configurationItemChanged || addedAffected.length > 0) && (
             <OutagePublicationNotice
-              hasConfigurationItem={!!configurationItemId}
+              hasConfigurationItem={publicationMayChange}
               monitoredClouds={metadata?.statusPageClouds}
               acknowledged={acknowledged}
               onAcknowledgedChange={setAcknowledged}
