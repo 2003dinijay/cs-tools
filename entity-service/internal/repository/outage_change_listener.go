@@ -32,13 +32,13 @@ const outageNoticeChannel = "outage_notice"
 // OutageChangeListener holds one pooled connection LISTENing on the outage
 // change channel. Not safe for concurrent use: one drainer owns one listener.
 type OutageChangeListener struct {
-	pool *pgxpool.Pool
+	db   *pgxpool.Pool
 	conn *pgxpool.Conn
 }
 
 // NewOutageChangeListener returns a listener that is not yet listening.
-func NewOutageChangeListener(pool *pgxpool.Pool) *OutageChangeListener {
-	return &OutageChangeListener{pool: pool}
+func NewOutageChangeListener(db *pgxpool.Pool) *OutageChangeListener {
+	return &OutageChangeListener{db: db}
 }
 
 // Listen takes a dedicated connection and subscribes. Calling it while already
@@ -47,7 +47,7 @@ func (l *OutageChangeListener) Listen(ctx context.Context) error {
 	if l.conn != nil {
 		return nil
 	}
-	conn, err := l.pool.Acquire(ctx)
+	conn, err := l.db.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire listener connection: %w", err)
 	}
