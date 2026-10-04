@@ -90,8 +90,8 @@ declare global {
       CSM_PORTAL_TOP_BANNER_ENABLED?: boolean;
       /**
        * Legacy single banner. A raw HTML string (shown only when
-       * CSM_PORTAL_TOP_BANNER_ENABLED is true; never expires) or a banner
-       * object (honours its own expiresAt).
+       * CSM_PORTAL_TOP_BANNER_ENABLED is true; has no start or expiry) or a banner
+       * object (honours its own startsAt and expiresAt).
        * Prefer CSM_PORTAL_TOP_BANNERS.
        */
       CSM_PORTAL_TOP_BANNER_HTML?: string | TopBannerItem;
