@@ -36,16 +36,33 @@ export default function TrackingIdCopy({
   error,
 }: TrackingIdCopyProps): JSX.Element | null {
   const referenceId = getErrorReferenceId(error);
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
 
   if (!referenceId) return null;
 
   const handleCopy = (): void => {
-    void navigator.clipboard.writeText(referenceId).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    navigator.clipboard.writeText(referenceId).then(
+      () => {
+        setCopyState("copied");
+        setTimeout(() => setCopyState("idle"), 2000);
+      },
+      () => {
+        // Clipboard access denied/unavailable — the ID is still visible and
+        // selectable in the text next to this button, so point the caller at it.
+        setCopyState("failed");
+        setTimeout(() => setCopyState("idle"), 3000);
+      },
+    );
   };
+
+  const tooltipTitle =
+    copyState === "copied"
+      ? "Copied!"
+      : copyState === "failed"
+        ? "Copy failed — select the ID above instead"
+        : "Copy tracking ID";
 
   return (
     <Box
@@ -66,7 +83,7 @@ export default function TrackingIdCopy({
       >
         Tracking ID: {referenceId}
       </Typography>
-      <Tooltip title={copied ? "Copied!" : "Copy tracking ID"} placement="top">
+      <Tooltip title={tooltipTitle} placement="top">
         <Button
           size="small"
           variant="text"
@@ -75,7 +92,7 @@ export default function TrackingIdCopy({
           sx={{ minWidth: 0, p: 0.5, color: "text.disabled" }}
           aria-label="Copy tracking ID"
         >
-          {copied ? <Check size={13} /> : <Copy size={13} />}
+          {copyState === "copied" ? <Check size={13} /> : <Copy size={13} />}
         </Button>
       </Tooltip>
     </Box>
