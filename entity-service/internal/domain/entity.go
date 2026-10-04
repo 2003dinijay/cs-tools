@@ -1844,7 +1844,7 @@ type Deployment struct {
 }
 
 // DeploymentView is the enriched search result for a deployment. It embeds
-// project and createdBy as named refs and uses createdOn/updatedOn naming.
+// project as a named ref and uses createdOn/updatedOn naming.
 type DeploymentView struct {
 	ID          string         `json:"id"`
 	Number      string         `json:"number"`
@@ -1852,7 +1852,6 @@ type DeploymentView struct {
 	Type        DeploymentType `json:"type"`
 	Description *string        `json:"description"`
 	URL         *string        `json:"url"`
-	CreatedBy   *EntityRef     `json:"createdBy"`
 	Project     EntityRef      `json:"project"`
 	CreatedOn   time.Time      `json:"createdOn"`
 	UpdatedOn   time.Time      `json:"updatedOn"`
