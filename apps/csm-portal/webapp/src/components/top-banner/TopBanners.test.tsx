@@ -1,0 +1,208 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+import "@testing-library/jest-dom/vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const warn = vi.fn();
+vi.mock("@hooks/useLogger", () => ({
+  useLogger: () => ({ warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+}));
+
+import TopBanners from "@components/top-banner/TopBanners";
+
+type Cfg = Record<string, unknown>;
+
+function setConfig(cfg: Cfg): void {
+  (window as unknown as { config: Cfg }).config = cfg;
+}
+
+const banner = (over: Cfg = {}): Cfg => ({
+  enabled: true,
+  closeable: false,
+  storageKey: "k1",
+  html: "<div>banner one</div>",
+  ...over,
+});
+
+describe("TopBanners", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    warn.mockClear();
+    setConfig({});
+  });
+  afterEach(cleanup);
+
+  it("renders nothing with no config", () => {
+    const { container } = render(<TopBanners />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("renders multiple enabled banners in order and skips disabled ones", () => {
+    setConfig({
+      CSM_PORTAL_TOP_BANNERS: [
+        banner({ storageKey: "a", html: "<p>first</p>" }),
+        banner({ storageKey: "b", html: "<p>hidden</p>", enabled: false }),
+        banner({ storageKey: "c", html: "<p>second</p>" }),
+      ],
+    });
+    const { container } = render(<TopBanners />);
+    expect(screen.queryByText("hidden")).toBeNull();
+    const text = container.textContent;
+    expect(text).toBe("firstsecond");
+  });
+
+  it("shows no close button when not closeable", () => {
+    setConfig({ CSM_PORTAL_TOP_BANNERS: [banner()] });
+    render(<TopBanners />);
+    expect(screen.getByText("banner one")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close banner" })).toBeNull();
+  });
+
+  it("closes, persists dismissal, and stays hidden on remount", () => {
+    setConfig({
+      CSM_PORTAL_TOP_BANNERS: [
+        banner({ closeable: true, storageKey: "dismiss_me" }),
+        banner({ storageKey: "other", html: "<div>stays</div>" }),
+      ],
+    });
+    const first = render(<TopBanners />);
+    fireEvent.click(screen.getByRole("button", { name: "Close banner" }));
+    expect(screen.queryByText("banner one")).toBeNull();
+    expect(screen.getByText("stays")).toBeInTheDocument();
+    expect(localStorage.getItem("dismiss_me")).toBe("dismissed");
+    first.unmount();
+
+    render(<TopBanners />);
+    expect(screen.queryByText("banner one")).toBeNull();
+    expect(screen.getByText("stays")).toBeInTheDocument();
+  });
+
+  it("uses a fallback key and warns when closeable without storageKey", () => {
+    setConfig({
+      CSM_PORTAL_TOP_BANNERS: [banner({ closeable: true, storageKey: "" })],
+    });
+    render(<TopBanners />);
+    expect(warn).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Close banner" }));
+    expect(localStorage.getItem("top_banner_fallback_v1")).toBe("dismissed");
+  });
+
+  it("still closes when localStorage throws", () => {
+    setConfig({ CSM_PORTAL_TOP_BANNERS: [banner({ closeable: true })] });
+    const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    render(<TopBanners />);
+    fireEvent.click(screen.getByRole("button", { name: "Close banner" }));
+    expect(screen.queryByText("banner one")).toBeNull();
+    spy.mockRestore();
+  });
+
+  describe("legacy keys", () => {
+    it("renders a legacy string as one non-closeable banner when enabled", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNER_ENABLED: true,
+        CSM_PORTAL_TOP_BANNER_HTML: "<div>legacy</div>",
+      });
+      render(<TopBanners />);
+      expect(screen.getByText("legacy")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Close banner" })).toBeNull();
+    });
+
+    it("hides a legacy string when ENABLED is not true", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNER_ENABLED: false,
+        CSM_PORTAL_TOP_BANNER_HTML: "<div>legacy</div>",
+      });
+      render(<TopBanners />);
+      expect(screen.queryByText("legacy")).toBeNull();
+    });
+
+    it("places the legacy banner before CSM_PORTAL_TOP_BANNERS", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNER_ENABLED: true,
+        CSM_PORTAL_TOP_BANNER_HTML: "<p>legacy</p>",
+        CSM_PORTAL_TOP_BANNERS: [banner({ html: "<p>listed</p>" })],
+      });
+      const { container } = render(<TopBanners />);
+      expect(container.textContent).toBe("legacylisted");
+    });
+
+    it("accepts a banner object in CSM_PORTAL_TOP_BANNER_HTML with its own semantics", () => {
+      setConfig({
+        // ENABLED flag is ignored for the object form.
+        CSM_PORTAL_TOP_BANNER_ENABLED: false,
+        CSM_PORTAL_TOP_BANNER_HTML: banner({
+          closeable: true,
+          storageKey: "obj_key",
+          html: "<div>object form</div>",
+        }),
+      });
+      render(<TopBanners />);
+      expect(screen.getByText("object form")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Close banner" }));
+      expect(screen.queryByText("object form")).toBeNull();
+      expect(localStorage.getItem("obj_key")).toBe("dismissed");
+    });
+
+    it("skips an object-form banner whose enabled is false", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNER_ENABLED: true,
+        CSM_PORTAL_TOP_BANNER_HTML: banner({ enabled: false }),
+      });
+      render(<TopBanners />);
+      expect(screen.queryByText("banner one")).toBeNull();
+    });
+  });
+
+  describe("sanitization", () => {
+    it("strips script tags and event handlers", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNERS: [
+          banner({
+            html: '<div>safe<script>window.__pwned = 1</script><img src="x" onerror="window.__pwned = 1"></div>',
+          }),
+        ],
+      });
+      const { container } = render(<TopBanners />);
+      expect(container.querySelector("script")).toBeNull();
+      expect(container.querySelector("img")?.hasAttribute("onerror")).toBe(false);
+      expect(screen.getByText("safe")).toBeInTheDocument();
+    });
+
+    it("keeps inline styles, strong, img and new-tab links with a safe rel", () => {
+      setConfig({
+        CSM_PORTAL_TOP_BANNERS: [
+          banner({
+            html: '<div style="background-color:#000;height:3rem"><a href="https://example.com" target="_blank"><img style="width:100%" src="https://cdn.example.com/a.png" role="presentation"></a><strong>bold</strong></div>',
+          }),
+        ],
+      });
+      const { container } = render(<TopBanners />);
+      const styled = container.querySelector<HTMLElement>("strong")?.parentElement;
+      expect(styled?.style.height).toBe("3rem");
+      expect(container.querySelector("strong")?.textContent).toBe("bold");
+      expect(container.querySelector("img")?.getAttribute("src")).toBe(
+        "https://cdn.example.com/a.png",
+      );
+      const a = container.querySelector("a");
+      expect(a?.getAttribute("target")).toBe("_blank");
+      expect(a?.getAttribute("rel")).toBe("noopener noreferrer");
+    });
+  });
+});
