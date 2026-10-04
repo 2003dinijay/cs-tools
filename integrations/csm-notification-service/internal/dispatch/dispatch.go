@@ -81,6 +81,7 @@ type linkResolver interface {
 	ResolveLinks(ctx context.Context, emails []string, projectID, caseID string) ([]recipientlinks.RecipientLink, error)
 	CSMLink(caseID string) string
 	ChangeRequestLink(audience, changeRequestID, projectID string) string
+	OutageLink(outageID string) string
 }
 
 // identityProvisioner abstracts scim.Client for testability — the one
@@ -433,6 +434,8 @@ func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {
 		return d.handleCRApprovalRequested(ctx, record, env.Payload)
 	case events.TypeCRPlanDateNotice:
 		return d.handleCRPlanDateNotice(ctx, record, env.Payload)
+	case events.TypeOutageNotificationDue, events.TypeOutageCommunicationDue:
+		return d.handleOutageNotice(ctx, env.Type, env.Payload)
 	case events.TypeProjectContactInvited:
 		return d.handleProjectContactInvited(ctx, record, env.Payload)
 	case events.TypeProjectContactRegistered:
@@ -2009,4 +2012,57 @@ func displayProjectName(projectName, projectKey string) string {
 		return projectKey
 	}
 	return "your project"
+}
+
+// handleOutageNotice sends one of the two outage emails. entity-service has
+// already decided it is owed, worded it and named its recipients; this wraps
+// it, adds the portal link and sends -- with the same sending switch and debug
+// redirect as every other email here.
+//
+// A send failure is returned, not swallowed, so the consumer retries it and
+// then dead-letters it to the outage DLQ: entity-service has already recorded
+// this email as sent, so this is the last place it can be recovered.
+func (d *Dispatcher) handleOutageNotice(ctx context.Context, t events.Type, raw json.RawMessage) error {
+	var p events.OutageNoticePayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("dispatch: decode %s payload: %w", t, err)
+	}
+	recipients := p.Recipients
+	if !d.emailSendingEnabled {
+		slog.InfoContext(ctx, "dispatch: email sending disabled, skipping outage email",
+			"type", string(t), "outageId", p.OutageID, "number", p.Number, "kind", p.Kind)
+		return nil
+	}
+	if d.emailDebugMode {
+		if len(d.emailDebugRecipients) == 0 {
+			slog.WarnContext(ctx, "dispatch: email debug mode on with no debug recipients, skipping outage email",
+				"type", string(t), "outageId", p.OutageID)
+			return nil
+		}
+		recipients = d.emailDebugRecipients
+	}
+
+	link := d.links.OutageLink(p.OutageID)
+	var body string
+	if t == events.TypeOutageNotificationDue {
+		body = notifications.RenderOutageNotificationEmail(notifications.OutageNotificationEmailData{
+			PhaseWord: notifications.OutagePhaseWord(p.Kind),
+			Number:    p.Number,
+			Message:   p.Body,
+			Link:      link,
+		})
+	} else {
+		body = notifications.RenderOutageCommunicationEmail(notifications.OutageCommunicationEmailData{
+			PhaseWord: notifications.OutagePhaseWord(p.Kind),
+			Message:   p.Body,
+			Link:      link,
+		})
+	}
+
+	if err := d.email.SendEmail(ctx, recipients, nil, nil, nil, p.Subject, body, nil); err != nil {
+		return fmt.Errorf("dispatch: send %s for outage %s (%s): %w", t, p.Number, p.Kind, err)
+	}
+	slog.InfoContext(ctx, "dispatch: outage email sent", "type", string(t),
+		"outageId", p.OutageID, "number", p.Number, "kind", p.Kind, "recipients", len(recipients))
+	return nil
 }

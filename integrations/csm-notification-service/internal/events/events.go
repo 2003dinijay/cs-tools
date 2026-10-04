@@ -122,6 +122,7 @@ var KnownTypes = []Type{
 	TypeIncidentAcknowledged, TypeIncidentPriorityElevated, TypeIncidentCommentAdded,
 	TypeSLATierReached,
 	TypeCRApprovalRequested, TypeCRPlanDateNotice,
+	TypeOutageNotificationDue, TypeOutageCommunicationDue,
 	TypeProjectContactInvited, TypeProjectContactRegistered,
 }
 

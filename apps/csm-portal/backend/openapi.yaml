@@ -1448,6 +1448,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -1791,6 +1797,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /roles/grantable:
+    get:
+      summary: List the portal roles an admin may grant to a new user.
+      description: >
+        Admin-only — the Add User dialog's only caller. Each key reported here is
+        already resolved, at startup, to a real role on the identity provider via
+        the configured role-ID mapping; a key with no configured mapping is simply
+        absent. POST /users' own grantRoles field accepts exactly these keys and
+        rejects any other with a 400.
+      operationId: getRolesGrantable
+      responses:
+        "200":
+          description: The portal roles this deployment can grant via SCIM.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantableRolesResponse'
         "401":
           description: Unauthorized
           content:
@@ -15207,6 +15249,25 @@ components:
         email:
           type: string
 
+    GrantableRolesResponse:
+      type: object
+      required: [roles]
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrantableRoleRef'
+
+    GrantableRoleRef:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+          description: >-
+            A stable portal role key (e.g. "cs_engineer", "escalator") — pass this
+            value, not a display name, in CreateUserPayload.grantRoles.
+
     CreateUserPayload:
       type: object
       required: [email]
@@ -15231,6 +15292,16 @@ components:
             partner/customer/partner_admin/customer_admin) is rejected
             unconditionally — creating an external-type user is temporarily
             disabled, and the form's "External" option is disabled to match.
+        grantRoles:
+          type: array
+          items:
+            type: string
+          description: >-
+            Portal role keys to additionally grant via SCIM once the user is
+            created — see GET /roles/grantable for the exact set this
+            deployment can grant. Optional; an unknown key is a 400. Distinct
+            from roles above: this never reaches entity-service, it only
+            controls which identity-provider role(s) the new user is added to.
       description: At least one of firstName/lastName is required.
 
     AccountSearchPayload:

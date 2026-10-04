@@ -89,9 +89,11 @@ func withCsEngineerUser(r *http.Request) *http.Request {
 // PermCreateWorkNote's own doc comment describes: this caller may post a
 // work_note, never anything else.
 var testWorknoteCreatorUser = &middleware.UserInfo{
-	Email:  "worknote-creator@example.com",
-	UserID: "f2d9bf5b-7067-43dc-8578-802c8623af5f",
-	Roles:  []string{"test-worknote-creator"},
+	Email:     "worknote-creator@example.com",
+	UserID:    "f2d9bf5b-7067-43dc-8578-802c8623af5f",
+	FirstName: "Worknote",
+	LastName:  "Creator",
+	Roles:     []string{"test-worknote-creator"},
 }
 
 // withWorknoteCreatorUser returns r with testWorknoteCreatorUser stored in its context.
@@ -174,6 +176,7 @@ type mockEntityCaseClient struct {
 	removeCaseTagFn            func(ctx context.Context, caseID, tagID string) ([]byte, error)
 	searchTagsFn               func(ctx context.Context, body []byte) ([]byte, error)
 	getUserMeFn                func(ctx context.Context) ([]byte, error)
+	createUserFn               func(ctx context.Context, body []byte) ([]byte, error)
 	// getChangeRequestFn/getIncidentFn back the attachmentStorageEntityClient
 	// interface (see attachment_storage.go) so this same mock serves
 	// AttachmentStorageHandler's per-reference-type access checks.
@@ -203,6 +206,13 @@ func (m *mockEntityCaseClient) GetUserMe(ctx context.Context) ([]byte, error) {
 		return m.getUserMeFn(ctx)
 	}
 	return []byte(`{"id":"` + testPlatformUserID + `","email":"` + testUser.Email + `"}`), nil
+}
+
+func (m *mockEntityCaseClient) CreateUser(ctx context.Context, body []byte) ([]byte, error) {
+	if m.createUserFn != nil {
+		return m.createUserFn(ctx, body)
+	}
+	return []byte(`{}`), nil
 }
 
 func (m *mockEntityCaseClient) CreateCase(ctx context.Context, body []byte) ([]byte, error) {
@@ -434,6 +444,7 @@ type mockSCIMClient struct {
 	searchExternalUserFn func(ctx context.Context, email string) (*scim.ExternalUserInfo, error)
 	updateUserPhoneFn    func(ctx context.Context, userID, mobile string) (*string, error)
 	getRoleFn            func(ctx context.Context, roleID string) ([]scim.RoleMember, error)
+	addRoleMembersFn     func(ctx context.Context, roleID string, emails []string) error
 }
 
 func (m *mockSCIMClient) SearchUser(ctx context.Context, email string) (*scim.UserInfo, error) {
@@ -462,6 +473,13 @@ func (m *mockSCIMClient) GetRole(ctx context.Context, roleID string) ([]scim.Rol
 		return m.getRoleFn(ctx, roleID)
 	}
 	return nil, nil
+}
+
+func (m *mockSCIMClient) AddRoleMembers(ctx context.Context, roleID string, emails []string) error {
+	if m.addRoleMembersFn != nil {
+		return m.addRoleMembersFn(ctx, roleID, emails)
+	}
+	return nil
 }
 
 // ----- mock entity user client -----
