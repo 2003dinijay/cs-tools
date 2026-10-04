@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
@@ -139,5 +140,104 @@ func TestOutageNoticeDrainerKeepsGoingPastFailures(t *testing.T) {
 	}
 	if pub.got[0].id != "good" {
 		t.Errorf("outagePublished %q, want the decision after the failed one", pub.got[0].id)
+	}
+}
+
+// fakeListener notifies on demand; Wait returns as soon as wake fires.
+type fakeListener struct {
+	listenErr error
+	wake      chan struct{}
+	waitErr   chan error
+	listens   int
+}
+
+func (f *fakeListener) Listen(context.Context) error { f.listens++; return f.listenErr }
+func (f *fakeListener) Close()                       {}
+func (f *fakeListener) Wait(ctx context.Context, timeout time.Duration) (bool, error) {
+	select {
+	case <-f.wake:
+		return true, nil
+	case err := <-f.waitErr:
+		return false, err
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-time.After(timeout):
+		return false, nil
+	}
+}
+
+// countingSweeper counts passes and signals each one.
+type countingSweeper struct {
+	OutageCommunicationService
+	passes chan struct{}
+}
+
+func (c *countingSweeper) Sweep(context.Context, int) (domain.OutageCommunicationSweepResponse, error) {
+	c.passes <- struct{}{}
+	return domain.OutageCommunicationSweepResponse{}, nil
+}
+
+func waitPass(t *testing.T, passes chan struct{}, within time.Duration, why string) {
+	t.Helper()
+	select {
+	case <-passes:
+	case <-time.After(within):
+		t.Fatalf("no drain pass within %s: %s", within, why)
+	}
+}
+
+// *** THE POINT OF LISTENING. *** With the fallback poll an hour away, a
+// notification alone must trigger the next pass, within the settle delay.
+func TestOutageNoticeDrainerWakesOnNotification(t *testing.T) {
+	sweeper := &countingSweeper{passes: make(chan struct{}, 10)}
+	l := &fakeListener{wake: make(chan struct{}), waitErr: make(chan error)}
+	d := &OutageNoticeDrainer{Communications: sweeper, Publisher: &fakeOutagePublisher{},
+		CommunicationRecipients: []string{"sre@wso2.com"},
+		Listener:                l, Interval: time.Hour, Settle: 10 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go d.Run(ctx)
+
+	waitPass(t, sweeper.passes, time.Second, "the startup pass")
+	l.wake <- struct{}{}
+	waitPass(t, sweeper.passes, time.Second, "a notification must wake the drainer, not the hourly poll")
+}
+
+// Losing the listener (or never having one) must only make the email slower:
+// the drainer falls back to the short poll and keeps trying to listen.
+func TestOutageNoticeDrainerPollsWhenItCannotListen(t *testing.T) {
+	sweeper := &countingSweeper{passes: make(chan struct{}, 10)}
+	l := &fakeListener{listenErr: errors.New("LISTEN not supported through this pooler")}
+	d := &OutageNoticeDrainer{Communications: sweeper, Publisher: &fakeOutagePublisher{},
+		CommunicationRecipients: []string{"sre@wso2.com"},
+		Listener:                l, Interval: time.Hour, UnlistenedInterval: 10 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go d.Run(ctx)
+
+	for i := 0; i < 3; i++ {
+		waitPass(t, sweeper.passes, time.Second, "polling must continue while listening fails")
+	}
+	cancel()
+	if l.listens < 2 {
+		t.Errorf("listener tried %d times, want a retry each poll", l.listens)
+	}
+}
+
+func TestOutageNoticeDrainerReconnectsAfterALostListener(t *testing.T) {
+	sweeper := &countingSweeper{passes: make(chan struct{}, 10)}
+	l := &fakeListener{wake: make(chan struct{}), waitErr: make(chan error, 1)}
+	d := &OutageNoticeDrainer{Communications: sweeper, Publisher: &fakeOutagePublisher{},
+		CommunicationRecipients: []string{"sre@wso2.com"},
+		Listener:                l, Interval: time.Hour, Settle: time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go d.Run(ctx)
+
+	waitPass(t, sweeper.passes, time.Second, "the startup pass")
+	l.waitErr <- errors.New("connection reset")
+	waitPass(t, sweeper.passes, time.Second, "a lost listener must drain again straight after reconnecting")
+	if l.listens < 2 {
+		t.Errorf("listened %d times, want a reconnect", l.listens)
 	}
 }

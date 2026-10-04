@@ -26,6 +26,26 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 )
 
+// outageChangeListener wakes the drainer when an outage changes; see
+// repository.OutageChangeListener.
+type outageChangeListener interface {
+	Listen(ctx context.Context) error
+	Wait(ctx context.Context, timeout time.Duration) (notified bool, err error)
+	Close()
+}
+
+const (
+	// defaultOutageNoticeUnlistenedInterval is the poll while the drainer
+	// cannot listen (no listener, or its connection is down): the delay it
+	// had before it could be woken, so losing the listener only ever makes
+	// the email slower, never missing.
+	defaultOutageNoticeUnlistenedInterval = 10 * time.Second
+	// defaultOutageNoticeSettle lets a burst of edits -- a portal save that
+	// writes the outage and then its affected CIs, a sync batch -- arrive
+	// before the pass that reads them, so one pass handles them all.
+	defaultOutageNoticeSettle = 300 * time.Millisecond
+)
+
 // outageNoticePublisher is the slice of EventPublisherService the drainer needs.
 type outageNoticePublisher interface {
 	Publish(ctx context.Context, eventType events.Type, entityID string, payload json.RawMessage) error
@@ -53,23 +73,94 @@ type OutageNoticeDrainer struct {
 	Publisher               outageNoticePublisher
 	NotificationRecipients  []string
 	CommunicationRecipients []string
-	Interval                time.Duration
+	// Listener, when set, wakes the drainer within a second of an outage
+	// change, and Interval is then only the fallback poll for a notification
+	// missed while it was not listening.
+	Listener outageChangeListener
+	Interval time.Duration
+	// UnlistenedInterval and Settle default to the constants above; tests set
+	// them shorter.
+	UnlistenedInterval time.Duration
+	Settle             time.Duration
 }
 
 // Run drains until ctx is cancelled. ctx must carry the system identity: both
 // sweeps are for internal callers only.
+//
+// With a Listener it drains once, then sleeps until an outage change is
+// notified or Interval passes, whichever is first. Without one -- or whenever
+// listening fails -- it polls every UnlistenedInterval, retrying the listener
+// each time round.
 func (d *OutageNoticeDrainer) Run(ctx context.Context) {
-	slog.InfoContext(ctx, "outagenotice: drainer started", "interval", d.Interval,
+	unlistened := d.UnlistenedInterval
+	if unlistened <= 0 {
+		unlistened = defaultOutageNoticeUnlistenedInterval
+	}
+	settle := d.Settle
+	if settle <= 0 {
+		settle = defaultOutageNoticeSettle
+	}
+	slog.InfoContext(ctx, "outagenotice: drainer started", "fallbackInterval", d.Interval,
+		"listener", d.Listener != nil,
 		"notificationRecipients", len(d.NotificationRecipients),
 		"communicationRecipients", len(d.CommunicationRecipients))
+	defer func() {
+		if d.Listener != nil {
+			d.Listener.Close()
+		}
+	}()
+
+	listening := false
+	lastListenErr := ""
 	for {
+		if d.Listener != nil && !listening {
+			if err := d.Listener.Listen(ctx); err != nil {
+				// Logged once per distinct failure, not once per poll.
+				if msg := err.Error(); msg != lastListenErr {
+					slog.WarnContext(ctx, "outagenotice: cannot listen for outage changes; polling instead",
+						"every", unlistened, "err", err)
+					lastListenErr = msg
+				}
+			} else {
+				listening, lastListenErr = true, ""
+				slog.InfoContext(ctx, "outagenotice: listening for outage changes")
+			}
+		}
+
 		d.drainOnce(ctx)
-		select {
-		case <-ctx.Done():
+
+		if !listening {
+			if !sleepCtx(ctx, unlistened) {
+				slog.InfoContext(ctx, "outagenotice: drainer stopped")
+				return
+			}
+			continue
+		}
+		notified, err := d.Listener.Wait(ctx, d.Interval)
+		if ctx.Err() != nil {
 			slog.InfoContext(ctx, "outagenotice: drainer stopped")
 			return
-		case <-time.After(d.Interval):
 		}
+		if err != nil {
+			slog.WarnContext(ctx, "outagenotice: lost the outage change listener; reconnecting", "err", err)
+			d.Listener.Close()
+			listening = false
+			continue
+		}
+		if notified && !sleepCtx(ctx, settle) {
+			slog.InfoContext(ctx, "outagenotice: drainer stopped")
+			return
+		}
+	}
+}
+
+// sleepCtx waits d, returning false if ctx ended first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
 	}
 }
 

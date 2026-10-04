@@ -239,9 +239,11 @@ type Config struct {
 	// (EVENT_HUB_BROKER + EVENT_PUBLISHING_ENABLED) and a database; the
 	// recipient lists below are what actually switch each email on.
 	OutageEventHubTopic string
-	// OutageNoticePollInterval is how often the drainer runs the two outage
-	// email decisions. ServiceNow's flows are record-triggered, so this is the
-	// whole of the delay between saving an outage and its email (default 10s).
+	// OutageNoticePollInterval is the drainer's FALLBACK poll (default 60s).
+	// The emails normally go out about a second after an outage changes: the
+	// drainer LISTENs for migration 0186's NOTIFY. This interval only catches
+	// a change it missed while not listening; if it cannot listen at all it
+	// polls every 10s instead.
 	OutageNoticePollInterval time.Duration
 	// OutageNotificationRecipients is the audience of the internal-stakeholder
 	// notification, OutageCommunicationRecipients that of the SRE outage
@@ -518,7 +520,7 @@ func Load() *Config {
 		ProjectEventHubTopic:                          getEnvOrDefault("PROJECT_EVENT_HUB_TOPIC", "project-events"),
 		CRNoticePollInterval:                          envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
 		OutageEventHubTopic:                           getEnvOrDefault("OUTAGE_EVENT_HUB_TOPIC", "outage-events"),
-		OutageNoticePollInterval:                      envDuration("OUTAGE_NOTICE_POLL_INTERVAL", 10*time.Second),
+		OutageNoticePollInterval:                      envDuration("OUTAGE_NOTICE_POLL_INTERVAL", 60*time.Second),
 		OutageNotificationRecipients:                  splitComma(os.Getenv("OUTAGE_NOTIFICATION_RECIPIENTS")),
 		OutageCommunicationRecipients:                 splitComma(os.Getenv("OUTAGE_COMMUNICATION_RECIPIENTS")),
 		AuthIssuer:                                    os.Getenv("AUTH_ISSUER"),

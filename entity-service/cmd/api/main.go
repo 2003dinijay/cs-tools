@@ -188,10 +188,13 @@ func main() {
 				),
 				NotificationRecipients:  cfg.OutageNotificationRecipients,
 				CommunicationRecipients: cfg.OutageCommunicationRecipients,
-				Interval:                cfg.OutageNoticePollInterval,
+				// Woken by migration 0186's NOTIFY on every outage change;
+				// the interval is only the fallback poll.
+				Listener: repository.NewOutageChangeListener(pool),
+				Interval: cfg.OutageNoticePollInterval,
 			}
 			go drainer.Run(outageNoticeCtx)
-			log.Printf("outage emails enabled: publishing to topic %q every %s (internal notification: %d recipients, outage communication: %d recipients)",
+			log.Printf("outage emails enabled: publishing to topic %q on each outage change (fallback poll %s; internal notification: %d recipients, outage communication: %d recipients)",
 				cfg.OutageEventHubTopic, cfg.OutageNoticePollInterval,
 				len(cfg.OutageNotificationRecipients), len(cfg.OutageCommunicationRecipients))
 		}
