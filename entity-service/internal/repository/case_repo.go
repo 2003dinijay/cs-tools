@@ -338,6 +338,21 @@ type CaseRepository interface {
 	// source stores file bytes externally in SFTPGo, never inline in Postgres.
 	// Returns a ValidationError if req.ReferenceID does not match an existing case.
 	CreateCaseAttachment(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error)
+	// CreateCaseAttachmentFromServiceNow inserts a new attachment metadata row
+	// for DATA_SOURCE=postgres-servicenow-dual-write, whose file bytes live
+	// only in ServiceNow (SFTPGo is never used in this mode). Unlike
+	// CreateCaseAttachment, the row's identity is NOT generated here: id is
+	// the caller-supplied sysidToUUID(the real ServiceNow attachment sys_id)
+	// -- the same "ServiceNow decides identity, Postgres mirrors it"
+	// convention CreateCaseFromServiceNow/CreateDeploymentFromServiceNow use.
+	// storage_key is always NULL (see migration 0185's own comment) and
+	// status is always 'complete': ServiceNow's attachment upload is
+	// synchronous, there is no pending/in-progress state to track.
+	// uploadedBy must be an existing user.id (the resolved actor, not a raw
+	// ServiceNow identity string) -- unlike deployment.created_by/
+	// deployment_product.created_by, case_attachment.uploaded_by is a real
+	// FK to "user"(id).
+	CreateCaseAttachmentFromServiceNow(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string, createdOn time.Time) (domain.Attachment, error)
 	// SearchCaseAttachments returns a paginated slice of attachments for the given
 	// case, most recently created first, together with the total matching count.
 	SearchCaseAttachments(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error)
@@ -2164,6 +2179,48 @@ func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAt
 	return a, nil
 }
 
+// CreateCaseAttachmentFromServiceNow implements CaseRepository. See the
+// interface doc comment for the identity/storage_key/status conventions this
+// follows -- id is supplied by the caller (ServiceNow's own attachment
+// sys_id, converted), not generated, and storage_key is always NULL.
+func (r *caseRepo) CreateCaseAttachmentFromServiceNow(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string, createdOn time.Time) (domain.Attachment, error) {
+	const query = `
+		INSERT INTO case_attachment (id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, status, created_on)
+		VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, 'complete', $8)
+		RETURNING id, case_id, filename, mime_type, size_bytes, description, uploaded_by, created_on, status`
+
+	var (
+		a            domain.Attachment
+		uploadedByID string
+	)
+	err := r.db.QueryRow(ctx, query,
+		id, req.ReferenceID, req.Name, req.Type, sizeBytes, req.Description, uploadedBy, createdOn,
+	).Scan(
+		&a.ID, &a.ReferenceID, &a.Name, &a.Type, &a.SizeBytes, &a.Description,
+		&uploadedByID, &a.CreatedOn, &a.Status,
+	)
+	if err != nil {
+		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "23505": // unique_violation -- id already exists (e.g. a retried mirror write)
+				return domain.Attachment{}, &apierror.ValidationError{Msg: "an attachment with this identity already exists"}
+			case "23503": // foreign_key_violation -- case_id or uploaded_by does not exist
+				return domain.Attachment{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
+			case "23514": // check_violation -- e.g. size_bytes <= 0
+				return domain.Attachment{}, &apierror.ValidationError{Msg: pgErr.Message}
+			}
+		}
+		return domain.Attachment{}, fmt.Errorf("create case attachment from servicenow: %w", err)
+	}
+	a.ReferenceType = domain.ReferenceTypeCase
+	// storage_key is never set for a ServiceNow-sourced row -- its bytes live
+	// in ServiceNow, addressed by this row's own id (see uuidToSysid), not by
+	// a storage_key. Left nil, same zero value SearchCaseAttachments/
+	// GetCaseAttachmentByID now return for any row with a NULL storage_key.
+	a.CreatedBy = domain.NewUserReference(uploadedByID, "", "")
+	return a, nil
+}
+
 // ConfirmCaseAttachment implements CaseRepository.
 func (r *caseRepo) ConfirmCaseAttachment(ctx context.Context, id string) (domain.Attachment, error) {
 	const query = `
@@ -2235,7 +2292,12 @@ func (r *caseRepo) SearchCaseAttachments(ctx context.Context, caseID string, pag
 			var (
 				a                         domain.Attachment
 				uploaderID, uploaderEmail string
-				uploaderName, storageKey  string
+				uploaderName              string
+				// storageKey is nullable: a dual-write (ServiceNow-sourced)
+				// row has no storage_key at all -- see migration 0185's own
+				// comment. *string (not string) is required here so a NULL
+				// column value scans as a nil pointer instead of erroring.
+				storageKey *string
 			)
 			if err := rows.Scan(
 				&a.ID, &a.ReferenceID, &a.Name, &a.Type, &a.SizeBytes, &a.Description,
@@ -2245,7 +2307,7 @@ func (r *caseRepo) SearchCaseAttachments(ctx context.Context, caseID string, pag
 			}
 			a.ReferenceType = domain.ReferenceTypeCase
 			a.CreatedBy = domain.NewUserReference(uploaderID, uploaderEmail, uploaderName)
-			a.StorageKey = &storageKey
+			a.StorageKey = storageKey
 			result = append(result, a)
 		}
 		if err := rows.Err(); err != nil {
@@ -2281,7 +2343,10 @@ func (r *caseRepo) GetCaseAttachmentByID(ctx context.Context, id string) (domain
 	var (
 		a                         domain.Attachment
 		uploaderID, uploaderEmail string
-		uploaderName, storageKey  string
+		uploaderName              string
+		// storageKey is nullable -- see SearchCaseAttachments' identical
+		// comment: a dual-write (ServiceNow-sourced) row has no storage_key.
+		storageKey *string
 	)
 	err := r.db.QueryRow(ctx, query, id).Scan(
 		&a.ID, &a.ReferenceID, &a.Name, &a.Type, &a.SizeBytes, &a.Description,
@@ -2295,7 +2360,7 @@ func (r *caseRepo) GetCaseAttachmentByID(ctx context.Context, id string) (domain
 	}
 	a.ReferenceType = domain.ReferenceTypeCase
 	a.CreatedBy = domain.NewUserReference(uploaderID, uploaderEmail, uploaderName)
-	a.StorageKey = &storageKey
+	a.StorageKey = storageKey
 	return a, nil
 }
 

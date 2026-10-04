@@ -736,28 +736,35 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// registration with a foreign-key violation).
 		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, nil)
 		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo, snWritebackDispatcher, snCaseMirrorSvc, slaEngineSvc, cfg.CSEngineerRole)
-		// Case ATTACHMENTS are ServiceNow-only in this mode, permanently —
-		// unlike case metadata (CREATE/UPDATE above), not a pilot scope
-		// decision but a hard requirement: the sftpgo-backed Postgres
-		// attachment implementation (case_attachment table,
-		// CaseRepository.CreateCaseAttachment et al. — real, working SQL,
-		// unlike the old CreateCase bug) is not production-ready for the
-		// Oct 4 go-live, so attachment routes must never reach it while this
-		// mode is active, regardless of how case metadata itself is wired.
-		// snCaseMirrorSvc (above) is reused as-is: every one of its
-		// attachment methods (CreateCaseAttachment/SearchCaseAttachments/
-		// GetCaseAttachmentContent/DeleteCaseAttachment/GetAttachmentByID/
-		// UpdateAttachment) already converts the platform case UUID to a
-		// ServiceNow sys_id via uuidToSysid internally, and that round-trips
-		// correctly because CreateCaseFromServiceNow (createCaseSNFirst)
-		// stores id = sysidToUUID(the real sys_id) for every case created in
-		// this mode — the same identity convention DataSource=servicenow
-		// itself relies on. ConfirmCaseAttachment correctly 503s here too,
-		// same as it already does in plain DataSource=servicenow — a
-		// pre-existing, expected gap (Postgres-only concept: ServiceNow's
-		// /attachments API has no pending/in-progress upload state to
-		// confirm), not something this override introduces.
-		caseAttachmentOverrideSvc = snCaseMirrorSvc
+		// Case ATTACHMENTS: file bytes still live ONLY in ServiceNow in this
+		// mode (SFTPGo, the CSM-native/Postgres storage backend, is never
+		// used here) — but metadata is now ALSO written into and read from
+		// Postgres, matching this codebase's "reads come from Postgres,
+		// writes go to both" policy for every other entity. This replaces
+		// the previous permanent "attachments are ServiceNow-only" override:
+		// that reasoning (the sftpgo-backed Postgres attachment
+		// implementation wasn't production-ready for the Oct 4 go-live) is
+		// now obsolete — case_attachment.storage_key is nullable (migration
+		// 0185) precisely so a ServiceNow-sourced row can have metadata-only
+		// Postgres rows alongside the existing SFTPGo-backed ones.
+		//
+		// service.NewCaseAttachmentDualWriteService wraps activeCaseSvc
+		// (itself a *caseService, reused for its Postgres-backed
+		// SearchCaseAttachments/GetAttachmentByID and its repo/resolveActor)
+		// and overrides CreateCaseAttachment (ServiceNow-first/synchronous,
+		// then a Postgres metadata insert via
+		// CaseRepository.CreateCaseAttachmentFromServiceNow),
+		// ConfirmCaseAttachment (still 503s — there is no pending/
+		// in-progress upload state in this mode, same as plain
+		// DataSource=servicenow), GetCaseAttachmentContent (bytes only exist
+		// in ServiceNow, forwarded to snCaseMirrorSvc), and
+		// DeleteCaseAttachment/UpdateAttachment (Postgres-first with a
+		// best-effort, asynchronous ServiceNow mirror via
+		// snWritebackDispatcher, the same shape as every other dual-write
+		// UPDATE/DELETE). SearchCaseAttachments/GetAttachmentByID are
+		// inherited unmodified — see that type's own doc comment
+		// (case_attachment_dual_write_service.go) for the full design.
+		caseAttachmentOverrideSvc = service.NewCaseAttachmentDualWriteService(activeCaseSvc, snCaseMirrorSvc, snWritebackDispatcher)
 	default:
 		activeCaseSvc = service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo)
 	}
