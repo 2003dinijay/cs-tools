@@ -32,6 +32,8 @@ import (
 // and records what was sent.
 type OutageCommunicationRepository interface {
 	PendingOutages(ctx context.Context, limit int) ([]domain.OutageForCommunication, error)
+	// TryLockSweep: see OutageNotificationRepository.TryLockSweep.
+	TryLockSweep(ctx context.Context) (release func(), ok bool, err error)
 	Record(ctx context.Context, req domain.RecordOutageCommunicationRequest) error
 	LogForOutage(ctx context.Context, number string) ([]domain.OutageCommunicationLogEntry, error)
 }
@@ -119,6 +121,11 @@ SELECT o.id::text,
    )
  ORDER BY o.start_on, o.id
  LIMIT $1`
+
+// TryLockSweep takes the outage-communication sweep lock.
+func (r *outageCommunicationRepo) TryLockSweep(ctx context.Context) (func(), bool, error) {
+	return tryAdvisoryLock(ctx, r.db, outageCommunicationSweepLockKey)
+}
 
 func (r *outageCommunicationRepo) PendingOutages(ctx context.Context, limit int) ([]domain.OutageForCommunication, error) {
 	rows, err := r.db.Query(ctx, pendingOutageCommunicationsSQL, limit)
