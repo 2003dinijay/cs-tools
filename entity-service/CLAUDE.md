@@ -5457,3 +5457,24 @@ is no start cutoff and no age limit: a change is applied however late, and an ou
 
 Tests: `incident_report_service_test.go` (unit), `incident_report_integration_test.go`
 (`INCIDENT_REPORT_TEST_DSN`, real DB with all migrations: both flows, rollback, backoff, retry).
+
+### [WSO2 Cloud Ops] Post resolution tasks (migration 0188)
+
+Runs in the same Resolved handler, after the report, in the same transaction. SN condition:
+service Choreo or Asgardeo, state changes to Resolved. Every block is an independent If on the
+incident as it is now:
+
+| Condition (`resolution_code`) | Effect |
+|---|---|
+| `FALSE_ALARM` | incident_task `[Alert Task][Falser Alarm] <number> alert is a false alarm` (SN's spelling), `CRITICAL`, group WSO2 SRE Team |
+| `DUPLICATE` or `DUPLICATE_ALERT` | `[Alert Task][Duplicate Alert] <number> alert is a duplicate`, `CRITICAL`, WSO2 SRE Team. Both spellings are SN's one "Duplicate" choice: the sync writes `DUPLICATE_ALERT`, the portal `DUPLICATE` |
+| `NOT_ACTIONABLE_ALERT` | `[Alert Task][Not Actionable Alert] <number> is not an actionable alert`, `HIGH`, WSO2 SRE Team |
+| `SOLVED_WORK_AROUND` and no `problem_id` | problem `Fix the root cause of <number>` with the incident's service, impact, urgency and priority (0188 adds `problem.service_id/impact/urgency`), `incident_id` = the incident, group Choreo Special Ops or Asgardeo Operations Team by service; then `incident.problem_id` = it |
+
+The services and groups are SN sys_ids as Postgres UUIDs, constants in
+`incident_report_service.go`. A group missing from the database leaves the record unassigned
+rather than failing the change (the insert looks the id up). **Not ported:** the runbook block
+(`u_runbook_solve_the_issue = 2` and not a workaround → `[Runbook Task] Modify the runbook`):
+the field has no column and no portal input. `MissingSchema` also checks 0188's columns.
+
+Tests: `post_resolution_tasks_test.go` (unit), `post_resolution_tasks_integration_test.go`.

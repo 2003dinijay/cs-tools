@@ -3665,6 +3665,17 @@ export interface BeIncidentTaskSearchView {
   assignedTo?: BeEntityRef | null;
 }
 
+/** `POST /incident-tasks/search` body. The only per-incident filter is the
+ * generic `{ field: "incidentId", op: "in" }` entry; there is no flat key. */
+export interface BeIncidentTaskSearchPayload {
+  filters?: {
+    searchQuery?: string;
+    number?: string;
+    filters?: { field: "state" | "assignmentGroupId" | "incidentId"; op: "in"; values: string[] }[];
+  };
+  pagination: { offset: number; limit: number };
+}
+
 /** Note: mirrors the problem/change-request/incident search responses — no `hasMore`. */
 export interface BeIncidentTaskSearchResponse {
   incidentTasks: BeIncidentTaskSearchView[];
