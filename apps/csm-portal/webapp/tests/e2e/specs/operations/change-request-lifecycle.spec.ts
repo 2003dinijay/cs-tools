@@ -17,9 +17,10 @@
 //
 // Deterministic Change Request lifecycle coverage — the compulsory-
 // assigned-team gate, Assess-entry approver auto-provisioning, the
-// approve/cancel-sibling cascade from Assess to Authorize, and a terminal
-// approval display — run against the four fixed-UUID fixtures in
-// scripts/csm-compose/seed-entity-service.sql (CR-FIXED-001..004), not a
+// approve/cancel-sibling cascade from Assess to Authorize, a terminal
+// approval display, and the customer group's Customer Approval / Customer
+// Review decisions — run against the eight fixed-UUID fixtures in
+// scripts/csm-compose/seed-entity-service.sql (CHG-FIXED-001..008), not a
 // freshly self-provisioned CR the way change-request-detail.spec.ts works.
 //
 // That's a deliberate, necessary difference, not a style choice:
@@ -30,29 +31,36 @@
 // fixtures exist specifically to give this spec something to navigate
 // straight to by id.
 //
-// The flip side of a fixed fixture: CR-FIXED-002/003 each get moved forward
-// by exactly the transition this spec exercises (New -> Assess, and an
-// approval decision), and that move is NOT reset by re-running the seed
-// file — `ON CONFLICT (id) DO NOTHING` only ever applies on first insert, so
-// a mutated row stays mutated. Unlike staging (where change-request-detail's
-// self-provisioned CRs are simply abandoned, never reused), this spec is
-// meant to run before every local push, so its own fixtures have to come
-// back to their starting state every time. resetFixtures() below does that
-// with plain, idempotent UPDATEs against the already-running local
-// docker-compose Postgres (`csm-platform-postgres-1`) before anything else
-// runs — CR-FIXED-001/004 are read-only fixtures (nothing here ever mutates
-// them) and need no reset.
+// The flip side of a fixed fixture: they get moved forward by exactly the
+// transition this spec exercises (New -> Assess, an approval decision, a
+// customer's answer). The seed is self-healing on purpose — re-running
+// seed-entity-service.sql deletes and re-inserts the fixtures' approval stages
+// and approvers and upserts their change_request rows back to the starting
+// state — so resetFixtures() below simply re-runs that file against the
+// already-running local docker-compose Postgres (`csmcr-postgres-1` here;
+// E2E_POSTGRES_CONTAINER) before anything else runs. One source of truth: the
+// starting state lives in the seed only.
+//
+// WHO acts is the point of the seed's personas (see "Local seed personas" in
+// entity-service's CLAUDE.md), so the specs sign in as the persona that
+// holds the seat — one captured session per role, minted by
+// tests/e2e/auth/generate-session.spec.ts (see auth/README.md):
+//
+//   crApprover          jane.doe@example.com        internal, the requester persona
+//   crInternalApprover  alice.perera@example.com    internal, peer/CAB approver
+//   crCustomerContact   dave.mendis@example.com     external, contact of project 401
+//   crCustomerContact2  erin.jayawardena@example.com  external, contact of project 401
 //
 // Runs only against the local stack (E2E_NO_WEBSERVER=1, see
-// package.json's "test:e2e:cr-lifecycle") signed in as jane.doe@example.com
-// — the approver CR-FIXED-003/004 are seeded with (see
-// tests/e2e/auth/generate-session.spec.ts for how that session is minted
-// with no human step, as the "crApprover" role).
+// package.json's "test:e2e:cr-lifecycle"). A test whose persona has no
+// captured session is skipped, not failed.
 //
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { test, expect, withRole } from "../../fixtures/test";
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import type { Browser, Page } from "@playwright/test";
+import { test, expect, withRole, hasSession, openContextAs, type TimecardRole } from "../../fixtures/test";
 import { ChangeRequestCreatePage } from "../../pages/ChangeRequestCreatePage";
 import { ChangeRequestDetailPage } from "../../pages/ChangeRequestDetailPage";
 import {
@@ -74,75 +82,86 @@ import {
   type FakeUser,
 } from "../../utils/fakeChangeRequestApi";
 
-const execFileAsync = promisify(execFile);
-
 const CR_NO_TEAM = "00000000-0000-0000-0000-000000001001";
 const CR_WITH_TEAM = "00000000-0000-0000-0000-000000001002";
 const CR_PENDING_APPROVAL = "00000000-0000-0000-0000-000000001003";
 const CR_RESOLVED = "00000000-0000-0000-0000-000000001004";
+const CR_CUSTOMER_APPROVAL = "00000000-0000-0000-0000-000000001303"; // CHG-FIXED-007
+const CR_CUSTOMER_REVIEW = "00000000-0000-0000-0000-000000001304"; // CHG-FIXED-008
 
-const APOLLO_GROUP_ID = "00000000-0000-0000-0000-000000000901"; // "Example Corp ABT" — see seed-entity-service.sql
-const STAGE_ID = "00000000-0000-0000-0000-000000001005";
-const JANE_APPROVER_ROW = "00000000-0000-0000-0000-000000001006";
-const JOHN_APPROVER_ROW = "00000000-0000-0000-0000-000000001007";
+/** The seed's personas, by the display name the Approvals table shows. */
+const ALICE = "Alice Perera"; // internal — peer / CAB / ECAB approver
+const BOB = "Bob Fernando"; // internal
+const CAROL = "Carol Silva"; // internal
+const DAVE = "Dave Mendis"; // external — registered contact of project 401
+const ERIN = "Erin Jayawardena"; // external — registered contact of project 401
+const JANE = "Jane Doe"; // internal requester persona, in no approval group
+const JOHN = "John Smith"; // customer who is (deliberately) a member of the assigned group
 
-/** Restores CR-FIXED-002/003 to the exact starting state documented in
- * seed-entity-service.sql, unconditionally, via the already-running local
- * docker-compose Postgres container — see this file's own top comment for
- * why a fixed fixture needs this instead of the idempotent seed file's own
- * `ON CONFLICT DO NOTHING` inserts. Plain UPDATEs, not re-running the seed
- * file, since the rows already exist after the first ever seed. */
+const DAVE_ID = "00000000-0000-0000-0000-000000000021";
+
+/** Absolute path of the seed file, from the webapp dir the specs run in. */
+const SEED_FILE = path.resolve(process.cwd(), "../../../scripts/csm-compose/seed-entity-service.sql");
+const POSTGRES_CONTAINER = process.env.E2E_POSTGRES_CONTAINER ?? "csm-platform-postgres-1";
+
+/** Runs SQL on the local docker-compose Postgres (psql in the container). With
+ * `sql` on stdin so the whole seed file fits however large it is. */
+async function psql(sql: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("docker", [
+      "exec", "-i", POSTGRES_CONTAINER, "psql", "-U", "postgres", "-d", "csm_platform", "-v", "ON_ERROR_STOP=1", "-q", "-f", "-",
+    ]);
+    let stderr = "";
+    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    child.on("error", reject);
+    child.on("close", (code) =>
+      code === 0 ? resolve() : reject(new Error(`psql exited ${code}: ${stderr}`)),
+    );
+    child.stdin.end(sql);
+  });
+}
+
+/** Restores the CHG-FIXED-* fixtures (and the personas) to their starting
+ * state by re-running the self-healing seed — see this file's top comment. */
 async function resetFixtures(): Promise<void> {
-  const sql = `
-    UPDATE change_request SET state = 'NEW'::change_request_state_enum, requested_by_user_id = NULL WHERE id = '${CR_WITH_TEAM}';
-    UPDATE work_item SET assignment_group_id = '${APOLLO_GROUP_ID}' WHERE id = '${CR_WITH_TEAM}';
-    -- Also clears the CAB/ECAB Approval stages the approval flow adds.
-    DELETE FROM approval_stage_approver WHERE work_item_id = '${CR_WITH_TEAM}';
-    DELETE FROM approval_stage WHERE work_item_id = '${CR_WITH_TEAM}';
+  await psql(fs.readFileSync(SEED_FILE, "utf8"));
+}
 
-    -- requested_by_user_id stays NULL here (not jane.doe/john.smith, both
-    -- team members): PatchChangeRequest now auto-cancels the change's own
-    -- requester instead of leaving them Requested (mirrors real ServiceNow,
-    -- confirmed live against CHG0039122 — see entity-service's own CLAUDE.md).
-    -- Either seeded user as requester would turn this fixture's "both
-    -- members become pending approvers" demonstration into a demonstration
-    -- of that unrelated exclusion instead.
-    UPDATE change_request SET state = 'ASSESS'::change_request_state_enum, requested_by_user_id = NULL WHERE id = '${CR_PENDING_APPROVAL}';
-    -- The "approve cascades to Authorize" test below approves Jane's row,
-    -- which (since entity-service also auto-provisions the CAB Approval
-    -- stage now, not just Peer Approval) creates a SECOND approval_stage + a fresh pair
-    -- of approver rows for this same work item, under new gen_random_uuid()
-    -- ids neither upsert below ever matches. Left alone, those accumulate
-    -- across runs -- the Approvals table ends up with two rows per approver,
-    -- and Playwright's strict-mode approverRow("Jane Doe") then matches more
-    -- than one and fails. Delete anything that isn't this fixture's own
-    -- known seeded stage/approvers before re-seeding them.
-    DELETE FROM approval_stage_approver WHERE work_item_id = '${CR_PENDING_APPROVAL}'
-      AND id NOT IN ('${JANE_APPROVER_ROW}', '${JOHN_APPROVER_ROW}');
-    DELETE FROM approval_stage WHERE work_item_id = '${CR_PENDING_APPROVAL}' AND id <> '${STAGE_ID}';
-    INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, raw_status)
-      VALUES ('${STAGE_ID}', now(), now(), 'seed', 'seed', '${CR_PENDING_APPROVAL}', '${APOLLO_GROUP_ID}', 'requested')
-      ON CONFLICT (id) DO UPDATE SET raw_status = 'requested';
-    INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
-      VALUES
-        ('${JANE_APPROVER_ROW}', now(), now(), 'seed', 'seed', '${STAGE_ID}', '${CR_PENDING_APPROVAL}', '00000000-0000-0000-0000-000000000001', 'requested'),
-        ('${JOHN_APPROVER_ROW}', now(), now(), 'seed', 'seed', '${STAGE_ID}', '${CR_PENDING_APPROVAL}', '00000000-0000-0000-0000-000000000002', 'requested')
-      ON CONFLICT (id) DO UPDATE SET status = 'requested';
-  `;
-  await execFileAsync("docker", [
-    "exec",
-    "-i",
-    process.env.E2E_POSTGRES_CONTAINER ?? "csm-platform-postgres-1",
-    "psql",
-    "-U",
-    "postgres",
-    "-d",
-    "csm_platform",
-    "-v",
-    "ON_ERROR_STOP=1",
-    "-c",
-    sql,
+/** Runs `fn` as `role`'s persona in a second, independent browser context. */
+async function asPersona<T>(browser: Browser, role: TimecardRole, fn: (page: Page) => Promise<T>): Promise<T> {
+  test.skip(
+    !hasSession(role),
+    `No captured session for '${role}'. See tests/e2e/auth/README.md to mint ` +
+      `tests/e2e/storageState/${role}.json (E2E_AUTH_EMAIL=… E2E_AUTH_ROLE=${role}).`,
+  );
+  const context = await openContextAs(browser, role);
+  try {
+    return await fn(await context.newPage());
+  } finally {
+    await context.close();
+  }
+}
+
+/** POSTs the caller's decision on a change request straight to the BFF with the
+ * very headers the signed-in page itself sends, to see the status the API
+ * answers — what the Approve button would have produced had it been rendered. */
+async function postDecision(page: Page, crId: string, decision: "approved" | "rejected") {
+  const detail = new ChangeRequestDetailPage(page);
+  const [request] = await Promise.all([
+    page.waitForRequest((r) => r.method() === "GET" && new RegExp(`/change-requests/${crId}/approvals`).test(r.url())),
+    detail.goto(crId),
   ]);
+  const all = await request.allHeaders();
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(all)) {
+    if (name === "authorization" || name.startsWith("x-")) headers[name] = value;
+  }
+  const base = request.url().replace(/\/change-requests\/.*$/, "");
+  const response = await page.request.post(`${base}/change-requests/${crId}/approvals/decision`, {
+    headers,
+    data: { decision },
+  });
+  return { status: response.status(), body: await response.text() };
 }
 
 withRole(test, "crApprover");
@@ -169,7 +188,7 @@ test.describe("change request lifecycle — compulsory team gate", () => {
 });
 
 test.describe("change request lifecycle — Assess-entry auto-provisioning", () => {
-  test("Request Approval succeeds once a team is assigned, and provisions that team's members as approvers", async ({
+  test("Request Approval succeeds once a team is assigned, and provisions that team's INTERNAL members as approvers", async ({
     page,
   }) => {
     test.setTimeout(60_000);
@@ -191,50 +210,68 @@ test.describe("change request lifecycle — Assess-entry auto-provisioning", () 
 
     await expect(requestApprovalButton).toBeHidden({ timeout: 15_000 });
 
-    // Both of the assigned team's seeded members (Jane Doe, John Smith —
-    // see scripts/csm-compose/seed-entity-service.sql) should now appear as
-    // Requested approvers, with no manual provisioning step.
-    await expect(detail.approverStatus("Jane Doe", "Peer Approval")).toHaveText("Requested");
-    await expect(detail.approverStatus("John Smith", "Peer Approval")).toHaveText("Requested");
+    // The assigned team's active internal members (Alice, Bob, Carol — see
+    // scripts/csm-compose/seed-entity-service.sql) are now Requested peer
+    // approvers, with no manual provisioning step...
+    await expect(detail.approverStatus(ALICE, "Peer Approval")).toHaveText("Requested");
+    await expect(detail.approverStatus(BOB, "Peer Approval")).toHaveText("Requested");
+    await expect(detail.approverStatus(CAROL, "Peer Approval")).toHaveText("Requested");
+    // ...and nobody else: John Smith is a member of the same group but a
+    // customer (EXTERNAL), who could not even find this change request in his
+    // own list, so he is never provisioned; Jane Doe is out of the group.
+    await expect(detail.approverRow(JOHN)).toHaveCount(0);
+    await expect(detail.approverRow(JANE)).toHaveCount(0);
   });
 });
 
 test.describe("change request lifecycle — approve cascades to Authorize", () => {
-  test("approving one of two pending approvers cascades the state to Authorize and cancels the other", async ({
-    page,
+  test("an internal approver sees the peer stage and approving it cascades to Authorize (CAB) and cancels the others", async ({
+    browser,
   }) => {
-    test.setTimeout(60_000);
+    test.setTimeout(90_000);
 
-    const detail = new ChangeRequestDetailPage(page);
-    await detail.goto(CR_PENDING_APPROVAL);
+    await asPersona(browser, "crInternalApprover", async (page) => {
+      const detail = new ChangeRequestDetailPage(page);
+      await detail.goto(CR_PENDING_APPROVAL);
 
-    // Only the signed-in user's (Jane Doe's) own pending row renders an
-    // Approve button — John Smith's sibling row has none. Rows are scoped to
-    // the "Peer Approval" stage because, once Jane approves, the backend
-    // adds a CAB Approval stage listing the same two seeded users.
-    const PEER = "Peer Approval";
-    await expect(detail.approverStatus("Jane Doe", PEER)).toHaveText("Requested");
-    await expect(detail.approverStatus("John Smith", PEER)).toHaveText("Requested");
-    await expect(detail.approveButton("John Smith", PEER)).toHaveCount(0);
+      // Only the signed-in user's (Alice's) own pending row renders an
+      // Approve button — Bob's and Carol's sibling rows have none. Rows are
+      // scoped to the "Peer Approval" stage because, once Alice approves, the
+      // backend adds a CAB Approval stage listing the same three people.
+      const PEER = "Peer Approval";
+      await expect(detail.approverStatus(ALICE, PEER)).toHaveText("Requested");
+      await expect(detail.approverStatus(BOB, PEER)).toHaveText("Requested");
+      await expect(detail.approverStatus(CAROL, PEER)).toHaveText("Requested");
+      await expect(detail.approveButton(BOB, PEER)).toHaveCount(0);
+      await expect(detail.approveButton(CAROL, PEER)).toHaveCount(0);
 
-    const approveButton = detail.approveButton("Jane Doe", PEER);
-    await expect(approveButton).toBeVisible();
+      const approveButton = detail.approveButton(ALICE, PEER);
+      await expect(approveButton).toBeVisible();
 
-    const [response] = await Promise.all([
-      page.waitForResponse((r) => /\/change-requests\/[^/]+\/approvals?/.test(r.url()), { timeout: 15_000 }),
-      approveButton.click(),
-    ]);
-    expect(response.ok(), `Approve decision failed (${response.status()})`).toBeTruthy();
+      const [response] = await Promise.all([
+        page.waitForResponse((r) => /\/change-requests\/[^/]+\/approvals?/.test(r.url()), { timeout: 15_000 }),
+        approveButton.click(),
+      ]);
+      expect(response.ok(), `Approve decision failed (${response.status()})`).toBeTruthy();
 
-    await expect(detail.approverStatus("Jane Doe", PEER)).toHaveText("Approved");
-    await expect(detail.approverStatus("John Smith", PEER)).toHaveText("Cancelled");
+      await expect(detail.approverStatus(ALICE, PEER)).toHaveText("Approved");
+      await expect(detail.approverStatus(BOB, PEER)).toHaveText("Cancelled");
+      await expect(detail.approverStatus(CAROL, PEER)).toHaveText("Cancelled");
 
-    // Peer approval cascades to the CAB Approval stage (its own group, the
-    // next stage), the CR is in Authorize, and there is no Schedule button.
-    await expect(detail.currentStep()).toContainText("Authorize");
-    await expect(detail.blockingReason()).toHaveText("Awaiting CAB Approval");
-    await expect(detail.approverStatus("Jane Doe", "CAB Approval")).toHaveText("Requested");
-    await expect(detail.scheduleButton()).toHaveCount(0);
+      // Peer approval cascades to the CAB Approval stage (its own group, the
+      // next stage), the CR is in Authorize, and there is no Schedule button.
+      await expect(detail.currentStep()).toContainText("Authorize");
+      await expect(detail.blockingReason()).toHaveText("Awaiting CAB Approval");
+      await expect(detail.approverStatus(ALICE, "CAB Approval")).toHaveText("Requested");
+      await expect(detail.approverStatus(BOB, "CAB Approval")).toHaveText("Requested");
+      await expect(detail.approverStatus(CAROL, "CAB Approval")).toHaveText("Requested");
+      await expect(detail.scheduleButton()).toHaveCount(0);
+
+      // ...and CAB approval by another internal user schedules it.
+      await detail.approveButton(ALICE, "CAB Approval").click();
+      await expect(detail.approverStatus(ALICE, "CAB Approval")).toHaveText("Approved");
+      await expect(detail.currentStep()).toContainText("Scheduled");
+    });
   });
 });
 
@@ -245,10 +282,144 @@ test.describe("change request lifecycle — terminal approval display", () => {
     const detail = new ChangeRequestDetailPage(page);
     await detail.goto(CR_RESOLVED);
 
-    await expect(detail.approverStatus("Jane Doe", "Peer Approval")).toHaveText("Approved");
-    await expect(detail.approverStatus("John Smith", "Peer Approval")).toHaveText("Cancelled");
+    await expect(detail.approverStatus(ALICE, "Peer Approval")).toHaveText("Approved");
+    await expect(detail.approverStatus(BOB, "Peer Approval")).toHaveText("Cancelled");
+    await expect(detail.approverStatus(CAROL, "Peer Approval")).toHaveText("Cancelled");
     await expect(detail.approveButton()).toHaveCount(0);
     await expect(detail.rejectButton()).toHaveCount(0);
+  });
+});
+
+test.describe("change request lifecycle — customer contacts answer the customer stages", () => {
+  // The decisions consume the fixtures; the seed puts them back.
+  test.beforeEach(async () => {
+    await resetFixtures();
+  });
+
+  test("a registered customer contact approves CHG-FIXED-007 (Customer Approval) and it is Scheduled", async ({
+    browser,
+  }) => {
+    test.setTimeout(90_000);
+
+    await asPersona(browser, "crCustomerContact", async (page) => {
+      const detail = new ChangeRequestDetailPage(page);
+      await detail.goto(CR_CUSTOMER_APPROVAL);
+
+      const STAGE = "Customer Approval";
+      await expect(detail.approverStatus(DAVE, STAGE)).toHaveText("Requested");
+      await expect(detail.approverStatus(ERIN, STAGE)).toHaveText("Requested");
+      // Only the signed-in contact's own row is actionable.
+      await expect(detail.approveButton(ERIN, STAGE)).toHaveCount(0);
+      const approve = detail.approveButton(DAVE, STAGE);
+      await expect(approve).toBeVisible();
+
+      const [response] = await Promise.all([
+        page.waitForResponse((r) => /\/change-requests\/[^/]+\/approvals?/.test(r.url()), { timeout: 15_000 }),
+        approve.click(),
+      ]);
+      expect(response.ok(), `customer approval failed (${response.status()})`).toBeTruthy();
+
+      await expect(detail.approverStatus(DAVE, STAGE)).toHaveText("Approved");
+      await expect(detail.approverStatus(ERIN, STAGE)).toHaveText("Cancelled");
+      await expect(detail.currentStep()).toContainText("Scheduled");
+    });
+  });
+
+  test("a registered customer contact approves CHG-FIXED-008 (Customer Review) and it is Closed", async ({
+    browser,
+  }) => {
+    test.setTimeout(90_000);
+
+    await asPersona(browser, "crCustomerContact2", async (page) => {
+      const detail = new ChangeRequestDetailPage(page);
+      await detail.goto(CR_CUSTOMER_REVIEW);
+
+      const STAGE = "Customer Review";
+      await expect(detail.approverStatus(ERIN, STAGE)).toHaveText("Requested");
+      await expect(detail.approverStatus(DAVE, STAGE)).toHaveText("Requested");
+      await expect(detail.approveButton(DAVE, STAGE)).toHaveCount(0);
+      const approve = detail.approveButton(ERIN, STAGE);
+      await expect(approve).toBeVisible();
+
+      const [response] = await Promise.all([
+        page.waitForResponse((r) => /\/change-requests\/[^/]+\/approvals?/.test(r.url()), { timeout: 15_000 }),
+        approve.click(),
+      ]);
+      expect(response.ok(), `customer review failed (${response.status()})`).toBeTruthy();
+
+      await expect(detail.approverStatus(ERIN, STAGE)).toHaveText("Approved");
+      await expect(detail.approverStatus(DAVE, STAGE)).toHaveText("Cancelled");
+      await expect(detail.currentStep()).toContainText("Closed");
+    });
+  });
+
+  test("an internal user who is not a contact of the project cannot answer the customer stages", async ({ browser }) => {
+    test.setTimeout(90_000);
+
+    await asPersona(browser, "crInternalApprover", async (page) => {
+      const detail = new ChangeRequestDetailPage(page);
+      for (const [crId, stage] of [
+        [CR_CUSTOMER_APPROVAL, "Customer Approval"],
+        [CR_CUSTOMER_REVIEW, "Customer Review"],
+      ] as const) {
+        await detail.goto(crId);
+        await expect(detail.approverStatus(DAVE, stage)).toHaveText("Requested");
+        await expect(detail.approveButton()).toHaveCount(0);
+        await expect(detail.rejectButton()).toHaveCount(0);
+      }
+
+      // And the API says so, with the reason.
+      const { status, body } = await postDecision(page, CR_CUSTOMER_APPROVAL, "approved");
+      expect(status, body).toBe(403);
+      expect(body).toContain("only members of the customer group");
+      await detail.goto(CR_CUSTOMER_APPROVAL);
+      await expect(detail.approverStatus(DAVE, "Customer Approval")).toHaveText("Requested");
+      await expect(detail.currentStep()).toContainText("Customer Approval");
+    });
+  });
+});
+
+test.describe("change request lifecycle — an external user cannot decide an internal stage", () => {
+  test.beforeEach(async () => {
+    await resetFixtures();
+  });
+
+  test("a customer holding a stale peer row has the controls disabled, and the API refuses with 403", async ({ browser }) => {
+    test.setTimeout(90_000);
+
+    // The row the INTERNAL-only rule exists for: a customer who was provisioned
+    // as a peer approver before the rule (what the original local database
+    // held for john.smith). Planted directly, as no code path creates it now.
+    await psql(`
+      INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+      VALUES ('00000000-0000-0000-0000-000000001901', now(), now(), 'e2e', 'e2e',
+              '00000000-0000-0000-0000-000000001005', '${CR_PENDING_APPROVAL}', '${DAVE_ID}', 'requested')
+      ON CONFLICT (id) DO UPDATE SET status = 'requested';`);
+
+    await asPersona(browser, "crCustomerContact", async (page) => {
+      const detail = new ChangeRequestDetailPage(page);
+      await detail.goto(CR_PENDING_APPROVAL);
+
+      // The customer is a contact of the change request's project, so he can
+      // open it and see his own pending row -- but not act on it: the API says
+      // canDecide=false, so the webapp renders the controls disabled (with the
+      // "You aren't able to approve or reject this stage" tooltip).
+      await expect(detail.approverStatus(DAVE, "Peer Approval")).toHaveText("Requested");
+      await expect(detail.approveButton(DAVE, "Peer Approval")).toBeDisabled();
+      await expect(detail.rejectButton(DAVE)).toBeDisabled();
+      // Nobody else's row has controls for him either.
+      await expect(detail.approveButton(ALICE, "Peer Approval")).toHaveCount(0);
+
+      const { status, body } = await postDecision(page, CR_PENDING_APPROVAL, "approved");
+      expect(status, body).toBe(403);
+      expect(body).toContain("only active internal (WSO2) users");
+
+      // Nothing moved.
+      await detail.goto(CR_PENDING_APPROVAL);
+      await expect(detail.approverStatus(DAVE, "Peer Approval")).toHaveText("Requested");
+      await expect(detail.approverStatus(ALICE, "Peer Approval")).toHaveText("Requested");
+      await expect(detail.currentStep()).toContainText("Assess");
+    });
   });
 });
 });
