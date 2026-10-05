@@ -16,7 +16,11 @@
 
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/paging"
+)
 
 func TestEscalationStartProblem(t *testing.T) {
 	cases := []struct {
@@ -41,6 +45,24 @@ func TestEscalationStartProblem(t *testing.T) {
 		problem := escalationStartProblem(c.rosterInvalid, c.rosterEmpty, c.teamSchedule, c.entity)
 		if (problem == "") != c.wantStart {
 			t.Errorf("%s: problem = %q, want start = %v", c.name, problem, c.wantStart)
+		}
+	}
+}
+
+// With no configuration file, the SRE ladder runs only on the Team Schedule:
+// the roster resolver ignores which ladder asks, so an SRE engine on it would
+// call the same roster people a second time.
+func TestLoadEscalationConfig_NoFileRunsSREOnlyOnTheTeamSchedule(t *testing.T) {
+	t.Setenv("INCIDENT_ESCALATION_CONFIG", "")
+	t.Setenv("INCIDENT_ESCALATION_ENABLED", "")
+	for resolver, want := range map[string]bool{"": false, "roster": false, "team-schedule": true} {
+		t.Setenv("INCIDENT_ESCALATION_RESOLVER", resolver)
+		cfg, err := loadEscalationConfig(paging.ChannelCall)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.SRE.Enabled != want || !cfg.CRE.Enabled {
+			t.Errorf("resolver %q: SRE enabled=%v CRE enabled=%v, want SRE %v and CRE on", resolver, cfg.SRE.Enabled, cfg.CRE.Enabled, want)
 		}
 	}
 }

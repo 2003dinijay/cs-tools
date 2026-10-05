@@ -456,6 +456,9 @@ func TestEngines_DivideIncidentsByTeam(t *testing.T) {
 		{"Atlas", "HIGH", true, false},
 		{"Atlas", "P0", true, true},
 		{"Atlas", "CATASTROPHIC", true, true},
+		// An incident's highest priority: no incident is CATASTROPHIC.
+		{"Atlas", "CRITICAL", true, true},
+		{"Apollo", "CRITICAL", false, true},
 	} {
 		creStore, sreStore := newMemStore(), newMemStore()
 		cre, sre := ladderEngine(LadderCRE, &fakeChat{}, creStore), ladderEngine(LadderSRE, &fakeChat{}, sreStore)

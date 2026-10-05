@@ -346,7 +346,7 @@ teams (`cre-team`) matches them but leaves the decision to that ladder's own
 
     cre-team      team [cre, none]                       -> cre
     sre-abt-team  team [sre]                             -> sre   (sheet "Yes" rows)
-    cre-p0        team [cre], priority [P0]              -> sre
+    cre-p0        team [cre], priority [P0, CRITICAL]    -> sre
     monitoring    contactType [AZURE, SITE_247, SENTINEL]-> sre   (sheet "No" rows)
 
 `contactType` comes from entity-service's `incident.created`
@@ -404,17 +404,20 @@ E.164) or `INCIDENT_ESCALATION_TEST_CALL_TO` (every call to one number) fill
 them through `TeamScheduleResolver.WithPhoneBook`. A chat-only ladder needs
 neither.
 
-**Where alert-born incidents come from, and the gap.** `sre-alert-core-service`
-creates the CSM incident (`engine.deliverAndPersist` -> `notify.NotifyCSM` ->
-`POST /incidents` on csm-integration-service, which passes the body through
-to entity-service), and entity-service publishes `incident.created` from
-`publishIncidentCreatedEvent` on the `servicenow` and dual-write data sources
-(plain `postgres` returns 503 and publishes nothing, which is why the local
-end-to-end tools publish the event themselves). Its create request sets
-neither `assignmentGroupId` nor `contactType`, so unless ServiceNow fills the
-group in itself, an alert-born incident matches no SRE routing rule and gets
-no ladder. Setting both from the alert's `Source` and its service's support
-group is a separate change in `sre-alert-core-service`, not part of this one.
+**Where alert-born incidents come from.** `sre-alert-core-service` creates the
+CSM incident (`engine.deliverAndPersist` -> `notify.NotifyCSM` -> `POST
+/incidents` on csm-integration-service, which passes the body through to
+entity-service). entity-service publishes `incident.created` through
+`publishIncidentCreatedEvent` on every data source, plain `postgres` included,
+once the insert commits; the event is enriched from the stored incident, so it
+carries the team, priority and contact type routing reads. The create request
+sends `contactType` when the alert's source has one (AZURE, SITE_247,
+SENTINEL), which the `monitoring` rule matches. It sends no assignment group:
+entity-service assigns the incident to its service's support group (#2353), and
+that group's family is what the `sre-abt-team` rule matches. The local
+end-to-end tools (`sre-e2e.sh`, `trigger-escalation.sh`) still publish the
+event themselves, through `entity-service/internal/tools/publishincident`, to
+drive a ladder without creating an incident.
 
 **Wiring** (`cmd/server/main.go`): inside the Redis block, started only when
 the ladder has somebody to resolve rungs from (`escalationStartProblem`): the

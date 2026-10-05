@@ -406,6 +406,19 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 
 	st := LadderState{Plan: plan, Placed: make([]bool, len(plan.Calls))}
 	if replace {
+		// A replay of the elevation this ladder was built from -- a redelivery, or
+		// the same record dead-lettered by the other ladder's engine and read back
+		// by this one's DLQ consumer -- must not restart it: a fresh state marks
+		// every call unplaced, and those already due would be dialled again.
+		running, found, err := e.store.Get(ctx, t.IncidentID)
+		if err != nil {
+			return fmt.Errorf("escalation: read running ladder for %s: %w", t.IncidentID, err)
+		}
+		if found && sameElevation(running.Plan.Trigger, t) {
+			slog.InfoContext(ctx, "escalation: elevation already applied to the running ladder; ignoring the replay",
+				"incidentId", t.IncidentID, "priority", t.Priority, "elevatedAt", t.At.Format(time.RFC3339))
+			return nil
+		}
 		previous, hadOne, err := e.retireRunning(ctx, t.IncidentID)
 		if err != nil {
 			return err
@@ -538,6 +551,13 @@ func (e *Engine) classify(ctx context.Context, t Trigger) Ladder {
 		return LadderCRE
 	}
 	return ladder
+}
+
+// sameElevation reports whether running was built from the very elevation t
+// carries: the same trigger kind, instant and priority.
+func sameElevation(running, t Trigger) bool {
+	return running.Kind == TriggerPriorityElevated && t.Kind == TriggerPriorityElevated &&
+		running.At.Equal(t.At) && NormalisePriority(running.Priority) == NormalisePriority(t.Priority)
 }
 
 func ladderName(l Ladder) string {

@@ -1257,7 +1257,11 @@ func loadEscalationConfig(envChannel paging.Channel) (paging.Config, error) {
 	cfg := paging.Config{
 		Enabled: true,
 		CRE:     paging.LadderConfig{Enabled: true, Channel: envChannel},
-		SRE: paging.LadderConfig{Enabled: true, Channel: envChannel,
+		// Only the Team Schedule knows SRE tiers. The roster resolver ignores
+		// which ladder asks, so an SRE engine on it would call the same roster
+		// people a second time; without a file, a roster deployment keeps the
+		// CRE ladder alone, as it had before the SRE one existed.
+		SRE: paging.LadderConfig{Enabled: os.Getenv("INCIDENT_ESCALATION_RESOLVER") == "team-schedule", Channel: envChannel,
 			// The file's sre.timing.includeL4, for a deployment without one.
 			Timing: paging.SRETiming{IncludeL4: os.Getenv("INCIDENT_ESCALATION_SRE_L4") == "true"}},
 	}

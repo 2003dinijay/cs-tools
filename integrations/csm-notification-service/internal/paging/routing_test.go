@@ -334,3 +334,25 @@ func TestABTEligibility_SurvivesJSON(t *testing.T) {
 		})
 	}
 }
+
+// A rule may spell a priority as a code, a label or an S-code, and it matches an
+// incident carrying any of them: both sides are compared in P-notation.
+func TestRouteWhen_PriorityMatchesEverySpelling(t *testing.T) {
+	for _, tc := range []struct {
+		rule, incident string
+		want           bool
+	}{
+		{"P0", "CATASTROPHIC", true},
+		{"CATASTROPHIC", "P0", true},
+		{"S0", "CATASTROPHIC", true},
+		{"S1", "CRITICAL", true},
+		{"critical", "P1", true},
+		{"P0", "CRITICAL", false},
+		{"P0", "", false},
+	} {
+		got := RouteWhen{Priority: []string{tc.rule}}.matches(RouteInput{Priority: tc.incident})
+		if got != tc.want {
+			t.Errorf("rule %q vs incident %q: matched=%v, want %v", tc.rule, tc.incident, got, tc.want)
+		}
+	}
+}

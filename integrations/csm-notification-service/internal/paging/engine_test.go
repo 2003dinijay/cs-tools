@@ -1118,3 +1118,43 @@ func acknowledgeFully(t *testing.T, e *Engine) {
 		t.Fatal(err)
 	}
 }
+
+// A replay of the elevation a ladder was built from -- a redelivery, or the
+// record dead-lettered by the other ladder's engine and read back here -- must
+// leave the running ladder alone: restarting it would mark every call unplaced
+// and dial again everyone already called.
+func TestEngine_ReplayedElevationDoesNotRestartTheLadder(t *testing.T) {
+	store, caller := newMemStore(), &fakeCaller{}
+	e := testEngine(store, caller, &fakeNotes{}, enabled())
+	at := ist(2026, 9, 9, 10, 0)
+	if err := e.Handle(context.Background(), createdEvent(t, "LOW", at)); err != nil {
+		t.Fatal(err)
+	}
+	elevated := record(t, events.TypeIncidentPriorityElevated, events.IncidentPriorityElevatedPayload{
+		OldPriority: "LOW", NewPriority: "CRITICAL", Title: "Gateway returning 500s in production",
+		Number: "INC0012345", Team: "Atlas", ABTEligible: abtYes(),
+		ElevatedAt: at.Add(time.Minute).Format(time.RFC3339),
+	})
+	if err := e.Handle(context.Background(), elevated); err != nil {
+		t.Fatal(err)
+	}
+	// The elevated ladder's first call has gone out.
+	st, _, _ := store.Get(context.Background(), testIncidentID)
+	st.Placed[0] = true
+	if err := store.Save(context.Background(), testIncidentID, st); err != nil {
+		t.Fatal(err)
+	}
+	wakes := len(store.wakes)
+
+	if err := e.Handle(context.Background(), elevated); err != nil {
+		t.Fatal(err)
+	}
+
+	after, found, _ := store.Get(context.Background(), testIncidentID)
+	if !found || !after.Placed[0] {
+		t.Fatal("the replayed elevation restarted the ladder: its first call is no longer marked placed")
+	}
+	if len(store.wakes) != wakes {
+		t.Errorf("%d wake entries after the replay, want %d unchanged", len(store.wakes), wakes)
+	}
+}

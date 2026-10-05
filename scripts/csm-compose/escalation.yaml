@@ -49,9 +49,11 @@ routing:
       when: { team: [sre] }
       ladders: [sre]
 
-    # A P0 raised on the CRE side needs both teams at once.
+    # A P0 raised on the CRE side needs both teams at once. An incident's
+    # highest priority is CRITICAL (incidents carry no CATASTROPHIC), so it
+    # counts as the CRE side's P0 here.
     - name: cre-p0
-      when: { team: [cre], priority: [P0] }
+      when: { team: [cre], priority: [P0, CRITICAL] }
       ladders: [sre]
 
     # The SRE rules sheet's "= No" rows: raised by monitoring, climbs the SRE

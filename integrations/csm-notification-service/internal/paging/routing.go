@@ -58,7 +58,8 @@ type RouteWhen struct {
 	// SENTINEL for monitoring sources, EMAIL, PHONE and so on for people.
 	// Punctuation is ignored, so SITE_247 also matches SITE_24_7.
 	ContactType []string `yaml:"contactType"`
-	// Priority accepts codes and labels alike: P0 also matches CATASTROPHIC.
+	// Priority accepts codes, labels and S-codes alike, compared in
+	// P-notation: P0, CATASTROPHIC and S0 are one priority.
 	Priority []string `yaml:"priority"`
 }
 
@@ -78,8 +79,10 @@ var DefaultRouting = Routing{Rules: []RouteRule{
 	{Name: "cre-team", When: RouteWhen{Team: []string{TeamFamilyCRE, TeamFamilyNone}}, Ladders: []string{LadderKeyCRE}},
 	// The rules sheet's "Is assigned to an SRE ABT team = Yes" rows.
 	{Name: "sre-abt-team", When: RouteWhen{Team: []string{TeamFamilySRE}}, Ladders: []string{LadderKeySRE}},
-	// A P0 raised on the CRE side needs both teams at once.
-	{Name: "cre-p0", When: RouteWhen{Team: []string{TeamFamilyCRE}, Priority: []string{"P0"}}, Ladders: []string{LadderKeySRE}},
+	// A P0 raised on the CRE side needs both teams at once. An incident's
+	// highest priority is CRITICAL (incidents carry no CATASTROPHIC), so that
+	// counts as the CRE side's P0 here; P0 itself still covers case severities.
+	{Name: "cre-p0", When: RouteWhen{Team: []string{TeamFamilyCRE}, Priority: []string{"P0", "CRITICAL"}}, Ladders: []string{LadderKeySRE}},
 	// The rules sheet's "= No" rows: raised by monitoring, whatever the team.
 	{Name: "monitoring", When: RouteWhen{ContactType: []string{"AZURE", "SITE_247", "SENTINEL"}}, Ladders: []string{LadderKeySRE}},
 }}
@@ -138,9 +141,20 @@ func (r RouteRule) AdmitsNoTeam() bool {
 	return len(r.When.Team) == 0
 }
 
+// containsPriority compares both sides in one spelling, P-notation, so a rule
+// may name a priority as a code, a label or an S-code (P0, CATASTROPHIC, S0)
+// and match an incident carrying any of them.
 func containsPriority(list []string, priority string) bool {
-	alias := priorityAliases[strings.ToUpper(strings.TrimSpace(priority))]
-	return contains(list, priority) || (alias != "" && contains(list, alias))
+	want := NormalisePriority(priority)
+	if want == "" {
+		return false
+	}
+	for _, p := range list {
+		if NormalisePriority(p) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // containsContact compares contact types ignoring case and punctuation, so
