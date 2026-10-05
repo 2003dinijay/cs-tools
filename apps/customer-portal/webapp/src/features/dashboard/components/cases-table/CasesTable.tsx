@@ -23,7 +23,7 @@ import {
   type ChangeEvent,
 } from "react";
 import { useModifierAwareNavigate } from "@hooks/useModifierAwareNavigate";
-import { useAsgardeo } from "@asgardeo/react";
+import { useAsgardeo } from "@hooks/useStableAsgardeo";
 import useGetProjectCases from "@api/useGetProjectCases";
 import { useGetProjectCasesPage } from "@api/useGetProjectCasesPage";
 import useGetProjectFilters from "@api/useGetProjectFilters";

@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { useAsgardeo } from "@asgardeo/react";
+import { useAsgardeo } from "@hooks/useStableAsgardeo";
 import { useQuery } from "@tanstack/react-query";
 import { useAuthApiClient } from "@/hooks/useAuthApiClient";
 import { ApiQueryKeys } from "@constants/apiConstants";

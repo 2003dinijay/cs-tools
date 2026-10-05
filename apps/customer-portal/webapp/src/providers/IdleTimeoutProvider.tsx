@@ -16,7 +16,7 @@
 
 import { useIdleTimer } from "react-idle-timer";
 import { useState, type JSX, type ReactNode } from "react";
-import { useAsgardeo } from "@asgardeo/react";
+import { useAsgardeo } from "@hooks/useStableAsgardeo";
 import SessionWarningDialog from "@components/SessionWarningDialog";
 import {
   IDLE_TIMEOUT_MS,

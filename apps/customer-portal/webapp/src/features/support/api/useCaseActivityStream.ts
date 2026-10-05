@@ -16,7 +16,7 @@
 
 import { useEffect } from "react";
 import EventSourcePolyfill from "@sanity/eventsource";
-import { useAsgardeo } from "@asgardeo/react";
+import { useAsgardeo } from "@hooks/useStableAsgardeo";
 import { useQueryClient } from "@tanstack/react-query";
 import { apiConfig } from "@config/apiConfig";
 import { ApiQueryKeys } from "@constants/apiConstants";

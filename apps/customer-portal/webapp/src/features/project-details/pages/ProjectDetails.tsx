@@ -17,7 +17,7 @@
 import { Box, Typography, Grid } from "@wso2/oxygen-ui";
 import { useLocation, useParams } from "react-router";
 import { useState, useEffect, useMemo, type JSX } from "react";
-import { useAsgardeo } from "@asgardeo/react";
+import { useAsgardeo } from "@hooks/useStableAsgardeo";
 import TabBar from "@components/tab-bar/TabBar";
 import {
   PROJECT_DETAILS_INVALID_PROJECT_ID_MESSAGE,

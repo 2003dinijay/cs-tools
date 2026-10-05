@@ -19,7 +19,7 @@ import { useModifierAwareNavigate } from "@hooks/useModifierAwareNavigate";
 import { useEffect, useMemo, type JSX } from "react";
 import { Grid, Stack } from "@wso2/oxygen-ui";
 import { FileText, MessageSquare } from "@wso2/oxygen-ui-icons-react";
-import { useAsgardeo } from "@asgardeo/react";
+import { useAsgardeo } from "@hooks/useStableAsgardeo";
 import CasesOverviewStatCard from "@features/support/components/cases-overview-stats/CasesOverviewStatCard";
 import SupportOverviewCard from "@features/support/components/support-overview-cards/SupportOverviewCard";
 import { SupportOverviewIconVariant } from "@features/support/types/supportOverview";

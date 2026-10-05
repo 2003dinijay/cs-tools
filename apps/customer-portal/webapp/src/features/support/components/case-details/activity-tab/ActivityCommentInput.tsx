@@ -26,7 +26,7 @@ import { ArrowUp } from "@wso2/oxygen-ui-icons-react";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { usePostComment } from "@features/support/api/usePostComment";
 import { usePostAttachments } from "@features/support/api/usePostAttachments";
-import { useAsgardeo } from "@asgardeo/react";
+import { useAsgardeo } from "@hooks/useStableAsgardeo";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { hasSubmittableEditorContent } from "@features/support/utils/support";
 import { usePiiGuard } from "@features/support/hooks/usePiiGuard";

@@ -44,7 +44,7 @@ import useGetUserDetails from "@features/settings/api/useGetUserDetails";
 import { hasPartnerAccess } from "@features/settings/constants/settingsConstants";
 import { clearLastSelectedProject } from "@features/settings/utils/settingsStorage";
 import { ChevronUp, FolderOpen, Search, X } from "@wso2/oxygen-ui-icons-react";
-import { useAsgardeo } from "@asgardeo/react";
+import { useAsgardeo } from "@hooks/useStableAsgardeo";
 import EmptyIcon from "@components/empty-state/EmptyIcon";
 import SearchNoResultsIcon from "@components/empty-state/SearchNoResultsIcon";
 import ApiErrorState from "@components/error/ApiErrorState";
