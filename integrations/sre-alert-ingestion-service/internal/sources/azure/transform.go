@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"strings"
 
+	"sre-alert-ingestion-service/internal/model"
 	"sre-alert-ingestion-service/internal/sources/jsonnum"
 	"sre-alert-ingestion-service/utils"
 )
@@ -52,16 +53,7 @@ var severityMap = map[string]string{
 var ErrMissingBody = errors.New("MISSING REQUEST BODY DATA")
 
 // Alert is the canonical alert model handed to the core component.
-type Alert struct {
-	Service          string `json:"service"`
-	MetricName       string `json:"metric_name"`
-	Severity         string `json:"severity"`
-	Category         string `json:"category"`
-	Environment      string `json:"environment"`
-	Source           string `json:"source"`
-	UniqueIdentifier string `json:"unique_identifier"`
-	Description      string `json:"description"`
-}
+type Alert = model.Alert
 
 // Config holds operator overrides, keyed the same way as defaults; any field left empty falls back to the default.
 type Config map[string]string
