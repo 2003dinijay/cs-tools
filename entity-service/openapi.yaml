@@ -13204,6 +13204,13 @@ components:
         description:
           type: string
           description: Description of the deployed product.
+        category:
+          type: string
+          enum: [pdp, ms, ps, cl, pc]
+          description: >-
+            Optional product category/classification (PDP/MS/PS/CL/PC). Postgres-only --
+            never forwarded to the ServiceNow mirror under dual-write, since ServiceNow's own
+            create payload has no equivalent field.
 
     CreateDeployedProductResponse:
       type: object
@@ -13227,7 +13234,7 @@ components:
 
     UpdateDeployedProductRequest:
       oneOf:
-        - description: Update deployed product detail fields. At least one of cores, tps, description, or updates must be provided.
+        - description: Update deployed product detail fields. At least one of cores, tps, description, category, or updates must be provided.
           type: object
           minProperties: 1
           additionalProperties: false
@@ -13248,6 +13255,12 @@ components:
               type: string
               nullable: true
               description: Description of the deployed product.
+            category:
+              type: string
+              enum: [pdp, ms, ps, cl, pc]
+              description: >-
+                Optional product category/classification (PDP/MS/PS/CL/PC). Postgres-only --
+                never forwarded to the ServiceNow mirror under dual-write.
             updates:
               type: array
               items:
