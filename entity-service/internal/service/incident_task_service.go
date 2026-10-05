@@ -144,9 +144,7 @@ func (s *incidentTaskService) GetIncidentTask(ctx context.Context, id string) (d
 }
 
 // UpdateIncidentTask implements IncidentTaskService for Postgres. State is
-// an incident_task_state_enum label, matched case-insensitively; closing a
-// task is what lets its incident be closed (see
-// IncidentRepository.UpdateIncidentLifecycle). Tasks are created in
+// an incident_task_state_enum label, matched case-insensitively. Tasks are created in
 // Postgres by the incident flows and have no ServiceNow copy, so there is no
 // mirror write.
 func (s *incidentTaskService) UpdateIncidentTask(ctx context.Context, req domain.UpdateIncidentTaskRequest) (domain.IncidentTaskDetail, error) {

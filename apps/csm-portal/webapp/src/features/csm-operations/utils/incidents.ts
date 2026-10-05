@@ -272,8 +272,8 @@ export function incidentRelatedTabPath(incidentId: string): string {
   return `/operations/incidents/${encodeURIComponent(incidentId)}?tab=related`;
 }
 
-/** Closed incident-task states. Any other state (or none) is still open,
- * and an incident with an open task cannot be closed. */
+/** Closed incident-task states (ServiceNow's 3, 4, 7). Any other state, or
+ * none, is still open. */
 export const CLOSED_INCIDENT_TASK_STATES: readonly string[] = [
   "CLOSED_COMPLETE",
   "CLOSED_INCOMPLETE",

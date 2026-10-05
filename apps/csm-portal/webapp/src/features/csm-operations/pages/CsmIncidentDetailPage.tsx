@@ -75,9 +75,7 @@ import {
   incidentPriorityLabel,
   incidentStateColor,
   incidentStateLabel,
-  isIncidentTaskOpen,
 } from "@features/csm-operations/utils/incidents";
-import { useSearchIncidentTasks } from "@features/csm-operations/api/useSearchIncidentTasks";
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
 import CsmCaseCommentInput from "@features/csm-cases/components/CsmCaseCommentInput";
 import {
@@ -215,17 +213,6 @@ export default function CsmIncidentDetailPage(): JSX.Element {
     | undefined;
   const backTarget = backState?.from ?? OPERATIONS_INCIDENTS_PATH;
   const { data, isLoading, isError } = useGetIncident(id);
-  // Same query (and cache entry) as the Related tab's IncidentTasksWidget.
-  // An incident closes only once all its tasks are closed; the backend
-  // enforces that too, this just says why Close is unavailable.
-  const { data: taskData } = useSearchIncidentTasks(id);
-  const openTaskCount = (taskData?.tasks ?? []).filter((t) => isIncidentTaskOpen(t.state)).length;
-  const blockedTargets =
-    openTaskCount > 0
-      ? {
-          CLOSED: `Close ${openTaskCount === 1 ? "the open incident task" : `all ${openTaskCount} open incident tasks`} first (Related tab).`,
-        }
-      : undefined;
   // The incident number as the short chip label (matching `CsmCaseDetailPage`'s
   // own `caseNumber`-only report); incidents have no separate project-scoped
   // id the way cases do, so the tooltip's `internalId` reuses the same
@@ -642,7 +629,6 @@ export default function CsmIncidentDetailPage(): JSX.Element {
                 incident={incident}
                 isPending={patchIncident.isPending}
                 onAction={onIncidentAction}
-                blockedTargets={blockedTargets}
               />
               <Button
                 variant="outlined"

@@ -189,8 +189,9 @@ type IncidentRepository interface {
 // Closed need a resolution code and resolution notes, taken from the request
 // or already on the record. Entering Resolved stamps resolved_on, and
 // resolved_by_id from ResolvedByID, falling back to DefaultResolvedByID.
-// Entering Closed also needs every incident task of the incident closed;
-// otherwise it is a ConflictError naming the open ones.
+// Entering Closed or Canceled also closes the incident's open incident tasks,
+// as ServiceNow's "Cascade closure of Incident Tasks" does (see
+// cascadeIncidentTaskClosure).
 type IncidentLifecycleUpdate struct {
 	State               *string // incident_state_enum label
 	AssignedEngineerID  *string
@@ -904,8 +905,7 @@ func (r *incidentRepo) UpdateIncidentLifecycle(ctx context.Context, id string, u
 	}
 	var ve *apierror.ValidationError
 	var nfe *apierror.NotFoundError
-	var ce *apierror.ConflictError
-	if errors.As(err, &ve) || errors.As(err, &nfe) || errors.As(err, &ce) {
+	if errors.As(err, &ve) || errors.As(err, &nfe) {
 		return err
 	}
 	if IsRLSPolicyViolation(err) {
@@ -921,39 +921,64 @@ func (r *incidentRepo) UpdateIncidentLifecycle(ctx context.Context, id string, u
 	return fmt.Errorf("update incident: %w", err)
 }
 
-// checkNoOpenIncidentTasks returns a ConflictError naming the incident's
-// open tasks (any state outside domain.IncidentTaskClosedStates; a NULL
-// state counts as open) when it has any. An incident is only closed once
-// every one of its tasks is.
-func checkNoOpenIncidentTasks(ctx context.Context, tx pgx.Tx, incidentID string) error {
+// Work notes ServiceNow's OOB "Cascade closure of Incident Tasks" writes on
+// each task it closes (incident, after insert/update, state changes to
+// Closed or Canceled; on when com.snc.incident.incident_task.closure is
+// "true", as it is on WSO2's instance). Discovery scripts 57-59 in
+// integrations/csm-flow-service/docs/servicenow-discovery have the evidence.
+const (
+	incidentTaskClosedOnCloseNote  = "Incident Task is Closed Incomplete based on closure of %s."
+	incidentTaskClosedOnCancelNote = "Incident Task is Closed Skipped based on cancelation of %s."
+)
+
+// cascadeIncidentTaskClosure ports "Cascade closure of Incident Tasks": when
+// the incident moves to CLOSED every active, open incident task becomes
+// CLOSED_INCOMPLETE; when it moves to CANCELED they become CLOSED_SKIPPED.
+// Each gets ServiceNow's work note, written as the acting user. Tasks
+// already in a closed state are left alone, as is a task with
+// is_active = false (ServiceNow's addActiveQuery). A NULL state counts as
+// open.
+//
+// The task side effects match ServiceNow's task rules ("mark closed" and
+// "Set Closure Fields"): is_active false, and closed_on / closed_by_id set
+// only when empty.
+func cascadeIncidentTaskClosure(ctx context.Context, tx pgx.Tx, incidentID, incidentNumber, incidentState, actorEmail string) error {
+	var taskState, note string
+	switch incidentState {
+	case "CLOSED":
+		taskState, note = "CLOSED_INCOMPLETE", fmt.Sprintf(incidentTaskClosedOnCloseNote, incidentNumber)
+	case "CANCELED":
+		taskState, note = "CLOSED_SKIPPED", fmt.Sprintf(incidentTaskClosedOnCancelNote, incidentNumber)
+	default:
+		return nil
+	}
 	closed := make([]string, 0, len(domain.IncidentTaskClosedStates))
 	for s := range domain.IncidentTaskClosedStates {
 		closed = append(closed, s)
 	}
-	rows, err := tx.Query(ctx, `
-		SELECT wi.number
-		FROM incident_task it
-		JOIN work_item wi ON wi.id = it.id
-		WHERE it.incident_id = $1
-		  AND (it.state IS NULL OR NOT (it.state::TEXT = ANY($2::text[])))
-		ORDER BY wi.number`, incidentID, closed)
-	if err != nil {
-		return fmt.Errorf("update incident: read open tasks: %w", err)
-	}
-	defer rows.Close()
-	var open []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			return fmt.Errorf("update incident: scan open task: %w", err)
-		}
-		open = append(open, n)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("update incident: read open tasks: %w", err)
-	}
-	if len(open) > 0 {
-		return &apierror.ConflictError{Msg: "close this incident's open tasks before closing it: " + strings.Join(open, ", ")}
+	if _, err := tx.Exec(ctx, `
+		WITH closed AS (
+			UPDATE incident_task it
+			SET state = $2::TEXT::incident_task_state_enum,
+			    is_active = FALSE,
+			    closed_on = COALESCE(it.closed_on, NOW()),
+			    closed_by_id = COALESCE(it.closed_by_id, (SELECT id FROM "user" WHERE LOWER(email) = LOWER($3) LIMIT 1))
+			WHERE it.incident_id = $1
+			  AND it.is_active = TRUE
+			  AND (it.state IS NULL OR NOT (it.state::TEXT = ANY($4::text[])))
+			RETURNING it.id
+		), touched AS (
+			UPDATE work_item wi
+			SET updated_on = NOW(), updated_by = $3
+			FROM closed
+			WHERE wi.id = closed.id
+			RETURNING wi.id
+		)
+		INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
+		SELECT gen_random_uuid(), NOW(), $3, $5::comment_type_enum, touched.id, $6
+		FROM touched`,
+		incidentID, taskState, actorEmail, closed, caseCommentTypeEnum[domain.CommentTypeWorkNote], note); err != nil {
+		return fmt.Errorf("update incident: close incident tasks: %w", err)
 	}
 	return nil
 }
@@ -964,14 +989,14 @@ func checkNoOpenIncidentTasks(ctx context.Context, tx pgx.Tx, incidentID string)
 // for updated_on/updated_by, plus the assignee) and incident (state and
 // resolution columns, only when one is being set).
 func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx, id string, u IncidentLifecycleUpdate, actorEmail string) error {
-	var currentState string
+	var currentState, number string
 	var currentCode, currentNotes *string
 	err := tx.QueryRow(ctx, `
-		SELECT inc.state::text, inc.resolution_code::text, inc.close_notes
+		SELECT inc.state::text, inc.resolution_code::text, inc.close_notes, wi.number
 		FROM incident inc
 		JOIN work_item wi ON wi.id = inc.id
 		WHERE inc.id = $1
-		FOR UPDATE OF inc`, id).Scan(&currentState, &currentCode, &currentNotes)
+		FOR UPDATE OF inc`, id).Scan(&currentState, &currentCode, &currentNotes, &number)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &apierror.NotFoundError{Msg: "incident not found"}
 	}
@@ -989,12 +1014,6 @@ func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx,
 		}
 		if code == nil || *code == "" || notes == nil || strings.TrimSpace(*notes) == "" {
 			return &apierror.ValidationError{Msg: "resolutionCode and resolutionNotes are required to move an incident to " + *u.State}
-		}
-	}
-
-	if u.State != nil && *u.State == "CLOSED" && currentState != "CLOSED" {
-		if err := checkNoOpenIncidentTasks(ctx, tx, id); err != nil {
-			return err
 		}
 	}
 
@@ -1051,6 +1070,10 @@ func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx,
 		incArgs...,
 	); err != nil {
 		return err
+	}
+	// After the incident's own write, as ServiceNow's cascade is an after rule.
+	if u.State != nil && *u.State != currentState {
+		return cascadeIncidentTaskClosure(ctx, tx, id, number, *u.State, actorEmail)
 	}
 	return nil
 }

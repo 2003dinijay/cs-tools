@@ -63,11 +63,13 @@ type IncidentTaskRepository interface {
 	// its UUID, or a NotFoundError if no matching row exists.
 	GetIncidentTask(ctx context.Context, id string) (domain.IncidentTaskDetail, error)
 	// UpdateIncidentTask writes req.State and/or req.CloseNotes in one
-	// transaction. Entering a closed state (domain.IncidentTaskClosedStates)
-	// from an open one sets is_active false, closed_on now and closed_by_id
-	// to the "user" matching actorEmail (NULL when there is none); moving
-	// from closed back to open sets is_active true and clears both. Returns
-	// a NotFoundError if id is not an incident task.
+	// transaction, with ServiceNow's task-table side effects ("mark closed",
+	// "Set Closure Fields", "task reopener"): entering a closed state
+	// (domain.IncidentTaskClosedStates) from an open one sets is_active
+	// false, and closed_on / closed_by_id (the "user" matching actorEmail)
+	// only where they are still empty; moving back to an open state sets
+	// is_active true and keeps closed_on / closed_by_id, as ServiceNow does.
+	// Returns a NotFoundError if id is not an incident task.
 	UpdateIncidentTask(ctx context.Context, req domain.UpdateIncidentTaskRequest, actorEmail string) error
 }
 
@@ -362,10 +364,10 @@ func (r *incidentTaskRepo) UpdateIncidentTask(ctx context.Context, req domain.Up
 			closing := domain.IncidentTaskClosedStates[*req.State]
 			switch {
 			case closing && !wasClosed:
-				sets = append(sets, "is_active = FALSE", "closed_on = NOW()")
-				add(`closed_by_id = (SELECT id FROM "user" WHERE LOWER(email) = LOWER($%d) LIMIT 1)`, actorEmail)
+				sets = append(sets, "is_active = FALSE", "closed_on = COALESCE(closed_on, NOW())")
+				add(`closed_by_id = COALESCE(closed_by_id, (SELECT id FROM "user" WHERE LOWER(email) = LOWER($%d) LIMIT 1))`, actorEmail)
 			case !closing && wasClosed:
-				sets = append(sets, "is_active = TRUE", "closed_on = NULL", "closed_by_id = NULL")
+				sets = append(sets, "is_active = TRUE")
 			}
 		}
 		if req.CloseNotes != nil {

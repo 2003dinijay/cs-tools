@@ -7558,8 +7558,10 @@ paths:
         Change an incident task's state and/or close notes (Postgres data sources only).
       description: >-
         Closing a task (CLOSED_COMPLETE, CLOSED_INCOMPLETE or CLOSED_SKIPPED) sets it
-        inactive and records when and by whom; moving it back to an open state reverses
-        that. An incident can only be closed once every one of its tasks is closed.
+        inactive and records when and by whom, unless already recorded; moving it back to
+        an open state makes it active again and keeps those, as ServiceNow does. Closing or
+        canceling the parent incident closes any task still open (Closed Incomplete /
+        Closed Skipped), as ServiceNow's "Cascade closure of Incident Tasks" does.
       operationId: updateIncidentTask
       parameters:
         - name: id

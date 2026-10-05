@@ -6126,9 +6126,10 @@ type SearchIncidentTasksResponse struct {
 	Limit         int            `json:"limit"`
 }
 
-// IncidentTaskClosedStates are incident_task_state_enum's closed labels. A
-// task in any other state (PENDING, OPEN, WORK_IN_PROGRESS) is still open
-// and keeps its incident from being closed.
+// IncidentTaskClosedStates are incident_task_state_enum's closed labels
+// (ServiceNow's SYSTEM_INACTIVE_STATES 3, 4, 7). A task in any other state
+// (PENDING, OPEN, WORK_IN_PROGRESS) is still open, and is closed for it when
+// its incident is closed or canceled.
 var IncidentTaskClosedStates = map[string]bool{
 	"CLOSED_COMPLETE":   true,
 	"CLOSED_INCOMPLETE": true,

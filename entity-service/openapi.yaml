@@ -7943,6 +7943,12 @@ paths:
 
     patch:
       summary: Partially update an incident (ServiceNow data source only).
+      description: >-
+        On postgres-servicenow-dual-write, moving the incident to CLOSED also moves each of
+        its open incident tasks to CLOSED_INCOMPLETE, and moving it to CANCELED moves them
+        to CLOSED_SKIPPED, each with ServiceNow's work note ("Incident Task is Closed
+        Incomplete based on closure of INC..."), in the same transaction -- a port of
+        ServiceNow's "Cascade closure of Incident Tasks".
       operationId: updateIncident
       parameters:
         - name: id
@@ -7978,14 +7984,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Incident not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "409":
-          description: >-
-            Moving the incident to CLOSED while any of its incident tasks is still open;
-            the message names the open tasks.
           content:
             application/json:
               schema:
@@ -9105,8 +9103,10 @@ paths:
         Change an incident task's state and/or close notes (Postgres data sources only).
       description: >-
         Closing a task (CLOSED_COMPLETE, CLOSED_INCOMPLETE or CLOSED_SKIPPED) sets it
-        inactive and records when and by whom; moving it back to an open state reverses
-        that. An incident can only be closed once every one of its tasks is closed.
+        inactive and records when and by whom, unless already recorded; moving it back to
+        an open state makes it active again and keeps those, as ServiceNow does. Closing or
+        canceling the parent incident closes any task still open (Closed Incomplete /
+        Closed Skipped), as ServiceNow's "Cascade closure of Incident Tasks" does.
       operationId: updateIncidentTask
       parameters:
         - name: id

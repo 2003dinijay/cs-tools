@@ -34,8 +34,7 @@ export interface PatchIncidentTaskInput {
 /**
  * Change an incident task's state and/or close notes via
  * `PATCH /incident-tasks/{id}`. The task detail and every incident's task
- * list are invalidated afterwards: the list drives whether the parent
- * incident's Close action is available.
+ * list are invalidated afterwards, so the Related tab shows the new state.
  */
 export function usePatchIncidentTask(): UseMutationResult<
   BeIncidentTaskDetail,
