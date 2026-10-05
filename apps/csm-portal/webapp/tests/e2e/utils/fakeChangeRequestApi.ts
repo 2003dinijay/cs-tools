@@ -45,17 +45,23 @@
 //     live, cancels every still-requested approver row, and is final (a later
 //     state change is a 400); the UI posts its reason as a comment first
 //     (`POST /change-requests/{id}/comments`, recorded in `journal()`);
-//   - customer group: when the CR has a customer group with at least one
-//     member, entering `customer_approval` / `customer_review` provisions a
-//     "Customer Approval" / "Customer Review" stage (assignment group = the
-//     customer group, approvers = its members). While that stage is live
+//   - customer group: the CR's Customer Group is READ-ONLY and derived from its
+//     Customer Project -- the project's registered contacts (`customerContacts`
+//     on the detail and on link-options; FAKE_PROJECT_CONTACTS). When the
+//     project has at least one eligible contact (not the creator), entering
+//     `customer_approval` / `customer_review` provisions a "Customer Approval" /
+//     "Customer Review" stage (approverName "Customer Group", approvers = the
+//     contacts), and changing the project replaces a live stage with one for the
+//     new project's contacts. `customerGroupId` is no longer accepted (400
+//     `customerGroupId is no longer accepted: ...`), nor is `environmentIds`
+//     (400 `environmentIds is no longer supported: ...`). While that stage is live
 //     (still has REQUESTED approvers) legalNextStates for those two states is
 //     [canceled] only, and the manual PATCH {state:"scheduled"} /
 //     {state:"closed"} is refused with a 400. A member's decision settles the
 //     stage (their co-members become NOT_REQUIRED): Customer Approval approved
 //     -> scheduled, rejected -> canceled; Customer Review approved -> closed,
-//     rejected -> rollback (terminal: legalNextStates none). With no customer group, or a group with no
-//     eligible member, no stage is provisioned and the manual paths above
+//     rejected -> rollback (terminal: legalNextStates none). With no project, or a
+//     project with no eligible contact, no stage is provisioned and the manual paths above
 //     remain. `canDecide` is true only on the signed-in member's own
 //     REQUESTED row of a live stage, never for the creator;
 //   - `customerApprovalRequired` / `customerReviewRequired` are on the detail
@@ -64,17 +70,16 @@
 //   - the CR's creator can never approve;
 //   - the customer scope (see FAKE_PROJECTS & co. below): `POST /projects/search`
 //     lists the fake projects, `POST /change-requests/link-options` answers the
-//     Customer Project -> Deployments -> Environments / Deployment products
-//     cascade, and `POST /change-requests` / `PATCH /change-requests/{id}` store
-//     `projectId` / `deploymentIds` / `environmentIds` / `deploymentProductIds` /
-//     `customerGroupId` / `category` / `comment` / `workNote` after the backend's
-//     own validation -- deployments must belong to the project, environments must
-//     be provided by a chosen deployment, deployment products must be exactly the
-//     derived set (all else a 400 with a readable message), and the project /
-//     deployments / environments are locked from `implement` onwards. The detail
-//     response returns `project`, `deployments`, `environments`,
-//     `deploymentProducts`, `customerGroup`, `category` (EntityRef / EntityRef[] /
-//     the category enum value).
+//     Customer Project -> Deployments -> Deployment products cascade (plus the
+//     project's `customerContacts`), and `POST /change-requests` /
+//     `PATCH /change-requests/{id}` store `projectId` / `deploymentIds` /
+//     `deploymentProductIds` / `category` / `comment` / `workNote` after the
+//     backend's own validation -- deployments must belong to the project,
+//     deployment products must be exactly the derived set (all else a 400 with a
+//     readable message), and the project / deployments are locked from
+//     `implement` onwards. The detail response returns `project`, `deployments`,
+//     `deploymentProducts`, `customerContacts`, `category` (EntityRef /
+//     EntityRef[] / {id,name,email}[] / the category enum value).
 //
 
 
@@ -93,24 +98,20 @@ export const FAKE_PEER: FakeUser = { id: "00000000-0000-0000-0000-00000000e002",
 export const FAKE_CAB: FakeUser = { id: "00000000-0000-0000-0000-00000000e003", name: "Cam Cab", email: "cam.cab@example.com" };
 export const FAKE_ECAB: FakeUser = { id: "00000000-0000-0000-0000-00000000e004", name: "Eli Ecab", email: "eli.ecab@example.com" };
 
-/** Members of the CR's customer group (the customer-side approvers). */
+/** Registered contacts of the Acme project (its read-only Customer Group: the customer-side approvers). */
 export const FAKE_CUST_ONE: FakeUser = { id: "00000000-0000-0000-0000-00000000e005", name: "Mia Member", email: "mia.member@acme.example" };
 export const FAKE_CUST_TWO: FakeUser = { id: "00000000-0000-0000-0000-00000000e006", name: "Max Member", email: "max.member@acme.example" };
 /** Someone with no stake in the customer group. */
 export const FAKE_OUTSIDER: FakeUser = { id: "00000000-0000-0000-0000-00000000e007", name: "Olive Outsider", email: "olive.outsider@example.com" };
-
-export interface FakeCustomerGroup {
-  id: string;
-  name: string;
-  /** Eligible members; empty means the group has nobody to assign a stage to. */
-  members: FakeUser[];
-}
+/** The Beta project's only registered contact -- another customer's person. */
+export const FAKE_BETA_CONTACT: FakeUser = { id: "00000000-0000-0000-0000-00000000e008", name: "Bea Beta", email: "bea.beta@beta.example" };
 
 export const FAKE_CR_ID = "00000000-0000-0000-0000-00000000c001";
 
 // ---------------------------------------------------------------------------
-// Customer scope fixtures: two projects, each with deployments that are
-// instances of an environment, each deployment carrying deployed products.
+// Customer scope fixtures: three projects (Gamma has no deployments and no
+// registered contacts); each deployment has a type (its environment role) and
+// carries deployed products; each project has its own registered contacts.
 // ---------------------------------------------------------------------------
 
 export interface FakeRef {
@@ -120,7 +121,6 @@ export interface FakeRef {
 export interface FakeDeployment extends FakeRef {
   projectId: string;
   type: string;
-  environmentId: string;
 }
 export interface FakeDeploymentProduct extends FakeRef {
   deploymentId: string;
@@ -129,16 +129,18 @@ export interface FakeDeploymentProduct extends FakeRef {
 export const FAKE_PROJECTS: FakeRef[] = [
   { id: "00000000-0000-0000-0000-00000000f001", name: "Acme Project" },
   { id: "00000000-0000-0000-0000-00000000f002", name: "Beta Project" },
+  { id: "00000000-0000-0000-0000-00000000f003", name: "Gamma Project" },
 ];
-export const FAKE_ENVIRONMENTS: FakeRef[] = [
-  { id: "00000000-0000-0000-0000-00000000e101", name: "Primary Production" },
-  { id: "00000000-0000-0000-0000-00000000e102", name: "Staging" },
-  { id: "00000000-0000-0000-0000-00000000e103", name: "Development" },
-];
+/** Each project's registered contacts: its read-only Customer Group (initial; see setProjectContacts). */
+export const FAKE_PROJECT_CONTACTS: Record<string, FakeUser[]> = {
+  [FAKE_PROJECTS[0]!.id]: [FAKE_CUST_ONE, FAKE_CUST_TWO],
+  [FAKE_PROJECTS[1]!.id]: [FAKE_BETA_CONTACT],
+  [FAKE_PROJECTS[2]!.id]: [],
+};
 export const FAKE_DEPLOYMENTS: FakeDeployment[] = [
-  { id: "00000000-0000-0000-0000-00000000d001", name: "Acme Production", projectId: FAKE_PROJECTS[0]!.id, type: "primary_production", environmentId: FAKE_ENVIRONMENTS[0]!.id },
-  { id: "00000000-0000-0000-0000-00000000d002", name: "Acme Staging", projectId: FAKE_PROJECTS[0]!.id, type: "staging", environmentId: FAKE_ENVIRONMENTS[1]!.id },
-  { id: "00000000-0000-0000-0000-00000000d003", name: "Beta Development", projectId: FAKE_PROJECTS[1]!.id, type: "development", environmentId: FAKE_ENVIRONMENTS[2]!.id },
+  { id: "00000000-0000-0000-0000-00000000d001", name: "Acme Production", projectId: FAKE_PROJECTS[0]!.id, type: "primary_production" },
+  { id: "00000000-0000-0000-0000-00000000d002", name: "Acme Staging", projectId: FAKE_PROJECTS[0]!.id, type: "staging" },
+  { id: "00000000-0000-0000-0000-00000000d003", name: "Beta Development", projectId: FAKE_PROJECTS[1]!.id, type: "development" },
 ];
 export const FAKE_DEPLOYMENT_PRODUCTS: FakeDeploymentProduct[] = [
   { id: "00000000-0000-0000-0000-00000000b001", name: "API Manager 4.3.0", deploymentId: FAKE_DEPLOYMENTS[0]!.id },
@@ -146,19 +148,13 @@ export const FAKE_DEPLOYMENT_PRODUCTS: FakeDeploymentProduct[] = [
   { id: "00000000-0000-0000-0000-00000000b003", name: "API Manager 4.2.0", deploymentId: FAKE_DEPLOYMENTS[1]!.id },
   { id: "00000000-0000-0000-0000-00000000b004", name: "Choreo 1.0.0", deploymentId: FAKE_DEPLOYMENTS[2]!.id },
 ];
+/** Assignment groups the Assignment group picker can search (the Customer Group is not searched: it is derived). */
 export const FAKE_GROUPS: FakeRef[] = [
-  { id: "00000000-0000-0000-0000-00000000a101", name: "Acme Customers" },
-  { id: "00000000-0000-0000-0000-00000000a102", name: "Beta Customers" },
+  { id: "00000000-0000-0000-0000-00000000a101", name: "Apollo" },
+  { id: "00000000-0000-0000-0000-00000000a102", name: "Artemis" },
 ];
 
-/** "Acme Customers" with two eligible members (Mia, Max); "Beta Customers" has
- * nobody, so a CR directed at it gets no customer stage (manual fallback). */
-export const FAKE_CUSTOMER_GROUP: FakeCustomerGroup = {
-  ...FAKE_GROUPS[0]!,
-  members: [FAKE_CUST_ONE, FAKE_CUST_TWO],
-};
-
-/** States from which project / deployments / environments can no longer change. */
+/** States from which project / deployments can no longer change. */
 const SCOPE_LOCKED = ["implement", "review", "customer_review", "closed", "rollback", "canceled"];
 
 const CATEGORIES = [
@@ -170,9 +166,7 @@ const CATEGORIES = [
 export interface FakeScope {
   projectId: string | null;
   deploymentIds: string[];
-  environmentIds: string[];
   deploymentProductIds: string[];
-  customerGroupId: string | null;
   category: string | null;
 }
 
@@ -185,9 +179,11 @@ export interface FakeRequestBody {
 const sameSet = (a: string[], b: string[]): boolean => a.length === b.length && a.every((x) => b.includes(x));
 const derivedProductIds = (deploymentIds: string[]): string[] =>
   FAKE_DEPLOYMENT_PRODUCTS.filter((p) => deploymentIds.includes(p.deploymentId)).map((p) => p.id);
-const environmentIdsOf = (deploymentIds: string[]): string[] => [
-  ...new Set(FAKE_DEPLOYMENTS.filter((d) => deploymentIds.includes(d.id)).map((d) => d.environmentId)),
-];
+
+/** The messages for the two fields the API no longer accepts (same text as the backend and the BFF). */
+const CUSTOMER_GROUP_ID_REMOVED =
+  "customerGroupId is no longer accepted: the customer group is derived from the customer project's registered contacts";
+const ENVIRONMENT_IDS_REMOVED = "environmentIds is no longer supported: deployments carry the environment";
 
 interface Approver {
   id: string;
@@ -236,8 +232,12 @@ export interface FakeChangeRequestApi {
    * with a 400 -- the "stale options" scenario.
    */
   retireDeployment(deploymentId: string): void;
-  /** Sets (or clears, with null) the CR's customer group out-of-band. */
-  setCustomerGroup(group: FakeCustomerGroup | null): void;
+  /**
+   * Changes a project's registered contacts out-of-band (someone registers /
+   * is deregistered); like the backend, a live customer stage follows on the
+   * next write that touches the state or the project.
+   */
+  setProjectContacts(projectId: string, contacts: FakeUser[]): void;
   /** The approval stages as the fake holds them (stage name -> status). */
   stages(): Array<{ stage: string; status: string; approvers: Array<{ name: string; status: string }> }>;
 }
@@ -282,9 +282,8 @@ export async function installFakeChangeRequestApi(
   initialType: FakeCrType,
   viewer: FakeUser = FAKE_CREATOR,
   initialFlags: Partial<FakeCustomerFlags> = {},
-  /** The customer scope the CR already holds (environments default to those of the deployments). */
+  /** The customer scope the CR already holds. */
   initialScope: Partial<FakeScope> = {},
-  initialCustomerGroup: FakeCustomerGroup | null = null,
 ): Promise<FakeChangeRequestApi> {
   let type = initialType;
   let currentViewer = viewer;
@@ -293,20 +292,16 @@ export async function installFakeChangeRequestApi(
   const scope: FakeScope = {
     projectId: null,
     deploymentIds: [],
-    environmentIds: [],
     deploymentProductIds: [],
-    customerGroupId: null,
     category: null,
   };
   if (initialScope.deploymentIds?.length) {
     scope.projectId = initialScope.projectId ?? null;
     scope.deploymentIds = [...initialScope.deploymentIds];
-    scope.environmentIds = initialScope.environmentIds ?? environmentIdsOf(scope.deploymentIds);
     scope.deploymentProductIds = derivedProductIds(scope.deploymentIds);
   } else if (initialScope.projectId) {
     scope.projectId = initialScope.projectId;
   }
-  scope.customerGroupId = initialScope.customerGroupId ?? null;
   scope.category = initialScope.category ?? null;
   const journal: Array<{ kind: "comment" | "workNote"; text: string }> = [];
   const retired = new Set<string>();
@@ -318,19 +313,11 @@ export async function installFakeChangeRequestApi(
   /** Where a CR lands once its internal approval is granted. */
   const afterInternalApproval = (): string => (flags.customerApprovalRequired ? "customer_approval" : "scheduled");
   let stages: Stage[] = [];
-  /** Eligible members per customer group id (the group's active users). */
-  const groupMembers = new Map<string, FakeUser[]>(FAKE_GROUPS.map((g) => [g.id, g.id === FAKE_CUSTOMER_GROUP.id ? FAKE_CUSTOMER_GROUP.members : []]));
-  if (initialCustomerGroup) {
-    scope.customerGroupId = initialCustomerGroup.id;
-    groupMembers.set(initialCustomerGroup.id, initialCustomerGroup.members);
-  }
+  /** Registered contacts per project (the read-only Customer Group). */
+  const contacts = new Map<string, FakeUser[]>(Object.entries(FAKE_PROJECT_CONTACTS).map(([id, users]) => [id, [...users]]));
+  /** The CR's customer group as the fake derives it: its project's registered contacts. */
+  const currentContacts = (): FakeUser[] => (scope.projectId ? (contacts.get(scope.projectId) ?? []) : []);
   const log: string[] = [];
-  /** The CR's customer group as the fake holds it, or null. */
-  const currentGroup = (): FakeCustomerGroup | null => {
-    const ref = FAKE_GROUPS.find((g) => g.id === scope.customerGroupId);
-    return ref ? { ...ref, members: groupMembers.get(ref.id) ?? [] } : null;
-  };
-
   const hasLiveCustomerStage = (): boolean =>
     stages.some((s) => CUSTOMER_STAGES.includes(s.stage) && s.status === "REQUESTED");
   const legal = (): string[] => legalNextStates(state, flags, hasLiveCustomerStage());
@@ -341,33 +328,34 @@ export async function installFakeChangeRequestApi(
   };
   /**
    * The backend's idempotent `provisionCustomerStage`: at a customer gate the
-   * CR's customer group (when it has eligible members) gets exactly one live
-   * stage. Set while already in the gate -> provisioned; changed while a stage
-   * is live -> the old stage's REQUESTED rows are cancelled and a new one is
-   * provisioned; cleared -> pending rows cancelled (manual path returns); a
-   * stage already approved/rejected is never re-provisioned.
+   * project's eligible registered contacts (everyone but the creator) get
+   * exactly one live stage. Entered with contacts -> provisioned; project (or
+   * its contacts) changed while a stage is live -> the old stage's REQUESTED
+   * rows are cancelled and a new one is provisioned; no contacts -> pending
+   * rows cancelled (manual path returns); a stage already approved/rejected is
+   * never re-provisioned.
    */
   function syncCustomerStage(): void {
     const kind = state === "customer_approval" ? "Customer Approval" : state === "customer_review" ? "Customer Review" : null;
     if (!kind) return;
-    const group = currentGroup();
+    const members = currentContacts().filter((u) => u.id !== FAKE_CREATOR.id);
     const live = stages.find((s) => s.stage === kind && s.status === "REQUESTED");
-    if (live && (!group || live.approverName !== group.name)) {
+    if (live) {
+      const have = live.approvers.map((a) => a.id);
+      if (members.length > 0 && sameSet(have, members.map((m) => m.id))) return;
       for (const a of live.approvers) if (a.status === "REQUESTED") a.status = "CANCELLED";
       live.status = "CANCELLED";
-    } else if (live) {
-      return;
     }
     const settled = stages.some((s) => s.stage === kind && (s.status === "APPROVED" || s.status === "REJECTED"));
-    if (settled || !group || group.members.length === 0) return;
+    if (settled || members.length === 0) return;
     stages = [
       ...stages,
       {
         stage: kind,
         approverType: "STATIC_GROUP",
-        approverName: group.name,
+        approverName: "Customer Group",
         status: "REQUESTED",
-        approvers: group.members.map((m) => ({ id: m.id, name: m.name, status: "REQUESTED" })),
+        approvers: members.map((m) => ({ id: m.id, name: m.name, status: "REQUESTED" })),
       },
     ];
   }
@@ -387,9 +375,8 @@ export async function installFakeChangeRequestApi(
     legalNextStates: legal(),
     project: FAKE_PROJECTS.find((p) => p.id === scope.projectId),
     deployments: FAKE_DEPLOYMENTS.filter((d) => scope.deploymentIds.includes(d.id)).map(({ id, name }) => ({ id, name })),
-    environments: FAKE_ENVIRONMENTS.filter((e) => scope.environmentIds.includes(e.id)),
     deploymentProducts: FAKE_DEPLOYMENT_PRODUCTS.filter((p) => scope.deploymentProductIds.includes(p.id)).map(({ id, name }) => ({ id, name })),
-    customerGroup: FAKE_GROUPS.find((g) => g.id === scope.customerGroupId) ?? null,
+    customerContacts: currentContacts().map(({ id, name, email }) => ({ id, name, email })),
     category: scope.category,
   });
 
@@ -403,16 +390,18 @@ export async function installFakeChangeRequestApi(
     next: FakeScope,
     isPatch: boolean,
   ): string | null => {
+    // The removed fields are refused outright (any value, null included).
+    if (body.customerGroupId !== undefined) return CUSTOMER_GROUP_ID_REMOVED;
+    if (body.environmentIds !== undefined) return ENVIRONMENT_IDS_REMOVED;
     if (typeof body.category === "string" && !CATEGORIES.includes(body.category)) {
       return `category must be one of ${CATEGORIES.join(", ")}`;
     }
     if (isPatch) {
       const touchesScope =
         (body.projectId !== undefined && body.projectId !== scope.projectId) ||
-        (body.deploymentIds !== undefined && !sameSet(body.deploymentIds as string[], scope.deploymentIds)) ||
-        (body.environmentIds !== undefined && !sameSet(body.environmentIds as string[], scope.environmentIds));
+        (body.deploymentIds !== undefined && !sameSet(body.deploymentIds as string[], scope.deploymentIds));
       if (touchesScope && SCOPE_LOCKED.includes(state)) {
-        return `projectId, deploymentIds and environmentIds can no longer be changed once the change request is ${state}`;
+        return `projectId and deploymentIds can no longer be changed once the change request is ${state}`;
       }
       if (body.projectId !== undefined && body.projectId !== scope.projectId && scope.deploymentIds.length > 0 && body.deploymentIds === undefined) {
         return "changing projectId while deployments are stored requires deploymentIds in the same request";
@@ -431,13 +420,6 @@ export async function installFakeChangeRequestApi(
         return `deploymentIds: deployment ${d.name} is not an active deployment of the selected project`;
       }
     }
-    const provided = environmentIdsOf(next.deploymentIds);
-    for (const id of next.environmentIds) {
-      if (!provided.includes(id)) {
-        const name = FAKE_ENVIRONMENTS.find((e) => e.id === id)?.name ?? id;
-        return `environmentIds: environment ${name} is not provided by any of the selected deployments`;
-      }
-    }
     if (body.deploymentProductIds !== undefined && !sameSet(body.deploymentProductIds as string[], derivedProductIds(next.deploymentIds))) {
       return "deploymentProductIds: deployment products are derived from the selected deployments and must be exactly that set";
     }
@@ -445,18 +427,11 @@ export async function installFakeChangeRequestApi(
   };
 
   /** The scope after applying the scope fields of `body` on top of the stored one. */
-  const applyScope = (body: Record<string, unknown>, base: FakeScope, isPatch: boolean): FakeScope => {
-    const next: FakeScope = { ...base, deploymentIds: [...base.deploymentIds], environmentIds: [...base.environmentIds] };
+  const applyScope = (body: Record<string, unknown>, base: FakeScope): FakeScope => {
+    const next: FakeScope = { ...base, deploymentIds: [...base.deploymentIds] };
     if (body.projectId !== undefined) next.projectId = body.projectId as string;
     if (body.deploymentIds !== undefined) next.deploymentIds = body.deploymentIds as string[];
-    if (body.environmentIds !== undefined) {
-      next.environmentIds = body.environmentIds as string[];
-    } else if (!isPatch || body.deploymentIds !== undefined) {
-      // Omitted environments default to those of the chosen deployments.
-      next.environmentIds = environmentIdsOf(next.deploymentIds);
-    }
     next.deploymentProductIds = derivedProductIds(next.deploymentIds);
-    if (body.customerGroupId !== undefined) next.customerGroupId = body.customerGroupId as string | null;
     if (body.category !== undefined) next.category = body.category as string | null;
     return next;
   };
@@ -533,7 +508,7 @@ export async function installFakeChangeRequestApi(
     },
   );
 
-  // Customer Group picker.
+  // Assignment group picker (the Customer Group is derived, so it is not searched).
   await page.route(
     (url) => url.pathname.endsWith("/groups/search"),
     async (route) => {
@@ -546,7 +521,7 @@ export async function installFakeChangeRequestApi(
     },
   );
 
-  // The Customer Project -> Deployments -> Environments / Deployment products cascade.
+  // The Customer Project -> Deployments -> Deployment products cascade, plus the project's contacts.
   await page.route(
     (url) => url.pathname.endsWith("/change-requests/link-options"),
     async (route) => {
@@ -555,6 +530,9 @@ export async function installFakeChangeRequestApi(
       const body = record(route, "POST /change-requests/link-options") ?? {};
       const projectId = body.projectId as string | undefined;
       if (!projectId) return json(route, { message: "projectId is required" }, 400);
+      if (!FAKE_PROJECTS.some((p) => p.id === projectId)) {
+        return json(route, { message: `projectId does not refer to an existing project: ${projectId}` }, 400);
+      }
       const chosen = (body.deploymentIds as string[] | undefined) ?? [];
       const projectDeployments = FAKE_DEPLOYMENTS.filter((d) => d.projectId === projectId && !retired.has(d.id));
       const stray = chosen.find((id) => !projectDeployments.some((d) => d.id === id));
@@ -564,9 +542,8 @@ export async function installFakeChangeRequestApi(
           id: d.id,
           name: d.name,
           type: d.type,
-          environment: FAKE_ENVIRONMENTS.find((e) => e.id === d.environmentId) ?? null,
         })),
-        environments: FAKE_ENVIRONMENTS.filter((e) => environmentIdsOf(chosen).includes(e.id)),
+        customerContacts: (contacts.get(projectId) ?? []).map(({ id, name, email }) => ({ id, name, email })),
         deploymentProducts: FAKE_DEPLOYMENT_PRODUCTS.filter((p) => chosen.includes(p.deploymentId)).map((p) => ({
           id: p.id,
           name: p.name,
@@ -586,7 +563,7 @@ export async function installFakeChangeRequestApi(
       if (!["normal", "standard", "emergency"].includes(body.type as string)) {
         return json(route, { message: "type is required: a change request must be one of standard, normal or emergency" }, 400);
       }
-      const next = applyScope(body, scope, false);
+      const next = applyScope(body, scope);
       const problem = validateScope(body, next, false);
       if (problem) return json(route, { message: problem }, 400);
       Object.assign(scope, next);
@@ -673,18 +650,19 @@ export async function installFakeChangeRequestApi(
           customerApprovalRequired?: boolean;
           customerReviewRequired?: boolean;
         } & Record<string, unknown>;
-        // Customer scope / category / customer group, validated like the backend.
+        // Customer scope / category (and the removed customerGroupId / environmentIds,
+        // which are refused), validated like the backend.
         const touchesScopeFields = ["projectId", "deploymentIds", "environmentIds", "deploymentProductIds", "customerGroupId", "category"].some(
           (k) => body[k] !== undefined,
         );
         if (touchesScopeFields) {
-          const next = applyScope(body, scope, true);
+          const next = applyScope(body, scope);
           const problem = validateScope(body, next, true);
           if (problem) return json(route, { message: problem }, 400);
           Object.assign(scope, next);
-          // A customer group set / changed / cleared while the CR already sits at a
-          // customer gate (re)provisions its stage, like the backend.
-          if (body.customerGroupId !== undefined) syncCustomerStage();
+          // A project written while the CR already sits at a customer gate
+          // (re)provisions the stage for that project's contacts, like the backend.
+          if (body.projectId !== undefined) syncCustomerStage();
         }
         for (const kind of ["comment", "workNote"] as const) {
           const text = body[kind];
@@ -765,15 +743,13 @@ export async function installFakeChangeRequestApi(
     flags: () => ({ ...flags }),
     requests: () => [...log],
     requestBodies: () => [...bodies],
-    scope: () => ({ ...scope, deploymentIds: [...scope.deploymentIds], environmentIds: [...scope.environmentIds], deploymentProductIds: [...scope.deploymentProductIds] }),
+    scope: () => ({ ...scope, deploymentIds: [...scope.deploymentIds], deploymentProductIds: [...scope.deploymentProductIds] }),
     journal: () => [...journal],
     retireDeployment: (deploymentId) => {
       retired.add(deploymentId);
     },
-    setCustomerGroup: (group) => {
-      scope.customerGroupId = group ? group.id : null;
-      if (group) groupMembers.set(group.id, group.members);
-      syncCustomerStage();
+    setProjectContacts: (projectId, users) => {
+      contacts.set(projectId, [...users]);
     },
     stages: () =>
       stages.map((st) => ({

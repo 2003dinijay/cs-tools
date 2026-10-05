@@ -62,13 +62,12 @@ import {
   FAKE_DEPLOYMENTS,
   FAKE_DEPLOYMENT_PRODUCTS,
   FAKE_ECAB,
-  FAKE_ENVIRONMENTS,
-  FAKE_GROUPS,
+  FAKE_BETA_CONTACT,
   FAKE_CUST_ONE,
   FAKE_CUST_TWO,
-  FAKE_CUSTOMER_GROUP,
   FAKE_OUTSIDER,
   FAKE_PEER,
+  FAKE_PROJECT_CONTACTS,
   FAKE_PROJECTS,
   installFakeChangeRequestApi,
   type FakeChangeRequestApi,
@@ -592,7 +591,7 @@ test.describe("change request approval flow — Standard", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Customer Project / Deployments / Environments / Deployment products on a
+// Customer Project / Deployments / Deployment products (and the read-only Customer Group) on a
 // change request, end to end against the in-browser fake backend: create ->
 // detail Overview -> edit (cascade, whole-scope PATCH, backend refusal) ->
 // approvals -> locked once implementation starts.
@@ -601,7 +600,9 @@ test.describe("change request approval flow — Standard", () => {
 const ACME = FAKE_PROJECTS[0]!;
 const BETA = FAKE_PROJECTS[1]!;
 const [ACME_PROD, ACME_STG, BETA_DEV] = FAKE_DEPLOYMENTS;
-const [PROD_ENV, STG_ENV, DEV_ENV] = FAKE_ENVIRONMENTS;
+const GAMMA = FAKE_PROJECTS[2]!;
+const ACME_CONTACTS = FAKE_PROJECT_CONTACTS[ACME.id]!.map((u) => u.name);
+const BETA_CONTACTS = FAKE_PROJECT_CONTACTS[BETA.id]!.map((u) => u.name);
 const productsOf = (deploymentId: string): string[] =>
   FAKE_DEPLOYMENT_PRODUCTS.filter((p) => p.deploymentId === deploymentId).map((p) => p.name);
 
@@ -614,13 +615,12 @@ test.describe("change request lifecycle — project and deployments (mocked back
     const create = new ChangeRequestCreatePage(page);
     const detail = new ChangeRequestDetailPage(page);
 
-    // 1. Create a Normal change with a project, two deployments, a customer group and a category.
+    // 1. Create a Normal change with a project, two deployments and a category.
     await create.goto();
     await create.selectType("Normal");
     await create.subjectField().fill("[E2E] project + deployments lifecycle (mocked)");
     await create.selectProject(ACME.name);
     await create.selectDeployments([ACME_PROD!.name, ACME_STG!.name]);
-    await create.selectCustomerGroup(FAKE_GROUPS[0]!.name);
     await create.selectCategory("DevOps");
     await create.createButton().click();
     await expect(page).toHaveURL(new RegExp(`/operations/change-requests/${FAKE_CR_ID}$`));
@@ -629,12 +629,13 @@ test.describe("change request lifecycle — project and deployments (mocked back
     // 2. The detail Overview shows every one of them.
     await expect(detail.overviewCell("Customer Project")).toContainText(ACME.name);
     await expect(detail.overviewChips("Deployments")).toHaveText([ACME_PROD!.name, ACME_STG!.name]);
-    await expect(detail.overviewChips("Environments")).toHaveText([PROD_ENV!.name, STG_ENV!.name]);
+    await expect(detail.page.getByText("Environments", { exact: true })).toHaveCount(0);
     await expect(detail.overviewChips("Deployment products")).toHaveText([
       ...productsOf(ACME_PROD!.id),
       ...productsOf(ACME_STG!.id),
     ]);
-    await expect(detail.overviewCell("Customer group")).toContainText(FAKE_GROUPS[0]!.name);
+    // The Customer Group is the project's registered contacts, derived and read-only.
+    await expect(detail.overviewChips("Customer group")).toHaveText(ACME_CONTACTS);
     await expect(detail.overviewCell("Category")).toContainText("DevOps");
     await expect(detail.currentStep()).toContainText("New");
 
@@ -645,8 +646,8 @@ test.describe("change request lifecycle — project and deployments (mocked back
     await expect(detail.editProjectField()).toHaveValue(ACME.name);
     await expect(detail.editChipsOf(detail.editDeploymentsField())).toHaveText([ACME_PROD!.name, ACME_STG!.name]);
     await detail.editToggleOptions(detail.editDeploymentsField(), [ACME_STG!.name]); // drop Staging
-    await expect(detail.editChipsOf(detail.editEnvironmentsField())).toHaveText([PROD_ENV!.name]);
     await expect(detail.editChipsOf(detail.editDeploymentProductsField())).toHaveText(productsOf(ACME_PROD!.id));
+    await expect(detail.editChipsOf(detail.editCustomerGroupField())).toHaveText(ACME_CONTACTS);
     const [patch] = await Promise.all([
       page.waitForRequest((r) => r.method() === "PATCH" && r.url().endsWith(`/change-requests/${FAKE_CR_ID}`)),
       detail.saveEdit(),
@@ -655,12 +656,10 @@ test.describe("change request lifecycle — project and deployments (mocked back
     expect(patch.postDataJSON()).toEqual({
       projectId: ACME.id,
       deploymentIds: [ACME_PROD!.id],
-      environmentIds: [PROD_ENV!.id],
       deploymentProductIds: FAKE_DEPLOYMENT_PRODUCTS.filter((p) => p.deploymentId === ACME_PROD!.id).map((p) => p.id),
     });
     await expect(detail.editDialog()).toHaveCount(0);
     await expect(detail.overviewChips("Deployments")).toHaveText([ACME_PROD!.name]);
-    await expect(detail.overviewChips("Environments")).toHaveText([PROD_ENV!.name]);
     await expect(detail.overviewChips("Deployment products")).toHaveText(productsOf(ACME_PROD!.id));
     expect(api.scope().deploymentIds).toEqual([ACME_PROD!.id]);
 
@@ -689,7 +688,6 @@ test.describe("change request lifecycle — project and deployments (mocked back
     await expect(detail.editDialog().getByText(/can't be changed once implementation has started/i)).toBeVisible();
     await expect(detail.editProjectField()).toBeDisabled();
     await expect(detail.editDeploymentsField()).toBeDisabled();
-    await expect(detail.editEnvironmentsField()).toBeDisabled();
     await expect(detail.saveButton()).toBeDisabled();
     await detail.editDialog().getByRole("button", { name: "Cancel" }).click();
     await expect(detail.overviewChips("Deployments")).toHaveText([ACME_PROD!.name]);
@@ -709,9 +707,9 @@ test.describe("change request lifecycle — project and deployments (mocked back
     await detail.editProjectField().click();
     await page.getByRole("option", { name: BETA.name }).click();
     await expect(detail.editChipsOf(detail.editDeploymentsField())).toHaveCount(0);
-    await expect(detail.editChipsOf(detail.editEnvironmentsField())).toHaveCount(0);
     await expect(detail.editChipsOf(detail.editDeploymentProductsField())).toHaveCount(0);
-    await expect(detail.editEnvironmentsField()).toBeDisabled();
+    // The read-only Customer Group follows the project: customer B's contacts replace customer A's.
+    await expect(detail.editChipsOf(detail.editCustomerGroupField())).toHaveText(BETA_CONTACTS);
     const [patch] = await Promise.all([
       page.waitForRequest((r) => r.method() === "PATCH" && r.url().endsWith(`/change-requests/${FAKE_CR_ID}`)),
       detail.saveEdit(),
@@ -719,16 +717,16 @@ test.describe("change request lifecycle — project and deployments (mocked back
     expect(patch.postDataJSON()).toEqual({
       projectId: BETA.id,
       deploymentIds: [],
-      environmentIds: [],
       deploymentProductIds: [],
     });
     await expect(detail.editDialog()).toHaveCount(0);
     await expect(detail.overviewCell("Customer Project")).toContainText(BETA.name);
     await expect(detail.overviewCell("Deployments")).toContainText("—");
-    expect(api.scope()).toMatchObject({ projectId: BETA.id, deploymentIds: [], environmentIds: [] });
+    await expect(detail.overviewChips("Customer group")).toHaveText(BETA_CONTACTS);
+    expect(api.scope()).toMatchObject({ projectId: BETA.id, deploymentIds: [] });
   });
 
-  test("editing: picking deployments of a new project preselects their environments and derives the products", async ({ page }) => {
+  test("editing: picking deployments of a new project derives the products", async ({ page }) => {
     await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
     const detail = new ChangeRequestDetailPage(page);
     await detail.goto(FAKE_CR_ID);
@@ -739,13 +737,11 @@ test.describe("change request lifecycle — project and deployments (mocked back
     await detail.editProjectField().click();
     await page.getByRole("option", { name: BETA.name }).click();
     await detail.editToggleOptions(detail.editDeploymentsField(), [BETA_DEV!.name]);
-    await expect(detail.editChipsOf(detail.editEnvironmentsField())).toHaveText([DEV_ENV!.name]);
     await expect(detail.editChipsOf(detail.editDeploymentProductsField())).toHaveText(productsOf(BETA_DEV!.id));
     await detail.saveEdit();
     await expect(detail.editDialog()).toHaveCount(0);
     await expect(detail.overviewCell("Customer Project")).toContainText(BETA.name);
     await expect(detail.overviewChips("Deployments")).toHaveText([BETA_DEV!.name]);
-    await expect(detail.overviewChips("Environments")).toHaveText([DEV_ENV!.name]);
   });
 
   test("editing: the category is sent on its own when only it changed", async ({ page }) => {
@@ -787,24 +783,29 @@ test.describe("change request lifecycle — project and deployments (mocked back
     await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
     const detail = new ChangeRequestDetailPage(page);
     await detail.goto(FAKE_CR_ID);
-    for (const label of ["Customer Project", "Deployments", "Environments", "Deployment products", "Customer group", "Category"]) {
+    for (const label of ["Customer Project", "Deployments", "Deployment products", "Customer group", "Category"]) {
       await expect(detail.overviewCell(label), label).toContainText("—");
     }
   });
 });
 
 //
-// Customer group: the people a customer-gated change request is directed to.
-// Against the same fake (see its header for the exact contract): with a
-// customer group that has members, entering Customer Approval / Customer
-// Review provisions a stage for them; while it is live only Cancel is
-// offered; their decision moves the CR (approve -> Scheduled / Closed,
-// reject -> Canceled). With no group, or a group with nobody eligible, no
-// stage exists and the manual "Record customer approval" / Close stay.
+// Customer group: the people a customer-gated change request is directed to --
+// the registered contacts of its Customer Project, derived and read-only.
+// Against the same fake (see its header for the exact contract): with a project
+// whose contacts include someone eligible, entering Customer Approval / Customer
+// Review provisions a stage for them; while it is live only Cancel is offered;
+// their decision moves the CR (approve -> Scheduled / Closed, reject ->
+// Canceled). With no project, a project without registered contacts, or none of
+// them eligible, no stage exists and the manual "Record customer approval" /
+// Close stay.
 //
 
 const NO_CUSTOMER_GROUP_TEXT =
-  "No customer group is set on this change request, so no customer approvers were assigned. Set the Customer Group to route this to the customer.";
+  /^No registered customer contacts are assigned to this change request's project, so no customer approvers were assigned\./;
+
+/** A change request on the Acme project: its customer group is Mia and Max. */
+const ON_ACME = { projectId: ACME.id };
 
 /** Cancel is the only action offered: no primary button, one menu entry. */
 async function expectOnlyCancelOffered(detail: ChangeRequestDetailPage): Promise<void> {
@@ -835,8 +836,8 @@ async function approveInternally(page: import("@playwright/test").Page, api: Fak
   await detail.approve("Cam Cab");
 }
 
-test.describe("change request approval flow — customer group", () => {
-  test("Normal with Customer Approval and Customer Review and a customer group: every step shows the right state, stage rows and buttons for the creator, a group member and a non-member", async ({
+test.describe("change request approval flow — customer group (the project's registered contacts)", () => {
+  test("Normal with Customer Approval and Customer Review on a project with registered contacts: every step shows the right state, stage rows and buttons for the creator, a contact and a non-contact", async ({
     page,
   }) => {
     test.setTimeout(180_000);
@@ -845,8 +846,7 @@ test.describe("change request approval flow — customer group", () => {
       "normal",
       FAKE_CREATOR,
       { customerApprovalRequired: true, customerReviewRequired: true },
-      {},
-      FAKE_CUSTOMER_GROUP,
+      ON_ACME,
     );
     const detail = new ChangeRequestDetailPage(page);
     await approveInternally(page, api, detail);
@@ -856,10 +856,12 @@ test.describe("change request approval flow — customer group", () => {
     await expect(detail.currentStep()).toContainText("Customer Approval");
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toHaveCount(0);
+    // The Overview lists the same people as the read-only Customer Group.
+    await expect(detail.overviewChips("Customer group")).toHaveText(ACME_CONTACTS);
     for (const member of [FAKE_CUST_ONE, FAKE_CUST_TWO]) {
       await expect(detail.approverRow(member.name, "Customer Approval")).toBeVisible();
       await expect(detail.approverStatus(member.name, "Customer Approval")).toHaveText("Requested");
-      await expect(detail.approverRow(member.name, "Customer Approval")).toContainText(FAKE_CUSTOMER_GROUP.name);
+      await expect(detail.approverRow(member.name, "Customer Approval")).toContainText("Customer Group");
     }
     await expect(detail.approverStatus("Pat Peer", "Peer Approval")).toHaveText("Approved");
     await expect(detail.approverStatus("Cam Cab", "CAB Approval")).toHaveText("Approved");
@@ -907,7 +909,7 @@ test.describe("change request approval flow — customer group", () => {
     await expect(detail.currentStep()).toContainText("Customer Review");
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Review");
     await expect(detail.approverStatus(FAKE_CUST_TWO.name, "Customer Review")).toHaveText("Requested");
-    await expect(detail.approverRow(FAKE_CUST_TWO.name, "Customer Review")).toContainText(FAKE_CUSTOMER_GROUP.name);
+    await expect(detail.approverRow(FAKE_CUST_TWO.name, "Customer Review")).toContainText("Customer Group");
     await expect(detail.approveButton()).toHaveCount(0); // creator
     await expectOnlyCancelOffered(detail);
 
@@ -929,9 +931,9 @@ test.describe("change request approval flow — customer group", () => {
     await expectNoManualSchedule(detail);
   });
 
-  test("a group member rejecting the Customer Approval cancels the change request", async ({ page }) => {
+  test("a contact rejecting the Customer Approval cancels the change request", async ({ page }) => {
     test.setTimeout(120_000);
-    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, {}, FAKE_CUSTOMER_GROUP);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
     await approveInternally(page, api, detail);
 
@@ -945,9 +947,9 @@ test.describe("change request approval flow — customer group", () => {
     await expect(detail.changeStateButton()).toHaveCount(0);
   });
 
-  test("a group member rejecting the Customer Review moves the change request to Rollback (terminal, no actions left)", async ({ page }) => {
+  test("a contact rejecting the Customer Review moves the change request to Rollback (terminal, no actions left)", async ({ page }) => {
     test.setTimeout(120_000);
-    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, {}, FAKE_CUSTOMER_GROUP);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
     await approveInternally(page, api, detail);
 
@@ -967,7 +969,7 @@ test.describe("change request approval flow — customer group", () => {
     await expect(detail.changeStateButton()).toHaveCount(0);
   });
 
-  test("no customer group: no customer stage, the Approval tab explains why, and Record customer approval still schedules it", async ({
+  test("no project: no customer stage, the Approval tab explains why, and Record customer approval still schedules it", async ({
     page,
   }) => {
     test.setTimeout(120_000);
@@ -988,7 +990,7 @@ test.describe("change request approval flow — customer group", () => {
     expect(api.state()).toBe("scheduled");
   });
 
-  test("no customer group: Customer Review shows the helper and manual Close stays available", async ({ page }) => {
+  test("no project: Customer Review shows the helper and manual Close stays available", async ({ page }) => {
     test.setTimeout(120_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true });
     const detail = new ChangeRequestDetailPage(page);
@@ -1008,37 +1010,88 @@ test.describe("change request approval flow — customer group", () => {
     expect(api.state()).toBe("closed");
   });
 
-  test("a customer group set while the change already waits at Customer Approval provisions the stage; the helper and the manual path go away", async ({
+  test("a project without registered contacts gets no stage and the helper; picking a project that has contacts provisions the stage and the manual path goes away", async ({
     page,
   }) => {
-    test.setTimeout(120_000);
-    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true });
+    test.setTimeout(150_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, { projectId: GAMMA.id });
     const detail = new ChangeRequestDetailPage(page);
     await approveInternally(page, api, detail);
 
     await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
+    await expect(detail.overviewChips("Customer group")).toHaveCount(0);
     await expect(detail.recordCustomerApprovalButton()).toBeVisible();
 
-    api.setCustomerGroup(FAKE_CUSTOMER_GROUP);
-    await switchTo(page, api, FAKE_CUST_ONE);
+    // Edit the project to Acme: the group is re-derived and the stage provisioned.
+    await detail.openEditDialog();
+    await detail.editProjectField().click();
+    await page.getByRole("option", { name: ACME.name }).click();
+    await expect(detail.editChipsOf(detail.editCustomerGroupField())).toHaveText(ACME_CONTACTS);
+    await detail.saveEdit();
+    await expect(detail.editDialog()).toHaveCount(0);
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toHaveCount(0);
-    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
+    await expect(detail.overviewChips("Customer group")).toHaveText(ACME_CONTACTS);
     await expect(detail.recordCustomerApprovalButton()).toHaveCount(0);
+
+    await switchTo(page, api, FAKE_CUST_ONE);
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
     await detail.approve(FAKE_CUST_ONE.name, "Customer Approval");
     await expect(detail.currentStep()).toContainText("Scheduled");
   });
 
-  test("a customer group with no eligible member provisions no stage: manual path stays, no helper", async ({ page }) => {
+  test("changing the project while the customer stage is live replaces it: the new project's contacts are asked, the old project's can no longer decide", async ({
+    page,
+  }) => {
+    test.setTimeout(150_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
+    await detail.openEditDialog();
+    await detail.editProjectField().click();
+    await page.getByRole("option", { name: BETA.name }).click();
+    await expect(detail.editChipsOf(detail.editCustomerGroupField())).toHaveText(BETA_CONTACTS);
+    await detail.saveEdit();
+    await expect(detail.editDialog()).toHaveCount(0);
+
+    await expect(detail.overviewChips("Customer group")).toHaveText(BETA_CONTACTS);
+    expect(api.stages().filter((st) => st.stage === "Customer Approval").map((st) => st.status)).toEqual(["CANCELLED", "REQUESTED"]);
+    await expect(detail.approverRow(FAKE_BETA_CONTACT.name, "Customer Approval")).toBeVisible();
+
+    // Customer A's contact is no longer asked and cannot decide ...
+    await switchTo(page, api, FAKE_CUST_ONE);
+    await expect(detail.approveButton()).toHaveCount(0);
+    await expect(detail.rejectButton()).toHaveCount(0);
+    // ... customer B's contact is.
+    await switchTo(page, api, FAKE_BETA_CONTACT);
+    await expect(detail.approveButton(FAKE_BETA_CONTACT.name, "Customer Approval")).toBeEnabled();
+    await detail.approve(FAKE_BETA_CONTACT.name, "Customer Approval");
+    await expect(detail.currentStep()).toContainText("Scheduled");
+  });
+
+  test("isolation: a change request of customer A is never put to customer B's contact, who sees no Approve / Reject", async ({ page }) => {
+    test.setTimeout(150_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+
+    await switchTo(page, api, FAKE_BETA_CONTACT);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.overviewChips("Customer group")).toHaveText(ACME_CONTACTS);
+    await expect(page.getByText(FAKE_BETA_CONTACT.name, { exact: true })).toHaveCount(0);
+    await expect(detail.approveButton()).toHaveCount(0);
+    await expect(detail.rejectButton()).toHaveCount(0);
+    expect(api.stages().find((st) => st.stage === "Customer Approval")?.approvers.map((a) => a.name)).toEqual(ACME_CONTACTS);
+  });
+
+  test("a project whose only contact is the creator provisions no stage: manual path stays, no helper", async ({ page }) => {
     test.setTimeout(120_000);
-    const api = await installFakeChangeRequestApi(
-      page,
-      "normal",
-      FAKE_CREATOR,
-      { customerApprovalRequired: true },
-      {},
-      { ...FAKE_CUSTOMER_GROUP, members: [] },
-    );
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, { projectId: GAMMA.id });
+    api.setProjectContacts(GAMMA.id, [FAKE_CREATOR]);
     const detail = new ChangeRequestDetailPage(page);
     await approveInternally(page, api, detail);
 
@@ -1199,8 +1252,7 @@ test.describe("change request approval flow — Roll back", () => {
       "normal",
       FAKE_CREATOR,
       { customerReviewRequired: true },
-      {},
-      FAKE_CUSTOMER_GROUP,
+      ON_ACME,
     );
     const detail = new ChangeRequestDetailPage(page);
     await approveInternally(page, api, detail);

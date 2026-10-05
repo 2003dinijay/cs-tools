@@ -135,7 +135,7 @@ export class ChangeRequestDetailPage {
     return this.page.getByText(label, { exact: true }).locator("xpath=..");
   }
 
-  /** The chips an Overview cell shows (Deployments / Environments / Deployment products). */
+  /** The chips an Overview cell shows (Deployments / Deployment products / Customer group). */
   overviewChips(label: string): Locator {
     return this.overviewCell(label).locator(".MuiChip-label");
   }
@@ -208,8 +208,9 @@ export class ChangeRequestDetailPage {
     return this.editDialog().getByRole("combobox", { name: "Deployments" });
   }
 
-  editEnvironmentsField(): Locator {
-    return this.editDialog().getByRole("combobox", { name: "Environments" });
+  /** The read-only Customer Group (the project's registered contacts) inside the edit dialog. */
+  editCustomerGroupField(): Locator {
+    return this.editDialog().getByLabel("Customer Group");
   }
 
   editDeploymentProductsField(): Locator {

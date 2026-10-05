@@ -77,7 +77,7 @@ export class ChangeRequestCreatePage {
   }
 
   // -------------------------------------------------------------------------
-  // Customer Project / Deployments / Environments / Deployment products,
+  // Customer Project / Deployments / Deployment products, the read-only
   // Customer Group, Category and the Communication area.
   // -------------------------------------------------------------------------
 
@@ -101,10 +101,6 @@ export class ChangeRequestCreatePage {
 
   deploymentsField(): Locator {
     return this.page.getByRole("combobox", { name: "Deployments" });
-  }
-
-  environmentsField(): Locator {
-    return this.page.getByRole("combobox", { name: "Environments" });
   }
 
   /** The read-only, derived "Deployment products" field. */
@@ -140,14 +136,17 @@ export class ChangeRequestCreatePage {
     return names;
   }
 
-  /** The "Customer Group" picker (searches groups). */
+  /**
+   * The read-only "Customer Group": the chosen project's registered contacts,
+   * shown as chips in a locked text field (not a picker).
+   */
   customerGroupField(): Locator {
-    return this.page.getByRole("combobox", { name: "Customer Group" });
+    return this.page.getByLabel("Customer Group");
   }
 
-  async selectCustomerGroup(name: string): Promise<void> {
-    await this.customerGroupField().click();
-    await this.page.getByRole("option", { name }).click();
+  /** The contacts the Customer Group lists, as chip labels. */
+  customerGroupChips(): Locator {
+    return this.chipsOf(this.customerGroupField());
   }
 
   /** The "Category" dropdown (pre-selected to Other). */
