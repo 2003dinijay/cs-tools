@@ -305,7 +305,7 @@ describe("CsmChangeRequestDetailPage", () => {
   });
 });
 
-describe("CsmChangeRequestDetailPage — project, deployments, environments, deployment products, customer group, category", () => {
+describe("CsmChangeRequestDetailPage — project, deployments, deployment products, customer group, category", () => {
   const cell = (label: string): HTMLElement => screen.getByText(label).parentElement!;
   const SCOPED = {
     ...BASE_CR,
@@ -314,15 +314,14 @@ describe("CsmChangeRequestDetailPage — project, deployments, environments, dep
       { id: "dep-prod", name: "Acme Production" },
       { id: "dep-stg", name: "Acme Staging" },
     ],
-    environments: [
-      { id: "env-prod", name: "Primary Production" },
-      { id: "env-stg", name: "Staging" },
-    ],
     deploymentProducts: [
       { id: "dp-apim", name: "API Manager 4.3.0" },
       { id: "dp-is", name: "Identity Server 7.0.0" },
     ],
-    customerGroup: { id: "grp-1", name: "Acme Customers" },
+    customerContacts: [
+      { id: "pc-1", name: "Alice Aaron" },
+      { id: "pc-2", name: "Bob Bell" },
+    ],
     category: "devops",
   };
 
@@ -333,13 +332,13 @@ describe("CsmChangeRequestDetailPage — project, deployments, environments, dep
     const deployments = within(cell("Deployments"));
     expect(deployments.getByText("Acme Production")).toBeInTheDocument();
     expect(deployments.getByText("Acme Staging")).toBeInTheDocument();
-    const environments = within(cell("Environments"));
-    expect(environments.getByText("Primary Production")).toBeInTheDocument();
-    expect(environments.getByText("Staging")).toBeInTheDocument();
     const products = within(cell("Deployment products"));
     expect(products.getByText("API Manager 4.3.0")).toBeInTheDocument();
     expect(products.getByText("Identity Server 7.0.0")).toBeInTheDocument();
-    expect(within(cell("Customer group")).getByText("Acme Customers")).toBeInTheDocument();
+    // The Customer Group is the project's registered contacts, read-only.
+    const group = within(cell("Customer group"));
+    expect(group.getByText("Alice Aaron")).toBeInTheDocument();
+    expect(group.getByText("Bob Bell")).toBeInTheDocument();
     expect(within(cell("Category")).getByText("DevOps")).toBeInTheDocument();
   });
 
@@ -349,9 +348,8 @@ describe("CsmChangeRequestDetailPage — project, deployments, environments, dep
         ...BASE_CR,
         project: undefined,
         deployments: [],
-        environments: [],
         deploymentProducts: [],
-        customerGroup: null,
+        customerContacts: [],
         category: null,
       },
     });
@@ -359,7 +357,6 @@ describe("CsmChangeRequestDetailPage — project, deployments, environments, dep
     for (const label of [
       "Customer Project",
       "Deployments",
-      "Environments",
       "Deployment products",
       "Customer group",
       "Category",
@@ -370,12 +367,18 @@ describe("CsmChangeRequestDetailPage — project, deployments, environments, dep
 
   it("shows a dash when the backend omits the lists entirely (an older response)", () => {
     mockQueryResult({
-      data: { ...BASE_CR, deployments: undefined, environments: undefined, deploymentProducts: undefined },
+      data: { ...BASE_CR, deployments: undefined, deploymentProducts: undefined, customerContacts: undefined },
     });
     renderPage();
     expect(within(cell("Deployments")).getByText("—")).toBeInTheDocument();
-    expect(within(cell("Environments")).getByText("—")).toBeInTheDocument();
     expect(within(cell("Deployment products")).getByText("—")).toBeInTheDocument();
+    expect(within(cell("Customer group")).getByText("—")).toBeInTheDocument();
+  });
+
+  it("has no Environments field", () => {
+    mockQueryResult({ data: SCOPED });
+    renderPage();
+    expect(screen.queryByText("Environments")).not.toBeInTheDocument();
   });
 
   it("reads the category from an entity-ref response too", () => {
@@ -391,7 +394,6 @@ describe("CsmChangeRequestDetailPage — project, deployments, environments, dep
     expect(screen.getByText("SRE details")).toBeInTheDocument();
     expect(screen.getAllByText("Category")).toHaveLength(1);
     expect(screen.getAllByText("Customer group")).toHaveLength(1);
-    expect(screen.getAllByText("Environments")).toHaveLength(1);
     expect(screen.getAllByText("Deployments")).toHaveLength(1);
     expect(screen.getAllByText("Deployment products")).toHaveLength(1);
   });
@@ -555,15 +557,14 @@ describe("CsmChangeRequestDetailPage — Clone", () => {
     );
   });
 
-  it("carries the project, customer group and category into the clone, but not the deployments / environments / products", () => {
+  it("carries the project and category into the clone, but not the deployments / products / customer group", () => {
     mockQueryResult({
       data: {
         ...BASE_CR,
         project: { id: "proj-a", name: "Acme Project" },
-        customerGroup: { id: "grp-1", name: "Acme Customers" },
+        customerContacts: [{ id: "pc-1", name: "Alice Aaron" }],
         category: "devops",
         deployments: [{ id: "dep-prod", name: "Acme Production" }],
-        environments: [{ id: "env-prod", name: "Primary Production" }],
         deploymentProducts: [{ id: "dp-apim", name: "API Manager 4.3.0" }],
       },
     });
@@ -573,12 +574,12 @@ describe("CsmChangeRequestDetailPage — Clone", () => {
     expect(options.state).toMatchObject({
       projectId: "proj-a",
       projectLabel: "Acme Project",
-      customerGroupId: "grp-1",
-      customerGroupLabel: "Acme Customers",
       category: "devops",
     });
     const keys = Object.keys(options.state);
     expect(keys).not.toContain("deployments");
+    expect(keys).not.toContain("customerContacts");
+    expect(keys).not.toContain("customerGroupId");
     expect(keys).not.toContain("environments");
     expect(keys).not.toContain("deploymentProducts");
   });
@@ -1151,12 +1152,11 @@ const LC_ECAB = { id: "u-ecab", email: "eli@example.com", name: "Eli Ecab" };
 
 const LC_CUST_ONE = { id: "u-cust1", email: "mia@acme.example", name: "Mia Member" };
 const LC_CUST_TWO = { id: "u-cust2", email: "max@acme.example", name: "Max Member" };
-const LC_CUSTOMER_GROUP = { id: "grp-acme", name: "Acme Reviewers" };
 
 interface LcFake {
   cr: BeChangeRequestDetail;
   approvals: BeChangeRequestApproval[];
-  /** Members of the CR's customer group (empty = no eligible member). */
+  /** Approvers the backend would provision from the CR's project contacts (empty = no eligible contact). */
   customerMembers: Array<{ id: string; name: string }>;
 }
 let lc: LcFake;
@@ -1231,7 +1231,7 @@ function lcSetState(state: string): void {
       {
         stage: state === "customer_approval" ? "Customer Approval" : "Customer Review",
         approverType: "STATIC_GROUP",
-        approverName: lc.cr.customerGroup?.name ?? null,
+        approverName: "Customer Group",
         status: "REQUESTED",
         approvers: lc.customerMembers.map((m) => ({ id: m.id, name: m.name, status: "REQUESTED" })),
       },
@@ -1270,7 +1270,14 @@ function lcPublish(): void {
 function lcSeed(
   type: "normal" | "emergency" | "standard",
   flags: { approval: boolean; review: boolean } = { approval: false, review: false },
-  customerGroup?: { members: Array<{ id: string; name: string }> } | null,
+  // The project's registered contacts (the read-only Customer Group): `members`
+  // are the eligible ones the backend asks; `contacts` (default: the members)
+  // lets a test have contacts who are all ineligible (e.g. only the creator).
+  // `null` = the project has no registered contacts.
+  customerGroup?: {
+    members: Array<{ id: string; name: string }>;
+    contacts?: Array<{ id: string; name: string }>;
+  } | null,
 ): void {
   lcEmitsCanDecide = true;
   lc = {
@@ -1282,8 +1289,7 @@ function lcSeed(
       createdBy: LC_CREATOR.email,
       customerApprovalRequired: flags.approval,
       customerReviewRequired: flags.review,
-      // `null` = the backend says no customer group is set.
-      customerGroup: customerGroup ? LC_CUSTOMER_GROUP : null,
+      customerContacts: customerGroup ? (customerGroup.contacts ?? customerGroup.members) : [],
       legalNextStates: lcLegalNextStates("new", flags),
     },
     approvals: [],
@@ -1385,16 +1391,22 @@ function expectNoManualSchedule(): void {
   expect(screen.queryByText(/move to assess/i)).not.toBeInTheDocument();
 }
 
+/** The table row of an approver. (A customer contact's name also shows as a chip in the Overview, so only table rows count.) */
 function approvalsRow(name: string): HTMLElement {
-  return screen.getByText(name).closest("tr") as HTMLElement;
+  const row = screen
+    .getAllByText(name)
+    .map((el) => el.closest("tr"))
+    .find((tr): tr is HTMLTableRowElement => tr !== null);
+  if (!row) throw new Error(`no approvals row for ${name}`);
+  return row;
 }
 
 /** The approvals row of `name` that belongs to `stage` (a member can have one per stage). */
 function approvalsRowInStage(name: string, stage: string): HTMLElement {
   const row = screen
     .getAllByText(name)
-    .map((el) => el.closest("tr") as HTMLElement)
-    .find((tr) => within(tr).queryByText(stage) !== null);
+    .map((el) => el.closest("tr"))
+    .find((tr): tr is HTMLTableRowElement => tr !== null && within(tr).queryByText(stage) !== null);
   if (!row) throw new Error(`no ${stage} row for ${name}`);
   return row;
 }
@@ -1918,13 +1930,14 @@ describe("CsmChangeRequestDetailPage — blocking reason for the customer states
 // ---------------------------------------------------------------------------
 // Customer group: the people a customer-gated change request is directed to
 //
-// When a CR with a customer group enters `customer_approval` /
-// `customer_review`, the backend provisions a "Customer Approval" / "Customer
-// Review" stage whose approvers are the group's members (like the Artemis and
-// Apollo assignment group). While that stage is live `legalNextStates` offers
-// only `canceled`; the member's decision moves the CR (approve -> scheduled /
-// closed, reject -> canceled). With no group, or a group with no eligible
-// member, no stage exists and the manual Record-customer-approval / Close
+// The Customer Group is the change request's project's registered contacts
+// (`customerContacts`, derived by the backend, read-only). When a CR whose
+// project has eligible contacts enters `customer_approval` / `customer_review`,
+// the backend provisions a "Customer Approval" / "Customer Review" stage whose
+// approvers are those contacts. While that stage is live `legalNextStates`
+// offers only `canceled`; a contact's decision moves the CR (approve ->
+// scheduled / closed, reject -> canceled). With no registered contacts, or none
+// eligible, no stage exists and the manual Record-customer-approval / Close
 // paths stay. The fake above encodes exactly that.
 // ---------------------------------------------------------------------------
 
@@ -1965,12 +1978,12 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
     view = lcOpenAs(LC_CREATOR, view);
     expect(currentStep()).toBe("Customer Approval");
     expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
-    // No "no customer group" helper: a group is set.
-    expect(screen.queryByText(/no customer group is set/i)).not.toBeInTheDocument();
+    // No "no registered contacts" helper: the project has contacts.
+    expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
     for (const member of [LC_CUST_ONE, LC_CUST_TWO]) {
       const row = approvalsRow(member.name);
       expect(within(row).getByText("Customer Approval")).toBeInTheDocument();
-      expect(within(row).getByText("Acme Reviewers")).toBeInTheDocument();
+      expect(within(row).getByText("Customer Group")).toBeInTheDocument();
       expect(within(row).getByText("Requested")).toBeInTheDocument();
     }
     expect(within(approvalsRow("Pat Peer")).getByText("Peer Approval")).toBeInTheDocument();
@@ -1984,7 +1997,8 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
     // --- customer_approval, non-member (the CAB approver): sees rows, no Approve/Reject.
     view = lcOpenAs(LC_CAB, view);
     expect(currentStep()).toBe("Customer Approval");
-    expect(screen.getByText("Mia Member")).toBeInTheDocument();
+    // (The contact is listed twice: as a Customer Group chip and as an approver row.)
+    expect(within(approvalsRow("Mia Member")).getByText("Requested")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Record customer approval" })).not.toBeInTheDocument();
@@ -2026,7 +2040,7 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
     fireEvent.click(screen.getByRole("button", { name: /^send for customer review$/i }));
     expect(currentStep()).toBe("Customer Review");
     expect(screen.getByText("Awaiting Customer Review")).toBeInTheDocument();
-    expect(within(approvalsRowInStage("Max Member", "Customer Review")).getByText("Acme Reviewers")).toBeInTheDocument();
+    expect(within(approvalsRowInStage("Max Member", "Customer Review")).getByText("Customer Group")).toBeInTheDocument();
     expect(within(approvalsRowInStage("Mia Member", "Customer Review")).getByText("Requested")).toBeInTheDocument();
     // The settled Customer Approval rows stay in the panel.
     expect(within(approvalsRowInStage("Mia Member", "Customer Approval")).getByText("Approved")).toBeInTheDocument();
@@ -2098,8 +2112,8 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
   });
 });
 
-describe("CsmChangeRequestDetailPage — customer group: no customer group (manual fallback)", () => {
-  it("customer_approval with no customer group: no customer stage, the helper explains why, and Record customer approval still works", () => {
+describe("CsmChangeRequestDetailPage — customer group: no registered customer contacts (manual fallback)", () => {
+  it("customer_approval with no registered contacts: no customer stage, the helper explains why, and Record customer approval still works", () => {
     lcSeed("normal", { approval: true, review: false }, null);
     let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
 
@@ -2108,21 +2122,17 @@ describe("CsmChangeRequestDetailPage — customer group: no customer group (manu
     expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
     // Only the settled internal stages; no customer-stage rows.
     expect(screen.queryAllByText("Customer Approval", { selector: "td" })).toHaveLength(0);
-    expect(
-      screen.getByText(
-        "No customer group is set on this change request, so no customer approvers were assigned. Set the Customer Group to route this to the customer.",
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/^No registered customer contacts are assigned to this change request's project, so no customer approvers were assigned\./)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Record customer approval" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Record customer approval" }));
     expect(patchMutateMock).toHaveBeenLastCalledWith({ id: "chg-1", patch: { state: "scheduled" } }, expect.anything());
     expect(currentStep()).toBe("Scheduled");
-    expect(screen.queryByText(/no customer group is set/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
     view.unmount();
   });
 
-  it("customer_review with no customer group: helper shown and manual Close still offered", () => {
+  it("customer_review with no registered contacts: helper shown and manual Close still offered", () => {
     lcSeed("normal", { approval: false, review: true }, null);
     let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
     view = lcOpenAs(LC_CREATOR, view);
@@ -2132,34 +2142,34 @@ describe("CsmChangeRequestDetailPage — customer group: no customer group (manu
 
     expect(currentStep()).toBe("Customer Review");
     expect(screen.getByText("Awaiting Customer Review")).toBeInTheDocument();
-    expect(screen.getByText(/no customer group is set/i)).toBeInTheDocument();
+    expect(screen.getByText(/no registered customer contacts/i)).toBeInTheDocument();
     expect(screen.queryAllByText("Customer Review", { selector: "td" })).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: /^close$/i }));
     expect(currentStep()).toBe("Closed");
     view.unmount();
   });
 
-  it("a customer group with no eligible member provisions no stage, so the manual path stays and no helper nags", () => {
-    lcSeed("normal", { approval: true, review: false }, { members: [] });
+  it("registered contacts none of whom is eligible (e.g. only the creator) provision no stage, so the manual path stays and no helper nags", () => {
+    lcSeed("normal", { approval: true, review: false }, { members: [], contacts: [{ id: LC_CREATOR.id, name: LC_CREATOR.name }] });
     let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
     view = lcOpenAs(LC_CREATOR, view);
     expect(currentStep()).toBe("Customer Approval");
     expect(screen.queryAllByText("Customer Approval", { selector: "td" })).toHaveLength(0);
-    expect(screen.queryByText(/no customer group is set/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Record customer approval" })).toBeInTheDocument();
     view.unmount();
   });
 
-  it("stays silent about the customer group when the payload omits the field (older backend)", () => {
+  it("stays silent about the customer contacts when the payload omits the field (another data source)", () => {
     mockQueryResult({ data: { ...BASE_CR, state: "customer_approval", customerApprovalRequired: true } });
     renderPage();
     expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
-    expect(screen.queryByText(/no customer group is set/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
   });
 
-  it("does not show the helper outside the customer gates, even with no customer group", () => {
-    mockQueryResult({ data: { ...BASE_CR, state: "scheduled", customerGroup: null } });
+  it("does not show the helper outside the customer gates, even with no registered contacts", () => {
+    mockQueryResult({ data: { ...BASE_CR, state: "scheduled", customerContacts: [] } });
     renderPage();
-    expect(screen.queryByText(/no customer group is set/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
   });
 });

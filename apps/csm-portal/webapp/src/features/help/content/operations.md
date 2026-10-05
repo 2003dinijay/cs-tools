@@ -61,13 +61,16 @@ The detail page shows:
     communication plan, the implementation plan, and the affected
     services/components text and rollback duration. Below that, an **SRE
     details** card shows further fields the backing system tracks:
-    priority, category, requested by, customer group, change request type,
+    priority, category, requested by, change request type,
     likelihood, whether the Implementation Plan is visible to customers,
     when the customer last updated it, work start/end, a git reference (if
-    any), and any linked environments, deployment products, deployments, or
+    any), and any linked deployment products, deployments, or
     labels. Most of these are read-only with no edit control anywhere yet —
     they're shown for context. "Implementation Plan visible to customers"
     is the exception: it's editable from Create/Edit (see below).
+    The **Customer Group** is not picked: it is the change request's customer
+    project's registered contacts (read-only), the people asked at Customer
+    Approval / Customer Review.
   - Planned start and end times you enter when creating or editing a change
     are in your own time zone (the one on your profile, or your browser's if
     none is set) and are stored as UTC, so they mean the same instant to
@@ -84,7 +87,7 @@ From the detail page a CS engineer can:
   as an approver on it: the Approve/Reject buttons only appear on that
   engineer's own pending approval.
 - **Edit** the planned window, assignment group, assigned engineer, requested
-  by, customer group, rollback duration, whether the Implementation Plan is
+  by, rollback duration, whether the Implementation Plan is
   visible to customers, and the implementation/rollback/test/
   affected-services/affected-components plans, or **Clone** the change request
   into a new one pre-filled with this one's values (useful for promoting the same

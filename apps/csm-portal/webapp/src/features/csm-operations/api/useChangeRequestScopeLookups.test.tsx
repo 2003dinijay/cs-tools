@@ -37,11 +37,14 @@ function wrapper({ children }: { children: ReactNode }) {
 
 const OPTIONS = {
   deployments: [
-    { id: "dep-prod", name: "Acme Production", type: "primary_production", environment: { id: "env-prod", name: "Primary Production" } },
-    { id: "dep-stg", name: "Acme Staging", type: "staging", environment: { id: "env-stg", name: "Staging" } },
-    { id: "dep-odd", name: "Odd", type: "other", environment: null },
+    { id: "dep-prod", name: "Acme Production", type: "primary_production" },
+    { id: "dep-stg", name: "Acme Staging", type: "staging" },
+    { id: "dep-odd", name: "Odd", type: "other" },
   ],
-  environments: [{ id: "env-prod", name: "Primary Production" }],
+  customerContacts: [
+    { id: "pc-1", name: "Alice Aaron", email: "alice@acme.example" },
+    { id: "pc-2", name: "Bob Bell" },
+  ],
   deploymentProducts: [
     { id: "dp-apim", name: "API Manager 4.3.0", deployment: { id: "dep-prod", name: "Acme Production" } },
     { id: "dp-is", name: "Identity Server 7.0.0", deployment: { id: "dep-prod", name: "Acme Production" } },
@@ -67,19 +70,34 @@ describe("useChangeRequestScopeLookups", () => {
     expect(postMock).toHaveBeenCalledWith("/change-requests/link-options", { projectId: "proj-a" });
   });
 
-  it("maps each deployment to its name and environment, and reports no products for unchosen deployments", async () => {
+  it("maps each deployment to its name, and reports no products for unchosen deployments", async () => {
     const { result } = renderHook(() => useChangeRequestScopeLookups("proj-a", []), { wrapper });
     await waitFor(() => expect(result.current.deployments).toHaveLength(3));
-    const [prod, stg, odd] = result.current.deployments;
-    expect(prod).toEqual({
-      id: "dep-prod",
-      label: "Acme Production",
-      environments: [{ id: "env-prod", label: "Primary Production" }],
-      products: undefined,
-    });
-    expect(stg!.environments).toEqual([{ id: "env-stg", label: "Staging" }]);
-    // A deployment without an environment contributes none (known-empty, not unknown).
-    expect(odd!.environments).toEqual([]);
+    const [prod] = result.current.deployments;
+    expect(prod).toEqual({ id: "dep-prod", label: "Acme Production", products: undefined });
+    expect(Object.keys(prod!)).not.toContain("environments");
+  });
+
+  it("exposes the project's registered contacts as the read-only customer group, once the lookup has settled", async () => {
+    const { result } = renderHook(() => useChangeRequestScopeLookups("proj-a", []), { wrapper });
+    // Not ready (and empty) before the lookup resolves.
+    expect(result.current.contactsReady).toBe(false);
+    expect(result.current.customerContacts).toEqual([]);
+    await waitFor(() => expect(result.current.contactsReady).toBe(true));
+    expect(result.current.customerContacts.map((c) => c.name)).toEqual(["Alice Aaron", "Bob Bell"]);
+  });
+
+  it("has no contacts, and is not ready, without a project", () => {
+    const { result } = renderHook(() => useChangeRequestScopeLookups(undefined, []), { wrapper });
+    expect(result.current.customerContacts).toEqual([]);
+    expect(result.current.contactsReady).toBe(false);
+  });
+
+  it("treats a response without customerContacts as an empty (but known) group", async () => {
+    postMock.mockResolvedValue({ deployments: [], deploymentProducts: [] });
+    const { result } = renderHook(() => useChangeRequestScopeLookups("proj-a", []), { wrapper });
+    await waitFor(() => expect(result.current.contactsReady).toBe(true));
+    expect(result.current.customerContacts).toEqual([]);
   });
 
   it("sends the chosen deployments and attributes each product to the deployment it is deployed in", async () => {
@@ -130,8 +148,16 @@ describe("useChangeRequestScopeLookups", () => {
     await waitFor(() => expect(result.current.deployments).toHaveLength(3));
     rerender({ project: "proj-b" });
     expect(result.current.deployments).toEqual([]);
-    resolveSecond({ deployments: [{ id: "dep-b", name: "Beta", type: "development", environment: null }], environments: [], deploymentProducts: [] });
+    // Nor does one customer's contact list: the new project's is empty until it loads.
+    expect(result.current.customerContacts).toEqual([]);
+    expect(result.current.contactsReady).toBe(false);
+    resolveSecond({
+      deployments: [{ id: "dep-b", name: "Beta", type: "development" }],
+      deploymentProducts: [],
+      customerContacts: [{ id: "pc-9", name: "Carol Cook" }],
+    });
     await waitFor(() => expect(result.current.deployments.map((d) => d.id)).toEqual(["dep-b"]));
+    expect(result.current.customerContacts.map((c) => c.name)).toEqual(["Carol Cook"]);
   });
 
   it("surfaces a failed lookup", async () => {

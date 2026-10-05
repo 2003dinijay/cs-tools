@@ -21,6 +21,7 @@ import { useBackendApi } from "@api/backend/client";
 import type {
   BeChangeRequestLinkOptionsPayload,
   BeChangeRequestLinkOptionsResponse,
+  BeCustomerContact,
 } from "@api/backend/types";
 
 export interface ScopeOption {
@@ -30,8 +31,6 @@ export interface ScopeOption {
 
 /** A selectable deployment with what choosing it contributes to the form. */
 export interface ScopeDeployment extends ScopeOption {
-  /** Environments this deployment is an instance of; `undefined` while not yet known. */
-  environments: ScopeOption[] | undefined;
   /** Deployment products this deployment carries; `undefined` until the
    * lookup for the current selection has settled. */
   products: ScopeOption[] | undefined;
@@ -39,17 +38,25 @@ export interface ScopeDeployment extends ScopeOption {
 
 export interface ChangeRequestScopeLookups {
   deployments: ScopeDeployment[];
+  /**
+   * The project's registered contacts: the change request's read-only
+   * "Customer Group" (empty until the lookup settles or when the project has
+   * none). Display names only — nothing here is ever sent back.
+   */
+  customerContacts: BeCustomerContact[];
+  /** True once the lookup for the current project has settled (contacts are known). */
+  contactsReady: boolean;
   isLoading: boolean;
   isError: boolean;
   refetch: () => void;
 }
 
 /**
- * Everything the change-request form's project -> deployments -> environments /
+ * Everything the change-request form's project -> deployments /
  * deployment products cascade needs, from one backend lookup
- * (`POST /change-requests/link-options`): the project's deployments (each with
- * the environment it is an instance of) and, for the deployments chosen so
- * far, the deployment products that follow from them. Disabled (empty) until a
+ * (`POST /change-requests/link-options`): the project's deployments, the
+ * project's registered contacts (the read-only Customer Group) and, for the
+ * deployments chosen so far, the deployment products that follow from them. Disabled (empty) until a
  * project is chosen. While the lookup for a changed selection is in flight the
  * previous deployment list stays on screen, but products are reported as not
  * yet known rather than stale.
@@ -91,7 +98,6 @@ export function useChangeRequestScopeLookups(
     return (data.deployments ?? []).map((d) => ({
       id: d.id,
       label: d.name || d.id,
-      environments: d.environment ? [{ id: d.environment.id, label: d.environment.name }] : [],
       products:
         productsSettled && chosen.has(d.id)
           ? (data.deploymentProducts ?? [])
@@ -103,6 +109,8 @@ export function useChangeRequestScopeLookups(
 
   return {
     deployments: projectId ? deployments : [],
+    customerContacts: projectId && data ? (data.customerContacts ?? []) : [],
+    contactsReady: !!projectId && !!data,
     isLoading: !!projectId && query.isLoading,
     isError: !!projectId && query.isError,
     refetch: () => void query.refetch(),

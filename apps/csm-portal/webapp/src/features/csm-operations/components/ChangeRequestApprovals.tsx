@@ -59,14 +59,14 @@ function formatDateTime(value?: string | null): string {
   );
 }
 
-/** The stages the backend provisions for the CR's customer group. */
+/** The stages the backend provisions for the CR's customer group (the project's registered contacts). */
 function isCustomerStage(stageName: string): boolean {
   return stageName === "Customer Approval" || stageName === "Customer Review";
 }
 
 /** "Devops Approval" (STATIC_GROUP), a named customer contact (DYNAMIC_CONTACT)
- * or, for a Customer Approval / Customer Review stage, the customer group whose
- * members are the approvers. */
+ * or, for a Customer Approval / Customer Review stage, the customer group (the
+ * project's registered contacts) who are the approvers. */
 function approverGroupName(approval: BeChangeRequestApproval): string {
   if (approval.approverName) return approval.approverName;
   if (approval.approverType === "DYNAMIC_CONTACT") return "Customer contact";

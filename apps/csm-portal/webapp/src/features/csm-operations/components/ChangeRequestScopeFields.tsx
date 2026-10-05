@@ -38,10 +38,11 @@ function selectedOptions(
 }
 
 /**
- * The Customer Project / Deployments / Environments / Deployment products
- * block, in the order the ServiceNow change-request form lays them out.
- * Deployments and Environments stay disabled until their parent is chosen;
- * Deployment products is read-only (lock icon) because it is derived.
+ * The Customer Project / Deployments / Deployment products block, in the order
+ * the ServiceNow change-request form lays them out. Deployments stays disabled
+ * until a project is chosen; Deployment products is read-only (lock icon)
+ * because it is derived. (A deployment already carries its environment role,
+ * so there is no separate Environments field.)
  */
 export default function ChangeRequestScopeFields({
   scope,
@@ -50,10 +51,8 @@ export default function ChangeRequestScopeFields({
   projectClearable = true,
 }: ChangeRequestScopeFieldsProps): JSX.Element {
   const hasProject = !!scope.projectId;
-  const hasDeployments = scope.deploymentIds.length > 0;
 
   const deploymentValue = selectedOptions(scope.deploymentIds, scope.deploymentLabels);
-  const environmentValue = selectedOptions(scope.environmentIds, scope.environmentLabels);
   const productValue = selectedOptions(scope.deploymentProductIds, scope.deploymentProductLabels);
 
   return (
@@ -110,33 +109,6 @@ export default function ChangeRequestScopeFields({
         )}
       />
 
-      <Autocomplete<ScopeOption, true>
-        multiple
-        fullWidth
-        size="small"
-        id={`${idPrefix}-environments`}
-        options={scope.environmentOptions}
-        value={environmentValue}
-        disabled={disabled || !hasDeployments}
-        disableCloseOnSelect
-        getOptionLabel={(o) => o.label}
-        isOptionEqualToValue={(o, v) => o.id === v.id}
-        onChange={(_e, next) => scope.setEnvironments(next.map((o) => o.id))}
-        noOptionsText="The chosen deployments provide no environments"
-        renderInput={(params) => (
-          <TextField
-            {...params}
-            label="Environments"
-            placeholder={environmentValue.length ? undefined : "Select environments…"}
-            helperText={
-              !hasDeployments
-                ? "Select deployments first."
-                : "Limited to the environments of the selected deployments."
-            }
-          />
-        )}
-      />
-
       <TextField
         id={`${idPrefix}-deployment-products`}
         label="Deployment products"
@@ -162,5 +134,68 @@ export default function ChangeRequestScopeFields({
         }}
       />
     </Box>
+  );
+}
+
+interface ChangeRequestCustomerGroupFieldProps {
+  scope: ChangeRequestScope;
+  /** Prefix for element ids (`cr` on the create page, `cr-edit` in the dialog). */
+  idPrefix: string;
+}
+
+/**
+ * The change request's "Customer Group", READ-ONLY: the registered contacts of
+ * the chosen Customer Project, listed as chips (lock icon, like Deployment
+ * products). There is nothing to pick — the group is derived by the backend
+ * from the project, so it can never name another customer's people — and
+ * nothing is sent back; it follows the project the moment that changes.
+ */
+export function ChangeRequestCustomerGroupField({
+  scope,
+  idPrefix,
+}: ChangeRequestCustomerGroupFieldProps): JSX.Element {
+  const hasProject = !!scope.projectId;
+  const contacts = hasProject ? scope.customerContacts : [];
+  const helper = !hasProject
+    ? "Select a Customer Project first."
+    : scope.lookups.isError
+      ? "Couldn't load the project's contacts."
+      : !scope.customerContactsReady
+        ? "Loading the project's registered contacts…"
+        : contacts.length === 0
+          ? "No registered contacts on this project. Derived from the customer project's registered contacts."
+          : "Derived from the customer project's registered contacts";
+
+  return (
+    <TextField
+      id={`${idPrefix}-customer-group`}
+      label="Customer Group"
+      size="small"
+      fullWidth
+      value=""
+      placeholder={contacts.length ? undefined : "—"}
+      helperText={helper}
+      slotProps={{
+        inputLabel: { shrink: true },
+        input: {
+          readOnly: true,
+          startAdornment: contacts.length ? (
+            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, mr: 0.5 }}>
+              {contacts.map((c) => (
+                <Chip
+                  key={c.id}
+                  size="small"
+                  variant="outlined"
+                  label={c.name}
+                  title={c.email || undefined}
+                />
+              ))}
+            </Box>
+          ) : undefined,
+          endAdornment: <Lock size={16} aria-hidden style={{ opacity: 0.6 }} />,
+        },
+        htmlInput: { "aria-readonly": true },
+      }}
+    />
   );
 }

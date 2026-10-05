@@ -36,8 +36,8 @@ import {
   isChangeRequestCategory,
   isChangeRequestCreator,
   isCreatableChangeRequestType,
-  NO_CUSTOMER_GROUP_HELPER,
-  noCustomerGroupHelper,
+  NO_CUSTOMER_CONTACTS_HELPER,
+  noCustomerContactsHelper,
 } from "@features/csm-operations/utils/changeRequests";
 import type { BeChangeRequestApproval, BeChangeRequestDetail } from "@api/backend/types";
 
@@ -108,40 +108,40 @@ describe("buildCloneChangeRequestNavState", () => {
     expect(keys).not.toContain("riskImpactAnalysis");
   });
 
-  it("carries the customer project, customer group and category, but never the deployments / environments / deployment products", () => {
+  it("carries the customer project and category, but never the deployments / deployment products / customer group", () => {
     const state = buildCloneChangeRequestNavState({
       ...FULL_CR,
-      customerGroup: { id: "grp-1", name: "Acme Customers" },
+      customerContacts: [{ id: "c-1", name: "Alice Aaron" }],
       category: { id: "devops", name: "DevOps" },
       deployments: [{ id: "dep-1", name: "prod" }],
-      environments: [{ id: "env-1", name: "Primary Production" }],
       deploymentProducts: [{ id: "dp-1", name: "API Manager 4.3.0" }],
     });
     expect(state.projectId).toBe("proj-1");
     expect(state.projectLabel).toBe("Project A");
-    expect(state.customerGroupId).toBe("grp-1");
-    expect(state.customerGroupLabel).toBe("Acme Customers");
     expect(state.category).toBe("devops");
-    // A clone exists to promote the change to a different environment, so what
-    // names the *target* environment is left for the user to choose.
+    // A clone exists to promote the change to a different deployment, so what
+    // names the *target* is left for the user to choose; the Customer Group is
+    // derived from the project and read-only, so it is never carried either.
     const keys = Object.keys(state);
     expect(keys).not.toContain("deployments");
     expect(keys).not.toContain("deploymentIds");
+    expect(keys).not.toContain("customerContacts");
+    expect(keys).not.toContain("customerGroupId");
+    expect(keys).not.toContain("customerGroupLabel");
     expect(keys).not.toContain("environments");
     expect(keys).not.toContain("environmentIds");
     expect(keys).not.toContain("deploymentProducts");
     expect(keys).not.toContain("deploymentProductIds");
   });
 
-  it("leaves project / customer group / category out when the source has none (or an unknown category)", () => {
+  it("leaves project / category out when the source has none (or an unknown category)", () => {
     const state = buildCloneChangeRequestNavState({
       ...FULL_CR,
       project: undefined,
-      customerGroup: null,
+      customerContacts: [],
       category: { id: "something_new", label: "Something new" },
     });
     expect(state.projectId).toBeUndefined();
-    expect(state.customerGroupId).toBeUndefined();
     expect(state.category).toBeUndefined();
   });
 
@@ -616,32 +616,32 @@ describe("changeRequestBlockingReason — customer group stages", () => {
   });
 });
 
-describe("noCustomerGroupHelper", () => {
+describe("noCustomerContactsHelper", () => {
   it.each(["customer_approval", "customer_review"])(
-    "returns the helper at %s when the customer group is explicitly unset",
+    "returns the helper at %s when the project has no registered contacts",
     (state) => {
-      expect(noCustomerGroupHelper(state, null)).toBe(NO_CUSTOMER_GROUP_HELPER);
-      expect(noCustomerGroupHelper(state, { id: "" })).toBe(NO_CUSTOMER_GROUP_HELPER);
+      expect(noCustomerContactsHelper(state, [])).toBe(NO_CUSTOMER_CONTACTS_HELPER);
+      expect(noCustomerContactsHelper(state, null)).toBe(NO_CUSTOMER_CONTACTS_HELPER);
     },
   );
 
-  it("is silent when a customer group is set", () => {
-    expect(noCustomerGroupHelper("customer_approval", { id: "g1" })).toBeNull();
+  it("is silent when the project has registered contacts", () => {
+    expect(noCustomerContactsHelper("customer_approval", [{ id: "c1", name: "Alice" }])).toBeNull();
   });
 
-  it("is silent when the payload carries no customerGroup field at all (unknown)", () => {
-    expect(noCustomerGroupHelper("customer_approval", undefined)).toBeNull();
+  it("is silent when the payload carries no customerContacts field at all (unknown)", () => {
+    expect(noCustomerContactsHelper("customer_approval", undefined)).toBeNull();
   });
 
   it("is silent outside the customer gates", () => {
     for (const state of ["new", "assess", "authorize", "scheduled", "implement", "review", "closed", "canceled", undefined]) {
-      expect(noCustomerGroupHelper(state, null)).toBeNull();
+      expect(noCustomerContactsHelper(state, [])).toBeNull();
     }
   });
 
-  it("says what to do about it", () => {
-    expect(NO_CUSTOMER_GROUP_HELPER).toBe(
-      "No customer group is set on this change request, so no customer approvers were assigned. Set the Customer Group to route this to the customer.",
+  it("says what is going on", () => {
+    expect(NO_CUSTOMER_CONTACTS_HELPER).toMatch(
+      /^No registered customer contacts are assigned to this change request's project, so no customer approvers were assigned\./,
     );
   });
 });

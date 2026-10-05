@@ -354,22 +354,24 @@ export function changeRequestBlockingReason(
 }
 
 /**
- * Helper shown in the Approval tab when a CR sits at a customer gate but has no
- * customer group, so the backend had nobody to assign the stage to. `null` when
- * the state is not a customer gate or a group is set. `customerGroup` being
- * `undefined` (field absent from the payload) is treated as "unknown" -> `null`,
- * only an explicit `null`/empty ref counts as unset.
+ * Helper shown in the Approval tab when a CR sits at a customer gate but its
+ * Customer Project has no registered contacts, so the backend had nobody to
+ * ask. `null` when the state is not a customer gate or contacts exist.
+ * `customerContacts` being `undefined` (field absent from the payload, e.g.
+ * another data source) is treated as "unknown" -> `null`; only an explicit
+ * empty list counts as "none".
  */
-export const NO_CUSTOMER_GROUP_HELPER =
-  "No customer group is set on this change request, so no customer approvers were assigned. Set the Customer Group to route this to the customer.";
+export const NO_CUSTOMER_CONTACTS_HELPER =
+  "No registered customer contacts are assigned to this change request's project, so no customer approvers were assigned. " +
+  "Once a contact registers on the project, saving the change request routes the step to them; until then the customer's response is recorded manually.";
 
-export function noCustomerGroupHelper(
+export function noCustomerContactsHelper(
   state: string | null | undefined,
-  customerGroup: { id?: string | null } | null | undefined,
+  customerContacts: readonly unknown[] | null | undefined,
 ): string | null {
   if (state !== "customer_approval" && state !== "customer_review") return null;
-  if (customerGroup === undefined) return null;
-  return customerGroup?.id ? null : NO_CUSTOMER_GROUP_HELPER;
+  if (customerContacts === undefined) return null;
+  return customerContacts && customerContacts.length > 0 ? null : NO_CUSTOMER_CONTACTS_HELPER;
 }
 
 /**
@@ -413,7 +415,7 @@ export function customerReviewLockedReason(state?: string | null): string | null
 }
 
 /**
- * States from which Customer Project / Deployments / Environments / Deployment
+ * States from which Customer Project / Deployments / Deployment
  * products can no longer be changed (the backend refuses with a 400 from
  * `implement` onward).
  */
@@ -426,10 +428,10 @@ const SCOPE_LOCKED_STATES: readonly string[] = [
   "canceled",
 ];
 
-/** Why the project / deployments / environments are locked in `state`, or `null` when editable. */
+/** Why the project / deployments are locked in `state`, or `null` when editable. */
 export function changeRequestScopeLockedReason(state?: string | null): string | null {
   return state && SCOPE_LOCKED_STATES.includes(state)
-    ? "Locked: the customer project, deployments and environments can't be changed once implementation has started."
+    ? "Locked: the customer project and deployments can't be changed once implementation has started."
     : null;
 }
 
@@ -649,15 +651,14 @@ export interface CloneChangeRequestNavState {
    * confirmation (`hasCustomerApproved`/`hasCustomerReviewed`) is never copied. */
   customerApprovalRequired?: boolean;
   customerReviewRequired?: boolean;
-  /** The source's Customer Project, Customer Group and Category, with the
-   * display labels the form shows until fresh lookups resolve them. The
-   * source's Deployments / Environments / Deployment products are
-   * deliberately NOT carried: they name the environment the change targets,
-   * and a clone exists to promote the change to a different one. */
+  /** The source's Customer Project and Category, with the display label the
+   * form shows until fresh lookups resolve it. The source's Deployments /
+   * Deployment products are deliberately NOT carried: they name the
+   * deployment the change targets, and a clone exists to promote the change
+   * to a different one. The Customer Group is never carried either: it is
+   * derived from the project's registered contacts (read-only). */
   projectId?: string;
   projectLabel?: string;
-  customerGroupId?: string;
-  customerGroupLabel?: string;
   category?: BeChangeRequestCategory;
 }
 
@@ -669,13 +670,13 @@ function cloneableHtml(html?: string | null): string | undefined {
 
 /**
  * Builds the router-state payload for a change request's "Clone" action.
- * Deliberately omits: deployments / environments / deployment products,
+ * Deliberately omits: deployments / deployment products,
  * state, approval fields
  * (`hasCustomerApproved`/`hasCustomerReviewed`/`approvedBy`/`approvedOn`; the
  * `customerApprovalRequired`/`customerReviewRequired` settings ARE carried),
  * planned start/end, and every auto-numbered/timestamp/created-by field —
  * per this feature's requirement that promoting a change to a new
- * environment must never silently carry an approval or a stale schedule
+ * deployment must never silently carry an approval or a stale schedule
  * across. Comments and attachments are never part of this payload; they
  * belong to the original record only.
  */
@@ -696,8 +697,6 @@ export function buildCloneChangeRequestNavState(
     customerReviewRequired: cr.customerReviewRequired ?? undefined,
     projectId: cr.project?.id || undefined,
     projectLabel: cr.project?.name || undefined,
-    customerGroupId: cr.customerGroup?.id || undefined,
-    customerGroupLabel: cr.customerGroup?.name || undefined,
     category: changeRequestCategoryValue(cr.category) || undefined,
   };
 }
@@ -709,10 +708,10 @@ export function buildCloneChangeRequestNavState(
  * wants a preview) and the create page stay in sync.
  */
 export const CLONE_SOURCE_GAP_MESSAGE =
-  "Copied the subject, description, justification, test plan, type, impact, assigned engineer, customer project, customer group, category, and customer approval/review settings. " +
+  "Copied the subject, description, justification, test plan, type, impact, assigned engineer, customer project, category, and customer approval/review settings. " +
   "Priority, implementation plan, risk/impact analysis, backout plan, assignment group, " +
   "linked case, and affected product aren't available to copy and need to be re-entered. " +
-  "Deployments, environments, deployment products, schedule, and approval fields are intentionally left blank for you to set for the new environment.";
+  "Deployments, deployment products, schedule, and approval fields are intentionally left blank for you to set for the new environment. The Customer Group follows the customer project.";
 
 // ---------------------------------------------------------------------------
 // "Originating service request" picker — unified parent-record search
@@ -843,12 +842,8 @@ export interface ChangeRequestDraft {
   projectLabel?: string;
   deploymentIds?: string[];
   deploymentLabels?: Record<string, string>;
-  environmentIds?: string[];
-  environmentLabels?: Record<string, string>;
   deploymentProductIds?: string[];
   deploymentProductLabels?: Record<string, string>;
-  customerGroupId?: string;
-  customerGroupLabel?: string;
   category?: string;
   comment?: string;
   workNote?: string;

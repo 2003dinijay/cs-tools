@@ -2731,9 +2731,15 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
   /** Free-form; e.g. `"10 mins"`. Parsing into a structured duration, if
    * ever needed, is CSM policy, not something ServiceNow enforces. */
   rollbackDurationText?: string | null;
-  environments?: BeEntityRef[];
   deploymentProducts?: BeEntityRef[];
-  customerGroup?: BeEntityRef | null;
+  /**
+   * The change request's "Customer Group": the REGISTERED portal-user contacts
+   * of its Customer Project, derived live by the backend and READ-ONLY (never
+   * picked or sent back). Always an array on the PostgreSQL data source (empty
+   * without a project or without registered contacts); absent on other data
+   * sources. They are the customer's approvers at Customer Approval / Review.
+   */
+  customerContacts?: BeCustomerContact[];
 
   /**
    * Read-through only — no write path is exposed anywhere in the stack for
@@ -2842,15 +2848,18 @@ export interface BeChangeRequestApprovalDecisionResponse {
  * `notes/2026-08-19-sn-prod-cr-form-spec.md` in the planning repo). The
  * backend contract is left untouched — only the webapp stops sending them.
  *
- * `projectId`, `deploymentIds`, `environmentIds`, `deploymentProductIds`,
- * `customerGroupId`, `category`, `comment` and `workNote` mirror the real
- * ServiceNow CR form's Customer Project / Deployments / Environments /
- * Deployment products / Customer Group / Category / Additional comments
- * (customer visible) / Work notes fields. Deployments, environments and
- * deployment products are all scoped to the chosen project; the backend
- * rejects an inconsistent combination with a 400 whose message the form shows
- * verbatim. Every one is optional and is omitted (arrays when empty) rather
- * than sent blank.
+ * `projectId`, `deploymentIds`, `deploymentProductIds`, `category`, `comment`
+ * and `workNote` mirror the real ServiceNow CR form's Customer Project /
+ * Deployments / Deployment products / Category / Additional comments
+ * (customer visible) / Work notes fields. Deployments and deployment products
+ * are scoped to the chosen project; the backend rejects an inconsistent
+ * combination with a 400 whose message the form shows verbatim. Every one is
+ * optional and is omitted (arrays when empty) rather than sent blank.
+ *
+ * There is deliberately no `customerGroupId` and no `environmentIds`: the
+ * Customer Group is derived from the project's registered contacts (read-only,
+ * see {@link BeCustomerContact}) and a deployment carries its environment; the
+ * backend answers a client that still sends either with a 400.
  */
 export interface BeCreateChangeRequestPayload {
   subject: string;
@@ -2879,12 +2888,8 @@ export interface BeCreateChangeRequestPayload {
   projectId?: string;
   /** Deployments of {@link projectId}. */
   deploymentIds?: string[];
-  /** Environments provided by the chosen deployments. */
-  environmentIds?: string[];
   /** Deployment products derived from the chosen deployments. */
   deploymentProductIds?: string[];
-  /** "Customer Group". */
-  customerGroupId?: string;
   /** Defaults to `other` on the legacy ServiceNow form. */
   category?: BeChangeRequestCategory;
   /** "Implementation Plan visible to customers" in this portal's UI. */
@@ -2899,24 +2904,30 @@ export interface BeCreateChangeRequestPayload {
 
 /**
  * `POST /change-requests/link-options` body: the lookup behind the change
- * request form's Customer Project -> Deployments -> Environments / Deployment
- * products cascade.
+ * request form's Customer Project -> Deployments -> Deployment products
+ * cascade, plus the project's read-only Customer Group.
  */
 export interface BeChangeRequestLinkOptionsPayload {
   /** The selected Customer Project. */
   projectId: string;
-  /** Deployments chosen so far; the response derives environments and
-   * deployment products from them. */
+  /** Deployments chosen so far; the response derives the deployment products
+   * from them. */
   deploymentIds?: string[];
 }
 
-/** One selectable deployment of the project, with the environment it is an instance of. */
+/** One selectable deployment of the project. */
 export interface BeChangeRequestDeploymentOption {
   id: string;
   name: string;
-  /** Deployment type (primary_production, staging, qa, ...). */
+  /** Deployment type, i.e. its environment role (primary_production, staging, qa, ...). */
   type?: string;
-  environment?: BeEntityRef | null;
+}
+
+/** A registered portal-user contact of a project: a member of the change request's read-only Customer Group. */
+export interface BeCustomerContact {
+  id: string;
+  name: string;
+  email?: string;
 }
 
 /** One deployment product (deployed product) that follows from the chosen deployments. */
@@ -2931,10 +2942,10 @@ export interface BeChangeRequestDeploymentProductOption {
 export interface BeChangeRequestLinkOptionsResponse {
   /** The project's deployments (all of them, regardless of the chosen ones). */
   deployments: BeChangeRequestDeploymentOption[];
-  /** Environments that follow from the chosen deployments. */
-  environments: BeEntityRef[];
   /** Deployment products that follow from the chosen deployments. */
   deploymentProducts: BeChangeRequestDeploymentProductOption[];
+  /** The project's registered contacts — the read-only Customer Group (name order, empty when none). */
+  customerContacts?: BeCustomerContact[];
 }
 
 /** `POST /change-requests` response — the created identifiers. */
@@ -3160,20 +3171,18 @@ export interface BePatchChangeRequestPayload {
   affectedServicesText?: string;
   affectedComponentsText?: string;
   rollbackDurationText?: string;
-  customerGroupId?: string;
   requestedById?: string;
   category?: BeChangeRequestCategory;
   /**
-   * Customer Project / Deployments / Environments / Deployment products. The
+   * Customer Project / Deployments / Deployment products. The
    * backend validates them as a unit (deployments must belong to the project,
-   * environments must be provided by a chosen deployment, deployment products
-   * must be exactly those of the chosen deployments) and refuses (400) any
+   * deployment products must be exactly those of the chosen deployments) and
+   * refuses (400) any
    * change once the CR has reached `implement`, so the edit dialog sends them
    * together, and only when one of them changed.
    */
   projectId?: string;
   deploymentIds?: string[];
-  environmentIds?: string[];
   deploymentProductIds?: string[];
   /** "Implementation Plan visible to customers" in this portal's UI. */
   isPlanningVisibleToCustomers?: boolean;

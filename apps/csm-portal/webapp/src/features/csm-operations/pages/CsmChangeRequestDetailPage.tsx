@@ -78,7 +78,7 @@ import {
   buildCloneChangeRequestNavState,
   changeRequestBlockingReason,
   changeRequestCategoryLabel,
-  noCustomerGroupHelper,
+  noCustomerContactsHelper,
   isChangeRequestCreator,
   changeRequestCommentGateReason,
   changeRequestTransitionRequiresReason,
@@ -170,7 +170,7 @@ function RefText({ value }: { value?: BeEntityRef | null }): JSX.Element {
   return <Typography variant="body2">{value?.name || "—"}</Typography>;
 }
 
-/** A multi-valued reference (Deployments / Environments / Deployment products) as chips, "—" when empty. */
+/** A multi-valued reference (Deployments / Deployment products / Customer Group) as chips, "—" when empty. */
 function RefChips({ values }: { values?: BeEntityRef[] | null }): JSX.Element {
   if (!values?.length) return <Typography variant="body2">—</Typography>;
   return (
@@ -454,10 +454,11 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
     cr.state === "closed" || cr.state === "canceled" || cr.state === "rollback"
       ? null
       : changeRequestBlockingReason(approvalsData?.approvals, cr.state);
-  // At a customer gate with no customer group the backend had no one to assign
-  // the Customer Approval / Customer Review stage to. `customerGroup` absent
-  // from the payload (older backend) yields null, so nothing is claimed.
-  const noCustomerGroupNote = noCustomerGroupHelper(cr.state, cr.customerGroup);
+  // At a customer gate whose project has no registered contacts the backend
+  // had no one to assign the Customer Approval / Customer Review stage to.
+  // `customerContacts` absent from the payload (another data source) yields
+  // null, so nothing is claimed.
+  const noCustomerGroupNote = noCustomerContactsHelper(cr.state, cr.customerContacts);
   // A transition is in flight whenever either half of a destructive
   // transition (the reason comment, then the patch) or a plain patch is
   // running, so the bar stays disabled across both and a double-click can't
@@ -708,9 +709,8 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
           <MetaCell label="Deployed product"><RefText value={cr.deployedProduct} /></MetaCell>
           <MetaCell label="Product"><RefText value={cr.product} /></MetaCell>
           <MetaCell label="Deployments"><RefChips values={cr.deployments} /></MetaCell>
-          <MetaCell label="Environments"><RefChips values={cr.environments} /></MetaCell>
           <MetaCell label="Deployment products"><RefChips values={cr.deploymentProducts} /></MetaCell>
-          <MetaCell label="Customer group"><RefText value={cr.customerGroup} /></MetaCell>
+          <MetaCell label="Customer group"><RefChips values={cr.customerContacts} /></MetaCell>
           <MetaCell label="Category">
             <Typography variant="body2">{changeRequestCategoryLabel(cr.category)}</Typography>
           </MetaCell>
@@ -891,8 +891,8 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
 
           {/*
             Read-only SRE metadata (`CHANGES-cr-field-parity.md`'s "group
-            C2"/"group D"). Project / deployments / environments / deployment
-            products / customer group / category are shown (and editable) in
+            C2"/"group D"). Project / deployments / deployment
+            products / customer group (the project's registered contacts) / category are shown (and editable) in
             the Overview above; the rest here have no write path anywhere in
             the stack yet (`EditChangeRequestDialog`'s doc comment on
             `BePatchChangeRequestPayload` explains why each is missing).

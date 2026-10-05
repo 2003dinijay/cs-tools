@@ -83,11 +83,8 @@ vi.mock("@api/backend/client", () => ({
 // as a plain labeled input that reports its id straight through onChange,
 // same technique as CreateProblemPage.test.tsx.
 // A few ids resolve to a named item, as a real search result would, so the
-// picked option's display name can be asserted where it matters (Customer Group).
-const PICKED_ITEMS: Record<string, { id: string; name: string }> = {
-  "grp-1": { id: "grp-1", name: "Acme Customers" },
-  "grp-9": { id: "grp-9", name: "Zeta Customers" },
-};
+// picked option's display name can be asserted where it matters.
+const PICKED_ITEMS: Record<string, { id: string; name: string }> = {};
 vi.mock("@components/AsyncEntitySelect", () => ({
   default: ({
     label,
@@ -129,19 +126,18 @@ vi.mock("@features/csm-cases/components/AsyncProjectSelect", () => ({
     />
   ),
 }));
-// The project -> deployments -> environments / deployment products lookup. The
-// fake mirrors the real hook's contract: a project's deployments always come
-// back (each with its environment); products are known only for the
-// deployments currently chosen.
+// The project -> deployments / deployment products / customer contacts lookup.
+// The fake mirrors the real hook's contract: a project's deployments always
+// come back; products are known only for the deployments currently chosen; the
+// contacts (the read-only Customer Group) are the project's own, per project.
 const SCOPE_FIXTURE: Record<
   string,
-  Array<{ id: string; label: string; env: { id: string; label: string }; products: Array<{ id: string; label: string }> }>
+  Array<{ id: string; label: string; products: Array<{ id: string; label: string }> }>
 > = {
   "proj-a": [
     {
       id: "dep-prod",
       label: "Acme Production",
-      env: { id: "env-prod", label: "Primary Production" },
       products: [
         { id: "dp-apim", label: "API Manager 4.3.0" },
         { id: "dp-is", label: "Identity Server 7.0.0" },
@@ -150,7 +146,6 @@ const SCOPE_FIXTURE: Record<
     {
       id: "dep-stg",
       label: "Acme Staging",
-      env: { id: "env-stg", label: "Staging" },
       products: [{ id: "dp-apim-stg", label: "API Manager 4.2.0" }],
     },
   ],
@@ -158,10 +153,18 @@ const SCOPE_FIXTURE: Record<
     {
       id: "dep-b",
       label: "Beta Development",
-      env: { id: "env-dev", label: "Development" },
       products: [{ id: "dp-b", label: "Choreo 1.0" }],
     },
   ],
+  "proj-c": [],
+};
+const CONTACTS_FIXTURE: Record<string, Array<{ id: string; name: string; email?: string }>> = {
+  "proj-a": [
+    { id: "pc-1", name: "Alice Aaron", email: "alice@acme.example" },
+    { id: "pc-2", name: "Bob Bell" },
+  ],
+  "proj-b": [{ id: "pc-9", name: "Carol Cook" }],
+  "proj-c": [],
 };
 let scopeLookupError = false;
 vi.mock("@features/csm-operations/api/useChangeRequestScopeLookups", () => ({
@@ -169,9 +172,10 @@ vi.mock("@features/csm-operations/api/useChangeRequestScopeLookups", () => ({
     deployments: (projectId ? (SCOPE_FIXTURE[projectId] ?? []) : []).map((d) => ({
       id: d.id,
       label: d.label,
-      environments: [d.env],
       products: deploymentIds.includes(d.id) ? d.products : undefined,
     })),
+    customerContacts: projectId ? (CONTACTS_FIXTURE[projectId] ?? []) : [],
+    contactsReady: !!projectId,
     isLoading: false,
     isError: !!projectId && scopeLookupError,
     refetch: vi.fn(),
@@ -1066,7 +1070,7 @@ describe("CreateChangeRequestPage — Customer Approval / Customer Review checkb
   });
 });
 
-describe("CreateChangeRequestPage — customer project, deployments, environments, deployment products", () => {
+describe("CreateChangeRequestPage — customer project, deployments, deployment products, customer group", () => {
   beforeEach(() => {
     sessionStorage.clear();
     locationState = undefined;
@@ -1115,13 +1119,17 @@ describe("CreateChangeRequestPage — customer project, deployments, environment
     return postChangeRequestMutateMock.mock.calls[0]![0] as Record<string, unknown>;
   }
 
-  it("lays the fields out like ServiceNow: Customer Project below Priority/Impact, then Deployments, Environments, Deployment products", () => {
+  function groupChips(): string[] {
+    const root = screen.getByLabelText("Customer Group").closest(".MuiInputBase-root");
+    return Array.from(root?.querySelectorAll(".MuiChip-label") ?? []).map((c) => c.textContent ?? "");
+  }
+
+  it("lays the fields out like ServiceNow: Customer Project below Priority/Impact, then Deployments, Deployment products, Customer Group", () => {
     render(<CreateChangeRequestPage />);
     const order = [
       screen.getByRole("combobox", { name: /impact/i }),
       screen.getByLabelText("Customer Project"),
       screen.getByRole("combobox", { name: "Deployments" }),
-      screen.getByRole("combobox", { name: "Environments" }),
       screen.getByLabelText("Deployment products"),
       screen.getByLabelText("Customer Group"),
       screen.getByRole("combobox", { name: "Category" }),
@@ -1132,17 +1140,19 @@ describe("CreateChangeRequestPage — customer project, deployments, environment
     }
   });
 
-  it("keeps Deployments and Environments disabled until a project (and deployments) are chosen", () => {
+  it("has no Environments field: a deployment carries its own environment", () => {
+    render(<CreateChangeRequestPage />);
+    expect(screen.queryByRole("combobox", { name: "Environments" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Environments")).not.toBeInTheDocument();
+  });
+
+  it("keeps Deployments disabled until a project is chosen", () => {
     render(<CreateChangeRequestPage />);
     expect(screen.getByRole("combobox", { name: "Deployments" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "Environments" })).toBeDisabled();
-    expect(screen.getByText("Select a Customer Project first.")).toBeInTheDocument();
-    expect(screen.getByText("Select deployments first.")).toBeInTheDocument();
+    expect(screen.getAllByText("Select a Customer Project first.").length).toBeGreaterThan(0);
 
     pickProject("proj-a");
     expect(screen.getByRole("combobox", { name: "Deployments" })).toBeEnabled();
-    // Environments follow the deployments, not the project.
-    expect(screen.getByRole("combobox", { name: "Environments" })).toBeDisabled();
   });
 
   it("populates Deployments from the selected project", () => {
@@ -1162,45 +1172,24 @@ describe("CreateChangeRequestPage — customer project, deployments, environment
     expect(field).toHaveValue("");
   });
 
-  it("derives Environments (preselected) and Deployment products from the chosen deployments", () => {
+  it("derives the Deployment products from the chosen deployments", () => {
     render(<CreateChangeRequestPage />);
     pickProject("proj-a");
     pickOptions("Deployments", ["Acme Production"]);
 
     expect(chips("Deployments")).toEqual(["Acme Production"]);
-    expect(chips("Environments")).toEqual(["Primary Production"]);
     expect(productChips()).toEqual(["API Manager 4.3.0", "Identity Server 7.0.0"]);
-    expect(screen.getByRole("combobox", { name: "Environments" })).toBeEnabled();
 
     pickOptions("Deployments", ["Acme Staging"]);
-    expect(chips("Environments")).toEqual(["Primary Production", "Staging"]);
     expect(productChips()).toEqual(["API Manager 4.3.0", "Identity Server 7.0.0", "API Manager 4.2.0"]);
   });
 
-  it("constrains Environments to what the chosen deployments provide", () => {
-    render(<CreateChangeRequestPage />);
-    pickProject("proj-a");
-    pickOptions("Deployments", ["Acme Production"]);
-    // Only the chosen deployment's environment is offered -- never Staging,
-    // which belongs to a deployment that was not chosen.
-    expect(offered("Environments")).toEqual(["Primary Production"]);
-  });
-
-  it("lets a preselected environment be deselected, and does not bring it back on its own", () => {
-    render(<CreateChangeRequestPage />);
-    pickProject("proj-a");
-    pickOptions("Deployments", ["Acme Production", "Acme Staging"]);
-    pickOptions("Environments", ["Staging"]); // toggles Staging off
-    expect(chips("Environments")).toEqual(["Primary Production"]);
-  });
-
-  it("drops the environment and products of a deployment that is removed", () => {
+  it("drops the products of a deployment that is removed", () => {
     render(<CreateChangeRequestPage />);
     pickProject("proj-a");
     pickOptions("Deployments", ["Acme Production", "Acme Staging"]);
     pickOptions("Deployments", ["Acme Production"]); // toggles Production off
     expect(chips("Deployments")).toEqual(["Acme Staging"]);
-    expect(chips("Environments")).toEqual(["Staging"]);
     expect(productChips()).toEqual(["API Manager 4.2.0"]);
   });
 
@@ -1212,9 +1201,7 @@ describe("CreateChangeRequestPage — customer project, deployments, environment
 
     pickProject("proj-b");
     expect(chips("Deployments")).toEqual([]);
-    expect(chips("Environments")).toEqual([]);
     expect(productChips()).toEqual([]);
-    expect(screen.getByRole("combobox", { name: "Environments" })).toBeDisabled();
     expect(offered("Deployments")).toEqual(["Beta Development"]);
   });
 
@@ -1243,7 +1230,7 @@ describe("CreateChangeRequestPage — customer project, deployments, environment
     expect(screen.getByLabelText("Customer Project")).not.toBeRequired();
   });
 
-  it("sends projectId, deploymentIds, environmentIds and deploymentProductIds with the exact wire names", () => {
+  it("sends projectId, deploymentIds and deploymentProductIds with the exact wire names", () => {
     render(<CreateChangeRequestPage />);
     fillSubject();
     pickProject("proj-a");
@@ -1252,21 +1239,11 @@ describe("CreateChangeRequestPage — customer project, deployments, environment
     expect(payload).toMatchObject({
       projectId: "proj-a",
       deploymentIds: ["dep-prod", "dep-stg"],
-      environmentIds: ["env-prod", "env-stg"],
       deploymentProductIds: ["dp-apim", "dp-is", "dp-apim-stg"],
     });
-  });
-
-  it("sends only the environments left selected", () => {
-    render(<CreateChangeRequestPage />);
-    fillSubject();
-    pickProject("proj-a");
-    pickOptions("Deployments", ["Acme Production", "Acme Staging"]);
-    pickOptions("Environments", ["Staging"]);
-    expect(submittedPayload()).toMatchObject({
-      deploymentIds: ["dep-prod", "dep-stg"],
-      environmentIds: ["env-prod"],
-    });
+    // The removed fields are never on the wire.
+    expect(payload).not.toHaveProperty("environmentIds");
+    expect(payload).not.toHaveProperty("customerGroupId");
   });
 
   it("omits every new field from the payload when none was filled in (arrays only when non-empty)", () => {
@@ -1276,9 +1253,7 @@ describe("CreateChangeRequestPage — customer project, deployments, environment
     for (const key of [
       "projectId",
       "deploymentIds",
-      "environmentIds",
       "deploymentProductIds",
-      "customerGroupId",
       "comment",
       "workNote",
     ]) {
@@ -1293,7 +1268,6 @@ describe("CreateChangeRequestPage — customer project, deployments, environment
     const payload = submittedPayload();
     expect(payload).toHaveProperty("projectId", "proj-b");
     expect(payload).not.toHaveProperty("deploymentIds");
-    expect(payload).not.toHaveProperty("environmentIds");
     expect(payload).not.toHaveProperty("deploymentProductIds");
   });
 
@@ -1322,9 +1296,81 @@ describe("CreateChangeRequestPage — customer project, deployments, environment
     options.onError(err);
     expect(showErrorMock).toHaveBeenCalledWith(message, err);
   });
+
+  describe("Customer Group: the project's registered contacts, read-only", () => {
+    it("is a locked, read-only field that says it is derived, and cannot be typed into", () => {
+      render(<CreateChangeRequestPage />);
+      const field = screen.getByLabelText("Customer Group");
+      expect(field).toHaveAttribute("readonly");
+      expect(field).toHaveAttribute("aria-readonly", "true");
+      fireEvent.change(field, { target: { value: "anything" } });
+      expect(field).toHaveValue("");
+    });
+
+    it("says to choose a Customer Project first, and lists nobody, until one is chosen", () => {
+      render(<CreateChangeRequestPage />);
+      expect(groupChips()).toEqual([]);
+      // The same helper sits under Deployments and Customer Group.
+      expect(screen.getAllByText("Select a Customer Project first.")).toHaveLength(2);
+    });
+
+    it("lists the chosen project's registered contacts, with the 'derived' helper", () => {
+      render(<CreateChangeRequestPage />);
+      pickProject("proj-a");
+      expect(groupChips()).toEqual(["Alice Aaron", "Bob Bell"]);
+      expect(screen.getByText("Derived from the customer project's registered contacts")).toBeInTheDocument();
+      expect(screen.getByText("Alice Aaron").closest(".MuiChip-root")).toHaveAttribute("title", "alice@acme.example");
+    });
+
+    it("re-derives when the project changes: another customer's contacts never carry over", () => {
+      render(<CreateChangeRequestPage />);
+      pickProject("proj-a");
+      pickProject("proj-b");
+      expect(groupChips()).toEqual(["Carol Cook"]);
+    });
+
+    it("empties again when the project is cleared", () => {
+      render(<CreateChangeRequestPage />);
+      pickProject("proj-a");
+      pickProject("");
+      expect(groupChips()).toEqual([]);
+      expect(screen.getAllByText("Select a Customer Project first.")).toHaveLength(2);
+    });
+
+    it("says so when the project has no registered contacts", () => {
+      render(<CreateChangeRequestPage />);
+      pickProject("proj-c");
+      expect(groupChips()).toEqual([]);
+      expect(screen.getByText(/No registered contacts on this project/)).toBeInTheDocument();
+    });
+
+    it("is never sent: no customerGroupId, whatever the project's contacts", () => {
+      render(<CreateChangeRequestPage />);
+      fillSubject();
+      pickProject("proj-a");
+      expect(groupChips()).toHaveLength(2);
+      const payload = submittedPayload();
+      expect(payload).toHaveProperty("projectId", "proj-a");
+      expect(payload).not.toHaveProperty("customerGroupId");
+      expect(payload).not.toHaveProperty("customerContacts");
+    });
+
+    it("shows the backend's 400 about the removed customerGroupId verbatim", async () => {
+      const { BackendApiError } = await import("@api/backend/client");
+      render(<CreateChangeRequestPage />);
+      fillSubject();
+      fireEvent.click(screen.getByRole("button", { name: /create change request/i }));
+      const [, options] = postChangeRequestMutateMock.mock.calls[0];
+      const message =
+        "customerGroupId is no longer accepted: the customer group is derived from the customer project's registered contacts";
+      const err = new (BackendApiError as unknown as new (s: number, m: string) => Error)(400, message);
+      options.onError(err);
+      expect(showErrorMock).toHaveBeenCalledWith(message, err);
+    });
+  });
 });
 
-describe("CreateChangeRequestPage — Customer Group, Category, Additional comments, Work notes", () => {
+describe("CreateChangeRequestPage — Category, Additional comments, Work notes", () => {
   beforeEach(() => {
     sessionStorage.clear();
     locationState = undefined;
@@ -1371,13 +1417,6 @@ describe("CreateChangeRequestPage — Customer Group, Category, Additional comme
     fireEvent.mouseDown(screen.getByRole("combobox", { name: "Category" }));
     fireEvent.click(screen.getByRole("option", { name: "-- Select --" }));
     expect(submittedPayload()).not.toHaveProperty("category");
-  });
-
-  it("sends the picked Customer Group as customerGroupId", () => {
-    render(<CreateChangeRequestPage />);
-    fillSubject();
-    fireEvent.change(screen.getByLabelText("Customer Group"), { target: { value: "grp-1" } });
-    expect(submittedPayload()).toHaveProperty("customerGroupId", "grp-1");
   });
 
   it("sends Additional comments (customer visible) and Work notes as comment and workNote, trimmed", () => {
@@ -1452,12 +1491,15 @@ describe("CreateChangeRequestPage — scope fields in the in-progress draft and 
     return Array.from(root?.querySelectorAll(".MuiChip-label") ?? []).map((c) => c.textContent ?? "");
   }
 
-  it("restores project, deployments, environments, products, customer group, comment and work note after unmount/remount", () => {
+  function groupChips(): string[] {
+    const root = screen.getByLabelText("Customer Group").closest(".MuiInputBase-root");
+    return Array.from(root?.querySelectorAll(".MuiChip-label") ?? []).map((c) => c.textContent ?? "");
+  }
+
+  it("restores project, deployments, products, comment and work note after unmount/remount, with the group re-derived from the project", () => {
     const first = render(<CreateChangeRequestPage />);
     fireEvent.change(screen.getByLabelText("Customer Project"), { target: { value: "proj-a" } });
     pickOptions("Deployments", ["Acme Production", "Acme Staging"]);
-    pickOptions("Environments", ["Staging"]);
-    fireEvent.change(screen.getByLabelText("Customer Group"), { target: { value: "grp-9" } });
     fireEvent.change(screen.getByLabelText("Additional comments (Customer visible)"), { target: { value: "hello" } });
     fireEvent.change(screen.getByLabelText("Work notes"), { target: { value: "internal" } });
     first.unmount();
@@ -1465,8 +1507,7 @@ describe("CreateChangeRequestPage — scope fields in the in-progress draft and 
     render(<CreateChangeRequestPage />);
     expect(screen.getByLabelText("Customer Project")).toHaveValue("proj-a");
     expect(chips("Deployments")).toEqual(["Acme Production", "Acme Staging"]);
-    expect(chips("Environments")).toEqual(["Primary Production"]);
-    expect(screen.getByLabelText("Customer Group")).toHaveValue("grp-9");
+    expect(groupChips()).toEqual(["Alice Aaron", "Bob Bell"]);
     expect(screen.getByLabelText("Additional comments (Customer visible)")).toHaveValue("hello");
     expect(screen.getByLabelText("Work notes")).toHaveValue("internal");
     // The restored products are the derived ones.
@@ -1478,22 +1519,35 @@ describe("CreateChangeRequestPage — scope fields in the in-progress draft and 
     ]);
   });
 
-  it("keeps the picked Customer Group's name in the draft and hands it back as the restored picker's label", () => {
+  it("keeps no customer group in the draft, and drops one a draft saved earlier still holds", () => {
     const first = render(<CreateChangeRequestPage />);
-    fireEvent.change(screen.getByLabelText("Customer Group"), { target: { value: "grp-9" } });
-    const draft = JSON.parse(sessionStorage.getItem(changeRequestDraftKey({ kind: "new" }))!) as ChangeRequestDraft;
-    expect(draft).toMatchObject({ customerGroupId: "grp-9", customerGroupLabel: "Zeta Customers" });
+    fireEvent.change(screen.getByLabelText("Customer Project"), { target: { value: "proj-b" } });
+    const draft = JSON.parse(sessionStorage.getItem(changeRequestDraftKey({ kind: "new" }))!) as Record<string, unknown>;
+    expect(draft).toMatchObject({ projectId: "proj-b" });
+    expect(draft).not.toHaveProperty("customerGroupId");
+    expect(draft).not.toHaveProperty("customerGroupLabel");
+    expect(draft).not.toHaveProperty("customerContacts");
     first.unmount();
 
+    // A draft written by the previous version of the form carried a picked group
+    // (and environments) of proj-a, and the project; restoring it shows the
+    // project's own contacts and never sends the stale ids.
+    saveChangeRequestDraft(changeRequestDraftKey({ kind: "new" }), {
+      ...(draft as unknown as ChangeRequestDraft),
+      subject: "Old draft",
+      type: "normal",
+      projectId: "proj-a",
+      customerGroupId: "grp-stale",
+      customerGroupLabel: "Stale Customers",
+      environmentIds: ["env-prod"],
+    } as ChangeRequestDraft);
     render(<CreateChangeRequestPage />);
-    expect(screen.getByLabelText("Customer Group")).toHaveValue("grp-9");
-    expect(screen.getByLabelText("Customer Group")).toHaveAttribute("data-known-label", "Zeta Customers");
-  });
-
-  it("passes a clone's customer group name to the picker as its label", () => {
-    locationState = { subject: "Promote", customerGroupId: "grp-1", customerGroupLabel: "Acme Customers" };
-    render(<CreateChangeRequestPage />);
-    expect(screen.getByLabelText("Customer Group")).toHaveAttribute("data-known-label", "Acme Customers");
+    expect(groupChips()).toEqual(["Alice Aaron", "Bob Bell"]);
+    fireEvent.click(screen.getByRole("button", { name: /create change request/i }));
+    const payload = postChangeRequestMutateMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload).toHaveProperty("projectId", "proj-a");
+    expect(payload).not.toHaveProperty("customerGroupId");
+    expect(payload).not.toHaveProperty("environmentIds");
   });
 
   it("persists the scope into the draft with display names, so a restore never shows raw ids", () => {
@@ -1507,8 +1561,6 @@ describe("CreateChangeRequestPage — scope fields in the in-progress draft and 
       projectLabel: "Acme Project",
       deploymentIds: ["dep-prod"],
       deploymentLabels: { "dep-prod": "Acme Production" },
-      environmentIds: ["env-prod"],
-      environmentLabels: { "env-prod": "Primary Production" },
       deploymentProductIds: ["dp-apim", "dp-is"],
       category: "other",
     });
@@ -1541,38 +1593,39 @@ describe("CreateChangeRequestPage — scope fields in the in-progress draft and 
     expect(screen.getByRole("combobox", { name: "Category" })).toHaveTextContent("Other");
   });
 
-  it("clones the source's project, customer group and category, but leaves deployments / environments / products to choose", () => {
+  it("clones the source's project and category, but leaves deployments / products to choose and derives the group from the project", () => {
     locationState = {
       sourceNumber: "CHG0001234",
       subject: "Promote the fix",
       type: "normal",
       projectId: "proj-a",
       projectLabel: "Acme Project",
-      customerGroupId: "grp-1",
-      customerGroupLabel: "Acme Customers",
+      // A stale clone state that still names a group: ignored.
+      ...({ customerGroupId: "grp-stale", customerGroupLabel: "Stale Customers" } as object),
       category: "devops",
     };
     render(<CreateChangeRequestPage />);
     expect(screen.getByLabelText("Customer Project")).toHaveValue("proj-a");
-    expect(screen.getByLabelText("Customer Group")).toHaveValue("grp-1");
+    expect(groupChips()).toEqual(["Alice Aaron", "Bob Bell"]);
     expect(screen.getByRole("combobox", { name: "Category" })).toHaveTextContent("DevOps");
     // Deployments are the new target: enabled (a project is known) but empty.
     expect(screen.getByRole("combobox", { name: "Deployments" })).toBeEnabled();
     expect(chips("Deployments")).toEqual([]);
-    expect(chips("Environments")).toEqual([]);
 
     fireEvent.click(screen.getByRole("button", { name: /create change request/i }));
     const payload = postChangeRequestMutateMock.mock.calls[0]![0] as Record<string, unknown>;
-    expect(payload).toMatchObject({ projectId: "proj-a", customerGroupId: "grp-1", category: "devops" });
+    expect(payload).toMatchObject({ projectId: "proj-a", category: "devops" });
+    expect(payload).not.toHaveProperty("customerGroupId");
     expect(payload).not.toHaveProperty("deploymentIds");
     expect(payload).not.toHaveProperty("environmentIds");
     expect(payload).not.toHaveProperty("deploymentProductIds");
   });
 
-  it("mentions the cloned project/group/category and the deliberately blank deployments in the clone banner", () => {
+  it("mentions the cloned project/category and the deliberately blank deployments in the clone banner", () => {
     locationState = { sourceNumber: "CHG0001234", subject: "Promote the fix" };
     render(<CreateChangeRequestPage />);
-    expect(screen.getByText(/customer project, customer group, category/i)).toBeInTheDocument();
-    expect(screen.getByText(/Deployments, environments, deployment products, schedule/i)).toBeInTheDocument();
+    expect(screen.getByText(/customer project, category/i)).toBeInTheDocument();
+    expect(screen.getByText(/Deployments, deployment products, schedule/i)).toBeInTheDocument();
+    expect(screen.getByText(/The Customer Group follows the customer project/i)).toBeInTheDocument();
   });
 });

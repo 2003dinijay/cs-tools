@@ -96,13 +96,12 @@ export function generateChangeRequestReportPdf(
   if (cr.deployments?.length) {
     rows.push({ label: "Deployments", value: cr.deployments.map((d) => d.name).join(", ") });
   }
-  if (cr.environments?.length) {
-    rows.push({ label: "Environments", value: cr.environments.map((e) => e.name).join(", ") });
-  }
   if (cr.deploymentProducts?.length) {
     rows.push({ label: "Deployment products", value: cr.deploymentProducts.map((p) => p.name).join(", ") });
   }
-  if (cr.customerGroup?.name) rows.push({ label: "Customer group", value: cr.customerGroup.name });
+  if (cr.customerContacts?.length) {
+    rows.push({ label: "Customer group", value: cr.customerContacts.map((c) => c.name).join(", ") });
+  }
   rows.push({ label: "Assigned engineer", value: cr.assignedEngineer?.name || "Unassigned" });
   rows.push({ label: "Assigned team", value: cr.assignedTeam?.name || "—" });
   if (cr.requestedBy?.name) rows.push({ label: "Requested by", value: cr.requestedBy.name });

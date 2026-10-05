@@ -52,7 +52,9 @@ import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
 import { useSearchParentRecordsForSelect } from "@features/csm-operations/api/useSearchParentRecordsForSelect";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
-import ChangeRequestScopeFields from "@features/csm-operations/components/ChangeRequestScopeFields";
+import ChangeRequestScopeFields, {
+  ChangeRequestCustomerGroupField,
+} from "@features/csm-operations/components/ChangeRequestScopeFields";
 import { useChangeRequestScope } from "@features/csm-operations/hooks/useChangeRequestScope";
 import {
   CHANGE_REQUEST_CATEGORY_OPTIONS,
@@ -259,10 +261,12 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const [customerReviewRequired, setCustomerReviewRequired] = useState(
     draft?.customerReviewRequired ?? cloneState?.customerReviewRequired ?? false,
   );
-  // Customer Project / Deployments / Environments / Deployment products. The
-  // hook owns the cascade (project -> deployments -> environments + derived
-  // products); a restored draft seeds it with the ids AND their display names
-  // so the pickers read as names before the lookups resolve.
+  // Customer Project / Deployments / Deployment products (and the read-only
+  // Customer Group, the project's registered contacts). The hook owns the
+  // cascade (project -> deployments + derived products and contacts); a
+  // restored draft seeds it with the ids AND their display names so the
+  // pickers read as names before the lookups resolve. A draft or clone never
+  // carries a group: the project's contacts are looked up afresh.
   const scope = useChangeRequestScope({
     projectId: draft?.projectId ?? cloneState?.projectId,
     projectLabel: draft ? draft.projectLabel : cloneState?.projectLabel,
@@ -270,23 +274,11 @@ export default function CreateChangeRequestPage(): JSX.Element {
       id,
       label: draft.deploymentLabels?.[id] ?? id,
     })),
-    environments: draft?.environmentIds?.map((id) => ({
-      id,
-      label: draft.environmentLabels?.[id] ?? id,
-    })),
     deploymentProducts: draft?.deploymentProductIds?.map((id) => ({
       id,
       label: draft.deploymentProductLabels?.[id] ?? id,
     })),
   });
-  const [customerGroupId, setCustomerGroupId] = useState(
-    draft?.customerGroupId ?? cloneState?.customerGroupId ?? "",
-  );
-  // Display name of the picked group, kept alongside its id so a restored draft
-  // (or a clone) shows the name rather than a raw id before any search runs.
-  const [customerGroupLabel, setCustomerGroupLabel] = useState(
-    draft ? (draft.customerGroupLabel ?? "") : (cloneState?.customerGroupLabel ?? ""),
-  );
   // The legacy ServiceNow form pre-selects "Other".
   const initialCategory = draft?.category ?? cloneState?.category ?? DEFAULT_CHANGE_REQUEST_CATEGORY;
   const [category, setCategory] = useState<string>(
@@ -397,12 +389,8 @@ export default function CreateChangeRequestPage(): JSX.Element {
       projectLabel: scope.projectLabel,
       deploymentIds: scope.deploymentIds,
       deploymentLabels: scope.deploymentLabels,
-      environmentIds: scope.environmentIds,
-      environmentLabels: scope.environmentLabels,
       deploymentProductIds: scope.deploymentProductIds,
       deploymentProductLabels: scope.deploymentProductLabels,
-      customerGroupId,
-      customerGroupLabel,
       category,
       comment,
       workNote,
@@ -432,12 +420,8 @@ export default function CreateChangeRequestPage(): JSX.Element {
     scope.projectLabel,
     scope.deploymentIds,
     scope.deploymentLabels,
-    scope.environmentIds,
-    scope.environmentLabels,
     scope.deploymentProductIds,
     scope.deploymentProductLabels,
-    customerGroupId,
-    customerGroupLabel,
     category,
     comment,
     workNote,
@@ -500,11 +484,11 @@ export default function CreateChangeRequestPage(): JSX.Element {
     // rejects a set that is not the derived one.
     if (scope.projectId) payload.projectId = scope.projectId;
     if (scope.projectId && scope.deploymentIds.length > 0) payload.deploymentIds = scope.deploymentIds;
-    if (scope.projectId && scope.environmentIds.length > 0) payload.environmentIds = scope.environmentIds;
     if (scope.projectId && scope.productsReady && scope.deploymentProductIds.length > 0) {
       payload.deploymentProductIds = scope.deploymentProductIds;
     }
-    if (customerGroupId.trim()) payload.customerGroupId = customerGroupId.trim();
+    // No customerGroupId: the Customer Group is the project's registered
+    // contacts, derived by the backend (read-only here).
     if (isChangeRequestCategory(category)) payload.category = category as BeChangeRequestCategory;
     if (comment.trim()) payload.comment = comment.trim();
     if (workNote.trim()) payload.workNote = workNote.trim();
@@ -842,21 +826,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
 
           <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
             <Box sx={{ flex: "1 1 220px" }}>
-              <AsyncEntitySelect<BeGroup>
-                id="cr-customer-group"
-                label="Customer Group"
-                placeholder="Search groups…"
-                value={customerGroupId}
-                onChange={(id, group) => {
-                  setCustomerGroupId(id);
-                  setCustomerGroupLabel(group?.name ?? "");
-                }}
-                disabled={isSubmitting}
-                useSearch={useSearchGroups}
-                getId={(g) => g.id}
-                getLabel={(g) => g.name}
-                knownLabel={customerGroupLabel || undefined}
-              />
+              <ChangeRequestCustomerGroupField scope={scope} idPrefix="cr" />
             </Box>
             <Box sx={{ flex: "1 1 220px" }}>
               {renderSelect(
