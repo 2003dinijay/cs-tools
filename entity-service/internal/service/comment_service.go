@@ -427,12 +427,12 @@ func (s *commentService) DeleteComment(ctx context.Context, id string) error {
 // GetCommentEditHistory implements CommentService. Gated by the same
 // author-or-admin rule as UpdateComment/DeleteComment: only the comment's
 // author or an admin may view its edit history. Prior comment bodies can
-// carry the same sensitive content the current body does, and this is the
-// only place WORK_NOTE/internal comment content isn't otherwise scoped by
-// case/work_item membership at this layer -- an unrestricted read here would
-// let any authenticated caller (including a customer-role one) read the full
-// edit history of any comment on the platform just by knowing or enumerating
-// its UUID.
+// carry the same sensitive content the current body does. Row-level security
+// already limits comments and their edit history to project members and hides
+// WORK_NOTE rows from external callers (migrations 0147, 0175, 0191); this
+// author-or-admin rule is the narrower check on top, so that a member cannot
+// read another author's earlier bodies just by knowing or enumerating a
+// comment UUID.
 func (s *commentService) GetCommentEditHistory(ctx context.Context, id string) (domain.GetCommentEditHistoryResponse, error) {
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.GetCommentEditHistoryResponse{}, err

@@ -121,12 +121,14 @@ func (s *caseEscalationService) CreateCaseEscalation(ctx context.Context, caseID
 		effectiveAction = domain.EscalationAction(strings.ToUpper(string(*action)))
 	}
 	//
-	// The note runs as the system identity, not the caller's: a WORK_NOTE is an
-	// internal record (migration 0191 refuses an external caller both reading
-	// and writing one), and a customer can escalate their own case. The
-	// escalation above already ran under the caller's identity, so caseID is a
-	// case they are allowed to act on; only this internal bookkeeping row is
-	// elevated.
+	// This one call runs as the system identity, not the caller's: a WORK_NOTE
+	// is an internal record (migration 0191 refuses an external caller both
+	// reading and writing one), and a customer can escalate their own case.
+	// The escalation above already ran under the caller's identity, so caseID is
+	// a case they are allowed to act on. The whole case-comment path runs as
+	// system for this call (author lookup, the case read behind the published
+	// event, the publish); nothing from it is returned to the caller, who gets
+	// the escalation only.
 	if _, err := s.caseSvc.CreateCaseComment(repository.WithSystemIdentity(ctx), domain.CreateCaseCommentRequest{
 		CaseID:  caseID,
 		Type:    domain.CommentTypeWorkNote,

@@ -41,6 +41,7 @@ const (
 	wnPlainComment   = "74444444-0000-0000-0000-000000000001"
 	wnWorkNote       = "74444444-0000-0000-0000-000000000002"
 	wnApprovalRecord = "74444444-0000-0000-0000-000000000003"
+	wnNullType       = "74444444-0000-0000-0000-000000000004"
 
 	wnMember   = "wn-member@test.local"
 	wnStranger = "wn-stranger@test.local"
@@ -60,7 +61,7 @@ func seedWorkNoteFixture(t *testing.T, pool *pgxpool.Pool) *repository.Scoped {
 	scoped := repository.NewScoped(pool)
 
 	cleanup := func() {
-		_, _ = scoped.Exec(internal, `DELETE FROM comment_edit_history WHERE comment_id IN ($1, $2, $3)`, wnPlainComment, wnWorkNote, wnApprovalRecord)
+		_, _ = scoped.Exec(internal, `DELETE FROM comment_edit_history WHERE comment_id IN ($1, $2, $3, $4)`, wnPlainComment, wnWorkNote, wnApprovalRecord, wnNullType)
 		_, _ = scoped.Exec(internal, `DELETE FROM comment WHERE work_item_id = $1`, wnWorkItem)
 		_, _ = scoped.Exec(internal, `DELETE FROM work_item WHERE project_id = $1`, wnProjectID)
 		_, _ = pool.Exec(internal, `DELETE FROM project_contact WHERE project_id = $1`, wnProjectID)
@@ -105,6 +106,8 @@ func seedWorkNoteFixture(t *testing.T, pool *pgxpool.Pool) *repository.Scoped {
 		mustScoped(`INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
 			VALUES ($1, $2, 'test', $3::comment_type_enum, $4, $5)`, c.id, now, c.typ, wnWorkItem, c.body)
 	}
+	mustScoped(`INSERT INTO comment (id, created_on, created_by, work_item_id, content)
+		VALUES ($1, $2, 'test', $3, 'comment with no type')`, wnNullType, now, wnWorkItem)
 	for _, id := range []string{wnPlainComment, wnWorkNote} {
 		mustScoped(`INSERT INTO comment_edit_history (comment_id, body, edited_by, edited_at) VALUES ($1, 'older body', 'test', $2)`, id, now)
 	}
@@ -113,7 +116,7 @@ func seedWorkNoteFixture(t *testing.T, pool *pgxpool.Pool) *repository.Scoped {
 
 func commentTypesVisible(t *testing.T, ctx context.Context, scoped *repository.Scoped) map[string]int {
 	t.Helper()
-	rows, err := scoped.Query(ctx, `SELECT type::text, count(*) FROM comment WHERE work_item_id = $1 GROUP BY 1`, wnWorkItem)
+	rows, err := scoped.Query(ctx, `SELECT coalesce(type::text, '(none)'), count(*) FROM comment WHERE work_item_id = $1 GROUP BY 1`, wnWorkItem)
 	if err != nil {
 		t.Fatalf("query comments: %v", err)
 	}
@@ -241,5 +244,62 @@ func TestCommentWorkNoteRLS_SystemIdentityCanStillWriteWorkNotes(t *testing.T) {
 	}
 	if got := commentTypesVisible(t, member, scoped); got["WORK_NOTE"] != 0 {
 		t.Fatalf("the new work note must stay hidden from the member, got %v", got)
+	}
+}
+
+// A comment with no type is not a work note: it stays visible, as it is today.
+func TestCommentWorkNoteRLS_CommentWithNoTypeStaysVisible(t *testing.T) {
+	pool := caseStatsPool(t)
+	scoped := seedWorkNoteFixture(t, pool)
+	_, member, _ := wnContexts()
+
+	var content string
+	if err := scoped.QueryRow(member, `SELECT content FROM comment WHERE id = $1`, wnNullType).Scan(&content); err != nil {
+		t.Fatalf("a member must still see a comment with no type: %v", err)
+	}
+}
+
+// CreateCaseComment writes through INSERT ... SELECT FROM work_item ... RETURNING,
+// not a plain INSERT: run that exact shape as a member.
+func TestCommentWorkNoteRLS_ServiceInsertShapeFollowsTheSameRule(t *testing.T) {
+	pool := caseStatsPool(t)
+	scoped := seedWorkNoteFixture(t, pool)
+	_, member, _ := wnContexts()
+
+	const query = `
+		INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
+		SELECT gen_random_uuid(), COALESCE($5, NOW()), $1, $2::comment_type_enum, w.id, $4
+		FROM work_item w
+		WHERE w.id = $3
+		RETURNING id, work_item_id, type, content, created_by, created_on`
+	var id, workItemID, typ, content, createdBy string
+	var createdOn time.Time
+
+	err := scoped.QueryRow(member, query, wnMember, "COMMENT", wnWorkItem, "customer reply", nil).
+		Scan(&id, &workItemID, &typ, &content, &createdBy, &createdOn)
+	if err != nil {
+		t.Fatalf("a member must still be able to add a COMMENT the way CreateCaseComment does: %v", err)
+	}
+
+	err = scoped.QueryRow(member, query, wnMember, "WORK_NOTE", wnWorkItem, "forged note", nil).
+		Scan(&id, &workItemID, &typ, &content, &createdBy, &createdOn)
+	if !isRLSViolation(err) {
+		t.Fatalf("a member adding a WORK_NOTE the way CreateCaseComment does must be refused (42501), got %v", err)
+	}
+}
+
+// The edit history of a hidden work note cannot be written to either.
+func TestCommentWorkNoteRLS_MemberCannotWriteEditHistoryOfAWorkNote(t *testing.T) {
+	pool := caseStatsPool(t)
+	scoped := seedWorkNoteFixture(t, pool)
+	_, member, _ := wnContexts()
+
+	const insert = `INSERT INTO comment_edit_history (comment_id, body, edited_by, edited_at) VALUES ($1, 'earlier body', $2, now())`
+	if _, err := scoped.Exec(member, insert, wnPlainComment, wnMember); err != nil {
+		t.Fatalf("a member must still be able to record the edit history of a plain comment: %v", err)
+	}
+	_, err := scoped.Exec(member, insert, wnWorkNote, wnMember)
+	if !isRLSViolation(err) {
+		t.Fatalf("recording edit history against a work note must be refused (42501), got %v", err)
 	}
 }
