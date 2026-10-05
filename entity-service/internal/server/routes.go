@@ -18,7 +18,6 @@ package server
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/config"
@@ -91,7 +90,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 			ClientID:     cfg.ServiceNowIntegrationServiceClientID,
 			ClientSecret: cfg.ServiceNowIntegrationServiceClientSecret,
 			Scopes:       cfg.ServiceNowIntegrationServiceScopes,
-		})
+		}, cfg.UpstreamClientTimeout)
 	}
 
 	var snAccountHandler *handler.SNAccountHandler
@@ -610,7 +609,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, service.Even
 		middleware.Recovery(
 			middleware.Logger(
 				middleware.UserIDToken(
-					middleware.Timeout(45 * time.Second)(mux),
+					middleware.Timeout(cfg.RequestTimeout)(mux),
 				),
 			),
 		),
