@@ -105,6 +105,17 @@ func (p *ProfilePhoneResolver) Resolve(ctx context.Context, level Level, rc Rout
 	return out, nil
 }
 
+// RuleFor passes the wrapped resolver's rule lookup through. BuildPlan asks
+// its resolver for the matched rule (R1..R6) to stamp it and to decide whether
+// LEVEL_0 exists; a wrapper that hid it would silently fall back to the
+// pre-rule-table behaviour for every incident the profile lookup is on for.
+func (p *ProfilePhoneResolver) RuleFor(rc RoutingContext) (Rule, bool) {
+	if n, ok := p.inner.(ruleNamer); ok {
+		return n.RuleFor(rc)
+	}
+	return Rule{}, false
+}
+
 // LeadPool implements LeadPoolResolver when the wrapped resolver does, with
 // the pool's numbers filled in the same way a rung's are.
 func (p *ProfilePhoneResolver) LeadPool(ctx context.Context) ([]Recipient, error) {
