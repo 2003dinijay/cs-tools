@@ -18,19 +18,18 @@ import { type Locator, type Page, expect } from "@playwright/test";
 
 /**
  * Page object for `/operations/change-requests/:id`
- * (`CsmChangeRequestDetailPage.tsx`). "Move to Assess" is only rendered when
+ * (`CsmChangeRequestDetailPage.tsx`). "Request Approval" is only rendered when
  * the CR's `legalNextStates` includes `"assess"` (data-driven, via
  * `ChangeRequestActionBar`'s own `legalNextStates` filtering); it will be
- * absent for a CR already past that stage. New -> Assess is a plain, direct
- * state PATCH (`{state: "assess"}`) like every other forward transition in
- * this bar — it used to be modeled as a special "approval request" action
- * (`{requestApproval: true}`, labeled "Request approval"), which was
- * backwards relative to the real ServiceNow process; that's fixed now, but
- * the label/method names below were kept in sync with the source rather than
- * left pointing at the old wording.
+ * absent for a CR already past that stage. It is a plain, direct state PATCH
+ * (`{state: "assess"}`) that starts the CR's approval flow (Peer -> CAB for
+ * Normal, ECAB for Emergency, straight to Scheduled for Standard).
+ * There is deliberately no "Schedule" button: a CR is moved to Scheduled
+ * automatically by its CAB/ECAB approval -- see `scheduleButton()`, which
+ * exists only so specs can assert its absence.
  */
 export class ChangeRequestDetailPage {
-  constructor(private readonly page: Page) {}
+  constructor(readonly page: Page) {}
 
   /**
    * A freshly-created CR isn't always retrievable the instant we navigate to
@@ -56,12 +55,50 @@ export class ChangeRequestDetailPage {
     return this.page.getByRole("list", { name: "Change request lifecycle" });
   }
 
-  moveToAssessButton(): Locator {
-    return this.page.getByRole("button", { name: "Move to Assess" });
+  requestApprovalButton(): Locator {
+    return this.page.getByRole("button", { name: "Request Approval" });
   }
 
-  async moveToAssess(): Promise<void> {
-    await this.moveToAssessButton().click();
+  async requestApproval(): Promise<void> {
+    await this.requestApprovalButton().click();
+  }
+
+  /** Never expected to be visible: Scheduled is reached by approval, not by a
+   * manual action. Matches a button or a menu entry containing "Schedule". */
+  scheduleButton(): Locator {
+    return this.page
+      .getByRole("button", { name: /schedule/i })
+      .or(this.page.getByRole("menuitem", { name: /schedule/i }));
+  }
+
+  /** The lifecycle stepper's current step (`aria-current="step"`). */
+  currentStep(): Locator {
+    return this.lifecycleStepper().locator('[aria-current="step"]');
+  }
+
+  /** Header note while a stage is waiting, e.g. "Awaiting CAB Approval". */
+  blockingReason(): Locator {
+    return this.page.getByText(/^Awaiting .+ Approval$/i);
+  }
+
+  /** Explanatory notice shown to the CR's creator in the Approvals card. */
+  creatorApprovalNotice(): Locator {
+    return this.page.getByRole("alert").filter({ hasText: /you created this change request/i });
+  }
+
+  /** The "Stage" cell of the approvals table row for a named approver
+   * ("Peer Approval" | "CAB Approval" | "ECAB Approval"). */
+  approverStage(approverName: string): Locator {
+    return this.approverRow(approverName).getByRole("cell").first();
+  }
+
+  /** The overflow ("Change state") menu trigger, which holds Cancel change. */
+  changeStateButton(): Locator {
+    return this.page.getByRole("button", { name: "Change state" });
+  }
+
+  cancelChangeMenuItem(): Locator {
+    return this.page.getByRole("menuitem", { name: "Cancel change" });
   }
 
   editButton(): Locator {
@@ -103,7 +140,7 @@ export class ChangeRequestDetailPage {
 
   // ── Approvals ────────────────────────────────────────────────────────────
   //
-  // ChangeRequestApprovals.tsx renders one flat table (State/Approver/
+  // ChangeRequestApprovals.tsx renders one flat table (Stage/State/Approver/
   // Assignment group/Comments/Created/Approved on/Actions) with every
   // approver from every stage shown together — not the collapsible
   // per-stage accordion cards an earlier UI revision used (see that
@@ -111,32 +148,36 @@ export class ChangeRequestDetailPage {
   // requests" section: "a full UI redesign ... now renders as one flat
   // table"). Scope by table row, not an accordion class.
 
-  /** The approvals table row for a named approver (e.g. "Jane Doe"). */
-  approverRow(approverName: string): Locator {
-    return this.page.getByRole("row", { name: approverName });
+  /** The approvals table row for a named approver (e.g. "Jane Doe"). The
+   * same person can sit on more than one stage (Peer Approval and CAB
+   * Approval both list the seeded users), so pass `stage` ("Peer Approval" |
+   * "CAB Approval" | "ECAB Approval") to pick one stage's row. */
+  approverRow(approverName: string, stage?: string): Locator {
+    const rows = this.page.getByRole("row", { name: approverName });
+    return stage ? rows.filter({ has: this.page.getByRole("cell", { name: stage, exact: true }) }) : rows;
   }
 
   /** That approver's status chip text ("Requested" | "Approved" |
    * "Rejected" | "Cancelled" | ...). */
-  approverStatus(approverName: string): Locator {
-    return this.approverRow(approverName).locator(".MuiChip-label");
+  approverStatus(approverName: string, stage?: string): Locator {
+    return this.approverRow(approverName, stage).locator(".MuiChip-label");
   }
 
   /** Approve/Reject buttons only render for the signed-in user's own
    * pending ("REQUESTED") approval row — scope by the approver's own display
    * name when more than one row is on the page at once. */
-  approveButton(approverName?: string): Locator {
-    const scope = approverName ? this.approverRow(approverName) : this.page;
+  approveButton(approverName?: string, stage?: string): Locator {
+    const scope = approverName ? this.approverRow(approverName, stage) : this.page;
     return scope.getByRole("button", { name: "Approve" });
   }
 
-  rejectButton(approverName?: string): Locator {
-    const scope = approverName ? this.approverRow(approverName) : this.page;
+  rejectButton(approverName?: string, stage?: string): Locator {
+    const scope = approverName ? this.approverRow(approverName, stage) : this.page;
     return scope.getByRole("button", { name: "Reject" });
   }
 
-  async approve(approverName?: string): Promise<void> {
-    await this.approveButton(approverName).click();
+  async approve(approverName?: string, stage?: string): Promise<void> {
+    await this.approveButton(approverName, stage).click();
   }
 
   async reject(approverName?: string): Promise<void> {

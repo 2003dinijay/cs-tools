@@ -15,6 +15,7 @@
 // under the License.
 
 import {
+  Alert,
   Box,
   Button,
   Card,
@@ -26,17 +27,20 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Tooltip,
   Typography,
 } from "@wso2/oxygen-ui";
 import { Check, X } from "@wso2/oxygen-ui-icons-react";
 import type { JSX } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
+import { BackendApiError } from "@api/backend/client";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useGetChangeRequestApprovals } from "@features/csm-operations/api/useGetChangeRequestApprovals";
 import { useDecideChangeRequestApproval } from "@features/csm-operations/api/useDecideChangeRequestApproval";
 import {
+  approvalStageLabel,
   approvalStatusColor,
   approvalStatusLabel,
 } from "@features/csm-operations/utils/changeRequests";
@@ -87,6 +91,8 @@ interface ApproverTableRow {
   key: string;
   approver: BeChangeRequestApprover;
   groupName: string;
+  /** "Peer Approval" / "CAB Approval" / "ECAB Approval" / backend's own name. */
+  stageName: string;
 }
 
 function flattenApprovals(approvals: BeChangeRequestApproval[]): ApproverTableRow[] {
@@ -97,23 +103,56 @@ function flattenApprovals(approvals: BeChangeRequestApproval[]): ApproverTableRo
         key: `${approvalIndex}-${approverIndex}-${approver.id}`,
         approver,
         groupName: approverGroupName(approval),
+        stageName: approvalStageLabel(approval.stage),
       });
     });
   });
   return rows;
 }
 
+const CREATOR_CANNOT_DECIDE =
+  "You created this change request, so you can't approve or reject it. Another approver has to decide. You can still cancel it.";
+const CANNOT_DECIDE = "You aren't able to approve or reject this stage.";
+
 function ApproverActionsCell({
   approver,
   currentUserId,
   decide,
+  isCreator,
+  canDecide,
 }: {
   approver: BeChangeRequestApprover;
   currentUserId?: string;
   decide?: DecideHandlers;
+  isCreator: boolean;
+  /** Backend-supplied, optional: `false` forbids deciding. */
+  canDecide: boolean;
 }): JSX.Element {
   if (!decide || !isMyPendingApproval(approver, currentUserId)) {
     return <>—</>;
+  }
+  // The creator can never approve or reject -- Peer, CAB and ECAB alike. Show
+  // the controls disabled with the reason, rather than silently hiding them,
+  // so it's clear why this pending row can't be decided by them.
+  if (isCreator || !canDecide) {
+    const reason = isCreator ? CREATOR_CANNOT_DECIDE : CANNOT_DECIDE;
+    return (
+      <Tooltip title={reason}>
+        <Box
+          component="span"
+          tabIndex={0}
+          aria-label={`Approve and Reject unavailable: ${reason}`}
+          sx={{ display: "flex", gap: 1 }}
+        >
+          <Button size="small" variant="outlined" color="success" startIcon={<Check size={14} />} disabled>
+            Approve
+          </Button>
+          <Button size="small" variant="outlined" color="error" startIcon={<X size={14} />} disabled>
+            Reject
+          </Button>
+        </Box>
+      </Tooltip>
+    );
   }
   return (
     <Box sx={{ display: "flex", gap: 1 }}>
@@ -144,14 +183,23 @@ function ApproverActionsCell({
 /**
  * Approval-stage records for a change request (`GET /change-requests/{id}/approvals`):
  * who specifically needs to approve, and each approver's individual status,
- * rendered as one flat table — State, Approver, Assignment group, Comments,
+ * rendered as one flat table — Stage, State, Approver, Assignment group, Comments,
  * Created, Approved on — matching real ServiceNow's own Approvers list
  * layout rather than this app's earlier collapsible-per-stage-card design.
  * Distinct from the flat `hasCustomerApproved`/`hasCustomerReviewed` toggle
  * shown in the Approval card above, which is a different, already-built
  * concept.
  */
-export default function ChangeRequestApprovals({ id }: { id: string | undefined }): JSX.Element | null {
+export default function ChangeRequestApprovals({
+  id,
+  isCreator = false,
+}: {
+  id: string | undefined;
+  /** True when the signed-in user created/requested this change request -- the
+   * backend refuses their approvals, so Approve/Reject render disabled with
+   * the reason. See `isChangeRequestCreator`. */
+  isCreator?: boolean;
+}): JSX.Element | null {
   const { data, isLoading, isError, error } = useGetChangeRequestApprovals(id);
   const { user } = useCurrentUser();
   const { showError } = useErrorBanner();
@@ -164,11 +212,16 @@ export default function ChangeRequestApprovals({ id }: { id: string | undefined 
           decideApproval.mutate(
             { id, decision },
             {
+              // The backend refuses with a readable 4xx message (e.g. 403 "the
+              // creator of a change request cannot approve it") -- show that
+              // rather than a generic failure.
               onError: (err) =>
                 showError(
-                  decision === "approved"
-                    ? "Could not approve the change request."
-                    : "Could not reject the change request.",
+                  err instanceof BackendApiError && err.status < 500 && err.message
+                    ? err.message
+                    : decision === "approved"
+                      ? "Could not approve the change request."
+                      : "Could not reject the change request.",
                   err,
                 ),
             },
@@ -198,6 +251,7 @@ export default function ChangeRequestApprovals({ id }: { id: string | undefined 
   const approvals = data?.approvals ?? [];
   const rows = flattenApprovals(approvals);
 
+
   if (rows.length === 0) {
     return (
       <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
@@ -212,11 +266,18 @@ export default function ChangeRequestApprovals({ id }: { id: string | undefined 
   return (
     <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
       <Typography variant="subtitle2">Approvals</Typography>
+      {isCreator && (
+        <Alert severity="info">
+          You created this change request, so you can&apos;t approve or reject it (Peer, CAB or
+          ECAB). Another approver has to decide. You can still cancel it.
+        </Alert>
+      )}
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
         <TableContainer>
           <Table size="small" sx={{ "& .MuiTableCell-root": { borderColor: "divider" } }}>
             <TableHead>
               <TableRow sx={{ bgcolor: "action.hover" }}>
+                <TableCell>Stage</TableCell>
                 <TableCell>State</TableCell>
                 <TableCell>Approver</TableCell>
                 <TableCell>Assignment group</TableCell>
@@ -227,10 +288,11 @@ export default function ChangeRequestApprovals({ id }: { id: string | undefined 
               </TableRow>
             </TableHead>
             <TableBody>
-              {rows.map(({ key, approver, groupName }) => {
+              {rows.map(({ key, approver, groupName, stageName }) => {
                 const name = approver.name?.trim();
                 return (
                   <TableRow key={key}>
+                    <TableCell>{stageName}</TableCell>
                     <TableCell>
                       <Chip
                         size="small"
@@ -251,7 +313,13 @@ export default function ChangeRequestApprovals({ id }: { id: string | undefined 
                     <TableCell>{formatDateTime(approver.createdOn)}</TableCell>
                     <TableCell>{formatDateTime(approver.respondedOn)}</TableCell>
                     <TableCell>
-                      <ApproverActionsCell approver={approver} currentUserId={user?.id} decide={decide} />
+                      <ApproverActionsCell
+                        approver={approver}
+                        currentUserId={user?.id}
+                        decide={decide}
+                        isCreator={isCreator}
+                        canDecide={approver.canDecide !== false}
+                      />
                     </TableCell>
                   </TableRow>
                 );

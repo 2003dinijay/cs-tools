@@ -14,14 +14,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import type { JSX } from "react";
+import { useEffect, useState, type JSX } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
-import type { BeChangeRequestDetail } from "@api/backend/types";
+import type { BeChangeRequestApproval, BeChangeRequestDetail } from "@api/backend/types";
 import { BackendApiError } from "@api/backend/client";
 import { CaseTabsProvider, useCaseTabsController } from "@context/case-tabs/CaseTabsContext";
 import { CaseTabsBehaviorProvider } from "@context/case-tabs/CaseTabsBehaviorContext";
@@ -72,20 +72,52 @@ vi.mock("@context/error-banner/ErrorBannerContext", () => ({
 // conventions). Mocking `CurrentUserContext` directly short-circuits that
 // chain before it ever reaches `apiConfig`, same approach as
 // CsmIncidentDetailPage.test.tsx.
+let mockCurrentUser: { id: string; email: string } = {
+  id: "00000000-0000-0000-0000-00000000000c",
+  email: "jane.doe@example.com",
+};
 vi.mock("@context/current-user/CurrentUserContext", () => ({
   useCurrentUser: () => ({
-    user: { id: "00000000-0000-0000-0000-00000000000c", email: "jane.doe@example.com" },
+    user: mockCurrentUser,
     isLoading: false,
     isError: false,
     error: null,
   }),
 }));
+// The lifecycle describe at the bottom of this file drives a stateful fake
+// backend through these same hook mocks: whenever it changes the fake CR it
+// calls `notifyFakeBackendChanged()`, which re-renders every mounted consumer of
+// the mocked query hooks (standing in for react-query's refetch-after-invalidate).
+const fakeBackendListeners = new Set<() => void>();
+function notifyFakeBackendChanged(): void {
+  act(() => fakeBackendListeners.forEach((l) => l()));
+}
+function useFakeBackendTick(): void {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const listener = (): void => setTick((n) => n + 1);
+    fakeBackendListeners.add(listener);
+    return () => {
+      fakeBackendListeners.delete(listener);
+    };
+  }, []);
+}
 vi.mock("@features/csm-operations/api/useGetChangeRequest", () => ({
-  useGetChangeRequest: () => useGetChangeRequestMock(),
+  useGetChangeRequest: () => {
+    useFakeBackendTick();
+    return useGetChangeRequestMock();
+  },
 }));
 const useGetChangeRequestApprovalsMock = vi.fn();
 vi.mock("@features/csm-operations/api/useGetChangeRequestApprovals", () => ({
-  useGetChangeRequestApprovals: () => useGetChangeRequestApprovalsMock(),
+  useGetChangeRequestApprovals: () => {
+    useFakeBackendTick();
+    return useGetChangeRequestApprovalsMock();
+  },
+}));
+const decideApprovalMutateMock = vi.fn();
+vi.mock("@features/csm-operations/api/useDecideChangeRequestApproval", () => ({
+  useDecideChangeRequestApproval: () => ({ mutate: decideApprovalMutateMock, isPending: false }),
 }));
 vi.mock("@features/csm-operations/api/usePatchChangeRequest", () => ({
   usePatchChangeRequest: () => ({
@@ -97,9 +129,21 @@ vi.mock("@features/csm-operations/api/usePatchChangeRequest", () => ({
     error: patchError,
   }),
 }));
-vi.mock("@features/csm-operations/components/ChangeRequestApprovals", () => ({
-  default: () => null,
-}));
+const approvalsPanelMock = vi.fn();
+// The real approvals panel, wrapped so tests can also inspect the props the
+// page hands it (e.g. `isCreator`). Its data comes from the mocked
+// `useGetChangeRequestApprovals` above, so it renders "No approval stages" in
+// every test that doesn't set approvals.
+vi.mock("@features/csm-operations/components/ChangeRequestApprovals", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@features/csm-operations/components/ChangeRequestApprovals")>();
+  const Actual = actual.default;
+  return {
+    default: (props: { id: string | undefined; isCreator?: boolean }) => {
+      approvalsPanelMock(props);
+      return <Actual {...props} />;
+    },
+  };
+});
 // Exercised in isolation by EditChangeRequestDialog.test.tsx; here we only
 // assert this page wires `saveError` and resets the mutation before opening.
 vi.mock("@features/csm-operations/components/EditChangeRequestDialog", () => ({
@@ -159,6 +203,8 @@ function mockQueryResult(
 }
 
 beforeEach(() => {
+  mockCurrentUser = { id: "00000000-0000-0000-0000-00000000000c", email: "jane.doe@example.com" };
+  decideApprovalMutateMock.mockReset();
   navigateMock.mockClear();
   patchMutateMock.mockClear();
   showErrorMock.mockClear();
@@ -167,6 +213,7 @@ beforeEach(() => {
   patchError = null;
   patchResetMock.mockClear();
   editChangeRequestDialogMock.mockClear();
+  approvalsPanelMock.mockClear();
   patchMutateAsyncMock.mockReset();
   patchMutateAsyncMock.mockResolvedValue({ id: "chg-1" });
   postCommentMutateAsyncMock.mockReset();
@@ -259,7 +306,7 @@ describe("CsmChangeRequestDetailPage", () => {
 });
 
 describe("CsmChangeRequestDetailPage — blocking-reason header note", () => {
-  it("shows 'Awaiting <stage> approval' when a stage is pending or requested", () => {
+  it("shows 'Awaiting Peer Approval' when the Assess stage is pending or requested", () => {
     mockQueryResult({ data: { ...BASE_CR, state: "assess" } });
     useGetChangeRequestApprovalsMock.mockReturnValue({
       data: {
@@ -278,10 +325,10 @@ describe("CsmChangeRequestDetailPage — blocking-reason header note", () => {
       error: null,
     });
     renderPage();
-    expect(screen.getByText("Awaiting Assess approval")).toBeInTheDocument();
+    expect(screen.getByText("Awaiting Peer Approval")).toBeInTheDocument();
   });
 
-  it("names the approver group when the stage carries one", () => {
+  it("names the CAB stage by its stage label, not the approver group, and never doubles 'approval'", () => {
     mockQueryResult({ data: { ...BASE_CR, state: "authorize" } });
     useGetChangeRequestApprovalsMock.mockReturnValue({
       data: {
@@ -300,7 +347,7 @@ describe("CsmChangeRequestDetailPage — blocking-reason header note", () => {
       error: null,
     });
     renderPage();
-    expect(screen.getByText("Awaiting Devops Approval")).toBeInTheDocument();
+    expect(screen.getByText("Awaiting CAB Approval")).toBeInTheDocument();
   });
 
   it("shows no blocking-reason note when no stage is pending/requested", () => {
@@ -435,12 +482,12 @@ describe("CsmChangeRequestDetailPage — Clone", () => {
   });
 });
 
-describe("CsmChangeRequestDetailPage — Move to Assess (New -> Assess)", () => {
-  it("shows the Move to Assess button when the backend flags 'assess' as a legal next state", () => {
+describe("CsmChangeRequestDetailPage — Request Approval (New -> Assess)", () => {
+  it("shows the Request Approval button when the backend flags 'assess' as a legal next state", () => {
     mockQueryResult({ data: { ...BASE_CR, legalNextStates: ["assess"] } });
     renderPage();
     expect(
-      screen.getByRole("button", { name: /move to assess/i }),
+      screen.getByRole("button", { name: /request approval/i }),
     ).toBeInTheDocument();
   });
 
@@ -448,7 +495,7 @@ describe("CsmChangeRequestDetailPage — Move to Assess (New -> Assess)", () => 
     mockQueryResult({ data: { ...BASE_CR, legalNextStates: [] } });
     renderPage();
     expect(
-      screen.queryByRole("button", { name: /move to assess/i }),
+      screen.queryByRole("button", { name: /request approval/i }),
     ).not.toBeInTheDocument();
   });
 
@@ -456,7 +503,7 @@ describe("CsmChangeRequestDetailPage — Move to Assess (New -> Assess)", () => 
     mockQueryResult({ data: { ...BASE_CR, legalNextStates: undefined } });
     renderPage();
     expect(
-      screen.queryByRole("button", { name: /move to assess/i }),
+      screen.queryByRole("button", { name: /request approval/i }),
     ).not.toBeInTheDocument();
   });
 
@@ -469,12 +516,12 @@ describe("CsmChangeRequestDetailPage — Move to Assess (New -> Assess)", () => 
    * this is the UI-side half that keeps the click from round-tripping into
    * that rejection.
    */
-  it("shows a disabled Move to Assess button when the state allows it but there is no assigned team", () => {
+  it("shows a disabled Request Approval button when the state allows it but there is no assigned team", () => {
     mockQueryResult({
       data: { ...BASE_CR, legalNextStates: ["assess"], assignedTeam: null },
     });
     renderPage();
-    const button = screen.getByRole("button", { name: /move to assess/i });
+    const button = screen.getByRole("button", { name: /request approval/i });
     expect(button).toBeDisabled();
     fireEvent.click(button);
     expect(patchMutateMock).not.toHaveBeenCalled();
@@ -485,29 +532,29 @@ describe("CsmChangeRequestDetailPage — Move to Assess (New -> Assess)", () => 
       data: { ...BASE_CR, legalNextStates: ["assess"], assignedTeam: null },
     });
     renderPage();
-    const button = screen.getByRole("button", { name: /move to assess/i });
+    const button = screen.getByRole("button", { name: /request approval/i });
     const focusTarget = button.closest('[tabindex="0"]');
     expect(focusTarget).not.toBeNull();
     expect(focusTarget).toHaveAttribute(
       "aria-label",
-      "Move to Assess: Set an assigned team before moving to Assess",
+      "Request Approval: Set an assigned team before requesting approval",
     );
   });
 
-  it("leaves Move to Assess enabled when both the state and the assigned team allow it", () => {
+  it("leaves Request Approval enabled when both the state and the assigned team allow it", () => {
     mockQueryResult({
       data: { ...BASE_CR, legalNextStates: ["assess"], assignedTeam: { id: "team-1", name: "Platform" } },
     });
     renderPage();
     expect(
-      screen.getByRole("button", { name: /move to assess/i }),
+      screen.getByRole("button", { name: /request approval/i }),
     ).toBeEnabled();
   });
 
   it("PATCHes { state: \"assess\" } for this CR when clicked", () => {
     mockQueryResult({ data: { ...BASE_CR, legalNextStates: ["assess"] } });
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /move to assess/i }));
+    fireEvent.click(screen.getByRole("button", { name: /request approval/i }));
     expect(patchMutateMock).toHaveBeenCalledWith(
       { id: "chg-1", patch: { state: "assess" } },
       expect.objectContaining({ onError: expect.any(Function) }),
@@ -517,7 +564,7 @@ describe("CsmChangeRequestDetailPage — Move to Assess (New -> Assess)", () => 
   it("surfaces a mutation error via the shared error banner", () => {
     mockQueryResult({ data: { ...BASE_CR, legalNextStates: ["assess"] } });
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /move to assess/i }));
+    fireEvent.click(screen.getByRole("button", { name: /request approval/i }));
     const [, options] = patchMutateMock.mock.calls[0];
     const err = new Error("boom");
     options.onError(err);
@@ -530,7 +577,7 @@ describe("CsmChangeRequestDetailPage — Move to Assess (New -> Assess)", () => 
   it("surfaces the backend's real rejection reason for a 4xx state-transition error", () => {
     mockQueryResult({ data: { ...BASE_CR, legalNextStates: ["assess"] } });
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /move to assess/i }));
+    fireEvent.click(screen.getByRole("button", { name: /request approval/i }));
     const [, options] = patchMutateMock.mock.calls[0];
     const err = new BackendApiError(409, "State transition rejected: approver required");
     options.onError(err);
@@ -543,7 +590,7 @@ describe("CsmChangeRequestDetailPage — Move to Assess (New -> Assess)", () => 
   it("falls back to the generic message for a 5xx error even with a body message", () => {
     mockQueryResult({ data: { ...BASE_CR, legalNextStates: ["assess"] } });
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /move to assess/i }));
+    fireEvent.click(screen.getByRole("button", { name: /request approval/i }));
     const [, options] = patchMutateMock.mock.calls[0];
     const err = new BackendApiError(500, "internal error detail");
     options.onError(err);
@@ -551,6 +598,68 @@ describe("CsmChangeRequestDetailPage — Move to Assess (New -> Assess)", () => 
       "Could not move this change request to Assess.",
       err,
     );
+  });
+});
+
+describe("CsmChangeRequestDetailPage — Request Approval flow: no Schedule, creator rules", () => {
+  it("never shows a Schedule button, even if the backend still lists scheduled", () => {
+    mockQueryResult({
+      data: { ...BASE_CR, state: "authorize", legalNextStates: ["scheduled", "canceled"] },
+    });
+    renderPage();
+    expect(screen.queryByRole("button", { name: /schedule/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    expect(screen.queryByRole("menuitem", { name: /schedule/i })).not.toBeInTheDocument();
+  });
+
+  it("shows Scheduled with no Schedule button once CAB approval has moved the CR there", () => {
+    mockQueryResult({
+      data: { ...BASE_CR, state: "scheduled", legalNextStates: ["implement", "canceled"] },
+    });
+    renderPage();
+    expect(screen.getAllByText("Scheduled").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /schedule$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /start implementation/i })).toBeInTheDocument();
+  });
+
+  it("tells the approvals panel the signed-in user is the creator when they are the requester", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_CR,
+        state: "assess",
+        requestedBy: { id: "00000000-0000-0000-0000-00000000000c", name: "Jane Doe" },
+      },
+    });
+    renderPage();
+    expect(approvalsPanelMock).toHaveBeenCalledWith(expect.objectContaining({ isCreator: true }));
+  });
+
+  it("recognises the creator from createdBy matching their email", () => {
+    mockQueryResult({ data: { ...BASE_CR, state: "assess", createdBy: "Jane.Doe@example.com" } });
+    renderPage();
+    expect(approvalsPanelMock).toHaveBeenCalledWith(expect.objectContaining({ isCreator: true }));
+  });
+
+  it("does not flag a different user as the creator", () => {
+    mockQueryResult({
+      data: { ...BASE_CR, state: "assess", requestedBy: { id: "someone-else", name: "Other" }, createdBy: "other@example.com" },
+    });
+    renderPage();
+    expect(approvalsPanelMock).toHaveBeenCalledWith(expect.objectContaining({ isCreator: false }));
+  });
+
+  it("still lets the creator Cancel the change request", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_CR,
+        state: "assess",
+        requestedBy: { id: "00000000-0000-0000-0000-00000000000c", name: "Jane Doe" },
+        legalNextStates: ["authorize", "canceled"],
+      },
+    });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeEnabled();
   });
 });
 
@@ -624,7 +733,7 @@ describe("CsmChangeRequestDetailPage — direct (non-destructive) transitions", 
   it("sends a plain state PATCH for New -> Assess, same as every other transition", () => {
     mockQueryResult({ data: { ...BASE_CR, legalNextStates: ["assess"] } });
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /move to assess/i }));
+    fireEvent.click(screen.getByRole("button", { name: /request approval/i }));
     const [{ patch }] = patchMutateMock.mock.calls[0];
     expect(patch).toEqual({ state: "assess" });
   });
@@ -889,5 +998,351 @@ describe("CsmChangeRequestDetailPage — reports its own draft state to the tab 
     fireEvent.click(screen.getByText("open-tab"));
     fireEvent.click(screen.getByText("close-tab"));
     expect(screen.queryByText("Close this case tab?")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lifecycle verification per change type
+//
+//   Normal    New -> Request Approval -> Assess [Peer Approval]
+//                 -> Authorize [CAB Approval] -> (auto) Scheduled
+//                 -> Implement -> Review -> Closed
+//   Emergency New -> Request Approval -> Authorize [ECAB Approval only]
+//                 -> (auto) Scheduled
+//   Standard  New -> Request Approval -> (auto) Scheduled, no approvals
+//
+// A small stateful fake of the backend contract sits behind the mocked
+// hooks above: the page's own PATCH / approve calls mutate it, and the page is
+// re-rendered from it, so every assertion is on what the user actually sees
+// after each step. The contract assumed: `legalNextStates` never lists
+// `authorize` or `scheduled`; Request Approval is `PATCH {state:"assess"}`;
+// approving Peer adds a CAB stage; approving CAB/ECAB moves the CR to
+// `scheduled` itself; Standard goes straight to `scheduled` with no stages.
+// ---------------------------------------------------------------------------
+
+const LC_CREATOR = { id: "u-creator", email: "casey@example.com", name: "Casey Creator" };
+const LC_PEER = { id: "u-peer", email: "pat@example.com", name: "Pat Peer" };
+const LC_CAB = { id: "u-cab", email: "cam@example.com", name: "Cam Cab" };
+const LC_ECAB = { id: "u-ecab", email: "eli@example.com", name: "Eli Ecab" };
+
+interface LcFake {
+  cr: BeChangeRequestDetail;
+  approvals: BeChangeRequestApproval[];
+}
+let lc: LcFake;
+/** Whether the fake backend sends `approvers[].canDecide` (Postgres source) or
+ * omits it (older backend / ServiceNow source), exercising the UI fallback. */
+let lcEmitsCanDecide = true;
+
+function lcLegalNextStates(state: string): string[] {
+  switch (state) {
+    case "new":
+      return ["assess", "canceled"];
+    case "assess":
+      return ["authorize", "canceled"]; // authorize = the approval path, never a button
+    case "authorize":
+      return ["canceled"];
+    case "scheduled":
+      return ["implement", "canceled"];
+    case "implement":
+      return ["review", "canceled"];
+    case "review":
+      return ["closed", "customer_review", "canceled"];
+    default:
+      return [];
+  }
+}
+
+function lcStage(name: string, group: string, who: { id: string; name: string }): BeChangeRequestApproval {
+  return {
+    stage: name,
+    approverType: "STATIC_GROUP",
+    approverName: group,
+    status: "REQUESTED",
+    approvers: [{ id: who.id, name: who.name, status: "REQUESTED" }],
+  };
+}
+
+function lcSetState(state: string): void {
+  lc.cr = { ...lc.cr, state, legalNextStates: lcLegalNextStates(state) };
+}
+
+function lcPublish(): void {
+  useGetChangeRequestMock.mockReturnValue({ data: lc.cr, isLoading: false, isError: false, error: null });
+  useGetChangeRequestApprovalsMock.mockReturnValue({
+    data: {
+      approvals: structuredClone(lc.approvals).map((stage) => ({
+        ...stage,
+        approvers: stage.approvers.map((a) =>
+          lcEmitsCanDecide
+            ? {
+                ...a,
+                // true only on the caller's own REQUESTED row, and never for the creator
+                canDecide:
+                  a.id === mockCurrentUser.id &&
+                  a.status === "REQUESTED" &&
+                  mockCurrentUser.id !== lc.cr.requestedBy?.id,
+              }
+            : a,
+        ),
+      })),
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+  });
+  notifyFakeBackendChanged();
+}
+
+function lcSeed(type: "normal" | "emergency" | "standard"): void {
+  lcEmitsCanDecide = true;
+  lc = {
+    cr: {
+      ...BASE_CR,
+      type,
+      state: "new",
+      requestedBy: { id: LC_CREATOR.id, name: LC_CREATOR.name },
+      createdBy: LC_CREATOR.email,
+      legalNextStates: lcLegalNextStates("new"),
+    },
+    approvals: [],
+  };
+  // The page's own PATCH (Request Approval, Start implementation, ...) drives the fake.
+  patchMutateMock.mockImplementation((input: { patch: { state?: string } }) => {
+    const target = input.patch.state;
+    if (target === "assess") {
+      if (lc.cr.type === "standard") lcSetState("scheduled");
+      else if (lc.cr.type === "emergency") {
+        lcSetState("authorize");
+        lc.approvals = [lcStage("ECAB Approval", "ECAB", LC_ECAB)];
+      } else {
+        lcSetState("assess");
+        lc.approvals = [lcStage("Peer Approval", "Peers", LC_PEER)];
+      }
+    } else if (target && target !== "scheduled" && target !== "authorize") {
+      lcSetState(target);
+    } else {
+      throw new Error(`illegal manual transition to ${String(target)}`);
+    }
+    lcPublish();
+  });
+  // The approvals panel's Approve/Reject drives the fake as the signed-in user.
+  decideApprovalMutateMock.mockImplementation((input: { decision: "approved" | "rejected" }) => {
+    const current = lc.approvals.find((a) => a.status === "REQUESTED");
+    const row = current?.approvers.find((a) => a.id === mockCurrentUser.id && a.status === "REQUESTED");
+    if (!current || !row || mockCurrentUser.id === lc.cr.requestedBy?.id) {
+      throw new Error("403: only a non-creator approver with a pending row may decide");
+    }
+    row.status = input.decision === "approved" ? "APPROVED" : "REJECTED";
+    current.status = row.status;
+    if (input.decision === "approved") {
+      if (current.stage === "Peer Approval") {
+        lcSetState("authorize");
+        lc.approvals = [...lc.approvals, lcStage("CAB Approval", "CAB", LC_CAB)];
+      } else {
+        lcSetState("scheduled"); // CAB / ECAB approval schedules the CR itself
+      }
+    }
+    lcPublish();
+  });
+  lcPublish();
+}
+
+/** Re-opens the page as another signed-in user (a fresh mount, like a new session). */
+function lcOpenAs(user: { id: string; email: string }, view?: ReturnType<typeof render>): ReturnType<typeof render> {
+  view?.unmount();
+  mockCurrentUser = { id: user.id, email: user.email };
+  lcPublish(); // canDecide is per caller, so the fake re-serves the approvals for this user
+  return renderPage();
+}
+
+/** The lifecycle stepper's current step label (`aria-current="step"`). */
+function currentStep(): string {
+  const list = screen.getByRole("list", { name: /change request lifecycle/i });
+  return within(list).getByRole("listitem", { current: "step" }).textContent ?? "";
+}
+
+function expectNoManualSchedule(): void {
+  expect(screen.queryByRole("button", { name: /schedule/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: /schedule/i })).not.toBeInTheDocument();
+  expect(screen.queryByText(/move to assess/i)).not.toBeInTheDocument();
+}
+
+function approvalsRow(name: string): HTMLElement {
+  return screen.getByText(name).closest("tr") as HTMLElement;
+}
+
+describe("CsmChangeRequestDetailPage — lifecycle: Normal (Request Approval -> Peer -> CAB -> auto Scheduled -> Implement -> Review -> Closed)", () => {
+  it("shows the right state, stage, header note and controls after every step", () => {
+    lcSeed("normal");
+
+    // New: the creator sees Request Approval, no Schedule, no Move to Assess.
+    let view = lcOpenAs(LC_CREATOR);
+    expect(currentStep()).toBe("New");
+    expect(screen.getByRole("button", { name: "Request Approval" })).toBeInTheDocument();
+    expectNoManualSchedule();
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+    expect(patchMutateMock).toHaveBeenCalledWith({ id: "chg-1", patch: { state: "assess" } }, expect.anything());
+
+    // Assess: Peer Approval pending; creator has no Approve/Reject, a notice, and can Cancel.
+    expect(currentStep()).toBe("Assess");
+    expect(screen.getByText("Awaiting Peer Approval")).toBeInTheDocument();
+    expect(within(approvalsRow("Pat Peer")).getByText("Peer Approval")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/you created this change request/i);
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeEnabled();
+    expectNoManualSchedule();
+
+    // A peer approves -> Authorize, CAB Approval is the next, separate stage.
+    view = lcOpenAs(LC_PEER, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(currentStep()).toBe("Authorize");
+    expect(screen.getByText("Awaiting CAB Approval")).toBeInTheDocument();
+    expect(within(approvalsRow("Cam Cab")).getByText("CAB Approval")).toBeInTheDocument();
+    expect(within(approvalsRow("Pat Peer")).getByText("Peer Approval")).toBeInTheDocument();
+    expect(within(approvalsRow("Pat Peer")).getByText("Approved")).toBeInTheDocument();
+    expectNoManualSchedule();
+
+    // A CAB member approves -> the page shows Scheduled, nothing awaited, no Schedule button.
+    view = lcOpenAs(LC_CAB, view);
+    expect(screen.getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(currentStep()).toBe("Scheduled");
+    expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
+    expectNoManualSchedule();
+    expect(patchMutateMock).toHaveBeenCalledTimes(1); // only Request Approval was ever a manual PATCH
+
+    // Engineer-driven tail.
+    view = lcOpenAs(LC_CREATOR, view);
+    expect(currentStep()).toBe("Scheduled");
+    fireEvent.click(screen.getByRole("button", { name: /^start implementation$/i }));
+    expect(currentStep()).toBe("Implement");
+    fireEvent.click(screen.getByRole("button", { name: /^mark implemented$/i }));
+    expect(currentStep()).toBe("Review");
+    // Review offers customer review (primary) and Close (overflow menu).
+    expect(screen.getByRole("button", { name: /^send for customer review$/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^close$/i }));
+    expect(currentStep()).toBe("Closed");
+    expectNoManualSchedule();
+    view.unmount();
+  });
+
+  it("lets a non-creator approver both Approve and Reject, and never shows them the creator notice", () => {
+    lcSeed("normal");
+    patchMutateMock({ id: "chg-1", patch: { state: "assess" } });
+
+    lcOpenAs(LC_PEER);
+    expect(screen.getByRole("button", { name: /^approve$/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^reject$/i })).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("disables Approve/Reject for the creator even when the backend wrongly gives them a pending row and sends no canDecide", () => {
+    lcSeed("normal");
+    lcEmitsCanDecide = false;
+    patchMutateMock({ id: "chg-1", patch: { state: "assess" } });
+    lc.approvals = [lcStage("Peer Approval", "Peers", { id: LC_CREATOR.id, name: "Casey Creator" })];
+    lcPublish();
+
+    lcOpenAs(LC_CREATOR);
+    expect(screen.getByRole("button", { name: /^approve$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^reject$/i })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(decideApprovalMutateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("CsmChangeRequestDetailPage — lifecycle: backend canDecide on approvers", () => {
+  it("disables Approve/Reject for a non-creator whose own pending row the backend marks canDecide=false (e.g. an SRE on the peer stage)", () => {
+    lcSeed("normal");
+    patchMutateMock({ id: "chg-1", patch: { state: "assess" } });
+    lcOpenAs(LC_PEER);
+    // Override just this row: the backend reports the caller may not decide it.
+    useGetChangeRequestApprovalsMock.mockReturnValue({
+      data: {
+        approvals: [
+          {
+            ...lc.approvals[0]!,
+            approvers: [{ ...lc.approvals[0]!.approvers[0]!, canDecide: false }],
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    notifyFakeBackendChanged();
+    expect(screen.getByRole("button", { name: /^approve$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^reject$/i })).toBeDisabled();
+  });
+
+  it("enables Approve/Reject only on the caller's own pending row when canDecide=true is sent", () => {
+    lcSeed("normal");
+    patchMutateMock({ id: "chg-1", patch: { state: "assess" } });
+    lcOpenAs(LC_PEER);
+    expect(screen.getByRole("button", { name: /^approve$/i })).toBeEnabled();
+    expect(screen.getAllByRole("button", { name: /^approve$/i })).toHaveLength(1);
+  });
+});
+
+describe("CsmChangeRequestDetailPage — lifecycle: Emergency (Request Approval -> ECAB only -> auto Scheduled)", () => {
+  it("has no Peer or CAB stage and lands on Scheduled when ECAB approves", () => {
+    lcSeed("emergency");
+
+    let view = lcOpenAs(LC_CREATOR);
+    expect(currentStep()).toBe("New");
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+
+    expect(currentStep()).toBe("Authorize");
+    expect(screen.getByText("Awaiting ECAB Approval")).toBeInTheDocument();
+    expect(within(approvalsRow("Eli Ecab")).getByText("ECAB Approval")).toBeInTheDocument();
+    expect(screen.queryByText("Peer Approval")).not.toBeInTheDocument();
+    expect(screen.queryByText("CAB Approval")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument(); // creator
+    expectNoManualSchedule();
+
+    view = lcOpenAs(LC_ECAB, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(currentStep()).toBe("Scheduled");
+    expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
+    expectNoManualSchedule();
+    expect(screen.getByRole("button", { name: /^start implementation$/i })).toBeInTheDocument();
+    view.unmount();
+  });
+});
+
+describe("CsmChangeRequestDetailPage — lifecycle: Standard (Request Approval -> auto Scheduled)", () => {
+  it("goes straight to Scheduled with no approval stages and no Schedule button", () => {
+    lcSeed("standard");
+
+    const view = lcOpenAs(LC_CREATOR);
+    expect(currentStep()).toBe("New");
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+
+    expect(currentStep()).toBe("Scheduled");
+    expect(screen.getByText(/no approval stages recorded/i)).toBeInTheDocument();
+    expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
+    expectNoManualSchedule();
+    expect(screen.getByRole("button", { name: /^start implementation$/i })).toBeInTheDocument();
+    view.unmount();
+  });
+});
+
+describe("CsmChangeRequestDetailPage — lifecycle: defensive against a backend that still offers scheduled", () => {
+  it("never renders a Schedule or Authorize action even if legalNextStates lists them", () => {
+    lcSeed("normal");
+    lcSetState("authorize");
+    lc.cr = { ...lc.cr, legalNextStates: ["scheduled", "authorize", "canceled"] };
+    lc.approvals = [lcStage("CAB Approval", "CAB", LC_CAB)];
+    lcPublish();
+
+    lcOpenAs(LC_CAB);
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeInTheDocument();
+    expectNoManualSchedule();
+    expect(screen.queryByRole("menuitem", { name: /authorize/i })).not.toBeInTheDocument();
   });
 });

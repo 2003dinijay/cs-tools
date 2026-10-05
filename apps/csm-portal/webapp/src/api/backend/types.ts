@@ -2727,6 +2727,10 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
 
 /** An approval stage seen on a change request, e.g. Assess, Authorize. */
 export type BeChangeRequestApprovalStage = "Assess" | "Authorize" | "Customer Approval";
+// Stage names are an open, backend-owned string (`BeChangeRequestApproval.stage`):
+// beyond the above, the Peer / CAB / ECAB stages may arrive as "Peer Approval",
+// "CAB Approval", "ECAB Approval" or "Emergency CAB". Labelled by
+// `approvalStageLabel` in `changeRequests.ts`.
 
 /** Who a change-request approval stage is assigned to. */
 export type BeChangeRequestApproverType = "STATIC_GROUP" | "DYNAMIC_CONTACT";
@@ -2745,6 +2749,14 @@ export interface BeChangeRequestApprover {
   createdOn?: string | null;
   respondedOn?: string | null;
   comments?: string | null;
+  /**
+   * Set by the backend (Postgres source): true only on the caller's own
+   * REQUESTED row, and only when they may decide it (not the creator, not an
+   * SRE on the peer stage). `false` makes the UI disable Approve/Reject for
+   * that row; absent (ServiceNow source / older backend) means "unknown", and
+   * the UI falls back to its own creator check plus the backend's 403.
+   */
+  canDecide?: boolean;
 }
 
 /** One approval stage on a change request, with its individual approvers. */
@@ -2800,7 +2812,9 @@ export interface BeCreateChangeRequestPayload {
   subject: string;
   priority?: BeChangeRequestPriority;
   impact?: BeChangeRequestImpact;
-  type?: BeChangeRequestType;
+  /** Required: one of "normal" | "standard" | "emergency" (the create form
+   * offers exactly these three). Drives the approval flow server-side. */
+  type: BeChangeRequestType;
   state?: BeChangeRequestState;
   groupId?: string;
   assignedEngineerId?: string;

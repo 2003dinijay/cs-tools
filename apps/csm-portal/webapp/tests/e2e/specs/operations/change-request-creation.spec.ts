@@ -30,13 +30,52 @@ import { e2eChangeRequestSubject } from "../../utils/selectors";
 withRole(test, "approver");
 
 test.describe("change request creation — page structure", () => {
-  test("requires a subject before Create change request is enabled", async ({ page }) => {
+  test("offers exactly Normal, Standard and Emergency, with none pre-selected", async ({ page }) => {
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+
+    const radios = cr.typeGroup().getByRole("radio");
+    await expect(radios).toHaveCount(3);
+    await expect(cr.typeRadio("Normal")).not.toBeChecked();
+    await expect(cr.typeRadio("Standard")).not.toBeChecked();
+    await expect(cr.typeRadio("Emergency")).not.toBeChecked();
+    // Order mirrors ServiceNow's "What type of change is required?" screen.
+    await expect(radios.nth(0)).toHaveAttribute("value", "normal");
+    await expect(radios.nth(1)).toHaveAttribute("value", "standard");
+    await expect(radios.nth(2)).toHaveAttribute("value", "emergency");
+  });
+
+  test("requires a change type and a subject before Create change request is enabled", async ({ page }) => {
     const cr = new ChangeRequestCreatePage(page);
     await cr.goto();
 
     await expect(cr.createButton()).toBeDisabled();
+    // A subject alone is not enough -- the type is required.
     await cr.subjectField().fill(e2eChangeRequestSubject("validation check"));
+    await expect(cr.createButton()).toBeDisabled();
+    await cr.selectType("Emergency");
     await expect(cr.createButton()).toBeEnabled();
+  });
+
+  test("sends the chosen type in the POST /change-requests payload", async ({ page }) => {
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectType("Standard");
+    await cr.subjectField().fill(e2eChangeRequestSubject("payload check"));
+
+    // Intercept (and abort) the create so this check never leaves a
+    // permanent staging record behind -- it only inspects the request body.
+    let sentType: unknown;
+    await page.route(
+      (url) => url.pathname.endsWith("/change-requests"),
+      async (route) => {
+        if (route.request().method() !== "POST") return route.fallback();
+        sentType = (route.request().postDataJSON() as { type?: string }).type;
+        await route.abort();
+      },
+    );
+    await cr.createButton().click();
+    await expect.poll(() => sentType).toBe("standard");
   });
 });
 

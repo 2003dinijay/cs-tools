@@ -162,6 +162,101 @@ export function approvalStatusColor(status?: string | null): ChipColor {
   return APPROVAL_STATUS_COLOR[status.toUpperCase()] ?? "default";
 }
 
+/**
+ * Display labels for the approval stages of the change-request flow:
+ * Normal changes go Peer Approval -> CAB Approval; Emergency changes have only
+ * an ECAB Approval; Standard changes have neither. The backend decides which
+ * stages exist -- this only maps a stage name it returned to its label, so
+ * both the legacy ServiceNow-style names ("Assess", "Authorize") and the
+ * explicit ones ("Peer Approval", "CAB Approval", "Emergency CAB") read the
+ * same; the post-implementation "Review" stage keeps its own name. Matching is case/space/punctuation-insensitive.
+ */
+const KNOWN_APPROVAL_STAGE_LABELS: Record<string, string> = {
+  assess: "Peer Approval",
+  peer: "Peer Approval",
+  peerapproval: "Peer Approval",
+  authorize: "CAB Approval",
+  cab: "CAB Approval",
+  cabapproval: "CAB Approval",
+  ecab: "ECAB Approval",
+  ecabapproval: "ECAB Approval",
+  review: "Review",
+  emergencycab: "ECAB Approval",
+  emergencycabapproval: "ECAB Approval",
+};
+
+function knownApprovalStageLabel(stage?: string | null): string | null {
+  if (!stage) return null;
+  return KNOWN_APPROVAL_STAGE_LABELS[stage.toLowerCase().replace(/[^a-z]/g, "")] ?? null;
+}
+
+/** Label for an approval stage name, e.g. `Authorize` -> `CAB Approval`.
+ * Unrecognised stages (e.g. `Customer Approval`) render as the backend sent them. */
+export function approvalStageLabel(stage?: string | null): string {
+  return knownApprovalStageLabel(stage) ?? (stage?.trim() || "Approval");
+}
+
+/**
+ * The three change types a new change request can be created as, in the order
+ * the ServiceNow "What type of change is required?" screen lists them. `value`
+ * is the backend's `ChangeRequestType` enum value (entity-service
+ * `domain.ChangeRequestType*`: "normal" / "standard" / "emergency"); the
+ * create form requires exactly one of these. The type drives the approval
+ * flow server-side: Normal = Peer -> CAB, Standard = none, Emergency = ECAB.
+ */
+export const CHANGE_REQUEST_CREATE_TYPE_OPTIONS: ReadonlyArray<{
+  value: Extract<BeChangeRequestType, "normal" | "standard" | "emergency">;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "normal",
+    label: "Normal",
+    description:
+      "Normal Changes are a general purpose change type that requires one or more approvals.",
+  },
+  {
+    value: "standard",
+    label: "Standard",
+    description:
+      "Preapproved, repeatable changes that follow an established template. These changes do not require approval.",
+  },
+  {
+    value: "emergency",
+    label: "Emergency",
+    description:
+      "Emergency Changes are a change type that must be implemented as soon as possible.",
+  },
+];
+
+/** True when `value` is one of the three types a change request can be created as. */
+export function isCreatableChangeRequestType(value: string | null | undefined): boolean {
+  return CHANGE_REQUEST_CREATE_TYPE_OPTIONS.some((o) => o.value === value);
+}
+
+/**
+ * Whether the signed-in user is the creator/requester of this change request.
+ * The backend refuses approvals from the creator (Peer, CAB and ECAB alike);
+ * this lets the UI say so up front rather than offering a control that will
+ * 403. Defensive on purpose: the detail only carries `requestedBy` (an entity
+ * ref) and `createdBy` (a display string whose shape -- id, email or name --
+ * the backend may change), so it compares each against the user's id and
+ * email and never throws on a missing field. Returns false when nothing
+ * matches or the user hasn't loaded, i.e. it never hides controls on a guess.
+ */
+export function isChangeRequestCreator(
+  cr: { requestedBy?: { id?: string | null } | null; createdBy?: string | null },
+  user: { id?: string | null; email?: string | null } | undefined,
+): boolean {
+  if (!user) return false;
+  const id = user.id?.trim().toLowerCase();
+  const email = user.email?.trim().toLowerCase();
+  const candidates = [cr.requestedBy?.id, cr.createdBy]
+    .map((c) => c?.trim().toLowerCase())
+    .filter((c): c is string => !!c);
+  return candidates.some((c) => (!!id && c === id) || (!!email && c === email));
+}
+
 /** Stage-level statuses that mean the stage is actively waiting on someone. */
 const WAITING_APPROVAL_STATUSES = new Set(["PENDING", "REQUESTED"]);
 
@@ -180,6 +275,11 @@ export function changeRequestBlockingReason(
 ): string | null {
   const waiting = approvals?.find((a) => WAITING_APPROVAL_STATUSES.has(a.status.trim().toUpperCase()));
   if (!waiting) return null;
+  // A recognised stage (Peer / CAB / ECAB) is named by its stage label, which
+  // already ends in "Approval" -- so this reads "Awaiting CAB Approval" and
+  // never "Awaiting CAB approval approval".
+  const stageLabel = knownApprovalStageLabel(waiting.stage);
+  if (stageLabel) return `Awaiting ${stageLabel}`;
   const who = waiting.approverName?.trim() || waiting.stage;
   // Approver-group names sometimes already say "Approval" ("Devops
   // Approval"); avoid a doubled "approval approval" in that case.
@@ -197,7 +297,7 @@ export function changeRequestBlockingReason(
 
 /**
  * Action-phrased label for a transition *into* a given state. Phrased as the
- * action being taken ("Schedule", "Mark implemented"), not as the destination,
+ * action being taken ("Request Approval", "Mark implemented"), not as the destination,
  * because the state chip next to the action bar already names the state —
  * same "no invented verbs for the state itself" convention as
  * `IncidentActionBar`/`CaseActionBar`.
@@ -208,8 +308,13 @@ export function changeRequestBlockingReason(
  * {@link changeRequestTransitionLabel}, so they still render and still work.
  */
 const TRANSITION_LABEL: Record<string, string> = {
-  assess: "Move to Assess",
-  scheduled: "Schedule",
+  // New -> Assess is the "Request Approval" action: it sends the CR into its
+  // approval flow (Peer -> CAB for Normal, ECAB for Emergency, straight to
+  // Scheduled for Standard -- all the backend's call).
+  assess: "Request Approval",
+  // There is deliberately no entry for `scheduled`: a CR is moved to Scheduled
+  // automatically when its CAB/ECAB approval is granted, never by a manual
+  // "Schedule" action. See `NEVER_OFFERED_TARGETS` in ChangeRequestActionBar.
   implement: "Start implementation",
   review: "Mark implemented",
   customer_review: "Send for customer review",
