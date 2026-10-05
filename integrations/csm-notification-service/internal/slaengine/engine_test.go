@@ -291,12 +291,14 @@ func TestEngine_Tick_AlertsOnlyNewlyCrossedTier(t *testing.T) {
 	}
 }
 
-// TestEngine_Tick_AlertsEveryTierCrossedSinceLastPoll verifies that a clock
-// whose percentage jumped past more than one checkpoint between polls (a
-// slow ticker interval, or a burst of ServiceNow sync activity) still fires
-// an alert for each intermediate tier, not just the highest one reached —
-// in ascending order.
-func TestEngine_Tick_AlertsEveryTierCrossedSinceLastPoll(t *testing.T) {
+// TestEngine_Tick_CollapsesMultiTierJumpToOneAlert verifies the fix for a
+// real, reported production symptom: a clock whose percentage jumped past
+// more than one checkpoint between polls (entity-service's own upstream
+// sync can leave a clock's percentage stale for days and then update it in
+// one batch) must fire exactly ONE alert, for the highest tier reached —
+// not one alert per intermediate tier (50, then 75, then 100), which
+// produced duplicate-looking Chat cards for a single underlying change.
+func TestEngine_Tick_CollapsesMultiTierJumpToOneAlert(t *testing.T) {
 	entity := &fakeStatusLister{statuses: []SLAStatus{{CaseID: "CASE-1", ClockType: "resolution", HasBreached: true, BusinessElapsedPercent: 140}}}
 	store := newFakeTierStore()
 	store.tiers["CASE-1|resolution"] = 50
@@ -308,14 +310,14 @@ func TestEngine_Tick_AlertsEveryTierCrossedSinceLastPoll(t *testing.T) {
 	}
 
 	chat := e.chat.(*fakeChatSender)
-	if len(chat.calls) != 2 {
-		t.Fatalf("expected 2 chat alerts (75 then 100), got %+v", chat.calls)
+	if len(chat.calls) != 1 || chat.calls[0].tier != "100" {
+		t.Fatalf("chat.calls = %+v, want exactly 1 alert, for tier 100 only (not 75 too)", chat.calls)
 	}
-	if chat.calls[0].tier != "75" || chat.calls[1].tier != "100" {
-		t.Errorf("chat.calls = %+v, want tier order 75, 100", chat.calls)
+	if len(pub.calls) != 1 {
+		t.Errorf("expected exactly 1 publish, got %d", len(pub.calls))
 	}
-	if len(pub.calls) != 2 {
-		t.Errorf("expected 2 publishes, got %d", len(pub.calls))
+	if len(store.claimCalls) != 1 || store.claimCalls[0] != (tierCall{"CASE-1", "resolution", 100}) {
+		t.Errorf("claimCalls = %+v, want a single claim for tier 100 (tier 75 never claimed)", store.claimCalls)
 	}
 	if store.tiers["CASE-1|resolution"] != 100 {
 		t.Errorf("cursor = %d, want advanced to 100", store.tiers["CASE-1|resolution"])
@@ -385,10 +387,12 @@ func TestEngine_Tick_SkipsPausedClockEntirely(t *testing.T) {
 }
 
 // TestEngine_Tick_StopsAtFirstFailedTierAndKeepsCursor verifies that a
-// publish/chat failure partway through a multi-tier crossing leaves the
-// cursor at the last SUCCESSFULLY alerted tier, not the clock's current
-// tier — so the next Tick retries exactly the remaining tiers, never
-// silently skipping or double-alerting the one that already succeeded.
+// publish/chat failure on a multi-tier jump (a clock whose stored cursor is
+// several checkpoints behind its current reading) leaves the cursor
+// unchanged rather than advancing to the clock's current tier — since only
+// the current tier is ever attempted (see processStatus's own doc comment),
+// a failure here means nothing succeeded this tick, and the next Tick
+// retries the same single tier from scratch.
 func TestEngine_Tick_StopsAtFirstFailedTierAndKeepsCursor(t *testing.T) {
 	entity := &fakeStatusLister{statuses: []SLAStatus{{CaseID: "CASE-1", ClockType: "response", HasBreached: true, BusinessElapsedPercent: 140}}}
 	store := newFakeTierStore()
@@ -400,7 +404,7 @@ func TestEngine_Tick_StopsAtFirstFailedTierAndKeepsCursor(t *testing.T) {
 		t.Fatal("Tick() error = nil, want the publish failure propagated")
 	}
 	if len(pub.calls) != 1 {
-		t.Errorf("expected exactly 1 failed publish attempt (stopping before tier 100), got %d", len(pub.calls))
+		t.Errorf("expected exactly 1 failed publish attempt (for tier 100, the only tier attempted), got %d", len(pub.calls))
 	}
 	if store.tiers["CASE-1|response"] != 50 {
 		t.Errorf("cursor = %d, want left at 50 (no tier succeeded)", store.tiers["CASE-1|response"])

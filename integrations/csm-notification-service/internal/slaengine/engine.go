@@ -197,21 +197,29 @@ func (e *Engine) Tick(ctx context.Context) error {
 //     cycle, not a regression to warn about.
 //   - Current tier is AT the stored cursor: nothing crossed since the last
 //     poll — no-op.
-//   - Current tier is ABOVE the stored cursor: for every checkpoint
-//     strictly between the stored cursor and the current tier, in
-//     ascending order, atomically claim that tier via TierStore.ClaimTier
-//     (a Redis SETNX) before alerting for it — see ClaimTier's own doc
-//     comment for why a plain read-then-write on the cursor alone isn't
-//     enough: if this service is ever deployed with more than one replica,
-//     two replicas can both read the same stale cursor and both decide to
-//     alert for the same tier at once. Only the replica whose ClaimTier
-//     call actually wins alerts; a losing call just moves on to the next
-//     tier. A failure to alert after winning the claim releases it (so a
-//     later tick — this replica or another — can retry that exact tier
-//     rather than losing it for good), and advances the cursor only after
-//     a tier's alert actually succeeds, so a failure partway through a
-//     multi-tier crossing still keeps whatever alerted successfully and
-//     retries only the remainder on the next Tick.
+//   - Current tier is ABOVE the stored cursor: only the CURRENT tier is
+//     ever claimed and alerted — never every checkpoint strictly between
+//     the stored cursor and current, even when more than one was crossed
+//     since the last poll. Entity-service's own upstream sync can leave a
+//     clock's percentage stale for days and then update it in one batch,
+//     jumping a cursor straight from, say, 0% to well past 100% in a
+//     single poll; alerting 50, then 75, then 100 individually for that
+//     one underlying change is what produced the real, reported "same case
+//     gets 50/75/100 breach alerts all at once" symptom this collapses.
+//     This is safe to do unconditionally: the ordinary case — a clock
+//     crosses exactly one checkpoint between two consecutive polls — already
+//     has `current` equal to that one checkpoint, so collapsing to "just
+//     current" alerts exactly the same single tier as before. Claiming is
+//     still atomic via TierStore.ClaimTier (a Redis SETNX) before alerting
+//     — see ClaimTier's own doc comment for why a plain read-then-write on
+//     the cursor alone isn't enough: if this service is ever deployed with
+//     more than one replica, two replicas can both read the same stale
+//     cursor and both decide the same tier needs alerting. Only the
+//     replica whose ClaimTier call actually wins alerts; a losing call does
+//     nothing further this tick. A failure to alert after winning the claim
+//     releases it (so a later tick — this replica or another — can retry
+//     the same tier rather than losing it for good), and the cursor only
+//     advances once the alert actually succeeds.
 //
 // A paused clock (s.IsPaused) is skipped outright: ServiceNow freezes
 // businessElapsedPercent while paused, so there is nothing to cross either
@@ -258,33 +266,30 @@ func (e *Engine) processStatus(ctx context.Context, s SLAStatus) error {
 		return nil
 	}
 
-	for _, tier := range tierSequence {
-		if tier <= last || tier > current {
-			continue
+	if current == last {
+		return nil
+	}
+
+	claimed, err := e.store.ClaimTier(ctx, s.CaseID, s.ClockType, current)
+	if err != nil {
+		return fmt.Errorf("claim tier %d: %w", current, err)
+	}
+	if !claimed {
+		// Some other call already owns this tier — a concurrent replica,
+		// or an earlier attempt that's already alerted for it. The cursor
+		// is intentionally left untouched here — the call that actually
+		// won the claim advances it once its own alert succeeds, and this
+		// replica picks up the advanced value on its own next poll.
+		return nil
+	}
+	if err := e.alertTier(ctx, s, current); err != nil {
+		if releaseErr := e.store.ReleaseTier(ctx, s.CaseID, s.ClockType, current); releaseErr != nil {
+			slog.ErrorContext(ctx, "slaengine: failed to release tier claim after a failed alert, tier may be stuck until it expires", "caseId", s.CaseID, "clockType", s.ClockType, "tier", current, "err", releaseErr)
 		}
-		claimed, err := e.store.ClaimTier(ctx, s.CaseID, s.ClockType, tier)
-		if err != nil {
-			return fmt.Errorf("claim tier %d: %w", tier, err)
-		}
-		if !claimed {
-			// Some other call already owns this tier — a concurrent
-			// replica, or an earlier attempt that's already alerted for
-			// it. Either way, this call must not alert again; move on to
-			// whatever tier comes next. The cursor is intentionally left
-			// untouched here — the call that actually won the claim
-			// advances it once its own alert succeeds, and this replica
-			// picks up the advanced value on its own next poll.
-			continue
-		}
-		if err := e.alertTier(ctx, s, tier); err != nil {
-			if releaseErr := e.store.ReleaseTier(ctx, s.CaseID, s.ClockType, tier); releaseErr != nil {
-				slog.ErrorContext(ctx, "slaengine: failed to release tier claim after a failed alert, tier may be stuck until it expires", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "err", releaseErr)
-			}
-			return fmt.Errorf("alert tier %d: %w", tier, err)
-		}
-		if err := e.store.SetTier(ctx, s.CaseID, s.ClockType, tier); err != nil {
-			return fmt.Errorf("advance tier cursor to %d: %w", tier, err)
-		}
+		return fmt.Errorf("alert tier %d: %w", current, err)
+	}
+	if err := e.store.SetTier(ctx, s.CaseID, s.ClockType, current); err != nil {
+		return fmt.Errorf("advance tier cursor to %d: %w", current, err)
 	}
 	return nil
 }
