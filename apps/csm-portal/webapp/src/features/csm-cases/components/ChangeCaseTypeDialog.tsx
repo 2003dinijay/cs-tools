@@ -231,8 +231,9 @@ export default function ChangeCaseTypeDialog({
         : targetType === "service_request"
           ? !!catalogId &&
             !!catalogItemId &&
-            !variables.isLoading &&
-            !variables.isError &&
+            // isSuccess, not !isLoading && !isError: a query paused offline is
+            // neither, and would otherwise pass with no questions loaded.
+            variables.isSuccess &&
             firstEmptyRequired === null
           : true;
 
