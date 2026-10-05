@@ -1008,6 +1008,27 @@ test.describe("change request approval flow — customer group", () => {
     expect(api.state()).toBe("closed");
   });
 
+  test("a customer group set while the change already waits at Customer Approval provisions the stage; the helper and the manual path go away", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true });
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
+    await expect(detail.recordCustomerApprovalButton()).toBeVisible();
+
+    api.setCustomerGroup(FAKE_CUSTOMER_GROUP);
+    await switchTo(page, api, FAKE_CUST_ONE);
+    await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toHaveCount(0);
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
+    await expect(detail.recordCustomerApprovalButton()).toHaveCount(0);
+    await detail.approve(FAKE_CUST_ONE.name, "Customer Approval");
+    await expect(detail.currentStep()).toContainText("Scheduled");
+  });
+
   test("a customer group with no eligible member provisions no stage: manual path stays, no helper", async ({ page }) => {
     test.setTimeout(120_000);
     const api = await installFakeChangeRequestApi(
