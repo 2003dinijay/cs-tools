@@ -108,14 +108,18 @@ describe("ToolBar Inline Code", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Inline Code" }));
 
-    await waitFor(() => {
-      const lastHtml = onChange.mock.calls.at(-1)?.[0] as string;
-      expect(lastHtml).toContain("<code");
-      expect(lastHtml).toContain("Please ");
-      expect(lastHtml).toContain(" the server");
-    });
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
 
     const lastHtml = onChange.mock.calls.at(-1)?.[0] as string;
+    const container = document.createElement("div");
+    container.innerHTML = lastHtml;
+    const paragraphs = container.querySelectorAll("p");
+    expect(paragraphs).toHaveLength(1);
+    expect(paragraphs[0]?.textContent).toBe(LINE);
+    const codeElements = paragraphs[0]?.querySelectorAll("code");
+    expect(codeElements).toHaveLength(1);
+    expect(codeElements?.[0]?.textContent).toBe("restart");
+
     // The whole line must NOT have become a <pre> code block -- only the
     // selected word gets wrapped.
     expect(lastHtml).not.toContain("<pre");
