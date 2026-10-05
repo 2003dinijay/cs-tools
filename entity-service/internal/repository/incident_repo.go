@@ -36,11 +36,14 @@ import (
 //
 // IncidentView/SearchIncidentView render State/Priority/Category/Subcategory/
 // ContactType/ResolutionCode as plain, unvalidated strings (per those types'
-// own field comments), so reads need no enum reconciliation against
-// domain.IncidentState/IncidentPriority/etc at all -- the real enum column
-// text is simply passed through. Only the SEARCH FILTER path uses those
-// strict domain enums (SearchIncidentsFilters.Priorities, the generic
-// Filters array's "state"), and three of them have real, easy-to-miss
+// own field comments), and the real enum column text is passed through --
+// except where a label differs from the value the API accepts and the
+// ServiceNow data source returns: state 'CANCELED', resolution code
+// 'SOLVED_WORK_AROUND'/'NOT_ACTIONABLE_ALERT' and contact type 'SITE_24_7'
+// are mapped back on read (incidentStateFromEnum and its siblings), so a
+// client sees the same values in both data sources. The SEARCH FILTER path
+// uses the strict domain enums (SearchIncidentsFilters.Priorities, the
+// generic Filters array's "state"), and three of them have real, easy-to-miss
 // mismatches against their Postgres enum's actual labels:
 //   - incident_state_enum's "canceled" label is spelled with one L
 //     ('CANCELED'), not domain.IncidentStateCancelled's two ("CANCELLED").
@@ -319,7 +322,7 @@ func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchI
 	}
 	v := domain.SearchIncidentView{
 		ID: &id, Number: &number, Subject: &subject,
-		Priority: priority, State: state, Category: category,
+		Priority: priority, State: incidentStateFromEnum(state), Category: category,
 		CreatedOn: createdOn.UTC().Format(time.RFC3339), CreatedBy: createdBy,
 		UpdatedOn: updatedOn.UTC().Format(time.RFC3339), UpdatedBy: updatedBy,
 	}
@@ -447,6 +450,9 @@ func (r *incidentRepo) AggregateIncidents(ctx context.Context, req domain.Search
 		if err := rows.Scan(&key, &count); err != nil {
 			return domain.AggregateResponse{}, fmt.Errorf("scan incident bucket: %w", err)
 		}
+		if groupBy == "state" {
+			key = *incidentStateFromEnum(&key)
+		}
 		lowerKey := strings.ToLower(key)
 		buckets = append(buckets, domain.AggregateBucket{Key: lowerKey, Label: lowerKey, Count: count})
 		totalRecords += count
@@ -542,9 +548,9 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 
 	v := domain.IncidentView{
 		ID: &id2, Number: &number, Subject: &subject,
-		Priority: priority, State: state, Category: category, Subcategory: subcatL,
+		Priority: priority, State: incidentStateFromEnum(state), Category: category, Subcategory: subcatL,
 		ContactType: incidentContactTypeFromEnum(contactType), Impact: impact, Urgency: urgency,
-		ResolutionCode: resolutionCode, ResolutionNotes: closeNotes, IncidentReport: incidentReport,
+		ResolutionCode: incidentResolutionCodeFromEnum(resolutionCode), ResolutionNotes: closeNotes, IncidentReport: incidentReport,
 		Description:           description,
 		WatchList:             []domain.IncidentWatchListItem{},
 		LinkedServiceRequests: []domain.LinkedServiceRequestRef{},
@@ -740,6 +746,38 @@ func incidentContactTypeFromEnum(label *string) *string {
 		return &v
 	}
 	return label
+}
+
+// incidentStateFromEnum is incidentStateToEnum's (incident_service.go)
+// inverse, for reads: the enum's 'CANCELED' goes back out as "CANCELLED",
+// the value the API accepts and the ServiceNow data source returns. Every
+// other label is passed through unchanged.
+func incidentStateFromEnum(label *string) *string {
+	if label != nil && *label == "CANCELED" {
+		v := string(domain.IncidentStateCancelled)
+		return &v
+	}
+	return label
+}
+
+// incidentResolutionCodeFromEnum is incidentResolutionCodeToEnum's
+// (incident_service.go) inverse, for reads: 'SOLVED_WORK_AROUND' and
+// 'NOT_ACTIONABLE_ALERT' go back out as "SOLVED_WORKAROUND" and
+// "NOT_ACTIONABLE". Every other label is passed through unchanged.
+func incidentResolutionCodeFromEnum(label *string) *string {
+	if label == nil {
+		return nil
+	}
+	var v string
+	switch *label {
+	case "SOLVED_WORK_AROUND":
+		v = string(domain.IncidentResolutionCodeSolvedWorkaround)
+	case "NOT_ACTIONABLE_ALERT":
+		v = string(domain.IncidentResolutionCodeNotActionable)
+	default:
+		return label
+	}
+	return &v
 }
 
 // createIncidentCommentQuery mirrors createCaseCommentQuery's (case_repo.go,

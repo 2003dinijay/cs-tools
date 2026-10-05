@@ -236,7 +236,12 @@ func getLifecycleIncident(t *testing.T, srv http.Handler) domain.IncidentView {
 	return view
 }
 
-// strOrNil is declared in incident_lifecycle_integration_test.go (same package).
+func strOrNil(p *string) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return *p
+}
 
 // TestIncidentLifecycle_WithoutSubcategory creates an incident with no
 // subcategory (the create form no longer requires one) and walks it
