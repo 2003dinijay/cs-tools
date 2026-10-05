@@ -317,6 +317,56 @@ func TestDeployedProductService_UpdateDeployedProduct_RejectsInvalidRequest(t *t
 	}
 }
 
+// TestDeployedProductService_UpdateDeployedProduct_RejectsInvalidCategory proves
+// an unrecognized category value is rejected with a ValidationError before
+// ever reaching the repository, rather than surfacing as a raw Postgres
+// enum-cast error.
+func TestDeployedProductService_UpdateDeployedProduct_RejectsInvalidCategory(t *testing.T) {
+	mirror := &stubMirrorDeployedProductService{}
+	repo := &stubDeployedProductRepo{}
+	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+	svc := NewDeployedProductServiceWithSNWriteback(repo, dispatcher, mirror)
+
+	bogus := "not-a-real-category"
+	_, err := svc.UpdateDeployedProduct(context.Background(), domain.UpdateDeployedProductRequest{ID: testDeploymentUUID, Category: &bogus})
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) {
+		t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+	}
+}
+
+// TestDeployedProductService_UpdateDeployedProduct_CategoryAloneIsSufficient
+// proves a request setting only Category (no cores/tps/description/updates)
+// satisfies the "at least one field" check and reaches the repository --
+// this is the whole point of the fix: a caller categorizing an old,
+// otherwise-unchanged deployed product shouldn't have to touch an unrelated
+// field just to satisfy this validation.
+func TestDeployedProductService_UpdateDeployedProduct_CategoryAloneIsSufficient(t *testing.T) {
+	mirror := &stubMirrorDeployedProductService{
+		updateDeployedProduct: func(context.Context, domain.UpdateDeployedProductRequest) (domain.UpdateDeployedProductResponse, error) {
+			return domain.UpdateDeployedProductResponse{}, nil
+		},
+	}
+	var gotCategory *string
+	repo := &stubDeployedProductRepo{
+		updateDeployedProductFields: func(ctx context.Context, req domain.UpdateDeployedProductRequest, updatedBy string) (domain.UpdatedDeployedProduct, error) {
+			gotCategory = req.Category
+			return domain.UpdatedDeployedProduct{ID: req.ID}, nil
+		},
+	}
+	dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+	svc := NewDeployedProductServiceWithSNWriteback(repo, dispatcher, mirror)
+
+	ms := "ms"
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	if _, err := svc.UpdateDeployedProduct(ctx, domain.UpdateDeployedProductRequest{ID: testDeploymentUUID, Category: &ms}); err != nil {
+		t.Fatalf("UpdateDeployedProduct: %v", err)
+	}
+	if gotCategory == nil || *gotCategory != "ms" {
+		t.Fatalf("expected Category %q to reach the repository, got %v", "ms", gotCategory)
+	}
+}
+
 // TestDeployedProductService_SearchDeployedProducts_ForwardsProductCategories
 // guards against a regression CodeRabbit caught on PR #2189: once
 // SearchDeployedProducts stopped delegating to ServiceNow under dual-write

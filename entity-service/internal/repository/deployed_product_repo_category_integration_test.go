@@ -137,3 +137,37 @@ func TestSearchDeployedProductsCategoryFilter(t *testing.T) {
 		t.Errorf("explicitly mismatching PS row %s present in results, want it excluded (filter must not have become a no-op)", dpCategoryMismatchID)
 	}
 }
+
+// TestUpdateDeployedProductFields_WritesCategory regression-tests the write
+// side of the same gap: before this fix, there was no way for any caller --
+// CSM Portal included -- to ever set product_category at all, since neither
+// CreateDeployedProductRequest nor UpdateDeployedProductRequest had a field
+// for it. Seeds a deployed product with NULL category, patches it to "ms"
+// (lower-case, the wire vocabulary), and confirms the real column -- not
+// just the echoed response -- actually changed.
+func TestUpdateDeployedProductFields_WritesCategory(t *testing.T) {
+	pool := caseStatsPool(t)
+	seedDeployedProductCategoryFixture(t, pool)
+
+	ctx := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewDeployedProductRepository(repository.NewScoped(pool))
+
+	category := "ms"
+	_, err := repo.UpdateDeployedProductFields(ctx, domain.UpdateDeployedProductRequest{
+		ID:       dpCategoryNullID,
+		Category: &category,
+	}, "dp-category-test")
+	if err != nil {
+		t.Fatalf("UpdateDeployedProductFields: %v", err)
+	}
+
+	var stored *string
+	scoped := repository.NewScoped(pool)
+	err = scoped.QueryRow(ctx, `SELECT product_category::TEXT FROM deployed_product WHERE id = $1`, dpCategoryNullID).Scan(&stored)
+	if err != nil {
+		t.Fatalf("read back product_category: %v", err)
+	}
+	if stored == nil || *stored != "MS" {
+		t.Fatalf("product_category = %v, want \"MS\"", stored)
+	}
+}

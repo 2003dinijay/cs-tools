@@ -680,30 +680,41 @@ const createDeployedProductFromServiceNowQuery = `
 		id, created_on, updated_on, created_by, updated_by,
 		number, description, active,
 		core_count, tps_count,
-		project_id, deployment_id, product_id, version_id
+		project_id, deployment_id, product_id, version_id,
+		product_category
 	)
 	VALUES (
 		$1, $2, $2, $3, $3,
 		$4, $5, TRUE,
 		$6, $7,
-		$8::uuid, $9::uuid, $10::uuid, $11::uuid
+		$8::uuid, $9::uuid, $10::uuid, $11::uuid,
+		$12::text::deployed_product_category_enum
 	)
 	RETURNING id, created_on, created_by`
 
 // CreateDeployedProductFromServiceNow implements DeployedProductRepository.
-// name/life_cycle_stage/life_cycle_stage_status/product_category/update_level_info
-// are left NULL -- CreateDeployedProductRequest carries no fields for them
-// (SN's own create payload doesn't send them either, see
+// name/life_cycle_stage/life_cycle_stage_status/update_level_info are left
+// NULL -- CreateDeployedProductRequest carries no fields for them (SN's own
+// create payload doesn't send them either, see
 // snCreateDeployedProductPayload), matching parity between the two data
 // sources rather than inventing values ServiceNow itself doesn't set on
-// create.
+// create. product_category is the one exception: see
+// domain.CreateDeployedProductRequest.Category's own doc comment for why
+// it's written here despite having no SN-side equivalent.
 func (r *deployedProductRepo) CreateDeployedProductFromServiceNow(ctx context.Context, req domain.CreateDeployedProductRequest, id, number, createdBy string, createdOn time.Time) (domain.CreatedDeployedProduct, error) {
+	var category *string
+	if req.Category != nil {
+		c := strings.ToUpper(*req.Category)
+		category = &c
+	}
+
 	var created domain.CreatedDeployedProduct
 	err := r.db.QueryRow(ctx, createDeployedProductFromServiceNowQuery,
 		id, createdOn, createdBy,
 		number, req.Description,
 		req.Cores, req.TPS,
 		req.ProjectID, req.DeploymentID, req.ProductID, req.VersionID,
+		category,
 	).Scan(&created.ID, &created.CreatedOn, &created.CreatedBy)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
@@ -754,7 +765,8 @@ const updateDeployedProductFieldsQuery = `
 		tps_count = COALESCE($4, tps_count),
 		description = CASE WHEN $5 THEN $6 ELSE description END,
 		update_level_info = CASE WHEN $7 THEN $8::jsonb ELSE update_level_info END,
-		active = COALESCE($9, active)
+		active = COALESCE($9, active),
+		product_category = COALESCE($11::text::deployed_product_category_enum, product_category)
 	WHERE id = $1::uuid
 	AND ($10::uuid IS NULL OR deployment_id = $10::uuid)
 	RETURNING id, updated_on, updated_by`
@@ -797,6 +809,12 @@ func (r *deployedProductRepo) UpdateDeployedProductFields(ctx context.Context, r
 		}
 	}
 
+	var category *string
+	if req.Category != nil {
+		c := strings.ToUpper(*req.Category)
+		category = &c
+	}
+
 	var updated domain.UpdatedDeployedProduct
 	err = r.db.QueryRow(ctx, updateDeployedProductFieldsQuery,
 		req.ID, updatedBy,
@@ -805,6 +823,7 @@ func (r *deployedProductRepo) UpdateDeployedProductFields(ctx context.Context, r
 		updatesProvided, updatesJSON,
 		req.Active,
 		req.DeploymentID,
+		category,
 	).Scan(&updated.ID, &updated.UpdatedOn, &updated.UpdatedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if req.DeploymentID != nil {
