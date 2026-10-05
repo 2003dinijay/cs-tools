@@ -74,11 +74,15 @@ type StoreConfig struct {
 	WriteDeadline   Duration `toml:"write_deadline"`
 }
 
-// PostgresConfig tunes startup connection retry, matching sre-alert-core-service.
+// PostgresConfig tunes startup connection retry, matching sre-alert-core-service, plus the warm pool floor and the credential check budget.
 type PostgresConfig struct {
 	ConnectMaxAttempts int      `toml:"connect_max_attempts"`
 	ConnectBaseDelay   Duration `toml:"connect_base_delay"`
 	ConnectTimeout     Duration `toml:"connect_timeout"`
+	// MinConns keeps this many connections open so a webhook after a quiet spell doesn't pay for a new TLS connection.
+	MinConns int `toml:"min_conns"`
+	// AuthTimeout bounds one integration_users check, including waiting for a pooled connection.
+	AuthTimeout Duration `toml:"auth_timeout"`
 }
 
 // WakeConfig bounds the fire-and-forget POST /alertz to alerts-core.
@@ -139,6 +143,8 @@ func Defaults() Config {
 			ConnectMaxAttempts: 5,
 			ConnectBaseDelay:   Duration(2 * time.Second),
 			ConnectTimeout:     Duration(10 * time.Second),
+			MinConns:           2,
+			AuthTimeout:        Duration(5 * time.Second),
 		},
 		Wake:   WakeConfig{Timeout: Duration(2 * time.Second)},
 		Reject: RejectConfig{BodyPreviewChars: 500},
@@ -218,6 +224,12 @@ func (c Config) Validate() error {
 		return fmt.Errorf("postgres.connect_base_delay must be positive")
 	case c.Postgres.ConnectTimeout <= 0:
 		return fmt.Errorf("postgres.connect_timeout must be positive")
+	case c.Postgres.MinConns < 0:
+		return fmt.Errorf("postgres.min_conns must not be negative")
+	case c.Postgres.AuthTimeout <= 0:
+		return fmt.Errorf("postgres.auth_timeout must be positive")
+	case c.Postgres.AuthTimeout+c.Server.RequestWait+WriteMargin > c.Server.WriteTimeout:
+		return fmt.Errorf("postgres.auth_timeout + server.request_wait must be at least %v below server.write_timeout", WriteMargin.Duration())
 	case c.Wake.Timeout <= 0:
 		return fmt.Errorf("wake.timeout must be positive")
 	case c.Reject.BodyPreviewChars <= 0:

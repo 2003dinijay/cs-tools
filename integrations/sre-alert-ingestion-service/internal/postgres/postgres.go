@@ -49,8 +49,26 @@ type Config struct {
 	User     string `env:"PGUSER,notEmpty"`
 	Password string `env:"PGPASSWORD,notEmpty"`
 	SSLMode  string `env:"PGSSLMODE" envDefault:"require"`
-	// PoolMaxConns caps this replica's pgxpool connections; 0 leaves pgx's default, too small under concurrent load.
+	// PoolMaxConns caps this replica's pgxpool connections; 0 lets SizePool derive it from the writer count.
 	PoolMaxConns int32 `env:"PGPOOLMAXCONNS" envDefault:"0"`
+	// PoolMinConns is set by SizePool from config.toml, not the environment.
+	PoolMinConns int32 `env:"-"`
+}
+
+// PoolReserve is the connections kept beyond the allocator's writers: one for the alert_seq claim, one for credential checks.
+const PoolReserve = 2
+
+// SizePool sets cfg's pool bounds for writeConcurrency writers; an explicit PGPOOLMAXCONNS below what they need is an error, since credential checks would then queue behind batch writes.
+func SizePool(cfg Config, writeConcurrency, minConns int) (Config, error) {
+	need := int32(writeConcurrency + PoolReserve)
+	switch {
+	case cfg.PoolMaxConns == 0:
+		cfg.PoolMaxConns = need
+	case cfg.PoolMaxConns < need:
+		return Config{}, fmt.Errorf("PGPOOLMAXCONNS=%d is below allocator.write_concurrency (%d) + %d; set it to at least %d or unset it", cfg.PoolMaxConns, writeConcurrency, PoolReserve, need)
+	}
+	cfg.PoolMinConns = min(int32(minConns), cfg.PoolMaxConns)
+	return cfg, nil
 }
 
 // ConfigFromEnv reads Config from the environment.
@@ -84,6 +102,7 @@ func Connect(cfg Config, connectTimeout, queryTimeout time.Duration) (*pgxpool.P
 	if cfg.PoolMaxConns > 0 {
 		poolCfg.MaxConns = cfg.PoolMaxConns
 	}
+	poolCfg.MinConns = cfg.PoolMinConns
 
 	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 	defer cancel()

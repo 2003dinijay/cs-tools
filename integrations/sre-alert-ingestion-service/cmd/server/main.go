@@ -71,6 +71,12 @@ func main() {
 		logger.Error("failed to read postgres config", "error", err)
 		os.Exit(1)
 	}
+	pgCfg, err = postgres.SizePool(pgCfg, cfg.Allocator.WriteConcurrency, cfg.Postgres.MinConns)
+	if err != nil {
+		logger.Error("invalid postgres pool size", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("postgres pool sized", "max_conns", pgCfg.PoolMaxConns, "min_conns", pgCfg.PoolMinConns)
 	// The driver's own timeout must not cut the longer claim_timeout short.
 	pool, err := connectWithRetry(logger, pgCfg, cfg.Postgres,
 		max(cfg.Store.QueryTimeout.Duration(), cfg.Store.ClaimTimeout.Duration()))
@@ -87,11 +93,11 @@ func main() {
 	var authn auth.Authenticator = auth.None{}
 	switch {
 	case envCfg.AuthEnabled && envCfg.AuthAuditOnly:
-		authn = auth.NewAudit(auth.NewIntegrationUsers(pool, cfg.Store.QueryTimeout.Duration(), authCacheTTL),
+		authn = auth.NewAudit(auth.NewIntegrationUsers(pool, cfg.Postgres.AuthTimeout.Duration(), authCacheTTL),
 			base.With("component", "auth"))
 		logger.Warn("AUTH_AUDIT_ONLY is set: credentials are checked but nothing is rejected")
 	case envCfg.AuthEnabled:
-		authn = auth.NewIntegrationUsers(pool, cfg.Store.QueryTimeout.Duration(), authCacheTTL)
+		authn = auth.NewIntegrationUsers(pool, cfg.Postgres.AuthTimeout.Duration(), authCacheTTL)
 		logger.Info("auth enabled: source webhooks are checked against integration_users")
 	default:
 		logger.Warn("AUTH_ENABLED is not true: source routes are unauthenticated")

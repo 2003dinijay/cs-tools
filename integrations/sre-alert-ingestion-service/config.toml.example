@@ -57,6 +57,10 @@ write_deadline = "8s"
 connect_max_attempts = 5
 connect_base_delay = "2s"
 connect_timeout = "10s"
+# Connections kept open per replica, so a webhook after a quiet spell doesn't wait on a new TLS connection.
+min_conns = 2
+# Budget for one integration_users credential check, including the wait for a pooled connection.
+auth_timeout = "5s"
 
 [wake]
 # Timeout for the fire-and-forget POST /alertz to alerts-core.
