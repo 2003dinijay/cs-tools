@@ -53,6 +53,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { test, expect, withRole } from "../../fixtures/test";
+import { ChangeRequestCreatePage } from "../../pages/ChangeRequestCreatePage";
 import { ChangeRequestDetailPage } from "../../pages/ChangeRequestDetailPage";
 import {
   FAKE_CAB,
@@ -121,7 +122,7 @@ async function resetFixtures(): Promise<void> {
   await execFileAsync("docker", [
     "exec",
     "-i",
-    "csm-platform-postgres-1",
+    process.env.E2E_POSTGRES_CONTAINER ?? "csm-platform-postgres-1",
     "psql",
     "-U",
     "postgres",
@@ -384,5 +385,27 @@ test.describe("change request approval flow — Standard", () => {
     await expect(detail.blockingReason()).toHaveCount(0);
     await expectNoManualSchedule(detail);
     await expect(page.getByRole("button", { name: "Start implementation" })).toBeVisible();
+  });
+});
+
+test.describe("seeded fixtures (local stack) — create with an assignment group", () => {
+  test("a team picked from the Assignment group picker is saved on create (no FK 400)", async ({ page }) => {
+    test.setTimeout(60_000);
+
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectType("Normal");
+    await cr.subjectField().fill(`[E2E] local create with assignment group ${new Date().toISOString()}`);
+
+    const group = page.getByRole("combobox", { name: /^Assignment group/ });
+    await group.fill("Apollo");
+    await page.getByRole("option", { name: /Apollo/ }).first().click();
+
+    const [response] = await Promise.all([
+      page.waitForResponse((r) => r.request().method() === "POST" && /\/change-requests$/.test(r.url())),
+      cr.createButton().click(),
+    ]);
+    expect(response.status(), await response.text()).toBe(201);
+    await expect(page).toHaveURL(/\/operations\/change-requests\/(?!new(?:[/?#]|$))[^/]+$/, { timeout: 15_000 });
   });
 });

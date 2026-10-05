@@ -67,8 +67,8 @@ export class ChangeRequestDetailPage {
    * manual action. Matches a button or a menu entry containing "Schedule". */
   scheduleButton(): Locator {
     return this.page
-      .getByRole("button", { name: /schedule/i })
-      .or(this.page.getByRole("menuitem", { name: /schedule/i }));
+      .getByRole("button", { name: /^schedule$/i })
+      .or(this.page.getByRole("menuitem", { name: /^schedule$/i }));
   }
 
   /** The lifecycle stepper's current step (`aria-current="step"`). */
