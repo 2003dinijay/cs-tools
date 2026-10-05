@@ -836,7 +836,13 @@ func (s *caseService) mirrorInitialSNComments(ctx context.Context, caseID string
 		// run. SearchCaseComments orders by created_on DESC, so stamping
 		// NOW() here instead would misorder mirrored comments relative to
 		// their real ServiceNow chronology (caught in review on PR #2204).
-		if _, err := s.repo.CreateCaseComment(ctx, domain.CreateCaseCommentRequest{
+		//
+		// System identity: ServiceNow's initial comments can include WORK_NOTE
+		// rows, which migration 0191 refuses an external caller both reading
+		// and writing, and the customer who just created this case is the
+		// caller here. The case was created under that caller's identity, so
+		// only this mirror of ServiceNow's own rows is elevated.
+		if _, err := s.repo.CreateCaseComment(repository.WithSystemIdentity(ctx), domain.CreateCaseCommentRequest{
 			CaseID:    caseID,
 			Type:      c.Type,
 			Content:   c.Content,

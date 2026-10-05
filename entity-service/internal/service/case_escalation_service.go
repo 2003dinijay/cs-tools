@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 // caseEscalationSearchPageSize is the page size used internally when reading
@@ -119,7 +120,14 @@ func (s *caseEscalationService) CreateCaseEscalation(ctx context.Context, caseID
 	if action != nil {
 		effectiveAction = domain.EscalationAction(strings.ToUpper(string(*action)))
 	}
-	if _, err := s.caseSvc.CreateCaseComment(ctx, domain.CreateCaseCommentRequest{
+	//
+	// The note runs as the system identity, not the caller's: a WORK_NOTE is an
+	// internal record (migration 0191 refuses an external caller both reading
+	// and writing one), and a customer can escalate their own case. The
+	// escalation above already ran under the caller's identity, so caseID is a
+	// case they are allowed to act on; only this internal bookkeeping row is
+	// elevated.
+	if _, err := s.caseSvc.CreateCaseComment(repository.WithSystemIdentity(ctx), domain.CreateCaseCommentRequest{
 		CaseID:  caseID,
 		Type:    domain.CommentTypeWorkNote,
 		Content: caseEscalationWorkNoteContent(effectiveAction, resp.Escalation),
