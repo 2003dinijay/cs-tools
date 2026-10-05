@@ -276,11 +276,15 @@ run_ladder() {
   [ -n "${ELEVATED}" ] && args+=(-kind elevated)
   [ -n "${L4}" ] && args+=(-sre-l4)
   case "${CHANNEL}" in
-    log)  args+=(-channel log -real-names) ;;
+    log)  args+=(-channel log) ;;
     chat) args+=(-channel chat -chat-webhook-env SRE_CHAT_WEBHOOK_URL) ;;
     call) args+=(-channel call) ;;
     both) args+=(-channel both -chat-webhook-env SRE_CHAT_WEBHOOK_URL) ;;
   esac
+  # Always the real people the Team Schedule resolves, on every channel: these runs test the
+  # live rota, so a card or call must name whoever is really on duty. Without -real-names the
+  # harness shows each person as "L1 support #1" (cmd/escalation-local maskedResolver).
+  args+=(-real-names)
   [ -n "${TO}" ] && args+=(-live -to "${TO}")
 
   # Every variable the harness would otherwise take from a .env is set, even
@@ -571,9 +575,9 @@ when="at ${AT} IST${WEEKEND:+ (next weekend day)}"
 [ -n "${SHIFT}" ] && when="${SHIFT} -- reported $(next_at "${SHIFT}")"
 reach="nobody -- logged only"
 case "${CHANNEL}" in
-  chat) reach="the SRE Google Chat space" ;;
+  chat) reach="the SRE Google Chat space, real names from the Team Schedule" ;;
   call) reach="${TO:+REAL calls to ${TO}}"; reach="${reach:-a local call stub (nothing dialled)}" ;;
-  both) reach="the SRE Google Chat space + ${TO:+REAL calls to ${TO}}"; [ -z "${TO}" ] && reach="${reach}a local call stub" ;;
+  both) reach="the SRE Google Chat space (real names) + ${TO:+REAL calls to ${TO}}"; [ -z "${TO}" ] && reach="${reach}a local call stub" ;;
 esac
 
 rerun="scripts/csm-compose/sre-escalation-ladder.sh -s ${SEV_LABEL}"

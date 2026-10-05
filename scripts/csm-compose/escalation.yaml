@@ -347,6 +347,14 @@ sre:
     # the lead of the SRE team answering the incident -- an assumption.
     includeL4: false
 
+  # The SRE ladder's own Google Chat space, the same mechanism as cre.chat:
+  # webhookUrlEnv is the NAME of the variable holding the webhook URL, never
+  # the URL itself (a credential). Keep it in scripts/csm-compose/.env, which
+  # is git-ignored. Used when channel is chat or both.
+  chat:
+    webhookUrlEnv: SRE_CHAT_WEBHOOK_URL
+    audience: "SRE"
+
   teams:
     # The other ABT, as team.type spells it: sre-abt holds two teams.
     abtType: sre-abt
