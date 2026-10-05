@@ -21,9 +21,11 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -422,7 +424,43 @@ func (s *changeRequestService) GetChangeRequestApprovals(ctx context.Context, id
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.ChangeRequestApprovals{}, err
 	}
-	return s.repo.GetChangeRequestApprovals(ctx, id)
+	return s.repo.GetChangeRequestApprovals(s.withApprovalViewer(ctx), id)
+}
+
+// withApprovalViewer makes sure the caller identity on ctx names the person
+// reading the approvals, so the repository can compute each approver row's
+// CanDecide for them.
+//
+// AccessService.ResolveScope only fills SearchScope.ViewerEmail on some
+// branches (a customer-scoped user, or the CSM portal backend client with a
+// matching-domain user). An internal user resolved from the user token alone
+// (scopeForUser's internal branch), or any caller behind an M2M client id,
+// comes back Unrestricted with an EMPTY ViewerEmail -- and the repository's
+// markCanDecide treats an empty ViewerEmail as "viewer unknown" and leaves
+// every canDecide false, so the portal rendered Approve/Reject disabled for
+// the very approver the row belongs to. DecideChangeRequestApproval
+// identifies its caller from the x-user-id-token (currentUser), so the same
+// source is used here, keeping "may decide" and "decided" consistent.
+//
+// Only fills a missing email and never invents an identity: with none on ctx
+// the repository still fails closed. ViewerEmail on an Unrestricted scope has
+// no effect on row visibility.
+func (s *changeRequestService) withApprovalViewer(ctx context.Context) context.Context {
+	scope, ok := repository.CallerIdentityFromContext(ctx)
+	if !ok || strings.TrimSpace(scope.ViewerEmail) != "" {
+		return ctx
+	}
+	email := auth.IdentityFromContext(ctx).UserEmail
+	if email == "" {
+		if token := middleware.UserIDTokenFromContext(ctx); token != "" {
+			email, _ = emailFromJWT(token)
+		}
+	}
+	if strings.TrimSpace(email) == "" {
+		return ctx
+	}
+	scope.ViewerEmail = email
+	return repository.WithCallerIdentity(ctx, scope)
 }
 
 // DecideChangeRequestApproval implements ChangeRequestService.

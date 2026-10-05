@@ -25,7 +25,9 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 // stubChangeRequestRepo is a minimal repository.ChangeRequestRepository
@@ -773,6 +775,78 @@ func TestChangeRequestService_CreateChangeRequest_PassesCustomerGateFlags(t *tes
 		}
 		if got.CustomerApprovalRequired == nil || !*got.CustomerApprovalRequired || got.CustomerReviewRequired == nil || *got.CustomerReviewRequired {
 			t.Fatalf("repository saw %v/%v, want true/false", got.CustomerApprovalRequired, got.CustomerReviewRequired)
+		}
+	})
+}
+
+// TestChangeRequestService_GetChangeRequestApprovals_StampsViewerEmail is the
+// regression guard for "Approve/Reject disabled for the approver themselves":
+// an internal user resolved from the user token alone comes back from
+// AccessService.ResolveScope Unrestricted with an EMPTY ViewerEmail, and the
+// repository's markCanDecide leaves every canDecide false without one. The
+// service must therefore hand the repo an identity naming the caller (taken
+// from the same x-user-id-token DecideChangeRequestApproval uses). The scope
+// here is produced by the REAL AccessService, exactly as
+// callerIdentityMiddleware stamps it on the HTTP path.
+func TestChangeRequestService_GetChangeRequestApprovals_StampsViewerEmail(t *testing.T) {
+	const email = "jane.doe@example.com"
+
+	var seen repository.SearchScope
+	var seenOK bool
+	repo := &stubChangeRequestRepo{
+		getChangeRequestApprovals: func(ctx context.Context, _ string) (domain.ChangeRequestApprovals, error) {
+			seen, seenOK = repository.CallerIdentityFromContext(ctx)
+			return domain.ChangeRequestApprovals{}, nil
+		},
+	}
+	svc := NewChangeRequestService(repo, stubUserRepo{})
+
+	// The HTTP path: auth.Middleware validates the token, the identity
+	// middleware resolves + stamps the scope, the handler calls the service.
+	httpCtx := func(t *testing.T, access AccessService) context.Context {
+		t.Helper()
+		ctx := auth.WithIdentity(contextWithUserIDToken(fakeJWTWithEmail(t, email)), auth.Identity{Validated: true, UserEmail: email})
+		scope, err := access.ResolveScope(ctx)
+		if err != nil {
+			t.Fatalf("ResolveScope: %v", err)
+		}
+		return repository.WithCallerIdentity(ctx, scope)
+	}
+
+	t.Run("internal user resolved from the user token (no CSM-portal client config)", func(t *testing.T) {
+		access := NewAccessService(&fakeAccessRepo{users: []repository.AccessUser{userOf("INTERNAL", true)}}, AccessClientConfig{})
+		ctx := httpCtx(t, access)
+		if pre, _ := repository.CallerIdentityFromContext(ctx); pre.ViewerEmail != "" {
+			t.Fatalf("precondition: ResolveScope now sets ViewerEmail (%q); this regression test needs revisiting", pre.ViewerEmail)
+		}
+		seen, seenOK = repository.SearchScope{}, false
+		if _, err := svc.GetChangeRequestApprovals(ctx, testUUID); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !seenOK || seen.ViewerEmail != email || !seen.Unrestricted {
+			t.Errorf("repo saw identity %+v (present=%v), want Unrestricted with ViewerEmail %q", seen, seenOK, email)
+		}
+	})
+
+	t.Run("an identity that already names the viewer is left alone", func(t *testing.T) {
+		ctx := repository.WithCallerIdentity(contextWithUserIDToken(fakeJWTWithEmail(t, "someone.else@example.com")),
+			repository.SearchScope{Unrestricted: true, ViewerEmail: email})
+		seen, seenOK = repository.SearchScope{}, false
+		if _, err := svc.GetChangeRequestApprovals(ctx, testUUID); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if seen.ViewerEmail != email {
+			t.Errorf("ViewerEmail = %q, want it kept as %q", seen.ViewerEmail, email)
+		}
+	})
+
+	t.Run("no caller identity on ctx stays absent (fails closed, nothing invented)", func(t *testing.T) {
+		seen, seenOK = repository.SearchScope{}, true
+		if _, err := svc.GetChangeRequestApprovals(contextWithUserIDToken(fakeJWTWithEmail(t, email)), testUUID); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if seenOK {
+			t.Errorf("repo saw an identity %+v, want none", seen)
 		}
 	})
 }
