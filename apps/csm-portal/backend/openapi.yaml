@@ -5537,6 +5537,21 @@ paths:
                 type:
                   type: string
                   enum: [standard, normal, emergency]
+                customerApprovalRequired:
+                  type: boolean
+                  description: >-
+                    The "Customer Approval" checkbox: the change needs the
+                    customer's approval before it is scheduled. CAB / ECAB
+                    approval (or Request Approval on a Standard change) then
+                    moves it to `customer_approval` instead of `scheduled`.
+                    Defaults to false. A non-boolean value is a 400.
+                customerReviewRequired:
+                  type: boolean
+                  description: >-
+                    The "Customer Review" checkbox: the change needs the
+                    customer's review before it is closed. Review then offers
+                    `customer_review` instead of `closed`. Defaults to false. A
+                    non-boolean value is a 400.
       responses:
         "201":
           description: Change request created.
@@ -12608,6 +12623,21 @@ components:
           type: string
         testPlan:
           type: string
+        customerApprovalRequired:
+          type: boolean
+          description: >-
+            The "Customer Approval" checkbox. Editable only until the approval
+            gate has been passed (state new, assess or authorize); changing it
+            afterwards is a 400 ("customerApprovalRequired can no longer be
+            changed ..."). Resending the stored value is always accepted. A
+            non-boolean value is a 400.
+        customerReviewRequired:
+          type: boolean
+          description: >-
+            The "Customer Review" checkbox. Editable until the change leaves
+            review (any state up to and including review); changing it from
+            customer_review onwards is a 400 ("customerReviewRequired can no
+            longer be changed ..."). A non-boolean value is a 400.
         isCustomerApproved:
           type: boolean
           description: >-
@@ -17459,8 +17489,24 @@ components:
               nullable: true
             hasCustomerApproved:
               type: boolean
+              description: >-
+                The customer's OUTCOME (their approval has been recorded), not
+                the creation checkbox -- see customerApprovalRequired.
             hasCustomerReviewed:
               type: boolean
+              description: >-
+                The customer's OUTCOME (their review has been recorded), not
+                the creation checkbox -- see customerReviewRequired.
+            customerApprovalRequired:
+              type: boolean
+              description: >-
+                The "Customer Approval" checkbox: the change needs the
+                customer's approval before it is scheduled.
+            customerReviewRequired:
+              type: boolean
+              description: >-
+                The "Customer Review" checkbox: the change needs the
+                customer's review before it is closed.
             approvedBy:
               $ref: '#/components/schemas/EntityRef'
               nullable: true
@@ -17472,10 +17518,18 @@ components:
               items:
                 type: string
               description: >-
-                Next states a human may move the change request to. "assess" out
-                of New is the "Request Approval" action for every type (the
-                state it lands in depends on the type). "scheduled" is never
-                offered: CAB/ECAB approval schedules a change automatically.
+                Next states a human may move the change request to, per state.
+                new: [assess, canceled] ("assess" is the "Request Approval"
+                action for every type; the state it lands in depends on the
+                type and on customerApprovalRequired). assess: [authorize,
+                canceled]. authorize: [canceled] (CAB/ECAB approval moves the
+                change on by itself: to scheduled, or to customer_approval when
+                customerApprovalRequired). customer_approval: [scheduled,
+                canceled] -- "scheduled" here means "record the customer's
+                approval" and is the only state it is offered from. scheduled:
+                [implement, canceled]. implement: [review, canceled]. review:
+                [customer_review, canceled] when customerReviewRequired, else
+                [closed, canceled]. customer_review: [closed, canceled].
 
     TaskSummary:
       type: object

@@ -632,3 +632,147 @@ func TestChangeRequestService_PatchChangeRequest_AcceptsFieldParityFieldsAlone(t
 		t.Fatalf("comment: expected ValidationError, got %T: %v", err, err)
 	}
 }
+
+// TestChangeRequestService_PatchChangeRequest_CustomerGateFlagsAlone: the
+// creation form's two checkboxes (customerApprovalRequired /
+// customerReviewRequired) are a patch on their own -- not rejected as "at least
+// one field must be provided" -- and reach the repository unchanged.
+func TestChangeRequestService_PatchChangeRequest_CustomerGateFlagsAlone(t *testing.T) {
+	yes, no := true, false
+	for name, req := range map[string]domain.PatchChangeRequestRequest{
+		"customerApprovalRequired": {CustomerApprovalRequired: &yes},
+		"customerReviewRequired":   {CustomerReviewRequired: &no},
+		"both":                     {CustomerApprovalRequired: &no, CustomerReviewRequired: &yes},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got domain.PatchChangeRequestRequest
+			repo := &stubChangeRequestRepo{
+				patchChangeRequest: func(_ context.Context, id string, r domain.PatchChangeRequestRequest, _ string) (domain.ChangeRequest, error) {
+					got = r
+					return domain.ChangeRequest{SearchChangeRequestView: domain.SearchChangeRequestView{ID: id}}, nil
+				},
+			}
+			svc := NewChangeRequestService(repo, stubUserRepo{})
+			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+			if _, err := svc.PatchChangeRequest(ctx, testUUID, req); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.CustomerApprovalRequired != req.CustomerApprovalRequired || got.CustomerReviewRequired != req.CustomerReviewRequired {
+				t.Fatalf("repository saw %+v/%+v, want the request's own flags", got.CustomerApprovalRequired, got.CustomerReviewRequired)
+			}
+		})
+	}
+}
+
+// TestChangeRequestService_PatchChangeRequest_CustomerGateFlagsStayOutOfTheMirror:
+// ServiceNow's change request API has no field the service can name for the
+// two checkboxes, so they are stripped from the dual-write mirror; a PATCH that
+// carried nothing else is not mirrored at all (an empty ServiceNow PATCH would
+// only record a writeback failure).
+func TestChangeRequestService_PatchChangeRequest_CustomerGateFlagsStayOutOfTheMirror(t *testing.T) {
+	yes := true
+	title := "new title"
+	repo := &stubChangeRequestRepo{
+		patchChangeRequest: func(_ context.Context, id string, _ domain.PatchChangeRequestRequest, _ string) (domain.ChangeRequest, error) {
+			return domain.ChangeRequest{SearchChangeRequestView: domain.SearchChangeRequestView{ID: id}}, nil
+		},
+	}
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	t.Run("mixed with other fields: flags stripped, rest mirrored", func(t *testing.T) {
+		called := make(chan domain.PatchChangeRequestRequest, 1)
+		mirror := &stubMirrorChangeRequestService{
+			patchChangeRequest: func(_ context.Context, _ string, r domain.PatchChangeRequestRequest) (domain.PatchChangeRequestResponse, error) {
+				called <- r
+				return domain.PatchChangeRequestResponse{}, nil
+			},
+		}
+		svc := NewChangeRequestServiceWithSNWriteback(repo, stubUserRepo{}, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+		if _, err := svc.PatchChangeRequest(ctx, testUUID, domain.PatchChangeRequestRequest{Title: &title, CustomerApprovalRequired: &yes, CustomerReviewRequired: &yes}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		select {
+		case got := <-called:
+			if got.Title == nil || *got.Title != title {
+				t.Errorf("mirror title = %v, want %q", got.Title, title)
+			}
+			if got.CustomerApprovalRequired != nil || got.CustomerReviewRequired != nil {
+				t.Errorf("mirror saw the Postgres-only flags: %v/%v", got.CustomerApprovalRequired, got.CustomerReviewRequired)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("mirror.PatchChangeRequest was never called")
+		}
+	})
+
+	t.Run("flags alone: nothing to mirror", func(t *testing.T) {
+		mirror := &stubMirrorChangeRequestService{
+			patchChangeRequest: func(context.Context, string, domain.PatchChangeRequestRequest) (domain.PatchChangeRequestResponse, error) {
+				t.Error("mirror was called for a PATCH that only carried the Postgres-only flags")
+				return domain.PatchChangeRequestResponse{}, nil
+			},
+		}
+		failures := &recordingSNWritebackFailures{}
+		svc := NewChangeRequestServiceWithSNWriteback(repo, stubUserRepo{}, mirror, NewSNWritebackDispatcher(failures))
+		if _, err := svc.PatchChangeRequest(ctx, testUUID, domain.PatchChangeRequestRequest{CustomerApprovalRequired: &yes}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		time.Sleep(150 * time.Millisecond) // the dispatch is asynchronous; give a wrongly-fired one time to show
+		if got := failures.count(); got != 0 {
+			t.Errorf("writeback failures = %d, want 0", got)
+		}
+	})
+}
+
+// TestChangeRequestService_CreateChangeRequest_PassesCustomerGateFlags: both
+// Postgres create paths (plain and ServiceNow-first) hand the checkboxes to the
+// repository untouched.
+func TestChangeRequestService_CreateChangeRequest_PassesCustomerGateFlags(t *testing.T) {
+	yes, no := true, false
+	want := validCreateChangeRequestRequest()
+	want.CustomerApprovalRequired, want.CustomerReviewRequired = &yes, &no
+	ok := func() domain.CreateChangeRequestResponse {
+		resp := domain.CreateChangeRequestResponse{Message: "ok"}
+		resp.ChangeRequest.ID = testUUID
+		return resp
+	}
+
+	t.Run("plain", func(t *testing.T) {
+		var got domain.CreateChangeRequestRequest
+		repo := &stubChangeRequestRepo{
+			createChangeRequest: func(_ context.Context, r domain.CreateChangeRequestRequest, _ string) (domain.CreateChangeRequestResponse, error) {
+				got = r
+				return ok(), nil
+			},
+		}
+		svc := NewChangeRequestService(repo, stubUserRepo{})
+		ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+		if _, err := svc.CreateChangeRequest(ctx, want); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.CustomerApprovalRequired == nil || !*got.CustomerApprovalRequired || got.CustomerReviewRequired == nil || *got.CustomerReviewRequired {
+			t.Fatalf("repository saw %v/%v, want true/false", got.CustomerApprovalRequired, got.CustomerReviewRequired)
+		}
+	})
+
+	t.Run("servicenow-first", func(t *testing.T) {
+		var got domain.CreateChangeRequestRequest
+		mirror := &stubMirrorChangeRequestService{
+			createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
+				return ok(), nil
+			},
+		}
+		repo := &stubChangeRequestRepo{
+			createChangeRequestFromServiceNow: func(_ context.Context, r domain.CreateChangeRequestRequest, _, _, _ string) (domain.CreateChangeRequestResponse, error) {
+				got = r
+				return ok(), nil
+			},
+		}
+		svc := NewChangeRequestServiceWithSNMirror(repo, stubUserRepo{}, mirror)
+		if _, err := svc.CreateChangeRequest(context.Background(), want); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.CustomerApprovalRequired == nil || !*got.CustomerApprovalRequired || got.CustomerReviewRequired == nil || *got.CustomerReviewRequired {
+			t.Fatalf("repository saw %v/%v, want true/false", got.CustomerApprovalRequired, got.CustomerReviewRequired)
+		}
+	})
+}

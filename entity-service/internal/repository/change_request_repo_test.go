@@ -18,6 +18,7 @@ package repository
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +125,7 @@ type fakeChangeRequestDetailRow struct {
 	confirmCustomerUpdatedDate                                         *string
 	customerUpdatedOn, workStart, workEnd                              *time.Time
 	gitReference                                                       *string
+	customerApprovalRequired, customerReviewRequired                   bool
 }
 
 func (f fakeChangeRequestDetailRow) Scan(dest ...any) error {
@@ -150,6 +152,7 @@ func (f fakeChangeRequestDetailRow) Scan(dest ...any) error {
 		f.changeRequestType, f.likelihood, f.isPlanningVisibleToCustomers,
 		f.confirmCustomerUpdatedDate, f.customerUpdatedOn,
 		f.workStart, f.workEnd, f.gitReference,
+		f.customerApprovalRequired, f.customerReviewRequired,
 	}
 	if len(dest) != len(vals) {
 		panic("fakeChangeRequestDetailRow: dest/vals length mismatch -- update this fake to match scanChangeRequestViewAndDetail's Scan call")
@@ -166,6 +169,8 @@ func (f fakeChangeRequestDetailRow) Scan(dest ...any) error {
 			*d = v.(*time.Time)
 		case **bool:
 			*d = v.(*bool)
+		case *bool:
+			*d = v.(bool)
 		default:
 			panic("fakeChangeRequestDetailRow: unhandled dest type at index")
 		}
@@ -274,6 +279,37 @@ func TestScanChangeRequestViewAndDetail_FieldParityAdditions(t *testing.T) {
 		if cr.ImplementationPlan != nil || cr.Priority != nil || cr.GitReference != nil {
 			t.Errorf("expected NULL field-parity columns to stay nil, got ImplementationPlan=%v Priority=%v GitReference=%v",
 				cr.ImplementationPlan, cr.Priority, cr.GitReference)
+		}
+	})
+
+	// The creation form's two checkboxes are read back as plain booleans and
+	// drive LegalNextStates (Review offers customer_review instead of closed).
+	t.Run("customer gate flags are read back and drive legalNextStates", func(t *testing.T) {
+		for _, tc := range []struct {
+			approval, review bool
+			wantLegal        []string
+		}{
+			{false, false, []string{"closed", "canceled"}},
+			{true, false, []string{"closed", "canceled"}},
+			{false, true, []string{"customer_review", "canceled"}},
+			{true, true, []string{"customer_review", "canceled"}},
+		} {
+			row := fakeChangeRequestDetailRow{
+				id: "CR-3", number: "CHG0003", subject: strPtrCR("s"), description: strPtrCR("d"),
+				createdOn: now, updatedOn: now, createdBy: "actor@wso2.com", state: strPtrCR("REVIEW"),
+				customerApprovalRequired: tc.approval, customerReviewRequired: tc.review,
+			}
+			var cr domain.ChangeRequest
+			if err := scanChangeRequestViewAndDetail(row, &cr); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cr.CustomerApprovalRequired != tc.approval || cr.CustomerReviewRequired != tc.review {
+				t.Errorf("CustomerApprovalRequired/CustomerReviewRequired = %v/%v, want %v/%v",
+					cr.CustomerApprovalRequired, cr.CustomerReviewRequired, tc.approval, tc.review)
+			}
+			if strings.Join(cr.LegalNextStates, ",") != strings.Join(tc.wantLegal, ",") {
+				t.Errorf("review (approval=%v, review=%v) LegalNextStates = %v, want %v", tc.approval, tc.review, cr.LegalNextStates, tc.wantLegal)
+			}
 		}
 	})
 }
@@ -447,51 +483,79 @@ func TestBuildChangeRequestApprovals_NoStages(t *testing.T) {
 	}
 }
 
-// TestLegalChangeRequestNextStates pins the empirically-derived forward
-// graph (see legalChangeRequestNextStates's own doc comment for how each
-// edge was confirmed against a live ServiceNow instance) -- a change to
-// this table changes what a caller is allowed to promote a change request
-// to, so a regression here would silently offer or withhold a real action.
+// TestLegalChangeRequestNextStates pins the forward graph (see
+// changeRequestForwardNextStates's own doc comment for how each edge was
+// derived) -- a change to this table changes what a caller is allowed to
+// promote a change request to, so a regression here would silently offer or
+// withhold a real action. The second column is customer_review_required:
+// only Review's offer depends on it.
 func TestLegalChangeRequestNextStates(t *testing.T) {
 	strPtr := func(s string) *string { return &s }
 
 	tests := []struct {
-		state string
-		want  []string
+		state          string
+		reviewRequired bool
+		want           []string
 	}{
-		{string(domain.ChangeRequestStateNew), []string{"assess", "canceled"}},
-		{string(domain.ChangeRequestStateAssess), []string{"authorize", "canceled"}},
+		{string(domain.ChangeRequestStateNew), false, []string{"assess", "canceled"}},
+		{string(domain.ChangeRequestStateNew), true, []string{"assess", "canceled"}},
+		{string(domain.ChangeRequestStateAssess), false, []string{"authorize", "canceled"}},
 		// Authorize is an approval wait (CAB/ECAB): it offers no forward move
-		// at all, only Cancel. "scheduled" is never offered -- CAB/ECAB
-		// approval schedules the change automatically, there is no Schedule
-		// action.
-		{string(domain.ChangeRequestStateAuthorize), []string{"canceled"}},
-		{string(domain.ChangeRequestStateCustomerApproval), []string{"canceled"}},
-		{string(domain.ChangeRequestStateScheduled), []string{"implement", "canceled"}},
-		{string(domain.ChangeRequestStateImplement), []string{"review", "canceled"}},
-		{string(domain.ChangeRequestStateReview), []string{"closed", "customer_review", "canceled"}},
-		{string(domain.ChangeRequestStateCustomerReview), []string{"closed", "canceled"}},
+		// at all, only Cancel -- CAB/ECAB approval moves the change on by
+		// itself (to Scheduled, or Customer Approval when the customer's
+		// approval is required).
+		{string(domain.ChangeRequestStateAuthorize), false, []string{"canceled"}},
+		// Customer Approval: "scheduled" records the customer's approval; Cancel
+		// is the customer declining. It is the ONE state that offers scheduled.
+		{string(domain.ChangeRequestStateCustomerApproval), false, []string{"scheduled", "canceled"}},
+		{string(domain.ChangeRequestStateCustomerApproval), true, []string{"scheduled", "canceled"}},
+		{string(domain.ChangeRequestStateScheduled), false, []string{"implement", "canceled"}},
+		{string(domain.ChangeRequestStateImplement), false, []string{"review", "canceled"}},
+		// Review: Closed directly unless the customer's review is required, in
+		// which case Customer Review is the only forward move (then Closed).
+		{string(domain.ChangeRequestStateReview), false, []string{"closed", "canceled"}},
+		{string(domain.ChangeRequestStateReview), true, []string{"customer_review", "canceled"}},
+		{string(domain.ChangeRequestStateCustomerReview), false, []string{"closed", "canceled"}},
+		{string(domain.ChangeRequestStateCustomerReview), true, []string{"closed", "canceled"}},
 	}
 	for _, tc := range tests {
-		t.Run(tc.state, func(t *testing.T) {
-			got := legalChangeRequestNextStates(strPtr(tc.state))
+		t.Run(fmt.Sprintf("%s/reviewRequired=%v", tc.state, tc.reviewRequired), func(t *testing.T) {
+			got := legalChangeRequestNextStates(strPtr(tc.state), tc.reviewRequired)
 			if len(got) != len(tc.want) {
-				t.Fatalf("legalChangeRequestNextStates(%q) = %v, want %v", tc.state, got, tc.want)
+				t.Fatalf("legalChangeRequestNextStates(%q, %v) = %v, want %v", tc.state, tc.reviewRequired, got, tc.want)
 			}
 			for i, want := range tc.want {
 				if got[i] != want {
-					t.Errorf("legalChangeRequestNextStates(%q)[%d] = %q, want %q", tc.state, i, got[i], want)
+					t.Errorf("legalChangeRequestNextStates(%q, %v)[%d] = %q, want %q", tc.state, tc.reviewRequired, i, got[i], want)
 				}
 			}
 		})
 	}
 
-	t.Run("scheduled is never offered as a manual action from any state", func(t *testing.T) {
+	t.Run("scheduled is offered from customer_approval only", func(t *testing.T) {
+		for st := range changeRequestForwardNextStates {
+			for _, review := range []bool{false, true} {
+				s := string(st)
+				for _, next := range legalChangeRequestNextStates(&s, review) {
+					if next == string(domain.ChangeRequestStateScheduled) && st != domain.ChangeRequestStateCustomerApproval {
+						t.Errorf("legalChangeRequestNextStates(%q) offers %q; Scheduled is reached automatically except by recording the customer's approval", s, next)
+					}
+				}
+			}
+		}
+	})
+
+	t.Run("customer_review is offered from review only when required", func(t *testing.T) {
 		for st := range changeRequestForwardNextStates {
 			s := string(st)
-			for _, next := range legalChangeRequestNextStates(&s) {
-				if next == string(domain.ChangeRequestStateScheduled) {
-					t.Errorf("legalChangeRequestNextStates(%q) offers %q; Scheduled must only be reached automatically", s, next)
+			for _, next := range legalChangeRequestNextStates(&s, false) {
+				if next == string(domain.ChangeRequestStateCustomerReview) {
+					t.Errorf("legalChangeRequestNextStates(%q, false) offers customer_review although it is not required", s)
+				}
+			}
+			for _, next := range legalChangeRequestNextStates(&s, true) {
+				if next == string(domain.ChangeRequestStateClosed) && st == domain.ChangeRequestStateReview {
+					t.Errorf("legalChangeRequestNextStates(review, true) offers closed although customer review is required")
 				}
 			}
 		}
@@ -504,22 +568,95 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 			domain.ChangeRequestStateCanceled,
 		} {
 			s := string(terminal)
-			if got := legalChangeRequestNextStates(&s); got != nil {
-				t.Errorf("legalChangeRequestNextStates(%q) = %v, want nil (terminal)", s, got)
+			for _, review := range []bool{false, true} {
+				if got := legalChangeRequestNextStates(&s, review); got != nil {
+					t.Errorf("legalChangeRequestNextStates(%q, %v) = %v, want nil (terminal)", s, review, got)
+				}
 			}
 		}
 	})
 
 	t.Run("nil state is nil", func(t *testing.T) {
-		if got := legalChangeRequestNextStates(nil); got != nil {
+		if got := legalChangeRequestNextStates(nil, true); got != nil {
 			t.Errorf("legalChangeRequestNextStates(nil) = %v, want nil", got)
 		}
 	})
 
 	t.Run("unrecognized state is nil, not a guess", func(t *testing.T) {
 		s := "some_future_state_this_repo_does_not_know_about"
-		if got := legalChangeRequestNextStates(&s); got != nil {
+		if got := legalChangeRequestNextStates(&s, true); got != nil {
 			t.Errorf("legalChangeRequestNextStates(%q) = %v, want nil", s, got)
+		}
+	})
+}
+
+// TestCustomerGateHelpers pins the pure gate rules: where Request Approval and
+// CAB/ECAB approval land, and until which state each checkbox stays editable.
+func TestCustomerGateHelpers(t *testing.T) {
+	t.Run("Request Approval destination", func(t *testing.T) {
+		for _, tc := range []struct {
+			model    string
+			required bool
+			want     domain.ChangeRequestState
+		}{
+			{"NORMAL", false, domain.ChangeRequestStateAssess},
+			{"NORMAL", true, domain.ChangeRequestStateAssess}, // the gate comes after CAB
+			{"EMERGENCY", false, domain.ChangeRequestStateAuthorize},
+			{"EMERGENCY", true, domain.ChangeRequestStateAuthorize}, // the gate comes after ECAB
+			{"STANDARD", false, domain.ChangeRequestStateScheduled},
+			{"STANDARD", true, domain.ChangeRequestStateCustomerApproval}, // no approval to wait for: gate right away
+			{"", true, domain.ChangeRequestStateAssess},                   // legacy/unknown follows Normal
+		} {
+			if got := requestApprovalDestination(changeRequestFlowForModel(tc.model), tc.required); got != tc.want {
+				t.Errorf("requestApprovalDestination(%q, %v) = %q, want %q", tc.model, tc.required, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("CAB/ECAB approval target", func(t *testing.T) {
+		if got := approvalGateTarget(false); got != "SCHEDULED" {
+			t.Errorf("approvalGateTarget(false) = %q, want SCHEDULED", got)
+		}
+		if got := approvalGateTarget(true); got != "CUSTOMER_APPROVAL" {
+			t.Errorf("approvalGateTarget(true) = %q, want CUSTOMER_APPROVAL", got)
+		}
+	})
+
+	t.Run("customerApprovalRequired is editable until the approval gate is passed", func(t *testing.T) {
+		for state, want := range map[string]bool{
+			"": true, "NEW": true, "ASSESS": true, "AUTHORIZE": true,
+			"CUSTOMER_APPROVAL": false, "SCHEDULED": false, "IMPLEMENT": false, "REVIEW": false,
+			"CUSTOMER_REVIEW": false, "ROLLBACK": false, "CLOSED": false, "CANCELED": false,
+		} {
+			if got := approvalRequirementEditable(state); got != want {
+				t.Errorf("approvalRequirementEditable(%q) = %v, want %v", state, got, want)
+			}
+		}
+	})
+
+	t.Run("customerReviewRequired is editable until the change leaves review", func(t *testing.T) {
+		for state, want := range map[string]bool{
+			"": true, "NEW": true, "ASSESS": true, "AUTHORIZE": true, "CUSTOMER_APPROVAL": true,
+			"SCHEDULED": true, "IMPLEMENT": true, "REVIEW": true,
+			"CUSTOMER_REVIEW": false, "ROLLBACK": false, "CLOSED": false, "CANCELED": false,
+		} {
+			if got := reviewRequirementEditable(state); got != want {
+				t.Errorf("reviewRequirementEditable(%q) = %v, want %v", state, got, want)
+			}
+		}
+	})
+
+	t.Run("an unchanged value is never refused", func(t *testing.T) {
+		yes, no := true, false
+		snap := changeRequestGateSnapshot{state: "CLOSED", approvalRequired: true, reviewRequired: false}
+		if err := validateCustomerGateEdits(snap, &yes, &no); err != nil {
+			t.Errorf("resending the stored values after the gates = %v, want nil", err)
+		}
+		if err := validateCustomerGateEdits(snap, &no, nil); err == nil {
+			t.Error("flipping customerApprovalRequired after the gate = nil, want a ValidationError")
+		}
+		if err := validateCustomerGateEdits(snap, nil, &yes); err == nil {
+			t.Error("flipping customerReviewRequired after the gate = nil, want a ValidationError")
 		}
 	})
 }

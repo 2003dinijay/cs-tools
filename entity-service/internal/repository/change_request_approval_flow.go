@@ -53,6 +53,21 @@ import (
 //
 // A change request whose type is NULL or not one of the three (a legacy or
 // ServiceNow-synced row: azure, infra, ...) follows the Normal flow.
+//
+// The creation form's two checkboxes add an optional customer step on each
+// side of the implementation (change_request.customer_approval_required /
+// customer_review_required, migration 0189):
+//
+//	approval gate: wherever the flow above would move the change to Scheduled
+//	    (CAB / ECAB approval, or Request Approval on a Standard change -- an
+//	    assumption, Standard has no internal approvals to put the gate after) it
+//	    moves it to Customer Approval instead when customer_approval_required.
+//	    A human then records the customer's approval ({state: "scheduled"},
+//	    legal ONLY from Customer Approval), which stamps is_customer_approved
+//	    and schedules the change.
+//	review gate: Review -> Customer Review -> Closed when
+//	    customer_review_required, Review -> Closed otherwise. Closing from
+//	    Customer Review records the customer's review (is_customer_reviewed).
 
 // Stage labels written to approval_stage.checkpoint_label by this file's
 // provisioning. LegacyAssessLabel/LegacyAuthorizeLabel are what stages created
@@ -451,6 +466,106 @@ func approverDecisionBlock(ctx context.Context, q crQuerier, userID string, crea
 		if sre[strings.ToLower(userID)] {
 			return &apierror.ForbiddenError{Msg: "members of an SRE team cannot give peer approval; only experienced engineers outside the SRE teams may"}
 		}
+	}
+	return nil
+}
+
+// changeRequestGateSnapshot is what the customer gates and the approval
+// routing need to know about a change request, read once under a row lock.
+type changeRequestGateSnapshot struct {
+	// state is the upper-case change_request_state_enum label, "" when NULL.
+	state string
+	// model is the upper-case change_model label, "" when NULL.
+	model            string
+	approvalRequired bool
+	reviewRequired   bool
+}
+
+// lockChangeRequestGateSnapshot reads (and locks, FOR UPDATE) the fields the
+// customer gates depend on. Locking keeps a concurrent approval decision
+// (which takes the same lock) from moving the change past a gate between this
+// read and the write that depends on it.
+func lockChangeRequestGateSnapshot(ctx context.Context, tx pgx.Tx, id string) (changeRequestGateSnapshot, error) {
+	var state, model *string
+	var snap changeRequestGateSnapshot
+	err := tx.QueryRow(ctx,
+		`SELECT state::text, change_model::text, customer_approval_required, customer_review_required
+		 FROM change_request WHERE id = $1 FOR UPDATE`, id,
+	).Scan(&state, &model, &snap.approvalRequired, &snap.reviewRequired)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return snap, &apierror.NotFoundError{Msg: "change request not found"}
+	}
+	if err != nil {
+		return snap, fmt.Errorf("patch change request: read approval gates: %w", err)
+	}
+	snap.state = strings.ToUpper(stringOrEmpty(state))
+	snap.model = strings.ToUpper(stringOrEmpty(model))
+	return snap, nil
+}
+
+// requestApprovalDestination is the state Request Approval writes: the flow's
+// own (Assess / Authorize / Scheduled), except that a flow with no internal
+// approval to wait for (Standard) goes to Customer Approval instead of
+// Scheduled when the customer's approval is required. Normal and Emergency
+// reach the customer gate later, when CAB / ECAB approves
+// (approvalGateTarget).
+func requestApprovalDestination(flow changeRequestFlow, customerApprovalRequired bool) domain.ChangeRequestState {
+	if flow.checkpoint == nil && flow.requestState == domain.ChangeRequestStateScheduled && customerApprovalRequired {
+		return domain.ChangeRequestStateCustomerApproval
+	}
+	return flow.requestState
+}
+
+// approvalGateTarget is the upper-case state a CAB / ECAB approval moves the
+// change to: Customer Approval when the customer's approval is required,
+// Scheduled otherwise.
+func approvalGateTarget(customerApprovalRequired bool) string {
+	if customerApprovalRequired {
+		return "CUSTOMER_APPROVAL"
+	}
+	return "SCHEDULED"
+}
+
+// approvalRequirementEditable reports whether customer_approval_required may
+// still be changed in the given (upper-case) state: until the approval gate it
+// controls has been passed, i.e. while the change is New, Assess or Authorize
+// (a NULL state is a pre-lifecycle legacy row and counts as New).
+func approvalRequirementEditable(state string) bool {
+	switch state {
+	case "", "NEW", "ASSESS", "AUTHORIZE":
+		return true
+	}
+	return false
+}
+
+// reviewRequirementEditable reports whether customer_review_required may still
+// be changed in the given (upper-case) state: until the change leaves Review,
+// the step whose next move it decides. Customer Review and every terminal
+// state are past it.
+func reviewRequirementEditable(state string) bool {
+	switch state {
+	case "CUSTOMER_REVIEW", "ROLLBACK", "CLOSED", "CANCELED":
+		return false
+	}
+	return true
+}
+
+// validateCustomerGateEdits refuses an edit of customer_approval_required /
+// customer_review_required once the gate it controls has been passed. A write
+// of the value already stored is a no-op and is always accepted, so a client
+// that resends the whole form is not punished for fields it did not touch.
+func validateCustomerGateEdits(snap changeRequestGateSnapshot, approvalRequired, reviewRequired *bool) error {
+	state := strings.ToLower(snap.state)
+	if state == "" {
+		state = "new"
+	}
+	if approvalRequired != nil && *approvalRequired != snap.approvalRequired && !approvalRequirementEditable(snap.state) {
+		return &apierror.ValidationError{Msg: fmt.Sprintf(
+			"customerApprovalRequired can no longer be changed: the change request has already passed the approval stage (current state: %s)", state)}
+	}
+	if reviewRequired != nil && *reviewRequired != snap.reviewRequired && !reviewRequirementEditable(snap.state) {
+		return &apierror.ValidationError{Msg: fmt.Sprintf(
+			"customerReviewRequired can no longer be changed: the change request has already left the review stage (current state: %s)", state)}
 	}
 	return nil
 }

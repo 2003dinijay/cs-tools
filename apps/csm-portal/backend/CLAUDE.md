@@ -268,6 +268,24 @@ This is the server-side half of a two-part fix — `apps/csm-portal/webapp`'s ow
 mitigation (added first, still in place) only ever hid the image *after* the bytes had already
 reached the browser; this is what stops them being sent at all to a caller who shouldn't see them.
 
+## Change request create/patch validation (`internal/handler/change_requests.go`)
+
+`POST /change-requests` and `PATCH /change-requests/{id}` forward their JSON body
+to the entity service as-is (no field allow-list), with two checks on top:
+
+* `POST` requires `type` of `standard`, `normal` or `emergency` (`validateChangeRequestCreateType`).
+* Both accept the creation form's two checkboxes, **`customerApprovalRequired`**
+  and **`customerReviewRequired`**, and refuse (400, "… must be a boolean (true
+  or false)") any value that is not a JSON boolean, `null` included
+  (`validateChangeRequestCustomerGateFlags`). Which transitions they enable, and
+  until when they are editable, is the entity service's call — see its CLAUDE.md,
+  "Customer Approval / Customer Review checkboxes". `PATCH` is the one write path
+  that echoes the entity service's 400 message (`mapUpstreamError`), so its
+  refusals ("customerApprovalRequired can no longer be changed …", "customer
+  review is required …") reach the form verbatim; `POST` errors are generic.
+* The detail response carries `customerApprovalRequired`/`customerReviewRequired`
+  and `legalNextStates` untouched; the webapp renders `legalNextStates` as-is.
+
 ## Health endpoints
 
 Two, registered directly on the mux in `cmd/server/main.go` (not through `route()`) and both exempt

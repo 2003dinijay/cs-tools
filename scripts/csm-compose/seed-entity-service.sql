@@ -244,4 +244,25 @@ INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, tea
   ('00000000-0000-0000-0000-000000001104', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-4000-8000-00000000eca1')
 ON CONFLICT (id) DO NOTHING;
 
+-- Customer Approval / Customer Review checkbox fixtures (migration 0189,
+-- change_request.customer_approval_required / customer_review_required):
+--
+-- CR-FIXED-005: a Standard change in New with "Customer Approval" ticked and a
+-- team assigned. Request Approval (no internal approval for Standard) lands it
+-- in Customer Approval, where "scheduled" records the customer's approval
+-- (legalNextStates [scheduled, canceled]), then Implement -> Review -> Closed.
+-- CR-FIXED-006: a change in Review with "Customer Review" ticked -- Review
+-- offers customer_review (not closed); customer_review then offers closed.
+-- Both start at false for every other fixture above (the column default), so
+-- they keep their Review -> Closed / no-customer-step behaviour.
+INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type, account_id, project_id, assignment_group_id, opened_by_user_id, assigned_to_id, description) VALUES
+  ('00000000-0000-0000-0000-000000001201', now(), now(), 'seed', 'seed', 'CHG-FIXED-005', 'E2E fixture: Standard change requiring customer approval', 'CHANGE_REQUEST', '00000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Seed fixture for Playwright E2E coverage: Standard change in New with the Customer Approval checkbox ticked -- Request Approval must land in Customer Approval, and "scheduled" there records the customer approval.'),
+  ('00000000-0000-0000-0000-000000001202', now(), now(), 'seed', 'seed', 'CHG-FIXED-006', 'E2E fixture: change in Review requiring customer review', 'CHANGE_REQUEST', '00000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Seed fixture for Playwright E2E coverage: Review state with the Customer Review checkbox ticked -- Review must offer customer_review instead of closed.')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO change_request (id, state, change_model, priority, impact, category, risk, change_request_type, requested_by_user_id, justification, customer_approval_required, customer_review_required) VALUES
+  ('00000000-0000-0000-0000-000000001201', 'NEW'::change_request_state_enum, 'STANDARD'::change_request_change_model_enum, 'MODERATE'::change_request_priority_enum, 'LOW'::change_request_impact_enum, 'SOFTWARE'::change_request_category_enum, 'LOW'::change_request_risk_enum, 'GENERAL'::change_request_type_enum, NULL, 'Seed fixture: Standard change, Customer Approval ticked.', true, false),
+  ('00000000-0000-0000-0000-000000001202', 'REVIEW'::change_request_state_enum, 'NORMAL'::change_request_change_model_enum, 'MODERATE'::change_request_priority_enum, 'LOW'::change_request_impact_enum, 'SOFTWARE'::change_request_category_enum, 'LOW'::change_request_risk_enum, 'GENERAL'::change_request_type_enum, NULL, 'Seed fixture: Review state, Customer Review ticked.', false, true)
+ON CONFLICT (id) DO NOTHING;
+
 COMMIT;

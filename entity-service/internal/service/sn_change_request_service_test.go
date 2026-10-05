@@ -626,14 +626,23 @@ func TestSNChangeRequestService_CreateChangeRequest_RequiresType(t *testing.T) {
 
 // TestWithoutManualScheduled: ServiceNow's own offered next states never reach
 // the portal with "scheduled" in them -- Scheduled is reached by CAB/ECAB
-// approval, there is no Schedule action.
+// approval, there is no Schedule action -- except from Customer Approval, where
+// "scheduled" is the action that records the customer's approval.
 func TestWithoutManualScheduled(t *testing.T) {
-	got := withoutManualScheduled([]string{"scheduled", "implement", "Scheduled", "canceled"})
+	str := func(s string) *string { return &s }
+	got := withoutManualScheduled([]string{"scheduled", "implement", "Scheduled", "canceled"}, str("assess"))
 	if strings.Join(got, ",") != "implement,canceled" {
 		t.Fatalf("withoutManualScheduled = %v, want [implement canceled]", got)
 	}
-	if withoutManualScheduled(nil) != nil {
+	if withoutManualScheduled(nil, nil) != nil {
 		t.Fatal("nil must stay nil")
+	}
+	if got := withoutManualScheduled([]string{"scheduled", "canceled"}, nil); strings.Join(got, ",") != "canceled" {
+		t.Fatalf("withoutManualScheduled with unknown state = %v, want [canceled]", got)
+	}
+	got = withoutManualScheduled([]string{"scheduled", "canceled"}, str("customer_approval"))
+	if strings.Join(got, ",") != "scheduled,canceled" {
+		t.Fatalf("withoutManualScheduled from customer_approval = %v, want [scheduled canceled] (records the customer's approval)", got)
 	}
 }
 

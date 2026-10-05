@@ -1522,7 +1522,7 @@ func mapSNChangeRequestDetailToView(cr snChangeRequestDetail) domain.ChangeReque
 		HasCustomerApproved:     cr.HasCustomerApproved,
 		HasCustomerReviewed:     cr.HasCustomerReviewed,
 		ApprovedOn:              cr.ApprovedOn,
-		LegalNextStates:         withoutManualScheduled(cr.LegalNextStates),
+		LegalNextStates:         withoutManualScheduled(cr.LegalNextStates, view.State),
 
 		// Field-parity additions.
 		ImplementationPlan:           cr.ImplementationPlan,
@@ -1595,10 +1595,15 @@ func mapSNChangeRequestDetailToView(cr snChangeRequestDetail) domain.ChangeReque
 // offers. There is no manual "Schedule" action in the CSM flow: a change
 // becomes Scheduled when its CAB (or, for Emergency, ECAB) approval is granted,
 // so the portal must never be handed it as something to click -- the same rule
-// the PostgreSQL data source applies (legalChangeRequestNextStates).
-func withoutManualScheduled(states []string) []string {
+// the PostgreSQL data source applies (legalChangeRequestNextStates). The one
+// exception is a change sitting in Customer Approval, where "scheduled" is the
+// action that records the customer's approval (also as on PostgreSQL).
+func withoutManualScheduled(states []string, state *string) []string {
 	if states == nil {
 		return nil
+	}
+	if state != nil && strings.EqualFold(*state, string(domain.ChangeRequestStateCustomerApproval)) {
+		return states
 	}
 	out := make([]string, 0, len(states))
 	for _, st := range states {

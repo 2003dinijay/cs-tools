@@ -107,6 +107,11 @@ func (h *ChangeRequestHandler) CreateChangeRequest(w http.ResponseWriter, r *htt
 		return
 	}
 
+	if msg := validateChangeRequestCustomerGateFlags(body); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
 	result, err := h.entity.CreateChangeRequest(r.Context(), body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity CreateChangeRequest failed", "userID", user.UserID, "err", err)
@@ -145,6 +150,35 @@ func validateChangeRequestCreateType(body []byte) string {
 		}
 	}
 	return "type is not allowed: a change request must be one of standard, normal or emergency"
+}
+
+// changeRequestCustomerGateFields are the creation form's two checkboxes,
+// "Customer Approval" and "Customer Review": whether the change needs the
+// customer's approval before it is scheduled / the customer's review before it
+// is closed. They are forwarded to the entity service as-is; the only thing
+// checked here is their type, so a stray string or null is refused with a
+// message the form can show instead of a generic upstream decode failure.
+var changeRequestCustomerGateFields = []string{"customerApprovalRequired", "customerReviewRequired"}
+
+// validateChangeRequestCustomerGateFlags returns a user-facing message when
+// body carries one of the customer gate checkboxes with a value that is not a
+// JSON boolean, or "" when it carries none or only booleans. A body that is not
+// a JSON object is left for the upstream to reject.
+func validateChangeRequestCustomerGateFlags(body []byte) string {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	for _, field := range changeRequestCustomerGateFields {
+		raw, ok := payload[field]
+		if !ok {
+			continue
+		}
+		if v := string(bytes.TrimSpace(raw)); v != "true" && v != "false" {
+			return field + " must be a boolean (true or false)"
+		}
+	}
+	return ""
 }
 
 // mapApprovalDecisionError is mapUpstreamErrorGeneric, except a 403 that
@@ -191,6 +225,11 @@ func (h *ChangeRequestHandler) PatchChangeRequest(w http.ResponseWriter, r *http
 
 	if len(body) > 0 && !json.Valid(body) {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	if msg := validateChangeRequestCustomerGateFlags(body); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 

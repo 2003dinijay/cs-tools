@@ -3991,6 +3991,14 @@ type CreateChangeRequestRequest struct {
 	// the customer-facing portal. Optional; when omitted, the backing data
 	// source's own default applies.
 	IsPlanningVisibleToCustomers *bool `json:"isPlanningVisibleToCustomers,omitempty"`
+	// CustomerApprovalRequired / CustomerReviewRequired are the creation
+	// form's "Customer Approval" and "Customer Review" checkboxes: this change
+	// needs the customer's approval before it is scheduled / the customer's
+	// review before it is closed. Optional; omitted means false. They are the
+	// REQUIREMENT, not the customer's outcome (that is PatchChangeRequestRequest.
+	// IsCustomerApproved / IsCustomerReviewed). Postgres data source only.
+	CustomerApprovalRequired *bool `json:"customerApprovalRequired,omitempty"`
+	CustomerReviewRequired   *bool `json:"customerReviewRequired,omitempty"`
 }
 
 // CreateChangeRequestResponse is the output for POST /change-requests.
@@ -4380,6 +4388,17 @@ type PatchChangeRequestRequest struct {
 	// as-is, so an explicit false is never confused with "not provided".
 	IsPlanningVisibleToCustomers *bool `json:"isPlanningVisibleToCustomers,omitempty"`
 
+	// CustomerApprovalRequired / CustomerReviewRequired: see
+	// CreateChangeRequestRequest. Editable only until the gate they control
+	// has been passed -- CustomerApprovalRequired while the change is New,
+	// Assess or Authorize; CustomerReviewRequired until it leaves Review --
+	// after which a change is refused with a ValidationError (a write that
+	// does not change the stored value is always accepted). Distinct from
+	// IsCustomerApproved / IsCustomerReviewed above, which record the
+	// customer's outcome. Postgres data source only.
+	CustomerApprovalRequired *bool `json:"customerApprovalRequired,omitempty"`
+	CustomerReviewRequired   *bool `json:"customerReviewRequired,omitempty"`
+
 	// The fields below are the change-request field-parity additions. Except
 	// Comment and WorkNote (journal entries, append-only, cannot be cleared),
 	// every one of them uses a pointer-to-pointer to distinguish three states:
@@ -4578,18 +4597,25 @@ type DeleteTimeCardResponse struct {
 // It extends SearchChangeRequestView with additional fields.
 type ChangeRequest struct {
 	SearchChangeRequestView
-	CreatedBy           string     `json:"createdBy"`
-	Justification       *string    `json:"justification"`
-	ImpactDescription   *string    `json:"impactDescription"`
-	ServiceOutage       *string    `json:"serviceOutage"`
-	CommunicationPlan   *string    `json:"communicationPlan"`
-	RollbackPlan        *string    `json:"rollbackPlan"`
-	TestPlan            *string    `json:"testPlan"`
-	HasCustomerApproved bool       `json:"hasCustomerApproved"`
-	HasCustomerReviewed bool       `json:"hasCustomerReviewed"`
-	ApprovedBy          *EntityRef `json:"approvedBy"`
-	ApprovedOn          *string    `json:"approvedOn"`
-	LegalNextStates     []string   `json:"legalNextStates"`
+	CreatedBy           string  `json:"createdBy"`
+	Justification       *string `json:"justification"`
+	ImpactDescription   *string `json:"impactDescription"`
+	ServiceOutage       *string `json:"serviceOutage"`
+	CommunicationPlan   *string `json:"communicationPlan"`
+	RollbackPlan        *string `json:"rollbackPlan"`
+	TestPlan            *string `json:"testPlan"`
+	HasCustomerApproved bool    `json:"hasCustomerApproved"`
+	HasCustomerReviewed bool    `json:"hasCustomerReviewed"`
+	// CustomerApprovalRequired / CustomerReviewRequired are the creation
+	// form's two checkboxes: the change needs the customer's approval before
+	// it is scheduled / the customer's review before it is closed. They drive
+	// LegalNextStates. Distinct from HasCustomerApproved / HasCustomerReviewed,
+	// which record the customer's outcome.
+	CustomerApprovalRequired bool       `json:"customerApprovalRequired"`
+	CustomerReviewRequired   bool       `json:"customerReviewRequired"`
+	ApprovedBy               *EntityRef `json:"approvedBy"`
+	ApprovedOn               *string    `json:"approvedOn"`
+	LegalNextStates          []string   `json:"legalNextStates"`
 
 	// The fields below are change-request field-parity additions. All 20 are
 	// present on GET /change-requests/{id} and the PATCH receipt (both share

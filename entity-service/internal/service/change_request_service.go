@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -249,7 +250,8 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 		req.ImplementationPlan == nil && req.Priority == nil && req.Category == nil &&
 		req.RequestedByID == nil && req.AffectedServicesText == nil && req.AffectedComponentsText == nil &&
 		req.RollbackDurationText == nil && req.CustomerGroupID == nil &&
-		req.OnHold == nil && req.OnHoldReason == nil {
+		req.OnHold == nil && req.OnHoldReason == nil &&
+		req.CustomerApprovalRequired == nil && req.CustomerReviewRequired == nil {
 		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "at least one field must be provided"}
 	}
 	// Accepted by the contract (and mirrored) but with no Postgres column
@@ -282,9 +284,18 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	// it's called directly here rather than through a narrower interface
 	// (unlike case's UpdateCase, which needed patchCaseFields specifically
 	// to avoid snCaseService.UpdateCase's own read-before-write behavior).
-	if s.snWriteback != nil {
-		mirrorID, mirrorReq := id, req
-		s.snWriteback.Dispatch(ctx, "change_request", id, "patch", req,
+	//
+	// customerApprovalRequired / customerReviewRequired are stripped first:
+	// the creation form's two checkboxes have no field in ServiceNow's change
+	// request API that this service can name (the scripted API only exposes
+	// isCustomerApproved / isCustomerReviewed, the customer's OUTCOME, which
+	// are a different thing), so they stay Postgres-only. A PATCH that carried
+	// nothing else has nothing to mirror.
+	mirrorReq := req
+	mirrorReq.CustomerApprovalRequired, mirrorReq.CustomerReviewRequired = nil, nil
+	if s.snWriteback != nil && !reflect.DeepEqual(mirrorReq, domain.PatchChangeRequestRequest{}) {
+		mirrorID := id
+		s.snWriteback.Dispatch(ctx, "change_request", id, "patch", mirrorReq,
 			func(writeCtx context.Context) error {
 				_, err := s.snMirror.PatchChangeRequest(writeCtx, mirrorID, mirrorReq)
 				return err

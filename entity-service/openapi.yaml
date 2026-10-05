@@ -15628,8 +15628,31 @@ components:
               nullable: true
             hasCustomerApproved:
               type: boolean
+              description: >-
+                The customer's OUTCOME: true once the customer's approval has
+                been recorded (state scheduled out of customer_approval). Not
+                the creation checkbox -- see customerApprovalRequired.
             hasCustomerReviewed:
               type: boolean
+              description: >-
+                The customer's OUTCOME: true once the customer's review has
+                been recorded (state closed out of customer_review). Not the
+                creation checkbox -- see customerReviewRequired.
+            customerApprovalRequired:
+              type: boolean
+              description: >-
+                The creation form's "Customer Approval" checkbox: the change
+                needs the customer's approval before it is scheduled. When
+                true, CAB / ECAB approval (or Request Approval on a Standard
+                change) moves the change to customer_approval instead of
+                scheduled. PostgreSQL data source only (always false on the
+                ServiceNow data source).
+            customerReviewRequired:
+              type: boolean
+              description: >-
+                The creation form's "Customer Review" checkbox: the change
+                needs the customer's review before it is closed. When true,
+                review offers customer_review instead of closed.
             approvedBy:
               $ref: '#/components/schemas/EntityRef'
               nullable: true
@@ -15641,12 +15664,24 @@ components:
               items:
                 type: string
               description: >-
-                Next states a human may move the change request to. "assess" out
-                of New is the "Request Approval" action for every type (the
-                state it lands in depends on the type: Assess for Normal,
-                Authorize for Emergency, Scheduled for Standard). "scheduled" is
-                never offered: CAB/ECAB approval schedules a change
-                automatically.
+                Next states a human may move the change request to, per state
+                (the single source of truth the portal renders).
+                new: [assess, canceled] -- "assess" is the "Request Approval"
+                action for every type; the state it lands in depends on the
+                type (Assess for Normal, Authorize for Emergency, Scheduled for
+                Standard -- customer_approval instead when
+                customerApprovalRequired).
+                assess: [authorize, canceled]; authorize: [canceled] (CAB/ECAB
+                approval moves the change on by itself: to scheduled, or to
+                customer_approval when customerApprovalRequired).
+                customer_approval: [scheduled, canceled] -- "scheduled" here
+                means "record the customer's approval" and is the ONLY state
+                from which a manual scheduled is accepted.
+                scheduled: [implement, canceled]; implement: [review,
+                canceled].
+                review: [customer_review, canceled] when customerReviewRequired,
+                else [closed, canceled].
+                customer_review: [closed, canceled]. Terminal states: none.
             implementationPlan:
               type: string
               nullable: true
@@ -16321,6 +16356,20 @@ components:
           description: >-
             Whether the Implementation Plan is visible to customers on the
             customer-facing portal.
+        customerApprovalRequired:
+          type: boolean
+          description: >-
+            The "Customer Approval" checkbox: the change needs the customer's
+            approval before it is scheduled (CAB / ECAB approval, or Request
+            Approval on a Standard change, then moves it to customer_approval
+            instead of scheduled). Defaults to false. PostgreSQL data source
+            only.
+        customerReviewRequired:
+          type: boolean
+          description: >-
+            The "Customer Review" checkbox: the change needs the customer's
+            review before it is closed (review offers customer_review instead
+            of closed). Defaults to false. PostgreSQL data source only.
 
     CreateChangeRequestResponse:
       type: object
@@ -16429,6 +16478,21 @@ components:
           description: >-
             Whether the Implementation Plan is visible to customers on the
             customer-facing portal.
+        customerApprovalRequired:
+          type: boolean
+          description: >-
+            The "Customer Approval" checkbox. Editable only until the approval
+            gate has been passed, i.e. while the state is new, assess or
+            authorize; a change of value afterwards is a 400 ("customerApprovalRequired
+            can no longer be changed ..."). Resending the stored value is
+            always accepted. PostgreSQL data source only.
+        customerReviewRequired:
+          type: boolean
+          description: >-
+            The "Customer Review" checkbox. Editable until the change leaves
+            review (any state up to and including review); a change of value
+            from customer_review onwards is a 400 ("customerReviewRequired can
+            no longer be changed ..."). PostgreSQL data source only.
         implementationPlan:
           type: string
           nullable: true
