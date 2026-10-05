@@ -11134,12 +11134,12 @@ components:
         engagementTypeName: {type: string, description: '"Paid" sets is_paid on a created firefighting engagement.'}
         engagementType: {type: string, nullable: true}
         engagementId: {type: string, maxLength: 20}
-        customerName: {type: string, description: Account name fallback when customerCode does not match.}
+        customerName: {type: string, description: 'Account name fallback when customerCode does not match.'}
         opportunityName: {type: string}
         productName: {type: string}
-        productId: {type: string, nullable: true, description: Salesforce line-item id; finds the engagement for a non-firefighting allocation.}
+        productId: {type: string, nullable: true, description: 'Salesforce line-item id; finds the engagement for a non-firefighting allocation.'}
         engagementCode: {type: string, maxLength: 20}
-        engagementNature: {type: string, description: Off-site -> OFFSITE, On-site -> ONSITE.}
+        engagementNature: {type: string, description: 'Off-site -> OFFSITE, On-site -> ONSITE.'}
         country: {type: string}
         customerCode: {type: string, nullable: true}
     AllocationEventResult:
