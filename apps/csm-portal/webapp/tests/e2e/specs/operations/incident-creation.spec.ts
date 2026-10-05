@@ -40,15 +40,16 @@ test.describe("incident creation — page structure", () => {
     await expect(incident.createButton()).toBeDisabled();
 
     await incident.selectOption("Category", "Inquiry / Help");
-    await incident.selectOption("Subcategory", "Information Request");
     await incident.selectOption("Contact type", "Email");
     await incident.selectOption("Impact", "Low");
     await incident.selectOption("Urgency", "Low");
-    // Short description, Category, Subcategory, Contact type, Impact, and
-    // Urgency are all filled now, but Service (backend-required, not part
-    // of the original field spec) still isn't — button must stay disabled.
+    // Short description, Category, Contact type, Impact, and Urgency are
+    // all filled now, but Service (backend-required, not part of the
+    // original field spec) still isn't — button must stay disabled.
     await expect(incident.createButton()).toBeDisabled();
 
+    // Subcategory is optional: Service is the last missing field, and the
+    // button enables without one being picked.
     await incident.pickService("e");
     await expect(incident.createButton()).toBeEnabled();
   });
