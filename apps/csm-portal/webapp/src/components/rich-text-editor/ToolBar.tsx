@@ -66,6 +66,7 @@ import {
   AlignJustify,
   ImageIcon,
   Code,
+  Code2,
   Link as LinkIcon,
   Indent,
   Outdent,
@@ -125,6 +126,7 @@ const Toolbar = ({
   const [isStrikethrough, setIsStrikethrough] = useState(false);
   const [isLink, setIsLink] = useState(false);
   const [isCode, setIsCode] = useState(false);
+  const [isInlineCode, setIsInlineCode] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [blockVariant, setBlockVariant] = useState("body1");
@@ -151,6 +153,7 @@ const Toolbar = ({
       setIsItalic(selection.hasFormat("italic"));
       setIsUnderline(selection.hasFormat("underline"));
       setIsStrikethrough(selection.hasFormat("strikethrough"));
+      setIsInlineCode(selection.hasFormat("code"));
 
       const node = selection.anchor.getNode();
       const parent = node?.getParent();
@@ -232,7 +235,7 @@ const Toolbar = ({
   }, [editor, updateToolbar]);
 
   const onFormatText = (
-    format: "bold" | "italic" | "underline" | "strikethrough",
+    format: "bold" | "italic" | "underline" | "strikethrough" | "code",
   ) => {
     focusEditor();
     editor.dispatchCommand(FORMAT_TEXT_COMMAND, format);
@@ -793,10 +796,21 @@ const Toolbar = ({
             </Box>
           </Popover>
 
-          <Tooltip title="Code Snippet">
+          <Tooltip title="Inline Code">
             <ToggleButton
               size="small"
-              value="code"
+              value="inline-code"
+              selected={isInlineCode}
+              onClick={() => onFormatText("code")}
+            >
+              <Code2 size={16} />
+            </ToggleButton>
+          </Tooltip>
+
+          <Tooltip title="Code Block">
+            <ToggleButton
+              size="small"
+              value="code-block"
               selected={isCode}
               onClick={onFormatCode}
             >
