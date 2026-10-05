@@ -67,7 +67,8 @@ export default function StableAuthLoadingProvider({
     [sdk, hideLoading],
   );
 
-  // Outside an SDK provider there is nothing to hold steady.
+  // Defensive only: the context is typed as nullable, but the SDK's default
+  // value is a non-null object, so this is not reached in practice.
   if (!value) {
     return <>{children}</>;
   }

@@ -188,11 +188,26 @@ describe("StableAuthLoadingProvider", () => {
       expect(last().isLoading).toBe(true);
     });
 
-    it("passes every other field through untouched", () => {
+    it("passes every other field through untouched, also while it is holding isLoading", () => {
       const { Probe, last } = recordAuth();
-      mountUnderAuth({ isSignedIn: true, isLoading: false }, () => <Probe />);
+      const { setSdk } = mountUnderAuth({ isSignedIn: true, isLoading: false }, () => <Probe />);
+      expect(last().getIdToken).toBe(getIdToken);
+
+      // the holding branch builds a new context object: nothing else may change
+      setSdk({ isSignedIn: true, isLoading: true });
+      expect(last().isLoading).toBe(false);
       expect(last().getIdToken).toBe(getIdToken);
       expect(last().isSignedIn).toBe(true);
+    });
+
+    it("does not hold loading when the session ends together with a busy flag", () => {
+      const { Probe, last } = recordAuth();
+      const { setSdk } = mountUnderAuth({ isSignedIn: true, isLoading: false }, () => <Probe />);
+
+      // a failed token refresh: the SDK reports signed out and busy in the same update
+      setSdk({ isSignedIn: false, isLoading: true });
+      expect(last().isSignedIn).toBe(false);
+      expect(last().isLoading).toBe(true);
     });
   });
 });
