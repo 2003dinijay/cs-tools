@@ -175,6 +175,12 @@ type Config struct {
 	// Sales Entity create endpoints this depends on are deployed, a portal
 	// that called them would write the database and leave Salesforce behind.
 	CSMMigrationPortalWritesEnabled bool
+	// CSMMigrationCustomerEngagementIngestEnabled registers POST /customer-engagements/allocation-events
+	// (CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED); off, the route is not registered.
+	CSMMigrationCustomerEngagementIngestEnabled bool
+	// CustomerEngagementFirefightingTypeID is the Firefighting type's ServiceNow sys_id
+	// (CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID); unset skips creating firefighting engagements.
+	CustomerEngagementFirefightingTypeID string
 	// GithubIntegrationEnabled gates the GitHub change-request sync: the
 	// webhook endpoint and the client that answers it.
 	//
@@ -570,6 +576,8 @@ func Load() *Config {
 	cfg.CSMMigrationSalesforceProjectIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED") == "true"
 	cfg.CSMMigrationSalesforceProjectInsertEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED") == "true"
 	cfg.CSMMigrationSalesforcePartnerIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED") == "true"
+	cfg.CSMMigrationCustomerEngagementIngestEnabled = os.Getenv("CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED") == "true"
+	cfg.CustomerEngagementFirefightingTypeID = strings.TrimSpace(os.Getenv("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID"))
 	return cfg
 }
 
@@ -801,7 +809,23 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("%s %q is not a valid UUID", envVar, value)
 		}
 	}
+	if v := c.CustomerEngagementFirefightingTypeID; v != "" && !isSysID(v) {
+		return fmt.Errorf("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID must be a 32-character hex sys_id")
+	}
 	return nil
+}
+
+// isSysID reports whether v is a 32-character lowercase hex ServiceNow sys_id.
+func isSysID(v string) bool {
+	if len(v) != 32 {
+		return false
+	}
+	for _, r := range v {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // PostgresAuthoritative reports whether PostgreSQL is the system of record:
@@ -829,6 +853,12 @@ func (c *Config) HasPortalMembershipWrites() bool {
 	return c.CSMMigrationPortalWritesEnabled &&
 		c.PostgresAuthoritative() &&
 		c.SalesEntityConfigured()
+}
+
+// HasCustomerEngagementIngest reports whether POST /customer-engagements/allocation-events
+// may be registered: the flag is on and PostgreSQL is authoritative.
+func (c *Config) HasCustomerEngagementIngest() bool {
+	return c.CSMMigrationCustomerEngagementIngestEnabled && c.PostgresAuthoritative()
 }
 
 // SalesEntityConfigured reports whether every REST sales/sales-entity-service env var is set.

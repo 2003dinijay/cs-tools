@@ -103,6 +103,43 @@ func TestIncidentService_CreateIncidentPortal_PassesDerivedFieldsAndPublishes(t 
 	}
 }
 
+// TestIncidentService_CreateIncidentPortal_WithoutSubcategory: subcategory is
+// optional on create, so a request with none passes validation and reaches
+// the repository with a nil subcategory value (-> incident.subcategory_id
+// NULL), rather than an empty-string lookup that would fail to resolve.
+func TestIncidentService_CreateIncidentPortal_WithoutSubcategory(t *testing.T) {
+	called := false
+	var gotSubcategory *string
+	repo := &stubIncidentRepo{
+		createIncident: func(_ context.Context, req domain.CreateIncidentRequest, _ string, subcategoryValue *string, _ string) (domain.CreateIncidentResponse, error) {
+			called = true
+			gotSubcategory = subcategoryValue
+			if req.Subcategory != nil {
+				t.Errorf("req.Subcategory = %v, want nil", *req.Subcategory)
+			}
+			resp := domain.CreateIncidentResponse{Message: "Incident created successfully."}
+			resp.Incident.ID = "66666666-6666-6666-6666-666666666666"
+			return resp, nil
+		},
+	}
+	svc := NewIncidentService(repo, nil)
+
+	req := validCreateIncidentRequest()
+	req.Category = domain.IncidentCategoryServiceInterruption
+	req.Subcategory = nil
+
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{Validated: true, UserEmail: "jane.doe@example.com"})
+	if _, err := svc.CreateIncident(ctx, req); err != nil {
+		t.Fatalf("CreateIncident without subcategory: unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("repository CreateIncident was not reached")
+	}
+	if gotSubcategory != nil {
+		t.Errorf("subcategory value = %q, want nil", *gotSubcategory)
+	}
+}
+
 // TestIncidentService_CreateIncidentPortal_MachineCallerUsesClientID guards
 // the alert-ingestion case: a machine caller has no user token, and must not
 // be refused for it.
