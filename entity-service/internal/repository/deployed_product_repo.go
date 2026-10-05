@@ -405,12 +405,24 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 	// lowercase values (SearchDeployedProductsRequest.ProductCategories'
 	// doc comment: e.g. "pdp") are upper-cased before the enum cast, same
 	// convention every other enum-array filter in this codebase uses.
+	//
+	// A NULL category is treated as a wildcard (matches any requested
+	// category), not excluded -- the same fail-open treatment this
+	// codebase already gives sr_category_routing_rule's own classification
+	// match, adopted there specifically because real deployed_product rows
+	// were found mostly uncategorized. Without this, a project type that
+	// restricts SR categories (ProjectFeatures.SrProductCategories) hid the
+	// overwhelming majority of real, active deployed products from the SR
+	// creation product dropdown -- "Product Version: Not available" even
+	// with active products on the deployment -- purely because nothing has
+	// ever backfilled this column, not because the product's category
+	// genuinely doesn't match.
 	if len(req.ProductCategories) > 0 {
 		categories := make([]string, len(req.ProductCategories))
 		for i, c := range req.ProductCategories {
 			categories[i] = strings.ToUpper(c)
 		}
-		where += fmt.Sprintf(" AND dp.product_category = ANY($%d::text[]::deployed_product_category_enum[])", argIdx)
+		where += fmt.Sprintf(" AND (dp.product_category IS NULL OR dp.product_category = ANY($%d::text[]::deployed_product_category_enum[]))", argIdx)
 		filterArgs = append(filterArgs, categories)
 		argIdx++
 	}
