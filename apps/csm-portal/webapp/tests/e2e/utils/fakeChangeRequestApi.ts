@@ -234,6 +234,8 @@ export async function installFakeChangeRequestApi(
   initialType: FakeCrType,
   viewer: FakeUser = FAKE_CREATOR,
   initialFlags: Partial<FakeCustomerFlags> = {},
+  /** The customer scope the CR already holds (environments default to those of the deployments). */
+  initialScope: Partial<FakeScope> = {},
 ): Promise<FakeChangeRequestApi> {
   let type = initialType;
   let currentViewer = viewer;
@@ -247,6 +249,16 @@ export async function installFakeChangeRequestApi(
     customerGroupId: null,
     category: null,
   };
+  if (initialScope.deploymentIds?.length) {
+    scope.projectId = initialScope.projectId ?? null;
+    scope.deploymentIds = [...initialScope.deploymentIds];
+    scope.environmentIds = initialScope.environmentIds ?? environmentIdsOf(scope.deploymentIds);
+    scope.deploymentProductIds = derivedProductIds(scope.deploymentIds);
+  } else if (initialScope.projectId) {
+    scope.projectId = initialScope.projectId;
+  }
+  scope.customerGroupId = initialScope.customerGroupId ?? null;
+  scope.category = initialScope.category ?? null;
   const journal: Array<{ kind: "comment" | "workNote"; text: string }> = [];
   const retired = new Set<string>();
   const bodies: FakeRequestBody[] = [];

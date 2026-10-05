@@ -59,8 +59,13 @@ import {
   FAKE_CAB,
   FAKE_CR_ID,
   FAKE_CREATOR,
+  FAKE_DEPLOYMENTS,
+  FAKE_DEPLOYMENT_PRODUCTS,
   FAKE_ECAB,
+  FAKE_ENVIRONMENTS,
+  FAKE_GROUPS,
   FAKE_PEER,
+  FAKE_PROJECTS,
   installFakeChangeRequestApi,
 } from "../../utils/fakeChangeRequestApi";
 
@@ -577,6 +582,208 @@ test.describe("change request approval flow — Standard", () => {
     await expect(detail.blockingReason()).toHaveCount(0);
     await expectNoManualSchedule(detail);
     await expect(page.getByRole("button", { name: "Start implementation" })).toBeVisible();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Customer Project / Deployments / Environments / Deployment products on a
+// change request, end to end against the in-browser fake backend: create ->
+// detail Overview -> edit (cascade, whole-scope PATCH, backend refusal) ->
+// approvals -> locked once implementation starts.
+// ---------------------------------------------------------------------------
+
+const ACME = FAKE_PROJECTS[0]!;
+const BETA = FAKE_PROJECTS[1]!;
+const [ACME_PROD, ACME_STG, BETA_DEV] = FAKE_DEPLOYMENTS;
+const [PROD_ENV, STG_ENV, DEV_ENV] = FAKE_ENVIRONMENTS;
+const productsOf = (deploymentId: string): string[] =>
+  FAKE_DEPLOYMENT_PRODUCTS.filter((p) => p.deploymentId === deploymentId).map((p) => p.name);
+
+test.describe("change request lifecycle — project and deployments (mocked backend)", () => {
+  test("Normal change: create with project + deployments, see them on the detail page, edit the scope, approve, and have it locked once implementing", async ({
+    page,
+  }) => {
+    test.setTimeout(150_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const create = new ChangeRequestCreatePage(page);
+    const detail = new ChangeRequestDetailPage(page);
+
+    // 1. Create a Normal change with a project, two deployments, a customer group and a category.
+    await create.goto();
+    await create.selectType("Normal");
+    await create.subjectField().fill("[E2E] project + deployments lifecycle (mocked)");
+    await create.selectProject(ACME.name);
+    await create.selectDeployments([ACME_PROD!.name, ACME_STG!.name]);
+    await create.selectCustomerGroup(FAKE_GROUPS[0]!.name);
+    await create.selectCategory("DevOps");
+    await create.createButton().click();
+    await expect(page).toHaveURL(new RegExp(`/operations/change-requests/${FAKE_CR_ID}$`));
+    await expect(detail.lifecycleStepper()).toBeVisible();
+
+    // 2. The detail Overview shows every one of them.
+    await expect(detail.overviewCell("Customer Project")).toContainText(ACME.name);
+    await expect(detail.overviewChips("Deployments")).toHaveText([ACME_PROD!.name, ACME_STG!.name]);
+    await expect(detail.overviewChips("Environments")).toHaveText([PROD_ENV!.name, STG_ENV!.name]);
+    await expect(detail.overviewChips("Deployment products")).toHaveText([
+      ...productsOf(ACME_PROD!.id),
+      ...productsOf(ACME_STG!.id),
+    ]);
+    await expect(detail.overviewCell("Customer group")).toContainText(FAKE_GROUPS[0]!.name);
+    await expect(detail.overviewCell("Category")).toContainText("DevOps");
+    await expect(detail.currentStep()).toContainText("New");
+
+    // 3. Request Approval, then edit the scope while it is still editable (Assess).
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Assess");
+    await detail.openEditDialog();
+    await expect(detail.editProjectField()).toHaveValue(ACME.name);
+    await expect(detail.editChipsOf(detail.editDeploymentsField())).toHaveText([ACME_PROD!.name, ACME_STG!.name]);
+    await detail.editToggleOptions(detail.editDeploymentsField(), [ACME_STG!.name]); // drop Staging
+    await expect(detail.editChipsOf(detail.editEnvironmentsField())).toHaveText([PROD_ENV!.name]);
+    await expect(detail.editChipsOf(detail.editDeploymentProductsField())).toHaveText(productsOf(ACME_PROD!.id));
+    const [patch] = await Promise.all([
+      page.waitForRequest((r) => r.method() === "PATCH" && r.url().endsWith(`/change-requests/${FAKE_CR_ID}`)),
+      detail.saveEdit(),
+    ]);
+    // The whole scope goes out together, with the exact wire names.
+    expect(patch.postDataJSON()).toEqual({
+      projectId: ACME.id,
+      deploymentIds: [ACME_PROD!.id],
+      environmentIds: [PROD_ENV!.id],
+      deploymentProductIds: FAKE_DEPLOYMENT_PRODUCTS.filter((p) => p.deploymentId === ACME_PROD!.id).map((p) => p.id),
+    });
+    await expect(detail.editDialog()).toHaveCount(0);
+    await expect(detail.overviewChips("Deployments")).toHaveText([ACME_PROD!.name]);
+    await expect(detail.overviewChips("Environments")).toHaveText([PROD_ENV!.name]);
+    await expect(detail.overviewChips("Deployment products")).toHaveText(productsOf(ACME_PROD!.id));
+    expect(api.scope().deploymentIds).toEqual([ACME_PROD!.id]);
+
+    // 4. Peer and CAB approve; the creator starts implementation.
+    api.setViewer(FAKE_PEER);
+    await page.reload();
+    await detail.approve("Pat Peer");
+    await expect(detail.currentStep()).toContainText("Authorize");
+    api.setViewer(FAKE_CAB);
+    await page.reload();
+    await detail.approve("Cam Cab");
+    api.setViewer(FAKE_CREATOR);
+    await page.reload();
+    await expect(detail.currentStep()).toContainText("Scheduled");
+
+    // Still editable while Scheduled ...
+    await detail.openEditDialog();
+    await expect(detail.editDeploymentsField()).toBeEnabled();
+    await detail.editDialog().getByRole("button", { name: "Cancel" }).click();
+
+    await page.getByRole("button", { name: "Start implementation" }).click();
+    await expect(detail.currentStep()).toContainText("Implement");
+
+    // 5. ... and locked, with the reason, from Implement on. The detail still shows it.
+    await detail.openEditDialog();
+    await expect(detail.editDialog().getByText(/can't be changed once implementation has started/i)).toBeVisible();
+    await expect(detail.editProjectField()).toBeDisabled();
+    await expect(detail.editDeploymentsField()).toBeDisabled();
+    await expect(detail.editEnvironmentsField()).toBeDisabled();
+    await expect(detail.saveButton()).toBeDisabled();
+    await detail.editDialog().getByRole("button", { name: "Cancel" }).click();
+    await expect(detail.overviewChips("Deployments")).toHaveText([ACME_PROD!.name]);
+  });
+
+  test("editing: changing the project clears the dependents and sends the new project with empty lists", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, {}, {
+      projectId: ACME.id,
+      deploymentIds: [ACME_PROD!.id],
+    });
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(FAKE_CR_ID);
+    await expect(detail.overviewChips("Deployments")).toHaveText([ACME_PROD!.name]);
+
+    await detail.openEditDialog();
+    // A saved project can be swapped but not cleared.
+    await detail.editProjectField().click();
+    await page.getByRole("option", { name: BETA.name }).click();
+    await expect(detail.editChipsOf(detail.editDeploymentsField())).toHaveCount(0);
+    await expect(detail.editChipsOf(detail.editEnvironmentsField())).toHaveCount(0);
+    await expect(detail.editChipsOf(detail.editDeploymentProductsField())).toHaveCount(0);
+    await expect(detail.editEnvironmentsField()).toBeDisabled();
+    const [patch] = await Promise.all([
+      page.waitForRequest((r) => r.method() === "PATCH" && r.url().endsWith(`/change-requests/${FAKE_CR_ID}`)),
+      detail.saveEdit(),
+    ]);
+    expect(patch.postDataJSON()).toEqual({
+      projectId: BETA.id,
+      deploymentIds: [],
+      environmentIds: [],
+      deploymentProductIds: [],
+    });
+    await expect(detail.editDialog()).toHaveCount(0);
+    await expect(detail.overviewCell("Customer Project")).toContainText(BETA.name);
+    await expect(detail.overviewCell("Deployments")).toContainText("—");
+    expect(api.scope()).toMatchObject({ projectId: BETA.id, deploymentIds: [], environmentIds: [] });
+  });
+
+  test("editing: picking deployments of a new project preselects their environments and derives the products", async ({ page }) => {
+    await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(FAKE_CR_ID);
+    await expect(detail.overviewCell("Customer Project")).toContainText("—");
+
+    await detail.openEditDialog();
+    await expect(detail.editDeploymentsField()).toBeDisabled();
+    await detail.editProjectField().click();
+    await page.getByRole("option", { name: BETA.name }).click();
+    await detail.editToggleOptions(detail.editDeploymentsField(), [BETA_DEV!.name]);
+    await expect(detail.editChipsOf(detail.editEnvironmentsField())).toHaveText([DEV_ENV!.name]);
+    await expect(detail.editChipsOf(detail.editDeploymentProductsField())).toHaveText(productsOf(BETA_DEV!.id));
+    await detail.saveEdit();
+    await expect(detail.editDialog()).toHaveCount(0);
+    await expect(detail.overviewCell("Customer Project")).toContainText(BETA.name);
+    await expect(detail.overviewChips("Deployments")).toHaveText([BETA_DEV!.name]);
+    await expect(detail.overviewChips("Environments")).toHaveText([DEV_ENV!.name]);
+  });
+
+  test("editing: the category is sent on its own when only it changed", async ({ page }) => {
+    await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, {}, { category: "other" });
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(FAKE_CR_ID);
+    await expect(detail.overviewCell("Category")).toContainText("Other");
+
+    await detail.openEditDialog();
+    await expect(detail.editCategoryField()).toHaveText("Other");
+    await detail.editCategoryField().click();
+    await page.getByRole("option", { name: "Hotfix Release - Cloud", exact: true }).click();
+    const [patch] = await Promise.all([
+      page.waitForRequest((r) => r.method() === "PATCH" && r.url().endsWith(`/change-requests/${FAKE_CR_ID}`)),
+      detail.saveEdit(),
+    ]);
+    expect(patch.postDataJSON()).toEqual({ category: "hotfix_release_cloud" });
+    await expect(detail.editDialog()).toHaveCount(0);
+    await expect(detail.overviewCell("Category")).toContainText("Hotfix Release - Cloud");
+  });
+
+  test("editing: shows the backend's refusal verbatim when a chosen deployment was deactivated behind the dialog", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, {}, { projectId: ACME.id, deploymentIds: [ACME_PROD!.id] });
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(FAKE_CR_ID);
+    await detail.openEditDialog();
+    await detail.editToggleOptions(detail.editDeploymentsField(), [ACME_STG!.name]);
+
+    api.retireDeployment(ACME_STG!.id);
+    await detail.saveEdit();
+    await expect(detail.editDialog().getByRole("alert")).toContainText(
+      `deploymentIds: deployment ${ACME_STG!.name} is not an active deployment of the selected project`,
+    );
+    await expect(detail.editDialog()).toBeVisible();
+    expect(api.scope().deploymentIds).toEqual([ACME_PROD!.id]);
+  });
+
+  test("the detail Overview shows a dash for each field a change request has none of", async ({ page }) => {
+    await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(FAKE_CR_ID);
+    for (const label of ["Customer Project", "Deployments", "Environments", "Deployment products", "Customer group", "Category"]) {
+      await expect(detail.overviewCell(label), label).toContainText("—");
+    }
   });
 });
 
