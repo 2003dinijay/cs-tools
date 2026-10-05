@@ -1289,6 +1289,223 @@ test.describe("change request approval flow — Roll back", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Re-schedule -- the diagram's Time Change loop. In Customer Approval an outlined
+// "Re-schedule" button opens a dialog (current window prefilled, at least one end
+// must change, optional reason); the change goes back to Authorize for CAB / ECAB
+// approval again, then the customer is asked again. Offered from Customer Approval
+// only. Runs against the in-browser fake of the backend contract.
+// ---------------------------------------------------------------------------
+
+/** Re-schedule is not offered: no such button and no such menu entry. */
+async function expectNoRescheduleOffered(detail: ChangeRequestDetailPage): Promise<void> {
+  await expect(detail.rescheduleButton()).toHaveCount(0);
+  if ((await detail.changeStateButton().count()) === 0) return;
+  await detail.changeStateButton().click();
+  await expect(detail.page.getByRole("menuitem").first()).toBeVisible();
+  await expect(detail.page.getByRole("menuitem", { name: /re-schedule|authorize/i })).toHaveCount(0);
+  await detail.page.keyboard.press("Escape");
+}
+
+// Typed in the signed-in user's time zone; the PATCH carries UTC, so the specs assert
+// the stored window moved to the week after (any zone offset keeps it on 2030-03-0[78]).
+const NEXT_WEEK_START = { month: 3, day: 8, year: 2030, hour12: 12, minute: 0, pm: true };
+const NEXT_WEEK_END = { month: 3, day: 8, year: 2030, hour12: 2, minute: 0, pm: true };
+const ORIGINAL_WINDOW = { start: "2030-03-01 09:00:00", end: "2030-03-01 11:00:00" };
+const MOVED_TO_NEXT_WEEK = /^2030-03-0[78] \d{2}:\d{2}:00$/;
+
+test.describe("change request approval flow — Re-schedule", () => {
+  test("Normal with a customer group: Customer Approval -> Re-schedule -> Authorize -> CAB approves -> Customer Approval again -> member approves -> Scheduled, state shown after every step", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const api = await installFakeChangeRequestApi(
+      page,
+      "normal",
+      FAKE_CREATOR,
+      { customerApprovalRequired: true },
+      ON_ACME,
+    );
+    const detail = new ChangeRequestDetailPage(page);
+
+    // Re-schedule is never on offer before Customer Approval.
+    await openDetail(detail);
+    await expectNoRescheduleOffered(detail);
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Assess");
+    await expectNoRescheduleOffered(detail);
+    await switchTo(page, api, FAKE_PEER);
+    await detail.approve("Pat Peer");
+    await expect(detail.currentStep()).toContainText("Authorize");
+    await expectNoRescheduleOffered(detail);
+    await switchTo(page, api, FAKE_CAB);
+    await detail.approve("Cam Cab");
+
+    // Customer Approval: the customer group is asked; Re-schedule and Cancel are the creator's actions.
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expect(detail.recordCustomerApprovalButton()).toHaveCount(0);
+    await expect(detail.rescheduleButton()).toBeVisible();
+    await detail.changeStateButton().click();
+    await expect(detail.page.getByRole("menuitem")).toHaveText(["Cancel change"]);
+    await detail.page.keyboard.press("Escape");
+
+    // The dialog starts on the current window and will not submit without a change.
+    await detail.rescheduleButton().click();
+    await expect(detail.rescheduleDialog()).toBeVisible();
+    await expect(detail.rescheduleSubmit()).toBeDisabled();
+    await expect(detail.rescheduleDialog().getByText("Change the planned start or end to re-schedule.")).toBeVisible();
+    await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START);
+    await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
+    await expect(detail.rescheduleSubmit()).toBeEnabled();
+    await detail.rescheduleDialog().getByLabel("Reason (optional)").fill("Customer freeze next week.");
+    await detail.rescheduleSubmit().click();
+
+    // Back at Authorize, waiting on a fresh CAB stage; the customer's request is superseded.
+    await expect(detail.currentStep()).toContainText("Authorize");
+    await expect(detail.rescheduleDialog()).toHaveCount(0);
+    expect(api.state()).toBe("authorize");
+    await expect(detail.blockingReason()).toHaveText("Awaiting CAB Approval");
+    await expect(detail.rescheduleButton()).toHaveCount(0);
+    await expect(detail.recordCustomerApprovalButton()).toHaveCount(0);
+    expect(api.stages().map((s) => s.stage)).toEqual(["Peer Approval", "CAB Approval", "Customer Approval", "CAB Approval"]);
+    expect(api.stages()[2].approvers.map((a) => a.status)).toEqual(["CANCELLED", "CANCELLED"]);
+    expect(api.stages()[3].approvers.map((a) => a.status)).toEqual(["REQUESTED"]);
+    expect(api.planned().start).toMatch(MOVED_TO_NEXT_WEEK);
+    expect(api.planned().end).toMatch(MOVED_TO_NEXT_WEEK);
+    expect(api.journal()).toContainEqual({ kind: "comment", text: "Customer freeze next week." });
+    const patches = api.requestBodies().filter((b) => b.request.startsWith("PATCH"));
+    expect(patches[patches.length - 1]?.body).toEqual({
+      state: "authorize",
+      plannedStartOn: api.planned().start,
+      plannedEndOn: api.planned().end,
+    });
+    await expectNoRescheduleOffered(detail);
+
+    // The new CAB approval asks the customer group again.
+    await switchTo(page, api, FAKE_CAB);
+    await expect(detail.approveButton()).toHaveCount(1);
+    await detail.approve("Cam Cab");
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    expect(api.state()).toBe("customer_approval");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval").nth(1)).toHaveText("Requested");
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval").first()).toHaveText("Cancelled");
+
+    await switchTo(page, api, FAKE_CUST_ONE);
+    await detail.approveButton().click();
+    await expect(detail.currentStep()).toContainText("Scheduled");
+    expect(api.state()).toBe("scheduled");
+    await expect(detail.blockingReason()).toHaveCount(0);
+    await expectNoRescheduleOffered(detail);
+  });
+
+  test("Normal without a customer group: Re-schedule sits next to Record customer approval; the dialog blocks an unchanged window and shows the backend's refusal", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true });
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.recordCustomerApprovalButton()).toBeVisible();
+    await expect(detail.rescheduleButton()).toBeVisible();
+
+    // No change -> the submit stays disabled.
+    await detail.rescheduleButton().click();
+    await expect(detail.rescheduleSubmit()).toBeDisabled();
+
+    // The backend's 400 is shown verbatim: the change moved on behind the dialog's back.
+    await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
+    await expect(detail.rescheduleSubmit()).toBeEnabled();
+    api.setState("scheduled");
+    await detail.rescheduleSubmit().click();
+    await expect(detail.rescheduleDialog().getByRole("alert")).toContainText(
+      'state "authorize" cannot be set manually',
+    );
+    await expect(detail.rescheduleDialog().getByRole("alert")).toContainText(
+      "it can only be set by hand to re-schedule a change from customer_approval",
+    );
+    expect(api.state()).toBe("scheduled");
+    expect(api.planned()).toEqual(ORIGINAL_WINDOW);
+    await detail.rescheduleDialog().getByRole("button", { name: "Close", exact: true }).click();
+    await expect(detail.rescheduleDialog()).toHaveCount(0);
+
+    // Back in Customer Approval, the loop works; the reasonless submit records no comment.
+    api.setState("customer_approval");
+    await page.reload();
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await detail.rescheduleButton().click();
+    await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
+    await detail.rescheduleSubmit().click();
+    await expect(detail.currentStep()).toContainText("Authorize");
+    await expect(detail.blockingReason()).toHaveText("Awaiting CAB Approval");
+    expect(api.journal()).toEqual([]);
+    expect(api.stages().map((s) => s.stage)).toEqual(["Peer Approval", "CAB Approval", "CAB Approval"]);
+  });
+
+  test("Emergency: Re-schedule goes back to Authorize for ECAB approval", async ({ page }) => {
+    test.setTimeout(240_000);
+    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR, { customerApprovalRequired: true });
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Authorize");
+    await switchTo(page, api, FAKE_ECAB);
+    await detail.approve("Eli Ecab");
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+
+    await detail.rescheduleButton().click();
+    await expect(detail.rescheduleDialog().getByText(/ECAB approval again/)).toBeVisible();
+    await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
+    await detail.rescheduleSubmit().click();
+    await expect(detail.currentStep()).toContainText("Authorize");
+    await expect(detail.blockingReason()).toHaveText("Awaiting ECAB Approval");
+    expect(api.stages().map((s) => s.stage)).toEqual(["ECAB Approval", "ECAB Approval"]);
+
+    await switchTo(page, api, FAKE_ECAB);
+    await detail.approveButton().click();
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    expect(api.state()).toBe("customer_approval");
+  });
+
+  test("Standard with a customer group: Re-schedule stays in Customer Approval and asks the customer again", async ({ page }) => {
+    test.setTimeout(240_000);
+    const api = await installFakeChangeRequestApi(
+      page,
+      "standard",
+      FAKE_CREATOR,
+      { customerApprovalRequired: true },
+      ON_ACME,
+    );
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    await expectNoRescheduleOffered(detail);
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.rescheduleButton()).toBeVisible();
+
+    await detail.rescheduleButton().click();
+    await expect(detail.rescheduleDialog().getByText(/stays in Customer Approval/)).toBeVisible();
+    await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
+    await detail.rescheduleSubmit().click();
+    await expect(detail.rescheduleDialog()).toHaveCount(0);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    expect(api.state()).toBe("customer_approval");
+    expect(api.planned().end).toMatch(MOVED_TO_NEXT_WEEK);
+    expect(api.planned().start).toBe(ORIGINAL_WINDOW.start);
+    expect(api.stages().map((s) => s.stage)).toEqual(["Customer Approval", "Customer Approval"]);
+    expect(api.stages()[0].approvers.map((a) => a.status)).toEqual(["CANCELLED", "CANCELLED"]);
+    expect(api.stages()[1].approvers.map((a) => a.status)).toEqual(["REQUESTED", "REQUESTED"]);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expect(detail.rescheduleButton()).toBeVisible();
+  });
+});
+
 test.describe("seeded fixtures (local stack) — create with an assignment group", () => {
   test("a team picked from the Assignment group picker is saved on create (no FK 400)", async ({ page }) => {
     test.setTimeout(60_000);

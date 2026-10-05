@@ -549,3 +549,52 @@ describe("ChangeRequestActionBar — Roll back", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+/**
+ * "Re-schedule": `authorize` from Customer Approval -- the planned time changed,
+ * so the change goes back through internal approval. A secondary (outlined)
+ * button next to the primary move; offered from `customer_approval` only.
+ */
+describe("ChangeRequestActionBar — Re-schedule", () => {
+  it("is an outlined button next to Record customer approval, with Cancel in the menu", () => {
+    const { onAction } = renderBar({
+      state: "customer_approval",
+      legalNextStates: ["scheduled", "authorize", "canceled"],
+    });
+    const contained = screen.getAllByRole("button").filter((b) => b.className.includes("MuiButton-contained"));
+    expect(contained).toHaveLength(1);
+    expect(contained[0]).toHaveTextContent("Record customer approval");
+    const reschedule = screen.getByRole("button", { name: "Re-schedule" });
+    expect(reschedule.className).toContain("MuiButton-outlined");
+    openMenu();
+    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Cancel change"]);
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    fireEvent.click(reschedule);
+    expect(onAction).toHaveBeenCalledWith("authorize");
+  });
+
+  it("stays on offer while a customer group's approval is pending (Cancel is the only other action)", () => {
+    renderBar({ state: "customer_approval", legalNextStates: ["authorize", "canceled"] });
+    expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record customer approval" })).not.toBeInTheDocument();
+    openMenu();
+    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Cancel change"]);
+  });
+
+  it("is disabled while a transition is in flight", () => {
+    renderBar({ state: "customer_approval", legalNextStates: ["authorize", "canceled"] }, { isPending: true });
+    expect(screen.getByRole("button", { name: "Re-schedule" })).toBeDisabled();
+  });
+
+  it("is never offered from any other state, even if the backend listed authorize", () => {
+    for (const state of [
+      "new", "assess", "authorize", "scheduled", "implement", "review", "customer_review",
+      "closed", "canceled", "rollback",
+    ]) {
+      cleanup();
+      renderBar({ state, legalNextStates: ["authorize"] });
+      expect(screen.queryByRole("button", { name: /re-schedule/i }), state).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /authorize/i }), state).not.toBeInTheDocument();
+    }
+  });
+});

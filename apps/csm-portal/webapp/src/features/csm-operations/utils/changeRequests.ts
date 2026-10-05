@@ -320,6 +320,9 @@ export function isChangeRequestCreator(
 /** Stage-level statuses that mean the stage is actively waiting on someone. */
 const WAITING_APPROVAL_STATUSES = new Set(["PENDING", "REQUESTED"]);
 
+/** Approver-level statuses that mean the approver is no longer being asked. */
+const NO_LONGER_ASKED_APPROVER_STATUSES = new Set(["CANCELLED", "CANCELED", "NOT_REQUIRED"]);
+
 /**
  * Plain-language reason a change request isn't moving on its own right now,
  * derived from its approval stages (`GET /change-requests/{id}/approvals`) —
@@ -340,7 +343,17 @@ export function changeRequestBlockingReason(
   // recorded manually. Same wording the stage label gives, never doubled.
   if (state === "customer_approval") return "Awaiting Customer Approval";
   if (state === "customer_review") return "Awaiting Customer Review";
-  const waiting = approvals?.find((a) => WAITING_APPROVAL_STATUSES.has(a.status.trim().toUpperCase()));
+  // A stage whose every approver was cancelled or marked not required (a
+  // superseded customer stage after a Re-schedule, a group change) has nobody
+  // left to answer, so it is not what the change is waiting on -- even though
+  // the backend reports such a stage as PENDING (nothing was approved or
+  // rejected on it).
+  const waiting = approvals?.find(
+    (a) =>
+      WAITING_APPROVAL_STATUSES.has(a.status.trim().toUpperCase()) &&
+      (a.approvers.length === 0 ||
+        a.approvers.some((p) => !NO_LONGER_ASKED_APPROVER_STATUSES.has(p.status.trim().toUpperCase()))),
+  );
   if (!waiting) return null;
   // A recognised stage (Peer / CAB / ECAB) is named by its stage label, which
   // already ends in "Approval" -- so this reads "Awaiting CAB Approval" and
@@ -495,6 +508,11 @@ export function changeRequestTransitionLabel(target: string, fromState?: string 
   // is recorded; it is the only place `scheduled` is ever an action.
   if (target === "scheduled" && fromState === "customer_approval") {
     return "Record customer approval";
+  }
+  // Likewise `authorize` is only ever an action from `customer_approval`: the
+  // planned time changed, so the change goes back through internal approval.
+  if (target === "authorize" && fromState === "customer_approval") {
+    return "Re-schedule";
   }
   return TRANSITION_LABEL[target] ?? sentenceCase(target);
 }

@@ -35,7 +35,16 @@
 //     Authorize; approving CAB/ECAB moves the CR on by itself;
 //   - "the post-approval state" is `customer_approval` when the CR has
 //     `customerApprovalRequired`, else `scheduled`;
-//   - from `customer_approval` legalNextStates = [scheduled, canceled];
+//   - from `customer_approval` legalNextStates = [scheduled, authorize, canceled]
+//     ([authorize, canceled] while a customer-group stage is live); "authorize"
+//     there is Re-schedule: PATCH {state:"authorize", plannedStartOn?,
+//     plannedEndOn?} is accepted ONLY from `customer_approval` and only when the
+//     window changes (else a 400 with the backend's wording); it cancels the
+//     customer's pending stage (kept as a record, reported PENDING with every
+//     approver CANCELLED, like the backend), moves a Normal / Emergency CR to
+//     `authorize` with a fresh "CAB Approval" / "ECAB Approval" stage, and keeps
+//     a Standard CR in `customer_approval` with a fresh customer stage; the new
+//     CAB / ECAB approval sends the CR to `customer_approval` again;
 //   - Review offers [customer_review, rollback, canceled] when
 //     `customerReviewRequired`, else [closed, rollback, canceled];
 //     `customer_review` -> [closed, rollback, canceled]. `rollback` ("Roll
@@ -238,6 +247,8 @@ export interface FakeChangeRequestApi {
    * next write that touches the state or the project.
    */
   setProjectContacts(projectId: string, contacts: FakeUser[]): void;
+  /** The planned window as the fake holds it ("YYYY-MM-DD HH:MM:SS", UTC). */
+  planned(): { start: string; end: string };
   /** The approval stages as the fake holds them (stage name -> status). */
   stages(): Array<{ stage: string; status: string; approvers: Array<{ name: string; status: string }> }>;
 }
@@ -254,7 +265,9 @@ function legalNextStates(state: string, flags: FakeCustomerFlags, liveCustomerSt
       return ["canceled"];
     case "customer_approval":
       // scheduled = "Record customer approval", unless the customer group decides
-      return liveCustomerStage ? ["canceled"] : ["scheduled", "canceled"];
+      // ... and "authorize" there is Re-schedule, which an internal user keeps
+      // even while the customer group's request is pending.
+      return liveCustomerStage ? ["authorize", "canceled"] : ["scheduled", "authorize", "canceled"];
     case "scheduled":
       return ["implement", "canceled"];
     case "implement":
@@ -317,6 +330,8 @@ export async function installFakeChangeRequestApi(
   const contacts = new Map<string, FakeUser[]>(Object.entries(FAKE_PROJECT_CONTACTS).map(([id, users]) => [id, [...users]]));
   /** The CR's customer group as the fake derives it: its project's registered contacts. */
   const currentContacts = (): FakeUser[] => (scope.projectId ? (contacts.get(scope.projectId) ?? []) : []);
+  let plannedStartOn = "2030-03-01 09:00:00";
+  let plannedEndOn = "2030-03-01 11:00:00";
   const log: string[] = [];
   const hasLiveCustomerStage = (): boolean =>
     stages.some((s) => CUSTOMER_STAGES.includes(s.stage) && s.status === "REQUESTED");
@@ -373,6 +388,8 @@ export async function installFakeChangeRequestApi(
     customerApprovalRequired: flags.customerApprovalRequired,
     customerReviewRequired: flags.customerReviewRequired,
     legalNextStates: legal(),
+    plannedStartOn,
+    plannedEndOn,
     project: FAKE_PROJECTS.find((p) => p.id === scope.projectId),
     deployments: FAKE_DEPLOYMENTS.filter((d) => scope.deploymentIds.includes(d.id)).map(({ id, name }) => ({ id, name })),
     deploymentProducts: FAKE_DEPLOYMENT_PRODUCTS.filter((p) => scope.deploymentProductIds.includes(p.id)).map(({ id, name }) => ({ id, name })),
@@ -701,6 +718,47 @@ export async function installFakeChangeRequestApi(
             if (st.status === "REQUESTED") st.status = "CANCELLED";
           }
           state = "rollback";
+        } else if (target === "authorize") {
+          // Re-schedule: the one manual way into Authorize, from Customer Approval only,
+          // and only when the planned window really changes.
+          if (state !== "customer_approval") {
+            return json(
+              route,
+              {
+                message:
+                  'state "authorize" cannot be set manually: it is reached automatically through the approval flow (Request Approval, then peer approval); it can only be set by hand to re-schedule a change from customer_approval',
+              },
+              400,
+            );
+          }
+          const newStart = typeof body.plannedStartOn === "string" ? body.plannedStartOn : undefined;
+          const newEnd = typeof body.plannedEndOn === "string" ? body.plannedEndOn : undefined;
+          if ((!newStart || newStart === plannedStartOn) && (!newEnd || newEnd === plannedEndOn)) {
+            return json(
+              route,
+              { message: "re-scheduling requires a changed planned start or end: send plannedStartOn and/or plannedEndOn with a value different from the stored one" },
+              400,
+            );
+          }
+          if ((newStart ?? plannedStartOn) > (newEnd ?? plannedEndOn)) {
+            return json(route, { message: "the planned start must not be after the planned end" }, 400);
+          }
+          plannedStartOn = newStart ?? plannedStartOn;
+          plannedEndOn = newEnd ?? plannedEndOn;
+          // The customer's pending request is superseded: rows cancelled, the stage stays
+          // as a record and is reported PENDING (nothing was approved or rejected on it).
+          for (const st of stages) {
+            if (CUSTOMER_STAGES.includes(st.stage) && st.status === "REQUESTED") {
+              for (const a of st.approvers) if (a.status === "REQUESTED") a.status = "CANCELLED";
+              st.status = "PENDING";
+            }
+          }
+          if (type === "standard") {
+            syncCustomerStage(); // nothing internal to repeat: the customer is asked again
+          } else {
+            state = "authorize";
+            stages = [...stages, type === "emergency" ? nextStage("ECAB Approval", "ECAB", FAKE_ECAB) : nextStage("CAB Approval", "CAB", FAKE_CAB)];
+          }
         } else if (target === "assess") {
           if (type === "standard") enter(afterInternalApproval());
           else if (type === "emergency") {
@@ -745,6 +803,7 @@ export async function installFakeChangeRequestApi(
     requestBodies: () => [...bodies],
     scope: () => ({ ...scope, deploymentIds: [...scope.deploymentIds], deploymentProductIds: [...scope.deploymentProductIds] }),
     journal: () => [...journal],
+    planned: () => ({ start: plannedStartOn, end: plannedEndOn }),
     retireDeployment: (deploymentId) => {
       retired.add(deploymentId);
     },

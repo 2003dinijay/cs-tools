@@ -245,6 +245,33 @@ describe("changeRequestBlockingReason", () => {
     ).toBeNull();
   });
 
+  // After a Re-schedule the superseded Customer Approval stage keeps its place in
+  // the list, all its approvers cancelled, and the backend reports it PENDING
+  // (nothing was approved or rejected on it). It is not what the change waits on.
+  it("skips a superseded stage whose approvers were all cancelled, naming the stage that is really waiting", () => {
+    const approver = (status: string) => ({ id: `u-${status}`, name: "Someone", status });
+    expect(
+      changeRequestBlockingReason(
+        [
+          approval({ stage: "Peer Approval", status: "APPROVED", approvers: [approver("APPROVED")] }),
+          approval({ stage: "CAB Approval", status: "APPROVED", approvers: [approver("APPROVED")] }),
+          approval({ stage: "Customer Approval", status: "PENDING", approvers: [approver("CANCELLED"), approver("CANCELED")] }),
+          approval({ stage: "CAB Approval", status: "PENDING", approvers: [approver("REQUESTED"), approver("CANCELLED")] }),
+        ],
+        "authorize",
+      ),
+    ).toBe("Awaiting CAB Approval");
+  });
+
+  it("returns null when the only PENDING stage has nobody left to ask", () => {
+    expect(
+      changeRequestBlockingReason(
+        [approval({ stage: "CAB Approval", status: "PENDING", approvers: [{ id: "u", name: "A", status: "NOT_REQUIRED" }] })],
+        "authorize",
+      ),
+    ).toBeNull();
+  });
+
   it("labels a legacy Authorize stage as CAB Approval", () => {
     expect(
       changeRequestBlockingReason([approval({ stage: "Authorize", status: "REQUESTED" })]),
@@ -359,6 +386,13 @@ describe("changeRequestTransitionLabel", () => {
       "Record customer approval",
     );
     expect(changeRequestTransitionLabel("scheduled")).not.toBe("Record customer approval");
+  });
+
+  it("labels authorize 'Re-schedule' only when leaving customer_approval", () => {
+    expect(changeRequestTransitionLabel("authorize", "customer_approval")).toBe("Re-schedule");
+    expect(changeRequestTransitionLabel("authorize", "assess")).not.toBe("Re-schedule");
+    expect(changeRequestTransitionLabel("authorize")).not.toBe("Re-schedule");
+    expect(isDestructiveChangeRequestTransition("authorize")).toBe(false);
   });
 
   it("labels the customer review and close transitions", () => {

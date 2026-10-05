@@ -1038,6 +1038,28 @@ func TestPatchChangeRequest_CustomerGateFlags(t *testing.T) {
 		}
 	})
 
+	// Re-schedule is a plain state PATCH carrying the new window (and an
+	// optional work note); the BFF forwards the body untouched.
+	t.Run("forwards a re-schedule (authorize + new window) verbatim", func(t *testing.T) {
+		const reqPayload = `{"state":"authorize","plannedStartOn":"2030-03-08 09:00:00","plannedEndOn":"2030-03-08 11:00:00","workNote":"Customer asked for next week."}`
+		var capturedBody []byte
+		client := &mockEntityChangeRequestClient{
+			patchChangeRequestFn: func(_ context.Context, _ string, body []byte) ([]byte, error) {
+				capturedBody = body
+				return []byte(`{"message":"ok","changeRequest":{"state":"authorize","legalNextStates":["canceled"]}}`), nil
+			},
+		}
+		w := patch(NewChangeRequestHandler(client), reqPayload)
+		assertStatus(t, w, http.StatusOK)
+		if string(capturedBody) != reqPayload {
+			t.Errorf("upstream received body %q, want %q", capturedBody, reqPayload)
+		}
+		resp := decodeJSON[map[string]any](t, w)
+		if cr, _ := resp["changeRequest"].(map[string]any); cr["state"] != "authorize" {
+			t.Errorf("response state = %v, want authorize", cr["state"])
+		}
+	})
+
 	t.Run("rejects a checkbox that is not a boolean", func(t *testing.T) {
 		for name, payload := range map[string]string{
 			"approval as string": `{"customerApprovalRequired":"true"}`,
@@ -1084,6 +1106,14 @@ func TestPatchChangeRequest_CustomerGateFlags(t *testing.T) {
 			"closed from review when required": {
 				`{"state":"closed"}`,
 				`state "closed" cannot be set from review: customer review is required for this change request (customerReviewRequired is true); move it to customer_review first`,
+			},
+			"authorize outside customer_approval": {
+				`{"state":"authorize","plannedStartOn":"2030-03-08 09:00:00"}`,
+				`state "authorize" cannot be set manually: it is reached automatically through the approval flow (Request Approval, then peer approval); it can only be set by hand to re-schedule a change from customer_approval`,
+			},
+			"re-schedule without a changed window": {
+				`{"state":"authorize","plannedStartOn":"2030-03-01 09:00:00"}`,
+				`re-scheduling requires a changed planned start or end: send plannedStartOn and/or plannedEndOn with a value different from the stored one`,
 			},
 			"rollback outside the review states": {
 				`{"state":"rollback"}`,

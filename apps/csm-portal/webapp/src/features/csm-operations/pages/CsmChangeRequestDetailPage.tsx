@@ -71,6 +71,7 @@ import {
 import ChangeRequestActionBar from "@features/csm-operations/components/ChangeRequestActionBar";
 import ChangeRequestApprovals from "@features/csm-operations/components/ChangeRequestApprovals";
 import ChangeRequestLifecycleStepper from "@features/csm-operations/components/ChangeRequestLifecycleStepper";
+import ChangeRequestRescheduleDialog from "@features/csm-operations/components/ChangeRequestRescheduleDialog";
 import ChangeRequestTransitionReasonDialog from "@features/csm-operations/components/ChangeRequestTransitionReasonDialog";
 import EditChangeRequestDialog from "@features/csm-operations/components/EditChangeRequestDialog";
 import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
@@ -344,6 +345,11 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   const [reasonTarget, setReasonTarget] = useState<string | null>(null);
   const [reasonError, setReasonError] = useState<string | null>(null);
   const [reasonRecorded, setReasonRecorded] = useState(false);
+  // Re-schedule (Customer Approval -> Authorize) collects the new planned
+  // window first; same shape as the reason dialog above.
+  const [rescheduleOpen, setRescheduleOpen] = useState(false);
+  const [rescheduleError, setRescheduleError] = useState<string | null>(null);
+  const [rescheduleReasonRecorded, setRescheduleReasonRecorded] = useState(false);
 
   const attachmentList = useMemo(() => attachments ?? [], [attachments]);
 
@@ -471,6 +477,13 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
    * the comment-then-patch ordering they then follow.
    */
   const onTransition = (target: string): void => {
+    // `authorize` is only offered as Re-schedule, which needs the new window.
+    if (target === "authorize") {
+      setRescheduleError(null);
+      setRescheduleReasonRecorded(false);
+      setRescheduleOpen(true);
+      return;
+    }
     if (changeRequestTransitionRequiresReason(target)) {
       setReasonError(null);
       setReasonRecorded(false);
@@ -547,6 +560,37 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
           transitionFallbackMessage(target),
         )} You don't need to retype it.`,
       );
+    }
+  };
+
+  /**
+   * Confirmed Re-schedule: the optional reason is recorded as an internal
+   * comment first (once, even across retries), then the state + new planned
+   * window are patched. The backend's refusal (e.g. "re-scheduling requires a
+   * changed planned start or end") is shown in the dialog as returned.
+   */
+  const confirmReschedule = async (
+    patch: BePatchChangeRequestPayload,
+    reason: string,
+  ): Promise<void> => {
+    setRescheduleError(null);
+    if (reason && !rescheduleReasonRecorded) {
+      try {
+        await postComment.mutateAsync({ changeRequestId: cr.id, bodyHtml: reason, internal: true });
+        setRescheduleReasonRecorded(true);
+      } catch (err) {
+        setRescheduleError(
+          backendErrorMessage(err, "Could not record the reason, so the change was not re-scheduled. Try again."),
+        );
+        return;
+      }
+    }
+    try {
+      await patchCr.mutateAsync({ id: cr.id, patch });
+      setRescheduleOpen(false);
+      setRescheduleReasonRecorded(false);
+    } catch (err) {
+      setRescheduleError(backendErrorMessage(err, "Could not re-schedule this change request."));
     }
   };
 
@@ -1050,6 +1094,21 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
             setReasonRecorded(false);
           }}
           onConfirm={(reason) => void confirmReasonTransition(reason)}
+        />
+      )}
+
+      {rescheduleOpen && (
+        <ChangeRequestRescheduleDialog
+          cr={cr}
+          isSubmitting={transitionPending}
+          error={rescheduleError}
+          onClose={() => {
+            if (transitionPending) return;
+            setRescheduleOpen(false);
+            setRescheduleError(null);
+            setRescheduleReasonRecorded(false);
+          }}
+          onSubmit={(patch, reason) => void confirmReschedule(patch, reason)}
         />
       )}
 

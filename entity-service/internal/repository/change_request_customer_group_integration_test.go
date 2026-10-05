@@ -172,7 +172,7 @@ func (f *crFlow) driveToCustomerApproval(id string) {
 	f.t.Helper()
 	f.requestApproval(id)
 	f.expect(id, "after Request Approval", "ASSESS", "authorize", "canceled")
-	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "canceled")
+	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 }
 
 // driveToCustomerReview takes a change that is Scheduled through Implement and
@@ -313,7 +313,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupStandardRequestApproval(t *te
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeStandard, sp(crScopeProjectA), true, false)
 	f.requestApproval(id)
-	f.expect(id, "after Request Approval", "CUSTOMER_APPROVAL", "canceled")
+	f.expect(id, "after Request Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	st := f.customerStages(id)
 	if len(st) != 1 || st[0].label != stageCustApproval {
 		t.Fatalf("customer stages = %+v", st)
@@ -339,7 +339,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupEmergencyECABCascade(t *testi
 	if err := f.decide(id, crECABMemberUserID, "approved"); err != nil {
 		t.Fatalf("ECAB approval: %v", err)
 	}
-	f.expect(id, "after ECAB approval", "CUSTOMER_APPROVAL", "canceled")
+	f.expect(id, "after ECAB approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	if st := f.customerStages(id); len(st) != 1 || st[0].label != stageCustApproval || liveStages(st) != 1 {
 		t.Fatalf("customer stages = %+v", st)
 	}
@@ -363,7 +363,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupCreatorAndNonMember(t *testin
 		err := f.decide(id, uid, "approved")
 		f.wantForbidden("non-member "+uid, err, `only members of the customer group`)
 	}
-	f.expect(id, "after refused decisions", "CUSTOMER_APPROVAL", "canceled")
+	f.expect(id, "after refused decisions", "CUSTOMER_APPROVAL", "authorize", "canceled")
 
 	// canDecide: true only for a member, on their own REQUESTED row.
 	if got := f.canDecideAs(id, crScopeUserA1); len(got) != 1 || !got[stageCustApproval+"/"+crScopeUserA1] {
@@ -419,7 +419,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupFallbackToManual(t *testing.T
 			}
 			id := f.createWithProject(domain.ChangeRequestTypeNormal, tc.project, true, true)
 			f.requestApproval(id)
-			f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "canceled")
+			f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
 			if n := len(f.customerStages(id)); n != 0 {
 				t.Fatalf("customer stage provisioned: %d", n)
 			}
@@ -462,11 +462,11 @@ func TestChangeRequestFlowIntegration_CustomerGroupFollowsTheProject(t *testing.
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeStandard, nil, true, true)
 	f.requestApproval(id)
-	f.expect(id, "in Customer Approval, no project", "CUSTOMER_APPROVAL", "scheduled", "canceled")
+	f.expect(id, "in Customer Approval, no project", "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
 
 	// Project set later: the stage appears; the manual path closes.
 	f.setProject(id, crScopeProjectA)
-	f.expect(id, "after the project was set", "CUSTOMER_APPROVAL", "canceled")
+	f.expect(id, "after the project was set", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	st := f.customerStages(id)
 	if len(st) != 1 {
 		t.Fatalf("stages after set = %+v", st)
@@ -484,7 +484,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupFollowsTheProject(t *testing.
 	// Project changed while live: customer A's stage is cancelled and customer
 	// B's contacts are asked instead.
 	f.setProject(id, crScopeProjectB)
-	f.expect(id, "after the project changed", "CUSTOMER_APPROVAL", "canceled")
+	f.expect(id, "after the project changed", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	st = f.customerStages(id)
 	if len(st) != 2 || liveStages(st) != 1 {
 		t.Fatalf("stages after change = %+v, want 2 (1 live)", st)
@@ -496,7 +496,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupFollowsTheProject(t *testing.
 
 	// A project without contacts: nothing live, the manual path is back.
 	f.setProject(id, crScopeProjectC)
-	f.expect(id, "after the project lost its contacts", "CUSTOMER_APPROVAL", "scheduled", "canceled")
+	f.expect(id, "after the project lost its contacts", "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
 	if liveStages(f.customerStages(id)) != 0 {
 		t.Fatalf("a live customer stage remains for a project without contacts")
 	}
@@ -539,8 +539,8 @@ func TestChangeRequestFlowIntegration_CustomerGroupIsolatesCustomers(t *testing.
 	// answer B's -- and a refused answer changes nothing.
 	f.wantForbidden("customer B deciding A's change", f.decide(idA, crScopeUserB1, "approved"), "only members of the customer group")
 	f.wantForbidden("customer A deciding B's change", f.decide(idB, crScopeUserA1, "approved"), "only members of the customer group")
-	f.expect(idA, "A after the refused decision", "CUSTOMER_APPROVAL", "canceled")
-	f.expect(idB, "B after the refused decision", "CUSTOMER_APPROVAL", "canceled")
+	f.expect(idA, "A after the refused decision", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	f.expect(idB, "B after the refused decision", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	if got := f.canDecideAs(idA, crScopeUserB1); len(got) != 0 {
 		t.Fatalf("canDecide for customer B on A's change = %v", got)
 	}
@@ -548,7 +548,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupIsolatesCustomers(t *testing.
 		t.Fatalf("customer A's own contact: %v", err)
 	}
 	f.expect(idA, "A after its own contact approved", "SCHEDULED", "implement", "canceled")
-	f.expect(idB, "B untouched by A's decision", "CUSTOMER_APPROVAL", "canceled")
+	f.expect(idB, "B untouched by A's decision", "CUSTOMER_APPROVAL", "authorize", "canceled")
 }
 
 // While a customer stage is live the manual transitions are refused with a
@@ -560,7 +560,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupRefusesManualTransition(t *te
 	_, err := f.patchState(id, domain.ChangeRequestStateScheduled)
 	f.wantValidationError("manual scheduled", err, "approving or rejecting it in the change request's approvals")
 	f.wantValidationError("manual scheduled", err, `the customer group (the registered contacts of the change request's project)`)
-	f.expect(id, "after the refused scheduled", "CUSTOMER_APPROVAL", "canceled")
+	f.expect(id, "after the refused scheduled", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	if approved, _ := f.customerOutcome(id); approved {
 		t.Fatal("refused PATCH stamped is_customer_approved")
 	}
@@ -609,7 +609,13 @@ func TestChangeRequestFlowIntegration_SeedCustomerGroupFixtures(t *testing.T) {
 		if got := contactNames(cr.CustomerContacts); strings.Join(got, ",") != "Jane Doe,John Smith" {
 			t.Fatalf("%s customerContacts = %v, want the project's Jane Doe,John Smith", tc.number, got)
 		}
-		assertStates(t, tc.number+" legalNextStates", cr.LegalNextStates, "canceled")
+		// A live customer request leaves only Cancel -- and, at Customer
+		// Approval, Re-schedule ("authorize").
+		wantLegal := []string{"canceled"}
+		if tc.state == "customer_approval" {
+			wantLegal = []string{"authorize", "canceled"}
+		}
+		assertStates(t, tc.number+" legalNextStates", cr.LegalNextStates, wantLegal...)
 		ctx := repository.WithCallerIdentity(context.Background(), repository.SearchScope{Unrestricted: true, ViewerEmail: "jane.doe@example.com"})
 		view, err := f.repo.GetChangeRequestApprovals(ctx, tc.id)
 		if err != nil {
@@ -646,7 +652,7 @@ func TestChangeRequestFlowIntegration_StoredCustomerGroupIsNoLongerUsedForApprov
 	// seededGroupID has real members (the seeded users); store it as the legacy group.
 	f.execSQL(`UPDATE change_request SET customer_group_id = $1 WHERE id = $2`, seededGroupID, id)
 	f.requestApproval(id)
-	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "canceled")
+	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
 	if n := len(f.customerStages(id)); n != 0 {
 		t.Fatalf("a customer stage was provisioned from the legacy group: %+v", f.customerStages(id))
 	}

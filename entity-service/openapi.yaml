@@ -15739,12 +15739,17 @@ components:
                 assess: [authorize, canceled]; authorize: [canceled] (CAB/ECAB
                 approval moves the change on by itself: to scheduled, or to
                 customer_approval when customerApprovalRequired).
-                customer_approval: [scheduled, canceled] -- "scheduled" here
-                means "record the customer's approval" and is the ONLY state
-                from which a manual scheduled is accepted -- UNLESS the change
-                has a customer group with a pending "Customer Approval" stage,
-                in which case it is [canceled] and the decision comes from the
-                group's members through the approvals.
+                customer_approval: [scheduled, authorize, canceled] --
+                "scheduled" here means "record the customer's approval" and is
+                the ONLY state from which a manual scheduled is accepted;
+                "authorize" here means Re-schedule (PATCH {state: authorize}
+                with a changed plannedStartOn and/or plannedEndOn sends the
+                change back through CAB/ECAB approval; it is accepted from this
+                state only and refused when the window does not change). When
+                the change has a customer group with a pending "Customer
+                Approval" stage "scheduled" is withdrawn: [authorize,
+                canceled], and the decision comes from the group's members
+                through the approvals.
                 scheduled: [implement, canceled]; implement: [review,
                 canceled].
                 review: [customer_review, rollback, canceled] when

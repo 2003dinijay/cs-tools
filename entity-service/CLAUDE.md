@@ -2504,6 +2504,10 @@ create. The type cannot be changed by PATCH once an approval stage exists.
 | Emergency | New →(**Request Approval**)→ Authorize `[ECAB Approval only]` → **Scheduled automatically on ECAB approval** → Implement → Review → Closed |
 | Standard | New →(**Request Approval**)→ **Scheduled** (no approval stages at all) → Implement → Review → Closed |
 
+Two off-ramps/loops sit outside the table: **Roll back** (from Review / Customer
+Review, final) and **Re-schedule** (from Customer Approval back to Authorize,
+below).
+
 The table is the flow with both creation-form checkboxes **unticked**. With
 **Customer Approval** ticked, every "→ Scheduled" above becomes "→ **Customer
 Approval** → (customer's approval recorded) → Scheduled"; with **Customer Review**
@@ -2521,20 +2525,54 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   PATCH is rejected (400): Scheduled is reached only by the CAB/ECAB approval
   cascade or by Request Approval on a Standard change -- **except from
   `customer_approval`**, where the human action `scheduled` means "record the
-  customer's approval". The ServiceNow data source's own offered states are
+  customer's approval" (and `authorize` means Re-schedule, see below). The ServiceNow data source's own offered states are
   filtered the same way (`withoutManualScheduled`, which keeps `scheduled` for a
   change sitting in `customer_approval`). `legalNextStates` per state (the single
   source of truth the webapp renders): new `[assess, canceled]`, assess
   `[authorize, canceled]` (`authorize` is the approval path; the webapp never
   renders it as a button), authorize `[canceled]`, customer_approval
-  `[scheduled, canceled]`, scheduled `[implement, canceled]`, implement
+  `[scheduled, authorize, canceled]` (`authorize` = Re-schedule), scheduled `[implement, canceled]`, implement
   `[review, canceled]`, review `[closed, rollback, canceled]` -- or
   `[customer_review, rollback, canceled]` when `customerReviewRequired` --,
   customer_review `[closed, rollback, canceled]`, terminal states none.
   **While a live Customer Approval / Customer Review stage exists (the change
-  has registered customer contacts, see "Customer Group" below) `customer_approval` and
-  `customer_review` offer only `[canceled]`**: the manual `scheduled` /
-  `closed` / `rollback` is withdrawn and refused.
+  has registered customer contacts, see "Customer Group" below) `customer_approval` offers
+  `[authorize, canceled]` and `customer_review` only `[canceled]`**: the manual
+  `scheduled` / `closed` / `rollback` is withdrawn and refused (Re-schedule
+  stays: an internal user may re-plan, which supersedes the pending request).
+* **Re-schedule** (the process diagram's "Time Change" loop). In
+  `customer_approval`, `PATCH {state: "authorize", plannedStartOn?,
+  plannedEndOn?}` sends the change back through internal approval because the
+  planned time changed. It is the one manual way into `authorize`; from any
+  other state the PATCH is a 400 `state "authorize" cannot be set manually: it
+  is reached automatically through the approval flow (Request Approval, then
+  peer approval); it can only be set by hand to re-schedule a change from
+  customer_approval`. **"Time Change = Yes" is enforced**: the request must
+  carry a start and/or end that differs from the stored instant, else 400
+  `re-scheduling requires a changed planned start or end: ...` (unparseable
+  dates: 400 `... must be valid date-times (RFC 3339)`; an end before the
+  start: 400 `the planned start must not be after the planned end`). The on-hold
+  gate applies; the whole PATCH is one transaction, so a re-schedule that cannot
+  be satisfied (e.g. the CAB group has nobody eligible) changes nothing.
+  Effects: the new window is applied; the customer's pending stage is cancelled
+  (it stays as a record, `provisionCustomerStage` as for any state exit); the
+  state becomes `authorize` and a **fresh internal stage** is provisioned --
+  Normal: a new "CAB Approval" stage (the peer approval stands), Emergency: a
+  new "ECAB Approval" stage -- from the same group with the creator listed
+  cancelled (`provisionReauthorizationStage`; no ordinal-position test, but
+  `provisionApprovalStage` now counts only the FIRST stage of each label, so
+  the Review checkpoint is still provisioned for a re-scheduled change). Stage
+  order after one loop: Peer, CAB, Customer Approval (cancelled), CAB (new).
+  When the new CAB / ECAB stage is approved the ordinary cascade sends the
+  change to `customer_approval` and provisions a fresh Customer Approval stage
+  for the customer group. Rejecting the new stage behaves as a CAB / ECAB
+  rejection always has (siblings cancelled, state unchanged). **Standard** has
+  no internal approval to repeat: the dates are applied, the change **stays in
+  `customer_approval`** and the customer is asked again (pending stage
+  cancelled, a fresh one provisioned when the group has an eligible member;
+  the manual `scheduled` path stays otherwise). The loop can be repeated.
+  `customerApprovalRequired` remains editable in `authorize` (existing rule),
+  so it can still be unticked there. No new notifications.
 * **Roll back** (`rollback`) is the failed-review off-ramp of the process
   diagram and is offered from exactly two states, `review` (internal review
   failed) and `customer_review` (customer review failed), whether or not

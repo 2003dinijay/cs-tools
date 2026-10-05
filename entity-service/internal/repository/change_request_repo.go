@@ -395,6 +395,10 @@ func ChangeRequestTypeSupported(t domain.ChangeRequestType) bool {
 //   - Review offers Closed -- or, when customer_review_required is set,
 //     Customer Review instead (legalChangeRequestNextStates applies that
 //     branch; the map holds the default). Customer Review then offers Closed.
+//   - Customer Approval additionally offers Authorize, which means Re-schedule:
+//     the planned time changed, so the change goes back through internal
+//     approval (patchChangeRequestTx documents the contract). It is the one
+//     state from which a manual {state: "authorize"} is accepted.
 //   - Rollback is the failed-review off-ramp and is offered from exactly two
 //     states, Review (the internal review failed) and Customer Review (the
 //     customer's review failed): changeRequestRollbackFrom. It is not a
@@ -418,7 +422,9 @@ var changeRequestForwardNextStates = map[domain.ChangeRequestState][]domain.Chan
 	// Customer Approval is the customer-approval step: "scheduled" records the
 	// customer's approval (stamping is_customer_approved) and schedules the
 	// change; Cancel is the customer declining.
-	domain.ChangeRequestStateCustomerApproval: {domain.ChangeRequestStateScheduled},
+	// "authorize" here is Re-schedule (the process diagram's Time Change loop),
+	// not the approval path: see rescheduleChangeRequest.
+	domain.ChangeRequestStateCustomerApproval: {domain.ChangeRequestStateScheduled, domain.ChangeRequestStateAuthorize},
 	domain.ChangeRequestStateScheduled:        {domain.ChangeRequestStateImplement},
 	domain.ChangeRequestStateImplement:        {domain.ChangeRequestStateReview},
 	// Review's default (customer review not required) is Closed directly.
@@ -1268,6 +1274,10 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	// is refused (validateCustomerGateEdits). The row is read under FOR UPDATE.
 	effectiveState := req.State
 	var requestApprovalFlow *changeRequestFlow
+	// Re-schedule (see the "authorize" case below): the internal stage to run
+	// again, or -- Standard -- whether the customer is simply asked again.
+	var rescheduleCheckpoint *changeRequestApprovalCheckpoint
+	rescheduleAsksCustomerAgain := false
 	effectiveApproved, effectiveReviewed := req.IsCustomerApproved, req.IsCustomerReviewed
 	var gates changeRequestGateSnapshot
 	if req.State != nil || req.CustomerApprovalRequired != nil || req.CustomerReviewRequired != nil {
@@ -1296,8 +1306,32 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		}
 		switch strings.ToLower(string(*req.State)) {
 		case "authorize":
-			return "", &apierror.ValidationError{Msg: fmt.Sprintf(
-				"state %q cannot be set manually: it is reached automatically through the approval flow (Request Approval, then peer approval)", *req.State)}
+			// Re-schedule: the one manual way into Authorize, from Customer
+			// Approval only, and only when the planned window really changes
+			// (the diagram's "Time Change = Yes").
+			if gates.state != "CUSTOMER_APPROVAL" {
+				return "", &apierror.ValidationError{Msg: fmt.Sprintf(
+					"state %q cannot be set manually: it is reached automatically through the approval flow (Request Approval, then peer approval); it can only be set by hand to re-schedule a change from customer_approval", *req.State)}
+			}
+			if err := checkRescheduleWindow(ctx, tx, id, req.PlannedStartOn, req.PlannedEndOn); err != nil {
+				return "", err
+			}
+			flow := changeRequestFlowForModel(gates.model)
+			switch {
+			case flow.checkpoint == nil:
+				// Standard has no internal approval to run again: the new
+				// dates are applied, the change stays in Customer Approval and
+				// the customer is asked again (replaced stage, below).
+				stay := domain.ChangeRequestStateCustomerApproval
+				effectiveState = &stay
+				rescheduleAsksCustomerAgain = true
+			case flow.checkpoint.Pool == poolPeer:
+				// Normal: the peer approval stands; CAB approves again.
+				rescheduleCheckpoint = &changeRequestCABCheckpoint
+			default:
+				// Emergency: ECAB approves again.
+				rescheduleCheckpoint = flow.checkpoint
+			}
 		case "customer_approval":
 			return "", &apierror.ValidationError{Msg: fmt.Sprintf(
 				"state %q cannot be set manually: it is reached automatically through the approval flow when customerApprovalRequired is set", *req.State)}
@@ -1699,6 +1733,20 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		}
 	}
 
+	// Re-schedule: a fresh internal approval stage (Normal: CAB, Emergency:
+	// ECAB) for the new plan, or -- Standard, nothing internal to repeat --
+	// the customer's pending request replaced by a fresh one (the call below
+	// provisions it once the old one is cancelled).
+	if rescheduleCheckpoint != nil {
+		if err := provisionReauthorizationStage(ctx, tx, id, actorEmail, *rescheduleCheckpoint); err != nil {
+			return "", err
+		}
+	}
+	if rescheduleAsksCustomerAgain {
+		if err := cancelLiveCustomerStages(ctx, tx, id, actorEmail); err != nil {
+			return "", err
+		}
+	}
 	// The customer group (the project's registered contacts) answers Customer
 	// Approval / Customer Review through an approval stage of its own
 	// (provisionCustomerStage). Whatever this PATCH changed about the state or
@@ -1977,10 +2025,17 @@ func provisionApprovalStage(ctx context.Context, tx pgx.Tx, workItemID string, a
 	// the Review checkpoint of a Normal change that went through Customer
 	// Approval at position 3 instead of 2, and it would silently never be
 	// provisioned.
+	// A re-schedule's repeated CAB / ECAB stage (provisionReauthorizationStage)
+	// is the same checkpoint again, not a further one: only the FIRST stage of
+	// each label counts, or the Review checkpoint would never be provisioned
+	// for a change that was re-scheduled.
 	var existingStages int
 	if err := tx.QueryRow(ctx,
-		`SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1
-		   AND COALESCE(checkpoint_label, '') NOT IN ($2, $3)`,
+		`SELECT COUNT(*) FROM approval_stage s WHERE s.work_item_id = $1
+		   AND COALESCE(s.checkpoint_label, '') NOT IN ($2, $3)
+		   AND NOT EXISTS (SELECT 1 FROM approval_stage e
+		                    WHERE e.work_item_id = s.work_item_id AND e.checkpoint_label = s.checkpoint_label
+		                      AND (e.created_on, e.id) < (s.created_on, s.id))`,
 		workItemID, approvalStageLabelCustomerApproval, approvalStageLabelCustomerReview).Scan(&existingStages); err != nil {
 		return false, fmt.Errorf("patch change request: check existing approval stages: %w", err)
 	}

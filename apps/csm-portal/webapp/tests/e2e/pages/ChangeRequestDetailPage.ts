@@ -170,6 +170,38 @@ export class ChangeRequestDetailPage {
     return this.page.getByRole("dialog");
   }
 
+  /** "Re-schedule" -- the outlined button beside the primary action in Customer Approval. */
+  rescheduleButton(): Locator {
+    return this.page.getByRole("button", { name: "Re-schedule", exact: true });
+  }
+
+  /** The Re-schedule dialog (its heading is "Re-schedule this change?"). */
+  rescheduleDialog(): Locator {
+    return this.page.getByRole("dialog").filter({ has: this.page.getByRole("heading", { name: "Re-schedule this change?" }) });
+  }
+
+  /** The dialog's submit button (the bar's own "Re-schedule" is behind the modal). */
+  rescheduleSubmit(): Locator {
+    return this.rescheduleDialog().getByRole("button", { name: "Re-schedule", exact: true });
+  }
+
+  /**
+   * Types a wall-clock value (in the signed-in user's time zone, as the picker
+   * shows it) into one of the Re-schedule dialog's MUI date-time pickers
+   * ("Planned start" | "Planned end"): focuses the Month section, then types `MMDDYYYYhhmm` + AM/PM, which the field auto-advances through.
+   */
+  async fillRescheduleWindow(label: "Planned start" | "Planned end", value: { month: number; day: number; year: number; hour12: number; minute: number; pm: boolean }): Promise<void> {
+    const two = (n: number): string => String(n).padStart(2, "0");
+    const group = this.rescheduleDialog().getByRole("group", { name: new RegExp(`^${label}`) });
+    // Focus the first section (Month) explicitly: a click on the group's centre
+    // would land on the Year section and shift every typed digit.
+    await group.getByRole("spinbutton", { name: "Month" }).click();
+    await this.page.keyboard.type(
+      `${two(value.month)}${two(value.day)}${value.year}${two(value.hour12)}${two(value.minute)}${value.pm ? "PM" : "AM"}`,
+      { delay: 30 },
+    );
+  }
+
   editButton(): Locator {
     return this.page.getByRole("button", { name: "Edit", exact: true });
   }

@@ -500,8 +500,10 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 		{string(domain.ChangeRequestStateAuthorize), false, []string{"canceled"}},
 		// Customer Approval: "scheduled" records the customer's approval; Cancel
 		// is the customer declining. It is the ONE state that offers scheduled.
-		{string(domain.ChangeRequestStateCustomerApproval), false, []string{"scheduled", "canceled"}},
-		{string(domain.ChangeRequestStateCustomerApproval), true, []string{"scheduled", "canceled"}},
+		// ... and "authorize" there means Re-schedule (the planned time changed:
+		// back through internal approval). It is offered from this state only.
+		{string(domain.ChangeRequestStateCustomerApproval), false, []string{"scheduled", "authorize", "canceled"}},
+		{string(domain.ChangeRequestStateCustomerApproval), true, []string{"scheduled", "authorize", "canceled"}},
 		{string(domain.ChangeRequestStateScheduled), false, []string{"implement", "canceled"}},
 		{string(domain.ChangeRequestStateImplement), false, []string{"review", "canceled"}},
 		// Review: Closed directly unless the customer's review is required, in
@@ -541,6 +543,27 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 						t.Errorf("legalChangeRequestNextStates(%q) offers %q; Scheduled is reached automatically except by recording the customer's approval", s, next)
 					}
 				}
+			}
+		}
+	})
+
+	t.Run("authorize is offered from assess (approval path) and customer_approval (re-schedule) only", func(t *testing.T) {
+		for _, st := range []domain.ChangeRequestState{
+			domain.ChangeRequestStateNew, domain.ChangeRequestStateAssess, domain.ChangeRequestStateAuthorize,
+			domain.ChangeRequestStateCustomerApproval, domain.ChangeRequestStateScheduled, domain.ChangeRequestStateImplement,
+			domain.ChangeRequestStateReview, domain.ChangeRequestStateCustomerReview,
+			domain.ChangeRequestStateRollback, domain.ChangeRequestStateClosed, domain.ChangeRequestStateCanceled,
+		} {
+			want := st == domain.ChangeRequestStateAssess || st == domain.ChangeRequestStateCustomerApproval
+			s := string(st)
+			got := false
+			for _, next := range legalChangeRequestNextStates(&s, false) {
+				if next == string(domain.ChangeRequestStateAuthorize) {
+					got = true
+				}
+			}
+			if got != want {
+				t.Errorf("legalChangeRequestNextStates(%q) offers authorize = %v, want %v", s, got, want)
 			}
 		}
 	})
@@ -820,8 +843,10 @@ func TestWithoutManualCustomerOutcome(t *testing.T) {
 		live  bool
 		want  []string
 	}{
-		{"customer_approval, live", str("CUSTOMER_APPROVAL"), []string{"scheduled", "canceled"}, true, []string{"canceled"}},
-		{"customer_approval, not live (fallback)", str("CUSTOMER_APPROVAL"), []string{"scheduled", "canceled"}, false, []string{"scheduled", "canceled"}},
+		// Re-schedule ("authorize") stays on offer: an internal user may still
+		// re-plan, which supersedes the pending customer request.
+		{"customer_approval, live", str("CUSTOMER_APPROVAL"), []string{"scheduled", "authorize", "canceled"}, true, []string{"authorize", "canceled"}},
+		{"customer_approval, not live (fallback)", str("CUSTOMER_APPROVAL"), []string{"scheduled", "authorize", "canceled"}, false, []string{"scheduled", "authorize", "canceled"}},
 		{"customer_review, live", str("CUSTOMER_REVIEW"), []string{"closed", "rollback", "canceled"}, true, []string{"canceled"}},
 		{"customer_review, not live (fallback)", str("CUSTOMER_REVIEW"), []string{"closed", "rollback", "canceled"}, false, []string{"closed", "rollback", "canceled"}},
 		{"review is untouched even with a live customer stage", str("REVIEW"), []string{"closed", "rollback", "canceled"}, true, []string{"closed", "rollback", "canceled"}},

@@ -829,6 +829,90 @@ func cancelLiveStageApprovers(ctx context.Context, tx pgx.Tx, stageID, actorEmai
 	return nil
 }
 
+// checkRescheduleWindow is the "Time Change = Yes" test of a Re-schedule:
+// the request must carry a planned start and/or end that differs from what is
+// stored (a value equal to the stored instant is not a change), and the
+// resulting window must not end before it starts.
+func checkRescheduleWindow(ctx context.Context, tx pgx.Tx, id string, start, end *string) error {
+	var startChanged, endChanged, inverted bool
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE($1::text::timestamptz IS DISTINCT FROM start_on, false) AND $1::text IS NOT NULL,
+		       COALESCE($2::text::timestamptz IS DISTINCT FROM end_on, false) AND $2::text IS NOT NULL,
+		       COALESCE(COALESCE($1::text::timestamptz, start_on) > COALESCE($2::text::timestamptz, end_on), false)
+		FROM change_request WHERE id = $3`, start, end, id).Scan(&startChanged, &endChanged, &inverted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &apierror.NotFoundError{Msg: "change request not found"}
+	}
+	if err != nil {
+		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && strings.HasPrefix(pgErr.Code, "22") {
+			return &apierror.ValidationError{Msg: "plannedStartOn and plannedEndOn must be valid date-times (RFC 3339)"}
+		}
+		return fmt.Errorf("patch change request: check re-schedule window: %w", err)
+	}
+	if !startChanged && !endChanged {
+		return &apierror.ValidationError{Msg: "re-scheduling requires a changed planned start or end: send plannedStartOn and/or plannedEndOn with a value different from the stored one"}
+	}
+	if inverted {
+		return &apierror.ValidationError{Msg: "the planned start must not be after the planned end"}
+	}
+	return nil
+}
+
+// provisionReauthorizationStage opens a FRESH stage for a checkpoint that has
+// already run (CAB / ECAB after a Re-schedule): the same group, the same
+// creator exclusion, a new approval_stage row (the earlier stage stays as a
+// record). Idempotent: a stage of this label that still has a requested
+// approver is left alone. Unlike provisionApprovalStage it does not test the
+// checkpoint's ordinal position -- repeating a checkpoint is the point. A group
+// with nobody eligible is a ValidationError, so a change is never re-scheduled
+// into an approval nobody can give.
+func provisionReauthorizationStage(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string, cp changeRequestApprovalCheckpoint) error {
+	if err := setCallerIdentity(ctx, tx, SearchScope{Unrestricted: true}); err != nil {
+		return fmt.Errorf("re-schedule: escalate identity: %w", err)
+	}
+	var live bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM approval_stage ast
+		                 WHERE ast.work_item_id = $1 AND ast.checkpoint_label = $2
+		                   AND EXISTS (SELECT 1 FROM approval_stage_approver asa WHERE asa.stage_id = ast.id AND asa.status = 'requested'))`,
+		workItemID, cp.Label).Scan(&live); err != nil {
+		return fmt.Errorf("re-schedule: check live %s stage: %w", cp.Label, err)
+	}
+	if live {
+		return nil
+	}
+	creatorIDs, err := changeRequestCreatorUserIDs(ctx, tx, workItemID)
+	if err != nil {
+		return fmt.Errorf("re-schedule: %w", err)
+	}
+	pool, err := resolveApprovalPool(ctx, tx, cp, nil, creatorIDs)
+	if err != nil {
+		return err
+	}
+	return insertApprovalStage(ctx, tx, workItemID, actorEmail, cp.Label, pool, creatorIDs)
+}
+
+// cancelLiveCustomerStages cancels the requested approvers of every live
+// customer stage (the stages stay, as a record).
+func cancelLiveCustomerStages(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string) error {
+	live, err := liveCustomerStages(ctx, tx, workItemID)
+	if err != nil {
+		return err
+	}
+	if len(live) == 0 {
+		return nil
+	}
+	if err := setCallerIdentity(ctx, tx, SearchScope{Unrestricted: true}); err != nil {
+		return fmt.Errorf("cancel customer stages: escalate identity: %w", err)
+	}
+	for _, st := range live {
+		if err := cancelLiveStageApprovers(ctx, tx, st.stageID, actorEmail); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // cancelPendingApprovers cancels every still-REQUESTED approver row of the
 // change, on whatever stage (the stages stay, as a record). Used when the
 // change reaches a state nothing can be approved in any more by hand (Rollback).

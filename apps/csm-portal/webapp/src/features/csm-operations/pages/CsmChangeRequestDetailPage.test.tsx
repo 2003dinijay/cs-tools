@@ -15,7 +15,7 @@
 // under the License.
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { useEffect, useState, type JSX } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -27,6 +27,7 @@ import { CaseTabsProvider, useCaseTabsController } from "@context/case-tabs/Case
 import { CaseTabsBehaviorProvider } from "@context/case-tabs/CaseTabsBehaviorContext";
 import { useCaseTabCloseConfirm } from "@features/case-tabs/hooks/useCaseTabCloseConfirm";
 import LoggerProvider from "@context/logger/LoggerProvider";
+import { clearUserPreferredTimeZone, setUserPreferredTimeZone } from "@utils/dateTime";
 
 const navigateMock = vi.fn();
 const useGetChangeRequestMock = vi.fn();
@@ -1193,7 +1194,8 @@ function lcLegalNextStates(
     case "customer_approval":
       // A live customer stage means the customer group decides: only cancel is
       // offered. Without one the manual "Record customer approval" remains.
-      return lcHasLiveCustomerStage() ? ["canceled"] : ["scheduled", "canceled"];
+      // "authorize" here is Re-schedule, offered either way.
+      return lcHasLiveCustomerStage() ? ["authorize", "canceled"] : ["scheduled", "authorize", "canceled"];
     case "scheduled":
       return ["implement", "canceled"];
     case "implement":
@@ -1290,6 +1292,8 @@ function lcSeed(
       customerApprovalRequired: flags.approval,
       customerReviewRequired: flags.review,
       customerContacts: customerGroup ? (customerGroup.contacts ?? customerGroup.members) : [],
+      plannedStartOn: "2030-03-01 09:00:00",
+      plannedEndOn: "2030-03-01 11:00:00",
       legalNextStates: lcLegalNextStates("new", flags),
     },
     approvals: [],
@@ -1312,6 +1316,42 @@ function lcSeed(
       lcSetState("scheduled"); // the customer's approval was recorded
     } else if (target === "closed" && lc.cr.state === "customer_review" && lcHasLiveCustomerStage()) {
       throw new Error("400: the customer group must decide");
+    } else if (target === "authorize") {
+      // Re-schedule: only from Customer Approval, only with a changed window.
+      if (lc.cr.state !== "customer_approval") {
+        throw new BackendApiError(
+          400,
+          'state "authorize" cannot be set manually: it is reached automatically through the approval flow (Request Approval, then peer approval); it can only be set by hand to re-schedule a change from customer_approval',
+        );
+      }
+      const win = input.patch as { plannedStartOn?: string; plannedEndOn?: string };
+      const changed =
+        (!!win.plannedStartOn && win.plannedStartOn !== lc.cr.plannedStartOn) ||
+        (!!win.plannedEndOn && win.plannedEndOn !== lc.cr.plannedEndOn);
+      if (!changed) {
+        throw new BackendApiError(400, "re-scheduling requires a changed planned start or end");
+      }
+      lc.cr = {
+        ...lc.cr,
+        plannedStartOn: win.plannedStartOn ?? lc.cr.plannedStartOn,
+        plannedEndOn: win.plannedEndOn ?? lc.cr.plannedEndOn,
+      };
+      // The customer's pending request is superseded: its rows are cancelled
+      // (the stage stays as a record; the backend reports it PENDING).
+      lc.approvals = lc.approvals.map((a) =>
+        lcIsCustomerStage(a.stage) && a.status === "REQUESTED"
+          ? { ...a, status: "PENDING", approvers: a.approvers.map((ap) => ({ ...ap, status: "CANCELLED" })) }
+          : a,
+      );
+      if (lc.cr.type === "standard") {
+        lcSetState("customer_approval"); // nothing internal to repeat: ask the customer again
+      } else {
+        lcSetState("authorize");
+        lc.approvals = [
+          ...lc.approvals,
+          lc.cr.type === "emergency" ? lcStage("ECAB Approval", "ECAB", LC_ECAB) : lcStage("CAB Approval", "CAB", LC_CAB),
+        ];
+      }
     } else if (target === "rollback") {
       // Backend rule: only from the review states, and the customer group
       // decides while its review request is live.
@@ -1324,7 +1364,7 @@ function lcSeed(
         approvers: a.approvers.map((ap) => (ap.status === "REQUESTED" ? { ...ap, status: "CANCELLED" } : ap)),
       }));
       lcSetState("rollback");
-    } else if (target && target !== "scheduled" && target !== "authorize" && target !== "customer_approval") {
+    } else if (target && target !== "scheduled" && target !== "customer_approval") {
       lcSetState(target);
     } else {
       throw new Error(`illegal manual transition to ${String(target)}`);
@@ -1386,8 +1426,9 @@ function currentStep(): string {
 }
 
 function expectNoManualSchedule(): void {
-  expect(screen.queryByRole("button", { name: /schedule/i })).not.toBeInTheDocument();
-  expect(screen.queryByRole("menuitem", { name: /schedule/i })).not.toBeInTheDocument();
+  // "Re-schedule" (from Customer Approval) is a different action: anchor at the start.
+  expect(screen.queryByRole("button", { name: /^schedule/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: /^schedule/i })).not.toBeInTheDocument();
   expect(screen.queryByText(/move to assess/i)).not.toBeInTheDocument();
 }
 
@@ -1679,6 +1720,195 @@ describe("CsmChangeRequestDetailPage — lifecycle: Roll back", () => {
     );
     expect(lc.cr.state).toBe("review");
     view.unmount();
+  });
+});
+
+/**
+ * Re-schedule: the diagram's Time Change loop. In Customer Approval the creator
+ * can re-plan the change -- a dialog collects the new window (at least one end
+ * must change) and an optional reason; the change goes back to Authorize for
+ * CAB / ECAB approval again, then the customer is asked again.
+ */
+describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
+  beforeEach(() => setUserPreferredTimeZone("UTC"));
+  afterEach(() => clearUserPreferredTimeZone());
+
+  function windowPicker(label: string): HTMLInputElement {
+    const group = within(screen.getByRole("dialog")).getAllByText(label)[0].closest(".MuiFormControl-root") as HTMLElement;
+    return group.querySelector("input") as HTMLInputElement;
+  }
+  const dialogSubmit = (): HTMLElement =>
+    within(screen.getByRole("dialog")).getByRole("button", { name: "Re-schedule" });
+
+  /** Normal change with Customer Approval, driven by clicks to Customer Approval. */
+  function runToCustomerApproval(
+    customerGroup: { members: Array<{ id: string; name: string }> } | null,
+    type: "normal" | "emergency" | "standard" = "normal",
+  ): ReturnType<typeof render> {
+    lcSeed(type, { approval: true, review: false }, customerGroup);
+    let view = lcOpenAs(LC_CREATOR);
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+    if (type === "normal") {
+      view = lcOpenAs(LC_PEER, view);
+      fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    }
+    if (type !== "standard") {
+      view = lcOpenAs(type === "emergency" ? LC_ECAB : LC_CAB, view);
+      fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    }
+    view = lcOpenAs(LC_CREATOR, view);
+    expect(currentStep()).toBe("Customer Approval");
+    return view;
+  }
+
+  it("Normal with a customer group: Customer Approval -> Re-schedule -> Authorize (CAB again) -> CAB approves -> Customer Approval (asked again) -> member approves -> Scheduled", async () => {
+    let view = runToCustomerApproval({ members: LC_MEMBERS });
+    expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
+    // Re-schedule sits next to nothing primary (the customer group decides) and Cancel stays in the menu.
+    expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record customer approval" })).not.toBeInTheDocument();
+    expectOnlyCancelOffered();
+
+    // The dialog starts on the current window and will not submit without a change.
+    fireEvent.click(screen.getByRole("button", { name: "Re-schedule" }));
+    expect(screen.getByRole("heading", { name: /re-schedule this change/i })).toBeInTheDocument();
+    expect(windowPicker("Planned start").value).toBe("03/01/2030 09:00 AM");
+    expect(windowPicker("Planned end").value).toBe("03/01/2030 11:00 AM");
+    expect(dialogSubmit()).toBeDisabled();
+    expect(patchMutateAsyncMock).not.toHaveBeenCalled();
+
+    fireEvent.change(windowPicker("Planned start"), { target: { value: "03/08/2030 09:00 AM" } });
+    fireEvent.change(windowPicker("Planned end"), { target: { value: "03/08/2030 11:00 AM" } });
+    fireEvent.change(screen.getByLabelText(/reason \(optional\)/i), { target: { value: "Customer freeze next week." } });
+    fireEvent.click(dialogSubmit());
+    await waitFor(() => expect(lc.cr.state).toBe("authorize"));
+
+    // The reason is recorded first, then the state + window are patched.
+    expect(postCommentMutateAsyncMock).toHaveBeenCalledWith({
+      changeRequestId: "chg-1",
+      bodyHtml: "Customer freeze next week.",
+      internal: true,
+    });
+    expect(patchMutateAsyncMock).toHaveBeenCalledWith({
+      id: "chg-1",
+      patch: { state: "authorize", plannedStartOn: "2030-03-08 09:00:00", plannedEndOn: "2030-03-08 11:00:00" },
+    });
+    expect(postCommentMutateAsyncMock.mock.invocationCallOrder[0]).toBeLessThan(
+      patchMutateAsyncMock.mock.invocationCallOrder[0],
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    // Back at Authorize, waiting on a fresh CAB stage -- not on the superseded customer stage.
+    expect(currentStep()).toBe("Authorize");
+    expect(screen.getByText("Awaiting CAB Approval")).toBeInTheDocument();
+    expect(screen.queryByText("Awaiting Customer Approval")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Re-schedule" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Record customer approval" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("CAB Approval", { selector: "td" })).toHaveLength(2);
+    expect(within(approvalsRowInStage("Mia Member", "Customer Approval")).getByText("Cancelled")).toBeInTheDocument();
+
+    // The new CAB approval asks the customer group again.
+    view = lcOpenAs(LC_CAB, view);
+    expect(screen.getAllByRole("button", { name: /^approve$/i })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(lc.cr.state).toBe("customer_approval");
+    view = lcOpenAs(LC_CREATOR, view);
+    expect(currentStep()).toBe("Customer Approval");
+    expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
+    expect(screen.getAllByText("Customer Approval", { selector: "td" })).toHaveLength(4); // 2 cancelled + 2 fresh member rows
+
+    view = lcOpenAs(LC_CUST_ONE, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(lc.cr.state).toBe("scheduled");
+    view.unmount();
+  });
+
+  it("Normal without a customer group (manual fallback): Re-schedule sits next to Record customer approval; the loop repeats", async () => {
+    let view = runToCustomerApproval(null);
+    expect(screen.getByRole("button", { name: "Record customer approval" })).toBeInTheDocument();
+    for (const [start, end] of [["03/08/2030 09:00 AM", "03/08/2030 11:00 AM"], ["03/15/2030 09:00 AM", "03/15/2030 11:00 AM"]]) {
+      fireEvent.click(screen.getByRole("button", { name: "Re-schedule" }));
+      fireEvent.change(windowPicker("Planned start"), { target: { value: start } });
+      fireEvent.change(windowPicker("Planned end"), { target: { value: end } });
+      fireEvent.click(dialogSubmit());
+      await waitFor(() => expect(lc.cr.state).toBe("authorize"));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(currentStep()).toBe("Authorize");
+      expect(screen.getByText("Awaiting CAB Approval")).toBeInTheDocument();
+      expect(postCommentMutateAsyncMock).not.toHaveBeenCalled(); // no reason given, none recorded
+
+      view = lcOpenAs(LC_CAB, view);
+      fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+      view = lcOpenAs(LC_CREATOR, view);
+      expect(currentStep()).toBe("Customer Approval");
+      expect(screen.getByRole("button", { name: "Record customer approval" })).toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Record customer approval" }));
+    expect(currentStep()).toBe("Scheduled");
+    view.unmount();
+  });
+
+  it("Emergency goes back to Authorize for ECAB approval", async () => {
+    const view = runToCustomerApproval(null, "emergency");
+    fireEvent.click(screen.getByRole("button", { name: "Re-schedule" }));
+    expect(screen.getByText(/ECAB approval again/i)).toBeInTheDocument();
+    fireEvent.change(windowPicker("Planned end"), { target: { value: "03/01/2030 01:00 PM" } });
+    fireEvent.click(dialogSubmit());
+    await waitFor(() => expect(lc.cr.state).toBe("authorize"));
+    expect(screen.getByText("Awaiting ECAB Approval")).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("Standard stays in Customer Approval and the customer is asked again", async () => {
+    const view = runToCustomerApproval({ members: LC_MEMBERS }, "standard");
+    fireEvent.click(screen.getByRole("button", { name: "Re-schedule" }));
+    expect(screen.getByText(/stays in Customer Approval/i)).toBeInTheDocument();
+    fireEvent.change(windowPicker("Planned start"), { target: { value: "02/28/2030 09:00 AM" } });
+    fireEvent.click(dialogSubmit());
+    await waitFor(() => expect(lc.cr.plannedStartOn).toBe("2030-02-28 09:00:00"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(currentStep()).toBe("Customer Approval");
+    expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("shows the backend's 400 verbatim in the dialog and keeps the state", async () => {
+    const view = runToCustomerApproval(null);
+    patchMutateAsyncMock.mockRejectedValueOnce(
+      new BackendApiError(400, "re-scheduling requires a changed planned start or end"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Re-schedule" }));
+    fireEvent.change(windowPicker("Planned end"), { target: { value: "03/01/2030 12:00 PM" } });
+    fireEvent.click(dialogSubmit());
+    await waitFor(() =>
+      expect(within(screen.getByRole("dialog")).getByRole("alert")).toHaveTextContent(
+        "re-scheduling requires a changed planned start or end",
+      ),
+    );
+    expect(lc.cr.state).toBe("customer_approval");
+    // Backing out leaves everything alone.
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(currentStep()).toBe("Customer Approval");
+    view.unmount();
+  });
+
+  it("is not offered anywhere but Customer Approval", () => {
+    lcSeed("normal", { approval: true, review: true });
+    for (const state of ["new", "assess", "authorize", "scheduled", "implement", "review", "customer_review"]) {
+      lcSetState(state);
+      // Even if a backend listed it, the bar does not render authorize.
+      lc.cr = { ...lc.cr, legalNextStates: [...(lc.cr.legalNextStates ?? []), "authorize"] };
+      lcPublish();
+      const view = lcOpenAs(LC_CREATOR);
+      expect(screen.queryByRole("button", { name: /re-schedule/i }), state).not.toBeInTheDocument();
+      if (screen.queryByRole("button", { name: /change state/i })) {
+        fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+        expect(screen.queryByRole("menuitem", { name: /re-schedule|authorize/i }), state).not.toBeInTheDocument();
+      }
+      view.unmount();
+    }
   });
 });
 
