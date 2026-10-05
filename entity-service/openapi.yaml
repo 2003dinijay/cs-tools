@@ -11136,12 +11136,12 @@ components:
         engagementTypeName: {type: string, description: 'Starting with "Paid" sets is_paid.'}
         engagementType: {type: string, nullable: true}
         engagementId: {type: string, maxLength: 20}
-        customerName: {type: string, description: Account name fallback when customerCode does not match.}
+        customerName: {type: string, description: 'Account name fallback when customerCode does not match.'}
         opportunityName: {type: string}
         productName: {type: string}
-        productId: {type: string, nullable: true, description: Salesforce line-item id; finds an engagement, and is stored on a created one.}
+        productId: {type: string, nullable: true, description: 'Salesforce line-item id; finds an engagement, and is stored on a created one.'}
         engagementCode: {type: string, maxLength: 20}
-        engagementNature: {type: string, description: Off-site -> OFFSITE, On-site -> ONSITE.}
+        engagementNature: {type: string, description: 'Off-site -> OFFSITE, On-site -> ONSITE.'}
         country: {type: string}
         customerCode: {type: string, nullable: true}
     AllocationEventResult:
