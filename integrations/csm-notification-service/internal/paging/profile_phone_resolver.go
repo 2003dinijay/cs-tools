@@ -18,6 +18,7 @@ package paging
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -103,6 +104,30 @@ func (p *ProfilePhoneResolver) Resolve(ctx context.Context, level Level, rc Rout
 	}
 	return out, nil
 }
+
+// LeadPool implements LeadPoolResolver when the wrapped resolver does, with
+// the pool's numbers filled in the same way a rung's are.
+func (p *ProfilePhoneResolver) LeadPool(ctx context.Context) ([]Recipient, error) {
+	inner, ok := p.inner.(LeadPoolResolver)
+	if !ok {
+		return nil, errNoLeadPool
+	}
+	pool, err := inner.LeadPool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Recipient, len(pool))
+	copy(out, pool)
+	for i := range out {
+		if strings.TrimSpace(out[i].Phone) == "" && strings.TrimSpace(out[i].Email) != "" {
+			out[i].Phone = p.number(ctx, out[i].Email, out[i].Name)
+		}
+	}
+	return out, nil
+}
+
+// errNoLeadPool: the wrapped resolver cannot name a lead pool.
+var errNoLeadPool = errors.New("resolver has no lead pool")
 
 // number is one person's profile number, or "" when there is none to dial.
 // The number itself is never logged.

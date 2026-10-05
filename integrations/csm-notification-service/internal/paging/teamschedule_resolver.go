@@ -890,6 +890,12 @@ func (r TeamScheduleResolver) teamLeadPool(ctx context.Context) ([]Recipient, er
 	return r.leadsOfABT(ctx)
 }
 
+// LeadPool implements LeadPoolResolver: every lead the lead tiers
+// (LEVEL_1, LEVEL_2) can reach for an ABT incident.
+func (r TeamScheduleResolver) LeadPool(ctx context.Context) ([]Recipient, error) {
+	return r.teamLeadPool(ctx)
+}
+
 // leadsOfABT is every lead in this ladder's ABT, resolved by type so a team
 // added to the ABT is reached without a config change.
 func (r TeamScheduleResolver) leadsOfABT(ctx context.Context) ([]Recipient, error) {

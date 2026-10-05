@@ -238,6 +238,21 @@ cre:
     # to 2 keeps an escalation away from the heads while a policy is trialled.
     # maxLevel: 2
 
+    # Calls switch on only when every lead in the ABT lead pool (the people
+    # LEVEL_1 and LEVEL_2 call) has a mobile number on their CSM Portal
+    # profile. Until then no call is placed -- otherwise a lead tier with no
+    # numbers is skipped and even a low-priority incident climbs straight to
+    # the heads. Held ladders are logged with the leads still missing a
+    # number; nothing is written to the incident. With channel "both" the
+    # chat cards still post. Set true to place calls before the pool is
+    # complete.
+    callWithoutVerifiedLeads: false
+
+    # The heads (LEVEL_3 CRE head, LEVEL_4 CS head) are paged only when at
+    # least one person on LEVEL_0..LEVEL_2 has a number to call; otherwise
+    # their calls are held (logged only). Set true to page them anyway.
+    callHeadsWithoutLowerTiers: false
+
     # When set, the ONLY numbers that may be dialled; every other recipient is
     # dropped before the call is placed. This is what makes a real ladder safe
     # to exercise against a real Twilio account — the resolver still runs and

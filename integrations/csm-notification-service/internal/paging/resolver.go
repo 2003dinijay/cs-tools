@@ -320,3 +320,13 @@ type Resolver interface {
 	// the next level rather than failing.
 	Resolve(ctx context.Context, level Level, rc RoutingContext) ([]Recipient, error)
 }
+
+// LeadPoolResolver is a Resolver that can also name its whole lead pool --
+// every ABT lead the lead tiers draw from -- so the engine can check that pool
+// can actually be called before it lets a ladder place calls at all. See
+// Safety.CallWithoutVerifiedLeads. A resolver that cannot (the hand-maintained
+// roster, whose entries carry their numbers) is simply not checked.
+type LeadPoolResolver interface {
+	Resolver
+	LeadPool(ctx context.Context) ([]Recipient, error)
+}

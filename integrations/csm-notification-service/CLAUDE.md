@@ -345,6 +345,24 @@ or is not E.164 leaves that one person `NO_NUMBER` and never fails the tier.
 `phones.source: none` turns it off. Nothing is persisted outside the plan, and
 the number is never logged.
 
+**Calls switch on when the ABT lead pool is verified.** Before any call is
+placed, `applySafety` asks the resolver for its whole lead pool
+(`LeadPoolResolver`; every `lead` on the ABT teams, numbers filled from
+profiles) and, if any lead has no E.164 number, holds the plan's calls
+(`safety.callWithoutVerifiedLeads: true` overrides). Without this, a lead tier
+with no numbers is skipped as `NO_NUMBER` and an unanswered incident of any
+priority climbs from LEVEL_0 straight to the heads. Separately, the heads
+(LEVEL_3/LEVEL_4) are held when no call on LEVEL_0..LEVEL_2 has a number
+(`safety.callHeadsWithoutLowerTiers: true` overrides).
+
+Both holds are setup, not incident outcomes, so they are **logged only, never
+written to the work note**: a call-only ladder held by the gate schedules
+nothing and writes no note (`Plan.CallsHeld`); with `both`, entries keep their
+chat cards and only the call is skipped (`PlannedCall.HoldCall`). A resolver
+without a lead pool (the hand-maintained roster, whose entries carry numbers)
+is not checked. To keep calls off entirely regardless, use `channel: chat` or
+`log`.
+
 **Not built**: the email at each rung (section 10.0), the two
 erroneous-scenario emails (section 12.0), LEVEL_0 availability filtering
 (section 8.0), a ServiceNow-backed `Resolver`. **No longer relevant**: `abtEligible` was never populated by any publisher, so

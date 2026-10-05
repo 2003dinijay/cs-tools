@@ -324,6 +324,11 @@ func (e *Engine) start(ctx context.Context, t Trigger, replace bool) error {
 			"incidentId", t.IncidentID, "rule", t.Routing.Rule(),
 			"level", issue.Level.String(), "reason", issue.Reason)
 	}
+	if len(plan.Calls) == 0 && plan.CallsHeld {
+		// Setup, not an incident outcome: the lead pool has no numbers yet,
+		// and a call-only ladder has nothing else to deliver. No work note.
+		return nil
+	}
 	if len(plan.Calls) == 0 {
 		slog.WarnContext(ctx, "escalation: plan has no reachable recipients; nothing scheduled",
 			"incidentId", t.IncidentID, "priority", t.Priority, "rule", t.Routing.Rule(),
@@ -721,6 +726,9 @@ func (e *Engine) place(ctx context.Context, plan Plan, call PlannedCall) error {
 
 	var errs []error
 	for _, n := range e.notifiers {
+		if call.HoldCall && n.Channel() == ChannelCall {
+			continue
+		}
 		delivered, err := n.Deliver(ctx, plan, call)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", n.Channel(), err))
@@ -1005,6 +1013,51 @@ func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
 		}
 	}
 
+	// No calls at all until the lead pool can be called: see
+	// Safety.CallWithoutVerifiedLeads. Log only -- nothing on the work note.
+	if e.cfg.Channel.Uses(ChannelCall) && !s.CallWithoutVerifiedLeads {
+		if missing, err := e.unverifiedLeads(ctx); err != nil || missing > 0 {
+			plan.CallsHeld = true
+			if e.cfg.Channel == ChannelCall {
+				plan.Calls = nil
+			} else {
+				for i := range plan.Calls {
+					plan.Calls[i].HoldCall = true
+				}
+			}
+			slog.WarnContext(ctx, "escalation: calls held -- the ABT lead pool is not verified with phone numbers",
+				"incidentId", plan.Trigger.IncidentID, "leadsWithoutNumber", missing, "err", err)
+		}
+	}
+
+	// The heads are not paged for an incident nobody below them could be
+	// reached about: see Safety.CallHeadsWithoutLowerTiers. Checked after the
+	// number allowlist, so a lower-tier number this deployment may not dial
+	// does not count as reachable. Log only -- nothing on the work note.
+	if e.cfg.Channel.Uses(ChannelCall) && !plan.CallsHeld && !s.CallHeadsWithoutLowerTiers && !lowerTiersDialable(plan.Calls) {
+		kept := plan.Calls[:0]
+		var held int
+		for _, c := range plan.Calls {
+			if c.Level < Level3 {
+				kept = append(kept, c)
+				continue
+			}
+			held++
+			if e.cfg.Channel == ChannelCall {
+				// A call-only entry is nothing but the call.
+				continue
+			}
+			// With both channels the entry still carries the rung's chat card.
+			c.HoldCall = true
+			kept = append(kept, c)
+		}
+		plan.Calls = kept
+		if held > 0 {
+			slog.WarnContext(ctx, "escalation: heads' calls held -- nobody on LEVEL_0..LEVEL_2 has a number to call",
+				"incidentId", plan.Trigger.IncidentID, "callsHeld", held)
+		}
+	}
+
 	// The call cap is deliberately last and deliberately truncating rather
 	// than refusing: by this point the earlier rungs are the ones worth
 	// keeping, and a ladder that reaches its first responders is better than
@@ -1018,6 +1071,48 @@ func (e *Engine) applySafety(ctx context.Context, plan *Plan) {
 			"incidentId", plan.Trigger.IncidentID,
 			"cap", s.MaxCallsPerLadder, "callsDropped", dropped)
 	}
+}
+
+// unverifiedLeads counts the leads in the resolver's lead pool without a
+// dialable (E.164) number, naming them in the log so whoever owns the data
+// knows who to ask. A resolver that cannot name a pool is not checked. An
+// empty pool is not verified: there is nobody for the lead tiers to call.
+func (e *Engine) unverifiedLeads(ctx context.Context) (int, error) {
+	lp, ok := e.resolver.(LeadPoolResolver)
+	if !ok {
+		return 0, nil
+	}
+	pool, err := lp.LeadPool(ctx)
+	if errors.Is(err, errNoLeadPool) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if len(pool) == 0 {
+		return 1, nil
+	}
+	var names []string
+	for _, l := range pool {
+		if !e164.MatchString(strings.TrimSpace(l.Phone)) {
+			names = append(names, l.Name)
+		}
+	}
+	if len(names) > 0 {
+		slog.WarnContext(ctx, "escalation: ABT leads without a phone number on their CSM Portal profile",
+			"leads", strings.Join(names, ", "))
+	}
+	return len(names), nil
+}
+
+// lowerTiersDialable reports whether any call on LEVEL_0..LEVEL_2 has a number.
+func lowerTiersDialable(calls []PlannedCall) bool {
+	for _, c := range calls {
+		if c.Level <= Level2 && !c.HoldCall && strings.TrimSpace(c.Recipient.Phone) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ladderChat picks the Chat client and room a ladder's rung cards go to.
