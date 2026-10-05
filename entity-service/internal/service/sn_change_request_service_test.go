@@ -17,6 +17,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -914,5 +915,29 @@ func TestSNChangeRequestService_AggregateChangeRequests_StateGroupByRemapsKeyToD
 	// crashing or dropping the bucket.
 	if got, want := resp.Groups[2].Key, "999"; got != want {
 		t.Errorf("groups[2].Key: got %q, want %q (unrecognized label falls back to raw key)", got, want)
+	}
+}
+
+// ServiceNow's change request payloads have no project (create) or deployment
+// list field: the ServiceNow-only service refuses them instead of dropping them
+// silently. (The PostgreSQL-first dual-write service strips them before it
+// mirrors, so only a ServiceNow-only deployment can hit this.)
+func TestSNChangeRequestService_RefusesPostgresOnlyScopeFields(t *testing.T) {
+	svc := &snChangeRequestService{}
+	project := "11111111-2222-3333-4444-555555555555"
+	normal := domain.ChangeRequestTypeNormal
+
+	_, err := svc.CreateChangeRequest(context.Background(), domain.CreateChangeRequestRequest{Subject: "s", Type: &normal, ProjectID: &project})
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) || !strings.Contains(ve.Msg, "projectId and deploymentIds are not supported") {
+		t.Fatalf("create with projectId: err = %v", err)
+	}
+	_, err = svc.CreateChangeRequest(context.Background(), domain.CreateChangeRequestRequest{Subject: "s", Type: &normal, DeploymentIDs: []string{project}})
+	if !asValidationError(err, &ve) {
+		t.Fatalf("create with deploymentIds: err = %v", err)
+	}
+	_, err = svc.PatchChangeRequest(context.Background(), project, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{project}})
+	if !asValidationError(err, &ve) || !strings.Contains(ve.Msg, "deploymentIds is not supported") {
+		t.Fatalf("patch with deploymentIds: err = %v", err)
 	}
 }

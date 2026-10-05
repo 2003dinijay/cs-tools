@@ -95,8 +95,10 @@ import (
 // ConfigurationItemID (no CMDB table exists at all in this schema);
 // ApprovedBy/ApprovedOn on domain.ChangeRequest (there is a
 // summary change_request.approval enum but no approver/date columns);
-// Environments/DeploymentProducts/Labels/Deployments (no M2M join table
-// exists for any of the four).
+// Labels (no join table). Deployments / Environments / DeploymentProducts ARE
+// backed (migration 0191's change_request_deployment / _environment /
+// _deployed_product, rules in change_request_links.go), as is Project
+// (work_item.project_id), now written at create time too.
 //
 // LegalNextStates is populated -- see legalChangeRequestNextStates's own
 // doc comment for how, and for the one branch it deliberately does not
@@ -204,19 +206,23 @@ type ChangeRequestRepository interface {
 	// case, where the response DOES return a confirmed, identity-matching
 	// state.
 	//
-	// Only fields with an unambiguous, already-established column/enum
-	// mapping are written. Deliberately NOT applied, for the same
-	// no-backing-column/no-confirmed-mapping reasons this file's own
-	// package doc comment and changeRequestWhereClause's already give:
-	// req.ConfigurationItemID (no CMDB table), req.Category (four
-	// of ChangeRequestCategory's thirteen values -- RegularReleaseCloud/
-	// HotfixReleaseCloud/DevOps/CloudComputing -- have no
-	// change_request_category_enum label, and PatchChangeRequest itself
-	// does not attempt this mapping either), req.EnvironmentIDs/
-	// req.DeploymentProductIDs (no M2M join tables exist for either), and
-	// req.Comment/req.WorkNote (ServiceNow journal entries, no backing
-	// column).
+	// Written beyond the core columns: the Customer Project (work_item.project_id),
+	// deployments / environments / deployment products (the join tables, validated
+	// and derived per change_request_links.go), category (all 13 values have an
+	// enum label since migration 0191) and the Comment / WorkNote journal entries
+	// (comment rows). Everything runs in one transaction. Deliberately NOT
+	// applied: req.ConfigurationItemID (no CMDB table).
 	CreateChangeRequestFromServiceNow(ctx context.Context, req domain.CreateChangeRequestRequest, id, number, createdBy string) (domain.CreateChangeRequestResponse, error)
+	// ValidateChangeRequestLinks validates a customer-scope selection (project,
+	// deployments, environments, deployment products) and returns it with
+	// everything derived, without writing anything -- the pre-flight the
+	// ServiceNow-first create runs before it calls ServiceNow. A
+	// ValidationError names the offending field. See change_request_links.go.
+	ValidateChangeRequestLinks(ctx context.Context, sel domain.ChangeRequestLinkSelection) (domain.ChangeRequestLinkSet, error)
+	// GetChangeRequestLinkOptions backs POST /change-requests/link-options: the
+	// project's active deployments and, for the deployments chosen so far, the
+	// environments and deployment products that follow from them.
+	GetChangeRequestLinkOptions(ctx context.Context, req domain.ChangeRequestLinkOptionsRequest) (domain.ChangeRequestLinkOptionsResponse, error)
 	// GetChangeRequestApprovals returns every approval stage for the change
 	// request identified by id (approval_stage rows with work_item_id = id,
 	// ordered by created_on ascending) together with each stage's approvers
@@ -799,9 +805,13 @@ func (r *changeRequestRepo) GetChangeRequestByID(ctx context.Context, id string)
 	if err != nil {
 		return domain.ChangeRequest{}, fmt.Errorf("get change request by id: %w", err)
 	}
-	// ApprovedBy/ApprovedOn/LegalNextStates/Environments/DeploymentProducts/
-	// Labels/Deployments have no real column -- see this file's own package
-	// doc comment.
+	// Deployments / Environments / DeploymentProducts come from the join
+	// tables (never nil). ApprovedBy/ApprovedOn/Labels have no real column --
+	// see this file's own package doc comment.
+	cr.Deployments, cr.Environments, cr.DeploymentProducts, err = loadChangeRequestLinks(ctx, r.db, id)
+	if err != nil {
+		return domain.ChangeRequest{}, fmt.Errorf("get change request by id: %w", err)
+	}
 
 	// While the customer group's approval request is pending (a live
 	// "Customer Approval" / "Customer Review" stage), the manual way out of
@@ -1069,6 +1079,24 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		}
 	}
 
+	// Journal entries ("Additional comments" / "Work notes") are append-only
+	// and cannot be blank.
+	if req.Comment != nil && strings.TrimSpace(*req.Comment) == "" {
+		return "", &apierror.ValidationError{Msg: "comment must not be empty"}
+	}
+	if req.WorkNote != nil && strings.TrimSpace(*req.WorkNote) == "" {
+		return "", &apierror.ValidationError{Msg: "workNote must not be empty"}
+	}
+
+	// Customer-scope fields (project, deployments, environments, deployment
+	// products): validated and planned here, before anything is written, so a
+	// refused combination leaves the change request untouched. See
+	// change_request_links.go for the rules and the edit window.
+	linkPlan, err := planChangeRequestLinks(ctx, tx, id, req)
+	if err != nil {
+		return "", err
+	}
+
 	wiSets := []string{"updated_on = NOW()", "updated_by = $1"}
 	wiArgs := []any{actorEmail}
 	wiIdx := 2
@@ -1076,6 +1104,13 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		wiSets = append(wiSets, fmt.Sprintf(assignment, wiIdx))
 		wiArgs = append(wiArgs, val)
 		wiIdx++
+	}
+	if linkPlan != nil && linkPlan.setSingulars {
+		// The single-valued deployment / deployed product columns follow the
+		// first chosen deployment / product (NULL when none), so the list views
+		// that still read them stay in step.
+		addWI("deployment_id = $%d::uuid", linkPlan.deploymentID)
+		addWI("deployed_product_id = $%d::uuid", linkPlan.deployedProductID)
 	}
 	if req.Title != nil {
 		addWI("subject = $%d", *req.Title)
@@ -1523,6 +1558,21 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		}
 	}
 
+	// Join rows for the scope fields, then the journal entries.
+	if err := applyChangeRequestLinkPlan(ctx, tx, id, linkPlan); err != nil {
+		return "", fmt.Errorf("patch change request: %w", err)
+	}
+	if req.Comment != nil {
+		if err := insertChangeRequestJournalEntry(ctx, tx, id, "COMMENT", actorEmail, *req.Comment); err != nil {
+			return "", fmt.Errorf("patch change request: %w", err)
+		}
+	}
+	if req.WorkNote != nil {
+		if err := insertChangeRequestJournalEntry(ctx, tx, id, "WORK_NOTE", actorEmail, *req.WorkNote); err != nil {
+			return "", fmt.Errorf("patch change request: %w", err)
+		}
+	}
+
 	// Request Approval provisions the first approval stage for the change's type
 	// (see change_request_approval_flow.go): the peer approval stage for a
 	// Normal change, the ECAB stage for an Emergency change, nothing for a
@@ -1965,11 +2015,13 @@ const createChangeRequestPortalQuery = `
 	WITH inserted_work_item AS (
 		INSERT INTO work_item (
 			id, created_on, updated_on, created_by, updated_by,
-			number, subject, description, type, assigned_to_id, assignment_group_id
+			number, subject, description, type, assigned_to_id, assignment_group_id,
+			project_id, deployment_id, deployed_product_id
 		)
 		VALUES (
 			gen_random_uuid(), NOW(), NOW(), $1, $1,
-			next_portal_work_item_number(), $2, $3, 'CHANGE_REQUEST'::work_item_type_enum, $4::uuid, $24::uuid
+			next_portal_work_item_number(), $2, $3, 'CHANGE_REQUEST'::work_item_type_enum, $4::uuid, $24::uuid,
+			$27::uuid, $28::uuid, $29::uuid
 		)
 		RETURNING id, number, subject, created_on, updated_on, created_by
 	),
@@ -1979,13 +2031,14 @@ const createChangeRequestPortalQuery = `
 			justification, implementation_plan, risk_impact_analysis, backout_plan, test_plan,
 			start_on, end_on, requested_by_user_id, customer_group_id,
 			is_planning_visible_to_customers, affected_services, affected_component, rollback_duration,
-			customer_approval_required, customer_review_required
+			customer_approval_required, customer_review_required, category
 		)
 		SELECT id, 'NEW'::change_request_state_enum, $5::uuid, $6::uuid, $7::change_request_impact_enum, $8::change_request_risk_enum,
 		       $9::change_request_priority_enum, $10::change_request_change_model_enum,
 		       $11, $12, $13, $14, $15,
 		       $16::text::timestamptz, $17::text::timestamptz, $18::uuid, $19::uuid,
-		       $20, $21, $22, $23, COALESCE($25::boolean, false), COALESCE($26::boolean, false)
+		       $20, $21, $22, $23, COALESCE($25::boolean, false), COALESCE($26::boolean, false),
+		       $30::change_request_category_enum
 		FROM inserted_work_item
 		RETURNING id
 	)
@@ -1993,14 +2046,94 @@ const createChangeRequestPortalQuery = `
 	FROM inserted_work_item iwi
 	JOIN inserted_change_request icr ON icr.id = iwi.id`
 
-// CreateChangeRequest implements ChangeRequestRepository.
-func (r *changeRequestRepo) CreateChangeRequest(ctx context.Context, req domain.CreateChangeRequestRequest, createdBy string) (domain.CreateChangeRequestResponse, error) {
-	if err := ValidateCreateChangeRequestType(req.Type); err != nil {
-		return domain.CreateChangeRequestResponse{}, err
-	}
-	changeModel := ptrString(changeRequestTypeToChangeModel[*req.Type])
+// createdChangeRequestRow is what both create queries return.
+type createdChangeRequestRow struct {
+	id, number, subject, createdBy string
+	createdOn, updatedOn           time.Time
+}
 
-	var impact, risk, priority *string
+func (c createdChangeRequestRow) response() domain.CreateChangeRequestResponse {
+	resp := domain.CreateChangeRequestResponse{Message: "Change request created successfully."}
+	resp.ChangeRequest.ID = c.id
+	resp.ChangeRequest.Number = c.number
+	resp.ChangeRequest.CreatedOn = c.createdOn.UTC().Format(time.RFC3339)
+	resp.ChangeRequest.CreatedBy = c.createdBy
+	return resp
+}
+
+// changeRequestCreateCategory maps the request's category to the enum label
+// the insert writes, or a ValidationError when it has none.
+func changeRequestCreateCategory(req domain.CreateChangeRequestRequest) (*string, error) {
+	if req.Category == nil {
+		return nil, nil
+	}
+	label := strings.ToUpper(string(*req.Category))
+	if !changeRequestCategoryPGLabels[label] {
+		return nil, &apierror.ValidationError{Msg: fmt.Sprintf("category %q is not supported on the PostgreSQL data source", *req.Category)}
+	}
+	return &label, nil
+}
+
+// createChangeRequestWithScope is the part of both create paths that is not
+// the insert itself: inside one transaction it validates and derives the
+// customer-scope selection (project, deployments, environments, deployment
+// products -- change_request_links.go), runs insert (which writes the
+// work_item/change_request rows, project, the first deployment/deployed
+// product and the category), writes the three join tables, and appends the
+// "Additional comments" / "Work notes" journal entries as comment rows. All or
+// nothing: a refused combination leaves no change request behind.
+func (r *changeRequestRepo) createChangeRequestWithScope(
+	ctx context.Context,
+	req domain.CreateChangeRequestRequest,
+	createdBy string,
+	insert func(ctx context.Context, tx pgx.Tx, projectID, deploymentID, deployedProductID, category *string) (createdChangeRequestRow, error),
+) (createdChangeRequestRow, error) {
+	category, err := changeRequestCreateCategory(req)
+	if err != nil {
+		return createdChangeRequestRow{}, err
+	}
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (createdChangeRequestRow, error) {
+		links, err := resolveChangeRequestLinks(ctx, tx, domain.ChangeRequestLinkSelection{
+			ProjectID:            req.ProjectID,
+			DeploymentIDs:        req.DeploymentIDs,
+			EnvironmentIDs:       req.EnvironmentIDs,
+			DeploymentProductIDs: req.DeploymentProductIDs,
+		}, resolveLinkOpts{})
+		if err != nil {
+			return createdChangeRequestRow{}, err
+		}
+		var projectID *string
+		if links.projectID != "" {
+			projectID = &links.projectID
+		}
+		row, err := insert(ctx, tx, projectID, firstOrNil(links.deploymentIDs()), firstOrNil(links.productIDs()), category)
+		if err != nil {
+			return createdChangeRequestRow{}, err
+		}
+		if err := writeChangeRequestDeployments(ctx, tx, row.id, links.deploymentIDs()); err != nil {
+			return createdChangeRequestRow{}, err
+		}
+		if err := writeChangeRequestEnvironments(ctx, tx, row.id, links.environmentIDs()); err != nil {
+			return createdChangeRequestRow{}, err
+		}
+		if err := writeChangeRequestProducts(ctx, tx, row.id, links.productIDs()); err != nil {
+			return createdChangeRequestRow{}, err
+		}
+		if req.Comment != nil && strings.TrimSpace(*req.Comment) != "" {
+			if err := insertChangeRequestJournalEntry(ctx, tx, row.id, "COMMENT", createdBy, *req.Comment); err != nil {
+				return createdChangeRequestRow{}, err
+			}
+		}
+		if req.WorkNote != nil && strings.TrimSpace(*req.WorkNote) != "" {
+			if err := insertChangeRequestJournalEntry(ctx, tx, row.id, "WORK_NOTE", createdBy, *req.WorkNote); err != nil {
+				return createdChangeRequestRow{}, err
+			}
+		}
+		return row, nil
+	})
+}
+
+func changeRequestEnumArgs(req domain.CreateChangeRequestRequest) (impact, risk, priority *string) {
 	if req.Impact != nil {
 		v := strings.ToUpper(string(*req.Impact))
 		impact = &v
@@ -2013,20 +2146,35 @@ func (r *changeRequestRepo) CreateChangeRequest(ctx context.Context, req domain.
 		v := strings.ToUpper(string(*req.Priority))
 		priority = &v
 	}
+	return impact, risk, priority
+}
 
-	var (
-		outID, outNumber, outSubject, outCreatedBy string
-		outCreatedOn, outUpdatedOn                 time.Time
-	)
-	err := r.db.QueryRow(ctx, createChangeRequestPortalQuery,
-		createdBy, req.Subject, req.Description, req.AssignedEngineerID,
-		req.ServiceID, req.ServiceOfferingID, impact, risk, priority, changeModel,
-		req.Justification, req.ImplementationPlan, req.RiskImpactAnalysis, req.BackoutPlan, req.TestPlan,
-		req.PlannedStartDate, req.PlannedEndDate, req.RequestedByID, req.CustomerGroupID,
-		req.IsPlanningVisibleToCustomers, req.AffectedServicesText, req.AffectedComponentsText, req.RollbackDurationText,
-		req.GroupID, req.CustomerApprovalRequired, req.CustomerReviewRequired,
-	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
+// CreateChangeRequest implements ChangeRequestRepository.
+func (r *changeRequestRepo) CreateChangeRequest(ctx context.Context, req domain.CreateChangeRequestRequest, createdBy string) (domain.CreateChangeRequestResponse, error) {
+	if err := ValidateCreateChangeRequestType(req.Type); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
+	changeModel := ptrString(changeRequestTypeToChangeModel[*req.Type])
+	impact, risk, priority := changeRequestEnumArgs(req)
+
+	row, err := r.createChangeRequestWithScope(ctx, req, createdBy, func(ctx context.Context, tx pgx.Tx, projectID, deploymentID, deployedProductID, category *string) (createdChangeRequestRow, error) {
+		var out createdChangeRequestRow
+		err := tx.QueryRow(ctx, createChangeRequestPortalQuery,
+			createdBy, req.Subject, req.Description, req.AssignedEngineerID,
+			req.ServiceID, req.ServiceOfferingID, impact, risk, priority, changeModel,
+			req.Justification, req.ImplementationPlan, req.RiskImpactAnalysis, req.BackoutPlan, req.TestPlan,
+			req.PlannedStartDate, req.PlannedEndDate, req.RequestedByID, req.CustomerGroupID,
+			req.IsPlanningVisibleToCustomers, req.AffectedServicesText, req.AffectedComponentsText, req.RollbackDurationText,
+			req.GroupID, req.CustomerApprovalRequired, req.CustomerReviewRequired,
+			projectID, deploymentID, deployedProductID, category,
+		).Scan(&out.id, &out.number, &out.subject, &out.createdOn, &out.updatedOn, &out.createdBy)
+		return out, err
+	})
 	if err != nil {
+		var ve *apierror.ValidationError
+		if errors.As(err, &ve) {
+			return domain.CreateChangeRequestResponse{}, err
+		}
 		// change_request_write_internal_only (migration 0145) permits only an
 		// internal caller to INSERT -- POST /change-requests is gated
 		// internalOnly at the route (routes.go), so this should not be
@@ -2046,13 +2194,7 @@ func (r *changeRequestRepo) CreateChangeRequest(ctx context.Context, req domain.
 		}
 		return domain.CreateChangeRequestResponse{}, fmt.Errorf("create change request: %w", err)
 	}
-
-	resp := domain.CreateChangeRequestResponse{Message: "Change request created successfully."}
-	resp.ChangeRequest.ID = outID
-	resp.ChangeRequest.Number = outNumber
-	resp.ChangeRequest.CreatedOn = outCreatedOn.UTC().Format(time.RFC3339)
-	resp.ChangeRequest.CreatedBy = outCreatedBy
-	return resp, nil
+	return row.response(), nil
 }
 
 // createChangeRequestFromServiceNowQuery inserts both halves of a change
@@ -2081,11 +2223,13 @@ const createChangeRequestFromServiceNowQuery = `
 	WITH inserted_work_item AS (
 		INSERT INTO work_item (
 			id, created_on, updated_on, created_by, updated_by,
-			number, subject, description, type, assigned_to_id, assignment_group_id
+			number, subject, description, type, assigned_to_id, assignment_group_id,
+			project_id, deployment_id, deployed_product_id
 		)
 		VALUES (
 			$1, NOW(), NOW(), $2, $2,
-			$3, $4, $5, 'CHANGE_REQUEST'::work_item_type_enum, $6::uuid, $26::uuid
+			$3, $4, $5, 'CHANGE_REQUEST'::work_item_type_enum, $6::uuid, $26::uuid,
+			$29::uuid, $30::uuid, $31::uuid
 		)
 		RETURNING id, number, subject, created_on, updated_on, created_by
 	),
@@ -2095,14 +2239,15 @@ const createChangeRequestFromServiceNowQuery = `
 			justification, implementation_plan, risk_impact_analysis, backout_plan, test_plan,
 			start_on, end_on, requested_by_user_id, customer_group_id,
 			is_planning_visible_to_customers, affected_services, affected_component, rollback_duration,
-			customer_approval_required, customer_review_required
+			customer_approval_required, customer_review_required, category
 		)
 		VALUES (
 			$1, 'NEW'::change_request_state_enum, $7::uuid, $8::uuid, $9::change_request_impact_enum, $10::change_request_risk_enum,
 			$11::change_request_priority_enum, $12::change_request_change_model_enum,
 			$13, $14, $15, $16, $17,
 			$18::text::timestamptz, $19::text::timestamptz, $20::uuid, $21::uuid,
-			$22, $23, $24, $25, COALESCE($27::boolean, false), COALESCE($28::boolean, false)
+			$22, $23, $24, $25, COALESCE($27::boolean, false), COALESCE($28::boolean, false),
+			$32::change_request_category_enum
 		)
 		RETURNING id
 	)
@@ -2116,44 +2261,34 @@ func (r *changeRequestRepo) CreateChangeRequestFromServiceNow(ctx context.Contex
 		return domain.CreateChangeRequestResponse{}, err
 	}
 	changeModel := ptrString(changeRequestTypeToChangeModel[*req.Type])
+	impact, risk, priority := changeRequestEnumArgs(req)
 
-	var impact, risk, priority *string
-	if req.Impact != nil {
-		v := strings.ToUpper(string(*req.Impact))
-		impact = &v
-	}
-	if req.Risk != nil {
-		v := strings.ToUpper(string(*req.Risk))
-		risk = &v
-	}
-	if req.Priority != nil {
-		v := strings.ToUpper(string(*req.Priority))
-		priority = &v
-	}
-
-	var (
-		outID, outNumber, outSubject, outCreatedBy string
-		outCreatedOn, outUpdatedOn                 time.Time
-	)
 	// WithSystemIdentity: change_request's INSERT policy (migration 0145)
-	// is internal-only -- this insert never sets a project_id (see this
-	// file's own package doc comment on CreateChangeRequestFromServiceNow),
-	// so there is nothing to check project membership against regardless of
-	// who issued the original HTTP request, and the insert only ever runs
-	// after ServiceNow's own workflow has already accepted the create --
-	// treat it as the trusted, already-authorized system operation it is
-	// rather than inheriting whatever identity happened to be on ctx.
+	// is internal-only, and the insert only ever runs after ServiceNow's own
+	// workflow has already accepted the create -- treat it as the trusted,
+	// already-authorized system operation it is rather than inheriting
+	// whatever identity happened to be on ctx. The project, if any, is the one
+	// the caller selected on the form (validated in the same transaction).
 	ctx = WithSystemIdentity(ctx)
-	err := r.db.QueryRow(ctx, createChangeRequestFromServiceNowQuery,
-		id, createdBy,
-		number, req.Subject, req.Description, req.AssignedEngineerID,
-		req.ServiceID, req.ServiceOfferingID, impact, risk, priority, changeModel,
-		req.Justification, req.ImplementationPlan, req.RiskImpactAnalysis, req.BackoutPlan, req.TestPlan,
-		req.PlannedStartDate, req.PlannedEndDate, req.RequestedByID, req.CustomerGroupID,
-		req.IsPlanningVisibleToCustomers, req.AffectedServicesText, req.AffectedComponentsText, req.RollbackDurationText,
-		req.GroupID, req.CustomerApprovalRequired, req.CustomerReviewRequired,
-	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
+	row, err := r.createChangeRequestWithScope(ctx, req, createdBy, func(ctx context.Context, tx pgx.Tx, projectID, deploymentID, deployedProductID, category *string) (createdChangeRequestRow, error) {
+		var out createdChangeRequestRow
+		err := tx.QueryRow(ctx, createChangeRequestFromServiceNowQuery,
+			id, createdBy,
+			number, req.Subject, req.Description, req.AssignedEngineerID,
+			req.ServiceID, req.ServiceOfferingID, impact, risk, priority, changeModel,
+			req.Justification, req.ImplementationPlan, req.RiskImpactAnalysis, req.BackoutPlan, req.TestPlan,
+			req.PlannedStartDate, req.PlannedEndDate, req.RequestedByID, req.CustomerGroupID,
+			req.IsPlanningVisibleToCustomers, req.AffectedServicesText, req.AffectedComponentsText, req.RollbackDurationText,
+			req.GroupID, req.CustomerApprovalRequired, req.CustomerReviewRequired,
+			projectID, deploymentID, deployedProductID, category,
+		).Scan(&out.id, &out.number, &out.subject, &out.createdOn, &out.updatedOn, &out.createdBy)
+		return out, err
+	})
 	if err != nil {
+		var ve *apierror.ValidationError
+		if errors.As(err, &ve) {
+			return domain.CreateChangeRequestResponse{}, err
+		}
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 			switch pgErr.Code {
 			case "23505": // unique_violation on id/number -- see this method's own doc comment for why this "shouldn't" happen
@@ -2168,13 +2303,7 @@ func (r *changeRequestRepo) CreateChangeRequestFromServiceNow(ctx context.Contex
 		}
 		return domain.CreateChangeRequestResponse{}, fmt.Errorf("create change request from servicenow: %w", err)
 	}
-
-	resp := domain.CreateChangeRequestResponse{Message: "Change request created successfully."}
-	resp.ChangeRequest.ID = outID
-	resp.ChangeRequest.Number = outNumber
-	resp.ChangeRequest.CreatedOn = outCreatedOn.UTC().Format(time.RFC3339)
-	resp.ChangeRequest.CreatedBy = outCreatedBy
-	return resp, nil
+	return row.response(), nil
 }
 
 // changeRequestApprovalStagesQuery backs GetChangeRequestApprovals' first of
@@ -2782,9 +2911,10 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 }
 
 // changeRequestCategoryPGLabels is change_request_category_enum's label set
-// (migration 0043). The domain enum carries four more values (regular/hotfix
-// release cloud, devops, cloud computing) with no label here.
+// (migration 0043, plus the four cloud/devops values added by migration 0191)
+// -- every value of the domain's category enum.
 var changeRequestCategoryPGLabels = map[string]bool{
 	"SOFTWARE": true, "NETWORK": true, "SERVICE": true, "TELECOM": true, "HARDWARE": true,
 	"SYSTEM_SOFTWARE": true, "DOCUMENTATION": true, "APPLICATIONS_SOFTWARE": true, "OTHER": true,
+	"REGULAR_RELEASE_CLOUD": true, "HOTFIX_RELEASE_CLOUD": true, "DEVOPS": true, "CLOUD_COMPUTING": true,
 }

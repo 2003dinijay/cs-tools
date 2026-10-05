@@ -2581,6 +2581,94 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   Approval` / `Customer Review`; pre-existing `Assess`/`Authorize`
   labels (and unlabeled positional stages) are still recognised as peer/CAB.
 
+### Customer project, deployments, environments and deployment products
+
+The change request form's **Customer Project**, **Deployments** (multi-select),
+**Environments** (multi-select) and **Deployment products** (read-only), plus
+**Category**, **Customer Group**, **Additional comments** (customer visible) and
+**Work notes**. Code: `change_request_links.go` (all rules), `change_request_repo.go`
+(create / `patchChangeRequestTx` / `GetChangeRequestByID`); migration
+`0191_change_request_project_links.sql`. PostgreSQL data source only.
+
+**Before this, only customer group and (via PATCH) category were persisted.** Both
+create paths silently dropped project, category, environments, deployment products,
+comment and workNote; PATCH rejected environments / deployment products / comment /
+workNote with "not supported on this data source". All are now written and read back.
+
+*Data model.* The case model has no environment table — a **deployment is an
+environment instance** of a project and its role is `deployment.type`
+(`deployment_type_enum`). So:
+
+| Field | Storage |
+| --- | --- |
+| Customer Project | `work_item.project_id` (already existed; create now writes it) |
+| Deployments | `change_request_deployment (change_request_id, deployment_id)` |
+| Environments | `change_request_environment (change_request_id, environment_id)` → new catalogue `environment (id, code, name)`, one row per `deployment_type_enum` label with fixed ids (`e0000000-0000-4000-8000-00000000000N`); a deployment's environment is the row whose `code` = its type |
+| Deployment products | `change_request_deployed_product (change_request_id, deployed_product_id)` (the same rows the case form's Product picker lists), stored as a snapshot |
+| Category | `change_request.category`; the enum gained `REGULAR_RELEASE_CLOUD`, `HOTFIX_RELEASE_CLOUD`, `DEVOPS`, `CLOUD_COMPUTING` so all 13 API values persist |
+| Customer Group | `change_request.customer_group_id` (unchanged) |
+| Additional comments / Work notes | `comment` rows of type `COMMENT` / `WORK_NOTE`, `created_by` = the caller's email |
+
+The join tables have FKs with `ON DELETE CASCADE`, a lookup index each and `FORCE ROW
+LEVEL SECURITY` (project membership through `work_item.project_id`, like
+`work_item_tag`; listed in `rlsProtectedTables`). The first deployment (name order)
+and its first deployed product are mirrored into `work_item.deployment_id` /
+`deployed_product_id` so list views keep working; `deploymentId`/`deployedProductId`
+on PATCH cannot be combined with `deploymentIds`.
+
+*Rules (identical on create, PATCH and the lookup).* Violations are 400
+`ValidationError`s naming the field and id:
+
+1. `projectId` must exist. `deploymentIds` require `projectId`; each deployment must
+   exist, be active and belong to the project.
+2. **Environments follow the deployments.** `environmentIds` omitted → every
+   environment of the chosen deployments. Given → each must be the environment of at
+   least one chosen deployment. `environmentIds` without `deploymentIds` is refused.
+3. **Deployment products are read-only and derived**: always the active
+   (`active IS NULL OR TRUE`) deployed products of the chosen deployments. A caller
+   may state `deploymentProductIds`, but only as exactly that set (on PATCH also
+   exactly the stored snapshot, so a re-sent value never fails because the
+   deployment gained a product since); anything else is "deploymentProductIds is
+   read-only: …". Without `deploymentIds` they are refused.
+4. Each list holds at most 100 ids; duplicates are collapsed.
+
+*PATCH.* Arrays replace. `deploymentIds` changed → deployments, environments (reset
+to the new deployments' unless `environmentIds` is sent too) and products (re-derived)
+are all rewritten; `[]` clears them. Changing `projectId` while deployments are stored
+requires `deploymentIds` in the same request. **Edit window:** project, deployments,
+environments and deployment products can change only while the change has not reached
+`implement` (states new … scheduled); from implement/review/customer_review/rollback/
+closed/canceled a *change* is a 400 ("<field> can no longer be changed: the change
+request is in state …") while re-sending the stored value is accepted (same posture as
+the customer gate flags). Category, customer group and the journal entries are not
+windowed. A refused PATCH writes nothing (all in the PATCH transaction).
+`comment` / `workNote` append a row each; blank is refused on PATCH and ignored on
+create. `durationInput` is still unsupported on this data source.
+
+*Create* runs validation, the insert, the three join tables and the two journal rows
+in one transaction (all-or-nothing). The ServiceNow-first path validates the selection
+(`ChangeRequestRepository.ValidateChangeRequestLinks`) **before** calling ServiceNow.
+
+*Lookup.* `POST /change-requests/link-options {projectId, deploymentIds?}` →
+`{deployments:[{id,name,type,environment}], environments:[…], deploymentProducts:[{id,name,deployment}]}`
+(`GetChangeRequestLinkOptions`): the project's active deployments, and for the chosen
+ones the environments and products that follow — computed by the same derivation the
+writes validate against, so what it offers is exactly what create accepts.
+
+*ServiceNow mirror (dual-write).* The ServiceNow client types here carry
+`customerGroupId`, `categoryKey`, `comment`, `workNote` (create) and `projectId`,
+`customerGroupId`, `comment`, `workNote` (PATCH), which keep being forwarded. They do
+**not** carry a project or a deployment *list* (create has neither; PATCH has the single
+`deploymentId`/`deployedProductId`), and the env/product ids PostgreSQL derives are not
+ServiceNow records (environments are a PostgreSQL-only catalogue), whose field names
+and reference tables are not discoverable from this repository. So `projectId` (create),
+`deploymentIds`, `environmentIds` and `deploymentProductIds` are **stripped from the
+mirror** like the customer gate flags (`changeRequestService.createChangeRequestSNFirst` /
+`PatchChangeRequest`); the ServiceNow-only service refuses `projectId`/`deploymentIds`
+instead of dropping them. Wire them once the ServiceNow field names are known.
+A change request created in dual-write mode also gets its comment rows in PostgreSQL;
+if csm-sync-service syncs the ServiceNow journal back it may add its own copies.
+
 ### Customer Approval / Customer Review checkboxes
 
 Real ServiceNow's change request form has two checkboxes on creation, **Customer
@@ -3347,17 +3435,13 @@ fields are always null on the ServiceNow-backed data source: the Choreo
 `GET /change-requests/{id}/approvals` response has no equivalent fields to
 populate them from.
 
-**Linking happens entirely through `PATCH`, never at creation** —
-`CreateChangeRequestRequest` has no project/case field at all;
-`PatchChangeRequestRequest.ProjectID`/`DeploymentID`/`DeployedProductID`/
-`AssignedEngineerID` map directly to their `work_item` columns, and
-`CaseID` maps to `work_item.parent_id` (`domain.LinkedChangeRequestRef`'s
-own doc comment already describes this as "the reverse of
-`PatchChangeRequestRequest.CaseID`" — confirmed here as the generic
-`work_item.parent_id` self-reference, migration 0039, not case-specific).
-Because of this, `SearchChangeRequestView.Project`/`Case` can be empty
-(`EntityRef{}`)/`nil` for a change request that exists but hasn't been
-linked yet — a real, valid state for this schema, not a bug.
+**Linking** — `CaseID` (`work_item.parent_id`, the generic self-reference, migration
+0039, not case-specific) and `AssignedEngineerID` are still PATCH-only. The
+Customer Project / Deployments / Environments / Deployment products fields can
+now be set at creation too (migration 0191, see "Customer project, deployments,
+environments and deployment products" below); `SearchChangeRequestView.Project`/`Case`
+can still be empty (`EntityRef{}`)/`nil` for a change request that was created
+without them and never linked — a real, valid state for this schema, not a bug.
 
 **"On hold" is now a real, enforced concept — it had no representation
 anywhere in this schema at all before.** A live investigation of the real

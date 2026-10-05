@@ -279,12 +279,31 @@ to the entity service as-is (no field allow-list), with two checks on top:
   or false)") any value that is not a JSON boolean, `null` included
   (`validateChangeRequestCustomerGateFlags`). Which transitions they enable, and
   until when they are editable, is the entity service's call — see its CLAUDE.md,
-  "Customer Approval / Customer Review checkboxes". `PATCH` is the one write path
-  that echoes the entity service's 400 message (`mapUpstreamError`), so its
+  "Customer Approval / Customer Review checkboxes". `PATCH` and `POST` echo the entity service's 400 message (`mapUpstreamError`), so its
   refusals ("customerApprovalRequired can no longer be changed …", "customer
-  review is required …") reach the form verbatim; `POST` errors are generic.
+  review is required …") reach the form verbatim (`POST` does the same, see below).
+* Both shape-check the customer-scope and journal fields
+  (`validateChangeRequestScopeFields`): `projectId` a UUID string; `deploymentIds`,
+  `environmentIds`, `deploymentProductIds` arrays of UUID strings (at most 100, `null`
+  is not an array); `customerGroupId` a UUID string (`null` clears it on PATCH);
+  `category`, `comment`, `workNote` strings; on PATCH `comment`/`workNote` not blank.
+  Whether the deployments belong to the project, the environments follow from the
+  deployments, the deployment products match (they are read-only/derived) and the
+  edit window (only before the change reaches `implement`) are the entity service's
+  call — see its CLAUDE.md, "Customer project, deployments, environments and
+  deployment products".
+* **`POST` now echoes the entity service's 400/409 message too** (`mapUpstreamError`,
+  like `PATCH`): the form has to show "deploymentIds contains a deployment that does
+  not belong to the selected project: …". 5xx and unmapped statuses still map to the
+  generic "Failed to create change request." — upstream internals are never echoed.
+* `POST /change-requests/link-options` (`PermViewOperations`) is the form's lookup:
+  `{projectId, deploymentIds?}` → `{deployments, environments, deploymentProducts}`.
+  `projectId` is required (400 "projectId is required"). Project search for the
+  picker is the existing `POST /projects/search`; customer group is `POST /groups/search`.
 * The detail response carries `customerApprovalRequired`/`customerReviewRequired`
-  and `legalNextStates` untouched; the webapp renders `legalNextStates` as-is.
+  and `legalNextStates` untouched; the webapp renders `legalNextStates` as-is. It also
+  carries `project`, `deployments`, `environments`, `deploymentProducts`,
+  `customerGroup` and `category`.
 * **Customer Group approvals.** The change's customer group answers Customer
   Approval / Customer Review through the approvals
   (`POST /change-requests/{id}/approvals/decision`), with the stages "Customer

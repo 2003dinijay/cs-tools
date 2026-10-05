@@ -718,6 +718,13 @@ func (s *snChangeRequestService) CreateChangeRequest(ctx context.Context, req do
 	if req.Subject == "" {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: "subject is required"}
 	}
+	// ServiceNow's create payload has no project or deployment field; refuse
+	// rather than drop them silently. (The PostgreSQL-first dual-write service
+	// strips them before it mirrors, so this only fires when ServiceNow is the
+	// sole data source.)
+	if req.ProjectID != nil || len(req.DeploymentIDs) > 0 {
+		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: "projectId and deploymentIds are not supported on the ServiceNow data source"}
+	}
 	if req.Category != nil {
 		if _, ok := snCRCategoryIDMap[*req.Category]; !ok {
 			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid category %q", *req.Category)}
@@ -997,6 +1004,9 @@ func (s *snChangeRequestService) PatchChangeRequest(ctx context.Context, id stri
 
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.PatchChangeRequestResponse{}, err
+	}
+	if req.DeploymentIDs != nil {
+		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "deploymentIds is not supported on the ServiceNow data source"}
 	}
 
 	if req.Title == nil && req.Description == nil && req.ProjectID == nil && req.CaseID == nil &&

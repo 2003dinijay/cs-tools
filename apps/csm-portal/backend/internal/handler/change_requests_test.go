@@ -128,7 +128,11 @@ func TestCreateChangeRequest(t *testing.T) {
 	})
 
 	t.Run("upstream errors are mapped correctly", func(t *testing.T) {
-		for _, tc := range upstreamErrorsGeneric("Failed to create change request.") {
+		// Create uses mapUpstreamError (like PATCH), not the Generic variant: the
+		// entity service's 400 explains why a project / deployments /
+		// environments combination was refused, and the form must show it. 5xx
+		// and unmapped statuses still map to the generic message.
+		for _, tc := range upstreamErrors("Failed to create change request.") {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				client := &mockEntityChangeRequestClient{
@@ -1099,4 +1103,213 @@ func TestGetChangeRequest_ReturnsCustomerGateFlags(t *testing.T) {
 	if len(states) != 2 || states[0] != "scheduled" {
 		t.Errorf("legalNextStates = %v, want [scheduled canceled] passed through untouched", states)
 	}
+}
+
+const (
+	scopeProjectID    = "11111111-2222-3333-4444-555555555555"
+	scopeDeploymentID = "66666666-7777-8888-9999-aaaaaaaaaaaa"
+)
+
+// The customer-scope fields (project, deployments, environments, deployment
+// products, customer group) and the journal entries are shape-checked at the
+// BFF on both create and PATCH, so a stray string/null reaches the form as a
+// readable 400 instead of an upstream decode failure; valid ones are forwarded
+// byte-for-byte.
+func TestChangeRequestScopeFieldValidation(t *testing.T) {
+	bad := map[string]string{
+		`"projectId":"not-a-uuid"`:                           "projectId must be a UUID string",
+		`"projectId":null`:                                   "projectId must be a UUID string",
+		`"projectId":7`:                                      "projectId must be a UUID string",
+		`"deploymentIds":"` + scopeDeploymentID + `"`:        "deploymentIds must be an array of UUID strings",
+		`"deploymentIds":null`:                               "deploymentIds must be an array of UUID strings",
+		`"deploymentIds":{"0":"x"}`:                          "deploymentIds must be an array of UUID strings",
+		`"deploymentIds":["not-a-uuid"]`:                     "deploymentIds must be an array of UUID strings",
+		`"deploymentIds":[1]`:                                "deploymentIds must be an array of UUID strings",
+		`"environmentIds":"` + scopeDeploymentID + `"`:       "environmentIds must be an array of UUID strings",
+		`"environmentIds":["` + scopeDeploymentID + `","x"]`: "environmentIds must be an array of UUID strings",
+		`"deploymentProductIds":true`:                        "deploymentProductIds must be an array of UUID strings",
+		`"customerGroupId":"x"`:                              "customerGroupId must be a UUID string",
+		`"category":3`:                                       "category must be a string",
+		`"comment":5`:                                        "comment must be a string",
+		`"workNote":["a"]`:                                   "workNote must be a string",
+		`"deploymentIds":[` + strings.TrimSuffix(strings.Repeat(`"`+scopeDeploymentID+`",`, 101), ",") + `]`: "deploymentIds must contain at most 100 entries",
+	}
+	for field, wantMsg := range bad {
+		field, wantMsg := field, wantMsg
+		t.Run("create rejects "+field[:min(len(field), 40)], func(t *testing.T) {
+			called := false
+			client := &mockEntityChangeRequestClient{createChangeRequestFn: func(_ context.Context, _ []byte) ([]byte, error) {
+				called = true
+				return []byte(`{}`), nil
+			}}
+			h := NewChangeRequestHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(`{"subject":"s","type":"normal",`+field+`}`)))
+			w := httptest.NewRecorder()
+			h.CreateChangeRequest(w, r)
+			assertStatus(t, w, http.StatusBadRequest)
+			assertErrorMessage(t, w, wantMsg)
+			if called {
+				t.Fatal("the entity service was called for a rejected body")
+			}
+		})
+		t.Run("patch rejects "+field[:min(len(field), 40)], func(t *testing.T) {
+			called := false
+			client := &mockEntityChangeRequestClient{patchChangeRequestFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				called = true
+				return []byte(`{}`), nil
+			}}
+			h := NewChangeRequestHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(`{`+field+`}`)))
+			r.SetPathValue("id", testCRID)
+			w := httptest.NewRecorder()
+			h.PatchChangeRequest(w, r)
+			assertStatus(t, w, http.StatusBadRequest)
+			assertErrorMessage(t, w, wantMsg)
+			if called {
+				t.Fatal("the entity service was called for a rejected body")
+			}
+		})
+	}
+
+	t.Run("patch rejects blank journal entries, create ignores them", func(t *testing.T) {
+		for _, field := range []string{`"comment":""`, `"comment":"  "`, `"workNote":"\n"`} {
+			h := NewChangeRequestHandler(&mockEntityChangeRequestClient{})
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(`{`+field+`}`)))
+			r.SetPathValue("id", testCRID)
+			w := httptest.NewRecorder()
+			h.PatchChangeRequest(w, r)
+			assertStatus(t, w, http.StatusBadRequest)
+		}
+		h := NewChangeRequestHandler(&mockEntityChangeRequestClient{})
+		r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(`{"subject":"s","type":"normal","comment":"","workNote":" "}`)))
+		w := httptest.NewRecorder()
+		h.CreateChangeRequest(w, r)
+		assertStatus(t, w, http.StatusCreated)
+	})
+
+	t.Run("valid scope fields are forwarded unchanged; null clears customerGroupId and category on patch", func(t *testing.T) {
+		createBody := `{"subject":"s","type":"normal","projectId":"` + scopeProjectID + `","deploymentIds":["` + scopeDeploymentID + `"],"environmentIds":[],"deploymentProductIds":[],"customerGroupId":"` + scopeProjectID + `","category":"devops","comment":"c","workNote":"w"}`
+		var gotCreate string
+		h := NewChangeRequestHandler(&mockEntityChangeRequestClient{createChangeRequestFn: func(_ context.Context, b []byte) ([]byte, error) {
+			gotCreate = string(b)
+			return []byte(`{"changeRequest":{"id":"x"}}`), nil
+		}})
+		w := httptest.NewRecorder()
+		h.CreateChangeRequest(w, withUser(httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(createBody))))
+		assertStatus(t, w, http.StatusCreated)
+		if gotCreate != createBody {
+			t.Fatalf("forwarded create body = %s, want unchanged", gotCreate)
+		}
+
+		patchBody := `{"projectId":"` + scopeProjectID + `","deploymentIds":[],"environmentIds":["` + scopeDeploymentID + `"],"customerGroupId":null,"category":null,"comment":"c"}`
+		var gotPatch string
+		h = NewChangeRequestHandler(&mockEntityChangeRequestClient{patchChangeRequestFn: func(_ context.Context, _ string, b []byte) ([]byte, error) {
+			gotPatch = string(b)
+			return []byte(`{}`), nil
+		}})
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(patchBody)))
+		r.SetPathValue("id", testCRID)
+		w = httptest.NewRecorder()
+		h.PatchChangeRequest(w, r)
+		assertStatus(t, w, http.StatusOK)
+		if gotPatch != patchBody {
+			t.Fatalf("forwarded patch body = %s, want unchanged", gotPatch)
+		}
+	})
+
+	t.Run("a refused combination surfaces the entity service's message on create and patch", func(t *testing.T) {
+		upstream := &apierror.Error{StatusCode: http.StatusBadRequest, Body: `{"message":"deploymentIds contains a deployment that does not belong to the selected project: ` + scopeDeploymentID + `"}`}
+		want := "deploymentIds contains a deployment that does not belong to the selected project: " + scopeDeploymentID
+		h := NewChangeRequestHandler(&mockEntityChangeRequestClient{
+			createChangeRequestFn: func(_ context.Context, _ []byte) ([]byte, error) { return nil, upstream },
+			patchChangeRequestFn:  func(_ context.Context, _ string, _ []byte) ([]byte, error) { return nil, upstream },
+		})
+		w := httptest.NewRecorder()
+		h.CreateChangeRequest(w, withUser(httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(`{"subject":"s","type":"normal"}`))))
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, want)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(`{"comment":"c"}`)))
+		r.SetPathValue("id", testCRID)
+		w = httptest.NewRecorder()
+		h.PatchChangeRequest(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, want)
+	})
+}
+
+// POST /change-requests/link-options: the form's Customer Project ->
+// Deployments -> Environments / Deployment products lookup.
+func TestChangeRequestLinkOptions(t *testing.T) {
+	post := func(h *ChangeRequestHandler, body string, authed bool) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/change-requests/link-options", strings.NewReader(body))
+		if authed {
+			r = withUser(r)
+		}
+		w := httptest.NewRecorder()
+		h.GetChangeRequestLinkOptions(w, r)
+		return w
+	}
+
+	t.Run("requires authenticated user", func(t *testing.T) {
+		w := post(NewChangeRequestHandler(&mockEntityChangeRequestClient{}), `{"projectId":"`+scopeProjectID+`"}`, false)
+		assertStatus(t, w, http.StatusUnauthorized)
+		assertErrorMessage(t, w, ErrMsgUnauthorized)
+	})
+
+	for name, tc := range map[string]struct{ body, msg string }{
+		"not json":                {`nope`, ErrMsgBadRequest},
+		"not an object":           {`[]`, ErrMsgBadRequest},
+		"missing projectId":       {`{"deploymentIds":[]}`, "projectId is required"},
+		"projectId not a uuid":    {`{"projectId":"p-1"}`, "projectId must be a UUID string"},
+		"projectId null":          {`{"projectId":null}`, "projectId must be a UUID string"},
+		"deploymentIds not array": {`{"projectId":"` + scopeProjectID + `","deploymentIds":"` + scopeDeploymentID + `"}`, "deploymentIds must be an array of UUID strings"},
+		"deploymentIds bad entry": {`{"projectId":"` + scopeProjectID + `","deploymentIds":["x"]}`, "deploymentIds must be an array of UUID strings"},
+	} {
+		tc := tc
+		t.Run("rejects "+name, func(t *testing.T) {
+			called := false
+			h := NewChangeRequestHandler(&mockEntityChangeRequestClient{getChangeRequestLinkOptionsFn: func(_ context.Context, _ []byte) ([]byte, error) {
+				called = true
+				return []byte(`{}`), nil
+			}})
+			w := post(h, tc.body, true)
+			assertStatus(t, w, http.StatusBadRequest)
+			assertErrorMessage(t, w, tc.msg)
+			if called {
+				t.Fatal("the entity service was called for a rejected body")
+			}
+		})
+	}
+
+	t.Run("forwards the body and returns the entity response as is", func(t *testing.T) {
+		body := `{"projectId":"` + scopeProjectID + `","deploymentIds":["` + scopeDeploymentID + `"]}`
+		const resp = `{"deployments":[{"id":"d1","name":"Prod","type":"primary_production","environment":{"id":"e1","name":"Primary Production"}}],"environments":[{"id":"e1","name":"Primary Production"}],"deploymentProducts":[{"id":"p1","name":"APIM 4.3.0","deployment":{"id":"d1","name":"Prod"}}]}`
+		var got string
+		h := NewChangeRequestHandler(&mockEntityChangeRequestClient{getChangeRequestLinkOptionsFn: func(_ context.Context, b []byte) ([]byte, error) {
+			got = string(b)
+			return []byte(resp), nil
+		}})
+		w := post(h, body, true)
+		assertStatus(t, w, http.StatusOK)
+		if got != body {
+			t.Fatalf("forwarded body = %s, want %s", got, body)
+		}
+		if strings.TrimSpace(w.Body.String()) != resp {
+			t.Fatalf("response = %s, want the entity response", w.Body.String())
+		}
+	})
+
+	t.Run("upstream errors are mapped: 400 message surfaced, 5xx generic", func(t *testing.T) {
+		for _, tc := range upstreamErrors("Failed to load change request options.") {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				h := NewChangeRequestHandler(&mockEntityChangeRequestClient{getChangeRequestLinkOptionsFn: func(_ context.Context, _ []byte) ([]byte, error) {
+					return nil, tc.err
+				}})
+				w := post(h, `{"projectId":"`+scopeProjectID+`"}`, true)
+				assertStatus(t, w, tc.wantCode)
+				assertErrorMessage(t, w, tc.wantMsg)
+			})
+		}
+	})
 }

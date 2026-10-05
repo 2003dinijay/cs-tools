@@ -235,6 +235,15 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	if err := validateUUIDs("id", ids); err != nil {
 		return domain.PatchChangeRequestResponse{}, err
 	}
+	if err := validateChangeRequestScopeLists(derefStrings(req.DeploymentIDs), derefStrings(req.EnvironmentIDs), derefStrings(req.DeploymentProductIDs)); err != nil {
+		return domain.PatchChangeRequestResponse{}, err
+	}
+	if req.Comment != nil && strings.TrimSpace(*req.Comment) == "" {
+		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "comment must not be empty"}
+	}
+	if req.WorkNote != nil && strings.TrimSpace(*req.WorkNote) == "" {
+		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "workNote must not be empty"}
+	}
 	if req.Impact != nil && !validChangeRequestImpact[*req.Impact] {
 		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "impact contains invalid value: " + string(*req.Impact)}
 	}
@@ -253,13 +262,15 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 		req.RequestedByID == nil && req.AffectedServicesText == nil && req.AffectedComponentsText == nil &&
 		req.RollbackDurationText == nil && req.CustomerGroupID == nil &&
 		req.OnHold == nil && req.OnHoldReason == nil &&
-		req.CustomerApprovalRequired == nil && req.CustomerReviewRequired == nil {
+		req.CustomerApprovalRequired == nil && req.CustomerReviewRequired == nil &&
+		req.DeploymentIDs == nil && req.EnvironmentIDs == nil && req.DeploymentProductIDs == nil &&
+		req.Comment == nil && req.WorkNote == nil && req.DurationInput == nil {
 		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "at least one field must be provided"}
 	}
 	// Accepted by the contract (and mirrored) but with no Postgres column
-	// or table behind them: reject rather than silently drop them.
-	if req.EnvironmentIDs != nil || req.DeploymentProductIDs != nil || req.Comment != nil || req.WorkNote != nil || req.DurationInput != nil {
-		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "environmentIds, deploymentProductIds, comment, workNote, and durationInput are not supported on this data source"}
+	// behind it: reject rather than silently drop it.
+	if req.DurationInput != nil {
+		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "durationInput is not supported on this data source"}
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)
@@ -293,8 +304,18 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	// isCustomerApproved / isCustomerReviewed, the customer's OUTCOME, which
 	// are a different thing), so they stay Postgres-only. A PATCH that carried
 	// nothing else has nothing to mirror.
+	//
+	// deploymentIds / environmentIds / deploymentProductIds are stripped too:
+	// ServiceNow's change request API carries a single deployment and a single
+	// deployed product on a PATCH, and its environments / deployment products
+	// are ServiceNow records whose ids are not the ones PostgreSQL derives
+	// (environments are a PostgreSQL-only catalogue of deployment types) -- the
+	// field names and reference tables behind them are not discoverable here,
+	// so rather than guess they stay Postgres-only. projectId, customerGroupId,
+	// category, comment and workNote are forwarded as before.
 	mirrorReq := req
 	mirrorReq.CustomerApprovalRequired, mirrorReq.CustomerReviewRequired = nil, nil
+	mirrorReq.DeploymentIDs, mirrorReq.EnvironmentIDs, mirrorReq.DeploymentProductIDs = nil, nil, nil
 	if s.snWriteback != nil && !reflect.DeepEqual(mirrorReq, domain.PatchChangeRequestRequest{}) {
 		mirrorID := id
 		s.snWriteback.Dispatch(ctx, "change_request", id, "patch", mirrorReq,
@@ -353,6 +374,9 @@ func (s *changeRequestService) createChangeRequestPortal(ctx context.Context, re
 	if !repository.ChangeRequestTypeSupported(*req.Type) {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
 	}
+	if err := validateChangeRequestCreateScope(req); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
 	return s.repo.CreateChangeRequest(ctx, req, createdBy)
 }
 
@@ -391,7 +415,26 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 	if !repository.ChangeRequestTypeSupported(*req.Type) {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
 	}
-	snResp, err := s.snMirror.CreateChangeRequest(ctx, req)
+	if err := validateChangeRequestCreateScope(req); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
+	// The project / deployments / environments / deployment products are
+	// validated BEFORE ServiceNow is called: once ServiceNow has created the
+	// change request, a refusal on the Postgres side would strand it there.
+	if _, err := s.repo.ValidateChangeRequestLinks(ctx, domain.ChangeRequestLinkSelection{
+		ProjectID: req.ProjectID, DeploymentIDs: req.DeploymentIDs,
+		EnvironmentIDs: req.EnvironmentIDs, DeploymentProductIDs: req.DeploymentProductIDs,
+	}); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
+	// ServiceNow gets the request without the scope fields only PostgreSQL
+	// models: projectId and deploymentIds have no field on ServiceNow's create
+	// payload, and environments / deployment products are PostgreSQL-derived
+	// ids that are not ServiceNow records (see PatchChangeRequest's mirror
+	// comment). customerGroupId, category, comment and workNote are forwarded.
+	mirrorReq := req
+	mirrorReq.ProjectID, mirrorReq.DeploymentIDs, mirrorReq.EnvironmentIDs, mirrorReq.DeploymentProductIDs = nil, nil, nil, nil
+	snResp, err := s.snMirror.CreateChangeRequest(ctx, mirrorReq)
 	if err != nil {
 		// ServiceNow never accepted the change request -- nothing is
 		// written to Postgres at all, by construction
@@ -532,5 +575,58 @@ func (s *changeRequestService) DecideChangeRequestApproval(ctx context.Context, 
 
 // GetChangeRequestLinkOptions implements ChangeRequestService.
 func (s *changeRequestService) GetChangeRequestLinkOptions(ctx context.Context, req domain.ChangeRequestLinkOptionsRequest) (domain.ChangeRequestLinkOptionsResponse, error) {
-	return domain.ChangeRequestLinkOptionsResponse{}, &apierror.ServiceUnavailableError{Msg: "change request link options are not implemented yet"}
+	if strings.TrimSpace(req.ProjectID) == "" {
+		return domain.ChangeRequestLinkOptionsResponse{}, &apierror.ValidationError{Msg: "projectId is required"}
+	}
+	if err := validateUUIDs("projectId", []string{req.ProjectID}); err != nil {
+		return domain.ChangeRequestLinkOptionsResponse{}, err
+	}
+	if err := validateChangeRequestScopeLists(req.DeploymentIDs, nil, nil); err != nil {
+		return domain.ChangeRequestLinkOptionsResponse{}, err
+	}
+	return s.repo.GetChangeRequestLinkOptions(ctx, req)
+}
+
+// maxChangeRequestScopeIDs caps each id list of the customer-scope fields.
+const maxChangeRequestScopeIDs = 100
+
+func derefStrings(p *[]string) []string {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// validateChangeRequestScopeLists checks the shape of the deployment,
+// environment and deployment-product id lists: UUIDs, bounded. Whether they
+// fit together is the repository's to judge.
+func validateChangeRequestScopeLists(deploymentIDs, environmentIDs, deploymentProductIDs []string) error {
+	for _, l := range []struct {
+		field string
+		ids   []string
+	}{{"deploymentIds", deploymentIDs}, {"environmentIds", environmentIDs}, {"deploymentProductIds", deploymentProductIDs}} {
+		if len(l.ids) > maxChangeRequestScopeIDs {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("%s must contain at most %d entries", l.field, maxChangeRequestScopeIDs)}
+		}
+		if err := validateUUIDs(l.field, l.ids); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateChangeRequestCreateScope checks the shape of the create request's
+// customer-scope fields (the repository judges how they fit together).
+func validateChangeRequestCreateScope(req domain.CreateChangeRequestRequest) error {
+	if req.ProjectID != nil {
+		if err := validateUUIDs("projectId", []string{*req.ProjectID}); err != nil {
+			return err
+		}
+	}
+	if req.CustomerGroupID != nil {
+		if err := validateUUIDs("customerGroupId", []string{*req.CustomerGroupID}); err != nil {
+			return err
+		}
+	}
+	return validateChangeRequestScopeLists(req.DeploymentIDs, req.EnvironmentIDs, req.DeploymentProductIDs)
 }

@@ -39,6 +39,24 @@ type stubChangeRequestRepo struct {
 	patchChangeRequest                func(ctx context.Context, id string, req domain.PatchChangeRequestRequest, email string) (domain.ChangeRequest, error)
 	getChangeRequestApprovals         func(ctx context.Context, id string) (domain.ChangeRequestApprovals, error)
 	decideChangeRequestApproval       func(ctx context.Context, id, approverUserID, decision, actorEmail string) (string, error)
+	validateChangeRequestLinks        func(ctx context.Context, sel domain.ChangeRequestLinkSelection) (domain.ChangeRequestLinkSet, error)
+	getChangeRequestLinkOptions       func(ctx context.Context, req domain.ChangeRequestLinkOptionsRequest) (domain.ChangeRequestLinkOptionsResponse, error)
+}
+
+// ValidateChangeRequestLinks defaults to accepting everything: most tests do
+// not exercise the customer-scope fields.
+func (s *stubChangeRequestRepo) ValidateChangeRequestLinks(ctx context.Context, sel domain.ChangeRequestLinkSelection) (domain.ChangeRequestLinkSet, error) {
+	if s.validateChangeRequestLinks != nil {
+		return s.validateChangeRequestLinks(ctx, sel)
+	}
+	return domain.ChangeRequestLinkSet{}, nil
+}
+
+func (s *stubChangeRequestRepo) GetChangeRequestLinkOptions(ctx context.Context, req domain.ChangeRequestLinkOptionsRequest) (domain.ChangeRequestLinkOptionsResponse, error) {
+	if s.getChangeRequestLinkOptions != nil {
+		return s.getChangeRequestLinkOptions(ctx, req)
+	}
+	panic("not implemented")
 }
 
 func (s *stubChangeRequestRepo) GetChangeRequestApprovals(ctx context.Context, id string) (domain.ChangeRequestApprovals, error) {
@@ -642,8 +660,8 @@ func TestChangeRequestService_DecideChangeRequestApproval_RepoNotFoundPropagates
 // TestChangeRequestService_PatchChangeRequest_AcceptsFieldParityFieldsAlone
 // proves a request carrying only one of the field-parity fields (previously
 // rejected with "at least one field must be provided") reaches the
-// repository, and that fields with no Postgres backing are rejected rather
-// than silently dropped.
+// repository, and that durationInput, the one field with no Postgres backing,
+// is rejected rather than silently dropped.
 func TestChangeRequestService_PatchChangeRequest_AcceptsFieldParityFieldsAlone(t *testing.T) {
 	text := "2 hours"
 	ptr := &text
@@ -664,11 +682,13 @@ func TestChangeRequestService_PatchChangeRequest_AcceptsFieldParityFieldsAlone(t
 		t.Fatal("repository never saw RollbackDurationText")
 	}
 
-	comment := "hello"
-	_, err := svc.PatchChangeRequest(ctx, testUUID, domain.PatchChangeRequestRequest{Comment: &comment})
+	// durationInput is the one field with no Postgres backing left.
+	d := 60
+	dd := &d
+	_, err := svc.PatchChangeRequest(ctx, testUUID, domain.PatchChangeRequestRequest{DurationInput: &dd})
 	var ve *apierror.ValidationError
 	if !asValidationError(err, &ve) {
-		t.Fatalf("comment: expected ValidationError, got %T: %v", err, err)
+		t.Fatalf("durationInput: expected ValidationError, got %T: %v", err, err)
 	}
 }
 
@@ -886,4 +906,251 @@ func TestChangeRequestService_GetChangeRequestApprovals_StampsViewerEmail(t *tes
 			t.Errorf("repo saw an identity %+v, want none", seen)
 		}
 	})
+}
+
+const (
+	scopeTestProjectID    = "11111111-2222-3333-4444-555555555555"
+	scopeTestDeploymentID = "66666666-7777-8888-9999-aaaaaaaaaaaa"
+)
+
+// The customer-scope fields are shape-checked (UUIDs, bounded) before anything
+// is written or sent anywhere, on create (plain and ServiceNow-first) and PATCH.
+func TestChangeRequestService_ScopeFields_ShapeValidation(t *testing.T) {
+	many := make([]string, maxChangeRequestScopeIDs+1)
+	for i := range many {
+		many[i] = scopeTestDeploymentID
+	}
+	bad := "not-a-uuid"
+	creates := map[string]func(*domain.CreateChangeRequestRequest){
+		"projectId":            func(r *domain.CreateChangeRequestRequest) { r.ProjectID = &bad },
+		"deploymentIds":        func(r *domain.CreateChangeRequestRequest) { r.DeploymentIDs = []string{bad} },
+		"environmentIds":       func(r *domain.CreateChangeRequestRequest) { r.EnvironmentIDs = []string{bad} },
+		"deploymentProductIds": func(r *domain.CreateChangeRequestRequest) { r.DeploymentProductIDs = []string{bad} },
+		"customerGroupId":      func(r *domain.CreateChangeRequestRequest) { r.CustomerGroupID = &bad },
+		"too many":             func(r *domain.CreateChangeRequestRequest) { r.DeploymentIDs = many },
+	}
+	for name, mod := range creates {
+		mod := mod
+		t.Run("create/"+name, func(t *testing.T) {
+			req := validCreateChangeRequestRequest()
+			mod(&req)
+			mirror := &stubMirrorChangeRequestService{createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
+				t.Fatal("ServiceNow was called for an invalid request")
+				return domain.CreateChangeRequestResponse{}, nil
+			}}
+			for label, svc := range map[string]ChangeRequestService{
+				"plain":            NewChangeRequestService(&stubChangeRequestRepo{}, stubUserRepo{}),
+				"servicenow-first": NewChangeRequestServiceWithSNMirror(&stubChangeRequestRepo{}, stubUserRepo{}, mirror),
+			} {
+				_, err := svc.CreateChangeRequest(contextWithUserIDToken(fakeJWTWithEmail(t, "a@example.com")), req)
+				var ve *apierror.ValidationError
+				if !asValidationError(err, &ve) {
+					t.Fatalf("%s: expected *apierror.ValidationError, got %T: %v", label, err, err)
+				}
+			}
+		})
+	}
+
+	patches := map[string]domain.PatchChangeRequestRequest{
+		"projectId":            {ProjectID: &bad},
+		"deploymentIds":        {DeploymentIDs: &[]string{bad}},
+		"environmentIds":       {EnvironmentIDs: &[]string{bad}},
+		"deploymentProductIds": {DeploymentProductIDs: &[]string{bad}},
+		"too many":             {DeploymentIDs: &many},
+		"blank comment":        {Comment: func() *string { s := "  "; return &s }()},
+		"blank work note":      {WorkNote: func() *string { s := ""; return &s }()},
+	}
+	for name, req := range patches {
+		req := req
+		t.Run("patch/"+name, func(t *testing.T) {
+			svc := NewChangeRequestService(&stubChangeRequestRepo{}, stubUserRepo{}) // repo panics if reached
+			_, err := svc.PatchChangeRequest(contextWithUserIDToken(fakeJWTWithEmail(t, "a@example.com")), testUUID, req)
+			var ve *apierror.ValidationError
+			if !asValidationError(err, &ve) {
+				t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+// PATCH accepts the scope fields and the journal entries (alone), hands them to
+// the repository untouched, and rejects only durationInput.
+func TestChangeRequestService_PatchChangeRequest_ScopeFieldsReachTheRepository(t *testing.T) {
+	var got domain.PatchChangeRequestRequest
+	repo := &stubChangeRequestRepo{patchChangeRequest: func(_ context.Context, id string, req domain.PatchChangeRequestRequest, _ string) (domain.ChangeRequest, error) {
+		got = req
+		return domain.ChangeRequest{SearchChangeRequestView: domain.SearchChangeRequestView{ID: id}}, nil
+	}}
+	svc := NewChangeRequestService(repo, stubUserRepo{})
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	comment, note := "hello", "internal"
+	for name, req := range map[string]domain.PatchChangeRequestRequest{
+		"deploymentIds":        {DeploymentIDs: &[]string{scopeTestDeploymentID}},
+		"empty deploymentIds":  {DeploymentIDs: &[]string{}},
+		"environmentIds":       {EnvironmentIDs: &[]string{scopeTestDeploymentID}},
+		"deploymentProductIds": {DeploymentProductIDs: &[]string{scopeTestDeploymentID}},
+		"comment":              {Comment: &comment},
+		"workNote":             {WorkNote: &note},
+		"projectId":            {ProjectID: func() *string { s := scopeTestProjectID; return &s }()},
+	} {
+		got = domain.PatchChangeRequestRequest{}
+		if _, err := svc.PatchChangeRequest(ctx, testUUID, req); err != nil {
+			t.Fatalf("%s alone: %v", name, err)
+		}
+		if got.DeploymentIDs != req.DeploymentIDs || got.EnvironmentIDs != req.EnvironmentIDs || got.DeploymentProductIDs != req.DeploymentProductIDs ||
+			got.Comment != req.Comment || got.WorkNote != req.WorkNote || got.ProjectID != req.ProjectID {
+			t.Fatalf("%s: the repository saw a different request", name)
+		}
+	}
+}
+
+// The dual-write mirror gets only what ServiceNow models: projectId on PATCH,
+// comment, workNote and customerGroupId go through; deploymentIds,
+// environmentIds and deploymentProductIds (Postgres-derived) are stripped; a
+// PATCH carrying only those has nothing to mirror.
+func TestChangeRequestService_PatchChangeRequest_ScopeFieldsStayOutOfTheMirror(t *testing.T) {
+	repo := &stubChangeRequestRepo{patchChangeRequest: func(_ context.Context, id string, _ domain.PatchChangeRequestRequest, _ string) (domain.ChangeRequest, error) {
+		return domain.ChangeRequest{SearchChangeRequestView: domain.SearchChangeRequestView{ID: id}}, nil
+	}}
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	project, comment := scopeTestProjectID, "mirrored comment"
+
+	t.Run("mixed: scope lists stripped, project and journal mirrored", func(t *testing.T) {
+		called := make(chan domain.PatchChangeRequestRequest, 1)
+		mirror := &stubMirrorChangeRequestService{patchChangeRequest: func(_ context.Context, _ string, r domain.PatchChangeRequestRequest) (domain.PatchChangeRequestResponse, error) {
+			called <- r
+			return domain.PatchChangeRequestResponse{}, nil
+		}}
+		svc := NewChangeRequestServiceWithSNWriteback(repo, stubUserRepo{}, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+		ids := []string{scopeTestDeploymentID}
+		if _, err := svc.PatchChangeRequest(ctx, testUUID, domain.PatchChangeRequestRequest{
+			ProjectID: &project, Comment: &comment, DeploymentIDs: &ids, EnvironmentIDs: &ids, DeploymentProductIDs: &ids,
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		select {
+		case got := <-called:
+			if got.DeploymentIDs != nil || got.EnvironmentIDs != nil || got.DeploymentProductIDs != nil {
+				t.Errorf("mirror saw the Postgres-only lists: %v/%v/%v", got.DeploymentIDs, got.EnvironmentIDs, got.DeploymentProductIDs)
+			}
+			if got.ProjectID == nil || *got.ProjectID != project || got.Comment == nil || *got.Comment != comment {
+				t.Errorf("mirror lost projectId/comment: %v/%v", got.ProjectID, got.Comment)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("mirror.PatchChangeRequest was never called")
+		}
+	})
+
+	t.Run("scope lists alone: nothing to mirror", func(t *testing.T) {
+		mirror := &stubMirrorChangeRequestService{patchChangeRequest: func(context.Context, string, domain.PatchChangeRequestRequest) (domain.PatchChangeRequestResponse, error) {
+			t.Error("mirror was called for a PATCH that only carried Postgres-only scope lists")
+			return domain.PatchChangeRequestResponse{}, nil
+		}}
+		svc := NewChangeRequestServiceWithSNWriteback(repo, stubUserRepo{}, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+		ids := []string{scopeTestDeploymentID}
+		if _, err := svc.PatchChangeRequest(ctx, testUUID, domain.PatchChangeRequestRequest{DeploymentIDs: &ids}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		time.Sleep(150 * time.Millisecond)
+	})
+}
+
+// ServiceNow-first create: the scope selection is validated against PostgreSQL
+// BEFORE ServiceNow is called (a refusal afterwards would strand the change
+// request in ServiceNow); ServiceNow then receives the request without the
+// fields it cannot model, while PostgreSQL receives all of them.
+func TestChangeRequestService_CreateChangeRequest_ScopeValidatedBeforeSNAndStrippedFromIt(t *testing.T) {
+	project := scopeTestProjectID
+	group, category, comment, note := scopeTestProjectID, domain.ChangeRequestCategoryDevOps, "c", "w"
+	req := validCreateChangeRequestRequest()
+	req.ProjectID, req.DeploymentIDs = &project, []string{scopeTestDeploymentID}
+	req.EnvironmentIDs, req.DeploymentProductIDs = []string{scopeTestDeploymentID}, []string{scopeTestDeploymentID}
+	req.CustomerGroupID, req.Category, req.Comment, req.WorkNote = &group, &category, &comment, &note
+
+	t.Run("refused by PostgreSQL: ServiceNow never called", func(t *testing.T) {
+		mirror := &stubMirrorChangeRequestService{createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
+			t.Fatal("ServiceNow was called although the scope selection is invalid")
+			return domain.CreateChangeRequestResponse{}, nil
+		}}
+		repo := &stubChangeRequestRepo{validateChangeRequestLinks: func(context.Context, domain.ChangeRequestLinkSelection) (domain.ChangeRequestLinkSet, error) {
+			return domain.ChangeRequestLinkSet{}, &apierror.ValidationError{Msg: "deploymentIds contains a deployment that does not belong to the selected project: x"}
+		}}
+		svc := NewChangeRequestServiceWithSNMirror(repo, stubUserRepo{}, mirror)
+		_, err := svc.CreateChangeRequest(context.Background(), req)
+		var ve *apierror.ValidationError
+		if !asValidationError(err, &ve) || !strings.Contains(ve.Msg, "does not belong to the selected project") {
+			t.Fatalf("err = %v, want the repository's ValidationError", err)
+		}
+	})
+
+	t.Run("accepted: ServiceNow gets the modelled fields only, PostgreSQL gets everything", func(t *testing.T) {
+		var sawSel domain.ChangeRequestLinkSelection
+		var toSN, toPG domain.CreateChangeRequestRequest
+		mirror := &stubMirrorChangeRequestService{createChangeRequest: func(_ context.Context, r domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
+			toSN = r
+			resp := domain.CreateChangeRequestResponse{}
+			resp.ChangeRequest.ID = testUUID
+			return resp, nil
+		}}
+		repo := &stubChangeRequestRepo{
+			validateChangeRequestLinks: func(_ context.Context, sel domain.ChangeRequestLinkSelection) (domain.ChangeRequestLinkSet, error) {
+				sawSel = sel
+				return domain.ChangeRequestLinkSet{}, nil
+			},
+			createChangeRequestFromServiceNow: func(_ context.Context, r domain.CreateChangeRequestRequest, id, _, _ string) (domain.CreateChangeRequestResponse, error) {
+				toPG = r
+				resp := domain.CreateChangeRequestResponse{}
+				resp.ChangeRequest.ID = id
+				return resp, nil
+			},
+		}
+		svc := NewChangeRequestServiceWithSNMirror(repo, stubUserRepo{}, mirror)
+		if _, err := svc.CreateChangeRequest(context.Background(), req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if sawSel.ProjectID == nil || *sawSel.ProjectID != project || len(sawSel.DeploymentIDs) != 1 || len(sawSel.EnvironmentIDs) != 1 || len(sawSel.DeploymentProductIDs) != 1 {
+			t.Errorf("validated selection = %+v", sawSel)
+		}
+		if toSN.ProjectID != nil || toSN.DeploymentIDs != nil || toSN.EnvironmentIDs != nil || toSN.DeploymentProductIDs != nil {
+			t.Errorf("ServiceNow saw the Postgres-only scope: %+v", toSN)
+		}
+		if toSN.CustomerGroupID == nil || toSN.Category == nil || toSN.Comment == nil || toSN.WorkNote == nil {
+			t.Errorf("ServiceNow lost customerGroupId/category/comment/workNote: %+v", toSN)
+		}
+		if toPG.ProjectID == nil || len(toPG.DeploymentIDs) != 1 || len(toPG.EnvironmentIDs) != 1 || len(toPG.DeploymentProductIDs) != 1 || toPG.Comment == nil || toPG.WorkNote == nil {
+			t.Errorf("PostgreSQL did not get the full request: %+v", toPG)
+		}
+	})
+}
+
+// The form's lookup validates its input and is Postgres-only.
+func TestChangeRequestService_GetChangeRequestLinkOptions(t *testing.T) {
+	var got domain.ChangeRequestLinkOptionsRequest
+	repo := &stubChangeRequestRepo{getChangeRequestLinkOptions: func(_ context.Context, r domain.ChangeRequestLinkOptionsRequest) (domain.ChangeRequestLinkOptionsResponse, error) {
+		got = r
+		return domain.ChangeRequestLinkOptionsResponse{Deployments: []domain.ChangeRequestDeploymentOption{{ID: "d"}}}, nil
+	}}
+	svc := NewChangeRequestService(repo, stubUserRepo{})
+	resp, err := svc.GetChangeRequestLinkOptions(context.Background(), domain.ChangeRequestLinkOptionsRequest{ProjectID: scopeTestProjectID, DeploymentIDs: []string{scopeTestDeploymentID}})
+	if err != nil || len(resp.Deployments) != 1 || got.ProjectID != scopeTestProjectID || len(got.DeploymentIDs) != 1 {
+		t.Fatalf("valid request: resp=%+v err=%v got=%+v", resp, err, got)
+	}
+	for name, req := range map[string]domain.ChangeRequestLinkOptionsRequest{
+		"missing projectId":   {},
+		"bad projectId":       {ProjectID: "nope"},
+		"bad deploymentIds":   {ProjectID: scopeTestProjectID, DeploymentIDs: []string{"nope"}},
+		"too many deployment": {ProjectID: scopeTestProjectID, DeploymentIDs: make([]string, maxChangeRequestScopeIDs+1)},
+	} {
+		_, err := svc.GetChangeRequestLinkOptions(context.Background(), req)
+		var ve *apierror.ValidationError
+		if !asValidationError(err, &ve) {
+			t.Fatalf("%s: expected *apierror.ValidationError, got %T: %v", name, err, err)
+		}
+	}
+	// The ServiceNow-only service refuses.
+	_, err = (&snChangeRequestService{}).GetChangeRequestLinkOptions(context.Background(), domain.ChangeRequestLinkOptionsRequest{ProjectID: scopeTestProjectID})
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) {
+		t.Fatalf("servicenow data source: expected *apierror.ValidationError, got %T: %v", err, err)
+	}
 }

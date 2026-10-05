@@ -58,6 +58,36 @@ INSERT INTO deployment (id, created_on, updated_on, created_by, updated_by, numb
   ('00000000-0000-0000-0000-000000000501', now(), now(), 'seed', 'seed', 'DEP-0001', 'Production', 'PRIMARY_PRODUCTION', true, '00000000-0000-0000-0000-000000000401')
 ON CONFLICT (id) DO NOTHING;
 
+-- A second and third environment for the same project, each with its own
+-- deployed products, so the change request form's cascade (Customer Project ->
+-- Deployments -> Environments / Deployment products) has something to show:
+-- Production (PRIMARY_PRODUCTION) runs API Manager 4.3.0 and Identity Server
+-- 7.0.0, Staging runs API Manager 4.4.0 only, Development runs nothing yet. A
+-- deployment's environment is its type, so choosing Production + Staging gives
+-- the environments {Primary Production, Staging} and three deployment
+-- products; choosing Development alone gives one environment and none.
+INSERT INTO deployment (id, created_on, updated_on, created_by, updated_by, number, name, type, is_active, project_id) VALUES
+  ('00000000-0000-0000-0000-000000000502', now(), now(), 'seed', 'seed', 'DEP-0002', 'Staging',     'STAGING',     true, '00000000-0000-0000-0000-000000000401'),
+  ('00000000-0000-0000-0000-000000000503', now(), now(), 'seed', 'seed', 'DEP-0003', 'Development', 'DEVELOPMENT', true, '00000000-0000-0000-0000-000000000401')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO product (id, created_on, updated_on, created_by, updated_by, manufacturer, category, name) VALUES
+  ('00000000-0000-0000-0000-000000000511', now(), now(), 'seed', 'seed', 'WSO2', 'SOFTWARE', 'WSO2 API Manager'),
+  ('00000000-0000-0000-0000-000000000512', now(), now(), 'seed', 'seed', 'WSO2', 'SOFTWARE', 'WSO2 Identity Server')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO product_version (id, created_on, updated_on, created_by, updated_by, version, product_id, current_support_status, release_date) VALUES
+  ('00000000-0000-0000-0000-000000000521', now(), now(), 'seed', 'seed', '4.3.0', '00000000-0000-0000-0000-000000000511', 'AVAILABLE', '2024-06-01'),
+  ('00000000-0000-0000-0000-000000000522', now(), now(), 'seed', 'seed', '4.4.0', '00000000-0000-0000-0000-000000000511', 'AVAILABLE', '2025-02-01'),
+  ('00000000-0000-0000-0000-000000000523', now(), now(), 'seed', 'seed', '7.0.0', '00000000-0000-0000-0000-000000000512', 'AVAILABLE', '2024-03-01')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO deployed_product (id, created_on, updated_on, created_by, updated_by, number, name, active, life_cycle_stage_status, life_cycle_stage, core_count, project_id, deployment_id, product_id, version_id, product_category) VALUES
+  ('00000000-0000-0000-0000-000000000531', now(), now(), 'seed', 'seed', 'DP-0001', 'WSO2 API Manager 4.3.0',      true, 'AVAILABLE', 'OPERATIONAL', 8, '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000501', '00000000-0000-0000-0000-000000000511', '00000000-0000-0000-0000-000000000521', 'PDP'),
+  ('00000000-0000-0000-0000-000000000532', now(), now(), 'seed', 'seed', 'DP-0002', 'WSO2 Identity Server 7.0.0', true, 'AVAILABLE', 'OPERATIONAL', 4, '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000501', '00000000-0000-0000-0000-000000000512', '00000000-0000-0000-0000-000000000523', 'PDP'),
+  ('00000000-0000-0000-0000-000000000533', now(), now(), 'seed', 'seed', 'DP-0003', 'WSO2 API Manager 4.4.0',      true, 'AVAILABLE', 'OPERATIONAL', 4, '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000502', '00000000-0000-0000-0000-000000000511', '00000000-0000-0000-0000-000000000522', 'PDP')
+ON CONFLICT DO NOTHING;
+
 -- One case (work_item + case row).
 INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type, account_id, project_id, deployment_id, opened_by_user_id, assigned_to_id, description) VALUES
   ('00000000-0000-0000-0000-000000000601', now(), now(), 'seed', 'seed', 'CASE-0001', 'CASE-0001', 'Sample case seeded for local dev', 'CASE', '00000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000501', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Seed data for docker-compose local dev stack.')

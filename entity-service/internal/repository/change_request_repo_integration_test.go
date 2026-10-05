@@ -4700,3 +4700,961 @@ func TestChangeRequestFlowIntegration_CustomerGateMigrationIsIdempotent(t *testi
 		t.Fatalf("flags after re-running the migration = %v/%v, want the stored true/true", cr.CustomerApprovalRequired, cr.CustomerReviewRequired)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Customer-scope fields: Customer Project, Deployments, Environments and
+// Deployment products, plus Category, Customer Group and the "Additional
+// comments" / "Work notes" journal entries (migration 0191,
+// change_request_links.go). Same harness as the lifecycle tests above.
+// ---------------------------------------------------------------------------
+
+const (
+	crScopeAccountID = "3bbbbbbb-0000-0000-0000-000000000001"
+	crScopeProjectA  = "3bbbbbbb-0000-0000-0000-000000000011"
+	crScopeProjectB  = "3bbbbbbb-0000-0000-0000-000000000012"
+
+	// Project A's deployments. Prod and Stage carry deployed products; Stage2
+	// is a second instance of the Staging environment with none; Dev has none;
+	// Old is deactivated.
+	crScopeDepProd   = "3bbbbbbb-0000-0000-0000-000000000021"
+	crScopeDepStage  = "3bbbbbbb-0000-0000-0000-000000000022"
+	crScopeDepStage2 = "3bbbbbbb-0000-0000-0000-000000000023"
+	crScopeDepDev    = "3bbbbbbb-0000-0000-0000-000000000024"
+	crScopeDepOld    = "3bbbbbbb-0000-0000-0000-000000000025"
+	// Project B's only deployment.
+	crScopeDepOtherB = "3bbbbbbb-0000-0000-0000-000000000026"
+
+	crScopeProductOne = "3bbbbbbb-0000-0000-0000-000000000031"
+	crScopeProductTwo = "3bbbbbbb-0000-0000-0000-000000000032"
+	crScopeVersion1   = "3bbbbbbb-0000-0000-0000-000000000041"
+	crScopeVersion2   = "3bbbbbbb-0000-0000-0000-000000000042"
+	crScopeVersion3   = "3bbbbbbb-0000-0000-0000-000000000043"
+
+	crScopeDPProdOne  = "3bbbbbbb-0000-0000-0000-000000000051" // Prod: product one 1.0
+	crScopeDPProdTwo  = "3bbbbbbb-0000-0000-0000-000000000052" // Prod: product two 3.0
+	crScopeDPStageOne = "3bbbbbbb-0000-0000-0000-000000000053" // Stage: product one 2.0
+	crScopeDPInactive = "3bbbbbbb-0000-0000-0000-000000000054" // Prod, deactivated
+	crScopeDPOtherB   = "3bbbbbbb-0000-0000-0000-000000000055" // B's deployment
+
+	// The environment catalogue rows (migration 0191).
+	crScopeEnvProd    = "e0000000-0000-4000-8000-000000000001"
+	crScopeEnvStaging = "e0000000-0000-4000-8000-000000000002"
+	crScopeEnvDev     = "e0000000-0000-4000-8000-000000000006"
+)
+
+// seedScope inserts project A (five deployments across four environments, three
+// active deployed products and one deactivated) and project B (one deployment
+// with one deployed product), and removes them again on cleanup.
+func (f *crFlow) seedScope() {
+	f.t.Helper()
+	exec := func(sql string, args ...any) {
+		f.t.Helper()
+		if _, err := f.scoped.Exec(f.sys, sql, args...); err != nil {
+			f.t.Fatalf("seed scope (%.60s): %v", sql, err)
+		}
+	}
+	clean := func() {
+		for _, q := range []string{
+			`DELETE FROM work_item WHERE subject = 'cr-approval-flow integration test'`,
+			`DELETE FROM deployed_product WHERE id::text LIKE '3bbbbbbb-%'`,
+			`DELETE FROM deployment WHERE id::text LIKE '3bbbbbbb-%'`,
+			`DELETE FROM project WHERE id::text LIKE '3bbbbbbb-%'`,
+			`DELETE FROM product_version WHERE id::text LIKE '3bbbbbbb-%'`,
+			`DELETE FROM product WHERE id::text LIKE '3bbbbbbb-%'`,
+			`DELETE FROM account WHERE id::text LIKE '3bbbbbbb-%'`,
+		} {
+			_, _ = f.scoped.Exec(f.sys, q)
+		}
+	}
+	clean()
+	f.t.Cleanup(clean)
+
+	exec(`INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id)
+	      VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', 'CR Scope Test Account', 'CR-SCOPE-ACC', 'CR-SCOPE-SF')`, crScopeAccountID)
+	for id, key := range map[string]string{crScopeProjectA: "CRSCOPEA", crScopeProjectB: "CRSCOPEB"} {
+		exec(`INSERT INTO project (id, created_on, updated_on, created_by, updated_by, key, sf_id, name, account_id)
+		      VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', $2, $2, $2, $3)`, id, key, crScopeAccountID)
+	}
+	for _, d := range []struct {
+		id, number, name, typ, project string
+		active                         bool
+	}{
+		{crScopeDepProd, "CRS-DEP-1", "Scope Prod", "PRIMARY_PRODUCTION", crScopeProjectA, true},
+		{crScopeDepStage, "CRS-DEP-2", "Scope Stage", "STAGING", crScopeProjectA, true},
+		{crScopeDepStage2, "CRS-DEP-3", "Scope Stage 2", "STAGING", crScopeProjectA, true},
+		{crScopeDepDev, "CRS-DEP-4", "Scope Dev", "DEVELOPMENT", crScopeProjectA, true},
+		{crScopeDepOld, "CRS-DEP-5", "Scope Old", "QA", crScopeProjectA, false},
+		{crScopeDepOtherB, "CRS-DEP-6", "Scope B Prod", "PRIMARY_PRODUCTION", crScopeProjectB, true},
+	} {
+		exec(`INSERT INTO deployment (id, created_on, updated_on, created_by, updated_by, number, name, type, is_active, project_id)
+		      VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', $2, $3, $4::deployment_type_enum, $5, $6)`,
+			d.id, d.number, d.name, d.typ, d.active, d.project)
+	}
+	for id, name := range map[string]string{crScopeProductOne: "Scope Product One", crScopeProductTwo: "Scope Product Two"} {
+		exec(`INSERT INTO product (id, created_on, updated_on, created_by, updated_by, manufacturer, category, name)
+		      VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', 'WSO2', 'SOFTWARE', $2)`, id, name)
+	}
+	for _, v := range []struct{ id, version, product string }{
+		{crScopeVersion1, "1.0", crScopeProductOne}, {crScopeVersion2, "2.0", crScopeProductOne}, {crScopeVersion3, "3.0", crScopeProductTwo},
+	} {
+		exec(`INSERT INTO product_version (id, created_on, updated_on, created_by, updated_by, version, product_id, current_support_status, release_date)
+		      VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', $2, $3, 'AVAILABLE', '2024-01-01')`, v.id, v.version, v.product)
+	}
+	for _, p := range []struct {
+		id, number, deployment, product, version string
+		active                                   bool
+	}{
+		{crScopeDPProdOne, "CRS-DP-1", crScopeDepProd, crScopeProductOne, crScopeVersion1, true},
+		{crScopeDPProdTwo, "CRS-DP-2", crScopeDepProd, crScopeProductTwo, crScopeVersion3, true},
+		{crScopeDPStageOne, "CRS-DP-3", crScopeDepStage, crScopeProductOne, crScopeVersion2, true},
+		{crScopeDPInactive, "CRS-DP-4", crScopeDepProd, crScopeProductOne, crScopeVersion2, false},
+		{crScopeDPOtherB, "CRS-DP-5", crScopeDepOtherB, crScopeProductOne, crScopeVersion1, true},
+	} {
+		exec(`INSERT INTO deployed_product (id, created_on, updated_on, created_by, updated_by, number, name, active, deployment_id, product_id, version_id, product_category)
+		      VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', $2, $2, $3, $4, $5, $6, 'PDP')`,
+			p.id, p.number, p.active, p.deployment, p.product, p.version)
+	}
+}
+
+func scopeStrp(s string) *string { return &s }
+
+// createScoped creates a Normal change request with the given scope fields.
+func (f *crFlow) createScoped(mod func(*domain.CreateChangeRequestRequest)) (string, error) {
+	f.t.Helper()
+	typ := domain.ChangeRequestTypeNormal
+	req := domain.CreateChangeRequestRequest{Subject: crFlowSubject, Type: &typ}
+	if mod != nil {
+		mod(&req)
+	}
+	resp, err := f.repo.CreateChangeRequest(f.sys, req, crFlowEmail(crFlowCreatorID))
+	if err != nil {
+		return "", err
+	}
+	return resp.ChangeRequest.ID, nil
+}
+
+func (f *crFlow) mustCreateScoped(mod func(*domain.CreateChangeRequestRequest)) string {
+	f.t.Helper()
+	id, err := f.createScoped(mod)
+	if err != nil {
+		f.t.Fatalf("CreateChangeRequest: %v", err)
+	}
+	return id
+}
+
+func (f *crFlow) mustPatch(id string, req domain.PatchChangeRequestRequest) domain.ChangeRequest {
+	f.t.Helper()
+	cr, err := f.patch(id, req)
+	if err != nil {
+		f.t.Fatalf("PATCH: %v", err)
+	}
+	return cr
+}
+
+func (f *crFlow) setStoredState(id, state string) {
+	f.t.Helper()
+	if _, err := f.scoped.Exec(f.sys, `UPDATE change_request SET state = $1::change_request_state_enum WHERE id = $2`, state, id); err != nil {
+		f.t.Fatalf("force state %s: %v", state, err)
+	}
+}
+
+func scopeIDs(refs []domain.EntityRef) []string {
+	out := make([]string, len(refs))
+	for i, r := range refs {
+		out[i] = r.ID
+	}
+	sort.Strings(out)
+	return out
+}
+
+func scopeNames(refs []domain.EntityRef) []string {
+	out := make([]string, len(refs))
+	for i, r := range refs {
+		out[i] = r.Name
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (f *crFlow) assertScope(what string, cr domain.ChangeRequest, project string, deployments, environments, products []string) {
+	f.t.Helper()
+	if cr.Project.ID != project {
+		f.t.Fatalf("%s: project = %q, want %q", what, cr.Project.ID, project)
+	}
+	for name, c := range map[string]struct {
+		got  []domain.EntityRef
+		want []string
+	}{"deployments": {cr.Deployments, deployments}, "environments": {cr.Environments, environments}, "deploymentProducts": {cr.DeploymentProducts, products}} {
+		if c.got == nil {
+			f.t.Fatalf("%s: %s is nil, want a (possibly empty) array", what, name)
+		}
+		want := append([]string{}, c.want...)
+		sort.Strings(want)
+		if got := scopeIDs(c.got); strings.Join(got, ",") != strings.Join(want, ",") {
+			f.t.Fatalf("%s: %s = %v, want %v", what, name, got, want)
+		}
+	}
+}
+
+func (f *crFlow) comments(id string) map[string][]string {
+	f.t.Helper()
+	rows, err := f.scoped.Query(f.sys, `SELECT type::text, content, created_by FROM comment WHERE work_item_id = $1 ORDER BY created_on, id`, id)
+	if err != nil {
+		f.t.Fatalf("read comments: %v", err)
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var typ, content, by string
+		if err := rows.Scan(&typ, &content, &by); err != nil {
+			f.t.Fatalf("scan comment: %v", err)
+		}
+		out[typ] = append(out[typ], content+"|"+by)
+	}
+	return out
+}
+
+func (f *crFlow) crCount() int {
+	f.t.Helper()
+	var n int
+	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM work_item WHERE subject = $1`, crFlowSubject).Scan(&n); err != nil {
+		f.t.Fatalf("count change requests: %v", err)
+	}
+	return n
+}
+
+// Every scope field persists on create and comes back on GET: project,
+// deployments, environments (defaulting to those of the deployments),
+// deployment products (derived, deactivated ones excluded), category, customer
+// group, and the two journal entries as comment rows of the right types.
+func TestChangeRequestScopeIntegration_CreatePersistsEveryField(t *testing.T) {
+	for _, path := range []string{"portal", "servicenow-first"} {
+		path := path
+		t.Run(path, func(t *testing.T) {
+			f := newCRFlow(t)
+			f.seedScope()
+			cat := domain.ChangeRequestCategoryDevOps
+			mod := func(r *domain.CreateChangeRequestRequest) {
+				r.ProjectID = scopeStrp(crScopeProjectA)
+				r.DeploymentIDs = []string{crScopeDepProd, crScopeDepStage}
+				r.Category = &cat
+				r.CustomerGroupID = scopeStrp(seededGroupID)
+				r.Comment = scopeStrp("customer visible note")
+				r.WorkNote = scopeStrp("internal note")
+			}
+			var id string
+			if path == "portal" {
+				id = f.mustCreateScoped(mod)
+			} else {
+				typ := domain.ChangeRequestTypeNormal
+				req := domain.CreateChangeRequestRequest{Subject: crFlowSubject, Type: &typ}
+				mod(&req)
+				id = "3bbbbbbb-0000-0000-0000-0000000000f1"
+				if _, err := f.repo.CreateChangeRequestFromServiceNow(f.sys, req, id, "CRSCOPESN01", crFlowEmail(crFlowCreatorID)); err != nil {
+					t.Fatalf("CreateChangeRequestFromServiceNow: %v", err)
+				}
+			}
+			cr := f.get(id)
+			f.assertScope("after create", cr, crScopeProjectA,
+				[]string{crScopeDepProd, crScopeDepStage},
+				[]string{crScopeEnvProd, crScopeEnvStaging},
+				[]string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne})
+			if got := scopeNames(cr.DeploymentProducts); strings.Join(got, ",") != "Scope Product One 1.0,Scope Product One 2.0,Scope Product Two 3.0" {
+				t.Fatalf("deploymentProducts names = %v, want \"<product> <version>\"", got)
+			}
+			if cr.Category == nil || *cr.Category != "devops" {
+				t.Fatalf("category = %v, want devops", cr.Category)
+			}
+			if cr.CustomerGroup == nil || cr.CustomerGroup.ID != seededGroupID {
+				t.Fatalf("customerGroup = %+v, want %s", cr.CustomerGroup, seededGroupID)
+			}
+			// The single-valued columns the list views read follow the first
+			// deployment (name order) and its first deployed product.
+			if cr.Deployment == nil || cr.Deployment.ID != crScopeDepProd {
+				t.Fatalf("deployment = %+v, want %s", cr.Deployment, crScopeDepProd)
+			}
+			if cr.DeployedProduct == nil || cr.DeployedProduct.ID != crScopeDPProdOne {
+				t.Fatalf("deployedProduct = %+v, want %s", cr.DeployedProduct, crScopeDPProdOne)
+			}
+			got := f.comments(id)
+			by := crFlowEmail(crFlowCreatorID)
+			if len(got["COMMENT"]) != 1 || got["COMMENT"][0] != "customer visible note|"+by || len(got["WORK_NOTE"]) != 1 || got["WORK_NOTE"][0] != "internal note|"+by || len(got) != 2 {
+				t.Fatalf("comment rows = %v, want one COMMENT and one WORK_NOTE by %s", got, by)
+			}
+		})
+	}
+}
+
+// A change request with no scope fields reads back with empty arrays, not null,
+// and a blank journal entry creates no comment row.
+func TestChangeRequestScopeIntegration_CreateWithoutScopeReadsEmptyArrays(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+		r.Comment = scopeStrp("   ")
+		r.WorkNote = scopeStrp("")
+	})
+	cr := f.get(id)
+	f.assertScope("bare create", cr, "", nil, nil, nil)
+	if cr.Category != nil || cr.CustomerGroup != nil {
+		t.Fatalf("category/customerGroup = %v/%v, want unset", cr.Category, cr.CustomerGroup)
+	}
+	if got := f.comments(id); len(got) != 0 {
+		t.Fatalf("blank journal entries created comment rows: %v", got)
+	}
+}
+
+// A project alone is stored (no deployments needed).
+func TestChangeRequestScopeIntegration_CreateProjectOnly(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) { r.ProjectID = scopeStrp(crScopeProjectA) })
+	f.assertScope("project only", f.get(id), crScopeProjectA, nil, nil, nil)
+}
+
+// Every combination the rules refuse is a ValidationError naming the field and
+// leaves no change request behind (the create is all-or-nothing).
+func TestChangeRequestScopeIntegration_CreateRejectsInconsistentSelections(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+	unknown := "3bbbbbbb-9999-0000-0000-000000000000"
+	for _, tc := range []struct {
+		name     string
+		mod      func(*domain.CreateChangeRequestRequest)
+		contains string
+	}{
+		{"deployment of another project", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			r.DeploymentIDs = []string{crScopeDepProd, crScopeDepOtherB}
+		}, "does not belong to the selected project: " + crScopeDepOtherB},
+		{"deployments without a project", func(r *domain.CreateChangeRequestRequest) {
+			r.DeploymentIDs = []string{crScopeDepProd}
+		}, "projectId is required when deploymentIds are provided"},
+		{"unknown deployment", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			r.DeploymentIDs = []string{unknown}
+		}, "unknown deployment: " + unknown},
+		{"inactive deployment", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			r.DeploymentIDs = []string{crScopeDepOld}
+		}, "inactive deployment: " + crScopeDepOld},
+		{"unknown project", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(unknown)
+		}, "projectId does not refer to an existing project"},
+		{"environment of no chosen deployment", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			r.DeploymentIDs = []string{crScopeDepProd}
+			r.EnvironmentIDs = []string{crScopeEnvStaging}
+		}, "environment that is not provided by the selected deployments: " + crScopeEnvStaging},
+		{"unknown environment", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			r.DeploymentIDs = []string{crScopeDepProd}
+			r.EnvironmentIDs = []string{unknown}
+		}, "unknown environment: " + unknown},
+		{"environments without deployments", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			r.EnvironmentIDs = []string{crScopeEnvProd}
+		}, "environmentIds requires deploymentIds"},
+		{"deployment products without deployments", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			r.DeploymentProductIDs = []string{crScopeDPProdOne}
+		}, "deploymentProductIds requires deploymentIds"},
+		{"deployment products: a subset of the derived set", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			r.DeploymentIDs = []string{crScopeDepProd}
+			r.DeploymentProductIDs = []string{crScopeDPProdOne}
+		}, "deploymentProductIds is read-only"},
+		{"deployment products: another deployment's", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			r.DeploymentIDs = []string{crScopeDepProd}
+			r.DeploymentProductIDs = []string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne}
+		}, "deploymentProductIds is read-only"},
+		{"deployment products: includes a deactivated one", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			r.DeploymentIDs = []string{crScopeDepProd}
+			r.DeploymentProductIDs = []string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPInactive}
+		}, "deploymentProductIds is read-only"},
+		{"too many deployments", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			for i := 0; i < 101; i++ {
+				r.DeploymentIDs = append(r.DeploymentIDs, fmt.Sprintf("3bbbbbbb-0000-0000-0001-%012d", i))
+			}
+		}, "deploymentIds must contain at most 100 entries"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := f.createScoped(tc.mod)
+			f.wantValidationError(tc.name, err, tc.contains)
+			if n := f.crCount(); n != 0 {
+				t.Fatalf("%d change request(s) left behind by a refused create", n)
+			}
+		})
+	}
+}
+
+// A chosen subset of the deployments' environments is kept; environments left
+// out are not stored. Deployment products stated exactly are accepted.
+func TestChangeRequestScopeIntegration_CreateEnvironmentSubsetAndExplicitProducts(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+		r.ProjectID = scopeStrp(crScopeProjectA)
+		r.DeploymentIDs = []string{crScopeDepProd, crScopeDepStage}
+		r.EnvironmentIDs = []string{crScopeEnvStaging}
+		r.DeploymentProductIDs = []string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne}
+	})
+	f.assertScope("subset", f.get(id), crScopeProjectA,
+		[]string{crScopeDepProd, crScopeDepStage}, []string{crScopeEnvStaging},
+		[]string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne})
+
+	// Duplicates in the lists are collapsed, and two deployments of one
+	// environment give that environment once.
+	id = f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+		r.ProjectID = scopeStrp(crScopeProjectA)
+		r.DeploymentIDs = []string{crScopeDepStage, crScopeDepStage2, crScopeDepStage}
+	})
+	f.assertScope("two staging deployments", f.get(id), crScopeProjectA,
+		[]string{crScopeDepStage, crScopeDepStage2}, []string{crScopeEnvStaging}, []string{crScopeDPStageOne})
+
+	// A deployment with no deployed products derives none.
+	id = f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+		r.ProjectID = scopeStrp(crScopeProjectA)
+		r.DeploymentIDs = []string{crScopeDepDev}
+	})
+	f.assertScope("dev only", f.get(id), crScopeProjectA, []string{crScopeDepDev}, []string{crScopeEnvDev}, nil)
+}
+
+// Category: all 13 values of the API enum persist (four needed new enum labels),
+// on create and on PATCH.
+func TestChangeRequestScopeIntegration_PersistsEveryCategory(t *testing.T) {
+	f := newCRFlow(t)
+	for _, c := range []domain.ChangeRequestCategory{
+		domain.ChangeRequestCategoryHardware, domain.ChangeRequestCategorySoftware, domain.ChangeRequestCategoryService,
+		domain.ChangeRequestCategorySystemSoftware, domain.ChangeRequestCategoryApplicationsSoftware,
+		domain.ChangeRequestCategoryNetwork, domain.ChangeRequestCategoryTelecom, domain.ChangeRequestCategoryDocumentation,
+		domain.ChangeRequestCategoryOther, domain.ChangeRequestCategoryRegularReleaseCloud,
+		domain.ChangeRequestCategoryHotfixReleaseCloud, domain.ChangeRequestCategoryDevOps, domain.ChangeRequestCategoryCloudComputing,
+	} {
+		c := c
+		id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) { r.Category = &c })
+		if got := f.get(id).Category; got == nil || *got != string(c) {
+			t.Fatalf("category after create = %v, want %s", got, c)
+		}
+		// ...and via PATCH, to a different value and back.
+		other := domain.ChangeRequestCategoryOther
+		if c == other {
+			other = domain.ChangeRequestCategorySoftware
+		}
+		oc := &other
+		f.mustPatch(id, domain.PatchChangeRequestRequest{Category: &oc})
+		if got := f.get(id).Category; got == nil || *got != string(other) {
+			t.Fatalf("category after PATCH = %v, want %s", got, other)
+		}
+		cc := &c
+		f.mustPatch(id, domain.PatchChangeRequestRequest{Category: &cc})
+		if got := f.get(id).Category; got == nil || *got != string(c) {
+			t.Fatalf("category after PATCH back = %v, want %s", got, c)
+		}
+	}
+	bogus := domain.ChangeRequestCategory("bogus")
+	_, err := f.createScoped(func(r *domain.CreateChangeRequestRequest) { r.Category = &bogus })
+	f.wantValidationError("bogus category", err, "not supported")
+}
+
+// PATCH arrays replace: deployments, the environments and deployment products
+// that follow, and the single-valued columns, through to an empty array.
+func TestChangeRequestScopeIntegration_PatchArraysReplace(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+		r.ProjectID = scopeStrp(crScopeProjectA)
+		r.DeploymentIDs = []string{crScopeDepProd, crScopeDepStage}
+	})
+
+	cr := f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepStage}})
+	f.assertScope("replace with [stage]", cr, crScopeProjectA, []string{crScopeDepStage}, []string{crScopeEnvStaging}, []string{crScopeDPStageOne})
+	if cr.Deployment == nil || cr.Deployment.ID != crScopeDepStage || cr.DeployedProduct == nil || cr.DeployedProduct.ID != crScopeDPStageOne {
+		t.Fatalf("single-valued deployment/deployedProduct = %+v/%+v, want stage / its product", cr.Deployment, cr.DeployedProduct)
+	}
+
+	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd, crScopeDepDev}})
+	f.assertScope("replace with [prod, dev]", cr, crScopeProjectA,
+		[]string{crScopeDepProd, crScopeDepDev}, []string{crScopeEnvProd, crScopeEnvDev}, []string{crScopeDPProdOne, crScopeDPProdTwo})
+
+	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{}})
+	f.assertScope("cleared", cr, crScopeProjectA, nil, nil, nil)
+	if cr.Deployment != nil || cr.DeployedProduct != nil {
+		t.Fatalf("single-valued deployment/deployedProduct after clearing = %+v/%+v, want nil", cr.Deployment, cr.DeployedProduct)
+	}
+}
+
+// Environments: replaced as a list; reset to the new deployments' when the
+// deployments change without them; left alone by an unrelated PATCH.
+func TestChangeRequestScopeIntegration_PatchEnvironments(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+		r.ProjectID = scopeStrp(crScopeProjectA)
+		r.DeploymentIDs = []string{crScopeDepProd, crScopeDepStage}
+	})
+	both := []string{crScopeDepProd, crScopeDepStage}
+	allProducts := []string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne}
+
+	cr := f.mustPatch(id, domain.PatchChangeRequestRequest{EnvironmentIDs: &[]string{crScopeEnvStaging}})
+	f.assertScope("narrowed to staging", cr, crScopeProjectA, both, []string{crScopeEnvStaging}, allProducts)
+
+	title := "unrelated edit"
+	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{Title: &title})
+	f.assertScope("after unrelated PATCH", cr, crScopeProjectA, both, []string{crScopeEnvStaging}, allProducts)
+
+	// Environments sent together with the same deployments.
+	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &both, EnvironmentIDs: &[]string{crScopeEnvProd}})
+	f.assertScope("deployments resent + env prod", cr, crScopeProjectA, both, []string{crScopeEnvProd}, allProducts)
+
+	// New deployments without environments: environments follow.
+	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd}})
+	f.assertScope("deployments [prod]", cr, crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, []string{crScopeDPProdOne, crScopeDPProdTwo})
+
+	// An environment of no chosen deployment is refused, and nothing changes.
+	_, err := f.patch(id, domain.PatchChangeRequestRequest{EnvironmentIDs: &[]string{crScopeEnvStaging}})
+	f.wantValidationError("env of another deployment", err, "not provided by the selected deployments")
+	// Clearing the environments is allowed.
+	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{EnvironmentIDs: &[]string{}})
+	f.assertScope("environments cleared", cr, crScopeProjectA, []string{crScopeDepProd}, nil, []string{crScopeDPProdOne, crScopeDPProdTwo})
+}
+
+// Deployments must belong to the project on PATCH too, and a refused PATCH
+// leaves everything as it was.
+func TestChangeRequestScopeIntegration_PatchRejectsInconsistentSelections(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+		r.ProjectID = scopeStrp(crScopeProjectA)
+		r.DeploymentIDs = []string{crScopeDepProd}
+	})
+	title := "must not be applied"
+	manyIDs := make([]string, 101)
+	for i := range manyIDs {
+		manyIDs[i] = fmt.Sprintf("3bbbbbbb-0000-0000-0002-%012d", i)
+	}
+	for _, tc := range []struct {
+		name     string
+		req      domain.PatchChangeRequestRequest
+		contains string
+	}{
+		{"deployment of another project", domain.PatchChangeRequestRequest{Title: &title, DeploymentIDs: &[]string{crScopeDepOtherB}}, "does not belong to the selected project"},
+		{"inactive deployment", domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepOld}}, "inactive deployment"},
+		{"unknown deployment", domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{"3bbbbbbb-9999-0000-0000-000000000000"}}, "unknown deployment"},
+		{"project changed without deployments", domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectB)}, "projectId cannot be changed without deploymentIds"},
+		{"project changed, old deployments kept", domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: &[]string{crScopeDepProd}}, "does not belong to the selected project"},
+		{"unknown project", domain.PatchChangeRequestRequest{ProjectID: scopeStrp("3bbbbbbb-9999-0000-0000-000000000000"), DeploymentIDs: &[]string{}}, "projectId does not refer to an existing project"},
+		{"deployment products: not the derived set", domain.PatchChangeRequestRequest{DeploymentProductIDs: &[]string{crScopeDPProdOne}}, "deploymentProductIds is read-only"},
+		{"deployment products: another project's", domain.PatchChangeRequestRequest{DeploymentProductIDs: &[]string{crScopeDPOtherB}}, "deploymentProductIds is read-only"},
+		{"single deployment fields with deploymentIds", domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd}, DeploymentID: scopeStrp(crScopeDepProd)}, "cannot be combined with deploymentIds"},
+		{"too many ids", domain.PatchChangeRequestRequest{EnvironmentIDs: &manyIDs}, "environmentIds must contain at most 100 entries"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := f.patch(id, tc.req)
+			f.wantValidationError(tc.name, err, tc.contains)
+			cr := f.get(id)
+			f.assertScope("after refused PATCH", cr, crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, []string{crScopeDPProdOne, crScopeDPProdTwo})
+			if cr.Subject != nil && *cr.Subject == title {
+				t.Fatal("a refused PATCH applied its other fields")
+			}
+		})
+	}
+}
+
+// Moving the change to another project: the deployments must be re-chosen from
+// the new project in the same PATCH (an empty array clears them).
+func TestChangeRequestScopeIntegration_PatchMovesProject(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+		r.ProjectID = scopeStrp(crScopeProjectA)
+		r.DeploymentIDs = []string{crScopeDepProd, crScopeDepStage}
+	})
+	cr := f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: &[]string{crScopeDepOtherB}})
+	f.assertScope("moved to B", cr, crScopeProjectB, []string{crScopeDepOtherB}, []string{crScopeEnvProd}, []string{crScopeDPOtherB})
+
+	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectA), DeploymentIDs: &[]string{}})
+	f.assertScope("back to A with no deployments", cr, crScopeProjectA, nil, nil, nil)
+
+	// With no deployments stored, the project alone can change.
+	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectB)})
+	f.assertScope("project alone", cr, crScopeProjectB, nil, nil, nil)
+
+	// A change request created without a project can be given one later.
+	id2 := f.mustCreateScoped(nil)
+	cr = f.mustPatch(id2, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectA), DeploymentIDs: &[]string{crScopeDepDev}})
+	f.assertScope("project added later", cr, crScopeProjectA, []string{crScopeDepDev}, []string{crScopeEnvDev}, nil)
+}
+
+// Deployment products are read-only: stated exactly (or as the stored
+// snapshot) they are accepted, and the stored list is always the derived one.
+func TestChangeRequestScopeIntegration_PatchDeploymentProductsReadOnly(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+		r.ProjectID = scopeStrp(crScopeProjectA)
+		r.DeploymentIDs = []string{crScopeDepProd}
+	})
+	derived := []string{crScopeDPProdOne, crScopeDPProdTwo}
+	cr := f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentProductIDs: &derived})
+	f.assertScope("exact set resent", cr, crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, derived)
+
+	// The deployment gains a product after the change request was raised: the
+	// stored snapshot stays until the deployments are re-chosen, and resending
+	// the snapshot is still accepted.
+	const extra = "3bbbbbbb-0000-0000-0000-000000000056"
+	if _, err := f.scoped.Exec(f.sys,
+		`INSERT INTO deployed_product (id, created_on, updated_on, created_by, updated_by, number, name, active, deployment_id, product_id, version_id, product_category)
+		 VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', 'CRS-DP-6', 'CRS-DP-6', true, $2, $3, $4, 'PDP')`,
+		extra, crScopeDepProd, crScopeProductTwo, crScopeVersion3); err != nil {
+		t.Fatalf("add deployed product: %v", err)
+	}
+	f.assertScope("snapshot unchanged", f.get(id), crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, derived)
+	f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentProductIDs: &derived})
+	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd}})
+	f.assertScope("snapshot kept while the deployments are the same", cr, crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, derived)
+	// Re-choosing the deployments re-derives, picking up the new product.
+	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepStage, crScopeDepProd}})
+	f.assertScope("re-derived", cr, crScopeProjectA, []string{crScopeDepProd, crScopeDepStage}, []string{crScopeEnvProd, crScopeEnvStaging},
+		[]string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne, extra})
+}
+
+// The edit window: project, deployments, environments and deployment products
+// change freely through Scheduled and are refused from Implement on; resending
+// the stored values is always accepted; everything else stays editable.
+func TestChangeRequestScopeIntegration_PatchEditWindow(t *testing.T) {
+	for state, open := range map[string]bool{
+		"NEW": true, "ASSESS": true, "AUTHORIZE": true, "CUSTOMER_APPROVAL": true, "SCHEDULED": true,
+		"IMPLEMENT": false, "REVIEW": false, "CUSTOMER_REVIEW": false, "ROLLBACK": false, "CLOSED": false, "CANCELED": false,
+	} {
+		state, open := state, open
+		t.Run(state, func(t *testing.T) {
+			f := newCRFlow(t)
+			f.seedScope()
+			id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+				r.ProjectID = scopeStrp(crScopeProjectA)
+				r.DeploymentIDs = []string{crScopeDepProd, crScopeDepStage}
+			})
+			f.setStoredState(id, state)
+			stored := f.get(id)
+
+			// Resending what is stored is always fine.
+			storedProducts := scopeIDs(stored.DeploymentProducts)
+			f.mustPatch(id, domain.PatchChangeRequestRequest{
+				ProjectID: scopeStrp(crScopeProjectA), DeploymentIDs: &[]string{crScopeDepStage, crScopeDepProd},
+				EnvironmentIDs: &[]string{crScopeEnvStaging, crScopeEnvProd}, DeploymentProductIDs: &storedProducts,
+			})
+
+			attempts := map[string]domain.PatchChangeRequestRequest{
+				"deploymentIds":  {DeploymentIDs: &[]string{crScopeDepProd}},
+				"environmentIds": {EnvironmentIDs: &[]string{crScopeEnvProd}},
+				"projectId":      {ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: &[]string{crScopeDepOtherB}},
+			}
+			for field, req := range attempts {
+				_, err := f.patch(id, req)
+				if open {
+					if err != nil {
+						t.Fatalf("%s change in %s: %v", field, state, err)
+					}
+					// Put it back for the next attempt.
+					f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectA), DeploymentIDs: &[]string{crScopeDepProd, crScopeDepStage}, EnvironmentIDs: &[]string{crScopeEnvProd, crScopeEnvStaging}})
+					continue
+				}
+				f.wantValidationError(field+" in "+state, err, "can no longer be changed")
+				if !strings.Contains(err.Error(), strings.ToLower(state)) {
+					t.Fatalf("message %q should name the state %q", err.Error(), strings.ToLower(state))
+				}
+				f.assertScope("after refused "+field, f.get(id), crScopeProjectA, []string{crScopeDepProd, crScopeDepStage}, []string{crScopeEnvProd, crScopeEnvStaging}, storedProducts)
+			}
+
+			// Not part of the window, in any state: journal entries, category, customer group.
+			cat := domain.ChangeRequestCategoryNetwork
+			cp := &cat
+			cg := scopeStrp(seededGroupID)
+			f.mustPatch(id, domain.PatchChangeRequestRequest{Comment: scopeStrp("still allowed"), WorkNote: scopeStrp("still allowed"), Category: &cp, CustomerGroupID: &cg})
+		})
+	}
+}
+
+// Comment / workNote on PATCH append comment rows of the right types, authored
+// by the caller; blank values are refused; each works alone.
+func TestChangeRequestScopeIntegration_PatchAppendsJournalEntries(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+	id := f.mustCreateScoped(nil)
+	by := crFlowEmail(crFlowCreatorID)
+
+	f.mustPatch(id, domain.PatchChangeRequestRequest{Comment: scopeStrp("first comment")})
+	got := f.comments(id)
+	if len(got) != 1 || len(got["COMMENT"]) != 1 || got["COMMENT"][0] != "first comment|"+by {
+		t.Fatalf("after comment alone: %v", got)
+	}
+	f.mustPatch(id, domain.PatchChangeRequestRequest{WorkNote: scopeStrp("a work note")})
+	f.mustPatch(id, domain.PatchChangeRequestRequest{Comment: scopeStrp("second comment"), WorkNote: scopeStrp("second work note")})
+	got = f.comments(id)
+	if len(got["COMMENT"]) != 2 || len(got["WORK_NOTE"]) != 2 || got["COMMENT"][1] != "second comment|"+by || got["WORK_NOTE"][0] != "a work note|"+by {
+		t.Fatalf("after three PATCHes: %v", got)
+	}
+
+	for _, req := range []domain.PatchChangeRequestRequest{
+		{Comment: scopeStrp("")}, {Comment: scopeStrp("  \n")}, {WorkNote: scopeStrp("")}, {WorkNote: scopeStrp("\t")},
+	} {
+		_, err := f.patch(id, req)
+		f.wantValidationError("blank journal entry", err, "must not be empty")
+	}
+	if after := f.comments(id); len(after["COMMENT"]) != 2 || len(after["WORK_NOTE"]) != 2 {
+		t.Fatalf("a refused blank entry changed the journal: %v", after)
+	}
+}
+
+// Customer group: persists on create, replaced and cleared on PATCH.
+func TestChangeRequestScopeIntegration_CustomerGroupRoundTrips(t *testing.T) {
+	f := newCRFlow(t)
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) { r.CustomerGroupID = scopeStrp(seededGroupID) })
+	if g := f.get(id).CustomerGroup; g == nil || g.ID != seededGroupID || g.Name == "" {
+		t.Fatalf("customerGroup after create = %+v", g)
+	}
+	var none *string
+	f.mustPatch(id, domain.PatchChangeRequestRequest{CustomerGroupID: &none})
+	if g := f.get(id).CustomerGroup; g != nil {
+		t.Fatalf("customerGroup after clearing = %+v, want nil", g)
+	}
+	g := scopeStrp(seededGroupID)
+	f.mustPatch(id, domain.PatchChangeRequestRequest{CustomerGroupID: &g})
+	if g := f.get(id).CustomerGroup; g == nil || g.ID != seededGroupID {
+		t.Fatalf("customerGroup after set = %+v", g)
+	}
+}
+
+// The scope fields survive the whole lifecycle: create with project,
+// deployments, group and journal entries; Request Approval, peer and CAB
+// approval, Implement, Review, Closed -- unchanged after every step, with the
+// edit window closing at Implement.
+func TestChangeRequestScopeIntegration_SurvivesNormalLifecycle(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	f.seedScope()
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1, crCABMemberUserID2)
+	typ := domain.ChangeRequestTypeNormal
+	group := crFlowGroupID
+	resp, err := f.repo.CreateChangeRequest(f.sys, domain.CreateChangeRequestRequest{
+		Subject: crFlowSubject, Type: &typ, GroupID: &group,
+		ProjectID: scopeStrp(crScopeProjectA), DeploymentIDs: []string{crScopeDepProd, crScopeDepStage},
+		CustomerGroupID: scopeStrp(seededGroupID), Comment: scopeStrp("lifecycle comment"), WorkNote: scopeStrp("lifecycle note"),
+	}, crFlowEmail(crFlowCreatorID))
+	if err != nil {
+		t.Fatalf("CreateChangeRequest: %v", err)
+	}
+	id := resp.ChangeRequest.ID
+	if _, err := f.scoped.Exec(f.sys, `UPDATE change_request SET requested_by_user_id = $1::uuid WHERE id = $2`, crFlowCreatorID, id); err != nil {
+		t.Fatalf("set requested_by: %v", err)
+	}
+	deps := []string{crScopeDepProd, crScopeDepStage}
+	envs := []string{crScopeEnvProd, crScopeEnvStaging}
+	prods := []string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne}
+	check := func(when string) {
+		t.Helper()
+		cr := f.get(id)
+		f.assertScope(when, cr, crScopeProjectA, deps, envs, prods)
+		if cr.CustomerGroup == nil || cr.CustomerGroup.ID != seededGroupID {
+			t.Fatalf("%s: customerGroup = %+v", when, cr.CustomerGroup)
+		}
+		if c := f.comments(id); len(c["COMMENT"]) < 1 || len(c["WORK_NOTE"]) < 1 || c["COMMENT"][0] != "lifecycle comment|"+crFlowEmail(crFlowCreatorID) {
+			t.Fatalf("%s: journal = %v", when, c)
+		}
+	}
+	check("after create")
+
+	// Editable while New: narrow, then swap back.
+	f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd}})
+	f.assertScope("narrowed while New", f.get(id), crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, []string{crScopeDPProdOne, crScopeDPProdTwo})
+	f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &deps})
+	check("after narrowing and back")
+
+	f.requestApproval(id)
+	check("after Request Approval")
+	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
+		t.Fatalf("peer approval: %v", err)
+	}
+	check("after peer approval")
+	if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
+		t.Fatalf("CAB approval: %v", err)
+	}
+	if got := f.state(id); got != "SCHEDULED" {
+		t.Fatalf("state = %s, want SCHEDULED", got)
+	}
+	check("after CAB approval")
+	// Still editable while Scheduled.
+	f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd}})
+	f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &deps})
+	for _, step := range []domain.ChangeRequestState{domain.ChangeRequestStateImplement, domain.ChangeRequestStateReview, domain.ChangeRequestStateClosed} {
+		step := step
+		f.mustPatch(id, domain.PatchChangeRequestRequest{State: &step})
+		check("after " + string(step))
+		if step == domain.ChangeRequestStateImplement {
+			_, err := f.patch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd}})
+			f.wantValidationError("edit after implement", err, "can no longer be changed")
+			check("after refused edit")
+		}
+	}
+}
+
+// The form's lookup: a project's active deployments with their environments;
+// the environments and read-only deployment products that follow from the
+// chosen deployments; the same validation errors as create.
+func TestChangeRequestScopeIntegration_LinkOptions(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+
+	opts, err := f.repo.GetChangeRequestLinkOptions(f.sys, domain.ChangeRequestLinkOptionsRequest{ProjectID: crScopeProjectA})
+	if err != nil {
+		t.Fatalf("GetChangeRequestLinkOptions: %v", err)
+	}
+	var depNames []string
+	for _, d := range opts.Deployments {
+		depNames = append(depNames, d.Name+"/"+d.Type+"/"+d.Environment.Name)
+	}
+	if want := "Scope Dev/development/Development,Scope Prod/primary_production/Primary Production,Scope Stage/staging/Staging,Scope Stage 2/staging/Staging"; strings.Join(depNames, ",") != want {
+		t.Fatalf("deployments = %v, want %s (active only, name order)", depNames, want)
+	}
+	if opts.Environments == nil || opts.DeploymentProducts == nil || len(opts.Environments) != 0 || len(opts.DeploymentProducts) != 0 {
+		t.Fatalf("without chosen deployments: environments/products = %v/%v, want empty arrays", opts.Environments, opts.DeploymentProducts)
+	}
+
+	opts, err = f.repo.GetChangeRequestLinkOptions(f.sys, domain.ChangeRequestLinkOptionsRequest{ProjectID: crScopeProjectA, DeploymentIDs: []string{crScopeDepProd, crScopeDepStage, crScopeDepStage2}})
+	if err != nil {
+		t.Fatalf("GetChangeRequestLinkOptions(chosen): %v", err)
+	}
+	if got := scopeIDs(opts.Environments); strings.Join(got, ",") != crScopeEnvProd+","+crScopeEnvStaging {
+		t.Fatalf("environments = %v, want Primary Production and Staging once each", got)
+	}
+	var prods []string
+	for _, p := range opts.DeploymentProducts {
+		prods = append(prods, p.ID+"@"+p.Deployment.ID)
+	}
+	sort.Strings(prods)
+	want := []string{crScopeDPProdOne + "@" + crScopeDepProd, crScopeDPProdTwo + "@" + crScopeDepProd, crScopeDPStageOne + "@" + crScopeDepStage}
+	sort.Strings(want)
+	if strings.Join(prods, ",") != strings.Join(want, ",") {
+		t.Fatalf("deploymentProducts = %v, want %v (deactivated product excluded, each with its deployment)", prods, want)
+	}
+	// What the lookup offers is exactly what create accepts.
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+		r.ProjectID = scopeStrp(crScopeProjectA)
+		r.DeploymentIDs = []string{crScopeDepProd, crScopeDepStage, crScopeDepStage2}
+		for _, e := range opts.Environments {
+			r.EnvironmentIDs = append(r.EnvironmentIDs, e.ID)
+		}
+		for _, p := range opts.DeploymentProducts {
+			r.DeploymentProductIDs = append(r.DeploymentProductIDs, p.ID)
+		}
+	})
+	f.assertScope("created from the lookup's options", f.get(id), crScopeProjectA,
+		[]string{crScopeDepProd, crScopeDepStage, crScopeDepStage2}, []string{crScopeEnvProd, crScopeEnvStaging},
+		[]string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne})
+
+	_, err = f.repo.GetChangeRequestLinkOptions(f.sys, domain.ChangeRequestLinkOptionsRequest{ProjectID: crScopeProjectA, DeploymentIDs: []string{crScopeDepOtherB}})
+	f.wantValidationError("foreign deployment", err, "does not belong to the selected project")
+	_, err = f.repo.GetChangeRequestLinkOptions(f.sys, domain.ChangeRequestLinkOptionsRequest{ProjectID: "3bbbbbbb-9999-0000-0000-000000000000"})
+	f.wantValidationError("unknown project", err, "projectId does not refer to an existing project")
+
+	// Pre-flight validation (the ServiceNow-first create) writes nothing.
+	set, err := f.repo.ValidateChangeRequestLinks(f.sys, domain.ChangeRequestLinkSelection{ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: []string{crScopeDepOtherB}})
+	if err != nil || set.ProjectID != crScopeProjectB || len(set.Deployments) != 1 || len(set.Environments) != 1 || len(set.DeploymentProducts) != 1 {
+		t.Fatalf("ValidateChangeRequestLinks = %+v, %v", set, err)
+	}
+	_, err = f.repo.ValidateChangeRequestLinks(f.sys, domain.ChangeRequestLinkSelection{ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: []string{crScopeDepProd}})
+	f.wantValidationError("pre-flight foreign deployment", err, "does not belong to the selected project")
+}
+
+// Deleting a deployment, a deployed product or the change request removes the
+// join rows (ON DELETE CASCADE) and nothing else.
+func TestChangeRequestScopeIntegration_JoinRowsCascade(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+		r.ProjectID = scopeStrp(crScopeProjectA)
+		r.DeploymentIDs = []string{crScopeDepProd, crScopeDepStage}
+	})
+	count := func(table string) int {
+		var n int
+		if err := f.scoped.QueryRow(f.sys, fmt.Sprintf(`SELECT count(*) FROM %s WHERE change_request_id = $1`, table), id).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		return n
+	}
+	if count("change_request_deployment") != 2 || count("change_request_environment") != 2 || count("change_request_deployed_product") != 3 {
+		t.Fatal("join rows not written as expected")
+	}
+	if _, err := f.scoped.Exec(f.sys, `DELETE FROM deployed_product WHERE id = $1`, crScopeDPStageOne); err != nil {
+		t.Fatalf("delete deployed product: %v", err)
+	}
+	if count("change_request_deployed_product") != 2 {
+		t.Fatalf("deployed-product rows after deleting one = %d, want 2", count("change_request_deployed_product"))
+	}
+	if _, err := f.scoped.Exec(f.sys, `DELETE FROM deployment WHERE id = $1`, crScopeDepStage); err != nil {
+		t.Fatalf("delete deployment: %v", err)
+	}
+	f.assertScope("after deleting the stage deployment", f.get(id), crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd, crScopeEnvStaging}, []string{crScopeDPProdOne, crScopeDPProdTwo})
+	if _, err := f.scoped.Exec(f.sys, `DELETE FROM work_item WHERE id = $1`, id); err != nil {
+		t.Fatalf("delete work item: %v", err)
+	}
+	if count("change_request_deployment")+count("change_request_environment")+count("change_request_deployed_product") != 0 {
+		t.Fatal("join rows survived the change request")
+	}
+}
+
+// Migration 0191 is idempotent: re-running it changes nothing, keeps the data
+// and the six environments, and the category enum carries all 13 labels.
+func TestChangeRequestScopeIntegration_MigrationIsIdempotent(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedScope()
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
+		r.ProjectID = scopeStrp(crScopeProjectA)
+		r.DeploymentIDs = []string{crScopeDepProd}
+	})
+	sqlBytes, err := os.ReadFile("../../migrations/0191_change_request_project_links.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := f.pool.Exec(context.Background(), string(sqlBytes)); err != nil {
+			t.Fatalf("re-running migration 0191 (pass %d): %v", i+1, err)
+		}
+	}
+	f.assertScope("after re-running the migration", f.get(id), crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, []string{crScopeDPProdOne, crScopeDPProdTwo})
+	var envs, labels int
+	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM environment`).Scan(&envs); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM pg_enum WHERE enumtypid = 'change_request_category_enum'::regtype`).Scan(&labels); err != nil {
+		t.Fatal(err)
+	}
+	if envs != 6 || labels != 13 {
+		t.Fatalf("environments = %d, category labels = %d, want 6 and 13", envs, labels)
+	}
+	// Every deployment_type_enum label has an environment (the join is by code).
+	var orphan int
+	if err := f.scoped.QueryRow(f.sys,
+		`SELECT count(*) FROM unnest(enum_range(NULL::deployment_type_enum)) t(label) WHERE NOT EXISTS (SELECT 1 FROM environment e WHERE e.code = t.label::text)`).Scan(&orphan); err != nil {
+		t.Fatal(err)
+	}
+	if orphan != 0 {
+		t.Fatalf("%d deployment types have no environment", orphan)
+	}
+	var fks, idx int
+	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid IN ('change_request_deployment'::regclass, 'change_request_environment'::regclass, 'change_request_deployed_product'::regclass) AND confdeltype = 'c'`).Scan(&fks); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM pg_indexes WHERE tablename IN ('change_request_deployment','change_request_environment','change_request_deployed_product')`).Scan(&idx); err != nil {
+		t.Fatal(err)
+	}
+	if fks != 6 || idx != 6 {
+		t.Fatalf("cascading FKs = %d, indexes = %d, want 6 and 6 (a PK + a lookup index per table)", fks, idx)
+	}
+}

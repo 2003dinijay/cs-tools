@@ -1481,8 +1481,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	// internalOnly: migration 0145's change_request_write_internal_only RLS
 	// policy only ever permits an internal caller to INSERT into
-	// change_request (CreateChangeRequestRequest has no projectId field at
-	// all to check membership against) -- same posture already established
+	// change_request (the optional projectId on CreateChangeRequestRequest is
+	// the customer project the change is raised for, not the creator's own
+	// membership) -- same posture already established
 	// for POST /incidents and POST /problems below. A non-internal caller
 	// reaching changeRequestService.CreateChangeRequest's plain-Postgres
 	// path would otherwise fail the RLS check with a raw 42501 (mapped to a

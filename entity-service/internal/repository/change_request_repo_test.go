@@ -822,3 +822,52 @@ func TestCustomerStageManualRefusal(t *testing.T) {
 		}
 	}
 }
+
+// TestChangeRequestLinkHelpers covers the pure helpers behind the
+// customer-scope rules (change_request_links.go): id lists are normalised
+// (trimmed, lower-cased, de-duplicated, blanks dropped, order kept) and
+// compared as sets.
+func TestChangeRequestLinkHelpers(t *testing.T) {
+	got := normalizeUUIDList([]string{" AAAA ", "aaaa", "", "bbbb", "  "})
+	if len(got) != 2 || got[0] != "aaaa" || got[1] != "bbbb" {
+		t.Fatalf("normalizeUUIDList = %v, want [aaaa bbbb]", got)
+	}
+	for _, tc := range []struct {
+		a, b []string
+		want bool
+	}{
+		{nil, nil, true},
+		{[]string{"a", "b"}, []string{"B", "a"}, true},
+		{[]string{"a"}, []string{"a", "b"}, false},
+		{[]string{"a", "b"}, []string{"a", "c"}, false},
+	} {
+		if sameIDSet(tc.a, tc.b) != tc.want {
+			t.Errorf("sameIDSet(%v, %v) = %v, want %v", tc.a, tc.b, !tc.want, tc.want)
+		}
+	}
+	if firstOrNil(nil) != nil || *firstOrNil([]string{"x", "y"}) != "x" {
+		t.Error("firstOrNil")
+	}
+	for _, locked := range []string{"IMPLEMENT", "REVIEW", "CUSTOMER_REVIEW", "ROLLBACK", "CLOSED", "CANCELED"} {
+		if !changeRequestLinksLockedStates[locked] {
+			t.Errorf("%s should close the edit window", locked)
+		}
+	}
+	for _, open := range []string{"NEW", "ASSESS", "AUTHORIZE", "CUSTOMER_APPROVAL", "SCHEDULED"} {
+		if changeRequestLinksLockedStates[open] {
+			t.Errorf("%s should be inside the edit window", open)
+		}
+	}
+	// Every category the API enum offers has an enum label on Postgres.
+	for _, c := range []domain.ChangeRequestCategory{
+		domain.ChangeRequestCategoryHardware, domain.ChangeRequestCategorySoftware, domain.ChangeRequestCategoryService,
+		domain.ChangeRequestCategorySystemSoftware, domain.ChangeRequestCategoryApplicationsSoftware, domain.ChangeRequestCategoryNetwork,
+		domain.ChangeRequestCategoryTelecom, domain.ChangeRequestCategoryDocumentation, domain.ChangeRequestCategoryOther,
+		domain.ChangeRequestCategoryRegularReleaseCloud, domain.ChangeRequestCategoryHotfixReleaseCloud,
+		domain.ChangeRequestCategoryDevOps, domain.ChangeRequestCategoryCloudComputing,
+	} {
+		if !changeRequestCategoryPGLabels[strings.ToUpper(string(c))] {
+			t.Errorf("category %s has no Postgres enum label", c)
+		}
+	}
+}
