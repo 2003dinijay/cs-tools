@@ -4117,19 +4117,18 @@ type SearchChangeRequestView struct {
 	Impact           *string    `json:"impact"`
 	State            *string    `json:"state"`
 	Type             *string    `json:"type"`
-	// OnHold/OnHoldReason/OnHoldSince back change_request.is_on_hold/
-	// on_hold_reason/on_hold_started_on (migration 0178) -- see
+	// OnHold/OnHoldReason back change_request.is_on_hold/
+	// on_hold_reason (migration 0178) -- see
 	// PatchChangeRequestRequest.OnHold's own doc comment for the gating
 	// behavior this flag drives, and entity-service's own CLAUDE.md "Change
 	// requests" -> "On hold" for the ServiceNow provenance. OnHold is nil
 	// only when the record predates this column ever being set at all (the
 	// column has no DEFAULT); a record never placed on hold otherwise reads
 	// as OnHold pointing at false, not nil, once anything has written to it.
-	// OnHoldReason/OnHoldSince are display-only (no gating effect of their
-	// own) and are always nil while OnHold is not true.
+	// OnHoldReason is display-only (no gating effect of its own) and is always
+	// nil while OnHold is not true.
 	OnHold       *bool   `json:"onHold"`
 	OnHoldReason *string `json:"onHoldReason"`
-	OnHoldSince  *string `json:"onHoldSince"`
 	CreatedOn    string  `json:"createdOn"`
 	UpdatedOn    string  `json:"updatedOn"`
 }
@@ -4350,8 +4349,8 @@ type PatchChangeRequestRequest struct {
 	IsCustomerApproved *bool                `json:"isCustomerApproved,omitempty"`
 	IsCustomerReviewed *bool                `json:"isCustomerReviewed,omitempty"`
 	RequestApproval    *bool                `json:"requestApproval,omitempty"`
-	// OnHold/OnHoldReason gate change_request.is_on_hold/on_hold_reason/
-	// on_hold_started_on (migration 0178). Combinable with every other field
+	// OnHold/OnHoldReason gate change_request.is_on_hold/on_hold_reason
+	// (migration 0178). Combinable with every other field
 	// on this PATCH, including State -- this endpoint has no exclusive/
 	// combinable grouping at all (unlike UpdateCaseRequest's state/watchList/
 	// assigneeEmail/... exclusive group; see entity-service's own CLAUDE.md
@@ -4370,11 +4369,10 @@ type PatchChangeRequestRequest struct {
 	// record's on-hold status -- editing, say, Description while on hold
 	// still succeeds.
 	//
-	// Setting OnHold to true stamps on_hold_started_on to the current time
-	// and sets on_hold_reason to OnHoldReason if provided in the same
-	// request, else NULL (a fresh hold event does not inherit a stale reason
+	// Setting OnHold to true sets on_hold_reason to OnHoldReason if
+	// provided in the same request, else NULL (a fresh hold event does not inherit a stale reason
 	// from a previous hold period). Setting OnHold to false always clears
-	// both on_hold_reason and on_hold_started_on, regardless of whether
+	// on_hold_reason, regardless of whether
 	// OnHoldReason also accompanies this same request. OnHoldReason may also
 	// be sent alone (OnHold omitted) to edit the reason text of an existing
 	// hold without touching OnHold itself.

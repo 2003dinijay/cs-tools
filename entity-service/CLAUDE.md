@@ -3289,7 +3289,8 @@ regardless of any ServiceNow-side hold, a confirmed, real gap between this
 mirror and the system it models.
 
 - **Schema** (migration 0178): `change_request.is_on_hold BOOLEAN`,
-  `on_hold_reason TEXT`, `on_hold_started_on TIMESTAMPTZ`. Shape follows two
+  `on_hold_reason TEXT`. (`on_hold_started_on` was added here originally and dropped
+  again in migration 0190 — ServiceNow has no equivalent field and nothing consumed it.) Shape follows two
   existing precedents in this same table rather than inventing a third: the
   boolean naming matches `is_customer_approved`/`is_customer_reviewed`/
   `is_planning_visible_to_customers` (migration 0043), and the
@@ -3305,8 +3306,7 @@ mirror and the system it models.
   file already documents for e.g. `account.deleted_on`.
 - **Domain** (`internal/domain/entity.go`): `SearchChangeRequestView` (and
   therefore `ChangeRequest`, which embeds it) gained `OnHold *bool`/
-  `OnHoldReason *string`/`OnHoldSince *string` (RFC3339, same convention as
-  `PlannedStartOn`/`PlannedEndOn`) on the read side.
+  `OnHoldReason *string` on the read side.
   `PatchChangeRequestRequest` gained `OnHold *bool`/`OnHoldReason *string` on
   the write side — plain optional pointers, not the tri-state
   pointer-to-pointer convention the Group C1/C2 "field-parity additions"
@@ -3365,19 +3365,16 @@ mirror and the system it models.
   deliberately: being on hold only ever blocks *advancing the lifecycle*,
   never any other field.
 - **The write semantics** (same function, in the `change_request` `UPDATE`'s
-  own field-by-field block): `OnHold: true` sets `is_on_hold = true` and
-  always refreshes `on_hold_started_on = NOW()` — even on a change request
-  already on hold, a resent `{onHold: true}` is treated as a fresh hold
-  event — and sets `on_hold_reason` to `OnHoldReason` if provided in the same
+  own field-by-field block): `OnHold: true` sets `is_on_hold = true`
+  and sets `on_hold_reason` to `OnHoldReason` if provided in the same
   request, else clears it to `NULL` (a fresh hold event does not inherit a
   stale reason text from whatever hold period preceded it). `OnHold: false`
-  always clears both `on_hold_reason` and `on_hold_started_on` to `NULL`
-  regardless of whether `OnHoldReason` also accompanies the same request —
+  always clears `on_hold_reason` to `NULL` regardless of whether `OnHoldReason` also accompanies the same request —
   taking a record off hold wins over setting a reason in the same call.
   `OnHoldReason` sent alone (`OnHold` omitted) only updates the reason text,
   letting a caller correct or add a reason on an existing hold without
-  resending `OnHold` itself; it has no effect on `is_on_hold`/
-  `on_hold_started_on` and is not validated against the record's current
+  resending `OnHold` itself; it has no effect on `is_on_hold`
+  and is not validated against the record's current
   on-hold status (a reason sent while not on hold is written but harmless —
   not cross-validated, matching this PATCH's existing "don't over-engineer a
   rarely-meaningful combination" posture elsewhere in this same field set).

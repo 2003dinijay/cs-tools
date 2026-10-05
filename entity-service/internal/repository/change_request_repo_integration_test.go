@@ -2240,13 +2240,13 @@ func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testi
 }
 
 // seedChangeRequestForOnHoldTest inserts a minimal work_item/change_request
-// pair in the given state, with is_on_hold/on_hold_reason/on_hold_started_on
+// pair in the given state, with is_on_hold/on_hold_reason
 // set directly via SQL rather than through PatchChangeRequest -- the tests
 // below are split between exercising the GATE (which needs an "already on
 // hold" precondition to exist before the PATCH under test ever runs) and the
 // WRITE path itself (covered separately), so seeding the precondition
 // directly keeps the two concerns from tangling. onHold=false seeds a
-// never-been-on-hold record (is_on_hold FALSE, reason/since left NULL),
+// never-been-on-hold record (is_on_hold FALSE, reason left NULL),
 // matching every change request created before migration 0178 ever ran.
 func seedChangeRequestForOnHoldTest(t *testing.T, pool *repository.Scoped, state string, onHold bool, reason *string) {
 	t.Helper()
@@ -2271,8 +2271,8 @@ func seedChangeRequestForOnHoldTest(t *testing.T, pool *repository.Scoped, state
 		changeRequestOnHoldTestID)
 
 	if onHold {
-		mustExec(`INSERT INTO change_request (id, state, is_on_hold, on_hold_reason, on_hold_started_on)
-		          VALUES ($1, $2::change_request_state_enum, TRUE, $3, now())`,
+		mustExec(`INSERT INTO change_request (id, state, is_on_hold, on_hold_reason)
+		          VALUES ($1, $2::change_request_state_enum, TRUE, $3)`,
 			changeRequestOnHoldTestID, state, reason)
 	} else {
 		mustExec(`INSERT INTO change_request (id, state, is_on_hold) VALUES ($1, $2::change_request_state_enum, FALSE)`,
@@ -2282,7 +2282,7 @@ func seedChangeRequestForOnHoldTest(t *testing.T, pool *repository.Scoped, state
 
 // TestChangeRequestIntegration_PatchOnHoldPersistsAndReadsBack confirms
 // {onHold: true, onHoldReason: ...} actually persists change_request.is_on_hold/
-// on_hold_reason/on_hold_started_on, both in PatchChangeRequest's own
+// on_hold_reason, both in PatchChangeRequest's own
 // response and independently on a fresh GetChangeRequestByID read.
 func TestChangeRequestIntegration_PatchOnHoldPersistsAndReadsBack(t *testing.T) {
 	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
@@ -2313,9 +2313,6 @@ func TestChangeRequestIntegration_PatchOnHoldPersistsAndReadsBack(t *testing.T) 
 	if cr.OnHoldReason == nil || *cr.OnHoldReason != reason {
 		t.Fatalf("OnHoldReason after patch = %v, want %q", cr.OnHoldReason, reason)
 	}
-	if cr.OnHoldSince == nil || *cr.OnHoldSince == "" {
-		t.Fatalf("OnHoldSince after patch = %v, want a non-empty timestamp", cr.OnHoldSince)
-	}
 
 	// Read back independently via GetChangeRequestByID -- not just trusting
 	// PatchChangeRequest's own response -- to confirm this actually
@@ -2329,9 +2326,6 @@ func TestChangeRequestIntegration_PatchOnHoldPersistsAndReadsBack(t *testing.T) 
 	}
 	if got.OnHoldReason == nil || *got.OnHoldReason != reason {
 		t.Fatalf("GetChangeRequestByID OnHoldReason = %v, want %q", got.OnHoldReason, reason)
-	}
-	if got.OnHoldSince == nil || *got.OnHoldSince != *cr.OnHoldSince {
-		t.Fatalf("GetChangeRequestByID OnHoldSince = %v, want %v", got.OnHoldSince, cr.OnHoldSince)
 	}
 }
 
@@ -2387,7 +2381,7 @@ func TestChangeRequestIntegration_PatchStateRejectedWhileOnHold(t *testing.T) {
 // onHold: false} in the SAME request is allowed through even though the
 // record is currently on hold -- "take it off hold and advance in one
 // call". Also confirms clearing OnHold in this combined request clears
-// on_hold_reason/on_hold_started_on exactly the same way a standalone
+// on_hold_reason exactly the same way a standalone
 // {onHold: false} would.
 func TestChangeRequestIntegration_PatchClearsOnHoldAndAdvancesStateTogether(t *testing.T) {
 	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
@@ -2418,9 +2412,6 @@ func TestChangeRequestIntegration_PatchClearsOnHoldAndAdvancesStateTogether(t *t
 	}
 	if cr.OnHoldReason != nil {
 		t.Fatalf("OnHoldReason after simultaneous clear+advance = %v, want nil", cr.OnHoldReason)
-	}
-	if cr.OnHoldSince != nil {
-		t.Fatalf("OnHoldSince after simultaneous clear+advance = %v, want nil", cr.OnHoldSince)
 	}
 	if cr.State == nil || *cr.State != string(domain.ChangeRequestStateCanceled) {
 		t.Fatalf("state after simultaneous clear+advance = %v, want %q", cr.State, domain.ChangeRequestStateCanceled)
@@ -2462,9 +2453,6 @@ func TestChangeRequestIntegration_PatchOffHoldAlwaysSucceeds(t *testing.T) {
 			}
 			if cr.OnHoldReason != nil {
 				t.Fatalf("OnHoldReason after patch = %v, want nil", cr.OnHoldReason)
-			}
-			if cr.OnHoldSince != nil {
-				t.Fatalf("OnHoldSince after patch = %v, want nil", cr.OnHoldSince)
 			}
 			if cr.State == nil || strings.ToUpper(*cr.State) != seedState {
 				t.Fatalf("state after off-hold patch = %v, want unchanged %q", cr.State, seedState)

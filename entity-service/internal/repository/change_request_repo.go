@@ -79,8 +79,8 @@ import (
 // results by it (the parsed filter array's assignmentGroupId) is also still
 // unwired -- see changeRequestWhereClause's own comment.
 //
-// OnHold/OnHoldReason/OnHoldSince are backed by change_request.is_on_hold/
-// on_hold_reason/on_hold_started_on (migration 0178) -- a concept this
+// OnHold/OnHoldReason are backed by change_request.is_on_hold/
+// on_hold_reason (migration 0178) -- a concept this
 // schema had no representation of at all before, despite a live
 // investigation of the real ServiceNow "Change Request - Normal" workflow
 // finding "on hold" threaded through nearly every stage transition. See
@@ -304,7 +304,7 @@ const changeRequestSelectColumns = `
 	cr.start_on, cr.end_on, cr.impact::TEXT, cr.state::TEXT, cr.change_model::TEXT,
 	wi.created_on, wi.updated_on,
 	ag.id, ag.name,
-	cr.is_on_hold, cr.on_hold_reason, cr.on_hold_started_on`
+	cr.is_on_hold, cr.on_hold_reason`
 
 // changeRequestChangeModelToType/changeRequestTypeToChangeModel map between
 // change_request.change_model's real enum labels (migration 0056) and
@@ -472,7 +472,6 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 		createdOn, updatedOn   time.Time
 		isOnHold               *bool
 		onHoldReason           *string
-		onHoldStartedOn        *time.Time
 	)
 	err := row.Scan(
 		&v.ID, &v.Number, &v.Subject, &v.Description,
@@ -487,7 +486,7 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 		&startOn, &endOn, &impact, &state, &changeModel,
 		&createdOn, &updatedOn,
 		&agID, &agName,
-		&isOnHold, &onHoldReason, &onHoldStartedOn,
+		&isOnHold, &onHoldReason,
 	)
 	if err != nil {
 		return domain.SearchChangeRequestView{}, err
@@ -543,10 +542,6 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 	}
 	v.OnHold = isOnHold
 	v.OnHoldReason = onHoldReason
-	if onHoldStartedOn != nil {
-		s := onHoldStartedOn.UTC().Format(time.RFC3339)
-		v.OnHoldSince = &s
-	}
 	v.CreatedOn = createdOn.UTC().Format(time.RFC3339)
 	v.UpdatedOn = updatedOn.UTC().Format(time.RFC3339)
 	return v, nil
@@ -832,7 +827,6 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 		createdOn, updatedOn   time.Time
 		isOnHold               *bool
 		onHoldReason           *string
-		onHoldStartedOn        *time.Time
 
 		createdBy                                                          string
 		justification, impactDescription, serviceOutage                    *string
@@ -862,7 +856,7 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 		&startOn, &endOn, &impact, &state, &changeModel,
 		&createdOn, &updatedOn,
 		&agID, &agName,
-		&isOnHold, &onHoldReason, &onHoldStartedOn,
+		&isOnHold, &onHoldReason,
 		&createdBy, &justification, &impactDescription, &serviceOutage, &communicationPlan, &rollbackPlan, &testPlan,
 		&isCustomerApproved, &isCustomerReviewed,
 		&implementationPlan, &priority, &category,
@@ -928,10 +922,6 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 	}
 	v.OnHold = isOnHold
 	v.OnHoldReason = onHoldReason
-	if onHoldStartedOn != nil {
-		s := onHoldStartedOn.UTC().Format(time.RFC3339)
-		v.OnHoldSince = &s
-	}
 	v.CreatedOn = createdOn.UTC().Format(time.RFC3339)
 	v.UpdatedOn = updatedOn.UTC().Format(time.RFC3339)
 	cr.SearchChangeRequestView = v
@@ -1451,15 +1441,13 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	}
 	// OnHold/OnHoldReason -- see PatchChangeRequestRequest.OnHold's own doc
 	// comment for the full tri-state write behavior this implements:
-	//   - OnHold: true  -> is_on_hold = true, on_hold_started_on = NOW()
-	//     (always refreshed, even when already on hold -- a resent
-	//     {onHold: true} is treated as a fresh hold event), on_hold_reason =
-	//     OnHoldReason if provided in this same request, else NULL (a fresh
-	//     hold event does not inherit a stale reason from a previous one).
-	//   - OnHold: false -> is_on_hold = false, and on_hold_reason/
-	//     on_hold_started_on are BOTH cleared to NULL regardless of whether
-	//     OnHoldReason also accompanies this same request -- taking a record
-	//     off hold always wins over setting a reason text in the same call.
+	//   - OnHold: true  -> is_on_hold = true, on_hold_reason = OnHoldReason if
+	//     provided in this same request, else NULL (a fresh hold event does
+	//     not inherit a stale reason from a previous one).
+	//   - OnHold: false -> is_on_hold = false, and on_hold_reason is cleared
+	//     to NULL regardless of whether OnHoldReason also accompanies this
+	//     same request -- taking a record off hold always wins over setting a
+	//     reason text in the same call.
 	//   - OnHold omitted, OnHoldReason provided -> only on_hold_reason is
 	//     written, letting a caller edit the reason text of an existing hold
 	//     (or set one belatedly) without resending OnHold itself.
@@ -1469,14 +1457,13 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	if req.OnHold != nil {
 		addCR("is_on_hold = $%d", *req.OnHold)
 		if *req.OnHold {
-			crSets = append(crSets, "on_hold_started_on = NOW()")
 			if req.OnHoldReason != nil {
 				addCR("on_hold_reason = $%d", *req.OnHoldReason)
 			} else {
 				crSets = append(crSets, "on_hold_reason = NULL")
 			}
 		} else {
-			crSets = append(crSets, "on_hold_reason = NULL", "on_hold_started_on = NULL")
+			crSets = append(crSets, "on_hold_reason = NULL")
 		}
 	} else if req.OnHoldReason != nil {
 		addCR("on_hold_reason = $%d", *req.OnHoldReason)
