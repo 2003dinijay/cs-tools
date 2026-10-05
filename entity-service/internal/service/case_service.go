@@ -2830,6 +2830,13 @@ func (s *caseService) ConfirmCaseAttachment(ctx context.Context, id string) (dom
 // SearchCaseAttachments implements CaseService for the CSM-native (Postgres)
 // data source.
 //
+// referenceType "case" reads case_attachment (unchanged). "change_request",
+// "incident" and "conversation" are work_item subtypes and read the generic
+// work_item_attachment table via CaseRepository.SearchWorkItemAttachments;
+// "deployment" is not a work_item subtype, has no attachment table here, and
+// is rejected with a validation error. Metadata only: a work item with no
+// attachments is a successful empty result.
+//
 // Read-path status decision: the underlying repository query filters out
 // 'pending' rows entirely (see caseRepo.SearchCaseAttachments), so a case's
 // attachment list never shows a still-uploading placeholder to other users.
@@ -2845,14 +2852,29 @@ func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.Sear
 	if err := validateUUIDs("referenceId", []string{req.ReferenceID}); err != nil {
 		return domain.SearchAttachmentsResponse{}, err
 	}
-	if req.ReferenceType != domain.ReferenceTypeCase {
-		return domain.SearchAttachmentsResponse{}, &apierror.ValidationError{Msg: "referenceType must be 'case' for this data source"}
+	isCase := req.ReferenceType == domain.ReferenceTypeCase
+	if !isCase {
+		// Non-case work items (change_request, incident, conversation) are
+		// backed by work_item_attachment; "deployment" is not a work_item
+		// subtype and has no attachment table on this data source.
+		if _, ok := repository.ReferenceTypeToWorkItemType[req.ReferenceType]; !ok {
+			return domain.SearchAttachmentsResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("referenceType %q is not supported for this data source: must be one of 'case', 'change_request', 'conversation', 'incident'", req.ReferenceType)}
+		}
 	}
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchAttachmentsResponse{}, err
 	}
 
-	attachments, total, err := s.repo.SearchCaseAttachments(ctx, req.ReferenceID, req.Pagination)
+	var (
+		attachments []domain.Attachment
+		total       int
+		err         error
+	)
+	if isCase {
+		attachments, total, err = s.repo.SearchCaseAttachments(ctx, req.ReferenceID, req.Pagination)
+	} else {
+		attachments, total, err = s.repo.SearchWorkItemAttachments(ctx, req.ReferenceID, req.ReferenceType, req.Pagination)
+	}
 	if err != nil {
 		return domain.SearchAttachmentsResponse{}, err
 	}
