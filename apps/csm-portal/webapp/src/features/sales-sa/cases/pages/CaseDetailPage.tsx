@@ -51,7 +51,7 @@ import { useGetCase, usePostWorkNote } from "../api/useCases";
 import { CASE_CLOSED_STATE } from "../api/caseTypes";
 import { ErrorPanel, LinearLoadingPanel, NotFoundPanel } from "../components/StatePanels";
 import { BackendApiError } from "@api/backend/client";
-import { usePermissions } from "@features/spl/api/permissionsContext";
+import { usePermissions } from "@features/sales-sa/api/permissionsContext";
 
 /** Strip tags + collapse whitespace to decide if the editor is effectively empty -- same check CsmCaseCommentInput uses. */
 function isEmptyHtml(html: string): boolean {
