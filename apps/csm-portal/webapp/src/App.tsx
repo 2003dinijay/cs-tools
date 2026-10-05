@@ -109,7 +109,6 @@ import CsmAnnouncementsPage from "@features/csm-announcements/pages/CsmAnnouncem
 import CsmAnnouncementCreatePage from "@features/csm-announcements/pages/CsmAnnouncementCreatePage";
 import HelpPage from "@features/help/pages/HelpPage";
 import RouteGuard from "@features/spl/pages/RouteGuard";
-import CasesPage from "@features/spl/cases/pages/CasesPage";
 import AccountsPage from "@features/spl/accounts/pages/AccountsPage";
 import AccountDetailPage from "@features/spl/accounts/pages/AccountDetailPage";
 import ProjectsPage from "@features/spl/projects/pages/ProjectsPage";
@@ -157,7 +156,7 @@ function RootLanding(): JSX.Element | null {
   // page is Cases, same as the standalone app's own index redirect. See
   // usePortalView.ts.
   const view = usePortalView();
-  const landing = view === "sales-sa" ? "/spl/cases" : "/dashboard";
+  const landing = view === "sales-sa" ? "/cases" : "/dashboard";
   return pending || hasDeepLinkSearch ? null : <Navigate to={landing} replace />;
 }
 
@@ -237,13 +236,14 @@ function LegacySettingsRedirect({ to }: { to: string }): JSX.Element {
 }
 
 /**
- * Redirects a legacy `/spl/cases/:caseId` link to the normal case view at
- * `/cases/:caseId`, preserving query, hash and `location.state`.
+ * Redirects the SPL case routes to the normal CSM case pages: `/spl/cases` to
+ * the cases list at `/cases`, and `/spl/cases/:caseId` to the case view at
+ * `/cases/:caseId`. Preserves query, hash and `location.state`.
  */
 function SplCaseRedirect(): JSX.Element {
   const { caseId } = useParams();
   const { search, hash, state } = useLocation();
-  return <Navigate to={`${caseId ? `/cases/${caseId}` : "/spl/cases"}${search}${hash}`} state={state} replace />;
+  return <Navigate to={`${caseId ? `/cases/${caseId}` : "/cases"}${search}${hash}`} state={state} replace />;
 }
 
 export default function App(): JSX.Element {
@@ -647,7 +647,13 @@ export default function App(): JSX.Element {
                       a hidden nav entry) and also mounts
                       PermissionProvider for every screen below it. */}
                   <Route path="spl" element={<RouteGuard />}>
-                    <Route path="cases" element={<CasesPage />} />
+                    {/* SPL no longer has a cases list of its own: its "Cases"
+                        item opens the normal CSM cases list at /cases. This
+                        redirect keeps the nav item's /spl/cases href and old
+                        links working (the nav href stays /spl/cases on
+                        purpose -- pointing it at /cases would make it win the
+                        path match for every user, see csmNavItems.ts). */}
+                    <Route path="cases" element={<SplCaseRedirect />} />
                     {/* SPL has no case-detail page of its own any more: every
                         case opens in the normal CSM case view at
                         /cases/:caseId (write actions there are gated by the
