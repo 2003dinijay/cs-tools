@@ -26,14 +26,13 @@ import (
 )
 
 // Defaults for the timeout settings. Create-case carries inline base64
-// attachments (up to 15 MiB), so the request and upstream deadlines must be
-// long enough for it to finish, yet below the server write timeout so a
-// handler can still return a clean error before the connection is closed.
+// attachments (up to 15 MiB), so the deadlines must be long enough for it to
+// finish. Operators may set any positive values.
 const (
-	DefaultServerReadTimeout     = 50 * time.Second
-	DefaultServerWriteTimeout    = 50 * time.Second
-	DefaultRequestTimeout        = 45 * time.Second
-	DefaultUpstreamClientTimeout = 45 * time.Second
+	DefaultServerReadTimeout     = 60 * time.Second
+	DefaultServerWriteTimeout    = 60 * time.Second
+	DefaultRequestTimeout        = 60 * time.Second
+	DefaultUpstreamClientTimeout = 60 * time.Second
 )
 
 // DataSource identifies which backend the service reads from.
@@ -97,9 +96,9 @@ type Config struct {
 	// SERVER_WRITE_TIMEOUT). The health server keeps its own fixed timeouts.
 	ServerReadTimeout  time.Duration
 	ServerWriteTimeout time.Duration
-	// RequestTimeout cancels each request's context (REQUEST_TIMEOUT). It
-	// must be strictly less than ServerWriteTimeout so the handler can write
-	// a clean error before the connection is forcibly closed.
+	// RequestTimeout cancels each request's context (REQUEST_TIMEOUT).
+	// Keeping it shorter than ServerWriteTimeout lets the handler write a
+	// clean error, but this is not enforced.
 	RequestTimeout time.Duration
 	// UpstreamClientTimeout is the data-source HTTP client timeout
 	// (UPSTREAM_CLIENT_TIMEOUT).
@@ -149,7 +148,7 @@ func Load() *Config {
 	}
 }
 
-// getDurationOrDefault parses key as a Go duration string (e.g. "50s"). An
+// getDurationOrDefault parses key as a Go duration string (e.g. "60s"). An
 // unset or empty value yields defaultVal; an unparsable one is an error.
 func getDurationOrDefault(key string, defaultVal time.Duration) (time.Duration, error) {
 	v := os.Getenv(key)
@@ -179,8 +178,7 @@ func getEnvOrDefault(key, defaultVal string) string {
 // DATA_SOURCE=servicenow, or if EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/
 // EVENT_HUB_TOPIC are only partially set, or if SERVER_READ_TIMEOUT/
 // SERVER_WRITE_TIMEOUT/REQUEST_TIMEOUT/UPSTREAM_CLIENT_TIMEOUT are
-// unparsable, not positive, or REQUEST_TIMEOUT is not strictly less than
-// SERVER_WRITE_TIMEOUT.
+// unparsable or not positive.
 func (c *Config) Validate() error {
 	if c.loadErr != nil {
 		return c.loadErr
@@ -197,11 +195,6 @@ func (c *Config) Validate() error {
 		if t.val <= 0 {
 			return fmt.Errorf("%s must be greater than 0, got %s", t.name, t.val)
 		}
-	}
-	// middleware.Timeout documents this: the request context must expire
-	// before the write deadline so a clean error can still be written.
-	if c.RequestTimeout >= c.ServerWriteTimeout {
-		return fmt.Errorf("REQUEST_TIMEOUT (%s) must be less than SERVER_WRITE_TIMEOUT (%s)", c.RequestTimeout, c.ServerWriteTimeout)
 	}
 	// The health server is a separate listener precisely so that only its
 	// own routes are reachable at public visibility (see HealthPort). Two

@@ -74,10 +74,11 @@ type CustomerEntityConfig struct {
 }
 
 // defaultCustomerEntityTimeout is the entity-service call timeout used when
-// CustomerEntityConfig.Timeout is unset. Raised from 25s to 55s so large
+// CustomerEntityConfig.Timeout is unset. Raised from 25s to 60s so large
 // inline-attachment uploads are not cut off; matches the customer-portal
-// backend and stays below the REST server's 60s write timeout.
-const defaultCustomerEntityTimeout = 55 * time.Second
+// backend. Keeping it shorter than the REST server write timeout is advisable
+// so a clean error can be returned, but is not enforced.
+const defaultCustomerEntityTimeout = 60 * time.Second
 
 // CustomerEntityClient is an HTTP client for the customer entity service (this
 // repo's entity-service, covering cases/accounts/projects/products/etc.),

@@ -91,10 +91,11 @@ type Config struct {
 
 // DefaultTimeout is the entity-service request timeout used when
 // Config.Timeout is unset. create-case relays inline base64 attachments (up
-// to ~15 MiB), so it is longer than a typical API timeout. It must stay below
-// the backend server's WriteTimeout and above the entity-service server's
-// 50s so the inner layer errors first.
-const DefaultTimeout = 55 * time.Second
+// to ~15 MiB), so it is longer than a typical API timeout. Operators may
+// override it (ENTITY_SERVICE_TIMEOUT); it is advisable to keep it below the
+// backend server's WriteTimeout so a clean error can be returned, but that is
+// not enforced.
+const DefaultTimeout = 60 * time.Second
 
 // Client is an HTTP client for cs-tools/entity-service, authenticated via the
 // OAuth2 client credentials grant. Tokens are acquired and refreshed

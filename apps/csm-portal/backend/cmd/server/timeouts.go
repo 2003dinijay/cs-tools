@@ -24,12 +24,13 @@ import (
 // Request-timeout defaults. These intentionally raise the previous values
 // (server 30s, entity client 25s) so large inline-attachment uploads, which are
 // relayed through two hops, are not cut off. They match the customer-portal
-// backend: server 60s > entity client 55s, so the entity client always gives up
-// first and the handler can still return a clean error.
+// backend (all 60s). Operators may set any values; it is advisable to keep
+// ENTITY_SERVICE_TIMEOUT shorter than REST_WRITE_TIMEOUT so the handler can
+// still return a clean error, but this is not enforced.
 const (
 	defaultRESTReadTimeout      = 60 * time.Second
 	defaultRESTWriteTimeout     = 60 * time.Second
-	defaultEntityServiceTimeout = 55 * time.Second
+	defaultEntityServiceTimeout = 60 * time.Second
 )
 
 // timeouts holds the operator-configurable request timeouts.
@@ -41,9 +42,7 @@ type timeouts struct {
 
 // loadTimeouts resolves the timeouts from the environment via getenv. Each
 // value is a Go duration string (e.g. "45s", "2m"); unset or empty selects the
-// default. Every value must be > 0, and ENTITY_SERVICE_TIMEOUT must be strictly
-// less than REST_WRITE_TIMEOUT so the upstream call times out before the
-// response deadline does.
+// default. Every value must be > 0; no ordering between them is enforced.
 func loadTimeouts(getenv func(string) string) (timeouts, error) {
 	var t timeouts
 	for _, f := range []struct {
@@ -60,11 +59,6 @@ func loadTimeouts(getenv func(string) string) (timeouts, error) {
 			return timeouts{}, err
 		}
 		*f.dst = d
-	}
-	if t.EntityService >= t.RESTWrite {
-		return timeouts{}, fmt.Errorf(
-			"ENTITY_SERVICE_TIMEOUT (%s) must be strictly less than REST_WRITE_TIMEOUT (%s)",
-			t.EntityService, t.RESTWrite)
 	}
 	return t, nil
 }

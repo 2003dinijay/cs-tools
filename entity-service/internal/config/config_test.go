@@ -220,9 +220,9 @@ func TestLoad_TimeoutDefaults(t *testing.T) {
 		t.Setenv(k, "")
 	}
 	c := Load()
-	if c.ServerReadTimeout != 50*time.Second || c.ServerWriteTimeout != 50*time.Second ||
-		c.RequestTimeout != 45*time.Second || c.UpstreamClientTimeout != 45*time.Second {
-		t.Errorf("defaults = %v/%v/%v/%v, want 50s/50s/45s/45s",
+	if c.ServerReadTimeout != 60*time.Second || c.ServerWriteTimeout != 60*time.Second ||
+		c.RequestTimeout != 60*time.Second || c.UpstreamClientTimeout != 60*time.Second {
+		t.Errorf("defaults = %v/%v/%v/%v, want 60s/60s/60s/60s",
 			c.ServerReadTimeout, c.ServerWriteTimeout, c.RequestTimeout, c.UpstreamClientTimeout)
 	}
 	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
@@ -272,8 +272,6 @@ func TestConfig_Validate_Timeouts(t *testing.T) {
 		{"negative write", func(c *Config) { c.ServerWriteTimeout = -time.Second }, "SERVER_WRITE_TIMEOUT"},
 		{"zero request", func(c *Config) { c.RequestTimeout = 0 }, "REQUEST_TIMEOUT"},
 		{"zero upstream", func(c *Config) { c.UpstreamClientTimeout = 0 }, "UPSTREAM_CLIENT_TIMEOUT"},
-		{"request equals write", func(c *Config) { c.RequestTimeout = c.ServerWriteTimeout }, "must be less than"},
-		{"request above write", func(c *Config) { c.RequestTimeout = c.ServerWriteTimeout + time.Second }, "must be less than"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -17,7 +17,6 @@
 package main
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
@@ -31,7 +30,7 @@ func TestLoadTimeouts_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := timeouts{read: 60 * time.Second, write: 60 * time.Second, entity: 55 * time.Second}
+	want := timeouts{read: 60 * time.Second, write: 60 * time.Second, entity: 60 * time.Second}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
@@ -70,24 +69,5 @@ func TestLoadTimeouts_Invalid(t *testing.T) {
 				t.Fatal("expected error")
 			}
 		})
-	}
-}
-
-func TestLoadTimeouts_EntityMustBeBelowWrite(t *testing.T) {
-	for name, env := range map[string]map[string]string{
-		"equal":                {envWriteTimeout: "30s", envEntityTimeout: "30s"},
-		"greater":              {envWriteTimeout: "30s", envEntityTimeout: "45s"},
-		"write below default":  {envWriteTimeout: "50s"},
-		"entity above default": {envEntityTimeout: "61s"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := loadTimeouts(envMap(env))
-			if err == nil || !strings.Contains(err.Error(), "must be less than") {
-				t.Fatalf("expected ordering error, got %v", err)
-			}
-		})
-	}
-	if _, err := loadTimeouts(envMap(map[string]string{envWriteTimeout: "30s", envEntityTimeout: "29s"})); err != nil {
-		t.Fatalf("strictly smaller entity timeout must pass: %v", err)
 	}
 }

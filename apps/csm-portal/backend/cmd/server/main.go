@@ -79,7 +79,7 @@ func main() {
 		ClientSecret: oauth2ClientSecret,
 		// Scopes is optional; set CUSTOMER_ENTITY_SCOPES as a comma-separated list if required.
 		Scopes: splitComma(os.Getenv("CUSTOMER_ENTITY_SCOPES")),
-		// Timeout is ENTITY_SERVICE_TIMEOUT (default 55s, raised from 25s).
+		// Timeout is ENTITY_SERVICE_TIMEOUT (default 60s).
 		Timeout: reqTimeouts.EntityService,
 	}
 

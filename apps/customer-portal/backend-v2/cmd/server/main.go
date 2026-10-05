@@ -368,10 +368,10 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		// Read/WriteTimeout default to 60s because create-case carries inline
 		// base64 attachments (up to ~15 MiB) relayed through two hops. The
-		// chain is ordered backend server 60s > entity client 55s >
-		// entity-service server 50s, so each layer can return a clean error
-		// before the outer one gives up. loadTimeouts enforces the first
-		// ordering at startup.
+		// values are operator-configurable and not ordered by the code;
+		// keeping the entity client timeout shorter than the server write
+		// timeout lets the handler return a clean error before the server
+		// gives up.
 		ReadTimeout:  timeouts.read,
 		WriteTimeout: timeouts.write,
 		IdleTimeout:  60 * time.Second,

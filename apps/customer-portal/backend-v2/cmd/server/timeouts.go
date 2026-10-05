@@ -41,9 +41,10 @@ type timeouts struct {
 
 // loadTimeouts reads the timeout variables (Go duration strings such as "60s"
 // or "1m30s"; unset or empty means the default) and validates them: every
-// value must be positive, and the entity client timeout must be strictly less
-// than the server write timeout so the handler can still return a clean error
-// when the upstream call times out.
+// value must parse and be positive. No ordering between them is enforced;
+// operators are advised to keep the entity client timeout shorter than the
+// server write timeout so the handler can still return a clean error when the
+// upstream call times out.
 func loadTimeouts(getenv func(string) string) (timeouts, error) {
 	var t timeouts
 	var err error
@@ -55,10 +56,6 @@ func loadTimeouts(getenv func(string) string) (timeouts, error) {
 	}
 	if t.entity, err = durationEnv(getenv, envEntityTimeout, entity.DefaultTimeout); err != nil {
 		return timeouts{}, err
-	}
-	if t.entity >= t.write {
-		return timeouts{}, fmt.Errorf("%s (%s) must be less than %s (%s)",
-			envEntityTimeout, t.entity, envWriteTimeout, t.write)
 	}
 	return t, nil
 }

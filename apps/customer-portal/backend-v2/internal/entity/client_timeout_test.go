@@ -26,8 +26,8 @@ func TestNewClient_Timeout(t *testing.T) {
 		in   time.Duration
 		want time.Duration
 	}{
-		"unset uses default":    {0, 55 * time.Second},
-		"negative uses default": {-time.Second, 55 * time.Second},
+		"unset uses default":    {0, 60 * time.Second},
+		"negative uses default": {-time.Second, 60 * time.Second},
 		"override":              {90 * time.Second, 90 * time.Second},
 	} {
 		t.Run(name, func(t *testing.T) {

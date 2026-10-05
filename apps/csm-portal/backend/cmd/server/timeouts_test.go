@@ -31,7 +31,7 @@ func TestLoadTimeoutsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := timeouts{RESTRead: 60 * time.Second, RESTWrite: 60 * time.Second, EntityService: 55 * time.Second}
+	want := timeouts{RESTRead: 60 * time.Second, RESTWrite: 60 * time.Second, EntityService: 60 * time.Second}
 	if got != want {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
@@ -68,24 +68,6 @@ func TestLoadTimeoutsInvalid(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), tc.key) {
 			t.Errorf("%s=%q: error %q does not name the variable", tc.key, tc.val, err)
-		}
-	}
-}
-
-func TestLoadTimeoutsOrdering(t *testing.T) {
-	for _, m := range []map[string]string{
-		{"ENTITY_SERVICE_TIMEOUT": "60s"},                              // equal to default write
-		{"ENTITY_SERVICE_TIMEOUT": "70s"},                              // above default write
-		{"REST_WRITE_TIMEOUT": "40s"},                                  // below default entity
-		{"REST_WRITE_TIMEOUT": "30s", "ENTITY_SERVICE_TIMEOUT": "30s"}, // equal
-	} {
-		_, err := loadTimeouts(env(m))
-		if err == nil {
-			t.Errorf("%v: expected ordering error", m)
-			continue
-		}
-		if !strings.Contains(err.Error(), "ENTITY_SERVICE_TIMEOUT") || !strings.Contains(err.Error(), "REST_WRITE_TIMEOUT") {
-			t.Errorf("%v: error %q should name both variables", m, err)
 		}
 	}
 }

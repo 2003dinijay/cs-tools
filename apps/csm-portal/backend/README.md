@@ -133,13 +133,13 @@ Backs `entity.CustomerEntityClient` (this repo's entity-service; cases, accounts
 
 ### Request timeouts
 
-Go duration strings (e.g. `45s`, `2m`); unset or empty uses the default. All must be greater than 0, and `ENTITY_SERVICE_TIMEOUT` must be strictly less than `REST_WRITE_TIMEOUT`; the service exits at startup otherwise. The defaults deliberately raise the previous values (server 30s, entity client 25s) so large inline-attachment uploads are not cut off, matching the customer-portal backend.
+Go duration strings (e.g. `45s`, `2m`); unset or empty uses the default. All must be greater than 0; the service exits at startup otherwise. No ordering between them is enforced, though keeping `ENTITY_SERVICE_TIMEOUT` shorter than `REST_WRITE_TIMEOUT` lets the handler return a clean error. The defaults deliberately raise the previous values (server 30s, entity client 25s) so large inline-attachment uploads are not cut off, matching the customer-portal backend.
 
 | Variable | Default | Description |
 |---|---|---|
 | `REST_READ_TIMEOUT` | `60s` | Main REST server read timeout |
 | `REST_WRITE_TIMEOUT` | `60s` | Main REST server write timeout |
-| `ENTITY_SERVICE_TIMEOUT` | `55s` | Per-request timeout of the customer entity service client |
+| `ENTITY_SERVICE_TIMEOUT` | `60s` | Per-request timeout of the customer entity service client |
 
 ### Engineering entity service (not yet wired in)
 
