@@ -14,6 +14,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//go:build ignore
+
+// Excluded from every normal build on purpose. Choreo's Go buildpack builds
+// entity-service only when `go list ./...` finds exactly one main package
+// (cmd/api); a second one under cmd/ broke the build (#2393). Build this local
+// test tool by its path instead:
+//
+//	go build -o /tmp/publish-incident ./internal/tools/publishincident/main.go
+
 // Command publish-incident puts one incident.created onto the event topic,
 // exactly as this service would.
 //

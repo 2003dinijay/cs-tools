@@ -92,6 +92,9 @@ func (f *fakeUserRepoForEscalationService) CreateUser(context.Context, domain.Cr
 func (f *fakeUserRepoForEscalationService) UpdateUserTimeZone(context.Context, string, string) (time.Time, error) {
 	panic("fakeUserRepoForEscalationService.UpdateUserTimeZone: not expected to be called by these tests")
 }
+func (f *fakeUserRepoForEscalationService) GetUsersByIDs(context.Context, []string) ([]domain.User, error) {
+	panic("fakeUserRepoForEscalationService.GetUsersByIDs: not expected to be called by these tests")
+}
 
 // GetUsersByIDs returns empty, matching stubUserRepo's: no test here
 // exercises it, it only completes repository.UserRepository.

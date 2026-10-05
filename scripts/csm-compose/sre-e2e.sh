@@ -56,7 +56,7 @@ last_incident() { [[ -s "$STATE" ]] && cat "$STATE" || { echo "no incident yet: 
 build_publisher() {
   local arch
   arch="$(docker compose exec -T entity-service uname -m </dev/null | tr -d '\r' | sed 's/aarch64/arm64/;s/x86_64/amd64/')"
-  ( cd entity-service && GOOS=linux GOARCH="$arch" go build -o "${TMPDIR:-/tmp}/publish-incident" ./cmd/publish-incident )
+  ( cd entity-service && GOOS=linux GOARCH="$arch" go build -o "${TMPDIR:-/tmp}/publish-incident" ./internal/tools/publishincident/main.go )
   docker compose cp "${TMPDIR:-/tmp}/publish-incident" entity-service:/tmp/publish-incident >/dev/null
 }
 
