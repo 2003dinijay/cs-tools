@@ -787,6 +787,14 @@ type SalesforceContactUpsertResult struct {
 	IsAccountAdmin bool
 }
 
+// AffectedUser names a user a write changed, so the caller can drop that
+// user's cached profile once the write has committed. Either field may be
+// empty when the write could not resolve it.
+type AffectedUser struct {
+	ID    string
+	Email string
+}
+
 // MembershipWriteTarget is the project (and its account) a portal membership
 // write lands on, read inside the write's own transaction before the
 // Salesforce half runs. The Salesforce ids are what the Salesforce calls need;
