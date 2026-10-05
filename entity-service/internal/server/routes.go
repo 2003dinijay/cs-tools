@@ -630,6 +630,31 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	deploymentHandler := handler.NewDeploymentHandler(activeDeploymentSvc)
 
+	// KB features are Postgres-only, like event_publish_failures above --
+	// db may be nil under DATA_SOURCE=servicenow, and a nil pool panics on
+	// first query rather than at construction (CodeRabbit finding). Gate
+	// the whole chain on it: nil handlers mean the KB routes below are
+	// never registered when there's no database to serve them.
+	var kbArticleHandler *handler.KBArticleHandler
+	var kbManagerUserHandler *handler.KBManagerUserHandler
+	var kbManagerGroupHandler *handler.KBManagerGroupHandler
+	var knowledgeBaseHandler *handler.KnowledgeBaseHandler
+	if db != nil {
+		kbArticleRepo := repository.NewKBArticleRepository(db)
+		kbArticleSvc := service.NewKBArticleService(kbArticleRepo, eventPublisher)
+		kbArticleHandler = handler.NewKBArticleHandler(kbArticleSvc)
+		kbManagerUserRepo := repository.NewKBManagerUserRepository(db)
+		kbManagerUserSvc := service.NewKBManagerUserService(kbManagerUserRepo)
+		kbManagerUserHandler = handler.NewKBManagerUserHandler(kbManagerUserSvc)
+		kbManagerGroupRepo := repository.NewKBManagerGroupRepository(db)
+		kbManagerGroupSvc := service.NewKBManagerGroupService(kbManagerGroupRepo)
+		kbManagerGroupHandler = handler.NewKBManagerGroupHandler(kbManagerGroupSvc)
+
+		knowledgeBaseRepo := repository.NewKnowledgeBaseRepository(db)
+		knowledgeBaseSvc := service.NewKnowledgeBaseService(knowledgeBaseRepo)
+		knowledgeBaseHandler = handler.NewKnowledgeBaseHandler(knowledgeBaseSvc)
+	}
+
 	deployedProductRepo := repository.NewDeployedProductRepository(repository.NewScoped(db))
 	var activeDeployedProductSvc service.DeployedProductService
 	switch cfg.DataSource {
@@ -746,6 +771,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// registration with a foreign-key violation).
 		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, nil)
 		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo, snWritebackDispatcher, snCaseMirrorSvc, slaEngineSvc, cfg.CSEngineerRole)
+		// CreateCase rejects a case/SR whose deployed product's category
+		// doesn't satisfy its project type's own Default Case/SR Creation
+		// Product Category allow-list — see
+		// caseService.validateDeployedProductCategoryForType's own doc
+		// comment. Wired here (and in the plain-Postgres default branch
+		// below), not for DataSourceServiceNow: that mode's CreateCase never
+		// reaches this service's Postgres data at all.
+		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
 		// Case ATTACHMENTS: file bytes still live ONLY in ServiceNow in this
 		// mode (SFTPGo, the CSM-native/Postgres storage backend, is never
 		// used here) — but metadata is now ALSO written into and read from
@@ -777,6 +810,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		caseAttachmentOverrideSvc = service.NewCaseAttachmentDualWriteService(activeCaseSvc, snCaseMirrorSvc, snWritebackDispatcher)
 	default:
 		activeCaseSvc = service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo)
+		// See the matching comment in the DataSourcePostgresServiceNowDualWrite
+		// case above.
+		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MTrustedActorEmails)
 	if db != nil {
@@ -990,7 +1026,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// worker pool plus one sn_writeback_failures repository, nothing
 		// case-specific about it, so a second instance would only mean a
 		// second, redundant worker pool.
-		snIncidentMirrorSvc := service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, nil)
+		snIncidentMirrorSvc := service.NewServiceNowIncidentMirrorService(serviceNowIntegrationServiceClient)
 		activeIncidentSvc = service.NewIncidentServiceWithSNMirror(incidentRepo, userRepo, snIncidentMirrorSvc, eventPublisher, snWritebackDispatcher)
 	default:
 		// DATA_SOURCE=postgres: the platform creates incidents itself, so it publishes incident.created
@@ -1356,7 +1392,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("GET /users/me", userHandler.GetMe)
 		mux.HandleFunc("PATCH /users/me", userHandler.PatchMe)
 		mux.HandleFunc("POST /users/search", userHandler.SearchUsers)
-		mux.HandleFunc("POST /users", userHandler.CreateUser)
+	mux.HandleFunc("POST /users/by-ids", userHandler.GetUsersByIDs)
+	mux.HandleFunc("POST /users", userHandler.CreateUser)
 	}
 	if snAccountHandler != nil {
 		mux.HandleFunc("GET /accounts/{id}", internalOnly(accessSvc, snAccountHandler.GetAccount))
@@ -1468,6 +1505,29 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// (and CaseHandler.SearchTagsQuery) once they are all on the POST.
 	//nolint:staticcheck // SA1019: intentional one-release compatibility route; remove with the handler.
 	mux.HandleFunc("GET /tags/search", caseHandler.SearchTagsQuery)
+	// KB routes are only registered when db != nil (see the KB handler
+	// construction above) -- matches the eventPublishFailureHandler
+	// pattern below: referencing a method on a nil handler here would
+	// panic at server startup, before any request ever arrives.
+	if kbArticleHandler != nil {
+		mux.HandleFunc("POST /kb-articles", kbArticleHandler.CreateKBArticle)
+		mux.HandleFunc("GET /kb-articles/{id}", kbArticleHandler.GetKBArticle)
+		mux.HandleFunc("POST /kb-articles/search", kbArticleHandler.SearchKBArticles)
+		mux.HandleFunc("PATCH /kb-articles/{id}/state", kbArticleHandler.PatchKBArticleState)
+		mux.HandleFunc("POST /kb-manager-users/search", kbManagerUserHandler.SearchKBManagerUsers)
+		mux.HandleFunc("POST /kb-manager-users", kbManagerUserHandler.CreateKBManagerUser)
+		mux.HandleFunc("DELETE /kb-manager-users", kbManagerUserHandler.DeleteKBManagerUser)
+		mux.HandleFunc("POST /kb-manager-groups/search", kbManagerGroupHandler.SearchKBManagerGroups)
+		mux.HandleFunc("POST /kb-manager-groups", kbManagerGroupHandler.CreateKBManagerGroup)
+		mux.HandleFunc("DELETE /kb-manager-groups", kbManagerGroupHandler.DeleteKBManagerGroup)
+		mux.HandleFunc("PATCH /kb-articles/{id}", kbArticleHandler.PatchKBArticleContent)
+		mux.HandleFunc("GET /knowledge-bases", knowledgeBaseHandler.ListKnowledgeBases)
+		mux.HandleFunc("POST /knowledge-bases", knowledgeBaseHandler.CreateKnowledgeBase)
+		mux.HandleFunc("PATCH /knowledge-bases/{id}", knowledgeBaseHandler.UpdateKnowledgeBaseName)
+		mux.HandleFunc("PATCH /knowledge-bases/{id}/active", knowledgeBaseHandler.SetKnowledgeBaseActive)
+		mux.HandleFunc("DELETE /kb-articles/{id}", kbArticleHandler.DeleteKBArticle)
+		mux.HandleFunc("GET /kb-articles/{id}/history", kbArticleHandler.ListKBArticleHistory)
+	}
 
 	mux.HandleFunc("POST /call-requests", callRequestHandler.CreateCallRequest)
 	mux.HandleFunc("POST /call-requests/search", callRequestHandler.SearchCallRequests)

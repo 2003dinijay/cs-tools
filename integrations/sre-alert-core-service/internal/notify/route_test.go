@@ -29,7 +29,7 @@ func TestCreateRequest_CarriesAssignmentGroupAndContactType(t *testing.T) {
 	n := &Notifier{callerID: "caller"}
 	inc := model.Incident{Fingerprint: "fp", Service: "svc", Source: "Azure", Category: "availability", Impact: "HIGH", Urgency: "HIGH"}
 
-	req := n.createRequest(inc, resolvedService{id: "svc-id", groupID: "grp-apollo"}, "[fp:tag]")
+	req := n.createRequest(inc, resolvedService{id: "svc-id", groupID: "grp-apollo"}, "[fp:tag]", "Incident auto-created from Alert: ALT1")
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -54,7 +54,7 @@ func TestCreateRequest_CarriesAssignmentGroupAndContactType(t *testing.T) {
 // and a service with no support group sends no assignmentGroupId rather than an empty string.
 func TestCreateRequest_OmitsWhatIsUnknown(t *testing.T) {
 	n := &Notifier{callerID: "caller"}
-	req := n.createRequest(model.Incident{Fingerprint: "fp", Source: "AWS"}, resolvedService{id: "svc-id"}, "[fp:tag]")
+	req := n.createRequest(model.Incident{Fingerprint: "fp", Source: "AWS"}, resolvedService{id: "svc-id"}, "[fp:tag]", "")
 
 	body, err := json.Marshal(req)
 	if err != nil {

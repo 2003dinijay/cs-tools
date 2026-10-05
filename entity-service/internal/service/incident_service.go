@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -448,6 +449,10 @@ func (s *incidentService) SearchIncidentActivities(ctx context.Context, req doma
 // delegates to createIncidentSNFirst -- see that method's own doc comment.
 // Otherwise it is createIncidentPortal, the native Postgres create.
 func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
+	var err error
+	if req, err = s.withAssignmentGroupFromService(ctx, req); err != nil {
+		return domain.CreateIncidentResponse{}, err
+	}
 	if s.snMirror != nil {
 		// ConfigurationItemID has no backing column on this data source at
 		// all (unlike Subcategory/AssignedEngineerID/WatchList/
@@ -470,6 +475,34 @@ func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateI
 		return s.createIncidentSNFirst(ctx, req)
 	}
 	return s.createIncidentPortal(ctx, req)
+}
+
+// withAssignmentGroupFromService sets an incident's assignment group to its
+// service's support group.
+//
+// *** THE ONLY PLACE THE GROUP IS CHOSEN. *** The create request has no
+// assignmentGroupId (see domain.CreateIncidentRequest.AssignmentGroupID), so
+// the portal, the microapp, alert-born incidents from sre-alert-core-service
+// and any M2M client all get the same group from one call, read live from the
+// service as ServiceNow's alert business rule does. Done before either create
+// path, so in dual-write mode ServiceNow and Postgres get the same group.
+//
+// A service with no support group leaves the incident unassigned. An invalid
+// service id is left for request validation to reject.
+func (s *incidentService) withAssignmentGroupFromService(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentRequest, error) {
+	req.AssignmentGroupID = nil
+	serviceID := strings.TrimSpace(req.ServiceID)
+	if serviceID == "" || validateUUIDs("serviceId", []string{serviceID}) != nil || s.repo == nil {
+		return req, nil
+	}
+	group, err := s.repo.SupportGroupOfService(ctx, serviceID)
+	if err != nil {
+		return req, err
+	}
+	if group != "" {
+		req.AssignmentGroupID = &group
+	}
+	return req, nil
 }
 
 // createIncidentPortal implements CreateIncident's plain-Postgres path

@@ -37,7 +37,6 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"golang.org/x/sync/singleflight"
 
-	"alert-core-service/internal/apierror"
 	"alert-core-service/internal/csm"
 	"alert-core-service/internal/model"
 )
@@ -59,7 +58,7 @@ type Notifier struct {
 	fallbackChatWebhookURLs []string
 	maxAttempts             int
 	retryBaseDelay          time.Duration
-	// chatThreadingEnabled threads every Chat fallback message for the same incident's fingerprint into one Google Chat thread, instead of a new top-level message each time.
+	// chatThreadingEnabled threads each incident's fallback card and Duplicate/OK replies into one Google Chat thread keyed by chatThreadKey.
 	chatThreadingEnabled bool
 }
 
@@ -79,10 +78,11 @@ type Config struct {
 	MaxAttempts     int
 	RetryBaseDelay  time.Duration
 	HTTPTimeout     time.Duration
-	// ChatThreadingEnabled threads Chat fallback messages by incident fingerprint; see Notifier.chatThreadingEnabled.
+	// ChatThreadingEnabled threads Chat fallback messages per incident; see Notifier.chatThreadingEnabled.
 	ChatThreadingEnabled bool
 }
 
+// New wires the notifier; a nil csm client disables CSM delivery so incidents only reach Chat.
 func New(logger *slog.Logger, csm *csm.Client, cfg Config) *Notifier {
 	n := &Notifier{
 		logger:                   logger,
@@ -115,13 +115,18 @@ func splitURLs(raw string) []string {
 	return urls
 }
 
+// CSMEnabled reports whether a CSM client is configured.
+func (n *Notifier) CSMEnabled() bool {
+	return n.csm != nil
+}
+
 // DedupTag includes FirstSeen for uniqueness; millisecond precision ensures same-second recurrences get distinct tags.
 func DedupTag(fingerprint string, firstSeen time.Time) string {
 	return fmt.Sprintf("[fp:%s:%d]", fingerprint[:12], firstSeen.UnixMilli())
 }
 
 // NotifyCSM returns permanent=true for non-retryable rejections (non-429 4xx). CSMAttempts >= 1 already counts current attempt; only first attempts fail open on search errors.
-func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident) (incidentID, incidentNumber string, ok bool, permanent bool) {
+func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident, creationNote string) (incidentID, incidentNumber string, ok bool, permanent bool) {
 	tag := DedupTag(inc.Fingerprint, inc.FirstSeen)
 	if id, number, found, err := n.csm.SearchIncidentByCorrelationID(ctx, tag); err != nil {
 		if inc.CSMAttempts > 1 {
@@ -144,11 +149,11 @@ func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident) (incidentI
 	svc.groupID, routedBy = n.assignmentGroup(inc, svc.groupID)
 	n.logger.Info("assignment group chosen", "incident_number", inc.IncidentNumber, "by", routedBy, "assignment_group_id", svc.groupID)
 
-	req := n.createRequest(inc, svc, tag)
+	req := n.createRequest(inc, svc, tag, creationNote)
 
 	res, err := n.createIncidentWithRetry(ctx, tag, req)
 	if err != nil {
-		var apiErr *apierror.Error
+		var apiErr *csm.Error
 		perm := errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != http.StatusTooManyRequests
 		n.logger.Error("csm create incident failed", "incident_number", inc.IncidentNumber, "permanent", perm, "error", err)
 		return "", "", false, perm
@@ -198,7 +203,7 @@ func (n *Notifier) createIncidentWithRetry(ctx context.Context, tag string, req 
 			result = res
 			return nil
 		}
-		var apiErr *apierror.Error
+		var apiErr *csm.Error
 		if errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != http.StatusTooManyRequests {
 			return backoff.Permanent(err)
 		}
@@ -218,7 +223,7 @@ type resolvedService struct {
 
 // createRequest builds the POST /incidents body. The assignment group and contact type are what put an
 // alert-born incident on the SRE escalation ladder: without either, it matches no SRE routing rule.
-func (n *Notifier) createRequest(inc model.Incident, svc resolvedService, tag string) csm.CreateIncidentRequest {
+func (n *Notifier) createRequest(inc model.Incident, svc resolvedService, tag, creationNote string) csm.CreateIncidentRequest {
 	req := csm.CreateIncidentRequest{
 		CallerID:      n.callerID,
 		Category:      csmCategory(inc.Category),
@@ -228,8 +233,8 @@ func (n *Notifier) createRequest(inc model.Incident, svc resolvedService, tag st
 		Subject:       incidentSubject(inc),
 		CorrelationID: &tag,
 	}
-	if inc.Description != "" {
-		req.WorkNotes = &inc.Description
+	if creationNote != "" {
+		req.WorkNotes = &creationNote
 	}
 	if svc.groupID != "" {
 		group := svc.groupID
@@ -426,9 +431,9 @@ func (n *Notifier) NotifyChat(ctx context.Context, inc model.Incident) (ok bool)
 	return n.postCardToChat(ctx, inc.IncidentNumber, fallbackGoogleChatCard(inc, n.chatThreadingEnabled))
 }
 
-// NotifyChatAnnotation threads a Duplicate/OK annotation into the incident's existing Chat thread, rendering kind and note so it reads as an update rather than a repeat of the original "Priority Incident Reported" card.
-func (n *Notifier) NotifyChatAnnotation(ctx context.Context, inc model.Incident, kind, note string) (ok bool) {
-	return n.postCardToChat(ctx, inc.IncidentNumber, annotationGoogleChatCard(inc, kind, note, n.chatThreadingEnabled))
+// NotifyChatAnnotation threads a Duplicate/OK digest into the incident's Chat thread, so it reads as an update rather than a repeat of the "Priority Incident Reported" card.
+func (n *Notifier) NotifyChatAnnotation(ctx context.Context, inc model.Incident, text string) (ok bool) {
+	return n.postCardToChat(ctx, inc.IncidentNumber, annotationGoogleChatCard(inc, text, n.chatThreadingEnabled))
 }
 
 // postCardToChat posts card to every configured webhook, threading it when enabled, and returns true only if every target confirms, or if none are configured.
@@ -563,7 +568,12 @@ func priorityLabel(severity int) string {
 	return fmt.Sprintf("P%d - %s", severity, severityLabel(severity))
 }
 
-// fallbackGoogleChatCard is titled FALLBACK since this path has no team-specific routing info. When threaded is true, the card carries inc.Fingerprint as the Chat thread key, so every message for this alert (across incident generations, and Duplicate/OK annotations) lands in one thread instead of a new top-level message each time.
+// chatThreadKey is unique per incident generation, so a recurrence after the dedup window starts a new thread while its Duplicate/OK replies join it.
+func chatThreadKey(inc model.Incident) string {
+	return fmt.Sprintf("%s-%d", inc.Fingerprint, inc.FirstSeen.UnixMilli())
+}
+
+// fallbackGoogleChatCard is titled FALLBACK since this path has no team-specific routing info; when threaded, the card carries chatThreadKey so the incident's annotations reply into it.
 func fallbackGoogleChatCard(inc model.Incident, threaded bool) map[string]any {
 	word := severityLabel(inc.Severity)
 	subtitle := "#" + inc.IncidentNumber + " | " + inc.Service
@@ -609,13 +619,13 @@ func fallbackGoogleChatCard(inc model.Incident, threaded bool) map[string]any {
 		},
 	}
 	if threaded {
-		card["thread"] = map[string]any{"threadKey": inc.Fingerprint}
+		card["thread"] = map[string]any{"threadKey": chatThreadKey(inc)}
 	}
 	return card
 }
 
-// annotationGoogleChatCard renders a Duplicate/OK annotation as a reply distinct from fallbackGoogleChatCard's "Priority Incident Reported" header, so a threaded Duplicate or OK doesn't look like a brand new page. note is model.BuildChatAnnotationText's HTML output, already naming the kind in bold.
-func annotationGoogleChatCard(inc model.Incident, _, note string, threaded bool) map[string]any {
+// annotationGoogleChatCard renders a Duplicate/OK digest as a reply without fallbackGoogleChatCard's header, so it doesn't look like a new page; note is model.BuildChatDigest's HTML.
+func annotationGoogleChatCard(inc model.Incident, note string, threaded bool) map[string]any {
 	card := map[string]any{
 		"cardsV2": []map[string]any{
 			{
@@ -633,7 +643,7 @@ func annotationGoogleChatCard(inc model.Incident, _, note string, threaded bool)
 		},
 	}
 	if threaded {
-		card["thread"] = map[string]any{"threadKey": inc.Fingerprint}
+		card["thread"] = map[string]any{"threadKey": chatThreadKey(inc)}
 	}
 	return card
 }

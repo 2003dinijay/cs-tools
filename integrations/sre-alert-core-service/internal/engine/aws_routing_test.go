@@ -129,11 +129,12 @@ func TestAWSAlarm_CreatesTheIncidentInItsAssignmentGroup(t *testing.T) {
 			if err := json.Unmarshal([]byte(awsStoredAlerts[tc.alert]), &alert); err != nil {
 				t.Fatal(err)
 			}
-			e := New(testLogger(), &fakeAlerts{}, newFakeIncidents(), n, model.Defaults{}, 3, 0, time.Hour,
-				CSMRetryConfig{BaseDelay: time.Hour, Multiplier: 3, MaxDelay: time.Hour}, true)
-			if got := e.Handle(context.Background(), "ALT000000001", alert); got != Processed {
-				t.Fatalf("Handle = %v, want Processed", got)
+			e := New(testLogger(), newFakeIncidents(), n, testConfig())
+			items := []Item{{ID: "ALT000000001", Alert: e.Normalize(alert)}}
+			if err := e.HandleGroup(context.Background(), fpOf(items[0]), items); err != nil {
+				t.Fatalf("HandleGroup: %v", err)
 			}
+			e.DeliverDue(context.Background())
 
 			if len(fake.creates) != 1 {
 				t.Fatalf("%d incident creates reached CSM, want 1", len(fake.creates))
