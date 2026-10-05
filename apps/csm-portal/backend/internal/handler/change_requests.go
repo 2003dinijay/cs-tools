@@ -25,6 +25,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
@@ -97,6 +98,15 @@ func (h *ChangeRequestHandler) CreateChangeRequest(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// The change type decides the whole approval flow (Standard: none; Normal:
+	// peer then CAB; Emergency: ECAB only), so a create without one of the
+	// three is refused here with a message the form can show, rather than
+	// forwarded to be rejected with a generic one.
+	if msg := validateChangeRequestCreateType(body); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
 	result, err := h.entity.CreateChangeRequest(r.Context(), body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity CreateChangeRequest failed", "userID", user.UserID, "err", err)
@@ -105,6 +115,52 @@ func (h *ChangeRequestHandler) CreateChangeRequest(w http.ResponseWriter, r *htt
 	}
 
 	writeJSON(w, http.StatusCreated, result)
+}
+
+// changeRequestCreatableTypes are the only types a change request may be
+// created with (the entity service enforces the same set).
+var changeRequestCreatableTypes = []string{"standard", "normal", "emergency"}
+
+// validateChangeRequestCreateType returns a user-facing message when body does
+// not carry a valid create-time "type" (standard, normal or emergency), or ""
+// when it does. A body that is not a JSON object is left for the upstream to
+// reject.
+func validateChangeRequestCreateType(body []byte) string {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	const required = "type is required: a change request must be one of standard, normal or emergency"
+	raw, ok := payload["type"]
+	if !ok {
+		return required
+	}
+	var typ string
+	if err := json.Unmarshal(raw, &typ); err != nil || typ == "" {
+		return required
+	}
+	for _, allowed := range changeRequestCreatableTypes {
+		if typ == allowed {
+			return ""
+		}
+	}
+	return "type is not allowed: a change request must be one of standard, normal or emergency"
+}
+
+// mapApprovalDecisionError is mapUpstreamErrorGeneric, except a 403 that
+// carries the entity service's own reason is shown to the caller. A refusal to
+// decide ("the creator of a change request cannot approve it", "members of an
+// SRE team cannot give peer approval") is only useful if the approver can read
+// why; every other failure keeps the generic mapping.
+func mapApprovalDecisionError(w http.ResponseWriter, err error, fallbackMsg string) {
+	var apiErr *apierror.Error
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
+		if msg := upstreamErrorMessageStrict(apiErr.Body, ""); msg != "" {
+			writeError(w, http.StatusForbidden, msg)
+			return
+		}
+	}
+	mapUpstreamErrorGeneric(w, err, fallbackMsg)
 }
 
 // PatchChangeRequest handles PATCH /change-requests/{id}.
@@ -349,7 +405,7 @@ func (h *ChangeRequestHandler) DecideChangeRequestApproval(w http.ResponseWriter
 	result, err := h.entity.DecideChangeRequestApproval(r.Context(), id, body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity DecideChangeRequestApproval failed", "userID", user.UserID, "id", id, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to submit change request approval decision.")
+		mapApprovalDecisionError(w, err, "Failed to submit change request approval decision.")
 		return
 	}
 

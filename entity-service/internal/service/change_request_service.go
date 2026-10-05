@@ -332,7 +332,12 @@ func (s *changeRequestService) createChangeRequestPortal(ctx context.Context, re
 	// Same type check createChangeRequestSNFirst runs before calling
 	// ServiceNow -- deterministic, no I/O, so there's no reason to defer it
 	// to the repository's own identical check.
-	if req.Type != nil && !repository.ChangeRequestTypeSupported(*req.Type) {
+	// The type is mandatory and must be standard/normal/emergency: it decides
+	// the whole approval flow (see repository.ValidateCreateChangeRequestType).
+	if err := repository.ValidateCreateChangeRequestType(req.Type); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
+	if !repository.ChangeRequestTypeSupported(*req.Type) {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
 	}
 	return s.repo.CreateChangeRequest(ctx, req, createdBy)
@@ -365,7 +370,12 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 	// defer it to CreateChangeRequestFromServiceNow's own check (which runs
 	// only after ServiceNow already accepted the create, at which point
 	// ServiceNow would keep an orphan with no Postgres row).
-	if req.Type != nil && !repository.ChangeRequestTypeSupported(*req.Type) {
+	// The type is mandatory and must be standard/normal/emergency: it decides
+	// the whole approval flow (see repository.ValidateCreateChangeRequestType).
+	if err := repository.ValidateCreateChangeRequestType(req.Type); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
+	if !repository.ChangeRequestTypeSupported(*req.Type) {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
 	}
 	snResp, err := s.snMirror.CreateChangeRequest(ctx, req)

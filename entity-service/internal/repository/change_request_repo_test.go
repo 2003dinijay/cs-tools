@@ -17,9 +17,12 @@
 package repository
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
@@ -458,12 +461,12 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 	}{
 		{string(domain.ChangeRequestStateNew), []string{"assess", "canceled"}},
 		{string(domain.ChangeRequestStateAssess), []string{"authorize", "canceled"}},
-		// Authorize and Review each have two confirmed forward moves (see
-		// changeRequestForwardNextStates' own doc comment) -- checking
-		// several real records directly disproved the "one common case"
-		// assumption an earlier revision of this map made.
-		{string(domain.ChangeRequestStateAuthorize), []string{"scheduled", "customer_approval", "canceled"}},
-		{string(domain.ChangeRequestStateCustomerApproval), []string{"scheduled", "canceled"}},
+		// Authorize is an approval wait (CAB/ECAB): it offers no forward move
+		// at all, only Cancel. "scheduled" is never offered -- CAB/ECAB
+		// approval schedules the change automatically, there is no Schedule
+		// action.
+		{string(domain.ChangeRequestStateAuthorize), []string{"canceled"}},
+		{string(domain.ChangeRequestStateCustomerApproval), []string{"canceled"}},
 		{string(domain.ChangeRequestStateScheduled), []string{"implement", "canceled"}},
 		{string(domain.ChangeRequestStateImplement), []string{"review", "canceled"}},
 		{string(domain.ChangeRequestStateReview), []string{"closed", "customer_review", "canceled"}},
@@ -482,6 +485,17 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("scheduled is never offered as a manual action from any state", func(t *testing.T) {
+		for st := range changeRequestForwardNextStates {
+			s := string(st)
+			for _, next := range legalChangeRequestNextStates(&s) {
+				if next == string(domain.ChangeRequestStateScheduled) {
+					t.Errorf("legalChangeRequestNextStates(%q) offers %q; Scheduled must only be reached automatically", s, next)
+				}
+			}
+		}
+	})
 
 	t.Run("terminal states have no legal next state", func(t *testing.T) {
 		for _, terminal := range []domain.ChangeRequestState{
@@ -508,4 +522,100 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 			t.Errorf("legalChangeRequestNextStates(%q) = %v, want nil", s, got)
 		}
 	})
+}
+
+// TestChangeRequestFlowForModel pins what Request Approval does per change
+// type: Normal -> Assess + Peer Approval stage, Emergency -> Authorize + ECAB
+// stage only (no peer approval), Standard -> Scheduled with no stage at all.
+// A NULL/legacy type follows the Normal flow.
+func TestChangeRequestFlowForModel(t *testing.T) {
+	tests := []struct {
+		model     string
+		wantState domain.ChangeRequestState
+		wantStage string // "" = no approval stage
+	}{
+		{"NORMAL", domain.ChangeRequestStateAssess, "Peer Approval"},
+		{"EMERGENCY", domain.ChangeRequestStateAuthorize, "ECAB Approval"},
+		{"STANDARD", domain.ChangeRequestStateScheduled, ""},
+		{"", domain.ChangeRequestStateAssess, "Peer Approval"},
+		{"AZURE", domain.ChangeRequestStateAssess, "Peer Approval"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.model, func(t *testing.T) {
+			got := changeRequestFlowForModel(tc.model)
+			if got.requestState != tc.wantState {
+				t.Fatalf("requestState = %q, want %q", got.requestState, tc.wantState)
+			}
+			if tc.wantStage == "" {
+				if got.checkpoint != nil {
+					t.Fatalf("checkpoint = %+v, want none (no approval)", got.checkpoint)
+				}
+				return
+			}
+			if got.checkpoint == nil || got.checkpoint.Label != tc.wantStage {
+				t.Fatalf("checkpoint = %+v, want label %q", got.checkpoint, tc.wantStage)
+			}
+		})
+	}
+	// Emergency has no peer stage, so its ECAB stage sits first; Normal's CAB
+	// stage sits right after the peer stage.
+	if changeRequestECABCheckpoint.Position != 0 || changeRequestPeerCheckpoint.Position != 0 || changeRequestCABCheckpoint.Position != 1 {
+		t.Fatalf("checkpoint positions: peer=%d cab=%d ecab=%d, want 0/1/0",
+			changeRequestPeerCheckpoint.Position, changeRequestCABCheckpoint.Position, changeRequestECABCheckpoint.Position)
+	}
+	// CAB and ECAB are separate groups.
+	if changeRequestCABCheckpoint.GroupName == changeRequestECABCheckpoint.GroupName {
+		t.Fatal("CAB and ECAB checkpoints share a group; they must be separate")
+	}
+}
+
+func TestClassifyApprovalStage(t *testing.T) {
+	str := func(s string) *string { return &s }
+	tests := []struct {
+		label *string
+		pos   int
+		want  approvalStageKind
+	}{
+		{str("Peer Approval"), 0, stageKindPeer},
+		{str("CAB Approval"), 1, stageKindCAB},
+		{str("ECAB Approval"), 0, stageKindECAB},
+		{str("Review"), 2, stageKindReview},
+		// Stages written before the CAB flow keep working.
+		{str("Assess"), 0, stageKindPeer},
+		{str("Authorize"), 1, stageKindCAB},
+		// No label: the historical positional convention.
+		{nil, 0, stageKindPeer},
+		{nil, 1, stageKindCAB},
+		{nil, 2, stageKindOther},
+		{str("something else"), 0, stageKindOther},
+	}
+	for _, tc := range tests {
+		if got := classifyApprovalStage(tc.label, tc.pos); got != tc.want {
+			t.Errorf("classifyApprovalStage(%v, %d) = %v, want %v", tc.label, tc.pos, got, tc.want)
+		}
+	}
+}
+
+// TestValidateCreateChangeRequestType: type is mandatory on create and must be
+// Standard, Normal or Emergency.
+func TestValidateCreateChangeRequestType(t *testing.T) {
+	typ := func(s string) *domain.ChangeRequestType { v := domain.ChangeRequestType(s); return &v }
+	for _, ok := range []string{"standard", "normal", "emergency"} {
+		if err := ValidateCreateChangeRequestType(typ(ok)); err != nil {
+			t.Errorf("ValidateCreateChangeRequestType(%q) = %v, want nil", ok, err)
+		}
+	}
+	for name, bad := range map[string]*domain.ChangeRequestType{
+		"missing": nil, "empty": typ(""), "azure": typ("azure"), "model": typ("model"), "bogus": typ("bogus"),
+	} {
+		var ve *apierror.ValidationError
+		if err := ValidateCreateChangeRequestType(bad); !errors.As(err, &ve) {
+			t.Errorf("ValidateCreateChangeRequestType(%s) = %v, want *apierror.ValidationError", name, err)
+		}
+	}
+	var ve *apierror.ValidationError
+	err := ValidateCreateChangeRequestType(nil)
+	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, "standard, normal or emergency") {
+		t.Errorf("missing-type message = %v, want it to list standard, normal or emergency", err)
+	}
 }

@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -107,7 +108,57 @@ func (s *stubMirrorChangeRequestService) PatchChangeRequest(ctx context.Context,
 }
 
 func validCreateChangeRequestRequest() domain.CreateChangeRequestRequest {
-	return domain.CreateChangeRequestRequest{Subject: "subject"}
+	normal := domain.ChangeRequestTypeNormal
+	return domain.CreateChangeRequestRequest{Subject: "subject", Type: &normal}
+}
+
+// TestChangeRequestService_CreateChangeRequest_RequiresType: a change request
+// must be created as standard, normal or emergency -- the type decides its
+// whole approval flow. A missing or other type is refused before ServiceNow
+// (dual-write) or Postgres (plain) is touched.
+func TestChangeRequestService_CreateChangeRequest_RequiresType(t *testing.T) {
+	azure := domain.ChangeRequestTypeAzure
+	empty := domain.ChangeRequestType("")
+	cases := map[string]*domain.ChangeRequestType{"missing": nil, "empty": &empty, "azure": &azure}
+	for name, typ := range cases {
+		t.Run("dual-write/"+name, func(t *testing.T) {
+			mirror := &stubMirrorChangeRequestService{
+				createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
+					t.Fatal("ServiceNow must never be called without a valid type")
+					return domain.CreateChangeRequestResponse{}, nil
+				},
+			}
+			svc := NewChangeRequestServiceWithSNMirror(&stubChangeRequestRepo{}, stubUserRepo{}, mirror)
+			_, err := svc.CreateChangeRequest(context.Background(), domain.CreateChangeRequestRequest{Subject: "subject", Type: typ})
+			var ve *apierror.ValidationError
+			if !asValidationError(err, &ve) {
+				t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+			}
+			if !strings.Contains(ve.Msg, "standard, normal or emergency") {
+				t.Errorf("message %q should name the three allowed types", ve.Msg)
+			}
+		})
+		t.Run("postgres/"+name, func(t *testing.T) {
+			svc := NewChangeRequestService(&stubChangeRequestRepo{}, stubUserRepo{})
+			_, err := svc.CreateChangeRequest(contextWithUserIDToken(fakeJWTWithEmail(t, "a@example.com")), domain.CreateChangeRequestRequest{Subject: "subject", Type: typ})
+			var ve *apierror.ValidationError
+			if !asValidationError(err, &ve) {
+				t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+			}
+		})
+	}
+	for _, ok := range domain.ChangeRequestCreatableTypes {
+		ok := ok
+		t.Run("accepts/"+string(ok), func(t *testing.T) {
+			repo := &stubChangeRequestRepo{createChangeRequest: func(_ context.Context, req domain.CreateChangeRequestRequest, _ string) (domain.CreateChangeRequestResponse, error) {
+				return domain.CreateChangeRequestResponse{Message: "ok"}, nil
+			}}
+			svc := NewChangeRequestService(repo, stubUserRepo{})
+			if _, err := svc.CreateChangeRequest(contextWithUserIDToken(fakeJWTWithEmail(t, "a@example.com")), domain.CreateChangeRequestRequest{Subject: "subject", Type: &ok}); err != nil {
+				t.Fatalf("type %s: %v", ok, err)
+			}
+		})
+	}
 }
 
 // TestChangeRequestService_CreateChangeRequest_SNFailureLeavesPostgresUntouched

@@ -131,7 +131,7 @@ WHERE id IN ('00000000-0000-0000-0000-000000000902', '00000000-0000-0000-0000-00
 -- work items have no wso2_id data"), unlike the case fixture above, whose
 -- type requires it.
 --
--- CR-FIXED-001: NEW, no assignment_group_id at all -- covers "Move to Assess
+-- CR-FIXED-001: NEW, no assignment_group_id at all -- covers "Request Approval
 -- is disabled/blocked with no team assigned" (PatchChangeRequest's compulsory-
 -- team gate, entity-service's own CLAUDE.md).
 INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type, account_id, project_id, opened_by_user_id, assigned_to_id, description) VALUES
@@ -143,7 +143,7 @@ INSERT INTO change_request (id, state, priority, impact, category, risk, change_
 ON CONFLICT (id) DO NOTHING;
 
 -- CR-FIXED-002: NEW, assignment_group_id = the existing "Example Corp ABT"
--- group (901) -- covers "Move to Assess succeeds once a team is assigned, and
+-- group (901) -- covers "Request Approval succeeds once a team is assigned, and
 -- auto-provisions that team's members (jane.doe/john.smith, via the
 -- team_member.group_id UPDATE above) as Assess-stage approvers." No
 -- approval_stage exists yet here on purpose: PatchChangeRequest's own
@@ -228,5 +228,20 @@ ON CONFLICT (id) DO NOTHING;
 -- team_member.group_id UPDATEs earlier in this file.
 UPDATE change_request SET requested_by_user_id = NULL
 WHERE id IN ('00000000-0000-0000-0000-000000001002', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000001004');
+
+-- CAB Approval / ECAB Approval membership (migration 0188 creates the two
+-- groups, empty). A Normal change cannot be sent for approval, and its peer
+-- approval cannot cascade to CAB, unless the CAB group has an eligible
+-- member -- so the two seeded users sit in both groups, which lets the
+-- fixtures above run the full Request Approval -> Peer -> CAB -> Scheduled
+-- (Normal) and Request Approval -> ECAB -> Scheduled (Emergency) flows
+-- locally. team_member.team_id is NOT NULL, so the seeded team (901) fills
+-- it; the membership that counts is group_id.
+INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id) VALUES
+  ('00000000-0000-0000-0000-000000001101', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000001', '00000000-0000-4000-8000-00000000ca01'),
+  ('00000000-0000-0000-0000-000000001102', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-4000-8000-00000000ca01'),
+  ('00000000-0000-0000-0000-000000001103', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000001', '00000000-0000-4000-8000-00000000eca1'),
+  ('00000000-0000-0000-0000-000000001104', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-4000-8000-00000000eca1')
+ON CONFLICT (id) DO NOTHING;
 
 COMMIT;

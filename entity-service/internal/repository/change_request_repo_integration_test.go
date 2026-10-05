@@ -21,7 +21,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -80,25 +82,6 @@ const (
 	// until that residue was cleaned up) -- a dedicated, test-owned group
 	// makes that structurally impossible instead of merely unlikely.
 	changeRequestAssessGateGroupID = "36666666-0000-0000-0000-00000000000a"
-
-	// changeRequestAuthorizeGateTestID is its own id, distinct from every
-	// other test's change request above (including the Assess-gate tests),
-	// so the Authorize-gate/approver-provisioning tests below never race any
-	// of them over the same work_item row.
-	changeRequestAuthorizeGateTestID = "36666666-0000-0000-0000-00000000000b"
-
-	// changeRequestAuthorizeGateMemberUserID{,2} are seeded as team_member
-	// rows against changeRequestAuthorizeGateGroupID (distinct from every
-	// other test's own user ids) to exercise Authorize's auto-provisioned
-	// approvers.
-	changeRequestAuthorizeGateMemberUserID  = "36666666-0000-0000-0000-00000000000c"
-	changeRequestAuthorizeGateMemberUserID2 = "36666666-0000-0000-0000-00000000000d"
-
-	// changeRequestAuthorizeGateGroupID is its own dedicated "group" row,
-	// deliberately not shared with changeRequestAssessGateGroupID or
-	// seededGroupID -- same isolation reasoning as
-	// changeRequestAssessGateGroupID's own doc comment.
-	changeRequestAuthorizeGateGroupID = "36666666-0000-0000-0000-00000000000e"
 
 	// changeRequestReviewGateTestID is its own id, distinct from every other
 	// test's change request above (including the Assess- and Authorize-gate
@@ -226,7 +209,7 @@ func seedChangeRequestForApprovalTest(t *testing.T, pool *repository.Scoped, sta
 	}
 
 	mustExec(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type)
-	          VALUES ($1, now(), now(), 'cr-approval-test', 'cr-approval-test', 'CRAPPRV01', 'approval guard test', 'CHANGE_REQUEST')`,
+	          VALUES ($1, now(), now(), 'cr-approval-test-creator', 'cr-approval-test', 'CRAPPRV01', 'approval guard test', 'CHANGE_REQUEST')`,
 		changeRequestApprovalTestID)
 	mustExec(`INSERT INTO change_request (id, state) VALUES ($1, $2::change_request_state_enum)`,
 		changeRequestApprovalTestID, state)
@@ -345,6 +328,7 @@ func TestChangeRequestIntegration_DecideApprovalCascadesAssessToAuthorize(t *tes
 	repo := repository.NewChangeRequestRepository(scoped)
 	seedApprovalUserForDecisionTest(t, pool)
 	seedChangeRequestForApprovalTest(t, scoped, "ASSESS")
+	seedApprovalGroupMembers(t, scoped, crCABGroupID, crCABMemberUserID1)
 	seedApprovalStageForDecisionTest(t, scoped, changeRequestApprovalApproverUserID)
 
 	if _, err := repo.DecideChangeRequestApproval(sys, changeRequestApprovalTestID,
@@ -359,6 +343,17 @@ func TestChangeRequestIntegration_DecideApprovalCascadesAssessToAuthorize(t *tes
 	}
 	if gotState != "AUTHORIZE" {
 		t.Fatalf("state after approval = %q, want \"AUTHORIZE\"", gotState)
+	}
+
+	// ...and the CAB Approval stage (its own group) is provisioned right away.
+	var cabStages int
+	if scanErr := scoped.QueryRow(sys,
+		`SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1 AND checkpoint_label = 'CAB Approval' AND assignment_group_id = $2::uuid`,
+		changeRequestApprovalTestID, crCABGroupID).Scan(&cabStages); scanErr != nil {
+		t.Fatalf("count CAB stages: %v", scanErr)
+	}
+	if cabStages != 1 {
+		t.Fatalf("CAB Approval stages after peer approval = %d, want 1", cabStages)
 	}
 }
 
@@ -468,6 +463,7 @@ func TestChangeRequestIntegration_DecideApprovalCancelsSiblingApprovers(t *testi
 	seedApprovalUserForDecisionTest(t, pool,
 		changeRequestApprovalApproverUserID, changeRequestApprovalApproverUserID2, changeRequestApprovalApproverUserID3)
 	seedChangeRequestForApprovalTest(t, scoped, "ASSESS")
+	seedApprovalGroupMembers(t, scoped, crCABGroupID, crCABMemberUserID1)
 	stageID := seedApprovalStageForDecisionTest(t, scoped,
 		changeRequestApprovalApproverUserID, changeRequestApprovalApproverUserID2, changeRequestApprovalApproverUserID3)
 
@@ -939,7 +935,7 @@ func seedChangeRequestForAssessGateTest(t *testing.T, pool *repository.Scoped) {
 
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type)
-		 VALUES ($1, now(), now(), 'cr-assess-gate-test', 'cr-assess-gate-test', 'CRASSESS01', 'assess gate test', 'CHANGE_REQUEST')`,
+		 VALUES ($1, now(), now(), 'cr-assess-gate-test-creator', 'cr-assess-gate-test', 'CRASSESS01', 'assess gate test', 'CHANGE_REQUEST')`,
 		changeRequestAssessGateTestID); err != nil {
 		t.Fatalf("seed work_item: %v", err)
 	}
@@ -948,6 +944,9 @@ func seedChangeRequestForAssessGateTest(t *testing.T, pool *repository.Scoped) {
 		changeRequestAssessGateTestID); err != nil {
 		t.Fatalf("seed change_request: %v", err)
 	}
+	// A Normal change cannot be sent for approval unless the CAB Approval
+	// group has someone to give the second approval.
+	seedApprovalGroupMembers(t, pool, crCABGroupID, crCABMemberUserID1, crCABMemberUserID2)
 }
 
 // seedAssessGateGroup inserts changeRequestAssessGateGroupID's own "group"
@@ -1526,35 +1525,6 @@ func TestChangeRequestIntegration_PatchAssessRejectsWhenOnlyMemberIsRequester(t 
 // lands its own new stage at position 1, the ordinal
 // changeRequestApprovalStagePosition reads as "Authorize".
 
-// seedChangeRequestForAuthorizeGateTest inserts a minimal work_item/
-// change_request pair already sitting in Assess -- the realistic starting
-// point for every Authorize-gate test below, since in production Authorize
-// is only ever reached after Assess's own compulsory assigned-team gate has
-// already run.
-func seedChangeRequestForAuthorizeGateTest(t *testing.T, pool *repository.Scoped) {
-	t.Helper()
-	// work_item and change_request are RLS-protected; seed/cleanup as internal.
-	ctx := repository.WithSystemIdentity(context.Background())
-
-	cleanup := func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM work_item WHERE id = $1`, changeRequestAuthorizeGateTestID)
-	}
-	cleanup()
-	t.Cleanup(cleanup)
-
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type)
-		 VALUES ($1, now(), now(), 'cr-authorize-gate-test', 'cr-authorize-gate-test', 'CRAUTH001', 'authorize gate test', 'CHANGE_REQUEST')`,
-		changeRequestAuthorizeGateTestID); err != nil {
-		t.Fatalf("seed work_item: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO change_request (id, state) VALUES ($1, 'ASSESS'::change_request_state_enum)`,
-		changeRequestAuthorizeGateTestID); err != nil {
-		t.Fatalf("seed change_request: %v", err)
-	}
-}
-
 // seedExistingApprovalStage inserts a single approval_stage row directly --
 // bypassing provisionApprovalStage entirely -- so a test can establish "this
 // work item already has an earlier checkpoint's own stage" as a
@@ -1570,603 +1540,6 @@ func seedExistingApprovalStage(t *testing.T, pool *repository.Scoped, workItemID
 		 VALUES (gen_random_uuid(), now(), now(), 'cr-authorize-gate-test', 'cr-authorize-gate-test', $1, $2::uuid)`,
 		workItemID, seededGroupID); err != nil {
 		t.Fatalf("seed existing (Assess-position) approval_stage: %v", err)
-	}
-}
-
-// seedAuthorizeGateGroup inserts changeRequestAuthorizeGateGroupID's own
-// "group" row -- a dedicated fixture for the tests below, deliberately not
-// shared with changeRequestAssessGateGroupID or seededGroupID (same
-// isolation reasoning as changeRequestAssessGateGroupID's own doc comment).
-func seedAuthorizeGateGroup(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	ctx := context.Background()
-
-	cleanup := func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM "group" WHERE id = $1`, changeRequestAuthorizeGateGroupID)
-	}
-	cleanup()
-	t.Cleanup(cleanup)
-
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name)
-		 VALUES ($1, now(), now(), 'cr-authorize-gate-test', 'cr-authorize-gate-test', 'Authorize Gate Test Group')`,
-		changeRequestAuthorizeGateGroupID); err != nil {
-		t.Fatalf("seed group: %v", err)
-	}
-}
-
-// seedTeamMembersForAuthorizeGateTest inserts one "user" row and one
-// team_member row (keyed by group_id, same reasoning as
-// seedTeamMembersForAssessGateTest) per given user id, so they resolve as
-// members of changeRequestAuthorizeGateGroupID for the auto-provisioning
-// tests below. Callers must seed that group row first (seedAuthorizeGateGroup).
-func seedTeamMembersForAuthorizeGateTest(t *testing.T, pool *pgxpool.Pool, userIDs ...string) {
-	t.Helper()
-	ctx := context.Background()
-
-	for i, userID := range userIDs {
-		id := userID
-		userCleanup := func() {
-			_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, id)
-		}
-		userCleanup()
-		t.Cleanup(userCleanup)
-
-		email := fmt.Sprintf("cr-authorize-gate-member-%d@example.com", i+1)
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user)
-			 VALUES ($1, now(), now(), 'cr-authorize-gate-test', 'cr-authorize-gate-test', $2, 'Authorize Gate Member', 'Authorize', 'Gate Member', $2, true, false)`,
-			id, email); err != nil {
-			t.Fatalf("seed team member user %s: %v", id, err)
-		}
-
-		memberCleanup := func() {
-			_, _ = pool.Exec(ctx, `DELETE FROM team_member WHERE user_id = $1`, id)
-		}
-		memberCleanup()
-		t.Cleanup(memberCleanup)
-
-		// team_member.team_id is NOT NULL -- same seededGroupID-as-filler
-		// reasoning as seedTeamMembersForAssessGateTest's own identical line.
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id)
-			 VALUES (gen_random_uuid(), now(), now(), 'cr-authorize-gate-test', 'cr-authorize-gate-test', $1::uuid, $2, $3::uuid)`,
-			seededGroupID, id, changeRequestAuthorizeGateGroupID); err != nil {
-			t.Fatalf("seed team_member for user %s: %v", id, err)
-		}
-	}
-}
-
-// setAuthorizeGateRequestedBy stamps change_request.requested_by_user_id for
-// changeRequestAuthorizeGateTestID, mirroring setAssessGateRequestedBy.
-func setAuthorizeGateRequestedBy(t *testing.T, pool *repository.Scoped, userID string) {
-	t.Helper()
-	ctx := repository.WithSystemIdentity(context.Background())
-	if _, err := pool.Exec(ctx,
-		`UPDATE change_request SET requested_by_user_id = $1::uuid WHERE id = $2`,
-		userID, changeRequestAuthorizeGateTestID); err != nil {
-		t.Fatalf("set change_request.requested_by_user_id: %v", err)
-	}
-}
-
-// TestChangeRequestIntegration_PatchAuthorizeProvisionsApproversFromGroupMembers
-// is the Authorize-checkpoint counterpart of
-// TestChangeRequestIntegration_PatchAssessProvisionsApproversFromGroupMembers:
-// a {state: "authorize"} PATCH against a change request that already has its
-// Assess-position stage provisions one requested approval_stage_approver row
-// per member of the assigned team, at a new, second approval_stage.
-func TestChangeRequestIntegration_PatchAuthorizeProvisionsApproversFromGroupMembers(t *testing.T) {
-	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
-	if dsn == "" {
-		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	scoped := repository.NewScoped(pool)
-	sys := repository.WithSystemIdentity(context.Background())
-	repo := repository.NewChangeRequestRepository(scoped)
-	seedChangeRequestForAuthorizeGateTest(t, scoped)
-	seedExistingApprovalStage(t, scoped, changeRequestAuthorizeGateTestID)
-	seedAuthorizeGateGroup(t, pool)
-	seedTeamMembersForAuthorizeGateTest(t, pool, changeRequestAuthorizeGateMemberUserID, changeRequestAuthorizeGateMemberUserID2)
-	t.Cleanup(func() {
-		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAuthorizeGateTestID)
-	})
-
-	teamID := changeRequestAuthorizeGateGroupID
-	authorize := domain.ChangeRequestStateAuthorize
-	if _, err := repo.PatchChangeRequest(sys, changeRequestAuthorizeGateTestID,
-		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &authorize}, "cr-authorize-gate-test"); err != nil {
-		t.Fatalf("PatchChangeRequest(assignedTeamId=%s, state=authorize): %v", teamID, err)
-	}
-
-	var stageCount int
-	if scanErr := scoped.QueryRow(sys,
-		`SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, changeRequestAuthorizeGateTestID).Scan(&stageCount); scanErr != nil {
-		t.Fatalf("count approval_stage: %v", scanErr)
-	}
-	if stageCount != 2 {
-		t.Fatalf("approval_stage rows after an authorize patch = %d, want exactly 2 (the pre-existing Assess stage plus the new Authorize stage)", stageCount)
-	}
-
-	var stageID, stageGroupID string
-	if scanErr := scoped.QueryRow(sys,
-		`SELECT id, assignment_group_id::TEXT FROM approval_stage WHERE work_item_id = $1 AND assignment_group_id = $2::uuid`,
-		changeRequestAuthorizeGateTestID, teamID).Scan(&stageID, &stageGroupID); scanErr != nil {
-		t.Fatalf("read back authorize approval_stage: %v", scanErr)
-	}
-	if stageGroupID != teamID {
-		t.Fatalf("approval_stage.assignment_group_id = %q, want %q", stageGroupID, teamID)
-	}
-
-	rows, err := scoped.Query(sys,
-		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1 ORDER BY approver_user_id`, stageID)
-	if err != nil {
-		t.Fatalf("query approval_stage_approver: %v", err)
-	}
-	defer rows.Close()
-	gotApprovers := map[string]string{}
-	for rows.Next() {
-		var uid, status string
-		if err := rows.Scan(&uid, &status); err != nil {
-			t.Fatalf("scan approval_stage_approver: %v", err)
-		}
-		gotApprovers[uid] = status
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("approval_stage_approver rows: %v", err)
-	}
-
-	want := map[string]string{
-		changeRequestAuthorizeGateMemberUserID:  "requested",
-		changeRequestAuthorizeGateMemberUserID2: "requested",
-	}
-	if len(gotApprovers) != len(want) {
-		t.Fatalf("approval_stage_approver rows = %+v, want exactly %+v", gotApprovers, want)
-	}
-	for uid, wantStatus := range want {
-		if gotApprovers[uid] != wantStatus {
-			t.Fatalf("approver %s status = %q, want %q", uid, gotApprovers[uid], wantStatus)
-		}
-	}
-}
-
-// TestChangeRequestIntegration_PatchAuthorizeDoesNotReprovisionWhenStageExists
-// is the Authorize-checkpoint counterpart of
-// TestChangeRequestIntegration_PatchAssessDoesNotReprovisionWhenStageExists:
-// a second {state: "authorize"} patch against a change request that already
-// has its Authorize-position stage must never create a duplicate stage or
-// re-seed approvers.
-func TestChangeRequestIntegration_PatchAuthorizeDoesNotReprovisionWhenStageExists(t *testing.T) {
-	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
-	if dsn == "" {
-		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	scoped := repository.NewScoped(pool)
-	sys := repository.WithSystemIdentity(context.Background())
-	repo := repository.NewChangeRequestRepository(scoped)
-	seedChangeRequestForAuthorizeGateTest(t, scoped)
-	seedExistingApprovalStage(t, scoped, changeRequestAuthorizeGateTestID)
-	seedAuthorizeGateGroup(t, pool)
-	seedTeamMembersForAuthorizeGateTest(t, pool, changeRequestAuthorizeGateMemberUserID, changeRequestAuthorizeGateMemberUserID2)
-	t.Cleanup(func() {
-		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAuthorizeGateTestID)
-	})
-
-	teamID := changeRequestAuthorizeGateGroupID
-	authorize := domain.ChangeRequestStateAuthorize
-	if _, err := repo.PatchChangeRequest(sys, changeRequestAuthorizeGateTestID,
-		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &authorize}, "cr-authorize-gate-test"); err != nil {
-		t.Fatalf("PatchChangeRequest(assignedTeamId=%s, state=authorize) #1: %v", teamID, err)
-	}
-	if _, err := repo.PatchChangeRequest(sys, changeRequestAuthorizeGateTestID,
-		domain.PatchChangeRequestRequest{State: &authorize}, "cr-authorize-gate-test"); err != nil {
-		t.Fatalf("PatchChangeRequest(state=authorize) #2 (resend): %v", err)
-	}
-
-	var stageCount int
-	if scanErr := scoped.QueryRow(sys,
-		`SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, changeRequestAuthorizeGateTestID).Scan(&stageCount); scanErr != nil {
-		t.Fatalf("count approval_stage: %v", scanErr)
-	}
-	if stageCount != 2 {
-		t.Fatalf("approval_stage rows after two authorize patches = %d, want exactly 2 (not reprovisioned)", stageCount)
-	}
-
-	var approverCount int
-	if scanErr := scoped.QueryRow(sys,
-		`SELECT COUNT(*) FROM approval_stage_approver asa JOIN approval_stage ast ON ast.id = asa.stage_id WHERE ast.work_item_id = $1`,
-		changeRequestAuthorizeGateTestID).Scan(&approverCount); scanErr != nil {
-		t.Fatalf("count approval_stage_approver: %v", scanErr)
-	}
-	if approverCount != 2 {
-		t.Fatalf("approval_stage_approver rows after two authorize patches = %d, want exactly 2 (not re-seeded)", approverCount)
-	}
-}
-
-// TestChangeRequestIntegration_PatchAuthorizeRejectsEmptyGroup is the
-// Authorize-checkpoint counterpart of
-// TestChangeRequestIntegration_PatchAssessRejectsEmptyGroup: an assigned team
-// with no members must reject the whole {state: "authorize"} PATCH with a
-// ValidationError and leave no new approval_stage behind -- only the
-// pre-existing Assess-position stage this test seeds up front.
-func TestChangeRequestIntegration_PatchAuthorizeRejectsEmptyGroup(t *testing.T) {
-	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
-	if dsn == "" {
-		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	scoped := repository.NewScoped(pool)
-	sys := repository.WithSystemIdentity(context.Background())
-	repo := repository.NewChangeRequestRepository(scoped)
-	seedChangeRequestForAuthorizeGateTest(t, scoped)
-	seedExistingApprovalStage(t, scoped, changeRequestAuthorizeGateTestID)
-	seedAuthorizeGateGroup(t, pool)
-	// Deliberately no seedTeamMembersForAuthorizeGateTest call -- the group
-	// exists (so assignedTeamId itself is valid) but has zero members.
-	t.Cleanup(func() {
-		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAuthorizeGateTestID)
-	})
-
-	teamID := changeRequestAuthorizeGateGroupID
-	authorize := domain.ChangeRequestStateAuthorize
-	_, err = repo.PatchChangeRequest(sys, changeRequestAuthorizeGateTestID,
-		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &authorize}, "cr-authorize-gate-test")
-	if err == nil {
-		t.Fatal("PatchChangeRequest(state=authorize) with an empty assigned team succeeded, want a ValidationError")
-	}
-	var valErr *apierror.ValidationError
-	if !errors.As(err, &valErr) {
-		t.Fatalf("PatchChangeRequest(state=authorize) with an empty assigned team error = %v (%T), want *apierror.ValidationError", err, err)
-	}
-
-	var stageCount int
-	if scanErr := scoped.QueryRow(sys,
-		`SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, changeRequestAuthorizeGateTestID).Scan(&stageCount); scanErr != nil {
-		t.Fatalf("count approval_stage: %v", scanErr)
-	}
-	if stageCount != 1 {
-		t.Fatalf("approval_stage rows after a rejected authorize patch = %d, want exactly 1 (only the pre-existing Assess stage, no dead-end Authorize stage)", stageCount)
-	}
-}
-
-// TestChangeRequestIntegration_PatchAuthorizeDeduplicatesGroupMembers is the
-// Authorize-checkpoint counterpart of
-// TestChangeRequestIntegration_PatchAssessDeduplicatesGroupMembers.
-func TestChangeRequestIntegration_PatchAuthorizeDeduplicatesGroupMembers(t *testing.T) {
-	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
-	if dsn == "" {
-		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	scoped := repository.NewScoped(pool)
-	sys := repository.WithSystemIdentity(context.Background())
-	repo := repository.NewChangeRequestRepository(scoped)
-	seedChangeRequestForAuthorizeGateTest(t, scoped)
-	seedExistingApprovalStage(t, scoped, changeRequestAuthorizeGateTestID)
-	seedAuthorizeGateGroup(t, pool)
-	seedTeamMembersForAuthorizeGateTest(t, pool, changeRequestAuthorizeGateMemberUserID)
-	t.Cleanup(func() {
-		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAuthorizeGateTestID)
-	})
-
-	// A second team_member row for the SAME user against the SAME group --
-	// seedTeamMembersForAuthorizeGateTest's own cleanup (DELETE ... WHERE
-	// user_id = $1) already covers this row too, since it shares the user id.
-	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id)
-		 VALUES (gen_random_uuid(), now(), now(), 'cr-authorize-gate-test', 'cr-authorize-gate-test', $1::uuid, $2, $3::uuid)`,
-		seededGroupID, changeRequestAuthorizeGateMemberUserID, changeRequestAuthorizeGateGroupID); err != nil {
-		t.Fatalf("seed duplicate team_member row: %v", err)
-	}
-
-	teamID := changeRequestAuthorizeGateGroupID
-	authorize := domain.ChangeRequestStateAuthorize
-	if _, err := repo.PatchChangeRequest(sys, changeRequestAuthorizeGateTestID,
-		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &authorize}, "cr-authorize-gate-test"); err != nil {
-		t.Fatalf("PatchChangeRequest(assignedTeamId=%s, state=authorize): %v", teamID, err)
-	}
-
-	var approverCount int
-	if scanErr := scoped.QueryRow(sys,
-		`SELECT COUNT(*) FROM approval_stage_approver asa
-		 JOIN approval_stage ast ON ast.id = asa.stage_id
-		 WHERE ast.work_item_id = $1 AND ast.assignment_group_id = $2::uuid`,
-		changeRequestAuthorizeGateTestID, teamID).Scan(&approverCount); scanErr != nil {
-		t.Fatalf("count approval_stage_approver: %v", scanErr)
-	}
-	if approverCount != 1 {
-		t.Fatalf("approval_stage_approver rows for a user with a duplicated team_member row = %d, want exactly 1", approverCount)
-	}
-}
-
-// TestChangeRequestIntegration_PatchAuthorizeProvisionsRequesterAsCancelled
-// is the Authorize-checkpoint counterpart of
-// TestChangeRequestIntegration_PatchAssessProvisionsRequesterAsCancelled --
-// the identical self-approval-exclusion rule applies at this checkpoint too.
-func TestChangeRequestIntegration_PatchAuthorizeProvisionsRequesterAsCancelled(t *testing.T) {
-	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
-	if dsn == "" {
-		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	scoped := repository.NewScoped(pool)
-	sys := repository.WithSystemIdentity(context.Background())
-	repo := repository.NewChangeRequestRepository(scoped)
-	seedChangeRequestForAuthorizeGateTest(t, scoped)
-	seedExistingApprovalStage(t, scoped, changeRequestAuthorizeGateTestID)
-	seedAuthorizeGateGroup(t, pool)
-	seedTeamMembersForAuthorizeGateTest(t, pool, changeRequestAuthorizeGateMemberUserID, changeRequestAuthorizeGateMemberUserID2)
-	setAuthorizeGateRequestedBy(t, scoped, changeRequestAuthorizeGateMemberUserID)
-	t.Cleanup(func() {
-		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAuthorizeGateTestID)
-	})
-
-	teamID := changeRequestAuthorizeGateGroupID
-	authorize := domain.ChangeRequestStateAuthorize
-	if _, err := repo.PatchChangeRequest(sys, changeRequestAuthorizeGateTestID,
-		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &authorize}, "cr-authorize-gate-test"); err != nil {
-		t.Fatalf("PatchChangeRequest(assignedTeamId=%s, state=authorize): %v", teamID, err)
-	}
-
-	var stageID string
-	if scanErr := scoped.QueryRow(sys,
-		`SELECT id FROM approval_stage WHERE work_item_id = $1 AND assignment_group_id = $2::uuid`,
-		changeRequestAuthorizeGateTestID, teamID).Scan(&stageID); scanErr != nil {
-		t.Fatalf("read back approval_stage: %v", scanErr)
-	}
-
-	rows, err := scoped.Query(sys,
-		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1`, stageID)
-	if err != nil {
-		t.Fatalf("query approval_stage_approver: %v", err)
-	}
-	defer rows.Close()
-	gotApprovers := map[string]string{}
-	for rows.Next() {
-		var uid, status string
-		if err := rows.Scan(&uid, &status); err != nil {
-			t.Fatalf("scan approval_stage_approver: %v", err)
-		}
-		gotApprovers[uid] = status
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("approval_stage_approver rows: %v", err)
-	}
-
-	want := map[string]string{
-		changeRequestAuthorizeGateMemberUserID:  "cancelled",
-		changeRequestAuthorizeGateMemberUserID2: "requested",
-	}
-	if len(gotApprovers) != len(want) {
-		t.Fatalf("approval_stage_approver rows = %+v, want exactly %+v", gotApprovers, want)
-	}
-	for uid, wantStatus := range want {
-		if gotApprovers[uid] != wantStatus {
-			t.Fatalf("approver %s status = %q, want %q", uid, gotApprovers[uid], wantStatus)
-		}
-	}
-}
-
-// TestChangeRequestIntegration_PatchAuthorizeRejectsWhenOnlyMemberIsRequester
-// is the Authorize-checkpoint counterpart of
-// TestChangeRequestIntegration_PatchAssessRejectsWhenOnlyMemberIsRequester.
-func TestChangeRequestIntegration_PatchAuthorizeRejectsWhenOnlyMemberIsRequester(t *testing.T) {
-	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
-	if dsn == "" {
-		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	scoped := repository.NewScoped(pool)
-	sys := repository.WithSystemIdentity(context.Background())
-	repo := repository.NewChangeRequestRepository(scoped)
-	seedChangeRequestForAuthorizeGateTest(t, scoped)
-	seedExistingApprovalStage(t, scoped, changeRequestAuthorizeGateTestID)
-	seedAuthorizeGateGroup(t, pool)
-	seedTeamMembersForAuthorizeGateTest(t, pool, changeRequestAuthorizeGateMemberUserID)
-	setAuthorizeGateRequestedBy(t, scoped, changeRequestAuthorizeGateMemberUserID)
-	t.Cleanup(func() {
-		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAuthorizeGateTestID)
-	})
-
-	teamID := changeRequestAuthorizeGateGroupID
-	authorize := domain.ChangeRequestStateAuthorize
-	_, err = repo.PatchChangeRequest(sys, changeRequestAuthorizeGateTestID,
-		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &authorize}, "cr-authorize-gate-test")
-	if err == nil {
-		t.Fatal("PatchChangeRequest(state=authorize) whose only team member is the requester succeeded, want a ValidationError")
-	}
-	var valErr *apierror.ValidationError
-	if !errors.As(err, &valErr) {
-		t.Fatalf("PatchChangeRequest(state=authorize) whose only team member is the requester error = %v (%T), want *apierror.ValidationError", err, err)
-	}
-
-	var stageCount int
-	if scanErr := scoped.QueryRow(sys,
-		`SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, changeRequestAuthorizeGateTestID).Scan(&stageCount); scanErr != nil {
-		t.Fatalf("count approval_stage: %v", scanErr)
-	}
-	if stageCount != 1 {
-		t.Fatalf("approval_stage rows after a rejected authorize patch = %d, want exactly 1 (only the pre-existing Assess stage, no dead-end Authorize stage)", stageCount)
-	}
-}
-
-// TestChangeRequestIntegration_AssessAndAuthorizeStagesCoexist runs the real,
-// full production path end to end -- a {state: "assess"} PATCH (provisioning
-// the Assess-position stage), then an approval decision on it
-// (DecideChangeRequestApproval's own Assess->Authorize cascade, which this
-// change wires into the new Authorize-stage provisioning too, as a
-// best-effort step -- see that call site's own comment) -- and confirms both
-// stages land correctly and independently: the Assess stage's own approvers
-// (one Approved, one Cancelled by the decision's own sibling-cancellation
-// rule) are untouched by the Authorize stage's own, separately-provisioned
-// approvers (both freshly "requested"), and each stage is attributed to its
-// own, distinct id rather than one clobbering the other.
-func TestChangeRequestIntegration_AssessAndAuthorizeStagesCoexist(t *testing.T) {
-	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
-	if dsn == "" {
-		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	scoped := repository.NewScoped(pool)
-	sys := repository.WithSystemIdentity(context.Background())
-	repo := repository.NewChangeRequestRepository(scoped)
-	seedChangeRequestForAssessGateTest(t, scoped)
-	seedAssessGateGroup(t, pool)
-	seedTeamMembersForAssessGateTest(t, pool, changeRequestAssessGateMemberUserID, changeRequestAssessGateMemberUserID2)
-	t.Cleanup(func() {
-		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
-	})
-
-	teamID := changeRequestAssessGateGroupID
-	assess := domain.ChangeRequestStateAssess
-	if _, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
-		domain.PatchChangeRequestRequest{AssignedTeamID: &teamID, State: &assess}, "cr-assess-gate-test"); err != nil {
-		t.Fatalf("PatchChangeRequest(assignedTeamId=%s, state=assess): %v", teamID, err)
-	}
-
-	var assessStageID string
-	if scanErr := scoped.QueryRow(sys,
-		`SELECT id FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID).Scan(&assessStageID); scanErr != nil {
-		t.Fatalf("read back Assess approval_stage: %v", scanErr)
-	}
-
-	if _, err := repo.DecideChangeRequestApproval(sys, changeRequestAssessGateTestID,
-		changeRequestAssessGateMemberUserID, "approved", "cr-assess-gate-test"); err != nil {
-		t.Fatalf("DecideChangeRequestApproval(approved): %v", err)
-	}
-
-	var gotState string
-	if scanErr := scoped.QueryRow(sys,
-		`SELECT state::TEXT FROM change_request WHERE id = $1`, changeRequestAssessGateTestID).Scan(&gotState); scanErr != nil {
-		t.Fatalf("read back state: %v", scanErr)
-	}
-	if gotState != "AUTHORIZE" {
-		t.Fatalf("state after approval = %q, want \"AUTHORIZE\"", gotState)
-	}
-
-	var stageCount int
-	if scanErr := scoped.QueryRow(sys,
-		`SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID).Scan(&stageCount); scanErr != nil {
-		t.Fatalf("count approval_stage: %v", scanErr)
-	}
-	if stageCount != 2 {
-		t.Fatalf("approval_stage rows after the assess->authorize cascade = %d, want exactly 2 (Assess plus the newly auto-provisioned Authorize stage)", stageCount)
-	}
-
-	var authorizeStageID string
-	if scanErr := scoped.QueryRow(sys,
-		`SELECT id FROM approval_stage WHERE work_item_id = $1 AND id != $2`,
-		changeRequestAssessGateTestID, assessStageID).Scan(&authorizeStageID); scanErr != nil {
-		t.Fatalf("read back Authorize approval_stage: %v", scanErr)
-	}
-	if authorizeStageID == assessStageID {
-		t.Fatal("Authorize stage id equals the Assess stage id -- a new stage was not actually created")
-	}
-
-	// The Assess stage's own approvers: the acted-on approver is Approved,
-	// the sibling is Cancelled by DecideChangeRequestApproval's own
-	// sibling-cancellation rule -- neither is disturbed by the Authorize
-	// stage's own, entirely separate provisioning.
-	assessApprovers := map[string]string{}
-	assessRows, err := scoped.Query(sys,
-		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1`, assessStageID)
-	if err != nil {
-		t.Fatalf("query Assess approval_stage_approver: %v", err)
-	}
-	for assessRows.Next() {
-		var uid, status string
-		if err := assessRows.Scan(&uid, &status); err != nil {
-			assessRows.Close()
-			t.Fatalf("scan Assess approval_stage_approver: %v", err)
-		}
-		assessApprovers[uid] = status
-	}
-	assessRows.Close()
-	if err := assessRows.Err(); err != nil {
-		t.Fatalf("Assess approval_stage_approver rows: %v", err)
-	}
-	wantAssess := map[string]string{
-		changeRequestAssessGateMemberUserID:  "approved",
-		changeRequestAssessGateMemberUserID2: "cancelled",
-	}
-	if len(assessApprovers) != len(wantAssess) {
-		t.Fatalf("Assess approval_stage_approver rows = %+v, want exactly %+v", assessApprovers, wantAssess)
-	}
-	for uid, wantStatus := range wantAssess {
-		if assessApprovers[uid] != wantStatus {
-			t.Fatalf("Assess approver %s status = %q, want %q", uid, assessApprovers[uid], wantStatus)
-		}
-	}
-
-	// The Authorize stage's own approvers: both members freshly provisioned
-	// as "requested", reusing the same assigned team -- confirming the new
-	// checkpoint's provisioning ran independently of, and did not reuse or
-	// clobber, the Assess stage's own rows.
-	authorizeApprovers := map[string]string{}
-	authorizeRows, err := scoped.Query(sys,
-		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1`, authorizeStageID)
-	if err != nil {
-		t.Fatalf("query Authorize approval_stage_approver: %v", err)
-	}
-	for authorizeRows.Next() {
-		var uid, status string
-		if err := authorizeRows.Scan(&uid, &status); err != nil {
-			authorizeRows.Close()
-			t.Fatalf("scan Authorize approval_stage_approver: %v", err)
-		}
-		authorizeApprovers[uid] = status
-	}
-	authorizeRows.Close()
-	if err := authorizeRows.Err(); err != nil {
-		t.Fatalf("Authorize approval_stage_approver rows: %v", err)
-	}
-	wantAuthorize := map[string]string{
-		changeRequestAssessGateMemberUserID:  "requested",
-		changeRequestAssessGateMemberUserID2: "requested",
-	}
-	if len(authorizeApprovers) != len(wantAuthorize) {
-		t.Fatalf("Authorize approval_stage_approver rows = %+v, want exactly %+v", authorizeApprovers, wantAuthorize)
-	}
-	for uid, wantStatus := range wantAuthorize {
-		if authorizeApprovers[uid] != wantStatus {
-			t.Fatalf("Authorize approver %s status = %q, want %q", uid, authorizeApprovers[uid], wantStatus)
-		}
 	}
 }
 
@@ -2191,7 +1564,7 @@ func seedChangeRequestForReviewGateTest(t *testing.T, pool *repository.Scoped) {
 
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type)
-		 VALUES ($1, now(), now(), 'cr-review-gate-test', 'cr-review-gate-test', 'CRREV001', 'review gate test', 'CHANGE_REQUEST')`,
+		 VALUES ($1, now(), now(), 'cr-review-gate-test-creator', 'cr-review-gate-test', 'CRREV001', 'review gate test', 'CHANGE_REQUEST')`,
 		changeRequestReviewGateTestID); err != nil {
 		t.Fatalf("seed work_item: %v", err)
 	}
@@ -2799,9 +2172,8 @@ func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testi
 		}
 	}
 
-	// The Authorize stage's own approvers: both freshly "requested", reusing
-	// the Assess checkpoint's own assigned team -- unchanged by the Review
-	// patch that followed.
+	// The CAB stage's own approvers: both CAB Approval members, freshly
+	// "requested" -- unchanged by the Review patch that followed.
 	authorizeApprovers := map[string]string{}
 	authorizeRows, err := scoped.Query(sys,
 		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1`, authorizeStageID)
@@ -2821,8 +2193,8 @@ func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testi
 		t.Fatalf("Authorize approval_stage_approver rows: %v", err)
 	}
 	wantAuthorize := map[string]string{
-		changeRequestAssessGateMemberUserID:  "requested",
-		changeRequestAssessGateMemberUserID2: "requested",
+		crCABMemberUserID1: "requested",
+		crCABMemberUserID2: "requested",
 	}
 	if len(authorizeApprovers) != len(wantAuthorize) {
 		t.Fatalf("Authorize approval_stage_approver rows = %+v, want exactly %+v", authorizeApprovers, wantAuthorize)
@@ -3692,5 +3064,947 @@ func TestChangeRequestIntegration_PatchCustomerFlagsLockIndependentPerField(t *t
 	}
 	if !cr.HasCustomerReviewed {
 		t.Error("HasCustomerReviewed after patch = false, want true")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Type-dependent approval flow (change_request_approval_flow.go).
+//
+// Lifecycle tests for Normal (peer then CAB), Emergency (ECAB only) and
+// Standard (no approval), the creator/SRE approver rules, the CAB/ECAB groups
+// the migration creates, the automatic move to Scheduled, and the mandatory
+// type on create -- all against the real Postgres this file's neighbours use:
+//
+//	CHANGE_REQUEST_TEST_DSN=postgres://... go test ./internal/repository/ -run ChangeRequestFlowIntegration
+// ---------------------------------------------------------------------------
+
+const (
+	// crCABGroupID / crECABGroupID are the fixed ids migration
+	// 0188_change_request_approval_groups.sql gives the two groups.
+	crCABGroupID  = "00000000-0000-4000-8000-00000000ca01"
+	crECABGroupID = "00000000-0000-4000-8000-00000000eca1"
+
+	// crCABMemberUserID{1,2} / crECABMemberUserID are seeded as members of the
+	// CAB / ECAB groups by the tests that need an eligible second approver.
+	crCABMemberUserID1 = "3aaaaaaa-0000-0000-0000-0000000000c1"
+	crCABMemberUserID2 = "3aaaaaaa-0000-0000-0000-0000000000c2"
+	crECABMemberUserID = "3aaaaaaa-0000-0000-0000-0000000000e1"
+
+	crFlowSubject = "cr-approval-flow integration test"
+
+	crFlowCreatorID  = "3aaaaaaa-0000-0000-0000-000000000001"
+	crFlowPeerAID    = "3aaaaaaa-0000-0000-0000-000000000002"
+	crFlowPeerBID    = "3aaaaaaa-0000-0000-0000-000000000003"
+	crFlowSREID      = "3aaaaaaa-0000-0000-0000-000000000004"
+	crFlowOutsiderID = "3aaaaaaa-0000-0000-0000-000000000005"
+
+	// crFlowGroupID is the change's assigned group: creator, both peers and
+	// one SRE-team member belong to it.
+	crFlowGroupID = "3aaaaaaa-0000-0000-0000-0000000000a1"
+	// crFlowSREGroupID is an SRE group (Apollo-like): only the SRE member.
+	crFlowSREGroupID = "3aaaaaaa-0000-0000-0000-0000000000a2"
+	// crFlowSRETeamID is the "team" row of type sre-abt the SRE member belongs to.
+	crFlowSRETeamID = "3aaaaaaa-0000-0000-0000-0000000000a3"
+	// crFlowDevopsGroupID is the peer approval fallback group ("Devops Approval").
+	crFlowDevopsGroupID = "3aaaaaaa-0000-0000-0000-0000000000a4"
+)
+
+func crFlowEmail(userID string) string {
+	return fmt.Sprintf("crflow-%s@example.com", userID[len(userID)-12:])
+}
+
+// seedApprovalGroupMembers makes each userID a (freshly seeded) user and a
+// member of the "group" groupID (team_member.group_id). The group row must
+// exist. Everything is removed again on cleanup.
+func seedApprovalGroupMembers(t *testing.T, pool *repository.Scoped, groupID string, userIDs ...string) {
+	t.Helper()
+	ctx := repository.WithSystemIdentity(context.Background())
+	isolateApprovalGroup(t, pool, groupID)
+	for _, uid := range userIDs {
+		id := uid
+		cleanup := func() { _, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, id) }
+		cleanup()
+		t.Cleanup(cleanup)
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user)
+			 VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', $2, 'CR Flow User', 'CR', 'Flow User', $2, true, false)`,
+			id, crFlowEmail(id)); err != nil {
+			t.Fatalf("seed user %s: %v", id, err)
+		}
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id)
+			 VALUES (gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', $1::uuid, $2, $3::uuid)`,
+			seededGroupID, id, groupID); err != nil {
+			t.Fatalf("seed team_member %s: %v", id, err)
+		}
+	}
+}
+
+var isolatedApprovalGroups sync.Map
+
+// isolateApprovalGroup removes whoever is already a member of the CAB / ECAB
+// group (local seed data puts the two dev users there; a synced environment
+// has real members) for the duration of the calling test, so the test sees
+// exactly the members it seeds itself, and puts them back on cleanup. Once per
+// test and group; any other group is left alone.
+func isolateApprovalGroup(t *testing.T, pool *repository.Scoped, groupID string) {
+	t.Helper()
+	if groupID != crCABGroupID && groupID != crECABGroupID {
+		return
+	}
+	key := t.Name() + "/" + groupID
+	if _, done := isolatedApprovalGroups.LoadOrStore(key, true); done {
+		return
+	}
+	ctx := repository.WithSystemIdentity(context.Background())
+	rows, err := pool.Query(ctx, `SELECT id::text, team_id::text, user_id::text FROM team_member WHERE group_id = $1::uuid`, groupID)
+	if err != nil {
+		t.Fatalf("snapshot approval group members: %v", err)
+	}
+	type member struct{ id, team, user string }
+	var saved []member
+	for rows.Next() {
+		var m member
+		if err := rows.Scan(&m.id, &m.team, &m.user); err != nil {
+			rows.Close()
+			t.Fatalf("scan approval group member: %v", err)
+		}
+		saved = append(saved, m)
+	}
+	rows.Close()
+	if _, err := pool.Exec(ctx, `DELETE FROM team_member WHERE group_id = $1::uuid`, groupID); err != nil {
+		t.Fatalf("clear approval group members: %v", err)
+	}
+	t.Cleanup(func() {
+		isolatedApprovalGroups.Delete(key)
+		for _, m := range saved {
+			_, _ = pool.Exec(ctx,
+				`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id)
+				 VALUES ($1::uuid, now(), now(), 'cr-flow-test', 'cr-flow-test', $2::uuid, $3::uuid, $4::uuid) ON CONFLICT (id) DO NOTHING`,
+				m.id, m.team, m.user, groupID)
+		}
+	})
+}
+
+type crFlow struct {
+	t      *testing.T
+	pool   *pgxpool.Pool
+	scoped *repository.Scoped
+	repo   repository.ChangeRequestRepository
+	sys    context.Context
+}
+
+func newCRFlow(t *testing.T) *crFlow {
+	t.Helper()
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	scoped := repository.NewScoped(pool)
+	f := &crFlow{t: t, pool: pool, scoped: scoped, repo: repository.NewChangeRequestRepository(scoped), sys: repository.WithSystemIdentity(context.Background())}
+
+	clean := func() {
+		_, _ = scoped.Exec(f.sys, `DELETE FROM work_item WHERE subject = $1`, crFlowSubject)
+		for _, g := range []string{crFlowGroupID, crFlowSREGroupID, crFlowDevopsGroupID} {
+			_, _ = scoped.Exec(f.sys, `DELETE FROM "group" WHERE id = $1`, g)
+		}
+		_, _ = scoped.Exec(f.sys, `DELETE FROM team WHERE id = $1`, crFlowSRETeamID)
+	}
+	clean()
+	t.Cleanup(clean)
+	// Tests that seed no CAB/ECAB members expect those groups empty.
+	isolateApprovalGroup(t, scoped, crCABGroupID)
+	isolateApprovalGroup(t, scoped, crECABGroupID)
+	return f
+}
+
+// seedAssignedGroup creates the assigned group (creator, peers A/B, and the
+// SRE member who is in an sre-abt team) plus the SRE team and SRE group.
+func (f *crFlow) seedAssignedGroup() {
+	f.t.Helper()
+	mustExec := func(sql string, args ...any) {
+		f.t.Helper()
+		if _, err := f.scoped.Exec(f.sys, sql, args...); err != nil {
+			f.t.Fatalf("seed (%.60s): %v", sql, err)
+		}
+	}
+	for id, name := range map[string]string{crFlowGroupID: "CR Flow Assigned Group", crFlowSREGroupID: "CR Flow SRE Group"} {
+		mustExec(`INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name) VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', $2)`, id, name)
+	}
+	mustExec(`INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, type, key)
+	          VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', 'CR Flow SRE Team', 'sre-abt', 'crflow-sre')`, crFlowSRETeamID)
+
+	seedApprovalGroupMembers(f.t, f.scoped, crFlowGroupID, crFlowCreatorID, crFlowPeerAID, crFlowPeerBID)
+	seedApprovalGroupMembers(f.t, f.scoped, crFlowGroupID, crFlowSREID)
+	// The SRE member belongs to an SRE team (Apollo-like) as well as the
+	// assigned group.
+	f.makeSRE(crFlowSREID, crFlowGroupID)
+	seedApprovalGroupMembers(f.t, f.scoped, crFlowGroupID, crFlowOutsiderID)
+}
+
+// makeSRE puts userID into the sre-abt team (team_id = the SRE team) while
+// keeping their membership of group groupID.
+func (f *crFlow) makeSRE(userID, groupID string) {
+	f.t.Helper()
+	if _, err := f.scoped.Exec(f.sys, `DELETE FROM team_member WHERE user_id = $1`, userID); err != nil {
+		f.t.Fatalf("reset team_member: %v", err)
+	}
+	if _, err := f.scoped.Exec(f.sys,
+		`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id)
+		 VALUES (gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', $1::uuid, $2, $3::uuid)`,
+		crFlowSRETeamID, userID, groupID); err != nil {
+		f.t.Fatalf("seed SRE team_member: %v", err)
+	}
+}
+
+func (f *crFlow) create(typ domain.ChangeRequestType, groupID string) string {
+	f.t.Helper()
+	g := groupID
+	resp, err := f.repo.CreateChangeRequest(f.sys, domain.CreateChangeRequestRequest{
+		Subject: crFlowSubject, Type: &typ, GroupID: &g,
+	}, crFlowEmail(crFlowCreatorID))
+	if err != nil {
+		f.t.Fatalf("CreateChangeRequest(%s): %v", typ, err)
+	}
+	// RequestedBy is the creator too (the portal sends the signed-in user).
+	if _, err := f.scoped.Exec(f.sys, `UPDATE change_request SET requested_by_user_id = $1::uuid WHERE id = $2`, crFlowCreatorID, resp.ChangeRequest.ID); err != nil {
+		f.t.Fatalf("set requested_by: %v", err)
+	}
+	return resp.ChangeRequest.ID
+}
+
+func (f *crFlow) patchState(id string, state domain.ChangeRequestState) (domain.ChangeRequest, error) {
+	s := state
+	return f.repo.PatchChangeRequest(f.sys, id, domain.PatchChangeRequestRequest{State: &s}, crFlowEmail(crFlowCreatorID))
+}
+
+func (f *crFlow) requestApproval(id string) {
+	f.t.Helper()
+	if _, err := f.patchState(id, domain.ChangeRequestStateAssess); err != nil {
+		f.t.Fatalf("Request Approval ({state: assess}): %v", err)
+	}
+}
+
+func (f *crFlow) state(id string) string {
+	f.t.Helper()
+	var st string
+	if err := f.scoped.QueryRow(f.sys, `SELECT COALESCE(state::text, '') FROM change_request WHERE id = $1`, id).Scan(&st); err != nil {
+		f.t.Fatalf("read state: %v", err)
+	}
+	return st
+}
+
+func (f *crFlow) legal(id string) []string {
+	f.t.Helper()
+	cr, err := f.repo.GetChangeRequestByID(f.sys, id)
+	if err != nil {
+		f.t.Fatalf("GetChangeRequestByID: %v", err)
+	}
+	return cr.LegalNextStates
+}
+
+type crFlowStage struct {
+	label     string
+	groupID   string
+	approvers map[string]string
+}
+
+func (f *crFlow) stages(id string) []crFlowStage {
+	f.t.Helper()
+	rows, err := f.scoped.Query(f.sys,
+		`SELECT id, COALESCE(checkpoint_label, ''), COALESCE(assignment_group_id::text, '') FROM approval_stage WHERE work_item_id = $1 ORDER BY created_on, id`, id)
+	if err != nil {
+		f.t.Fatalf("query stages: %v", err)
+	}
+	type raw struct{ id, label, group string }
+	var raws []raw
+	for rows.Next() {
+		var r raw
+		if err := rows.Scan(&r.id, &r.label, &r.group); err != nil {
+			rows.Close()
+			f.t.Fatalf("scan stage: %v", err)
+		}
+		raws = append(raws, r)
+	}
+	rows.Close()
+	var out []crFlowStage
+	for _, r := range raws {
+		st := crFlowStage{label: r.label, groupID: r.group, approvers: map[string]string{}}
+		arows, err := f.scoped.Query(f.sys, `SELECT approver_user_id::text, status FROM approval_stage_approver WHERE stage_id = $1`, r.id)
+		if err != nil {
+			f.t.Fatalf("query approvers: %v", err)
+		}
+		for arows.Next() {
+			var uid, status string
+			if err := arows.Scan(&uid, &status); err != nil {
+				arows.Close()
+				f.t.Fatalf("scan approver: %v", err)
+			}
+			st.approvers[uid] = status
+		}
+		arows.Close()
+		out = append(out, st)
+	}
+	return out
+}
+
+func (f *crFlow) decide(id, userID, decision string) error {
+	_, err := f.repo.DecideChangeRequestApproval(f.sys, id, userID, decision, crFlowEmail(userID))
+	return err
+}
+
+func assertStates(t *testing.T, what string, got []string, want ...string) {
+	t.Helper()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("%s = %v, want %v", what, got, want)
+	}
+}
+
+func assertApprovers(t *testing.T, what string, got map[string]string, want map[string]string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s approvers = %v, want %v", what, got, want)
+	}
+	for uid, st := range want {
+		if got[uid] != st {
+			t.Fatalf("%s approver %s = %q, want %q (all: %v)", what, uid, got[uid], st, got)
+		}
+	}
+}
+
+// Normal: New -> (Request Approval) Assess [Peer Approval] -> Authorize [CAB
+// Approval] -> Scheduled automatically on CAB approval -> Implement -> Review
+// -> Closed. Also pins legalNextStates at every step and that Scheduled is
+// never offered or accepted manually.
+func TestChangeRequestFlowIntegration_NormalFullLifecycle(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1, crCABMemberUserID2)
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+
+	if got := f.state(id); got != "NEW" {
+		t.Fatalf("state after create = %q, want NEW", got)
+	}
+	assertStates(t, "legalNextStates(New)", f.legal(id), "assess", "canceled")
+
+	// Request Approval -> Assess with the PEER stage: the two peers are
+	// requested, the creator is cancelled (never approves their own change),
+	// the SRE-team member is not provisioned at all.
+	f.requestApproval(id)
+	if got := f.state(id); got != "ASSESS" {
+		t.Fatalf("state after Request Approval = %q, want ASSESS", got)
+	}
+	stages := f.stages(id)
+	if len(stages) != 1 || stages[0].label != "Peer Approval" || stages[0].groupID != crFlowGroupID {
+		t.Fatalf("stages after Request Approval = %+v, want exactly one \"Peer Approval\" stage on the assigned group", stages)
+	}
+	assertApprovers(t, "peer stage", stages[0].approvers, map[string]string{
+		crFlowCreatorID: "cancelled", crFlowPeerAID: "requested", crFlowPeerBID: "requested", crFlowOutsiderID: "requested",
+	})
+	assertStates(t, "legalNextStates(Assess)", f.legal(id), "authorize", "canceled")
+
+	// There is no manual shortcut past the approvals.
+	for _, target := range []domain.ChangeRequestState{domain.ChangeRequestStateScheduled, domain.ChangeRequestStateAuthorize} {
+		_, err := f.patchState(id, target)
+		var ve *apierror.ValidationError
+		if !errors.As(err, &ve) {
+			t.Fatalf("manual {state: %s} from Assess err = %v (%T), want *apierror.ValidationError", target, err, err)
+		}
+	}
+	if got := f.state(id); got != "ASSESS" {
+		t.Fatalf("state after refused manual transitions = %q, want still ASSESS", got)
+	}
+
+	// Peer approval right after Request Approval: CAB is its own group and
+	// comes next.
+	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
+		t.Fatalf("peer approval: %v", err)
+	}
+	if got := f.state(id); got != "AUTHORIZE" {
+		t.Fatalf("state after peer approval = %q, want AUTHORIZE", got)
+	}
+	stages = f.stages(id)
+	if len(stages) != 2 || stages[1].label != "CAB Approval" || stages[1].groupID != crCABGroupID {
+		t.Fatalf("stages after peer approval = %+v, want a second \"CAB Approval\" stage on the CAB group", stages)
+	}
+	assertApprovers(t, "peer stage after approval", stages[0].approvers, map[string]string{
+		crFlowCreatorID: "cancelled", crFlowPeerAID: "approved", crFlowPeerBID: "cancelled", crFlowOutsiderID: "cancelled",
+	})
+	assertApprovers(t, "CAB stage", stages[1].approvers, map[string]string{crCABMemberUserID1: "requested", crCABMemberUserID2: "requested"})
+	assertStates(t, "legalNextStates(Authorize)", f.legal(id), "canceled")
+
+	// A peer cannot also give the CAB approval (not in the CAB group), and no
+	// manual Schedule exists.
+	if err := f.decide(id, crFlowPeerBID, "approved"); err == nil {
+		t.Fatal("a peer approver with no CAB row decided the CAB stage, want NotFound")
+	}
+	if _, err := f.patchState(id, domain.ChangeRequestStateScheduled); err == nil {
+		t.Fatal("manual {state: scheduled} from Authorize succeeded, want a refusal")
+	}
+
+	// CAB approval moves the change to Scheduled by itself.
+	if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
+		t.Fatalf("CAB approval: %v", err)
+	}
+	if got := f.state(id); got != "SCHEDULED" {
+		t.Fatalf("state after CAB approval = %q, want SCHEDULED (automatic)", got)
+	}
+	assertStates(t, "legalNextStates(Scheduled)", f.legal(id), "implement", "canceled")
+
+	for _, step := range []struct {
+		to   domain.ChangeRequestState
+		want string
+	}{
+		{domain.ChangeRequestStateImplement, "IMPLEMENT"},
+		{domain.ChangeRequestStateReview, "REVIEW"},
+		{domain.ChangeRequestStateClosed, "CLOSED"},
+	} {
+		if _, err := f.patchState(id, step.to); err != nil {
+			t.Fatalf("PATCH state %s: %v", step.to, err)
+		}
+		if got := f.state(id); got != step.want {
+			t.Fatalf("state after %s = %q, want %q", step.to, got, step.want)
+		}
+	}
+	if got := f.legal(id); got != nil {
+		t.Fatalf("legalNextStates(Closed) = %v, want none", got)
+	}
+}
+
+// Emergency: no peer approval; Request Approval goes straight to Authorize
+// with ONLY the ECAB stage (its own group, not CAB); ECAB approval schedules.
+func TestChangeRequestFlowIntegration_EmergencyLifecycle(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	// CAB members exist too -- an emergency must NOT involve them.
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+	seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
+	id := f.create(domain.ChangeRequestTypeEmergency, crFlowGroupID)
+
+	assertStates(t, "legalNextStates(New)", f.legal(id), "assess", "canceled")
+	f.requestApproval(id)
+
+	if got := f.state(id); got != "AUTHORIZE" {
+		t.Fatalf("emergency state after Request Approval = %q, want AUTHORIZE (no peer step)", got)
+	}
+	stages := f.stages(id)
+	if len(stages) != 1 || stages[0].label != "ECAB Approval" || stages[0].groupID != crECABGroupID {
+		t.Fatalf("emergency stages = %+v, want exactly one \"ECAB Approval\" stage on the ECAB group", stages)
+	}
+	assertApprovers(t, "ECAB stage", stages[0].approvers, map[string]string{crECABMemberUserID: "requested"})
+	assertStates(t, "legalNextStates(Authorize)", f.legal(id), "canceled")
+
+	// Neither a peer nor a regular CAB member can decide an emergency.
+	for _, uid := range []string{crFlowPeerAID, crCABMemberUserID1} {
+		if err := f.decide(id, uid, "approved"); err == nil {
+			t.Fatalf("user %s decided the ECAB stage without an ECAB row", uid)
+		}
+	}
+
+	if err := f.decide(id, crECABMemberUserID, "approved"); err != nil {
+		t.Fatalf("ECAB approval: %v", err)
+	}
+	if got := f.state(id); got != "SCHEDULED" {
+		t.Fatalf("state after ECAB approval = %q, want SCHEDULED (automatic)", got)
+	}
+	assertStates(t, "legalNextStates(Scheduled)", f.legal(id), "implement", "canceled")
+	if len(f.stages(id)) != 1 {
+		t.Fatalf("emergency ended with %d stages, want 1", len(f.stages(id)))
+	}
+}
+
+// Standard: no approval stages at all; Request Approval goes straight to
+// Scheduled, then Implement -> Review -> Closed.
+func TestChangeRequestFlowIntegration_StandardLifecycle(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	id := f.create(domain.ChangeRequestTypeStandard, crFlowGroupID)
+
+	assertStates(t, "legalNextStates(New)", f.legal(id), "assess", "canceled")
+	f.requestApproval(id)
+
+	if got := f.state(id); got != "SCHEDULED" {
+		t.Fatalf("standard state after Request Approval = %q, want SCHEDULED (no approval needed)", got)
+	}
+	if n := len(f.stages(id)); n != 0 {
+		t.Fatalf("standard change has %d approval stages, want none (neither Peer nor CAB)", n)
+	}
+	assertStates(t, "legalNextStates(Scheduled)", f.legal(id), "implement", "canceled")
+
+	// Request Approval is only legal from New: it must not drag a Scheduled
+	// change back.
+	if _, err := f.patchState(id, domain.ChangeRequestStateAssess); err != nil {
+		t.Fatalf("idempotent resend of Request Approval on a Scheduled Standard change: %v", err)
+	}
+	for _, to := range []domain.ChangeRequestState{domain.ChangeRequestStateImplement, domain.ChangeRequestStateReview} {
+		if _, err := f.patchState(id, to); err != nil {
+			t.Fatalf("PATCH state %s: %v", to, err)
+		}
+	}
+	if _, err := f.patchState(id, domain.ChangeRequestStateClosed); err != nil {
+		t.Fatalf("PATCH state closed: %v", err)
+	}
+	if n := len(f.stages(id)); n != 0 {
+		t.Fatalf("standard change ended with %d approval stages, want none (Review approval is Normal-only)", n)
+	}
+}
+
+// Request Approval is only legal from New; once the change has moved on it is
+// refused rather than dragging the state backward.
+func TestChangeRequestFlowIntegration_RequestApprovalOnlyFromNew(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	id := f.create(domain.ChangeRequestTypeStandard, crFlowGroupID)
+	f.requestApproval(id)
+	if _, err := f.patchState(id, domain.ChangeRequestStateImplement); err != nil {
+		t.Fatalf("implement: %v", err)
+	}
+	_, err := f.patchState(id, domain.ChangeRequestStateAssess)
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("Request Approval on an Implement change err = %v (%T), want *apierror.ValidationError", err, err)
+	}
+	if got := f.state(id); got != "IMPLEMENT" {
+		t.Fatalf("state after refused Request Approval = %q, want IMPLEMENT", got)
+	}
+}
+
+// The creator may never approve their own change request -- neither the
+// peer stage nor CAB/ECAB -- but may still cancel it.
+func TestChangeRequestFlowIntegration_CreatorCannotApproveAnyStage(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	f.requestApproval(id)
+
+	assertForbidden := func(what, userID string) {
+		t.Helper()
+		err := f.decide(id, userID, "approved")
+		var fe *apierror.ForbiddenError
+		if !errors.As(err, &fe) {
+			t.Fatalf("%s: err = %v (%T), want *apierror.ForbiddenError", what, err, err)
+		}
+		if !strings.Contains(fe.Msg, "creator") {
+			t.Fatalf("%s: message %q should say the creator cannot approve", what, fe.Msg)
+		}
+	}
+
+	// Peer stage: the creator's row was born cancelled; even a REQUESTED row
+	// forced in by drift must not be decidable.
+	assertForbidden("creator on the peer stage (cancelled row)", crFlowCreatorID)
+	if _, err := f.scoped.Exec(f.sys,
+		`UPDATE approval_stage_approver SET status = 'requested' WHERE work_item_id = $1 AND approver_user_id = $2`, id, crFlowCreatorID); err != nil {
+		t.Fatalf("force creator row to requested: %v", err)
+	}
+	assertForbidden("creator on the peer stage (requested row)", crFlowCreatorID)
+	rejectErr := f.decide(id, crFlowCreatorID, "rejected")
+	var fe *apierror.ForbiddenError
+	if !errors.As(rejectErr, &fe) {
+		t.Fatalf("creator rejecting err = %v, want ForbiddenError (the creator does not decide at all)", rejectErr)
+	}
+
+	// CAB stage: put the creator in the CAB group's stage by force.
+	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
+		t.Fatalf("peer approval: %v", err)
+	}
+	if _, err := f.scoped.Exec(f.sys,
+		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'requested'
+		 FROM approval_stage s WHERE s.work_item_id = $1 AND s.checkpoint_label = 'CAB Approval'`, id, crFlowCreatorID); err != nil {
+		t.Fatalf("force creator onto the CAB stage: %v", err)
+	}
+	assertForbidden("creator on the CAB stage", crFlowCreatorID)
+	if got := f.state(id); got != "AUTHORIZE" {
+		t.Fatalf("state after refused creator approvals = %q, want AUTHORIZE (unchanged)", got)
+	}
+
+	// The creator may still cancel.
+	if _, err := f.patchState(id, domain.ChangeRequestStateCanceled); err != nil {
+		t.Fatalf("creator cancelling their own change: %v", err)
+	}
+	if got := f.state(id); got != "CANCELED" {
+		t.Fatalf("state after cancel = %q, want CANCELED", got)
+	}
+}
+
+// The creator is also recognised through work_item.created_by (their email)
+// when change_request.requested_by_user_id was never set.
+func TestChangeRequestFlowIntegration_CreatorRecognisedByCreatedByEmail(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	if _, err := f.scoped.Exec(f.sys, `UPDATE change_request SET requested_by_user_id = NULL WHERE id = $1`, id); err != nil {
+		t.Fatalf("clear requested_by: %v", err)
+	}
+	f.requestApproval(id)
+	stages := f.stages(id)
+	if got := stages[0].approvers[crFlowCreatorID]; got != "cancelled" {
+		t.Fatalf("creator (identified only by created_by email) peer row = %q, want cancelled", got)
+	}
+}
+
+// SRE team members (Apollo/Artemis/any SRE group) are never peer approvers.
+func TestChangeRequestFlowIntegration_SREMemberCannotBePeerApprover(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	f.makeSRE(crFlowSREID, crFlowGroupID)
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	f.requestApproval(id)
+
+	stages := f.stages(id)
+	if _, present := stages[0].approvers[crFlowSREID]; present {
+		t.Fatalf("SRE member was provisioned into the peer approval group: %v", stages[0].approvers)
+	}
+
+	// Decision time: even a row that exists (drift, or a membership that
+	// changed after provisioning) cannot be decided by an SRE member.
+	if _, err := f.scoped.Exec(f.sys,
+		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'requested'
+		 FROM approval_stage s WHERE s.work_item_id = $1 AND s.checkpoint_label = 'Peer Approval'`, id, crFlowSREID); err != nil {
+		t.Fatalf("force SRE member onto the peer stage: %v", err)
+	}
+	err := f.decide(id, crFlowSREID, "approved")
+	var fe *apierror.ForbiddenError
+	if !errors.As(err, &fe) || !strings.Contains(fe.Msg, "SRE") {
+		t.Fatalf("SRE member peer decision err = %v (%T), want a ForbiddenError naming the SRE rule", err, err)
+	}
+	if got := f.state(id); got != "ASSESS" {
+		t.Fatalf("state after refused SRE approval = %q, want ASSESS", got)
+	}
+}
+
+// When the assigned group IS an SRE group (Apollo), nobody in it may approve;
+// the peer pool falls back to the "Devops Approval" group of experienced
+// engineers. With no such group the request is refused clearly.
+func TestChangeRequestFlowIntegration_SREAssignedGroupFallsBackToPeerApprovalGroup(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	f.makeSRE(crFlowSREID, crFlowSREGroupID)
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+
+	var existing int
+	if err := f.scoped.QueryRow(f.sys, `SELECT COUNT(*) FROM "group" WHERE name = $1`, domain.PeerApprovalFallbackGroupName).Scan(&existing); err != nil {
+		t.Fatalf("count devops group: %v", err)
+	}
+	if existing != 0 {
+		t.Skipf("a %q group already exists in this database", domain.PeerApprovalFallbackGroupName)
+	}
+
+	// No fallback group: refused, nothing half-written.
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowSREGroupID)
+	_, err := f.patchState(id, domain.ChangeRequestStateAssess)
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, "no eligible peer approvers") {
+		t.Fatalf("Request Approval on an SRE-assigned change with no peer group err = %v (%T), want the no-eligible-peer-approvers ValidationError", err, err)
+	}
+	if got := f.state(id); got != "NEW" {
+		t.Fatalf("state after refused Request Approval = %q, want NEW", got)
+	}
+	if n := len(f.stages(id)); n != 0 {
+		t.Fatalf("refused Request Approval left %d stages", n)
+	}
+
+	// With the Devops Approval group (an SRE member sits in it too -- still
+	// excluded), the experienced engineers become the peer approvers.
+	if _, err := f.scoped.Exec(f.sys,
+		`INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name) VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', $2)`,
+		crFlowDevopsGroupID, domain.PeerApprovalFallbackGroupName); err != nil {
+		t.Fatalf("seed devops group: %v", err)
+	}
+	seedApprovalGroupMembers(t, f.scoped, crFlowDevopsGroupID, crFlowPeerAID, crFlowPeerBID)
+	if _, err := f.scoped.Exec(f.sys,
+		`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id)
+		 VALUES (gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', $1::uuid, $2, $3::uuid)`,
+		crFlowSRETeamID, crFlowSREID, crFlowDevopsGroupID); err != nil {
+		t.Fatalf("seed SRE member in devops group: %v", err)
+	}
+	f.requestApproval(id)
+	stages := f.stages(id)
+	if len(stages) != 1 || stages[0].groupID != crFlowDevopsGroupID {
+		t.Fatalf("stages = %+v, want one peer stage on the Devops Approval group", stages)
+	}
+	assertApprovers(t, "fallback peer stage", stages[0].approvers, map[string]string{crFlowPeerAID: "requested", crFlowPeerBID: "requested"})
+}
+
+// A Normal change cannot be sent for approval into a flow with nobody to give
+// the CAB approval; the request is refused and nothing is written.
+func TestChangeRequestFlowIntegration_NormalRequiresEligibleCABApprovers(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+
+	_, err := f.patchState(id, domain.ChangeRequestStateAssess)
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, domain.CABApprovalGroupName) {
+		t.Fatalf("Request Approval with an empty CAB group err = %v (%T), want a ValidationError naming %q", err, err, domain.CABApprovalGroupName)
+	}
+	if got := f.state(id); got != "NEW" {
+		t.Fatalf("state after refused Request Approval = %q, want NEW", got)
+	}
+	if n := len(f.stages(id)); n != 0 {
+		t.Fatalf("refused Request Approval left %d approval stages", n)
+	}
+
+	// Same for Emergency and the ECAB group.
+	eid := f.create(domain.ChangeRequestTypeEmergency, crFlowGroupID)
+	_, err = f.patchState(eid, domain.ChangeRequestStateAssess)
+	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, domain.ECABApprovalGroupName) {
+		t.Fatalf("emergency Request Approval with an empty ECAB group err = %v (%T), want a ValidationError naming %q", err, err, domain.ECABApprovalGroupName)
+	}
+
+	// A CAB group whose only member is the creator is also a dead end.
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crFlowCreatorID)
+	if _, err = f.patchState(id, domain.ChangeRequestStateAssess); err == nil {
+		t.Fatal("Request Approval succeeded although the only CAB member is the creator")
+	}
+}
+
+// CAB approval must not be able to strand a change: if the CAB group has lost
+// its members by the time the peer approves, the peer's decision is refused
+// (rolled back) instead of advancing to an Authorize nobody can decide.
+func TestChangeRequestFlowIntegration_PeerApprovalRefusedWhenCABGroupEmptied(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	f.requestApproval(id)
+	if _, err := f.scoped.Exec(f.sys, `DELETE FROM team_member WHERE user_id = $1`, crCABMemberUserID1); err != nil {
+		t.Fatalf("empty the CAB group: %v", err)
+	}
+
+	err := f.decide(id, crFlowPeerAID, "approved")
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("peer approval into an empty CAB group err = %v (%T), want *apierror.ValidationError", err, err)
+	}
+	if got := f.state(id); got != "ASSESS" {
+		t.Fatalf("state after refused peer approval = %q, want ASSESS (rolled back)", got)
+	}
+	stages := f.stages(id)
+	if len(stages) != 1 || stages[0].approvers[crFlowPeerAID] != "requested" {
+		t.Fatalf("stages after rolled-back approval = %+v, want the peer still pending", stages)
+	}
+}
+
+// A CAB/ECAB rejection keeps the existing rejection behaviour: siblings are
+// cancelled and the state is NOT advanced (nor rolled back).
+func TestChangeRequestFlowIntegration_CABRejectionDoesNotSchedule(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1, crCABMemberUserID2)
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	f.requestApproval(id)
+	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
+		t.Fatalf("peer approval: %v", err)
+	}
+	if err := f.decide(id, crCABMemberUserID1, "rejected"); err != nil {
+		t.Fatalf("CAB rejection: %v", err)
+	}
+	if got := f.state(id); got != "AUTHORIZE" {
+		t.Fatalf("state after CAB rejection = %q, want AUTHORIZE (no cascade)", got)
+	}
+	stages := f.stages(id)
+	assertApprovers(t, "CAB stage after rejection", stages[1].approvers, map[string]string{crCABMemberUserID1: "rejected", crCABMemberUserID2: "cancelled"})
+}
+
+// The type cannot be changed once approval has been requested: the stages
+// provisioned belong to the type they were provisioned for.
+func TestChangeRequestFlowIntegration_TypeLockedAfterApprovalRequested(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+
+	// Before approval is requested the type may still be corrected.
+	std := domain.ChangeRequestTypeStandard
+	if _, err := f.repo.PatchChangeRequest(f.sys, id, domain.PatchChangeRequestRequest{Type: &std}, "x@example.com"); err != nil {
+		t.Fatalf("changing the type on a New change: %v", err)
+	}
+	nrm := domain.ChangeRequestTypeNormal
+	if _, err := f.repo.PatchChangeRequest(f.sys, id, domain.PatchChangeRequestRequest{Type: &nrm}, "x@example.com"); err != nil {
+		t.Fatalf("changing the type back: %v", err)
+	}
+	f.requestApproval(id)
+	emg := domain.ChangeRequestTypeEmergency
+	_, err := f.repo.PatchChangeRequest(f.sys, id, domain.PatchChangeRequestRequest{Type: &emg}, "x@example.com")
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("changing the type after Request Approval err = %v (%T), want *apierror.ValidationError", err, err)
+	}
+}
+
+// canDecide is true only on the viewer's own pending row, and only when they
+// may actually decide it.
+func TestChangeRequestFlowIntegration_CanDecide(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	f.makeSRE(crFlowSREID, crFlowGroupID)
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	f.requestApproval(id)
+	// Drift: rows for the creator and the SRE member exist as requested.
+	for _, uid := range []string{crFlowCreatorID, crFlowSREID} {
+		if _, err := f.scoped.Exec(f.sys,
+			`DELETE FROM approval_stage_approver WHERE work_item_id = $1 AND approver_user_id = $2`, id, uid); err != nil {
+			t.Fatalf("reset row: %v", err)
+		}
+		if _, err := f.scoped.Exec(f.sys,
+			`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+			 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'requested'
+			 FROM approval_stage s WHERE s.work_item_id = $1`, id, uid); err != nil {
+			t.Fatalf("seed row: %v", err)
+		}
+	}
+
+	canDecide := func(viewerID string) map[string]bool {
+		t.Helper()
+		ctx := repository.WithCallerIdentity(context.Background(), repository.SearchScope{Unrestricted: true, ViewerEmail: crFlowEmail(viewerID)})
+		got, err := f.repo.GetChangeRequestApprovals(ctx, id)
+		if err != nil {
+			t.Fatalf("GetChangeRequestApprovals: %v", err)
+		}
+		out := map[string]bool{}
+		for _, a := range got.Approvals {
+			for _, ap := range a.Approvers {
+				if ap.CanDecide {
+					out[ap.ID] = true
+				}
+			}
+		}
+		return out
+	}
+
+	if got := canDecide(crFlowPeerAID); len(got) != 1 || !got[crFlowPeerAID] {
+		t.Fatalf("canDecide for a peer = %v, want only their own row", got)
+	}
+	if got := canDecide(crFlowCreatorID); len(got) != 0 {
+		t.Fatalf("canDecide for the creator = %v, want none", got)
+	}
+	if got := canDecide(crFlowSREID); len(got) != 0 {
+		t.Fatalf("canDecide for an SRE member = %v, want none", got)
+	}
+	if got := canDecide(crCABMemberUserID1); len(got) != 0 {
+		t.Fatalf("canDecide for a CAB member while still in Assess = %v, want none (no CAB row yet)", got)
+	}
+	// System identity carries no viewer: never true.
+	sysGot, err := f.repo.GetChangeRequestApprovals(f.sys, id)
+	if err != nil {
+		t.Fatalf("GetChangeRequestApprovals(system): %v", err)
+	}
+	for _, a := range sysGot.Approvals {
+		for _, ap := range a.Approvers {
+			if ap.CanDecide {
+				t.Fatalf("canDecide set without a viewer identity: %+v", ap)
+			}
+		}
+	}
+
+	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
+		t.Fatalf("peer approval: %v", err)
+	}
+	if got := canDecide(crFlowPeerAID); len(got) != 0 {
+		t.Fatalf("canDecide for the peer after deciding = %v, want none", got)
+	}
+	if got := canDecide(crCABMemberUserID1); len(got) != 1 || !got[crCABMemberUserID1] {
+		t.Fatalf("canDecide for a CAB member on the CAB stage = %v, want their own row", got)
+	}
+}
+
+// The CAB Approval and ECAB Approval groups exist after the migrations, and
+// re-running the migration neither fails nor duplicates them.
+func TestChangeRequestFlowIntegration_ApprovalGroupsExistAndMigrationIsIdempotent(t *testing.T) {
+	f := newCRFlow(t)
+	for _, name := range []string{domain.CABApprovalGroupName, domain.ECABApprovalGroupName} {
+		var n int
+		if err := f.scoped.QueryRow(f.sys, `SELECT COUNT(*) FROM "group" WHERE name = $1`, name).Scan(&n); err != nil {
+			t.Fatalf("count %q: %v", name, err)
+		}
+		if n < 1 {
+			t.Fatalf("group %q does not exist after migrations", name)
+		}
+	}
+	var cabID, ecabID string
+	if err := f.scoped.QueryRow(f.sys, `SELECT id::text FROM "group" WHERE name = $1 ORDER BY created_on LIMIT 1`, domain.CABApprovalGroupName).Scan(&cabID); err != nil {
+		t.Fatalf("read CAB group: %v", err)
+	}
+	if err := f.scoped.QueryRow(f.sys, `SELECT id::text FROM "group" WHERE name = $1 ORDER BY created_on LIMIT 1`, domain.ECABApprovalGroupName).Scan(&ecabID); err != nil {
+		t.Fatalf("read ECAB group: %v", err)
+	}
+	if cabID == ecabID {
+		t.Fatal("CAB Approval and ECAB Approval are the same group; they must be separate groups")
+	}
+
+	sqlBytes, err := os.ReadFile("../../migrations/0188_change_request_approval_groups.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	var before, after []string
+	collect := func(into *[]string) {
+		rows, err := f.scoped.Query(f.sys, `SELECT id::text FROM "group" WHERE name IN ($1, $2) ORDER BY id`, domain.CABApprovalGroupName, domain.ECABApprovalGroupName)
+		if err != nil {
+			t.Fatalf("list groups: %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			*into = append(*into, id)
+		}
+	}
+	collect(&before)
+	for i := 0; i < 2; i++ {
+		if _, err := f.pool.Exec(context.Background(), string(sqlBytes)); err != nil {
+			t.Fatalf("re-running migration 0188 (pass %d): %v", i+1, err)
+		}
+	}
+	collect(&after)
+	sort.Strings(before)
+	sort.Strings(after)
+	if strings.Join(before, ",") != strings.Join(after, ",") {
+		t.Fatalf("re-running the migration changed the groups: before %v, after %v", before, after)
+	}
+}
+
+// A type is mandatory on create, and only standard/normal/emergency are
+// allowed -- in both Postgres create paths (portal and ServiceNow-first).
+func TestChangeRequestFlowIntegration_CreateRequiresCreatableType(t *testing.T) {
+	f := newCRFlow(t)
+	var ve *apierror.ValidationError
+
+	if _, err := f.repo.CreateChangeRequest(f.sys, domain.CreateChangeRequestRequest{Subject: crFlowSubject}, "x@example.com"); !errors.As(err, &ve) || !strings.Contains(ve.Msg, "type is required") {
+		t.Fatalf("CreateChangeRequest without a type err = %v (%T), want a \"type is required\" ValidationError", err, err)
+	}
+	if _, err := f.repo.CreateChangeRequestFromServiceNow(f.sys, domain.CreateChangeRequestRequest{Subject: crFlowSubject}, "3aaaaaaa-0000-0000-0000-0000000000f1", "CRFLOWSN001", "x@example.com"); !errors.As(err, &ve) || !strings.Contains(ve.Msg, "type is required") {
+		t.Fatalf("CreateChangeRequestFromServiceNow without a type err = %v (%T), want a \"type is required\" ValidationError", err, err)
+	}
+	azure := domain.ChangeRequestTypeAzure
+	if _, err := f.repo.CreateChangeRequest(f.sys, domain.CreateChangeRequestRequest{Subject: crFlowSubject, Type: &azure}, "x@example.com"); !errors.As(err, &ve) {
+		t.Fatalf("CreateChangeRequest with type azure err = %v (%T), want a ValidationError", err, err)
+	}
+
+	for _, typ := range domain.ChangeRequestCreatableTypes {
+		typ := typ
+		resp, err := f.repo.CreateChangeRequest(f.sys, domain.CreateChangeRequestRequest{Subject: crFlowSubject, Type: &typ}, "x@example.com")
+		if err != nil {
+			t.Fatalf("CreateChangeRequest(%s): %v", typ, err)
+		}
+		cr, err := f.repo.GetChangeRequestByID(f.sys, resp.ChangeRequest.ID)
+		if err != nil {
+			t.Fatalf("GetChangeRequestByID: %v", err)
+		}
+		if cr.Type == nil || !strings.EqualFold(*cr.Type, string(typ)) {
+			t.Fatalf("created type = %v, want %q", cr.Type, typ)
+		}
 	}
 }

@@ -5518,6 +5518,11 @@ paths:
   /change-requests:
     post:
       summary: Create a change request (ServiceNow data source only).
+      description: >-
+        The body must carry `type`: one of `standard`, `normal` or `emergency`
+        (400 with an explanatory message otherwise). The type decides the approval
+        flow -- Standard needs none, Normal needs peer then CAB approval, Emergency
+        needs ECAB approval only.
       operationId: createChangeRequest
       security:
         - bearerAuth: []
@@ -5527,6 +5532,11 @@ paths:
           application/json:
             schema:
               type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [standard, normal, emergency]
       responses:
         "201":
           description: Change request created.
@@ -17462,8 +17472,10 @@ components:
               items:
                 type: string
               description: >-
-                States the change request can legally transition to from its
-                current state, given its type and workflow position.
+                Next states a human may move the change request to. "assess" out
+                of New is the "Request Approval" action for every type (the
+                state it lands in depends on the type). "scheduled" is never
+                offered: CAB/ECAB approval schedules a change automatically.
 
     TaskSummary:
       type: object
@@ -17603,6 +17615,12 @@ components:
             Approver-level status as reported by the backing data source
             (e.g. "APPROVED", "NOT_REQUIRED", "REQUESTED"); open string set,
             not a fixed enum.
+        canDecide:
+          type: boolean
+          description: >-
+            True only on the calling user's own REQUESTED row, when they may
+            actually decide it (not the change request's creator; not an SRE team
+            member on the peer approval stage). Render Approve/Reject on this.
         createdOn:
           type: string
           nullable: true
@@ -17624,7 +17642,9 @@ components:
       properties:
         stage:
           type: string
-          enum: [Assess, Authorize, Customer Approval]
+          description: >-
+            "Peer Approval", "CAB Approval", "ECAB Approval" or "Review";
+            legacy/synced stages may be "Assess", "Authorize" or "Customer Approval".
         approverType:
           type: string
           enum: [STATIC_GROUP, DYNAMIC_CONTACT]

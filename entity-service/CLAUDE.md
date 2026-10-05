@@ -2458,6 +2458,93 @@ the same `validChangeRequestSortField`/`validChangeRequestSortOrder` maps
 value is a 400 on both data sources instead of silently falling back to
 `created_on DESC` only on Postgres.
 
+### Approval flow by change type (current behaviour)
+
+> **This section is the current contract and supersedes the Assess/Authorize/
+> "Move to Assess" history further down wherever they differ** (that history
+> is kept for the reasoning behind individual mechanisms). Code:
+> `change_request_approval_flow.go` plus `patchChangeRequestTx` /
+> `DecideChangeRequestApproval` in `change_request_repo.go`; migration
+> `0188_change_request_approval_groups.sql`.
+
+**A change request is created with exactly one of three types** — `standard`,
+`normal`, `emergency` (ServiceNow's own "What type of change is required?":
+Normal "requires one or more approvals", Standard "does not require approval",
+Emergency "must be implemented as soon as possible"). `type` is **required** on
+create: `repository.ValidateCreateChangeRequestType` is applied by both
+Postgres creates, the ServiceNow-first (dual-write) path *before* ServiceNow is
+called, the pure ServiceNow service, and the csm-portal BFF. `azure`/`infra`/…
+still exist on synced legacy rows and read back fine but cannot be chosen at
+create. The type cannot be changed by PATCH once an approval stage exists.
+
+| Type | Flow |
+|---|---|
+| Normal | New →(**Request Approval**)→ Assess `[Peer Approval]` → Authorize `[CAB Approval]` → **Scheduled automatically on CAB approval** → Implement → Review → Closed |
+| Emergency | New →(**Request Approval**)→ Authorize `[ECAB Approval only]` → **Scheduled automatically on ECAB approval** → Implement → Review → Closed |
+| Standard | New →(**Request Approval**)→ **Scheduled** (no approval stages at all) → Implement → Review → Closed |
+
+* **"Request Approval" is the one human action out of New** and is always sent
+  as `{state: "assess"}` (legalNextStates of New is `["assess","canceled"]` for
+  every type — the webapp contract). The state written is chosen from the type,
+  never by the caller: Assess / Authorize / Scheduled. It is only legal from New
+  (a resend that matches the resulting state is an idempotent no-op; anything
+  else is a 400). It still requires an assigned team.
+* **There is no "Schedule" action.** `scheduled` is never in `legalNextStates`
+  and a manual `{state: "scheduled"}` (or `"authorize"` / `"customer_approval"`)
+  PATCH is rejected (400): Scheduled is reached only by the CAB/ECAB approval
+  cascade or by Request Approval on a Standard change. The ServiceNow data
+  source's own offered states are filtered the same way
+  (`withoutManualScheduled`). `legalNextStates` per state: new `[assess,
+  canceled]`, assess `[authorize, canceled]` (`authorize` is the approval path;
+  the webapp never renders it as a button), authorize `[canceled]`, scheduled
+  `[implement, canceled]`, implement `[review, canceled]`, review `[closed,
+  customer_review, canceled]`, customer_review `[closed, canceled]`,
+  customer_approval (legacy) `[canceled]`, terminal states none.
+* **Approver pools.**
+  * *Peer Approval* — Normal only. The change's assigned group, **minus every
+    member of an SRE team** (`team.type` starting `sre`, e.g. `sre-abt`:
+    Apollo, Artemis, …): only experienced engineers qualify to be peer
+    approvers. When the assigned group is itself an SRE group (or nobody
+    eligible remains once the creator is excluded) the pool is the
+    **`Devops Approval`** group (`domain.PeerApprovalFallbackGroupName`, the
+    ServiceNow flow's peer approval group), same exclusions. Neither → 400
+    "no eligible peer approvers".
+  * *CAB Approval* — Normal only, **right after** peer approval, its own
+    group (`CAB Approval`). Provisioned inside the peer-approval decision's
+    transaction; if it cannot be (nobody eligible) the peer decision is **rolled
+    back** with a 400 rather than stranding the change in Authorize. Request
+    Approval also pre-validates the CAB pool so the failure is early.
+  * *ECAB Approval* — Emergency only, **its own group** (`ECAB Approval`), the
+    only stage (no peer approval, no CAB).
+  * Standard: no stage.
+  * *Review* — unchanged (assigned team, provisioned on a `{state: "review"}`
+    PATCH once exactly two stages exist, i.e. Normal only).
+* **`CAB Approval` and `ECAB Approval` groups** are created by migration 0188
+  (fixed ids `00000000-0000-4000-8000-00000000ca01` / `…eca1`) only when no group
+  of that name exists, idempotently; membership is NOT seeded (synced from
+  ServiceNow or set by an operator; local compose seed adds the two dev users).
+  Groups are resolved **by name**; members are `team_member.group_id` (and
+  `team_member.team_id` of a team with that name, which is how the CR-notice
+  flow addresses them).
+* **The creator may not approve at any stage** (peer, CAB, ECAB) — they may
+  still cancel. The creator is the user whose email is `work_item.created_by`
+  or who is `change_request.requested_by_user_id`. They are provisioned
+  `cancelled` where they are in a pool, and `DecideChangeRequestApproval`
+  refuses them with a 403 even if a `requested` row exists.
+* **SRE members may not decide a peer approval** — not provisioned, and
+  refused (403) at decision time even if a stale row exists. There is no
+  endpoint in this repo that edits group membership (it comes from the
+  ServiceNow sync), so provisioning + decision time are the enforcement points.
+* **`canDecide`** on each approver in `GET /change-requests/{id}/approvals` is
+  true only on the calling user's own `REQUESTED` row when they may actually
+  decide it (not creator; not SRE on the peer stage). Additive, advisory; the
+  decision endpoint re-checks. Postgres data source only.
+* **Rejections** keep the existing behaviour: siblings cancelled, no state
+  change in either direction.
+* Stage labels (`approval_stage.checkpoint_label`) are now `Peer Approval`,
+  `CAB Approval`, `ECAB Approval`, `Review`; pre-existing `Assess`/`Authorize`
+  labels (and unlabeled positional stages) are still recognised as peer/CAB.
+
 **`scanChangeRequestView`/`scanChangeRequestViewAndDetail` had a
 scan-destination bug** found in production logs: `wi.created_on`/
 `wi.updated_on` (`TIMESTAMPTZ`) were scanned directly into
@@ -2634,8 +2721,8 @@ everywhere else, and is presumably populated in real synced environments by
 `csm-sync-service` mirroring ServiceNow's own `sys_user_grmember`, the same
 way `assignment_group_id` itself is populated from `sys_user_group`.
 
-**The second approval checkpoint, Authorize ("Risk approvals" in real
-ServiceNow), now gets the identical auto-provisioning treatment as Assess**
+**(Superseded — see "Approval flow by change type" above: the second stage is now the separate `CAB Approval` group, not the assigned team, and is only provisioned by the peer-approval cascade, never by a direct `{state: "authorize"}` PATCH.) The second approval checkpoint, Authorize ("Risk approvals" in real
+ServiceNow), got the identical auto-provisioning treatment as Assess**
 — the same gap, one lifecycle step later: a change request that reaches
 Authorize with nothing in `approval_stage`/`approval_stage_approver` for it
 is just as stuck as the original Assess-empty-Approvals-tab bug this whole

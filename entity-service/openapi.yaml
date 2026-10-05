@@ -15640,6 +15640,13 @@ components:
               type: array
               items:
                 type: string
+              description: >-
+                Next states a human may move the change request to. "assess" out
+                of New is the "Request Approval" action for every type (the
+                state it lands in depends on the type: Assess for Normal,
+                Authorize for Emergency, Scheduled for Standard). "scheduled" is
+                never offered: CAB/ECAB approval schedules a change
+                automatically.
             implementationPlan:
               type: string
               nullable: true
@@ -15731,6 +15738,14 @@ components:
           description: >-
             Approver response status. Open string set (e.g. APPROVED, NOT_REQUIRED,
             REQUESTED, REJECTED, CANCELLED, NO_CONSENSUS); not a fixed enum.
+        canDecide:
+          type: boolean
+          description: >-
+            True only on the calling user's own REQUESTED row, when they may
+            actually decide it (they are not the change request's creator, and
+            are not an SRE team member on the peer approval stage). Advisory --
+            the decision endpoint re-checks. Postgres data source only; false
+            elsewhere.
         createdOn:
           type: string
           nullable: true
@@ -15754,7 +15769,10 @@ components:
       properties:
         stage:
           type: string
-          description: Approval stage name (e.g. Assess, Authorize, Customer Approval).
+          description: >-
+            Approval stage name: "Peer Approval", "CAB Approval", "ECAB Approval"
+            or "Review" for stages provisioned by this service; legacy/synced
+            stages may be "Assess", "Authorize" or "Customer Approval".
         approverType:
           type: string
           enum: [STATIC_GROUP, DYNAMIC_CONTACT]
@@ -16170,9 +16188,17 @@ components:
       type: object
       required:
         - subject
+        - type
       properties:
         subject:
           type: string
+        type:
+          type: string
+          enum: [standard, normal, emergency]
+          description: >-
+            Required. Decides the approval flow: Standard needs no approval
+            (Request Approval goes straight to Scheduled); Normal needs peer
+            approval then CAB approval; Emergency needs ECAB approval only.
         category:
           type: string
           enum:
@@ -16211,15 +16237,6 @@ components:
             - high
             - medium
             - low
-        type:
-          type: string
-          enum:
-            - standard
-            - normal
-            - emergency
-            - model
-            - site_reliability_ops
-            - azure
         state:
           type: string
           enum:

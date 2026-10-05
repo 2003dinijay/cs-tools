@@ -22,6 +22,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 )
 
 const testCRID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -29,7 +31,7 @@ const testCRID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 func TestCreateChangeRequest(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
 		h := NewChangeRequestHandler(&mockEntityChangeRequestClient{})
-		r := httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(`{"subject":"Deploy v2"}`))
+		r := httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(`{"subject":"Deploy v2","type":"normal"}`))
 		w := httptest.NewRecorder()
 		h.CreateChangeRequest(w, r)
 		assertStatus(t, w, http.StatusUnauthorized)
@@ -47,6 +49,52 @@ func TestCreateChangeRequest(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
+	t.Run("requires a type of standard, normal or emergency", func(t *testing.T) {
+		for name, payload := range map[string]string{
+			"missing":      `{"subject":"Deploy v2"}`,
+			"empty":        `{"subject":"Deploy v2","type":""}`,
+			"not a string": `{"subject":"Deploy v2","type":3}`,
+			"azure":        `{"subject":"Deploy v2","type":"azure"}`,
+			"bogus":        `{"subject":"Deploy v2","type":"bogus"}`,
+		} {
+			t.Run(name, func(t *testing.T) {
+				called := false
+				client := &mockEntityChangeRequestClient{
+					createChangeRequestFn: func(_ context.Context, _ []byte) ([]byte, error) {
+						called = true
+						return nil, nil
+					},
+				}
+				h := NewChangeRequestHandler(client)
+				r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(payload)))
+				w := httptest.NewRecorder()
+				h.CreateChangeRequest(w, r)
+				assertStatus(t, w, http.StatusBadRequest)
+				if called {
+					t.Error("upstream was called for a change request without a valid type")
+				}
+				if msg := w.Body.String(); !strings.Contains(msg, "standard, normal or emergency") {
+					t.Errorf("message %q should name the allowed types", msg)
+				}
+			})
+		}
+	})
+
+	t.Run("accepts each creatable type", func(t *testing.T) {
+		for _, typ := range []string{"standard", "normal", "emergency"} {
+			client := &mockEntityChangeRequestClient{
+				createChangeRequestFn: func(_ context.Context, _ []byte) ([]byte, error) {
+					return []byte(`{"message":"ok"}`), nil
+				},
+			}
+			h := NewChangeRequestHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(`{"subject":"x","type":"`+typ+`"}`)))
+			w := httptest.NewRecorder()
+			h.CreateChangeRequest(w, r)
+			assertStatus(t, w, http.StatusCreated)
+		}
+	})
+
 	t.Run("rejects invalid JSON body", func(t *testing.T) {
 		h := NewChangeRequestHandler(&mockEntityChangeRequestClient{})
 		r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(`not-json`)))
@@ -58,7 +106,7 @@ func TestCreateChangeRequest(t *testing.T) {
 	})
 
 	t.Run("forwards body to upstream and returns 201 with response", func(t *testing.T) {
-		const reqPayload = `{"subject":"Deploy v2"}`
+		const reqPayload = `{"subject":"Deploy v2","type":"normal"}`
 		var capturedBody []byte
 		client := &mockEntityChangeRequestClient{
 			createChangeRequestFn: func(_ context.Context, body []byte) ([]byte, error) {
@@ -88,7 +136,7 @@ func TestCreateChangeRequest(t *testing.T) {
 					},
 				}
 				h := NewChangeRequestHandler(client)
-				r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(`{"subject":"Deploy v2"}`)))
+				r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(`{"subject":"Deploy v2","type":"normal"}`)))
 				w := httptest.NewRecorder()
 				h.CreateChangeRequest(w, r)
 				assertStatus(t, w, tc.wantCode)
@@ -527,6 +575,24 @@ func TestDecideChangeRequestApproval(t *testing.T) {
 				assertContentType(t, w, "application/json")
 			})
 		}
+	})
+
+	// A refusal to decide must tell the approver why (creator may not approve,
+	// SRE members may not give peer approval); the reason comes from the entity
+	// service's own error envelope. Anything else stays generic.
+	t.Run("a 403 carrying the entity service's reason shows it", func(t *testing.T) {
+		client := &mockEntityChangeRequestClient{
+			decideChangeRequestApprovalFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusForbidden, Body: `{"code":403,"message":"the creator of a change request cannot approve it"}`}
+			},
+		}
+		h := NewChangeRequestHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests/"+testCRID+"/approvals/decision", strings.NewReader(`{"decision":"approved"}`)))
+		r.SetPathValue("id", testCRID)
+		w := httptest.NewRecorder()
+		h.DecideChangeRequestApproval(w, r)
+		assertStatus(t, w, http.StatusForbidden)
+		assertErrorMessage(t, w, "the creator of a change request cannot approve it")
 	})
 }
 
