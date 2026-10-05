@@ -538,6 +538,38 @@ describe("ChangeCaseTypeDialog — transfer into service_request", () => {
     });
   });
 
+  it("blocks confirm when the catalog item's request form fails to load", () => {
+    mockUseCatalogItemVariables.mockReturnValue(
+      asQueryResult({
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        error: new Error("Could not load the request form for this catalog item."),
+      }),
+    );
+    const onSubmit = vi.fn();
+    render(
+      <ChangeCaseTypeDialog
+        currentType="case"
+        currentSeverity="S2"
+        hasAttachments
+        isSubmitting={false}
+        deployedProductId="dp-1"
+        onClose={() => {}}
+        onSubmit={onSubmit}
+      />,
+    );
+    pickTargetAndAdvanceToFields(/service request/i);
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "Catalog" }));
+    fireEvent.click(screen.getByRole("option", { name: /api manager support/i }));
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "Catalog item" }));
+    fireEvent.click(screen.getByRole("option", { name: /request environment scaling/i }));
+    // Without its questions the item can't be answered, so the fields step
+    // stays invalid rather than treating the failure as "no fields".
+    expect(screen.getByRole("button", { name: /^next$/i })).toBeDisabled();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("blocks confirm until a required question is answered", () => {
     mockUseCatalogItemVariables.mockReturnValue(
       asQueryResult({

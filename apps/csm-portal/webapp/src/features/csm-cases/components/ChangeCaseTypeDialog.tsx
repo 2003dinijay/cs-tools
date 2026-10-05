@@ -229,7 +229,11 @@ export default function ChangeCaseTypeDialog({
       : targetType === "security_report_analysis"
         ? hasAttachments
         : targetType === "service_request"
-          ? !!catalogId && !!catalogItemId && firstEmptyRequired === null
+          ? !!catalogId &&
+            !!catalogItemId &&
+            !variables.isLoading &&
+            !variables.isError &&
+            firstEmptyRequired === null
           : true;
 
   // fieldsStepValid already carries each target's own requirements (catalog +
