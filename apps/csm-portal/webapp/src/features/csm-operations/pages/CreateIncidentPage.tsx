@@ -205,7 +205,10 @@ export default function CreateIncidentPage(): JSX.Element {
 
   const isShortDescriptionValid = shortDescription.trim().length > 0;
   const isCategoryValid = !!category;
-  const isSubcategoryValid = !!subcategory;
+  // Subcategory is optional: entity-service (validateCreateIncidentRequest),
+  // the portal backend (validateCreateIncidentBody) and the incident table
+  // (nullable subcategory_id) all accept an incident with none, so it's only
+  // sent when one was picked.
   const isContactTypeValid = !!contactType;
   const isImpactValid = !!impact;
   const isUrgencyValid = !!urgency;
@@ -218,7 +221,6 @@ export default function CreateIncidentPage(): JSX.Element {
   const canSubmit =
     isShortDescriptionValid &&
     isCategoryValid &&
-    isSubcategoryValid &&
     isContactTypeValid &&
     isImpactValid &&
     isUrgencyValid &&
@@ -231,7 +233,6 @@ export default function CreateIncidentPage(): JSX.Element {
       setTouched({
         shortDescription: true,
         category: true,
-        subcategory: true,
         contactType: true,
         impact: true,
         urgency: true,
@@ -244,7 +245,6 @@ export default function CreateIncidentPage(): JSX.Element {
     const payload: BeCreateIncidentPayload = {
       subject: shortDescription.trim(),
       category: category as BeIncidentCategory,
-      subcategory: subcategory as BeIncidentSubcategory,
       serviceId,
       contactType: contactType as BeIncidentContactType,
       impact: impact as BeIncidentImpact,
@@ -253,6 +253,7 @@ export default function CreateIncidentPage(): JSX.Element {
     };
     // No dedicated "description" field on the backend — the closest
     // equivalent is the customer-visible additionalComments journal field.
+    if (subcategory) payload.subcategory = subcategory;
     if (description.trim()) payload.additionalComments = description.trim();
     if (serviceOfferingId) payload.serviceOfferingId = serviceOfferingId;
     if (configurationItemId) payload.configurationItemId = configurationItemId;
@@ -408,7 +409,6 @@ export default function CreateIncidentPage(): JSX.Element {
                 (v) => setSubcategory(v as BeIncidentSubcategory | ""),
                 subcategoryOptions,
                 {
-                  required: true,
                   disabled: !category,
                   helperText: category ? undefined : "Pick a category first.",
                 },

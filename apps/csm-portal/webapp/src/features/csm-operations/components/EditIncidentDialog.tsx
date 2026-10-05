@@ -255,10 +255,18 @@ export default function EditIncidentDialog({
   // actually valid, rather than letting any of it silently no-op or 500.
   const isTransitioningToResolved =
     state.state !== initial.state && (state.state === "RESOLVED" || state.state === "CLOSED");
+  // Subcategory is optional (an incident can have none — see
+  // CreateIncidentPage). It only blocks Save when Category changed on an
+  // incident that already has a subcategory: PATCH has no way to clear a
+  // subcategory (omitted/null both mean "unchanged"), so a new category with
+  // a blank subcategory would leave the old category's subcategory on the
+  // record.
+  const isSubcategoryMissingForNewCategory =
+    state.category !== initial.category && !!initial.subcategory && !state.subcategory;
   const isValid =
     state.subject.trim().length > 0 &&
     !!state.category &&
-    !!state.subcategory &&
+    !isSubcategoryMissingForNewCategory &&
     !!state.contactType &&
     !!state.impact &&
     !!state.urgency &&
@@ -339,7 +347,14 @@ export default function EditIncidentDialog({
                 state.subcategory,
                 (v) => set("subcategory", v as BeIncidentSubcategory | ""),
                 subcategoryOptions,
-                { disabled: !state.category, helperText: state.category ? undefined : "Pick a category first." },
+                {
+                  disabled: !state.category,
+                  helperText: !state.category
+                    ? "Pick a category first."
+                    : isSubcategoryMissingForNewCategory
+                      ? "Required when the category changes."
+                      : undefined,
+                },
               )}
             </Box>
             <Box sx={{ flex: "1 1 220px" }}>

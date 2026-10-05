@@ -171,6 +171,122 @@ func TestIncidentCreate_PersistsEveryField(t *testing.T) {
 	}
 }
 
+// TestIncidentCreate_WithoutSubcategory: subcategory is optional on create
+// (the webapp form no longer requires it), so a request with none must
+// insert with incident.subcategory_id NULL and the category still set --
+// the nullable column plus incident_subcategory_requires_category (which
+// only constrains a NON-null subcategory_id) must both accept that.
+func TestIncidentCreate_WithoutSubcategory(t *testing.T) {
+	pool := incidentCreatePool(t)
+	seedIncidentCreateFixture(t, pool)
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewIncidentRepository(scoped)
+	ctx := repository.WithSystemIdentity(context.Background())
+
+	req := icRequest()
+	req.Subcategory = nil
+	resp, err := repo.CreateIncident(ctx, req, "HIGH", nil, "jane.doe@test.local")
+	if err != nil {
+		t.Fatalf("CreateIncident without subcategory: %v", err)
+	}
+	if resp.Incident.ID == "" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+
+	var category string
+	var subcategoryIsNull bool
+	if err := scoped.QueryRow(ctx,
+		`SELECT category::text, subcategory_id IS NULL FROM incident WHERE id = $1`,
+		resp.Incident.ID).Scan(&category, &subcategoryIsNull); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if category != string(domain.IncidentCategoryServiceInterruption) || !subcategoryIsNull {
+		t.Errorf("got category=%s subcategory_id IS NULL=%v, want SERVICE_INTERRUPTION and true", category, subcategoryIsNull)
+	}
+
+	view, err := repo.GetIncidentByID(ctx, resp.Incident.ID)
+	if err != nil {
+		t.Fatalf("GetIncidentByID: %v", err)
+	}
+	if view.Subcategory != nil {
+		t.Errorf("view.Subcategory = %v, want nil", *view.Subcategory)
+	}
+}
+
+// TestIncidentCreate_LifecycleWithoutSubcategory takes an incident created
+// with no subcategory through New -> In Progress -> Resolved -> Closed and
+// re-reads it through GetIncidentByID after each stage: state must follow,
+// and subcategory_id must stay NULL with the category intact.
+//
+// The state changes are written directly in SQL. Nothing in entity-service
+// transitions a Postgres incident's state (incidentService.UpdateIncident
+// rejects `state` on both Postgres data sources; transitions go through
+// ServiceNow -- see handler/incident_lifecycle_test.go), so this covers the
+// database side only: that no constraint or trigger on incident (the
+// incident_subcategory_requires_category CHECK, the category/subcategory
+// FK, the incident_outbox AFTER UPDATE trigger) rejects a NULL subcategory
+// at any stage, and that the read path maps every stage correctly.
+func TestIncidentCreate_LifecycleWithoutSubcategory(t *testing.T) {
+	pool := incidentCreatePool(t)
+	seedIncidentCreateFixture(t, pool)
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewIncidentRepository(scoped)
+	ctx := repository.WithSystemIdentity(context.Background())
+
+	req := icRequest()
+	req.Subcategory = nil
+	resp, err := repo.CreateIncident(ctx, req, "HIGH", nil, "jane.doe@test.local")
+	if err != nil {
+		t.Fatalf("CreateIncident without subcategory: %v", err)
+	}
+	id := resp.Incident.ID
+
+	assertStage := func(t *testing.T, stage, wantState string) {
+		t.Helper()
+		view, err := repo.GetIncidentByID(ctx, id)
+		if err != nil {
+			t.Fatalf("%s: GetIncidentByID: %v", stage, err)
+		}
+		if view.State == nil || *view.State != wantState {
+			t.Errorf("%s: state = %v, want %s", stage, view.State, wantState)
+		}
+		if view.Subcategory != nil {
+			t.Errorf("%s: subcategory = %s, want none", stage, *view.Subcategory)
+		}
+		if view.Category == nil || *view.Category != string(domain.IncidentCategoryServiceInterruption) {
+			t.Errorf("%s: category = %v, want SERVICE_INTERRUPTION", stage, view.Category)
+		}
+		var subcategoryIsNull bool
+		if err := scoped.QueryRow(ctx, `SELECT subcategory_id IS NULL FROM incident WHERE id = $1`, id).Scan(&subcategoryIsNull); err != nil {
+			t.Fatalf("%s: read subcategory_id: %v", stage, err)
+		}
+		if !subcategoryIsNull {
+			t.Errorf("%s: incident.subcategory_id is set, want NULL", stage)
+		}
+	}
+
+	assertStage(t, "after create", "NEW")
+
+	stages := []struct {
+		name, state, sql string
+	}{
+		{"start work", "IN_PROGRESS", `UPDATE incident SET state = 'IN_PROGRESS' WHERE id = $1`},
+		{"resolve", "RESOLVED", `UPDATE incident SET state = 'RESOLVED', resolution_code = 'SOLVED_PERMANENTLY',
+			close_notes = 'Rolled back the bad gateway config.', resolved_by_id = '` + icEngineerID + `', resolved_on = now() WHERE id = $1`},
+		{"close", "CLOSED", `UPDATE incident SET state = 'CLOSED' WHERE id = $1`},
+	}
+	for _, s := range stages {
+		tag, err := scoped.Exec(ctx, s.sql, id)
+		if err != nil {
+			t.Fatalf("%s: %v", s.name, err)
+		}
+		if tag.RowsAffected() != 1 {
+			t.Fatalf("%s: updated %d rows, want 1", s.name, tag.RowsAffected())
+		}
+		assertStage(t, "after "+s.name, s.state)
+	}
+}
+
 func TestIncidentCreate_RollsBackOnBadInput(t *testing.T) {
 	pool := incidentCreatePool(t)
 	seedIncidentCreateFixture(t, pool)
