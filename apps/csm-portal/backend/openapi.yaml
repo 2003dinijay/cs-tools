@@ -5523,6 +5523,11 @@ paths:
   /change-requests:
     post:
       summary: Create a change request (ServiceNow data source only).
+      description: >-
+        The body must carry `type`: one of `standard`, `normal` or `emergency`
+        (400 with an explanatory message otherwise). The type decides the approval
+        flow -- Standard needs none, Normal needs peer then CAB approval, Emergency
+        needs ECAB approval only.
       operationId: createChangeRequest
       security:
         - bearerAuth: []
@@ -5532,6 +5537,26 @@ paths:
           application/json:
             schema:
               type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [standard, normal, emergency]
+                customerApprovalRequired:
+                  type: boolean
+                  description: >-
+                    The "Customer Approval" checkbox: the change needs the
+                    customer's approval before it is scheduled. CAB / ECAB
+                    approval (or Request Approval on a Standard change) then
+                    moves it to `customer_approval` instead of `scheduled`.
+                    Defaults to false. A non-boolean value is a 400.
+                customerReviewRequired:
+                  type: boolean
+                  description: >-
+                    The "Customer Review" checkbox: the change needs the
+                    customer's review before it is closed. Review then offers
+                    `customer_review` instead of `closed`. Defaults to false. A
+                    non-boolean value is a 400.
       responses:
         "201":
           description: Change request created.
@@ -12603,6 +12628,21 @@ components:
           type: string
         testPlan:
           type: string
+        customerApprovalRequired:
+          type: boolean
+          description: >-
+            The "Customer Approval" checkbox. Editable only until the approval
+            gate has been passed (state new, assess or authorize); changing it
+            afterwards is a 400 ("customerApprovalRequired can no longer be
+            changed ..."). Resending the stored value is always accepted. A
+            non-boolean value is a 400.
+        customerReviewRequired:
+          type: boolean
+          description: >-
+            The "Customer Review" checkbox. Editable until the change leaves
+            review (any state up to and including review); changing it from
+            customer_review onwards is a 400 ("customerReviewRequired can no
+            longer be changed ..."). A non-boolean value is a 400.
         isCustomerApproved:
           type: boolean
           description: >-
@@ -17454,8 +17494,24 @@ components:
               nullable: true
             hasCustomerApproved:
               type: boolean
+              description: >-
+                The customer's OUTCOME (their approval has been recorded), not
+                the creation checkbox -- see customerApprovalRequired.
             hasCustomerReviewed:
               type: boolean
+              description: >-
+                The customer's OUTCOME (their review has been recorded), not
+                the creation checkbox -- see customerReviewRequired.
+            customerApprovalRequired:
+              type: boolean
+              description: >-
+                The "Customer Approval" checkbox: the change needs the
+                customer's approval before it is scheduled.
+            customerReviewRequired:
+              type: boolean
+              description: >-
+                The "Customer Review" checkbox: the change needs the
+                customer's review before it is closed.
             approvedBy:
               $ref: '#/components/schemas/EntityRef'
               nullable: true
@@ -17467,8 +17523,18 @@ components:
               items:
                 type: string
               description: >-
-                States the change request can legally transition to from its
-                current state, given its type and workflow position.
+                Next states a human may move the change request to, per state.
+                new: [assess, canceled] ("assess" is the "Request Approval"
+                action for every type; the state it lands in depends on the
+                type and on customerApprovalRequired). assess: [authorize,
+                canceled]. authorize: [canceled] (CAB/ECAB approval moves the
+                change on by itself: to scheduled, or to customer_approval when
+                customerApprovalRequired). customer_approval: [scheduled,
+                canceled] -- "scheduled" here means "record the customer's
+                approval" and is the only state it is offered from. scheduled:
+                [implement, canceled]. implement: [review, canceled]. review:
+                [customer_review, canceled] when customerReviewRequired, else
+                [closed, canceled]. customer_review: [closed, canceled].
 
     TaskSummary:
       type: object
@@ -17608,6 +17674,12 @@ components:
             Approver-level status as reported by the backing data source
             (e.g. "APPROVED", "NOT_REQUIRED", "REQUESTED"); open string set,
             not a fixed enum.
+        canDecide:
+          type: boolean
+          description: >-
+            True only on the calling user's own REQUESTED row, when they may
+            actually decide it (not the change request's creator; not an SRE team
+            member on the peer approval stage). Render Approve/Reject on this.
         createdOn:
           type: string
           nullable: true
@@ -17629,7 +17701,9 @@ components:
       properties:
         stage:
           type: string
-          enum: [Assess, Authorize, Customer Approval]
+          description: >-
+            "Peer Approval", "CAB Approval", "ECAB Approval" or "Review";
+            legacy/synced stages may be "Assess", "Authorize" or "Customer Approval".
         approverType:
           type: string
           enum: [STATIC_GROUP, DYNAMIC_CONTACT]
@@ -18745,6 +18819,15 @@ components:
         state:
           type: string
           enum: [draft, pending_approval, approved, published]
+        states:
+          type: array
+          description: >-
+            Matches a request in any of the listed states, as one merged
+            paginated list. An empty or omitted list means no state filter.
+            Rejected if combined with state.
+          items:
+            type: string
+            enum: [draft, pending_approval, approved, published]
         createdBy:
           type: string
         pagination:
@@ -19199,6 +19282,9 @@ components:
         serviceId:
           type: string
           format: uuid
+          description: >-
+            The incident's assignment group is set from this service's support
+            group; there is no assignmentGroupId on create.
         serviceOfferingId:
           type: string
           format: uuid
@@ -19217,9 +19303,6 @@ components:
         urgency:
           type: string
           enum: [HIGH, MEDIUM, LOW]
-        assignmentGroupId:
-          type: string
-          format: uuid
         assignedEngineerId:
           type: string
           format: uuid

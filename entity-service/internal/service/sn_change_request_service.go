@@ -27,6 +27,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 	integrationservice "github.com/wso2-open-operations/cs-tools/entity-service/internal/servicenow-integration-service"
 )
 
@@ -722,10 +723,14 @@ func (s *snChangeRequestService) CreateChangeRequest(ctx context.Context, req do
 			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid category %q", *req.Category)}
 		}
 	}
-	if req.Type != nil {
-		if _, ok := snCRCreateTypeIDMap[*req.Type]; !ok {
-			return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid type %q", *req.Type)}
-		}
+	// The type is mandatory and must be standard/normal/emergency -- it decides
+	// the approval flow ServiceNow runs (Standard: none; Normal: approvals;
+	// Emergency: expedited).
+	if err := repository.ValidateCreateChangeRequestType(req.Type); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
+	if _, ok := snCRCreateTypeIDMap[*req.Type]; !ok {
+		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid type %q", *req.Type)}
 	}
 	// A change request can only ever be created at New -- see
 	// snCreateChangeRequestPayload's own doc comment for why. req.State is
@@ -1517,7 +1522,7 @@ func mapSNChangeRequestDetailToView(cr snChangeRequestDetail) domain.ChangeReque
 		HasCustomerApproved:     cr.HasCustomerApproved,
 		HasCustomerReviewed:     cr.HasCustomerReviewed,
 		ApprovedOn:              cr.ApprovedOn,
-		LegalNextStates:         cr.LegalNextStates,
+		LegalNextStates:         withoutManualScheduled(cr.LegalNextStates, view.State),
 
 		// Field-parity additions.
 		ImplementationPlan:           cr.ImplementationPlan,
@@ -1584,4 +1589,28 @@ func mapSNChangeRequestDetailToView(cr snChangeRequestDetail) domain.ChangeReque
 	}
 
 	return result
+}
+
+// withoutManualScheduled drops "scheduled" from the next states ServiceNow
+// offers. There is no manual "Schedule" action in the CSM flow: a change
+// becomes Scheduled when its CAB (or, for Emergency, ECAB) approval is granted,
+// so the portal must never be handed it as something to click -- the same rule
+// the PostgreSQL data source applies (legalChangeRequestNextStates). The one
+// exception is a change sitting in Customer Approval, where "scheduled" is the
+// action that records the customer's approval (also as on PostgreSQL).
+func withoutManualScheduled(states []string, state *string) []string {
+	if states == nil {
+		return nil
+	}
+	if state != nil && strings.EqualFold(*state, string(domain.ChangeRequestStateCustomerApproval)) {
+		return states
+	}
+	out := make([]string, 0, len(states))
+	for _, st := range states {
+		if strings.EqualFold(st, string(domain.ChangeRequestStateScheduled)) {
+			continue
+		}
+		out = append(out, st)
+	}
+	return out
 }

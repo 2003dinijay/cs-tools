@@ -746,6 +746,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// registration with a foreign-key violation).
 		snCaseMirrorSvc := service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, nil)
 		activeCaseSvc = service.NewCaseServiceWithSNWriteback(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo, snWritebackDispatcher, snCaseMirrorSvc, slaEngineSvc, cfg.CSEngineerRole)
+		// CreateCase rejects a case/SR whose deployed product's category
+		// doesn't satisfy its project type's own Default Case/SR Creation
+		// Product Category allow-list — see
+		// caseService.validateDeployedProductCategoryForType's own doc
+		// comment. Wired here (and in the plain-Postgres default branch
+		// below), not for DataSourceServiceNow: that mode's CreateCase never
+		// reaches this service's Postgres data at all.
+		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
 		// Case ATTACHMENTS: file bytes still live ONLY in ServiceNow in this
 		// mode (SFTPGo, the CSM-native/Postgres storage backend, is never
 		// used here) — but metadata is now ALSO written into and read from
@@ -777,6 +785,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		caseAttachmentOverrideSvc = service.NewCaseAttachmentDualWriteService(activeCaseSvc, snCaseMirrorSvc, snWritebackDispatcher)
 	default:
 		activeCaseSvc = service.NewCaseService(caseRepo, userRepo, eventPublisher, accessSvc, projectContactRepo)
+		// See the matching comment in the DataSourcePostgresServiceNowDualWrite
+		// case above.
+		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MTrustedActorEmails)
 	if db != nil {
@@ -990,7 +1001,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// worker pool plus one sn_writeback_failures repository, nothing
 		// case-specific about it, so a second instance would only mean a
 		// second, redundant worker pool.
-		snIncidentMirrorSvc := service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, nil)
+		snIncidentMirrorSvc := service.NewServiceNowIncidentMirrorService(serviceNowIntegrationServiceClient)
 		activeIncidentSvc = service.NewIncidentServiceWithSNMirror(incidentRepo, userRepo, snIncidentMirrorSvc, eventPublisher, snWritebackDispatcher)
 	default:
 		activeIncidentSvc = service.NewIncidentService(incidentRepo, eventPublisher)

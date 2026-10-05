@@ -2076,6 +2076,17 @@ type CreateDeployedProductRequest struct {
 	Cores        *int     `json:"cores"`
 	TPS          *float64 `json:"tps"`
 	Description  *string  `json:"description"`
+	// Category is one of the lower-case deployed_product_category_enum codes
+	// ("pdp", "ms", "ps", "cl", "pc" -- same vocabulary as
+	// SearchDeployedProductsRequest.ProductCategories), optional. Postgres-only:
+	// ServiceNow's own deployed-product create/update payloads (see
+	// snCreateDeployedProductPayload/snUpdateDeployedProductPayload,
+	// sn_deployed_product_service.go) have no classification field at all, so
+	// this is never forwarded to the SN mirror under dual-write -- the same
+	// "write it where the data actually has a column, skip the mirror call
+	// entirely rather than send a field it would ignore or reject" precedent
+	// documented on patchCaseFieldsBundle's own four-of-nine mirrored fields.
+	Category *string `json:"category,omitempty"`
 }
 
 // CreateDeployedProductResponse is the response for POST /deployed-products.
@@ -2108,6 +2119,10 @@ type UpdateDeployedProductRequest struct {
 	Description  json.RawMessage      `json:"description,omitempty"`
 	Updates      []ProductUpdateEntry `json:"updates,omitempty"`
 	Active       *bool                `json:"active"`
+	// Category -- see CreateDeployedProductRequest.Category's own doc comment
+	// for the vocabulary and why it is Postgres-only (never forwarded to the
+	// SN mirror).
+	Category *string `json:"category,omitempty"`
 }
 
 // UpdateDeployedProductResponse is the response for PATCH /deployed-products/{id}.
@@ -3835,6 +3850,49 @@ const (
 	ChangeRequestTypeUnauthorizedChange  ChangeRequestType = "unauthorized_change"
 )
 
+// ChangeRequestCreatableTypes lists the only change types a change request may be
+// created with: Standard, Normal and Emergency (ServiceNow's own three
+// "What type of change is required?" choices). The wider ChangeRequestType
+// enum still carries values (azure, infra, ...) that exist on synced legacy
+// records and may be read back, but none of them can be chosen at create time.
+var ChangeRequestCreatableTypes = []ChangeRequestType{
+	ChangeRequestTypeStandard,
+	ChangeRequestTypeNormal,
+	ChangeRequestTypeEmergency,
+}
+
+// IsCreatableChangeRequestType reports whether t is one of the three types a
+// change request may be created with.
+func IsCreatableChangeRequestType(t ChangeRequestType) bool {
+	for _, c := range ChangeRequestCreatableTypes {
+		if c == t {
+			return true
+		}
+	}
+	return false
+}
+
+// Names of the approver groups the change request approval flow resolves by
+// name (the "group" table has no stable key of its own; membership is mirrored
+// from ServiceNow, so these names are the contract with that data).
+//
+//   - CABApprovalGroupName: the Change Advisory Board, the approver pool of a
+//     Normal change's second (CAB) approval stage.
+//   - ECABApprovalGroupName: the Emergency CAB, the approver pool of an
+//     Emergency change's only approval stage. A group of its own, not CAB.
+//   - PeerApprovalFallbackGroupName: the experienced-engineer peer approval
+//     group ("Devops Approval" in the ServiceNow flow). A Normal change's peer
+//     stage draws its approvers from the change's assigned group; when that
+//     group is an SRE group (or yields nobody eligible) this group is used.
+//
+// CAB Approval and ECAB Approval are created by migration
+// 0188_change_request_approval_groups.sql when absent.
+const (
+	CABApprovalGroupName          = "CAB Approval"
+	ECABApprovalGroupName         = "ECAB Approval"
+	PeerApprovalFallbackGroupName = "Devops Approval"
+)
+
 // ChangeRequestState represents the current workflow state of a change request.
 type ChangeRequestState string
 
@@ -3948,6 +4006,14 @@ type CreateChangeRequestRequest struct {
 	// the customer-facing portal. Optional; when omitted, the backing data
 	// source's own default applies.
 	IsPlanningVisibleToCustomers *bool `json:"isPlanningVisibleToCustomers,omitempty"`
+	// CustomerApprovalRequired / CustomerReviewRequired are the creation
+	// form's "Customer Approval" and "Customer Review" checkboxes: this change
+	// needs the customer's approval before it is scheduled / the customer's
+	// review before it is closed. Optional; omitted means false. They are the
+	// REQUIREMENT, not the customer's outcome (that is PatchChangeRequestRequest.
+	// IsCustomerApproved / IsCustomerReviewed). Postgres data source only.
+	CustomerApprovalRequired *bool `json:"customerApprovalRequired,omitempty"`
+	CustomerReviewRequired   *bool `json:"customerReviewRequired,omitempty"`
 }
 
 // CreateChangeRequestResponse is the output for POST /change-requests.
@@ -4337,6 +4403,17 @@ type PatchChangeRequestRequest struct {
 	// as-is, so an explicit false is never confused with "not provided".
 	IsPlanningVisibleToCustomers *bool `json:"isPlanningVisibleToCustomers,omitempty"`
 
+	// CustomerApprovalRequired / CustomerReviewRequired: see
+	// CreateChangeRequestRequest. Editable only until the gate they control
+	// has been passed -- CustomerApprovalRequired while the change is New,
+	// Assess or Authorize; CustomerReviewRequired until it leaves Review --
+	// after which a change is refused with a ValidationError (a write that
+	// does not change the stored value is always accepted). Distinct from
+	// IsCustomerApproved / IsCustomerReviewed above, which record the
+	// customer's outcome. Postgres data source only.
+	CustomerApprovalRequired *bool `json:"customerApprovalRequired,omitempty"`
+	CustomerReviewRequired   *bool `json:"customerReviewRequired,omitempty"`
+
 	// The fields below are the change-request field-parity additions. Except
 	// Comment and WorkNote (journal entries, append-only, cannot be cleared),
 	// every one of them uses a pointer-to-pointer to distinguish three states:
@@ -4535,18 +4612,25 @@ type DeleteTimeCardResponse struct {
 // It extends SearchChangeRequestView with additional fields.
 type ChangeRequest struct {
 	SearchChangeRequestView
-	CreatedBy           string     `json:"createdBy"`
-	Justification       *string    `json:"justification"`
-	ImpactDescription   *string    `json:"impactDescription"`
-	ServiceOutage       *string    `json:"serviceOutage"`
-	CommunicationPlan   *string    `json:"communicationPlan"`
-	RollbackPlan        *string    `json:"rollbackPlan"`
-	TestPlan            *string    `json:"testPlan"`
-	HasCustomerApproved bool       `json:"hasCustomerApproved"`
-	HasCustomerReviewed bool       `json:"hasCustomerReviewed"`
-	ApprovedBy          *EntityRef `json:"approvedBy"`
-	ApprovedOn          *string    `json:"approvedOn"`
-	LegalNextStates     []string   `json:"legalNextStates"`
+	CreatedBy           string  `json:"createdBy"`
+	Justification       *string `json:"justification"`
+	ImpactDescription   *string `json:"impactDescription"`
+	ServiceOutage       *string `json:"serviceOutage"`
+	CommunicationPlan   *string `json:"communicationPlan"`
+	RollbackPlan        *string `json:"rollbackPlan"`
+	TestPlan            *string `json:"testPlan"`
+	HasCustomerApproved bool    `json:"hasCustomerApproved"`
+	HasCustomerReviewed bool    `json:"hasCustomerReviewed"`
+	// CustomerApprovalRequired / CustomerReviewRequired are the creation
+	// form's two checkboxes: the change needs the customer's approval before
+	// it is scheduled / the customer's review before it is closed. They drive
+	// LegalNextStates. Distinct from HasCustomerApproved / HasCustomerReviewed,
+	// which record the customer's outcome.
+	CustomerApprovalRequired bool       `json:"customerApprovalRequired"`
+	CustomerReviewRequired   bool       `json:"customerReviewRequired"`
+	ApprovedBy               *EntityRef `json:"approvedBy"`
+	ApprovedOn               *string    `json:"approvedOn"`
+	LegalNextStates          []string   `json:"legalNextStates"`
 
 	// The fields below are change-request field-parity additions. All 20 are
 	// present on GET /change-requests/{id} and the PATCH receipt (both share
@@ -4615,6 +4699,14 @@ type ChangeRequestApprover struct {
 	CreatedOn   *string `json:"createdOn"`
 	RespondedOn *string `json:"respondedOn"`
 	Comments    *string `json:"comments"`
+	// CanDecide is true only on the CALLING user's own approver row, and only
+	// when that row is still REQUESTED and the caller may actually decide it
+	// right now: they are not the change request's creator/requester, and (for
+	// the peer stage) are not an SRE team member. The webapp should render
+	// Approve/Reject exactly when this is true. Populated by the Postgres data
+	// source only; always false on every other row and under the ServiceNow
+	// data source (where ServiceNow itself enforces who may decide).
+	CanDecide bool `json:"canDecide"`
 }
 
 // ChangeRequestApproval represents a single approval stage (e.g. Assess, Authorize,
@@ -5565,17 +5657,21 @@ type CreateIncidentRequest struct {
 	ContactType         *IncidentContactType `json:"contactType,omitempty"`
 	Impact              IncidentImpact       `json:"impact"`
 	Urgency             IncidentUrgency      `json:"urgency"`
-	AssignmentGroupID   *string              `json:"assignmentGroupId,omitempty"`
-	AssignedEngineerID  *string              `json:"assignedEngineerId,omitempty"`
-	Subject             string               `json:"subject"`
-	WatchList           []string             `json:"watchList,omitempty"`
-	AdditionalComments  *string              `json:"additionalComments,omitempty"`
-	WorkNotes           *string              `json:"workNotes,omitempty"`
-	ParentID            *string              `json:"parentId,omitempty"`
-	ParentIncidentID    *string              `json:"parentIncidentId,omitempty"`
-	ChangeRequestID     *string              `json:"changeRequestId,omitempty"`
-	ProblemID           *string              `json:"problemId,omitempty"`
-	CausedByID          *string              `json:"causedById,omitempty"`
+	// AssignmentGroupID is never read from the request body: an incident's
+	// assignment group is its service's support group, set by the incident
+	// service before either create path runs. One rule, one place -- a
+	// caller that sends assignmentGroupId gets a 400 for an unknown field.
+	AssignmentGroupID  *string  `json:"-"`
+	AssignedEngineerID *string  `json:"assignedEngineerId,omitempty"`
+	Subject            string   `json:"subject"`
+	WatchList          []string `json:"watchList,omitempty"`
+	AdditionalComments *string  `json:"additionalComments,omitempty"`
+	WorkNotes          *string  `json:"workNotes,omitempty"`
+	ParentID           *string  `json:"parentId,omitempty"`
+	ParentIncidentID   *string  `json:"parentIncidentId,omitempty"`
+	ChangeRequestID    *string  `json:"changeRequestId,omitempty"`
+	ProblemID          *string  `json:"problemId,omitempty"`
+	CausedByID         *string  `json:"causedById,omitempty"`
 	// CorrelationID is an optional caller-supplied external-system key, stored
 	// on ServiceNow's stock `correlation_id` field. Lets a monitoring
 	// integration find an incident it already created (SearchIncidentsFilters.
@@ -7669,20 +7765,28 @@ type SearchAnnouncementRequestUpdatesResponse struct {
 	Updates []AnnouncementRequestUpdate `json:"updates"`
 }
 
-// SearchAnnouncementRequestsRequest filters announcement_requests. State and
-// CreatedBy are both optional; omitting both returns every row (subject to
-// pagination) — there is no default filter, unlike some other search
-// endpoints in this service, since every caller of this endpoint so far
-// (the registry page's "Pending" tab) needs to choose its own filter
-// explicitly rather than inherit an implicit one.
+// SearchAnnouncementRequestsRequest filters announcement_requests. State,
+// States and CreatedBy are all optional; omitting all of them returns every
+// row (subject to pagination) — there is no default filter, unlike some
+// other search endpoints in this service, since every caller of this
+// endpoint so far (the registry page's "Pending" tab) needs to choose its
+// own filter explicitly rather than inherit an implicit one.
 type SearchAnnouncementRequestsRequest struct {
-	State     *AnnouncementRequestState `json:"state,omitempty"`
-	CreatedBy *string                   `json:"createdBy,omitempty"`
+	State *AnnouncementRequestState `json:"state,omitempty"`
+	// States matches a row in any of the listed states, in one paginated
+	// result (so Total/HasMore describe the merged list, not one state).
+	// State stays for single-state callers (the registry's published-requests
+	// lookup); the two are mutually exclusive -- naming both is rejected even
+	// when States is an explicit empty list. On its own, an empty/omitted
+	// States means "no state filter," same as an omitted State.
+	States    []AnnouncementRequestState `json:"states,omitempty"`
+	CreatedBy *string                    `json:"createdBy,omitempty"`
 	// ReadyForScheduledPublish, when true, ignores State and instead matches
 	// every approved row whose ScheduledFor is set and has already arrived
 	// (scheduled_for <= now()) — the one query
 	// operations/csm-scheduled-tasks' "publish_scheduled_announcements"
-	// sub-cron needs. Mutually exclusive with State (ambiguous otherwise).
+	// sub-cron needs. Mutually exclusive with State and States (ambiguous
+	// otherwise), including an explicit empty States list.
 	ReadyForScheduledPublish bool       `json:"readyForScheduledPublish,omitempty"`
 	Pagination               Pagination `json:"pagination"`
 }

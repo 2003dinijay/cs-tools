@@ -654,7 +654,7 @@ paths:
 
   /announcement-requests/search:
     post:
-      summary: Search announcement_requests rows, newest first, optionally filtered by state and/or createdBy.
+      summary: Search announcement_requests rows, newest first, optionally filtered by state (or a list of states) and/or createdBy.
       operationId: searchAnnouncementRequests
       requestBody:
         required: true
@@ -8010,7 +8010,7 @@ paths:
 
   /incidents:
     post:
-      summary: Create a new incident (ServiceNow data source only).
+      summary: Create a new incident.
       operationId: createIncident
       requestBody:
         required: true
@@ -13204,6 +13204,13 @@ components:
         description:
           type: string
           description: Description of the deployed product.
+        category:
+          type: string
+          enum: [pdp, ms, ps, cl, pc]
+          description: >-
+            Optional product category/classification (PDP/MS/PS/CL/PC). Postgres-only --
+            never forwarded to the ServiceNow mirror under dual-write, since ServiceNow's own
+            create payload has no equivalent field.
 
     CreateDeployedProductResponse:
       type: object
@@ -13227,7 +13234,7 @@ components:
 
     UpdateDeployedProductRequest:
       oneOf:
-        - description: Update deployed product detail fields. At least one of cores, tps, description, or updates must be provided.
+        - description: Update deployed product detail fields. At least one of cores, tps, description, category, or updates must be provided.
           type: object
           minProperties: 1
           additionalProperties: false
@@ -13248,6 +13255,12 @@ components:
               type: string
               nullable: true
               description: Description of the deployed product.
+            category:
+              type: string
+              enum: [pdp, ms, ps, cl, pc]
+              description: >-
+                Optional product category/classification (PDP/MS/PS/CL/PC). Postgres-only --
+                never forwarded to the ServiceNow mirror under dual-write.
             updates:
               type: array
               items:
@@ -15628,8 +15641,31 @@ components:
               nullable: true
             hasCustomerApproved:
               type: boolean
+              description: >-
+                The customer's OUTCOME: true once the customer's approval has
+                been recorded (state scheduled out of customer_approval). Not
+                the creation checkbox -- see customerApprovalRequired.
             hasCustomerReviewed:
               type: boolean
+              description: >-
+                The customer's OUTCOME: true once the customer's review has
+                been recorded (state closed out of customer_review). Not the
+                creation checkbox -- see customerReviewRequired.
+            customerApprovalRequired:
+              type: boolean
+              description: >-
+                The creation form's "Customer Approval" checkbox: the change
+                needs the customer's approval before it is scheduled. When
+                true, CAB / ECAB approval (or Request Approval on a Standard
+                change) moves the change to customer_approval instead of
+                scheduled. PostgreSQL data source only (always false on the
+                ServiceNow data source).
+            customerReviewRequired:
+              type: boolean
+              description: >-
+                The creation form's "Customer Review" checkbox: the change
+                needs the customer's review before it is closed. When true,
+                review offers customer_review instead of closed.
             approvedBy:
               $ref: '#/components/schemas/EntityRef'
               nullable: true
@@ -15640,6 +15676,25 @@ components:
               type: array
               items:
                 type: string
+              description: >-
+                Next states a human may move the change request to, per state
+                (the single source of truth the portal renders).
+                new: [assess, canceled] -- "assess" is the "Request Approval"
+                action for every type; the state it lands in depends on the
+                type (Assess for Normal, Authorize for Emergency, Scheduled for
+                Standard -- customer_approval instead when
+                customerApprovalRequired).
+                assess: [authorize, canceled]; authorize: [canceled] (CAB/ECAB
+                approval moves the change on by itself: to scheduled, or to
+                customer_approval when customerApprovalRequired).
+                customer_approval: [scheduled, canceled] -- "scheduled" here
+                means "record the customer's approval" and is the ONLY state
+                from which a manual scheduled is accepted.
+                scheduled: [implement, canceled]; implement: [review,
+                canceled].
+                review: [customer_review, canceled] when customerReviewRequired,
+                else [closed, canceled].
+                customer_review: [closed, canceled]. Terminal states: none.
             implementationPlan:
               type: string
               nullable: true
@@ -15731,6 +15786,14 @@ components:
           description: >-
             Approver response status. Open string set (e.g. APPROVED, NOT_REQUIRED,
             REQUESTED, REJECTED, CANCELLED, NO_CONSENSUS); not a fixed enum.
+        canDecide:
+          type: boolean
+          description: >-
+            True only on the calling user's own REQUESTED row, when they may
+            actually decide it (they are not the change request's creator, and
+            are not an SRE team member on the peer approval stage). Advisory --
+            the decision endpoint re-checks. Postgres data source only; false
+            elsewhere.
         createdOn:
           type: string
           nullable: true
@@ -15754,7 +15817,10 @@ components:
       properties:
         stage:
           type: string
-          description: Approval stage name (e.g. Assess, Authorize, Customer Approval).
+          description: >-
+            Approval stage name: "Peer Approval", "CAB Approval", "ECAB Approval"
+            or "Review" for stages provisioned by this service; legacy/synced
+            stages may be "Assess", "Authorize" or "Customer Approval".
         approverType:
           type: string
           enum: [STATIC_GROUP, DYNAMIC_CONTACT]
@@ -16170,9 +16236,17 @@ components:
       type: object
       required:
         - subject
+        - type
       properties:
         subject:
           type: string
+        type:
+          type: string
+          enum: [standard, normal, emergency]
+          description: >-
+            Required. Decides the approval flow: Standard needs no approval
+            (Request Approval goes straight to Scheduled); Normal needs peer
+            approval then CAB approval; Emergency needs ECAB approval only.
         category:
           type: string
           enum:
@@ -16211,15 +16285,6 @@ components:
             - high
             - medium
             - low
-        type:
-          type: string
-          enum:
-            - standard
-            - normal
-            - emergency
-            - model
-            - site_reliability_ops
-            - azure
         state:
           type: string
           enum:
@@ -16304,6 +16369,20 @@ components:
           description: >-
             Whether the Implementation Plan is visible to customers on the
             customer-facing portal.
+        customerApprovalRequired:
+          type: boolean
+          description: >-
+            The "Customer Approval" checkbox: the change needs the customer's
+            approval before it is scheduled (CAB / ECAB approval, or Request
+            Approval on a Standard change, then moves it to customer_approval
+            instead of scheduled). Defaults to false. PostgreSQL data source
+            only.
+        customerReviewRequired:
+          type: boolean
+          description: >-
+            The "Customer Review" checkbox: the change needs the customer's
+            review before it is closed (review offers customer_review instead
+            of closed). Defaults to false. PostgreSQL data source only.
 
     CreateChangeRequestResponse:
       type: object
@@ -16412,6 +16491,21 @@ components:
           description: >-
             Whether the Implementation Plan is visible to customers on the
             customer-facing portal.
+        customerApprovalRequired:
+          type: boolean
+          description: >-
+            The "Customer Approval" checkbox. Editable only until the approval
+            gate has been passed, i.e. while the state is new, assess or
+            authorize; a change of value afterwards is a 400 ("customerApprovalRequired
+            can no longer be changed ..."). Resending the stored value is
+            always accepted. PostgreSQL data source only.
+        customerReviewRequired:
+          type: boolean
+          description: >-
+            The "Customer Review" checkbox. Editable until the change leaves
+            review (any state up to and including review); a change of value
+            from customer_review onwards is a 400 ("customerReviewRequired can
+            no longer be changed ..."). PostgreSQL data source only.
         implementationPlan:
           type: string
           nullable: true
@@ -18858,6 +18952,11 @@ components:
         serviceId:
           type: string
           format: uuid
+          description: >-
+            The incident's assignment group is set from this service's support
+            group; there is no assignmentGroupId on create. A service with no
+            support group creates the incident unassigned. Reassign afterwards
+            with PATCH.
         serviceOfferingId:
           type: string
           format: uuid
@@ -18880,10 +18979,6 @@ components:
         urgency:
           type: string
           enum: [HIGH, MEDIUM, LOW]
-        assignmentGroupId:
-          type: string
-          format: uuid
-          nullable: true
         assignedEngineerId:
           type: string
           format: uuid
@@ -18926,7 +19021,7 @@ components:
           type: string
           nullable: true
           description: Optional caller-supplied external-system key, stored on ServiceNow's
-            correlation_id field. Look it up via SearchIncidentsFilters.correlationId
+            correlation_id field. Look it up via SearchIncidentsRequest filters.correlationId
             to find an incident this caller already created, without depending on
             free-text search over subject or workNotes.
         environment:
@@ -23091,6 +23186,17 @@ components:
         state:
           type: string
           enum: [draft, pending_approval, approved, published]
+        states:
+          type: array
+          description: >-
+            Matches a request in any of the listed states, as one merged
+            paginated list (total/hasMore describe the merged list). On its own,
+            an empty or omitted list means no state filter. Rejected if sent
+            together with state or readyForScheduledPublish, even as an empty
+            list.
+          items:
+            type: string
+            enum: [draft, pending_approval, approved, published]
         createdBy:
           type: string
         readyForScheduledPublish:
@@ -23099,7 +23205,7 @@ components:
             When true, ignores state and instead matches every approved
             request whose scheduledFor has already arrived — the query
             operations/csm-scheduled-tasks' publish_scheduled_announcements
-            sub-cron uses. Rejected if combined with state.
+            sub-cron uses. Rejected if combined with state or states.
         pagination:
           $ref: '#/components/schemas/Pagination'
 
