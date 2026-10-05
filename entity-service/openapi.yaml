@@ -23095,9 +23095,10 @@ components:
           type: array
           description: >-
             Matches a request in any of the listed states, as one merged
-            paginated list (total/hasMore describe the merged list). An empty
-            or omitted list means no state filter. Rejected if combined with
-            state or readyForScheduledPublish.
+            paginated list (total/hasMore describe the merged list). On its own,
+            an empty or omitted list means no state filter. Rejected if sent
+            together with state or readyForScheduledPublish, even as an empty
+            list.
           items:
             type: string
             enum: [draft, pending_approval, approved, published]

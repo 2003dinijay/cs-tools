@@ -1298,6 +1298,33 @@ func TestAnnouncementRequestService_Search(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects state combined with an explicitly empty states list", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{}
+		svc := NewAnnouncementRequestService(repo, nil, nil)
+		draft := domain.AnnouncementRequestStateDraft
+		_, err := svc.Search(context.Background(), domain.SearchAnnouncementRequestsRequest{
+			State:  &draft,
+			States: []domain.AnnouncementRequestState{},
+		})
+		var ve *apierror.ValidationError
+		if !isValidationError(err, &ve) {
+			t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("rejects readyForScheduledPublish combined with an explicitly empty states list", func(t *testing.T) {
+		repo := &fakeAnnouncementRequestRepo{}
+		svc := NewAnnouncementRequestService(repo, nil, nil)
+		_, err := svc.Search(context.Background(), domain.SearchAnnouncementRequestsRequest{
+			ReadyForScheduledPublish: true,
+			States:                   []domain.AnnouncementRequestState{},
+		})
+		var ve *apierror.ValidationError
+		if !isValidationError(err, &ve) {
+			t.Fatalf("expected *apierror.ValidationError, got %T: %v", err, err)
+		}
+	})
+
 	t.Run("rejects readyForScheduledPublish combined with states", func(t *testing.T) {
 		repo := &fakeAnnouncementRequestRepo{}
 		svc := NewAnnouncementRequestService(repo, nil, nil)

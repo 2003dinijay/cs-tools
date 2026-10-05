@@ -91,6 +91,23 @@ func TestSearchAnnouncementRequests_RequestBodies(t *testing.T) {
 		}
 	})
 
+	// The service tells "states sent but empty" from "states omitted" by
+	// nil-ness (so a contradictory `state` + `"states": []` is rejected), which
+	// only works if the JSON decode keeps that distinction.
+	t.Run("keeps an explicit empty states list distinct from an omitted one", func(t *testing.T) {
+		rec, svc := post(t, `{"states":[],"pagination":{"offset":0,"limit":10}}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		if svc.got.States == nil {
+			t.Fatal("explicit empty States decoded as nil, indistinguishable from omitted")
+		}
+		_, omitted := post(t, `{"pagination":{"offset":0,"limit":10}}`)
+		if omitted.got.States != nil {
+			t.Fatalf("omitted States = %v, want nil", omitted.got.States)
+		}
+	})
+
 	t.Run("accepts no state filter at all", func(t *testing.T) {
 		rec, svc := post(t, `{"pagination":{"offset":0,"limit":10}}`)
 		if rec.Code != http.StatusOK {

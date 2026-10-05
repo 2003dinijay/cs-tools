@@ -7680,8 +7680,9 @@ type SearchAnnouncementRequestsRequest struct {
 	// States matches a row in any of the listed states, in one paginated
 	// result (so Total/HasMore describe the merged list, not one state).
 	// State stays for single-state callers (the registry's published-requests
-	// lookup); the two are mutually exclusive, and an empty/omitted States
-	// means "no state filter," same as an omitted State.
+	// lookup); the two are mutually exclusive -- naming both is rejected even
+	// when States is an explicit empty list. On its own, an empty/omitted
+	// States means "no state filter," same as an omitted State.
 	States    []AnnouncementRequestState `json:"states,omitempty"`
 	CreatedBy *string                    `json:"createdBy,omitempty"`
 	// ReadyForScheduledPublish, when true, ignores State and instead matches
@@ -7689,7 +7690,7 @@ type SearchAnnouncementRequestsRequest struct {
 	// (scheduled_for <= now()) — the one query
 	// operations/csm-scheduled-tasks' "publish_scheduled_announcements"
 	// sub-cron needs. Mutually exclusive with State and States (ambiguous
-	// otherwise).
+	// otherwise), including an explicit empty States list.
 	ReadyForScheduledPublish bool       `json:"readyForScheduledPublish,omitempty"`
 	Pagination               Pagination `json:"pagination"`
 }

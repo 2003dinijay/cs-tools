@@ -4945,8 +4945,9 @@ merged list — ordered newest-first and paginated as a whole, so `total`/`hasMo
 describe the merged result rather than one state. The repository query is
 `state = ANY($4::text[])` against a nil-when-empty `text[]`, so an omitted or
 empty `states` means "no state filter," never "match nothing." `Search` rejects
-`state` + `states` together, any state outside the four lifecycle values, and
-`readyForScheduledPublish` combined with either (that flag is the
+`state` + `states` together (judged by the field being *sent*, so an explicit
+`"states": []` alongside `state` is rejected too), any state outside the four
+lifecycle values, and `readyForScheduledPublish` combined with either (that flag is the
 `csm-scheduled-tasks` cron's own "approved and due" query and ignores state
 filters by design). `state` is deliberately kept rather than folded into
 `states`: the registry's published-requests lookup and the cron both send it,
