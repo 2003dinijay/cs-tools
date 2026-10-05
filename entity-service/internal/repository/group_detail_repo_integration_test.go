@@ -38,20 +38,26 @@ import (
 //	CHANGE_REQUEST_TEST_DSN=postgres://... go test ./internal/repository/ -run GroupDetailIntegration
 //
 // This file is in package repository (not repository_test) so it can hold the
-// list against namedGroup / groupMemberIDs, the functions the approval pools
-// provision from.
+// list against namedGroup / groupMemberIDs / onlyInternalApprovers, the
+// functions the approval pools provision from.
 
 // Fixture ids: one prefix, so cleanup is a single sweep and nothing collides
 // with the compose seed or the other integration tests.
 const (
 	gdPrefix = "7a7a7a7a-0000-4000-8000-"
 
+	// An ordinary (assigned) group: its pools read team_member.group_id = its id.
 	gdGroupA     = gdPrefix + "00000000a001" // "GV Approvers": manager, description, email
 	gdGroupADup  = gdPrefix + "00000000a002" // a second mirror row with the SAME name
 	gdGroupOther = gdPrefix + "00000000b001" // different name
 	gdGroupEmpty = gdPrefix + "00000000c001" // no members, no manager, no description
 	gdGroupNoNam = gdPrefix + "00000000d001" // name NULL
 	gdUnknown    = gdPrefix + "00000000ffff" // no such group
+	// A group the pools resolve BY NAME (the Devops Approval peer fallback), its
+	// same-named duplicate mirror row, and a team of that name.
+	gdGroupDevops    = gdPrefix + "00000000d002"
+	gdGroupDevopsDup = gdPrefix + "00000000d003"
+	gdTeamDevops     = gdPrefix + "00000000e003"
 
 	gdTeamSameName = gdPrefix + "00000000e001" // team named like gdGroupA
 	gdTeamUnrel    = gdPrefix + "00000000e002" // team no group shares a name with
@@ -127,26 +133,32 @@ func gdMemberships() []gdMembership {
 		return gdMembership{id: gdPrefix + "0000000f" + string(rune('0'+n/10)) + string(rune('0'+n%10)) + "00", teamID: teamID, userID: gdUserID(user), group: group, role: role}
 	}
 	return []gdMembership{
-		// by group_id
+		// Ordinary group A, by group_id.
 		m(gdTeamUnrel, "gv-zoe", grp(gdGroupA), "member"),
+		m(gdTeamUnrel, "gv-zoe", grp(gdGroupA), "lead"), // a second row, lead: one member, and a lead
 		m(gdTeamUnrel, "gv-bob", grp(gdGroupA), "member"),
+		m(gdTeamUnrel, "gv-bob", grp(gdGroupA), "member"), // duplicate row: still one member
 		m(gdTeamUnrel, "gv-ian", grp(gdGroupA), "member"), // inactive
 		m(gdTeamUnrel, "gv-fay", grp(gdGroupA), "member"),
 		m(gdTeamUnrel, "gv-nia", grp(gdGroupA), "member"),
-		// a user with two rows: by group_id and through the same-named team, one of them lead
-		m(gdTeamUnrel, "gv-bob", grp(gdGroupA), "member"),
-		m(gdTeamSameName, "gv-zoe", nil, "lead"),
-		// by team_id of a team named like the group, no group_id at all
+		m(gdTeamUnrel, "gv-noname", grp(gdGroupA), "member"), // a user with only an email
+		m(gdTeamUnrel, "gv-cust", grp(gdGroupA), "member"),   // a customer
+		m(gdTeamUnrel, "gv-notype", grp(gdGroupA), "member"), // no derivable type
+		// People near group A who are NOT in its pool: a member of a team that merely
+		// shares its name, a member of a same-named duplicate group, another group's member.
 		m(gdTeamSameName, "gv-tom", nil, "member"),
-		// by group_id of a second group with the same name
 		m(gdTeamUnrel, "gv-dan", grp(gdGroupADup), "member"),
-		// a different group
 		m(gdTeamUnrel, "gv-olga", grp(gdGroupOther), "member"),
-		// a user with only an email
-		m(gdTeamUnrel, "gv-noname", grp(gdGroupA), "member"),
-		// a customer and a typeless user in the group, one through the same-named team too
-		m(gdTeamUnrel, "gv-cust", grp(gdGroupA), "member"),
-		m(gdTeamSameName, "gv-notype", nil, "member"),
+
+		// The by-name group (Devops Approval): by group_id, by a same-named
+		// duplicate group, and by a same-named team (no group_id at all).
+		m(gdTeamUnrel, "gv-zoe", grp(gdGroupDevops), "member"),
+		m(gdTeamUnrel, "gv-dan", grp(gdGroupDevopsDup), "member"),
+		m(gdTeamDevops, "gv-tom", nil, "member"),
+		m(gdTeamDevops, "gv-bob", nil, "lead"),
+		m(gdTeamUnrel, "gv-cust", grp(gdGroupDevops), "member"), // customer: never provisioned
+		m(gdTeamDevops, "gv-ian", nil, "member"),                // inactive
+		m(gdTeamUnrel, "gv-olga", grp(gdGroupOther), "member"),
 	}
 }
 
@@ -200,12 +212,16 @@ func gdSetup(t *testing.T) *pgxpool.Pool {
 	          ($4, now(), now(), 'gv-test', 'gv-test', $2, NULL, NULL, NULL, true),
 	          ($5, now(), now(), 'gv-test', 'gv-test', 'GV Other Group', NULL, NULL, NULL, true),
 	          ($6, now(), now(), 'gv-test', 'gv-test', 'GV Empty Group', NULL, NULL, NULL, true),
-	          ($7, now(), now(), 'gv-test', 'gv-test', NULL, NULL, NULL, NULL, true)`,
-		gdGroupA, gdGroupAName, gdUserID("gv-mia"), gdGroupADup, gdGroupOther, gdGroupEmpty, gdGroupNoNam)
+	          ($7, now(), now(), 'gv-test', 'gv-test', NULL, NULL, NULL, NULL, true),
+	          ($8, now(), now(), 'gv-test', 'gv-test', $10, NULL, NULL, NULL, true),
+	          ($9, now(), now(), 'gv-test', 'gv-test', $10, NULL, NULL, NULL, true)`,
+		gdGroupA, gdGroupAName, gdUserID("gv-mia"), gdGroupADup, gdGroupOther, gdGroupEmpty, gdGroupNoNam,
+		gdGroupDevops, gdGroupDevopsDup, domain.PeerApprovalFallbackGroupName)
 	mustExec(`INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, type, key) VALUES
 	          ($1, now(), now(), 'gv-test', 'gv-test', $2, 'ABT', 'gv-team-same-name'),
-	          ($3, now(), now(), 'gv-test', 'gv-test', 'GV Unrelated Team', 'ABT', 'gv-team-unrelated')`,
-		gdTeamSameName, gdGroupAName, gdTeamUnrel)
+	          ($3, now(), now(), 'gv-test', 'gv-test', 'GV Unrelated Team', 'ABT', 'gv-team-unrelated'),
+	          ($4, now(), now(), 'gv-test', 'gv-test', $5, 'ABT', 'gv-team-devops')`,
+		gdTeamSameName, gdGroupAName, gdTeamUnrel, gdTeamDevops, domain.PeerApprovalFallbackGroupName)
 	for _, m := range gdMemberships() {
 		mustExec(`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id, role)
 		          VALUES ($1, now(), now(), 'gv-test', 'gv-test', $2, $3, $4, $5)`,
@@ -242,10 +258,10 @@ func TestGroupDetailIntegration_ListsActiveMembersInNameOrder(t *testing.T) {
 	// and the user with no type (Nate) are left out -- none of them could be
 	// provisioned as an approver; "Fay Fallback" comes from first + last,
 	// "noname@example.test" from the email; Nia (is_active NULL) counts as
-	// active; Tom is a member through the same-named team and Dan through the
-	// same-named duplicate group; Olga (another group) and Mia (only the
-	// manager) are not members.
-	want := []string{"bob baker", "Dan Duplicate", "Fay Fallback", "Nia Null", "noname@example.test", "Tom Team", "Zoe Zed"}
+	// active. An ordinary group is read by id only: Tom (a team that merely
+	// shares the group's name), Dan (a same-named duplicate group) and Olga
+	// (another group) are not in its pool, and Mia is only the manager.
+	want := []string{"bob baker", "Fay Fallback", "Nia Null", "noname@example.test", "Zoe Zed"}
 	if names := gdNames(got.Members); !reflect.DeepEqual(names, want) {
 		t.Fatalf("members = %v, want %v", names, want)
 	}
@@ -254,7 +270,8 @@ func TestGroupDetailIntegration_ListsActiveMembersInNameOrder(t *testing.T) {
 	}
 	for _, m := range got.Members {
 		if strings.Contains(m.Name, "Ian") || strings.Contains(m.Name, "Olga") || strings.Contains(m.Name, "Mia") ||
-			strings.Contains(m.Name, "Cora") || strings.Contains(m.Name, "Nate") {
+			strings.Contains(m.Name, "Cora") || strings.Contains(m.Name, "Nate") || strings.Contains(m.Name, "Tom") ||
+			strings.Contains(m.Name, "Dan") {
 			t.Fatalf("%q must not be listed", m.Name)
 		}
 	}
@@ -304,8 +321,8 @@ func TestGroupDetailIntegration_MemberFields(t *testing.T) {
 	if (zoe.UserType == nil) != (wantType == nil) || (wantType != nil && *zoe.UserType != *wantType) {
 		t.Fatalf("zoe userType = %v, want %v", zoe.UserType, wantType)
 	}
-	// Zoe has a plain group_id row AND a lead row through the same-named team
-	// -- one member, and the lead row wins.
+	// Zoe has a plain row AND a lead row in the group -- one member, and the
+	// lead row wins.
 	if zoe.Role == nil || *zoe.Role != "lead" {
 		t.Fatalf("zoe role = %v, want lead", zoe.Role)
 	}
@@ -372,23 +389,24 @@ func TestGroupDetailIntegration_GroupWithoutANameHasOnlyItsOwnMembers(t *testing
 	}
 }
 
-// The list a user sees is the list the approval pools provision from: for a
-// group resolved by name (CAB / ECAB / Devops) it is exactly namedGroup's member
-// set, and for a group addressed by id (the assigned-group pool) it is
-// groupMemberIDs' -- in both cases narrowed by the pools' own INTERNAL-and-active
-// rule (onlyInternalApprovers), so a customer or inactive user in the group is
-// neither provisioned nor shown.
-func TestGroupDetailIntegration_MatchesTheApprovalPools(t *testing.T) {
+// The list a user sees is the list the approval pools provision from, for both
+// shapes of pool, each narrowed by the pools' own INTERNAL-and-active rule
+// (onlyInternalApprovers) so a customer or inactive user in the group is neither
+// provisioned nor shown.
+//
+// A group resolved by NAME (CAB / ECAB / Devops Approval) is exactly namedGroup's
+// member set: group_id of any group of that name, or team_id of a team of that
+// name.
+func TestGroupDetailIntegration_NamedPoolGroupMatchesTheApprovalPool(t *testing.T) {
 	pool := gdSetup(t)
 	ctx := context.Background()
-	got, err := NewGroupDetailRepository(pool).GetGroupDetail(ctx, gdGroupA)
+	got, err := NewGroupDetailRepository(pool).GetGroupDetail(ctx, gdGroupDevops)
 	if err != nil {
 		t.Fatalf("GetGroupDetail: %v", err)
 	}
 	shown := gdIDs(got.Members)
 
-	// CAB / ECAB / Devops: resolved by name.
-	_, byName, exists, err := namedGroup(ctx, pool, gdGroupAName)
+	_, byName, exists, err := namedGroup(ctx, pool, domain.PeerApprovalFallbackGroupName)
 	if err != nil || !exists {
 		t.Fatalf("namedGroup: exists=%v err=%v", exists, err)
 	}
@@ -401,35 +419,65 @@ func TestGroupDetailIntegration_MatchesTheApprovalPools(t *testing.T) {
 		want = append(want, strings.ToLower(id))
 	}
 	sort.Strings(want)
-	if len(want) == 0 {
-		t.Fatal("fixture error: the named pool provisions nobody, so the comparison below would prove nothing")
-	}
 	if !reflect.DeepEqual(shown, want) {
 		t.Fatalf("group page members %v != the members the named pool provisions %v", shown, want)
 	}
-	// The pool has people the page must have dropped for being ineligible.
+
+	// The fixture's three ways in are all there, and the ineligible are not.
+	names := map[string]bool{}
+	for _, n := range gdNames(got.Members) {
+		names[n] = true
+	}
+	for _, n := range []string{"Zoe Zed", "Dan Duplicate", "Tom Team", "bob baker"} {
+		if !names[n] {
+			t.Fatalf("%q (a member by group_id, duplicate group or same-named team) is missing: %v", n, gdNames(got.Members))
+		}
+	}
+	for _, n := range []string{"Cora Customer", "Ian Inactive", "Olga Other"} {
+		if names[n] {
+			t.Fatalf("%q must not be listed: %v", n, gdNames(got.Members))
+		}
+	}
+	// bob leads through the team row only -- the page says lead.
+	for _, m := range got.Members {
+		if m.ID == gdUserID("gv-bob") && (m.Role == nil || *m.Role != "lead") {
+			t.Fatalf("bob role = %v, want lead (his team row is lead)", m.Role)
+		}
+	}
+	// The pool has people the page dropped for being ineligible.
 	if len(byName) <= len(provisioned) {
-		t.Fatalf("fixture error: the group has %d members by name but %d eligible; it should hold ineligible ones too", len(byName), len(provisioned))
+		t.Fatalf("fixture error: %d members by name but %d eligible; it should hold ineligible ones too", len(byName), len(provisioned))
+	}
+}
+
+// An ordinary (assigned) group is the other shape: its pools read
+// team_member.group_id = <its id> only (groupMemberIDs), so a team that merely
+// shares its name adds nobody to its page.
+func TestGroupDetailIntegration_AssignedGroupMatchesTheAssignedPool(t *testing.T) {
+	pool := gdSetup(t)
+	ctx := context.Background()
+	got, err := NewGroupDetailRepository(pool).GetGroupDetail(ctx, gdGroupA)
+	if err != nil {
+		t.Fatalf("GetGroupDetail: %v", err)
 	}
 
-	// The assigned-group pool: team_member.group_id = <id>. Everyone it
-	// provisions is on the page (the page can show more only through the
-	// same-named team / group the named pools also read).
 	byID, err := groupMemberIDs(ctx, pool, gdGroupA)
 	if err != nil {
 		t.Fatalf("groupMemberIDs: %v", err)
 	}
-	assigned, err := onlyInternalApprovers(ctx, pool, byID)
+	provisioned, err := onlyInternalApprovers(ctx, pool, byID)
 	if err != nil {
-		t.Fatalf("onlyInternalApprovers(assigned): %v", err)
+		t.Fatalf("onlyInternalApprovers: %v", err)
 	}
-	onPage := map[string]bool{}
-	for _, id := range shown {
-		onPage[id] = true
+	want := make([]string, 0, len(provisioned))
+	for _, id := range provisioned {
+		want = append(want, strings.ToLower(id))
 	}
-	for _, id := range assigned {
-		if !onPage[strings.ToLower(id)] {
-			t.Fatalf("assigned-group pool member %s is missing from the group page", id)
-		}
+	sort.Strings(want)
+	if shown := gdIDs(got.Members); !reflect.DeepEqual(shown, want) {
+		t.Fatalf("group page members %v != the members the assigned-group pool provisions %v", shown, want)
+	}
+	if len(want) == 0 || len(byID) <= len(provisioned) {
+		t.Fatalf("fixture error: %d by id, %d eligible", len(byID), len(provisioned))
 	}
 }

@@ -53,19 +53,39 @@ func NewGroupDetailRepository(db *pgxpool.Pool) GroupDetailRepository {
 	return &groupDetailRepo{db: db}
 }
 
+// namedPoolGroups are the groups the approval pools resolve BY NAME rather than
+// by id: the CAB and ECAB stages' own groups and the Devops Approval peer
+// fallback (resolveApprovalPool / resolvePeerPool -> namedGroup). Every other
+// group an approval stage points at is a change's assigned group, whose pools
+// read team_member.group_id = <the group's id> only (groupMemberIDs).
+var namedPoolGroups = map[string]bool{
+	domain.CABApprovalGroupName:          true,
+	domain.ECABApprovalGroupName:         true,
+	domain.PeerApprovalFallbackGroupName: true,
+}
+
 // groupDetailMembersSQL lists the distinct active INTERNAL users who are members
 // of the group, one row per user, in name order.
 //
 // WHO IS A MEMBER is exactly who the approval pools provision from, so the list
 // a user sees is the list of people who can actually be asked to approve
-// (apart from per-change exclusions such as the creator). The CAB / ECAB / Devops
-// pools resolve a group by NAME (namedGroup in change_request_approval_flow.go):
-// anyone whose team_member.group_id points at a "group" of that name, or whose
-// team_member.team_id points at a `team` of that name (which is also how the
-// CR-notice flow addresses these audiences). The assigned-group pools read
-// team_member.group_id = <the group's id>, which the first branch covers. $1 is
-// the group id, $2 its name (NULL when the row has none, which leaves only the
-// group_id = $1 branch).
+// (apart from per-change exclusions such as the creator), and there are two
+// shapes of pool:
+//
+//   - an assigned group (the Peer and Review stages) reads
+//     team_member.group_id = <the group's id> and nothing else
+//     (groupMemberIDs) -- so does this, for any group not listed below;
+//   - the CAB / ECAB / Devops Approval groups are resolved by NAME
+//     (namedGroup): anyone whose team_member.group_id points at a "group" of
+//     that name, or whose team_member.team_id points at a `team` of that name
+//     (which is also how the CR-notice flow addresses these audiences) -- so
+//     for those names does this ($3 = true).
+//
+// A team of the same name as an ordinary assigned group therefore does not add
+// people to that group's page: its members are not in the peer pool either.
+//
+// $1 is the group id, $2 its name (NULL when the row has none), $3 whether the
+// group is one of namedPoolGroups.
 //
 // Like every pool (internalApproverIDs), only an active user ("user".is_active,
 // NULL counting as active, as in user_repo.go) whose user_type is INTERNAL is
@@ -90,7 +110,7 @@ const groupDetailMembersSQL = `
 	JOIN "user" u ON u.id = tm.user_id
 	WHERE (
 	        tm.group_id = $1::uuid
-	     OR ($2::text IS NOT NULL AND (
+	     OR ($3::boolean AND $2::text IS NOT NULL AND (
 	            tm.group_id IN (SELECT g2.id FROM "group" g2 WHERE g2.name = $2::text)
 	         OR tm.team_id  IN (SELECT t.id  FROM team    t  WHERE t.name  = $2::text)))
 	      )
@@ -137,7 +157,8 @@ func (r *groupDetailRepo) GetGroupDetail(ctx context.Context, groupID string) (d
 		detail.Manager = ref
 	}
 
-	rows, err := r.db.Query(ctx, groupDetailMembersSQL, groupID, name)
+	resolvedByName := name != nil && namedPoolGroups[*name]
+	rows, err := r.db.Query(ctx, groupDetailMembersSQL, groupID, name, resolvedByName)
 	if err != nil {
 		return domain.GroupDetail{}, fmt.Errorf("list group members: %w", err)
 	}

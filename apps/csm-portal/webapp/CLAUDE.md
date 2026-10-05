@@ -223,7 +223,7 @@ In `ChangeRequestApprovals`, each row's **Assignment group** is a link-button (`
 - **Customer Approval / Customer Review** have no group (`assignmentGroup` is `null`): their Assignment group opens the same dialog titled **"Customer Group"** listing the project's registered contacts, from data already on the page (`customerContacts`, which `CsmChangeRequestDetailPage` passes down; else the stage's own approvers) -- **no request**.
 - A stage with neither (ServiceNow data source, legacy rows) stays plain text.
 - Test by role/name, not by position: the cell now holds a button, so a row's first `button` is no longer Approve (`within(row).getByRole("button", { name: "Approve" })`).
-- e2e: `fakeChangeRequestApi.ts` serves `GET /groups/{id}` (`FAKE_PEER_GROUP` / `FAKE_CAB_GROUP` / `FAKE_ECAB_GROUP`), puts `assignmentGroup` on every internal stage (`null` on the customer ones) and has `failGroups(status)` for the error state; the cases live in `change-request-lifecycle.spec.ts` ("opening an Assignment group").
+- e2e: `fakeChangeRequestApi.ts` serves `GET /groups/{id}` (`FAKE_PEER_GROUP` / `FAKE_CAB_GROUP` / `FAKE_ECAB_GROUP`), puts `assignmentGroup` on every internal stage (`null` on the customer ones) and has `failGroups(status)` for the error state; the cases live in `change-request-lifecycle.spec.ts` ("opening an Assignment group", fake API) plus two against the real local stack in its "seeded fixtures" block (CHG-FIXED-004's Example Corp ABT group lists Alice, Bob and Carol -- not Jane, who is only in the team, nor the customer John -- and CHG-FIXED-007's Customer Group lists Dave and Erin), which need the rebuilt BFF and entity-service.
 
 ## Testing
 

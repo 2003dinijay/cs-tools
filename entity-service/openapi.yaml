@@ -6938,10 +6938,11 @@ paths:
         GET /change-requests/{id}/approvals): the group's name, description,
         group email and manager, and its active members in name order.
         `id` is a `"group"` id, NOT a `team` id (POST /groups/search lists
-        teams). Members are the users the approval pools provision from: a
-        `team_member` whose `group_id` is this group, or -- the way the CAB /
-        ECAB / Devops pools resolve a group, by name -- whose `group_id` is any
-        group of the same name or whose `team_id` is a team of the same name.
+        teams). Members are the users the approval pools provision from: for the
+        CAB Approval / ECAB Approval / Devops Approval groups, which the pools
+        resolve by name, a `team_member` whose `group_id` is any group of that
+        name or whose `team_id` is a team of that name; for any other group (a
+        change's assigned group) a `team_member` whose `group_id` is this group.
         Only active INTERNAL users are listed -- the rule every approver pool
         applies, so a customer in a staff group, an inactive user or a user with
         no derivable type is neither provisioned as an approver nor shown -- and

@@ -297,6 +297,50 @@ test.describe("change request lifecycle — terminal approval display", () => {
   });
 });
 
+test.describe("change request lifecycle — opening an Assignment group", () => {
+  test("an internal stage's group opens and lists the people its pool is drawn from, in name order", async ({ page }) => {
+    test.setTimeout(60_000);
+
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(CR_RESOLVED);
+
+    await detail.groupLink(ALICE, "Example Corp ABT", "Peer Approval").click();
+    const dialog = detail.groupDialog("Example Corp ABT");
+    await expect(dialog).toBeVisible();
+    // Alice, Bob and Carol are the group's active internal members (the
+    // approvers it provisions). Jane Doe is in the *team* of that name, not in
+    // the group, and John Smith is a customer: neither is a peer approver, so
+    // neither is listed.
+    await expect(dialog.getByRole("heading", { name: "Group Members (3)" })).toBeVisible();
+    await expect(dialog.getByRole("listitem")).toHaveText([
+      new RegExp(`${ALICE}.*alice\\.perera@example\\.com`),
+      new RegExp(`${BOB}.*bob\\.fernando@example\\.com`),
+      new RegExp(`${CAROL}.*carol\\.silva@example\\.com`),
+    ]);
+    await expect(dialog.getByText(JANE)).toHaveCount(0);
+    await expect(dialog.getByText(JOHN)).toHaveCount(0);
+
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+  });
+
+  test("the Customer Approval stage opens the Customer Group: the project's registered contacts", async ({ page }) => {
+    test.setTimeout(60_000);
+
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(CR_CUSTOMER_APPROVAL);
+
+    await detail.groupLink(DAVE, "Customer Group", "Customer Approval").click();
+    const dialog = detail.groupDialog("Customer Group");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "Group Members (2)" })).toBeVisible();
+    await expect(dialog.getByRole("listitem")).toHaveText([
+      new RegExp(`${DAVE}.*dave\\.mendis@example\\.com`),
+      new RegExp(`${ERIN}.*erin\\.jayawardena@example\\.com`),
+    ]);
+  });
+});
+
 test.describe("change request lifecycle — customer contacts answer the customer stages", () => {
   // The decisions consume the fixtures; the seed puts them back.
   test.beforeEach(async () => {

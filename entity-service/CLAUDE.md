@@ -2732,20 +2732,25 @@ pool, like `GET /teams/{id}/members`).
   `len(members)`. Unknown id is a 404, a malformed one a 400.
 * **Who is listed is who the approval pools provision from**, so the page and the
   stage agree (apart from per-change exclusions such as the creator, who is
-  provisioned cancelled but is still *in* the group): a `team_member` whose `group_id`
-  is this group (`groupMemberIDs`, the assigned-group pools) **or** -- the way
-  `namedGroup` resolves CAB / ECAB / Devops -- whose `group_id` is any `"group"` of
-  the same name or whose `team_id` is a `team` of the same name; a group row with no
-  name matches on its own `group_id` only. **Only active INTERNAL users are listed**
-  (`"user".user_type = 'INTERNAL'` and `is_active` not false, NULL counting as active) --
-  the very rule every pool applies (`internalApproverIDs`), so a customer who sits in a
-  staff group, a deactivated user or a user with no derivable type is neither
+  provisioned cancelled but is still *in* the group). There are two shapes of pool and
+  the page follows each: an **assigned group** (the Peer and Review stages) is
+  `team_member.group_id = <the group's id>` and nothing else (`groupMemberIDs`) -- a
+  `team` that merely shares the group's name adds nobody, because its members are not in
+  the peer pool either (the seed's Jane Doe sits in the *team* "Example Corp ABT" and in no
+  approval group); the **CAB Approval / ECAB Approval / Devops Approval** groups
+  (`namedPoolGroups`) are resolved by name (`namedGroup`): any `team_member` whose
+  `group_id` is a `"group"` of that name or whose `team_id` is a `team` of that name. A
+  group row with no name matches on its own `group_id` only. **Only active INTERNAL users
+  are listed** (`"user".user_type = 'INTERNAL'` and `is_active` not false, NULL counting as
+  active) -- the very rule every pool applies (`internalApproverIDs`), so a customer who
+  sits in a staff group, a deactivated user or a user with no derivable type is neither
   provisioned nor shown. (The group's own membership is untouched; the page just does not
   promise an approver the stage cannot have.) One row per user (the `lead` role of any of
   their rows wins), name order (case-insensitive; the name falls back to first + last
-  name, then the email, so nobody is listed blank). If the pools' eligibility rule ever
-  changes, change `groupDetailMembersSQL` with it: the integration test holds the page
-  against `namedGroup` / `groupMemberIDs` narrowed by `onlyInternalApprovers`.
+  name, then the email, so nobody is listed blank). If the pools change -- a new named pool,
+  or a different eligibility rule -- change `namedPoolGroups` / `groupDetailMembersSQL`
+  with them: the integration tests hold the page against `namedGroup` / `groupMemberIDs`
+  narrowed by `onlyInternalApprovers`.
 * **Internal callers only** (`RequireInternalCaller`, checked before the id is parsed):
   an external (customer) caller gets 403, so a customer's contacts are never
   enumerable here. The route is not RLS-scoped because `group`, `team_member` and
