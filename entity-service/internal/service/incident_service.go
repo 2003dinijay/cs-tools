@@ -292,8 +292,10 @@ func NewIncidentService(repo repository.IncidentRepository, eventPublisher Event
 // NewIncidentServiceWithPublisher is NewIncidentService for DATA_SOURCE=postgres when the platform
 // creates incidents itself, with no ServiceNow behind it: CreateIncident publishes incident.created once
 // the Postgres insert commits (the event the call-escalation ladders start from) and keeps the create's
-// notes as comments, and UpdateIncident writes work notes and comments. userRepo resolves a forwarded
-// end-user token to its user; a service caller with none is incidentSystemActorEmail.
+// notes as comments, and UpdateIncident writes the engineer's claim (state, assignee, resolution) and
+// work notes and comments. A create is attributed to the forwarded user, else the calling client's id
+// (actorOf); userRepo resolves a forwarded end-user token for UpdateIncident, whose notes from a
+// service caller with none are incidentSystemActorEmail.
 func NewIncidentServiceWithPublisher(repo repository.IncidentRepository, userRepo repository.UserRepository, eventPublisher EventPublisherService) IncidentService {
 	return &incidentService{repo: repo, userRepo: userRepo, eventPublisher: eventPublisher}
 }
