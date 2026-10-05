@@ -682,6 +682,29 @@ func TestLoad_SalesforceIngestRetryInterval(t *testing.T) {
 	}
 }
 
+func TestConfig_Validate_CustomerEngagementTypeIDs(t *testing.T) {
+	c := baseValidConfig()
+	c.CSMMigrationCustomerEngagementIngestEnabled = true
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unset type ids must not fail startup: %v", err)
+	}
+	c.CustomerEngagementTypeIDs = map[string]string{"QSP": "07fd9f78478cb910a0a29cd3846d4304"}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	c.CustomerEngagementTypeIDs["TRAINING"] = "not-a-sys-id"
+	if c.Validate() == nil {
+		t.Error("Validate() = nil for a malformed type id")
+	}
+	if !c.HasCustomerEngagementIngest() {
+		t.Error("HasCustomerEngagementIngest() = false on a Postgres config")
+	}
+	c.DataSource = DataSourceServiceNow
+	if c.HasCustomerEngagementIngest() {
+		t.Error("HasCustomerEngagementIngest() = true on a ServiceNow config")
+	}
+}
+
 // dsnSearchPath extracts the search_path value DSN embedded in its "options"
 // query parameter, so a test can assert on the schema alone rather than the
 // whole connection string.
