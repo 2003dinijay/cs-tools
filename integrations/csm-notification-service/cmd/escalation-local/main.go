@@ -772,6 +772,26 @@ func runTicks(ctx context.Context, cfg config, engine *escalation.Engine, rdb *r
 				return fmt.Errorf("reading the stored ladder: %w", err)
 			}
 			if !found {
+				// A ladder that runs out places its last call and deletes its
+				// state in the same tick, so that call is never read back as
+				// placed above. Exhausting means every call is settled, so the
+				// ones due by now and not yet reported were placed just now.
+				// (An acknowledged ladder is deleted with its remaining calls
+				// retired, not placed -- those are left alone.)
+				if !cancelled {
+					for i := seen; i < len(plan.Calls); i++ {
+						c := plan.Calls[i]
+						if c.At.After(now) {
+							continue
+						}
+						fmt.Printf("  [%7s] %-8s #%d  %-14s called %s  (ladder +%s)\n",
+							short(elapsed), c.Level, c.Ordinal, c.Recipient.Name,
+							maskPhone(c.Recipient.Phone), short(c.At.Sub(trigger)))
+						if i < len(lastPlaced) {
+							lastPlaced[i] = true
+						}
+					}
+				}
 				fmt.Printf("\n  the engine has finished with this incident and cleared its state\n")
 				return summarise(ctx, cfg, store, rec, plan, cancelledAtLadderTime, lastPlaced, lastFailed, runStart)
 			}

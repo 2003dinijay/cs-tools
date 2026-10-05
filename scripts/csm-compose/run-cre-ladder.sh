@@ -34,6 +34,12 @@
 
 set -euo pipefail
 
+# Everything below is one { ... } group, so bash reads the whole file before
+# running any of it. A script is otherwise read as it runs, and editing it
+# under a run in progress -- a real-time ladder lasts up to two hours --
+# makes that run resume at the wrong line of the new file, or silently stop.
+{
+
 usage() {
   cat <<'USAGE'
 Usage: run-cre-ladder.sh [options]
@@ -271,6 +277,7 @@ esac
 # store. So the binary is built first and started here, its pid is kept, and
 # every way out of this script stops it before Redis is removed.
 child=""
+created_redis=""
 bin_dir=""
 cleanup() {
   if [ -n "${child}" ] && kill -0 "${child}" 2>/dev/null; then
@@ -283,7 +290,9 @@ cleanup() {
     echo; echo "redis left running as ${REDIS_NAME} on 127.0.0.1:${REDIS_PORT}"
     return
   fi
-  docker rm -f "${REDIS_NAME}" >/dev/null 2>&1 || true
+  # Only ever the Redis this run started. A run that found the name taken and
+  # stopped used to remove it here -- the other run's Redis, mid-ladder.
+  [ -n "${created_redis}" ] && docker rm -f "${REDIS_NAME}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 # Turn a signal into an exit, so the EXIT trap above runs for it too.
@@ -292,14 +301,31 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 trap 'exit 142' ALRM
 
-if ! docker ps --format '{{.Names}}' | grep -qx "${REDIS_NAME}"; then
-  docker rm -f "${REDIS_NAME}" >/dev/null 2>&1 || true
-  docker run -d --name "${REDIS_NAME}" -p "127.0.0.1:${REDIS_PORT}:6379" redis:7-alpine >/dev/null
-  for _ in $(seq 1 20); do
-    [ "$(docker exec "${REDIS_NAME}" redis-cli ping 2>/dev/null)" = "PONG" ] && break
-    sleep 0.5
-  done
+# Never share a Redis. A container already under this name means another run
+# holds the port (or one left it behind), and joining it puts two engines on one
+# ladder store, each working the other's incidents.
+if docker ps -a --format '{{.Names}}' | grep -qx "${REDIS_NAME}"; then
+  die "Redis container ${REDIS_NAME} already exists -- another run is using port ${REDIS_PORT}. Use a different REDIS_PORT, or if it is left over from an old run: docker rm -f ${REDIS_NAME}"
 fi
+docker run -d --name "${REDIS_NAME}" -p "127.0.0.1:${REDIS_PORT}:6379" redis:7-alpine >/dev/null
+created_redis=1
+# Ready means answering on the HOST port, which is what the harness dials.
+# Asking redis-cli inside the container is not enough: Docker Desktop's port
+# forward can lag the container, most with several runs starting at once --
+# that is how 16 of a 63-scenario suite died at startup with "connection
+# refused" after the old check had given up silently and let them run.
+redis_up() {
+  ( exec 3<>"/dev/tcp/127.0.0.1/${REDIS_PORT}" || exit 1
+    printf 'PING\r\n' >&3
+    read -r -t 2 reply <&3 || exit 1
+    [ "${reply%$'\r'}" = "+PONG" ] ) 2>/dev/null
+}
+ready=""
+for _ in $(seq 1 60); do
+  redis_up && { ready=1; break; }
+  sleep 0.5
+done
+[ -n "${ready}" ] || die "Redis ${REDIS_NAME} is not answering on 127.0.0.1:${REDIS_PORT} after 30s"
 
 # -- the run ------------------------------------------------------------------
 
@@ -353,8 +379,20 @@ cat <<SUMMARY
 SUMMARY
 
 cd "${service_dir}"
-bin_dir="$(mktemp -d)"
-go build -o "${bin_dir}/escalation-local" ./cmd/escalation-local
-"${bin_dir}/escalation-local" "${args[@]}" &
+# A suite builds the harness once and hands every scenario the same binary in
+# ESCALATION_LOCAL_BIN: sixteen scenarios each running their own go build at
+# once were killed mid-build, silently, and every one of them died there.
+if [ -n "${ESCALATION_LOCAL_BIN:-}" ]; then
+  [ -x "${ESCALATION_LOCAL_BIN}" ] || die "ESCALATION_LOCAL_BIN=${ESCALATION_LOCAL_BIN} is not an executable"
+  bin="${ESCALATION_LOCAL_BIN}"
+else
+  bin_dir="$(mktemp -d)"
+  bin="${bin_dir}/escalation-local"
+  go build -o "${bin}" ./cmd/escalation-local || die "building the harness failed (go build exit $?)"
+fi
+"${bin}" "${args[@]}" &
 child=$!
 wait "${child}"
+
+exit
+}

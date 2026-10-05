@@ -70,6 +70,9 @@ type TeamScheduleResolver struct {
 	// rotaTeamKeys narrows the rota rungs to these teams; empty means this
 	// ladder's ABT teams plus Americas. See TeamKeys.RotaTeams.
 	rotaTeamKeys []string
+	// americasWeekendRotaShifts is the Team Schedule shift codes the weekend
+	// night's rota member is taken from. See TeamKeys.AmericasWeekendRotaShifts.
+	americasWeekendRotaShifts []string
 	// unassignedTeamLead is how the "Team lead" rung answers when there is no
 	// ABT to take a lead from: "pool" or "none". See TeamKeys.
 	unassignedTeamLead string
@@ -159,17 +162,18 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 		americasLead:    teams.AmericasLead,
 		teamLeadsToCall: teams.TeamLeadsToCall,
 
-		rotaMembersToCall:       normaliseRotaCaps(teams.RotaMembersToCall),
-		rotaTeamKeys:            lowerKeys(teams.RotaTeams),
-		unassignedTeamLead:      unassignedLeadMode(teams.UnassignedTeamLead),
-		unassignedTeamLeadCount: unassignedLeadCount(teams.UnassignedTeamLeadCount),
-		tiers:                   alertTiers,
-		entity:                  entity,
-		rules:                   rules,
-		abtTeamKeys:             keys,
-		teamLeadKeys:            leadKeys,
-		americasTeamKey:         teamKeyFor(teams.Americas),
-		leadershipTeamKey:       teams.Leadership,
+		rotaMembersToCall:         normaliseRotaCaps(teams.RotaMembersToCall),
+		rotaTeamKeys:              lowerKeys(teams.RotaTeams),
+		americasWeekendRotaShifts: americasWeekendShifts(teams.AmericasWeekendRotaShifts),
+		unassignedTeamLead:        unassignedLeadMode(teams.UnassignedTeamLead),
+		unassignedTeamLeadCount:   unassignedLeadCount(teams.UnassignedTeamLeadCount),
+		tiers:                     alertTiers,
+		entity:                    entity,
+		rules:                     rules,
+		abtTeamKeys:               keys,
+		teamLeadKeys:              leadKeys,
+		americasTeamKey:           teamKeyFor(teams.Americas),
+		leadershipTeamKey:         teams.Leadership,
 	}
 }
 
@@ -224,6 +228,19 @@ type TeamKeys struct {
 	// longest-since-called, the same fairness the "Team leads" rung uses, so a
 	// cap does not always spare the same names.
 	RotaMembersToCall map[string]int `yaml:"rotaMembersToCall"`
+	// AmericasWeekendRotaShifts is where the weekend night's (R6) Level 0 rota
+	// member comes from: the Team Schedule shift codes of the Americas weekend
+	// rota. Empty means CRE_WEEKEND_NIGHT, the catalogue's "Americas weekend".
+	//
+	// The rung is "a rota member and the Americas nominees". It used to take
+	// whoever sorted first among EVERYONE on duty at that hour, which on a
+	// weekend night is mostly the separate on-call shift
+	// (CRE_WEEKEND_NIGHT_OC) -- so the on-call engineer was paged first and the
+	// rostered Americas weekend member not at all. The on-call shift is the
+	// fallback cover, not the first responder, so it is deliberately not in
+	// the default. Nobody on these shifts means the rung calls the nominees
+	// alone; it never falls back to the on-call shift.
+	AmericasWeekendRotaShifts []string `yaml:"americasWeekendRotaShifts"`
 	// RotaTeams is whose rota a rota rung may reach. Empty -- the default --
 	// means this ladder's own ABT teams plus Americas.
 	//
@@ -268,17 +285,12 @@ type TeamKeys struct {
 	Americas string `yaml:"americas"`
 	// Leadership is the team the two heads belong to.
 	Leadership string `yaml:"leadership"`
-	// AmericasLead is the single lead above the Americas team's own leads,
-	// named outright.
+	// AmericasLead overrides who the America Team lead is, by name.
 	//
-	// It has to be named because the schema cannot tell the two apart: the
-	// three Americas team leads and the one above them all hold role 'lead',
-	// so looking the rung up by role returned the whole pool and LEVEL_2
-	// re-called everybody LEVEL_1 had just reached -- an escalation that looks
-	// like it climbed without reaching anybody new.
-	//
-	// Left empty, LEVEL_2 falls back to the lowest-addressed lead of the
-	// Americas team, which is at least one person rather than all of them.
+	// Normally left empty: the America Team lead is whoever holds role
+	// americas_team_lead in the Americas team (migration 0185), set from the
+	// Team Schedule. This file is public, so naming a person here publishes
+	// their email -- keep it for an emergency override only.
 	AmericasLead Person `yaml:"americasLead"`
 }
 
@@ -293,8 +305,11 @@ const defaultLeadershipTeamKey = "cre-leadership"
 const (
 	roleSubLead = "sub_lead"
 	roleLead    = "lead"
-	roleCREHead = "cre_head"
-	roleCSHead  = "cs_head"
+	// roleAmericasTeamLead is the one position above the Americas team's
+	// three Team leads: night LEVEL_2 (migration 0185).
+	roleAmericasTeamLead = "americas_team_lead"
+	roleCREHead          = "cre_head"
+	roleCSHead           = "cs_head"
 )
 
 // Resolve implements Resolver by looking the incident's rule up and asking
@@ -391,7 +406,7 @@ func (r TeamScheduleResolver) fromSource(ctx context.Context, src LevelSource, r
 		return r.alertDuty(ctx, r.americasKeys())
 
 	case SourceRotaMemberAndAlertDutyAmericas:
-		rota, err := r.rotaMembers(ctx, rc.At, rc.Shift)
+		rota, err := r.rotaMembersOnShifts(ctx, rc.At, r.americasWeekendRotaShifts)
 		if err != nil {
 			return nil, err
 		}
@@ -433,23 +448,43 @@ func (r TeamScheduleResolver) fromSource(ctx context.Context, src LevelSource, r
 		return r.takeLongestSinceCalled(ctx, pool, r.teamLeadsToCall), nil
 
 	case SourceAmericasTeamLeads:
-		return r.leadsOf(ctx, r.americasKeys())
+		// The Americas team's three Team leads (role lead). The America Team
+		// lead above them holds a role of its own (migration 0185), so it is
+		// never in this list and LEVEL_2 always reaches somebody new.
+		leads, err := r.leadsOf(ctx, r.americasKeys())
+		if err != nil {
+			return nil, err
+		}
+		if !r.americasLead.Set() {
+			return leads, nil
+		}
+		out := make([]Recipient, 0, len(leads))
+		for _, l := range leads {
+			if !strings.EqualFold(l.Email, r.americasLead.Email) {
+				out = append(out, l)
+			}
+		}
+		return out, nil
 
 	case SourceAmericasTeamLead:
+		// The America Team lead: the Americas team's one americas_team_lead.
+		// Nobody holding it means nobody to call -- the rung is recorded as
+		// having no recipients and the ladder climbs, rather than guessing one
+		// of the three Team leads. teams.americasLead, when set, still wins.
 		if r.americasLead.Set() {
-			return []Recipient{{
-				Name:  r.americasLead.Name,
-				Email: r.americasLead.Email,
-				Phone: r.americasLead.Phone,
-			}}, nil
+			return []Recipient{{Name: r.americasLead.Name, Email: r.americasLead.Email, Phone: r.americasLead.Phone}}, nil
 		}
-		// Nobody named: take one rather than the whole pool, so this rung is
-		// still distinguishable from LEVEL_1's three.
-		leads, err := r.leadsOf(ctx, r.americasKeys())
-		if err != nil || len(leads) == 0 {
-			return leads, err
+		keys := r.americasKeys()
+		if len(keys) == 0 {
+			return nil, nil
 		}
-		return leads[:1], nil
+		members, err := r.entity.TeamMembers(ctx, keys, []string{roleAmericasTeamLead}, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		out := recipientsOf(members)
+		sortRecipients(out)
+		return out, nil
 
 	case SourceCREHead:
 		if p := r.heads.CRE; p.Set() {
@@ -561,6 +596,50 @@ func (r TeamScheduleResolver) rotaMembers(ctx context.Context, at time.Time, shi
 		return r.takeLongestSinceCalled(ctx, out, n), nil
 	}
 	return out, nil
+}
+
+// rotaMembersOnShifts is everyone on duty at `at` whose assignment is one of
+// the given shift codes, in the same stable order rotaMembers uses.
+func (r TeamScheduleResolver) rotaMembersOnShifts(ctx context.Context, at time.Time, codes []string) ([]Recipient, error) {
+	onDuty, err := r.onDutyHere(ctx, at)
+	if err != nil {
+		return nil, err
+	}
+	var out []Recipient
+	seen := map[string]bool{}
+	for _, a := range onDuty {
+		if a.Engineer.UserID == "" || seen[a.Engineer.UserID] {
+			continue
+		}
+		if !slices.Contains(codes, strings.ToUpper(strings.TrimSpace(a.ShiftCode))) {
+			continue
+		}
+		seen[a.Engineer.UserID] = true
+		out = append(out, Recipient{
+			Email: a.Engineer.Email, Name: a.Engineer.Name, ShiftCode: a.ShiftCode,
+		})
+	}
+	sortRecipients(out)
+	return out, nil
+}
+
+// defaultAmericasWeekendRotaShift is the catalogue's "Americas weekend" rota
+// (migration 0154). Its on-call twin, CRE_WEEKEND_NIGHT_OC, is not a default.
+const defaultAmericasWeekendRotaShift = "CRE_WEEKEND_NIGHT"
+
+// americasWeekendShifts upper-cases the configured codes, defaulting to the
+// Americas weekend rota.
+func americasWeekendShifts(in []string) []string {
+	var out []string
+	for _, c := range in {
+		if c = strings.ToUpper(strings.TrimSpace(c)); c != "" {
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		out = []string{defaultAmericasWeekendRotaShift}
+	}
+	return out
 }
 
 // rotaPair is the evening rule: the rostered member from the incident's own
