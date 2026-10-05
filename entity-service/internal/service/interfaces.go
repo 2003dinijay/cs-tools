@@ -65,6 +65,26 @@ type UserService interface {
 	CreateUser(ctx context.Context, req domain.CreateUserRequest) (domain.User, error)
 }
 
+// UserCacheInvalidator clears a user's cached GET /users/{id} and
+// GET /users/me responses. Every writer of "user", user_role, account_contact
+// or project_contact rows calls it after its transaction commits, naming the
+// user by id, email, or both. It never fails: an invalidation that cannot
+// reach the cache is logged, and the entry expires after its TTL.
+type UserCacheInvalidator interface {
+	InvalidateUser(ctx context.Context, userID, email string)
+}
+
+// UserCache is the read-through store behind NewCachedUserService
+// (internal/cache.UserCache in production). A miss, including one caused by
+// an unreachable cache, reports false and the caller reads Postgres.
+type UserCache interface {
+	UserCacheInvalidator
+	GetUserDetail(ctx context.Context, id string) (domain.UserDetail, bool)
+	SetUserDetail(ctx context.Context, d domain.UserDetail)
+	GetMe(ctx context.Context, email string) (domain.GetUserMeResponse, bool)
+	SetMe(ctx context.Context, email string, me domain.GetUserMeResponse)
+}
+
 // SavedFilterViewService is the caller's own named list-filter bookmarks
 // (CSM portal saved views). Postgres-only; the caller is always the
 // authenticated user resolved from x-user-id-token — never a client-supplied
