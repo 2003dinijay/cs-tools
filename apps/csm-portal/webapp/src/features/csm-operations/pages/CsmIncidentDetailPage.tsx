@@ -982,7 +982,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
             </Typography>
           )}
 
-          <IncidentTasksWidget incidentId={incident.id} />
+          <IncidentTasksWidget incidentId={incident.id as string} />
 
           {hasLinkedServiceRequests && (
             <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
