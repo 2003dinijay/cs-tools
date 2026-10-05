@@ -42,7 +42,6 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/recipientlinks"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/scim"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/slaengine"
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/timecardengine"
 )
 
 func main() {
@@ -187,6 +186,23 @@ func main() {
 	crDLQProducer := eventbus.NewProducer(crDLQCfg)
 	defer crDLQProducer.Close()
 
+	// The two outage emails ride their own topic as well, for the same
+	// reason: entity-service's outage notice drainer publishes them there
+	// (OUTAGE_EVENT_HUB_TOPIC there), and its own DLQ keeps a stuck outage
+	// email out of the case and change-request dead-letter topics.
+	outageCfg := eventbus.Config{
+		Broker:           eventBusCfg.Broker,
+		ConnectionString: eventBusCfg.ConnectionString,
+		Topic:            envOrDefault("OUTAGE_EVENT_HUB_TOPIC", "outage-events"),
+	}
+	outageDLQCfg := eventbus.Config{
+		Broker:           eventBusCfg.Broker,
+		ConnectionString: eventBusCfg.ConnectionString,
+		Topic:            envOrDefault("OUTAGE_EVENT_HUB_DLQ_TOPIC", "outage-events-dlq"),
+	}
+	outageDLQProducer := eventbus.NewProducer(outageDLQCfg)
+	defer outageDLQProducer.Close()
+
 	// The onboarding events ride their own topic too, for the same reason
 	// the change-request notices do: a separate consumer group isolates
 	// processing, only a separate topic isolates volume. An invitation
@@ -217,6 +233,10 @@ func main() {
 	crDLQConsumerGroup := envOrDefault("CR_DLQ_CONSUMER_GROUP", "csm-notification-service-cr-dlq")
 	crConsumerCount := envInt("CR_CONSUMER_COUNT", 1)
 	crDLQConsumerCount := envInt("CR_DLQ_CONSUMER_COUNT", 1)
+	outageConsumerGroup := envOrDefault("OUTAGE_CONSUMER_GROUP", "csm-notification-service-outage")
+	outageDLQConsumerGroup := envOrDefault("OUTAGE_DLQ_CONSUMER_GROUP", "csm-notification-service-outage-dlq")
+	outageConsumerCount := envInt("OUTAGE_CONSUMER_COUNT", 1)
+	outageDLQConsumerCount := envInt("OUTAGE_DLQ_CONSUMER_COUNT", 1)
 	projectConsumerGroup := envOrDefault("PROJECT_CONSUMER_GROUP", "csm-notification-service-project")
 	projectDLQConsumerGroup := envOrDefault("PROJECT_DLQ_CONSUMER_GROUP", "csm-notification-service-project-dlq")
 	projectConsumerCount := envInt("PROJECT_CONSUMER_COUNT", 1)
@@ -303,6 +323,15 @@ func main() {
 		return crDLQProducer.Publish(ctx, record.Key, record.Value)
 	}
 
+	// And for the outage consumer.
+	outageToDeadLetter := func(ctx context.Context, record eventbus.Record, handleErr error) error {
+		attrs := []any{"topic", record.Topic, "partition", record.Partition,
+			"offset", record.Offset, "dlqTopic", outageDLQCfg.Topic}
+		slog.WarnContext(ctx, "eventbus: handler exhausted retries, publishing to dead-letter topic",
+			append(attrs, deadLetterErrAttrs(handleErr)...)...)
+		return outageDLQProducer.Publish(ctx, record.Key, record.Value)
+	}
+
 	// Same again for the onboarding consumer: a stuck invitation cannot
 	// fill the case or change-request DLQ, and the reverse.
 	projectToDeadLetter := func(ctx context.Context, record eventbus.Record, handleErr error) error {
@@ -360,6 +389,8 @@ func main() {
 	// that is all their topic carries.
 	crConsumers := startConsumers(ctx, "cr", crCfg, crConsumerGroup, crConsumerCount, dispatcher.Handle, crToDeadLetter)
 	crDLQConsumers := startConsumers(ctx, "cr-dlq", crDLQCfg, crDLQConsumerGroup, crDLQConsumerCount, dispatcher.Handle, nil)
+	outageConsumers := startConsumers(ctx, "outage", outageCfg, outageConsumerGroup, outageConsumerCount, dispatcher.Handle, outageToDeadLetter)
+	outageDLQConsumers := startConsumers(ctx, "outage-dlq", outageDLQCfg, outageDLQConsumerGroup, outageDLQConsumerCount, dispatcher.Handle, nil)
 	// And the same for project_contact.invited: the one dispatcher routes
 	// on the envelope's Type already, and these two only ever receive the
 	// onboarding events since that is all their topic carries.
@@ -464,19 +495,6 @@ func main() {
 		go slaEngine.RunTicker(ctx, tickInterval)
 	}
 
-	// timecardengine has no Redis/state dependency at all (unlike slaEngine
-	// above) — it's a plain Kafka consumer, so it's started unconditionally,
-	// not gated behind the REDIS_URL/REDIS_ADDR check. Its own dedicated
-	// consumer group, not dispatcher's — see that package's own doc comment
-	// for why. Its Handle is currently log-only (see the package doc
-	// comment): entity-service's own Publish call for events.
-	// TypeCaseBillableStatusChanged is itself still commented out, so this
-	// consumer group exists ahead of having anything to actually do yet.
-	timeCardEngine := timecardengine.NewEngine()
-	timeCardConsumerGroup := envOrDefault("TIME_CARD_CONSUMER_GROUP", "csm-notification-service-time-card")
-	timeCardConsumerCount := envInt("TIME_CARD_CONSUMER_COUNT", 1)
-	timeCardConsumers := startConsumers(ctx, "time-card", eventBusCfg, timeCardConsumerGroup, timeCardConsumerCount, timeCardEngine.Handle, toDeadLetter)
-
 	<-ctx.Done()
 	stop()
 
@@ -492,13 +510,16 @@ func main() {
 	for _, c := range crDLQConsumers {
 		c.Close()
 	}
+	for _, c := range outageConsumers {
+		c.Close()
+	}
+	for _, c := range outageDLQConsumers {
+		c.Close()
+	}
 	for _, c := range projectConsumers {
 		c.Close()
 	}
 	for _, c := range projectDLQConsumers {
-		c.Close()
-	}
-	for _, c := range timeCardConsumers {
 		c.Close()
 	}
 	if slaProducer != nil {

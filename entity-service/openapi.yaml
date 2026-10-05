@@ -115,8 +115,7 @@ paths:
         row (partner to customer) and its reverse "Is Customer Of" mirror per
         partner, missing partner accounts ingested first, rows of every other
         label untouched. The same refresh runs after Account events and after
-        partner-contact membership events. Internal callers only
-        (AUTH_INTERNAL_CLIENT_IDS). Registered only when
+        partner-contact membership events. Internal (M2M) callers only. Registered only when
         CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true, DATA_SOURCE=postgres
         and REST sales-entity-service config is present; 404 otherwise.
       operationId: refreshSalesforceAccountPartners
@@ -160,6 +159,56 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
           description: Salesforce is temporarily unavailable, or sales-entity-service did not return the partner list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /customer-engagements/allocation-events:
+    post:
+      summary: >-
+        Apply one Allocation-app allocation event to customer engagements (port of
+        ServiceNow processAllocationEvent): find the engagement by engagementId, else by
+        line item (productId; sets its engagement_id when empty), else create it from the
+        payload when allocationTypeName maps to a type (Firefighting, Consulting*, QSP,
+        Training, Architecture/Solution/Deployment Configuration Review); then upsert the
+        allocation resource. One transaction; repeating an event is safe. Internal
+        clients only (M2M_CLIENT_IDS). Registered only when
+        CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED=true and PostgreSQL is authoritative.
+      operationId: processAllocationEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AllocationEvent'
+      responses:
+        "200":
+          description: Applied, or skipped with a reason (a skip is not retryable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AllocationEventResult'
+        "400":
+          description: Bad request (malformed body, missing id or email, bad date, value too long).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: The caller is not an allow-listed internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The route is not registered (flag off).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error; retryable.
           content:
             application/json:
               schema:
@@ -1469,6 +1518,54 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: No outage with that id belongs to that cloud.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/availability/sweep:
+    post:
+      summary: >-
+        Internal-caller-only. Recomputes service availability for every
+        offering held to an AVAILABILITY commitment and writes
+        service_availability: the daily, weekly, monthly and annual periods
+        containing now, the four that most recently closed, and the rolling
+        last 7 / 30 / 90 days and 12 months. The producer behind the cloud
+        status dashboard endpoints; invoked nightly by
+        operations/csm-scheduled-tasks' availability_recalculation sub-cron.
+        Idempotent: rows are keyed on their own period, so a re-run rewrites
+        them rather than adding more.
+      operationId: sweepServiceAvailability
+      responses:
+        "200":
+          description: >-
+            The sweep ran. failed counts subjects whose computation errored;
+            the others were written regardless.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailabilitySweepResult'
+        "401":
+          description: >-
+            No valid internal client credential. The route is internal-only
+            (internalOnly in routes.go); customer user tokens are refused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is authenticated but is not an internal caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: The caller's identity could not be resolved right now; retry.
           content:
             application/json:
               schema:
@@ -8361,9 +8458,12 @@ paths:
     post:
       summary: Evaluate which internal-stakeholder outage emails are due.
       description: >-
-        Postgres data source only. Backs the `outage_internal_notification`
-        sub-cron in operations/csm-scheduled-tasks, which renders and sends
-        the emails this returns.
+        Postgres data source only. entity-service's own outage notice
+        drainer runs this decision every few seconds and publishes what it
+        returns on the outage-events topic for csm-notification-service to
+        send; this endpoint remains for manual use. Sweeps take turns under
+        an advisory lock, so a call while one is running returns no
+        decisions.
 
 
         The port of ServiceNow's `Internal Stakeholders Email Notification -
@@ -8945,8 +9045,8 @@ paths:
     get:
       summary: Get system-wide reference metadata (time zones, project types, feedback emojis).
       description: >
-        Postgres: projectTypes come from project_type; timeZones and feedbackEmojies have no
-        Postgres source yet and come back empty.
+        Postgres: projectTypes come from project_type and timeZones come from timezone;
+        feedbackEmojies has no Postgres source yet and comes back empty.
       operationId: getSystemMetadata
       responses:
         "200":
@@ -8984,15 +9084,19 @@ paths:
 
         On the Postgres data source, every request's tokens are validated (Asgardeo), and
         results are scoped to the caller (the same rule GET /projects/{id}, POST
-        /projects/search, GET /cases/{id}, and POST /cases/search also apply): if the
-        request's `x-jwt-assertion` client-credentials token names a client id in
-        AUTH_INTERNAL_CLIENT_IDS, the caller sees every project and case unconditionally --
-        regardless of any `x-user-id-token` the same request also carries (that token, if
-        present, is never used to scope an internal caller). Any other caller is resolved
-        purely from its `x-user-id-token`: an internal user still sees everything, a
+        /projects/search, GET /cases/{id}, and POST /cases/search also apply). The
+        request's `x-jwt-assertion` client-credentials token's client id decides how:
+        a customer-facing backend's client id is always resolved from the forwarded
+        `x-user-id-token`, checked first and never unconditionally trusted; the CSM
+        portal backend's client id sees every project and case unconditionally, but
+        only if that same user token's email also matches the configured CSM portal
+        user domain (otherwise refused, 403); a pure machine-to-machine client id sees
+        everything unconditionally regardless of any user token it also carries (never
+        used to scope). Any other caller is resolved purely from its `x-user-id-token`:
+        an internal user still sees everything, a
         customer sees only projects they are a REGISTERED contact of and the cases in
         them, and any other user type, an inactive user, or an unknown email is refused
-        (403). No user token and not an internal client id is refused (401) -- there is no
+        (403). No user token and no client id match above is refused (401) -- there is no
         legitimate caller to resolve. A token that is present but invalid is always
         rejected with 401. The project counts (`activeChatsCount`, `actionRequiredCount`,
         `outstandingCount`) are 0 on Postgres.
@@ -10993,12 +11097,69 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: >-
-        A client-credentials token whose client id appears in
-        AUTH_INTERNAL_CLIENT_IDS. Declared on the operations that verify it
+        A client-credentials token whose client id appears in the service's
+        machine-to-machine client id allow-list. Declared on the operations that verify it
         themselves; most endpoints in this service scope by caller instead and
         do not carry this requirement.
 
   schemas:
+    AllocationEvent:
+      type: object
+      description: >-
+        The Finance Entity's allocation record as posted to ServiceNow
+        allocation_added_or_modified, plus customerCode. Unknown fields are ignored.
+      required: [id, email]
+      properties:
+        id: {type: string, maxLength: 20, description: Allocation id.}
+        email: {type: string, description: Consultant email; matched to user.email then user.user_name.}
+        allocationType: {type: integer}
+        allocationTypeName: {type: string, description: Picks the type of a created engagement; unmapped names create none.}
+        startDate: {type: string, format: date}
+        endDate: {type: string, format: date}
+        comment: {type: string, nullable: true}
+        clearanceStatus: {type: string, nullable: true, description: 'Label, e.g. "Confirmed"; stored as the allocation state.'}
+        isTravelRequired: {type: string, nullable: true}
+        addedBy: {type: string}
+        isRecurring: {type: string, nullable: true}
+        startTime: {type: string, nullable: true, maxLength: 8}
+        endTime: {type: string, nullable: true, maxLength: 8}
+        timeZone: {type: string, nullable: true, maxLength: 20}
+        consultantRole: {type: string, nullable: true}
+        status: {type: string, nullable: true}
+        customerCode: {type: string, nullable: true, description: Salesforce Account id (15 or 18 characters); engagement.customerCode is also read.}
+        engagement:
+          $ref: '#/components/schemas/AllocationEventEngagement'
+    AllocationEventEngagement:
+      type: object
+      properties:
+        type: {type: integer}
+        engagementTypeName: {type: string, description: 'Starting with "Paid" sets is_paid.'}
+        engagementType: {type: string, nullable: true}
+        engagementId: {type: string, maxLength: 20}
+        customerName: {type: string, description: Account name fallback when customerCode does not match.}
+        opportunityName: {type: string}
+        productName: {type: string}
+        productId: {type: string, nullable: true, description: Salesforce line-item id; finds an engagement, and is stored on a created one.}
+        engagementCode: {type: string, maxLength: 20}
+        engagementNature: {type: string, description: Off-site -> OFFSITE, On-site -> ONSITE.}
+        country: {type: string}
+        customerCode: {type: string, nullable: true}
+    AllocationEventResult:
+      type: object
+      required: [result, engagementId, allocationResourceId, engagementCreated]
+      properties:
+        result:
+          type: string
+          enum: [created, updated, skipped]
+        reason:
+          type: string
+          description: >-
+            Present when skipped: no engagement details, no engagement id, account not found,
+            ambiguous account name, user not found, "allocation type <name> does not create
+            engagements", or "engagement type id not configured for <TYPE>".
+        engagementId: {type: string, format: uuid, nullable: true}
+        allocationResourceId: {type: string, format: uuid, nullable: true}
+        engagementCreated: {type: boolean}
     CreateServiceRequestFromIssueRequest:
       type: object
       required: [owner, repository, issueNumber, title]
@@ -19958,6 +20119,16 @@ components:
         statusPageCloud:
           type: string
           nullable: true
+        notifyInternalStakeholders:
+          type: boolean
+        outageCommunication:
+          type: boolean
+        impact:
+          type: string
+          nullable: true
+        state:
+          type: string
+          nullable: true
         createdOn:
           type: string
         createdBy:
@@ -20088,6 +20259,8 @@ components:
         - caseTypes
         - engagementTypes
         - engagementPaymentTypes
+        - resolutionCodes
+        - causes
         - features
       properties:
         caseStates:
@@ -20140,6 +20313,18 @@ components:
             $ref: '#/components/schemas/ChoiceListItem'
         engagementPaymentTypes:
           type: array
+          items:
+            $ref: '#/components/schemas/ChoiceListItem'
+        resolutionCodes:
+          type: array
+          description: >
+            Valid values for PATCH /cases/{id}'s `resolutionCode`, required alongside
+            `cause` and `closeNotes` when closing (or proposing a solution for) a case.
+          items:
+            $ref: '#/components/schemas/ChoiceListItem'
+        causes:
+          type: array
+          description: Valid values for PATCH /cases/{id}'s `cause`.
           items:
             $ref: '#/components/schemas/ChoiceListItem'
         features:
@@ -20747,6 +20932,31 @@ components:
           type: boolean
           nullable: true
           description: Required when configurationItemId resolves to a monitored status-page cloud.
+        notifyInternalStakeholders:
+          type: boolean
+          description: >-
+            Opt-in for the internal-stakeholder outage notification (ServiceNow
+            "Notify internal stakeholders"). Omitted means false.
+        outageCommunication:
+          type: boolean
+          description: >-
+            Opt-in for the SRE outage-communication email (ServiceNow "Outage
+            communication"). Omitted means false.
+        impact:
+          type: string
+          maxLength: 40
+          description: Printed as "Impact:" in the outage-communication email.
+        state:
+          type: string
+          maxLength: 40
+          description: Printed as "Current Status:" in the outage-communication email.
+        affectedConfigurationItemIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: >-
+            Service offerings this outage also affects (ServiceNow Affected CIs). They drive each one's status-page monitor and availability. Adding one with a status-page monitor needs acknowledgePublicPublication.
 
     CreateOutageResponse:
       type: object
@@ -20779,6 +20989,31 @@ components:
           format: uuid
         acknowledgePublicPublication:
           type: boolean
+        notifyInternalStakeholders:
+          type: boolean
+          description: >-
+            Opt-in for the internal-stakeholder outage notification (ServiceNow
+            "Notify internal stakeholders"). Omit to leave it unchanged.
+        outageCommunication:
+          type: boolean
+          description: >-
+            Opt-in for the SRE outage-communication email (ServiceNow "Outage
+            communication"). Omit to leave it unchanged.
+        impact:
+          type: string
+          maxLength: 40
+          description: Printed as "Impact:" in the outage-communication email. An empty string clears it.
+        state:
+          type: string
+          maxLength: 40
+          description: Printed as "Current Status:" in the outage-communication email. An empty string clears it.
+        affectedConfigurationItemIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: >-
+            Replaces the whole affected set ([] clears it); omit to leave it alone. Newly added items must be service offerings; ones already on the outage are kept whatever their class. Only additions with a status-page monitor need acknowledgePublicPublication. Changing only this list does not update the outage itself.
 
     PatchOutageResponse:
       type: object
@@ -22392,6 +22627,20 @@ components:
           type: boolean
           description: Drives a UI accordion; always false on the wire.
       required: [id, begin, end, type, status, short_description, expanded]
+    AvailabilitySweepResult:
+      type: object
+      properties:
+        subjects:
+          type: integer
+          description: How many offering/commitment pairs the sweep computed.
+        rows:
+          type: integer
+          description: How many service_availability rows were written.
+        failed:
+          type: integer
+          description: >-
+            Subjects whose computation errored. Non-zero is a fault; the
+            entity-service log names each one and its commitment.
     CloudStatusSweepResult:
       type: object
       properties:

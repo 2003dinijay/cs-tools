@@ -35,6 +35,8 @@ import {
 import {
   INSERT_ORDERED_LIST_COMMAND,
   INSERT_UNORDERED_LIST_COMMAND,
+  REMOVE_LIST_COMMAND,
+  ListNode,
 } from "@lexical/list";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import {
@@ -73,7 +75,7 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "@wso2/oxygen-ui-icons-react";
-import { mergeRegister } from "@lexical/utils";
+import { mergeRegister, $getNearestNodeOfType } from "@lexical/utils";
 import {
   ALLOWED_INLINE_IMAGE_EXTENSIONS,
   ALLOWED_INLINE_IMAGE_TYPES,
@@ -128,6 +130,7 @@ const Toolbar = ({
   const [blockVariant, setBlockVariant] = useState("body1");
   const [elementAlign, setElementAlign] = useState<ElementFormatType>("");
   const [hasContent, setHasContent] = useState(false);
+  const [listType, setListType] = useState<"bullet" | "number" | null>(null);
 
   const [linkAnchorEl, setLinkAnchorEl] = useState<HTMLButtonElement | null>(
     null,
@@ -152,6 +155,14 @@ const Toolbar = ({
       const node = selection.anchor.getNode();
       const parent = node?.getParent();
       setIsLink($isLinkNode(parent) || $isLinkNode(node));
+
+      const listNode = $getNearestNodeOfType(node, ListNode);
+      const nodeListType = listNode?.getListType();
+      setListType(
+        nodeListType === "bullet" || nodeListType === "number"
+          ? nodeListType
+          : null,
+      );
 
       let element: ReturnType<typeof selection.anchor.getNode>;
       try {
@@ -677,12 +688,17 @@ const Toolbar = ({
             <ToggleButton
               size="small"
               value="bullet"
+              selected={listType === "bullet"}
               onClick={() => {
                 focusEditor();
-                editor.dispatchCommand(
-                  INSERT_UNORDERED_LIST_COMMAND,
-                  undefined,
-                );
+                if (listType === "bullet") {
+                  editor.dispatchCommand(REMOVE_LIST_COMMAND, undefined);
+                } else {
+                  editor.dispatchCommand(
+                    INSERT_UNORDERED_LIST_COMMAND,
+                    undefined,
+                  );
+                }
               }}
             >
               <List size={16} />
@@ -693,9 +709,17 @@ const Toolbar = ({
             <ToggleButton
               size="small"
               value="numbered"
+              selected={listType === "number"}
               onClick={() => {
                 focusEditor();
-                editor.dispatchCommand(INSERT_ORDERED_LIST_COMMAND, undefined);
+                if (listType === "number") {
+                  editor.dispatchCommand(REMOVE_LIST_COMMAND, undefined);
+                } else {
+                  editor.dispatchCommand(
+                    INSERT_ORDERED_LIST_COMMAND,
+                    undefined,
+                  );
+                }
               }}
             >
               <ListOrdered size={16} />

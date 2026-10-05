@@ -99,7 +99,7 @@ func TestPgProjectUpdateService_IgnoresSuspensionProcessState(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			repo := &stubProjectUpdateRepo{}
-			svc := NewProjectUpdateService(repo, testProjectUserRepo(), nil)
+			svc := NewProjectUpdateService(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{})
 			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 			if _, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", req); err != nil {
@@ -125,9 +125,21 @@ func TestPgProjectUpdateService_CallerResolution(t *testing.T) {
 		wantErr bool
 	}{
 		{"internal client without token", m2mCtx, stubAccess{scope: AccessScope{Unrestricted: true}}, "csm-integration", false},
-		{"restricted caller without token", m2mCtx, stubAccess{scope: AccessScope{ProjectIDs: []string{"p"}}}, "", true},
+		// ProjectIDs deliberately includes the project this test actually
+		// requests, so this case reaches (and still exercises) the
+		// identity-resolution check this test is named for, rather than
+		// being rejected earlier by authorizeProject's own project-scope
+		// check for an unrelated reason.
+		{"restricted caller without token", m2mCtx, stubAccess{scope: AccessScope{ProjectIDs: []string{"11111111-1111-1111-1111-111111111111"}}}, "", true},
 		{"no access service wired", m2mCtx, nil, "", true},
-		{"user token unchanged", contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com")), stubAccess{err: errors.New("must not be consulted")}, "jane.doe@example.com", false},
+		// access IS now consulted here too -- authorizeProject runs for every
+		// caller, token or not (that's the whole point of the IDOR fix this
+		// pins). What this case still proves: resolveUpdatedBy itself
+		// resolves identity from the user token, not from access -- gotBy
+		// comes back as the token's own email regardless of what access's
+		// scope contains, as long as it's broad enough to authorize the
+		// project at all.
+		{"user token unchanged", contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com")), stubAccess{scope: AccessScope{Unrestricted: true}}, "jane.doe@example.com", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,11 +160,41 @@ func TestPgProjectUpdateService_CallerResolution(t *testing.T) {
 	}
 }
 
+// TestPgProjectUpdateService_RejectsCallerOutsideProjectScope is the
+// regression guard for a real IDOR caught in review: granting a
+// user-token-authenticated caller (customer_admin, specifically) the
+// projects:update permission meant they could update ANY project's
+// settings just by knowing its UUID, since nothing checked whether the
+// caller actually belonged to that project -- a write has no WHERE-clause
+// scope predicate the way a scoped list/by-id read does, so this has to be
+// checked explicitly (see authorizeProject's own doc comment). A caller
+// restricted to a different project must be refused as NotFoundError
+// (never Forbidden, matching every other by-id authorization check in this
+// codebase -- a 403 would confirm the project exists to someone not
+// entitled to know that), and the repository must never be reached.
+func TestPgProjectUpdateService_RejectsCallerOutsideProjectScope(t *testing.T) {
+	open := "Open"
+	repo := &stubProjectUpdateRepo{}
+	access := stubAccess{scope: AccessScope{ProjectIDs: []string{"22222222-2222-2222-2222-222222222222"}}}
+	svc := NewProjectUpdateService(repo, testProjectUserRepo(), access)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	_, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{EndDateClosureState: &open})
+
+	var notFound *apierror.NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("UpdateProject() error = %v, want *apierror.NotFoundError", err)
+	}
+	if repo.called {
+		t.Fatal("UpdateProject() reached the repository for a project outside the caller's scope")
+	}
+}
+
 // TestPgProjectUpdateService_RequiresAtLeastOneField mirrors the
 // ServiceNow-mode contract's own "at least one field must be provided" rule.
 func TestPgProjectUpdateService_RequiresAtLeastOneField(t *testing.T) {
 	repo := &stubProjectUpdateRepo{}
-	svc := NewProjectUpdateService(repo, testProjectUserRepo(), nil)
+	svc := NewProjectUpdateService(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{})
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	_, err := svc.UpdateProject(ctx, "11111111-1111-1111-1111-111111111111", domain.ProjectUpdateRequest{})
@@ -183,7 +225,7 @@ func TestPgProjectUpdateService_PlainPostgresUpdatesFieldsAndNeverCallsSN(t *tes
 			return wantResult, nil
 		},
 	}
-	svc := NewProjectUpdateService(repo, testProjectUserRepo(), nil)
+	svc := NewProjectUpdateService(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{})
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	resp, err := svc.UpdateProject(ctx, wantResult.ID, domain.ProjectUpdateRequest{
@@ -223,7 +265,7 @@ func TestPgProjectUpdateService_DualWriteDispatchesExactlyOneMirrorCallOnSuccess
 	mirror := &stubProjectMirror{err: errors.New("sn unreachable")}
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
-	svc := NewProjectUpdateServiceWithSNWriteback(repo, testProjectUserRepo(), nil, dispatcher, mirror)
+	svc := NewProjectUpdateServiceWithSNWriteback(repo, testProjectUserRepo(), alwaysUnrestrictedAccess{}, dispatcher, mirror)
 	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 
 	id := "11111111-1111-1111-1111-111111111111"

@@ -88,7 +88,27 @@ func NewProjectUpdateServiceWithSNWriteback(repo repository.ProjectRepository, u
 }
 
 // UpdateProject implements ProjectUpdateService.
+//
+// Authorizes the caller against projectID before touching anything -- a
+// write has no WHERE-clause scope predicate to fold the caller's
+// AccessScope into the way a scoped list/by-id read does (see
+// authorizeProject's own doc comment), so without this call any caller
+// who merely holds the projects:update permission (customer_admin
+// included, as of the AI Assistant settings toggle) could update any
+// project's settings just by knowing its UUID -- a real IDOR, caught in
+// review once that permission was first granted to an external-facing
+// role.
 func (s *pgProjectUpdateService) UpdateProject(ctx context.Context, id string, req domain.ProjectUpdateRequest) (domain.ProjectUpdateResponse, error) {
+	// A nil access (only possible via direct construction -- routes.go always
+	// wires a real AccessService) can't resolve anyone's scope, so it must
+	// fail closed for every caller here, same as resolveUpdatedBy's own
+	// identical guard on its separate no-token/M2M branch below.
+	if s.access == nil {
+		return domain.ProjectUpdateResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+	if _, err := authorizeProject(ctx, s.access, id); err != nil {
+		return domain.ProjectUpdateResponse{}, err
+	}
 	if !hasStoredProjectFields(req) && req.SuspensionProcessState == nil {
 		return domain.ProjectUpdateResponse{}, &apierror.ValidationError{Msg: "at least one field must be provided"}
 	}

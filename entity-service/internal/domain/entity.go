@@ -345,12 +345,16 @@ type SearchSNUsersResponse struct {
 
 // GetUserMeResponse is the response for GET /users/me from the ServiceNow data source.
 type GetUserMeResponse struct {
-	ID        string   `json:"id"`
-	Email     string   `json:"email"`
-	FirstName *string  `json:"firstName,omitempty"`
-	LastName  string   `json:"lastName"`
-	TimeZone  *string  `json:"timeZone,omitempty"`
-	Roles     []string `json:"roles"`
+	ID        string  `json:"id"`
+	Email     string  `json:"email"`
+	FirstName *string `json:"firstName,omitempty"`
+	LastName  string  `json:"lastName"`
+	TimeZone  *string `json:"timeZone,omitempty"`
+	// UserType distinguishes staff from customer/partner contacts, matching SNUser's own
+	// field. Exposed for the same reason it is on SNUser -- a caller may need to tell them
+	// apart -- and also drives whether Groups below is populated.
+	UserType UserType `json:"userType,omitempty"`
+	Roles    []string `json:"roles"`
 	// Groups is every group the caller belongs to, which is what a caller
 	// holding the team registry needs to resolve their team. Empty when the
 	// membership lookup failed — it is best-effort and never fails the
@@ -1584,7 +1588,13 @@ type ProjectMetadataResponse struct {
 	CaseTypes                   []ReferenceTableItem `json:"caseTypes"`
 	EngagementTypes             []ChoiceListItem     `json:"engagementTypes"`
 	EngagementPaymentTypes      []ChoiceListItem     `json:"engagementPaymentTypes"`
-	Features                    ProjectFeatures      `json:"features"`
+	// ResolutionCodes/Causes back the resolution fields PATCH /cases/{id}
+	// requires when closing (or proposing a solution for) a plain "case" --
+	// see UpdateCase's own comment on that requirement. ID is the value to
+	// send back on resolutionCode/cause; Label is a display string.
+	ResolutionCodes []ChoiceListItem `json:"resolutionCodes"`
+	Causes          []ChoiceListItem `json:"causes"`
+	Features        ProjectFeatures  `json:"features"`
 }
 
 // ProjectStatsOutstandingCount groups the outstanding-work-item counts
@@ -4056,8 +4066,21 @@ type SearchChangeRequestView struct {
 	Impact           *string    `json:"impact"`
 	State            *string    `json:"state"`
 	Type             *string    `json:"type"`
-	CreatedOn        string     `json:"createdOn"`
-	UpdatedOn        string     `json:"updatedOn"`
+	// OnHold/OnHoldReason/OnHoldSince back change_request.is_on_hold/
+	// on_hold_reason/on_hold_started_on (migration 0178) -- see
+	// PatchChangeRequestRequest.OnHold's own doc comment for the gating
+	// behavior this flag drives, and entity-service's own CLAUDE.md "Change
+	// requests" -> "On hold" for the ServiceNow provenance. OnHold is nil
+	// only when the record predates this column ever being set at all (the
+	// column has no DEFAULT); a record never placed on hold otherwise reads
+	// as OnHold pointing at false, not nil, once anything has written to it.
+	// OnHoldReason/OnHoldSince are display-only (no gating effect of their
+	// own) and are always nil while OnHold is not true.
+	OnHold       *bool   `json:"onHold"`
+	OnHoldReason *string `json:"onHoldReason"`
+	OnHoldSince  *string `json:"onHoldSince"`
+	CreatedOn    string  `json:"createdOn"`
+	UpdatedOn    string  `json:"updatedOn"`
 }
 
 // SearchChangeRequestsResponse is the paginated result of a change request search.
@@ -4276,6 +4299,36 @@ type PatchChangeRequestRequest struct {
 	IsCustomerApproved *bool                `json:"isCustomerApproved,omitempty"`
 	IsCustomerReviewed *bool                `json:"isCustomerReviewed,omitempty"`
 	RequestApproval    *bool                `json:"requestApproval,omitempty"`
+	// OnHold/OnHoldReason gate change_request.is_on_hold/on_hold_reason/
+	// on_hold_started_on (migration 0178). Combinable with every other field
+	// on this PATCH, including State -- this endpoint has no exclusive/
+	// combinable grouping at all (unlike UpdateCaseRequest's state/watchList/
+	// assigneeEmail/... exclusive group; see entity-service's own CLAUDE.md
+	// "Change requests" -> "On hold" for why that precedent was deliberately
+	// NOT followed here), so OnHold slots in as just another independently
+	// settable field, same as Impact or AssignedTeamID.
+	//
+	// OnHold is the gate: when the change request is CURRENTLY on hold
+	// (change_request.is_on_hold = true, read fresh inside the PATCH
+	// transaction, not from this request), a PATCH that also sets State is
+	// rejected with a ValidationError UNLESS this same PATCH is also setting
+	// OnHold to false -- "take it off hold and advance in one call" is
+	// explicitly allowed. Taking a record off hold (OnHold: false) is never
+	// itself blocked by anything, state change or not. A PATCH that does not
+	// touch State at all is never affected by this gate regardless of the
+	// record's on-hold status -- editing, say, Description while on hold
+	// still succeeds.
+	//
+	// Setting OnHold to true stamps on_hold_started_on to the current time
+	// and sets on_hold_reason to OnHoldReason if provided in the same
+	// request, else NULL (a fresh hold event does not inherit a stale reason
+	// from a previous hold period). Setting OnHold to false always clears
+	// both on_hold_reason and on_hold_started_on, regardless of whether
+	// OnHoldReason also accompanies this same request. OnHoldReason may also
+	// be sent alone (OnHold omitted) to edit the reason text of an existing
+	// hold without touching OnHold itself.
+	OnHold       *bool   `json:"onHold,omitempty"`
+	OnHoldReason *string `json:"onHoldReason,omitempty"`
 	// IsPlanningVisibleToCustomers ("Implementation Plan visible to customers")
 	// controls whether the Implementation Plan is exposed to the customer on
 	// the customer-facing portal. Like IsCustomerApproved/IsCustomerReviewed
@@ -6226,10 +6279,16 @@ type Outage struct {
 	AffectedConfigurationItems []OutageConfigurationItemRef `json:"affectedConfigurationItems"`
 	PublishesToStatusPage      bool                         `json:"publishesToStatusPage"`
 	StatusPageCloud            *string                      `json:"statusPageCloud"`
-	CreatedOn                  string                       `json:"createdOn"`
-	CreatedBy                  string                       `json:"createdBy"`
-	UpdatedOn                  string                       `json:"updatedOn"`
-	UpdatedBy                  string                       `json:"updatedBy"`
+	// The two notification opt-ins and the two values the outage-communication
+	// email prints. See CreateOutageRequest.NotifyInternalStakeholders.
+	NotifyInternalStakeholders bool    `json:"notifyInternalStakeholders"`
+	OutageCommunication        bool    `json:"outageCommunication"`
+	Impact                     *string `json:"impact"`
+	State                      *string `json:"state"`
+	CreatedOn                  string  `json:"createdOn"`
+	CreatedBy                  string  `json:"createdBy"`
+	UpdatedOn                  string  `json:"updatedOn"`
+	UpdatedBy                  string  `json:"updatedBy"`
 }
 
 // OutageCommunicationCounts summarizes the number of communication entries on
@@ -6261,6 +6320,23 @@ type CreateOutageRequest struct {
 	ExternalCommunication        *string    `json:"externalCommunication,omitempty"`
 	InternalCommunication        *string    `json:"internalCommunication,omitempty"`
 	AcknowledgePublicPublication *bool      `json:"acknowledgePublicPublication,omitempty"`
+	// *** THE TWO OPT-INS THE OUTAGE EMAILS ARE GATED ON. *** ServiceNow's
+	// outage form has a checkbox for each, and its flows mail only for outages
+	// someone ticked: NotifyInternalStakeholders drives the internal-stakeholder
+	// notification (Declared/Update/Resolved), OutageCommunication drives the
+	// SRE declaration/resolution pair. Omitted means false, as an unticked box.
+	NotifyInternalStakeholders *bool `json:"notifyInternalStakeholders,omitempty"`
+	OutageCommunication        *bool `json:"outageCommunication,omitempty"`
+	// Impact and State are the "Impact:" and "Current Status:" lines of the
+	// outage-communication email. Free text (40 characters, the column width):
+	// ServiceNow's choice lists for them have not been captured.
+	Impact *string `json:"impact,omitempty"`
+	State  *string `json:"state,omitempty"`
+	// AffectedConfigurationItemIDs are the service offerings this outage also
+	// affects (ServiceNow's Affected CIs, cmdb_outage_ci_mtom). They drive the
+	// status-page monitors and availability for each. Adding one that is on
+	// the status page needs acknowledgePublicPublication, as the main CI does.
+	AffectedConfigurationItemIDs []string `json:"affectedConfigurationItemIds,omitempty"`
 }
 
 // CreateOutageResponse is the response for POST /outages.
@@ -6286,6 +6362,16 @@ type PatchOutageRequest struct {
 	ConfigurationItemID          *string     `json:"configurationItemId,omitempty"`
 	IncidentID                   *string     `json:"incidentId,omitempty"`
 	AcknowledgePublicPublication *bool       `json:"acknowledgePublicPublication,omitempty"`
+	// See CreateOutageRequest. Omitted leaves a field alone; for Impact and
+	// State an empty string clears it.
+	NotifyInternalStakeholders *bool   `json:"notifyInternalStakeholders,omitempty"`
+	OutageCommunication        *bool   `json:"outageCommunication,omitempty"`
+	Impact                     *string `json:"impact,omitempty"`
+	State                      *string `json:"state,omitempty"`
+	// AffectedConfigurationItemIDs replaces the whole set when present ([]
+	// clears it); omitted leaves it alone. Only newly added offerings that
+	// publish need acknowledgePublicPublication.
+	AffectedConfigurationItemIDs *[]string `json:"affectedConfigurationItemIds,omitempty"`
 }
 
 // PatchOutageResponse is the response for PATCH /outages/{id}.
