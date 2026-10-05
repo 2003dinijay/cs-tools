@@ -130,9 +130,8 @@ func TestSourceRoute_201PassesRequestThrough(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201", rec.Code)
 	}
-	m := decode(t, rec)
-	if m["status"] != "OK" {
-		t.Errorf("body = %v", m)
+	if got, want := strings.TrimSpace(rec.Body.String()), `{"status":"OK","alt_ids":["ALT000000001","ALT000000002"]}`; got != want {
+		t.Errorf("body = %s, want %s", got, want)
 	}
 	if p.got.Source != "prometheus" || string(p.got.Body) != `{"a":1}` || p.got.RequestID != "req-123" ||
 		p.got.ContentType != "application/json" || p.got.Route != SourceRoutePrefix+"prometheus" {
@@ -288,5 +287,28 @@ func TestAccessLog_CarriesSourceAndAltIDs(t *testing.T) {
 	}
 	if strings.Contains(out, "/healthz") {
 		t.Error("health probes should not be access-logged")
+	}
+}
+
+// TestStoredBody_Shapes: one alert answers alt_id, several answer alt_ids, and none answers status alone.
+func TestStoredBody_Shapes(t *testing.T) {
+	cases := map[string]struct {
+		ids  []string
+		want string
+	}{
+		"none": {nil, `{"status":"OK"}`},
+		"one":  {[]string{"ALT000008816"}, `{"status":"OK","alt_id":"ALT000008816"}`},
+		"many": {[]string{"ALT000008816", "ALT000008817"}, `{"status":"OK","alt_ids":["ALT000008816","ALT000008817"]}`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := json.Marshal(storedBody(tc.ids))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("body = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }

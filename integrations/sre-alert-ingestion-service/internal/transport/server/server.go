@@ -242,7 +242,7 @@ func (s *Server) sourceRoute(w http.ResponseWriter, r *http.Request) {
 	case http.StatusOK:
 		writeJSON(w, http.StatusOK, map[string]string{"status": "OK"})
 	case http.StatusCreated:
-		writeJSON(w, http.StatusCreated, stored{Status: "OK", AltIDs: res.AltIDs, Count: len(res.AltIDs)})
+		writeJSON(w, http.StatusCreated, storedBody(res.AltIDs))
 	case http.StatusBadRequest:
 		s.reject(r, source, http.StatusBadRequest, res.Error, preview, size)
 		writeJSON(w, http.StatusBadRequest, rejected(res.Error))
@@ -291,11 +291,23 @@ func writeUnavailable(w http.ResponseWriter, msg string) {
 	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "error": msg})
 }
 
-// stored is the 201 body: one id per stored alert, in request order, so a sender can trace each one.
+// stored is the 201 body; only a multi-alert request (prometheus, servicenow arrays) carries alt_ids, in request order.
 type stored struct {
 	Status string   `json:"status"`
-	AltIDs []string `json:"alt_ids"`
-	Count  int      `json:"count"`
+	AltID  string   `json:"alt_id,omitempty"`
+	AltIDs []string `json:"alt_ids,omitempty"`
+}
+
+// storedBody answers one alert with alt_id, several with alt_ids, and a fully skipped batch with status alone.
+func storedBody(ids []string) stored {
+	switch len(ids) {
+	case 0:
+		return stored{Status: "OK"}
+	case 1:
+		return stored{Status: "OK", AltID: ids[0]}
+	default:
+		return stored{Status: "OK", AltIDs: ids}
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
