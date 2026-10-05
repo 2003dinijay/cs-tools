@@ -507,6 +507,7 @@ func main() {
 	route("PATCH /change-requests/{id}", handler.PermWrite, changeRequestHandler.PatchChangeRequest)
 	route("POST /change-requests/search", handler.PermViewOperations, changeRequestHandler.SearchChangeRequests)
 	route("POST /change-requests/aggregate", handler.PermViewOperations, changeRequestHandler.AggregateChangeRequests)
+	route("POST /change-requests/link-options", handler.PermViewOperations, changeRequestHandler.GetChangeRequestLinkOptions)
 	route("POST /services/search", handler.PermView, itServiceHandler.SearchITServices)
 	route("POST /service-offerings/search", handler.PermView, serviceOfferingHandler.SearchServiceOfferings)
 	route("POST /groups/search", handler.PermView, groupHandler.SearchGroups)

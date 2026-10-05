@@ -1614,3 +1614,10 @@ func withoutManualScheduled(states []string, state *string) []string {
 	}
 	return out
 }
+
+// GetChangeRequestLinkOptions implements ChangeRequestService. The
+// project/deployment/environment cascade is derived from PostgreSQL tables, so
+// it is not available when ServiceNow is the data source.
+func (s *snChangeRequestService) GetChangeRequestLinkOptions(_ context.Context, _ domain.ChangeRequestLinkOptionsRequest) (domain.ChangeRequestLinkOptionsResponse, error) {
+	return domain.ChangeRequestLinkOptionsResponse{}, &apierror.ValidationError{Msg: "change request link options are not supported on the ServiceNow data source"}
+}

@@ -903,6 +903,7 @@ type mockEntityChangeRequestClient struct {
 	getChangeRequestFn            func(ctx context.Context, id string) ([]byte, error)
 	patchChangeRequestFn          func(ctx context.Context, id string, body []byte) ([]byte, error)
 	getChangeRequestApprovalsFn   func(ctx context.Context, id string) ([]byte, error)
+	getChangeRequestLinkOptionsFn func(ctx context.Context, body []byte) ([]byte, error)
 	createCommentFn               func(ctx context.Context, body []byte) ([]byte, error)
 	searchCommentsFn              func(ctx context.Context, body []byte) ([]byte, error)
 	decideChangeRequestApprovalFn func(ctx context.Context, id string, body []byte) ([]byte, error)
@@ -948,6 +949,13 @@ func (m *mockEntityChangeRequestClient) GetChangeRequestApprovals(ctx context.Co
 		return m.getChangeRequestApprovalsFn(ctx, id)
 	}
 	return []byte(`{"approvals":[]}`), nil
+}
+
+func (m *mockEntityChangeRequestClient) GetChangeRequestLinkOptions(ctx context.Context, body []byte) ([]byte, error) {
+	if m.getChangeRequestLinkOptionsFn != nil {
+		return m.getChangeRequestLinkOptionsFn(ctx, body)
+	}
+	return []byte(`{"deployments":[],"environments":[],"deploymentProducts":[]}`), nil
 }
 
 func (m *mockEntityChangeRequestClient) CreateComment(ctx context.Context, body []byte) ([]byte, error) {

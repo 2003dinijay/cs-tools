@@ -1491,6 +1491,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /change-requests", internalOnly(accessSvc, changeRequestHandler.CreateChangeRequest))
 	mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
 	mux.HandleFunc("POST /change-requests/aggregate", changeRequestHandler.AggregateChangeRequests)
+	mux.HandleFunc("POST /change-requests/link-options", changeRequestHandler.GetChangeRequestLinkOptions)
 	mux.HandleFunc("GET /change-requests/{id}", changeRequestHandler.GetChangeRequest)
 	mux.HandleFunc("PATCH /change-requests/{id}", changeRequestHandler.PatchChangeRequest)
 	mux.HandleFunc("GET /change-requests/{id}/approvals", changeRequestHandler.GetChangeRequestApprovals)

@@ -7239,6 +7239,55 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /change-requests/link-options:
+    post:
+      summary: >-
+        Options for the change request form's Customer Project -> Deployments ->
+        Environments / Deployment products cascade (PostgreSQL data source only).
+      operationId: getChangeRequestLinkOptions
+      description: >-
+        Given the selected Customer Project, returns the project's active
+        deployments (each with the environment it is an instance of). Given the
+        deployments chosen so far as well, also returns the environments and the
+        deployment products that follow from them -- the same derivation that
+        POST /change-requests and PATCH /change-requests/{id} validate against.
+        Deployment products are read-only on the form: they are always the
+        active deployed products of the chosen deployments.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeRequestLinkOptionsRequest'
+      responses:
+        "200":
+          description: The options for the selection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeRequestLinkOptionsResponse'
+        "400":
+          description: >-
+            Bad request: projectId missing or not a UUID; a deployment that is
+            unknown, inactive or belongs to another project; not supported on
+            the ServiceNow data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /change-requests/aggregate:
     post:
       summary: >-
@@ -15714,10 +15763,16 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/EntityRef'
+              description: >-
+                The environments of the change (deployment types such as Primary
+                Production, Staging). Follow from `deployments`.
             deploymentProducts:
               type: array
               items:
                 $ref: '#/components/schemas/EntityRef'
+              description: >-
+                Read-only, derived from `deployments`: the deployed products of
+                the chosen deployments, named "<product> <version>".
             customerGroup:
               $ref: '#/components/schemas/EntityRef'
               nullable: true
@@ -15745,6 +15800,9 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/EntityRef'
+              description: >-
+                The project's deployments the change touches (the project is
+                `project`). Always an array on the PostgreSQL data source.
             workStart:
               type: string
               nullable: true
@@ -16323,8 +16381,14 @@ components:
           pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
         comment:
           type: string
+          description: >-
+            The customer-visible "Additional comments" entry. On the PostgreSQL
+            data source stored as a comment row of type `comment`; blank is ignored.
         workNote:
           type: string
+          description: >-
+            The internal "Work notes" entry. On the PostgreSQL data source stored
+            as a comment row of type `work_note`; blank is ignored.
         affectedServicesText:
           type: string
         affectedComponentsText:
@@ -16335,16 +16399,50 @@ components:
         customerGroupId:
           type: string
           format: uuid
+        projectId:
+          type: string
+          format: uuid
+          description: >-
+            The Customer Project (PostgreSQL data source only). Must exist.
+        deploymentIds:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+            format: uuid
+          description: >-
+            The project's deployments the change touches (PostgreSQL data
+            source only). Each must exist, be active and belong to `projectId`
+            (so `projectId` is required with it). 400 messages: "projectId is
+            required when deploymentIds are provided", "deploymentIds contains
+            an unknown deployment: <id>", "deploymentIds contains a deployment
+            that does not belong to the selected project: <id>", "deploymentIds
+            contains an inactive deployment: <id>".
         environmentIds:
           type: array
+          maxItems: 100
           items:
             type: string
             format: uuid
+          description: >-
+            Environments follow from the chosen deployments. Omitted: every
+            environment of the chosen deployments. Given: each must be the
+            environment of at least one chosen deployment, else 400
+            ("environmentIds contains an environment that is not provided by the
+            selected deployments: <id>"; "environmentIds requires deploymentIds").
+            PostgreSQL data source only.
         deploymentProductIds:
           type: array
+          maxItems: 100
           items:
             type: string
             format: uuid
+          description: >-
+            READ-ONLY, derived: always the active deployed products of the chosen
+            deployments. Optional; when given it must be exactly that set, else
+            400 ("deploymentProductIds is read-only: it is derived from the
+            selected deployments and must match them exactly"). PostgreSQL data
+            source only.
         durationInput:
           type: integer
           description: >-
@@ -16370,6 +16468,73 @@ components:
             The "Customer Review" checkbox: the change needs the customer's
             review before it is closed (review offers customer_review instead
             of closed). Defaults to false. PostgreSQL data source only.
+
+    ChangeRequestLinkOptionsRequest:
+      type: object
+      required:
+        - projectId
+      properties:
+        projectId:
+          type: string
+          format: uuid
+          description: The selected Customer Project.
+        deploymentIds:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+            format: uuid
+          description: >-
+            The deployments chosen so far. Must belong to the project. Omit (or
+            send empty) to get just the project's deployments.
+
+    ChangeRequestLinkOptionsResponse:
+      type: object
+      required: [deployments, environments, deploymentProducts]
+      properties:
+        deployments:
+          type: array
+          description: The project's active deployments, name order.
+          items:
+            type: object
+            required: [id, name, type]
+            properties:
+              id:
+                type: string
+                format: uuid
+              name:
+                type: string
+              type:
+                type: string
+                description: primary_production, staging, qa, stress, uat or development.
+              environment:
+                $ref: '#/components/schemas/EntityRef'
+                nullable: true
+        environments:
+          type: array
+          description: >-
+            The environments that follow from `deploymentIds` (distinct, name
+            order); empty when none were chosen.
+          items:
+            $ref: '#/components/schemas/EntityRef'
+        deploymentProducts:
+          type: array
+          description: >-
+            Read-only: the active deployed products of the chosen deployments.
+            Empty when none were chosen.
+          items:
+            type: object
+            required: [id, name, deployment]
+            properties:
+              id:
+                type: string
+                format: uuid
+                description: The deployed product id (what deploymentProductIds carries).
+              name:
+                type: string
+                description: '"<product> <version>".'
+              deployment:
+                $ref: '#/components/schemas/EntityRef'
 
     CreateChangeRequestResponse:
       type: object
@@ -16531,26 +16696,60 @@ components:
           format: uuid
           nullable: true
           description: Explicit null clears the field.
+        deploymentIds:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+            format: uuid
+          description: >-
+            Replaces the whole list of the project's deployments the change
+            touches; an explicitly empty array clears it (and with it the
+            environments and deployment products). Each deployment must belong
+            to the change request's project (`projectId` in this request, else
+            the stored one). Changing `projectId` while deployments are stored
+            requires `deploymentIds` in the same request. Cannot be combined
+            with `deploymentId` / `deployedProductId`. Environments are reset to
+            those of the new deployments unless `environmentIds` is also sent;
+            deployment products are always re-derived. EDIT WINDOW:
+            `projectId`, `deploymentIds`, `environmentIds` and
+            `deploymentProductIds` can be changed only while the change request
+            has not reached `implement` (states new .. scheduled); afterwards a
+            change is a 400 ("<field> can no longer be changed: ...") while
+            resending the stored value is accepted. PostgreSQL data source only.
         environmentIds:
           type: array
           nullable: true
+          maxItems: 100
           items:
             type: string
             format: uuid
-          description: Replaces the whole list; an explicitly empty array clears it.
+          description: >-
+            Replaces the whole list; an explicitly empty array clears it. Each
+            must be the environment of a deployment on the change request
+            (stored, or `deploymentIds` in this request). Same edit window as
+            `deploymentIds`.
         deploymentProductIds:
           type: array
           nullable: true
+          maxItems: 100
           items:
             type: string
             format: uuid
-          description: Replaces the whole list; an explicitly empty array clears it.
+          description: >-
+            READ-ONLY, derived from the deployments. Accepted only when it is
+            exactly the derived set (otherwise 400); the stored list is always
+            the derived one.
         comment:
           type: string
-          description: Appends a journal entry. Cannot be empty and cannot clear anything.
+          description: >-
+            Appends a customer-visible journal entry ("Additional comments", a
+            comment row of type `comment`). Cannot be empty and cannot clear anything.
         workNote:
           type: string
-          description: Appends a journal entry. Cannot be empty and cannot clear anything.
+          description: >-
+            Appends an internal journal entry ("Work notes", a comment row of
+            type `work_note`). Cannot be empty and cannot clear anything.
         durationInput:
           type: integer
           nullable: true

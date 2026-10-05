@@ -5552,6 +5552,54 @@ paths:
                     customer's review before it is closed. Review then offers
                     `customer_review` instead of `closed`. Defaults to false. A
                     non-boolean value is a 400.
+                projectId:
+                  type: string
+                  format: uuid
+                  description: >-
+                    The Customer Project. Not a UUID string is a 400. Pick it
+                    with POST /projects/search.
+                deploymentIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  description: >-
+                    The project's deployments the change touches. Not an array
+                    of UUID strings is a 400. Each must belong to `projectId`
+                    (400 otherwise, with the entity service's message). Get the
+                    choices from POST /change-requests/link-options.
+                environmentIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  description: >-
+                    Environments of the chosen deployments (default: all of
+                    them). 400 when one is not provided by a chosen deployment.
+                deploymentProductIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  description: >-
+                    READ-ONLY, derived from `deploymentIds`; optional, and when
+                    sent it must be exactly the derived set (400 otherwise).
+                customerGroupId:
+                  type: string
+                  format: uuid
+                category:
+                  type: string
+                  enum: [hardware, software, service, system_software, applications_software, network, telecom, documentation, other, regular_release_cloud, hotfix_release_cloud, devops, cloud_computing]
+                comment:
+                  type: string
+                  description: >-
+                    The customer-visible "Additional comments" entry; stored as
+                    a comment of type `comment`. Blank is ignored.
+                workNote:
+                  type: string
+                  description: >-
+                    The internal "Work notes" entry; stored as a comment of type
+                    `work_note`. Blank is ignored.
       responses:
         "201":
           description: Change request created.
@@ -5559,6 +5607,111 @@ paths:
             application/json:
               schema:
                 type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: Request entity too large.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /change-requests/link-options:
+    post:
+      summary: >-
+        Options for the change request form's Customer Project -> Deployments ->
+        Environments / Deployment products cascade.
+      description: >-
+        Send the selected Customer Project to get its active deployments (each
+        with its environment); add the deployments chosen so far to also get the
+        environments and the (read-only) deployment products that follow from
+        them. `projectId` is required and `projectId` / `deploymentIds` must be
+        UUIDs (`deploymentIds` an array) -- 400 otherwise, also when a deployment
+        does not belong to the project.
+      operationId: postChangeRequestLinkOptions
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [projectId]
+              properties:
+                projectId:
+                  type: string
+                  format: uuid
+                deploymentIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        "200":
+          description: The options for the selection.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deployments, environments, deploymentProducts]
+                properties:
+                  deployments:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, type]
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        name:
+                          type: string
+                        type:
+                          type: string
+                          description: primary_production, staging, qa, stress, uat or development.
+                        environment:
+                          $ref: '#/components/schemas/EntityRef'
+                          nullable: true
+                  environments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EntityRef'
+                  deploymentProducts:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, deployment]
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        name:
+                          type: string
+                        deployment:
+                          $ref: '#/components/schemas/EntityRef'
         "400":
           description: Bad request.
           content:
@@ -12638,6 +12791,52 @@ components:
             review (any state up to and including review); changing it from
             customer_review onwards is a 400 ("customerReviewRequired can no
             longer be changed ..."). A non-boolean value is a 400.
+        deploymentIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: >-
+            Replaces the list of the project's deployments the change touches
+            (empty array clears it, and with it the environments and deployment
+            products). Not an array of UUID strings is a 400. Each must belong
+            to the change request's project (`projectId` here, else the stored
+            one); changing `projectId` while deployments are stored requires
+            `deploymentIds` too. Editable only before the change request reaches
+            `implement` (states new..scheduled); afterwards a change of
+            `projectId`, `deploymentIds`, `environmentIds` is a 400 (resending
+            the stored value is accepted).
+        environmentIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: >-
+            Replaces the environments; each must be the environment of a
+            deployment on the change request. Reset to those of the new
+            deployments when `deploymentIds` changes and this is omitted.
+        deploymentProductIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: >-
+            READ-ONLY, derived from the deployments; accepted only when exactly
+            the derived set.
+        customerGroupId:
+          type: string
+          format: uuid
+          nullable: true
+        category:
+          type: string
+          nullable: true
+          enum: [hardware, software, service, system_software, applications_software, network, telecom, documentation, other, regular_release_cloud, hotfix_release_cloud, devops, cloud_computing]
+        comment:
+          type: string
+          description: Appends a customer-visible "Additional comments" entry. Not empty.
+        workNote:
+          type: string
+          description: Appends an internal "Work notes" entry. Not empty.
         isCustomerApproved:
           type: boolean
           description: >-
@@ -17507,6 +17706,27 @@ components:
               description: >-
                 The "Customer Review" checkbox: the change needs the
                 customer's review before it is closed.
+            deployments:
+              type: array
+              items:
+                $ref: '#/components/schemas/EntityRef'
+              description: The project's deployments the change touches (`project` is the Customer Project).
+            environments:
+              type: array
+              items:
+                $ref: '#/components/schemas/EntityRef'
+              description: Follow from `deployments`.
+            deploymentProducts:
+              type: array
+              items:
+                $ref: '#/components/schemas/EntityRef'
+              description: Read-only, derived from `deployments`; names read "<product> <version>".
+            customerGroup:
+              $ref: '#/components/schemas/EntityRef'
+              nullable: true
+            category:
+              type: string
+              nullable: true
             approvedBy:
               $ref: '#/components/schemas/EntityRef'
               nullable: true

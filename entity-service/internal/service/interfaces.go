@@ -882,6 +882,14 @@ type ChangeRequestService interface {
 	// PatchChangeRequest updates mutable fields on a change request identified by UUID.
 	PatchChangeRequest(ctx context.Context, id string, req domain.PatchChangeRequestRequest) (domain.PatchChangeRequestResponse, error)
 
+	// GetChangeRequestLinkOptions backs the change request form's Customer Project ->
+	// Deployments -> Environments / Deployment products cascade: the project's active
+	// deployments and, for the deployments chosen so far (req.DeploymentIDs, which must
+	// belong to the project), the environments and deployment products that follow from
+	// them -- the same derivation create and PATCH validate against. PostgreSQL data
+	// source only; a ValidationError on the ServiceNow data source.
+	GetChangeRequestLinkOptions(ctx context.Context, req domain.ChangeRequestLinkOptionsRequest) (domain.ChangeRequestLinkOptionsResponse, error)
+
 	// GetChangeRequestApprovals returns the approval stages and per-approver status
 	// for a single change request identified by UUID. Supported by the ServiceNow data
 	// source only.

@@ -482,6 +482,14 @@ func (c *CustomerEntityClient) PatchChangeRequest(ctx context.Context, id string
 	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/change-requests/%s", url.PathEscape(id)), body)
 }
 
+// GetChangeRequestLinkOptions calls POST /change-requests/link-options on the
+// entity service: the project's deployments and, for the deployments chosen so
+// far, the environments and deployment products that follow from them.
+// Response is returned as raw JSON.
+func (c *CustomerEntityClient) GetChangeRequestLinkOptions(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/change-requests/link-options", body)
+}
+
 // GetChangeRequestApprovals calls GET /change-requests/{id}/approvals on the entity service.
 // Response is returned as raw JSON; typed response structs are deferred.
 func (c *CustomerEntityClient) GetChangeRequestApprovals(ctx context.Context, id string) ([]byte, error) {

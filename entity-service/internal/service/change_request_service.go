@@ -529,3 +529,8 @@ func (s *changeRequestService) DecideChangeRequestApproval(ctx context.Context, 
 		State: decision,
 	}, nil
 }
+
+// GetChangeRequestLinkOptions implements ChangeRequestService.
+func (s *changeRequestService) GetChangeRequestLinkOptions(ctx context.Context, req domain.ChangeRequestLinkOptionsRequest) (domain.ChangeRequestLinkOptionsResponse, error) {
+	return domain.ChangeRequestLinkOptionsResponse{}, &apierror.ServiceUnavailableError{Msg: "change request link options are not implemented yet"}
+}
