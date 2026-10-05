@@ -16,6 +16,11 @@
 
 package main
 
+import (
+	"fmt"
+	"strings"
+)
+
 // consumerTarget is one topic and the consumer group that reads it.
 type consumerTarget struct {
 	Topic string
@@ -52,6 +57,11 @@ type srePlan struct {
 // explicit SRE_CONSUMER_GROUP / SRE_DLQ_CONSUMER_GROUP always wins.
 func planSREConsumers(sreTopic, sreGroup, sreDLQTopic, sreDLQGroup string,
 	cr, crDLQ, outage, outageDLQ consumerTarget) srePlan {
+	// Trimmed as entity-service trims SRE_EVENT_HUB_TOPIC: a stray space in
+	// the shared value must not leave the two services on different topics,
+	// entity-service publishing to "sre-events" while this reads "sre-events ".
+	sreTopic, sreGroup = strings.TrimSpace(sreTopic), strings.TrimSpace(sreGroup)
+	sreDLQTopic, sreDLQGroup = strings.TrimSpace(sreDLQTopic), strings.TrimSpace(sreDLQGroup)
 	if sreTopic == "" {
 		return srePlan{StartCR: true, StartCRDLQ: true, StartOutage: true, StartOutageDLQ: true}
 	}
@@ -78,4 +88,33 @@ func planSREConsumers(sreTopic, sreGroup, sreDLQTopic, sreDLQGroup string,
 		StartOutage:    outage.Topic != sreTopic,
 		StartOutageDLQ: outageDLQ.Topic != sreDLQTopic,
 	}
+}
+
+// validateSREPlan rejects an enabled plan whose topics would make a consumer
+// read its own output or another consumer's input. Checked before any
+// consumer starts.
+//
+//   - The SRE topic or its DLQ is the case or project topic: those topics
+//     have consumers with their own semantics, and reading them a second time
+//     under another group sends their emails twice.
+//   - The DLQ is the SRE topic itself: a record that keeps failing is
+//     dead-lettered by republishing it unchanged, so it would land back on
+//     the topic it failed on, be read again, fail again, and be republished
+//     again -- an endless stream of copies ahead of the valid events.
+func validateSREPlan(plan srePlan, caseTopic, projectTopic string) error {
+	if !plan.Enabled {
+		return nil
+	}
+	for _, t := range []struct{ name, topic string }{
+		{"SRE_EVENT_HUB_TOPIC", plan.SRE.Topic},
+		{"SRE_EVENT_HUB_DLQ_TOPIC", plan.SREDLQ.Topic},
+	} {
+		if t.topic == caseTopic || t.topic == projectTopic {
+			return fmt.Errorf("%s must not be the case or project topic (%q)", t.name, t.topic)
+		}
+	}
+	if plan.SREDLQ.Topic == plan.SRE.Topic {
+		return fmt.Errorf("SRE_EVENT_HUB_DLQ_TOPIC must differ from SRE_EVENT_HUB_TOPIC (both %q)", plan.SRE.Topic)
+	}
+	return nil
 }

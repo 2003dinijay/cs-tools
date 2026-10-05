@@ -76,3 +76,41 @@ func TestPlanSREConsumers_ExplicitGroupAndSharedDLQ(t *testing.T) {
 		t.Errorf("sharing the outage DLQ topic must reuse its group and stop its own DLQ consumer: %+v start=%v", p.SREDLQ, p.StartOutageDLQ)
 	}
 }
+
+// A stray space in the shared value must give the topic entity-service
+// publishes to, not a second one.
+func TestPlanSREConsumers_TrimsTheTopic(t *testing.T) {
+	p := planSREConsumers("  sre-events \t", " ", " sre-events-dlq ", "", crT, crDLQT, outageDef, outageDLQT)
+	if p.SRE.Topic != "sre-events" || p.SREDLQ.Topic != "sre-events-dlq" {
+		t.Fatalf("topics = %q / %q, want them trimmed", p.SRE.Topic, p.SREDLQ.Topic)
+	}
+	if p.SRE.Group != defaultSREConsumerGroup {
+		t.Errorf("a blank SRE_CONSUMER_GROUP must fall back to the default, got %q", p.SRE.Group)
+	}
+	if blank := planSREConsumers("   ", "", "", "", crT, crDLQT, outageDef, outageDLQT); blank.Enabled {
+		t.Errorf("an all-space SRE_EVENT_HUB_TOPIC must count as unset: %+v", blank)
+	}
+}
+
+func TestValidateSREPlan(t *testing.T) {
+	plan := func(topic, dlq string) srePlan {
+		return planSREConsumers(topic, "", dlq, "", crT, crDLQT, outageDef, outageDLQT)
+	}
+	for name, c := range map[string]struct {
+		plan    srePlan
+		wantErr bool
+	}{
+		"unset":                     {plan("", ""), false},
+		"sre-events, default DLQ":   {plan("sre-events", ""), false},
+		"DLQ is the SRE topic":      {plan("sre-events", "sre-events"), true},
+		"DLQ is it after trimming":  {plan("sre-events", " sre-events "), true},
+		"SRE topic is the case one": {plan("cs-events", ""), true},
+		"SRE topic is the project":  {plan("project-events", ""), true},
+		"DLQ is the case topic":     {plan("sre-events", "cs-events"), true},
+	} {
+		err := validateSREPlan(c.plan, "cs-events", "project-events")
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", name, err, c.wantErr)
+		}
+	}
+}

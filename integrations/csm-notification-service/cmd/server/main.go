@@ -398,10 +398,8 @@ func main() {
 		os.Getenv("SRE_EVENT_HUB_DLQ_TOPIC"), os.Getenv("SRE_DLQ_CONSUMER_GROUP"),
 		consumerTarget{crCfg.Topic, crConsumerGroup}, consumerTarget{crDLQCfg.Topic, crDLQConsumerGroup},
 		consumerTarget{outageCfg.Topic, outageConsumerGroup}, consumerTarget{outageDLQCfg.Topic, outageDLQConsumerGroup})
-	if plan.Enabled && (plan.SRE.Topic == eventBusCfg.Topic || plan.SRE.Topic == projectCfg.Topic) {
-		// Those topics have consumers with their own semantics; reading them a
-		// second time under another group would send their emails twice.
-		slog.Error("SRE_EVENT_HUB_TOPIC must not be the case or project topic", "topic", plan.SRE.Topic)
+	if err := validateSREPlan(plan, eventBusCfg.Topic, projectCfg.Topic); err != nil {
+		slog.Error("invalid sre-events configuration", "err", err)
 		os.Exit(1)
 	}
 	var crConsumers, crDLQConsumers, outageConsumers, outageDLQConsumers, sreConsumers, sreDLQConsumers []*eventbus.Consumer
