@@ -248,6 +248,9 @@ func (n *Notifier) assignmentGroup(inc model.Incident, serviceGroupID string) (i
 		if id := n.groupRoutes[routeKey("group", named)]; id != "" {
 			return id, "alert"
 		}
+		// A UUID named in the alarm is used as-is, on purpose: a team can route its own alarms to its
+		// group without a route being added here first. Editing an alarm's description is limited to the
+		// account's own operators, and entity-service still rejects an id that is not a real group.
 		if looksLikeGroupID(named) {
 			return named, "alert"
 		}
@@ -296,19 +299,33 @@ func looksLikeGroupID(v string) bool {
 // uuidPattern is entity-service's own validate.UUIDPattern (a separate Go module, so copied by hand).
 var uuidPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// routeKinds are the routing signals a CSM_ASSIGNMENT_GROUP_ROUTES key may name.
+var routeKinds = map[string]bool{"group": true, "topic": true, "account": true}
+
 // ValidateGroupIDs checks the configured default group and every route's group id are UUIDs, the only
 // assignmentGroupId entity-service accepts; a bad one would make every incident it routes fail to create.
+// It also refuses a key whose kind is not group, topic or account (it would never match anything), and two
+// keys that are the same route once normalised but name different groups (which one won would depend on
+// map order).
 func ValidateGroupIDs(cfg Config) error {
 	if v := strings.TrimSpace(cfg.DefaultAssignmentGroupID); v != "" && !looksLikeGroupID(v) {
 		return fmt.Errorf("CSM_DEFAULT_ASSIGNMENT_GROUP_ID %q is not a UUID", v)
 	}
+	seen := make(map[string]string, len(cfg.AssignmentGroupRoutes)) // normalised key -> original key
 	for k, v := range cfg.AssignmentGroupRoutes {
-		if _, _, ok := strings.Cut(k, ":"); !ok {
-			return fmt.Errorf("CSM_ASSIGNMENT_GROUP_ROUTES key %q has no kind (group:, topic: or account:)", k)
+		kind, value, ok := strings.Cut(k, ":")
+		kind = strings.ToLower(strings.TrimSpace(kind))
+		if !ok || !routeKinds[kind] {
+			return fmt.Errorf("CSM_ASSIGNMENT_GROUP_ROUTES key %q must start with group:, topic: or account:", k)
 		}
 		if !looksLikeGroupID(strings.TrimSpace(v)) {
 			return fmt.Errorf("CSM_ASSIGNMENT_GROUP_ROUTES[%q] = %q is not a UUID", k, v)
 		}
+		key := routeKey(kind, value)
+		if other, dup := seen[key]; dup && !strings.EqualFold(strings.TrimSpace(cfg.AssignmentGroupRoutes[other]), strings.TrimSpace(v)) {
+			return fmt.Errorf("CSM_ASSIGNMENT_GROUP_ROUTES keys %q and %q are the same route but name different groups", other, k)
+		}
+		seen[key] = k
 	}
 	return nil
 }

@@ -163,9 +163,23 @@ func TestValidateGroupIDs(t *testing.T) {
 		"sys_id default":   {DefaultAssignmentGroupID: "0123456789abcdef0123456789abcdef"},
 		"name as a value":  {AssignmentGroupRoutes: map[string]string{"account:487629103847": "SRE - Apollo"}},
 		"key with no kind": {AssignmentGroupRoutes: map[string]string{"Apollo": "11111111-2222-3333-4444-555555555555"}},
+		"misspelled kind":  {AssignmentGroupRoutes: map[string]string{"grup:SRE": "11111111-2222-3333-4444-555555555555"}},
+		"same route, two groups": {AssignmentGroupRoutes: map[string]string{
+			"Group:SRE": "11111111-2222-3333-4444-555555555555",
+			"group:sre": "66666666-7777-8888-9999-000000000000",
+		}},
 	} {
 		if err := ValidateGroupIDs(bad); err == nil {
 			t.Errorf("%s: accepted, want refused", name)
 		}
+	}
+
+	// The same route spelled twice is harmless when both name the same group.
+	same := Config{AssignmentGroupRoutes: map[string]string{
+		"Group:SRE": "11111111-2222-3333-4444-555555555555",
+		"group:sre": "11111111-2222-3333-4444-555555555555",
+	}}
+	if err := ValidateGroupIDs(same); err != nil {
+		t.Errorf("same route, same group: refused: %v", err)
 	}
 }

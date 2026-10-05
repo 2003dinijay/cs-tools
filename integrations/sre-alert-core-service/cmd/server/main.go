@@ -223,7 +223,6 @@ func main() {
 	}
 }
 
-// mustEnv exits the process if name is unset; used for required config with no safe default.
 // assignmentGroupRoutes reads CSM_ASSIGNMENT_GROUP_ROUTES, a JSON object of routing key -> CSM group id.
 // Optional; one that does not parse stops startup rather than routing every incident to the default.
 func assignmentGroupRoutes(logger *slog.Logger) map[string]string {
@@ -239,6 +238,7 @@ func assignmentGroupRoutes(logger *slog.Logger) map[string]string {
 	return routes
 }
 
+// mustEnv exits the process if name is unset; used for required config with no safe default.
 func mustEnv(logger *slog.Logger, name string) string {
 	v := os.Getenv(name)
 	if v == "" {

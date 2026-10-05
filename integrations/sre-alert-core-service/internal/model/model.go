@@ -88,7 +88,6 @@ type Incident struct {
 	Version int64 `json:"-" db:"version"`
 }
 
-// CSMRetryDue reports whether enough time has passed since the last CSM attempt, growing the wait exponentially (base, base*mult, ...) capped at maxDelay.
 // TakeRouting copies an alert's routing signals onto a new incident; the incident keeps the first alert's.
 func (i *Incident) TakeRouting(a Alert) {
 	i.AssignmentGroup = a.AssignmentGroup
@@ -96,6 +95,7 @@ func (i *Incident) TakeRouting(a Alert) {
 	i.SourceAccount = a.SourceAccount
 }
 
+// CSMRetryDue reports whether enough time has passed since the last CSM attempt, growing the wait exponentially (base, base*mult, ...) capped at maxDelay.
 func (i Incident) CSMRetryDue(now time.Time, base time.Duration, multiplier float64, maxDelay time.Duration) bool {
 	if i.CSMAttempts == 0 {
 		return true // never attempted yet
