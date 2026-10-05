@@ -53,7 +53,7 @@ func TestSanitizeRichText_StructureAndFormatting(t *testing.T) {
 		{
 			name:  "heading followed by a paragraph stays separated",
 			input: "<h2>Summary</h2><p>Details</p>",
-			want:  "Summary<br>Details",
+			want:  `<h2 style="margin:12px 0 4px;font-size:22px;font-weight:600;line-height:1.3;">Summary</h2>Details`,
 		},
 		{
 			name:  "plain text with no markup passes through unchanged",
@@ -829,6 +829,94 @@ func TestRenderCaseCreatedEmail_AnnouncementTableRendersAsTable(t *testing.T) {
 			}
 			if start+closeRel > footer {
 				t.Error("the table swallowed the email footer: Add Comment appears before the table's close")
+			}
+		})
+	}
+}
+
+// TestSanitizeRichText_EditorFormats pins every inline/block format the
+// announcement editor's toolbar can produce, using the HTML Lexical itself
+// exports for each (captured from the real editor, including its wrapper
+// spans/classes/white-space styles). Before this, strikethrough, inline and
+// block code, quotes, headings and alignment all collapsed to plain text, so
+// a customer received something different from what the author composed.
+func TestSanitizeRichText_EditorFormats(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "strikethrough",
+			input: `<p><s><span class="editor-text-strikethrough" style="white-space: pre-wrap;">old</span></s></p>`,
+			want:  "<s>old</s>",
+		},
+		{
+			name:  "inline code",
+			input: `<p>run <code spellcheck="false" style="white-space: pre-wrap;"><span class="editor-text-code">make migrate</span></code> first</p>`,
+			want:  "run " + emailCodeOpen + "make migrate</code> first",
+		},
+		{
+			name:  "code block keeps its own whitespace and newlines",
+			input: "<pre spellcheck=\"false\"><span style=\"white-space: pre-wrap;\">a := 1\n  b := 2</span></pre><p>after</p>",
+			want:  emailPreOpen + "a := 1\n  b := 2</pre>after",
+		},
+		{
+			name:  "quote",
+			input: `<blockquote><span style="white-space: pre-wrap;">wise words</span></blockquote>`,
+			want:  emailQuoteOpen + "wise words</blockquote>",
+		},
+		{
+			name:  "every heading level keeps its own size",
+			input: `<h1>a</h1><h3>b</h3><h6>c</h6>`,
+			want: `<h1 style="margin:12px 0 4px;font-size:26px;font-weight:600;line-height:1.3;">a</h1>` +
+				`<h3 style="margin:12px 0 4px;font-size:19px;font-weight:600;line-height:1.3;">b</h3>` +
+				`<h6 style="margin:12px 0 4px;font-size:14px;font-weight:600;line-height:1.3;">c</h6>`,
+		},
+		{
+			name:  "centered paragraph",
+			input: `<p style="text-align: center;"><span style="white-space: pre-wrap;">hello</span></p><p>next</p>`,
+			want:  `<div style="text-align:center;">hello<br></div>next`,
+		},
+		{
+			name:  "right-aligned and justified paragraphs",
+			input: `<p style="text-align: right;">r</p><p style="text-align: justify;">j</p>`,
+			want:  `<div style="text-align:right;">r<br></div><div style="text-align:justify;">j<br></div>`,
+		},
+		{
+			name:  "alignment keyword is matched case-insensitively and re-emitted lowercase",
+			input: `<p style="TEXT-ALIGN: CENTER">x</p>`,
+			want:  `<div style="text-align:center;">x<br></div>`,
+		},
+		{
+			name:  "centered heading",
+			input: `<h2 style="text-align: center;">T</h2>`,
+			want:  `<h2 style="margin:12px 0 4px;font-size:22px;font-weight:600;line-height:1.3;text-align:center;">T</h2>`,
+		},
+		{
+			name:  "the default alignments add nothing",
+			input: `<p style="text-align: start;">a</p><p style="text-align: left;">b</p>`,
+			want:  "a<br>b",
+		},
+		{
+			name:  "no other style from the source rides along with the alignment",
+			input: `<p style="text-align:center;background:url(javascript:evil());color:red">x</p>`,
+			want:  `<div style="text-align:center;">x<br></div>`,
+		},
+		{
+			name:  "a value that only contains the keyword is not an alignment",
+			input: `<p style="text-align: center-ish">x</p>`,
+			want:  "x",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, images := sanitizeRichText(tt.input, &inlineImageBudget{})
+			if got != tt.want {
+				t.Errorf("sanitizeRichText(%q)\n got: %q\nwant: %q", tt.input, got, tt.want)
+			}
+			if len(images) != 0 {
+				t.Errorf("returned %d images, want 0", len(images))
 			}
 		})
 	}
