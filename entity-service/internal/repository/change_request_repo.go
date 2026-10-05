@@ -67,9 +67,15 @@ import (
 // on this PATCH already uses) -- csm-sync-service still separately populates
 // it from ServiceNow's own Assignment group field for every work_item type
 // the same way it does assigned_to_id, but a caller can now also set it
-// directly through this API. Writing it at create time
-// (CreateChangeRequestRequest.GroupID) remains unwired -- see this file's
-// own doc comment on CreateChangeRequestFromServiceNow. Filtering search
+// directly through this API. It is also written at create time, from
+// CreateChangeRequestRequest.GroupID (the create form's "Assignment group"
+// picker -- the same /groups/search picker, labelled the same, that the edit
+// dialog sends as PatchChangeRequestRequest.AssignedTeamID), by both
+// CreateChangeRequest and CreateChangeRequestFromServiceNow. An earlier
+// revision left GroupID unwritten on both Postgres create paths -- a real
+// reported bug: the assignment group picked on the create form was silently
+// dropped, so the new change request read back with no AssignedTeam (and
+// could not be moved to Assess until someone set it again). Filtering search
 // results by it (the parsed filter array's assignmentGroupId) is also still
 // unwired -- see changeRequestWhereClause's own comment.
 //
@@ -86,9 +92,8 @@ import (
 //
 // The remaining fields on the request/response contract have no
 // established mapping and are always left unset rather than guessed at:
-// ConfigurationItemID (no CMDB table exists at all in this schema); GroupID
-// (the create-time field distinct from the above -- still unwired, for the
-// same reason); ApprovedBy/ApprovedOn on domain.ChangeRequest (there is a
+// ConfigurationItemID (no CMDB table exists at all in this schema);
+// ApprovedBy/ApprovedOn on domain.ChangeRequest (there is a
 // summary change_request.approval enum but no approver/date columns);
 // Environments/DeploymentProducts/Labels/Deployments (no M2M join table
 // exists for any of the four).
@@ -203,9 +208,7 @@ type ChangeRequestRepository interface {
 	// mapping are written. Deliberately NOT applied, for the same
 	// no-backing-column/no-confirmed-mapping reasons this file's own
 	// package doc comment and changeRequestWhereClause's already give:
-	// req.ConfigurationItemID (no CMDB table), req.GroupID (no
-	// assignment-group mapping established for change_request -- see this
-	// file's own package doc comment on AssignedTeamID), req.Category (four
+	// req.ConfigurationItemID (no CMDB table), req.Category (four
 	// of ChangeRequestCategory's thirteen values -- RegularReleaseCloud/
 	// HotfixReleaseCloud/DevOps/CloudComputing -- have no
 	// change_request_category_enum label, and PatchChangeRequest itself
@@ -1892,11 +1895,11 @@ const createChangeRequestPortalQuery = `
 	WITH inserted_work_item AS (
 		INSERT INTO work_item (
 			id, created_on, updated_on, created_by, updated_by,
-			number, subject, description, type, assigned_to_id
+			number, subject, description, type, assigned_to_id, assignment_group_id
 		)
 		VALUES (
 			gen_random_uuid(), NOW(), NOW(), $1, $1,
-			next_portal_work_item_number(), $2, $3, 'CHANGE_REQUEST'::work_item_type_enum, $4::uuid
+			next_portal_work_item_number(), $2, $3, 'CHANGE_REQUEST'::work_item_type_enum, $4::uuid, $24::uuid
 		)
 		RETURNING id, number, subject, created_on, updated_on, created_by
 	),
@@ -1954,6 +1957,7 @@ func (r *changeRequestRepo) CreateChangeRequest(ctx context.Context, req domain.
 		req.Justification, req.ImplementationPlan, req.RiskImpactAnalysis, req.BackoutPlan, req.TestPlan,
 		req.PlannedStartDate, req.PlannedEndDate, req.RequestedByID, req.CustomerGroupID,
 		req.IsPlanningVisibleToCustomers, req.AffectedServicesText, req.AffectedComponentsText, req.RollbackDurationText,
+		req.GroupID,
 	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
 	if err != nil {
 		// change_request_write_internal_only (migration 0145) permits only an
@@ -2010,11 +2014,11 @@ const createChangeRequestFromServiceNowQuery = `
 	WITH inserted_work_item AS (
 		INSERT INTO work_item (
 			id, created_on, updated_on, created_by, updated_by,
-			number, subject, description, type, assigned_to_id
+			number, subject, description, type, assigned_to_id, assignment_group_id
 		)
 		VALUES (
 			$1, NOW(), NOW(), $2, $2,
-			$3, $4, $5, 'CHANGE_REQUEST'::work_item_type_enum, $6::uuid
+			$3, $4, $5, 'CHANGE_REQUEST'::work_item_type_enum, $6::uuid, $26::uuid
 		)
 		RETURNING id, number, subject, created_on, updated_on, created_by
 	),
@@ -2083,6 +2087,7 @@ func (r *changeRequestRepo) CreateChangeRequestFromServiceNow(ctx context.Contex
 		req.Justification, req.ImplementationPlan, req.RiskImpactAnalysis, req.BackoutPlan, req.TestPlan,
 		req.PlannedStartDate, req.PlannedEndDate, req.RequestedByID, req.CustomerGroupID,
 		req.IsPlanningVisibleToCustomers, req.AffectedServicesText, req.AffectedComponentsText, req.RollbackDurationText,
+		req.GroupID,
 	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
