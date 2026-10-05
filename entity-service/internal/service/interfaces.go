@@ -1082,9 +1082,10 @@ type IncidentService interface {
 
 	// UpdateIncident partially updates an existing incident. At least one field must be
 	// provided. A NotFoundError is returned if the incident does not exist.
-	// On DATA_SOURCE=postgres-servicenow-dual-write only WorkNotes and AdditionalComments
-	// are supported -- every other field is rejected with a ValidationError (see
-	// incidentService.UpdateIncident's own doc comment for why).
+	// On DATA_SOURCE=postgres-servicenow-dual-write only the state-transition fields
+	// (State, AssignedEngineerID, ResolutionCode, ResolutionNotes, ResolvedByID) and
+	// WorkNotes/AdditionalComments are supported -- every other field is rejected with
+	// a ValidationError (see incidentService.UpdateIncident's own doc comment).
 	UpdateIncident(ctx context.Context, req domain.UpdateIncidentRequest) (domain.UpdateIncidentResponse, error)
 
 	// SearchIncidentActivities returns a paginated activity feed for an incident.
