@@ -654,7 +654,7 @@ paths:
 
   /announcement-requests/search:
     post:
-      summary: Search announcement_requests rows, newest first, optionally filtered by state and/or createdBy.
+      summary: Search announcement_requests rows, newest first, optionally filtered by state (or a list of states) and/or createdBy.
       operationId: searchAnnouncementRequests
       requestBody:
         required: true
@@ -5912,8 +5912,8 @@ paths:
         caller's own pending approval can be acted on; the change request's own state
         cascades automatically in the backing data source. For a change request's
         customer group stages: "Customer Approval" approved -> scheduled
-        (is_customer_approved), rejected -> canceled; "Customer Review" approved
-        -> closed (is_customer_reviewed), rejected -> rollback.
+        (is_customer_approval_required), rejected -> canceled; "Customer Review" approved
+        -> closed (is_customer_review_required), rejected -> rollback.
       operationId: decideChangeRequestApproval
       parameters:
         - name: id
@@ -8075,7 +8075,7 @@ paths:
 
   /incidents:
     post:
-      summary: Create a new incident (ServiceNow data source only).
+      summary: Create a new incident.
       operationId: createIncident
       requestBody:
         required: true
@@ -13269,6 +13269,13 @@ components:
         description:
           type: string
           description: Description of the deployed product.
+        category:
+          type: string
+          enum: [pdp, ms, ps, cl, pc]
+          description: >-
+            Optional product category/classification (PDP/MS/PS/CL/PC). Postgres-only --
+            never forwarded to the ServiceNow mirror under dual-write, since ServiceNow's own
+            create payload has no equivalent field.
 
     CreateDeployedProductResponse:
       type: object
@@ -13292,7 +13299,7 @@ components:
 
     UpdateDeployedProductRequest:
       oneOf:
-        - description: Update deployed product detail fields. At least one of cores, tps, description, or updates must be provided.
+        - description: Update deployed product detail fields. At least one of cores, tps, description, category, or updates must be provided.
           type: object
           minProperties: 1
           additionalProperties: false
@@ -13313,6 +13320,12 @@ components:
               type: string
               nullable: true
               description: Description of the deployed product.
+            category:
+              type: string
+              enum: [pdp, ms, ps, cl, pc]
+              description: >-
+                Optional product category/classification (PDP/MS/PS/CL/PC). Postgres-only --
+                never forwarded to the ServiceNow mirror under dual-write.
             updates:
               type: array
               items:
@@ -19191,6 +19204,11 @@ components:
         serviceId:
           type: string
           format: uuid
+          description: >-
+            The incident's assignment group is set from this service's support
+            group; there is no assignmentGroupId on create. A service with no
+            support group creates the incident unassigned. Reassign afterwards
+            with PATCH.
         serviceOfferingId:
           type: string
           format: uuid
@@ -19213,10 +19231,6 @@ components:
         urgency:
           type: string
           enum: [HIGH, MEDIUM, LOW]
-        assignmentGroupId:
-          type: string
-          format: uuid
-          nullable: true
         assignedEngineerId:
           type: string
           format: uuid
@@ -19259,7 +19273,7 @@ components:
           type: string
           nullable: true
           description: Optional caller-supplied external-system key, stored on ServiceNow's
-            correlation_id field. Look it up via SearchIncidentsFilters.correlationId
+            correlation_id field. Look it up via SearchIncidentsRequest filters.correlationId
             to find an incident this caller already created, without depending on
             free-text search over subject or workNotes.
         environment:
@@ -23424,6 +23438,17 @@ components:
         state:
           type: string
           enum: [draft, pending_approval, approved, published]
+        states:
+          type: array
+          description: >-
+            Matches a request in any of the listed states, as one merged
+            paginated list (total/hasMore describe the merged list). On its own,
+            an empty or omitted list means no state filter. Rejected if sent
+            together with state or readyForScheduledPublish, even as an empty
+            list.
+          items:
+            type: string
+            enum: [draft, pending_approval, approved, published]
         createdBy:
           type: string
         readyForScheduledPublish:
@@ -23432,7 +23457,7 @@ components:
             When true, ignores state and instead matches every approved
             request whose scheduledFor has already arrived — the query
             operations/csm-scheduled-tasks' publish_scheduled_announcements
-            sub-cron uses. Rejected if combined with state.
+            sub-cron uses. Rejected if combined with state or states.
         pagination:
           $ref: '#/components/schemas/Pagination'
 

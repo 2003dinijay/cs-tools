@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Command user manages integration_users rows (e.g. webhook-integration-user): create/rotate, list, enable, disable. Uses the same CASSANDRA_* env vars as the server.
+// Command user manages integration_users rows (e.g. webhook-integration-user): create/rotate, list, enable, disable. Uses the same PG* env vars as the server.
 package main
 
 import (
@@ -28,10 +28,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/gocql/gocql"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"alert-core-service/internal/auth"
-	"alert-core-service/internal/cassandra"
+	"alert-core-service/internal/postgres"
 )
 
 func main() {
@@ -40,12 +40,12 @@ func main() {
 		os.Exit(2)
 	}
 
-	session, err := connect()
+	pool, err := connect()
 	if err != nil {
 		log.Fatalf("user: %v", err)
 	}
-	defer session.Close()
-	repo := auth.NewUserRepo(session)
+	defer pool.Close()
+	repo := auth.NewUserRepo(pool)
 
 	switch os.Args[1] {
 	case "create":
@@ -71,17 +71,17 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  disable -username <name>                      disable a user")
 }
 
-// connect reads CASSANDRA_* env vars (same ones the server uses) and opens a session.
-func connect() (*gocql.Session, error) {
-	cfg, err := cassandra.ConfigFromEnv()
+// connect reads PG* env vars (same ones the server uses) and opens a pool.
+func connect() (*pgxpool.Pool, error) {
+	cfg, err := postgres.ConfigFromEnv()
 	if err != nil {
-		return nil, fmt.Errorf("read cassandra config: %w", err)
+		return nil, fmt.Errorf("read postgres config: %w", err)
 	}
-	session, err := cassandra.Connect(cfg, 10*time.Second, 10*time.Second)
+	pool, err := postgres.Connect(cfg, 10*time.Second, 10*time.Second, false)
 	if err != nil {
-		return nil, fmt.Errorf("connect to cassandra: %w", err)
+		return nil, fmt.Errorf("connect to postgres: %w", err)
 	}
-	return session, nil
+	return pool, nil
 }
 
 func runCreate(repo *auth.UserRepo, args []string) {
@@ -140,20 +140,16 @@ func runCreate(repo *auth.UserRepo, args []string) {
 		SecretRotatedAt: now,
 	}
 	if !isNew {
-		u.ID = existing.ID
 		u.CreatedAt = existing.CreatedAt
 		if *createdBy == "" {
 			u.CreatedBy = existing.CreatedBy
 		}
 		u.Enabled = existing.Enabled
 		u.ExpiresAt = existing.ExpiresAt
-	} else {
-		id, err := gocql.RandomUUID()
-		if err != nil {
-			log.Fatalf("user create: generate id: %v", err)
-		}
-		u.ID = id
 	}
+	// u.ID is left unset for both branches: Upsert's INSERT omits the id column, so a new row
+	// gets one from integration_users.id's gen_random_uuid() default, and an existing row's
+	// ON CONFLICT clause never touches id.
 	switch {
 	case *clearExpiry:
 		u.ExpiresAt = time.Time{}

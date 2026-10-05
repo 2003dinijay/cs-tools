@@ -19072,6 +19072,15 @@ components:
         state:
           type: string
           enum: [draft, pending_approval, approved, published]
+        states:
+          type: array
+          description: >-
+            Matches a request in any of the listed states, as one merged
+            paginated list. An empty or omitted list means no state filter.
+            Rejected if combined with state.
+          items:
+            type: string
+            enum: [draft, pending_approval, approved, published]
         createdBy:
           type: string
         pagination:
@@ -19526,6 +19535,9 @@ components:
         serviceId:
           type: string
           format: uuid
+          description: >-
+            The incident's assignment group is set from this service's support
+            group; there is no assignmentGroupId on create.
         serviceOfferingId:
           type: string
           format: uuid
@@ -19544,9 +19556,6 @@ components:
         urgency:
           type: string
           enum: [HIGH, MEDIUM, LOW]
-        assignmentGroupId:
-          type: string
-          format: uuid
         assignedEngineerId:
           type: string
           format: uuid

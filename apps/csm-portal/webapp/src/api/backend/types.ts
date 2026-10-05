@@ -2232,6 +2232,12 @@ export interface BeDeployedProductCreatePayload {
   cores?: number;
   tps?: number;
   description?: string;
+  /**
+   * Opaque category code ("pdp" | "ms" | "ps" | "cl" | "pc", case-insensitive
+   * on write). Postgres-only -- never mirrored to ServiceNow. Omit to leave
+   * it unset.
+   */
+  category?: string;
 }
 
 export interface BeDeployedProductCreateResponse {
@@ -2259,6 +2265,14 @@ export interface BeDeployedProductDetailUpdatePayload {
    * per-entry endpoint.
    */
   updates?: BeProductUpdate[] | null;
+  /**
+   * Opaque category code ("pdp" | "ms" | "ps" | "cl" | "pc", case-insensitive
+   * on write) -- unlike every other field on this payload, this one is
+   * set-only: the BE has no way to clear it back to unset once set (the
+   * underlying column is COALESCEd, not overwritten, on this field), so
+   * `null` is not an accepted value here. Omit to leave it unchanged.
+   */
+  category?: string;
   active?: never;
 }
 
@@ -3412,7 +3426,8 @@ export interface BeCreateIncidentPayload {
   contactType?: BeIncidentContactType;
   impact: BeIncidentImpact;
   urgency: BeIncidentUrgency;
-  assignmentGroupId?: string;
+  // No assignmentGroupId: the backend sets the group from `serviceId`'s
+  // support group, and refuses a create that sends one.
   assignedEngineerId?: string;
   subject: string;
   watchList?: string[];
@@ -3803,6 +3818,17 @@ export interface BeIncidentTaskSearchView {
   incident?: BeCaseNumberRef | null;
   assignmentGroup?: BeEntityRef | null;
   assignedTo?: BeEntityRef | null;
+}
+
+/** `POST /incident-tasks/search` body. The only per-incident filter is the
+ * generic `{ field: "incidentId", op: "in" }` entry; there is no flat key. */
+export interface BeIncidentTaskSearchPayload {
+  filters?: {
+    searchQuery?: string;
+    number?: string;
+    filters?: { field: "state" | "assignmentGroupId" | "incidentId"; op: "in"; values: string[] }[];
+  };
+  pagination: { offset: number; limit: number };
 }
 
 /** Note: mirrors the problem/change-request/incident search responses — no `hasMore`. */

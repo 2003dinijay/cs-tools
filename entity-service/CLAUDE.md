@@ -957,7 +957,12 @@ revisited.
   `CaseCreatedPayload.CaseType`) — those types notify by email only, per
   the same explicit request. See that service's own `CLAUDE.md`.
 - **`snIncidentService.CreateIncident`** publishes `incident.created` via
-  `publishIncidentCreated`, called the same way. No enrichment round trip is
+  `publishIncidentCreated`, called the same way. On `DATA_SOURCE=postgres`
+  (`NewIncidentServiceWithPublisher`, with no ServiceNow behind it) later work
+  notes also go through `PATCH /incidents/{id}` -- an alert-born SRE incident's
+  follow-up alerts from `sre-alert-core-service` -- written as comments in one
+  transaction (`CreateIncidentNotes`: a work note and a comment commit together
+  or not at all), with no ServiceNow mirror. No enrichment round trip is
   needed here: `req.Subject`/`req.AdditionalComments` already carry
   everything the payload needs (`Title`/`ShortDescription`, the latter
   falling back to `Subject` when `AdditionalComments` is absent).
@@ -2581,7 +2586,7 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   be set from review or customer_review`; from `customer_review` with a live
   customer stage it is refused like a manual `closed` (the group's members
   decide; their rejection already yields `rollback`). The on-hold gate applies.
-  Rolling back stamps no `is_customer_reviewed` (`isCustomerReviewed: true`
+  Rolling back stamps no `is_customer_review_required` (`isCustomerReviewed: true`
   alongside it is a 400), provisions no stage, and **cancels every still-
   `requested` approver row** of the change (all stages stay as a record; the
   customer-group rejection cascade now does the same). **`rollback` is final**:
@@ -2743,7 +2748,7 @@ false`, idempotent) and the API fields **`customerApprovalRequired`** /
 `PATCH /change-requests/{id}`, returned on the detail response (and the PATCH
 receipt). Postgres data source only.
 
-* **They are NOT `is_customer_approved` / `is_customer_reviewed`.** Those two
+* **They are NOT `is_customer_approval_required` / `is_customer_review_required`.** Those two
   record the customer's *outcome* ("the customer has confirmed"): authorized
   (internal user or registered `PORTAL_USER` contact) and one-way-locked by
   `authorizeChangeRequestCustomerFlagWrite`, and in the ServiceNow scripted API
@@ -2765,7 +2770,7 @@ receipt). Postgres data source only.
   Approval — an assumption) — a change with `customerApprovalRequired` goes to
   **`customer_approval`** instead. There `legalNextStates` is `[scheduled,
   canceled]`; the human PATCH `{state: "scheduled"}` records the customer's
-  approval: it stamps `is_customer_approved = true` through the same
+  approval: it stamps `is_customer_approval_required = true` through the same
   `authorizeChangeRequestCustomerFlagWrite` (authorization + lock) a direct
   `isCustomerApproved` write uses and schedules the change. A manual `scheduled`
   from any other state is refused; so is `{state: "scheduled",
@@ -2779,7 +2784,7 @@ receipt). Postgres data source only.
   refused when not required ("customer review is not required …"), and
   `{state: "closed"}` from `review` is refused when required ("customer review
   is required …; move it to customer_review first"). `customer_review` offers
-  `[closed, rollback, canceled]`; closing from it stamps `is_customer_reviewed = true`
+  `[closed, rollback, canceled]`; closing from it stamps `is_customer_review_required = true`
   (same authorization/lock). No other transition is graph-checked — as before,
   the PATCH does not enforce a full transition graph.
 * **Editable only until the gate is passed** (`validateCustomerGateEdits`,
@@ -2858,8 +2863,8 @@ action in the Approvals tab**, like any other stage. Code: `change_request_links
 
   | Stage | Approved | Rejected |
   |---|---|---|
-  | Customer Approval | `scheduled`, `is_customer_approved = true` | `canceled` |
-  | Customer Review | `closed`, `is_customer_reviewed = true` | `rollback` |
+  | Customer Approval | `scheduled`, `is_customer_approval_required = true` | `canceled` |
+  | Customer Review | `closed`, `is_customer_review_required = true` | `rollback` |
 
   Rejected review -> `rollback` (which also cancels the change's still-requested
   approver rows): the same state a human reaches with the manual Roll back
@@ -3574,7 +3579,7 @@ mirror and the system it models.
   `on_hold_reason TEXT`. (`on_hold_started_on` was added here originally and dropped
   again in migration 0190 — ServiceNow has no equivalent field and nothing consumed it.) Shape follows two
   existing precedents in this same table rather than inventing a third: the
-  boolean naming matches `is_customer_approved`/`is_customer_reviewed`/
+  boolean naming matches `is_customer_approval_required`/`is_customer_review_required`/
   `is_planning_visible_to_customers` (migration 0043), and the
   flag-plus-"since" pairing mirrors `work_item.workaround_provided_on`/
   `workaround_provided_by_user_id` (migration 0021) — a nullable TIMESTAMPTZ
@@ -3667,7 +3672,7 @@ mirror and the system it models.
   and a blocked-reason display on the action bar are a deliberate follow-up
   cycle once this API contract exists, not part of this change.
 
-**`is_customer_approved`/`is_customer_reviewed` are now authorized and
+**`is_customer_approval_required`/`is_customer_review_required` are now authorized and
 one-way-locked — the last gap in this schema's four internal approval
 checkpoints plus these two customer-facing fields had no authorization of
 its own at all before this.** `PatchChangeRequestRequest.IsCustomerApproved`/
@@ -5393,6 +5398,23 @@ precondition changed underneath the caller, a real race) or the propagated
 `NotFoundError` if it doesn't (checked via one extra `Get`, only on this rare
 path, so the common case stays a single round trip).
 
+**`POST /announcement-requests/search` filters by state two ways, and they are
+mutually exclusive.** `state` (one value) is the original field; `states` (a
+list) matches a request in *any* of the listed states and returns them as one
+merged list — ordered newest-first and paginated as a whole, so `total`/`hasMore`
+describe the merged result rather than one state. The repository query is
+`state = ANY($4::text[])` against a nil-when-empty `text[]`, so an omitted or
+empty `states` means "no state filter," never "match nothing." `Search` rejects
+`state` + `states` together (judged by the field being *sent*, so an explicit
+`"states": []` alongside `state` is rejected too), any state outside the four
+lifecycle values, and `readyForScheduledPublish` combined with either (that flag is the
+`csm-scheduled-tasks` cron's own "approved and due" query and ignores state
+filters by design). `state` is deliberately kept rather than folded into
+`states`: the registry's published-requests lookup and the cron both send it,
+and the handler's `decodeRequest` rejects unknown JSON fields, so a client that
+sends only `state` (as the CSM portal's Requests tab does for a one-state
+selection) keeps working against a build that predates `states`.
+
 This service never creates the real per-project cases itself — `MarkPublished`
 only records that publishing happened, by whom, and when. The actual fan-out
 (`POST /cases` per project) is, and remains, the caller's own job, unchanged
@@ -5666,6 +5688,76 @@ per-rating reason chips, so every `reasons_*` bucket returns an empty result;
 503 on Postgres because `work_item_feedback` has no emoji id, chip ids or
 assessment id to serve it from.
 
+## CreateCase enforces a project type's product-category allow-list for case/SR
+
+`project_type.default_case_product_categories`/`sr_product_categories`
+(`deployed_product_category_enum[]`, migration
+`0130_project_type_feature_entitlement.sql`, transcribed from ServiceNow's
+own `ProjectTypeFeatureManager.FEATURE_MATRIX`) were, until now, purely
+advisory: `ReferenceDataRepository.GetProjectByID` already surfaced them as
+`ProjectFeatures.DefaultCaseProductCategories`/`SrProductCategories` via
+`GET /projects/{id}/features`, read-only, for the frontend's own product
+dropdown to filter against (and `SearchDeployedProducts`' fail-open
+NULL-category handling — see that query's own doc comment — exists
+specifically so an uncategorized product isn't hidden from that dropdown).
+Nothing ever stopped a caller from creating a `case`/`service_request`
+against a deployed product whose category didn't match the project type's
+own configured requirement at all — the matrix was real configuration with
+no enforcement behind it.
+
+`caseService.validateDeployedProductCategoryForType` (`case_service.go`)
+closes this at `CreateCase` time, for `type: "case"` (checked against
+`DefaultCaseProductCategories`) and `type: "service_request"` (checked
+against `SrProductCategories`) only — the two types the matrix actually
+names; every other type is unaffected, and a project type with no entry for
+the request's own type ("N/A" in the matrix, an empty/nil slice) stays
+unrestricted exactly as before this check existed.
+
+**Fail-closed on an uncategorized deployed product, by deliberate product
+decision — the opposite of `SearchDeployedProducts`' own read-side
+posture.** A deployed product with no `product_category` set (the majority
+of real rows today) now FAILS this check once a project type restricts the
+request's type, rather than being treated as a wildcard match. The whole
+point of this gate is to make categorizing a deployed product matter; the
+CSM Portal's own Create/Edit Deployed Product dialogs are what let staff set
+one (`apps/csm-portal/webapp`'s `CreateDeployedProductDialog.tsx`/
+`EditDeployedProductDialog.tsx`), closing the loop this check opens.
+
+**One call site, nil-safe, covers both the plain-Postgres and dual-write
+data sources.** `validateDeployedProductCategoryForType` is called from
+`CreateCase` right after the existing `deploymentId`/`deployedProductId`
+UUID validation and before the `s.snMirror != nil` branch — so it runs
+identically whether `s.snMirror` is set (`DATA_SOURCE=postgres-servicenow-dual-write`,
+`createCaseSNFirst`) or nil (plain `DATA_SOURCE=postgres`), with no
+duplicated logic. It depends on two new, optional `caseService` fields
+(`referenceDataRepo`/`deployedProductRepo`), wired via
+`WithProductCategoryEnforcement(svc, referenceDataRepo, deployedProductRepo)`
+— a post-construction step, not a new constructor parameter, specifically so
+every existing `NewCaseService`/`NewCaseServiceWithSNWriteback` call site
+(every test, and `DataSourceServiceNow`'s own `pgCaseFallbackSvc` in
+`routes.go`) keeps compiling and behaving unchanged; the two constructors'
+own doc comments already established this precedent for exactly this
+reason. Both fields nil (the default) skips the check entirely, the same
+posture as every other optional `caseService` dependency
+(`publisher`/`snMirror`/...).
+
+**`DATA_SOURCE=servicenow` does not get this check, by explicit product
+decision** — `routes.go` only calls `WithProductCategoryEnforcement` for the
+`DataSourcePostgresServiceNowDualWrite` and default (plain-Postgres)
+branches. `snCaseService.CreateCase` never reaches `caseService`'s code at
+all (it validates and builds its own ServiceNow payload directly), and its
+`pgFallback` field — already used for three other Postgres-only reads — is
+not wired to either new repository. Staging/production both run dual-write,
+where this data is already available; a plain-ServiceNow deployment is left
+as a documented, known gap, same posture as every other Postgres-only
+feature in this file.
+
+`DeployedProductRepository.GetDeployedProductCategory(ctx, id)` is the one
+new repository method this needed — a single-row lookup
+(`SELECT product_category::TEXT FROM deployed_product WHERE id = $1`,
+lower-cased before returning), deliberately not reusing
+`SearchDeployedProducts`' list/filter machinery for a one-row check.
+
 ## Adding a new entity
 
 Follow these steps in order:
@@ -5912,3 +6004,24 @@ is no start cutoff and no age limit: a change is applied however late, and an ou
 
 Tests: `incident_report_service_test.go` (unit), `incident_report_integration_test.go`
 (`INCIDENT_REPORT_TEST_DSN`, real DB with all migrations: both flows, rollback, backoff, retry).
+
+### [WSO2 Cloud Ops] Post resolution tasks (migration 0188)
+
+Runs in the same Resolved handler, after the report, in the same transaction. SN condition:
+service Choreo or Asgardeo, state changes to Resolved. Every block is an independent If on the
+incident as it is now:
+
+| Condition (`resolution_code`) | Effect |
+|---|---|
+| `FALSE_ALARM` | incident_task `[Alert Task][Falser Alarm] <number> alert is a false alarm` (SN's spelling), `CRITICAL`, group WSO2 SRE Team |
+| `DUPLICATE` or `DUPLICATE_ALERT` | `[Alert Task][Duplicate Alert] <number> alert is a duplicate`, `CRITICAL`, WSO2 SRE Team. Both spellings are SN's one "Duplicate" choice: the sync writes `DUPLICATE_ALERT`, the portal `DUPLICATE` |
+| `NOT_ACTIONABLE_ALERT` | `[Alert Task][Not Actionable Alert] <number> is not an actionable alert`, `HIGH`, WSO2 SRE Team |
+| `SOLVED_WORK_AROUND` and no `problem_id` | problem `Fix the root cause of <number>` with the incident's service, impact, urgency and priority (0188 adds `problem.service_id/impact/urgency`), `incident_id` = the incident, group Choreo Special Ops or Asgardeo Operations Team by service; then `incident.problem_id` = it |
+
+The services and groups are SN sys_ids as Postgres UUIDs, constants in
+`incident_report_service.go`. A group missing from the database leaves the record unassigned
+rather than failing the change (the insert looks the id up). **Not ported:** the runbook block
+(`u_runbook_solve_the_issue = 2` and not a workaround → `[Runbook Task] Modify the runbook`):
+the field has no column and no portal input. `MissingSchema` also checks 0188's columns.
+
+Tests: `post_resolution_tasks_test.go` (unit), `post_resolution_tasks_integration_test.go`.

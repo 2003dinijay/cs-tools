@@ -2076,6 +2076,17 @@ type CreateDeployedProductRequest struct {
 	Cores        *int     `json:"cores"`
 	TPS          *float64 `json:"tps"`
 	Description  *string  `json:"description"`
+	// Category is one of the lower-case deployed_product_category_enum codes
+	// ("pdp", "ms", "ps", "cl", "pc" -- same vocabulary as
+	// SearchDeployedProductsRequest.ProductCategories), optional. Postgres-only:
+	// ServiceNow's own deployed-product create/update payloads (see
+	// snCreateDeployedProductPayload/snUpdateDeployedProductPayload,
+	// sn_deployed_product_service.go) have no classification field at all, so
+	// this is never forwarded to the SN mirror under dual-write -- the same
+	// "write it where the data actually has a column, skip the mirror call
+	// entirely rather than send a field it would ignore or reject" precedent
+	// documented on patchCaseFieldsBundle's own four-of-nine mirrored fields.
+	Category *string `json:"category,omitempty"`
 }
 
 // CreateDeployedProductResponse is the response for POST /deployed-products.
@@ -2108,6 +2119,10 @@ type UpdateDeployedProductRequest struct {
 	Description  json.RawMessage      `json:"description,omitempty"`
 	Updates      []ProductUpdateEntry `json:"updates,omitempty"`
 	Active       *bool                `json:"active"`
+	// Category -- see CreateDeployedProductRequest.Category's own doc comment
+	// for the vocabulary and why it is Postgres-only (never forwarded to the
+	// SN mirror).
+	Category *string `json:"category,omitempty"`
 }
 
 // UpdateDeployedProductResponse is the response for PATCH /deployed-products/{id}.
@@ -5761,17 +5776,21 @@ type CreateIncidentRequest struct {
 	ContactType         *IncidentContactType `json:"contactType,omitempty"`
 	Impact              IncidentImpact       `json:"impact"`
 	Urgency             IncidentUrgency      `json:"urgency"`
-	AssignmentGroupID   *string              `json:"assignmentGroupId,omitempty"`
-	AssignedEngineerID  *string              `json:"assignedEngineerId,omitempty"`
-	Subject             string               `json:"subject"`
-	WatchList           []string             `json:"watchList,omitempty"`
-	AdditionalComments  *string              `json:"additionalComments,omitempty"`
-	WorkNotes           *string              `json:"workNotes,omitempty"`
-	ParentID            *string              `json:"parentId,omitempty"`
-	ParentIncidentID    *string              `json:"parentIncidentId,omitempty"`
-	ChangeRequestID     *string              `json:"changeRequestId,omitempty"`
-	ProblemID           *string              `json:"problemId,omitempty"`
-	CausedByID          *string              `json:"causedById,omitempty"`
+	// AssignmentGroupID is never read from the request body: an incident's
+	// assignment group is its service's support group, set by the incident
+	// service before either create path runs. One rule, one place -- a
+	// caller that sends assignmentGroupId gets a 400 for an unknown field.
+	AssignmentGroupID  *string  `json:"-"`
+	AssignedEngineerID *string  `json:"assignedEngineerId,omitempty"`
+	Subject            string   `json:"subject"`
+	WatchList          []string `json:"watchList,omitempty"`
+	AdditionalComments *string  `json:"additionalComments,omitempty"`
+	WorkNotes          *string  `json:"workNotes,omitempty"`
+	ParentID           *string  `json:"parentId,omitempty"`
+	ParentIncidentID   *string  `json:"parentIncidentId,omitempty"`
+	ChangeRequestID    *string  `json:"changeRequestId,omitempty"`
+	ProblemID          *string  `json:"problemId,omitempty"`
+	CausedByID         *string  `json:"causedById,omitempty"`
 	// CorrelationID is an optional caller-supplied external-system key, stored
 	// on ServiceNow's stock `correlation_id` field. Lets a monitoring
 	// integration find an incident it already created (SearchIncidentsFilters.
@@ -7865,20 +7884,28 @@ type SearchAnnouncementRequestUpdatesResponse struct {
 	Updates []AnnouncementRequestUpdate `json:"updates"`
 }
 
-// SearchAnnouncementRequestsRequest filters announcement_requests. State and
-// CreatedBy are both optional; omitting both returns every row (subject to
-// pagination) — there is no default filter, unlike some other search
-// endpoints in this service, since every caller of this endpoint so far
-// (the registry page's "Pending" tab) needs to choose its own filter
-// explicitly rather than inherit an implicit one.
+// SearchAnnouncementRequestsRequest filters announcement_requests. State,
+// States and CreatedBy are all optional; omitting all of them returns every
+// row (subject to pagination) — there is no default filter, unlike some
+// other search endpoints in this service, since every caller of this
+// endpoint so far (the registry page's "Pending" tab) needs to choose its
+// own filter explicitly rather than inherit an implicit one.
 type SearchAnnouncementRequestsRequest struct {
-	State     *AnnouncementRequestState `json:"state,omitempty"`
-	CreatedBy *string                   `json:"createdBy,omitempty"`
+	State *AnnouncementRequestState `json:"state,omitempty"`
+	// States matches a row in any of the listed states, in one paginated
+	// result (so Total/HasMore describe the merged list, not one state).
+	// State stays for single-state callers (the registry's published-requests
+	// lookup); the two are mutually exclusive -- naming both is rejected even
+	// when States is an explicit empty list. On its own, an empty/omitted
+	// States means "no state filter," same as an omitted State.
+	States    []AnnouncementRequestState `json:"states,omitempty"`
+	CreatedBy *string                    `json:"createdBy,omitempty"`
 	// ReadyForScheduledPublish, when true, ignores State and instead matches
 	// every approved row whose ScheduledFor is set and has already arrived
 	// (scheduled_for <= now()) — the one query
 	// operations/csm-scheduled-tasks' "publish_scheduled_announcements"
-	// sub-cron needs. Mutually exclusive with State (ambiguous otherwise).
+	// sub-cron needs. Mutually exclusive with State and States (ambiguous
+	// otherwise), including an explicit empty States list.
 	ReadyForScheduledPublish bool       `json:"readyForScheduledPublish,omitempty"`
 	Pagination               Pagination `json:"pagination"`
 }
@@ -8084,6 +8111,189 @@ type ListScheduledTaskRunsResponse struct {
 // DELETE /scheduled-task-runs?resolvedBefore=<RFC3339 timestamp>.
 type DeleteScheduledTaskRunsResponse struct {
 	DeletedCount int `json:"deletedCount"`
+}
+
+// Kb articles are the knowledge-base articles that can be created, reviewed, and published in postgresql.
+
+type KBArticleState string
+
+const (
+	KBArticleStateDraft         KBArticleState = "draft"
+	KBArticleStatePendingReview KBArticleState = "pending_review"
+	KBArticleStatePublished     KBArticleState = "published"
+	KBArticleStateRetired       KBArticleState = "retired"
+)
+
+type KBArticle struct {
+	ID               string         `json:"id"`
+	KnowledgeBaseID  string         `json:"knowledgeBaseId"`
+	Title            string         `json:"title"`
+	Body             string         `json:"body"`
+	State            KBArticleState `json:"state"`
+	AuthorID         string         `json:"authorId"`
+	RevisedByID      *string        `json:"revisedById"`
+	SourceCaseID     *string        `json:"sourceCaseId"`
+	RejectionComment *string        `json:"rejectionComment"`
+	// UpdatedBy is the user who most recently edited or transitioned this
+	// article -- null only for an article that has never been touched
+	// since creation (shouldn't normally happen, since create sets it too).
+	UpdatedBy *string `json:"updatedBy"`
+	// Number is a human-readable reference number, matching the real
+	// table's "number" column -- optional, no current code sets it.
+	Number *string `json:"number,omitempty"`
+	// BaseVersionID/Latest implement history: editing an article creates
+	// a NEW row linked back to the FIRST row in its lineage via
+	// BaseVersionID (nil on that first row itself), with exactly one row
+	// per lineage having Latest=true -- see kb-tables.sql's doc comment.
+	BaseVersionID *string    `json:"baseVersionId,omitempty"`
+	Latest        bool       `json:"latest"`
+	CreatedOn     time.Time  `json:"createdOn"`
+	UpdatedOn     time.Time  `json:"updatedOn"`
+	PublishedOn   *time.Time `json:"publishedOn"`
+	RetiredOn     *time.Time `json:"retiredOn"`
+	// ScheduledPublishOn/GeneratedWithAI/AIGeneratedBy/HelpfulCount/
+	// Rating/UseCount/ViewCount all exist on the real table but have no
+	// current code using them -- omitted here until something needs them.
+}
+
+type CreateKBArticleRequest struct {
+	KnowledgeBaseID string  `json:"knowledgeBaseId"`
+	Title           string  `json:"title"`
+	Body            string  `json:"body"`
+	AuthorID        string  `json:"authorId"`
+	TeamKey         *string `json:"teamKey,omitempty"`
+}
+
+type UpdateKBArticleStateRequest struct {
+	State            KBArticleState `json:"state"`
+	RejectionComment *string        `json:"rejectionComment,omitempty"`
+	UpdatedBy        string         `json:"updatedBy"`
+	// CurrentState is set by the service layer for optimistic locking.
+	CurrentState KBArticleState `json:"-"`
+}
+
+type SearchKBArticlesRequest struct {
+	KnowledgeBaseID string           `json:"knowledgeBaseId,omitempty"`
+	States          []KBArticleState `json:"states,omitempty"`
+	AuthorID        string           `json:"authorId,omitempty"`
+	TeamKeys        []string         `json:"teamKeys,omitempty"`
+	SearchQuery     string           `json:"searchQuery,omitempty"`
+	Pagination      Pagination       `json:"pagination"`
+}
+
+type SearchKBArticlesResponse struct {
+	Articles []KBArticle `json:"articles"`
+	Total    int         `json:"total"`
+	Limit    int         `json:"limit"`
+	Offset   int         `json:"offset"`
+	HasMore  bool        `json:"hasMore"`
+}
+
+type CreateKBArticleResponse struct {
+	Article KBArticle `json:"article"`
+}
+
+type UpdateKBArticleStateResponse struct {
+	Article KBArticle `json:"article"`
+}
+
+type KBManagerUser struct {
+	ID              string    `json:"id"`
+	KnowledgeBaseID string    `json:"knowledgeBaseId"`
+	UserID          string    `json:"userId"`
+	CreatedOn       time.Time `json:"createdOn"`
+}
+
+// KBManagerGroup grants every member of a group manager access to a
+// knowledge base -- see knowledge_base_manager_group's own doc comment
+// (kb-tables.sql) for why GroupID has no local FK.
+type KBManagerGroup struct {
+	ID              string    `json:"id"`
+	KnowledgeBaseID string    `json:"knowledgeBaseId"`
+	GroupID         string    `json:"groupId"`
+	GroupName       *string   `json:"groupName"`
+	CreatedOn       time.Time `json:"createdOn"`
+}
+
+type SearchKBManagerUsersRequest struct {
+	KnowledgeBaseID string `json:"knowledgeBaseId,omitempty"`
+	UserID          string `json:"userId,omitempty"`
+}
+
+type SearchKBManagerUsersResponse struct {
+	Managers []KBManagerUser `json:"managers"`
+}
+
+type SearchKBManagerGroupsRequest struct {
+	KnowledgeBaseID string `json:"knowledgeBaseId,omitempty"`
+	GroupID         string `json:"groupId,omitempty"`
+}
+
+type SearchKBManagerGroupsResponse struct {
+	Managers []KBManagerGroup `json:"managers"`
+}
+
+type UpdateKBArticleContentRequest struct {
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	UpdatedBy string `json:"updatedBy"`
+}
+
+type KnowledgeBase struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Active    bool      `json:"active"`
+	CreatedOn time.Time `json:"createdOn"`
+	UpdatedOn time.Time `json:"updatedOn"`
+}
+
+type ListKnowledgeBasesResponse struct {
+	KnowledgeBases []KnowledgeBase `json:"knowledgeBases"`
+}
+
+type KBArticleHistoryEntry struct {
+	ID          string         `json:"id"`
+	KBArticleID string         `json:"kbArticleId"`
+	Title       string         `json:"title"`
+	Body        string         `json:"body"`
+	State       KBArticleState `json:"state"`
+	ChangedBy   string         `json:"changedBy"`
+	CreatedOn   time.Time      `json:"createdOn"`
+}
+
+type ListKBArticleHistoryResponse struct {
+	History []KBArticleHistoryEntry `json:"history"`
+}
+
+type GetUsersByIDsResponse struct {
+	Users []User `json:"users"`
+}
+
+type CreateKnowledgeBaseRequest struct {
+	// ProductID is optional -- a knowledge base doesn't have to be tied to
+	// a specific product (per the Sep 11 call, "we might have knowledge
+	// bases without the product or with multiple products").
+	ProductID *string `json:"productId,omitempty"`
+	Name      string  `json:"name"`
+}
+
+type UpdateKnowledgeBaseRequest struct {
+	Name string `json:"name"`
+}
+
+type UpdateKnowledgeBaseActiveRequest struct {
+	IsActive bool `json:"isActive"`
+}
+
+type CreateKBManagerUserRequest struct {
+	KnowledgeBaseID string `json:"knowledgeBaseId"`
+	UserID          string `json:"userId"`
+}
+
+type CreateKBManagerGroupRequest struct {
+	KnowledgeBaseID string  `json:"knowledgeBaseId"`
+	GroupID         string  `json:"groupId"`
+	GroupName       *string `json:"groupName,omitempty"`
 }
 
 // AlertIncidentMappingView is the durable record of one monitoring alert

@@ -65,11 +65,11 @@ import (
 //	    assumption, Standard has no internal approvals to put the gate after) it
 //	    moves it to Customer Approval instead when customer_approval_required.
 //	    A human then records the customer's approval ({state: "scheduled"},
-//	    legal ONLY from Customer Approval), which stamps is_customer_approved
+//	    legal ONLY from Customer Approval), which stamps is_customer_approval_required
 //	    and schedules the change.
 //	review gate: Review -> Customer Review -> Closed when
 //	    customer_review_required, Review -> Closed otherwise. Closing from
-//	    Customer Review records the customer's review (is_customer_reviewed).
+//	    Customer Review records the customer's review (is_customer_review_required).
 //
 // Who gives the customer's answer depends on the change's Customer Group
 // (change_request.customer_group_id, a "group"; its members are its
@@ -82,8 +82,8 @@ import (
 //	    eligible member -- and the members decide it in the Approvals tab,
 //	    through DecideChangeRequestApproval like every other stage (first
 //	    responder wins). Approving Customer Approval schedules the change
-//	    (is_customer_approved stamped), rejecting it cancels it; approving
-//	    Customer Review closes it (is_customer_reviewed stamped), rejecting it
+//	    (is_customer_approval_required stamped), rejecting it cancels it; approving
+//	    Customer Review closes it (is_customer_review_required stamped), rejecting it
 //	    moves it to Rollback. The manual {state: scheduled} / {state: closed}
 //	    is then refused: the answer comes from the approval.
 //	without one (no customer group, or nobody eligible in it): no stage is
@@ -632,7 +632,7 @@ type customerStageSpec struct {
 var (
 	customerApprovalStageSpec = customerStageSpec{
 		state: "CUSTOMER_APPROVAL", label: approvalStageLabelCustomerApproval, kind: stageKindCustomerApproval,
-		approvedState: "SCHEDULED", rejectedState: "CANCELED", approvedFlagColumn: "is_customer_approved",
+		approvedState: "SCHEDULED", rejectedState: "CANCELED", approvedFlagColumn: "is_customer_approval_required",
 		what: "approval",
 	}
 	// A rejected customer review moves the change to Rollback: the state the
@@ -642,7 +642,7 @@ var (
 	// exactly as it is everywhere else in this data source.
 	customerReviewStageSpec = customerStageSpec{
 		state: "CUSTOMER_REVIEW", label: approvalStageLabelCustomerReview, kind: stageKindCustomerReview,
-		approvedState: "CLOSED", rejectedState: "ROLLBACK", approvedFlagColumn: "is_customer_reviewed",
+		approvedState: "CLOSED", rejectedState: "ROLLBACK", approvedFlagColumn: "is_customer_review_required",
 		what: "review",
 	}
 )
@@ -1052,8 +1052,8 @@ func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 
 // applyCustomerStageOutcome moves the change on after a customer stage was
 // resolved by a decision: Customer Approval approved -> Scheduled (stamping
-// is_customer_approved), rejected -> Canceled; Customer Review approved ->
-// Closed (stamping is_customer_reviewed), rejected -> Rollback. The change
+// is_customer_approval_required), rejected -> Canceled; Customer Review approved ->
+// Closed (stamping is_customer_review_required), rejected -> Rollback. The change
 // must still be in the stage's state (a stage whose change has moved on has
 // had its approvers cancelled, so this is a defence, not a path). Returns
 // whether the state moved.

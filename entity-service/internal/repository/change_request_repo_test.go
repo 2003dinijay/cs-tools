@@ -823,10 +823,10 @@ func TestCustomerStageSpecs(t *testing.T) {
 			t.Errorf("customerStageSpecForState(%q) != nil", st)
 		}
 	}
-	if ca.label != "Customer Approval" || ca.approvedState != "SCHEDULED" || ca.rejectedState != "CANCELED" || ca.approvedFlagColumn != "is_customer_approved" {
+	if ca.label != "Customer Approval" || ca.approvedState != "SCHEDULED" || ca.rejectedState != "CANCELED" || ca.approvedFlagColumn != "is_customer_approval_required" {
 		t.Errorf("Customer Approval spec = %+v", *ca)
 	}
-	if cr.label != "Customer Review" || cr.approvedState != "CLOSED" || cr.rejectedState != "ROLLBACK" || cr.approvedFlagColumn != "is_customer_reviewed" {
+	if cr.label != "Customer Review" || cr.approvedState != "CLOSED" || cr.rejectedState != "ROLLBACK" || cr.approvedFlagColumn != "is_customer_review_required" {
 		t.Errorf("Customer Review spec = %+v", *cr)
 	}
 	if customerStageSpecForKind(stageKindCustomerApproval) != ca || customerStageSpecForKind(stageKindCustomerReview) != cr || customerStageSpecForKind(stageKindPeer) != nil {

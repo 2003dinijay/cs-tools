@@ -420,7 +420,7 @@ var changeRequestForwardNextStates = map[domain.ChangeRequestState][]domain.Chan
 	// that does not.
 	domain.ChangeRequestStateAuthorize: {},
 	// Customer Approval is the customer-approval step: "scheduled" records the
-	// customer's approval (stamping is_customer_approved) and schedules the
+	// customer's approval (stamping is_customer_approval_required) and schedules the
 	// change; Cancel is the customer declining.
 	// "authorize" here is Re-schedule (the process diagram's Time Change loop),
 	// not the approval path: see rescheduleChangeRequest.
@@ -798,7 +798,7 @@ func (r *changeRequestRepo) AggregateChangeRequests(ctx context.Context, req dom
 const changeRequestDetailColumns = `
 	wi.created_by, cr.justification, cr.impact_description, cr.service_outage_downtime,
 	cr.communication_plan, cr.rollback_process, cr.test_plan,
-	cr.is_customer_approved, cr.is_customer_reviewed,
+	cr.is_customer_approval_required, cr.is_customer_review_required,
 	cr.implementation_plan, cr.priority::TEXT, cr.category::TEXT,
 	rb.id, COALESCE(rb.name, NULLIF(TRIM(CONCAT_WS(' ', rb.first_name, rb.last_name)), '')),
 	cr.affected_services, cr.affected_component, cr.rollback_duration,
@@ -1248,7 +1248,7 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	//     caller skip an approval the flow requires.
 	//   - {state: "scheduled"} is rejected EXCEPT from Customer Approval, where
 	//     it is the human action "record the customer's approval": it stamps
-	//     is_customer_approved (through the same authorization and one-way lock
+	//     is_customer_approval_required (through the same authorization and one-way lock
 	//     as a direct isCustomerApproved write) and schedules the change.
 	//     Everywhere else Scheduled is reached only by the CAB/ECAB cascade (or
 	//     Request Approval on a Standard change).
@@ -1256,7 +1256,7 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	//     is set, and {state: "closed"} from Review is rejected when it is: the
 	//     customer's review is a required step in between. {state: "closed"}
 	//     from Customer Review records the customer's review
-	//     (is_customer_reviewed).
+	//     (is_customer_review_required).
 	//   - {state: "rollback"} is the failed-review off-ramp: accepted only from
 	//     Review and Customer Review (and from Customer Review only while no
 	//     customer-group review request is pending -- its members' rejection
@@ -1350,11 +1350,11 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			if req.IsCustomerApproved != nil && !*req.IsCustomerApproved {
 				return "", &apierror.ValidationError{Msg: "isCustomerApproved cannot be false when recording the customer's approval (state scheduled from customer_approval)"}
 			}
-			// Recording the customer's approval IS setting is_customer_approved.
+			// Recording the customer's approval IS setting is_customer_approval_required.
 			effectiveApproved = &yes
 		case "rollback":
 			// The failed-review off-ramp: only from the two review states.
-			// Terminal, no stamp of is_customer_reviewed, no new stage.
+			// Terminal, no stamp of is_customer_review_required, no new stage.
 			if gates.state != "REVIEW" && gates.state != "CUSTOMER_REVIEW" {
 				return "", &apierror.ValidationError{Msg: `state "rollback" can only be set from review or customer_review`}
 			}
@@ -1502,10 +1502,10 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			return "", err
 		}
 		if effectiveApproved != nil {
-			addCR("is_customer_approved = $%d", *effectiveApproved)
+			addCR("is_customer_approval_required = $%d", *effectiveApproved)
 		}
 		if effectiveReviewed != nil {
-			addCR("is_customer_reviewed = $%d", *effectiveReviewed)
+			addCR("is_customer_review_required = $%d", *effectiveReviewed)
 		}
 	}
 	// The creation form's checkboxes: the requirement, not the outcome. Any
@@ -1773,8 +1773,8 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 }
 
 // authorizeChangeRequestCustomerFlagWrite applies the authorization and
-// one-way-lock rules for change_request.is_customer_approved/
-// is_customer_reviewed (domain.ChangeRequest.HasCustomerApproved/
+// one-way-lock rules for change_request.is_customer_approval_required/
+// is_customer_review_required (domain.ChangeRequest.HasCustomerApproved/
 // HasCustomerReviewed on the read side; PatchChangeRequestRequest.
 // IsCustomerApproved/IsCustomerReviewed, approved/reviewed here, on this
 // one) -- the last two customer-facing fields this PATCH used to write
@@ -1843,7 +1843,7 @@ func authorizeChangeRequestCustomerFlagWrite(ctx context.Context, tx pgx.Tx, id,
 	var currentApproved, currentReviewed *bool
 	var projectID *string
 	err := tx.QueryRow(ctx, `
-		SELECT cr.is_customer_approved, cr.is_customer_reviewed, wi.project_id::text
+		SELECT cr.is_customer_approval_required, cr.is_customer_review_required, wi.project_id::text
 		FROM change_request cr
 		JOIN work_item wi ON wi.id = cr.id
 		WHERE cr.id = $1`, id,
@@ -1903,7 +1903,7 @@ func authorizeChangeRequestCustomerFlagWrite(ctx context.Context, tx pgx.Tx, id,
 }
 
 // callerMayGrantChangeRequestCustomerFlag reports whether actorEmail may
-// flip change_request.is_customer_approved/is_customer_reviewed from false
+// flip change_request.is_customer_approval_required/is_customer_review_required from false
 // to true on the change request whose work_item.project_id is projectID --
 // see authorizeChangeRequestCustomerFlagWrite's own doc comment immediately
 // above for the full rule and its provenance. projectID nil/empty (an
@@ -2822,8 +2822,8 @@ func cancelSiblingApprovalStageApprovers(ctx context.Context, tx pgx.Tx, stageID
 //     {state: "scheduled"} out of Customer Approval.
 //   - the customer group's stage while the change waits in the matching state
 //     (provisionCustomerStage): "Customer Approval" approved -> Scheduled and
-//     is_customer_approved = true, rejected -> Canceled; "Customer Review"
-//     approved -> Closed and is_customer_reviewed = true, rejected ->
+//     is_customer_approval_required = true, rejected -> Canceled; "Customer Review"
+//     approved -> Closed and is_customer_review_required = true, rejected ->
 //     Rollback. CAB / ECAB approval into Customer Approval provisions the
 //     "Customer Approval" stage in the same transaction.
 //   - any other stage (Review, or a stage that is neither): the decision is
