@@ -5114,6 +5114,23 @@ precondition changed underneath the caller, a real race) or the propagated
 `NotFoundError` if it doesn't (checked via one extra `Get`, only on this rare
 path, so the common case stays a single round trip).
 
+**`POST /announcement-requests/search` filters by state two ways, and they are
+mutually exclusive.** `state` (one value) is the original field; `states` (a
+list) matches a request in *any* of the listed states and returns them as one
+merged list — ordered newest-first and paginated as a whole, so `total`/`hasMore`
+describe the merged result rather than one state. The repository query is
+`state = ANY($4::text[])` against a nil-when-empty `text[]`, so an omitted or
+empty `states` means "no state filter," never "match nothing." `Search` rejects
+`state` + `states` together (judged by the field being *sent*, so an explicit
+`"states": []` alongside `state` is rejected too), any state outside the four
+lifecycle values, and `readyForScheduledPublish` combined with either (that flag is the
+`csm-scheduled-tasks` cron's own "approved and due" query and ignores state
+filters by design). `state` is deliberately kept rather than folded into
+`states`: the registry's published-requests lookup and the cron both send it,
+and the handler's `decodeRequest` rejects unknown JSON fields, so a client that
+sends only `state` (as the CSM portal's Requests tab does for a one-state
+selection) keeps working against a build that predates `states`.
+
 This service never creates the real per-project cases itself — `MarkPublished`
 only records that publishing happened, by whom, and when. The actual fan-out
 (`POST /cases` per project) is, and remains, the caller's own job, unchanged
