@@ -24,7 +24,7 @@ import type {
   ChatWebSocketPayload,
   UseChatWebSocketOptions,
 } from "@features/support/types/conversations";
-import { useAsgardeo } from "@hooks/useStableAsgardeo";
+import { useAsgardeo } from "@asgardeo/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**

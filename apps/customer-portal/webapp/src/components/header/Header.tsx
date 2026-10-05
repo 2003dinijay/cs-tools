@@ -28,7 +28,7 @@ import Brand from "@components/header/Brand";
 import Actions from "@components/header/Actions";
 import SearchBar from "@components/header/SearchBar";
 import ProjectSwitcher from "@components/header/ProjectSwitcher";
-import { useAsgardeo } from "@hooks/useStableAsgardeo";
+import { useAsgardeo } from "@asgardeo/react";
 import { shouldExcludeS0 } from "@utils/permission";
 import { setLastSelectedProject } from "@features/settings/utils/settingsStorage";
 import { useErrorPageContext } from "@context/error-page/ErrorPageContext";

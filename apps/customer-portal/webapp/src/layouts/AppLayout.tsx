@@ -25,7 +25,7 @@ import {
 } from "@wso2/oxygen-ui";
 import AppShellLayout from "@layouts/AppShellLayout";
 import { type JSX, type ReactNode, useRef, useEffect, useState } from "react";
-import { useAsgardeo } from "@hooks/useStableAsgardeo";
+import { useAsgardeo } from "@asgardeo/react";
 import { useLoader } from "@context/linear-loader/LoaderContext";
 import { useErrorPageContext } from "@context/error-page/ErrorPageContext";
 import { useLocation, Outlet } from "react-router";

@@ -15,7 +15,7 @@
 // under the License.
 
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { useAsgardeo } from "@hooks/useStableAsgardeo";
+import { useAsgardeo } from "@asgardeo/react";
 import { useAuthApiClient } from "@/hooks/useAuthApiClient";
 import { ApiError } from "@utils/ApiError";
 import { CORRELATION_ID_HEADER, newCorrelationId } from "@utils/correlationId";

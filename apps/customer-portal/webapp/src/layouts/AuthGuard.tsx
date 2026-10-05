@@ -15,7 +15,7 @@
 // under the License.
 
 import { type JSX, useEffect } from "react";
-import { useAsgardeo } from "@hooks/useStableAsgardeo";
+import { useAsgardeo } from "@asgardeo/react";
 import { ProtectedRoute } from "@asgardeo/react-router";
 import { useLocation, useNavigate } from "react-router";
 import AppLayout from "@layouts/AppLayout";

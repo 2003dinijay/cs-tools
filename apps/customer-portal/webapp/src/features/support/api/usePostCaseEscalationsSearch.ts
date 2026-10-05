@@ -15,7 +15,7 @@
 // under the License.
 
 import { useQuery } from "@tanstack/react-query";
-import { useAsgardeo } from "@hooks/useStableAsgardeo";
+import { useAsgardeo } from "@asgardeo/react";
 import { useAuthApiClient } from "@/hooks/useAuthApiClient";
 import { ApiQueryKeys } from "@constants/apiConstants";
 import type { EscalationSearchResponse } from "@features/support/types/cases";

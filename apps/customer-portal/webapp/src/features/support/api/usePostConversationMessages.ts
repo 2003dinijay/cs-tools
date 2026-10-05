@@ -14,7 +14,7 @@
 // under the License.
 
 import { useMutation, type UseMutationResult } from "@tanstack/react-query";
-import { useAsgardeo } from "@hooks/useStableAsgardeo";
+import { useAsgardeo } from "@asgardeo/react";
 import { useAuthApiClient } from "@/hooks/useAuthApiClient";
 import { useLogger } from "@hooks/useLogger";
 import type { ConversationRequest } from "@features/support/types/conversations";

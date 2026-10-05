@@ -19,7 +19,7 @@ import { useParams, useLocation } from "react-router";
 import { useCallback, useEffect, useRef, useMemo, type JSX } from "react";
 import { useModifierAwareNavigate } from "@hooks/useModifierAwareNavigate";
 import { useIsMidSizeTouchViewport } from "@hooks/useResponsiveLayout";
-import { useAsgardeo } from "@hooks/useStableAsgardeo";
+import { useAsgardeo } from "@asgardeo/react";
 import { useLogger } from "@hooks/useLogger";
 import { useLoader } from "@context/linear-loader/LoaderContext";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";

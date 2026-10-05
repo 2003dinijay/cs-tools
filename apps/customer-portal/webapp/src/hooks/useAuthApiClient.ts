@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { useAsgardeo } from "@hooks/useStableAsgardeo";
+import { useAsgardeo } from "@asgardeo/react";
 import { ASGARDEO_UNAUTHENTICATED_CODE } from "@constants/apiConstants";
 
 // Shared across every caller's hook instance. Each useAuthApiClient() call

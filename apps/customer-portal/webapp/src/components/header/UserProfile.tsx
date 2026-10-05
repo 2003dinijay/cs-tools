@@ -17,7 +17,7 @@
 import { UserMenu } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
 import { useState } from "react";
-import { useAsgardeo } from "@hooks/useStableAsgardeo";
+import { useAsgardeo } from "@asgardeo/react";
 import { LogOut, User } from "@wso2/oxygen-ui-icons-react";
 import useGetUserDetails from "@features/settings/api/useGetUserDetails";
 import { useLogger } from "@hooks/useLogger";

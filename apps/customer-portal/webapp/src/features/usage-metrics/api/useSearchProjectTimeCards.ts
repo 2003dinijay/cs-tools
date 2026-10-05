@@ -19,7 +19,7 @@ import {
   type UseInfiniteQueryResult,
   type InfiniteData,
 } from "@tanstack/react-query";
-import { useAsgardeo } from "@hooks/useStableAsgardeo";
+import { useAsgardeo } from "@asgardeo/react";
 import { useAuthApiClient } from "@/hooks/useAuthApiClient";
 import { useLogger } from "@hooks/useLogger";
 import { ApiQueryKeys } from "@constants/apiConstants";
