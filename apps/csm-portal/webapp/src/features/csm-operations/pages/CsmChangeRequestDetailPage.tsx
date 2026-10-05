@@ -51,6 +51,7 @@ import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { isBlankHtml, sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 import { BackendApiError } from "@api/backend/client";
 import ExportPdfButton from "@components/ExportPdfButton";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import { useEngineerDisplayName } from "@hooks/useEngineerDisplayName";
@@ -75,6 +76,7 @@ import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
 import {
   buildCloneChangeRequestNavState,
   changeRequestBlockingReason,
+  isChangeRequestCreator,
   changeRequestCommentGateReason,
   changeRequestTransitionRequiresReason,
   changeRequestImpactColor,
@@ -120,7 +122,7 @@ function backendErrorMessage(err: unknown, fallback: string): string {
  * (`{requestApproval: true}`), but that was backwards relative to the real
  * ServiceNow process (confirmed against the live instance): it's a direct,
  * ungated state change, exactly like every other forward transition in this
- * bar ("Schedule", "Mark implemented", …) — there is no approval gate on this
+ * bar ("Mark implemented", …) — there is no approval gate on this
  * move at all. `requestApproval` is a separate, unrelated bookkeeping flag on
  * the same PATCH endpoint that this action bar no longer has any reason to
  * set.
@@ -273,6 +275,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   // fetching twice.
   const { data: approvalsData } = useGetChangeRequestApprovals(id);
   const { showError } = useErrorBanner();
+  const { user } = useCurrentUser();
   const patchCr = usePatchChangeRequest();
   const [editOpen, setEditOpen] = useState(false);
   // Kept in the URL (`?tab=`), not local state, so a shared/bookmarked link
@@ -415,6 +418,9 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   }
 
   const cr = data;
+  // The creator can't approve/reject any stage (backend-enforced); they can
+  // still cancel, which the action bar offers via `legalNextStates` as usual.
+  const isCreator = isChangeRequestCreator(cr, user);
 
   const handleExportChangeRequestPdf = async (): Promise<void> => {
     try {
@@ -783,7 +789,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
             >
               Internal approval workflow
             </Typography>
-            <ChangeRequestApprovals id={cr.id} />
+            <ChangeRequestApprovals id={cr.id} isCreator={isCreator} />
           </Box>
         </Box>
       )}

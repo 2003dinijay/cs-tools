@@ -16,11 +16,16 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  approvalStageLabel,
   buildChangeRequestSearchFilters,
   buildCloneChangeRequestNavState,
+  CHANGE_REQUEST_CREATE_TYPE_OPTIONS,
   changeRequestBlockingReason,
+  changeRequestTransitionLabel,
   countActiveCRFilters,
   DEFAULT_CR_FILTERS,
+  isChangeRequestCreator,
+  isCreatableChangeRequestType,
 } from "@features/csm-operations/utils/changeRequests";
 import type { BeChangeRequestApproval, BeChangeRequestDetail } from "@api/backend/types";
 
@@ -181,29 +186,57 @@ describe("changeRequestBlockingReason", () => {
     ).toBeNull();
   });
 
-  it("names the stage when a stage is REQUESTED and has no named approver group", () => {
+  it("labels a legacy Authorize stage as CAB Approval", () => {
     expect(
       changeRequestBlockingReason([approval({ stage: "Authorize", status: "REQUESTED" })]),
-    ).toBe("Awaiting Authorize approval");
+    ).toBe("Awaiting CAB Approval");
   });
 
-  it("treats PENDING the same as REQUESTED", () => {
+  it("labels a legacy Assess stage as Peer Approval, and treats PENDING the same as REQUESTED", () => {
     expect(
       changeRequestBlockingReason([approval({ stage: "Assess", status: "PENDING" })]),
-    ).toBe("Awaiting Assess approval");
+    ).toBe("Awaiting Peer Approval");
   });
 
-  it("names the approver group instead of the stage when one is present", () => {
+  it.each([
+    ["Peer Approval", "Awaiting Peer Approval"],
+    ["CAB Approval", "Awaiting CAB Approval"],
+    ["CAB", "Awaiting CAB Approval"],
+    ["ECAB Approval", "Awaiting ECAB Approval"],
+    ["ECAB", "Awaiting ECAB Approval"],
+    ["Emergency CAB", "Awaiting ECAB Approval"],
+    ["emergency_cab_approval", "Awaiting ECAB Approval"],
+  ])("names stage %s as '%s' with no doubled 'approval'", (stage, expected) => {
+    const reason = changeRequestBlockingReason([approval({ stage, status: "REQUESTED" })]);
+    expect(reason).toBe(expected);
+    expect(reason?.match(/approval/gi)).toHaveLength(1);
+  });
+
+  it("names the post-implementation Review stage 'Awaiting Review'", () => {
+    expect(
+      changeRequestBlockingReason([approval({ stage: "Review", status: "REQUESTED" })]),
+    ).toBe("Awaiting Review");
+  });
+
+  it("prefers the stage label over the approver group name for a recognised stage", () => {
     expect(
       changeRequestBlockingReason([
         approval({ stage: "Authorize", status: "REQUESTED", approverName: "Devops Approval" }),
       ]),
-    ).toBe("Awaiting Devops Approval");
+    ).toBe("Awaiting CAB Approval");
+  });
+
+  it("names the approver group for a stage it has no label for", () => {
+    expect(
+      changeRequestBlockingReason([
+        approval({ stage: "Customer Approval", status: "REQUESTED", approverName: "Acme Contact" }),
+      ]),
+    ).toBe("Awaiting Acme Contact approval");
   });
 
   it("does not double the word 'approval' when the approver name already carries it", () => {
     const reason = changeRequestBlockingReason([
-      approval({ status: "REQUESTED", approverName: "Security Approval Board" }),
+      approval({ stage: "Customer Approval", status: "REQUESTED", approverName: "Security Approval Board" }),
     ]);
     expect(reason).toBe("Awaiting Security Approval Board");
     expect(reason?.match(/approval/gi)).toHaveLength(1);
@@ -216,13 +249,84 @@ describe("changeRequestBlockingReason", () => {
         approval({ stage: "Authorize", status: "REQUESTED" }),
         approval({ stage: "Customer Approval", status: "PENDING" }),
       ]),
-    ).toBe("Awaiting Authorize approval");
+    ).toBe("Awaiting CAB Approval");
   });
 
   it("is case-insensitive on the status value", () => {
     expect(
       changeRequestBlockingReason([approval({ stage: "Assess", status: "requested" })]),
-    ).toBe("Awaiting Assess approval");
+    ).toBe("Awaiting Peer Approval");
+  });
+});
+
+describe("approvalStageLabel", () => {
+  it.each([
+    ["Assess", "Peer Approval"],
+    ["Peer Approval", "Peer Approval"],
+    ["Authorize", "CAB Approval"],
+    ["CAB Approval", "CAB Approval"],
+    ["Emergency CAB", "ECAB Approval"],
+    ["ECAB Approval", "ECAB Approval"],
+    ["Review", "Review"],
+    ["Customer Approval", "Customer Approval"],
+    ["Something New", "Something New"],
+  ])("maps %s to %s", (stage, expected) => {
+    expect(approvalStageLabel(stage)).toBe(expected);
+  });
+
+  it("falls back to a generic label for a blank stage", () => {
+    expect(approvalStageLabel("")).toBe("Approval");
+    expect(approvalStageLabel(undefined)).toBe("Approval");
+  });
+});
+
+describe("changeRequestTransitionLabel", () => {
+  it("labels the New -> Assess transition 'Request Approval', never 'Move to Assess'", () => {
+    expect(changeRequestTransitionLabel("assess")).toBe("Request Approval");
+    expect(changeRequestTransitionLabel("assess")).not.toMatch(/move to assess/i);
+  });
+
+  it("has no curated 'Schedule' action label for the scheduled state", () => {
+    expect(changeRequestTransitionLabel("scheduled")).not.toMatch(/^schedule$/i);
+  });
+});
+
+describe("CHANGE_REQUEST_CREATE_TYPE_OPTIONS", () => {
+  it("offers exactly Normal, Standard, Emergency, in that order, with the backend enum values", () => {
+    expect(CHANGE_REQUEST_CREATE_TYPE_OPTIONS.map((o) => [o.value, o.label])).toEqual([
+      ["normal", "Normal"],
+      ["standard", "Standard"],
+      ["emergency", "Emergency"],
+    ]);
+    CHANGE_REQUEST_CREATE_TYPE_OPTIONS.forEach((o) => expect(o.description.length).toBeGreaterThan(10));
+  });
+
+  it("only treats those three values as creatable", () => {
+    expect(isCreatableChangeRequestType("normal")).toBe(true);
+    expect(isCreatableChangeRequestType("standard")).toBe(true);
+    expect(isCreatableChangeRequestType("emergency")).toBe(true);
+    expect(isCreatableChangeRequestType("azure")).toBe(false);
+    expect(isCreatableChangeRequestType("model")).toBe(false);
+    expect(isCreatableChangeRequestType("")).toBe(false);
+    expect(isCreatableChangeRequestType(undefined)).toBe(false);
+  });
+});
+
+describe("isChangeRequestCreator", () => {
+  it("matches the requester id against the user id", () => {
+    expect(isChangeRequestCreator({ requestedBy: { id: "u-1" } }, { id: "u-1" })).toBe(true);
+  });
+
+  it("matches createdBy against the user id or email, case-insensitively", () => {
+    expect(isChangeRequestCreator({ createdBy: "U-1" }, { id: "u-1" })).toBe(true);
+    expect(isChangeRequestCreator({ createdBy: "Jane@Example.com" }, { email: "jane@example.com" })).toBe(true);
+  });
+
+  it("is false for someone else, an unloaded user, or a CR with no creator data", () => {
+    expect(isChangeRequestCreator({ requestedBy: { id: "u-1" }, createdBy: "x" }, { id: "u-2", email: "b@x.com" })).toBe(false);
+    expect(isChangeRequestCreator({ requestedBy: { id: "u-1" } }, undefined)).toBe(false);
+    expect(isChangeRequestCreator({}, { id: "u-1" })).toBe(false);
+    expect(isChangeRequestCreator({ requestedBy: null, createdBy: "" }, { id: "" })).toBe(false);
   });
 });
 

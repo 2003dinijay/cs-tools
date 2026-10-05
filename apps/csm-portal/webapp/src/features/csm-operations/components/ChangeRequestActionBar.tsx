@@ -18,7 +18,6 @@ import { Box, Button, Menu, MenuItem, Tooltip, Typography } from "@wso2/oxygen-u
 import {
   ArrowRight,
   Ban,
-  CalendarClock,
   CheckCircle,
   ChevronDown,
   Play,
@@ -45,7 +44,6 @@ type TargetConfig = {
 
 const TARGET_CONFIG: Record<string, TargetConfig> = {
   assess: { color: "primary", icon: <Send size={16} /> },
-  scheduled: { color: "primary", icon: <CalendarClock size={16} /> },
   implement: { color: "primary", icon: <Play size={16} /> },
   review: { color: "primary", icon: <CheckCircle size={16} /> },
   customer_review: { color: "primary", icon: <UserCheck size={16} /> },
@@ -78,7 +76,6 @@ const DEFAULT_TARGET_CONFIG: TargetConfig = {
  */
 const FORWARD_ORDER: readonly string[] = [
   "assess",
-  "scheduled",
   "implement",
   "review",
   "customer_review",
@@ -111,10 +108,22 @@ const MENU_ORDER: readonly string[] = [...FORWARD_ORDER, "rollback", "canceled"]
  * Authorize with no approval behind it — the same audit hole as above, by a
  * different route.
  *
+ * `scheduled` is the same shape as `authorize`: a CR is moved to Scheduled
+ * automatically the moment its CAB (or, for Emergency, ECAB) approval is
+ * granted -- and, for a Standard change, straight from Request Approval. There
+ * is no manual "Schedule" action. The backend no longer lists it in
+ * `legalNextStates`; this filter is the defensive second line so it can never
+ * reappear as a button or menu entry.
+ *
  * The exclusion is deliberately unconditional so a future backend change that
  * starts returning any of these cannot silently reopen it.
  */
-const NEVER_OFFERED_TARGETS: readonly string[] = ["rollback", "customer_approval", "authorize"];
+const NEVER_OFFERED_TARGETS: readonly string[] = [
+  "rollback",
+  "customer_approval",
+  "authorize",
+  "scheduled",
+];
 
 /** Sort key for a target: curated order first, uncurated states after. */
 function menuRank(target: string): number {
@@ -132,7 +141,7 @@ function menuRank(target: string): number {
  * target: the same situation (legal transition, unmet prerequisite) can
  * apply to any target.
  *
- * `assess` requires `assignedTeam` — by explicit product decision, confirmed
+ * `assess` ("Request Approval") requires `assignedTeam` — by explicit product decision, confirmed
  * compulsory: the assigned team's own members are what populate the Assess
  * stage's approvers the moment the transition lands (see
  * `PatchChangeRequest`'s own doc comment in `change_request_repo.go`), so
@@ -150,7 +159,7 @@ const TARGET_BLOCKED_REASON: Record<
   (cr: BeChangeRequestDetail) => string | null
 > = {
   assess: (cr) =>
-    cr.assignedTeam ? null : "Set an assigned team before moving to Assess",
+    cr.assignedTeam ? null : "Set an assigned team before requesting approval",
 };
 
 interface ChangeRequestActionBarProps {
