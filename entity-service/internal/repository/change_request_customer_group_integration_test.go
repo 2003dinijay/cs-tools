@@ -587,9 +587,11 @@ func TestChangeRequestFlowIntegration_CustomerGroupRefusesManualTransition(t *te
 
 // scripts/csm-compose/seed-entity-service.sql ships two fixtures for the local
 // stack: CHG-FIXED-007 (Customer Approval) and CHG-FIXED-008 (Customer Review),
-// each on project 401, whose registered contacts (the Customer Group) are
-// jane.doe and john.smith, with its stage provisioned for them. Read-only here (deciding would consume them); skipped when the
-// database was not built from the seed.
+// each on project 401, whose registered contacts (the Customer Group) are the
+// two customer personas dave.mendis and erin.jayawardena (external users, not
+// jane.doe / john.smith), with its stage provisioned for them. Read-only here
+// (deciding would consume them); skipped when the database was not built from
+// the seed.
 func TestChangeRequestFlowIntegration_SeedCustomerGroupFixtures(t *testing.T) {
 	f := newCRFlow(t)
 	for _, tc := range []struct {
@@ -606,8 +608,8 @@ func TestChangeRequestFlowIntegration_SeedCustomerGroupFixtures(t *testing.T) {
 		if cr.State == nil || *cr.State != tc.state {
 			t.Fatalf("%s state = %v, want %s", tc.number, cr.State, tc.state)
 		}
-		if got := contactNames(cr.CustomerContacts); strings.Join(got, ",") != "Jane Doe,John Smith" {
-			t.Fatalf("%s customerContacts = %v, want the project's Jane Doe,John Smith", tc.number, got)
+		if got := contactNames(cr.CustomerContacts); strings.Join(got, ",") != "Dave Mendis,Erin Jayawardena" {
+			t.Fatalf("%s customerContacts = %v, want the project's Dave Mendis,Erin Jayawardena", tc.number, got)
 		}
 		// A live customer request leaves only Cancel -- and, at Customer
 		// Approval, Re-schedule ("authorize").
@@ -616,7 +618,7 @@ func TestChangeRequestFlowIntegration_SeedCustomerGroupFixtures(t *testing.T) {
 			wantLegal = []string{"authorize", "canceled"}
 		}
 		assertStates(t, tc.number+" legalNextStates", cr.LegalNextStates, wantLegal...)
-		ctx := repository.WithCallerIdentity(context.Background(), repository.SearchScope{Unrestricted: true, ViewerEmail: "jane.doe@example.com"})
+		ctx := repository.WithCallerIdentity(context.Background(), repository.SearchScope{Unrestricted: true, ViewerEmail: "dave.mendis@example.com"})
 		view, err := f.repo.GetChangeRequestApprovals(ctx, tc.id)
 		if err != nil {
 			t.Fatalf("%s approvals: %v", tc.number, err)
@@ -625,19 +627,19 @@ func TestChangeRequestFlowIntegration_SeedCustomerGroupFixtures(t *testing.T) {
 			t.Fatalf("%s approvals = %+v", tc.number, view.Approvals)
 		}
 		if len(view.Approvals[0].Approvers) != 2 {
-			t.Fatalf("%s approvers = %+v, want jane.doe and john.smith", tc.number, view.Approvals[0].Approvers)
+			t.Fatalf("%s approvers = %+v, want dave.mendis and erin.jayawardena", tc.number, view.Approvals[0].Approvers)
 		}
 		can := 0
 		for _, ap := range view.Approvals[0].Approvers {
 			if ap.CanDecide {
 				can++
-				if ap.Name != "Jane Doe" {
-					t.Fatalf("%s canDecide on %q, want only the viewer (Jane Doe)", tc.number, ap.Name)
+				if ap.Name != "Dave Mendis" {
+					t.Fatalf("%s canDecide on %q, want only the viewer (Dave Mendis)", tc.number, ap.Name)
 				}
 			}
 		}
 		if can != 1 {
-			t.Fatalf("%s canDecide rows for jane.doe = %d, want 1", tc.number, can)
+			t.Fatalf("%s canDecide rows for dave.mendis = %d, want 1", tc.number, can)
 		}
 	}
 }

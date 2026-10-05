@@ -17,6 +17,7 @@
 package repository
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
@@ -1032,6 +1036,162 @@ func TestChangeRequestLinkHelpers(t *testing.T) {
 	} {
 		if !changeRequestCategoryPGLabels[strings.ToUpper(string(c))] {
 			t.Errorf("category %s has no Postgres enum label", c)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Internal-only approver pools (no database): the eligibility test and the
+// decision-time guard, against a fake crQuerier.
+// ---------------------------------------------------------------------------
+
+// fakeApproverRows is a pgx.Rows over a list of single-column text values.
+type fakeApproverRows struct {
+	vals []string
+	i    int
+}
+
+func (r *fakeApproverRows) Close()                                       {}
+func (r *fakeApproverRows) Err() error                                   { return nil }
+func (r *fakeApproverRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (r *fakeApproverRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (r *fakeApproverRows) Values() ([]any, error)                       { return nil, nil }
+func (r *fakeApproverRows) RawValues() [][]byte                          { return nil }
+func (r *fakeApproverRows) Conn() *pgx.Conn                              { return nil }
+func (r *fakeApproverRows) TypeMap() *pgtype.Map                         { return nil }
+func (r *fakeApproverRows) Next() bool {
+	r.i++
+	return r.i <= len(r.vals)
+}
+func (r *fakeApproverRows) Scan(dest ...any) error {
+	*(dest[0].(*string)) = r.vals[r.i-1]
+	return nil
+}
+
+// fakeApproverQuerier answers the "user" eligibility query from internal (the
+// ids whose user_type is INTERNAL and who are active) and counts every query so
+// a test can prove a rule did not look at the database at all.
+type fakeApproverQuerier struct {
+	internal map[string]bool
+	queries  int
+	err      error
+}
+
+func (f *fakeApproverQuerier) Query(_ context.Context, sql string, args ...any) (pgx.Rows, error) {
+	f.queries++
+	if f.err != nil {
+		return nil, f.err
+	}
+	if !strings.Contains(sql, `FROM "user" u`) {
+		panic("unexpected query: " + sql)
+	}
+	var out []string
+	for _, id := range args[0].([]string) {
+		if f.internal[id] {
+			out = append(out, id)
+		}
+	}
+	return &fakeApproverRows{vals: out}, nil
+}
+
+func (f *fakeApproverQuerier) QueryRow(context.Context, string, ...any) pgx.Row {
+	panic("unexpected QueryRow")
+}
+
+func TestStageKindNeedsInternalApprover(t *testing.T) {
+	for kind, want := range map[approvalStageKind]bool{
+		stageKindPeer: true, stageKindCAB: true, stageKindECAB: true, stageKindReview: true,
+		// The customer's stages are decided by the project's (external) contacts;
+		// an unclassified stage is not ours to judge.
+		stageKindCustomerApproval: false, stageKindCustomerReview: false, stageKindOther: false,
+	} {
+		if got := stageKindNeedsInternalApprover(kind); got != want {
+			t.Errorf("stageKindNeedsInternalApprover(%v) = %v, want %v", kind, got, want)
+		}
+	}
+}
+
+func TestInternalApproverIDsAndOnlyInternalApprovers(t *testing.T) {
+	const a, b, c = "AAAAAAAA-0000-0000-0000-000000000001", "bbbbbbbb-0000-0000-0000-000000000002", "cccccccc-0000-0000-0000-000000000003"
+	q := &fakeApproverQuerier{internal: map[string]bool{a: true, c: true}}
+
+	got, err := internalApproverIDs(context.Background(), q, []string{a, b, c})
+	if err != nil {
+		t.Fatalf("internalApproverIDs: %v", err)
+	}
+	if len(got) != 2 || !got[strings.ToLower(a)] || !got[c] || got[b] {
+		t.Errorf("internalApproverIDs = %v, want a and c (lower-cased) only", got)
+	}
+	// Order is preserved and the external member is dropped.
+	kept, err := onlyInternalApprovers(context.Background(), q, []string{c, b, a})
+	if err != nil {
+		t.Fatalf("onlyInternalApprovers: %v", err)
+	}
+	if strings.Join(kept, ",") != c+","+a {
+		t.Errorf("onlyInternalApprovers = %v, want [c a]", kept)
+	}
+	// No members: no query at all.
+	before := q.queries
+	if got, _ := internalApproverIDs(context.Background(), q, nil); len(got) != 0 || q.queries != before {
+		t.Errorf("internalApproverIDs(nil) = %v after %d queries, want empty and no query", got, q.queries-before)
+	}
+	// A database error is returned, not swallowed into "nobody is internal".
+	if _, err := internalApproverIDs(context.Background(), &fakeApproverQuerier{err: errors.New("boom")}, []string{a}); err == nil {
+		t.Error("internalApproverIDs swallowed a query error")
+	}
+}
+
+func TestApproverDecisionBlock_InternalOnly(t *testing.T) {
+	const internal, external, creator = "11111111-0000-0000-0000-000000000001", "22222222-0000-0000-0000-000000000002", "33333333-0000-0000-0000-000000000003"
+	q := &fakeApproverQuerier{internal: map[string]bool{internal: true, creator: true}}
+	ctx := context.Background()
+	creators := map[string]bool{creator: true}
+
+	// An internal user decides every internal stage.
+	for _, kind := range []approvalStageKind{stageKindPeer, stageKindCAB, stageKindECAB, stageKindReview} {
+		if err := approverDecisionBlock(ctx, q, internal, creators, kind); err != nil {
+			t.Errorf("internal user on %s: %v, want nil", stageKindName(kind), err)
+		}
+	}
+	// An external user is refused on every one of them, with a readable 403.
+	for _, kind := range []approvalStageKind{stageKindPeer, stageKindCAB, stageKindECAB, stageKindReview} {
+		err := approverDecisionBlock(ctx, q, external, creators, kind)
+		var fe *apierror.ForbiddenError
+		if !errors.As(err, &fe) {
+			t.Fatalf("external user on %s: err = %v (%T), want *apierror.ForbiddenError", stageKindName(kind), err, err)
+		}
+		if !strings.Contains(fe.Msg, "internal") || !strings.Contains(fe.Msg, stageKindName(kind)) {
+			t.Errorf("external user on %s: message %q should name the internal-only rule and the stage", stageKindName(kind), fe.Msg)
+		}
+	}
+	// The customer stages (and an unclassified one) are not internal-only, and
+	// the rule does not even look the user up there.
+	before := q.queries
+	for _, kind := range []approvalStageKind{stageKindCustomerApproval, stageKindCustomerReview, stageKindOther} {
+		if err := approverDecisionBlock(ctx, q, external, creators, kind); err != nil {
+			t.Errorf("external user on a non-internal stage kind %v: %v, want nil", kind, err)
+		}
+	}
+	if q.queries != before {
+		t.Errorf("customer stages ran %d user queries, want none", q.queries-before)
+	}
+	// The creator rule still comes first, whoever the creator is.
+	err := approverDecisionBlock(ctx, q, creator, creators, stageKindPeer)
+	var fe *apierror.ForbiddenError
+	if !errors.As(err, &fe) || !strings.Contains(fe.Msg, "creator") {
+		t.Errorf("creator on the peer stage: err = %v, want the creator refusal", err)
+	}
+	// A failing lookup fails the decision rather than letting it through.
+	if err := approverDecisionBlock(ctx, &fakeApproverQuerier{err: errors.New("boom")}, internal, creators, stageKindCAB); err == nil {
+		t.Error("a failed user lookup let the decision through")
+	}
+}
+
+func TestNoInternalMembersMessage(t *testing.T) {
+	msg := noInternalMembersMessage(`the "CAB Approval" group`, "CAB Approval")
+	for _, want := range []string{`"CAB Approval" group`, "no active internal", "external/customer users", "CAB Approval approvers"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q should contain %q", msg, want)
 		}
 	}
 }

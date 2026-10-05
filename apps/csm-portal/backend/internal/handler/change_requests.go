@@ -336,9 +336,10 @@ func (h *ChangeRequestHandler) GetChangeRequestLinkOptions(w http.ResponseWriter
 
 // mapApprovalDecisionError is mapUpstreamErrorGeneric, except a 403 that
 // carries the entity service's own reason is shown to the caller. A refusal to
-// decide ("the creator of a change request cannot approve it", "members of an
-// SRE team cannot give peer approval") is only useful if the approver can read
-// why; every other failure keeps the generic mapping.
+// decide ("the creator of a change request cannot approve it", "only active
+// internal (WSO2) users can approve or reject the Peer Approval stage ...") is
+// only useful if the approver can read why; every other failure keeps the
+// generic mapping.
 func mapApprovalDecisionError(w http.ResponseWriter, err error, fallbackMsg string) {
 	var apiErr *apierror.Error
 	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {

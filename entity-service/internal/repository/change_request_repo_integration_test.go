@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -183,6 +184,7 @@ func seedApprovalUserForDecisionTest(t *testing.T, pool *pgxpool.Pool, userIDs .
 			id, email); err != nil {
 			t.Fatalf("seed approver user %s: %v", id, err)
 		}
+		setTestUserType(t, pool, ctx, id, userTypeInternal)
 	}
 }
 
@@ -996,6 +998,7 @@ func seedTeamMembersForAssessGateTest(t *testing.T, pool *pgxpool.Pool, userIDs 
 			id, email); err != nil {
 			t.Fatalf("seed team member user %s: %v", id, err)
 		}
+		setTestUserType(t, pool, ctx, id, userTypeInternal)
 
 		memberCleanup := func() {
 			_, _ = pool.Exec(ctx, `DELETE FROM team_member WHERE user_id = $1`, id)
@@ -1266,6 +1269,10 @@ func TestChangeRequestIntegration_PatchAssessRejectsEmptyGroup(t *testing.T) {
 	repo := repository.NewChangeRequestRepository(scoped)
 	seedChangeRequestForAssessGateTest(t, scoped)
 	seedAssessGateGroup(t, pool)
+	// The local seed populates the Devops Approval peer fallback group, which
+	// would rescue an empty assigned team; this test is about nobody being
+	// left, so the fallback group is emptied for its duration.
+	isolateGroupsNamed(t, scoped, domain.PeerApprovalFallbackGroupName)
 	// Deliberately no seedTeamMembersForAssessGateTest call -- the group
 	// exists (so assignedTeamId itself is valid) but has zero members.
 	t.Cleanup(func() {
@@ -1477,6 +1484,8 @@ func TestChangeRequestIntegration_PatchAssessRejectsWhenOnlyMemberIsRequester(t 
 	seedAssessGateGroup(t, pool)
 	seedTeamMembersForAssessGateTest(t, pool, changeRequestAssessGateMemberUserID)
 	setAssessGateRequestedBy(t, scoped, changeRequestAssessGateMemberUserID)
+	// As above: no seeded Devops Approval fallback for the duration.
+	isolateGroupsNamed(t, scoped, domain.PeerApprovalFallbackGroupName)
 	t.Cleanup(func() {
 		_, _ = scoped.Exec(sys, `DELETE FROM approval_stage WHERE work_item_id = $1`, changeRequestAssessGateTestID)
 	})
@@ -1623,6 +1632,7 @@ func seedTeamMembersForReviewGateTest(t *testing.T, pool *pgxpool.Pool, userIDs 
 			id, email); err != nil {
 			t.Fatalf("seed team member user %s: %v", id, err)
 		}
+		setTestUserType(t, pool, ctx, id, userTypeInternal)
 
 		memberCleanup := func() {
 			_, _ = pool.Exec(ctx, `DELETE FROM team_member WHERE user_id = $1`, id)
@@ -3059,7 +3069,7 @@ func TestChangeRequestIntegration_PatchCustomerFlagsLockIndependentPerField(t *t
 // Type-dependent approval flow (change_request_approval_flow.go).
 //
 // Lifecycle tests for Normal (peer then CAB), Emergency (ECAB only) and
-// Standard (no approval), the creator/SRE approver rules, the CAB/ECAB groups
+// Standard (no approval), the creator/INTERNAL-only approver rules, the CAB/ECAB groups
 // the migration creates, the automatic move to Scheduled, and the mandatory
 // type on create -- all against the real Postgres this file's neighbours use:
 //
@@ -3086,13 +3096,33 @@ const (
 	crFlowSREID      = "3aaaaaaa-0000-0000-0000-000000000004"
 	crFlowOutsiderID = "3aaaaaaa-0000-0000-0000-000000000005"
 
+	// Users the INTERNAL-only pool rule must keep out of every internal stage:
+	// two customers (EXTERNAL), an internal user who has been deactivated, and
+	// a user with no role at all (user_type NOT_AVAILABLE). crFlowSREPeerID is a
+	// second, ordinary internal member of the SRE team.
+	crFlowExternalID  = "3aaaaaaa-0000-0000-0000-000000000006"
+	crFlowExternalID2 = "3aaaaaaa-0000-0000-0000-000000000007"
+	crFlowSREPeerID   = "3aaaaaaa-0000-0000-0000-000000000008"
+	crFlowInactiveID  = "3aaaaaaa-0000-0000-0000-000000000009"
+	crFlowNoTypeID    = "3aaaaaaa-0000-0000-0000-00000000000a"
+
+	// External members of the CAB / ECAB groups and the Devops Approval
+	// fallback group, and its internal members.
+	crCABExternalID    = "3aaaaaaa-0000-0000-0000-0000000000c3"
+	crECABExternalID   = "3aaaaaaa-0000-0000-0000-0000000000e2"
+	crDevopsMemberID1  = "3aaaaaaa-0000-0000-0000-0000000000d1"
+	crDevopsMemberID2  = "3aaaaaaa-0000-0000-0000-0000000000d2"
+	crDevopsExternalID = "3aaaaaaa-0000-0000-0000-0000000000d3"
+
 	// crFlowGroupID is the change's assigned group: creator, both peers and
-	// one SRE-team member belong to it.
+	// the outsider belong to it.
 	crFlowGroupID = "3aaaaaaa-0000-0000-0000-0000000000a1"
-	// crFlowSREGroupID is an SRE group (Apollo-like): only the SRE member.
-	crFlowSREGroupID = "3aaaaaaa-0000-0000-0000-0000000000a2"
-	// crFlowSRETeamID is the "team" row of type sre-abt the SRE member belongs to.
+	// crFlowSRETeamID is an SRE team (Apollo-like): the "team" row of type
+	// sre-abt, mirrored by a "group" row with the SAME id (as every synced team
+	// is), which is what a change assigned to that team points at.
 	crFlowSRETeamID = "3aaaaaaa-0000-0000-0000-0000000000a3"
+	// crFlowSREGroupID is that mirror group.
+	crFlowSREGroupID = crFlowSRETeamID
 	// crFlowDevopsGroupID is the peer approval fallback group ("Devops Approval").
 	crFlowDevopsGroupID = "3aaaaaaa-0000-0000-0000-0000000000a4"
 )
@@ -3101,10 +3131,47 @@ func crFlowEmail(userID string) string {
 	return fmt.Sprintf("crflow-%s@example.com", userID[len(userID)-12:])
 }
 
-// seedApprovalGroupMembers makes each userID a (freshly seeded) user and a
-// member of the "group" groupID (team_member.group_id). The group row must
-// exist. Everything is removed again on cleanup.
+// "user".user_type values the tests seed. recompute_user_type() derives them
+// from a user's roles (internal/admin -> INTERNAL, customer/external/partner...
+// -> EXTERNAL, nothing -> NOT_AVAILABLE); the tests set the column directly
+// instead of creating role rows, so they do not depend on (or collide with)
+// the seed's fixed-id role rows. Approver pools are INTERNAL-only, so a test
+// user is INTERNAL unless the test says otherwise.
+const (
+	userTypeInternal = "INTERNAL"
+	userTypeExternal = "EXTERNAL"
+)
+
+// testUserExecer is what both *pgxpool.Pool and *repository.Scoped offer.
+type testUserExecer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// setTestUserType sets a seeded test user's user_type.
+func setTestUserType(t *testing.T, db testUserExecer, ctx context.Context, userID, userType string) {
+	t.Helper()
+	if _, err := db.Exec(ctx, `UPDATE "user" SET user_type = $2::user_type_enum WHERE id = $1`, userID, userType); err != nil {
+		t.Fatalf("set user_type %s on %s: %v", userType, userID, err)
+	}
+}
+
+// seedApprovalGroupMembers makes each userID a (freshly seeded) INTERNAL user
+// and a member of the "group" groupID (team_member.group_id). The group row
+// must exist. Everything is removed again on cleanup.
 func seedApprovalGroupMembers(t *testing.T, pool *repository.Scoped, groupID string, userIDs ...string) {
+	t.Helper()
+	seedGroupMembersOfType(t, pool, groupID, userTypeInternal, userIDs...)
+}
+
+// seedExternalGroupMembers is seedApprovalGroupMembers for EXTERNAL (customer)
+// users: members of the group who must never be provisioned as approvers of an
+// internal stage.
+func seedExternalGroupMembers(t *testing.T, pool *repository.Scoped, groupID string, userIDs ...string) {
+	t.Helper()
+	seedGroupMembersOfType(t, pool, groupID, userTypeExternal, userIDs...)
+}
+
+func seedGroupMembersOfType(t *testing.T, pool *repository.Scoped, groupID, userType string, userIDs ...string) {
 	t.Helper()
 	ctx := repository.WithSystemIdentity(context.Background())
 	isolateApprovalGroup(t, pool, groupID)
@@ -3119,6 +3186,7 @@ func seedApprovalGroupMembers(t *testing.T, pool *repository.Scoped, groupID str
 			id, crFlowEmail(id)); err != nil {
 			t.Fatalf("seed user %s: %v", id, err)
 		}
+		setTestUserType(t, pool, ctx, id, userType)
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id)
 			 VALUES (gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', $1::uuid, $2, $3::uuid)`,
@@ -3184,6 +3252,19 @@ type crFlow struct {
 
 func newCRFlow(t *testing.T) *crFlow {
 	t.Helper()
+	f := newCRFlowNoIsolation(t)
+	// Tests that seed no CAB/ECAB members expect those groups empty, and so for
+	// the Devops Approval fallback group (the local seed populates all three).
+	isolateApprovalGroup(t, f.scoped, crCABGroupID)
+	isolateApprovalGroup(t, f.scoped, crECABGroupID)
+	isolateGroupsNamed(t, f.scoped, domain.PeerApprovalFallbackGroupName)
+	return f
+}
+
+// newCRFlowNoIsolation is newCRFlow without emptying the CAB / ECAB / Devops
+// Approval groups: for tests about what a seeded database holds in them.
+func newCRFlowNoIsolation(t *testing.T) *crFlow {
+	t.Helper()
 	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
 	if dsn == "" {
 		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
@@ -3205,15 +3286,67 @@ func newCRFlow(t *testing.T) *crFlow {
 	}
 	clean()
 	t.Cleanup(clean)
-	// Tests that seed no CAB/ECAB members expect those groups empty.
-	isolateApprovalGroup(t, scoped, crCABGroupID)
-	isolateApprovalGroup(t, scoped, crECABGroupID)
 	return f
 }
 
-// seedAssignedGroup creates the assigned group (creator, peers A/B, and the
-// SRE member who is in an sre-abt team) plus the SRE team and SRE group.
+// isolateGroupsNamed is isolateApprovalGroup for every "group" row of the
+// given name (the Devops Approval fallback group may exist more than once, and
+// namedGroup counts the members of all of them): their members are removed for
+// the duration of the calling test and put back on cleanup.
+func isolateGroupsNamed(t *testing.T, pool *repository.Scoped, name string) {
+	t.Helper()
+	ctx := repository.WithSystemIdentity(context.Background())
+	rows, err := pool.Query(ctx,
+		`SELECT id::text, team_id::text, user_id::text, group_id::text, role FROM team_member
+		 WHERE group_id IN (SELECT id FROM "group" WHERE name = $1)`, name)
+	if err != nil {
+		t.Fatalf("snapshot members of groups named %q: %v", name, err)
+	}
+	type member struct{ id, team, user, group, role string }
+	var saved []member
+	for rows.Next() {
+		var m member
+		if err := rows.Scan(&m.id, &m.team, &m.user, &m.group, &m.role); err != nil {
+			rows.Close()
+			t.Fatalf("scan member: %v", err)
+		}
+		saved = append(saved, m)
+	}
+	rows.Close()
+	if len(saved) == 0 {
+		return
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM team_member WHERE group_id IN (SELECT id FROM "group" WHERE name = $1)`, name); err != nil {
+		t.Fatalf("clear members of groups named %q: %v", name, err)
+	}
+	t.Cleanup(func() {
+		for _, m := range saved {
+			_, _ = pool.Exec(ctx,
+				`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id, role)
+				 VALUES ($1::uuid, now(), now(), 'cr-flow-test', 'cr-flow-test', $2::uuid, $3::uuid, $4::uuid, $5) ON CONFLICT (id) DO NOTHING`,
+				m.id, m.team, m.user, m.group, m.role)
+		}
+	})
+}
+
+// seedAssignedGroup creates the assigned group: the creator, peers A/B and the
+// outsider, all INTERNAL users.
 func (f *crFlow) seedAssignedGroup() {
+	f.t.Helper()
+	if _, err := f.scoped.Exec(f.sys,
+		`INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name) VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', 'CR Flow Assigned Group')`,
+		crFlowGroupID); err != nil {
+		f.t.Fatalf("seed assigned group: %v", err)
+	}
+	seedApprovalGroupMembers(f.t, f.scoped, crFlowGroupID, crFlowCreatorID, crFlowPeerAID, crFlowPeerBID)
+	seedApprovalGroupMembers(f.t, f.scoped, crFlowGroupID, crFlowOutsiderID)
+}
+
+// seedSREGroup creates an SRE team the way a synced one looks (Apollo): a
+// "team" row of type sre-abt and a "group" row with the same id, whose members
+// -- the creator, two ordinary internal engineers and a customer -- have
+// team_id = group_id = that id. A change assigned to it points at the group.
+func (f *crFlow) seedSREGroup() {
 	f.t.Helper()
 	mustExec := func(sql string, args ...any) {
 		f.t.Helper()
@@ -3221,18 +3354,14 @@ func (f *crFlow) seedAssignedGroup() {
 			f.t.Fatalf("seed (%.60s): %v", sql, err)
 		}
 	}
-	for id, name := range map[string]string{crFlowGroupID: "CR Flow Assigned Group", crFlowSREGroupID: "CR Flow SRE Group"} {
-		mustExec(`INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name) VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', $2)`, id, name)
-	}
 	mustExec(`INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, type, key)
 	          VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', 'CR Flow SRE Team', 'sre-abt', 'crflow-sre')`, crFlowSRETeamID)
-
-	seedApprovalGroupMembers(f.t, f.scoped, crFlowGroupID, crFlowCreatorID, crFlowPeerAID, crFlowPeerBID)
-	seedApprovalGroupMembers(f.t, f.scoped, crFlowGroupID, crFlowSREID)
-	// The SRE member belongs to an SRE team (Apollo-like) as well as the
-	// assigned group.
-	f.makeSRE(crFlowSREID, crFlowGroupID)
-	seedApprovalGroupMembers(f.t, f.scoped, crFlowGroupID, crFlowOutsiderID)
+	mustExec(`INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name) VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', 'CR Flow SRE Team')`, crFlowSREGroupID)
+	seedApprovalGroupMembers(f.t, f.scoped, crFlowSREGroupID, crFlowCreatorID, crFlowSREID, crFlowSREPeerID)
+	seedExternalGroupMembers(f.t, f.scoped, crFlowSREGroupID, crFlowExternalID)
+	for _, uid := range []string{crFlowCreatorID, crFlowSREID, crFlowSREPeerID, crFlowExternalID} {
+		f.makeSRE(uid, crFlowSREGroupID)
+	}
 }
 
 // makeSRE puts userID into the sre-abt team (team_id = the SRE team) while
@@ -3381,8 +3510,7 @@ func TestChangeRequestFlowIntegration_NormalFullLifecycle(t *testing.T) {
 	assertStates(t, "legalNextStates(New)", f.legal(id), "assess", "canceled")
 
 	// Request Approval -> Assess with the PEER stage: the two peers are
-	// requested, the creator is cancelled (never approves their own change),
-	// the SRE-team member is not provisioned at all.
+	// requested, the creator is cancelled (never approves their own change).
 	f.requestApproval(id)
 	if got := f.state(id); got != "ASSESS" {
 		t.Fatalf("state after Request Approval = %q, want ASSESS", got)
@@ -3638,89 +3766,475 @@ func TestChangeRequestFlowIntegration_CreatorRecognisedByCreatedByEmail(t *testi
 	}
 }
 
-// SRE team members (Apollo/Artemis/any SRE group) are never peer approvers.
-func TestChangeRequestFlowIntegration_SREMemberCannotBePeerApprover(t *testing.T) {
+// helpers shared by the INTERNAL-only pool tests ---------------------------
+
+// seedDevopsGroup creates the Devops Approval peer fallback group with two
+// internal members and one customer.
+func (f *crFlow) seedDevopsGroup() {
+	f.t.Helper()
+	if _, err := f.scoped.Exec(f.sys,
+		`INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name) VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', $2)`,
+		crFlowDevopsGroupID, domain.PeerApprovalFallbackGroupName); err != nil {
+		f.t.Fatalf("seed devops group: %v", err)
+	}
+	seedApprovalGroupMembers(f.t, f.scoped, crFlowDevopsGroupID, crDevopsMemberID1, crDevopsMemberID2)
+	seedExternalGroupMembers(f.t, f.scoped, crFlowDevopsGroupID, crDevopsExternalID)
+}
+
+// forceApprover puts userID on the change's (latest) stage with the given label
+// as a REQUESTED approver -- the drift the decision-time guard exists for: a row
+// that predates the INTERNAL-only rule, or a user whose type or membership
+// changed after provisioning.
+func (f *crFlow) forceApprover(id, label, userID string) {
+	f.t.Helper()
+	if _, err := f.scoped.Exec(f.sys,
+		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $3::uuid, 'requested'
+		 FROM approval_stage s WHERE s.work_item_id = $1 AND s.checkpoint_label = $2
+		 ORDER BY s.created_on DESC, s.id DESC LIMIT 1`, id, label, userID); err != nil {
+		f.t.Fatalf("force %s onto the %s stage: %v", userID, label, err)
+	}
+}
+
+// stage returns the change's stage with the given label (the first, if the
+// stage was repeated), failing the test when there is none.
+func (f *crFlow) stage(id, label string) crFlowStage {
+	f.t.Helper()
+	for _, st := range f.stages(id) {
+		if st.label == label {
+			return st
+		}
+	}
+	f.t.Fatalf("change %s has no %q stage (stages: %v)", id, label, f.labels(id))
+	return crFlowStage{}
+}
+
+// wantPeerPool asserts the change's Peer Approval stage is on groupID with
+// exactly the given approvers.
+func (f *crFlow) wantPeerPool(id, groupID string, want map[string]string) {
+	f.t.Helper()
+	st := f.stage(id, "Peer Approval")
+	if st.groupID != groupID {
+		f.t.Fatalf("peer stage group = %s, want %s", st.groupID, groupID)
+	}
+	assertApprovers(f.t, "peer stage", st.approvers, want)
+}
+
+// Peer approval is the WHOLE assigned group: when that group is an SRE team
+// (Apollo-like: a sre-abt team and its same-id group), its active internal
+// members are the peer approvers -- belonging to an SRE team neither keeps
+// anyone out of the pool nor stops them deciding. The creator is still listed,
+// cancelled, and a customer who is a member of the team is not provisioned.
+func TestChangeRequestFlowIntegration_SRETeamAssignedGroupMembersArePeerApprovers(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedSREGroup()
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+	// The Devops Approval fallback must not be what supplies the approvers.
+	f.seedDevopsGroup()
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowSREGroupID)
+	f.requestApproval(id)
+
+	f.wantPeerPool(id, crFlowSREGroupID, map[string]string{
+		crFlowCreatorID: "cancelled", crFlowSREID: "requested", crFlowSREPeerID: "requested",
+	})
+
+	// They may decide, and see it: canDecide on their own row.
+	if got := f.canDecideAs(id, crFlowSREID); len(got) != 1 || !got["Peer Approval/"+crFlowSREID] {
+		t.Fatalf("canDecide for an SRE-team peer = %v, want their own Peer Approval row", got)
+	}
+	if err := f.decide(id, crFlowSREID, "approved"); err != nil {
+		t.Fatalf("SRE-team peer approval: %v", err)
+	}
+	f.expect(id, "after the SRE-team peer approved", "AUTHORIZE", "canceled")
+	assertApprovers(t, "peer stage after approval", f.stage(id, "Peer Approval").approvers, map[string]string{
+		crFlowCreatorID: "cancelled", crFlowSREID: "approved", crFlowSREPeerID: "cancelled",
+	})
+	if f.stage(id, "CAB Approval").groupID != crCABGroupID {
+		t.Fatal("the CAB stage was not provisioned on the CAB group")
+	}
+}
+
+// The Devops Approval group is the peer pool's fallback and nothing else: only
+// when the assigned group yields no eligible member -- no active internal
+// member other than the creator -- is it used, under the same rules (internal
+// users only, creator cancelled). While the assigned group has an eligible
+// member, a populated Devops Approval group is ignored.
+func TestChangeRequestFlowIntegration_PeerPoolFallsBackToDevopsApprovalOnlyWhenAssignedGroupYieldsNobody(t *testing.T) {
+	newFlow := func(t *testing.T) *crFlow {
+		f := newCRFlow(t)
+		seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+		if _, err := f.scoped.Exec(f.sys,
+			`INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name) VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', 'CR Flow Assigned Group')`,
+			crFlowGroupID); err != nil {
+			t.Fatalf("seed assigned group: %v", err)
+		}
+		return f
+	}
+	devopsPool := map[string]string{crDevopsMemberID1: "requested", crDevopsMemberID2: "requested"}
+
+	t.Run("assigned group with an eligible member does not use Devops Approval", func(t *testing.T) {
+		f := newFlow(t)
+		f.seedDevopsGroup()
+		seedApprovalGroupMembers(t, f.scoped, crFlowGroupID, crFlowCreatorID, crFlowPeerAID)
+		id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+		f.requestApproval(id)
+		f.wantPeerPool(id, crFlowGroupID, map[string]string{crFlowCreatorID: "cancelled", crFlowPeerAID: "requested"})
+	})
+
+	t.Run("assigned group of customers only falls back", func(t *testing.T) {
+		f := newFlow(t)
+		f.seedDevopsGroup()
+		seedApprovalGroupMembers(t, f.scoped, crFlowGroupID, crFlowCreatorID)
+		seedExternalGroupMembers(t, f.scoped, crFlowGroupID, crFlowExternalID, crFlowExternalID2)
+		id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+		f.requestApproval(id)
+		// The customer in the Devops group is skipped there too.
+		f.wantPeerPool(id, crFlowDevopsGroupID, devopsPool)
+	})
+
+	t.Run("assigned group with only the creator falls back", func(t *testing.T) {
+		f := newFlow(t)
+		f.seedDevopsGroup()
+		seedApprovalGroupMembers(t, f.scoped, crFlowGroupID, crFlowCreatorID)
+		id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+		f.requestApproval(id)
+		f.wantPeerPool(id, crFlowDevopsGroupID, devopsPool)
+	})
+
+	t.Run("assigned group of an inactive internal user and a user with no type falls back", func(t *testing.T) {
+		f := newFlow(t)
+		f.seedDevopsGroup()
+		seedApprovalGroupMembers(t, f.scoped, crFlowGroupID, crFlowCreatorID, crFlowInactiveID)
+		f.execSQL(`UPDATE "user" SET is_active = false WHERE id = $1`, crFlowInactiveID)
+		seedGroupMembersOfType(t, f.scoped, crFlowGroupID, "NOT_AVAILABLE", crFlowNoTypeID)
+		id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+		f.requestApproval(id)
+		f.wantPeerPool(id, crFlowDevopsGroupID, devopsPool)
+	})
+
+	t.Run("an SRE-team assigned group with nobody eligible falls back like any other", func(t *testing.T) {
+		f := newFlow(t)
+		f.seedDevopsGroup()
+		f.seedSREGroup()
+		// Only the creator and a customer are left in the SRE group.
+		f.execSQL(`DELETE FROM team_member WHERE user_id IN ($1, $2)`, crFlowSREID, crFlowSREPeerID)
+		id := f.create(domain.ChangeRequestTypeNormal, crFlowSREGroupID)
+		f.requestApproval(id)
+		f.wantPeerPool(id, crFlowDevopsGroupID, devopsPool)
+	})
+
+	t.Run("nobody eligible anywhere is refused, and says why", func(t *testing.T) {
+		f := newFlow(t)
+		// No Devops Approval members at all (the group may not even exist).
+		seedApprovalGroupMembers(t, f.scoped, crFlowGroupID, crFlowCreatorID)
+		seedExternalGroupMembers(t, f.scoped, crFlowGroupID, crFlowExternalID)
+		id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+		_, err := f.patchState(id, domain.ChangeRequestStateAssess)
+		f.wantValidationError("Request Approval with no eligible peer", err, "no eligible peer approvers")
+		f.wantValidationError("Request Approval with no eligible peer", err, "external/customer users cannot approve")
+		f.wantValidationError("Request Approval with no eligible peer", err, domain.PeerApprovalFallbackGroupName)
+		if got := f.state(id); got != "NEW" {
+			t.Fatalf("state after refused Request Approval = %q, want NEW", got)
+		}
+		if n := len(f.stages(id)); n != 0 {
+			t.Fatalf("refused Request Approval left %d stages", n)
+		}
+	})
+}
+
+// An EXTERNAL (customer) member of the assigned team is never provisioned as
+// an approver of an internal stage -- Peer, CAB, ECAB or Review -- and neither
+// is an inactive user or one with no derivable type; the creator stays a
+// cancelled row. Mixed pools keep exactly their active internal users.
+func TestChangeRequestFlowIntegration_MixedPoolsKeepOnlyActiveInternalUsers(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedAssignedGroup()
-	f.makeSRE(crFlowSREID, crFlowGroupID)
+	seedExternalGroupMembers(t, f.scoped, crFlowGroupID, crFlowExternalID, crFlowExternalID2)
+	seedApprovalGroupMembers(t, f.scoped, crFlowGroupID, crFlowInactiveID)
+	f.execSQL(`UPDATE "user" SET is_active = false WHERE id = $1`, crFlowInactiveID)
+	seedGroupMembersOfType(t, f.scoped, crFlowGroupID, "NOT_AVAILABLE", crFlowNoTypeID)
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+	seedExternalGroupMembers(t, f.scoped, crCABGroupID, crCABExternalID)
+	seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
+	seedExternalGroupMembers(t, f.scoped, crECABGroupID, crECABExternalID)
+
+	// Normal: Peer, then CAB, then (after Implement) Review.
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	f.requestApproval(id)
+	f.wantPeerPool(id, crFlowGroupID, map[string]string{
+		crFlowCreatorID: "cancelled", crFlowPeerAID: "requested", crFlowPeerBID: "requested", crFlowOutsiderID: "requested",
+	})
+	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
+		t.Fatalf("peer approval: %v", err)
+	}
+	assertApprovers(t, "CAB stage", f.stage(id, "CAB Approval").approvers, map[string]string{crCABMemberUserID1: "requested"})
+	if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
+		t.Fatalf("CAB approval: %v", err)
+	}
+	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
+	assertApprovers(t, "Review stage", f.stage(id, "Review").approvers, map[string]string{
+		crFlowCreatorID: "cancelled", crFlowPeerAID: "requested", crFlowPeerBID: "requested", crFlowOutsiderID: "requested",
+	})
+
+	// Emergency: ECAB only.
+	eid := f.create(domain.ChangeRequestTypeEmergency, crFlowGroupID)
+	f.requestApproval(eid)
+	assertApprovers(t, "ECAB stage", f.stage(eid, "ECAB Approval").approvers, map[string]string{crECABMemberUserID: "requested"})
+}
+
+// A group made only of customers has no one to give an internal approval: the
+// request is refused up front, with a message that names the group and says
+// customers cannot approve -- for the CAB, the ECAB, and the Review stage
+// (whose assigned team has lost its internal members by then).
+func TestChangeRequestFlowIntegration_AllExternalGroupsAreRefusedClearly(t *testing.T) {
+	t.Run("CAB", func(t *testing.T) {
+		f := newCRFlow(t)
+		f.seedAssignedGroup()
+		seedExternalGroupMembers(t, f.scoped, crCABGroupID, crCABExternalID)
+		id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+		_, err := f.patchState(id, domain.ChangeRequestStateAssess)
+		f.wantValidationError("CAB of customers only", err, `the "CAB Approval" group has no active internal (WSO2) members`)
+		f.wantValidationError("CAB of customers only", err, "external/customer users")
+		if got := f.state(id); got != "NEW" {
+			t.Fatalf("state after refused Request Approval = %q, want NEW", got)
+		}
+		if n := len(f.stages(id)); n != 0 {
+			t.Fatalf("refused Request Approval left %d stages", n)
+		}
+	})
+	t.Run("ECAB", func(t *testing.T) {
+		f := newCRFlow(t)
+		f.seedAssignedGroup()
+		seedExternalGroupMembers(t, f.scoped, crECABGroupID, crECABExternalID)
+		id := f.create(domain.ChangeRequestTypeEmergency, crFlowGroupID)
+		_, err := f.patchState(id, domain.ChangeRequestStateAssess)
+		f.wantValidationError("ECAB of customers only", err, `the "ECAB Approval" group has no active internal (WSO2) members`)
+	})
+	t.Run("CAB cascade rolls the peer decision back", func(t *testing.T) {
+		f := newCRFlow(t)
+		f.seedAssignedGroup()
+		seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+		id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+		f.requestApproval(id)
+		// The CAB's only member becomes a customer after the peer stage exists.
+		f.execSQL(`UPDATE "user" SET user_type = 'EXTERNAL'::user_type_enum WHERE id = $1`, crCABMemberUserID1)
+		err := f.decide(id, crFlowPeerAID, "approved")
+		f.wantValidationError("peer approval into a CAB of customers only", err, `the "CAB Approval" group has no active internal (WSO2) members`)
+		f.expect(id, "after the refused peer approval", "ASSESS", "authorize", "canceled")
+	})
+	t.Run("Review", func(t *testing.T) {
+		f := newCRFlow(t)
+		f.seedAssignedGroup()
+		seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+		id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+		f.requestApproval(id)
+		f.approvePeerAndCAB(id, "SCHEDULED", "implement", "canceled")
+		f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
+		// The assigned team turns out to be customers only.
+		f.execSQL(`UPDATE "user" SET user_type = 'EXTERNAL'::user_type_enum WHERE id IN ($1, $2, $3, $4)`,
+			crFlowCreatorID, crFlowPeerAID, crFlowPeerBID, crFlowOutsiderID)
+		_, err := f.patchState(id, domain.ChangeRequestStateReview)
+		f.wantValidationError("Review of a team of customers", err, "the assigned team has no active internal (WSO2) members")
+		f.expect(id, "after the refused review", "IMPLEMENT", "review", "canceled")
+	})
+}
+
+// Decision time: an external user (or an inactive one, or one whose type
+// changed after the row was written) holding a REQUESTED row on an internal
+// stage is refused with a readable 403 and sees canDecide=false, on every
+// internal stage; the internal approvers beside them are unaffected.
+func TestChangeRequestFlowIntegration_ExternalUserCannotDecideInternalStage(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	seedExternalGroupMembers(t, f.scoped, crFlowGroupID, crFlowExternalID)
 	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
 	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
 	f.requestApproval(id)
 
-	stages := f.stages(id)
-	if _, present := stages[0].approvers[crFlowSREID]; present {
-		t.Fatalf("SRE member was provisioned into the peer approval group: %v", stages[0].approvers)
+	wantRefused := func(stage, userID string) {
+		t.Helper()
+		f.wantForbidden(stage+" decision by "+userID, f.decide(id, userID, "approved"), "only active internal (WSO2) users")
+		f.wantForbidden(stage+" rejection by "+userID, f.decide(id, userID, "rejected"), stage)
+		if got := f.canDecideAs(id, userID); len(got) != 0 {
+			t.Fatalf("canDecide for %s on %s = %v, want none", userID, stage, got)
+		}
 	}
 
-	// Decision time: even a row that exists (drift, or a membership that
-	// changed after provisioning) cannot be decided by an SRE member.
-	if _, err := f.scoped.Exec(f.sys,
-		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
-		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'requested'
-		 FROM approval_stage s WHERE s.work_item_id = $1 AND s.checkpoint_label = 'Peer Approval'`, id, crFlowSREID); err != nil {
-		t.Fatalf("force SRE member onto the peer stage: %v", err)
+	// Peer: a stale REQUESTED row for the customer who is a member of the team.
+	f.forceApprover(id, "Peer Approval", crFlowExternalID)
+	wantRefused("Peer Approval", crFlowExternalID)
+	// An internal peer beside them can decide, and sees it.
+	if got := f.canDecideAs(id, crFlowPeerAID); len(got) != 1 || !got["Peer Approval/"+crFlowPeerAID] {
+		t.Fatalf("canDecide for an internal peer = %v, want only their own row", got)
 	}
-	err := f.decide(id, crFlowSREID, "approved")
-	var fe *apierror.ForbiddenError
-	if !errors.As(err, &fe) || !strings.Contains(fe.Msg, "SRE") {
-		t.Fatalf("SRE member peer decision err = %v (%T), want a ForbiddenError naming the SRE rule", err, err)
+	// A peer whose type changed after provisioning is refused too.
+	f.execSQL(`UPDATE "user" SET user_type = 'EXTERNAL'::user_type_enum WHERE id = $1`, crFlowPeerBID)
+	wantRefused("Peer Approval", crFlowPeerBID)
+	f.execSQL(`UPDATE "user" SET user_type = 'INTERNAL'::user_type_enum, is_active = false WHERE id = $1`, crFlowPeerBID)
+	f.wantForbidden("an inactive peer deciding", f.decide(id, crFlowPeerBID, "approved"), "only active internal (WSO2) users")
+	f.wantState(id, "ASSESS")
+	if st := f.stage(id, "Peer Approval"); st.approvers[crFlowExternalID] != "requested" {
+		t.Fatalf("refused decision changed the customer's row: %v", st.approvers)
 	}
-	if got := f.state(id); got != "ASSESS" {
-		t.Fatalf("state after refused SRE approval = %q, want ASSESS", got)
+
+	// The internal peers are unaffected: approval cascades to CAB.
+	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
+		t.Fatalf("internal peer approval: %v", err)
+	}
+	// CAB stage.
+	f.forceApprover(id, "CAB Approval", crFlowExternalID)
+	wantRefused("CAB Approval", crFlowExternalID)
+	f.wantState(id, "AUTHORIZE")
+	if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
+		t.Fatalf("internal CAB approval: %v", err)
+	}
+	f.wantState(id, "SCHEDULED")
+
+	// Review stage.
+	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
+	f.forceApprover(id, "Review", crFlowExternalID)
+	wantRefused("Review", crFlowExternalID)
+
+	// ECAB stage of an Emergency change.
+	seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
+	eid := f.create(domain.ChangeRequestTypeEmergency, crFlowGroupID)
+	f.requestApproval(eid)
+	f.forceApprover(eid, "ECAB Approval", crFlowExternalID)
+	f.wantForbidden("ECAB decision by a customer", f.decide(eid, crFlowExternalID, "approved"), "ECAB Approval")
+	if got := f.canDecideAs(eid, crFlowExternalID); len(got) != 0 {
+		t.Fatalf("canDecide for a customer on the ECAB stage = %v, want none", got)
+	}
+	f.wantState(eid, "AUTHORIZE")
+	if err := f.decide(eid, crECABMemberUserID, "approved"); err != nil {
+		t.Fatalf("internal ECAB approval: %v", err)
+	}
+	f.wantState(eid, "SCHEDULED")
+}
+
+// wantState asserts the stored state is want (used after a refused decision,
+// which must not move the change).
+func (f *crFlow) wantState(id, want string) {
+	f.t.Helper()
+	if got := f.state(id); got != want {
+		f.t.Fatalf("state = %q, want %q", got, want)
 	}
 }
 
-// When the assigned group IS an SRE group (Apollo), nobody in it may approve;
-// the peer pool falls back to the "Devops Approval" group of experienced
-// engineers. With no such group the request is refused clearly.
-func TestChangeRequestFlowIntegration_SREAssignedGroupFallsBackToPeerApprovalGroup(t *testing.T) {
-	f := newCRFlow(t)
-	f.seedAssignedGroup()
-	f.makeSRE(crFlowSREID, crFlowSREGroupID)
-	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+// The customer stages are not subject to the INTERNAL-only rule: the project's
+// registered (external) contacts are asked and decide them -- Customer Approval
+// then Customer Review -- while a customer who is only a member of the assigned
+// team (not a contact of the project) cannot.
+func TestChangeRequestFlowIntegration_CustomerStagesStillWorkForExternalContacts(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	seedExternalGroupMembers(t, f.scoped, crFlowGroupID, crFlowExternalID)
+	for _, uid := range []string{crScopeUserA1, crScopeUserA2} {
+		var typ string
+		if err := f.scoped.QueryRow(f.sys, `SELECT user_type::text FROM "user" WHERE id = $1`, uid).Scan(&typ); err != nil || typ != userTypeExternal {
+			t.Fatalf("customer contact %s user_type = %q (%v), want EXTERNAL", uid, typ, err)
+		}
+	}
+	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, true)
+	f.driveToCustomerApproval(id)
 
-	var existing int
-	if err := f.scoped.QueryRow(f.sys, `SELECT COUNT(*) FROM "group" WHERE name = $1`, domain.PeerApprovalFallbackGroupName).Scan(&existing); err != nil {
-		t.Fatalf("count devops group: %v", err)
+	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+	if got := f.canDecideAs(id, crScopeUserA1); len(got) != 1 || !got[stageCustApproval+"/"+crScopeUserA1] {
+		t.Fatalf("canDecide for an external contact = %v, want their own Customer Approval row", got)
 	}
-	if existing != 0 {
-		t.Skipf("a %q group already exists in this database", domain.PeerApprovalFallbackGroupName)
+	// A customer on the team but not a contact of the project is told so.
+	f.wantForbidden("a team customer who is no contact", f.decide(id, crFlowExternalID, "approved"), "only members of the customer group")
+	if err := f.decide(id, crScopeUserA1, "approved"); err != nil {
+		t.Fatalf("external contact approving Customer Approval: %v", err)
 	}
+	f.expect(id, "after the contact approved", "SCHEDULED", "implement", "canceled")
 
-	// No fallback group: refused, nothing half-written.
-	id := f.create(domain.ChangeRequestTypeNormal, crFlowSREGroupID)
-	_, err := f.patchState(id, domain.ChangeRequestStateAssess)
-	var ve *apierror.ValidationError
-	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, "no eligible peer approvers") {
-		t.Fatalf("Request Approval on an SRE-assigned change with no peer group err = %v (%T), want the no-eligible-peer-approvers ValidationError", err, err)
+	f.driveToCustomerReview(id)
+	if got := f.canDecideAs(id, crScopeUserA2); len(got) != 1 || !got[stageCustReview+"/"+crScopeUserA2] {
+		t.Fatalf("canDecide for an external contact on Customer Review = %v", got)
 	}
-	if got := f.state(id); got != "NEW" {
-		t.Fatalf("state after refused Request Approval = %q, want NEW", got)
+	if err := f.decide(id, crScopeUserA2, "approved"); err != nil {
+		t.Fatalf("external contact approving Customer Review: %v", err)
 	}
-	if n := len(f.stages(id)); n != 0 {
-		t.Fatalf("refused Request Approval left %d stages", n)
-	}
+	f.expect(id, "after the contact reviewed", "CLOSED")
+}
 
-	// With the Devops Approval group (an SRE member sits in it too -- still
-	// excluded), the experienced engineers become the peer approvers.
-	if _, err := f.scoped.Exec(f.sys,
-		`INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name) VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', $2)`,
-		crFlowDevopsGroupID, domain.PeerApprovalFallbackGroupName); err != nil {
-		t.Fatalf("seed devops group: %v", err)
+// The stage approver rows after every step of a Normal change (both customer
+// boxes ticked) whose assigned team, CAB group and project mix internal and
+// external people: the internal stages hold exactly the active internal users
+// (creator cancelled), the customer stages exactly the project's contacts.
+func TestChangeRequestFlowIntegration_LifecycleStageRowsWithInternalAndExternalMembers(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	seedExternalGroupMembers(t, f.scoped, crFlowGroupID, crFlowExternalID, crFlowExternalID2)
+	seedExternalGroupMembers(t, f.scoped, crCABGroupID, crCABExternalID)
+	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, true)
+
+	labels := func(want ...string) {
+		t.Helper()
+		if got := strings.Join(f.labels(id), ","); got != strings.Join(want, ",") {
+			t.Fatalf("stages = %s, want %s", got, strings.Join(want, ","))
+		}
 	}
-	seedApprovalGroupMembers(t, f.scoped, crFlowDevopsGroupID, crFlowPeerAID, crFlowPeerBID)
-	if _, err := f.scoped.Exec(f.sys,
-		`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id)
-		 VALUES (gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', $1::uuid, $2, $3::uuid)`,
-		crFlowSRETeamID, crFlowSREID, crFlowDevopsGroupID); err != nil {
-		t.Fatalf("seed SRE member in devops group: %v", err)
-	}
+	labels()
+
+	// 1. Request Approval -> Peer Approval: the team's internal members.
 	f.requestApproval(id)
-	stages := f.stages(id)
-	if len(stages) != 1 || stages[0].groupID != crFlowDevopsGroupID {
-		t.Fatalf("stages = %+v, want one peer stage on the Devops Approval group", stages)
+	labels("Peer Approval")
+	assertApprovers(t, "peer", f.stage(id, "Peer Approval").approvers, map[string]string{
+		crFlowCreatorID: "cancelled", crFlowPeerAID: "requested", crFlowPeerBID: "requested", crFlowOutsiderID: "requested",
+	})
+
+	// 2. A peer approves -> Authorize, CAB Approval: the CAB's internal members.
+	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
+		t.Fatalf("peer approval: %v", err)
 	}
-	assertApprovers(t, "fallback peer stage", stages[0].approvers, map[string]string{crFlowPeerAID: "requested", crFlowPeerBID: "requested"})
+	f.expect(id, "after the peer approved", "AUTHORIZE", "canceled")
+	labels("Peer Approval", "CAB Approval")
+	assertApprovers(t, "peer", f.stage(id, "Peer Approval").approvers, map[string]string{
+		crFlowCreatorID: "cancelled", crFlowPeerAID: "approved", crFlowPeerBID: "cancelled", crFlowOutsiderID: "cancelled",
+	})
+	assertApprovers(t, "CAB", f.stage(id, "CAB Approval").approvers, map[string]string{crCABMemberUserID1: "requested", crCABMemberUserID2: "requested"})
+
+	// 3. CAB approves -> Customer Approval: exactly the project's contacts.
+	if err := f.decide(id, crCABMemberUserID2, "approved"); err != nil {
+		t.Fatalf("CAB approval: %v", err)
+	}
+	f.expect(id, "after CAB approved", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	labels("Peer Approval", "CAB Approval", "Customer Approval")
+	assertApprovers(t, "CAB", f.stage(id, "CAB Approval").approvers, map[string]string{crCABMemberUserID1: "cancelled", crCABMemberUserID2: "approved"})
+	assertApprovers(t, "Customer Approval", f.stage(id, "Customer Approval").approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+
+	// 4. A contact approves -> Scheduled.
+	if err := f.decide(id, crScopeUserA2, "approved"); err != nil {
+		t.Fatalf("customer approval: %v", err)
+	}
+	f.expect(id, "after the customer approved", "SCHEDULED", "implement", "canceled")
+	assertApprovers(t, "Customer Approval", f.stage(id, "Customer Approval").approvers, map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "approved"})
+
+	// 5. Implement -> Review: the team's internal members again, fresh.
+	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
+	labels("Peer Approval", "CAB Approval", "Customer Approval", "Review")
+	assertApprovers(t, "Review", f.stage(id, "Review").approvers, map[string]string{
+		crFlowCreatorID: "cancelled", crFlowPeerAID: "requested", crFlowPeerBID: "requested", crFlowOutsiderID: "requested",
+	})
+	if err := f.decide(id, crFlowPeerBID, "approved"); err != nil {
+		t.Fatalf("review approval: %v", err)
+	}
+	f.expect(id, "after the internal review", "REVIEW", "customer_review", "rollback", "canceled")
+	assertApprovers(t, "Review", f.stage(id, "Review").approvers, map[string]string{
+		crFlowCreatorID: "cancelled", crFlowPeerAID: "cancelled", crFlowPeerBID: "approved", crFlowOutsiderID: "cancelled",
+	})
+
+	// 6. Customer Review: exactly the project's contacts again; a contact closes it.
+	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "canceled")
+	labels("Peer Approval", "CAB Approval", "Customer Approval", "Review", "Customer Review")
+	assertApprovers(t, "Customer Review", f.stage(id, "Customer Review").approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+	if err := f.decide(id, crScopeUserA1, "approved"); err != nil {
+		t.Fatalf("customer review: %v", err)
+	}
+	f.expect(id, "after the customer reviewed", "CLOSED")
+	assertApprovers(t, "Customer Review", f.stage(id, "Customer Review").approvers, map[string]string{crScopeUserA1: "approved", crScopeUserA2: "cancelled"})
 }
 
 // A Normal change cannot be sent for approval into a flow with nobody to give
@@ -3835,12 +4349,14 @@ func TestChangeRequestFlowIntegration_TypeLockedAfterApprovalRequested(t *testin
 func TestChangeRequestFlowIntegration_CanDecide(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedAssignedGroup()
-	f.makeSRE(crFlowSREID, crFlowGroupID)
+	seedExternalGroupMembers(t, f.scoped, crFlowGroupID, crFlowExternalID)
 	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
 	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
 	f.requestApproval(id)
-	// Drift: rows for the creator and the SRE member exist as requested.
-	for _, uid := range []string{crFlowCreatorID, crFlowSREID} {
+	// Drift: rows for the creator and for a customer exist as requested (the
+	// customer was never provisioned, so this is a row that predates the
+	// INTERNAL-only rule).
+	for _, uid := range []string{crFlowCreatorID, crFlowExternalID} {
 		if _, err := f.scoped.Exec(f.sys,
 			`DELETE FROM approval_stage_approver WHERE work_item_id = $1 AND approver_user_id = $2`, id, uid); err != nil {
 			t.Fatalf("reset row: %v", err)
@@ -3877,8 +4393,8 @@ func TestChangeRequestFlowIntegration_CanDecide(t *testing.T) {
 	if got := canDecide(crFlowCreatorID); len(got) != 0 {
 		t.Fatalf("canDecide for the creator = %v, want none", got)
 	}
-	if got := canDecide(crFlowSREID); len(got) != 0 {
-		t.Fatalf("canDecide for an SRE member = %v, want none", got)
+	if got := canDecide(crFlowExternalID); len(got) != 0 {
+		t.Fatalf("canDecide for an external user holding a peer row = %v, want none", got)
 	}
 	if got := canDecide(crCABMemberUserID1); len(got) != 0 {
 		t.Fatalf("canDecide for a CAB member while still in Assess = %v, want none (no CAB row yet)", got)
@@ -4588,25 +5104,26 @@ func TestChangeRequestFlowIntegration_CustomerApprovalCanBeCancelled(t *testing.
 	}
 }
 
-// Creator / SRE approval rules from the CAB flow still hold when the customer
-// gates are ticked.
+// Creator / INTERNAL-only approval rules from the CAB flow still hold when the
+// customer gates are ticked.
 func TestChangeRequestFlowIntegration_ApproverRulesHoldWithCustomerGates(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedAssignedGroup()
+	seedExternalGroupMembers(t, f.scoped, crFlowGroupID, crFlowExternalID)
 	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
 	id := f.createGated(domain.ChangeRequestTypeNormal, crFlowGroupID, boolp(true), boolp(true))
 	f.requestApproval(id)
 
-	// The creator cannot approve the peer stage; an SRE-team member is not even
-	// a peer approver (not provisioned).
+	// The creator cannot approve the peer stage; a customer who is a member of
+	// the team is not even a peer approver (not provisioned).
 	var fe *apierror.ForbiddenError
 	if err := f.decide(id, crFlowCreatorID, "approved"); !errors.As(err, &fe) {
 		t.Fatalf("creator approving the peer stage err = %v (%T), want ForbiddenError", err, err)
 	}
 	if stages := f.stages(id); len(stages) != 1 {
 		t.Fatalf("stages = %d, want 1", len(stages))
-	} else if _, ok := stages[0].approvers[crFlowSREID]; ok {
-		t.Fatal("the SRE-team member was provisioned as a peer approver")
+	} else if _, ok := stages[0].approvers[crFlowExternalID]; ok {
+		t.Fatal("the customer was provisioned as a peer approver")
 	}
 	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
 		t.Fatalf("peer approval: %v", err)
@@ -4799,6 +5316,9 @@ func (f *crFlow) seedScopeContacts(exec func(sql string, args ...any)) {
 		email := crFlowEmail(c.userID)
 		exec(`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user)
 		      VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', $2, $3, 'First', 'Last', $2, $4, false)`, c.userID, email, c.name, !c.inactiveUser)
+		// The customer's own people: external users, who answer the customer
+		// stages (and only those).
+		exec(`UPDATE "user" SET user_type = 'EXTERNAL'::user_type_enum WHERE id = $1`, c.userID)
 		var acID, pcID string
 		if err := f.scoped.QueryRow(f.sys,
 			`INSERT INTO account_contact (id, created_on, updated_on, created_by, updated_by, user_name, account_id)

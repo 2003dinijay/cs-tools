@@ -2596,15 +2596,37 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   unchanged. The ServiceNow data source replays `stateKey` 2 like any other
   state and `withoutManualScheduled` does not strip `rollback`. Project stats
   "outstanding" counting is unchanged by this.
+* **Approver pools are INTERNAL-only.** Every internal stage (Peer, CAB, ECAB,
+  Review) is decided by WSO2 staff, who see every project; an external
+  (customer) user sees only the projects they are a registered contact of, so an
+  approver row for one could never be found, let alone decided. A pool is
+  therefore filtered, when it is resolved, to **active** (`"user".is_active`,
+  NULL counting as active) users whose **`"user".user_type = 'INTERNAL'`** (the
+  type `recompute_user_type()` derives from the `internal`/`admin` roles;
+  `EXTERNAL`, `SYSTEM` and `NOT_AVAILABLE` users are never eligible) —
+  `internalApproverIDs` / `onlyInternalApprovers` in
+  `change_request_approval_flow.go`, applied to the peer pool (assigned group and
+  the `Devops Approval` fallback), the CAB / ECAB groups and the Review pool. The
+  same test is applied again at decision time (`approverDecisionBlock`, also what
+  drives `canDecide`): a non-internal user holding an internal-stage row is
+  refused with a 403 (`only active internal (WSO2) users can approve or reject
+  the <stage> stage ...`) and gets `canDecide=false`. The customer stages
+  (below) are the exception: their approvers are the project's registered
+  customer contacts, external by nature. An internal stage whose group has
+  members but no eligible internal one is a 400 that says so (`... has no active
+  internal (WSO2) members to provision as <stage> approvers: external/customer
+  users and inactive users cannot approve an internal stage`).
 * **Approver pools.**
-  * *Peer Approval* — Normal only. The change's assigned group, **minus every
-    member of an SRE team** (`team.type` starting `sre`, e.g. `sre-abt`:
-    Apollo, Artemis, …): only experienced engineers qualify to be peer
-    approvers. When the assigned group is itself an SRE group (or nobody
-    eligible remains once the creator is excluded) the pool is the
-    **`Devops Approval`** group (`domain.PeerApprovalFallbackGroupName`, the
-    ServiceNow flow's peer approval group), same exclusions. Neither → 400
-    "no eligible peer approvers".
+  * *Peer Approval* — Normal only. **Every active internal member of the change's
+    assigned group** (`team_member.group_id`), whatever team type that group is.
+    The creator is still listed, as a `cancelled` row, and never counts towards
+    the pool. Who is experienced enough to peer-approve is decided when people
+    are added to the group (membership management), **not** when the stage is
+    provisioned. The pool is the **`Devops Approval`** group
+    (`domain.PeerApprovalFallbackGroupName`, the ServiceNow flow's peer approval
+    group, same rules) only when there is no assigned group or the assigned group
+    yields nobody eligible (no active internal member other than the creator).
+    Neither → 400 "no eligible peer approvers".
   * *CAB Approval* — Normal only, **right after** peer approval, its own
     group (`CAB Approval`). Provisioned inside the peer-approval decision's
     transaction; if it cannot be (nobody eligible) the peer decision is **rolled
@@ -2615,10 +2637,53 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   * Standard: no stage.
   * *Review* — unchanged (assigned team, provisioned on a `{state: "review"}`
     PATCH once exactly two stages exist, i.e. Normal only).
+* **Local seed personas** (`scripts/csm-compose/seed-entity-service.sql`) — a
+  separate set of people for exercising the approval and customer-approval flows
+  locally, so the fixtures do not hang on jane.doe / john.smith (whose rows stay:
+  cases, time cards, the customer portal and other seed data use them). All on
+  `example.com`; `user_type` is *derived* from the role by
+  `recompute_user_type()`, not set by hand.
+
+  | Persona | Email | Role → `user_type` | Seats |
+  |---|---|---|---|
+  | Alice Perera | `alice.perera@example.com` | `internal` → INTERNAL | group "Example Corp ABT" (901, the assigned group of every fixture), "CAB Approval", "ECAB Approval", "Devops Approval"; peer approver on CHG-FIXED-003 (requested) / -004 (approved) |
+  | Bob Fernando | `bob.fernando@example.com` | `internal` → INTERNAL | same groups; peer approver on -003 (requested) / -004 (cancelled) |
+  | Carol Silva | `carol.silva@example.com` | `internal` → INTERNAL | same groups; peer approver on -003 (requested) / -004 (cancelled) |
+  | Dave Mendis | `dave.mendis@example.com` | `customer` → EXTERNAL | registered `PORTAL_USER` contact of project 401 "Example Corp Production"; Customer Approval approver on CHG-FIXED-007, Customer Review on -008 (requested) |
+  | Erin Jayawardena | `erin.jayawardena@example.com` | `customer` → EXTERNAL | same as Dave |
+
+  * jane.doe (internal) is the requester persona: still a *team* member of Example
+    Corp ABT (so `/users/me` and `GET /teams/{id}/members` keep working) but
+    deliberately out of the *group* (`team_member.group_id` NULL), and in no CAB /
+    ECAB / Devops group. john.smith (a customer) is still in the assigned group on
+    purpose — the standing probe of the INTERNAL-only pools: Request Approval on
+    CHG-FIXED-002 provisions alice, bob and carol, never john. Neither is a
+    registered contact of project 401 any more (Other Corp's sam.other is
+    unchanged).
+  * The **`Devops Approval`** group (the peer fallback) is seeded with the three
+    internal personas — it is created only when no group of that name exists.
+  * **Traps** (both from `seed-team-schedule.sql`): never grant the `internal`
+    role to a customer (`recompute_user_type()` checks internal before external,
+    so that customer becomes INTERNAL and gets unrestricted scope), and the
+    personas' `user_role` rows carry **no** `created_by` — that file deletes every
+    `created_by = 'seed'` internal grant of anyone outside its own roster.
+  * **Self-healing.** Most seed rows are `ON CONFLICT DO NOTHING`, which would
+    leave a database seeded before the personas on jane/john for ever. The
+    personas and the eight `CHG-FIXED-*` fixtures are therefore upserted /
+    deleted-and-reinserted: re-running the seed (`docker-compose -p <project> up
+    -d migrate`, which runs it every time) removes jane/john's contact, CAB/ECAB and
+    approver rows, installs the personas' and **resets the fixtures to their
+    starting state** (state, stamps, stages, approvers), so no volume wipe is
+    needed. The Playwright suite re-runs the seed before it starts.
+  * Tests: `TestChangeRequestSeedIntegration_*` (personas, fixture approvers, the
+    seeded assigned group / CAB / ECAB end to end, the Devops fallback, and the
+    seed's self-healing from the old shape inside a rolled-back transaction),
+    `_SeedCustomerGroupFixtures`.
 * **`CAB Approval` and `ECAB Approval` groups** are created by migration 0188
   (fixed ids `00000000-0000-4000-8000-00000000ca01` / `…eca1`) only when no group
   of that name exists, idempotently; membership is NOT seeded (synced from
-  ServiceNow or set by an operator; local compose seed adds the two dev users).
+  ServiceNow or set by an operator; the local compose seed adds the three internal
+  personas — see "Local seed personas").
   Groups are resolved **by name**; members are `team_member.group_id` (and
   `team_member.team_id` of a team with that name, which is how the CR-notice
   flow addresses them).
@@ -2627,13 +2692,16 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   or who is `change_request.requested_by_user_id`. They are provisioned
   `cancelled` where they are in a pool, and `DecideChangeRequestApproval`
   refuses them with a 403 even if a `requested` row exists.
-* **SRE members may not decide a peer approval** — not provisioned, and
-  refused (403) at decision time even if a stale row exists. There is no
-  endpoint in this repo that edits group membership (it comes from the
-  ServiceNow sync), so provisioning + decision time are the enforcement points.
+* **Only active internal users may decide an internal stage** — not
+  provisioned, and refused (403) at decision time even if a stale row exists
+  (e.g. a customer who was a member of the team before the pools were
+  INTERNAL-only). There is no endpoint in this repo that edits group membership
+  (it comes from the ServiceNow sync), so provisioning + decision time are the
+  enforcement points.
 * **`canDecide`** on each approver in `GET /change-requests/{id}/approvals` is
   true only on the calling user's own `REQUESTED` row when they may actually
-  decide it (not creator; not SRE on the peer stage). Additive, advisory; the
+  decide it (not creator; an active internal user on an internal stage).
+  Additive, advisory; the
   decision endpoint re-checks. Postgres data source only.
 * **Rejections** of the internal stages keep the existing behaviour: siblings
   cancelled, no state change in either direction. (A *customer contact's*
@@ -2883,8 +2951,9 @@ action in the Approvals tab**, like any other stage. Code: `change_request_links
   The detail response drops `customerGroup` for `customerContacts:
   [{id (project_contact.id), name, email?}]` (name order).
 * **Eligible approvers** = the contacts' active users minus the CR's creator (listed
-  `cancelled` like on every other stage; they can never decide). The SRE-peer
-  exclusion does **not** apply to customer stages.
+  `cancelled` like on every other stage; they can never decide). The
+  INTERNAL-only rule does **not** apply to customer stages (the contacts are
+  external).
 * **Stages.** Entering `customer_approval` writes an `approval_stage`
   `checkpoint_label = "Customer Approval"`, **`assignment_group_id` NULL** (the
   group is not a `"group"` row), one `requested` `approval_stage_approver` per
@@ -2930,7 +2999,9 @@ action in the Approvals tab**, like any other stage. Code: `change_request_links
   have no access to the CSM portal, and no customer-facing app here calls it. So a
   live customer stage is, today, answerable only by a person who is both a
   registered project contact **and** a CSM user with `PermWrite` — in the local seed
-  jane.doe / john.smith are exactly that. In production, until a customer-facing
+  dave.mendis / erin.jayawardena are exactly that (the local mock-oidc login gives
+  any email the `cs_engineer` group, and the BFF takes `PermWrite` from the JWT
+  group, so a customer persona can answer from the portal locally). In production, until a customer-facing
   client for this endpoint exists (not built here), a live stage cannot be answered
   by the real customer, and with a live stage `legalNextStates` offers only
   `canceled` (the manual `scheduled` / `closed` is refused). The ServiceNow
@@ -2964,11 +3035,11 @@ action in the Approvals tab**, like any other stage. Code: `change_request_links
   it no longer does (nothing to send). Pure-ServiceNow reads no longer map
   `customerGroup`.
 * Seed: `scripts/csm-compose/seed-entity-service.sql` seeds two customers — Example
-  Corp (project 401, registered contacts jane.doe and john.smith) and Other Corp
+  Corp (project 401, registered contacts dave.mendis and erin.jayawardena) and Other Corp
   (project 402, registered contact sam.other) with the `PORTAL_USER` role /
   "General Access" project group they hold — and CHG-FIXED-007
   (`customer_approval`) / CHG-FIXED-008 (`customer_review`) on project 401 with
-  their stages (no assignment group).
+  their stages (no assignment group). See "Local seed personas" below.
 * Tests: `TestChangeRequestFlowIntegration_CustomerGroup*`,
   `_StoredCustomerGroupIsNoLongerUsedForApprovals`, `_SeedCustomerGroupFixtures`,
   `TestChangeRequestScopeIntegration_CustomerContactsAreDerivedFromTheProject`,

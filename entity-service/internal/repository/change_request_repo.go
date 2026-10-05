@@ -1976,8 +1976,9 @@ type changeRequestApprovalCheckpoint struct {
 
 var (
 	// changeRequestPeerCheckpoint is a Normal change's first stage: peer
-	// approval by experienced engineers (never SRE team members), entered by
-	// Request Approval (state Assess).
+	// approval by the active internal members of the assigned group (the
+	// "Devops Approval" group when there is none), entered by Request Approval
+	// (state Assess).
 	changeRequestPeerCheckpoint = changeRequestApprovalCheckpoint{Position: 0, Label: approvalStageLabelPeer, Pool: poolPeer}
 	// changeRequestCABCheckpoint is a Normal change's second stage, right
 	// after peer approval: the "CAB Approval" group, its own approver group.
@@ -2536,8 +2537,8 @@ func (r *changeRequestRepo) GetChangeRequestApprovals(ctx context.Context, id st
 
 // markCanDecide sets domain.ChangeRequestApprover.CanDecide on the calling
 // viewer's own REQUESTED approver rows, applying the same who-may-decide rules
-// DecideChangeRequestApproval enforces (creator may never approve; SRE team
-// members may not give peer approval). It is purely advisory for the UI --
+// DecideChangeRequestApproval enforces (creator may never approve; only an
+// active internal user may decide an internal stage). It is purely advisory for the UI --
 // DecideChangeRequestApproval re-checks everything -- so any failure here
 // (no viewer identity, an unreadable creator row) leaves CanDecide false
 // rather than failing the read.
@@ -2854,7 +2855,9 @@ func cancelSiblingApprovalStageApprovers(ctx context.Context, tx pgx.Tx, stageID
 //
 //   - the change request's creator/requester may never approve it, at any
 //     stage (they may still cancel it);
-//   - a member of an SRE team may not decide a peer approval.
+//   - only an active INTERNAL user may decide an internal stage (Peer, CAB,
+//     ECAB, Review); the customer stages are decided by the project's
+//     (external) contacts.
 //
 // Concurrency: the change_request row is locked (SELECT ... FOR UPDATE) before
 // any approver row is touched, so two decisions are serialized and cannot
@@ -2873,8 +2876,8 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 		}
 
 		// Who-may-decide rules, before the approver row is touched. The
-		// creator rule needs no row; the SRE rule needs the kind of the stage
-		// the caller's pending row belongs to (none found: fall through to the
+		// creator rule needs no row; the internal-only rule needs the kind of the
+		// stage the caller's pending row belongs to (none found: fall through to the
 		// UPDATE below, whose zero rows produce the usual NotFoundError).
 		creatorIDs, err := changeRequestCreatorUserIDs(ctx, tx, id)
 		if err != nil {

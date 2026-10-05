@@ -93,6 +93,18 @@ import (
 // provisionCustomerStage keeps the stage in step with the change (state and
 // customer group) and is the one place that provisions, replaces or cancels it.
 
+// Approver pools are INTERNAL-only. Every internal stage (Peer, CAB, ECAB,
+// Review) is decided in the portal by WSO2 staff, who see every project; an
+// external (customer) user sees only the projects they are a registered
+// contact of, so an approver row for one could never be found, let alone
+// decided. A pool is therefore filtered to users who are active
+// ("user".is_active, NULL counting as active) and "user".user_type = 'INTERNAL'
+// -- the type recompute_user_type() derives from the internal/admin roles --
+// when it is resolved (internalApproverIDs), and the same test is applied
+// again at decision time (approverDecisionBlock, which also drives canDecide).
+// The customer stages are the exception on purpose: their approvers are the
+// project's registered customer contacts, external by nature.
+
 // Stage labels written to approval_stage.checkpoint_label by this file's
 // provisioning. LegacyAssessLabel/LegacyAuthorizeLabel are what stages created
 // before the CAB flow were written with; they are still recognised when a
@@ -265,41 +277,6 @@ func changeRequestCreatorUserIDs(ctx context.Context, q crQuerier, workItemID st
 	return ids, nil
 }
 
-// sreMemberIDs returns which of userIDs belong to an SRE team (team.type
-// starting with "sre", e.g. "sre-abt": Apollo, Artemis, ...). Membership is
-// recognised however the mirror recorded it: a team_member row whose team_id
-// is an SRE team, whose group_id is an SRE team's own id, or whose group_id
-// is a "group" sharing an SRE team's name. People in an SRE group are not
-// "experienced engineers" for the purposes of peer approval.
-func sreMemberIDs(ctx context.Context, q crQuerier, userIDs []string) (map[string]bool, error) {
-	out := map[string]bool{}
-	if len(userIDs) == 0 {
-		return out, nil
-	}
-	rows, err := q.Query(ctx, `
-		SELECT DISTINCT tm.user_id::text
-		FROM team_member tm
-		WHERE tm.user_id = ANY($1::uuid[])
-		  AND (
-		        EXISTS (SELECT 1 FROM team t WHERE t.id = tm.team_id AND LOWER(t.type) LIKE 'sre%')
-		     OR EXISTS (SELECT 1 FROM team t WHERE t.id = tm.group_id AND LOWER(t.type) LIKE 'sre%')
-		     OR EXISTS (SELECT 1 FROM "group" g JOIN team t ON LOWER(t.name) = LOWER(g.name)
-		                 WHERE g.id = tm.group_id AND LOWER(t.type) LIKE 'sre%')
-		      )`, userIDs)
-	if err != nil {
-		return nil, fmt.Errorf("check sre membership: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan sre membership: %w", err)
-		}
-		out[strings.ToLower(id)] = true
-	}
-	return out, rows.Err()
-}
-
 // groupMemberIDs lists the distinct user ids in the "group" identified by
 // groupID (team_member.group_id -- see CLAUDE.md on why group_id, not team_id).
 func groupMemberIDs(ctx context.Context, q crQuerier, groupID string) ([]string, error) {
@@ -317,6 +294,87 @@ func groupMemberIDs(ctx context.Context, q crQuerier, groupID string) ([]string,
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// internalApproverIDs returns which of userIDs may be provisioned as, or act
+// as, an approver of an INTERNAL stage: an active ("user".is_active, NULL
+// counting as active, like everywhere else) user whose user_type is INTERNAL.
+// External (customer/partner) users, system users and users with no derivable
+// type are never eligible; neither is an id with no "user" row.
+func internalApproverIDs(ctx context.Context, q crQuerier, userIDs []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT u.id::text FROM "user" u
+		WHERE u.id = ANY($1::uuid[])
+		  AND u.user_type = 'INTERNAL'::user_type_enum
+		  AND COALESCE(u.is_active, true)`, userIDs)
+	if err != nil {
+		return nil, fmt.Errorf("check internal approvers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan internal approver: %w", err)
+		}
+		out[strings.ToLower(id)] = true
+	}
+	return out, rows.Err()
+}
+
+// onlyInternalApprovers keeps the members that internalApproverIDs accepts,
+// in their original order.
+func onlyInternalApprovers(ctx context.Context, q crQuerier, members []string) ([]string, error) {
+	internal, err := internalApproverIDs(ctx, q, members)
+	if err != nil {
+		return nil, err
+	}
+	var kept []string
+	for _, m := range members {
+		if internal[strings.ToLower(m)] {
+			kept = append(kept, m)
+		}
+	}
+	return kept, nil
+}
+
+// stageKindNeedsInternalApprover reports whether the stage kind is an
+// INTERNAL one (Peer, CAB, ECAB, Review) whose approvers must be internal
+// users. The customer stages and unclassified (ServiceNow-synced) stages are
+// not: customer contacts are external by nature.
+func stageKindNeedsInternalApprover(kind approvalStageKind) bool {
+	switch kind {
+	case stageKindPeer, stageKindCAB, stageKindECAB, stageKindReview:
+		return true
+	}
+	return false
+}
+
+// stageKindName is the stage kind's label in messages.
+func stageKindName(kind approvalStageKind) string {
+	switch kind {
+	case stageKindPeer:
+		return approvalStageLabelPeer
+	case stageKindCAB:
+		return approvalStageLabelCAB
+	case stageKindECAB:
+		return approvalStageLabelECAB
+	case stageKindReview:
+		return approvalStageLabelReview
+	}
+	return "this"
+}
+
+// noInternalMembersMessage is the ValidationError for a CAB / ECAB / Review
+// pool that has members but none who is an active internal user, so the
+// operator can see that the people are there and why they do not count.
+func noInternalMembersMessage(poolDescription, label string) string {
+	return fmt.Sprintf(
+		"%s has no active internal (WSO2) members to provision as %s approvers: external/customer users and inactive users cannot approve an internal stage",
+		poolDescription, label)
 }
 
 // namedGroup resolves a group by name: its id (preferring, when the mirror
@@ -361,31 +419,28 @@ type approvalPool struct {
 	members []string
 }
 
-// resolvePeerPool resolves the peer approval pool of a Normal change.
+// resolvePeerPool resolves the peer approval pool of a Normal change: every
+// member of the change's assigned group (team_member.group_id) who is an
+// active INTERNAL user (internalApproverIDs: a customer who happens to be a
+// member is never placed in the pool). Whether a member is experienced enough
+// to peer-approve is decided when people are added to the group, not here.
 //
-// Only experienced engineers qualify to approve a peer: nobody who belongs to
-// an SRE team (Apollo, Artemis, any other) is ever placed in the pool. The
-// primary pool is the change's assigned group; when that group is an SRE group
-// (every member excluded) or has nobody left once the creator is excluded, the
-// PeerApprovalFallbackGroupName group is used instead -- it is the group of
-// experienced engineers that peer approval is drawn from in the ServiceNow
-// flow. creatorIDs are never counted as a way to satisfy the pool (they are
-// still listed, as cancelled, by the caller).
+// The creator is never counted as a way to satisfy the pool (the caller still
+// lists them, as cancelled). When there is no assigned group, or the assigned
+// group yields nobody eligible -- no active internal member other than the
+// creator -- the PeerApprovalFallbackGroupName group ("Devops Approval") is
+// used instead, subject to the same rules.
 func resolvePeerPool(ctx context.Context, q crQuerier, assignedTeamID *string, creatorIDs map[string]bool) (approvalPool, error) {
 	eligible := func(members []string) ([]string, bool, error) {
-		sre, err := sreMemberIDs(ctx, q, members)
+		kept, err := onlyInternalApprovers(ctx, q, members)
 		if err != nil {
 			return nil, false, err
 		}
-		var kept []string
 		requestable := false
-		for _, m := range members {
-			if sre[strings.ToLower(m)] {
-				continue
-			}
-			kept = append(kept, m)
+		for _, m := range kept {
 			if !creatorIDs[strings.ToLower(m)] {
 				requestable = true
+				break
 			}
 		}
 		return kept, requestable, nil
@@ -419,7 +474,7 @@ func resolvePeerPool(ctx context.Context, q crQuerier, assignedTeamID *string, c
 		}
 	}
 	return approvalPool{}, &apierror.ValidationError{Msg: fmt.Sprintf(
-		"no eligible peer approvers: the assigned group has no members who can approve (SRE team members and the change's creator cannot, and a peer approval group is only used when its members qualify), and the %q group has none either",
+		"no eligible peer approvers: the assigned group has no active internal members other than the change's creator (external/customer users cannot approve), and the %q group has none either",
 		domain.PeerApprovalFallbackGroupName)}
 }
 
@@ -440,6 +495,12 @@ func resolveApprovalPool(ctx context.Context, q crQuerier, cp changeRequestAppro
 		}
 		if len(members) == 0 {
 			return approvalPool{}, &apierror.ValidationError{Msg: fmt.Sprintf("the %q group has no members to provision as %s approvers", cp.GroupName, cp.Label)}
+		}
+		if members, err = onlyInternalApprovers(ctx, q, members); err != nil {
+			return approvalPool{}, err
+		}
+		if len(members) == 0 {
+			return approvalPool{}, &apierror.ValidationError{Msg: noInternalMembersMessage(fmt.Sprintf("the %q group", cp.GroupName), cp.Label)}
 		}
 		requestable := false
 		for _, m := range members {
@@ -463,6 +524,12 @@ func resolveApprovalPool(ctx context.Context, q crQuerier, cp changeRequestAppro
 		if len(members) == 0 {
 			return approvalPool{}, &apierror.ValidationError{Msg: fmt.Sprintf("the assigned team has no members to provision as %s approvers", cp.Label)}
 		}
+		if members, err = onlyInternalApprovers(ctx, q, members); err != nil {
+			return approvalPool{}, err
+		}
+		if len(members) == 0 {
+			return approvalPool{}, &apierror.ValidationError{Msg: noInternalMembersMessage("the assigned team", cp.Label)}
+		}
 		requestable := false
 		for _, m := range members {
 			if !creatorIDs[strings.ToLower(m)] {
@@ -479,15 +546,16 @@ func resolveApprovalPool(ctx context.Context, q crQuerier, cp changeRequestAppro
 
 // approverDecisionBlock reports why userID may not decide an approval on the
 // change request right now, or nil when nothing blocks them. Only the rules
-// that depend on WHO the person is are checked here (the creator rule, and the
-// SRE rule on the peer stage); that they hold a REQUESTED row is decided by
-// the caller's own UPDATE.
+// that depend on WHO the person is are checked here (the creator rule and the
+// internal-only rule); that they hold a REQUESTED row is decided by the
+// caller's own UPDATE.
 //
 //   - The creator of a change request (see changeRequestCreatorUserIDs) may
 //     not approve it at any stage. They may still cancel it.
-//   - An SRE team member may not decide a PEER approval, even if a row for
-//     them exists (membership can change after provisioning, and rows
-//     can predate the rule).
+//   - Only an active INTERNAL user may decide an internal stage (Peer, CAB,
+//     ECAB, Review), even if a row for them exists (a row can predate the
+//     rule, or the user's type can change after provisioning). The customer
+//     stages are not subject to it.
 //
 // stageKind is the kind of the stage the caller's pending row belongs to; pass
 // stageKindOther when it is not known.
@@ -495,13 +563,14 @@ func approverDecisionBlock(ctx context.Context, q crQuerier, userID string, crea
 	if creatorIDs[strings.ToLower(userID)] {
 		return &apierror.ForbiddenError{Msg: "the creator of a change request cannot approve it"}
 	}
-	if kind == stageKindPeer {
-		sre, err := sreMemberIDs(ctx, q, []string{userID})
+	if stageKindNeedsInternalApprover(kind) {
+		internal, err := internalApproverIDs(ctx, q, []string{userID})
 		if err != nil {
 			return err
 		}
-		if sre[strings.ToLower(userID)] {
-			return &apierror.ForbiddenError{Msg: "members of an SRE team cannot give peer approval; only experienced engineers outside the SRE teams may"}
+		if !internal[strings.ToLower(userID)] {
+			return &apierror.ForbiddenError{Msg: fmt.Sprintf(
+				"only active internal (WSO2) users can approve or reject the %s stage of a change request; external/customer users cannot", stageKindName(kind))}
 		}
 	}
 	return nil

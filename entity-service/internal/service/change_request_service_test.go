@@ -548,6 +548,50 @@ func TestChangeRequestService_DecideChangeRequestApproval_NonMemberRefusalPropag
 	}
 }
 
+// TestChangeRequestService_DecideChangeRequestApproval_ExternalUserRefusalPropagates:
+// a customer holding a row on an internal stage (approver pools are
+// INTERNAL-only) gets the repository's readable ForbiddenError unchanged -- the
+// service adds no mapping of its own, so the 403 and its reason reach the
+// caller -- and nothing is mirrored to ServiceNow for a decision that was never
+// recorded.
+func TestChangeRequestService_DecideChangeRequestApproval_ExternalUserRefusalPropagates(t *testing.T) {
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "dave.mendis@example.com"))
+	const msg = "only active internal (WSO2) users can approve or reject the Peer Approval stage of a change request; external/customer users cannot"
+	mirrorCalled := make(chan struct{}, 1)
+	mirror := &stubMirrorChangeRequestService{
+		decideChangeRequestApproval: func(context.Context, string, string) (domain.ChangeRequestApprovalDecisionResponse, error) {
+			mirrorCalled <- struct{}{}
+			return domain.ChangeRequestApprovalDecisionResponse{}, nil
+		},
+	}
+	repo := &stubChangeRequestRepo{
+		decideChangeRequestApproval: func(_ context.Context, _, approverUserID, _, actorEmail string) (string, error) {
+			if approverUserID != testUUID || actorEmail != "dave.mendis@example.com" {
+				t.Errorf("repo got approver %q / actor %q, want the caller", approverUserID, actorEmail)
+			}
+			return "", &apierror.ForbiddenError{Msg: msg}
+		},
+	}
+	svc := NewChangeRequestServiceWithSNWriteback(repo, stubUserRepo{
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testUUID, Email: "dave.mendis@example.com"}, nil
+		},
+	}, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+
+	for _, decision := range []string{"approved", "rejected"} {
+		_, err := svc.DecideChangeRequestApproval(ctx, testUUID, decision)
+		var fe *apierror.ForbiddenError
+		if !errors.As(err, &fe) || fe.Msg != msg {
+			t.Fatalf("%s: err = %v, want the repository's ForbiddenError %q", decision, err, msg)
+		}
+	}
+	select {
+	case <-mirrorCalled:
+		t.Fatal("a refused decision was mirrored to ServiceNow")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // TestChangeRequestService_DecideChangeRequestApproval_MirrorsToServiceNow
 // covers the writeback wiring: on a successful Postgres decide, the
 // mirror's DecideChangeRequestApproval is dispatched asynchronously and

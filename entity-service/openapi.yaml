@@ -5949,10 +5949,11 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "403":
           description: >-
-            The caller may not decide: the change request's creator, an SRE team
-            member on the peer stage, or -- while the change waits on its
-            customer group's Customer Approval / Customer Review -- anyone not
-            in that group. The message says which.
+            The caller may not decide: the change request's creator, a user who
+            is not an active internal user on an internal stage (peer, CAB,
+            ECAB, review), or -- while the change waits on its customer group's
+            Customer Approval / Customer Review -- anyone not in that group.
+            The message says which.
           content:
             application/json:
               schema:
@@ -15944,7 +15945,8 @@ components:
           description: >-
             True only on the calling user's own REQUESTED row, when they may
             actually decide it (they are not the change request's creator, and
-            are not an SRE team member on the peer approval stage). Advisory --
+            on an internal stage -- peer, CAB, ECAB, review -- are an active
+            internal user). Advisory --
             the decision endpoint re-checks. Postgres data source only; false
             elsewhere.
         createdOn:

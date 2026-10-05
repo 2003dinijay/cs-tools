@@ -3880,10 +3880,13 @@ func IsCreatableChangeRequestType(t ChangeRequestType) bool {
 //     Normal change's second (CAB) approval stage.
 //   - ECABApprovalGroupName: the Emergency CAB, the approver pool of an
 //     Emergency change's only approval stage. A group of its own, not CAB.
-//   - PeerApprovalFallbackGroupName: the experienced-engineer peer approval
-//     group ("Devops Approval" in the ServiceNow flow). A Normal change's peer
-//     stage draws its approvers from the change's assigned group; when that
-//     group is an SRE group (or yields nobody eligible) this group is used.
+//   - PeerApprovalFallbackGroupName: the peer approval fallback group
+//     ("Devops Approval" in the ServiceNow flow). A Normal change's peer stage
+//     draws its approvers from the active internal members of the change's
+//     assigned group; when there is no assigned group, or it yields nobody
+//     eligible (no active internal member other than the creator), this group
+//     is used. Who is experienced enough to peer-approve is decided when
+//     people are added to the group, not when the stage is provisioned.
 //
 // CAB Approval and ECAB Approval are created by migration
 // 0188_change_request_approval_groups.sql when absent.
@@ -4821,7 +4824,8 @@ type ChangeRequestApprover struct {
 	// CanDecide is true only on the CALLING user's own approver row, and only
 	// when that row is still REQUESTED and the caller may actually decide it
 	// right now: they are not the change request's creator/requester, and (for
-	// the peer stage) are not an SRE team member. The webapp should render
+	// an internal stage: peer, CAB, ECAB, review) are an active internal user.
+	// The webapp should render
 	// Approve/Reject exactly when this is true. Populated by the Postgres data
 	// source only; always false on every other row and under the ServiceNow
 	// data source (where ServiceNow itself enforces who may decide).

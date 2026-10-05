@@ -17994,8 +17994,9 @@ components:
           type: boolean
           description: >-
             True only on the calling user's own REQUESTED row, when they may
-            actually decide it (not the change request's creator; not an SRE team
-            member on the peer approval stage). Render Approve/Reject on this.
+            actually decide it (not the change request's creator; an active
+            internal user on an internal stage -- peer, CAB, ECAB, review).
+            Render Approve/Reject on this.
         createdOn:
           type: string
           nullable: true
