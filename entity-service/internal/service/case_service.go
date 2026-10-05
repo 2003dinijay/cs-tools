@@ -2833,9 +2833,14 @@ func (s *caseService) ConfirmCaseAttachment(ctx context.Context, id string) (dom
 // referenceType "case" reads case_attachment (unchanged). "change_request",
 // "incident" and "conversation" are work_item subtypes and read the generic
 // work_item_attachment table via CaseRepository.SearchWorkItemAttachments;
-// "deployment" is not a work_item subtype, has no attachment table here, and
-// is rejected with a validation error. Metadata only: a work item with no
-// attachments is a successful empty result.
+// "deployment" is not a work_item subtype and has no attachment table on
+// plain Postgres, where it is rejected with a validation error. Metadata
+// only: a work item with no attachments is a successful empty result.
+//
+// Stopgap: under DATA_SOURCE=postgres-servicenow-dual-write (s.snMirror !=
+// nil) a "deployment" search is delegated to the mirrored data source and its
+// response or error is returned as-is, until a Postgres-native deployment
+// attachment store exists. Every other reference type is unaffected.
 //
 // Read-path status decision: the underlying repository query filters out
 // 'pending' rows entirely (see caseRepo.SearchCaseAttachments), so a case's
@@ -2851,6 +2856,12 @@ func (s *caseService) ConfirmCaseAttachment(ctx context.Context, id string) (dom
 func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.SearchAttachmentsRequest) (domain.SearchAttachmentsResponse, error) {
 	if err := validateUUIDs("referenceId", []string{req.ReferenceID}); err != nil {
 		return domain.SearchAttachmentsResponse{}, err
+	}
+	if req.ReferenceType == domain.ReferenceTypeDeployment && s.snMirror != nil {
+		// No Postgres deployment attachment table yet: serve from the
+		// mirrored data source (SN) in dual-write mode. Plain Postgres mode
+		// (snMirror == nil) falls through to the validation error below.
+		return s.snMirror.SearchCaseAttachments(ctx, req)
 	}
 	isCase := req.ReferenceType == domain.ReferenceTypeCase
 	if !isCase {

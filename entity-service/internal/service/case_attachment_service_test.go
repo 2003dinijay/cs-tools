@@ -808,3 +808,106 @@ func TestCaseService_SearchCaseAttachments_UnsupportedType(t *testing.T) {
 		}
 	}
 }
+
+// stubAttachmentSearchMirror is a mirror CaseService that only implements
+// SearchCaseAttachments; any other method panics via the nil embed.
+type stubAttachmentSearchMirror struct {
+	CaseService
+	search func(ctx context.Context, req domain.SearchAttachmentsRequest) (domain.SearchAttachmentsResponse, error)
+	calls  int
+}
+
+func (m *stubAttachmentSearchMirror) SearchCaseAttachments(ctx context.Context, req domain.SearchAttachmentsRequest) (domain.SearchAttachmentsResponse, error) {
+	m.calls++
+	return m.search(ctx, req)
+}
+
+// TestCaseService_SearchCaseAttachments_DeploymentDualWrite covers the
+// deployment stopgap: delegated to the mirror only when one is configured.
+func TestCaseService_SearchCaseAttachments_DeploymentDualWrite(t *testing.T) {
+	mirrorErr := errors.New("mirror unavailable")
+	mirrorResp := domain.SearchAttachmentsResponse{
+		Attachments: []domain.Attachment{{ID: testAttachmentID, ReferenceID: testWorkItemID, ReferenceType: domain.ReferenceTypeDeployment, Name: "plan.pdf"}},
+		Total:       1, Limit: 10, Offset: 0,
+	}
+	tests := []struct {
+		name        string
+		refType     domain.ReferenceType
+		withMirror  bool
+		mirrorErr   error
+		wantMirror  int
+		wantRepo    bool
+		wantErr     error
+		wantValid   bool
+		wantMirrorR bool
+	}{
+		{name: "dual-write deployment delegates to mirror", refType: domain.ReferenceTypeDeployment, withMirror: true, wantMirror: 1, wantMirrorR: true},
+		{name: "dual-write deployment returns mirror error", refType: domain.ReferenceTypeDeployment, withMirror: true, mirrorErr: mirrorErr, wantMirror: 1, wantErr: mirrorErr},
+		{name: "plain postgres deployment is a validation error", refType: domain.ReferenceTypeDeployment, withMirror: false, wantValid: true},
+		{name: "dual-write case stays on postgres", refType: domain.ReferenceTypeCase, withMirror: true, wantRepo: true},
+		{name: "dual-write incident stays on postgres", refType: domain.ReferenceTypeIncident, withMirror: true, wantRepo: true},
+		{name: "dual-write bogus type is a validation error", refType: "bogus", withMirror: true, wantValid: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repoCalled := false
+			repo := &stubCaseRepo{
+				searchCaseAttachments: func(context.Context, string, domain.Pagination) ([]domain.Attachment, int, error) {
+					repoCalled = true
+					return nil, 0, nil
+				},
+				searchWorkItemAttachments: func(context.Context, string, domain.ReferenceType, domain.Pagination) ([]domain.Attachment, int, error) {
+					repoCalled = true
+					return nil, 0, nil
+				},
+			}
+			mirror := &stubAttachmentSearchMirror{
+				search: func(_ context.Context, req domain.SearchAttachmentsRequest) (domain.SearchAttachmentsResponse, error) {
+					if req.ReferenceID != testWorkItemID || req.ReferenceType != domain.ReferenceTypeDeployment {
+						t.Fatalf("mirror got %q/%q", req.ReferenceID, req.ReferenceType)
+					}
+					if tc.mirrorErr != nil {
+						return domain.SearchAttachmentsResponse{}, tc.mirrorErr
+					}
+					return mirrorResp, nil
+				},
+			}
+			var svc CaseService
+			if tc.withMirror {
+				svc = NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, nil, mirror, nil, "")
+			} else {
+				svc = NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+			}
+			id := testWorkItemID
+			if tc.refType == domain.ReferenceTypeCase {
+				id = testCaseID
+			}
+			resp, err := svc.SearchCaseAttachments(context.Background(), domain.SearchAttachmentsRequest{ReferenceID: id, ReferenceType: tc.refType})
+
+			if mirror.calls != tc.wantMirror {
+				t.Fatalf("mirror calls = %d, want %d", mirror.calls, tc.wantMirror)
+			}
+			if repoCalled != tc.wantRepo {
+				t.Fatalf("repo called = %v, want %v", repoCalled, tc.wantRepo)
+			}
+			switch {
+			case tc.wantErr != nil:
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tc.wantErr)
+				}
+			case tc.wantValid:
+				var ve *apierror.ValidationError
+				if !errors.As(err, &ve) {
+					t.Fatalf("want ValidationError, got %v", err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+			if tc.wantMirrorR && (resp.Total != 1 || len(resp.Attachments) != 1 || resp.Attachments[0].ID != testAttachmentID) {
+				t.Fatalf("response not passed through from mirror: %+v", resp)
+			}
+		})
+	}
+}
