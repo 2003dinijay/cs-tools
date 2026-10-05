@@ -41,6 +41,7 @@ type statusLister interface {
 type tierStore interface {
 	GetTier(ctx context.Context, caseID, clockType string) (tier int, found bool, err error)
 	SetTier(ctx context.Context, caseID, clockType string, tier int) error
+	AdvanceTier(ctx context.Context, caseID, clockType string, tier int) error
 	ClaimTier(ctx context.Context, caseID, clockType string, tier int) (claimed bool, err error)
 	ReleaseTier(ctx context.Context, caseID, clockType string, tier int) error
 	ClaimEmail(ctx context.Context, caseID, clockType string, tier int) (claimed bool, err error)
@@ -197,21 +198,36 @@ func (e *Engine) Tick(ctx context.Context) error {
 //     cycle, not a regression to warn about.
 //   - Current tier is AT the stored cursor: nothing crossed since the last
 //     poll — no-op.
-//   - Current tier is ABOVE the stored cursor: for every checkpoint
-//     strictly between the stored cursor and the current tier, in
-//     ascending order, atomically claim that tier via TierStore.ClaimTier
-//     (a Redis SETNX) before alerting for it — see ClaimTier's own doc
-//     comment for why a plain read-then-write on the cursor alone isn't
-//     enough: if this service is ever deployed with more than one replica,
-//     two replicas can both read the same stale cursor and both decide to
-//     alert for the same tier at once. Only the replica whose ClaimTier
-//     call actually wins alerts; a losing call just moves on to the next
-//     tier. A failure to alert after winning the claim releases it (so a
-//     later tick — this replica or another — can retry that exact tier
-//     rather than losing it for good), and advances the cursor only after
-//     a tier's alert actually succeeds, so a failure partway through a
-//     multi-tier crossing still keeps whatever alerted successfully and
-//     retries only the remainder on the next Tick.
+//   - Current tier is ABOVE the stored cursor: only the CURRENT tier is
+//     ever claimed and alerted — never every checkpoint strictly between
+//     the stored cursor and current, even when more than one was crossed
+//     since the last poll. Entity-service's own upstream sync can leave a
+//     clock's percentage stale for days and then update it in one batch,
+//     jumping a cursor straight from, say, 0% to well past 100% in a
+//     single poll; alerting 50, then 75, then 100 individually for that
+//     one underlying change is what produced the real, reported "same case
+//     gets 50/75/100 breach alerts all at once" symptom this collapses.
+//     This is safe to do unconditionally: the ordinary case — a clock
+//     crosses exactly one checkpoint between two consecutive polls — already
+//     has `current` equal to that one checkpoint, so collapsing to "just
+//     current" alerts exactly the same single tier as before. Claiming is
+//     still atomic via TierStore.ClaimTier (a Redis SETNX) before alerting
+//     — see ClaimTier's own doc comment for why a plain read-then-write on
+//     the cursor alone isn't enough: if this service is ever deployed with
+//     more than one replica, two replicas can both read the same stale
+//     cursor and both decide the same tier needs alerting. Only the
+//     replica whose ClaimTier call actually wins alerts; a losing call does
+//     nothing further this tick. A failure to alert after winning the claim
+//     releases it (so a later tick — this replica or another — can retry
+//     the same tier rather than losing it for good), and the cursor only
+//     advances once the alert actually succeeds — via TierStore.AdvanceTier,
+//     not the plain SetTier the other two cases above use, since claims are
+//     keyed per TIER, not per clock: two replicas computing "current" from
+//     two different /sla-status snapshots a moment apart can each win a
+//     DIFFERENT tier's claim and each alert successfully, and a plain
+//     unconditional write from each could let whichever lands second
+//     silently move the cursor backward. AdvanceTier's own doc comment has
+//     the full reasoning.
 //
 // A paused clock (s.IsPaused) is skipped outright: ServiceNow freezes
 // businessElapsedPercent while paused, so there is nothing to cross either
@@ -258,33 +274,30 @@ func (e *Engine) processStatus(ctx context.Context, s SLAStatus) error {
 		return nil
 	}
 
-	for _, tier := range tierSequence {
-		if tier <= last || tier > current {
-			continue
+	if current == last {
+		return nil
+	}
+
+	claimed, err := e.store.ClaimTier(ctx, s.CaseID, s.ClockType, current)
+	if err != nil {
+		return fmt.Errorf("claim tier %d: %w", current, err)
+	}
+	if !claimed {
+		// Some other call already owns this tier — a concurrent replica,
+		// or an earlier attempt that's already alerted for it. The cursor
+		// is intentionally left untouched here — the call that actually
+		// won the claim advances it once its own alert succeeds, and this
+		// replica picks up the advanced value on its own next poll.
+		return nil
+	}
+	if err := e.alertTier(ctx, s, current); err != nil {
+		if releaseErr := e.store.ReleaseTier(ctx, s.CaseID, s.ClockType, current); releaseErr != nil {
+			slog.ErrorContext(ctx, "slaengine: failed to release tier claim after a failed alert, tier may be stuck until it expires", "caseId", s.CaseID, "clockType", s.ClockType, "tier", current, "err", releaseErr)
 		}
-		claimed, err := e.store.ClaimTier(ctx, s.CaseID, s.ClockType, tier)
-		if err != nil {
-			return fmt.Errorf("claim tier %d: %w", tier, err)
-		}
-		if !claimed {
-			// Some other call already owns this tier — a concurrent
-			// replica, or an earlier attempt that's already alerted for
-			// it. Either way, this call must not alert again; move on to
-			// whatever tier comes next. The cursor is intentionally left
-			// untouched here — the call that actually won the claim
-			// advances it once its own alert succeeds, and this replica
-			// picks up the advanced value on its own next poll.
-			continue
-		}
-		if err := e.alertTier(ctx, s, tier); err != nil {
-			if releaseErr := e.store.ReleaseTier(ctx, s.CaseID, s.ClockType, tier); releaseErr != nil {
-				slog.ErrorContext(ctx, "slaengine: failed to release tier claim after a failed alert, tier may be stuck until it expires", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "err", releaseErr)
-			}
-			return fmt.Errorf("alert tier %d: %w", tier, err)
-		}
-		if err := e.store.SetTier(ctx, s.CaseID, s.ClockType, tier); err != nil {
-			return fmt.Errorf("advance tier cursor to %d: %w", tier, err)
-		}
+		return fmt.Errorf("alert tier %d: %w", current, err)
+	}
+	if err := e.store.AdvanceTier(ctx, s.CaseID, s.ClockType, current); err != nil {
+		return fmt.Errorf("advance tier cursor to %d: %w", current, err)
 	}
 	return nil
 }
@@ -308,23 +321,12 @@ func (e *Engine) alertTier(ctx context.Context, s SLAStatus, tier int) error {
 		return fmt.Errorf("publish sla.tier_reached: %w", err)
 	}
 
-	chatErr := e.sendBreachAlert(ctx, s, tier)
-	// Breach emails are attempted regardless of the Chat alert's own
-	// outcome: a Chat space outage must not also suppress email, which
-	// would otherwise happen silently if the clock completes (and so drops
-	// out of the active /sla-status list) before Chat recovers and this
-	// tier gets a retry. Best-effort, deliberately not folded into this
-	// function's own error return: a transient email failure must never
-	// cause processStatus to release this tier's claim and retry the WHOLE
-	// tier — see dispatch.go's beginRecord/endRecord history for the class
-	// of duplicate-send bug that would reintroduce for the Chat alert
-	// above. e.store.ClaimEmail (checked inside sendBreachEmails) ensures a
-	// retry caused solely by the Chat error below doesn't re-attempt an
-	// already-attempted email.
+	// Chat and email are both best-effort from here on — neither can cause
+	// this call to fail or be retried; see sendBreachAlert's own doc
+	// comment for why a Chat failure specifically no longer does (it used
+	// to, and that was itself a real, reported production bug).
+	e.sendBreachAlert(ctx, s, tier)
 	e.sendBreachEmails(ctx, s, tier)
-	if chatErr != nil {
-		return fmt.Errorf("send sla breach alert: %w", chatErr)
-	}
 	slog.InfoContext(ctx, "slaengine: sla tier reached", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier)
 	return nil
 }
@@ -339,12 +341,22 @@ func (e *Engine) alertTier(ctx context.Context, s SLAStatus, tier int) error {
 // lack of a routing value. s's own display fields (the bulk /sla-status
 // response already carries all of them, so no second lookup is needed
 // here, unlike the old per-clock GetClock design) are shared unchanged
-// across every audience's own card. A failure on any one audience fails
-// the whole call (errors.Join) — alertTier's own caller already retries
-// the entire tier (including the Kafka publish) on any sendBreachAlert
-// error, so this doesn't weaken that existing retry contract, just applies
-// it across however many audiences resolved instead of one.
-func (e *Engine) sendBreachAlert(ctx context.Context, s SLAStatus, tier int) error {
+// across every audience's own card.
+//
+// A failed send to one audience is logged (naming that Chat space) and
+// NOT retried — by explicit product decision, and deliberately not folded
+// into an error return at all any more. An earlier design failed the
+// whole call (errors.Join) on any one audience's failure, which made
+// alertTier's own caller release the tier's claim and retry the entire
+// tier on the next Tick — and since a retry resent to EVERY resolved
+// audience again, including ones that had already succeeded, a single
+// persistently broken Chat space (a dead or misconfigured webhook) turned
+// into an unbounded stream of real, duplicate-looking Chat messages to
+// the space that worked fine, repeating every poll, forever — confirmed
+// live against real staging cases whose cursor had been stuck retrying
+// the same tier for over a day. Dropping one space's alert (logged, so
+// it's visible and actionable) is the smaller cost.
+func (e *Engine) sendBreachAlert(ctx context.Context, s SLAStatus, tier int) {
 	caseNumber := s.CaseNumber
 	if caseNumber == "" {
 		// s.CaseNumber can be empty for a work item entity-service's own
@@ -360,13 +372,11 @@ func (e *Engine) sendBreachAlert(ctx context.Context, s SLAStatus, tier int) err
 
 	audiences := chataudience.Resolve(s.Team, s.IsEvaluationAccount, s.ProjectOnboardingStatus, time.Now(), e.chat.HasAudienceSpace)
 	caseLink := e.links.CSMLink(s.CaseID)
-	var errs []error
 	for _, audience := range audiences {
 		if err := e.chat.SendSLABreachAlert(ctx, audience, s.ClockType, tierLabel(tier), caseNumber, s.WSO2CaseID, s.CaseTitle, s.CaseType, s.Product, s.Team, s.TeamLeadName, s.Priority, s.State, openedAt, caseLink); err != nil {
-			errs = append(errs, fmt.Errorf("audience %q: %w", audience, err))
+			slog.ErrorContext(ctx, "slaengine: failed to send sla breach alert to chat space, not retrying", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "chatSpace", audience, "err", err)
 		}
 	}
-	return errors.Join(errs...)
 }
 
 // sendBreachEmails sends the same tier crossing as two separate emails —
@@ -392,12 +402,11 @@ func (e *Engine) sendBreachAlert(ctx context.Context, s SLAStatus, tier int) err
 // debug mode as in production — see the send closure's own doc comment.
 //
 // Claims (caseID, clockType, tier) via e.store.ClaimEmail before sending
-// anything: alertTier now attempts this regardless of whether the Chat
-// alert itself succeeded, so a tier retried solely because Chat failed
-// must not re-send an already-attempted email — see emailClaimKeyPrefix's
-// own doc comment. A claim failure (Redis error) is logged and treated the
-// same as "already claimed" — skip rather than risk a duplicate send on an
-// indeterminate claim result.
+// anything — see emailClaimKeyPrefix's own doc comment for the one retry
+// path (a Kafka publish failure on an earlier attempt, before this ever
+// ran) this still guards against. A claim failure (Redis error) is logged
+// and treated the same as "already claimed" — skip rather than risk a
+// duplicate send on an indeterminate claim result.
 func (e *Engine) sendBreachEmails(ctx context.Context, s SLAStatus, tier int) {
 	if e.email == nil || !e.emailSendingEnabled {
 		return
