@@ -155,6 +155,36 @@ type IncidentRepository interface {
 	// req.WatchList becomes work_item_watcher rows, all in the same
 	// transaction as the record itself.
 	CreateIncident(ctx context.Context, req domain.CreateIncidentRequest, priority string, subcategoryValue *string, createdBy string) (domain.CreateIncidentResponse, error)
+	// UpdateIncidentLifecycle writes an incident's state transition and the
+	// fields that travel with one -- the PATCH the portal sends to move an
+	// incident to In Progress (with an optional assignedEngineerId claim),
+	// On Hold, Resolved/Closed (with resolutionCode/resolutionNotes), or
+	// Cancelled. See IncidentLifecycleUpdate for the field-by-field rules.
+	// One transaction. Returns NotFoundError when id is not an incident the
+	// caller can see, and ValidationError for an unknown assignee/resolver or
+	// a Resolved/Closed target with no resolution code or notes.
+	UpdateIncidentLifecycle(ctx context.Context, id string, u IncidentLifecycleUpdate, actorEmail string) error
+}
+
+// IncidentLifecycleUpdate is UpdateIncidentLifecycle's input. Every field is
+// optional; nil leaves the column unchanged. Enum fields already carry their
+// Postgres label (the service maps domain values -- e.g. CANCELLED to
+// 'CANCELED', SOLVED_WORKAROUND to 'SOLVED_WORK_AROUND' -- before calling).
+//
+// The rules mirror what ServiceNow enforces on the same transitions: no
+// state requires an assignee or assignment group (In Progress included), and
+// no old-state -> new-state legality is checked (the portal's own
+// getLegalNextIncidentStates is a UI guardrail, not an SN rule). Resolved and
+// Closed need a resolution code and resolution notes, taken from the request
+// or already on the record. Entering Resolved stamps resolved_on, and
+// resolved_by_id from ResolvedByID, falling back to DefaultResolvedByID.
+type IncidentLifecycleUpdate struct {
+	State               *string // incident_state_enum label
+	AssignedEngineerID  *string
+	ResolutionCode      *string // incident_resolution_code_enum label
+	ResolutionNotes     *string // incident.close_notes
+	ResolvedByID        *string
+	DefaultResolvedByID *string // the acting user, used only when entering Resolved without ResolvedByID
 }
 
 type incidentRepo struct {
@@ -740,6 +770,131 @@ func (r *incidentRepo) CreateIncidentComment(ctx context.Context, incidentID str
 	c.Type = caseCommentEnumType[typeRaw]
 	c.CreatedBy = domain.NewUserReference("", createdByEmail, "")
 	return c, nil
+}
+
+// incidentLifecycleFKField names the request field behind each foreign key
+// UpdateIncidentLifecycle can trip, so a bad id reads as a ValidationError
+// on that field instead of a 500.
+var incidentLifecycleFKField = map[string]string{
+	"work_item_assigned_to_id_fkey": "assignedEngineerId",
+	"incident_resolved_by_id_fkey":  "resolvedById",
+}
+
+// UpdateIncidentLifecycle implements IncidentRepository.
+func (r *incidentRepo) UpdateIncidentLifecycle(ctx context.Context, id string, u IncidentLifecycleUpdate, actorEmail string) error {
+	_, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (struct{}, error) {
+		return struct{}{}, r.updateIncidentLifecycleTx(ctx, tx, id, u, actorEmail)
+	})
+	if err == nil {
+		return nil
+	}
+	var ve *apierror.ValidationError
+	var nfe *apierror.NotFoundError
+	if errors.As(err, &ve) || errors.As(err, &nfe) {
+		return err
+	}
+	if IsRLSPolicyViolation(err) {
+		return &apierror.NotFoundError{Msg: "incident not found"}
+	}
+	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		field := incidentLifecycleFKField[pgErr.ConstraintName]
+		if field == "" {
+			field = "a referenced id"
+		}
+		return &apierror.ValidationError{Msg: field + " does not identify an existing user"}
+	}
+	return fmt.Errorf("update incident: %w", err)
+}
+
+// updateIncidentLifecycleTx is UpdateIncidentLifecycle's body: lock the
+// incident row, check the Resolved/Closed resolution requirement against the
+// request plus what is already on record, then update work_item (always,
+// for updated_on/updated_by, plus the assignee) and incident (state and
+// resolution columns, only when one is being set).
+func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx, id string, u IncidentLifecycleUpdate, actorEmail string) error {
+	var currentState string
+	var currentCode, currentNotes *string
+	err := tx.QueryRow(ctx, `
+		SELECT inc.state::text, inc.resolution_code::text, inc.close_notes
+		FROM incident inc
+		JOIN work_item wi ON wi.id = inc.id
+		WHERE inc.id = $1
+		FOR UPDATE OF inc`, id).Scan(&currentState, &currentCode, &currentNotes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &apierror.NotFoundError{Msg: "incident not found"}
+	}
+	if err != nil {
+		return fmt.Errorf("update incident: read current state: %w", err)
+	}
+
+	if u.State != nil && (*u.State == "RESOLVED" || *u.State == "CLOSED") {
+		code, notes := currentCode, currentNotes
+		if u.ResolutionCode != nil {
+			code = u.ResolutionCode
+		}
+		if u.ResolutionNotes != nil {
+			notes = u.ResolutionNotes
+		}
+		if code == nil || *code == "" || notes == nil || strings.TrimSpace(*notes) == "" {
+			return &apierror.ValidationError{Msg: "resolutionCode and resolutionNotes are required to move an incident to " + *u.State}
+		}
+	}
+
+	wiSets := []string{"updated_on = NOW()", "updated_by = $1"}
+	wiArgs := []any{actorEmail}
+	if u.AssignedEngineerID != nil {
+		wiSets = append(wiSets, fmt.Sprintf("assigned_to_id = $%d::uuid", len(wiArgs)+1))
+		wiArgs = append(wiArgs, *u.AssignedEngineerID)
+	}
+	wiArgs = append(wiArgs, id)
+	var wiID string
+	if err := tx.QueryRow(ctx,
+		fmt.Sprintf(`UPDATE work_item SET %s WHERE id = $%d AND type = 'INCIDENT' RETURNING id`, strings.Join(wiSets, ", "), len(wiArgs)),
+		wiArgs...,
+	).Scan(&wiID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &apierror.NotFoundError{Msg: "incident not found"}
+		}
+		return err
+	}
+
+	var incSets []string
+	var incArgs []any
+	addInc := func(assignment string, val any) {
+		incArgs = append(incArgs, val)
+		incSets = append(incSets, fmt.Sprintf(assignment, len(incArgs)))
+	}
+	if u.State != nil {
+		addInc("state = $%d::incident_state_enum", *u.State)
+	}
+	if u.ResolutionCode != nil {
+		addInc("resolution_code = $%d::incident_resolution_code_enum", *u.ResolutionCode)
+	}
+	if u.ResolutionNotes != nil {
+		addInc("close_notes = $%d", *u.ResolutionNotes)
+	}
+	enteringResolved := u.State != nil && *u.State == "RESOLVED" && currentState != "RESOLVED"
+	resolvedBy := u.ResolvedByID
+	if resolvedBy == nil && enteringResolved {
+		resolvedBy = u.DefaultResolvedByID
+	}
+	if resolvedBy != nil {
+		addInc("resolved_by_id = $%d::uuid", *resolvedBy)
+	}
+	if enteringResolved {
+		incSets = append(incSets, "resolved_on = NOW()")
+	}
+	if len(incSets) == 0 {
+		return nil
+	}
+	incArgs = append(incArgs, id)
+	if _, err := tx.Exec(ctx,
+		fmt.Sprintf(`UPDATE incident SET %s WHERE id = $%d`, strings.Join(incSets, ", "), len(incArgs)),
+		incArgs...,
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
 // createIncidentPortalQuery is CreateIncident's (the plain-Postgres,
