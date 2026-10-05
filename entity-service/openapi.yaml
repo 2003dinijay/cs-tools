@@ -6873,7 +6873,7 @@ paths:
             type: string
           description: >
             Comma-separated roles to keep. Omit for every role. One of
-            `engineer`, `sub_lead`, `lead`, `cre_head`, `cs_head`.
+            `engineer`, `sub_lead`, `lead`, `americas_team_lead`, `cre_head`, `cs_head`.
           example: lead
         - name: alertTiers
           in: query

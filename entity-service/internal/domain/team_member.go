@@ -33,8 +33,8 @@ type TeamMemberEntry struct {
 	// is a question about the data rather than a list in a config file that
 	// drifts the first time a team is added.
 	TeamType string `json:"teamType,omitempty"`
-	// Role is the raw team_member.role: engineer, sub_lead, lead, cre_head or
-	// cs_head. Passed through unvalidated, the same way the schedule views
+	// Role is the raw team_member.role: engineer, sub_lead, lead,
+	// americas_team_lead, cre_head or cs_head. Passed through unvalidated, the same way the schedule views
 	// render state and priority, so a role added by a migration reaches a
 	// caller without this service needing to learn about it first.
 	Role string `json:"role"`

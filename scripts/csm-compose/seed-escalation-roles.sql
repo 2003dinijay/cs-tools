@@ -120,6 +120,46 @@ VALUES
    md5('seed-team-cre-leadership')::uuid, md5('seed-cs-head')::uuid, 'cs_head')
 ON CONFLICT (id) DO NOTHING;
 
+-- Americas has three Team leads (role lead) and one America Team lead above
+-- them (role americas_team_lead, migration 0185): night LEVEL_1 and LEVEL_2.
+-- Made-up data: top the team up to three leads, by e-mail like the sub leads
+-- above, then make the lowest-addressed lead the America Team lead if the team
+-- has none. A real roster names that person; this only gives a fresh local
+-- stack something to call.
+WITH shortfall AS (
+    SELECT t.id AS team_id,
+           4 - count(*) FILTER (WHERE m.role IN ('lead', 'americas_team_lead')) AS wanted
+      FROM team t
+      LEFT JOIN team_member m ON m.team_id = t.id
+     WHERE t.key = 'americas'
+     GROUP BY t.id
+), candidates AS (
+    SELECT m.id, m.team_id,
+           row_number() OVER (PARTITION BY m.team_id ORDER BY u.email DESC) AS rn
+      FROM team_member m
+      JOIN "user" u ON u.id = m.user_id
+     WHERE m.role = 'engineer' AND m.alert_tier IS NULL
+)
+UPDATE team_member m
+   SET role = 'lead', updated_on = now(), updated_by = 'seed:assumed-roles'
+  FROM candidates c
+  JOIN shortfall s ON s.team_id = c.team_id
+ WHERE m.id = c.id
+   AND s.wanted > 0
+   AND c.rn <= s.wanted;
+
+UPDATE team_member m
+   SET role = 'americas_team_lead', updated_on = now(), updated_by = 'seed:assumed-roles'
+ WHERE m.id = (SELECT m2.id
+                 FROM team_member m2
+                 JOIN team t ON t.id = m2.team_id
+                 JOIN "user" u ON u.id = m2.user_id
+                WHERE t.key = 'americas' AND m2.role = 'lead'
+                ORDER BY u.email
+                LIMIT 1)
+   AND NOT EXISTS (SELECT 1 FROM team_member x JOIN team t ON t.id = x.team_id
+                    WHERE t.key = 'americas' AND x.role = 'americas_team_lead');
+
 -- Alert-duty nominees (T1/T2/T3) for every ABT team, and for Americas.
 --
 -- Americas is not an ABT (team.type is cre), but its nominees are LEVEL_0 on
