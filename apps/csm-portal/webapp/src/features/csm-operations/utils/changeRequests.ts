@@ -376,7 +376,7 @@ export function changeRequestBlockingReason(
  */
 export const NO_CUSTOMER_CONTACTS_HELPER =
   "No registered customer contacts are assigned to this change request's project, so no customer approvers were assigned. " +
-  "Once a contact registers on the project, saving the change request routes the step to them; until then the customer's response is recorded manually.";
+  "Once a contact registers on the project, changing the Customer Project and saving the change request routes the step to them; until then the customer's response is recorded manually.";
 
 export function noCustomerContactsHelper(
   state: string | null | undefined,

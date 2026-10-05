@@ -71,27 +71,29 @@ import (
 //	    customer_review_required, Review -> Closed otherwise. Closing from
 //	    Customer Review records the customer's review (is_customer_review_required).
 //
-// Who gives the customer's answer depends on the change's Customer Group
-// (change_request.customer_group_id, a "group"; its members are its
-// team_member rows by group_id, exactly like the Assignment group):
+// Who gives the customer's answer depends on the change's Customer Project. The
+// Customer Group is not stored or picked: it is the project's registered
+// PORTAL_USER contacts, derived live by customerContactUserIDs(projectID).
+// change_request.customer_group_id is legacy and ignored when provisioning:
 //
-//	with a customer group that has an eligible member (an active member who
-//	    is not the creator): entering Customer Approval / Customer Review
-//	    provisions an approval stage -- "Customer Approval" / "Customer Review",
-//	    assignment group = the customer group, one REQUESTED approver per
-//	    eligible member -- and the members decide it in the Approvals tab,
-//	    through DecideChangeRequestApproval like every other stage (first
-//	    responder wins). Approving Customer Approval schedules the change
-//	    (is_customer_approval_required stamped), rejecting it cancels it; approving
-//	    Customer Review closes it (is_customer_review_required stamped), rejecting it
-//	    moves it to Rollback. The manual {state: scheduled} / {state: closed}
-//	    is then refused: the answer comes from the approval.
-//	without one (no customer group, or nobody eligible in it): no stage is
-//	    provisioned and the manual path above stays the way out, so a change
+//	with at least one eligible contact (an active registered contact who is not
+//	    the creator): entering Customer Approval / Customer Review provisions
+//	    an approval stage -- "Customer Approval" / "Customer Review", with NO
+//	    assignment group (the approvals response shows "Customer Group") -- and
+//	    one REQUESTED approver per eligible contact. The contacts decide it in
+//	    the Approvals tab, through DecideChangeRequestApproval like every other
+//	    stage (first responder wins). Approving Customer Approval schedules the
+//	    change (is_customer_approval_required stamped), rejecting it cancels it;
+//	    approving Customer Review closes it (is_customer_review_required
+//	    stamped), rejecting it moves it to Rollback. The manual
+//	    {state: scheduled} / {state: closed} is then refused: the answer comes
+//	    from the approval.
+//	without one (no project, or no eligible registered contact on it): no stage
+//	    is provisioned and the manual path above stays the way out, so a change
 //	    can never be stranded in a customer state with nobody able to answer.
 //
 // provisionCustomerStage keeps the stage in step with the change (state and
-// customer group) and is the one place that provisions, replaces or cancels it.
+// project contacts) and is the one place that provisions, replaces or cancels it.
 
 // Approver pools are INTERNAL-only. Every internal stage (Peer, CAB, ECAB,
 // Review) is decided in the portal by WSO2 staff, who see every project; an

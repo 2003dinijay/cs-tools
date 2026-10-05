@@ -483,8 +483,9 @@ func (c *CustomerEntityClient) PatchChangeRequest(ctx context.Context, id string
 }
 
 // GetChangeRequestLinkOptions calls POST /change-requests/link-options on the
-// entity service: the project's deployments and, for the deployments chosen so
-// far, the environments and deployment products that follow from them.
+// entity service: the project's deployments, the deployment products that
+// follow from the deployments chosen so far, and the project's registered
+// customer contacts (the read-only Customer Group).
 // Response is returned as raw JSON.
 func (c *CustomerEntityClient) GetChangeRequestLinkOptions(ctx context.Context, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, "/change-requests/link-options", body)

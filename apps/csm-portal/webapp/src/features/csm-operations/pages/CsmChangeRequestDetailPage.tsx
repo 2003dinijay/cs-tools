@@ -1102,6 +1102,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
           cr={cr}
           isSubmitting={transitionPending}
           error={rescheduleError}
+          reasonRecorded={rescheduleReasonRecorded}
           onClose={() => {
             if (transitionPending) return;
             setRescheduleOpen(false);

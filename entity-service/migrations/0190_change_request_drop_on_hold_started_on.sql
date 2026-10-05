@@ -18,6 +18,7 @@
 -- (no gating behaviour), has no ServiceNow counterpart (ServiceNow's change
 -- request carries on_hold / on_hold_reason / on_hold_task only), and nothing
 -- outside entity-service read it. is_on_hold and on_hold_reason are unchanged.
--- Deploy the code that no longer selects the column together with (or before)
--- this migration.
+-- Apply this migration only AFTER the code that no longer selects the column is
+-- live: until then the running code still reads on_hold_started_on, so dropping
+-- the column first would fail every change request read.
 ALTER TABLE change_request DROP COLUMN IF EXISTS on_hold_started_on;

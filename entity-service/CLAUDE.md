@@ -2839,7 +2839,10 @@ fields and validates the selection
 (`GetChangeRequestLinkOptions`): the project's active deployments, for the chosen ones
 the products that follow — computed by the same derivation the writes validate against,
 so what it offers is exactly what create accepts — and the project's registered
-contacts (the read-only Customer Group, name order, `[]` when none).
+contacts (the read-only Customer Group, name order, `[]` when none). The route is **internal callers only**
+(`internalOnly`, pinned by `TestChangeRequestLinkOptionsIsInternalOnly`): it takes a
+project id and returns that project's deployments and customer contacts, so an
+external caller must not be able to enumerate other projects through it.
 
 *ServiceNow mirror (dual-write).* `customerGroupId` and `environmentIds` are **no
 longer forwarded** (they are no longer accepted, so there is nothing to forward; the
@@ -3679,9 +3682,9 @@ populate them from.
 
 **Linking** — `CaseID` (`work_item.parent_id`, the generic self-reference, migration
 0039, not case-specific) and `AssignedEngineerID` are still PATCH-only. The
-Customer Project / Deployments / Environments / Deployment products fields can
-now be set at creation too (migration 0191, see "Customer project, deployments,
-environments and deployment products" below); `SearchChangeRequestView.Project`/`Case`
+Customer Project / Deployments / Deployment products fields can now be set at
+creation too (migration 0191, see "Customer project, deployments and deployment
+products" below); `SearchChangeRequestView.Project`/`Case`
 can still be empty (`EntityRef{}`)/`nil` for a change request that was created
 without them and never linked — a real, valid state for this schema, not a bug.
 

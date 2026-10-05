@@ -1900,6 +1900,31 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
     view.unmount();
   });
 
+  it("after a failed re-schedule the recorded reason is locked and a retry never posts it twice", async () => {
+    const view = runToCustomerApproval(null);
+    fireEvent.click(screen.getByRole("button", { name: "Re-schedule" }));
+    fireEvent.change(windowPicker("Planned start"), { target: { value: "03/08/2030 09:00 AM" } });
+    fireEvent.change(windowPicker("Planned end"), { target: { value: "03/08/2030 11:00 AM" } });
+    fireEvent.change(screen.getByLabelText(/reason \(optional\)/i), { target: { value: "Customer freeze next week." } });
+
+    patchMutateAsyncMock.mockRejectedValueOnce(new BackendApiError(409, "Rejected"));
+    fireEvent.click(dialogSubmit());
+    await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("alert")).toBeInTheDocument());
+    expect(postCommentMutateAsyncMock).toHaveBeenCalledTimes(1);
+
+    // The reason is now recorded: the field is locked so an edit can't be silently dropped.
+    expect(screen.getByLabelText(/reason \(optional\)/i)).toBeDisabled();
+    expect(
+      screen.getByText("Already recorded as a work note — retrying will only re-schedule."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(dialogSubmit());
+    await waitFor(() => expect(lc.cr.state).toBe("authorize"));
+    expect(patchMutateAsyncMock).toHaveBeenCalledTimes(2);
+    expect(postCommentMutateAsyncMock).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
   it("is not offered anywhere but Customer Approval", () => {
     lcSeed("normal", { approval: true, review: true });
     for (const state of ["new", "assess", "authorize", "scheduled", "implement", "review", "customer_review"]) {

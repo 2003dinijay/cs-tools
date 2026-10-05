@@ -52,6 +52,13 @@ interface ChangeRequestRescheduleDialogProps {
   isSubmitting: boolean;
   /** The backend's refusal for the last attempt, shown verbatim. */
   error?: string | null;
+  /**
+   * True once the reason has been saved as a work note by an earlier attempt
+   * whose PATCH then failed: the field is locked (as in the Roll back / Cancel
+   * dialog) so an edited reason can't be silently dropped when the retry skips
+   * posting it again.
+   */
+  reasonRecorded?: boolean;
   onClose: () => void;
   /**
    * `{state: "authorize", plannedStartOn?, plannedEndOn?}` plus the optional
@@ -73,6 +80,7 @@ export default function ChangeRequestRescheduleDialog({
   cr,
   isSubmitting,
   error,
+  reasonRecorded,
   onClose,
   onSubmit,
 }: ChangeRequestRescheduleDialogProps): JSX.Element {
@@ -155,12 +163,16 @@ export default function ChangeRequestRescheduleDialog({
             label="Reason (optional)"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            disabled={isSubmitting}
+            disabled={isSubmitting || reasonRecorded}
             multiline
             minRows={2}
             fullWidth
             size="small"
-            helperText="Recorded as an internal work note."
+            helperText={
+              reasonRecorded
+                ? "Already recorded as a work note — retrying will only re-schedule."
+                : "Recorded as an internal work note."
+            }
           />
         </Box>
       </DialogContent>

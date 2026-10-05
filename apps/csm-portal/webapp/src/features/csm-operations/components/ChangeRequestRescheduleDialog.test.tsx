@@ -139,4 +139,18 @@ describe("ChangeRequestRescheduleDialog", () => {
     expect(submitButton()).toBeDisabled();
     expect(screen.getByLabelText(/reason \(optional\)/i)).toBeDisabled();
   });
+
+  it("locks the reason once it is recorded, so a retry can't silently drop an edit", () => {
+    renderDialog({ reasonRecorded: true });
+    expect(screen.getByLabelText(/reason \(optional\)/i)).toBeDisabled();
+    expect(
+      screen.getByText("Already recorded as a work note — retrying will only re-schedule."),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the reason editable until it has been recorded", () => {
+    renderDialog({ reasonRecorded: false });
+    expect(screen.getByLabelText(/reason \(optional\)/i)).toBeEnabled();
+    expect(screen.getByText("Recorded as an internal work note.")).toBeInTheDocument();
+  });
 });
