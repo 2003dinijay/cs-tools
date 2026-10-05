@@ -1243,6 +1243,61 @@ func TestChangeRequestScopeFieldValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("create: customerGroupId needs projectId, refused before the entity service is called", func(t *testing.T) {
+		called := false
+		h := NewChangeRequestHandler(&mockEntityChangeRequestClient{createChangeRequestFn: func(_ context.Context, _ []byte) ([]byte, error) {
+			called = true
+			return []byte(`{"changeRequest":{"id":"x"}}`), nil
+		}})
+		w := httptest.NewRecorder()
+		h.CreateChangeRequest(w, withUser(httptest.NewRequest(http.MethodPost, "/change-requests",
+			strings.NewReader(`{"subject":"s","type":"normal","customerGroupId":"`+scopeProjectID+`"}`))))
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, "customerGroupId requires projectId: the customer group must belong to the selected customer project")
+		if called {
+			t.Fatal("the entity service was called for a customer group without a project")
+		}
+		// A PATCH may rely on the project the change request already has.
+		var got string
+		h = NewChangeRequestHandler(&mockEntityChangeRequestClient{patchChangeRequestFn: func(_ context.Context, _ string, b []byte) ([]byte, error) {
+			got = string(b)
+			return []byte(`{}`), nil
+		}})
+		body := `{"customerGroupId":"` + scopeProjectID + `"}`
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(body)))
+		r.SetPathValue("id", testCRID)
+		w = httptest.NewRecorder()
+		h.PatchChangeRequest(w, r)
+		assertStatus(t, w, http.StatusOK)
+		if got != body {
+			t.Fatalf("forwarded patch body = %s, want %s", got, body)
+		}
+	})
+
+	t.Run("the customer group refusals of the entity service are shown verbatim on create and patch", func(t *testing.T) {
+		for _, want := range []string{
+			"customerGroupId does not belong to the selected project: " + scopeProjectID,
+			"projectId cannot be changed without customerGroupId: the stored customer group does not belong to the new project (send customerGroupId for the new project; null clears it)",
+		} {
+			upstream := &apierror.Error{StatusCode: http.StatusBadRequest, Body: `{"message":"` + want + `"}`}
+			h := NewChangeRequestHandler(&mockEntityChangeRequestClient{
+				createChangeRequestFn: func(_ context.Context, _ []byte) ([]byte, error) { return nil, upstream },
+				patchChangeRequestFn:  func(_ context.Context, _ string, _ []byte) ([]byte, error) { return nil, upstream },
+			})
+			w := httptest.NewRecorder()
+			h.CreateChangeRequest(w, withUser(httptest.NewRequest(http.MethodPost, "/change-requests",
+				strings.NewReader(`{"subject":"s","type":"normal","projectId":"`+scopeProjectID+`","customerGroupId":"`+scopeProjectID+`"}`))))
+			assertStatus(t, w, http.StatusBadRequest)
+			assertErrorMessage(t, w, want)
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(`{"projectId":"`+scopeProjectID+`"}`)))
+			r.SetPathValue("id", testCRID)
+			w = httptest.NewRecorder()
+			h.PatchChangeRequest(w, r)
+			assertStatus(t, w, http.StatusBadRequest)
+			assertErrorMessage(t, w, want)
+		}
+	})
+
 	t.Run("a refused combination surfaces the entity service's message on create and patch", func(t *testing.T) {
 		upstream := &apierror.Error{StatusCode: http.StatusBadRequest, Body: `{"message":"deploymentIds contains a deployment that does not belong to the selected project: ` + scopeDeploymentID + `"}`}
 		want := "deploymentIds contains a deployment that does not belong to the selected project: " + scopeDeploymentID
@@ -1307,9 +1362,9 @@ func TestChangeRequestLinkOptions(t *testing.T) {
 		})
 	}
 
-	t.Run("forwards the body and returns the entity response as is", func(t *testing.T) {
+	t.Run("forwards the body and returns the entity response as is, customerGroups included", func(t *testing.T) {
 		body := `{"projectId":"` + scopeProjectID + `","deploymentIds":["` + scopeDeploymentID + `"]}`
-		const resp = `{"deployments":[{"id":"d1","name":"Prod","type":"primary_production","environment":{"id":"e1","name":"Primary Production"}}],"environments":[{"id":"e1","name":"Primary Production"}],"deploymentProducts":[{"id":"p1","name":"APIM 4.3.0","deployment":{"id":"d1","name":"Prod"}}]}`
+		const resp = `{"deployments":[{"id":"d1","name":"Prod","type":"primary_production","environment":{"id":"e1","name":"Primary Production"}}],"environments":[{"id":"e1","name":"Primary Production"}],"deploymentProducts":[{"id":"p1","name":"APIM 4.3.0","deployment":{"id":"d1","name":"Prod"}}],"customerGroups":[{"id":"g1","name":"PEKINPROD_customer"}]}`
 		var got string
 		h := NewChangeRequestHandler(&mockEntityChangeRequestClient{getChangeRequestLinkOptionsFn: func(_ context.Context, b []byte) ([]byte, error) {
 			got = string(b)

@@ -5587,6 +5587,17 @@ paths:
                 customerGroupId:
                   type: string
                   format: uuid
+                  description: >-
+                    The Customer Group (the customer-side people who approve /
+                    review the change). Based on the Customer Project: it must
+                    be one of the project's `customerGroups` from POST
+                    /change-requests/link-options, so a change request can
+                    never be directed at another customer's people. Requires
+                    `projectId` (400 `customerGroupId requires projectId: the
+                    customer group must belong to the selected customer
+                    project`); a group that is not the project's is a 400
+                    `customerGroupId does not belong to the selected project:
+                    <id>` (a project with no groups refuses every group).
                 category:
                   type: string
                   enum: [hardware, software, service, system_software, applications_software, network, telecom, documentation, other, regular_release_cloud, hotfix_release_cloud, devops, cloud_computing]
@@ -5647,9 +5658,11 @@ paths:
         Send the selected Customer Project to get its active deployments (each
         with its environment); add the deployments chosen so far to also get the
         environments and the (read-only) deployment products that follow from
-        them. `projectId` is required and `projectId` / `deploymentIds` must be
-        UUIDs (`deploymentIds` an array) -- 400 otherwise, also when a deployment
-        does not belong to the project.
+        them. The response also lists the project's customer groups
+        (`customerGroups`, name order) -- the only values `customerGroupId`
+        accepts for that project. `projectId` is required and `projectId` /
+        `deploymentIds` must be UUIDs (`deploymentIds` an array) -- 400
+        otherwise, also when a deployment does not belong to the project.
       operationId: postChangeRequestLinkOptions
       security:
         - bearerAuth: []
@@ -5676,8 +5689,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [deployments, environments, deploymentProducts]
+                required: [deployments, environments, deploymentProducts, customerGroups]
                 properties:
+                  customerGroups:
+                    type: array
+                    description: >-
+                      The customer groups associated with the project, name
+                      order; empty when it has none.
+                    items:
+                      $ref: '#/components/schemas/EntityRef'
                   deployments:
                     type: array
                     items:
@@ -12827,6 +12847,14 @@ components:
           type: string
           format: uuid
           nullable: true
+          description: >-
+            The Customer Group; null clears it. Must belong to the change
+            request's (effective) project, as on create. Changing `projectId`
+            while a group is stored requires a valid `customerGroupId` for the
+            new project (or null) in the same request -- otherwise 400
+            `projectId cannot be changed without customerGroupId: the stored
+            customer group does not belong to the new project (send
+            customerGroupId for the new project; null clears it)`.
         category:
           type: string
           nullable: true

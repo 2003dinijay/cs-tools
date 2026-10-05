@@ -210,8 +210,10 @@ var changeRequestScopeIDArrays = []string{"deploymentIds", "environmentIds", "de
 // category, comment and workNote strings; on a PATCH comment / workNote not
 // blank -- so a stray string or null is refused with a message the form can
 // show instead of a generic upstream decode failure. The relationships between
-// them (deployments of the project, environments of the deployments, ...) are
-// the entity service's to judge and are surfaced as its 400 message. A body
+// them (deployments of the project, environments of the deployments, the
+// customer group of the project, ...) are the entity service's to judge and
+// are surfaced as its 400 message; the one exception is a create carrying a
+// customerGroupId without a projectId, refused here with the same message. A body
 // that is not a JSON object is left for the upstream to reject.
 func validateChangeRequestScopeFields(body []byte, patch bool) string {
 	var payload map[string]json.RawMessage
@@ -229,6 +231,15 @@ func validateChangeRequestScopeFields(body []byte, patch bool) string {
 	}
 	if raw, ok := payload["customerGroupId"]; ok && !isUUIDString(raw) && !(patch && isNull(raw)) {
 		return "customerGroupId must be a UUID string"
+	}
+	// A customer group is only meaningful within the customer project it
+	// belongs to, so on create it needs a project (the entity service rules on
+	// whether the group is that project's, and a PATCH may rely on the project
+	// the change request already has).
+	if _, hasGroup := payload["customerGroupId"]; hasGroup && !patch {
+		if _, hasProject := payload["projectId"]; !hasProject {
+			return "customerGroupId requires projectId: the customer group must belong to the selected customer project"
+		}
 	}
 	for _, field := range changeRequestScopeIDArrays {
 		raw, ok := payload[field]
