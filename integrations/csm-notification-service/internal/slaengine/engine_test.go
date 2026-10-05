@@ -56,6 +56,7 @@ type fakeTierStore struct {
 
 	getErr        error
 	setErr        error
+	advanceErr    error
 	claimErr      error
 	releaseErr    error
 	claimEmailErr error
@@ -63,6 +64,7 @@ type fakeTierStore struct {
 	forceClaimLoss map[string]bool
 
 	sets            []tierCall
+	advances        []tierCall
 	claimCalls      []tierCall
 	releaseCalls    []tierCall
 	claimEmailCalls []tierCall
@@ -92,6 +94,21 @@ func (f *fakeTierStore) SetTier(_ context.Context, caseID, clockType string, tie
 	}
 	f.tiers[f.key(caseID, clockType)] = tier
 	f.sets = append(f.sets, tierCall{caseID, clockType, tier})
+	return nil
+}
+
+// AdvanceTier mirrors TierStore.AdvanceTier's own real semantics: the
+// stored cursor only ever moves up, never down or sideways to an equal
+// value, matching the real Lua script's "candidate > current" condition.
+func (f *fakeTierStore) AdvanceTier(_ context.Context, caseID, clockType string, tier int) error {
+	if f.advanceErr != nil {
+		return f.advanceErr
+	}
+	f.advances = append(f.advances, tierCall{caseID, clockType, tier})
+	key := f.key(caseID, clockType)
+	if current, ok := f.tiers[key]; !ok || tier > current {
+		f.tiers[key] = tier
+	}
 	return nil
 }
 
@@ -765,6 +782,61 @@ func TestEngine_Tick_RegressionReleasesClaimsAboveNewTier(t *testing.T) {
 	}
 }
 
+// TestTierStore_AdvanceTier_NeverMovesCursorBackward pins the
+// "advance-only-if-higher" contract AdvanceTier must satisfy — the fix for
+// a real concurrency gap a CodeRabbit review caught: two replicas can each
+// compute "current" from their own, slightly different /sla-status
+// snapshot for the SAME clock (one sees, say, 75%, a later one already
+// sees 100%), each win a DIFFERENT tier's Redis claim (claims are keyed
+// per tier, not per clock), and each alert successfully. If whichever
+// write happened to land second could freely overwrite the cursor, the
+// higher tier's own successful alert could be silently erased from the
+// cursor by a lower tier's later-arriving write — and once that higher
+// tier's own (now orphaned) claim eventually expires, a later poll would
+// wrongly alert it again. A lower or equal tier must never move the
+// cursor backward once a higher one is recorded.
+func TestTierStore_AdvanceTier_NeverMovesCursorBackward(t *testing.T) {
+	store := newFakeTierStore()
+	ctx := context.Background()
+
+	// No cursor yet: establishes the baseline, same as the real Lua
+	// script's "not current" branch.
+	if err := store.AdvanceTier(ctx, "CASE-1", "response", 75); err != nil {
+		t.Fatalf("AdvanceTier(75) error = %v", err)
+	}
+	if got := store.tiers["CASE-1|response"]; got != 75 {
+		t.Fatalf("cursor = %d, want 75", got)
+	}
+
+	// A genuinely higher tier (the other replica's own, later-crossing
+	// alert) advances it normally.
+	if err := store.AdvanceTier(ctx, "CASE-1", "response", 100); err != nil {
+		t.Fatalf("AdvanceTier(100) error = %v", err)
+	}
+	if got := store.tiers["CASE-1|response"]; got != 100 {
+		t.Fatalf("cursor = %d, want advanced to 100", got)
+	}
+
+	// The exact race this fix closes: a lower tier's own write lands
+	// AFTER the higher tier's write already landed (e.g. the replica that
+	// read an earlier, lower snapshot was simply slower to finish). It
+	// must not move the cursor backward.
+	if err := store.AdvanceTier(ctx, "CASE-1", "response", 75); err != nil {
+		t.Fatalf("AdvanceTier(75) error = %v", err)
+	}
+	if got := store.tiers["CASE-1|response"]; got != 100 {
+		t.Errorf("cursor = %d, want still 100 (a lower tier must never move it backward)", got)
+	}
+
+	// An equal value is also a no-op, not just a strictly lower one.
+	if err := store.AdvanceTier(ctx, "CASE-1", "response", 100); err != nil {
+		t.Fatalf("AdvanceTier(100) (repeat) error = %v", err)
+	}
+	if got := store.tiers["CASE-1|response"]; got != 100 {
+		t.Errorf("cursor = %d, want still 100", got)
+	}
+}
+
 // TestEngine_Tick_PropagatesEachTierStoreError pins the behavior of every
 // TierStore failure path processStatus has: a failed cursor read must skip
 // the clock (not reseed it and silently swallow a genuine crossing), and
@@ -805,18 +877,11 @@ func TestEngine_Tick_PropagatesEachTierStoreError(t *testing.T) {
 			setErrFn:   func(s *fakeTierStore) { s.claimErr = someErr },
 		},
 		{
-			name:       "SetTier fails advancing the cursor after a successful alert",
+			name:       "AdvanceTier fails advancing the cursor after a successful alert",
 			percent:    80,
 			seedCursor: true,
 			cursor:     50,
-			setErrFn: func(s *fakeTierStore) {
-				// Only the *second* SetTier call in this flow (the
-				// post-alert cursor advance) should fail — the store has
-				// no earlier SetTier call to conflict with in this
-				// particular scenario, so a plain unconditional setErr is
-				// enough here.
-				s.setErr = someErr
-			},
+			setErrFn:   func(s *fakeTierStore) { s.advanceErr = someErr },
 		},
 	}
 

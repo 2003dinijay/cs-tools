@@ -125,10 +125,61 @@ func (s *TierStore) GetTier(ctx context.Context, caseID, clockType string) (tier
 }
 
 // SetTier records tier as the last tier reached for (caseID, clockType),
-// refreshing tierTTL. Called both to seed/reseed a baseline (no alert sent)
-// and to record a tier this call just alerted for.
+// refreshing tierTTL, UNCONDITIONALLY — including backward, if tier is
+// lower than whatever is already stored. Correct for the two call sites
+// that deliberately intend that: first-sight seeding (processStatus's
+// !found branch) and a genuine regression reseed (processStatus's
+// current < last branch), both of which replace an old/absent value with
+// a fresh baseline, not advance past a prior alert. Do NOT use this to
+// record a tier this call just alerted for — see AdvanceTier below, which
+// is what every such call site must use instead.
 func (s *TierStore) SetTier(ctx context.Context, caseID, clockType string, tier int) error {
 	return s.rdb.Set(ctx, tierKey(caseID, clockType), strconv.Itoa(tier), tierTTL).Err()
+}
+
+// advanceTierScript atomically sets a cursor key to ARGV[1] only if it is
+// currently absent or lower than ARGV[1] — never moving it backward.
+// ARGV[2] is the TTL (seconds) to set/refresh alongside the value, same
+// window either way: if the compare-and-maybe-set itself didn't need to
+// write, the key's existing TTL must still be refreshed as if this call
+// were a genuine touch (matching SetTier's own refresh-on-every-call
+// behavior), since GetTier's "found" check otherwise has no other way to
+// learn this clock is still active.
+var advanceTierScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+local candidate = tonumber(ARGV[1])
+if (not current) or (candidate > tonumber(current)) then
+	redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+else
+	redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return 1
+`)
+
+// AdvanceTier atomically records tier as the last tier reached for
+// (caseID, clockType) — but ONLY if the currently stored cursor is absent
+// or lower than tier; a lower or equal tier never overwrites a higher
+// one. This is the call every success path (processStatus, right after
+// Engine.alertTier succeeds) must use instead of the plain SetTier above.
+//
+// Closes a real concurrency gap a CodeRabbit review caught: two replicas
+// can each compute "current" from their own, slightly different
+// /sla-status snapshot for the SAME clock (one sees, say, 75%, a later
+// one already sees 100%) and each separately win a DIFFERENT tier's Redis
+// claim — claims are keyed per (caseID, clockType, TIER), not per clock,
+// so this is not mutually exclusive the way a single tier's own SETNX
+// is — then each successfully alert independently. A plain SetTier from
+// each would let whichever write lands SECOND silently overwrite the
+// other, including moving the stored cursor backward from a higher tier
+// to a lower one even though the higher tier's alert genuinely already
+// fired; once that higher tier's own (now orphaned) claim key's TTL
+// eventually expires, a later poll would see the (wrongly lowered)
+// cursor below that tier again and alert it a second time.
+// AdvanceTier's compare-and-set keeps the stored cursor always equal to
+// the highest tier any replica has actually succeeded in alerting,
+// independent of write order.
+func (s *TierStore) AdvanceTier(ctx context.Context, caseID, clockType string, tier int) error {
+	return advanceTierScript.Run(ctx, s.rdb, []string{tierKey(caseID, clockType)}, tier, int(tierTTL.Seconds())).Err()
 }
 
 // ClaimTier atomically claims (caseID, clockType, tier) via Redis SETNX —

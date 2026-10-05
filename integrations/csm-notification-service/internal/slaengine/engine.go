@@ -41,6 +41,7 @@ type statusLister interface {
 type tierStore interface {
 	GetTier(ctx context.Context, caseID, clockType string) (tier int, found bool, err error)
 	SetTier(ctx context.Context, caseID, clockType string, tier int) error
+	AdvanceTier(ctx context.Context, caseID, clockType string, tier int) error
 	ClaimTier(ctx context.Context, caseID, clockType string, tier int) (claimed bool, err error)
 	ReleaseTier(ctx context.Context, caseID, clockType string, tier int) error
 	ClaimEmail(ctx context.Context, caseID, clockType string, tier int) (claimed bool, err error)
@@ -219,7 +220,14 @@ func (e *Engine) Tick(ctx context.Context) error {
 //     nothing further this tick. A failure to alert after winning the claim
 //     releases it (so a later tick — this replica or another — can retry
 //     the same tier rather than losing it for good), and the cursor only
-//     advances once the alert actually succeeds.
+//     advances once the alert actually succeeds — via TierStore.AdvanceTier,
+//     not the plain SetTier the other two cases above use, since claims are
+//     keyed per TIER, not per clock: two replicas computing "current" from
+//     two different /sla-status snapshots a moment apart can each win a
+//     DIFFERENT tier's claim and each alert successfully, and a plain
+//     unconditional write from each could let whichever lands second
+//     silently move the cursor backward. AdvanceTier's own doc comment has
+//     the full reasoning.
 //
 // A paused clock (s.IsPaused) is skipped outright: ServiceNow freezes
 // businessElapsedPercent while paused, so there is nothing to cross either
@@ -288,7 +296,7 @@ func (e *Engine) processStatus(ctx context.Context, s SLAStatus) error {
 		}
 		return fmt.Errorf("alert tier %d: %w", current, err)
 	}
-	if err := e.store.SetTier(ctx, s.CaseID, s.ClockType, current); err != nil {
+	if err := e.store.AdvanceTier(ctx, s.CaseID, s.ClockType, current); err != nil {
 		return fmt.Errorf("advance tier cursor to %d: %w", current, err)
 	}
 	return nil
