@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -442,5 +443,120 @@ func TestUpdateIncident_UnrelatedPatchSkipsTheBaselineFetch(t *testing.T) {
 	}
 	if gets != 0 {
 		t.Errorf("a subject-only PATCH made %d baseline read(s); it should make none", gets)
+	}
+}
+
+// newTestIncidentAssignmentClient stubs the baseline GET and the PATCH of an
+// assignment. An empty assignee id means the incident has none.
+func newTestIncidentAssignmentClient(t *testing.T, beforeAssignee, afterAssignee string) *integrationservice.Client {
+	t.Helper()
+	body := func(assignee string) string {
+		assigned := ""
+		if assignee != "" {
+			assigned = `, "assignedTo": {"id": "` + assignee + `", "name": "Ana"}`
+		}
+		return `{
+			"id": "` + testIncidentSysid + `",
+			"number": "INC0042",
+			"openedOn": "2026-09-09 04:30:00",
+			"subject": "Latency alert",
+			"priority": {"id": 2, "label": "priority"},
+			"state": {"id": 1, "label": "New"},
+			"assignmentGroup": {"id": "` + testIncidentSysid + `", "name": "Apollo"}` + assigned + `
+		}`
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/incidents/"+testIncidentSysid, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPatch {
+			_, _ = w.Write([]byte(`{"message":"Incident updated successfully.","incident":` + body(afterAssignee) + `}`))
+			return
+		}
+		_, _ = w.Write([]byte(body(beforeAssignee)))
+	})
+	return newTestSNClient(t, mux)
+}
+
+// Setting an assignee is the SRE ladder's acknowledgement, so it publishes
+// incident.assigned carrying who took it.
+func TestPublishIncidentAssigned_OnANewAssignee(t *testing.T) {
+	const engineer = "0123456789abcdef0123456789abcdef"
+	client := newTestIncidentAssignmentClient(t, "", engineer)
+	publisher := &mockEventPublisher{}
+	svc := NewServiceNowIncidentService(client, publisher)
+
+	assignee := sysidToUUID(engineer)
+	if _, err := svc.UpdateIncident(contextWithUserIDToken("token"), domain.UpdateIncidentRequest{
+		ID: testIncidentUUID, AssignedEngineerID: &assignee,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var p events.IncidentAssignedPayload
+	if err := json.Unmarshal(findPublished(t, publisher.calls, events.TypeIncidentAssigned).payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.AssigneeID != assignee || p.AssigneeName != "Ana" {
+		t.Errorf("payload = %+v, want the new assignee", p)
+	}
+}
+
+// Re-sending the assignee already set is not a new acknowledgement.
+func TestPublishIncidentAssigned_SameAssigneePublishesNothing(t *testing.T) {
+	const engineer = "0123456789abcdef0123456789abcdef"
+	client := newTestIncidentAssignmentClient(t, engineer, engineer)
+	publisher := &mockEventPublisher{}
+	svc := NewServiceNowIncidentService(client, publisher)
+
+	assignee := sysidToUUID(engineer)
+	if _, err := svc.UpdateIncident(contextWithUserIDToken("token"), domain.UpdateIncidentRequest{
+		ID: testIncidentUUID, AssignedEngineerID: &assignee,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, published := findPublishCall(publisher.calls, events.TypeIncidentAssigned); published {
+		t.Error("a no-op re-assignment published incident.assigned")
+	}
+}
+
+// How the incident was raised routes it: a monitoring source (Azure, Site24x7,
+// Sentinel) puts it on the SRE ladder whatever its team. The view's own
+// contact type is what the event carries.
+func TestPublishIncidentCreated_CarriesTheContactType(t *testing.T) {
+	body := strings.Replace(incidentEnrichmentBody, `"state":`, `"contactType": {"id": "1", "label": "Azure"}, "state":`, 1)
+	client := newTestIncidentEnrichmentClient(t, body, http.StatusOK)
+	publisher := &mockEventPublisher{}
+	svc := NewServiceNowIncidentService(client, publisher)
+
+	if _, err := svc.CreateIncident(contextWithUserIDToken("token"), validCreateIncidentRequest()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var p events.IncidentCreatedPayload
+	if err := json.Unmarshal(findPublished(t, publisher.calls, events.TypeIncidentCreated).payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.ContactType != "AZURE" {
+		t.Errorf("contactType = %q, want AZURE -- a monitoring-raised incident climbs the SRE ladder", p.ContactType)
+	}
+}
+
+// When the view cannot be read, the request's own contact type still goes out,
+// so a monitoring-raised incident is not routed as if a person had raised it.
+func TestPublishIncidentCreated_ContactTypeFallsBackToTheRequest(t *testing.T) {
+	client := newTestIncidentEnrichmentClient(t, "", http.StatusInternalServerError)
+	publisher := &mockEventPublisher{}
+	svc := NewServiceNowIncidentService(client, publisher)
+
+	req := validCreateIncidentRequest()
+	site := domain.IncidentContactTypeSite247
+	req.ContactType = &site
+	if _, err := svc.CreateIncident(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var p events.IncidentCreatedPayload
+	if err := json.Unmarshal(findPublished(t, publisher.calls, events.TypeIncidentCreated).payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.ContactType != "SITE_247" {
+		t.Errorf("contactType = %q, want SITE_247 from the request", p.ContactType)
 	}
 }

@@ -987,7 +987,15 @@ func publishIncidentCreatedEvent(ctx context.Context, publisher EventPublisherSe
 		Number:           number,
 		ReportedAt:       snTimeToRFC3339(ctx, "sn create incident", "createdOn", createdOn),
 	}
+	// How it was raised, from the request until the view below says otherwise:
+	// it decides whether a monitoring-raised incident climbs the SRE ladder.
+	if req.ContactType != nil {
+		event.ContactType = string(*req.ContactType)
+	}
 	if view, verr := fetchIncidentView(ctx, fetch, incidentID); verr == nil {
+		if view.ContactType != nil && *view.ContactType != "" {
+			event.ContactType = *view.ContactType
+		}
 		if view.Priority != nil {
 			event.Priority = *view.Priority
 		}
@@ -1644,6 +1652,49 @@ func (s *snIncidentService) publishEscalationSignals(
 			s.publishIncidentPriorityElevated(ctx, req.ID, oldP, newP, after)
 		}
 	}
+	if req.AssignedEngineerID != nil {
+		if assignee, ok := incidentAssignment(before, after); ok {
+			s.publishIncidentAssigned(ctx, req.ID, assignee)
+		}
+	}
+}
+
+// incidentAssignment reports a genuine change of assignee to someone. Clearing
+// the assignee, or re-sending the one already set, acknowledges nothing.
+func incidentAssignment(before, after domain.IncidentView) (domain.EntityRef, bool) {
+	if after.AssignedTo == nil || after.AssignedTo.ID == "" {
+		return domain.EntityRef{}, false
+	}
+	if before.AssignedTo != nil && before.AssignedTo.ID == after.AssignedTo.ID {
+		return domain.EntityRef{}, false
+	}
+	return *after.AssignedTo, true
+}
+
+// publishIncidentAssigned emits the SRE escalation ladder's stop signal: an
+// engineer has taken the incident.
+func (s *snIncidentService) publishIncidentAssigned(ctx context.Context, incidentID string, assignee domain.EntityRef) {
+	publishIncidentAssignedEvent(ctx, s.publisher, incidentID, assignee)
+}
+
+// publishIncidentAssignedEvent is publishIncidentAssigned for any data source, so the Postgres
+// incident update sends the same event. A nil publisher publishes nothing.
+func publishIncidentAssignedEvent(ctx context.Context, publisher EventPublisherService, incidentID string, assignee domain.EntityRef) {
+	if publisher == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, publishIncidentEscalationSignalTimeout)
+	defer cancel()
+
+	payload, err := json.Marshal(events.IncidentAssignedPayload{AssigneeID: assignee.ID, AssigneeName: assignee.Name})
+	if err != nil {
+		slog.ErrorContext(ctx, "update incident: encode incident.assigned payload failed", "incidentId", incidentID, "error", err)
+		return
+	}
+	if err := publisher.Publish(ctx, events.TypeIncidentAssigned, incidentID, payload); err != nil {
+		// Not logging err itself, same reasoning as publishIncidentCreated.
+		slog.ErrorContext(ctx, "update incident: publish incident.assigned failed", "incidentId", incidentID)
+	}
 }
 
 // incidentUpdateTouchesPriority reports whether an update could change the
@@ -1662,7 +1713,7 @@ func incidentUpdateTouchesPriority(req domain.UpdateIncidentRequest) bool {
 // stop a call escalation, and so whether the pre-PATCH baseline is worth
 // fetching.
 func incidentUpdateTouchesEscalation(req domain.UpdateIncidentRequest) bool {
-	return req.State != nil || incidentUpdateTouchesPriority(req)
+	return req.State != nil || incidentUpdateTouchesPriority(req) || req.AssignedEngineerID != nil
 }
 
 // incidentStateTransition reports a genuine move out of NEW. Leaving NEW is
@@ -1708,6 +1759,15 @@ func incidentPriorityElevation(before, after domain.IncidentView) (oldP, newP st
 // publishIncidentAcknowledged emits the signal that cancels a running call
 // escalation for this incident.
 func (s *snIncidentService) publishIncidentAcknowledged(ctx context.Context, incidentID, prev, next string) {
+	publishIncidentAcknowledgedEvent(ctx, s.publisher, incidentID, prev, next)
+}
+
+// publishIncidentAcknowledgedEvent is publishIncidentAcknowledged for any data source. A nil
+// publisher publishes nothing.
+func publishIncidentAcknowledgedEvent(ctx context.Context, publisher EventPublisherService, incidentID, prev, next string) {
+	if publisher == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(ctx, publishIncidentEscalationSignalTimeout)
 	defer cancel()
 
@@ -1716,13 +1776,34 @@ func (s *snIncidentService) publishIncidentAcknowledged(ctx context.Context, inc
 		NewState:      next,
 	})
 	if err != nil {
-		slog.ErrorContext(ctx, "sn update incident: encode incident.acknowledged payload failed", "incidentId", incidentID, "error", err)
+		slog.ErrorContext(ctx, "update incident: encode incident.acknowledged payload failed", "incidentId", incidentID, "error", err)
 		return
 	}
-	if err := s.publisher.Publish(ctx, events.TypeIncidentAcknowledged, incidentID, payload); err != nil {
+	if err := publisher.Publish(ctx, events.TypeIncidentAcknowledged, incidentID, payload); err != nil {
 		// Not logging err itself, same reasoning as publishIncidentCreated:
 		// it can carry raw Event Hub client detail.
-		slog.ErrorContext(ctx, "sn update incident: publish incident.acknowledged failed", "incidentId", incidentID)
+		slog.ErrorContext(ctx, "update incident: publish incident.acknowledged failed", "incidentId", incidentID)
+	}
+}
+
+// publishIncidentStopSignals sends the two events that stop a running call escalation,
+// incident.acknowledged (it left NEW) and incident.assigned (an engineer took it), from the
+// incident before and after an update -- the Postgres counterpart of publishEscalationSignals'
+// stop half. Without them an incident created in Postgres (an alert-born SRE incident) pages
+// every rung even after somebody has it. before without an ID means no baseline: nothing is sent.
+func publishIncidentStopSignals(ctx context.Context, publisher EventPublisherService, req domain.UpdateIncidentRequest, before, after domain.IncidentView) {
+	if publisher == nil || before.ID == nil {
+		return
+	}
+	if req.State != nil {
+		if prev, next, ok := incidentStateTransition(before, after); ok {
+			publishIncidentAcknowledgedEvent(ctx, publisher, req.ID, prev, next)
+		}
+	}
+	if req.AssignedEngineerID != nil {
+		if assignee, ok := incidentAssignment(before, after); ok {
+			publishIncidentAssignedEvent(ctx, publisher, req.ID, assignee)
+		}
 	}
 }
 

@@ -155,7 +155,7 @@ func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolic
 	if haveRule {
 		includeLevel0 = matched.Levels[Level0] != SourceNone
 	}
-	policy, ok := Lookup(policies, t.Priority)
+	policy, ok := PolicyFor(policies, t)
 	if !ok {
 		return Plan{}, fmt.Errorf("escalation: no policy for priority %q", t.Priority)
 	}
@@ -175,7 +175,18 @@ func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolic
 		attempts := attemptsByLevel[level]
 		opensAt := t.At.Add(attempts[0].After)
 
-		recipients, err := r.Resolve(ctx, level, t.Routing)
+		// An SRE rung calls whoever holds its tier when it opens, not when
+		// the incident was reported: a ladder reported at 13:25 opens L2 at
+		// 13:30, inside TZ2, and TZ1's L2 has gone home by then. Asked at the
+		// report instant, it called the wrong zone, or nobody when the
+		// earlier window had no holder for that tier. The CRE ladder keeps
+		// the report instant; its rungs are ranks and rota pairs fixed by
+		// the shift the incident arrived in.
+		rc := t.Routing
+		if rc.Ladder == LadderSRE {
+			rc.At = opensAt
+		}
+		recipients, err := r.Resolve(ctx, level, rc)
 		if err != nil {
 			plan.Issues = append(plan.Issues, PlanIssue{
 				Level: level, At: opensAt, Reason: "RESOLVE_FAILED", Detail: err.Error(),
@@ -341,6 +352,11 @@ func (t Trigger) caseRef() string {
 // differ by exactly these two characters, which is why this takes a flag
 // rather than the callers sharing one string.
 func (t Trigger) instruction(quoted bool) string {
+	// The SRE ladder stops when an engineer takes the incident, whichever
+	// trigger started it.
+	if t.Routing.Ladder == LadderSRE {
+		return "Assign the incident to yourself to stop further calls."
+	}
 	if t.Kind != TriggerNewIncident {
 		return "Add a public comment to stop further notifications."
 	}

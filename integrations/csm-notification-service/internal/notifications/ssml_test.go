@@ -152,3 +152,18 @@ func TestMakeSSMLCall_Validation(t *testing.T) {
 		t.Error("expected an error when Twilio is not configured")
 	}
 }
+
+// The transcript is the spoken words only, with ordinary spacing, so a card
+// can quote what the call says.
+func TestSpeech_Transcript(t *testing.T) {
+	s := Speech{Sentences: []Sentence{
+		{Parts: []SpeechPart{Say("WSO2 Support Alert.")}},
+		{Parts: []SpeechPart{Say("Case number - "), Pause("500ms"), Say(" "), Spell("90%", "INC001"), Say(" .")}},
+		{Parts: []SpeechPart{Stress("moderate", " Add a public comment.")}},
+		{Parts: []SpeechPart{Pause("1s")}},
+	}}
+	want := "WSO2 Support Alert. Case number - INC001. Add a public comment."
+	if got := s.Transcript(); got != want {
+		t.Fatalf("Transcript() = %q, want %q", got, want)
+	}
+}

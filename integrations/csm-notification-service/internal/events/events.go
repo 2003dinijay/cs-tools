@@ -79,6 +79,12 @@ const (
 	// TypeIncidentAcknowledged can never fire for it again; without this event
 	// an elevation's ladder ran to exhaustion no matter what anyone did.
 	TypeIncidentCommentAdded Type = "incident.comment_added"
+	// TypeIncidentAssigned is published when an engineer is set as an
+	// incident's assignee. It is the SRE ladder's acknowledgement gesture
+	// ("assignee set on incident"): whoever takes the incident stops the
+	// calls. Like the other incident.* signals above it belongs to
+	// internal/paging, and dispatch.Handle no-ops on it.
+	TypeIncidentAssigned Type = "incident.assigned"
 
 	// TypeSLATierReached belongs to internal/slaengine, not internal/dispatch
 	// — see SLATierReachedPayload below. Not an email trigger (no
@@ -119,7 +125,7 @@ const (
 // that enumerate valid values.
 var KnownTypes = []Type{
 	TypeCaseCreated, TypeCommentAdded, TypeStatusChanged, TypeCaseAssigned, TypeCaseAcknowledged, TypeSeverityChanged, TypeIncidentCreated,
-	TypeIncidentAcknowledged, TypeIncidentPriorityElevated, TypeIncidentCommentAdded,
+	TypeIncidentAcknowledged, TypeIncidentPriorityElevated, TypeIncidentCommentAdded, TypeIncidentAssigned,
 	TypeSLATierReached,
 	TypeCRApprovalRequested, TypeCRPlanDateNotice,
 	TypeOutageNotificationDue, TypeOutageCommunicationDue,
@@ -392,6 +398,12 @@ type IncidentCreatedPayload struct {
 	CallTo string `json:"callTo"`
 
 	// --- escalation ladder inputs, all optional (see the doc comment above) ---
+	// ContactType is how the incident was raised, as the incident view spells
+	// it: AZURE, SITE_247 or SENTINEL when a monitoring source raised it,
+	// EMAIL, PHONE, SELF_SERVICE and so on when a person did. The SRE ladder
+	// reads it: a monitoring-raised incident climbs the SRE ladder whatever
+	// team it is assigned to, or when it is assigned to none. Optional.
+	ContactType string `json:"contactType,omitempty"`
 
 	// Number is the incident's human-readable reference (e.g. "INC0012345"),
 	// used as the case reference the voice message reads out and in the
@@ -450,6 +462,18 @@ type IncidentCommentAddedPayload struct {
 	CommentID string `json:"commentId"`
 	// IsPublic is false for a work note.
 	IsPublic bool `json:"isPublic"`
+}
+
+// IncidentAssignedPayload is TypeIncidentAssigned's payload. Published by
+// entity-service's UpdateIncident when the assignee genuinely changes to
+// someone, never on a no-op re-PATCH or when the assignee is cleared.
+type IncidentAssignedPayload struct {
+	// AssigneeID is the engineer now assigned, as entity-service identifies
+	// them. Required: an assignment to nobody acknowledges nothing.
+	AssigneeID string `json:"assigneeId"`
+	// AssigneeName is for the execution summary, so the work note says who
+	// took the incident. Optional; a publisher that cannot resolve it omits it.
+	AssigneeName string `json:"assigneeName,omitempty"`
 }
 
 // SLATierReachedPayload is TypeSLATierReached's payload — published by
@@ -512,6 +536,7 @@ type IncidentPriorityElevatedPayload struct {
 	// this ladder's offsets are measured from.
 	ElevatedAt string `json:"elevatedAt,omitempty"`
 }
+
 // TypeCRPlanDateNotice is published by csm-flow-service's cr_plan_date_notice
 // flow — the plan-start-date conversation between WSO2 and a customer. One
 // type for all three notices because they differ only in wording and audience.

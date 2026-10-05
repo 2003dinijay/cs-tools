@@ -15,6 +15,54 @@
 
 enabled: true
 
+# Which ladders an incident climbs. Both engines read these rules; each asks
+# only about its own ladder, so an incident can climb both.
+#
+# An incident climbs every ladder named by any rule it matches. A rule matches
+# when every condition it states matches; a condition left out matches
+# anything. Change who goes where here, not in code.
+#
+#   team         sre  -- assigned to an SRE team (sre.teams.abts)
+#                cre  -- assigned to any other team the rota knows
+#                none -- no assignment group, or one the rota does not know
+#   contactType  how the incident was raised: AZURE, SITE_247, SENTINEL are
+#                monitoring sources; EMAIL, PHONE, SELF_SERVICE ... are people.
+#                Punctuation is ignored (SITE_247 matches SITE_24_7).
+#   priority     codes or labels: P0 also matches CATASTROPHIC.
+#
+# A rule with NO team condition (monitoring) takes incidents with no known team
+# on purpose and overrides that ladder's trigger.requireKnownTeam. A rule that
+# names none among its teams (cre-team) only matches them: that ladder's own
+# requireKnownTeam still decides.
+# Omit this whole section and these same four rules apply.
+routing:
+  rules:
+    # A CRE team's incident, and one assigned to no team -- the CRE rule table
+    # has rows for "assigned to no ABT". cre.trigger.requireKnownTeam below
+    # still refuses the team-less ones locally.
+    - name: cre-team
+      when: { team: [cre, none] }
+      ladders: [cre]
+
+    # The SRE rules sheet's "Is assigned to an SRE ABT team = Yes" rows.
+    - name: sre-abt-team
+      when: { team: [sre] }
+      ladders: [sre]
+
+    # A P0 raised on the CRE side needs both teams at once. An incident's
+    # highest priority is CRITICAL (incidents carry no CATASTROPHIC), so it
+    # counts as the CRE side's P0 here.
+    - name: cre-p0
+      when: { team: [cre], priority: [P0, CRITICAL] }
+      ladders: [sre]
+
+    # The SRE rules sheet's "= No" rows: raised by monitoring, climbs the SRE
+    # ladder by zone with no team preference -- and, on a CRE team, the CRE
+    # ladder as well (through cre-team).
+    - name: monitoring
+      when: { contactType: [AZURE, SITE_247, SENTINEL] }
+      ladders: [sre]
+
 cre:
   enabled: true
 
@@ -259,16 +307,72 @@ cre:
     # the plan is still built from the real rota, but only these ring.
     allowedNumbers: []
 
+# The SRE ladder: an incident assigned to an SRE team, called by on-call tier.
+#
+#   LEVEL_0  L1 support   the moment the incident is created
+#   LEVEL_1  L2 support   +interval, if nobody has been assigned
+#   LEVEL_2  L3 support   +interval
+#   LEVEL_3  L4 support   +interval, only with timing.includeL4 (NOT CONFIRMED)
+#
+# One person per rung, whoever holds that tier on the rota when the incident
+# arrives: the incident's own SRE team first, then the zone whose L1 block is
+# live (so the weekday 12:00-15:00 TZ1/TZ2 overlap calls one person, not two),
+# then the order of teams.abts below. It stops when an engineer is assigned, or
+# the incident leaves NEW. A public comment alone does not stop it.
+#
+# No priority gate: every SRE incident gets a ladder. Which incidents are SRE
+# incidents is the routing section at the top. The rules this follows are in
+# "SRE Notification Escalation rules .xlsx" (R1-R7).
 sre:
   enabled: true
+
+  # log | chat | call | both -- see cre.channel above.
   channel: log
-  teams:
-    # The other ABT: two teams.
-    abtType: sre-abt
-    abts: [apollo, artemis]
   trigger:
+    # Which priorities get a ladder at all. Empty means every priority --
+    # unlike CRE, the SRE clock does not depend on priority.
     priorities: []
+
+    teams: []
+    excludeTeams: []
+    shifts: []
     requireKnownTeam: true
+
+
+  # The clock. One call per rung, the same for every priority.
+  timing:
+    initialWait: 0s
+    interval: 5m
+    # L4 support has no source: the rota's tiers stop at L3. On, it reaches
+    # the lead of the SRE team answering the incident -- an assumption.
+    includeL4: false
+
+  # The SRE ladder's own Google Chat space, the same mechanism as cre.chat:
+  # webhookUrlEnv is the NAME of the variable holding the webhook URL, never
+  # the URL itself (a credential). Keep it in scripts/csm-compose/.env, which
+  # is git-ignored. Used when channel is chat or both.
+  chat:
+    webhookUrlEnv: SRE_CHAT_WEBHOOK_URL
+    audience: "SRE"
+
+  teams:
+    # The other ABT, as team.type spells it: sre-abt holds two teams.
+    abtType: sre-abt
+    # Named outright, which wins over abtType. An incident assigned to one of
+    # these climbs this ladder; the order breaks a tie when an incident belongs
+    # to none of them (a CRE P0) and both have somebody on the tier. A team
+    # must not also be in cre.teams.abts -- that is a configuration error.
+    abts: [apollo, artemis]
+    # Assignment-group names that are not simply a team key. The alert flow
+    # assigns the service's support group; if its name is not "Apollo" or
+    # "Artemis", map it here, or its incidents climb the CRE ladder. e.g.
+    #   aliases:
+    #     "SRE - Apollo": apollo
+    aliases: {}
+
   safety:
-    maxCallsPerLadder: 8
+    # L1 + L2 + L3 (+ L4) is at most four calls; anything above that means a
+    # rung resolved to more than one person, which it never should.
+    maxCallsPerLadder: 4
+    # maxLevel: 2
     allowedNumbers: []

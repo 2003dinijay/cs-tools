@@ -2184,3 +2184,18 @@ func TestDispatcher_Handle_CRPlanDateNotice_WordingPerKind(t *testing.T) {
 		})
 	}
 }
+
+// incident.assigned belongs to the escalation ladder, which stops an SRE
+// ladder on it. The dispatcher's own consumer group gets a copy of the same
+// topic and must acknowledge it as a no-op, not dead-letter it as unknown.
+func TestDispatcher_Handle_IncidentAssignedIsANoOp(t *testing.T) {
+	call := &mockCallSender{}
+	d := NewDispatcher(&mockEmailSender{}, &mockGoogleChatSender{}, call, &mockLinkResolver{}, true, false, nil, true, "+15550000000", nil)
+	body := `{"type":"incident.assigned","entityId":"inc-1","payload":{"assigneeId":"u-1","assigneeName":"Engineer"}}`
+	if err := d.Handle(context.Background(), eventbus.Record{Value: []byte(body)}); err != nil {
+		t.Fatalf("Handle() error = %v; want nil", err)
+	}
+	if len(call.calls) != 0 {
+		t.Fatalf("dispatcher placed %d call(s) for incident.assigned", len(call.calls))
+	}
+}

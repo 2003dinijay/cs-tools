@@ -273,7 +273,7 @@ echo "    CRE channel: $CHANNEL${CALL_ME:+  (calls pinned to $CALL_ME)}"
 
 echo "==> building the publisher (entity-service's own event struct)"
 ( cd entity-service && GOOS=linux GOARCH="$(docker compose exec -T entity-service uname -m | tr -d '\r' | sed 's/aarch64/arm64/;s/x86_64/amd64/')" \
-    go build -o /tmp/publish-incident ./cmd/publish-incident )
+    go build -o /tmp/publish-incident ./internal/tools/publishincident/main.go )
 docker compose cp /tmp/publish-incident entity-service:/tmp/publish-incident >/dev/null
 
 echo "==> publishing"

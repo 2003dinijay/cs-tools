@@ -321,6 +321,104 @@ ticker, with Redis as its only durable state — the same `REDIS_URL`/
   `INCIDENT_ESCALATION_SSML=true`. No `<speak>` root: in TwiML, `<Say>` is
   the root.
 
+### The SRE ladder (`sre.go`, `teamschedule_sre.go`)
+
+There are two ladders, and **one engine per ladder**: `cmd/server/main.go`
+starts a CRE engine and an SRE engine (`EngineConfig.Kind`), each with its own
+channel, its own consumer group (`INCIDENT_ESCALATION_CONSUMER_GROUP`,
+`INCIDENT_ESCALATION_SRE_CONSUMER_GROUP`) and its own Redis namespace
+(`Store.ForLadder` -- the CRE ladder keeps the original keys, so ladders stored
+before this existed are still found). One engine per ladder because **a P0 CRE
+incident climbs both at once**: sharing one namespace would make the second
+SETNX look like a redelivery, and sharing one wake index would let each tick
+place the other ladder's calls over its own channel.
+
+**Which ladders an incident climbs is configuration, not code**: the file's
+top-level `routing:` section (`routing.go`). `Engine.claims` matches the
+incident's team family (`sre` / `cre` / `none`, from
+`TeamScheduleResolver.TeamFamily`), `contactType` and priority against the
+rules, and an engine claims the incident when a matching rule names its ladder
+-- so one incident can climb both. A rule with **no** `team` condition
+(`monitoring`) deliberately takes team-less incidents and overrides that
+ladder's `trigger.requireKnownTeam`; a rule that merely lists `none` among its
+teams (`cre-team`) matches them but leaves the decision to that ladder's own
+`requireKnownTeam`, so the CRE side keeps control of CRE. Absent, `DefaultRouting` applies:
+
+    cre-team      team [cre, none]                       -> cre
+    sre-abt-team  team [sre]                             -> sre   (sheet "Yes" rows)
+    cre-p0        team [cre], priority [P0, CRITICAL]    -> sre
+    monitoring    contactType [AZURE, SITE_247, SENTINEL]-> sre   (sheet "No" rows)
+
+`contactType` comes from entity-service's `incident.created`
+(`IncidentCreatedPayload.ContactType`, the incident view's label, falling back
+to the create request's); it is compared ignoring punctuation, so `SITE_247`
+matches the database's `SITE_24_7`. The one rule kept in code is a property of
+the SRE ladder, not of routing: its clock ignores priority, so an elevation
+starts an SRE ladder only through a rule that conditions on priority.
+`crePriorities` (the earlier SRE-only setting) is gone -- an unknown key, so a
+file still carrying it fails to load rather than being silently ignored.
+
+An incident is an SRE team's when its assignment group (after
+`sre.teams.aliases`) is in `sre.teams.abts`; with no list configured, the Team
+Schedule catalogue's team `family` answers.
+
+    LEVEL_0  L1 support   at once
+    LEVEL_1  L2 support   +interval (5m)
+    LEVEL_2  L3 support   +interval
+    LEVEL_3  L4 support   +interval, only with sre.timing.includeL4 (NOT CONFIRMED)
+
+**One call, one person per rung**, the same clock for every priority, and **no
+priority gate** -- `PolicyFor` gates only the CRE ladder on priority; an SRE
+incident at PLANNING still gets its clock. The clock is `sre.timing`
+(`SRETiming.Policy`); without a file, `INCIDENT_ESCALATION_SRE_L4` still turns
+L4 on. A rung is whoever holds that **tier** on an SRE window at the instant
+**that rung opens** (on-duty `tier`, else the window's own) -- not the report
+instant: a ladder reported at 13:25 opens L2 at 13:30, inside TZ2, and asked
+at 13:25 it called TZ1's L2 after they had gone home, or nobody when TZ1 had
+no holder for the tier. `BuildPlan` sets `RoutingContext.At` to the rung's
+opening time for the SRE ladder only; the CRE ladder keeps the report instant,
+its rungs being fixed by the shift the incident arrived in. Picked in this order: the
+incident's own SRE team; then the zone whose L1 block is live -- weekdays
+12:00-15:00 IST the TZ1 and TZ2 escalation windows are both live, and the SRE
+team confirmed only one person is called; then `sre.teams.abts` order; then
+email. The rota has no L4 tier, so L4 is the lead of the answering team -- the
+incident's own, or for a CRE P0 the team of whoever took L1. An assumption.
+
+**Stops on**: `incident.assigned` (an engineer set as the assignee, published
+by entity-service) or `incident.acknowledged` (leaving NEW). A public comment
+does **not** stop an SRE ladder -- it may be a third party triaging -- and an
+assignee does not stop a CRE one (the engine's `Kind` decides; there is no
+per-plan check). An elevation never restarts an SRE team's ladder: its clock
+does not depend on priority. The voice message and card say "assign the
+incident to yourself", and the rule is reported as `SRE_TIERS`.
+
+**Configuration** is the file's `sre:` section, the same shape as `cre:` plus
+`timing` and `teams.abts`/`teams.aliases`; who climbs it is `routing:`. Each
+ladder's own keys are refused on the other (a `timing:` under `cre:` is an
+error, not ignored), and a team in both `cre.teams.abts` and `sre.teams.abts` is
+an error -- its lead would still be called on every CRE ladder's
+`all_team_leads` rung.
+
+**Numbers**: the rota holds none. `INCIDENT_ESCALATION_PHONES` (JSON, e-mail ->
+E.164) or `INCIDENT_ESCALATION_TEST_CALL_TO` (every call to one number) fill
+them through `TeamScheduleResolver.WithPhoneBook`. A chat-only ladder needs
+neither.
+
+**Where alert-born incidents come from.** `sre-alert-core-service` creates the
+CSM incident (`engine.deliverAndPersist` -> `notify.NotifyCSM` -> `POST
+/incidents` on csm-integration-service, which passes the body through to
+entity-service). entity-service publishes `incident.created` through
+`publishIncidentCreatedEvent` on every data source, plain `postgres` included,
+once the insert commits; the event is enriched from the stored incident, so it
+carries the team, priority and contact type routing reads. The create request
+sends `contactType` when the alert's source has one (AZURE, SITE_247,
+SENTINEL), which the `monitoring` rule matches. It sends no assignment group:
+entity-service assigns the incident to its service's support group (#2353), and
+that group's family is what the `sre-abt-team` rule matches. The local
+end-to-end tools (`sre-e2e.sh`, `trigger-escalation.sh`) still publish the
+event themselves, through `entity-service/internal/tools/publishincident`, to
+drive a ladder without creating an incident.
+
 **Wiring** (`cmd/server/main.go`): inside the Redis block, started only when
 the ladder has somebody to resolve rungs from (`escalationStartProblem`): the
 Team Schedule, with `INCIDENT_ESCALATION_RESOLVER=team-schedule` and

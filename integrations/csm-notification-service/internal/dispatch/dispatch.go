@@ -476,9 +476,10 @@ func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {
 		return d.handleSeverityChanged(ctx, record, env.Payload)
 	case events.TypeIncidentCreated:
 		return d.handleIncidentCreated(ctx, record, env.Payload)
-	case events.TypeIncidentAcknowledged, events.TypeIncidentPriorityElevated, events.TypeIncidentCommentAdded:
+	case events.TypeIncidentAcknowledged, events.TypeIncidentPriorityElevated, events.TypeIncidentCommentAdded,
+		events.TypeIncidentAssigned:
 		// The incident call-escalation ladder (internal/paging) owns
-		// these three; the notification dispatcher reacts to none of them. Same
+		// these four; the notification dispatcher reacts to none of them. Same
 		// reasoning as the sla.* case below — erroring here would burn this
 		// consumer's retries and dead-letter a perfectly valid event that
 		// simply is not this consumer's concern.

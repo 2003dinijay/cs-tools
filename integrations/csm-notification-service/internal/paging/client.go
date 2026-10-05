@@ -183,6 +183,12 @@ type onDutyAssignment struct {
 	} `json:"engineer"`
 	TeamKey   string `json:"teamKey"`
 	ShiftCode string `json:"shiftCode"`
+	// Tier is the on-call tier the assignment holds (L1, L2, L3), or nil for
+	// someone working the window without one -- in which case the window's
+	// own tier, if it has one, is the answer. The SRE ladder reads it.
+	Tier *string `json:"tier,omitempty"`
+	// ZoneCode is the SRE zone (TZ1, TZ2, TZ3) the turn belongs to.
+	ZoneCode *string `json:"zoneCode,omitempty"`
 }
 
 type onDutyResponse struct {
@@ -209,6 +215,36 @@ func (c *EntityClient) OnDutyAt(ctx context.Context, at time.Time) ([]onDutyAssi
 		return nil, fmt.Errorf("escalation: decode on-duty: %w", err)
 	}
 	return resp.Assignments, nil
+}
+
+// scheduleCatalogue is the part of GET /team-schedule/catalogue the resolver
+// reads: which family each team and each window belongs to.
+type scheduleCatalogue struct {
+	Teams []struct {
+		Key    string `json:"key"`
+		Name   string `json:"name"`
+		Family string `json:"family"`
+	} `json:"teams"`
+	Shifts []struct {
+		Code     string  `json:"code"`
+		Family   string  `json:"family"`
+		ZoneCode *string `json:"zoneCode,omitempty"`
+		Tier     *string `json:"tier,omitempty"`
+	} `json:"shifts"`
+}
+
+// ScheduleCatalogue returns the rota's teams and windows. It changes by
+// migration rather than daily; the resolver reads it once per ladder.
+func (c *EntityClient) ScheduleCatalogue(ctx context.Context) (scheduleCatalogue, error) {
+	raw, err := c.do(ctx, http.MethodGet, "/team-schedule/catalogue", nil)
+	if err != nil {
+		return scheduleCatalogue{}, err
+	}
+	var cat scheduleCatalogue
+	if err := json.Unmarshal(raw, &cat); err != nil {
+		return scheduleCatalogue{}, fmt.Errorf("escalation: decode catalogue: %w", err)
+	}
+	return cat, nil
 }
 
 // do executes an authenticated HTTP request against entity-service and returns

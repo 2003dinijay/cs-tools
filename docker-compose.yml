@@ -534,6 +534,10 @@ services:
       # The CRE ladder's own room, named by escalation.yaml cre.chat.webhookUrlEnv.
       # Supplied by trigger-escalation.sh from the service's .env; never committed.
       CRE_CHAT_WEBHOOK_URL: ${CRE_CHAT_WEBHOOK_URL:-}
+      # The SRE ladder's room, named by escalation.yaml sre.chat.webhookUrlEnv.
+      # Kept in scripts/csm-compose/.env (git-ignored); export it before
+      # `docker compose up`. Never committed.
+      SRE_CHAT_WEBHOOK_URL: ${SRE_CHAT_WEBHOOK_URL:-}
       INCIDENT_ESCALATION_ROSTER: ${INCIDENT_ESCALATION_ROSTER:-}
       # Resolve rungs from the Team Schedule -- the rule table escalation.yaml
       # and rules.go describe. Unset, the server falls back to the stand-in

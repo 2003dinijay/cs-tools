@@ -1055,13 +1055,15 @@ revisited.
   an answer nobody gave — see that service's own `CLAUDE.md` for what the
   missing flag does to the USA_WEEKEND routing rule.
   On `DATA_SOURCE=postgres` (`NewIncidentServiceWithPublisher`, with no
-  ServiceNow behind it) later work notes also go through `PATCH
-  /incidents/{id}` -- an alert-born SRE incident's follow-up alerts from
-  `sre-alert-core-service` -- written as comments in one transaction
-  (`CreateIncidentNotes`: a work note and a comment commit together or not at
-  all), with no ServiceNow mirror. That create path publishes the same
-  enriched `incident.created` (the read-back is a Postgres `GetIncidentByID`),
-  so an alert-born incident reaches the ladder with its priority and team.
+  ServiceNow behind it) later work notes also go through `PATCH /incidents/{id}`
+  -- an alert-born SRE incident's follow-up alerts from `sre-alert-core-service`
+  -- written as comments in one transaction (`CreateIncidentNotes`: a work note
+  and a comment commit together or not at all), with no ServiceNow mirror. That
+  create path publishes the same enriched `incident.created` (the read-back is a
+  Postgres `GetIncidentByID`), so an alert-born incident reaches the ladder with
+  its priority and team. The same update sends `incident.acknowledged`/
+  `incident.assigned` when it moves the incident out of NEW or sets an assignee
+  (`publishIncidentStopSignals`).
   `incident.created` has exactly one reaction on the receiving side now — a
   Twilio voice call — not a Google Chat alert: `csm-notification-service`
   removed that reaction entirely, per explicit product direction (an
@@ -1159,7 +1161,14 @@ revisited.
   `incident.created`, from the post-PATCH view, plus `ElevatedAt` (`now`,
   the instant the ladder's offsets run from). Neither carries an actor:
   `UpdateIncidentRequest` has none and this service cannot resolve who
-  performed an update.
+  performed an update. A third signal, **`incident.assigned`**
+  (`publishIncidentAssigned`), goes out when `AssignedEngineerID` genuinely
+  changes the assignee to someone (`incidentAssignment`: not on a re-send of
+  the same assignee, not when it is cleared), carrying the assignee's id and
+  display name from the post-PATCH view. It is the SRE escalation ladder's
+  stop signal ("assignee set on incident"); the CRE ladder ignores it. It
+  shares the pre-PATCH baseline fetch, which an `AssignedEngineerID` PATCH now
+  also triggers.
 - **`snCommentSearchService.CreateComment`** (the reference-generic comment
   service, ServiceNow branch only) publishes `incident.comment_added` via
   `publishIncidentCommentAdded` whenever a comment lands on an

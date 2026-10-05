@@ -120,6 +120,20 @@ type config struct {
 	sayVoice       string
 	keep           bool
 	cleanup        bool
+	interactive    bool
+	contactType    string
+	sreL4          bool
+	ladder         string
+	realNames      bool
+}
+
+// kind is the ladder this run exercises. The service runs one engine per
+// ladder; this tool runs the one asked for.
+func (c config) ladderKind() paging.Ladder {
+	if strings.EqualFold(c.ladder, "sre") {
+		return paging.LadderSRE
+	}
+	return paging.LadderCRE
 }
 
 func main() {
@@ -165,7 +179,7 @@ func run() error {
 	}
 
 	if cfg.cleanup {
-		return cleanupLocalLadders(ctx, paging.NewStore(rdb), rdb)
+		return cleanupLocalLadders(ctx, paging.NewStore(rdb).ForLadder(cfg.ladderKind()), rdb)
 	}
 
 	speaker := newSpeaker()
@@ -182,7 +196,7 @@ func run() error {
 	}
 	engine := paging.NewEngine(
 		paging.DefaultPolicy,
-		localResolver(to),
+		localResolver(to, cfg.realNames),
 		twilio,
 		localChatClient(cfg),
 		// Empty base: a local card carries no portal URL, which PortalLinks
@@ -191,10 +205,14 @@ func run() error {
 		paging.NewStore(rdb),
 		nil, // no entity-service locally; the summary is printed here instead
 		firstNonEmpty(cfg.chatAudience, cfg.chatProduct),
-		paging.EngineConfig{CallSendingEnabled: true, UseSSML: cfg.ssml, Channel: channel,
-			Ladder: paging.LadderConfig{Chat: paging.Chat{
-				Audience: cfg.chatAudience, WebhookURLEnv: cfg.chatWebhookEnv,
-			}}},
+		paging.EngineConfig{
+			CallSendingEnabled: true, UseSSML: cfg.ssml, Channel: channel,
+			Kind: cfg.ladderKind(),
+			Ladder: paging.LadderConfig{
+				Timing: paging.SRETiming{IncludeL4: cfg.sreL4},
+				Chat:   paging.Chat{Audience: cfg.chatAudience, WebhookURLEnv: cfg.chatWebhookEnv},
+			},
+		},
 	)
 
 	// The trigger instant decides the effective shift (the engine derives it
@@ -216,7 +234,7 @@ func run() error {
 		return fmt.Errorf("starting the ladder: %w", err)
 	}
 
-	st, found, err := paging.NewStore(rdb).Get(ctx, cfg.incidentID)
+	st, found, err := paging.NewStore(rdb).ForLadder(cfg.ladderKind()).Get(ctx, cfg.incidentID)
 	if err != nil {
 		return fmt.Errorf("reading the stored ladder: %w", err)
 	}
@@ -232,7 +250,7 @@ func run() error {
 		// live in a sorted set shared with every other ladder. Deleting the
 		// state alone would strand them there, rescanned on every tick, with
 		// nothing able to reclaim them afterwards.
-		if err := retireLadder(ctx, paging.NewStore(rdb), cfg.incidentID); err != nil {
+		if err := retireLadder(ctx, paging.NewStore(rdb).ForLadder(cfg.ladderKind()), cfg.incidentID); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not retire the over-cap ladder %s: %v\n", cfg.incidentID, err)
 		}
 		return fmt.Errorf("this plan is %d calls, more than --max-calls=%d; raise the cap or pick a shorter priority",
@@ -246,7 +264,7 @@ func run() error {
 	// out unless resumption is what is being tested.
 	if !cfg.keep {
 		defer func() {
-			if err := retireLadder(context.Background(), paging.NewStore(rdb), cfg.incidentID); err != nil {
+			if err := retireLadder(context.Background(), paging.NewStore(rdb).ForLadder(cfg.ladderKind()), cfg.incidentID); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not retire ladder %s: %v\n", cfg.incidentID, err)
 			}
 		}()
@@ -278,9 +296,11 @@ func parseFlags() config {
 	flag.DurationVar(&cfg.tick, "tick", 200*time.Millisecond, "how often the engine scans for due calls")
 	flag.DurationVar(&cfg.cancelAfter, "cancel-after", 0, "acknowledge this far into the run; 0 runs the whole ladder")
 	flag.StringVar(&cfg.cancelBy, "cancel-by", "both",
-		"how to acknowledge: both (a move out of NEW AND a public comment -- the only thing that actually stops a CRE ladder), comment, or status")
+		"how to acknowledge: both (a move out of NEW AND a public comment -- the only thing that actually stops a CRE ladder), comment, status, or assign (an engineer assigned -- what stops an SRE ladder)")
 	flag.StringVar(&cfg.cancelAt, "cancel-at", "",
 		"acknowledge once the ladder has called this rung, e.g. LEVEL_2; easier than timing -cancel-after by hand, and the two are mutually exclusive")
+	flag.StringVar(&cfg.contactType, "contact-type", "", "how the incident was raised: AZURE, SITE_247, SENTINEL (monitoring) or EMAIL, PHONE ...; routing reads it")
+	flag.BoolVar(&cfg.interactive, "interactive", false, "acknowledge by typing while the ladder runs: a (assign), s (leave NEW), c (public comment), then Enter")
 	flag.IntVar(&cfg.maxCalls, "max-calls", 20, "refuse to run a plan larger than this")
 	flag.StringVar(&cfg.redisAddr, "redis", envOr("REDIS_ADDR", "localhost:6379"), "Redis address holding the ladder state")
 	flag.StringVar(&cfg.incidentID, "incident-id", "", "incident id to use; defaults to a fresh one per run")
@@ -297,6 +317,9 @@ func parseFlags() config {
 	flag.BoolVar(&cfg.showTwiML, "show-twiml", false, "print the TwiML document of each call (dry runs only)")
 	flag.BoolVar(&cfg.keep, "keep", false, "leave this run's ladder in Redis on exit, so a later run resumes it (for testing resumption)")
 	flag.BoolVar(&cfg.cleanup, "cleanup", false, "retire every ladder this tool has left in Redis, then exit")
+	flag.BoolVar(&cfg.sreL4, "sre-l4", false, "add the SRE ladder's unconfirmed fourth rung, L4 support")
+	flag.StringVar(&cfg.ladder, "ladder", "cre", "which ladder to run: cre, or sre (an SRE team's incident, or a P0 CRE one)")
+	flag.BoolVar(&cfg.realNames, "real-names", false, "show rota-resolved people by name on cards and output; off shows them by rung, since the local rota can hold real staff")
 	flag.Parse()
 	return cfg
 }
@@ -418,7 +441,63 @@ func localChatClient(cfg config) *notifications.GoogleChatClient {
 // Remember that the rung model the schedule resolver implements is still an
 // assumption. A run against it exercises a complete, valid flow, which is the
 // point; it does not confirm the flow is right.
-func localResolver(to string) paging.Resolver {
+func localResolver(to string, realNames bool) paging.Resolver {
+	r := teamScheduleOrRoster(to)
+	if realNames {
+		return r
+	}
+	return maskedResolver{inner: r}
+}
+
+// maskedResolver shows a rota-resolved person by their rung instead of their
+// name. The local stack's rota can hold real staff imported from the roster
+// sheet, and a card posted to a Chat space would carry their names out of
+// this machine; -real-names opts back in. It forwards classification, or
+// every incident would fall back to the CRE ladder.
+type maskedResolver struct{ inner paging.Resolver }
+
+func (m maskedResolver) Resolve(ctx context.Context, level paging.Level, rc paging.RoutingContext) ([]paging.Recipient, error) {
+	people, err := m.inner.Resolve(ctx, level, rc)
+	for i := range people {
+		people[i].Name = fmt.Sprintf("%s #%d", level.RoleIn(rc.Ladder), i+1)
+		people[i].Email = fmt.Sprintf("%s-%d@local.invalid", strings.ToLower(level.String()), i+1)
+	}
+	return people, err
+}
+
+func (m maskedResolver) LadderFor(ctx context.Context, rc paging.RoutingContext) (paging.Ladder, error) {
+	if c, ok := m.inner.(paging.LadderClassifier); ok {
+		return c.LadderFor(ctx, rc)
+	}
+	return paging.LadderCRE, nil
+}
+
+// TeamFamily and RuleFor pass routing through too: the engine finds both by type
+// assertion, and a mask that hid them would route and report a run differently
+// from the same run with -real-names.
+func (m maskedResolver) TeamFamily(ctx context.Context, rc paging.RoutingContext) (string, error) {
+	if r, ok := m.inner.(paging.TeamFamilyResolver); ok {
+		return r.TeamFamily(ctx, rc)
+	}
+	if l, _ := m.LadderFor(ctx, rc); l == paging.LadderSRE {
+		return paging.TeamFamilySRE, nil
+	}
+	if strings.TrimSpace(rc.AssignedCRETeam) == "" {
+		return paging.TeamFamilyNone, nil
+	}
+	return paging.TeamFamilyCRE, nil
+}
+
+func (m maskedResolver) RuleFor(rc paging.RoutingContext) (paging.Rule, bool) {
+	if n, ok := m.inner.(interface {
+		RuleFor(paging.RoutingContext) (paging.Rule, bool)
+	}); ok {
+		return n.RuleFor(rc)
+	}
+	return paging.Rule{}, false
+}
+
+func teamScheduleOrRoster(to string) paging.Resolver {
 	base := os.Getenv("CUSTOMER_ENTITY_BASE_URL")
 	if base == "" {
 		return ruleAwareRoster{
@@ -438,7 +517,9 @@ func localResolver(to string) paging.Resolver {
 		}),
 		localTeamKeys(),
 		nil,
-	)
+	// Every person the rota names is rung on the one number under test (or
+	// the stub), never their own: this reads real staff.
+	).WithPhoneBook(paging.PhoneBook{TestCallTo: to})
 }
 
 // localTeamKeys mirrors the deployed configuration's own teams block, so a dry
@@ -455,6 +536,10 @@ func localTeamKeys() paging.TeamKeys {
 		// the Level 2 lead pool -- and never reached rigel or sirius at all.
 		abts = []string{"atlas", "castor", "draco", "phoenix", "rigel", "sirius", "vega"}
 	}
+	sre := splitCommaEnv("INCIDENT_ESCALATION_SRE_TEAMS")
+	if len(sre) == 0 {
+		sre = []string{"apollo", "artemis"}
+	}
 	americas := os.Getenv("INCIDENT_ESCALATION_AMERICAS_TEAM")
 	if americas == "" {
 		americas = "americas"
@@ -463,6 +548,7 @@ func localTeamKeys() paging.TeamKeys {
 		ABTs:       abts,
 		Americas:   americas,
 		Leadership: os.Getenv("INCIDENT_ESCALATION_LEADERSHIP_TEAM"),
+		SRE:        sre,
 	}
 }
 
@@ -635,6 +721,7 @@ func startRecord(cfg config, at time.Time) eventbus.Record {
 		Priority:         cfg.priority,
 		Account:          "Automation Test Account",
 		Team:             cfg.team,
+		ContactType:      cfg.contactType,
 		Product:          "WSO2 API Manager",
 		ABTEligible:      abtFlag(cfg.notABT),
 		ReportedAt:       at.Format(time.RFC3339),
@@ -645,6 +732,11 @@ func startRecord(cfg config, at time.Time) eventbus.Record {
 // public comment an elevation's voice message instructs, or the move out of
 // NEW a new incident's does.
 func cancelRecord(cfg config) eventbus.Record {
+	if cfg.cancelBy == "assign" {
+		return envelope(cfg.incidentID, events.TypeIncidentAssigned, events.IncidentAssignedPayload{
+			AssigneeID: "local-engineer", AssigneeName: "local engineer",
+		})
+	}
 	if cfg.cancelBy == "status" {
 		return statusRecord(cfg)
 	}
@@ -673,6 +765,10 @@ func commentRecord(cfg config) eventbus.Record {
 // to acknowledge actually acknowledges.
 func cancelRecords(cfg config) []eventbus.Record {
 	switch cfg.cancelBy {
+	case "assign":
+		// An engineer assigned: what stops an SRE ladder. A CRE ladder
+		// ignores it.
+		return []eventbus.Record{cancelRecord(cfg)}
 	case "status":
 		return []eventbus.Record{statusRecord(cfg)}
 	case "comment":
@@ -692,9 +788,11 @@ func dueByTime(cfg config, elapsed time.Duration) bool {
 func gestureName(by string) string {
 	switch by {
 	case "status":
-		return "a move out of NEW (one gesture only -- the ladder keeps climbing)"
+		return "a move out of NEW"
 	case "comment":
-		return "a public comment (one gesture only -- the ladder keeps climbing)"
+		return "a public comment"
+	case "assign":
+		return "an engineer assigned"
 	default:
 		return "a move out of NEW AND a public comment"
 	}
@@ -716,12 +814,16 @@ func envelope(entityID string, t events.Type, payload any) eventbus.Record {
 // acknowledgement part-way when asked.
 func runTicks(ctx context.Context, cfg config, engine *paging.Engine, rdb *redis.Client, trigger time.Time, rec *callRecorder, plan paging.Plan, runStart time.Time) error {
 	fmt.Printf("\n  running (ctrl-c to stop)...\n\n")
-	store := paging.NewStore(rdb)
+	store := paging.NewStore(rdb).ForLadder(cfg.ladderKind())
 	ticker := time.NewTicker(cfg.tick)
 	defer ticker.Stop()
 
 	realStart := time.Now()
-	cancelled := false
+	// sent is whether the acknowledgement gesture has gone to the engine;
+	// cancelled is whether the engine actually stopped because of it. They
+	// differ on purpose: a public comment does not stop an SRE ladder, and
+	// on a CRE one it is only half of the two gestures.
+	sent, cancelled := false, false
 	var cancelledAtLadderTime *time.Time
 	// The engine deletes a ladder's state the moment it finishes or is
 	// acknowledged, so the placed flags have to be kept as they are observed —
@@ -733,8 +835,66 @@ func runTicks(ctx context.Context, cfg config, engine *paging.Engine, rdb *redis
 	seen := 0
 	reachedCancelLevel := false
 
+	// acknowledge sends one gesture to the engine and reports what the engine
+	// did with it, read back from the ladder's own state: the state is gone,
+	// or marked cancelled, only when the gesture really stopped the ladder.
+	acknowledge := func(by string, elapsed time.Duration, now time.Time) error {
+		cfg.cancelBy = by // the summary names the gesture actually sent
+		fmt.Printf("  [%7s] SENT %s to the engine  (ladder %s)\n", short(elapsed), gestureName(by), now.Format("15:04:05"))
+		// Each gesture is a separate event, exactly as entity-service
+		// publishes them, so the engine's own rules decide whether this stops
+		// the ladder -- both gestures for CRE, an assignee or a move out of
+		// NEW for SRE.
+		for _, r := range cancelRecords(cfg) {
+			if err := engine.Handle(ctx, r); err != nil {
+				return fmt.Errorf("acknowledging: %w", err)
+			}
+		}
+		st, found, err := store.Get(ctx, cfg.incidentID)
+		switch {
+		case err != nil:
+			fmt.Printf("  [%7s] could not read the ladder back: %v\n", short(elapsed), err)
+		case !found || st.Cancelled != nil:
+			if !cancelled {
+				cancelled = true
+				at := now
+				cancelledAtLadderTime = &at
+			}
+			fmt.Printf("  [%7s] STOPPED — the engine cancelled the ladder\n", short(elapsed))
+		default:
+			fmt.Printf("  [%7s] NOT STOPPED — the engine keeps climbing; this gesture does not acknowledge this ladder\n", short(elapsed))
+		}
+		return nil
+	}
+
+	// Typed gestures, read off the terminal while the ladder runs on its own
+	// clock -- the way to acknowledge at a rung of your choosing rather than
+	// at a time fixed before the run.
+	var typed chan string
+	if cfg.interactive {
+		typed = make(chan string)
+		go func() {
+			sc := bufio.NewScanner(os.Stdin)
+			for sc.Scan() {
+				typed <- strings.ToLower(strings.TrimSpace(sc.Text()))
+			}
+		}()
+		fmt.Printf("  type a + Enter to assign an engineer, s to move it out of NEW, c for a public comment\n\n")
+	}
+
 	for {
 		select {
+		case line := <-typed:
+			elapsed := time.Since(realStart)
+			now := trigger.Add(time.Duration(float64(elapsed) / float64(cfg.minute) * float64(time.Minute)))
+			by := map[string]string{"a": "assign", "assign": "assign", "s": "status", "status": "status", "c": "comment", "comment": "comment"}[line]
+			if by == "" {
+				fmt.Printf("  (unknown %q: a = assign, s = leave NEW, c = public comment)\n", line)
+				continue
+			}
+			if err := acknowledge(by, elapsed, now); err != nil {
+				return err
+			}
 		case <-ctx.Done():
 			fmt.Printf("\n  interrupted\n")
 			return summarise(context.Background(), cfg, store, rec, plan, cancelledAtLadderTime, lastPlaced, lastFailed, runStart)
@@ -744,19 +904,10 @@ func runTicks(ctx context.Context, cfg config, engine *paging.Engine, rdb *redis
 			// Ladder time, expanded back out from the compressed real clock.
 			now := trigger.Add(time.Duration(float64(elapsed) / float64(cfg.minute) * float64(time.Minute)))
 
-			if !cancelled && (dueByTime(cfg, elapsed) || reachedCancelLevel) {
-				cancelled = true
-				at := now
-				cancelledAtLadderTime = &at
-				fmt.Printf("  [%7s] ACKNOWLEDGED by %s — the engine should stop calling\n",
-					short(elapsed), gestureName(cfg.cancelBy))
-				// Each gesture is a separate event, exactly as entity-service
-				// publishes them, so the engine's own both-gestures rule is
-				// what decides whether this stops the ladder.
-				for _, r := range cancelRecords(cfg) {
-					if err := engine.Handle(ctx, r); err != nil {
-						return fmt.Errorf("acknowledging: %w", err)
-					}
+			if !sent && (dueByTime(cfg, elapsed) || reachedCancelLevel) {
+				sent = true
+				if err := acknowledge(cfg.cancelBy, elapsed, now); err != nil {
+					return err
 				}
 			}
 
@@ -772,24 +923,28 @@ func runTicks(ctx context.Context, cfg config, engine *paging.Engine, rdb *redis
 				return fmt.Errorf("reading the stored ladder: %w", err)
 			}
 			if !found {
-				// A ladder that runs out places its last call and deletes its
-				// state in the same tick, so that call is never read back as
-				// placed above. Exhausting means every call is settled, so the
-				// ones due by now and not yet reported were placed just now.
-				// (An acknowledged ladder is deleted with its remaining calls
-				// retired, not placed -- those are left alone.)
 				if !cancelled {
+					// Run to its end. The engine clears a ladder in the same
+					// tick that settles its last call, so the snapshot from
+					// the tick before never saw that call placed -- and the
+					// progress lines and the summary both dropped it. The
+					// engine only exhausts a ladder once every call is
+					// settled, so every call not already known to have
+					// failed went out. (A final call the provider rejected
+					// in that same tick is the one case this still reports
+					// as placed; the engine's own work note has it right.)
+					lastPlaced = make([]bool, len(plan.Calls))
+					for i := range lastPlaced {
+						lastPlaced[i] = i >= len(lastFailed) || lastFailed[i] == ""
+					}
 					for i := seen; i < len(plan.Calls); i++ {
-						c := plan.Calls[i]
-						if c.At.After(now) {
+						if !lastPlaced[i] {
 							continue
 						}
+						c := plan.Calls[i]
 						fmt.Printf("  [%7s] %-8s #%d  %-14s called %s  (ladder +%s)\n",
 							short(elapsed), c.Level, c.Ordinal, c.Recipient.Name,
 							maskPhone(c.Recipient.Phone), short(c.At.Sub(trigger)))
-						if i < len(lastPlaced) {
-							lastPlaced[i] = true
-						}
 					}
 				}
 				fmt.Printf("\n  the engine has finished with this incident and cleared its state\n")
@@ -838,6 +993,9 @@ func summarise(ctx context.Context, cfg config, store *paging.Store, rec *callRe
 		reason = "Public comment added"
 		if cfg.cancelBy == "status" {
 			reason = "Acknowledged"
+		}
+		if cfg.cancelBy == "assign" {
+			reason = "Assignee set"
 		}
 	}
 	if st, found, err := store.Get(ctx, cfg.incidentID); err == nil && found {

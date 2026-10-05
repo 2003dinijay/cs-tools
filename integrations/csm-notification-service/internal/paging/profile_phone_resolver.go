@@ -116,6 +116,32 @@ func (p *ProfilePhoneResolver) RuleFor(rc RoutingContext) (Rule, bool) {
 	return Rule{}, false
 }
 
+// TeamFamily and LadderFor pass the wrapped resolver's routing answers through,
+// for the same reason as RuleFor: the engine finds them by type assertion, and a
+// wrapper that hid them would route every SRE team's incident as CRE whenever the
+// profile lookup is on.
+func (p *ProfilePhoneResolver) TeamFamily(ctx context.Context, rc RoutingContext) (string, error) {
+	if r, ok := p.inner.(TeamFamilyResolver); ok {
+		return r.TeamFamily(ctx, rc)
+	}
+	// The engine's own fallback for a resolver that cannot say (Engine.teamFamily).
+	if ladder, _ := p.LadderFor(ctx, rc); ladder == LadderSRE {
+		return TeamFamilySRE, nil
+	}
+	if strings.TrimSpace(rc.AssignedCRETeam) == "" {
+		return TeamFamilyNone, nil
+	}
+	return TeamFamilyCRE, nil
+}
+
+// LadderFor implements LadderClassifier; see TeamFamily.
+func (p *ProfilePhoneResolver) LadderFor(ctx context.Context, rc RoutingContext) (Ladder, error) {
+	if c, ok := p.inner.(LadderClassifier); ok {
+		return c.LadderFor(ctx, rc)
+	}
+	return LadderCRE, nil
+}
+
 // LeadPool implements LeadPoolResolver when the wrapped resolver does, with
 // the pool's numbers filled in the same way a rung's are.
 func (p *ProfilePhoneResolver) LeadPool(ctx context.Context) ([]Recipient, error) {

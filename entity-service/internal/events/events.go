@@ -66,6 +66,11 @@ const (
 	// already left NEW by the time its priority is raised, so
 	// TypeIncidentAcknowledged can never fire again for it.
 	TypeIncidentCommentAdded Type = "incident.comment_added"
+	// TypeIncidentAssigned is published when an engineer is set as an
+	// incident's assignee. It is how the SRE escalation ladder stops: the SRE
+	// flow's acknowledgement is "assignee set on incident". The CRE ladder
+	// ignores it.
+	TypeIncidentAssigned Type = "incident.assigned"
 	// TypeProjectContactInvited is Postgres-data-source-only. Published by
 	// the Salesforce membership ingest (salesforceEventService) after a
 	// Project_Contact__c in state INVITED / RE-INVITED has been written to the
@@ -324,6 +329,12 @@ type CaseCreatedPayload struct {
 type IncidentCreatedPayload struct {
 	Title            string `json:"title"`
 	ShortDescription string `json:"shortDescription"`
+	// ContactType is how the incident was raised, as the incident view spells
+	// it: AZURE, SITE_247 or SENTINEL when a monitoring source raised it,
+	// EMAIL, PHONE, SELF_SERVICE and so on when a person did. The SRE ladder
+	// reads it: a monitoring-raised incident climbs the SRE ladder whatever
+	// team it is assigned to, or when it is assigned to none. Optional.
+	ContactType string `json:"contactType,omitempty"`
 
 	// The remaining fields feed csm-notification-service's call-escalation
 	// ladder (its internal/paging), which needs the priority that keys
@@ -437,6 +448,16 @@ type ProjectContactRegisteredPayload struct {
 	ProjectKey        string `json:"projectKey"`
 	IsIntegrationUser bool   `json:"isIntegrationUser,omitempty"`
 	EventModifiedOn   string `json:"eventModifiedOn,omitempty"`
+}
+
+// IncidentAssignedPayload is TypeIncidentAssigned's payload, mirrored by
+// hand in csm-notification-service's events package.
+type IncidentAssignedPayload struct {
+	// AssigneeID is the engineer now assigned.
+	AssigneeID string `json:"assigneeId"`
+	// AssigneeName is for the escalation's execution summary; omitted when
+	// ServiceNow returned no display name.
+	AssigneeName string `json:"assigneeName,omitempty"`
 }
 
 // IncidentAcknowledgedPayload is the Payload shape for

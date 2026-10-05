@@ -96,6 +96,15 @@ type TeamScheduleResolver struct {
 	// /users/me -- the absence the Team Schedule page reads as "belongs to
 	// neither group".
 	leadershipTeamKey string
+	// sreTeamKeys are the SRE teams, in the order the SRE ladder breaks a tie
+	// between them. See teamschedule_sre.go.
+	sreTeamKeys []string
+	// aliases maps an assignment group's name to the rota key it stands for,
+	// for a group whose name is not simply its key ("SRE - Apollo").
+	aliases map[string]string
+	// phones supplies a number for each recipient. The rota holds none, so
+	// without it a rung can be reached over chat but not dialled.
+	phones PhoneBook
 }
 
 // teamScheduleReader is the slice of EntityClient this needs, named so tests
@@ -103,6 +112,7 @@ type TeamScheduleResolver struct {
 type teamScheduleReader interface {
 	TeamMembers(ctx context.Context, teamKeys, roles, alertTiers, teamTypes []string) ([]teamMember, error)
 	OnDutyAt(ctx context.Context, at time.Time) ([]onDutyAssignment, error)
+	ScheduleCatalogue(ctx context.Context) (scheduleCatalogue, error)
 }
 
 // callHistory answers when each of these people was last called. Satisfied by
@@ -135,6 +145,12 @@ func (r TeamScheduleResolver) WithCallHistory(h callHistory) TeamScheduleResolve
 	return r
 }
 
+// WithPhoneBook returns a copy that fills in each recipient's number.
+func (r TeamScheduleResolver) WithPhoneBook(pb PhoneBook) TeamScheduleResolver {
+	r.phones = pb
+	return r
+}
+
 func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []Rule) TeamScheduleResolver {
 	if strings.TrimSpace(teams.Leadership) == "" {
 		teams.Leadership = defaultLeadershipTeamKey
@@ -142,12 +158,11 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 	if len(rules) == 0 {
 		rules = DefaultRules
 	}
-	keys := make([]string, 0, len(teams.ABTs))
-	for _, k := range teams.ABTs {
-		if k = teamKeyFor(k); k != "" {
-			keys = append(keys, k)
-		}
+	aliases := make(map[string]string, len(teams.Aliases))
+	for group, key := range teams.Aliases {
+		aliases[teamKeyFor(group)] = teamKeyFor(key)
 	}
+	keys := teamKeysFor(teams.ABTs)
 	leadKeys := make([]string, 0, len(teams.TeamLeads))
 	for _, k := range teams.TeamLeads {
 		if k = teamKeyFor(k); k != "" {
@@ -174,7 +189,19 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 		teamLeadKeys:              leadKeys,
 		americasTeamKey:           teamKeyFor(teams.Americas),
 		leadershipTeamKey:         teams.Leadership,
+		sreTeamKeys:               teamKeysFor(teams.SRE),
+		aliases:                   aliases,
 	}
+}
+
+func teamKeysFor(names []string) []string {
+	keys := make([]string, 0, len(names))
+	for _, k := range names {
+		if k = teamKeyFor(k); k != "" {
+			keys = append(keys, k)
+		}
+	}
+	return keys
 }
 
 // TeamKeys names the teams the rule table refers to by role rather than by
@@ -292,6 +319,16 @@ type TeamKeys struct {
 	// Team Schedule. This file is public, so naming a person here publishes
 	// their email -- keep it for an emergency override only.
 	AmericasLead Person `yaml:"americasLead"`
+	// SRE are the SRE team keys, in the order that breaks a tie when an
+	// incident belongs to no SRE team and two could answer a rung. Never read
+	// from the file: the SRE section names its teams as sre.teams.abts, the
+	// same key the CRE section uses for its own, and cmd/server copies them
+	// here for the one resolver both ladders share.
+	SRE []string `yaml:"-"`
+	// Aliases maps an assignment group's name to the rota key it stands for,
+	// for a group whose name is not simply its key -- the alert flow assigns
+	// "SRE - Apollo", the rota calls it apollo.
+	Aliases map[string]string `yaml:"aliases"`
 }
 
 const defaultLeadershipTeamKey = "cre-leadership"
@@ -322,13 +359,28 @@ func (r TeamScheduleResolver) Resolve(ctx context.Context, level Level, rc Routi
 	if level < Level0 || level > Level4 {
 		return nil, fmt.Errorf("escalation: no rung %s", level)
 	}
-	rule, ok := r.RuleFor(rc)
-	if !ok {
-		// No row covers this shift. Not an error: the ladder reports the miss
-		// and climbs, which is the same shape as a rung with nobody on it.
-		return nil, nil
+	var (
+		out []Recipient
+		err error
+	)
+	if rc.Ladder == LadderSRE {
+		out, err = r.resolveSRE(ctx, level, rc)
+	} else {
+		rule, ok := r.RuleFor(rc)
+		if !ok {
+			// No row covers this shift. Not an error: the ladder reports the
+			// miss and climbs, which is the same shape as a rung with nobody
+			// on it.
+			return nil, nil
+		}
+		out, err = r.fromSource(ctx, rule.Levels[level], rc)
 	}
-	return r.fromSource(ctx, rule.Levels[level], rc)
+	for i := range out {
+		if out[i].Phone == "" {
+			out[i].Phone = r.phones.NumberFor(out[i].Email)
+		}
+	}
+	return out, err
 }
 
 // RuleFor is which row of the table an incident routes by.
@@ -344,6 +396,11 @@ func (r TeamScheduleResolver) RuleFor(rc RoutingContext) (Rule, bool) {
 // RuleForCtx is RuleFor with a context, since answering "is this an ABT team"
 // may mean asking entity-service when the ABT is resolved by type.
 func (r TeamScheduleResolver) RuleForCtx(ctx context.Context, rc RoutingContext) (Rule, bool) {
+	if rc.Ladder == LadderSRE {
+		// The rule table is the CRE ladder's; an SRE plan must not report one
+		// of its rows.
+		return Rule{}, false
+	}
 	key := teamKeyFor(rc.AssignedCRETeam)
 	// An incident with no team is a DEFINITE "not assigned to an ABT team",
 	// not an unknown. Treating it as unknown left every ABTYes/ABTNo row
