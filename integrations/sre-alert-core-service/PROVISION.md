@@ -1,6 +1,6 @@
 # Internal API users
 
-`internal/auth` provides PBKDF2-hashed (10000 iterations, random salt) service-account credentials backed by the `integration_users` PostgreSQL table, plus an `auth.RequireAuth` middleware. It is not currently wired into any route: `/alertz` is reachable via a project-level exposure (gateway/network scoping) rather than a per-caller secret, so no route in this service enforces it today. Use `auth.RequireAuth` if a future endpoint needs per-caller authentication.
+`internal/auth` provides PBKDF2-hashed (10000 iterations, random salt) service-account credentials backed by the `integration_users` PostgreSQL table, plus an `auth.RequireAuth` middleware. `cmd/server` wraps `POST /alertz` with `auth.RequireAuth`, so every wake request needs an `integration_users` credential; provision one here and set it on sre-alert-ingestion-service as `ALERT_CORE_WAKE_USERNAME` / `ALERT_CORE_WAKE_SECRET`, otherwise each wake gets a 401 and alerts are only picked up by the `poll.interval` backstop.
 
 Secrets are never stored in plaintext; only the PBKDF2 hash and salt live in PostgreSQL. Each row also tracks who provisioned it, when it was last modified, when its secret was last rotated, and an optional expiry, so accounts behave closer to real identity records rather than a bare credential pair. There's no admin API or startup seeding, so accounts are managed one at a time with `cmd/user`, run against the same PostgreSQL database and `PG*` env vars the server itself uses.
 
@@ -86,7 +86,7 @@ last_used_at:       -
 expires_at:         -
 ```
 
-`last_used_at` is reserved for a future `RequireAuth` wiring and is always `-` (unset) today; nothing currently writes to it. Only metadata is shown in either view; `secret_hash`/`salt` are never printed.
+`last_used_at` is not updated by `RequireAuth` on `/alertz` and stays `-` (unset); nothing currently writes to it. Only metadata is shown in either view; `secret_hash`/`salt` are never printed.
 
 ## Enabling / disabling a user
 
@@ -99,15 +99,15 @@ go run ./cmd/user enable -username webhook-integration-user
 
 ## Authenticating
 
-Once a route is wrapped with `auth.RequireAuth`, callers can authenticate with either header form:
+Callers of `POST /alertz` (the route wrapped with `auth.RequireAuth`) can authenticate with either header form:
 
 ```bash
 # Bearer, base64("username:secret")
 TOKEN=$(printf '%s:%s' webhook-integration-user '<secret>' | base64 | tr -d '\n')
-curl -X POST https://<host>/<protected-route> -H "Authorization: Bearer $TOKEN"
+curl -X POST https://<host>/alertz -H "Authorization: Bearer $TOKEN"
 
 # Basic, via curl's -u
-curl -X POST https://<host>/<protected-route> -u webhook-integration-user:<secret>
+curl -X POST https://<host>/alertz -u webhook-integration-user:<secret>
 ```
 
 ## Schema
@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS integration_users (
   created_by        text NOT NULL DEFAULT '', -- operator who provisioned it
   updated_at        timestamptz NOT NULL DEFAULT now(), -- bumped on every create/rotate/enable/disable
   secret_rotated_at timestamptz NOT NULL DEFAULT to_timestamp(0), -- bumped only when secret_hash/salt actually change
-  last_used_at      timestamptz NOT NULL DEFAULT to_timestamp(0), -- reserved for future RequireAuth wiring; always unset today
+  last_used_at      timestamptz NOT NULL DEFAULT to_timestamp(0), -- not written by RequireAuth; always unset today
   expires_at        timestamptz NOT NULL DEFAULT to_timestamp(0)  -- epoch (or earlier) = never expires
 );
 ```

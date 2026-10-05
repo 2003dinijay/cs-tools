@@ -20,7 +20,9 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -49,11 +51,21 @@ func ConfigFromEnv() (Config, error) {
 	return cfg, nil
 }
 
+// connString builds the DSN through url.URL so each part gets its own escaping, keeping passwords with spaces or reserved characters intact.
+func connString(cfg Config) string {
+	u := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(cfg.User, cfg.Password),
+		Host:     net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
+		Path:     "/" + cfg.Database,
+		RawQuery: url.Values{"sslmode": {cfg.SSLMode}}.Encode(),
+	}
+	return u.String()
+}
+
 // Connect opens a pooled connection, bounding connect time and the default per-query timeout; asyncCommit turns off synchronous_commit, which is safe only for writes that are replayed after a crash.
 func Connect(cfg Config, connectTimeout, queryTimeout time.Duration, asyncCommit bool) (*pgxpool.Pool, error) {
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-		url.QueryEscape(cfg.User), url.QueryEscape(cfg.Password), cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode)
-	poolCfg, err := pgxpool.ParseConfig(dsn)
+	poolCfg, err := pgxpool.ParseConfig(connString(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("parse postgres config: %w", err)
 	}

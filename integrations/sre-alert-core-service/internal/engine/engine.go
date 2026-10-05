@@ -325,8 +325,8 @@ func (e *Engine) deliver(ctx context.Context, id int64) {
 	if csmEnabled && !d.inc.CSMConfirmed && !d.inc.CSMPermanentlyFailed {
 		d.retryAfter(d.inc.NextCSMRetry(e.cfg.CSMRetry.BaseDelay, e.cfg.CSMRetry.Multiplier, e.cfg.CSMRetry.MaxDelay))
 	}
-	if len(notes) == notesPerDelivery {
-		d.retryAfter(time.Now()) // more notes than one pass reads.
+	if len(notes) == notesPerDelivery && slices.ContainsFunc(d.notes, func(n model.Note) bool { return !n.CSMPending && !n.ChatPending }) {
+		d.retryAfter(time.Now()) // more notes than one pass reads, and this pass cleared some.
 	}
 	var next *time.Time
 	if !d.retryAt.IsZero() {
