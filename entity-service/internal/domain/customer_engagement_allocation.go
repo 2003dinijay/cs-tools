@@ -84,9 +84,6 @@ type NewCustomerEngagement struct {
 	EngagementTypeID string
 	PlannedStartDate *string
 	PlannedEndDate   *string
-	// LineItemSfID is the payload's productId; the line-item and opportunity refs are
-	// filled from CSM's copy of that line item when there is one.
-	LineItemSfID *string
 }
 
 // AllocationResourceFields are the columns an allocation event writes on
