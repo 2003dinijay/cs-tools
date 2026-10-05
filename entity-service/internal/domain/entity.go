@@ -4837,7 +4837,22 @@ type ChangeRequestApproval struct {
 	ApproverType ChangeRequestApproverType   `json:"approverType"`
 	ApproverName string                      `json:"approverName"`
 	Status       ChangeRequestApprovalStatus `json:"status"`
-	Approvers    []ChangeRequestApprover     `json:"approvers"`
+	// AssignmentGroup is the "group" row this stage was provisioned against
+	// (approval_stage.assignment_group_id), so a client can open it
+	// (GET /groups/{id}) and list who sits in it. null for the Customer
+	// Approval / Customer Review stages (their approvers are the project's
+	// registered contacts, not a group) and for any stage recorded against no
+	// group, and always null under the ServiceNow data source. ApproverName is
+	// unchanged and still carries the display name.
+	AssignmentGroup *ChangeRequestApprovalGroup `json:"assignmentGroup"`
+	Approvers       []ChangeRequestApprover     `json:"approvers"`
+}
+
+// ChangeRequestApprovalGroup is the id and name of the group an approval stage
+// is assigned to.
+type ChangeRequestApprovalGroup struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // ChangeRequestApprovals is the response for GET /change-requests/{id}/approvals.
@@ -5043,6 +5058,37 @@ type Group struct {
 	Name   string          `json:"name"`
 	Active bool            `json:"active"`
 	Parent *GroupParentRef `json:"parent"`
+}
+
+// GroupManagerRef is the manager of a group, as shown on its detail.
+type GroupManagerRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// GroupMember is one active member of a group, as shown on its detail.
+type GroupMember struct {
+	// ID is the member's "user".id.
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Email *string `json:"email"`
+	// UserType is "user".user_type (INTERNAL, EXTERNAL, ...); null when unset.
+	UserType *string `json:"userType"`
+	// Role is "lead" when the user leads the group (team_member.role) on any
+	// of the membership rows that make them a member, else "member".
+	Role *string `json:"role"`
+}
+
+// GroupDetail is the response for GET /groups/{id}: the "group" row and its
+// active members, in name order. Total is len(Members).
+type GroupDetail struct {
+	ID          string           `json:"id"`
+	Name        string           `json:"name"`
+	Description *string          `json:"description"`
+	Email       *string          `json:"email"`
+	Manager     *GroupManagerRef `json:"manager"`
+	Members     []GroupMember    `json:"members"`
+	Total       int              `json:"total"`
 }
 
 // SearchGroupsFilters holds optional filter criteria for group searches.

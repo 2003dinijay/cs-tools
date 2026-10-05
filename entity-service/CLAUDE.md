@@ -2643,6 +2643,48 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   Approval` / `Customer Review`; pre-existing `Assess`/`Authorize`
   labels (and unlabeled positional stages) are still recognised as peer/CAB.
 
+### Opening an approval stage's assignment group (`GET /groups/{id}`)
+
+The Approval tab's *Assignment group* is a link: it opens the group the stage was
+provisioned from and lists who is in it, like ServiceNow's group form and its
+"Group Members" tab. Code: `group_detail_repo.go` (`GetGroupDetail`),
+`service/group_detail_service.go`, `handler/group_detail_handler.go`; route in
+`routes.go`. PostgreSQL data source only (the route is not registered without a
+pool, like `GET /teams/{id}/members`).
+
+* **`GET /change-requests/{id}/approvals` gained `assignmentGroup`** on each stage:
+  `{id, name}` of `approval_stage.assignment_group_id`, **`null` for the Customer
+  Approval / Customer Review stages** (recorded against no group: their approvers are
+  the project's registered contacts) and for any stage with no group. Additive:
+  `approverName` is unchanged, and the ServiceNow data source always returns `null`.
+* **`GET /groups/{id}`** (`id` is a `"group"` id, **not** a `team` id -- `POST
+  /groups/search` lists the `team` registry) returns `{id, name, description, email,
+  manager: {id, name}|null, members: [{id, name, email, userType, role}], total}`;
+  absent parts are `null`, `members` is `[]` for a group nobody is in, `total` =
+  `len(members)`. Unknown id is a 404, a malformed one a 400.
+* **Who is listed is who the approval pools provision from**, so the page and the
+  stage agree (apart from per-change exclusions such as the creator and, on the peer
+  stage, SRE members, who are still *in* the group): a `team_member` whose `group_id`
+  is this group (`groupMemberIDs`, the assigned-group pools) **or** -- the way
+  `namedGroup` resolves CAB / ECAB / Devops -- whose `group_id` is any `"group"` of
+  the same name or whose `team_id` is a `team` of the same name. A group row with no
+  name matches on its own `group_id` only. One row per user (the `lead` role of any of
+  their rows wins), name order (case-insensitive; name falls back to first + last
+  name, then the email, so nobody is listed blank). **Inactive users are left out**
+  (`"user".is_active = FALSE`; NULL counts as active, as in `user_repo.go`) --
+  `groupMemberIDs`/`namedGroup` do *not* filter on it, so provisioning can still seat an
+  inactive user the page hides; keep the two in step if that filter is ever added there.
+* **Internal callers only** (`RequireInternalCaller`, checked before the id is parsed):
+  an external (customer) caller gets 403, so a customer's contacts are never
+  enumerable here. The route is not RLS-scoped because `group`, `team_member` and
+  `user` carry no row-level security.
+* Tests: `group_detail_repo_integration_test.go` (real Postgres, `CHANGE_REQUEST_TEST_DSN`:
+  members, order, inactive, duplicates, same-name team/group, unknown id, empty group,
+  and the list held against `namedGroup`/`groupMemberIDs`),
+  `change_request_approvals_group_integration_test.go` (approvals carry the group;
+  customer stage `null`; the CAB group page equals the stage's approvers),
+  `TestBuildChangeRequestApprovals_AssignmentGroup`, the service and handler tests.
+
 ### Customer project, deployments and deployment products
 
 The change request form's **Customer Project**, **Deployments** (multi-select) and

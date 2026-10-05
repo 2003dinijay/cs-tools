@@ -234,6 +234,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		teamHandler = handler.NewTeamHandler(service.NewTeamService(teamRepo))
 	}
 
+	// groupDetailHandler (GET /groups/{id}: one group and its members, opened
+	// from an approval stage's assignment group) is Postgres-only for the same
+	// reason as teamHandler above, and gated on db != nil the same way.
+	var groupDetailHandler *handler.GroupDetailHandler
+	if db != nil {
+		groupDetailHandler = handler.NewGroupDetailHandler(
+			service.NewGroupDetailService(repository.NewGroupDetailRepository(db), accessSvc))
+	}
+
 	var salesforceEventHandler *handler.SalesforceEventHandler
 	// salesforcePartnerHandler is set when the partner refresh is on.
 	var salesforcePartnerHandler *handler.SalesforcePartnerHandler
@@ -1585,6 +1594,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /service-offerings/search", serviceOfferingHandler.SearchServiceOfferings)
 
 	mux.HandleFunc("POST /groups/search", groupHandler.SearchGroups)
+	if groupDetailHandler != nil {
+		mux.HandleFunc("GET /groups/{id}", groupDetailHandler.GetGroup)
+	}
 
 	if configurationItemHandler != nil {
 		mux.HandleFunc("POST /configuration-items/search", configurationItemHandler.SearchConfigurationItems)

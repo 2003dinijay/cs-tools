@@ -17,6 +17,7 @@
 package repository
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -462,6 +463,62 @@ func TestBuildChangeRequestApprovals_PositionalLabelsAndFirstResponderWinsStatus
 	}
 	if len(a2.Approvers) != 0 {
 		t.Errorf("stage 2 has %d approvers, want 0 (the NULL-stage_id row must be dropped, not attached here)", len(a2.Approvers))
+	}
+}
+
+// TestBuildChangeRequestApprovals_AssignmentGroup pins the group reference on
+// each stage that lets the portal open the group (GET /groups/{id}): an
+// internal stage carries {id, name}; a customer stage -- recorded against no
+// group, its approvers being the project's registered contacts -- carries
+// null, and still names the Customer Group in approverName. It also pins the
+// wire shape: `assignmentGroup` is always present, `null` when absent.
+func TestBuildChangeRequestApprovals_AssignmentGroup(t *testing.T) {
+	peer, cab, customer := "Peer Approval", "CAB Approval", "Customer Approval"
+	stages := []changeRequestApprovalStageRow{
+		{id: "s-peer", assignmentGroupName: strPtrApproval("Example Corp ABT"), assignmentGroupID: strPtrApproval("11111111-1111-4111-8111-111111111111"), checkpointLabel: &peer},
+		{id: "s-cab", assignmentGroupName: strPtrApproval("CAB Approval"), assignmentGroupID: strPtrApproval("22222222-2222-4222-8222-222222222222"), checkpointLabel: &cab},
+		{id: "s-cust", assignmentGroupName: nil, assignmentGroupID: nil, checkpointLabel: &customer},
+	}
+
+	got := buildChangeRequestApprovals(stages, nil)
+
+	if len(got.Approvals) != 3 {
+		t.Fatalf("got %d approvals, want 3", len(got.Approvals))
+	}
+	if g := got.Approvals[0].AssignmentGroup; g == nil || g.ID != "11111111-1111-4111-8111-111111111111" || g.Name != "Example Corp ABT" {
+		t.Errorf("peer stage assignmentGroup = %+v, want {11111111-..., Example Corp ABT}", g)
+	}
+	if g := got.Approvals[1].AssignmentGroup; g == nil || g.ID != "22222222-2222-4222-8222-222222222222" || g.Name != "CAB Approval" {
+		t.Errorf("CAB stage assignmentGroup = %+v, want {22222222-..., CAB Approval}", g)
+	}
+	if g := got.Approvals[2].AssignmentGroup; g != nil {
+		t.Errorf("customer stage assignmentGroup = %+v, want nil", g)
+	}
+	// approverName is unchanged: the display name, "Customer Group" for the customer stage.
+	if got.Approvals[0].ApproverName != "Example Corp ABT" || got.Approvals[2].ApproverName != "Customer Group" {
+		t.Errorf("approverName = %q / %q, want %q / %q", got.Approvals[0].ApproverName, got.Approvals[2].ApproverName, "Example Corp ABT", "Customer Group")
+	}
+
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire struct {
+		Approvals []map[string]json.RawMessage `json:"approvals"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for i, a := range wire.Approvals {
+		if _, ok := a["assignmentGroup"]; !ok {
+			t.Errorf("stage %d has no assignmentGroup key on the wire: %s", i, raw)
+		}
+	}
+	if string(wire.Approvals[2]["assignmentGroup"]) != "null" {
+		t.Errorf("customer stage assignmentGroup on the wire = %s, want null", wire.Approvals[2]["assignmentGroup"])
+	}
+	if string(wire.Approvals[0]["assignmentGroup"]) != `{"id":"11111111-1111-4111-8111-111111111111","name":"Example Corp ABT"}` {
+		t.Errorf("peer stage assignmentGroup on the wire = %s", wire.Approvals[0]["assignmentGroup"])
 	}
 }
 

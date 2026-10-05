@@ -2420,7 +2420,7 @@ func (r *changeRequestRepo) CreateChangeRequestFromServiceNow(ctx context.Contex
 // buildChangeRequestApprovals' positional stage-label derivation depends
 // entirely on this ordering.
 const changeRequestApprovalStagesQuery = `
-	SELECT ast.id, g.name, ast.checkpoint_label
+	SELECT ast.id, g.name, ast.checkpoint_label, g.id::text
 	FROM approval_stage ast
 	LEFT JOIN "group" g ON g.id = ast.assignment_group_id
 	WHERE ast.work_item_id = $1
@@ -2464,6 +2464,10 @@ type changeRequestApprovalStageRow struct {
 	// equivalent concept); buildChangeRequestApprovals falls back to the
 	// ordinal-position heuristic in that case.
 	checkpointLabel *string
+	// assignmentGroupID is the "group" row's id (nil for a stage recorded
+	// against no group -- the customer stages -- or one whose group row is
+	// gone); it becomes domain.ChangeRequestApproval.AssignmentGroup.
+	assignmentGroupID *string
 }
 
 // changeRequestApprovalApproverRow is one row of
@@ -2496,7 +2500,7 @@ func (r *changeRequestRepo) GetChangeRequestApprovals(ctx context.Context, id st
 	var stages []changeRequestApprovalStageRow
 	for stageRows.Next() {
 		var st changeRequestApprovalStageRow
-		if err := stageRows.Scan(&st.id, &st.assignmentGroupName, &st.checkpointLabel); err != nil {
+		if err := stageRows.Scan(&st.id, &st.assignmentGroupName, &st.checkpointLabel, &st.assignmentGroupID); err != nil {
 			stageRows.Close()
 			return domain.ChangeRequestApprovals{}, fmt.Errorf("get change request approvals: scan stage: %w", err)
 		}
@@ -2763,12 +2767,20 @@ func buildChangeRequestApprovals(stages []changeRequestApprovalStageRow, approve
 		if approverName == "" && st.checkpointLabel != nil && customerStageSpecForLabel(*st.checkpointLabel) != nil {
 			approverName = customerGroupDisplayName
 		}
+		// The group reference lets a client open the group and list its
+		// members (GET /groups/{id}). Customer stages are recorded against no
+		// group, so it stays nil for them.
+		var assignmentGroup *domain.ChangeRequestApprovalGroup
+		if st.assignmentGroupID != nil && *st.assignmentGroupID != "" {
+			assignmentGroup = &domain.ChangeRequestApprovalGroup{ID: *st.assignmentGroupID, Name: stringOrEmpty(st.assignmentGroupName)}
+		}
 		result = append(result, domain.ChangeRequestApproval{
-			Stage:        label,
-			ApproverType: approverType,
-			ApproverName: approverName,
-			Status:       stageStatus,
-			Approvers:    domainApprovers,
+			Stage:           label,
+			ApproverType:    approverType,
+			ApproverName:    approverName,
+			Status:          stageStatus,
+			AssignmentGroup: assignmentGroup,
+			Approvers:       domainApprovers,
 		})
 	}
 
