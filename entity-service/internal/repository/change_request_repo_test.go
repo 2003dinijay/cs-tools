@@ -716,6 +716,10 @@ func TestClassifyApprovalStage(t *testing.T) {
 		{str("CAB Approval"), 1, stageKindCAB},
 		{str("ECAB Approval"), 0, stageKindECAB},
 		{str("Review"), 2, stageKindReview},
+		// The customer group's stages are recognised by label, wherever they sit.
+		{str("Customer Approval"), 2, stageKindCustomerApproval},
+		{str("Customer Approval"), 0, stageKindCustomerApproval},
+		{str("Customer Review"), 4, stageKindCustomerReview},
 		// Stages written before the CAB flow keep working.
 		{str("Assess"), 0, stageKindPeer},
 		{str("Authorize"), 1, stageKindCAB},
@@ -753,5 +757,68 @@ func TestValidateCreateChangeRequestType(t *testing.T) {
 	err := ValidateCreateChangeRequestType(nil)
 	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, "standard, normal or emergency") {
 		t.Errorf("missing-type message = %v, want it to list standard, normal or emergency", err)
+	}
+}
+
+// The customer stages: which state each belongs to, where each outcome leads,
+// and what legalNextStates drops while one is live.
+func TestCustomerStageSpecs(t *testing.T) {
+	ca := customerStageSpecForState("CUSTOMER_APPROVAL")
+	cr := customerStageSpecForState("CUSTOMER_REVIEW")
+	if ca == nil || cr == nil {
+		t.Fatal("no spec for CUSTOMER_APPROVAL / CUSTOMER_REVIEW")
+	}
+	for _, st := range []string{"", "NEW", "ASSESS", "AUTHORIZE", "SCHEDULED", "IMPLEMENT", "REVIEW", "ROLLBACK", "CLOSED", "CANCELED"} {
+		if customerStageSpecForState(st) != nil {
+			t.Errorf("customerStageSpecForState(%q) != nil", st)
+		}
+	}
+	if ca.label != "Customer Approval" || ca.approvedState != "SCHEDULED" || ca.rejectedState != "CANCELED" || ca.approvedFlagColumn != "is_customer_approved" {
+		t.Errorf("Customer Approval spec = %+v", *ca)
+	}
+	if cr.label != "Customer Review" || cr.approvedState != "CLOSED" || cr.rejectedState != "ROLLBACK" || cr.approvedFlagColumn != "is_customer_reviewed" {
+		t.Errorf("Customer Review spec = %+v", *cr)
+	}
+	if customerStageSpecForKind(stageKindCustomerApproval) != ca || customerStageSpecForKind(stageKindCustomerReview) != cr || customerStageSpecForKind(stageKindPeer) != nil {
+		t.Error("customerStageSpecForKind does not agree with customerStageSpecForState")
+	}
+}
+
+func TestWithoutManualCustomerOutcome(t *testing.T) {
+	str := func(s string) *string { return &s }
+	for _, tc := range []struct {
+		name  string
+		state *string
+		in    []string
+		live  bool
+		want  []string
+	}{
+		{"customer_approval, live", str("CUSTOMER_APPROVAL"), []string{"scheduled", "canceled"}, true, []string{"canceled"}},
+		{"customer_approval, not live (fallback)", str("CUSTOMER_APPROVAL"), []string{"scheduled", "canceled"}, false, []string{"scheduled", "canceled"}},
+		{"customer_review, live", str("CUSTOMER_REVIEW"), []string{"closed", "canceled"}, true, []string{"canceled"}},
+		{"customer_review, not live (fallback)", str("CUSTOMER_REVIEW"), []string{"closed", "canceled"}, false, []string{"closed", "canceled"}},
+		{"other state is untouched", str("REVIEW"), []string{"closed", "canceled"}, true, []string{"closed", "canceled"}},
+		{"nil states", str("CUSTOMER_REVIEW"), nil, true, nil},
+		{"nil state", nil, []string{"closed"}, true, []string{"closed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := withoutManualCustomerOutcome(tc.state, tc.in, tc.live)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") || (got == nil) != (tc.want == nil) {
+				t.Errorf("withoutManualCustomerOutcome = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCustomerStageManualRefusal(t *testing.T) {
+	err := customerStageManualRefusal("scheduled", &customerApprovalStageSpec, &liveCustomerStage{groupName: "Artemis Customers"})
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("err = %v, want *apierror.ValidationError", err)
+	}
+	for _, want := range []string{`"scheduled"`, `customer group "Artemis Customers"`, "approving or rejecting", "approvals"} {
+		if !strings.Contains(ve.Msg, want) {
+			t.Errorf("message %q does not contain %q", ve.Msg, want)
+		}
 	}
 }

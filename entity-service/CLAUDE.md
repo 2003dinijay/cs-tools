@@ -2530,7 +2530,10 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   `[scheduled, canceled]`, scheduled `[implement, canceled]`, implement
   `[review, canceled]`, review `[closed, canceled]` -- or `[customer_review,
   canceled]` when `customerReviewRequired` --, customer_review `[closed,
-  canceled]`, terminal states none.
+  canceled]`, terminal states none. **While a live Customer Approval /
+  Customer Review stage exists (the change has a Customer Group, see "Customer
+  Group" below) `customer_approval` and `customer_review` offer only
+  `[canceled]`**: the manual `scheduled` / `closed` is withdrawn and refused.
 * **Approver pools.**
   * *Peer Approval* — Normal only. The change's assigned group, **minus every
     member of an SRE team** (`team.type` starting `sre`, e.g. `sre-abt`:
@@ -2570,10 +2573,12 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   true only on the calling user's own `REQUESTED` row when they may actually
   decide it (not creator; not SRE on the peer stage). Additive, advisory; the
   decision endpoint re-checks. Postgres data source only.
-* **Rejections** keep the existing behaviour: siblings cancelled, no state
-  change in either direction.
+* **Rejections** of the internal stages keep the existing behaviour: siblings
+  cancelled, no state change in either direction. (A *customer group's*
+  rejection does move the change — see "Customer Group" below.)
 * Stage labels (`approval_stage.checkpoint_label`) are now `Peer Approval`,
-  `CAB Approval`, `ECAB Approval`, `Review`; pre-existing `Assess`/`Authorize`
+  `CAB Approval`, `ECAB Approval`, `Review`, plus the customer group's `Customer
+  Approval` / `Customer Review`; pre-existing `Assess`/`Authorize`
   labels (and unlabeled positional stages) are still recognised as peer/CAB.
 
 ### Customer Approval / Customer Review checkboxes
@@ -2638,11 +2643,91 @@ receipt). Postgres data source only.
   false}` from a required Review closes it; `{state: "assess",
   customerApprovalRequired: true}` on a Standard change lands in
   `customer_approval`).
+* **Customer Group: who gives the customer's answer.** See the next section.
 * Tests: `TestChangeRequestFlowIntegration_*CustomerGate*` /
   `*CustomerApproval*` / `*CustomerReview*` / `ManualScheduledOnlyFromCustomerApproval`
   (real Postgres, `CHANGE_REQUEST_TEST_DSN`), `TestLegalChangeRequestNextStates`,
   `TestCustomerGateHelpers`, the service tests
   `TestChangeRequestService_*CustomerGate*`, and the csm-portal BFF handler tests.
+
+### Customer Group: approving / rejecting Customer Approval and Customer Review
+
+A change request's **Customer Group** (`change_request.customer_group_id`, an FK
+into `"group"`; API `customerGroupId` on create/PATCH, `customerGroup` on the
+detail response) identifies the people the request is directed to, the way the
+Assignment group (Apollo / Artemis) identifies the internal approvers. When the
+change reaches `customer_approval` / `customer_review`, **the group's members
+get an Approve / Reject action in the Approvals tab**, like any other stage.
+Code: `change_request_approval_flow.go` (`provisionCustomerStage`,
+`applyCustomerStageOutcome`, `customerStageSpec*`).
+
+* **Membership model.** A group's members are its `team_member` rows by
+  `group_id` — exactly the Assignment group's model (`groupMemberIDs`), nothing
+  new. Eligible = an **active** user (`"user".is_active`) in the group;
+  the CR's creator is listed `cancelled` like on every other stage and can never
+  decide. The SRE-peer exclusion does **not** apply to customer stages.
+* **Stages.** Entering `customer_approval` writes an `approval_stage`
+  `checkpoint_label = "Customer Approval"`, `assignment_group_id` = the customer
+  group, one `requested` `approval_stage_approver` per eligible member; entering
+  `customer_review` the same with `"Customer Review"`. Entry points (all call
+  `provisionCustomerStage`): CAB / ECAB approval cascade, Request Approval on a
+  Standard change, the `{state: "customer_review"}` PATCH, and any PATCH that
+  carries `state` or `customerGroupId`. The stage kind rides on
+  `checkpoint_label` (`stageKindCustomerApproval` / `stageKindCustomerReview` in
+  `classifyApprovalStage`) — **no migration**. The approvals read response shows
+  them under those labels, `approverName` = the group's name, `approverType`
+  `STATIC_GROUP`. The Customer stages are excluded from the internal checkpoint
+  ordinal count in `provisionApprovalStage`, so the Review stage of a Normal
+  change is still created after a Customer Approval stage exists.
+* **Decisions** go through `DecideChangeRequestApproval` (first responder wins,
+  siblings cancelled, `canDecide` true only on a member's own `REQUESTED` row).
+  Outcomes, applied in the same transaction:
+
+  | Stage | Approved | Rejected |
+  |---|---|---|
+  | Customer Approval | `scheduled`, `is_customer_approved = true` | `canceled` |
+  | Customer Review | `closed`, `is_customer_reviewed = true` | `rollback` |
+
+  Rejected review -> `rollback`: the webapp's `ChangeRequestActionBar` documents
+  `rollback` as "written by the workflow that handles a rejected review", and
+  `canceled` for a declined approval matches the ServiceNow `isCustomerApproved:
+  false` semantics. **`rollback` is terminal here** (`legalNextStates` none), as
+  everywhere else on this data source — decide separately if it should offer
+  `closed`. The decision comes from the approval, so the flag stamp bypasses
+  `authorizeChangeRequestCustomerFlagWrite` (the decider is a group member).
+* **A non-member** (or anyone without a `requested` row) deciding on a change
+  waiting on its live customer stage gets a **403** `only members of the
+  customer group "<name>" can approve or reject the customer's approval|review
+  of this change request` (the creator keeps "the creator of a change request
+  cannot approve it"); elsewhere the old 404 "no pending approval found" stays.
+* **Fallback so nothing strands.** No customer group, or a group with no
+  eligible member: **no stage**, and the manual paths work as before
+  (`customer_approval` `[scheduled, canceled]`, `customer_review` `[closed,
+  canceled]`). With a live stage, `legalNextStates` is `[canceled]` for both
+  states and a manual `{state: "scheduled"}` / `{state: "closed"}` is a **400**
+  `state "scheduled" cannot be set manually: the customer's approval has been
+  requested from the customer group "<name>" and is given by one of its members
+  approving or rejecting it in the change request's approvals (POST
+  /change-requests/{id}/approvals/decision)`. Cancel stays available and cancels
+  the pending rows.
+* **Group set / changed / cleared later** (`provisionCustomerStage`,
+  idempotent, under the `change_request` row lock): set while already in the
+  state -> the stage is provisioned; resent/unrelated PATCH -> nothing; changed
+  while a stage is live -> the old stage's `requested` rows are `cancelled` and a
+  new stage is provisioned for the new group (never two live stages; the old
+  stage stays as a record); cleared -> pending rows cancelled, manual path back.
+  A stage already approved/rejected is never re-provisioned.
+* **ServiceNow.** Not mirrored beyond the existing decision replay
+  (`approval_decision` writeback); no ServiceNow field names for customer-group
+  approvals are guessed. The pure ServiceNow data source is unchanged
+  (`withoutManualScheduled` still offers `scheduled` from customer approval).
+* Seed: `scripts/csm-compose/seed-entity-service.sql` adds the group "Example
+  Corp Customer Approvers" (jane.doe, john.smith) and CHG-FIXED-007
+  (`customer_approval`) / CHG-FIXED-008 (`customer_review`) with their stages.
+* Tests: `TestChangeRequestFlowIntegration_CustomerGroup*` and
+  `_SeedCustomerGroupFixtures` (real Postgres), `TestCustomerStageSpecs`,
+  `TestWithoutManualCustomerOutcome`, `TestCustomerStageManualRefusal`,
+  `TestClassifyApprovalStage`.
 
 **`scanChangeRequestView`/`scanChangeRequestViewAndDetail` had a
 scan-destination bug** found in production logs: `wi.created_on`/

@@ -265,4 +265,52 @@ INSERT INTO change_request (id, state, change_model, priority, impact, category,
   ('00000000-0000-0000-0000-000000001202', 'REVIEW'::change_request_state_enum, 'NORMAL'::change_request_change_model_enum, 'MODERATE'::change_request_priority_enum, 'LOW'::change_request_impact_enum, 'SOFTWARE'::change_request_category_enum, 'LOW'::change_request_risk_enum, 'GENERAL'::change_request_type_enum, NULL, 'Seed fixture: Review state, Customer Review ticked.', false, true)
 ON CONFLICT (id) DO NOTHING;
 
+-- Customer Group fixtures: the group that gives the customer's answer at
+-- Customer Approval / Customer Review (change_request.customer_group_id), like
+-- the Assignment group (901) does for the internal Peer/Review approvals.
+-- Membership is team_member.group_id -- the same model as every other approval
+-- group; team_member.team_id is NOT NULL, so the seeded team (901) fills it.
+-- jane.doe and john.smith are the members, so either can approve or reject in
+-- the Approvals tab. requested_by_user_id is NULL and created_by is 'seed', so
+-- neither is excluded as the creator.
+INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name, is_active) VALUES
+  ('00000000-0000-0000-0000-000000000911', now(), now(), 'seed', 'seed', 'Example Corp Customer Approvers', true)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id) VALUES
+  ('00000000-0000-0000-0000-000000001301', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000911'),
+  ('00000000-0000-0000-0000-000000001302', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000911')
+ON CONFLICT (id) DO NOTHING;
+
+-- CR-FIXED-007: a Normal change in Customer Approval with the customer group
+-- set and its "Customer Approval" stage provisioned (what the CAB approval
+-- cascade writes): jane.doe and john.smith are REQUESTED approvers; the first
+-- to approve schedules the change, a rejection cancels it.
+-- CR-FIXED-008: a change in Customer Review with the customer group set and its
+-- "Customer Review" stage provisioned: approving closes it, rejecting moves it
+-- to Rollback.
+INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type, account_id, project_id, assignment_group_id, opened_by_user_id, assigned_to_id, description) VALUES
+  ('00000000-0000-0000-0000-000000001303', now(), now(), 'seed', 'seed', 'CHG-FIXED-007', 'E2E fixture: change in Customer Approval with a pending customer group approval', 'CHANGE_REQUEST', '00000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Seed fixture: Customer Approval state, customer group set, Customer Approval stage with two requested approvers (jane.doe, john.smith).'),
+  ('00000000-0000-0000-0000-000000001304', now(), now(), 'seed', 'seed', 'CHG-FIXED-008', 'E2E fixture: change in Customer Review with a pending customer group review', 'CHANGE_REQUEST', '00000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Seed fixture: Customer Review state, customer group set, Customer Review stage with two requested approvers (jane.doe, john.smith).')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO change_request (id, state, change_model, priority, impact, category, risk, change_request_type, requested_by_user_id, justification, customer_approval_required, customer_review_required, customer_group_id) VALUES
+  ('00000000-0000-0000-0000-000000001303', 'CUSTOMER_APPROVAL'::change_request_state_enum, 'NORMAL'::change_request_change_model_enum, 'MODERATE'::change_request_priority_enum, 'LOW'::change_request_impact_enum, 'SOFTWARE'::change_request_category_enum, 'LOW'::change_request_risk_enum, 'GENERAL'::change_request_type_enum, NULL, 'Seed fixture: Customer Approval with a customer group.', true, false, '00000000-0000-0000-0000-000000000911'),
+  ('00000000-0000-0000-0000-000000001304', 'CUSTOMER_REVIEW'::change_request_state_enum, 'NORMAL'::change_request_change_model_enum, 'MODERATE'::change_request_priority_enum, 'LOW'::change_request_impact_enum, 'SOFTWARE'::change_request_category_enum, 'LOW'::change_request_risk_enum, 'GENERAL'::change_request_type_enum, NULL, 'Seed fixture: Customer Review with a customer group.', false, true, '00000000-0000-0000-0000-000000000911')
+ON CONFLICT (id) DO NOTHING;
+
+-- The stages carry an explicit checkpoint_label (migration 0179), which is how
+-- they are recognised; the assignment group is the customer group.
+INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, raw_status, checkpoint_label) VALUES
+  ('00000000-0000-0000-0000-000000001305', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001303', '00000000-0000-0000-0000-000000000911', 'requested', 'Customer Approval'),
+  ('00000000-0000-0000-0000-000000001306', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001304', '00000000-0000-0000-0000-000000000911', 'requested', 'Customer Review')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status) VALUES
+  ('00000000-0000-0000-0000-000000001307', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001305', '00000000-0000-0000-0000-000000001303', '00000000-0000-0000-0000-000000000001', 'requested'),
+  ('00000000-0000-0000-0000-000000001308', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001305', '00000000-0000-0000-0000-000000001303', '00000000-0000-0000-0000-000000000002', 'requested'),
+  ('00000000-0000-0000-0000-000000001309', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001306', '00000000-0000-0000-0000-000000001304', '00000000-0000-0000-0000-000000000001', 'requested'),
+  ('00000000-0000-0000-0000-000000001310', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001306', '00000000-0000-0000-0000-000000001304', '00000000-0000-0000-0000-000000000002', 'requested')
+ON CONFLICT (id) DO NOTHING;
+
 COMMIT;

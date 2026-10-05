@@ -5910,7 +5910,10 @@ paths:
       description: >-
         Records the caller's decision on their own pending approval stage. Only the
         caller's own pending approval can be acted on; the change request's own state
-        cascades automatically in the backing data source.
+        cascades automatically in the backing data source. For a change request's
+        customer group stages: "Customer Approval" approved -> scheduled
+        (is_customer_approved), rejected -> canceled; "Customer Review" approved
+        -> closed (is_customer_reviewed), rejected -> rollback.
       operationId: decideChangeRequestApproval
       parameters:
         - name: id
@@ -5940,6 +5943,16 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
           description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: >-
+            The caller may not decide: the change request's creator, an SRE team
+            member on the peer stage, or -- while the change waits on its
+            customer group's Customer Approval / Customer Review -- anyone not
+            in that group. The message says which.
           content:
             application/json:
               schema:
@@ -15725,12 +15738,17 @@ components:
                 customer_approval when customerApprovalRequired).
                 customer_approval: [scheduled, canceled] -- "scheduled" here
                 means "record the customer's approval" and is the ONLY state
-                from which a manual scheduled is accepted.
+                from which a manual scheduled is accepted -- UNLESS the change
+                has a customer group with a pending "Customer Approval" stage,
+                in which case it is [canceled] and the decision comes from the
+                group's members through the approvals.
                 scheduled: [implement, canceled]; implement: [review,
                 canceled].
                 review: [customer_review, canceled] when customerReviewRequired,
                 else [closed, canceled].
-                customer_review: [closed, canceled]. Terminal states: none.
+                customer_review: [closed, canceled], or [canceled] while a
+                customer group's "Customer Review" stage is pending.
+                Terminal states: none.
             implementationPlan:
               type: string
               nullable: true
@@ -15863,9 +15881,12 @@ components:
         stage:
           type: string
           description: >-
-            Approval stage name: "Peer Approval", "CAB Approval", "ECAB Approval"
-            or "Review" for stages provisioned by this service; legacy/synced
-            stages may be "Assess", "Authorize" or "Customer Approval".
+            Approval stage name: "Peer Approval", "CAB Approval", "ECAB Approval",
+            "Review", and -- for the change's customer group, while it is in
+            customer_approval / customer_review -- "Customer Approval" /
+            "Customer Review" (approverName is then the customer group's name),
+            for stages provisioned by this service; legacy/synced stages may be
+            "Assess", "Authorize" or "Customer Approval".
         approverType:
           type: string
           enum: [STATIC_GROUP, DYNAMIC_CONTACT]

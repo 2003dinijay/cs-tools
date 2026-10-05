@@ -285,6 +285,18 @@ to the entity service as-is (no field allow-list), with two checks on top:
   review is required …") reach the form verbatim; `POST` errors are generic.
 * The detail response carries `customerApprovalRequired`/`customerReviewRequired`
   and `legalNextStates` untouched; the webapp renders `legalNextStates` as-is.
+* **Customer Group approvals.** The change's customer group answers Customer
+  Approval / Customer Review through the approvals
+  (`POST /change-requests/{id}/approvals/decision`), with the stages "Customer
+  Approval" / "Customer Review" in `GET .../approvals` (see the entity service's
+  CLAUDE.md, "Customer Group"). While such a stage is live `legalNextStates` for
+  those states is just `["canceled"]` and a manual `{state: "scheduled"}` /
+  `{state: "closed"}` PATCH is a 400 whose message is echoed verbatim. A
+  non-member's decision is a 403 whose reason is shown (`mapApprovalDecisionError`
+  already surfaces any 403 reason: `only members of the customer group "X" can
+  approve or reject …`). A rejected Customer Approval cancels the change, a
+  rejected Customer Review moves it to `rollback`. No BFF code change was needed;
+  `TestCustomerGroupApprovalMessages` pins both messages.
 
 ## Health endpoints
 

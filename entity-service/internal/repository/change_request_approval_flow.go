@@ -98,16 +98,16 @@ import (
 // before the CAB flow were written with; they are still recognised when a
 // stage is classified (see classifyApprovalStage).
 const (
-	approvalStageLabelPeer      = "Peer Approval"
-	approvalStageLabelCAB       = "CAB Approval"
-	approvalStageLabelECAB      = "ECAB Approval"
-	approvalStageLabelReview    = "Review"
+	approvalStageLabelPeer   = "Peer Approval"
+	approvalStageLabelCAB    = "CAB Approval"
+	approvalStageLabelECAB   = "ECAB Approval"
+	approvalStageLabelReview = "Review"
 	// The customer's own stages (see provisionCustomerStage): not part of the
 	// internal checkpoint ordinals, so they are written and recognised by label.
 	approvalStageLabelCustomerApproval = "Customer Approval"
 	approvalStageLabelCustomerReview   = "Customer Review"
-	approvalStageLabelLegacyAss = "Assess"
-	approvalStageLabelLegacyAut = "Authorize"
+	approvalStageLabelLegacyAss        = "Assess"
+	approvalStageLabelLegacyAut        = "Authorize"
 )
 
 // approvalPoolKind selects where a checkpoint's approvers come from.

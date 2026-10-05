@@ -493,6 +493,43 @@ func TestChangeRequestService_DecideChangeRequestApproval_NoWritebackWhenSnWrite
 	}
 }
 
+// TestChangeRequestService_DecideChangeRequestApproval_NonMemberRefusalPropagates:
+// a caller outside the customer group of a change waiting on its customer
+// stage gets the repository's readable ForbiddenError unchanged, and nothing
+// is mirrored to ServiceNow for a decision that was never recorded.
+func TestChangeRequestService_DecideChangeRequestApproval_NonMemberRefusalPropagates(t *testing.T) {
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "outsider@example.com"))
+	const msg = `only members of the customer group "Artemis Customers" can approve or reject the customer's approval of this change request`
+	mirrorCalled := make(chan struct{}, 1)
+	mirror := &stubMirrorChangeRequestService{
+		decideChangeRequestApproval: func(context.Context, string, string) (domain.ChangeRequestApprovalDecisionResponse, error) {
+			mirrorCalled <- struct{}{}
+			return domain.ChangeRequestApprovalDecisionResponse{}, nil
+		},
+	}
+	repo := &stubChangeRequestRepo{
+		decideChangeRequestApproval: func(context.Context, string, string, string, string) (string, error) {
+			return "", &apierror.ForbiddenError{Msg: msg}
+		},
+	}
+	svc := NewChangeRequestServiceWithSNWriteback(repo, stubUserRepo{
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testUUID, Email: "outsider@example.com"}, nil
+		},
+	}, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+
+	_, err := svc.DecideChangeRequestApproval(ctx, testUUID, "approved")
+	var fe *apierror.ForbiddenError
+	if !errors.As(err, &fe) || fe.Msg != msg {
+		t.Fatalf("err = %v, want the repository's ForbiddenError %q", err, msg)
+	}
+	select {
+	case <-mirrorCalled:
+		t.Fatal("a refused decision was mirrored to ServiceNow")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // TestChangeRequestService_DecideChangeRequestApproval_MirrorsToServiceNow
 // covers the writeback wiring: on a successful Postgres decide, the
 // mirror's DecideChangeRequestApproval is dispatched asynchronously and

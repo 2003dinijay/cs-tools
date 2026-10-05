@@ -597,6 +597,45 @@ func TestDecideChangeRequestApproval(t *testing.T) {
 	})
 }
 
+// Customer Approval / Customer Review are answered by the members of the
+// change's customer group through the approvals. A non-member's refusal and the
+// refusal of the manual state change must reach the caller readable.
+func TestCustomerGroupApprovalMessages(t *testing.T) {
+	t.Run("a non-member's decision is refused with the group named", func(t *testing.T) {
+		const msg = `only members of the customer group "Artemis Customers" can approve or reject the customer's approval of this change request`
+		client := &mockEntityChangeRequestClient{
+			decideChangeRequestApprovalFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusForbidden, Body: `{"code":403,"message":` + jsonQuote(msg) + `}`}
+			},
+		}
+		h := NewChangeRequestHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests/"+testCRID+"/approvals/decision", strings.NewReader(`{"decision":"approved"}`)))
+		r.SetPathValue("id", testCRID)
+		w := httptest.NewRecorder()
+		h.DecideChangeRequestApproval(w, r)
+		assertStatus(t, w, http.StatusForbidden)
+		assertErrorMessage(t, w, msg)
+	})
+
+	t.Run("a manual scheduled/closed while the customer group's request is pending is a readable 400", func(t *testing.T) {
+		const msg = `state "scheduled" cannot be set manually: the customer's approval has been requested from the customer group "Artemis Customers" and is given by one of its members approving or rejecting it in the change request's approvals (POST /change-requests/{id}/approvals/decision)`
+		client := &mockEntityChangeRequestClient{
+			patchChangeRequestFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusBadRequest, Body: `{"code":400,"message":` + jsonQuote(msg) + `}`}
+			},
+		}
+		h := NewChangeRequestHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(`{"state":"scheduled"}`)))
+		r.SetPathValue("id", testCRID)
+		w := httptest.NewRecorder()
+		h.PatchChangeRequest(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, msg)
+	})
+}
+
+func jsonQuote(s string) string { b, _ := json.Marshal(s); return string(b) }
+
 func TestSearchChangeRequests(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {
 		h := NewChangeRequestHandler(&mockEntityChangeRequestClient{})
