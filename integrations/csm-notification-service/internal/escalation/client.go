@@ -140,7 +140,15 @@ func (c *Client) DetectEscalation(ctx context.Context, caseID, caseNumber, produ
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	// Bounded even on success: unlike the excerpt-only truncation on the
+	// error path just below, a successful response is decoded in full (the
+	// JSON fields this client actually needs), so it can't be capped to a
+	// handful of bytes the way an error body's excerpt is -- but it still
+	// must not be unbounded, since a misbehaving or misconfigured detector
+	// could otherwise have this buffer an arbitrarily large body in memory,
+	// on the Kafka consumer path, for every customer comment.
+	const maxResponseBody = 1 << 20 // 1 MiB
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
 		return Result{}, fmt.Errorf("escalation: read response: %w", err)
 	}

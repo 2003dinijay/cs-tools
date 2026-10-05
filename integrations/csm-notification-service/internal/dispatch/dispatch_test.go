@@ -712,6 +712,45 @@ func TestDispatcher_Handle_CommentAdded_FrustrationDetection_SkipConditions(t *t
 	}
 }
 
+// TestDispatcher_Handle_CommentAdded_FrustrationDetection_NotRepeatedWhenEmailRetries
+// is a regression test for a CodeRabbit-flagged bug: handleCommentAdded's own
+// return value is driven by the EMAIL path, not checkFrustration — a record
+// retried solely because the email send keeps failing used to redo
+// frustration detection (a second OpenAI call) and repost the Chat alert on
+// every attempt, exactly the repeated-Chat-alert-on-retry-and-DLQ-hand-off
+// incident this file's own history already documents for other channels.
+// checkFrustration's own claim now persists across attempts (forgotten only
+// on record.NoMoreRetries), so the detector/Chat alert fire exactly once
+// across every retry of the same record content, even though the email send
+// — and therefore Handle's own return value — keeps failing the whole time.
+func TestDispatcher_Handle_CommentAdded_FrustrationDetection_NotRepeatedWhenEmailRetries(t *testing.T) {
+	email := &mockEmailSender{err: errors.New("email service unreachable")}
+	chat := &mockGoogleChatSender{}
+	links := &mockLinkResolver{isCustomer: true}
+	detector := &mockEscalationDetector{result: escalation.Result{ShouldAlert: true, Reason: "Repeated unanswered follow-ups", FrustratedLevel: 0.91}}
+	d := NewDispatcher(email, chat, &mockCallSender{}, links, true, false, nil, true, "", nil).
+		WithFrustrationDetection(detector)
+
+	record := eventbus.Record{Topic: "case-events", Partition: 1, Offset: 7, Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001","caseTitle":"Something broke","caseComment":"still no update, unacceptable","commentId":"C-1","recipients":["test-recipient@example.com"],"authorEmail":"customer@acme.com","product":"WSO2 API Manager"}}`)}
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		record.NoMoreRetries = attempt == 3
+		if err := d.Handle(context.Background(), record); err == nil {
+			t.Fatalf("attempt %d: expected the email error to still propagate", attempt)
+		}
+	}
+
+	if detector.callCount() != 1 {
+		t.Errorf("detector called %d times across 3 retries, want 1 (frustration detection must not repeat once it has run)", detector.callCount())
+	}
+	if len(chat.frustrationCalls) != 1 {
+		t.Errorf("frustration Chat alert sent %d times across 3 retries, want 1", len(chat.frustrationCalls))
+	}
+	if len(d.done) != 0 {
+		t.Errorf("done map should be empty after the final (NoMoreRetries) attempt, has %d entries (leaked tracking)", len(d.done))
+	}
+}
+
 // TestDispatcher_Handle_CommentAdded_InlineImage verifies a comment
 // containing an inline (data: URI) image ends up sent as a real inline
 // EmailAttachment with a matching Content-ID, referenced from the email

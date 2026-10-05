@@ -472,14 +472,16 @@ func (c *GoogleChatClient) SendSeverityChangedAlert(ctx context.Context, audienc
 // SendFrustrationAlert posts a card message for a comment
 // ai-escalate-comment-detector (internal/escalation) flagged as
 // escalation-worthy, to the Google Chat space configured for audience —
-// dispatch.go always resolves this to the fixed chataudience.IncidentMonitor
-// audience today, the same posture SendCaseCreatedAlert's own doc comment
-// describes for that event type (not per-team routing; this service has no
-// per-case team data on a case.comment_added payload to route by). Same
-// header/body convention as the other case.* cards above: case ref as the
-// header title, a "🚨" marker (distinct from SendCaseCreatedAlert's "🆕"),
-// product (bold) and the frustration score on their own lines, the model's
-// own reason as plain text, then a single "View case" link.
+// dispatch.checkFrustration resolves audience via chataudience.Resolve, the
+// same team-first/Incident-Monitor-fallback routing (plus the Evaluation/
+// Onboarding/Americas/weekend overlays) an SLA breach alert uses, using the
+// case.comment_added payload's own Team/IsEvaluationAccount/
+// ProjectOnboardingStatus fields — not the fixed-IncidentMonitor-only
+// posture SendCaseCreatedAlert's own doc comment describes for that event
+// type. Same header/body convention as the other case.* cards above: case
+// ref as the header title, a "🚨" marker (distinct from SendCaseCreatedAlert's
+// "🆕"), product (bold) and the frustration score on their own lines, the
+// model's own reason as plain text, then a single "View case" link.
 func (c *GoogleChatClient) SendFrustrationAlert(ctx context.Context, audience, caseNumber, wso2CaseID, productName, reason string, frustrationLevel float64, caseLink string) error {
 	if caseNumber == "" {
 		return fmt.Errorf("notifications: caseNumber is required")

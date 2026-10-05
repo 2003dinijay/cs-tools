@@ -636,7 +636,7 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 		return fmt.Errorf("dispatch: decode case.comment_added payload: %w", err)
 	}
 
-	d.checkFrustration(ctx, p)
+	d.checkFrustration(ctx, record, p)
 
 	groups, groupUserIDs, err := d.groupByLink(ctx, p.Recipients, p.ProjectID, p.CaseID)
 	if err != nil {
@@ -678,16 +678,45 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 // swallowed, never propagated as this record's own error — the email
 // reaction to a new comment is the primary thing this handler exists for,
 // and a problem with a newer, secondary feature must not cause Kafka to
-// retry (and therefore re-run, including a second OpenAI call) a comment
-// whose email side has already succeeded or is being retried for an
-// unrelated reason. No separate idempotency tracking (the claim/forget
-// mechanism sendPerGroup/groupByLink use for email) guards a retry from
-// re-running this check and potentially re-alerting — accepted for a first
-// version: a duplicate Chat alert on an already-rare retry is a much
-// smaller problem than the email-delivery duplicates that mechanism exists
-// to prevent.
-func (d *Dispatcher) checkFrustration(ctx context.Context, p events.CommentAddedPayload) {
+// retry a comment whose email side has already succeeded.
+//
+// Claimed via recordBaseKey(record)+"/frustration" (the same per-record,
+// content-keyed idempotency tracking as every other channel in this file —
+// see claim's own doc comment), and deliberately NOT released on success the
+// way handleCaseAcknowledged's/handleIncidentCreated's own single-channel
+// shape does: those two are safe to forget-on-success because their own
+// success/failure IS the whole function's return value, so a successful run
+// is never retried at all. This call site is different — it runs
+// unconditionally at the top of handleCommentAdded, whose return value is
+// driven entirely by the EMAIL path below; a record retried solely because
+// the email side failed would otherwise redo this step (a second OpenAI
+// call, and a second Chat post) even though frustration detection itself
+// already fully completed on the first attempt. Released only on
+// record.NoMoreRetries (no further attempt coming, ever, on any topic — see
+// recordBaseKey's own doc comment for why a DLQ redelivery shares the same
+// key) — matching the exact repeated-Chat-alert-on-retry-and-DLQ-hand-off
+// incident this file's own history already documents for the email/other
+// Chat channels.
+func (d *Dispatcher) checkFrustration(ctx context.Context, record eventbus.Record, p events.CommentAddedPayload) {
 	if d.frustrationDetector == nil || p.IsInternalNote || p.AuthorEmail == "" || p.CaseComment == "" {
+		return
+	}
+
+	frustrationKey := recordBaseKey(record) + "/frustration"
+	if record.NoMoreRetries {
+		// No further attempt will ever come for this record's content again
+		// (main topic or DLQ) -- release unconditionally, the same
+		// "regardless of who currently holds it" reasoning
+		// forgetEmailGroups' own NoMoreRetries branch uses. Registered
+		// before the claim attempt below (not after): on the actually-final
+		// retry, claim() returning false (an earlier attempt still holds the
+		// key, since nothing has forgotten it yet) would otherwise return
+		// before ever reaching a forget placed after it, leaking the key
+		// forever -- confirmed by a failing regression test before this
+		// ordering was fixed.
+		defer d.forget(frustrationKey)
+	}
+	if !d.claim(frustrationKey) {
 		return
 	}
 
