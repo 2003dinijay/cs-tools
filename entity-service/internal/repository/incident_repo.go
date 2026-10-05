@@ -65,6 +65,10 @@ import (
 // DATA_SOURCE=postgres-servicenow-dual-write's SN-first incident creation,
 // where identity comes from ServiceNow rather than being generated here.
 type IncidentRepository interface {
+	// SupportGroupOfService returns the service's support group id, or ""
+	// when the service has none or does not exist. CreateIncident uses it to
+	// derive an incident's assignment group from its service.
+	SupportGroupOfService(ctx context.Context, serviceID string) (string, error)
 	// SearchIncidents returns a filtered, sorted, paginated slice of
 	// incidents together with the total count of matching rows before
 	// pagination. priorities/states are the already-mapped Postgres enum
@@ -189,6 +193,19 @@ type IncidentLifecycleUpdate struct {
 
 type incidentRepo struct {
 	db *Scoped
+}
+
+// SupportGroupOfService implements IncidentRepository.
+func (r *incidentRepo) SupportGroupOfService(ctx context.Context, serviceID string) (string, error) {
+	var group *string
+	err := r.db.QueryRow(ctx, `SELECT support_group_id::text FROM service WHERE id = $1::uuid`, serviceID).Scan(&group)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && group == nil) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read support group of service %s: %w", serviceID, err)
+	}
+	return *group, nil
 }
 
 // NewIncidentRepository constructs an IncidentRepository backed by the given connection pool.

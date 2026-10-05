@@ -85,6 +85,11 @@ type stubIncidentRepo struct {
 	createIncidentComment        func(ctx context.Context, incidentID string, commentType domain.CommentType, content, createdBy string) (domain.CaseComment, error)
 	getIncidentByID              func(ctx context.Context, id string) (domain.IncidentView, error)
 	updateIncidentLifecycle      func(ctx context.Context, id string, u repository.IncidentLifecycleUpdate, actorEmail string) error
+	supportGroups                map[string]string // service id -> support group id; unset = none
+}
+
+func (s *stubIncidentRepo) SupportGroupOfService(_ context.Context, serviceID string) (string, error) {
+	return s.supportGroups[serviceID], nil
 }
 
 func (s *stubIncidentRepo) SearchIncidents(context.Context, domain.SearchIncidentsRequest, []string, []string, []string, []string, *bool, *bool, *time.Time, *time.Time) ([]domain.SearchIncidentView, int, error) {

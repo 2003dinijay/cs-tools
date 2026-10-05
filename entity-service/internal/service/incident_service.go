@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -429,6 +430,10 @@ func (s *incidentService) SearchIncidentActivities(ctx context.Context, req doma
 // delegates to createIncidentSNFirst -- see that method's own doc comment.
 // Otherwise it is createIncidentPortal, the native Postgres create.
 func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentResponse, error) {
+	var err error
+	if req, err = s.withAssignmentGroupFromService(ctx, req); err != nil {
+		return domain.CreateIncidentResponse{}, err
+	}
 	if s.snMirror != nil {
 		// ConfigurationItemID has no backing column on this data source at
 		// all (unlike Subcategory/AssignedEngineerID/WatchList/
@@ -451,6 +456,39 @@ func (s *incidentService) CreateIncident(ctx context.Context, req domain.CreateI
 		return s.createIncidentSNFirst(ctx, req)
 	}
 	return s.createIncidentPortal(ctx, req)
+}
+
+// withAssignmentGroupFromService fills in an incident's assignment group from
+// its service's support group when the caller named a service but no group.
+//
+// *** ONE CALL CARRIES EVERYTHING. *** The portal's create form derives the
+// same group from the service it shows, but every other caller -- alert-born
+// incidents from sre-alert-core-service, any M2M client -- would otherwise
+// have to look the support group up itself in a second call, or create the
+// incident with no group and route it nowhere. Done here, before either
+// create path, so in dual-write mode ServiceNow and Postgres get the same
+// group.
+//
+// An explicitly sent group always wins: a caller that knows better (an alarm
+// that names its own team) is not overridden. A service with no support group
+// leaves the incident unassigned, as before. An invalid service id is left for
+// request validation to reject.
+func (s *incidentService) withAssignmentGroupFromService(ctx context.Context, req domain.CreateIncidentRequest) (domain.CreateIncidentRequest, error) {
+	if req.AssignmentGroupID != nil && strings.TrimSpace(*req.AssignmentGroupID) != "" {
+		return req, nil
+	}
+	serviceID := strings.TrimSpace(req.ServiceID)
+	if serviceID == "" || validateUUIDs("serviceId", []string{serviceID}) != nil || s.repo == nil {
+		return req, nil
+	}
+	group, err := s.repo.SupportGroupOfService(ctx, serviceID)
+	if err != nil {
+		return req, err
+	}
+	if group != "" {
+		req.AssignmentGroupID = &group
+	}
+	return req, nil
 }
 
 // createIncidentPortal implements CreateIncident's plain-Postgres path
