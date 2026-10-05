@@ -23,7 +23,7 @@
 # for the time the incident was reported, so the rotation -- weekday or
 # weekend, Sri Lanka hours or the Americas night -- decides the people.
 # It stops when an engineer is assigned or the incident leaves NEW; a public
-# comment does NOT stop it (internal/escalation/engine.go Handle).
+# comment does NOT stop it (internal/paging/engine.go Handle).
 #
 # Run it with no arguments and it asks, one numbered list at a time:
 #   1. which severity          S0..S3 (P0..P3 are the same levels, old names)

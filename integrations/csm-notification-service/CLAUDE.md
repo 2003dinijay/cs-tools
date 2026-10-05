@@ -166,7 +166,7 @@ the `case.*` events. An **incident** is `POST /incidents` and
 `domain.IncidentView`, carried by the `incident.*` events. Both families exist
 here and they are not interchangeable: `case.comment_added` and
 `incident.comment_added` are different payloads about different entities, and
-`dispatch` reacts to the first while `internal/escalation` reacts to the
+`dispatch` reacts to the first while `internal/paging` reacts to the
 second.
 
 **"SRE incident" is not a third thing.** `integrations/sre-alert-ingestion-service`
@@ -177,7 +177,7 @@ below escalates it like any other. There is no separate SRE entity.
 
 ## Incident call escalation
 
-`internal/escalation` runs the incident call-escalation ladder from the
+`internal/paging` runs the incident call-escalation ladder from the
 "Synchronizing Twilio Alerts for New Incoming Incidents Based on ABT Model"
 specification: an unattended incident climbs five rungs (LEVEL_0 rotation
 lead/members — rotations only — then ABT leads, ABT team leads, Head of BU,

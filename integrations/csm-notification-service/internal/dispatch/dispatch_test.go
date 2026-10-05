@@ -1297,7 +1297,7 @@ func TestDispatcher_Handle_CaseCreated_EmailSendingDisabled(t *testing.T) {
 
 // TestDispatcher_Handle_IgnoresEventTypesOwnedByOtherConsumers verifies that
 // records belonging to another consumer group on this shared topic -- the
-// slaengine poller's sla.tier_reached, and internal/escalation's three
+// slaengine poller's sla.tier_reached, and internal/paging's three
 // incident signals -- are a silent no-op here, not an error. Erroring would
 // burn this consumer's retries and dead-letter an event that was never broken.
 func TestDispatcher_Handle_IgnoresEventTypesOwnedByOtherConsumers(t *testing.T) {

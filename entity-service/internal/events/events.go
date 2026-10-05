@@ -282,7 +282,7 @@ type IncidentCreatedPayload struct {
 	ContactType string `json:"contactType,omitempty"`
 
 	// The remaining fields feed csm-notification-service's call-escalation
-	// ladder (its internal/escalation), which needs the priority that keys
+	// ladder (its internal/paging), which needs the priority that keys
 	// the timing table plus the routing attributes that select recipients.
 	// Every one is optional on the wire: publishIncidentCreated resolves them
 	// from a post-create read of the incident, and that read is best-effort —

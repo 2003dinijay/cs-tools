@@ -63,7 +63,7 @@ const (
 	TypeSeverityChanged  Type = "case.severity_changed"
 	TypeIncidentCreated  Type = "incident.created"
 	// TypeIncidentAcknowledged / TypeIncidentPriorityElevated belong to the
-	// incident call-escalation ladder (internal/escalation), not to
+	// incident call-escalation ladder (internal/paging), not to
 	// internal/dispatch. Published by entity-service's UpdateIncident. Both
 	// are in KnownTypes and have Validate cases so a malformed one is still
 	// rejected, but dispatch.Handle deliberately no-ops on them exactly as it
@@ -83,7 +83,7 @@ const (
 	// incident's assignee. It is the SRE ladder's acknowledgement gesture
 	// ("assignee set on incident"): whoever takes the incident stops the
 	// calls. Like the other incident.* signals above it belongs to
-	// internal/escalation, and dispatch.Handle no-ops on it.
+	// internal/paging, and dispatch.Handle no-ops on it.
 	TypeIncidentAssigned Type = "incident.assigned"
 
 	// TypeSLATierReached belongs to internal/slaengine, not internal/dispatch
@@ -351,7 +351,7 @@ type SeverityChangedPayload struct {
 // caller-supplied one. A publisher only needs to know that an incident was
 // created, not this service's portal URL configuration.
 //
-// Its other reaction is the call-escalation ladder (internal/escalation),
+// Its other reaction is the call-escalation ladder (internal/paging),
 // which needs considerably more than a direct call does: the priority that
 // keys the timing table, the routing attributes that pick recipients, and the
 // real report time the ladder's offsets are measured from. Every one of those
@@ -364,7 +364,7 @@ type SeverityChangedPayload struct {
 type IncidentCreatedPayload struct {
 	// Product is no longer read by dispatch.handleIncidentCreated: the Google
 	// Chat alert it used to select a space for is gone, per explicit product
-	// direction. It is still read by internal/escalation, where it is rules
+	// direction. It is still read by internal/paging, where it is rules
 	// R7/R8/R13/R14's "is a WSO2 product present" routing input, and it is
 	// still accepted on the wire regardless -- events.Validate decodes
 	// strictly (DisallowUnknownFields), so removing the field outright would

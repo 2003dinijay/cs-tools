@@ -18,7 +18,7 @@
 // single phone number, on a compressed clock, placing the calls itself.
 //
 // It predates the engine and is no longer the tool to reach for. It builds a
-// real plan with internal/escalation and then dials it directly, so it
+// real plan with internal/paging and then dials it directly, so it
 // exercises the timing table and the spoken message but none of the engine:
 // no durable state, no idempotency under redelivery, no resumption after a
 // restart, and no cancellation driven by a real event — its --ack-after is a
@@ -57,8 +57,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/escalation"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/paging"
 )
 
 // maxHarnessCallsCeiling bounds --max-calls itself. A full ladder is 14 calls;
@@ -140,11 +140,11 @@ func run(cfg config) error {
 		fmt.Printf("no --to given; using the placeholder %s for this dry run\n\n", cfg.to)
 	}
 
-	kind := escalation.TriggerNewIncident
+	kind := paging.TriggerNewIncident
 	switch strings.ToLower(cfg.kind) {
 	case "new":
 	case "elevated":
-		kind = escalation.TriggerPriorityElevated
+		kind = paging.TriggerPriorityElevated
 	default:
 		return fmt.Errorf("--kind must be new or elevated, got %q", cfg.kind)
 	}
@@ -156,7 +156,7 @@ func run(cfg config) error {
 
 	// A ladder is built from a real trigger and expanded by the real planner —
 	// the point of the harness is that this half is not simulated.
-	trigger := escalation.Trigger{
+	trigger := paging.Trigger{
 		IncidentID: "harness-0000-0000-0000-000000000000",
 		Number:     cfg.incNumber,
 		WSO2CaseID: cfg.caseID,
@@ -166,7 +166,7 @@ func run(cfg config) error {
 		Team:       cfg.team,
 		Kind:       kind,
 		At:         time.Now(),
-		Routing: escalation.RoutingContext{
+		Routing: paging.RoutingContext{
 			Product:         "WSO2 API Manager",
 			ABTEligible:     abtFlag(cfg.notABT),
 			AssignedCRETeam: "Atlas",
@@ -174,11 +174,11 @@ func run(cfg config) error {
 		},
 	}
 
-	if _, ok := escalation.Lookup(escalation.DefaultPolicy, trigger.Priority); !ok {
+	if _, ok := paging.Lookup(paging.DefaultPolicy, trigger.Priority); !ok {
 		return fmt.Errorf("no escalation policy for priority %q", trigger.Priority)
 	}
 
-	plan, err := escalation.BuildPlan(context.Background(), trigger, escalation.DefaultPolicy, harnessResolver(cfg.to), escalation.ChannelCall)
+	plan, err := paging.BuildPlan(context.Background(), trigger, paging.DefaultPolicy, harnessResolver(cfg.to), paging.ChannelCall)
 	if err != nil {
 		return err
 	}
@@ -209,7 +209,7 @@ func run(cfg config) error {
 	// how section 3.0 pairs them: a status change for a new incident, a public
 	// comment for a priority elevation.
 	reason := "Acknowledged"
-	if trigger.Kind == escalation.TriggerPriorityElevated {
+	if trigger.Kind == paging.TriggerPriorityElevated {
 		reason = "Public comment added"
 	}
 	for _, line := range plan.ExecutionSummary(nil, nil, cancelledAt, reason) {
@@ -223,37 +223,37 @@ func run(cfg config) error {
 // per-level identity so the execution summary stays readable. The names are
 // the specification's own roles; the addresses use .invalid, a reserved TLD,
 // so a stray email can never reach anyone.
-func harnessResolver(to string) escalation.Resolver {
-	name := func(role string) escalation.Recipient {
-		return escalation.Recipient{
+func harnessResolver(to string) paging.Resolver {
+	name := func(role string) paging.Recipient {
+		return paging.Recipient{
 			Email: fmt.Sprintf("%s@harness.invalid", role),
 			Name:  role,
 			Phone: to,
 		}
 	}
-	return escalation.StaticResolver{ByLevel: map[escalation.Level][]escalation.Recipient{
-		escalation.Level0: {name("rotation-engineer")},
-		escalation.Level1: {name("sub-lead")},
-		escalation.Level2: {name("team-lead")},
-		escalation.Level3: {name("bu-head")},
-		escalation.Level4: {name("head-of-cre")},
+	return paging.StaticResolver{ByLevel: map[paging.Level][]paging.Recipient{
+		paging.Level0: {name("rotation-engineer")},
+		paging.Level1: {name("sub-lead")},
+		paging.Level2: {name("team-lead")},
+		paging.Level3: {name("bu-head")},
+		paging.Level4: {name("head-of-cre")},
 	}}
 }
 
-func parseShift(s string) (escalation.Shift, error) {
-	switch escalation.Shift(strings.ToUpper(s)) {
-	case escalation.ShiftLK:
-		return escalation.ShiftLK, nil
-	case escalation.ShiftLKMorning:
-		return escalation.ShiftLKMorning, nil
-	case escalation.ShiftLKEvening:
-		return escalation.ShiftLKEvening, nil
-	case escalation.ShiftLKWeekend:
-		return escalation.ShiftLKWeekend, nil
-	case escalation.ShiftUSA:
-		return escalation.ShiftUSA, nil
-	case escalation.ShiftUSAWeekend:
-		return escalation.ShiftUSAWeekend, nil
+func parseShift(s string) (paging.Shift, error) {
+	switch paging.Shift(strings.ToUpper(s)) {
+	case paging.ShiftLK:
+		return paging.ShiftLK, nil
+	case paging.ShiftLKMorning:
+		return paging.ShiftLKMorning, nil
+	case paging.ShiftLKEvening:
+		return paging.ShiftLKEvening, nil
+	case paging.ShiftLKWeekend:
+		return paging.ShiftLKWeekend, nil
+	case paging.ShiftUSA:
+		return paging.ShiftUSA, nil
+	case paging.ShiftUSAWeekend:
+		return paging.ShiftUSAWeekend, nil
 	default:
 		return "", fmt.Errorf("unknown --shift %q", s)
 	}
@@ -262,11 +262,11 @@ func parseShift(s string) (escalation.Shift, error) {
 // caller places one call for a trigger, or reports what it would have placed.
 // Taking the trigger rather than a rendered string is what lets --ssml pick the
 // structured document over the flat one at the point of dialling.
-type caller func(ctx context.Context, to string, t escalation.Trigger) error
+type caller func(ctx context.Context, to string, t paging.Trigger) error
 
 func buildCaller(cfg config) (caller, error) {
 	if !cfg.live {
-		return func(_ context.Context, _ string, _ escalation.Trigger) error { return nil }, nil
+		return func(_ context.Context, _ string, _ paging.Trigger) error { return nil }, nil
 	}
 	missing := []string{}
 	for _, k := range []string{"TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER"} {
@@ -286,18 +286,18 @@ func buildCaller(cfg config) (caller, error) {
 		APIBaseURL: os.Getenv("TWILIO_API_BASE_URL"),
 	})
 	if cfg.useSSML {
-		return func(ctx context.Context, to string, t escalation.Trigger) error {
+		return func(ctx context.Context, to string, t paging.Trigger) error {
 			_, err := client.MakeSSMLCall(ctx, to, t.VoiceSpeech())
 			return err
 		}, nil
 	}
-	return func(ctx context.Context, to string, t escalation.Trigger) error {
+	return func(ctx context.Context, to string, t paging.Trigger) error {
 		_, err := client.MakeCall(ctx, to, t.VoiceMessagePlain())
 		return err
 	}, nil
 }
 
-func printPlan(cfg config, trigger escalation.Trigger, plan escalation.Plan) {
+func printPlan(cfg config, trigger paging.Trigger, plan paging.Plan) {
 	mode := "DRY RUN - nothing will be dialled"
 	if cfg.live {
 		mode = fmt.Sprintf("LIVE - %d real call(s) to %s", len(plan.Calls), cfg.to)
@@ -339,7 +339,7 @@ func printPlan(cfg config, trigger escalation.Trigger, plan escalation.Plan) {
 // runLadder walks the plan on the compressed clock, placing each call as it
 // comes due. It returns how many calls went out and, if the run was
 // acknowledged or interrupted, the real-clock instant that happened at.
-func runLadder(ctx context.Context, cfg config, trigger escalation.Trigger, plan escalation.Plan, place caller) (int, *time.Time) {
+func runLadder(ctx context.Context, cfg config, trigger paging.Trigger, plan paging.Plan, place caller) (int, *time.Time) {
 	start := time.Now()
 	var placed int
 

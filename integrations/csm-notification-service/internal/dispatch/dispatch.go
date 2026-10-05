@@ -425,7 +425,7 @@ func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {
 		return d.handleIncidentCreated(ctx, record, env.Payload)
 	case events.TypeIncidentAcknowledged, events.TypeIncidentPriorityElevated, events.TypeIncidentCommentAdded,
 		events.TypeIncidentAssigned:
-		// The incident call-escalation ladder (internal/escalation) owns
+		// The incident call-escalation ladder (internal/paging) owns
 		// these four; the notification dispatcher reacts to none of them. Same
 		// reasoning as the sla.* case below — erroring here would burn this
 		// consumer's retries and dead-letter a perfectly valid event that

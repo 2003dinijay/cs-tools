@@ -40,7 +40,7 @@ import (
 // avoids: it would mean either trusting the caller's markup (a TwiML injection
 // hole) or escaping it (which is what makes escalation.Trigger.VoiceMessage
 // undeliverable — Twilio reads the escaped tags aloud instead of interpreting
-// them). See internal/escalation/plan.go's VoiceSpeech.
+// them). See internal/paging/plan.go's VoiceSpeech.
 //
 // Note there is no <speak> root here. A standalone SSML document has one;
 // inside TwiML the <Say> verb is itself the root, and SSML elements are its

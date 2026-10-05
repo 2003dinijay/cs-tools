@@ -349,12 +349,12 @@ at startup when both are live.
 
 ### Redis-backed store tests
 
-`internal/escalation/store_test.go` covers the ladder store against a real
+`internal/paging/store_test.go` covers the ladder store against a real
 Redis and skips when none is reachable, so `go test ./...` stays dependency-free:
 
 ```bash
 docker run --rm -p 6379:6379 redis
-go test ./internal/escalation/ -run TestStore -v
+go test ./internal/paging/ -run TestStore -v
 ```
 
 ## Commands

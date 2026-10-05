@@ -980,7 +980,7 @@ revisited.
   falling back to `Subject` when absent), and `Number`/`ReportedAt` from the
   create response. The **escalation fields** need one best-effort
   `GetIncidentByID` read: `csm-notification-service`'s call-escalation ladder
-  (its `internal/escalation`) is keyed on the incident's *priority*, which
+  (its `internal/paging`) is keyed on the incident's *priority*, which
   ServiceNow derives from impact and urgency and which neither `req` nor the
   create response carries, and on the assigned team's display name, where
   `req` has only a sys_id. That read is deliberately not fatal and not even

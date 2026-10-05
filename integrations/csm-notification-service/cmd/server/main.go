@@ -36,10 +36,10 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/dispatch"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/entity"
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/escalation"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/paging"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/recipientlinks"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/scim"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/slaengine"
@@ -530,7 +530,7 @@ func main() {
 		tickInterval := envDuration("SLA_TICK_INTERVAL", 5*time.Minute)
 		go slaEngine.RunTicker(ctx, tickInterval)
 
-		// The incident call-escalation ladder (internal/escalation) shares
+		// The incident call-escalation ladder (internal/paging) shares
 		// this same Redis — its own keys, its own ZSET — and its own consumer
 		// group on the same topic, exactly as the SLA engine does. It is
 		// nested inside the Redis block for the same reason: without durable
@@ -538,21 +538,21 @@ func main() {
 		// first restart, mid-page.
 		//
 		// It needs one more thing than Redis, though: a roster to resolve
-		// levels to people (see escalation.RosterResolver for why that is
+		// levels to people (see paging.RosterResolver for why that is
 		// configuration rather than a ServiceNow lookup today). With none
 		// configured, the engine is deliberately NOT started — a running
 		// ladder that can never call anyone is worse than an absent one,
 		// because it looks like coverage.
-		roster, err := escalation.ParseRoster(os.Getenv("INCIDENT_ESCALATION_ROSTER"))
-		escalationChannel, channelErr := escalation.ParseChannel(os.Getenv("INCIDENT_ESCALATION_CHANNEL"))
+		roster, err := paging.ParseRoster(os.Getenv("INCIDENT_ESCALATION_ROSTER"))
+		escalationChannel, channelErr := paging.ParseChannel(os.Getenv("INCIDENT_ESCALATION_CHANNEL"))
 
 		// The configuration file governs behaviour; the environment still
 		// holds the secrets. With no file, every knob keeps its previous
 		// env-derived value, so an existing deployment behaves exactly as it
 		// did -- see loadEscalationConfig.
 		escalationCfg, cfgErr := loadEscalationConfig(escalationChannel)
-		creCfg, creRunning := escalationCfg.For(escalation.LadderKeyCRE)
-		sreCfg, sreRunning := escalationCfg.For(escalation.LadderKeySRE)
+		creCfg, creRunning := escalationCfg.For(paging.LadderKeyCRE)
+		sreCfg, sreRunning := escalationCfg.For(paging.LadderKeySRE)
 		escalationRunning := creRunning || sreRunning
 		if cfgErr == nil {
 			// The file wins over INCIDENT_ESCALATION_CHANNEL when there is
@@ -601,9 +601,9 @@ func main() {
 			// a laptop) without entity-service access should still be able to
 			// run a real ladder, with the summary logged instead of written
 			// back — see Engine.writeNote's nil handling.
-			var escalationNotes *escalation.EntityClient
+			var escalationNotes *paging.EntityClient
 			if base := os.Getenv("CUSTOMER_ENTITY_BASE_URL"); base != "" {
-				escalationNotes = escalation.NewEntityClient(escalation.EntityConfig{
+				escalationNotes = paging.NewEntityClient(paging.EntityConfig{
 					BaseURL:      base,
 					TokenURL:     os.Getenv("OAUTH2_TOKEN_URL"),
 					ClientID:     os.Getenv("OAUTH2_CLIENT_ID"),
@@ -624,7 +624,7 @@ func main() {
 			// Off by default: the rung model the schedule resolver implements
 			// is still an assumption awaiting confirmation, and a deployment
 			// should opt into it knowingly rather than inherit it on upgrade.
-			var escalationResolver escalation.Resolver = escalation.NewRosterResolver(roster)
+			var escalationResolver paging.Resolver = paging.NewRosterResolver(roster)
 			if os.Getenv("INCIDENT_ESCALATION_RESOLVER") == "team-schedule" {
 				if escalationNotes == nil {
 					slog.Error("INCIDENT_ESCALATION_RESOLVER=team-schedule needs CUSTOMER_ENTITY_BASE_URL; " +
@@ -634,12 +634,12 @@ func main() {
 					// INCIDENT_ESCALATION_PHONES (e-mail -> E.164), or every
 					// call goes to INCIDENT_ESCALATION_TEST_CALL_TO. A chat-only
 					// ladder needs neither.
-					phones, perr := escalation.ParsePhoneBook(os.Getenv("INCIDENT_ESCALATION_PHONES"), os.Getenv("INCIDENT_ESCALATION_TEST_CALL_TO"))
+					phones, perr := paging.ParsePhoneBook(os.Getenv("INCIDENT_ESCALATION_PHONES"), os.Getenv("INCIDENT_ESCALATION_TEST_CALL_TO"))
 					if perr != nil {
 						// Not logging perr: the decode error can quote numbers.
 						slog.Error("invalid INCIDENT_ESCALATION_PHONES; escalation calls will have no numbers")
 					}
-					escalationResolver = escalation.NewTeamScheduleResolver(
+					escalationResolver = paging.NewTeamScheduleResolver(
 						escalationNotes, resolverTeams(creCfg, sreCfg), creCfg.Rules).
 						// The heads are two named people, not a team lookup.
 						WithHeads(creCfg.Heads).
@@ -648,7 +648,7 @@ func main() {
 						WithAlertDuty(creCfg.AlertTiers(), creCfg.AlertDuty.PerTeam).
 						// Who has gone longest without a call, for the evening
 						// pairing's second call.
-						WithCallHistory(escalation.NewStore(redisClient)).
+						WithCallHistory(paging.NewStore(redisClient)).
 						// The rota holds no numbers; see ParsePhoneBook above.
 						WithPhoneBook(phones)
 					slog.Info("incident escalation resolves rungs from the Team Schedule (CRE and SRE ladders)")
@@ -661,15 +661,15 @@ func main() {
 			// P0 CRE incident climbs both ladders at the same time and the
 			// two must not mistake each other for a redelivery.
 			ladders := []struct {
-				kind    escalation.Ladder
+				kind    paging.Ladder
 				name    string
-				cfg     escalation.LadderConfig
+				cfg     paging.LadderConfig
 				running bool
 				group   string
 			}{
-				{escalation.LadderCRE, "escalation", creCfg, creRunning,
+				{paging.LadderCRE, "escalation", creCfg, creRunning,
 					envOrDefault("INCIDENT_ESCALATION_CONSUMER_GROUP", "csm-notification-service-escalation")},
-				{escalation.LadderSRE, "escalation-sre", sreCfg, sreRunning,
+				{paging.LadderSRE, "escalation-sre", sreCfg, sreRunning,
 					envOrDefault("INCIDENT_ESCALATION_SRE_CONSUMER_GROUP", "csm-notification-service-escalation-sre")},
 			}
 			for _, l := range ladders {
@@ -683,8 +683,8 @@ func main() {
 				if channel == "" {
 					channel = escalationChannel
 				}
-				escalationEngine := escalation.NewEngine(
-					escalation.DefaultPolicy,
+				escalationEngine := paging.NewEngine(
+					paging.DefaultPolicy,
 					escalationResolver,
 					twilioClient,
 					googleChatClient,
@@ -692,8 +692,8 @@ func main() {
 					// lost IncidentLink when incident.created stopped posting
 					// a Chat alert and nothing else needed one; a rung's card
 					// still has to say where to go and look.
-					escalation.PortalLinks{CSMBaseURL: csmPortalBaseURL},
-					escalation.NewStore(redisClient),
+					paging.PortalLinks{CSMBaseURL: csmPortalBaseURL},
+					paging.NewStore(redisClient),
 					escalationNotes,
 					// The audience a rung's card posts to when the incident
 					// names no product of its own. Its own variable rather
@@ -701,7 +701,7 @@ func main() {
 					// went away with the incident Chat alert -- the ladder's
 					// room is its own decision now.
 					os.Getenv("INCIDENT_ESCALATION_CHAT_AUDIENCE"),
-					escalation.EngineConfig{
+					paging.EngineConfig{
 						// Shares CALL_SENDING_ENABLED with
 						// dispatch.handleIncidentCreated's single call: both
 						// are the same outbound channel to the same people,
@@ -735,7 +735,7 @@ func main() {
 				// the stale-trigger guard already make harmless. onExhausted
 				// is nil: a record that fails here too is logged and dropped.
 				dlqGroup := l.group + "-dlq"
-				if l.kind == escalation.LadderCRE {
+				if l.kind == paging.LadderCRE {
 					dlqGroup = envOrDefault("INCIDENT_ESCALATION_DLQ_CONSUMER_GROUP", dlqGroup)
 				}
 				escalationDLQCount := envInt("INCIDENT_ESCALATION_DLQ_CONSUMER_COUNT", 1)
@@ -1141,18 +1141,18 @@ func escalationStartProblem(rosterInvalid, rosterEmpty, teamSchedule, entityConf
 // INCIDENT_ESCALATION_ENABLED overrides the file's own master switch in both
 // directions, so an operator can stop every ladder by setting one variable,
 // without editing and shipping a file in the middle of an incident.
-func loadEscalationConfig(envChannel escalation.Channel) (escalation.Config, error) {
+func loadEscalationConfig(envChannel paging.Channel) (paging.Config, error) {
 	path := os.Getenv("INCIDENT_ESCALATION_CONFIG")
 
-	cfg := escalation.Config{
+	cfg := paging.Config{
 		Enabled: true,
-		CRE:     escalation.LadderConfig{Enabled: true, Channel: envChannel},
-		SRE: escalation.LadderConfig{Enabled: true, Channel: envChannel,
+		CRE:     paging.LadderConfig{Enabled: true, Channel: envChannel},
+		SRE: paging.LadderConfig{Enabled: true, Channel: envChannel,
 			// The file's sre.timing.includeL4, for a deployment without one.
-			Timing: escalation.SRETiming{IncludeL4: os.Getenv("INCIDENT_ESCALATION_SRE_L4") == "true"}},
+			Timing: paging.SRETiming{IncludeL4: os.Getenv("INCIDENT_ESCALATION_SRE_L4") == "true"}},
 	}
 	if path != "" {
-		loaded, err := escalation.LoadConfig(path)
+		loaded, err := paging.LoadConfig(path)
 		if err != nil {
 			return loaded, err
 		}
@@ -1177,7 +1177,7 @@ func loadEscalationConfig(envChannel escalation.Channel) (escalation.Config, err
 // ladders share: the CRE section names the ABTs, the Americas team and the
 // heads; the SRE section names the SRE teams. Aliases from either apply to
 // both, since an assignment group means the same team whichever ladder asks.
-func resolverTeams(cre, sre escalation.LadderConfig) escalation.TeamKeys {
+func resolverTeams(cre, sre paging.LadderConfig) paging.TeamKeys {
 	teams := cre.Teams
 	teams.SRE = sre.Teams.ABTs
 	if len(sre.Teams.Aliases) > 0 {
