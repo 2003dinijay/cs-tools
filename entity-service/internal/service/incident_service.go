@@ -653,6 +653,18 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		return domain.UpdateIncidentResponse{}, err
 	}
 
+	// The incident before this change, so a claim or a move out of NEW can be told apart from a
+	// re-send of what it already had (publishIncidentStopSignals). Read only when one could follow.
+	var before domain.IncidentView
+	if s.eventPublisher != nil && (req.State != nil || req.AssignedEngineerID != nil) {
+		if b, err := s.repo.GetIncidentByID(ctx, req.ID); err == nil {
+			before = b
+		} else {
+			slog.WarnContext(ctx, "update incident: could not read the incident before the change; no stop signal will be sent",
+				"incidentId", req.ID, "error", err)
+		}
+	}
+
 	if hasLifecycle {
 		if actor.ID != "" {
 			lifecycle.DefaultResolvedByID = &actor.ID
@@ -677,6 +689,7 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 	if err != nil {
 		return domain.UpdateIncidentResponse{}, err
 	}
+	publishIncidentStopSignals(ctx, s.eventPublisher, req, before, view)
 
 	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write
 	// only (guaranteed by the s.snWriteback == nil guard above). Postgres has
