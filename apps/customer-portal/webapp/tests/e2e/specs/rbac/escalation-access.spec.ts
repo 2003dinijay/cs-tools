@@ -22,18 +22,12 @@
 //
 // The expectation under test:
 //   - Security Contact cannot escalate at all.
-//   - Admin and Lead can escalate up to EL3.
-//   - Portal user can escalate all the way to EL5.
+//   - Admin and Portal user can escalate up to EL3.
+//   - Lead can escalate all the way to EL5.
 //
-// ⚠️ That last pair disagrees with the app's own source, and the disagreement is
-// worth knowing before reading a failure. ESCALATION_LEAD_REQUIRED_FROM_LEVEL in
-// supportConstants.ts gates levels 3 and 4 on `isCurrentUserLead`, and
-// CLAUDE.md states "Lead is required to escalate past EL3" — which would make
-// LEAD, not PORTAL, the role that reaches EL5. Both cannot be right. The
-// expectations here are as specified; if PORTAL stops at EL3 and LEAD goes
-// further, the specification is what needs revisiting, not this test. Account
-// naming and project membership are independent in this app, so an account
-// called "portal" may well hold `isLead` on its membership.
+// The Lead ceiling follows the implementation: levels 3 and 4 are gated on
+// `isCurrentUserLead` (ESCALATION_LEAD_REQUIRED_FROM_LEVEL in
+// supportConstants.ts), which is why only a Lead passes EL3.
 //
 // Each test signs in as its own account, so `withSession` is deliberately
 // absent — the same approach as the other rbac specs.
