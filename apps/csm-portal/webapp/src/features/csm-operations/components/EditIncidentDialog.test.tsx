@@ -240,3 +240,32 @@ describe("EditIncidentDialog optional subcategory", () => {
     expect(onSave).toHaveBeenCalledWith({ category: "SERVICE_INTERRUPTION", subcategory: "SLOWNESS" });
   });
 });
+
+describe("EditIncidentDialog channel", () => {
+  const WITH_CHANNEL: BeIncidentDetail = {
+    ...BASE_INCIDENT,
+    state: "IN_PROGRESS",
+    category: "SECURITY",
+    subcategory: "PHISHING",
+    contactType: "PHONE",
+    impact: "LOW",
+    urgency: "LOW",
+  };
+
+  it("shows the incident's current value under a Channel label", () => {
+    render(<EditIncidentDialog incident={WITH_CHANNEL} isSaving={false} onClose={vi.fn()} onSave={vi.fn()} />);
+    expect(screen.getByRole("combobox", { name: /^channel$/i })).toHaveTextContent("Phone");
+    expect(screen.queryByText(/contact type/i)).not.toBeInTheDocument();
+  });
+
+  it("sends a changed channel as the wire field contactType, and only that", () => {
+    const onSave = vi.fn();
+    render(<EditIncidentDialog incident={WITH_CHANNEL} isSaving={false} onClose={vi.fn()} onSave={onSave} />);
+
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: /^channel$/i }));
+    fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: "Chat" }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    expect(onSave).toHaveBeenCalledWith({ contactType: "CHAT" });
+  });
+});

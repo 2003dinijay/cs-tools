@@ -40,10 +40,10 @@ test.describe("incident creation — page structure", () => {
     await expect(incident.createButton()).toBeDisabled();
 
     await incident.selectOption("Category", "Inquiry / Help");
-    await incident.selectOption("Contact type", "Email");
+    await incident.selectOption("Channel", "Email");
     await incident.selectOption("Impact", "Low");
     await incident.selectOption("Urgency", "Low");
-    // Short description, Category, Contact type, Impact, and Urgency are
+    // Short description, Category, Channel, Impact, and Urgency are
     // all filled now, but Service (backend-required, not part of the
     // original field spec) still isn't — button must stay disabled.
     await expect(incident.createButton()).toBeDisabled();
@@ -84,7 +84,7 @@ test.describe("incident creation — happy path", () => {
       shortDescription: subject,
       category: "Inquiry / Help",
       subcategory: "Information Request",
-      contactType: "Email",
+      channel: "Email",
       impact: "Low",
       urgency: "Low",
       serviceQuery: "e",

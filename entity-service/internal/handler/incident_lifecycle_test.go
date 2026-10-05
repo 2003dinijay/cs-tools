@@ -342,3 +342,77 @@ func TestIncidentLifecycle_WithoutSubcategory(t *testing.T) {
 		}
 	}
 }
+
+// TestIncidentLifecycle_ChannelSurvives: the UI's "Channel" is the
+// incident's contactType. Created with SITE_247 -- the value whose
+// ServiceNow key ("2") is furthest from its own name, so a mapping slip in
+// either direction shows -- it must read back as SITE_247 after create and
+// after every transition, and no transition may send contactTypeKey. Start
+// work uses the detail page's own action-bar body (state plus claiming the
+// incident), not EditIncidentDialog's bare state change.
+func TestIncidentLifecycle_ChannelSurvives(t *testing.T) {
+	srv, store := newIncidentLifecycleServer(t)
+	const engineerID = "7a000000-0000-0000-0000-0000000000e1"
+
+	createBody := fmt.Sprintf(`{
+		"subject": "Site 24/7 monitor: gateway down",
+		"callerId": %q,
+		"serviceId": %q,
+		"category": "SERVICE_INTERRUPTION",
+		"contactType": "SITE_247",
+		"impact": "HIGH",
+		"urgency": "HIGH"
+	}`, lifecycleCallerID, lifecycleServiceID)
+	w := doLifecycleRequest(t, srv, http.MethodPost, "/incidents", createBody)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("POST /incidents: status %d, body %s", w.Code, w.Body.String())
+	}
+	if got, _ := store.createBody["contactTypeKey"].(string); got != "2" {
+		t.Fatalf("create sent contactTypeKey %q to ServiceNow, want \"2\" (Site 24/7)", got)
+	}
+
+	assertChannel := func(t *testing.T, stage string, wantState domain.IncidentState) {
+		t.Helper()
+		view := getLifecycleIncident(t, srv)
+		if strOrNil(view.State) != string(wantState) {
+			t.Errorf("%s: state = %s, want %s", stage, strOrNil(view.State), wantState)
+		}
+		if strOrNil(view.ContactType) != "SITE_247" {
+			t.Errorf("%s: channel (contactType) = %s, want SITE_247", stage, strOrNil(view.ContactType))
+		}
+	}
+	assertChannel(t, "after create", domain.IncidentStateNew)
+
+	steps := []struct {
+		name      string
+		body      string
+		wantState domain.IncidentState
+	}{
+		{"start work", fmt.Sprintf(`{"state":"IN_PROGRESS","assignedEngineerId":%q}`, engineerID), domain.IncidentStateInProgress},
+		{"resolve", `{"state":"RESOLVED","resolutionCode":"SOLVED_PERMANENTLY","resolutionNotes":"Monitor recovered after failover."}`, domain.IncidentStateResolved},
+		{"close", `{"state":"CLOSED","resolutionCode":"SOLVED_PERMANENTLY","resolutionNotes":"Monitor recovered after failover."}`, domain.IncidentStateClosed},
+	}
+	for _, step := range steps {
+		w := doLifecycleRequest(t, srv, http.MethodPatch, "/incidents/"+lifecycleIncidentID, step.body)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: PATCH %s: status %d, body %s", step.name, step.body, w.Code, w.Body.String())
+		}
+		var updated domain.UpdateIncidentResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &updated); err != nil {
+			t.Fatalf("%s: decode PATCH response: %v", step.name, err)
+		}
+		if strOrNil(updated.Incident.ContactType) != "SITE_247" {
+			t.Errorf("%s: PATCH response channel = %s, want SITE_247", step.name, strOrNil(updated.Incident.ContactType))
+		}
+		assertChannel(t, "after "+step.name, step.wantState)
+	}
+
+	for i, body := range store.patchBodies {
+		if _, sent := body["contactTypeKey"]; sent {
+			t.Errorf("%s: PATCH sent contactTypeKey=%v, want it omitted", steps[i].name, body["contactTypeKey"])
+		}
+	}
+	if got, _ := store.patchBodies[0]["assignedEngineerId"].(string); got != strings.ReplaceAll(engineerID, "-", "") {
+		t.Errorf("start work sent assignedEngineerId %q, want the engineer's sys_id", got)
+	}
+}

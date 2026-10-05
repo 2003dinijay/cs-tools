@@ -19,10 +19,10 @@ import { INCIDENT_CREATE } from "../utils/selectors";
 
 /**
  * Page object for `/operations/incidents/new`. Unlike change requests
- * (Subject-only), the form requires Short description, Category, Contact
- * type, Impact, Urgency, Caller, and Service (the backend's
+ * (Subject-only), the form requires Short description, Category, Channel,
+ * Impact, Urgency, Caller, and Service (the backend's
  * `validateCreateIncidentBody` in incidents.go hard-requires all but
- * Contact type) — Caller auto-fills to the signed-in user, everything else
+ * Channel) — Caller auto-fills to the signed-in user, everything else
  * needs an explicit pick. Subcategory is optional.
  */
 export class IncidentCreatePage {
@@ -44,7 +44,7 @@ export class IncidentCreatePage {
   }
 
   /** Opens a MUI Select by its field label and clicks the named option —
-   * Category, Subcategory, Contact type, Impact, Urgency all use this.
+   * Category, Subcategory, Channel, Impact, Urgency all use this.
    * Anchored regex, not `exact: true` — all but Subcategory are required
    * fields, and MUI's FormControl appends a required-field marker to the
    * label. Confirmed live it's not a plain " *": the actual separator is
@@ -103,7 +103,7 @@ export class IncidentCreatePage {
     category: string;
     /** Optional — Subcategory isn't required; omitted, it's left unset. */
     subcategory?: string;
-    contactType: string;
+    channel: string;
     impact: string;
     urgency: string;
     serviceQuery: string;
@@ -111,7 +111,7 @@ export class IncidentCreatePage {
     await this.shortDescriptionField().fill(opts.shortDescription);
     await this.selectOption("Category", opts.category);
     if (opts.subcategory) await this.selectOption("Subcategory", opts.subcategory);
-    await this.selectOption("Contact type", opts.contactType);
+    await this.selectOption("Channel", opts.channel);
     await this.selectOption("Impact", opts.impact);
     await this.selectOption("Urgency", opts.urgency);
     await this.pickService(opts.serviceQuery);

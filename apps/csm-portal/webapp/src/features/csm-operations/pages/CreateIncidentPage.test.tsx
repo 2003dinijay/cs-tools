@@ -97,7 +97,7 @@ const fillRequiredFields = (): void => {
     target: { value: "Gateway returning 502s" },
   });
   pickOption(/^category/i, "Service Interruption");
-  pickOption(/^contact type/i, "Email");
+  pickOption(/^channel/i, "Email");
   pickOption(/^impact/i, "High");
   pickOption(/^urgency/i, "Low");
   fireEvent.change(screen.getByLabelText("Service"), { target: { value: SERVICE_ID } });
@@ -156,5 +156,47 @@ describe("CreateIncidentPage subcategory", () => {
     expect(asterisk("category-label")).not.toBeNull();
     expect(document.getElementById("subcategory-label")).not.toBeNull();
     expect(asterisk("subcategory-label")).toBeNull();
+  });
+});
+
+describe("CreateIncidentPage channel", () => {
+  beforeEach(() => {
+    postIncidentMutateMock.mockReset();
+  });
+
+  it("labels the field Channel (required), with no Contact type field left", () => {
+    render(<CreateIncidentPage />);
+    expect(screen.getByRole("combobox", { name: /^channel/i })).toBeInTheDocument();
+    expect(
+      document.getElementById("channel-label")?.querySelector(".MuiFormLabel-asterisk"),
+    ).not.toBeNull();
+    expect(screen.queryByText(/contact type/i)).not.toBeInTheDocument();
+  });
+
+  it("sends the picked channel as the wire field contactType", () => {
+    render(<CreateIncidentPage />);
+    fillRequiredFields();
+    // Overrides fillRequiredFields' "Email" with a value whose ServiceNow
+    // key isn't its own name (SITE_247 -> "2").
+    pickOption(/^channel/i, "Site 24/7");
+    fireEvent.click(submitButton());
+
+    expect(postIncidentMutateMock).toHaveBeenCalledTimes(1);
+    expect(postIncidentMutateMock.mock.calls[0][0]).toMatchObject({ contactType: "SITE_247" });
+  });
+
+  it("keeps Create disabled until a channel is picked", () => {
+    render(<CreateIncidentPage />);
+    fireEvent.change(screen.getByLabelText(/short description/i), {
+      target: { value: "Gateway returning 502s" },
+    });
+    pickOption(/^category/i, "Service Interruption");
+    pickOption(/^impact/i, "High");
+    pickOption(/^urgency/i, "Low");
+    fireEvent.change(screen.getByLabelText("Service"), { target: { value: SERVICE_ID } });
+    expect(submitButton()).toBeDisabled();
+
+    pickOption(/^channel/i, "Phone");
+    expect(submitButton()).not.toBeDisabled();
   });
 });

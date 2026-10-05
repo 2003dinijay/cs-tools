@@ -18869,6 +18869,9 @@ components:
           format: uuid
           nullable: true
         contactType:
+          description: >-
+            How the incident was reported. Shown as "Channel" in the CSM portal
+            (ServiceNow's incident contact_type, which ServiceNow also labels Channel).
           type: string
           enum: [SELF_SERVICE, EMAIL, WALK_IN, AZURE, EMAIL_INTERNAL, SITE_247, DIRECT,
                  PHONE, SENTINEL, VIRTUAL_AGENT, CHAT, EMAIL_EXTERNAL]
@@ -19113,6 +19116,9 @@ components:
           $ref: '#/components/schemas/EntityRef'
           nullable: true
         contactType:
+          description: >-
+            How the incident was reported. Shown as "Channel" in the CSM portal
+            (ServiceNow's incident contact_type, which ServiceNow also labels Channel).
           type: string
           nullable: true
           enum: [SELF_SERVICE, EMAIL, WALK_IN, AZURE, EMAIL_INTERNAL, SITE_247, DIRECT, PHONE, SENTINEL, VIRTUAL_AGENT, CHAT, EMAIL_EXTERNAL]
@@ -19377,6 +19383,9 @@ components:
                  UNAUTHORIZED_ACCESS, IDENTITY_PROTECTION, PHISHING, IMPROPER_CONFIGURATION,
                  INFORMATION_REQUEST, DB2, PARTIAL_OUTAGE, EMAIL, MONITOR, WIRELESS]
         contactType:
+          description: >-
+            How the incident was reported. Shown as "Channel" in the CSM portal
+            (ServiceNow's incident contact_type, which ServiceNow also labels Channel).
           type: string
           enum: [SELF_SERVICE, EMAIL, WALK_IN, AZURE, EMAIL_INTERNAL, SITE_247, DIRECT,
                  PHONE, SENTINEL, VIRTUAL_AGENT, CHAT, EMAIL_EXTERNAL]
