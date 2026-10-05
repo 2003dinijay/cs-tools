@@ -661,6 +661,14 @@ func (c *CustomerEntityClient) SearchGroups(ctx context.Context, body []byte) ([
 	return c.do(ctx, http.MethodPost, "/groups/search", body)
 }
 
+// GetGroup calls GET /groups/{id} on the entity service: one group (name,
+// description, email, manager) and its active members, opened from a change
+// request approval stage's assignment group. Internal callers only, enforced by
+// entity-service. Response is returned as raw JSON.
+func (c *CustomerEntityClient) GetGroup(ctx context.Context, id string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, fmt.Sprintf("/groups/%s", url.PathEscape(id)), nil)
+}
+
 // GetScheduleCatalogue calls GET /team-schedule/catalogue on the entity service.
 // The Team Schedule zones, windows and absence kinds, in one payload: a client
 // needs all three to draw a single day. Response is returned as raw JSON.

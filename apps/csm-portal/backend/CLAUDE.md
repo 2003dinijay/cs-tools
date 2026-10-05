@@ -325,6 +325,30 @@ to the entity service as-is (no field allow-list), with two checks on top:
   rejected Customer Review moves it to `rollback`. No BFF code change was needed;
   `TestCustomerGroupApprovalMessages` pins both messages.
 
+## Opening an approval stage's assignment group (`GET /groups/{id}`)
+
+`GET /change-requests/{id}/approvals` now carries `assignmentGroup: {id, name}` on
+each stage (`null` for Customer Approval / Customer Review, whose approvers are the
+project's registered contacts rather than a group); the response is still passed
+through untouched. `GET /groups/{id}` (`GroupHandler.GetGroup`, `PermView` -- the same
+level as `POST /groups/search` and `POST /users/search`, which already expose staff
+names and emails) forwards to the entity service's `GET /groups/{id}` and returns its
+`{id, name, description, email, manager, members: [{id, name, email, userType, role}],
+total}` untouched.
+
+* `id` is a **group** id (the `assignmentGroup.id` from the approvals response), not a
+  team id -- `POST /groups/search` and `GET /teams/{id}/members` are the team registry.
+  It must be a UUID (400 `ErrMsgInvalidUUID` otherwise, no upstream call).
+* **Internal staff only.** The BFF does not widen it: entity-service refuses an
+  external caller with 403 and the BFF returns that as 403 (`mapUpstreamErrorGeneric`);
+  an unknown group is 404, and a group with no members is a 200 with `members: []`.
+* PostgreSQL data source only (entity-service does not register the route otherwise).
+* Declared in `openapi.yaml` (`/groups/{id}`, `GroupDetail`, and
+  `ChangeRequestApprovalGroup` on `ChangeRequestApproval`), so
+  `TestEveryRegisteredRouteIsInOpenAPI` does not list it. Tests: `TestGetGroup`,
+  `TestGetChangeRequestApprovals_PassesAssignmentGroupThrough` (`groups_test.go`) and
+  `TestGetGroupSendsGetToGroupsID` (`internal/entity/customer_client_test.go`).
+
 ## Health endpoints
 
 Two, registered directly on the mux in `cmd/server/main.go` (not through `route()`) and both exempt

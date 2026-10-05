@@ -1078,6 +1078,14 @@ func (m *mockEntityServiceOfferingClient) SearchServiceOfferings(ctx context.Con
 
 type mockEntityGroupClient struct {
 	searchGroupsFn func(ctx context.Context, body []byte) ([]byte, error)
+	getGroupFn     func(ctx context.Context, id string) ([]byte, error)
+}
+
+func (m *mockEntityGroupClient) GetGroup(ctx context.Context, id string) ([]byte, error) {
+	if m.getGroupFn != nil {
+		return m.getGroupFn(ctx, id)
+	}
+	return []byte(`{"id":"` + id + `","name":"","description":null,"email":null,"manager":null,"members":[],"total":0}`), nil
 }
 
 func (m *mockEntityGroupClient) SearchGroups(ctx context.Context, body []byte) ([]byte, error) {
