@@ -312,3 +312,45 @@ func TestStoredBody_Shapes(t *testing.T) {
 		})
 	}
 }
+
+// TestPayloadLog: the raw body is logged before the transform, nested when it is JSON, truncated past the cap, and not at all when the cap is 0 or auth fails.
+func TestPayloadLog(t *testing.T) {
+	run := func(limit int64, authn auth.Authenticator, body string) string {
+		var buf strings.Builder
+		s := New(Options{
+			Logger: slog.New(slog.NewJSONHandler(&buf, nil)), Auth: authn,
+			Pipeline: &fakePipeline{result: Result{Status: http.StatusCreated, AltIDs: []string{"ALT000000001"}}},
+			Sources:  []string{"datadog"}, MaxBodyBytes: 1024, PayloadLogBytes: limit,
+		})
+		do(t, s, "POST", SourceRoutePrefix+"datadog", body)
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if strings.Contains(line, `"msg":"webhook received"`) {
+				return line
+			}
+		}
+		return ""
+	}
+
+	if line := run(1024, auth.None{}, "{\n  \"alert_id\": \"148502937\"\n}"); !strings.Contains(line, `"payload":{"alert_id":"148502937"}`) ||
+		!strings.Contains(line, `"source":"datadog"`) || !strings.Contains(line, `"body_size":`) {
+		t.Errorf("json body not logged nested: %s", line)
+	}
+	if line := run(1024, auth.None{}, "not json"); !strings.Contains(line, `"payload":"not json"`) {
+		t.Errorf("non-json body not logged as text: %s", line)
+	}
+	if line := run(8, auth.None{}, `{"alert_id":"148502937"}`); !strings.Contains(line, `"payload":"{\"alert_"`) || !strings.Contains(line, `"payload_truncated":true`) {
+		t.Errorf("oversized body not truncated: %s", line)
+	}
+	if line := run(0, auth.None{}, `{"a":1}`); line != "" {
+		t.Errorf("payload logged with the cap at 0: %s", line)
+	}
+	if line := run(1024, denyAll{}, `{"a":1}`); line != "" {
+		t.Errorf("payload logged for an unauthenticated request: %s", line)
+	}
+}
+
+func TestTruncateBytes_KeepsCharactersWhole(t *testing.T) {
+	if got := truncateBytes([]byte("ab\u00e9cd"), 3); got != "ab" {
+		t.Errorf("truncateBytes = %q, want %q", got, "ab")
+	}
+}

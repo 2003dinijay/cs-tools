@@ -178,3 +178,15 @@ func (s *Store) InsertBatch(ctx context.Context, rows []InsertRow) error {
 	}
 	return nil
 }
+
+// insertPayloadsQuery writes a whole flush of raw webhook bodies in one statement.
+const insertPayloadsQuery = `INSERT INTO raw_alerts (received_at, payload)
+SELECT * FROM unnest($1::timestamptz[], $2::jsonb[])`
+
+// InsertPayloads writes every buffered raw body in one round trip; payloads must already be valid JSON.
+func (s *Store) InsertPayloads(ctx context.Context, receivedAt []time.Time, payloads []string) error {
+	if _, err := s.pool.Exec(ctx, insertPayloadsQuery, receivedAt, payloads); err != nil {
+		return fmt.Errorf("insert %d payloads: %w", len(payloads), err)
+	}
+	return nil
+}

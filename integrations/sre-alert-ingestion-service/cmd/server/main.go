@@ -34,6 +34,7 @@ import (
 	"sre-alert-ingestion-service/internal/config"
 	"sre-alert-ingestion-service/internal/outbound/corewake"
 	"sre-alert-ingestion-service/internal/outbound/snsconfirm"
+	"sre-alert-ingestion-service/internal/payloads"
 	"sre-alert-ingestion-service/internal/postgres"
 	"sre-alert-ingestion-service/internal/sources"
 	"sre-alert-ingestion-service/internal/transport/auth"
@@ -110,6 +111,13 @@ func main() {
 
 	waker := corewake.New(base.With("component", "corewake"), envCfg.WakeURL, envCfg.WakeUsername, envCfg.WakeSecret, cfg.Wake.Timeout.Duration())
 
+	rawPayloads := payloads.New(base.With("component", "payloads"), store, payloads.Config{
+		FlushInterval: cfg.Payloads.FlushInterval.Duration(),
+		MaxBytes:      cfg.Payloads.MaxBufferBytes,
+		FlushTimeout:  cfg.Payloads.FlushTimeout.Duration(),
+	})
+	go rawPayloads.Run()
+
 	sns := snsconfirm.New(base.With("component", "snsconfirm"), snsConfirmTimeout)
 
 	alloc := allocator.New(base.With("component", "allocator"), store, waker, allocator.Config{
@@ -124,16 +132,18 @@ func main() {
 	})
 
 	srv := server.New(server.Options{
-		Logger:       base.With("component", "server"),
-		Auth:         authn,
-		Pipeline:     server.NewIngestor(registry, alloc, cfg.Server.RequestWait.Duration()).WithSNSConfirmer(sns),
-		Rejects:      nil,
-		Sources:      registry.Names(),
-		MaxBodyBytes: cfg.Server.MaxBodyBytes,
-		PreviewChars: cfg.Reject.BodyPreviewChars,
-		ReadTimeout:  cfg.Server.ReadTimeout.Duration(),
-		WriteTimeout: cfg.Server.WriteTimeout.Duration(),
-		IdleTimeout:  cfg.Server.IdleTimeout.Duration(),
+		Logger:          base.With("component", "server"),
+		Auth:            authn,
+		Pipeline:        server.NewIngestor(registry, alloc, cfg.Server.RequestWait.Duration()).WithSNSConfirmer(sns),
+		Rejects:         nil,
+		Sources:         registry.Names(),
+		MaxBodyBytes:    cfg.Server.MaxBodyBytes,
+		PreviewChars:    cfg.Reject.BodyPreviewChars,
+		PayloadLogBytes: cfg.Log.PayloadMaxBytes,
+		Payloads:        rawPayloads,
+		ReadTimeout:     cfg.Server.ReadTimeout.Duration(),
+		WriteTimeout:    cfg.Server.WriteTimeout.Duration(),
+		IdleTimeout:     cfg.Server.IdleTimeout.Duration(),
 	})
 	httpSrv := srv.HTTPServer(":" + envCfg.Port)
 
@@ -162,7 +172,7 @@ func main() {
 			DrainDelay:     cfg.Server.DrainDelay.Duration(),
 			RequestWait:    cfg.Server.RequestWait.Duration(),
 			AllocatorDrain: cfg.Server.AllocatorDrain.Duration(),
-		}, waker.Wait)
+		}, waker.Wait, rawPayloads.Close)
 	}
 }
 

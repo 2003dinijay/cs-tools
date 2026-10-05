@@ -87,6 +87,11 @@ type RejectNotifier interface {
 // logPreviewChars bounds how much of a rejected body goes into the log line.
 const logPreviewChars = 200
 
+// PayloadRecorder keeps a raw webhook body for storage; *payloads.Buffer implements it.
+type PayloadRecorder interface {
+	Add(receivedAt time.Time, body []byte)
+}
+
 // Options configures a Server.
 type Options struct {
 	Logger       *slog.Logger
@@ -97,8 +102,12 @@ type Options struct {
 	MaxBodyBytes int64
 	// PreviewChars is how much of a body a rejection keeps (reject.body_preview_chars).
 	PreviewChars int
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	// Payloads stores each raw body before the transform; nil stores nothing.
+	Payloads PayloadRecorder
+	// PayloadLogBytes caps the raw body logged before the transform (log.payload_max_bytes); 0 logs nothing.
+	PayloadLogBytes int64
+	ReadTimeout     time.Duration
+	WriteTimeout    time.Duration
 	// IdleTimeout closes keep-alive connections nobody is using, so idle source connections can't pile up.
 	IdleTimeout time.Duration
 }
@@ -113,6 +122,8 @@ type Server struct {
 	sources      map[string]bool
 	maxBodyBytes int64
 	previewChars int
+	payloadLog   int64
+	payloads     PayloadRecorder
 	draining     atomic.Bool
 	handler      http.Handler
 	readTimeout  time.Duration
@@ -130,6 +141,8 @@ func New(opts Options) *Server {
 		sources:      make(map[string]bool, len(opts.Sources)),
 		maxBodyBytes: opts.MaxBodyBytes,
 		previewChars: opts.PreviewChars,
+		payloadLog:   opts.PayloadLogBytes,
+		payloads:     opts.Payloads,
 		readTimeout:  opts.ReadTimeout,
 		writeTimeout: opts.WriteTimeout,
 		idleTimeout:  opts.IdleTimeout,
@@ -222,6 +235,10 @@ func (s *Server) sourceRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.logPayload(r, source, body)
+	if s.payloads != nil {
+		s.payloads.Add(time.Now(), body)
+	}
 	if s.pipeline == nil {
 		writeUnavailable(w, "ingestion not configured")
 		return
@@ -266,6 +283,33 @@ func (s *Server) reject(r *http.Request, source string, status int, msg, preview
 			ContentType: r.Header.Get("Content-Type"), Body: []byte(preview), BodySize: size, SourceTotal: total,
 		})
 	}
+}
+
+// logPayload records the body exactly as the source sent it, nested as JSON when it is valid JSON within the cap so its fields stay queryable.
+func (s *Server) logPayload(r *http.Request, source string, body []byte) {
+	if s.payloadLog <= 0 {
+		return
+	}
+	attrs := []any{"request_id", RequestID(r.Context()), "source", source,
+		"content_type", r.Header.Get("Content-Type"), "body_size", len(body)}
+	switch {
+	case int64(len(body)) > s.payloadLog:
+		attrs = append(attrs, "payload", truncateBytes(body, s.payloadLog), "payload_truncated", true)
+	case json.Valid(body):
+		attrs = append(attrs, "payload", json.RawMessage(body))
+	default:
+		attrs = append(attrs, "payload", string(body))
+	}
+	s.logger.Info("webhook received", attrs...)
+}
+
+// truncateBytes cuts b to at most n bytes without splitting a multi-byte character.
+func truncateBytes(b []byte, n int64) string {
+	cut := b[:n]
+	for len(cut) > 0 && !utf8.Valid(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return string(cut)
 }
 
 // preview keeps the start of body needed by the log line and the rejection notifier.

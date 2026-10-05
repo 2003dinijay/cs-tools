@@ -41,6 +41,8 @@ type Config struct {
 	Postgres  PostgresConfig  `toml:"postgres"`
 	Wake      WakeConfig      `toml:"wake"`
 	Reject    RejectConfig    `toml:"reject"`
+	Log       LogConfig       `toml:"log"`
+	Payloads  PayloadsConfig  `toml:"payloads"`
 	// LegacyAuthSection flags a leftover [auth] table, no longer read now auth is AUTH_ENABLED.
 	LegacyAuthSection bool `toml:"-"`
 }
@@ -93,6 +95,19 @@ type WakeConfig struct {
 // RejectConfig tunes how much of a rejected webhook's body is kept for logging.
 type RejectConfig struct {
 	BodyPreviewChars int `toml:"body_preview_chars"`
+}
+
+// LogConfig bounds the raw webhook body logged before each transform.
+type LogConfig struct {
+	// PayloadMaxBytes caps the logged body; a longer one is logged truncated, and 0 turns the line off.
+	PayloadMaxBytes int64 `toml:"payload_max_bytes"`
+}
+
+// PayloadsConfig tunes the in-memory buffer of raw webhook bodies written to raw_alerts.
+type PayloadsConfig struct {
+	FlushInterval  Duration `toml:"flush_interval"`
+	MaxBufferBytes int64    `toml:"max_buffer_bytes"`
+	FlushTimeout   Duration `toml:"flush_timeout"`
 }
 
 // Duration wraps time.Duration so TOML values like "30s" decode via time.ParseDuration.
@@ -148,6 +163,12 @@ func Defaults() Config {
 		},
 		Wake:   WakeConfig{Timeout: Duration(2 * time.Second)},
 		Reject: RejectConfig{BodyPreviewChars: 500},
+		Log:    LogConfig{PayloadMaxBytes: 64 << 10},
+		Payloads: PayloadsConfig{
+			FlushInterval:  Duration(10 * time.Minute),
+			MaxBufferBytes: 32 << 20,
+			FlushTimeout:   Duration(30 * time.Second),
+		},
 	}
 }
 
@@ -234,6 +255,14 @@ func (c Config) Validate() error {
 		return fmt.Errorf("wake.timeout must be positive")
 	case c.Reject.BodyPreviewChars <= 0:
 		return fmt.Errorf("reject.body_preview_chars must be positive")
+	case c.Log.PayloadMaxBytes < 0:
+		return fmt.Errorf("log.payload_max_bytes must not be negative")
+	case c.Payloads.FlushInterval <= 0:
+		return fmt.Errorf("payloads.flush_interval must be positive")
+	case c.Payloads.FlushTimeout <= 0:
+		return fmt.Errorf("payloads.flush_timeout must be positive")
+	case c.Payloads.MaxBufferBytes < 2*c.Server.MaxBodyBytes:
+		return fmt.Errorf("payloads.max_buffer_bytes must be at least 2 x server.max_body_bytes, so the largest body fits under the early-flush mark")
 	}
 	return nil
 }

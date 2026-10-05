@@ -69,3 +69,15 @@ timeout = "2s"
 [reject]
 # How much of a rejected body is kept for logging.
 body_preview_chars = 500
+
+[log]
+# Raw webhook body logged once per request before the transform; longer bodies are truncated, 0 turns it off.
+payload_max_bytes = 65536
+
+[payloads]
+# Raw webhook bodies wait in memory this long, then are written to raw_alerts in one insert.
+flush_interval = "10m"
+# Memory cap for waiting bodies; half of it flushes early, and a body past it is not stored.
+max_buffer_bytes = 33554432
+# Time limit for one flush insert.
+flush_timeout = "30s"
