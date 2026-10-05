@@ -322,7 +322,7 @@ components:
       properties:
         status:
           type: string
-          example: stored
+          example: OK
         alt_ids:
           type: array
           items:
@@ -331,11 +331,6 @@ components:
         count:
           type: integer
           example: 1
-        alerts:
-          type: array
-          description: The transformed, canonical alert(s) that were stored.
-          items:
-            $ref: '#/components/schemas/CanonicalAlert'
     Error:
       type: object
       properties:

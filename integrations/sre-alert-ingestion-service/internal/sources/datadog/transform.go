@@ -66,19 +66,6 @@ var transitionStateMap = map[string]string{
 	"No Data":      stateError,
 }
 
-// tagFieldMap maps a key:value tag key from Datadog's $TAGS to the canonical field it can supply, matched case-insensitively.
-var tagFieldMap = map[string]string{
-	"service":     "SERVICE",
-	"svc":         "SERVICE",
-	"env":         "ENVIRONMENT",
-	"environment": "ENVIRONMENT",
-	"category":    "CATEGORY",
-	"severity":    "SEVERITY",
-	"sev":         "SEVERITY",
-	"metric":      "METRIC_NAME",
-	"metric_name": "METRIC_NAME",
-}
-
 // ErrInvalidStructure is returned when the payload is missing both event/monitor id and event/monitor name.
 var ErrInvalidStructure = errors.New("invalid datadog alert payload structure")
 
@@ -191,13 +178,20 @@ func parseTags(tags string) map[string]string {
 	return result
 }
 
-// tagValue returns the tag value for a canonical field, scanning every tag-key alias that maps to it.
+// tagAliases lists the $TAGS keys (lowercased by parseTags) that can supply each canonical field, in priority order. A fixed order keeps the result, and so the fingerprint, stable when a payload carries two aliases with different values.
+var tagAliases = map[string][]string{
+	"SERVICE":     {"service", "svc"},
+	"ENVIRONMENT": {"env", "environment"},
+	"CATEGORY":    {"category"},
+	"SEVERITY":    {"severity", "sev"},
+	"METRIC_NAME": {"metric", "metric_name"},
+}
+
+// tagValue returns the first non-empty tag value among a canonical field's aliases.
 func tagValue(tags map[string]string, field string) string {
-	for tagKey, mappedField := range tagFieldMap {
-		if mappedField == field {
-			if v, ok := tags[tagKey]; ok && v != "" {
-				return v
-			}
+	for _, k := range tagAliases[field] {
+		if v := tags[k]; v != "" {
+			return v
 		}
 	}
 	return ""

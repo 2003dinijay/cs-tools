@@ -32,7 +32,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"sre-alert-ingestion-service/internal/model"
 	"sre-alert-ingestion-service/internal/transport/auth"
 )
 
@@ -56,7 +55,6 @@ type Request struct {
 type Result struct {
 	Status int
 	AltIDs []string
-	Alerts []model.Alert
 	Error  string
 }
 
@@ -244,7 +242,7 @@ func (s *Server) sourceRoute(w http.ResponseWriter, r *http.Request) {
 	case http.StatusOK:
 		writeJSON(w, http.StatusOK, map[string]string{"status": "OK"})
 	case http.StatusCreated:
-		writeJSON(w, http.StatusCreated, map[string]string{"status": "OK"})
+		writeJSON(w, http.StatusCreated, stored{Status: "OK", AltIDs: res.AltIDs, Count: len(res.AltIDs)})
 	case http.StatusBadRequest:
 		s.reject(r, source, http.StatusBadRequest, res.Error, preview, size)
 		writeJSON(w, http.StatusBadRequest, rejected(res.Error))
@@ -291,6 +289,13 @@ func rejected(msg string) map[string]string {
 func writeUnavailable(w http.ResponseWriter, msg string) {
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
 	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "error": msg})
+}
+
+// stored is the 201 body: one id per stored alert, in request order, so a sender can trace each one.
+type stored struct {
+	Status string   `json:"status"`
+	AltIDs []string `json:"alt_ids"`
+	Count  int      `json:"count"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

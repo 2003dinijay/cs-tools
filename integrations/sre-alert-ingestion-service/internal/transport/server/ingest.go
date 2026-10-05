@@ -82,5 +82,5 @@ func (in *Ingestor) Ingest(ctx context.Context, req Request) Result {
 	if err != nil {
 		return Result{Status: http.StatusServiceUnavailable, Error: err.Error()}
 	}
-	return Result{Status: http.StatusCreated, AltIDs: ids, Alerts: alerts}
+	return Result{Status: http.StatusCreated, AltIDs: ids}
 }

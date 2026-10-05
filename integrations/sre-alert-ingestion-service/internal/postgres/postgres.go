@@ -20,7 +20,9 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -60,11 +62,21 @@ func ConfigFromEnv() (Config, error) {
 	return cfg, nil
 }
 
+// dsn builds the connection URL, escaping each part for where it sits; url.QueryEscape would turn a space in the password into "+".
+func dsn(cfg Config) string {
+	u := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(cfg.User, cfg.Password),
+		Host:     net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
+		Path:     "/" + cfg.Database,
+		RawQuery: url.Values{"sslmode": {cfg.SSLMode}}.Encode(),
+	}
+	return u.String()
+}
+
 // Connect opens a pooled connection, bounding connect time and the default per-query timeout.
 func Connect(cfg Config, connectTimeout, queryTimeout time.Duration) (*pgxpool.Pool, error) {
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-		url.QueryEscape(cfg.User), url.QueryEscape(cfg.Password), cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode)
-	poolCfg, err := pgxpool.ParseConfig(dsn)
+	poolCfg, err := pgxpool.ParseConfig(dsn(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("parse postgres config: %w", err)
 	}

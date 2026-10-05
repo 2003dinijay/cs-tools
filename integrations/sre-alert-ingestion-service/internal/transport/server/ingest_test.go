@@ -102,7 +102,8 @@ func TestIngest_201(t *testing.T) {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
 	}
 	m := decode(t, rec)
-	if m["status"] != "OK" {
+	ids, _ := m["alt_ids"].([]any)
+	if m["status"] != "OK" || m["count"] != float64(1) || len(ids) != 1 || ids[0] != "ALT000000001" {
 		t.Errorf("body = %v", m)
 	}
 	if len(sub.calls) != 1 || sub.source != "datadog" || sub.calls[0][0].UniqueIdentifier != "148502937" {

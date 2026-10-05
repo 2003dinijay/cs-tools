@@ -103,7 +103,8 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	if monitorCondition == "Resolved" {
 		mappedSeverity = severityMap["Sev4"] // "OK"
 	} else {
-		mappedSeverity = severityMap[rawSeverity]
+		// A value outside Sev0-Sev4, such as the "Critical" default, passes through unchanged.
+		mappedSeverity = utils.FirstNonEmpty(severityMap[rawSeverity], rawSeverity)
 	}
 
 	alert := Alert{
