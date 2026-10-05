@@ -101,9 +101,20 @@ func main() {
 	// ESCALATION_DETECTOR_BASE_URL means WithFrustrationDetection below is
 	// simply never called, and checkFrustration's own nil-frustrationDetector
 	// check skips the step entirely rather than erroring on every comment.
+	//
+	// Shares the same OAuth2 client credentials app as emailClient/
+	// customerEntityClient above (OAUTH2_CLIENT_ID/OAUTH2_CLIENT_SECRET/
+	// OAUTH2_TOKEN_URL) rather than getting its own -- only BaseURL/Scopes
+	// are specific to this client.
 	var escalationClient *escalation.Client
 	if baseURL := os.Getenv("ESCALATION_DETECTOR_BASE_URL"); baseURL != "" {
-		escalationClient = escalation.New(escalation.Config{BaseURL: baseURL})
+		escalationClient = escalation.New(escalation.Config{
+			BaseURL:      baseURL,
+			TokenURL:     os.Getenv("OAUTH2_TOKEN_URL"),
+			ClientID:     os.Getenv("OAUTH2_CLIENT_ID"),
+			ClientSecret: os.Getenv("OAUTH2_CLIENT_SECRET"),
+			Scopes:       splitComma(os.Getenv("ESCALATION_DETECTOR_SCOPES")),
+		})
 	} else {
 		slog.Warn("ESCALATION_DETECTOR_BASE_URL not set; frustration detection on case.comment_added is disabled")
 	}
