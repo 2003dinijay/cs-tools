@@ -21,11 +21,17 @@ import {
   buildCloneChangeRequestNavState,
   CHANGE_REQUEST_CREATE_TYPE_OPTIONS,
   changeRequestBlockingReason,
+  CHANGE_REQUEST_CATEGORY_OPTIONS,
+  changeRequestCategoryLabel,
+  changeRequestCategoryValue,
+  changeRequestScopeLockedReason,
   changeRequestTransitionLabel,
   countActiveCRFilters,
   customerApprovalLockedReason,
   customerReviewLockedReason,
+  DEFAULT_CHANGE_REQUEST_CATEGORY,
   DEFAULT_CR_FILTERS,
+  isChangeRequestCategory,
   isChangeRequestCreator,
   isCreatableChangeRequestType,
 } from "@features/csm-operations/utils/changeRequests";
@@ -89,18 +95,53 @@ describe("buildCloneChangeRequestNavState", () => {
     expect(keys).not.toContain("serviceOutage");
     expect(keys).not.toContain("communicationPlan");
     expect(keys).not.toContain("rollbackPlan");
-    // category/priority/risk/riskImpactAnalysis are write-only — never
-    // returned by GET — so there is no source value ever. `implementationPlan`
+    // priority/risk/riskImpactAnalysis have no clone source. `implementationPlan`
     // is readable now too, but isn't wired into clone yet (separate feature
     // decision), so it also must not appear here.
-    expect(keys).not.toContain("category");
     expect(keys).not.toContain("priority");
     expect(keys).not.toContain("risk");
     expect(keys).not.toContain("implementationPlan");
     expect(keys).not.toContain("riskImpactAnalysis");
   });
 
-  it("never carries the environment, project, or linked-case references", () => {
+  it("carries the customer project, customer group and category, but never the deployments / environments / deployment products", () => {
+    const state = buildCloneChangeRequestNavState({
+      ...FULL_CR,
+      customerGroup: { id: "grp-1", name: "Acme Customers" },
+      category: { id: "devops", name: "DevOps" },
+      deployments: [{ id: "dep-1", name: "prod" }],
+      environments: [{ id: "env-1", name: "Primary Production" }],
+      deploymentProducts: [{ id: "dp-1", name: "API Manager 4.3.0" }],
+    });
+    expect(state.projectId).toBe("proj-1");
+    expect(state.projectLabel).toBe("Project A");
+    expect(state.customerGroupId).toBe("grp-1");
+    expect(state.customerGroupLabel).toBe("Acme Customers");
+    expect(state.category).toBe("devops");
+    // A clone exists to promote the change to a different environment, so what
+    // names the *target* environment is left for the user to choose.
+    const keys = Object.keys(state);
+    expect(keys).not.toContain("deployments");
+    expect(keys).not.toContain("deploymentIds");
+    expect(keys).not.toContain("environments");
+    expect(keys).not.toContain("environmentIds");
+    expect(keys).not.toContain("deploymentProducts");
+    expect(keys).not.toContain("deploymentProductIds");
+  });
+
+  it("leaves project / customer group / category out when the source has none (or an unknown category)", () => {
+    const state = buildCloneChangeRequestNavState({
+      ...FULL_CR,
+      project: undefined,
+      customerGroup: null,
+      category: { id: "something_new", label: "Something new" },
+    });
+    expect(state.projectId).toBeUndefined();
+    expect(state.customerGroupId).toBeUndefined();
+    expect(state.category).toBeUndefined();
+  });
+
+  it("never carries the single-deployment, linked-case or team references", () => {
     const state = buildCloneChangeRequestNavState(FULL_CR);
     const keys = Object.keys(state);
     expect(keys).not.toContain("deployment");
@@ -478,5 +519,50 @@ describe("buildChangeRequestSearchFilters", () => {
     expect(buildChangeRequestSearchFilters(DEFAULT_CR_FILTERS, "")).not.toHaveProperty(
       "projectIds",
     );
+  });
+});
+
+describe("change request category helpers", () => {
+  it("offers the 13 ServiceNow categories, with 'other' as the default", () => {
+    expect(CHANGE_REQUEST_CATEGORY_OPTIONS).toHaveLength(13);
+    expect(DEFAULT_CHANGE_REQUEST_CATEGORY).toBe("other");
+    expect(CHANGE_REQUEST_CATEGORY_OPTIONS.find((o) => o.value === "other")?.label).toBe("Other");
+  });
+
+  it("recognises only backend enum values", () => {
+    expect(isChangeRequestCategory("devops")).toBe(true);
+    expect(isChangeRequestCategory("Other")).toBe(false);
+    expect(isChangeRequestCategory("")).toBe(false);
+    expect(isChangeRequestCategory(undefined)).toBe(false);
+  });
+
+  it("reads the enum value off a detail category, whether it carries a name or a label", () => {
+    expect(changeRequestCategoryValue({ id: "network", name: "Network" })).toBe("network");
+    expect(changeRequestCategoryValue({ id: "network", label: "Network" })).toBe("network");
+    expect(changeRequestCategoryValue("devops")).toBe("devops");
+    expect(changeRequestCategoryValue({ id: "unknown" })).toBe("");
+    expect(changeRequestCategoryValue("unknown")).toBe("");
+    expect(changeRequestCategoryValue(null)).toBe("");
+  });
+
+  it("labels a category from the known list first, then from the backend, with a dash when absent", () => {
+    expect(changeRequestCategoryLabel({ id: "regular_release_cloud", name: "x" })).toBe("Regular Release - Cloud");
+    expect(changeRequestCategoryLabel({ id: "mystery", name: "Mystery" })).toBe("Mystery");
+    expect(changeRequestCategoryLabel({ id: "mystery", label: "Old label" })).toBe("Old label");
+    expect(changeRequestCategoryLabel("hotfix_release_cloud")).toBe("Hotfix Release - Cloud");
+    expect(changeRequestCategoryLabel("Free text")).toBe("Free text");
+    expect(changeRequestCategoryLabel(undefined)).toBe("—");
+  });
+});
+
+describe("changeRequestScopeLockedReason", () => {
+  it("is editable before implementation and locked from implement onwards", () => {
+    for (const state of ["new", "assess", "authorize", "customer_approval", "scheduled"]) {
+      expect(changeRequestScopeLockedReason(state)).toBeNull();
+    }
+    for (const state of ["implement", "review", "customer_review", "closed", "rollback", "canceled"]) {
+      expect(changeRequestScopeLockedReason(state)).toMatch(/can't be changed/);
+    }
+    expect(changeRequestScopeLockedReason(undefined)).toBeNull();
   });
 });

@@ -52,13 +52,19 @@ import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
 import { useSearchParentRecordsForSelect } from "@features/csm-operations/api/useSearchParentRecordsForSelect";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
+import ChangeRequestScopeFields from "@features/csm-operations/components/ChangeRequestScopeFields";
+import { useChangeRequestScope } from "@features/csm-operations/hooks/useChangeRequestScope";
 import {
+  CHANGE_REQUEST_CATEGORY_OPTIONS,
   CHANGE_REQUEST_CREATE_TYPE_OPTIONS,
+  CHANGE_REQUEST_JOURNAL_MAX,
   changeRequestDraftKey,
   clearChangeRequestDraft,
   CLONE_SOURCE_GAP_MESSAGE,
+  DEFAULT_CHANGE_REQUEST_CATEGORY,
   decodeParentRecordValue,
   encodeParentRecordValue,
+  isChangeRequestCategory,
   isCreatableChangeRequestType,
   loadChangeRequestDraft,
   parentRecordLabel,
@@ -70,6 +76,7 @@ import {
 } from "@features/csm-operations/utils/changeRequests";
 import type { CreateChangeRequestFromCaseNavState } from "@features/csm-cases/types/csmCases";
 import type {
+  BeChangeRequestCategory,
   BeChangeRequestImpact,
   BeChangeRequestPriority,
   BeChangeRequestType,
@@ -218,10 +225,9 @@ export default function CreateChangeRequestPage(): JSX.Element {
   // so it stays unset here too. A clone carries over `type`/`impact` from
   // the source record when present; priority has no source value to carry
   // (see buildCloneChangeRequestNavState), so it keeps the same default a
-  // from-scratch change request gets. `category` and `risk` are not
-  // editable here at all — see BeCreateChangeRequestPayload's doc comment:
-  // `category` is 99.9% left at its default on real records and `risk`
-  // isn't a field on the real ServiceNow CR form.
+  // from-scratch change request gets. `risk` is not editable here — it
+  // isn't a field on the real ServiceNow CR form. `category` is, defaulting
+  // to "Other" like the ServiceNow form (see the Category state below).
   // Type has NO default: it decides which approval flow the change goes
   // through (Normal: Peer then CAB; Standard: none; Emergency: ECAB), so the
   // user must choose one of the three deliberately. A clone / restored draft
@@ -253,6 +259,38 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const [customerReviewRequired, setCustomerReviewRequired] = useState(
     draft?.customerReviewRequired ?? cloneState?.customerReviewRequired ?? false,
   );
+  // Customer Project / Deployments / Environments / Deployment products. The
+  // hook owns the cascade (project -> deployments -> environments + derived
+  // products); a restored draft seeds it with the ids AND their display names
+  // so the pickers read as names before the lookups resolve.
+  const scope = useChangeRequestScope({
+    projectId: draft?.projectId ?? cloneState?.projectId,
+    projectLabel: draft ? draft.projectLabel : cloneState?.projectLabel,
+    deployments: draft?.deploymentIds?.map((id) => ({
+      id,
+      label: draft.deploymentLabels?.[id] ?? id,
+    })),
+    environments: draft?.environmentIds?.map((id) => ({
+      id,
+      label: draft.environmentLabels?.[id] ?? id,
+    })),
+    deploymentProducts: draft?.deploymentProductIds?.map((id) => ({
+      id,
+      label: draft.deploymentProductLabels?.[id] ?? id,
+    })),
+  });
+  const [customerGroupId, setCustomerGroupId] = useState(
+    draft?.customerGroupId ?? cloneState?.customerGroupId ?? "",
+  );
+  // The legacy ServiceNow form pre-selects "Other".
+  const initialCategory = draft?.category ?? cloneState?.category ?? DEFAULT_CHANGE_REQUEST_CATEGORY;
+  const [category, setCategory] = useState<string>(
+    isChangeRequestCategory(initialCategory) ? initialCategory : DEFAULT_CHANGE_REQUEST_CATEGORY,
+  );
+  // "Additional comments (Customer visible)" and "Work notes" — plain text,
+  // optional, 4000 characters like ServiceNow's journal fields.
+  const [comment, setComment] = useState((draft?.comment ?? "").slice(0, CHANGE_REQUEST_JOURNAL_MAX));
+  const [workNote, setWorkNote] = useState((draft?.workNote ?? "").slice(0, CHANGE_REQUEST_JOURNAL_MAX));
   const [groupId, setGroupId] = useState(draft?.groupId ?? "");
   const [assignedEngineerId, setAssignedEngineerId] = useState(
     draft?.assignedEngineerId ?? cloneState?.assignedEngineerId ?? "",
@@ -350,6 +388,18 @@ export default function CreateChangeRequestPage(): JSX.Element {
       assignedEngineerId,
       requestedById,
       parentValue,
+      projectId: scope.projectId,
+      projectLabel: scope.projectLabel,
+      deploymentIds: scope.deploymentIds,
+      deploymentLabels: scope.deploymentLabels,
+      environmentIds: scope.environmentIds,
+      environmentLabels: scope.environmentLabels,
+      deploymentProductIds: scope.deploymentProductIds,
+      deploymentProductLabels: scope.deploymentProductLabels,
+      customerGroupId,
+      category,
+      comment,
+      workNote,
     });
   }, [
     draftKey,
@@ -372,6 +422,18 @@ export default function CreateChangeRequestPage(): JSX.Element {
     assignedEngineerId,
     requestedById,
     parentValue,
+    scope.projectId,
+    scope.projectLabel,
+    scope.deploymentIds,
+    scope.deploymentLabels,
+    scope.environmentIds,
+    scope.environmentLabels,
+    scope.deploymentProductIds,
+    scope.deploymentProductLabels,
+    customerGroupId,
+    category,
+    comment,
+    workNote,
   ]);
 
   const isSubmitting = postChangeRequest.isPending || patchChangeRequest.isPending;
@@ -425,6 +487,20 @@ export default function CreateChangeRequestPage(): JSX.Element {
     if (groupId.trim()) payload.groupId = groupId.trim();
     if (assignedEngineerId.trim()) payload.assignedEngineerId = assignedEngineerId.trim();
     if (requestedById.trim()) payload.requestedById = requestedById.trim();
+    // Scope: only what has a value (arrays only when non-empty). The deployment
+    // products are derived from the deployments; sent (once the lookup has
+    // settled) so the backend records exactly what the form showed — it
+    // rejects a set that is not the derived one.
+    if (scope.projectId) payload.projectId = scope.projectId;
+    if (scope.projectId && scope.deploymentIds.length > 0) payload.deploymentIds = scope.deploymentIds;
+    if (scope.projectId && scope.environmentIds.length > 0) payload.environmentIds = scope.environmentIds;
+    if (scope.projectId && scope.productsReady && scope.deploymentProductIds.length > 0) {
+      payload.deploymentProductIds = scope.deploymentProductIds;
+    }
+    if (customerGroupId.trim()) payload.customerGroupId = customerGroupId.trim();
+    if (isChangeRequestCategory(category)) payload.category = category as BeChangeRequestCategory;
+    if (comment.trim()) payload.comment = comment.trim();
+    if (workNote.trim()) payload.workNote = workNote.trim();
 
     postChangeRequest.mutate(payload, {
       onSuccess: (created) => {
@@ -498,7 +574,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
     label: string,
     value: string,
     onChange: (v: string) => void,
-    options: Array<{ value: string; label: string }>,
+    options: ReadonlyArray<{ value: string; label: string }>,
   ): JSX.Element => (
     <FormControl fullWidth size="small" disabled={isSubmitting}>
       <InputLabel id={`${id}-label`} shrink>
@@ -750,6 +826,39 @@ export default function CreateChangeRequestPage(): JSX.Element {
             </Box>
           </Box>
 
+          <Box role="group" aria-labelledby="cr-scope-heading">
+            <Typography id="cr-scope-heading" variant="subtitle2" sx={{ mb: 1 }}>
+              Customer project and deployments
+            </Typography>
+            <ChangeRequestScopeFields scope={scope} disabled={isSubmitting} idPrefix="cr" />
+          </Box>
+
+          <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+            <Box sx={{ flex: "1 1 220px" }}>
+              <AsyncEntitySelect<BeGroup>
+                id="cr-customer-group"
+                label="Customer Group"
+                placeholder="Search groups…"
+                value={customerGroupId}
+                onChange={setCustomerGroupId}
+                disabled={isSubmitting}
+                useSearch={useSearchGroups}
+                getId={(g) => g.id}
+                getLabel={(g) => g.name}
+                knownLabel={draft?.customerGroupLabel ?? cloneState?.customerGroupLabel}
+              />
+            </Box>
+            <Box sx={{ flex: "1 1 220px" }}>
+              {renderSelect(
+                "cr-category",
+                "Category",
+                category,
+                setCategory,
+                CHANGE_REQUEST_CATEGORY_OPTIONS,
+              )}
+            </Box>
+          </Box>
+
           <Box role="group" aria-labelledby="cr-customer-steps-heading">
             <Typography
               id="cr-customer-steps-heading"
@@ -918,6 +1027,31 @@ export default function CreateChangeRequestPage(): JSX.Element {
               />
             </Box>
           </LocalizationProvider>
+
+          <Typography variant="subtitle2" sx={{ mt: 1 }}>
+            Communication
+          </Typography>
+
+          <TextField
+            label="Additional comments (Customer visible)"
+            value={comment}
+            onChange={(e) => setComment(e.target.value.slice(0, CHANGE_REQUEST_JOURNAL_MAX))}
+            fullWidth
+            multiline
+            minRows={3}
+            disabled={isSubmitting}
+            helperText={`Visible to the customer. Characters left: ${CHANGE_REQUEST_JOURNAL_MAX - comment.length}`}
+          />
+          <TextField
+            label="Work notes"
+            value={workNote}
+            onChange={(e) => setWorkNote(e.target.value.slice(0, CHANGE_REQUEST_JOURNAL_MAX))}
+            fullWidth
+            multiline
+            minRows={3}
+            disabled={isSubmitting}
+            helperText={`Internal only. Characters left: ${CHANGE_REQUEST_JOURNAL_MAX - workNote.length}`}
+          />
 
           <Typography variant="subtitle2" sx={{ mt: 1 }}>
             More options

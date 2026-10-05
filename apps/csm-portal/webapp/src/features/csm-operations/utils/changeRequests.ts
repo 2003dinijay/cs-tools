@@ -16,6 +16,7 @@
 
 import type {
   BeChangeRequestApproval,
+  BeChangeRequestCategory,
   BeChangeRequestDetail,
   BeChangeRequestImpact,
   BeChangeRequestSearchPayload,
@@ -229,6 +230,61 @@ export const CHANGE_REQUEST_CREATE_TYPE_OPTIONS: ReadonlyArray<{
   },
 ];
 
+/**
+ * The ServiceNow change-request Category choice list, in the legacy form's
+ * order. `value` is the backend's `category` enum value. The form defaults to
+ * {@link DEFAULT_CHANGE_REQUEST_CATEGORY} (ServiceNow's own default).
+ */
+export const CHANGE_REQUEST_CATEGORY_OPTIONS: ReadonlyArray<{
+  value: BeChangeRequestCategory;
+  label: string;
+}> = [
+  { value: "hardware", label: "Hardware" },
+  { value: "software", label: "Software" },
+  { value: "service", label: "Service" },
+  { value: "system_software", label: "System Software" },
+  { value: "applications_software", label: "Applications Software" },
+  { value: "network", label: "Network" },
+  { value: "telecom", label: "Telecom" },
+  { value: "documentation", label: "Documentation" },
+  { value: "other", label: "Other" },
+  { value: "regular_release_cloud", label: "Regular Release - Cloud" },
+  { value: "hotfix_release_cloud", label: "Hotfix Release - Cloud" },
+  { value: "devops", label: "DevOps" },
+  { value: "cloud_computing", label: "Cloud Computing" },
+];
+
+export const DEFAULT_CHANGE_REQUEST_CATEGORY: BeChangeRequestCategory = "other";
+
+/** True when `value` is a category the backend accepts. */
+export function isChangeRequestCategory(value: string | null | undefined): value is BeChangeRequestCategory {
+  return CHANGE_REQUEST_CATEGORY_OPTIONS.some((o) => o.value === value);
+}
+
+/** Maximum length of the Additional comments / Work notes fields (ServiceNow journal limit). */
+export const CHANGE_REQUEST_JOURNAL_MAX = 4000;
+
+/**
+ * Reads a category off a detail response: the enum value itself (Postgres data
+ * source) or an entity ref whose `id` is the enum value.
+ */
+export function changeRequestCategoryValue(
+  category: BeChangeRequestDetail["category"],
+): BeChangeRequestCategory | "" {
+  const id = typeof category === "string" ? category : category?.id;
+  return isChangeRequestCategory(id) ? id : "";
+}
+
+/** Display label for a detail response's category ("—" when unset). */
+export function changeRequestCategoryLabel(category: BeChangeRequestDetail["category"]): string {
+  if (!category) return "—";
+  const id = typeof category === "string" ? category : category.id;
+  const known = CHANGE_REQUEST_CATEGORY_OPTIONS.find((o) => o.value === id);
+  if (known) return known.label;
+  if (typeof category === "string") return category || "—";
+  return category.label ?? category.name ?? (category.id || "—");
+}
+
 /** True when `value` is one of the three types a change request can be created as. */
 export function isCreatableChangeRequestType(value: string | null | undefined): boolean {
   return CHANGE_REQUEST_CREATE_TYPE_OPTIONS.some((o) => o.value === value);
@@ -328,6 +384,27 @@ export function customerApprovalLockedReason(state?: string | null): string | nu
 export function customerReviewLockedReason(state?: string | null): string | null {
   return state && CUSTOMER_REVIEW_LOCKED_STATES.includes(state)
     ? "Locked: the change request has already reached the customer review step or later."
+    : null;
+}
+
+/**
+ * States from which Customer Project / Deployments / Environments / Deployment
+ * products can no longer be changed (the backend refuses with a 400 from
+ * `implement` onward).
+ */
+const SCOPE_LOCKED_STATES: readonly string[] = [
+  "implement",
+  "review",
+  "customer_review",
+  "closed",
+  "rollback",
+  "canceled",
+];
+
+/** Why the project / deployments / environments are locked in `state`, or `null` when editable. */
+export function changeRequestScopeLockedReason(state?: string | null): string | null {
+  return state && SCOPE_LOCKED_STATES.includes(state)
+    ? "Locked: the customer project, deployments and environments can't be changed once implementation has started."
     : null;
 }
 
@@ -547,6 +624,16 @@ export interface CloneChangeRequestNavState {
    * confirmation (`hasCustomerApproved`/`hasCustomerReviewed`) is never copied. */
   customerApprovalRequired?: boolean;
   customerReviewRequired?: boolean;
+  /** The source's Customer Project, Customer Group and Category, with the
+   * display labels the form shows until fresh lookups resolve them. The
+   * source's Deployments / Environments / Deployment products are
+   * deliberately NOT carried: they name the environment the change targets,
+   * and a clone exists to promote the change to a different one. */
+  projectId?: string;
+  projectLabel?: string;
+  customerGroupId?: string;
+  customerGroupLabel?: string;
+  category?: BeChangeRequestCategory;
 }
 
 /** Rich-text field carried into the clone form only when it has real content. */
@@ -557,7 +644,8 @@ function cloneableHtml(html?: string | null): string | undefined {
 
 /**
  * Builds the router-state payload for a change request's "Clone" action.
- * Deliberately omits: environment/deployment, state, approval fields
+ * Deliberately omits: deployments / environments / deployment products,
+ * state, approval fields
  * (`hasCustomerApproved`/`hasCustomerReviewed`/`approvedBy`/`approvedOn`; the
  * `customerApprovalRequired`/`customerReviewRequired` settings ARE carried),
  * planned start/end, and every auto-numbered/timestamp/created-by field —
@@ -581,6 +669,11 @@ export function buildCloneChangeRequestNavState(
     assignedEngineerLabel: cr.assignedEngineer?.name || undefined,
     customerApprovalRequired: cr.customerApprovalRequired ?? undefined,
     customerReviewRequired: cr.customerReviewRequired ?? undefined,
+    projectId: cr.project?.id || undefined,
+    projectLabel: cr.project?.name || undefined,
+    customerGroupId: cr.customerGroup?.id || undefined,
+    customerGroupLabel: cr.customerGroup?.name || undefined,
+    category: changeRequestCategoryValue(cr.category) || undefined,
   };
 }
 
@@ -591,10 +684,10 @@ export function buildCloneChangeRequestNavState(
  * wants a preview) and the create page stay in sync.
  */
 export const CLONE_SOURCE_GAP_MESSAGE =
-  "Copied the subject, description, justification, test plan, type, impact, assigned engineer, and customer approval/review settings. " +
+  "Copied the subject, description, justification, test plan, type, impact, assigned engineer, customer project, customer group, category, and customer approval/review settings. " +
   "Priority, implementation plan, risk/impact analysis, backout plan, assignment group, " +
-  "linked project/case, and affected product aren't available to copy and need to be re-entered. " +
-  "Deployment, schedule, and approval fields are intentionally left blank for you to set for the new environment.";
+  "linked case, and affected product aren't available to copy and need to be re-entered. " +
+  "Deployments, environments, deployment products, schedule, and approval fields are intentionally left blank for you to set for the new environment.";
 
 // ---------------------------------------------------------------------------
 // "Originating service request" picker — unified parent-record search
@@ -718,6 +811,22 @@ export interface ChangeRequestDraft {
   assignedEngineerId: string;
   requestedById: string;
   parentValue: string;
+  /** Optional: a draft saved before these fields existed lacks them. The
+   * `*Labels` maps hold the display names for the picked ids so a restored
+   * draft shows names, not UUIDs, before the lookups resolve. */
+  projectId?: string;
+  projectLabel?: string;
+  deploymentIds?: string[];
+  deploymentLabels?: Record<string, string>;
+  environmentIds?: string[];
+  environmentLabels?: Record<string, string>;
+  deploymentProductIds?: string[];
+  deploymentProductLabels?: Record<string, string>;
+  customerGroupId?: string;
+  customerGroupLabel?: string;
+  category?: string;
+  comment?: string;
+  workNote?: string;
 }
 
 /** Which of the create form's three entry points (or none — opened fresh) a

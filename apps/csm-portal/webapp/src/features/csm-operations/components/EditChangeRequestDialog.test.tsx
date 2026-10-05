@@ -36,6 +36,82 @@ vi.mock("@api/useSearchUsersByName", () => ({
   useSearchInternalUsersByName: (...args: unknown[]) => useSearchUsersByNameMock(...(args as [])),
 }));
 
+// Customer Project picker: a plain labelled input that reports the typed id and
+// its display name; exposes whether it may be cleared.
+const PROJECT_NAMES: Record<string, string> = { "proj-a": "Acme Project", "proj-b": "Beta Project" };
+vi.mock("@features/csm-cases/components/AsyncProjectSelect", () => ({
+  default: ({
+    label,
+    value,
+    knownLabel,
+    disableClearable,
+    disabled,
+    onChange,
+  }: {
+    label: string;
+    value: string;
+    knownLabel?: string;
+    disableClearable?: boolean;
+    disabled?: boolean;
+    onChange: (next: string, name?: string) => void;
+  }) => (
+    <input
+      aria-label={label}
+      data-known-label={knownLabel ?? ""}
+      data-disable-clearable={String(!!disableClearable)}
+      disabled={disabled}
+      value={value}
+      onChange={(e) => onChange(e.target.value, PROJECT_NAMES[e.target.value])}
+    />
+  ),
+}));
+// project -> deployments -> environments / deployment products lookup, same
+// contract as the real hook: a project's deployments always come back, products
+// only for the chosen ones.
+const SCOPE_FIXTURE: Record<
+  string,
+  Array<{ id: string; label: string; env: { id: string; label: string }; products: Array<{ id: string; label: string }> }>
+> = {
+  "proj-a": [
+    {
+      id: "dep-prod",
+      label: "Acme Production",
+      env: { id: "env-prod", label: "Primary Production" },
+      products: [
+        { id: "dp-apim", label: "API Manager 4.3.0" },
+        { id: "dp-is", label: "Identity Server 7.0.0" },
+      ],
+    },
+    {
+      id: "dep-stg",
+      label: "Acme Staging",
+      env: { id: "env-stg", label: "Staging" },
+      products: [{ id: "dp-apim-stg", label: "API Manager 4.2.0" }],
+    },
+  ],
+  "proj-b": [
+    {
+      id: "dep-b",
+      label: "Beta Development",
+      env: { id: "env-dev", label: "Development" },
+      products: [{ id: "dp-b", label: "Choreo 1.0" }],
+    },
+  ],
+};
+vi.mock("@features/csm-operations/api/useChangeRequestScopeLookups", () => ({
+  useChangeRequestScopeLookups: (projectId: string | undefined, deploymentIds: string[]) => ({
+    deployments: (projectId ? (SCOPE_FIXTURE[projectId] ?? []) : []).map((d) => ({
+      id: d.id,
+      label: d.label,
+      environments: [d.env],
+      products: deploymentIds.includes(d.id) ? d.products : undefined,
+    })),
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  }),
+}));
+
 /**
  * Stand-in for the rich-text editor: a textarea whose value is the HTML.
  *
@@ -564,5 +640,236 @@ describe("EditChangeRequestDialog — Customer Approval / Customer Review checkb
       />,
     );
     expect(screen.getByRole("alert")).toHaveTextContent(/can no longer be changed/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Customer Project / Deployments / Environments / Deployment products / Category
+// ---------------------------------------------------------------------------
+
+const SCOPED_CR: Partial<BeChangeRequestDetail> = {
+  state: "scheduled",
+  project: { id: "proj-a", name: "Acme Project" },
+  deployments: [{ id: "dep-prod", name: "Acme Production" }],
+  environments: [{ id: "env-prod", name: "Primary Production" }],
+  deploymentProducts: [
+    { id: "dp-apim", name: "API Manager 4.3.0" },
+    { id: "dp-is", name: "Identity Server 7.0.0" },
+  ],
+};
+
+function pickOptions(field: string, names: string[]): void {
+  const input = screen.getByRole("combobox", { name: field });
+  fireEvent.mouseDown(input);
+  for (const name of names) fireEvent.click(screen.getByRole("option", { name }));
+  fireEvent.keyDown(input, { key: "Escape" });
+}
+
+function chips(field: string): string[] {
+  const root = screen.getByRole("combobox", { name: field }).closest(".MuiInputBase-root");
+  return Array.from(root?.querySelectorAll(".MuiChip-label") ?? []).map((c) => c.textContent ?? "");
+}
+
+function productChips(): string[] {
+  const root = screen.getByLabelText("Deployment products").closest(".MuiInputBase-root");
+  return Array.from(root?.querySelectorAll(".MuiChip-label") ?? []).map((c) => c.textContent ?? "");
+}
+
+describe("EditChangeRequestDialog — customer project, deployments, environments, deployment products", () => {
+  it("seeds all four from the record, with names rather than ids", () => {
+    renderDialog(SCOPED_CR);
+    expect(screen.getByLabelText("Customer Project")).toHaveValue("proj-a");
+    expect(screen.getByLabelText("Customer Project")).toHaveAttribute("data-known-label", "Acme Project");
+    expect(chips("Deployments")).toEqual(["Acme Production"]);
+    expect(chips("Environments")).toEqual(["Primary Production"]);
+    expect(productChips()).toEqual(["API Manager 4.3.0", "Identity Server 7.0.0"]);
+  });
+
+  it("sends nothing for them, and keeps Save disabled, when none was touched", () => {
+    renderDialog(SCOPED_CR);
+    expect(saveButton()).toBeDisabled();
+  });
+
+  it("renders them empty (Deployments / Environments disabled) for a change request with no project", () => {
+    renderDialog();
+    expect(screen.getByLabelText("Customer Project")).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Deployments" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Environments" })).toBeDisabled();
+    expect(saveButton()).toBeDisabled();
+  });
+
+  it("cascades a deployment change and sends the whole scope together, deployment products included", () => {
+    const { onSave } = renderDialog(SCOPED_CR);
+    pickOptions("Deployments", ["Acme Staging"]);
+    expect(chips("Deployments")).toEqual(["Acme Production", "Acme Staging"]);
+    expect(chips("Environments")).toEqual(["Primary Production", "Staging"]);
+    expect(productChips()).toEqual(["API Manager 4.3.0", "Identity Server 7.0.0", "API Manager 4.2.0"]);
+
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenCalledWith({
+      projectId: "proj-a",
+      deploymentIds: ["dep-prod", "dep-stg"],
+      environmentIds: ["env-prod", "env-stg"],
+      deploymentProductIds: ["dp-apim", "dp-is", "dp-apim-stg"],
+    });
+  });
+
+  it("drops a removed deployment's environment and products", () => {
+    const { onSave } = renderDialog({
+      ...SCOPED_CR,
+      deployments: [
+        { id: "dep-prod", name: "Acme Production" },
+        { id: "dep-stg", name: "Acme Staging" },
+      ],
+      environments: [
+        { id: "env-prod", name: "Primary Production" },
+        { id: "env-stg", name: "Staging" },
+      ],
+      deploymentProducts: [
+        { id: "dp-apim", name: "API Manager 4.3.0" },
+        { id: "dp-is", name: "Identity Server 7.0.0" },
+        { id: "dp-apim-stg", name: "API Manager 4.2.0" },
+      ],
+    });
+    pickOptions("Deployments", ["Acme Production"]); // toggles Production off
+    expect(chips("Environments")).toEqual(["Staging"]);
+    expect(productChips()).toEqual(["API Manager 4.2.0"]);
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledWith({
+      projectId: "proj-a",
+      deploymentIds: ["dep-stg"],
+      environmentIds: ["env-stg"],
+      deploymentProductIds: ["dp-apim-stg"],
+    });
+  });
+
+  it("sends the whole scope (not just environmentIds) when only an environment was deselected", () => {
+    const { onSave } = renderDialog({
+      ...SCOPED_CR,
+      deployments: [
+        { id: "dep-prod", name: "Acme Production" },
+        { id: "dep-stg", name: "Acme Staging" },
+      ],
+      environments: [
+        { id: "env-prod", name: "Primary Production" },
+        { id: "env-stg", name: "Staging" },
+      ],
+    });
+    pickOptions("Environments", ["Staging"]); // toggles Staging off
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-a",
+        deploymentIds: ["dep-prod", "dep-stg"],
+        environmentIds: ["env-prod"],
+      }),
+    );
+  });
+
+  it("clears the dependents when the project changes, and sends the new project with empty lists", () => {
+    const { onSave } = renderDialog(SCOPED_CR);
+    fireEvent.change(screen.getByLabelText("Customer Project"), { target: { value: "proj-b" } });
+    expect(chips("Deployments")).toEqual([]);
+    expect(chips("Environments")).toEqual([]);
+    expect(productChips()).toEqual([]);
+    expect(screen.getByRole("combobox", { name: "Environments" })).toBeDisabled();
+
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledWith({
+      projectId: "proj-b",
+      deploymentIds: [],
+      environmentIds: [],
+      deploymentProductIds: [],
+    });
+  });
+
+  it("sends the chosen project and deployments when a project is set for the first time", () => {
+    const { onSave } = renderDialog();
+    fireEvent.change(screen.getByLabelText("Customer Project"), { target: { value: "proj-b" } });
+    pickOptions("Deployments", ["Beta Development"]);
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledWith({
+      projectId: "proj-b",
+      deploymentIds: ["dep-b"],
+      environmentIds: ["env-dev"],
+      deploymentProductIds: ["dp-b"],
+    });
+  });
+
+  it("does not let a saved project be cleared (the patch cannot express it), but does when none is saved", () => {
+    const first = render(
+      <EditChangeRequestDialog
+        cr={{ ...BASE_CR, ...SCOPED_CR }}
+        isSaving={false}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("Customer Project")).toHaveAttribute("data-disable-clearable", "true");
+    first.unmount();
+    renderDialog();
+    expect(screen.getByLabelText("Customer Project")).toHaveAttribute("data-disable-clearable", "false");
+  });
+
+  it.each(["implement", "review", "customer_review", "closed", "canceled"])(
+    "locks the four fields, with the reason, once the change request is in %s",
+    (state) => {
+      const { onSave } = renderDialog({ ...SCOPED_CR, state });
+      expect(screen.getByText(/can't be changed once implementation has started/i)).toBeInTheDocument();
+      expect(screen.getByLabelText("Customer Project")).toBeDisabled();
+      expect(screen.getByRole("combobox", { name: "Deployments" })).toBeDisabled();
+      expect(screen.getByRole("combobox", { name: "Environments" })).toBeDisabled();
+      expect(saveButton()).toBeDisabled();
+      expect(onSave).not.toHaveBeenCalled();
+    },
+  );
+
+  it("stays editable up to and including scheduled", () => {
+    renderDialog({ ...SCOPED_CR, state: "scheduled" });
+    expect(screen.queryByText(/can't be changed once implementation/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Deployments" })).toBeEnabled();
+  });
+
+  it("shows the backend's refusal of an inconsistent combination verbatim", () => {
+    const message = "deploymentIds: deployment dep-x does not belong to project proj-a";
+    render(
+      <EditChangeRequestDialog
+        cr={{ ...BASE_CR, ...SCOPED_CR }}
+        isSaving={false}
+        saveError={message}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+  });
+});
+
+describe("EditChangeRequestDialog — Category", () => {
+  it("seeds from a plain category value, and leaves Save disabled until it changes", () => {
+    renderDialog({ category: "devops" });
+    expect(screen.getByRole("combobox", { name: "Category" })).toHaveTextContent("DevOps");
+    expect(saveButton()).toBeDisabled();
+  });
+
+  it("seeds from an entity-ref category too", () => {
+    renderDialog({ category: { id: "network", name: "Network" } });
+    expect(screen.getByRole("combobox", { name: "Category" })).toHaveTextContent("Network");
+  });
+
+  it("sends only the new category when it is changed", () => {
+    const { onSave } = renderDialog({ category: "devops" });
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "Category" }));
+    fireEvent.click(screen.getByRole("option", { name: "Hotfix Release - Cloud" }));
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledWith({ category: "hotfix_release_cloud" });
+  });
+
+  it("does not send a category when it is cleared (the patch cannot express it)", () => {
+    renderDialog({ category: "devops" });
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "Category" }));
+    fireEvent.click(screen.getByRole("option", { name: "-- Select --" }));
+    expect(saveButton()).toBeDisabled();
   });
 });

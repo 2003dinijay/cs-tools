@@ -76,6 +76,7 @@ import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
 import {
   buildCloneChangeRequestNavState,
   changeRequestBlockingReason,
+  changeRequestCategoryLabel,
   isChangeRequestCreator,
   changeRequestCommentGateReason,
   changeRequestTransitionRequiresReason,
@@ -165,6 +166,18 @@ function MetaCell({ label, children }: { label: string; children: ReactNode }): 
 
 function RefText({ value }: { value?: BeEntityRef | null }): JSX.Element {
   return <Typography variant="body2">{value?.name || "—"}</Typography>;
+}
+
+/** A multi-valued reference (Deployments / Environments / Deployment products) as chips, "—" when empty. */
+function RefChips({ values }: { values?: BeEntityRef[] | null }): JSX.Element {
+  if (!values?.length) return <Typography variant="body2">—</Typography>;
+  return (
+    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+      {values.map((v) => (
+        <Chip key={v.id} size="small" variant="outlined" label={v.name} />
+      ))}
+    </Box>
+  );
 }
 
 function YesNo({ value }: { value?: boolean }): JSX.Element {
@@ -668,7 +681,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
             },
           }}
         >
-          <MetaCell label="Project"><RefText value={cr.project} /></MetaCell>
+          <MetaCell label="Customer Project"><RefText value={cr.project} /></MetaCell>
           <MetaCell label="Type">
             <Typography variant="body2">{cr.type || "—"}</Typography>
           </MetaCell>
@@ -688,6 +701,13 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
           <MetaCell label="Deployment"><RefText value={cr.deployment} /></MetaCell>
           <MetaCell label="Deployed product"><RefText value={cr.deployedProduct} /></MetaCell>
           <MetaCell label="Product"><RefText value={cr.product} /></MetaCell>
+          <MetaCell label="Deployments"><RefChips values={cr.deployments} /></MetaCell>
+          <MetaCell label="Environments"><RefChips values={cr.environments} /></MetaCell>
+          <MetaCell label="Deployment products"><RefChips values={cr.deploymentProducts} /></MetaCell>
+          <MetaCell label="Customer group"><RefText value={cr.customerGroup} /></MetaCell>
+          <MetaCell label="Category">
+            <Typography variant="body2">{changeRequestCategoryLabel(cr.category)}</Typography>
+          </MetaCell>
           <MetaCell label="Assigned engineer"><RefText value={cr.assignedEngineer} /></MetaCell>
           <MetaCell label="Assigned team"><RefText value={cr.assignedTeam} /></MetaCell>
           <MetaCell label="Duration">
@@ -860,11 +880,10 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
 
           {/*
             Read-only SRE metadata (`CHANGES-cr-field-parity.md`'s "group
-            C2"/"group D" plus the extra read-only refs from "group C1").
-            None of these get an editable control here — `category` never
-            gets one at all (see `BeChangeRequestDetail.category`'s doc
-            comment), and the rest have no write path anywhere in the stack
-            yet (`EditChangeRequestDialog`'s doc comment on
+            C2"/"group D"). Project / deployments / environments / deployment
+            products / customer group / category are shown (and editable) in
+            the Overview above; the rest here have no write path anywhere in
+            the stack yet (`EditChangeRequestDialog`'s doc comment on
             `BePatchChangeRequestPayload` explains why each is missing).
           */}
           <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
@@ -879,11 +898,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
               <MetaCell label="Priority">
                 <Typography variant="body2">{cr.priority?.label || "—"}</Typography>
               </MetaCell>
-              <MetaCell label="Category">
-                <Typography variant="body2">{cr.category?.label || "—"}</Typography>
-              </MetaCell>
               <MetaCell label="Requested by"><RefText value={cr.requestedBy} /></MetaCell>
-              <MetaCell label="Customer group"><RefText value={cr.customerGroup} /></MetaCell>
               <MetaCell label="Change request type">
                 <Typography variant="body2">{cr.changeRequestType?.label || "—"}</Typography>
               </MetaCell>
@@ -916,33 +931,6 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
                 )}
               </MetaCell>
             </Box>
-            {!!cr.environments?.length && (
-              <MetaCell label="Environments">
-                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-                  {cr.environments.map((e) => (
-                    <Chip key={e.id} size="small" variant="outlined" label={e.name} />
-                  ))}
-                </Box>
-              </MetaCell>
-            )}
-            {!!cr.deploymentProducts?.length && (
-              <MetaCell label="Deployment products">
-                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-                  {cr.deploymentProducts.map((p) => (
-                    <Chip key={p.id} size="small" variant="outlined" label={p.name} />
-                  ))}
-                </Box>
-              </MetaCell>
-            )}
-            {!!cr.deployments?.length && (
-              <MetaCell label="Deployments">
-                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-                  {cr.deployments.map((d) => (
-                    <Chip key={d.id} size="small" variant="outlined" label={d.name} />
-                  ))}
-                </Box>
-              </MetaCell>
-            )}
             {!!cr.labels?.length && (
               <MetaCell label="Labels">
                 <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>

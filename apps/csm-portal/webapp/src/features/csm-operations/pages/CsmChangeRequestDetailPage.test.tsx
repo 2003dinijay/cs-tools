@@ -305,6 +305,98 @@ describe("CsmChangeRequestDetailPage", () => {
   });
 });
 
+describe("CsmChangeRequestDetailPage — project, deployments, environments, deployment products, customer group, category", () => {
+  const cell = (label: string): HTMLElement => screen.getByText(label).parentElement!;
+  const SCOPED = {
+    ...BASE_CR,
+    project: { id: "proj-a", name: "Acme Project" },
+    deployments: [
+      { id: "dep-prod", name: "Acme Production" },
+      { id: "dep-stg", name: "Acme Staging" },
+    ],
+    environments: [
+      { id: "env-prod", name: "Primary Production" },
+      { id: "env-stg", name: "Staging" },
+    ],
+    deploymentProducts: [
+      { id: "dp-apim", name: "API Manager 4.3.0" },
+      { id: "dp-is", name: "Identity Server 7.0.0" },
+    ],
+    customerGroup: { id: "grp-1", name: "Acme Customers" },
+    category: "devops",
+  };
+
+  it("shows each of them in the Overview", () => {
+    mockQueryResult({ data: SCOPED });
+    renderPage();
+    expect(within(cell("Customer Project")).getByText("Acme Project")).toBeInTheDocument();
+    const deployments = within(cell("Deployments"));
+    expect(deployments.getByText("Acme Production")).toBeInTheDocument();
+    expect(deployments.getByText("Acme Staging")).toBeInTheDocument();
+    const environments = within(cell("Environments"));
+    expect(environments.getByText("Primary Production")).toBeInTheDocument();
+    expect(environments.getByText("Staging")).toBeInTheDocument();
+    const products = within(cell("Deployment products"));
+    expect(products.getByText("API Manager 4.3.0")).toBeInTheDocument();
+    expect(products.getByText("Identity Server 7.0.0")).toBeInTheDocument();
+    expect(within(cell("Customer group")).getByText("Acme Customers")).toBeInTheDocument();
+    expect(within(cell("Category")).getByText("DevOps")).toBeInTheDocument();
+  });
+
+  it("shows a dash for each when the change request has none", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_CR,
+        project: undefined,
+        deployments: [],
+        environments: [],
+        deploymentProducts: [],
+        customerGroup: null,
+        category: null,
+      },
+    });
+    renderPage();
+    for (const label of [
+      "Customer Project",
+      "Deployments",
+      "Environments",
+      "Deployment products",
+      "Customer group",
+      "Category",
+    ]) {
+      expect(within(cell(label)).getByText("—")).toBeInTheDocument();
+    }
+  });
+
+  it("shows a dash when the backend omits the lists entirely (an older response)", () => {
+    mockQueryResult({
+      data: { ...BASE_CR, deployments: undefined, environments: undefined, deploymentProducts: undefined },
+    });
+    renderPage();
+    expect(within(cell("Deployments")).getByText("—")).toBeInTheDocument();
+    expect(within(cell("Environments")).getByText("—")).toBeInTheDocument();
+    expect(within(cell("Deployment products")).getByText("—")).toBeInTheDocument();
+  });
+
+  it("reads the category from an entity-ref response too", () => {
+    mockQueryResult({ data: { ...SCOPED, category: { id: "regular_release_cloud", name: "Regular Release - Cloud" } } });
+    renderPage();
+    expect(within(cell("Category")).getByText("Regular Release - Cloud")).toBeInTheDocument();
+  });
+
+  it("lists each only once: Category and Customer group are not repeated under SRE details", () => {
+    mockQueryResult({ data: SCOPED });
+    renderPage();
+    fireEvent.click(screen.getByRole("tab", { name: /plan/i }));
+    expect(screen.getByText("SRE details")).toBeInTheDocument();
+    expect(screen.getAllByText("Category")).toHaveLength(1);
+    expect(screen.getAllByText("Customer group")).toHaveLength(1);
+    expect(screen.getAllByText("Environments")).toHaveLength(1);
+    expect(screen.getAllByText("Deployments")).toHaveLength(1);
+    expect(screen.getAllByText("Deployment products")).toHaveLength(1);
+  });
+});
+
 describe("CsmChangeRequestDetailPage — blocking-reason header note", () => {
   it("shows 'Awaiting Peer Approval' when the Assess stage is pending or requested", () => {
     mockQueryResult({ data: { ...BASE_CR, state: "assess" } });
@@ -461,6 +553,34 @@ describe("CsmChangeRequestDetailPage — Clone", () => {
         }),
       }),
     );
+  });
+
+  it("carries the project, customer group and category into the clone, but not the deployments / environments / products", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_CR,
+        project: { id: "proj-a", name: "Acme Project" },
+        customerGroup: { id: "grp-1", name: "Acme Customers" },
+        category: "devops",
+        deployments: [{ id: "dep-prod", name: "Acme Production" }],
+        environments: [{ id: "env-prod", name: "Primary Production" }],
+        deploymentProducts: [{ id: "dp-apim", name: "API Manager 4.3.0" }],
+      },
+    });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /clone/i }));
+    const [, options] = navigateMock.mock.calls[0];
+    expect(options.state).toMatchObject({
+      projectId: "proj-a",
+      projectLabel: "Acme Project",
+      customerGroupId: "grp-1",
+      customerGroupLabel: "Acme Customers",
+      category: "devops",
+    });
+    const keys = Object.keys(options.state);
+    expect(keys).not.toContain("deployments");
+    expect(keys).not.toContain("environments");
+    expect(keys).not.toContain("deploymentProducts");
   });
 
   it("never puts the deployment, state, or approval fields into the clone's router state", () => {
