@@ -447,7 +447,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		customerEngagementAllocationHandler = handler.NewCustomerEngagementAllocationHandler(
 			service.NewCustomerEngagementAllocationService(
 				repository.NewCustomerEngagementAllocationRepository(repository.NewScoped(db)),
-				cfg.CustomerEngagementFirefightingTypeID),
+				cfg.CustomerEngagementTypeIDs),
 			cfg.AuthInternalClientIDs)
 	}
 

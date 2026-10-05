@@ -31,15 +31,29 @@ import (
 const (
 	AllocationSkipNoEngagementDetails = "no engagement details"
 	AllocationSkipNoEngagementID      = "no engagement id"
-	AllocationSkipNoLineItem          = "no engagement for line item"
 	AllocationSkipAccountNotFound     = "account not found"
 	AllocationSkipAmbiguousAccount    = "ambiguous account name"
 	AllocationSkipUserNotFound        = "user not found"
 )
 
-// firefightingAllocationTypes are the allocation types ServiceNow's processAllocationEvent
-// treats as firefighting (Support/Consulting Related Customer Firefighting).
-var firefightingAllocationTypes = map[int]bool{76: true, 83: true}
+// engagementTypeForAllocation maps allocationTypeName (case-insensitive, first rule wins) to the
+// engagement type a new engagement gets; "" means the allocation type creates none.
+func engagementTypeForAllocation(name string) string {
+	n := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.Contains(n, "firefighting"):
+		return "FIREFIGHTING"
+	case strings.HasPrefix(n, "consulting"):
+		return "CONSULTANCY"
+	case n == "qsp":
+		return "QSP"
+	case n == "training":
+		return "TRAINING"
+	case n == "architecture review", n == "solution review", n == "deployment configuration review":
+		return "ARCHITECTURE_REVIEW"
+	}
+	return ""
+}
 
 // allocationClearanceStates maps the Finance Entity's clearance status labels to
 // engagement_allocation_state_enum (same labels as csm-sync's mapping).
@@ -63,14 +77,14 @@ type CustomerEngagementAllocationService interface {
 }
 
 type customerEngagementAllocationService struct {
-	repo               repository.CustomerEngagementAllocationRepository
-	firefightingTypeID string
+	repo    repository.CustomerEngagementAllocationRepository
+	typeIDs map[string]string
 }
 
-// NewCustomerEngagementAllocationService constructs the service; firefightingTypeID is the
-// engagement_type_id (ServiceNow sys_id) written on created firefighting engagements.
-func NewCustomerEngagementAllocationService(repo repository.CustomerEngagementAllocationRepository, firefightingTypeID string) CustomerEngagementAllocationService {
-	return &customerEngagementAllocationService{repo: repo, firefightingTypeID: firefightingTypeID}
+// NewCustomerEngagementAllocationService constructs the service; typeIDs maps an engagement
+// type (see engagementTypeForAllocation) to its ServiceNow sys_id.
+func NewCustomerEngagementAllocationService(repo repository.CustomerEngagementAllocationRepository, typeIDs map[string]string) CustomerEngagementAllocationService {
+	return &customerEngagementAllocationService{repo: repo, typeIDs: typeIDs}
 }
 
 // ProcessAllocationEvent implements CustomerEngagementAllocationService.
@@ -99,43 +113,12 @@ func (s *customerEngagementAllocationService) process(ctx context.Context, store
 	if in.engagement == nil {
 		return allocSkipped(AllocationSkipNoEngagementDetails), nil
 	}
-	var engagementID string
-	created := false
-	if firefightingAllocationTypes[in.allocationType] {
-		if in.engagementID == "" {
-			return allocSkipped(AllocationSkipNoEngagementID), nil
-		}
-		existing, err := store.FindEngagementByEngagementID(ctx, in.engagementID)
-		if err != nil {
-			return domain.AllocationEventResult{}, err
-		}
-		if existing != nil {
-			engagementID = *existing
-		} else {
-			accountID, reason, err := resolveAllocationAccount(ctx, store, in)
-			if err != nil {
-				return domain.AllocationEventResult{}, err
-			}
-			if accountID == "" {
-				return allocSkipped(reason), nil
-			}
-			engagementID, created, err = store.InsertEngagement(ctx, s.newFirefightingEngagement(in, accountID))
-			if err != nil {
-				return domain.AllocationEventResult{}, err
-			}
-		}
-	} else {
-		if in.productID == "" {
-			return allocSkipped(AllocationSkipNoLineItem), nil
-		}
-		found, err := store.FindEngagementByLineItemSfID(ctx, in.productID)
-		if err != nil {
-			return domain.AllocationEventResult{}, err
-		}
-		if found == nil {
-			return allocSkipped(AllocationSkipNoLineItem), nil
-		}
-		engagementID = *found
+	engagementID, created, reason, err := s.findOrCreateEngagement(ctx, store, in)
+	if err != nil {
+		return domain.AllocationEventResult{}, err
+	}
+	if reason != "" {
+		return allocSkipped(reason), nil
 	}
 
 	res := domain.AllocationEventResult{EngagementID: &engagementID, EngagementCreated: created}
@@ -208,18 +191,61 @@ func resolveAllocationAccount(ctx context.Context, store repository.AllocationEv
 	}
 }
 
-func (s *customerEngagementAllocationService) newFirefightingEngagement(in allocationInput, accountID string) domain.NewCustomerEngagement {
-	return domain.NewCustomerEngagement{
+// findOrCreateEngagement finds the engagement by engagement id, then by line item, else
+// creates it from the payload; a non-empty reason means skip.
+func (s *customerEngagementAllocationService) findOrCreateEngagement(ctx context.Context, store repository.AllocationEventStore, in allocationInput) (string, bool, string, error) {
+	if in.engagementID != "" {
+		found, err := store.FindEngagementByEngagementID(ctx, in.engagementID)
+		if err != nil || found != nil {
+			return allocDeref(found), false, "", err
+		}
+	}
+	if in.productID != "" {
+		found, err := store.FindEngagementByLineItemSfID(ctx, in.productID)
+		if err != nil {
+			return "", false, "", err
+		}
+		if found != nil {
+			if in.engagementID != "" {
+				if err := store.SetEngagementIDIfNull(ctx, *found, in.engagementID); err != nil {
+					return "", false, "", err
+				}
+			}
+			return *found, false, "", nil
+		}
+	}
+	engType := engagementTypeForAllocation(in.allocationTypeName)
+	if engType == "" {
+		return "", false, "allocation type " + in.allocationTypeName + " does not create engagements", nil
+	}
+	typeID := s.typeIDs[engType]
+	if typeID == "" {
+		return "", false, "engagement type id not configured for " + engType, nil
+	}
+	if in.engagementID == "" {
+		return "", false, AllocationSkipNoEngagementID, nil
+	}
+	accountID, reason, err := resolveAllocationAccount(ctx, store, in)
+	if err != nil || accountID == "" {
+		return "", false, reason, err
+	}
+	var lineItem *string
+	if in.productID != "" {
+		lineItem = &in.productID
+	}
+	id, created, err := store.InsertEngagement(ctx, domain.NewCustomerEngagement{
 		EngagementID:     in.engagementID,
 		EngagementCode:   in.engagementCode,
 		Name:             allocTruncate(in.customerName+" - "+in.allocationTypeName, 200),
 		AccountID:        accountID,
-		IsPaid:           in.engagement.EngagementTypeName == "Paid",
+		IsPaid:           strings.HasPrefix(strings.ToLower(strings.TrimSpace(in.engagement.EngagementTypeName)), "paid"),
 		DeliveryMode:     deliveryModeFromNature(in.engagement.EngagementNature),
-		EngagementTypeID: s.firefightingTypeID,
+		EngagementTypeID: typeID,
 		PlannedStartDate: in.startDate,
 		PlannedEndDate:   in.endDate,
-	}
+		LineItemSfID:     lineItem,
+	})
+	return id, created, "", err
 }
 
 // deliveryModeFromNature maps engagementNature to customer_engagement_delivery_mode_enum
@@ -240,7 +266,6 @@ func deliveryModeFromNature(nature string) *string {
 // allocationInput is a validated, trimmed AllocationEvent.
 type allocationInput struct {
 	id, email, allocationTypeName                       string
-	allocationType                                      int
 	startDate, endDate, startTime, endTime, timeZone    *string
 	state                                               *string
 	engagement                                          *domain.AllocationEventEngagement
@@ -263,7 +288,6 @@ func normalizeAllocationEvent(ev domain.AllocationEvent) (allocationInput, error
 	in := allocationInput{
 		id:                 strings.TrimSpace(ev.ID),
 		email:              strings.TrimSpace(ev.Email),
-		allocationType:     ev.AllocationType,
 		allocationTypeName: strings.TrimSpace(ev.AllocationTypeName),
 		engagement:         ev.Engagement,
 	}

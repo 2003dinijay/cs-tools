@@ -599,15 +599,19 @@ func TestLoad_SalesforceIngestRetryInterval(t *testing.T) {
 	}
 }
 
-func TestConfig_Validate_CustomerEngagementIngestNeedsFirefightingTypeID(t *testing.T) {
+func TestConfig_Validate_CustomerEngagementTypeIDs(t *testing.T) {
 	c := baseValidConfig()
 	c.CSMMigrationCustomerEngagementIngestEnabled = true
-	if err := c.Validate(); err == nil {
-		t.Fatal("Validate() = nil, want an error without CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID")
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unset type ids must not fail startup: %v", err)
 	}
-	c.CustomerEngagementFirefightingTypeID = "fc7f2d171b81f910d64e64a2604bcb9b"
+	c.CustomerEngagementTypeIDs = map[string]string{"QSP": "07fd9f78478cb910a0a29cd3846d4304"}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	c.CustomerEngagementTypeIDs["TRAINING"] = "not-a-sys-id"
+	if c.Validate() == nil {
+		t.Error("Validate() = nil for a malformed type id")
 	}
 	if !c.HasCustomerEngagementIngest() {
 		t.Error("HasCustomerEngagementIngest() = false on a Postgres config")

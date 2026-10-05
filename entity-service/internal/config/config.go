@@ -160,9 +160,9 @@ type Config struct {
 	// CSMMigrationCustomerEngagementIngestEnabled registers POST /customer-engagements/allocation-events
 	// (CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED); off, the route is not registered.
 	CSMMigrationCustomerEngagementIngestEnabled bool
-	// CustomerEngagementFirefightingTypeID is the engagement_type_id (ServiceNow sys_id) of the
-	// "Firefighting" type, written on created engagements; required once the ingest is on.
-	CustomerEngagementFirefightingTypeID string
+	// CustomerEngagementTypeIDs maps an engagement type (FIREFIGHTING, CONSULTANCY, QSP, TRAINING,
+	// ARCHITECTURE_REVIEW) to its ServiceNow sys_id, from CUSTOMER_ENGAGEMENT_<TYPE>_TYPE_ID; unset skips.
+	CustomerEngagementTypeIDs map[string]string
 	// GithubIntegrationEnabled gates the GitHub change-request sync: the
 	// webhook endpoint and the client that answers it.
 	//
@@ -471,7 +471,12 @@ func Load() *Config {
 	cfg.CSMMigrationSalesforceProjectInsertEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED") == "true"
 	cfg.CSMMigrationSalesforcePartnerIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED") == "true"
 	cfg.CSMMigrationCustomerEngagementIngestEnabled = os.Getenv("CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED") == "true"
-	cfg.CustomerEngagementFirefightingTypeID = strings.TrimSpace(os.Getenv("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID"))
+	cfg.CustomerEngagementTypeIDs = map[string]string{}
+	for _, t := range CustomerEngagementTypes {
+		if v := strings.TrimSpace(os.Getenv("CUSTOMER_ENGAGEMENT_" + t + "_TYPE_ID")); v != "" {
+			cfg.CustomerEngagementTypeIDs[t] = v
+		}
+	}
 	return cfg
 }
 
@@ -692,11 +697,17 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("%s %q is not a valid UUID", envVar, value)
 		}
 	}
-	if c.CSMMigrationCustomerEngagementIngestEnabled && !isSysID(c.CustomerEngagementFirefightingTypeID) {
-		return fmt.Errorf("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID must be a 32-character hex sys_id when CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED=true")
+	for t, v := range c.CustomerEngagementTypeIDs {
+		if !isSysID(v) {
+			return fmt.Errorf("CUSTOMER_ENGAGEMENT_%s_TYPE_ID must be a 32-character hex sys_id", t)
+		}
 	}
 	return nil
 }
+
+// CustomerEngagementTypes are the engagement types an allocation event can create; each
+// reads its sys_id from CUSTOMER_ENGAGEMENT_<TYPE>_TYPE_ID.
+var CustomerEngagementTypes = []string{"FIREFIGHTING", "CONSULTANCY", "QSP", "TRAINING", "ARCHITECTURE_REVIEW"}
 
 // isSysID reports whether v is a 32-character lowercase hex ServiceNow sys_id.
 func isSysID(v string) bool {

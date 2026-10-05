@@ -34,8 +34,11 @@ const (
 	itUser           = "a110c000-0000-4000-8000-000000000011"
 	itLineEngagement = "a110c000-0000-4000-8000-000000000021"
 	itLineItemRow    = "a110c000-0000-4000-8000-000000000031"
+	itNewLineItemRow = "a110c000-0000-4000-8000-000000000032"
+	itOpportunity    = "a110c000-0000-4000-8000-000000000041"
+	itNewLineItemSf  = "00kITESTALLOC02AAA"
 	itAccountSfID    = "001ITESTALLOC0001A"
-	itLineItemSfID   = "00kITESTALLOC0001A"
+	itLineItemSfID   = "00kITESTALLOC01AAA"
 )
 
 func newAllocationIntegrationPool(t *testing.T) *pgxpool.Pool {
@@ -53,7 +56,8 @@ func newAllocationIntegrationPool(t *testing.T) *pgxpool.Pool {
 	clean := func() {
 		for _, stmt := range []string{
 			`DELETE FROM customer_engagement WHERE engagement_id LIKE 'EIT%' OR id = '` + itLineEngagement + `'`,
-			`DELETE FROM sf_opportunity_product WHERE id = '` + itLineItemRow + `'`,
+			`DELETE FROM sf_opportunity_product WHERE id IN ('` + itLineItemRow + `', '` + itNewLineItemRow + `')`,
+			`DELETE FROM sf_opportunity WHERE id = '` + itOpportunity + `'`,
 			`DELETE FROM account WHERE id IN ('` + itAccountLive + `', '` + itAccountDeleted + `')`,
 			`DELETE FROM "user" WHERE id = '` + itUser + `'`,
 		} {
@@ -70,8 +74,11 @@ func newAllocationIntegrationPool(t *testing.T) *pgxpool.Pool {
 			('` + itAccountLive + `', now(), now(), 't', 't', 'Alloc ITest Co Live', 'ACC-ALLOC-IT-1', '` + itAccountSfID + `', NULL)`,
 		`INSERT INTO "user" (id, created_on, updated_on, user_name, email) VALUES
 			('` + itUser + `', now(), now(), 'alloc.itest', 'Alloc-ITest@wso2.com')`,
-		`INSERT INTO sf_opportunity_product (id, created_on, updated_on, created_by, updated_by, line_item_sf_id) VALUES
-			('` + itLineItemRow + `', now(), now(), 't', 't', '` + itLineItemSfID + `')`,
+		`INSERT INTO sf_opportunity (id, created_on, updated_on, created_by, updated_by, name) VALUES
+			('` + itOpportunity + `', now(), now(), 't', 't', 'Alloc ITest Opp')`,
+		`INSERT INTO sf_opportunity_product (id, created_on, updated_on, created_by, updated_by, line_item_sf_id, opportunity_id) VALUES
+			('` + itLineItemRow + `', now(), now(), 't', 't', '` + itLineItemSfID + `', NULL),
+			('` + itNewLineItemRow + `', now(), now(), 't', 't', '` + itNewLineItemSf + `', '` + itOpportunity + `')`,
 		`INSERT INTO customer_engagement (id, created_on, updated_on, name, line_item_id_ref) VALUES
 			('` + itLineEngagement + `', now(), now(), 'Line engagement', replace('` + itLineItemRow + `', '-', ''))`,
 	} {
@@ -94,7 +101,7 @@ func itCount(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 func TestAllocationEventIntegration(t *testing.T) {
 	pool := newAllocationIntegrationPool(t)
 	svc := NewCustomerEngagementAllocationService(
-		repository.NewCustomerEngagementAllocationRepository(repository.NewScoped(pool)), testFirefightingTypeID)
+		repository.NewCustomerEngagementAllocationRepository(repository.NewScoped(pool)), testEngagementTypeIDs)
 	ctx := repository.WithSystemIdentity(context.Background())
 
 	ff := allocFirefightingEvent()
@@ -152,15 +159,35 @@ func TestAllocationEventIntegration(t *testing.T) {
 
 	// Line-item path through line_item_id_ref -> sf_opportunity_product.
 	li := allocLineItemEvent()
-	li.ID, li.Email = "AIT0002", "alloc.itest"
+	li.ID, li.Email, li.Engagement.EngagementID = "AIT0002", "alloc.itest", "EIT0002"
 	li.Engagement.ProductID = allocStr(itLineItemSfID)
 	res, err = svc.ProcessAllocationEvent(ctx, li)
 	if err != nil || res.Result != domain.AllocationEventCreated || res.EngagementID == nil || *res.EngagementID != itLineEngagement {
 		t.Fatalf("line item = %+v, %v", res, err)
 	}
-	li.Engagement.ProductID = allocStr("00kITESTMISSING01A")
-	res, err = svc.ProcessAllocationEvent(ctx, li)
-	if err != nil || res.Result != domain.AllocationEventSkipped || res.Reason != AllocationSkipNoLineItem {
-		t.Fatalf("missing line item = %+v, %v", res, err)
+	if n := itCount(t, pool, `SELECT count(*) FROM customer_engagement WHERE id = $1 AND engagement_id = 'EIT0002'`, itLineEngagement); n != 1 {
+		t.Error("engagement found by line item did not get the payload's engagement_id")
+	}
+
+	// Created from the payload: line item and opportunity refs resolved from CSM's line-item copy.
+	cr := allocLineItemEvent()
+	cr.ID, cr.Email, cr.CustomerCode = "AIT0003", "alloc-itest@wso2.com", allocStr(itAccountSfID)
+	cr.Engagement.EngagementID, cr.Engagement.ProductID = "EIT0003", allocStr(itNewLineItemSf)
+	res, err = svc.ProcessAllocationEvent(ctx, cr)
+	if err != nil || res.Result != domain.AllocationEventCreated || !res.EngagementCreated {
+		t.Fatalf("create = %+v, %v", res, err)
+	}
+	if n := itCount(t, pool, `SELECT count(*) FROM customer_engagement WHERE id = $1 AND engagement_id = 'EIT0003'
+		AND line_item_id = $2 AND line_item_id_ref = replace($3, '-', '') AND opportunity_id = replace($4, '-', '')
+		AND engagement_type_id = $5 AND name = 'Acme - Consulting - Delivery'`,
+		*res.EngagementID, itNewLineItemSf, itNewLineItemRow, itOpportunity, testEngagementTypeIDs["CONSULTANCY"]); n != 1 {
+		t.Error("created engagement columns are not as expected")
+	}
+
+	cr.AllocationTypeName, cr.Engagement.EngagementID, cr.ID = "Pre-Sales", "EIT0004", "AIT0004"
+	cr.Engagement.ProductID = nil
+	res, err = svc.ProcessAllocationEvent(ctx, cr)
+	if err != nil || res.Result != domain.AllocationEventSkipped || res.Reason != "allocation type Pre-Sales does not create engagements" {
+		t.Fatalf("unmapped = %+v, %v", res, err)
 	}
 }

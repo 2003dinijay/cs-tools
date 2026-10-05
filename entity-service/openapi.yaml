@@ -169,8 +169,10 @@ paths:
     post:
       summary: >-
         Apply one Allocation-app allocation event to customer engagements (port of
-        ServiceNow processAllocationEvent): find or create the firefighting engagement
-        (allocation types 76/83) or find the engagement by line item, then upsert the
+        ServiceNow processAllocationEvent): find the engagement by engagementId, else by
+        line item (productId; sets its engagement_id when empty), else create it from the
+        payload when allocationTypeName maps to a type (Firefighting, Consulting*, QSP,
+        Training, Architecture/Solution/Deployment Configuration Review); then upsert the
         allocation resource. One transaction; repeating an event is safe. Internal
         clients only (AUTH_INTERNAL_CLIENT_IDS). Registered only when
         CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED=true and PostgreSQL is authoritative.
@@ -11056,8 +11058,8 @@ components:
       properties:
         id: {type: string, maxLength: 20, description: Allocation id.}
         email: {type: string, description: Consultant email; matched to user.email then user.user_name.}
-        allocationType: {type: integer, description: 76 and 83 are firefighting.}
-        allocationTypeName: {type: string}
+        allocationType: {type: integer}
+        allocationTypeName: {type: string, description: Picks the type of a created engagement; unmapped names create none.}
         startDate: {type: string, format: date}
         endDate: {type: string, format: date}
         comment: {type: string, nullable: true}
@@ -11077,13 +11079,13 @@ components:
       type: object
       properties:
         type: {type: integer}
-        engagementTypeName: {type: string, description: '"Paid" sets is_paid.'}
+        engagementTypeName: {type: string, description: 'Starting with "Paid" sets is_paid.'}
         engagementType: {type: string, nullable: true}
         engagementId: {type: string, maxLength: 20}
         customerName: {type: string, description: Account name fallback when customerCode does not match.}
         opportunityName: {type: string}
         productName: {type: string}
-        productId: {type: string, nullable: true, description: Salesforce line-item id (non-firefighting lookup).}
+        productId: {type: string, nullable: true, description: Salesforce line-item id; finds an engagement, and is stored on a created one.}
         engagementCode: {type: string, maxLength: 20}
         engagementNature: {type: string, description: Off-site -> OFFSITE, On-site -> ONSITE.}
         country: {type: string}
@@ -11097,8 +11099,10 @@ components:
           enum: [created, updated, skipped]
         reason:
           type: string
-          description: Present when skipped.
-          enum: [no engagement details, no engagement id, no engagement for line item, account not found, ambiguous account name, user not found]
+          description: >-
+            Present when skipped: no engagement details, no engagement id, account not found,
+            ambiguous account name, user not found, "allocation type <name> does not create
+            engagements", or "engagement type id not configured for <TYPE>".
         engagementId: {type: string, format: uuid, nullable: true}
         allocationResourceId: {type: string, format: uuid, nullable: true}
         engagementCreated: {type: boolean}

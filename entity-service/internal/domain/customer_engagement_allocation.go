@@ -73,7 +73,7 @@ type AllocationEventResult struct {
 	EngagementCreated    bool                      `json:"engagementCreated"`
 }
 
-// NewCustomerEngagement is a firefighting engagement created from an allocation event.
+// NewCustomerEngagement is an engagement created from an allocation event.
 type NewCustomerEngagement struct {
 	EngagementID     string
 	EngagementCode   *string
@@ -84,6 +84,9 @@ type NewCustomerEngagement struct {
 	EngagementTypeID string
 	PlannedStartDate *string
 	PlannedEndDate   *string
+	// LineItemSfID is the payload's productId; the line-item and opportunity refs are
+	// filled from CSM's copy of that line item when there is one.
+	LineItemSfID *string
 }
 
 // AllocationResourceFields are the columns an allocation event writes on

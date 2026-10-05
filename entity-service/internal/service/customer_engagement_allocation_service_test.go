@@ -30,6 +30,12 @@ import (
 
 const testFirefightingTypeID = "fc7f2d171b81f910d64e64a2604bcb9b"
 
+// Dev sys_ids; TRAINING is left unset to exercise the "not configured" skip.
+var testEngagementTypeIDs = map[string]string{
+	"FIREFIGHTING": testFirefightingTypeID, "CONSULTANCY": "0512ef7c478cb910a0a29cd3846d4330",
+	"QSP": "07fd9f78478cb910a0a29cd3846d4304", "ARCHITECTURE_REVIEW": "e549186e4788f150a0a29cd3846d43c4",
+}
+
 // fakeAllocationStore is an in-memory customer_engagement / allocation_resource pair.
 type fakeAllocationStore struct {
 	engagementsByEngID map[string]string // engagement_id -> id
@@ -40,6 +46,7 @@ type fakeAllocationStore struct {
 	allocations        map[string]domain.AllocationResourceFields // engagement/allocation -> row
 	allocationIDs      map[string]string
 	inserted           []domain.NewCustomerEngagement
+	engagementIDSet    map[string]string // id -> engagement_id set via SetEngagementIDIfNull
 	seq                int
 }
 
@@ -48,7 +55,7 @@ func newFakeAllocationStore() *fakeAllocationStore {
 		engagementsByEngID: map[string]string{}, engagementsByLine: map[string]string{},
 		accountsBySfID: map[string]string{}, accountsByName: map[string][]domain.AccountCandidate{},
 		usersByEmail: map[string]string{}, allocations: map[string]domain.AllocationResourceFields{},
-		allocationIDs: map[string]string{},
+		allocationIDs: map[string]string{}, engagementIDSet: map[string]string{},
 	}
 }
 
@@ -92,6 +99,16 @@ func (f *fakeAllocationStore) InsertEngagement(_ context.Context, e domain.NewCu
 	f.inserted = append(f.inserted, e)
 	return id, true, nil
 }
+func (f *fakeAllocationStore) SetEngagementIDIfNull(_ context.Context, id, engagementID string) error {
+	for _, existing := range f.engagementsByEngID {
+		if existing == id {
+			return nil
+		}
+	}
+	f.engagementIDSet[id] = engagementID
+	f.engagementsByEngID[engagementID] = id
+	return nil
+}
 func (f *fakeAllocationStore) UpdateAllocationResource(_ context.Context, r domain.AllocationResourceFields) (*string, error) {
 	key := r.EngagementID + "/" + r.AllocationID
 	id, ok := f.allocationIDs[key]
@@ -130,12 +147,13 @@ func allocFirefightingEvent() domain.AllocationEvent {
 func allocLineItemEvent() domain.AllocationEvent {
 	ev := allocFirefightingEvent()
 	ev.AllocationType = 12
+	ev.AllocationTypeName = "Consulting - Delivery"
 	ev.Engagement.ProductID = allocStr("00k000000000001AAA")
 	return ev
 }
 
 func newAllocationSvc(f *fakeAllocationStore) CustomerEngagementAllocationService {
-	return NewCustomerEngagementAllocationService(f, testFirefightingTypeID)
+	return NewCustomerEngagementAllocationService(f, testEngagementTypeIDs)
 }
 
 func TestAllocationEvent_FirefightingCreatesEngagement(t *testing.T) {
@@ -188,30 +206,77 @@ func TestAllocationEvent_FirefightingWithoutEngagementIDSkips(t *testing.T) {
 	}
 }
 
-func TestAllocationEvent_LineItemFound(t *testing.T) {
+func TestAllocationEvent_LineItemFoundSetsEngagementID(t *testing.T) {
 	f := newFakeAllocationStore()
 	f.engagementsByLine["00k000000000001AAA"] = "eng-line"
 	f.usersByEmail["consultant@wso2.com"] = "user-1"
+	svc := newAllocationSvc(f)
 
-	res, err := newAllocationSvc(f).ProcessAllocationEvent(context.Background(), allocLineItemEvent())
-	if err != nil {
-		t.Fatal(err)
+	res, err := svc.ProcessAllocationEvent(context.Background(), allocLineItemEvent())
+	if err != nil || res.Result != domain.AllocationEventCreated || *res.EngagementID != "eng-line" || res.EngagementCreated {
+		t.Fatalf("result = %+v, err %v", res, err)
 	}
-	if res.Result != domain.AllocationEventCreated || *res.EngagementID != "eng-line" || res.EngagementCreated {
-		t.Fatalf("result = %+v", res)
+	if f.engagementIDSet["eng-line"] != "E1001" || len(f.inserted) != 0 {
+		t.Fatalf("engagement_id set = %v, inserted %d", f.engagementIDSet, len(f.inserted))
+	}
+	// Next time the engagement id alone finds it.
+	delete(f.engagementsByLine, "00k000000000001AAA")
+	again, err := svc.ProcessAllocationEvent(context.Background(), allocLineItemEvent())
+	if err != nil || *again.EngagementID != "eng-line" || again.Result != domain.AllocationEventUpdated {
+		t.Fatalf("again = %+v, err %v", again, err)
 	}
 }
 
-func TestAllocationEvent_LineItemMissingSkips(t *testing.T) {
+func TestAllocationEvent_CreatedFromPayload(t *testing.T) {
 	f := newFakeAllocationStore()
-	for _, ev := range []domain.AllocationEvent{allocLineItemEvent(), func() domain.AllocationEvent {
-		e := allocLineItemEvent()
-		e.Engagement.ProductID = nil
-		return e
-	}()} {
+	f.accountsBySfID["001000000000001AAA"] = "acct-1"
+	f.usersByEmail["consultant@wso2.com"] = "user-1"
+	ev := allocLineItemEvent()
+	ev.Engagement.EngagementTypeName = "Paid - Fixed Price"
+	ev.Engagement.EngagementNature = "On-site"
+
+	res, err := newAllocationSvc(f).ProcessAllocationEvent(context.Background(), ev)
+	if err != nil || res.Result != domain.AllocationEventCreated || !res.EngagementCreated {
+		t.Fatalf("result = %+v, err %v", res, err)
+	}
+	e := f.inserted[0]
+	if e.Name != "Acme - Consulting - Delivery" || e.EngagementTypeID != testEngagementTypeIDs["CONSULTANCY"] || !e.IsPaid ||
+		*e.DeliveryMode != "ONSITE" || e.LineItemSfID == nil || *e.LineItemSfID != "00k000000000001AAA" || e.EngagementID != "E1001" {
+		t.Errorf("engagement = %+v", e)
+	}
+}
+
+func TestEngagementTypeForAllocation(t *testing.T) {
+	for name, want := range map[string]string{
+		"Support Related Customer Firefighting":    "FIREFIGHTING",
+		"consulting related customer FIREFIGHTING": "FIREFIGHTING",
+		"Consulting - Delivery":                    "CONSULTANCY",
+		"qsp":                                      "QSP",
+		"Training":                                 "TRAINING",
+		"Architecture Review":                      "ARCHITECTURE_REVIEW",
+		"Solution Review":                          "ARCHITECTURE_REVIEW",
+		"Deployment Configuration Review":          "ARCHITECTURE_REVIEW",
+		"Pre-Sales":                                "",
+		"QSP Extended":                             "",
+	} {
+		if got := engagementTypeForAllocation(name); got != want {
+			t.Errorf("%q -> %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestAllocationEvent_CreationSkips(t *testing.T) {
+	for typeName, want := range map[string]string{
+		"Pre-Sales": "allocation type Pre-Sales does not create engagements",
+		"Training":  "engagement type id not configured for TRAINING",
+	} {
+		f := newFakeAllocationStore()
+		f.accountsBySfID["001000000000001AAA"] = "acct-1"
+		ev := allocLineItemEvent()
+		ev.AllocationTypeName = typeName
 		res, err := newAllocationSvc(f).ProcessAllocationEvent(context.Background(), ev)
-		if err != nil || res.Result != domain.AllocationEventSkipped || res.Reason != AllocationSkipNoLineItem || res.EngagementID != nil {
-			t.Fatalf("result = %+v, err %v", res, err)
+		if err != nil || res.Result != domain.AllocationEventSkipped || res.Reason != want || len(f.inserted) != 0 {
+			t.Errorf("%q: result = %+v, err %v", typeName, res, err)
 		}
 	}
 }
