@@ -77,8 +77,8 @@ func TestSanitizeRichText_StructureAndFormatting(t *testing.T) {
 		},
 		{
 			name:  "an unrecognized tag is dropped, its text kept",
-			input: `<table><tr><td>cell text</td></tr></table>`,
-			want:  "cell text",
+			input: `<section><font color="red">some text</font></section>`,
+			want:  "some text",
 		},
 		{
 			name:  "a literal < a user actually typed is escaped, not stripped",
@@ -677,5 +677,130 @@ func TestRenderProjectContactRegisteredEmail(t *testing.T) {
 	}
 	if strings.Contains(got, "<!-- [") || strings.Count(got, "<!DOCTYPE") != 1 {
 		t.Error("welcome email has an unsubstituted placeholder or is not one document")
+	}
+}
+
+// TestSanitizeRichText_Tables is a regression test for a real reported bug:
+// an announcement's product/version table arrived in the recipient's inbox as
+// one value per line — no rows, no columns — because table/tr/th/td weren't
+// on the allow-list and every cell's <p> closed as a bare "<br>". The source
+// here is the editor's own output shape (Lexical): <colgroup><col>, inline
+// styles on every cell, and a <p> inside each cell.
+func TestSanitizeRichText_Tables(t *testing.T) {
+	const th = emailTHOpen
+	const td = emailTDOpen
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name: "editor table keeps rows and columns, cell paragraphs add no blank lines",
+			input: `<table><colgroup><col><col></colgroup><tbody>` +
+				`<tr><th style="border: 1px solid black;"><p><b><strong class="x">Product</strong></b></p></th><th><p><b>Level</b></p></th></tr>` +
+				`<tr><td style="border: 1px solid black;"><p style="text-align: left;">WSO2 API Manager</p></td><td><p>13</p></td></tr>` +
+				`</tbody></table><p>after</p>`,
+			want: emailTableOpen +
+				"<tr>" + th + "<b><strong>Product</strong></b></th>" + th + "<b>Level</b></th></tr>" +
+				"<tr>" + td + "WSO2 API Manager</td>" + td + "13</td></tr>" +
+				"</table>after",
+		},
+		{
+			name:  "a void <col> never strands the stack, so </table> still closes the table",
+			input: `<table><colgroup><col><col></colgroup><tr><td>a</td></tr></table>tail`,
+			want:  emailTableOpen + "<tr>" + td + "a</td></tr></table>tail",
+		},
+		{
+			name:  "pretty-printed source with whitespace between cells",
+			input: "<table>\n <thead>\n  <tr>\n   <th>Version</th>\n  </tr>\n </thead>\n <tbody>\n  <tr>\n   <td>4.2.0</td>\n  </tr>\n </tbody>\n</table>",
+			want:  emailTableOpen + "\n \n  <tr>\n   " + th + "Version</th>\n  </tr>\n \n \n  <tr>\n   " + td + "4.2.0</td>\n  </tr>\n \n</table>",
+		},
+		{
+			name:  "a cell's own multi-paragraph content keeps its inner break but loses the edges",
+			input: `<table><tr><td><p>one</p><p>two</p></td></tr></table>`,
+			want:  emailTableOpen + "<tr>" + td + "one<br>two</td></tr></table>",
+		},
+		{
+			name:  "an empty cell stays an empty cell",
+			input: `<table><tr><td><p><br></p></td><td>x</td></tr></table>`,
+			want:  emailTableOpen + "<tr>" + td + "</td>" + td + "x</td></tr></table>",
+		},
+		{
+			name:  "a list inside a cell survives",
+			input: `<table><tr><td><ul><li>a</li></ul></td></tr></table>`,
+			want:  emailTableOpen + "<tr>" + td + "<ul><li>a</li></ul></td></tr></table>",
+		},
+		{
+			name:  "source attributes and styles never reach the output",
+			input: `<table onclick="evil()" style="background:url(x)"><tr><td onmouseover="evil()" style="x:y" colspan="9">c</td></tr></table>`,
+			want:  emailTableOpen + "<tr>" + td + "c</td></tr></table>",
+		},
+		{
+			name:  "an unclosed table is closed at the end so it can't swallow the template footer",
+			input: `<table><tr><td>cell`,
+			want:  emailTableOpen + "<tr>" + td + "cell</td></tr></table>",
+		},
+		{
+			name:  "an unclosed bold is closed at the end too",
+			input: `<p>start <b>bold forever`,
+			want:  "start <b>bold forever</b>",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, images := sanitizeRichText(tt.input, &inlineImageBudget{})
+			if got != tt.want {
+				t.Errorf("sanitizeRichText(%q)\n got: %q\nwant: %q", tt.input, got, tt.want)
+			}
+			if len(images) != 0 {
+				t.Errorf("returned %d images, want 0", len(images))
+			}
+		})
+	}
+}
+
+// TestSanitizeRichText_VoidElementsDontBreakLaterCloseTags covers the stack
+// bug the table fix exposed: a void element (<hr>) used to be pushed and
+// never popped, so the </li> after it was silently dropped.
+func TestSanitizeRichText_VoidElementsDontBreakLaterCloseTags(t *testing.T) {
+	got, _ := sanitizeRichText(`<ul><li>a<hr>b</li></ul>`, &inlineImageBudget{})
+	want := "<ul><li>ab</li></ul>"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestRenderCaseCreatedEmail_AnnouncementTableRendersAsTable is the end-to-end
+// shape of the reported bug: the real announcement description (product /
+// version / U2 level matrix) must come out of the case-created email as a
+// <table> with a row per product, not as loose lines.
+func TestRenderCaseCreatedEmail_AnnouncementTableRendersAsTable(t *testing.T) {
+	desc := `<p>Solution</p><table><colgroup><col><col><col></colgroup><tbody>` +
+		`<tr><th><p><b>Product Name</b></p></th><th><p><b>Product Version</b></p></th><th><p><b>U2 Update Level</b></p></th></tr>` +
+		`<tr><td><p>WSO2 API Manager</p></td><td><p>4.6.0</p></td><td><p>12</p></td></tr>` +
+		`<tr><td><p>WSO2 Traffic Manager</p></td><td><p>4.5.0</p></td><td><p>47</p></td></tr>` +
+		`</tbody></table><p>Best regards</p>`
+	out, _ := RenderCaseCreatedEmail(CaseCreatedEmailData{
+		ReporterName: "Jane Doe",
+		ProjectName:  "PROJ",
+		CaseNumber:   "CS0001",
+		CaseTitle:    "Announcement",
+		CaseType:     "Announcement",
+		Description:  desc,
+		CaseLink:     "https://x/case",
+		CommentLink:  "https://x/comment",
+	})
+	if got := strings.Count(out, "<tr>"); got < 3 {
+		t.Errorf("rendered email has %d <tr> rows from the announcement table, want at least 3", got)
+	}
+	for _, cell := range []string{">WSO2 API Manager</td>", ">4.6.0</td>", ">12</td>", ">WSO2 Traffic Manager</td>"} {
+		if !strings.Contains(out, cell) {
+			t.Errorf("rendered email is missing table cell %q", cell)
+		}
+	}
+	// The footer links must sit after the table is closed, not inside it.
+	if strings.Index(out, "</table>") > strings.Index(out, "Add Comment") && strings.Contains(out, "Add Comment") {
+		t.Error("the table swallowed the email footer: Add Comment appears before the table's close")
 	}
 }
