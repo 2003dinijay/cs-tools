@@ -211,7 +211,13 @@ export default function EditDeployedProductDialog({
                 notched={category !== ""}
                 displayEmpty
               >
-                <MenuItem value="">
+                {/* Disabled once a category already exists: selecting this
+                    would look like clearing it, but the BE has no way to
+                    clear a category back to unset (see categoryChanged
+                    above) -- categoryChanged already treats a "" selection
+                    as a no-op, so leaving this enabled let a user think
+                    they'd cleared the category when nothing was sent. */}
+                <MenuItem value="" disabled={originalCategory !== ""}>
                   <Typography variant="inherit" component="span" color="text.secondary">
                     Not set
                   </Typography>
