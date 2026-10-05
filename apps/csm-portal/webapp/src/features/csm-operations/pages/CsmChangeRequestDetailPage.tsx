@@ -438,7 +438,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   const blockingReason =
     cr.state === "closed" || cr.state === "canceled" || cr.state === "rollback"
       ? null
-      : changeRequestBlockingReason(approvalsData?.approvals);
+      : changeRequestBlockingReason(approvalsData?.approvals, cr.state);
   // A transition is in flight whenever either half of a destructive
   // transition (the reason comment, then the patch) or a plain patch is
   // running, so the bar stays disabled across both and a double-click can't
@@ -614,7 +614,11 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
             )}
           </Box>
           <Typography variant="h5">{cr.subject || "Change request"}</Typography>
-          <ChangeRequestLifecycleStepper state={cr.state} />
+          <ChangeRequestLifecycleStepper
+            state={cr.state}
+            customerApprovalRequired={cr.customerApprovalRequired}
+            customerReviewRequired={cr.customerReviewRequired}
+          />
         </Box>
         <Box sx={{ flexShrink: 0, alignSelf: { xs: "stretch", md: "flex-start" } }}>
           <Box className="csm-print-hide" sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -758,7 +762,8 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
               }}
             >
               <Typography variant="body2" color="text.secondary">
-                What the customer has confirmed on this change.
+                Whether this change requires customer approval and review, and what the
+                customer has confirmed on it.
               </Typography>
               <Box
                 sx={{
@@ -771,6 +776,12 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
                   },
                 }}
               >
+                <MetaCell label="Customer approval required">
+                  <YesNo value={cr.customerApprovalRequired} />
+                </MetaCell>
+                <MetaCell label="Customer review required">
+                  <YesNo value={cr.customerReviewRequired} />
+                </MetaCell>
                 <MetaCell label="Customer approved"><YesNo value={cr.hasCustomerApproved} /></MetaCell>
                 <MetaCell label="Customer reviewed"><YesNo value={cr.hasCustomerReviewed} /></MetaCell>
                 <MetaCell label="Approved by"><RefText value={cr.approvedBy} /></MetaCell>

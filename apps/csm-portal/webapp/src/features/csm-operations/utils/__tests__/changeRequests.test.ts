@@ -23,6 +23,8 @@ import {
   changeRequestBlockingReason,
   changeRequestTransitionLabel,
   countActiveCRFilters,
+  customerApprovalLockedReason,
+  customerReviewLockedReason,
   DEFAULT_CR_FILTERS,
   isChangeRequestCreator,
   isCreatableChangeRequestType,
@@ -107,6 +109,18 @@ describe("buildCloneChangeRequestNavState", () => {
     expect(keys).not.toContain("case");
     expect(keys).not.toContain("product");
     expect(keys).not.toContain("assignedTeam");
+  });
+
+  it("carries the customer approval / review checkbox settings, but not the customer's confirmation", () => {
+    const state = buildCloneChangeRequestNavState({
+      ...FULL_CR,
+      customerApprovalRequired: true,
+      customerReviewRequired: false,
+    });
+    expect(state.customerApprovalRequired).toBe(true);
+    expect(state.customerReviewRequired).toBe(false);
+    expect(Object.keys(state)).not.toContain("hasCustomerApproved");
+    expect(Object.keys(state)).not.toContain("hasCustomerReviewed");
   });
 
   it("never carries state, schedule, or approval fields", () => {
@@ -288,6 +302,68 @@ describe("changeRequestTransitionLabel", () => {
 
   it("has no curated 'Schedule' action label for the scheduled state", () => {
     expect(changeRequestTransitionLabel("scheduled")).not.toMatch(/^schedule$/i);
+    expect(changeRequestTransitionLabel("scheduled", "authorize")).not.toMatch(/^schedule$/i);
+  });
+
+  it("labels scheduled 'Record customer approval' only when leaving customer_approval", () => {
+    expect(changeRequestTransitionLabel("scheduled", "customer_approval")).toBe(
+      "Record customer approval",
+    );
+    expect(changeRequestTransitionLabel("scheduled")).not.toBe("Record customer approval");
+  });
+
+  it("labels the customer review and close transitions", () => {
+    expect(changeRequestTransitionLabel("customer_review", "review")).toBe("Send for customer review");
+    expect(changeRequestTransitionLabel("closed", "review")).toBe("Close");
+  });
+});
+
+describe("changeRequestBlockingReason — customer states", () => {
+  it("names the customer approval gate from the state, with or without approvals data", () => {
+    expect(changeRequestBlockingReason(undefined, "customer_approval")).toBe(
+      "Awaiting customer approval",
+    );
+    expect(
+      changeRequestBlockingReason(
+        [{ stage: "Authorize", approverType: "STATIC_GROUP", approverName: null, status: "APPROVED", approvers: [] }],
+        "customer_approval",
+      ),
+    ).toBe("Awaiting customer approval");
+  });
+
+  it("names the customer review gate from the state", () => {
+    expect(changeRequestBlockingReason(undefined, "customer_review")).toBe(
+      "Awaiting customer review",
+    );
+  });
+
+  it("still derives the reason from approval stages for any other state", () => {
+    expect(
+      changeRequestBlockingReason(
+        [{ stage: "Authorize", approverType: "STATIC_GROUP", approverName: null, status: "REQUESTED", approvers: [] }],
+        "authorize",
+      ),
+    ).toBe("Awaiting CAB Approval");
+  });
+});
+
+describe("customer approval / review edit locks", () => {
+  it("locks Customer Approval from customer_approval onwards (incl. off-ramps), not before", () => {
+    for (const s of ["new", "assess", "authorize"]) {
+      expect(customerApprovalLockedReason(s)).toBeNull();
+    }
+    for (const s of ["customer_approval", "scheduled", "implement", "review", "customer_review", "closed", "rollback", "canceled"]) {
+      expect(customerApprovalLockedReason(s)).toMatch(/locked/i);
+    }
+  });
+
+  it("locks Customer Review from customer_review onwards, but not at review or earlier", () => {
+    for (const s of ["new", "assess", "authorize", "customer_approval", "scheduled", "implement", "review"]) {
+      expect(customerReviewLockedReason(s)).toBeNull();
+    }
+    for (const s of ["customer_review", "closed", "rollback", "canceled"]) {
+      expect(customerReviewLockedReason(s)).toMatch(/locked/i);
+    }
   });
 });
 

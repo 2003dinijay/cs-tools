@@ -21,6 +21,7 @@ import {
   Box,
   Button,
   Card,
+  Checkbox,
   DatePickers,
   FormControl,
   FormControlLabel,
@@ -243,6 +244,15 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const [isPlanningVisibleToCustomers, setIsPlanningVisibleToCustomers] = useState(
     draft?.isPlanningVisibleToCustomers ?? false,
   );
+  // The two ServiceNow "Customer Approval" / "Customer Review" checkboxes.
+  // Unchecked by default; a clone carries the source's settings over (they
+  // configure the flow, unlike the customer's actual confirmation).
+  const [customerApprovalRequired, setCustomerApprovalRequired] = useState(
+    draft?.customerApprovalRequired ?? cloneState?.customerApprovalRequired ?? false,
+  );
+  const [customerReviewRequired, setCustomerReviewRequired] = useState(
+    draft?.customerReviewRequired ?? cloneState?.customerReviewRequired ?? false,
+  );
   const [groupId, setGroupId] = useState(draft?.groupId ?? "");
   const [assignedEngineerId, setAssignedEngineerId] = useState(
     draft?.assignedEngineerId ?? cloneState?.assignedEngineerId ?? "",
@@ -334,6 +344,8 @@ export default function CreateChangeRequestPage(): JSX.Element {
       backoutPlan,
       testPlan,
       isPlanningVisibleToCustomers,
+      customerApprovalRequired,
+      customerReviewRequired,
       groupId,
       assignedEngineerId,
       requestedById,
@@ -354,6 +366,8 @@ export default function CreateChangeRequestPage(): JSX.Element {
     backoutPlan,
     testPlan,
     isPlanningVisibleToCustomers,
+    customerApprovalRequired,
+    customerReviewRequired,
     groupId,
     assignedEngineerId,
     requestedById,
@@ -405,6 +419,9 @@ export default function CreateChangeRequestPage(): JSX.Element {
     if (!isBlankHtml(backoutPlan)) payload.backoutPlan = backoutPlan;
     if (!isBlankHtml(testPlan)) payload.testPlan = testPlan;
     payload.isPlanningVisibleToCustomers = isPlanningVisibleToCustomers;
+    // Always sent, true or false, so the backend never has to guess the intent.
+    payload.customerApprovalRequired = customerApprovalRequired;
+    payload.customerReviewRequired = customerReviewRequired;
     if (groupId.trim()) payload.groupId = groupId.trim();
     if (assignedEngineerId.trim()) payload.assignedEngineerId = assignedEngineerId.trim();
     if (requestedById.trim()) payload.requestedById = requestedById.trim();
@@ -730,6 +747,72 @@ export default function CreateChangeRequestPage(): JSX.Element {
             </Box>
             <Box sx={{ flex: "1 1 200px" }}>
               {renderSelect("cr-impact", "Impact", impact, setImpact, IMPACT_OPTIONS)}
+            </Box>
+          </Box>
+
+          <Box role="group" aria-labelledby="cr-customer-steps-heading">
+            <Typography
+              id="cr-customer-steps-heading"
+              variant="subtitle2"
+              sx={{ mb: 0.5 }}
+            >
+              Customer steps
+            </Typography>
+            <Box sx={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+              <FormControlLabel
+                sx={{ flex: "1 1 280px", alignItems: "flex-start", m: 0 }}
+                disabled={isSubmitting}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={customerApprovalRequired}
+                    onChange={(e) => setCustomerApprovalRequired(e.target.checked)}
+                    inputProps={{
+                      "aria-label": "Customer Approval",
+                      "aria-describedby": "cr-customer-approval-desc",
+                    }}
+                  />
+                }
+                label={
+                  <Box>
+                    <Typography variant="body1">Customer Approval</Typography>
+                    <Typography
+                      id="cr-customer-approval-desc"
+                      variant="body2"
+                      color="text.secondary"
+                    >
+                      Adds a customer approval step after internal approval, before scheduling.
+                    </Typography>
+                  </Box>
+                }
+              />
+              <FormControlLabel
+                sx={{ flex: "1 1 280px", alignItems: "flex-start", m: 0 }}
+                disabled={isSubmitting}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={customerReviewRequired}
+                    onChange={(e) => setCustomerReviewRequired(e.target.checked)}
+                    inputProps={{
+                      "aria-label": "Customer Review",
+                      "aria-describedby": "cr-customer-review-desc",
+                    }}
+                  />
+                }
+                label={
+                  <Box>
+                    <Typography variant="body1">Customer Review</Typography>
+                    <Typography
+                      id="cr-customer-review-desc"
+                      variant="body2"
+                      color="text.secondary"
+                    >
+                      Adds a customer review step after Review, before closing.
+                    </Typography>
+                  </Box>
+                }
+              />
             </Box>
           </Box>
 

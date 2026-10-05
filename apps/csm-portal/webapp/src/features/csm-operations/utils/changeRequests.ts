@@ -272,7 +272,12 @@ const WAITING_APPROVAL_STATUSES = new Set(["PENDING", "REQUESTED"]);
  */
 export function changeRequestBlockingReason(
   approvals: BeChangeRequestApproval[] | undefined,
+  state?: string | null,
 ): string | null {
+  // The customer gates are states of their own, not approval stages the
+  // internal approvers list carries, so they are named from the state.
+  if (state === "customer_approval") return "Awaiting customer approval";
+  if (state === "customer_review") return "Awaiting customer review";
   const waiting = approvals?.find((a) => WAITING_APPROVAL_STATUSES.has(a.status.trim().toUpperCase()));
   if (!waiting) return null;
   // A recognised stage (Peer / CAB / ECAB) is named by its stage label, which
@@ -284,6 +289,46 @@ export function changeRequestBlockingReason(
   // Approver-group names sometimes already say "Approval" ("Devops
   // Approval"); avoid a doubled "approval approval" in that case.
   return /approval/i.test(who) ? `Awaiting ${who}` : `Awaiting ${who} approval`;
+}
+
+/**
+ * States from which the "Customer Approval" checkbox can no longer be changed:
+ * the gate it controls (between internal approval and scheduling) is either
+ * being worked (`customer_approval`) or already behind the CR (`scheduled` and
+ * everything after it, including the off-ramps). Mirrors the backend, which
+ * refuses a late edit with a 400; this only lets the UI say so up front.
+ */
+const CUSTOMER_APPROVAL_LOCKED_STATES: readonly string[] = [
+  "customer_approval",
+  "scheduled",
+  "implement",
+  "review",
+  "customer_review",
+  "closed",
+  "rollback",
+  "canceled",
+];
+
+/** States from which the "Customer Review" checkbox can no longer be changed. */
+const CUSTOMER_REVIEW_LOCKED_STATES: readonly string[] = [
+  "customer_review",
+  "closed",
+  "rollback",
+  "canceled",
+];
+
+/** Why the Customer Approval checkbox is locked in `state`, or `null` when it is editable. */
+export function customerApprovalLockedReason(state?: string | null): string | null {
+  return state && CUSTOMER_APPROVAL_LOCKED_STATES.includes(state)
+    ? "Locked: the change request has already reached the customer approval step or later."
+    : null;
+}
+
+/** Why the Customer Review checkbox is locked in `state`, or `null` when it is editable. */
+export function customerReviewLockedReason(state?: string | null): string | null {
+  return state && CUSTOMER_REVIEW_LOCKED_STATES.includes(state)
+    ? "Locked: the change request has already reached the customer review step or later."
+    : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -312,9 +357,12 @@ const TRANSITION_LABEL: Record<string, string> = {
   // approval flow (Peer -> CAB for Normal, ECAB for Emergency, straight to
   // Scheduled for Standard -- all the backend's call).
   assess: "Request Approval",
-  // There is deliberately no entry for `scheduled`: a CR is moved to Scheduled
-  // automatically when its CAB/ECAB approval is granted, never by a manual
-  // "Schedule" action. See `NEVER_OFFERED_TARGETS` in ChangeRequestActionBar.
+  // There is deliberately no generic entry for `scheduled`: a CR is moved to
+  // Scheduled automatically when its approval is granted, never by a manual
+  // "Schedule" action. The one exception is leaving `customer_approval`,
+  // where the move *is* recording the customer's approval -- see
+  // `changeRequestTransitionLabel`'s `fromState` and `NEVER_OFFERED_TARGETS`
+  // in ChangeRequestActionBar.
   implement: "Start implementation",
   review: "Mark implemented",
   customer_review: "Send for customer review",
@@ -338,7 +386,12 @@ function sentenceCase(raw: string): string {
 }
 
 /** The action-phrased label for a transition target, curated or generic. */
-export function changeRequestTransitionLabel(target: string): string {
+export function changeRequestTransitionLabel(target: string, fromState?: string | null): string {
+  // Leaving `customer_approval` for `scheduled` is how the customer's approval
+  // is recorded; it is the only place `scheduled` is ever an action.
+  if (target === "scheduled" && fromState === "customer_approval") {
+    return "Record customer approval";
+  }
   return TRANSITION_LABEL[target] ?? sentenceCase(target);
 }
 
@@ -488,6 +541,12 @@ export interface CloneChangeRequestNavState {
   assignedEngineerId?: string;
   /** Display label for `assignedEngineerId` until a fresh search resolves it. */
   assignedEngineerLabel?: string;
+  /** The source's "Customer Approval" / "Customer Review" checkbox settings.
+   * These are configuration of the flow (which steps the change goes through),
+   * not an approval outcome, so a clone carries them; the customer's actual
+   * confirmation (`hasCustomerApproved`/`hasCustomerReviewed`) is never copied. */
+  customerApprovalRequired?: boolean;
+  customerReviewRequired?: boolean;
 }
 
 /** Rich-text field carried into the clone form only when it has real content. */
@@ -499,7 +558,8 @@ function cloneableHtml(html?: string | null): string | undefined {
 /**
  * Builds the router-state payload for a change request's "Clone" action.
  * Deliberately omits: environment/deployment, state, approval fields
- * (`hasCustomerApproved`/`hasCustomerReviewed`/`approvedBy`/`approvedOn`),
+ * (`hasCustomerApproved`/`hasCustomerReviewed`/`approvedBy`/`approvedOn`; the
+ * `customerApprovalRequired`/`customerReviewRequired` settings ARE carried),
  * planned start/end, and every auto-numbered/timestamp/created-by field —
  * per this feature's requirement that promoting a change to a new
  * environment must never silently carry an approval or a stale schedule
@@ -519,6 +579,8 @@ export function buildCloneChangeRequestNavState(
     impact: (cr.impact as BeChangeRequestImpact) ?? undefined,
     assignedEngineerId: cr.assignedEngineer?.id || undefined,
     assignedEngineerLabel: cr.assignedEngineer?.name || undefined,
+    customerApprovalRequired: cr.customerApprovalRequired ?? undefined,
+    customerReviewRequired: cr.customerReviewRequired ?? undefined,
   };
 }
 
@@ -529,7 +591,7 @@ export function buildCloneChangeRequestNavState(
  * wants a preview) and the create page stay in sync.
  */
 export const CLONE_SOURCE_GAP_MESSAGE =
-  "Copied the subject, description, justification, test plan, type, impact, and assigned engineer. " +
+  "Copied the subject, description, justification, test plan, type, impact, assigned engineer, and customer approval/review settings. " +
   "Priority, implementation plan, risk/impact analysis, backout plan, assignment group, " +
   "linked project/case, and affected product aren't available to copy and need to be re-entered. " +
   "Deployment, schedule, and approval fields are intentionally left blank for you to set for the new environment.";
@@ -649,6 +711,9 @@ export interface ChangeRequestDraft {
   backoutPlan: string;
   testPlan: string;
   isPlanningVisibleToCustomers: boolean;
+  /** Optional: a draft saved before these checkboxes existed lacks them. */
+  customerApprovalRequired?: boolean;
+  customerReviewRequired?: boolean;
   groupId: string;
   assignedEngineerId: string;
   requestedById: string;

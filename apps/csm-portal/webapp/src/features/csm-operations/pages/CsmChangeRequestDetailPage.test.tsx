@@ -1015,9 +1015,13 @@ describe("CsmChangeRequestDetailPage — reports its own draft state to the tab 
 // hooks above: the page's own PATCH / approve calls mutate it, and the page is
 // re-rendered from it, so every assertion is on what the user actually sees
 // after each step. The contract assumed: `legalNextStates` never lists
-// `authorize` or `scheduled`; Request Approval is `PATCH {state:"assess"}`;
-// approving Peer adds a CAB stage; approving CAB/ECAB moves the CR to
-// `scheduled` itself; Standard goes straight to `scheduled` with no stages.
+// `authorize`, and lists `scheduled` only from `customer_approval` (where it
+// records the customer's approval); Request Approval is
+// `PATCH {state:"assess"}`; approving Peer adds a CAB stage; approving
+// CAB/ECAB (or Standard's Request Approval) moves the CR to `customer_approval`
+// when `customerApprovalRequired`, else straight to `scheduled`; Review offers
+// `customer_review` when `customerReviewRequired`, else `closed`;
+// `customer_review` -> `closed`.
 // ---------------------------------------------------------------------------
 
 const LC_CREATOR = { id: "u-creator", email: "casey@example.com", name: "Casey Creator" };
@@ -1034,7 +1038,13 @@ let lc: LcFake;
  * omits it (older backend / ServiceNow source), exercising the UI fallback. */
 let lcEmitsCanDecide = true;
 
-function lcLegalNextStates(state: string): string[] {
+function lcLegalNextStates(
+  state: string,
+  flags: { approval: boolean; review: boolean } = {
+    approval: lc?.cr.customerApprovalRequired ?? false,
+    review: lc?.cr.customerReviewRequired ?? false,
+  },
+): string[] {
   switch (state) {
     case "new":
       return ["assess", "canceled"];
@@ -1042,15 +1052,24 @@ function lcLegalNextStates(state: string): string[] {
       return ["authorize", "canceled"]; // authorize = the approval path, never a button
     case "authorize":
       return ["canceled"];
+    case "customer_approval":
+      return ["scheduled", "canceled"]; // scheduled = "Record customer approval"
     case "scheduled":
       return ["implement", "canceled"];
     case "implement":
       return ["review", "canceled"];
     case "review":
-      return ["closed", "customer_review", "canceled"];
+      return flags.review ? ["customer_review", "canceled"] : ["closed", "canceled"];
+    case "customer_review":
+      return ["closed", "canceled"];
     default:
       return [];
   }
+}
+
+/** Where a CR lands once its internal approval is granted. */
+function lcAfterInternalApproval(): string {
+  return lc.cr.customerApprovalRequired ? "customer_approval" : "scheduled";
 }
 
 function lcStage(name: string, group: string, who: { id: string; name: string }): BeChangeRequestApproval {
@@ -1094,7 +1113,10 @@ function lcPublish(): void {
   notifyFakeBackendChanged();
 }
 
-function lcSeed(type: "normal" | "emergency" | "standard"): void {
+function lcSeed(
+  type: "normal" | "emergency" | "standard",
+  flags: { approval: boolean; review: boolean } = { approval: false, review: false },
+): void {
   lcEmitsCanDecide = true;
   lc = {
     cr: {
@@ -1103,7 +1125,9 @@ function lcSeed(type: "normal" | "emergency" | "standard"): void {
       state: "new",
       requestedBy: { id: LC_CREATOR.id, name: LC_CREATOR.name },
       createdBy: LC_CREATOR.email,
-      legalNextStates: lcLegalNextStates("new"),
+      customerApprovalRequired: flags.approval,
+      customerReviewRequired: flags.review,
+      legalNextStates: lcLegalNextStates("new", flags),
     },
     approvals: [],
   };
@@ -1111,7 +1135,7 @@ function lcSeed(type: "normal" | "emergency" | "standard"): void {
   patchMutateMock.mockImplementation((input: { patch: { state?: string } }) => {
     const target = input.patch.state;
     if (target === "assess") {
-      if (lc.cr.type === "standard") lcSetState("scheduled");
+      if (lc.cr.type === "standard") lcSetState(lcAfterInternalApproval());
       else if (lc.cr.type === "emergency") {
         lcSetState("authorize");
         lc.approvals = [lcStage("ECAB Approval", "ECAB", LC_ECAB)];
@@ -1119,7 +1143,9 @@ function lcSeed(type: "normal" | "emergency" | "standard"): void {
         lcSetState("assess");
         lc.approvals = [lcStage("Peer Approval", "Peers", LC_PEER)];
       }
-    } else if (target && target !== "scheduled" && target !== "authorize") {
+    } else if (target === "scheduled" && lc.cr.state === "customer_approval") {
+      lcSetState("scheduled"); // the customer's approval was recorded
+    } else if (target && target !== "scheduled" && target !== "authorize" && target !== "customer_approval") {
       lcSetState(target);
     } else {
       throw new Error(`illegal manual transition to ${String(target)}`);
@@ -1140,7 +1166,7 @@ function lcSeed(type: "normal" | "emergency" | "standard"): void {
         lcSetState("authorize");
         lc.approvals = [...lc.approvals, lcStage("CAB Approval", "CAB", LC_CAB)];
       } else {
-        lcSetState("scheduled"); // CAB / ECAB approval schedules the CR itself
+        lcSetState(lcAfterInternalApproval()); // CAB / ECAB approval moves the CR on itself
       }
     }
     lcPublish();
@@ -1172,63 +1198,133 @@ function approvalsRow(name: string): HTMLElement {
   return screen.getByText(name).closest("tr") as HTMLElement;
 }
 
-describe("CsmChangeRequestDetailPage — lifecycle: Normal (Request Approval -> Peer -> CAB -> auto Scheduled -> Implement -> Review -> Closed)", () => {
-  it("shows the right state, stage, header note and controls after every step", () => {
-    lcSeed("normal");
+/** The labels of the lifecycle stepper's steps, in order. */
+function stepLabels(): string[] {
+  const list = screen.getByRole("list", { name: /change request lifecycle/i });
+  return within(list)
+    .getAllByRole("listitem")
+    .map((li) => li.textContent ?? "");
+}
 
-    // New: the creator sees Request Approval, no Schedule, no Move to Assess.
-    let view = lcOpenAs(LC_CREATOR);
-    expect(currentStep()).toBe("New");
-    expect(screen.getByRole("button", { name: "Request Approval" })).toBeInTheDocument();
+/** Cell value (Yes/No) beside a label on the Approval tab. */
+function metaValue(label: string): string {
+  return within(screen.getByText(label).parentElement!).getByText(/^(Yes|No)$/).textContent ?? "";
+}
+
+/**
+ * Drives one Normal change through its whole life with the given Customer
+ * Approval / Customer Review settings, asserting what is visible after every
+ * step: the stepper's current step, the header note, the Approval tab flags and
+ * which actions exist. The CR never gets a Schedule button.
+ */
+function runNormalLifecycle(approval: boolean, review: boolean): void {
+  lcSeed("normal", { approval, review });
+
+  // New: the creator sees Request Approval, no Schedule, no Move to Assess.
+  let view = lcOpenAs(LC_CREATOR);
+  expect(currentStep()).toBe("New");
+  expect(metaValue("Customer approval required")).toBe(approval ? "Yes" : "No");
+  expect(metaValue("Customer review required")).toBe(review ? "Yes" : "No");
+  // The optional customer steps are on the line only when their checkbox is on.
+  expect(stepLabels().includes("Customer Approval")).toBe(approval);
+  expect(stepLabels().includes("Customer Review")).toBe(review);
+  expect(screen.getByRole("button", { name: "Request Approval" })).toBeInTheDocument();
+  expectNoManualSchedule();
+  fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+  expect(patchMutateMock).toHaveBeenCalledWith({ id: "chg-1", patch: { state: "assess" } }, expect.anything());
+
+  // Assess: Peer Approval pending; creator has no Approve/Reject, a notice, and can Cancel.
+  expect(currentStep()).toBe("Assess");
+  expect(screen.getByText("Awaiting Peer Approval")).toBeInTheDocument();
+  expect(within(approvalsRow("Pat Peer")).getByText("Peer Approval")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent(/you created this change request/i);
+  fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+  expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeEnabled();
+  expectNoManualSchedule();
+
+  // A peer approves -> Authorize, CAB Approval is the next, separate stage.
+  view = lcOpenAs(LC_PEER, view);
+  fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+  expect(currentStep()).toBe("Authorize");
+  expect(screen.getByText("Awaiting CAB Approval")).toBeInTheDocument();
+  expect(within(approvalsRow("Cam Cab")).getByText("CAB Approval")).toBeInTheDocument();
+  expect(within(approvalsRow("Pat Peer")).getByText("Peer Approval")).toBeInTheDocument();
+  expect(within(approvalsRow("Pat Peer")).getByText("Approved")).toBeInTheDocument();
+  expectNoManualSchedule();
+
+  // A CAB member approves -> Customer Approval when required, else Scheduled.
+  view = lcOpenAs(LC_CAB, view);
+  expect(screen.getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+  expect(patchMutateMock).toHaveBeenCalledTimes(1); // only Request Approval was ever a manual PATCH so far
+
+  view = lcOpenAs(LC_CREATOR, view);
+  if (approval) {
+    expect(currentStep()).toBe("Customer Approval");
+    expect(screen.getByText("Awaiting customer approval")).toBeInTheDocument();
+    // Neither Start implementation nor a Schedule button yet: only recording the approval (and Cancel).
+    expect(screen.queryByRole("button", { name: /start implementation/i })).not.toBeInTheDocument();
     expectNoManualSchedule();
-    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
-    expect(patchMutateMock).toHaveBeenCalledWith({ id: "chg-1", patch: { state: "assess" } }, expect.anything());
-
-    // Assess: Peer Approval pending; creator has no Approve/Reject, a notice, and can Cancel.
-    expect(currentStep()).toBe("Assess");
-    expect(screen.getByText("Awaiting Peer Approval")).toBeInTheDocument();
-    expect(within(approvalsRow("Pat Peer")).getByText("Peer Approval")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent(/you created this change request/i);
+    expect(screen.getByRole("button", { name: "Record customer approval" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change state/i }));
-    expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeEnabled();
-    expectNoManualSchedule();
+    expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Record customer approval" }));
+    expect(patchMutateMock).toHaveBeenLastCalledWith({ id: "chg-1", patch: { state: "scheduled" } }, expect.anything());
+  } else {
+    expect(screen.queryByText("Record customer approval")).not.toBeInTheDocument();
+  }
 
-    // A peer approves -> Authorize, CAB Approval is the next, separate stage.
-    view = lcOpenAs(LC_PEER, view);
-    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
-    expect(currentStep()).toBe("Authorize");
-    expect(screen.getByText("Awaiting CAB Approval")).toBeInTheDocument();
-    expect(within(approvalsRow("Cam Cab")).getByText("CAB Approval")).toBeInTheDocument();
-    expect(within(approvalsRow("Pat Peer")).getByText("Peer Approval")).toBeInTheDocument();
-    expect(within(approvalsRow("Pat Peer")).getByText("Approved")).toBeInTheDocument();
-    expectNoManualSchedule();
+  // Scheduled: nothing awaited, no Schedule button, ready to implement.
+  expect(currentStep()).toBe("Scheduled");
+  expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
+  expect(screen.queryByText("Record customer approval")).not.toBeInTheDocument();
+  expectNoManualSchedule();
 
-    // A CAB member approves -> the page shows Scheduled, nothing awaited, no Schedule button.
-    view = lcOpenAs(LC_CAB, view);
-    expect(screen.getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
-    expect(currentStep()).toBe("Scheduled");
-    expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
-    expectNoManualSchedule();
-    expect(patchMutateMock).toHaveBeenCalledTimes(1); // only Request Approval was ever a manual PATCH
-
-    // Engineer-driven tail.
-    view = lcOpenAs(LC_CREATOR, view);
-    expect(currentStep()).toBe("Scheduled");
-    fireEvent.click(screen.getByRole("button", { name: /^start implementation$/i }));
-    expect(currentStep()).toBe("Implement");
-    fireEvent.click(screen.getByRole("button", { name: /^mark implemented$/i }));
-    expect(currentStep()).toBe("Review");
-    // Review offers customer review (primary) and Close (overflow menu).
+  // Engineer-driven tail.
+  fireEvent.click(screen.getByRole("button", { name: /^start implementation$/i }));
+  expect(currentStep()).toBe("Implement");
+  fireEvent.click(screen.getByRole("button", { name: /^mark implemented$/i }));
+  expect(currentStep()).toBe("Review");
+  if (review) {
+    // Review offers only "Send for customer review" (no Close) when required.
     expect(screen.getByRole("button", { name: /^send for customer review$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change state/i }));
-    fireEvent.click(screen.getByRole("menuitem", { name: /^close$/i }));
-    expect(currentStep()).toBe("Closed");
-    expectNoManualSchedule();
-    view.unmount();
-  });
+    expect(screen.queryByRole("menuitem", { name: /^close$/i })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: /^send for customer review$/i }));
+    expect(currentStep()).toBe("Customer Review");
+    expect(screen.getByText("Awaiting customer review")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^send for customer review$/i })).not.toBeInTheDocument();
+  } else {
+    // Review offers only Close (no customer review) when not required.
+    expect(screen.queryByRole("button", { name: /send for customer review/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    expect(screen.queryByRole("menuitem", { name: /customer review/i })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  }
+  fireEvent.click(screen.getByRole("button", { name: /^close$/i }));
+  expect(currentStep()).toBe("Closed");
+  expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
+  expectNoManualSchedule();
+  view.unmount();
+}
+
+describe("CsmChangeRequestDetailPage — lifecycle: Normal (Request Approval -> Peer -> CAB -> [Customer Approval] -> Scheduled -> Implement -> Review -> [Customer Review] -> Closed)", () => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "shows the right state, stage, header note and controls after every step (customerApprovalRequired=%s, customerReviewRequired=%s)",
+    (approval, review) => {
+      runNormalLifecycle(approval, review);
+    },
+  );
 
   it("lets a non-creator approver both Approve and Reject, and never shows them the creator notice", () => {
     lcSeed("normal");
@@ -1314,6 +1410,58 @@ describe("CsmChangeRequestDetailPage — lifecycle: Emergency (Request Approval 
   });
 });
 
+describe("CsmChangeRequestDetailPage — lifecycle: Emergency with Customer Approval (ECAB -> Customer Approval -> Scheduled)", () => {
+  it("waits in Customer Approval after ECAB approves, and only 'Record customer approval' moves it on", () => {
+    lcSeed("emergency", { approval: true, review: false });
+
+    let view = lcOpenAs(LC_CREATOR);
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+    expect(currentStep()).toBe("Authorize");
+    expect(screen.getByText("Awaiting ECAB Approval")).toBeInTheDocument();
+    expectNoManualSchedule();
+
+    view = lcOpenAs(LC_ECAB, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(currentStep()).toBe("Customer Approval");
+    expect(screen.getByText("Awaiting customer approval")).toBeInTheDocument();
+    expect(screen.queryByText("Peer Approval")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /start implementation/i })).not.toBeInTheDocument();
+    expectNoManualSchedule();
+    expect(screen.getByRole("button", { name: "Record customer approval" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Record customer approval" }));
+    expect(patchMutateMock).toHaveBeenLastCalledWith({ id: "chg-1", patch: { state: "scheduled" } }, expect.anything());
+    expect(currentStep()).toBe("Scheduled");
+    expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^start implementation$/i })).toBeInTheDocument();
+    expectNoManualSchedule();
+    view.unmount();
+  });
+});
+
+describe("CsmChangeRequestDetailPage — lifecycle: Standard with Customer Approval (Request Approval -> Customer Approval -> Scheduled)", () => {
+  it("goes to Customer Approval, not straight to Scheduled, and has no approval stages", () => {
+    lcSeed("standard", { approval: true, review: false });
+
+    const view = lcOpenAs(LC_CREATOR);
+    expect(currentStep()).toBe("New");
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+
+    expect(currentStep()).toBe("Customer Approval");
+    expect(screen.getByText("Awaiting customer approval")).toBeInTheDocument();
+    expect(screen.getByText(/no approval stages recorded/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /start implementation/i })).not.toBeInTheDocument();
+    expectNoManualSchedule();
+
+    fireEvent.click(screen.getByRole("button", { name: "Record customer approval" }));
+    expect(patchMutateMock).toHaveBeenLastCalledWith({ id: "chg-1", patch: { state: "scheduled" } }, expect.anything());
+    expect(currentStep()).toBe("Scheduled");
+    expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^start implementation$/i })).toBeInTheDocument();
+    view.unmount();
+  });
+});
+
 describe("CsmChangeRequestDetailPage — lifecycle: Standard (Request Approval -> auto Scheduled)", () => {
   it("goes straight to Scheduled with no approval stages and no Schedule button", () => {
     lcSeed("standard");
@@ -1344,5 +1492,106 @@ describe("CsmChangeRequestDetailPage — lifecycle: defensive against a backend 
     expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeInTheDocument();
     expectNoManualSchedule();
     expect(screen.queryByRole("menuitem", { name: /authorize/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("CsmChangeRequestDetailPage — lifecycle: scheduled is only ever 'Record customer approval'", () => {
+  it("a customer_approval CR that is Canceled from the menu goes through the reason dialog", () => {
+    lcSeed("normal", { approval: true, review: false });
+    lcSetState("customer_approval");
+    lcPublish();
+    lcOpenAs(LC_CREATOR);
+    expect(currentStep()).toBe("Customer Approval");
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /cancel change/i }));
+    // Destructive, so the reason dialog opens instead of patching.
+    expect(patchMutateMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("never offers 'Record customer approval' from any other state, even if the backend lists scheduled", () => {
+    for (const state of ["new", "assess", "authorize", "scheduled", "implement", "review", "customer_review"]) {
+      lcSeed("normal", { approval: true, review: true });
+      lcSetState(state);
+      lc.cr = { ...lc.cr, legalNextStates: ["scheduled"] };
+      lcPublish();
+      const view = lcOpenAs(LC_CREATOR);
+      expect(screen.queryByText("Record customer approval")).not.toBeInTheDocument();
+      expectNoManualSchedule();
+      view.unmount();
+    }
+  });
+});
+
+describe("CsmChangeRequestDetailPage — customer approval / review flags on the Approval tab", () => {
+  it("shows both flags read-only as Yes/No, separate from the customer's confirmation outcome", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_CR,
+        customerApprovalRequired: true,
+        customerReviewRequired: false,
+        hasCustomerApproved: false,
+        hasCustomerReviewed: true,
+      },
+    });
+    renderPage();
+    expect(metaValue("Customer approval required")).toBe("Yes");
+    expect(metaValue("Customer review required")).toBe("No");
+    expect(metaValue("Customer approved")).toBe("No");
+    expect(metaValue("Customer reviewed")).toBe("Yes");
+    // Read-only: no checkbox anywhere on the page itself.
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  it("shows No for both when the backend omits the flags", () => {
+    mockQueryResult({ data: BASE_CR });
+    renderPage();
+    expect(metaValue("Customer approval required")).toBe("No");
+    expect(metaValue("Customer review required")).toBe("No");
+  });
+
+  it("passes the flags through to the Edit dialog's CR", () => {
+    mockQueryResult({
+      data: { ...BASE_CR, state: "assess", customerApprovalRequired: true, customerReviewRequired: true },
+    });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const props = editChangeRequestDialogMock.mock.calls.at(-1)![0] as { cr: BeChangeRequestDetail };
+    expect(props.cr.customerApprovalRequired).toBe(true);
+    expect(props.cr.customerReviewRequired).toBe(true);
+  });
+
+  it("carries the flags into the Clone router state but never the customer's confirmation", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_CR,
+        customerApprovalRequired: true,
+        customerReviewRequired: true,
+        hasCustomerApproved: true,
+        hasCustomerReviewed: true,
+      },
+    });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^clone$/i }));
+    const [, options] = navigateMock.mock.calls.at(-1)!;
+    const state = (options as { state: Record<string, unknown> }).state;
+    expect(state.customerApprovalRequired).toBe(true);
+    expect(state.customerReviewRequired).toBe(true);
+    expect(Object.keys(state)).not.toContain("hasCustomerApproved");
+    expect(Object.keys(state)).not.toContain("hasCustomerReviewed");
+  });
+});
+
+describe("CsmChangeRequestDetailPage — blocking reason for the customer states", () => {
+  it("shows 'Awaiting customer approval' in the header for a customer_approval CR with no pending approver", () => {
+    mockQueryResult({ data: { ...BASE_CR, state: "customer_approval", customerApprovalRequired: true } });
+    renderPage();
+    expect(screen.getByText("Awaiting customer approval")).toBeInTheDocument();
+  });
+
+  it("shows 'Awaiting customer review' in the header for a customer_review CR", () => {
+    mockQueryResult({ data: { ...BASE_CR, state: "customer_review", customerReviewRequired: true } });
+    renderPage();
+    expect(screen.getByText("Awaiting customer review")).toBeInTheDocument();
   });
 });

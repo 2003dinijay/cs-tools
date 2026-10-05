@@ -25,8 +25,9 @@ import { type Locator, type Page, expect } from "@playwright/test";
  * (`{state: "assess"}`) that starts the CR's approval flow (Peer -> CAB for
  * Normal, ECAB for Emergency, straight to Scheduled for Standard).
  * There is deliberately no "Schedule" button: a CR is moved to Scheduled
- * automatically by its CAB/ECAB approval -- see `scheduleButton()`, which
- * exists only so specs can assert its absence.
+ * automatically by its CAB/ECAB approval (or, when it requires customer
+ * approval, by "Record customer approval" from the Customer Approval step) --
+ * see `scheduleButton()`, which exists only so specs can assert its absence.
  */
 export class ChangeRequestDetailPage {
   constructor(readonly page: Page) {}
@@ -67,8 +68,8 @@ export class ChangeRequestDetailPage {
    * manual action. Matches a button or a menu entry containing "Schedule". */
   scheduleButton(): Locator {
     return this.page
-      .getByRole("button", { name: /^schedule$/i })
-      .or(this.page.getByRole("menuitem", { name: /^schedule$/i }));
+      .getByRole("button", { name: /^schedule/i })
+      .or(this.page.getByRole("menuitem", { name: /^schedule/i }));
   }
 
   /** The lifecycle stepper's current step (`aria-current="step"`). */
@@ -76,9 +77,52 @@ export class ChangeRequestDetailPage {
     return this.lifecycleStepper().locator('[aria-current="step"]');
   }
 
-  /** Header note while a stage is waiting, e.g. "Awaiting CAB Approval". */
+  /** Header note while a stage is waiting, e.g. "Awaiting CAB Approval",
+   * "Awaiting customer approval" or "Awaiting customer review". */
   blockingReason(): Locator {
-    return this.page.getByText(/^Awaiting .+ Approval$/i);
+    return this.page.getByText(/^Awaiting .+ (Approval|review)$/i);
+  }
+
+  /** "Record customer approval" -- the only place `scheduled` is a manual action. */
+  recordCustomerApprovalButton(): Locator {
+    return this.page.getByRole("button", { name: "Record customer approval" });
+  }
+
+  async recordCustomerApproval(): Promise<void> {
+    await this.recordCustomerApprovalButton().click();
+  }
+
+  /** Review's forward move when the CR requires customer review. */
+  sendForCustomerReviewButton(): Locator {
+    return this.page.getByRole("button", { name: "Send for customer review" });
+  }
+
+  /** The primary "Close" button (as opposed to the overflow menu entry). */
+  closeButton(): Locator {
+    return this.page.getByRole("button", { name: "Close", exact: true });
+  }
+
+  /** Read-only Yes/No on the Approval tab beside a label such as
+   * "Customer approval required" / "Customer review required". */
+  flagValue(label: string): Locator {
+    return this.page
+      .getByText(label, { exact: true })
+      .locator("xpath=..")
+      .getByText(/^(Yes|No)$/);
+  }
+
+  /** The lifecycle stepper's step labels, in order. */
+  stepLabels(): Locator {
+    return this.lifecycleStepper().getByRole("listitem");
+  }
+
+  /** The Customer Approval / Customer Review checkboxes in the edit dialog. */
+  editCustomerApprovalCheckbox(): Locator {
+    return this.editDialog().getByRole("checkbox", { name: "Customer Approval" });
+  }
+
+  editCustomerReviewCheckbox(): Locator {
+    return this.editDialog().getByRole("checkbox", { name: "Customer Review" });
   }
 
   /** Explanatory notice shown to the CR's creator in the Approvals card. */

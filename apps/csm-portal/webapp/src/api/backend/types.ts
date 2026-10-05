@@ -2657,6 +2657,17 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
   testPlan?: string | null;
   hasCustomerApproved?: boolean;
   hasCustomerReviewed?: boolean;
+  /**
+   * The two ServiceNow-style creation checkboxes. `customerApprovalRequired`
+   * adds a `customer_approval` step after internal (CAB/ECAB/Standard)
+   * approval and before `scheduled`; `customerReviewRequired` adds a
+   * `customer_review` step after `review` and before `closed`. Distinct from
+   * `hasCustomerApproved` / `hasCustomerReviewed`, which are the customer's
+   * confirmation outcome. Optional so a response from a backend that
+   * predates them still type-checks; absent is treated as `false`.
+   */
+  customerApprovalRequired?: boolean;
+  customerReviewRequired?: boolean;
   approvedBy?: BeEntityRef | null;
   approvedOn?: string | null;
   /**
@@ -2831,6 +2842,12 @@ export interface BeCreateChangeRequestPayload {
   workNote?: string;
   /** "Implementation Plan visible to customers" in this portal's UI. */
   isPlanningVisibleToCustomers?: boolean;
+  /** "Customer Approval" checkbox: adds a customer approval step after
+   * internal approval, before scheduling. The create form always sends it. */
+  customerApprovalRequired?: boolean;
+  /** "Customer Review" checkbox: adds a customer review step after Review,
+   * before closing. The create form always sends it. */
+  customerReviewRequired?: boolean;
 }
 
 /** `POST /change-requests` response — the created identifiers. */
@@ -3066,6 +3083,12 @@ export interface BePatchChangeRequestPayload {
   requestedById?: string;
   /** "Implementation Plan visible to customers" in this portal's UI. */
   isPlanningVisibleToCustomers?: boolean;
+  /** Customer Approval checkbox. The backend refuses (400) a change once the
+   * CR has reached `scheduled` or later, or is in `customer_approval`. */
+  customerApprovalRequired?: boolean;
+  /** Customer Review checkbox. The backend refuses (400) a change once the CR
+   * has reached `customer_review`, `closed`, `rollback` or `canceled`. */
+  customerReviewRequired?: boolean;
 }
 
 /** `PATCH /change-requests/{id}` response — the touched identifiers. */

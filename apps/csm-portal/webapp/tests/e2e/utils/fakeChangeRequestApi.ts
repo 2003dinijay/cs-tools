@@ -23,14 +23,24 @@
 // suite runs against, and the browser session is still the captured one.
 //
 // The contract encoded here is the one the UI is built against:
-//   - `legalNextStates` offers no manual way to `scheduled`, and `authorize`
-//     (listed from Assess) is the approval path, never a button;
+//   - `legalNextStates` offers no manual way to `scheduled` -- except from
+//     `customer_approval`, where `scheduled` means "record the customer's
+//     approval" -- and `authorize` (listed from Assess) is the approval path,
+//     never a button;
 //   - Request Approval (`PATCH {state:"assess"}`) on a Normal CR enters Assess
 //     with a "Peer Approval" stage; on an Emergency CR it enters Authorize with
 //     an "ECAB Approval" stage only; on a Standard CR it goes straight to
-//     Scheduled with no approvals;
+//     the post-approval state with no approvals;
 //   - approving Peer Approval adds a "CAB Approval" stage and moves to
-//     Authorize; approving CAB/ECAB moves the CR to Scheduled by itself;
+//     Authorize; approving CAB/ECAB moves the CR on by itself;
+//   - "the post-approval state" is `customer_approval` when the CR has
+//     `customerApprovalRequired`, else `scheduled`;
+//   - from `customer_approval` legalNextStates = [scheduled, canceled];
+//   - Review offers [customer_review, canceled] when `customerReviewRequired`,
+//     else [closed, canceled]; `customer_review` -> [closed, canceled];
+//   - `customerApprovalRequired` / `customerReviewRequired` are on the detail
+//     response and editable via PATCH until their gate passes; a late edit is
+//     refused with a 400 and a readable message;
 //   - the CR's creator can never approve.
 //
 
@@ -64,14 +74,31 @@ interface Stage {
   approvers: Approver[];
 }
 
+/** The two ServiceNow-style creation checkboxes the CR carries. */
+export interface FakeCustomerFlags {
+  customerApprovalRequired: boolean;
+  customerReviewRequired: boolean;
+}
+
+/** States from which each checkbox can no longer be changed (backend refuses with 400). */
+const APPROVAL_FLAG_LOCKED = ["customer_approval", "scheduled", "implement", "review", "customer_review", "closed", "rollback", "canceled"];
+const REVIEW_FLAG_LOCKED = ["customer_review", "closed", "rollback", "canceled"];
+
 export interface FakeChangeRequestApi {
   /** Who the app believes is signed in (applied on the next page load). */
   setViewer(user: FakeUser): void;
+  /** The CR's current lifecycle state, as the fake backend holds it. */
+  state(): string;
+  /** The CR's current checkbox settings, as the fake backend holds them. */
+  flags(): FakeCustomerFlags;
+  /** Moves the fake CR to `next` out-of-band (e.g. while an edit dialog is
+   * still open on a stale copy), without touching its approval stages. */
+  setState(next: string): void;
   /** Every request the fake served, as "METHOD /path". */
   requests(): string[];
 }
 
-function legalNextStates(state: string): string[] {
+function legalNextStates(state: string, flags: FakeCustomerFlags): string[] {
   switch (state) {
     case "new":
       return ["assess", "canceled"];
@@ -79,12 +106,16 @@ function legalNextStates(state: string): string[] {
       return ["authorize", "canceled"]; // authorize = the approval path, never a button
     case "authorize":
       return ["canceled"];
+    case "customer_approval":
+      return ["scheduled", "canceled"]; // scheduled = "Record customer approval"
     case "scheduled":
       return ["implement", "canceled"];
     case "implement":
       return ["review", "canceled"];
     case "review":
-      return ["closed", "customer_review", "canceled"];
+      return flags.customerReviewRequired ? ["customer_review", "canceled"] : ["closed", "canceled"];
+    case "customer_review":
+      return ["closed", "canceled"];
     default:
       return [];
   }
@@ -102,9 +133,16 @@ export async function installFakeChangeRequestApi(
   page: Page,
   type: FakeCrType,
   viewer: FakeUser = FAKE_CREATOR,
+  initialFlags: Partial<FakeCustomerFlags> = {},
 ): Promise<FakeChangeRequestApi> {
   let currentViewer = viewer;
   let state = "new";
+  const flags: FakeCustomerFlags = {
+    customerApprovalRequired: initialFlags.customerApprovalRequired ?? false,
+    customerReviewRequired: initialFlags.customerReviewRequired ?? false,
+  };
+  /** Where a CR lands once its internal approval is granted. */
+  const afterInternalApproval = (): string => (flags.customerApprovalRequired ? "customer_approval" : "scheduled");
   let stages: Stage[] = [];
   const log: string[] = [];
 
@@ -118,7 +156,9 @@ export async function installFakeChangeRequestApi(
     type,
     assignedTeam: { id: "00000000-0000-0000-0000-00000000a001", name: "Platform" },
     requestedBy: { id: FAKE_CREATOR.id, name: FAKE_CREATOR.name },
-    legalNextStates: legalNextStates(state),
+    customerApprovalRequired: flags.customerApprovalRequired,
+    customerReviewRequired: flags.customerReviewRequired,
+    legalNextStates: legalNextStates(state, flags),
   });
 
   const cors = (route: Route): Record<string, string> => ({
@@ -177,7 +217,7 @@ export async function installFakeChangeRequestApi(
             state = "authorize";
             stages = [...stages, nextStage("CAB Approval", "CAB", FAKE_CAB)];
           } else {
-            state = "scheduled"; // CAB / ECAB approval schedules the CR itself
+            state = afterInternalApproval(); // CAB / ECAB approval moves the CR on itself
           }
         }
         return json(route, { id: FAKE_CR_ID, state });
@@ -199,9 +239,30 @@ export async function installFakeChangeRequestApi(
         return json(route, { comments: [], hasMore: false, totalRecords: 0 });
       }
       if (req.method() === "PATCH") {
-        const { state: target } = req.postDataJSON() as { state?: string };
+        const body = req.postDataJSON() as {
+          state?: string;
+          customerApprovalRequired?: boolean;
+          customerReviewRequired?: boolean;
+        };
+        // Checkbox edits: refused once the gate they control has passed.
+        if (body.customerApprovalRequired !== undefined) {
+          if (APPROVAL_FLAG_LOCKED.includes(state)) {
+            return json(route, { message: `customerApprovalRequired cannot be changed once the change request is ${state}` }, 400);
+          }
+          flags.customerApprovalRequired = body.customerApprovalRequired;
+        }
+        if (body.customerReviewRequired !== undefined) {
+          if (REVIEW_FLAG_LOCKED.includes(state)) {
+            return json(route, { message: `customerReviewRequired cannot be changed once the change request is ${state}` }, 400);
+          }
+          flags.customerReviewRequired = body.customerReviewRequired;
+        }
+        const target = body.state;
+        if (target === undefined) {
+          return json(route, { id: FAKE_CR_ID, state });
+        }
         if (target === "assess") {
-          if (type === "standard") state = "scheduled";
+          if (type === "standard") state = afterInternalApproval();
           else if (type === "emergency") {
             state = "authorize";
             stages = [nextStage("ECAB Approval", "ECAB", FAKE_ECAB)];
@@ -209,7 +270,12 @@ export async function installFakeChangeRequestApi(
             state = "assess";
             stages = [nextStage("Peer Approval", "Peers", FAKE_PEER)];
           }
-        } else if (target && target !== "scheduled" && target !== "authorize") {
+        } else if (target === "scheduled" && state === "customer_approval") {
+          state = "scheduled"; // the customer's approval was recorded
+        } else if (target !== "scheduled" && target !== "authorize" && target !== "customer_approval") {
+          if (!legalNextStates(state, flags).includes(target)) {
+            return json(route, { message: `Illegal transition from ${state} to ${target}.` }, 400);
+          }
           state = target;
         } else {
           return json(route, { message: `Illegal transition to ${String(target)}.` }, 400);
@@ -227,6 +293,11 @@ export async function installFakeChangeRequestApi(
     setViewer: (user) => {
       currentViewer = user;
     },
+    state: () => state,
+    setState: (next) => {
+      state = next;
+    },
+    flags: () => ({ ...flags }),
     requests: () => [...log],
   };
 }

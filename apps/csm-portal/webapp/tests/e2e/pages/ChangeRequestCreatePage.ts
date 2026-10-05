@@ -52,6 +52,16 @@ export class ChangeRequestCreatePage {
     await this.typeRadio(type).check();
   }
 
+  /** The "Customer Approval" checkbox (a real checkbox, unchecked by default). */
+  customerApprovalCheckbox(): Locator {
+    return this.page.getByRole("checkbox", { name: "Customer Approval" });
+  }
+
+  /** The "Customer Review" checkbox (a real checkbox, unchecked by default). */
+  customerReviewCheckbox(): Locator {
+    return this.page.getByRole("checkbox", { name: "Customer Review" });
+  }
+
   /** MUI's required-field asterisk (a thin-space + `*` folded into the
    * computed accessible name) makes an exact "Subject" match find nothing —
    * this anchored, marker-tolerant regex matches either way. */
@@ -77,9 +87,15 @@ export class ChangeRequestCreatePage {
    * itself, which would let this assertion pass instantly on a still-pending
    * (or failed) submit, before the app ever navigates to the created
    * record's real id. */
-  async fillSubjectAndSubmit(subject: string, type: ChangeType = "Normal"): Promise<void> {
+  async fillSubjectAndSubmit(
+    subject: string,
+    type: ChangeType = "Normal",
+    opts: { customerApproval?: boolean; customerReview?: boolean } = {},
+  ): Promise<void> {
     await this.selectType(type);
     await this.subjectField().fill(subject);
+    if (opts.customerApproval) await this.customerApprovalCheckbox().check();
+    if (opts.customerReview) await this.customerReviewCheckbox().check();
     await expect(this.createButton()).toBeEnabled();
     await this.createButton().click();
     await expect(this.page).toHaveURL(/\/operations\/change-requests\/(?!new(?:[/?#]|$))[^/]+$/, {

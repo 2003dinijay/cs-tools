@@ -382,6 +382,46 @@ describe("ChangeRequestApprovals — Peer / CAB / ECAB stages", () => {
   });
 });
 
+describe("ChangeRequestApprovals — internal approvals while the CR waits for the customer", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCurrentUser("c");
+    mockDecideMutation();
+  });
+
+  it("keeps showing the settled Peer and CAB stages, with no Approve/Reject, once the CR sits in customer_approval", () => {
+    // Customer approval is a state of the CR, not an internal approval stage:
+    // the panel only ever reflects what the backend returns, all settled here.
+    mockQueryResult({
+      data: {
+        approvals: [
+          { stage: "Peer Approval", approverType: "STATIC_GROUP", approverName: "Peers", status: "APPROVED", approvers: [{ id: "p", name: "Peer One", status: "APPROVED" }] },
+          { stage: "CAB Approval", approverType: "STATIC_GROUP", approverName: "CAB", status: "APPROVED", approvers: [{ id: "c", name: "Cab One", status: "APPROVED" }] },
+        ],
+      },
+    });
+    render(<ChangeRequestApprovals id="chg-1" />);
+    expect(screen.getByText("Peer One").closest("tr")).toHaveTextContent("Approved");
+    expect(screen.getByText("Cab One").closest("tr")).toHaveTextContent("Approved");
+    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
+  });
+
+  it("renders a backend-provided 'Customer Approval' stage under its own name rather than as Peer/CAB", () => {
+    mockQueryResult({
+      data: {
+        approvals: [
+          { stage: "Customer Approval", approverType: "DYNAMIC_CONTACT", approverName: null, status: "REQUESTED", approvers: [{ id: "x", name: "Acme Contact", status: "REQUESTED" }] },
+        ],
+      },
+    });
+    render(<ChangeRequestApprovals id="chg-1" />);
+    expect(screen.getByText("Acme Contact").closest("tr")).toHaveTextContent("Customer Approval");
+    expect(screen.queryByText("Peer Approval")).not.toBeInTheDocument();
+    expect(screen.queryByText("CAB Approval")).not.toBeInTheDocument();
+  });
+});
+
 describe("ChangeRequestApprovals — the creator cannot approve", () => {
   const stages = (approverId: string) => ({
     approvals: [

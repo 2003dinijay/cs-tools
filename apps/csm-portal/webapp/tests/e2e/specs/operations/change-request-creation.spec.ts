@@ -79,6 +79,52 @@ test.describe("change request creation — page structure", () => {
   });
 });
 
+test.describe("change request creation — Customer Approval / Customer Review checkboxes", () => {
+  test("offers both as real checkboxes, unchecked by default, with their helper lines", async ({ page }) => {
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+
+    await expect(cr.customerApprovalCheckbox()).not.toBeChecked();
+    await expect(cr.customerReviewCheckbox()).not.toBeChecked();
+    await expect(
+      page.getByText("Adds a customer approval step after internal approval, before scheduling."),
+    ).toBeVisible();
+    await expect(page.getByText("Adds a customer review step after Review, before closing.")).toBeVisible();
+    await expect(page.getByRole("switch", { name: /customer (approval|review)/i })).toHaveCount(0);
+  });
+
+  for (const [approval, review] of [
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ] as const) {
+    test(`always sends both flags in the POST payload (approval ${approval}, review ${review})`, async ({ page }) => {
+      const cr = new ChangeRequestCreatePage(page);
+      await cr.goto();
+      await cr.selectType("Normal");
+      await cr.subjectField().fill(e2eChangeRequestSubject("customer flags payload check"));
+      if (approval) await cr.customerApprovalCheckbox().check();
+      if (review) await cr.customerReviewCheckbox().check();
+
+      // Intercept (and abort) the create so this check never leaves a
+      // permanent staging record behind -- it only inspects the request body.
+      let sent: Record<string, unknown> | undefined;
+      await page.route(
+        (url) => url.pathname.endsWith("/change-requests"),
+        async (route) => {
+          if (route.request().method() !== "POST") return route.fallback();
+          sent = route.request().postDataJSON() as Record<string, unknown>;
+          await route.abort();
+        },
+      );
+      await cr.createButton().click();
+      await expect.poll(() => sent).toBeDefined();
+      expect(sent).toMatchObject({ customerApprovalRequired: approval, customerReviewRequired: review });
+    });
+  }
+});
+
 test.describe("change request creation — happy path", () => {
   test("creates a real change request and lands on its detail page", async ({ page }) => {
     // Real network round trip to create, then a navigation and a second

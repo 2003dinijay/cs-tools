@@ -854,3 +854,132 @@ describe("CreateChangeRequestPage — required change type (Normal / Standard / 
     expect(screen.getByRole("radio", { name: /^emergency/i })).toBeChecked();
   });
 });
+
+describe("CreateChangeRequestPage — Customer Approval / Customer Review checkboxes", () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+    locationState = undefined;
+    navigateMock.mockReset();
+    postChangeRequestMutateMock.mockReset();
+    patchChangeRequestMutateMock.mockReset();
+    showErrorMock.mockReset();
+  });
+
+  function submittedPayload(): Record<string, unknown> {
+    fireEvent.click(screen.getByRole("button", { name: /create change request/i }));
+    expect(postChangeRequestMutateMock).toHaveBeenCalledTimes(1);
+    return postChangeRequestMutateMock.mock.calls[0]![0] as Record<string, unknown>;
+  }
+
+  it("renders both as real checkboxes (not switches), unchecked by default", () => {
+    render(<CreateChangeRequestPage />);
+    const approval = screen.getByRole("checkbox", { name: "Customer Approval" });
+    const review = screen.getByRole("checkbox", { name: "Customer Review" });
+    expect(approval).not.toBeChecked();
+    expect(review).not.toBeChecked();
+    // A MUI Switch would expose role="switch"; these must not.
+    expect(screen.queryByRole("switch", { name: /customer (approval|review)/i })).not.toBeInTheDocument();
+    expect((approval as HTMLInputElement).type).toBe("checkbox");
+    expect((review as HTMLInputElement).type).toBe("checkbox");
+  });
+
+  it("shows each one's helper line", () => {
+    render(<CreateChangeRequestPage />);
+    expect(
+      screen.getByText("Adds a customer approval step after internal approval, before scheduling."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Adds a customer review step after Review, before closing."),
+    ).toBeInTheDocument();
+    // The helper text describes its checkbox for assistive tech.
+    expect(screen.getByRole("checkbox", { name: "Customer Approval" })).toHaveAccessibleDescription(
+      /customer approval step/i,
+    );
+  });
+
+  it("always sends both flags, false/false when neither is checked", () => {
+    render(<CreateChangeRequestPage />);
+    fillSubject("Normal");
+    const payload = submittedPayload();
+    expect(payload).toHaveProperty("customerApprovalRequired", false);
+    expect(payload).toHaveProperty("customerReviewRequired", false);
+  });
+
+  it.each([
+    [true, false],
+    [false, true],
+    [true, true],
+  ])("sends customerApprovalRequired=%s and customerReviewRequired=%s", (approval, review) => {
+    render(<CreateChangeRequestPage />);
+    fillSubject("Normal");
+    if (approval) fireEvent.click(screen.getByRole("checkbox", { name: "Customer Approval" }));
+    if (review) fireEvent.click(screen.getByRole("checkbox", { name: "Customer Review" }));
+    const payload = submittedPayload();
+    expect(payload.customerApprovalRequired).toBe(approval);
+    expect(payload.customerReviewRequired).toBe(review);
+  });
+
+  it("sits with Priority and Impact, above the Planning section", () => {
+    render(<CreateChangeRequestPage />);
+    const approval = screen.getByRole("checkbox", { name: "Customer Approval" });
+    expect(
+      screen.getByText("Planning").compareDocumentPosition(approval) & Node.DOCUMENT_POSITION_PRECEDING,
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("combobox", { name: /impact/i }).compareDocumentPosition(approval) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("restores both checked boxes from an in-progress draft after unmount/remount", () => {
+    const { unmount } = render(<CreateChangeRequestPage />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Customer Approval" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Customer Review" }));
+    unmount();
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByRole("checkbox", { name: "Customer Approval" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Customer Review" })).toBeChecked();
+  });
+
+  it("starts unchecked from a draft saved before these checkboxes existed", () => {
+    const legacyDraft: ChangeRequestDraft = {
+      subject: "Old draft",
+      type: "normal",
+      impact: "low",
+      priority: "",
+      plannedStartDate: "",
+      plannedEndDate: "",
+      description: "",
+      justification: "",
+      implementationPlan: "",
+      riskImpactAnalysis: "",
+      backoutPlan: "",
+      testPlan: "",
+      isPlanningVisibleToCustomers: false,
+      groupId: "",
+      assignedEngineerId: "",
+      requestedById: "",
+      parentValue: "",
+    };
+    saveChangeRequestDraft(changeRequestDraftKey({ kind: "new" }), legacyDraft);
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByRole("checkbox", { name: "Customer Approval" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Customer Review" })).not.toBeChecked();
+  });
+
+  it("pre-checks the boxes a clone's source had, and sends them", () => {
+    locationState = {
+      sourceNumber: "CHG0009988",
+      subject: "Clone me",
+      type: "normal",
+      customerApprovalRequired: true,
+      customerReviewRequired: false,
+    };
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByRole("checkbox", { name: "Customer Approval" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Customer Review" })).not.toBeChecked();
+    const payload = submittedPayload();
+    expect(payload.customerApprovalRequired).toBe(true);
+    expect(payload.customerReviewRequired).toBe(false);
+  });
+});
