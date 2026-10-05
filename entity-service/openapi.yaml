@@ -18927,7 +18927,7 @@ components:
           type: string
           nullable: true
           description: Optional caller-supplied external-system key, stored on ServiceNow's
-            correlation_id field. Look it up via SearchIncidentsFilters.correlationId
+            correlation_id field. Look it up via SearchIncidentsRequest filters.correlationId
             to find an incident this caller already created, without depending on
             free-text search over subject or workNotes.
         environment:

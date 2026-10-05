@@ -133,3 +133,27 @@ func TestSNIncidentMirror_SendsTheGivenGroupWithoutALookup(t *testing.T) {
 		t.Errorf("assignmentGroupId = %v, want %s", body["assignmentGroupId"], uuidToSysid(testSupportGroup))
 	}
 }
+
+// Running out of pages is not proof the service has no group -- it may be
+// further on -- so the create fails rather than going out unassigned.
+func TestSNCreateIncident_ExhaustedScanIsAnError(t *testing.T) {
+	req := validCreateIncidentRequest()
+	services := make([]snServiceFixture, 0, snServiceScanMaxPages*maxLimit+1)
+	for i := 0; i < snServiceScanMaxPages*maxLimit; i++ {
+		services = append(services, snServiceFixture{sysid: fmt.Sprintf("%032x", i+1), group: "0123456789abcdef0123456789abcdef"})
+	}
+	services = append(services, snServiceFixture{sysid: uuidToSysid(req.ServiceID), group: "fedcba9876543210fedcba9876543210"})
+
+	var body map[string]any
+	var lookups int32
+	svc := NewServiceNowIncidentService(newTestSNClient(t, snCreateCapturingClient(t, services, &body, &lookups)), nil)
+	if _, err := svc.CreateIncident(contextWithUserIDToken("token"), req); err == nil {
+		t.Fatal("CreateIncident succeeded; an inconclusive scan must not create the incident unassigned")
+	}
+	if body != nil {
+		t.Errorf("an incident was created: %v", body)
+	}
+	if lookups != snServiceScanMaxPages {
+		t.Errorf("lookups = %d, want %d", lookups, snServiceScanMaxPages)
+	}
+}

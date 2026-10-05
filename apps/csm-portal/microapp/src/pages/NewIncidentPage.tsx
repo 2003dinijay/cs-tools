@@ -288,8 +288,9 @@ export default function NewIncidentPage() {
           disabled={createIncident.isPending}
           search={changeRequestLookups.itServices}
           // The backend sets the assignment group from the service's support group; there is no
-          // group to pick here, and a create that sends one is refused.
-          helperText="The assignment group is set from this service."
+          // group to pick here, and a create that sends one is refused. A service with no support
+          // group creates the incident unassigned.
+          helperText="The assignment group is set from this service's support group, if it has one."
         />
 
         {/* Everything below is optional and used less often at creation time — collapsed by

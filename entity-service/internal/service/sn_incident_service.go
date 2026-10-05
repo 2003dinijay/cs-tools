@@ -1667,8 +1667,7 @@ func (s *snIncidentService) HandOffIncidentToSpecialist(ctx context.Context, req
 }
 
 // snServiceScanMaxPages bounds supportGroupOfService's scan at 40 pages of
-// maxLimit (2,000 services). A bound, not a size estimate: if the CMDB
-// outgrows it, the "service not found" warning below is the signal.
+// maxLimit (2,000 services).
 const snServiceScanMaxPages = 40
 
 // supportGroupOfService is incidentService.withAssignmentGroupFromService for
@@ -1679,8 +1678,13 @@ const snServiceScanMaxPages = 40
 // filters on `name CONTAINS searchQuery` only -- there is no lookup by sys_id
 // -- so the service is found by paging through cmdb_ci_service and matching
 // the id. It runs once per incident create and stops at the first match.
-// A service not found within the bound leaves the incident unassigned, with
-// a warning, rather than failing the create.
+//
+// *** ONLY A COMPLETE SCAN MAY CONCLUDE "NO GROUP". *** A short page means
+// ServiceNow has no more services, so a service not seen by then is not
+// listed and the incident is created unassigned, with a warning. Running out
+// of pages proves nothing -- the service may simply be further on -- so that
+// is an error: creating the incident unassigned there would misroute one
+// whose service does have a group.
 func (s *snIncidentService) supportGroupOfService(ctx context.Context, token, serviceID string) (*string, error) {
 	want := uuidToSysid(strings.TrimSpace(serviceID))
 	for page := 0; page < snServiceScanMaxPages; page++ {
@@ -1704,10 +1708,11 @@ func (s *snIncidentService) supportGroupOfService(ctx context.Context, token, se
 			return &group, nil
 		}
 		if len(resp.Services) < maxLimit {
-			break
+			slog.WarnContext(ctx, "incident create: service not in ServiceNow's service list; creating it with no assignment group",
+				"serviceId", serviceID)
+			return nil, nil
 		}
 	}
-	slog.WarnContext(ctx, "incident create: service not found in ServiceNow's service list; creating it with no assignment group",
-		"serviceId", serviceID)
-	return nil, nil
+	return nil, fmt.Errorf("looking up the support group of service %s: not found in the first %d ServiceNow services; raise snServiceScanMaxPages",
+		serviceID, snServiceScanMaxPages*maxLimit)
 }
