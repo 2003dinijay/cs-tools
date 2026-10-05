@@ -2587,7 +2587,7 @@ false`, idempotent) and the API fields **`customerApprovalRequired`** /
 `PATCH /change-requests/{id}`, returned on the detail response (and the PATCH
 receipt). Postgres data source only.
 
-* **They are NOT `is_customer_approved` / `is_customer_reviewed`.** Those two
+* **They are NOT `is_customer_approval_required` / `is_customer_review_required`.** Those two
   record the customer's *outcome* ("the customer has confirmed"): authorized
   (internal user or registered `PORTAL_USER` contact) and one-way-locked by
   `authorizeChangeRequestCustomerFlagWrite`, and in the ServiceNow scripted API
@@ -2609,7 +2609,7 @@ receipt). Postgres data source only.
   Approval — an assumption) — a change with `customerApprovalRequired` goes to
   **`customer_approval`** instead. There `legalNextStates` is `[scheduled,
   canceled]`; the human PATCH `{state: "scheduled"}` records the customer's
-  approval: it stamps `is_customer_approved = true` through the same
+  approval: it stamps `is_customer_approval_required = true` through the same
   `authorizeChangeRequestCustomerFlagWrite` (authorization + lock) a direct
   `isCustomerApproved` write uses and schedules the change. A manual `scheduled`
   from any other state is refused; so is `{state: "scheduled",
@@ -2623,7 +2623,7 @@ receipt). Postgres data source only.
   refused when not required ("customer review is not required …"), and
   `{state: "closed"}` from `review` is refused when required ("customer review
   is required …; move it to customer_review first"). `customer_review` offers
-  `[closed, canceled]`; closing from it stamps `is_customer_reviewed = true`
+  `[closed, canceled]`; closing from it stamps `is_customer_review_required = true`
   (same authorization/lock). No other transition is graph-checked — as before,
   the PATCH does not enforce a full transition graph.
 * **Editable only until the gate is passed** (`validateCustomerGateEdits`,
@@ -3291,7 +3291,7 @@ mirror and the system it models.
 - **Schema** (migration 0178): `change_request.is_on_hold BOOLEAN`,
   `on_hold_reason TEXT`, `on_hold_started_on TIMESTAMPTZ`. Shape follows two
   existing precedents in this same table rather than inventing a third: the
-  boolean naming matches `is_customer_approved`/`is_customer_reviewed`/
+  boolean naming matches `is_customer_approval_required`/`is_customer_review_required`/
   `is_planning_visible_to_customers` (migration 0043), and the
   flag-plus-"since" pairing mirrors `work_item.workaround_provided_on`/
   `workaround_provided_by_user_id` (migration 0021) — a nullable TIMESTAMPTZ
@@ -3388,7 +3388,7 @@ mirror and the system it models.
   and a blocked-reason display on the action bar are a deliberate follow-up
   cycle once this API contract exists, not part of this change.
 
-**`is_customer_approved`/`is_customer_reviewed` are now authorized and
+**`is_customer_approval_required`/`is_customer_review_required` are now authorized and
 one-way-locked — the last gap in this schema's four internal approval
 checkpoints plus these two customer-facing fields had no authorization of
 its own at all before this.** `PatchChangeRequestRequest.IsCustomerApproved`/

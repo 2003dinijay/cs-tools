@@ -63,11 +63,11 @@ import (
 //	    assumption, Standard has no internal approvals to put the gate after) it
 //	    moves it to Customer Approval instead when customer_approval_required.
 //	    A human then records the customer's approval ({state: "scheduled"},
-//	    legal ONLY from Customer Approval), which stamps is_customer_approved
+//	    legal ONLY from Customer Approval), which stamps is_customer_approval_required
 //	    and schedules the change.
 //	review gate: Review -> Customer Review -> Closed when
 //	    customer_review_required, Review -> Closed otherwise. Closing from
-//	    Customer Review records the customer's review (is_customer_reviewed).
+//	    Customer Review records the customer's review (is_customer_review_required).
 
 // Stage labels written to approval_stage.checkpoint_label by this file's
 // provisioning. LegacyAssessLabel/LegacyAuthorizeLabel are what stages created
