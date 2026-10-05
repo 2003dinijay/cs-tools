@@ -539,7 +539,7 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 	v := domain.IncidentView{
 		ID: &id2, Number: &number, Subject: &subject,
 		Priority: priority, State: state, Category: category, Subcategory: subcatL,
-		ContactType: contactType, Impact: impact, Urgency: urgency,
+		ContactType: incidentContactTypeFromEnum(contactType), Impact: impact, Urgency: urgency,
 		ResolutionCode: resolutionCode, ResolutionNotes: closeNotes, IncidentReport: incidentReport,
 		Description:           description,
 		WatchList:             []domain.IncidentWatchListItem{},
@@ -723,6 +723,19 @@ func incidentContactTypeToEnum(c domain.IncidentContactType) string {
 		return "SITE_24_7"
 	}
 	return string(c)
+}
+
+// incidentContactTypeFromEnum is incidentContactTypeToEnum's inverse, for
+// reads: the enum's 'SITE_24_7' goes back out as "SITE_247", so a channel
+// (the UI's name for contact type) round-trips to the same value the API
+// accepted, and the one the webapp's/microapp's option lists use. Every
+// other label is passed through unchanged.
+func incidentContactTypeFromEnum(label *string) *string {
+	if label != nil && *label == "SITE_24_7" {
+		v := string(domain.IncidentContactTypeSite247)
+		return &v
+	}
+	return label
 }
 
 // createIncidentCommentQuery mirrors createCaseCommentQuery's (case_repo.go,
