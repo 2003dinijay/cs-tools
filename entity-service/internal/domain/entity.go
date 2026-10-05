@@ -7669,20 +7669,27 @@ type SearchAnnouncementRequestUpdatesResponse struct {
 	Updates []AnnouncementRequestUpdate `json:"updates"`
 }
 
-// SearchAnnouncementRequestsRequest filters announcement_requests. State and
-// CreatedBy are both optional; omitting both returns every row (subject to
-// pagination) — there is no default filter, unlike some other search
-// endpoints in this service, since every caller of this endpoint so far
-// (the registry page's "Pending" tab) needs to choose its own filter
-// explicitly rather than inherit an implicit one.
+// SearchAnnouncementRequestsRequest filters announcement_requests. State,
+// States and CreatedBy are all optional; omitting all of them returns every
+// row (subject to pagination) — there is no default filter, unlike some
+// other search endpoints in this service, since every caller of this
+// endpoint so far (the registry page's "Pending" tab) needs to choose its
+// own filter explicitly rather than inherit an implicit one.
 type SearchAnnouncementRequestsRequest struct {
-	State     *AnnouncementRequestState `json:"state,omitempty"`
-	CreatedBy *string                   `json:"createdBy,omitempty"`
+	State *AnnouncementRequestState `json:"state,omitempty"`
+	// States matches a row in any of the listed states, in one paginated
+	// result (so Total/HasMore describe the merged list, not one state).
+	// State stays for single-state callers (the registry's published-requests
+	// lookup); the two are mutually exclusive, and an empty/omitted States
+	// means "no state filter," same as an omitted State.
+	States    []AnnouncementRequestState `json:"states,omitempty"`
+	CreatedBy *string                    `json:"createdBy,omitempty"`
 	// ReadyForScheduledPublish, when true, ignores State and instead matches
 	// every approved row whose ScheduledFor is set and has already arrived
 	// (scheduled_for <= now()) — the one query
 	// operations/csm-scheduled-tasks' "publish_scheduled_announcements"
-	// sub-cron needs. Mutually exclusive with State (ambiguous otherwise).
+	// sub-cron needs. Mutually exclusive with State and States (ambiguous
+	// otherwise).
 	ReadyForScheduledPublish bool       `json:"readyForScheduledPublish,omitempty"`
 	Pagination               Pagination `json:"pagination"`
 }

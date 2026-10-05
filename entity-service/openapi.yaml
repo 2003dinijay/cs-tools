@@ -654,7 +654,7 @@ paths:
 
   /announcement-requests/search:
     post:
-      summary: Search announcement_requests rows, newest first, optionally filtered by state and/or createdBy.
+      summary: Search announcement_requests rows, newest first, optionally filtered by state (or a list of states) and/or createdBy.
       operationId: searchAnnouncementRequests
       requestBody:
         required: true
@@ -23091,6 +23091,16 @@ components:
         state:
           type: string
           enum: [draft, pending_approval, approved, published]
+        states:
+          type: array
+          description: >-
+            Matches a request in any of the listed states, as one merged
+            paginated list (total/hasMore describe the merged list). An empty
+            or omitted list means no state filter. Rejected if combined with
+            state or readyForScheduledPublish.
+          items:
+            type: string
+            enum: [draft, pending_approval, approved, published]
         createdBy:
           type: string
         readyForScheduledPublish:
@@ -23099,7 +23109,7 @@ components:
             When true, ignores state and instead matches every approved
             request whose scheduledFor has already arrived — the query
             operations/csm-scheduled-tasks' publish_scheduled_announcements
-            sub-cron uses. Rejected if combined with state.
+            sub-cron uses. Rejected if combined with state or states.
         pagination:
           $ref: '#/components/schemas/Pagination'
 

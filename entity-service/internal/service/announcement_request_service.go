@@ -133,8 +133,16 @@ func (s *announcementRequestService) Search(ctx context.Context, req domain.Sear
 	if req.State != nil && !isValidAnnouncementRequestState(*req.State) {
 		return domain.SearchAnnouncementRequestsResponse{}, &apierror.ValidationError{Msg: "state must be one of: draft, pending_approval, approved, published"}
 	}
-	if req.ReadyForScheduledPublish && req.State != nil {
-		return domain.SearchAnnouncementRequestsResponse{}, &apierror.ValidationError{Msg: "readyForScheduledPublish cannot be combined with state"}
+	for _, st := range req.States {
+		if !isValidAnnouncementRequestState(st) {
+			return domain.SearchAnnouncementRequestsResponse{}, &apierror.ValidationError{Msg: "states must each be one of: draft, pending_approval, approved, published"}
+		}
+	}
+	if req.State != nil && len(req.States) > 0 {
+		return domain.SearchAnnouncementRequestsResponse{}, &apierror.ValidationError{Msg: "state cannot be combined with states"}
+	}
+	if req.ReadyForScheduledPublish && (req.State != nil || len(req.States) > 0) {
+		return domain.SearchAnnouncementRequestsResponse{}, &apierror.ValidationError{Msg: "readyForScheduledPublish cannot be combined with state or states"}
 	}
 
 	requests, total, err := s.repo.Search(ctx, req)
