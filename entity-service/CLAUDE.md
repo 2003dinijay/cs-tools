@@ -1011,7 +1011,28 @@ revisited.
   `req.Type == domain.CommentTypeWorkNote` on every publish — `csm-notification-service`
   renders a distinct email layout for it (`RenderInternalNoteEmail`, see
   that service's own `CLAUDE.md`), so it needs to know the comment's type,
-  not just receive an already-filtered recipient list.
+  not just receive an already-filtered recipient list. `CommentAddedPayload`
+  also carries `AuthorEmail` (the same resolved author identity as `Name`,
+  just the address rather than the display name — `author.Email`/`actorEmail`
+  at each of this payload's two call sites), `Product` (`caseProductName(cv)`),
+  and `Team`/`IsEvaluationAccount`/`ProjectOnboardingStatus` — purely for
+  `csm-notification-service`'s own consumption: `AuthorEmail` lets that
+  service classify whether a new comment is customer-authored before running
+  it through its frustration-detection step (see that service's own
+  `CLAUDE.md`, "Frustration detection"), and `Team`/`IsEvaluationAccount`/
+  `ProjectOnboardingStatus` let a resulting Chat alert route through
+  `chataudience.Resolve` the same team-first way an SLA breach alert does,
+  rather than always the fixed `Incident Monitor` audience. The latter two are
+  resolved via the new `CaseRepository.ProjectOnboardingInfo(ctx, projectID)`
+  (a small, on-demand `project`/`project_type` join — the same two facts
+  `sla_status_repo.go`'s own bulk join already resolves for `GET
+  /sla-status`, just read here per-comment instead of in bulk), reached from
+  `snCaseService` via the same `pgFallback`-delegation pattern as
+  `AccountDefaultWatcherEmails` just above (empty/`false` with no error on a
+  pure-ServiceNow deployment with no Postgres pool). A lookup failure here is
+  logged and the fields are simply left at their zero value — the email
+  reaction `publishCommentAddedEvent` exists to drive must never be blocked
+  by this enrichment failing.
 
 `publishCaseCreated`, `publishCommentAdded`, `publishStatusChanged`, and
 `publishCaseAssigned` — every `case.*` publisher above, not

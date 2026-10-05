@@ -36,6 +36,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/dispatch"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/escalation"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
@@ -94,6 +95,18 @@ func main() {
 		Language:            os.Getenv("TWILIO_LANGUAGE"),
 		APIBaseURL:          os.Getenv("TWILIO_API_BASE_URL"),
 	})
+
+	// The frustration-detection escalation client (dispatch.checkFrustration,
+	// case.comment_added only) is likewise optional per deployment: an unset
+	// ESCALATION_DETECTOR_BASE_URL means WithFrustrationDetection below is
+	// simply never called, and checkFrustration's own nil-frustrationDetector
+	// check skips the step entirely rather than erroring on every comment.
+	var escalationClient *escalation.Client
+	if baseURL := os.Getenv("ESCALATION_DETECTOR_BASE_URL"); baseURL != "" {
+		escalationClient = escalation.New(escalation.Config{BaseURL: baseURL})
+	} else {
+		slog.Warn("ESCALATION_DETECTOR_BASE_URL not set; frustration detection on case.comment_added is disabled")
+	}
 
 	// The customer entity service backs per-recipient portal-link resolution
 	// (internal/recipientlinks) — optional per deployment like the channel
@@ -299,6 +312,17 @@ func main() {
 
 	dispatcher := dispatch.NewDispatcher(emailClient, googleChatClient, twilioClient, linkResolver, emailSendingEnabled, emailDebugMode, emailDebugRecipients, callSendingEnabled, defaultOnCallNumber, defaultCSMEmailCC).
 		WithOnboarding(loadOnboardingConfig(customerEntityClient, emailClient))
+	// escalationClient is a *escalation.Client, not the escalationDetector
+	// interface itself -- passing it through WithFrustrationDetection
+	// unconditionally when nil would store a non-nil interface wrapping a
+	// nil pointer (the same "nil pointer in an interface is non-nil" trap
+	// entity-service's own health handler guards against), making
+	// checkFrustration's own frustrationDetector != nil check always true
+	// and then panicking on DetectEscalation. Only chain it in when a real
+	// client was constructed.
+	if escalationClient != nil {
+		dispatcher = dispatcher.WithFrustrationDetection(escalationClient)
+	}
 
 	// The main consumer's OnExhausted: publish the exhausted record to the
 	// dead-letter topic instead of just logging and dropping it. The DLQ's

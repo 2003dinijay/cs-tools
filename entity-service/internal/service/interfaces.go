@@ -647,6 +647,12 @@ type CaseService interface {
 	// access at all (a pure ServiceNow data source with no pgFallback
 	// configured), returns an empty slice and no error.
 	AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error)
+	// ProjectOnboardingInfo returns projectID's own onboarding status and
+	// evaluation-account flag -- see CaseRepository.ProjectOnboardingInfo's
+	// own doc comment. A project with no linked account, or no Postgres
+	// access at all (a pure ServiceNow data source with no pgFallback
+	// configured), returns the zero values and no error.
+	ProjectOnboardingInfo(ctx context.Context, projectID string) (onboardingStatus string, isEvaluationAccount bool, err error)
 	// GetCaseEtaSharedOn returns work_item.eta_shared_on for caseID -- see
 	// CaseRepository.GetCaseEtaSharedOn's own doc comment. Lets the plain
 	// ServiceNow data source's own GetCaseByID (which has no Postgres row of

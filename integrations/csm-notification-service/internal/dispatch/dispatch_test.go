@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/chataudience"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/escalation"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/recipientlinks"
@@ -102,6 +103,12 @@ type sentSeverityChangedAlert struct {
 	audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string
 }
 
+type sentFrustrationAlert struct {
+	audience, caseNumber, wso2CaseID, productName, reason string
+	frustrationLevel                                      float64
+	caseLink                                              string
+}
+
 type mockGoogleChatSender struct {
 	err error
 	// mu guards calls — see mockEmailSender.mu's doc comment.
@@ -110,6 +117,18 @@ type mockGoogleChatSender struct {
 	caseAcknowledgedCalls       []sentCaseAcknowledgedAlert
 	severityChangedCalls        []sentSeverityChangedAlert
 	securityReportAnalysisCalls []sentSecurityReportAnalysisAlert
+	frustrationCalls            []sentFrustrationAlert
+	// hasAudienceSpace, when set, backs HasAudienceSpace; nil means every
+	// audience is "unconfigured" (false) — same convention as
+	// internal/slaengine's own fakeChatSender.
+	hasAudienceSpace func(string) bool
+}
+
+func (m *mockGoogleChatSender) HasAudienceSpace(audience string) bool {
+	if m.hasAudienceSpace != nil {
+		return m.hasAudienceSpace(audience)
+	}
+	return false
 }
 
 func (m *mockGoogleChatSender) SendCaseCreatedAlert(ctx context.Context, audience, severityLabel, severityColor, caseNumber, wso2CaseID, productName, title, team, caseLink string) error {
@@ -137,6 +156,13 @@ func (m *mockGoogleChatSender) SendSeverityChangedAlert(ctx context.Context, aud
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.severityChangedCalls = append(m.severityChangedCalls, sentSeverityChangedAlert{audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink})
+	return m.err
+}
+
+func (m *mockGoogleChatSender) SendFrustrationAlert(ctx context.Context, audience, caseNumber, wso2CaseID, productName, reason string, frustrationLevel float64, caseLink string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.frustrationCalls = append(m.frustrationCalls, sentFrustrationAlert{audience, caseNumber, wso2CaseID, productName, reason, frustrationLevel, caseLink})
 	return m.err
 }
 
@@ -169,6 +195,23 @@ type mockLinkResolver struct {
 
 	gotEmails               []string
 	gotProjectID, gotCaseID string
+
+	// isCustomer is IsCustomer's canned return, defaulting to false (every
+	// existing test's recipients are treated as internal unless a test sets
+	// this) — isCustomerErr, if set, is returned instead.
+	isCustomer    bool
+	isCustomerErr error
+}
+
+// IsCustomer returns the mock's canned isCustomer/isCustomerErr — see
+// mockLinkResolver's own doc comment. Deliberately simpler than ResolveLinks'
+// per-email classification above: no existing test needs more than one fixed
+// answer for the single email checkFrustration ever asks about.
+func (m *mockLinkResolver) IsCustomer(ctx context.Context, email string) (bool, error) {
+	if m.isCustomerErr != nil {
+		return false, m.isCustomerErr
+	}
+	return m.isCustomer, nil
 }
 
 // CSMLink mirrors recipientlinks.Resolver.CSMLink's own shape closely enough
@@ -554,6 +597,157 @@ func TestDispatcher_Handle_CommentAdded(t *testing.T) {
 	}
 	if !strings.Contains(mock.calls[0].htmlBody, "fixed it") {
 		t.Error("htmlBody does not contain the comment text")
+	}
+}
+
+// mockEscalationDetector is a hand-written fake for escalationDetector.
+type mockEscalationDetector struct {
+	result escalation.Result
+	err    error
+
+	mu    sync.Mutex
+	calls []struct{ caseID, caseNumber, product, comment string }
+}
+
+func (m *mockEscalationDetector) DetectEscalation(ctx context.Context, caseID, caseNumber, product, comment string) (escalation.Result, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, struct{ caseID, caseNumber, product, comment string }{caseID, caseNumber, product, comment})
+	if m.err != nil {
+		return escalation.Result{}, m.err
+	}
+	return m.result, nil
+}
+
+func (m *mockEscalationDetector) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.calls)
+}
+
+// TestDispatcher_Handle_CommentAdded_FrustrationDetected_SendsChatAlert
+// verifies the full frustration-detection path: a customer-authored comment
+// is sent to the detector, and a ShouldAlert result sends a Chat alert routed
+// through chataudience.Resolve — here, no team is configured, so it falls
+// back to the fixed Incident Monitor audience, matching sendBreachAlert's own
+// identical fallback in internal/slaengine.
+func TestDispatcher_Handle_CommentAdded_FrustrationDetected_SendsChatAlert(t *testing.T) {
+	chat := &mockGoogleChatSender{}
+	links := &mockLinkResolver{isCustomer: true}
+	detector := &mockEscalationDetector{result: escalation.Result{
+		IsFrustrated: true, FrustratedLevel: 0.91, Reason: "Repeated unanswered follow-ups", ShouldAlert: true,
+	}}
+	d := NewDispatcher(&mockEmailSender{}, chat, &mockCallSender{}, links, true, false, nil, true, "", nil).
+		WithFrustrationDetection(detector)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001","caseTitle":"Something broke","caseComment":"this is unacceptable, still no update","commentId":"C-1","recipients":["test-recipient@example.com"],"authorEmail":"customer@acme.com","product":"WSO2 API Manager"}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if detector.callCount() != 1 {
+		t.Fatalf("expected 1 detector call, got %d", detector.callCount())
+	}
+	if len(chat.frustrationCalls) != 1 {
+		t.Fatalf("expected 1 frustration Chat alert, got %d", len(chat.frustrationCalls))
+	}
+	got := chat.frustrationCalls[0]
+	if got.audience != chataudience.IncidentMonitor {
+		t.Errorf("audience = %q, want %q (no team configured)", got.audience, chataudience.IncidentMonitor)
+	}
+	if got.reason != "Repeated unanswered follow-ups" || got.frustrationLevel != 0.91 {
+		t.Errorf("unexpected SendFrustrationAlert args: %+v", got)
+	}
+}
+
+// TestDispatcher_Handle_CommentAdded_FrustrationDetection_SkipConditions
+// verifies checkFrustration's own early-return gates: no detector
+// configured, an internal note, a non-customer author, and a detector result
+// that doesn't cross the threshold all skip sending a Chat alert (and most
+// skip calling the detector at all) — without affecting the comment's own
+// email reaction either way.
+func TestDispatcher_Handle_CommentAdded_FrustrationDetection_SkipConditions(t *testing.T) {
+	basePayload := `"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001","caseTitle":"Something broke","caseComment":"not happy about this","commentId":"C-1","recipients":["test-recipient@example.com"],"authorEmail":"customer@acme.com","product":"WSO2 API Manager"`
+
+	testCases := []struct {
+		name           string
+		payloadExtra   string
+		configure      bool // whether to call WithFrustrationDetection
+		isCustomer     bool
+		detectorErr    error
+		shouldAlert    bool
+		wantDetectCall bool
+	}{
+		{"no detector configured", "", false, true, nil, true, false},
+		{"internal note", `,"isInternalNote":true`, true, true, nil, true, false},
+		{"author is not a customer", "", true, false, nil, true, false},
+		{"detector call fails", "", true, true, errors.New("boom"), true, true},
+		{"detector says do not alert", "", true, true, nil, false, true},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &mockGoogleChatSender{}
+			links := &mockLinkResolver{isCustomer: tc.isCustomer}
+			detector := &mockEscalationDetector{
+				result: escalation.Result{ShouldAlert: tc.shouldAlert},
+				err:    tc.detectorErr,
+			}
+			d := NewDispatcher(&mockEmailSender{}, chat, &mockCallSender{}, links, true, false, nil, true, "", nil)
+			if tc.configure {
+				d = d.WithFrustrationDetection(detector)
+			}
+
+			record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{` + basePayload + tc.payloadExtra + `}}`)}
+			if err := d.Handle(context.Background(), record); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+
+			if got := detector.callCount() > 0; got != tc.wantDetectCall {
+				t.Errorf("detector called = %v, want %v", got, tc.wantDetectCall)
+			}
+			if len(chat.frustrationCalls) != 0 {
+				t.Errorf("expected no frustration Chat alert, got %d", len(chat.frustrationCalls))
+			}
+		})
+	}
+}
+
+// TestDispatcher_Handle_CommentAdded_FrustrationDetection_NotRepeatedWhenEmailRetries
+// is a regression test for a CodeRabbit-flagged bug: handleCommentAdded's own
+// return value is driven by the EMAIL path, not checkFrustration — a record
+// retried solely because the email send keeps failing used to redo
+// frustration detection (a second OpenAI call) and repost the Chat alert on
+// every attempt, exactly the repeated-Chat-alert-on-retry-and-DLQ-hand-off
+// incident this file's own history already documents for other channels.
+// checkFrustration's own claim now persists across attempts (forgotten only
+// on record.NoMoreRetries), so the detector/Chat alert fire exactly once
+// across every retry of the same record content, even though the email send
+// — and therefore Handle's own return value — keeps failing the whole time.
+func TestDispatcher_Handle_CommentAdded_FrustrationDetection_NotRepeatedWhenEmailRetries(t *testing.T) {
+	email := &mockEmailSender{err: errors.New("email service unreachable")}
+	chat := &mockGoogleChatSender{}
+	links := &mockLinkResolver{isCustomer: true}
+	detector := &mockEscalationDetector{result: escalation.Result{ShouldAlert: true, Reason: "Repeated unanswered follow-ups", FrustratedLevel: 0.91}}
+	d := NewDispatcher(email, chat, &mockCallSender{}, links, true, false, nil, true, "", nil).
+		WithFrustrationDetection(detector)
+
+	record := eventbus.Record{Topic: "case-events", Partition: 1, Offset: 7, Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001","caseTitle":"Something broke","caseComment":"still no update, unacceptable","commentId":"C-1","recipients":["test-recipient@example.com"],"authorEmail":"customer@acme.com","product":"WSO2 API Manager"}}`)}
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		record.NoMoreRetries = attempt == 3
+		if err := d.Handle(context.Background(), record); err == nil {
+			t.Fatalf("attempt %d: expected the email error to still propagate", attempt)
+		}
+	}
+
+	if detector.callCount() != 1 {
+		t.Errorf("detector called %d times across 3 retries, want 1 (frustration detection must not repeat once it has run)", detector.callCount())
+	}
+	if len(chat.frustrationCalls) != 1 {
+		t.Errorf("frustration Chat alert sent %d times across 3 retries, want 1", len(chat.frustrationCalls))
+	}
+	if len(d.done) != 0 {
+		t.Errorf("done map should be empty after the final (NoMoreRetries) attempt, has %d entries (leaked tracking)", len(d.done))
 	}
 }
 
@@ -1433,6 +1627,14 @@ func (s *blockingCaseAcknowledgedChatSender) SendCaseAcknowledgedAlert(ctx conte
 
 func (s *blockingCaseAcknowledgedChatSender) SendSeverityChangedAlert(ctx context.Context, product, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error {
 	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendFrustrationAlert(ctx context.Context, audience, caseNumber, wso2CaseID, productName, reason string, frustrationLevel float64, caseLink string) error {
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) HasAudienceSpace(audience string) bool {
+	return false
 }
 
 // TestDispatcher_Handle_CaseAcknowledged_LosingConcurrentCallDoesNotReleaseWinnersClaim

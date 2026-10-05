@@ -84,6 +84,14 @@ Copy `.env.example` to `.env` and fill in the values:
 |---|---|
 | `GOOGLE_CHAT_SPACES` | JSON array of `{"audience","webhookUrl"}` objects, one per Google Chat space — the only Google Chat routing mechanism this service has. `audience` is either a real CRE team name (exact, case-sensitive match — see entity-service's `"group".name`) or one of the standing audiences `"Incident Monitor"`/`"Onboarding"`/`"Americas"`/`"Evaluation"`. `case.created`/`case.acknowledged`/`case.severity_changed` always route to the fixed `"Incident Monitor"` audience; SLA breach alerts resolve a real per-team/onboarding/time-of-day audience (see `internal/chataudience`). Optional — left unset or malformed, Google Chat alerts are unavailable but startup and every other endpoint work normally. An audience with no configured space is skipped (logged), not an error |
 
+### Frustration detection (`case.comment_added`)
+
+`dispatch.checkFrustration` sends a new, customer-authored case comment to the existing `ai-escalate-comment-detector` service for an OpenAI-backed frustration analysis, and — when it crosses that service's own configured threshold — posts a Chat alert through `GOOGLE_CHAT_SPACES` above, routed the same way an SLA breach alert is (team-first, falling back to `"Incident Monitor"`). No OAuth2 is involved; that service has no inbound auth of its own.
+
+| Variable | Description |
+|---|---|
+| `ESCALATION_DETECTOR_BASE_URL` | Base URL of the `ai-escalate-comment-detector` service (optional). Unset means a customer comment is never sent for analysis and no frustration Chat alert is ever sent — nothing else in this service is affected |
+
 ### SMS and call notification channels (Twilio)
 
 | Variable | Description |
