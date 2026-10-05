@@ -15,7 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-# Every scenario of the CRE escalation ladder for ONE severity, on the real
+# Every scenario of the CRE escalation ladder for ONE severity -- usually
+# started from cre-escalation-ladder.sh (menu option 2) rather than directly, on the real
 # clock, with the evidence collected into one file for review.
 #
 # S0 and P0 are the same severity: P0 is the old name, S0 the new one, and both
@@ -38,9 +39,10 @@
 # Redis work each other's ladders and the timings become meaningless. -j sets
 # how many at once.
 #
-# What it collects, under scripts/csm-compose/.run/<severity>-suite-<time>/
+# What it collects, under scripts/csm-compose/.run/cre-escalation-ladder/<time>_suite_<severity>/
 # (git-ignored -- it holds real staff names from the local roster):
-#   ALL.log          everything below in one file: share this one
+#   cre-escalation-ladder-suite.log
+#                    everything below in one file: share this one
 #   summary.tsv      one row per scenario: rule, shift, outcome, timing drift
 #   calls.tsv        one row per placed call: rung, attempt, who, due, actual
 #   ground-truth/    who SHOULD be called: the roster, and the on-duty list at
@@ -58,11 +60,16 @@
 
 set -euo pipefail
 
+# Everything below is one { ... } group, so bash reads the whole file before
+# running any of it. A script is otherwise read as it runs, and editing it
+# under a run in progress -- a real-time ladder lasts up to two hours --
+# makes that run resume at the wrong line of the new file, or silently stop.
+{
+
 SEVERITY=S0
 JOBS=8
 ONLY=""
 DRY_RUN=""
-PORT_BASE=16500
 
 usage() { sed -n '/^# Usage:/,/^# Needs/p' "$0" | sed 's/^# \{0,1\}//'; }
 while [ $# -gt 0 ]; do
@@ -95,14 +102,14 @@ runner="${repo_root}/scripts/csm-compose/run-cre-ladder.sh"
 open_at() { echo "$OPEN" | awk -v n="$1" '{print $(n+1)}'; }
 minutes_for() {
   case "$1" in
-    none)   echo $((END + 1)) ;;
+    never)  echo $((END + 1)) ;;
     L0|L1|L2|L3|L4) echo $(( $(open_at "${1#L}") + 1 )) ;;
   esac
 }
 
 # ---------------------------------------------------------------------------
 # The scenarios. One line each: id | expected rule | shift | team | ack | ack-by | extra
-# team empty = on no ABT. ack "none" = never acknowledged.
+# team empty = on no ABT. ack "never" = never acknowledged.
 # ---------------------------------------------------------------------------
 CASES="
 morning-vega|R1a|LK_MORNING|vega
@@ -122,7 +129,7 @@ americas-weekendnight-vega|R6|USA_WEEKEND|vega
 SCENARIOS=""
 add() { SCENARIOS="${SCENARIOS}$1
 "; }
-for ack in none L4 L3 L2 L1 L0; do                    # longest first, to pack the pool
+for ack in never L4 L3 L2 L1 L0; do                    # longest first, to pack the pool
   echo "$CASES" | while IFS='|' read -r name rule shift team; do
     [ -n "$name" ] || continue
     echo "${name}-ack${ack}|${rule}|${shift}|${team}|${ack}|both|"
@@ -183,7 +190,7 @@ token() {
 [ -n "$(token)" ] || { echo "mock-oidc is not issuing tokens on :9100 -- docker compose up -d mock-oidc" >&2; exit 1; }
 
 stamp="$(date +%Y%m%d-%H%M%S)"
-out="${repo_root}/scripts/csm-compose/.run/${SEV}-suite-${stamp}"
+out="${repo_root}/scripts/csm-compose/.run/cre-escalation-ladder/${stamp}_suite_${SEV}"
 mkdir -p "${out}/scenarios" "${out}/ground-truth"
 
 # ---------------------------------------------------------------------------
@@ -206,7 +213,20 @@ cp "${repo_root}/scripts/csm-compose/escalation.yaml" "${out}/ground-truth/escal
 # ---------------------------------------------------------------------------
 # Run the pool.
 # ---------------------------------------------------------------------------
-pids=""
+# Ports come from the shared reservation (cre-ladder-ports.sh), never from a
+# fixed base: four suites started together once all used 16501-16563 and broke
+# each other's ladders. Every port this suite holds is released when it ends.
+. "${repo_root}/scripts/csm-compose/cre-ladder-ports.sh"
+# One build of the harness for the whole suite, shared by every scenario (see
+# ESCALATION_LOCAL_BIN in run-cre-ladder.sh). A build per scenario, sixteen at a
+# time, got killed under the load and took every scenario down with it.
+suite_bin_dir="$(mktemp -d)"
+trap 'release_ports; rm -rf "${suite_bin_dir}"' EXIT
+echo "building the harness once for the suite..."
+( cd "${repo_root}/integrations/csm-notification-service" && go build -o "${suite_bin_dir}/escalation-local" ./cmd/escalation-local ) \
+  || { echo "building the harness failed" >&2; exit 1; }
+export ESCALATION_LOCAL_BIN="${suite_bin_dir}/escalation-local"
+
 stop_all() {
   trap - INT TERM
   echo; echo "stopping every running scenario..."
@@ -223,15 +243,15 @@ while IFS='|' read -r id rule shift team ack by extra; do
   [ -n "$id" ] || continue
   i=$((i + 1))
   while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$JOBS" ]; do sleep 2; done
-  port=$((PORT_BASE + i))
+  port="$(reserve_port 16400 16999)" || { echo "no free Redis port in 16400-16999" >&2; exit 1; }
   log="${out}/scenarios/$(printf '%02d' "$i")-${id}.log"
   args=(-s "$SEV" --shift "$shift" --max-calls 200)
   [ -n "$team" ] && args+=(-a "$team")
-  [ "$ack" != none ] && args+=(--ack-at "LEVEL_${ack#L}" --ack-by "$by")
+  [ "$ack" != never ] && args+=(--ack-at "LEVEL_${ack#L}" --ack-by "$by")
   [ "$extra" = elevated ] && args+=(--elevated)
   {
     echo "### SCENARIO ${id}"
-    echo "### expected-rule=${rule} shift=${shift} team=${team:-none} ack=${ack} ack-by=${by} extra=${extra:-none}"
+    echo "### params expected-rule=${rule} shift=${shift} team=${team:-none} ack=${ack} ack-by=${by} extra=${extra:-none}"
     echo "### command: REDIS_PORT=${port} scripts/csm-compose/run-cre-ladder.sh ${args[*]}"
     echo "### started $(date '+%Y-%m-%d %H:%M:%S %Z')"
   } > "$log"
@@ -262,75 +282,7 @@ done
 # ---------------------------------------------------------------------------
 # Summaries, then everything into one file.
 # ---------------------------------------------------------------------------
-python3 - "$out" "$OPEN" "$END" <<'PY'
-import sys, os, re, glob, json
-out, opens, end = sys.argv[1], [int(x) for x in sys.argv[2].split()], int(sys.argv[3])
-
-def secs(d):
-    d = d.strip().lstrip("+")
-    t = 0.0
-    for v, u in re.findall(r"([\d.]+)(h|m(?!s)|s|ms)", d):
-        t += float(v) * {"h": 3600, "m": 60, "s": 1, "ms": 0.001}[u]
-    return t
-
-rows, calls = [], []
-for path in sorted(glob.glob(os.path.join(out, "scenarios", "*.log"))):
-    txt = open(path, encoding="utf-8", errors="replace").read()
-    sid = re.search(r"### SCENARIO (\S+)", txt).group(1)
-    meta = dict(re.findall(r"(\S+?)=(\S+)", re.search(r"### (expected-rule=.*)", txt).group(1)))
-    rule = (re.search(r"rule=(R\w+)", txt) or [None, ""])[1]
-    shift = (re.search(r"shift +([A-Z_]+) \(derived", txt) or [None, ""])[1]
-    rep = (re.search(r"reported at +(.+? IST)", txt) or [None, ""])[1]
-    plan = re.findall(r"^\s+\+(\S+)\s+(LEVEL_\d)\s+#(\d)\s+(.+?)\s*$", txt.split("running (ctrl-c")[0], re.M)
-    l0 = sum(1 for p in plan if p[1] == "LEVEL_0")
-    placed = re.findall(r"^\s+\[\s*(\S+)\]\s+(LEVEL_\d)\s+#(\d)\s+(.+?)\s+called .*?\(ladder \+(\S+)\)", txt, re.M)
-    drift = 0.0
-    for el, lvl, att, who, due in placed:
-        d = secs(el) - secs(due)
-        drift = max(drift, abs(d))
-        calls.append([sid, lvl, att, who, f"{secs(due):.0f}", f"{secs(el):.0f}", f"{d:+.0f}"])
-    levels = {p[1] for p in plan}
-    ack, by = meta.get("ack", ""), meta.get("ack-by", "")
-    if ack == "none" or by in ("status", "comment"):
-        expected = "exhausted"          # never acknowledged, or only half of it
-    elif "LEVEL_" + ack[1:] not in levels:
-        expected = "exhausted"          # that rung is not on this rule's ladder
-    else:
-        expected = "acknowledged"
-    if "escalation: ladder cancelled" in txt:
-        outcome = "acknowledged"
-    elif "ladder exhausted without acknowledgement" in txt:
-        outcome = "exhausted"
-    else:
-        outcome = "ERROR"
-    if re.search(r"^error:|tick error|RESOLVE_FAILED|NO_RECIPIENTS|CALL_FAILED", txt, re.M):
-        outcome += "+issues"
-    # The last rung the harness saw placed before it stopped.
-    reached = max((p[1] for p in placed), default="-")
-    canc = (re.search(r"cancelledCalls=(\d+)", txt) or [None, ""])[1]
-    rows.append([sid, meta.get("expected-rule", ""), rule, "ok" if rule == meta.get("expected-rule") else "MISMATCH",
-                 shift, rep, meta.get("team", ""), ack, by, expected, outcome,
-                 "ok" if outcome == expected else "MISMATCH", reached, " ".join(sorted(levels)),
-                 str(l0), str(len(plan)), str(len(placed)), canc, f"{drift:.0f}"])
-
-with open(os.path.join(out, "summary.tsv"), "w") as f:
-    f.write("scenario\texpected_rule\trule\trule_check\tshift\treported_at\tteam\tack\tack_by\t"
-            "expected_outcome\toutcome\toutcome_check\treached_level\tladder_levels\t"
-            "level0_people\tplanned_calls\tplaced_calls\tcancelled\tmax_drift_s\n")
-    for r in rows: f.write("\t".join(r) + "\n")
-with open(os.path.join(out, "calls.tsv"), "w") as f:
-    f.write("scenario\tlevel\tattempt\trecipient\tdue_s\tobserved_s\tdrift_s\n")
-    for c in calls: f.write("\t".join(c) + "\n")
-
-bad = [r for r in rows if r[3] != "ok" or r[11] != "ok" or "+issues" in r[10]]
-print(f"\n{len(rows)} scenarios: {sum(r[3]=='ok' for r in rows)} routed as expected, "
-      f"{sum(r[11]=='ok' for r in rows)} ended as expected; "
-      f"largest timing drift {max((float(r[-1]) for r in rows), default=0):.0f}s")
-if bad:
-    print("needs a look:")
-    for r in bad: print(f"  {r[0]}: rule {r[2] or '?'} (expected {r[1]}), "
-                        f"outcome {r[10]} (expected {r[9]})")
-PY
+python3 "${repo_root}/scripts/csm-compose/cre-ladder-report.py" suite "$out"
 
 {
   echo "######## CRE ${SEV} SUITE -- $(cat "${out}/ground-truth/commit.txt") -- $(date '+%Y-%m-%d %H:%M %Z')"
@@ -348,9 +300,12 @@ for r in rows:
     e=r.get("engineer",{}); print("\t".join([r.get("teamKey",""), r.get("shiftCode",""), e.get("name",""), e.get("email","")]))' "$j" 2>/dev/null || cat "$j"
   done
   for log in "${out}"/scenarios/*.log; do echo; echo "######## $(basename "$log")"; cat "$log"; done
-} > "${out}/ALL.log"
+} > "${out}/cre-escalation-ladder-suite.log"
 
 echo
 echo "Share this file for review:"
-echo "  ${out}/ALL.log"
+echo "  ${out}/cre-escalation-ladder-suite.log"
 echo "It contains real staff names from the local roster -- keep it out of tickets, PRs and chat."
+
+exit
+}

@@ -103,7 +103,7 @@ func TestMembersByTeamKeys_RejectsBadInput(t *testing.T) {
 // Every role the CHECK allows must be accepted, or the ladder loses a rung to
 // a validation error rather than to missing data.
 func TestMembersByTeamKeys_AcceptsEveryRole(t *testing.T) {
-	for _, role := range []string{"engineer", "sub_lead", "lead", "cre_head", "cs_head"} {
+	for _, role := range []string{"engineer", "sub_lead", "lead", "americas_team_lead", "cre_head", "cs_head"} {
 		t.Run(role, func(t *testing.T) {
 			repo := &stubTeamMemberRepo{}
 			if _, err := NewTeamMemberService(repo, alwaysUnrestrictedAccess{}).MembersByTeamKeys(

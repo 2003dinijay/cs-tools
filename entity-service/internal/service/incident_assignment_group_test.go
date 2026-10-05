@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
@@ -37,16 +38,18 @@ func strPtrGroup(s string) *string { return &s }
 func createCapturing(groups map[string]string, got *domain.CreateIncidentRequest) *stubIncidentRepo {
 	return &stubIncidentRepo{
 		supportGroups: groups,
+		// The publish after create reads the incident back for the call
+		// ladder's routing fields. That read is best-effort; answering "not
+		// found" takes its failure path (publish without them) instead of
+		// the stub's "not implemented" panic. Nothing here asserts on it.
+		getIncidentByID: func(context.Context, string) (domain.IncidentView, error) {
+			return domain.IncidentView{}, &apierror.NotFoundError{Msg: "incident not found"}
+		},
 		createIncident: func(_ context.Context, req domain.CreateIncidentRequest, _ string, _ *string, _ string) (domain.CreateIncidentResponse, error) {
 			*got = req
 			resp := domain.CreateIncidentResponse{}
 			resp.Incident.ID = "66666666-6666-6666-6666-666666666666"
 			return resp, nil
-		},
-		// incident.created reads the new incident back for the escalation fields (team, priority,
-		// contact type); best-effort, so a bare view is enough here.
-		getIncidentByID: func(_ context.Context, id string) (domain.IncidentView, error) {
-			return domain.IncidentView{ID: &id}, nil
 		},
 	}
 }

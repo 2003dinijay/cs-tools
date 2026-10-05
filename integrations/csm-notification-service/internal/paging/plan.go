@@ -65,6 +65,11 @@ type PlannedCall struct {
 	Ordinal   int
 	At        time.Time
 	Recipient Recipient
+	// HoldCall skips this entry's phone call while its other channels (the
+	// chat card) still deliver. Set by the safety checks that keep calls off
+	// until the ABT leads' numbers are in place; never reported on the work
+	// note, since that is setup, not something that happened to the incident.
+	HoldCall bool `json:",omitempty"`
 	// index is this call's position in Plan.Calls, set while the summary is
 	// grouping them so it can look the call up in the engine's placed flags.
 	// Unexported: it is an artefact of that grouping, not part of the plan,
@@ -93,6 +98,10 @@ type Plan struct {
 	// "Initial waiting time"), kept so ExecutionSummary can report it the way
 	// section 11.0's work note does.
 	InitialWait time.Duration
+	// CallsHeld marks a plan whose calls were all held because the ABT lead
+	// pool is not verified with phone numbers yet. A call-only ladder held
+	// this way has nothing left to do and ends without a work note.
+	CallsHeld bool `json:",omitempty"`
 }
 
 // BuildPlan expands a trigger into every call the ladder would place, with

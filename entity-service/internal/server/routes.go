@@ -1090,11 +1090,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	case config.DataSourceServiceNow:
 		activeConversationSvc = service.NewServiceNowConversationService(serviceNowIntegrationServiceClient)
 	case config.DataSourcePostgresServiceNowDualWrite:
+		// CreateConversation is ServiceNow-first and synchronous;
 		// UpdateConversation mirrors to ServiceNow asynchronously,
 		// best-effort, via the shared snWritebackDispatcher -- see
-		// conversationService.UpdateConversation's own doc comment.
-		// CreateConversation stays unsupported (work_item.number has no
-		// generator here) -- see conversationService's own doc comment.
+		// conversationService's snMirror doc comment.
 		snConversationMirrorSvc := service.NewServiceNowConversationService(serviceNowIntegrationServiceClient)
 		activeConversationSvc = service.NewConversationServiceWithSNWriteback(conversationRepo, snWritebackDispatcher, snConversationMirrorSvc)
 	default:

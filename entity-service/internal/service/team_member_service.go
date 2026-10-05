@@ -74,8 +74,11 @@ var validTeamMemberRole = map[string]bool{
 	"engineer": true,
 	"sub_lead": true,
 	"lead":     true,
-	"cre_head": true,
-	"cs_head":  true,
+	// The America Team lead: above the Americas team's three Team leads
+	// (migration 0185).
+	"americas_team_lead": true,
+	"cre_head":           true,
+	"cs_head":            true,
 }
 
 func (s *teamMemberService) MembersByTeamKeys(ctx context.Context, teamKeys, roles, alertTiers, teamTypes []string) (domain.TeamMembersResponse, error) {

@@ -69,7 +69,8 @@ func TestIncidentService_CreateIncidentPortal_PassesDerivedFieldsAndPublishes(t 
 			resp.Incident.ID = "66666666-6666-6666-6666-666666666666"
 			return resp, nil
 		},
-		// The event is enriched from the incident as stored, the way the dual-write path does it.
+		// The publish this path makes is the enriched one, which reads the incident back to fill
+		// the escalation fields the ladder routes on (and panics on the bare stub without this).
 		getIncidentByID: func(_ context.Context, id string) (domain.IncidentView, error) {
 			v := newTestIncidentView(id)
 			v.AssignmentGroup = &domain.EntityRef{ID: "88888888-8888-8888-8888-888888888888", Name: "SRE - Apollo"}

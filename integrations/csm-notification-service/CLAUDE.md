@@ -177,8 +177,12 @@ below escalates it like any other. There is no separate SRE entity.
 
 ## Incident call escalation
 
-`internal/paging` (not `internal/escalation`, which is the customer frustration detector's
-client -- see "Frustration detection" below) runs the incident call-escalation ladder from the
+The ladder lives in `internal/paging`, not `internal/escalation`: that
+package is the customer-frustration detector's client (next section), and
+"escalation" is the customer-initiated feature's word. The two share no
+code, types or configuration.
+
+`internal/paging` runs the incident call-escalation ladder from the
 "Synchronizing Twilio Alerts for New Incoming Incidents Based on ABT Model"
 specification: an unattended incident climbs five rungs (LEVEL_0 rotation
 lead/members — rotations only — then ABT leads, ABT team leads, Head of BU,
@@ -424,6 +428,35 @@ warns when `INCIDENT_DEFAULT_CALL_TO` is also set: the dispatcher's single
 immediate call predates the ladder and is **not** in the specification (its
 initial reaction is the Chat alert and an email); unset it once the ladder
 covers an environment, or an incident gets both.
+
+**Phone numbers** come from each person's own CSM Portal profile. The Team
+Schedule names who to call but holds no numbers, and a call plan drops anyone
+without one (`NO_NUMBER`). `ProfilePhoneResolver` wraps whichever resolver is
+in use and fills a missing number from the person's Asgardeo user (the
+portal's profile dialog writes the `mobile` phone there; `scim.Client.MobileNumber`
+reads it back), once per person per two minutes, 3 s per lookup. A number
+named in `escalation.yaml` is never replaced; a lookup that fails, times out
+or is not E.164 leaves that one person `NO_NUMBER` and never fails the tier.
+`phones.source: none` turns it off. Nothing is persisted outside the plan, and
+the number is never logged.
+
+**Calls switch on when the ABT lead pool is verified.** Before any call is
+placed, `applySafety` asks the resolver for its whole lead pool
+(`LeadPoolResolver`; every `lead` on the ABT teams, numbers filled from
+profiles) and, if any lead has no E.164 number, holds the plan's calls
+(`safety.callWithoutVerifiedLeads: true` overrides). Without this, a lead tier
+with no numbers is skipped as `NO_NUMBER` and an unanswered incident of any
+priority climbs from LEVEL_0 straight to the heads. Separately, the heads
+(LEVEL_3/LEVEL_4) are held when no call on LEVEL_0..LEVEL_2 has a number
+(`safety.callHeadsWithoutLowerTiers: true` overrides).
+
+Both holds are setup, not incident outcomes, so they are **logged only, never
+written to the work note**: a call-only ladder held by the gate schedules
+nothing and writes no note (`Plan.CallsHeld`); with `both`, entries keep their
+chat cards and only the call is skipped (`PlannedCall.HoldCall`). A resolver
+without a lead pool (the hand-maintained roster, whose entries carry numbers)
+is not checked. To keep calls off entirely regardless, use `channel: chat` or
+`log`.
 
 **Not built**: the email at each rung (section 10.0), the two
 erroneous-scenario emails (section 12.0), LEVEL_0 availability filtering

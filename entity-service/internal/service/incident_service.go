@@ -541,9 +541,15 @@ func (s *incidentService) createIncidentPortal(ctx context.Context, req domain.C
 	if err != nil {
 		return domain.CreateIncidentResponse{}, err
 	}
-	// The same enriched event the dual-write path publishes: read back from Postgres, it carries the
-	// assignment group, contact type and priority the call-escalation ladders route on.
-	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID, resp.Incident.Number, resp.Incident.CreatedOn, s.GetIncidentByID)
+	// The enriched publish, not the title-only one. This create path arrived
+	// from upstream calling the 4-argument form, which predates the escalation
+	// ladder: it publishes an incident.created carrying only the subject, with
+	// no team, priority or contactType. The ladder resolves its rungs from
+	// those fields, so an incident created here -- which includes every one
+	// raised by alert ingestion -- would reach csm-notification-service with
+	// nothing to escalate on, and no ladder would run for it.
+	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID,
+		resp.Incident.Number, resp.Incident.CreatedOn, s.GetIncidentByID)
 	return resp, nil
 }
 

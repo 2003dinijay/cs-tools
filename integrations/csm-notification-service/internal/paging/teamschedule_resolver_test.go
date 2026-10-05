@@ -290,6 +290,68 @@ func TestResolve_Level0PerRule(t *testing.T) {
 			t.Errorf("LEVEL_0 = %v, want only the Americas nominees", emails(got))
 		}
 	})
+
+	// R6's rota member is the rostered Americas weekend member, never the
+	// on-call shift beside it -- even when the on-call engineer sorts first.
+	americasNominees := []teamMember{
+		member("americas", "am1@example.com", "engineer", "T1"),
+		member("americas", "am2@example.com", "engineer", "T2"),
+		member("americas", "am3@example.com", "engineer", "T3"),
+	}
+	onShift := func(userID, email, team, code string) onDutyAssignment {
+		a := onDutyFor(userID, email, team)
+		a.ShiftCode = code
+		return a
+	}
+
+	t.Run("R6 calls the Americas weekend rota member and the nominees", func(t *testing.T) {
+		stub := &stubScheduleReader{members: americasNominees, onDuty: []onDutyAssignment{
+			onShift("u1", "aaa.oncall@example.com", "draco", "CRE_WEEKEND_NIGHT_OC"),
+			onShift("u2", "zzz.weekend@example.com", "americas", "CRE_WEEKEND_NIGHT"),
+		}}
+		got, err := testResolver(stub).Resolve(context.Background(), Level0,
+			RoutingContext{Shift: ShiftUSAWeekend, AssignedCRETeam: "sirius", At: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"zzz.weekend@example.com", "am1@example.com", "am2@example.com", "am3@example.com"}
+		if !equalStrings(emails(got), want) {
+			t.Errorf("LEVEL_0 = %v, want %v", emails(got), want)
+		}
+	})
+
+	t.Run("R6 with nobody on the weekend rota calls the nominees, not the on-call", func(t *testing.T) {
+		stub := &stubScheduleReader{members: americasNominees, onDuty: []onDutyAssignment{
+			onShift("u1", "aaa.oncall@example.com", "draco", "CRE_WEEKEND_NIGHT_OC"),
+		}}
+		got, err := testResolver(stub).Resolve(context.Background(), Level0,
+			RoutingContext{Shift: ShiftUSAWeekend, AssignedCRETeam: "sirius", At: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"am1@example.com", "am2@example.com", "am3@example.com"}
+		if !equalStrings(emails(got), want) {
+			t.Errorf("LEVEL_0 = %v, want %v", emails(got), want)
+		}
+	})
+
+	t.Run("R6 rota shifts are configurable", func(t *testing.T) {
+		stub := &stubScheduleReader{members: americasNominees[:1], onDuty: []onDutyAssignment{
+			onShift("u1", "oncall@example.com", "draco", "CRE_WEEKEND_NIGHT_OC"),
+			onShift("u2", "weekend@example.com", "americas", "CRE_WEEKEND_NIGHT"),
+		}}
+		teams := testTeams
+		teams.AmericasWeekendRotaShifts = []string{"cre_weekend_night_oc"}
+		got, err := NewTeamScheduleResolver(stub, teams, nil).Resolve(context.Background(), Level0,
+			RoutingContext{Shift: ShiftUSAWeekend, AssignedCRETeam: "sirius", At: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"oncall@example.com", "am1@example.com"}
+		if !equalStrings(emails(got), want) {
+			t.Errorf("LEVEL_0 = %v, want %v", emails(got), want)
+		}
+	})
 }
 
 // The evening pairing has to pick the same second person every time, or a
@@ -602,6 +664,64 @@ func TestResolve_AmericasTeamLeadsIsSelectablePerRule(t *testing.T) {
 	}
 }
 
+// At night LEVEL_1 is the Americas team's three Team leads (role lead) and
+// LEVEL_2 the one America Team lead above them (role americas_team_lead,
+// migration 0185). Before that role existed all four were 'lead', LEVEL_1
+// took all four, and LEVEL_2 had to guess.
+func TestResolve_NightLevel1NeverIncludesTheAmericaLead(t *testing.T) {
+	stub := &stubScheduleReader{members: []teamMember{
+		member("americas", "am.tl1@example.com", roleLead, ""),
+		member("americas", "am.tl2@example.com", roleLead, ""),
+		member("americas", "am.tl3@example.com", roleLead, ""),
+		member("americas", "am.atl@example.com", roleAmericasTeamLead, ""),
+	}}
+	rules := []Rule{{
+		ID: "R5", Shift: ShiftUSA, ABT: ABTAny,
+		Levels: [5]LevelSource{SourceAlertDutyAmericas, SourceAmericasTeamLeads,
+			SourceAmericasTeamLead, SourceCREHead, SourceCSHead},
+	}}
+	rc := RoutingContext{Shift: ShiftUSA, AssignedCRETeam: "vega", At: time.Now()}
+	r := NewTeamScheduleResolver(stub, testTeams, rules)
+
+	l1, err := r.Resolve(context.Background(), Level1, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l2, err := r.Resolve(context.Background(), Level2, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"am.tl1@example.com", "am.tl2@example.com", "am.tl3@example.com"}; !equalStrings(emails(l1), want) {
+		t.Errorf("LEVEL_1 = %v, want the three Team leads %v", emails(l1), want)
+	}
+	if want := []string{"am.atl@example.com"}; !equalStrings(emails(l2), want) {
+		t.Errorf("LEVEL_2 = %v, want the America Team lead %v", emails(l2), want)
+	}
+}
+
+// Nobody holding americas_team_lead is nobody to call at LEVEL_2 -- never one
+// of the three Team leads picked by address, which would ring a LEVEL_1
+// person twice and look like an escalation.
+func TestResolve_NoAmericaTeamLeadIsNobodyNotAGuess(t *testing.T) {
+	stub := &stubScheduleReader{members: []teamMember{
+		member("americas", "am.tl1@example.com", roleLead, ""),
+		member("americas", "am.tl2@example.com", roleLead, ""),
+	}}
+	rules := []Rule{{
+		ID: "R5", Shift: ShiftUSA, ABT: ABTAny,
+		Levels: [5]LevelSource{SourceAlertDutyAmericas, SourceAmericasTeamLeads,
+			SourceAmericasTeamLead, SourceCREHead, SourceCSHead},
+	}}
+	l2, err := NewTeamScheduleResolver(stub, testTeams, rules).Resolve(context.Background(), Level2,
+		RoutingContext{Shift: ShiftUSA, AssignedCRETeam: "vega", At: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(l2) != 0 {
+		t.Errorf("LEVEL_2 = %v, want nobody when no America Team lead is set", emails(l2))
+	}
+}
+
 // The heads are two named people, not a team lookup -- so a deployment with no
 // leadership team still reaches them, and entity-service is never asked.
 func TestResolve_HeadsComeFromConfigurationWhenNamed(t *testing.T) {
@@ -812,9 +932,9 @@ func TestRuleFor_NoTeamMatchesTheNotAssignedRow(t *testing.T) {
 	}
 }
 
-// LEVEL_2 on the night shift is ONE person, not the pool LEVEL_1 just called.
-// Both sources read role 'lead' on the Americas team, so without a named lead
-// the rung returned everybody and the escalation reached nobody new.
+// LEVEL_2 on the night shift is ONE person, never the pool of Team leads
+// LEVEL_1 just called: the named override when set, else the holder of
+// americas_team_lead -- and with neither, nobody rather than a guess.
 func TestResolve_AmericasTeamLeadIsOnePerson(t *testing.T) {
 	stub := &stubScheduleReader{members: []teamMember{
 		member("americas", "am1@example.com", roleLead, ""),
@@ -834,13 +954,13 @@ func TestResolve_AmericasTeamLeadIsOnePerson(t *testing.T) {
 		t.Errorf("LEVEL_2 = %v, want the one named lead", emails(got))
 	}
 
-	// Unnamed, it still must not call the whole pool.
+	// Unnamed and no americas_team_lead held: not the pool, and not a guess.
 	fallback, err := NewTeamScheduleResolver(stub, testTeams, nil).Resolve(context.Background(), Level2, rc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fallback) != 1 {
-		t.Errorf("LEVEL_2 = %v, want one person even with none named", emails(fallback))
+	if len(fallback) != 0 {
+		t.Errorf("LEVEL_2 = %v, want nobody: the three Team leads are LEVEL_1's", emails(fallback))
 	}
 }
 

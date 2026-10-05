@@ -472,6 +472,31 @@ func (m maskedResolver) LadderFor(ctx context.Context, rc paging.RoutingContext)
 	return paging.LadderCRE, nil
 }
 
+// TeamFamily and RuleFor pass routing through too: the engine finds both by type
+// assertion, and a mask that hid them would route and report a run differently
+// from the same run with -real-names.
+func (m maskedResolver) TeamFamily(ctx context.Context, rc paging.RoutingContext) (string, error) {
+	if r, ok := m.inner.(paging.TeamFamilyResolver); ok {
+		return r.TeamFamily(ctx, rc)
+	}
+	if l, _ := m.LadderFor(ctx, rc); l == paging.LadderSRE {
+		return paging.TeamFamilySRE, nil
+	}
+	if strings.TrimSpace(rc.AssignedCRETeam) == "" {
+		return paging.TeamFamilyNone, nil
+	}
+	return paging.TeamFamilyCRE, nil
+}
+
+func (m maskedResolver) RuleFor(rc paging.RoutingContext) (paging.Rule, bool) {
+	if n, ok := m.inner.(interface {
+		RuleFor(paging.RoutingContext) (paging.Rule, bool)
+	}); ok {
+		return n.RuleFor(rc)
+	}
+	return paging.Rule{}, false
+}
+
 func teamScheduleOrRoster(to string) paging.Resolver {
 	base := os.Getenv("CUSTOMER_ENTITY_BASE_URL")
 	if base == "" {

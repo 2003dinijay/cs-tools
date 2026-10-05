@@ -84,6 +84,33 @@ type LadderConfig struct {
 	Timing SRETiming `yaml:"timing"`
 
 	Chat Chat `yaml:"chat"`
+
+	// Phones is where a recipient's phone number comes from when the rung's
+	// resolver does not supply one (the Team Schedule never does).
+	Phones Phones `yaml:"phones"`
+}
+
+// Phones selects the source of recipients' phone numbers.
+//
+//	profile  the number each person set on their own CSM Portal profile, read
+//	         from Asgardeo (the default)
+//	none     only numbers named in this file; everyone else is NO_NUMBER
+type Phones struct {
+	Source string `yaml:"source"`
+}
+
+// Phone sources.
+const (
+	PhoneSourceProfile = "profile"
+	PhoneSourceNone    = "none"
+)
+
+// PhoneSource is the configured source, defaulting to the profile.
+func (l LadderConfig) PhoneSource() string {
+	if s := strings.ToLower(strings.TrimSpace(l.Phones.Source)); s != "" {
+		return s
+	}
+	return PhoneSourceProfile
 }
 
 // SRETiming is the SRE ladder's clock: one call per rung, a fixed gap between
@@ -292,6 +319,32 @@ type Safety struct {
 	// account: the resolver still runs, the plan is still built from the real
 	// rota, and only the numbers named here actually ring.
 	AllowedNumbers []string `yaml:"allowedNumbers"`
+	// CallHeadsWithoutLowerTiers lets the heads' tiers (LEVEL_3 CRE head,
+	// LEVEL_4 CS head) ring even when nobody on LEVEL_0..LEVEL_2 can be
+	// called. Off by default, which holds the heads' calls in that case.
+	//
+	// The ladder exists so the people closest to an incident answer first. A
+	// plan in which no first responder, team lead or lead has a number is not
+	// an incident nobody answered -- it is missing phone numbers -- and
+	// paging a director and a VP for it, with nobody below them having been
+	// given a chance, is the wrong answer to a data problem. Held calls are
+	// logged, not written to the work note. With channel "both" the heads'
+	// chat cards still post; only the calls are held.
+	CallHeadsWithoutLowerTiers bool `yaml:"callHeadsWithoutLowerTiers"`
+	// CallWithoutVerifiedLeads lets a ladder place calls before every lead in
+	// its ABT lead pool has a number to call. Off by default, which holds all
+	// of a ladder's calls until the pool is complete.
+	//
+	// The lead tiers (LEVEL_1, LEVEL_2) are what stand between the first
+	// responders and the heads. With a lead missing a number those tiers are
+	// skipped as NO_NUMBER, and an unanswered incident -- however low its
+	// priority -- goes from LEVEL_0 straight to a director and a VP. So calls
+	// are switched on by the data being ready, not by a date: once every lead
+	// has set a mobile number on their CSM Portal profile, calls start on the
+	// next incident. A held ladder is logged (naming the leads without a
+	// number), never written to the work note; with channel "both" its chat
+	// cards still post and only the calls are held.
+	CallWithoutVerifiedLeads bool `yaml:"callWithoutVerifiedLeads"`
 }
 
 // DefaultConfig is what the service does when no file is supplied: nothing.
@@ -378,6 +431,11 @@ func (l *LadderConfig) validate(name string) error {
 	if v := strings.TrimSpace(l.Chat.WebhookURLEnv); v != "" && !envVarName.MatchString(v) {
 		return fmt.Errorf("%s: chat.webhookUrlEnv must be the NAME of an environment variable "+
 			"that holds the webhook URL, not the URL itself -- this file is committed", name)
+	}
+
+	if src := l.PhoneSource(); src != PhoneSourceProfile && src != PhoneSourceNone {
+		return fmt.Errorf("%s: phones.source is %q; use %q or %q", name, l.Phones.Source,
+			PhoneSourceProfile, PhoneSourceNone)
 	}
 
 	// A cap keyed by a shift name that does not exist would read as a cap and

@@ -266,3 +266,8 @@ export function buildIncidentSearchFilters(
     ...(fieldFilters.length > 0 && { filters: fieldFilters }),
   };
 }
+
+/** Path of an incident's Related tab, where its tasks are listed. */
+export function incidentRelatedTabPath(incidentId: string): string {
+  return `/operations/incidents/${encodeURIComponent(incidentId)}?tab=related`;
+}

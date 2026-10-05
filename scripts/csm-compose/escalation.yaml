@@ -119,6 +119,8 @@ cre:
     # has its own alert-duty nominees, and three Team leads of its own with a
     # single Americas lead above them, which is why R5 and R6 read
     # americas_team_leads at LEVEL_1 and americas_team_lead at LEVEL_2.
+    # The three Team leads hold role 'lead'; the America Team lead above them
+    # holds 'americas_team_lead' (migration 0185), set from the Team Schedule.
     americas: americas
 
     # Only used when heads.cre / heads.cs below are left empty.
@@ -161,6 +163,14 @@ cre:
     # not always spare the same names.
     rotaMembersToCall: {}
 
+    # Weekend night (R6) Level 0 = one Americas weekend rota member plus the
+    # Americas nominated first responders. These are the Team Schedule shift
+    # codes that member is taken from. Empty means CRE_WEEKEND_NIGHT ("Americas
+    # weekend"). The on-call shift beside it, CRE_WEEKEND_NIGHT_OC, is
+    # deliberately not included: it is fallback cover, not the first page.
+    # Nobody rostered on these shifts means the rung calls the nominees alone.
+    americasWeekendRotaShifts: [CRE_WEEKEND_NIGHT]
+
     # Whose rota the rota rungs may reach. Empty means this ladder's ABT teams
     # above plus Americas. The Team Schedule also holds the SRE rotas (apollo,
     # artemis); they are never CRE rota members -- SRE is reached only by its
@@ -196,22 +206,24 @@ cre:
   #     levels: [alert_duty_own_abt, team_lead, all_team_leads, cre_head, cs_head]
   #     expectedCalls: [3, 1, 3, 1, 1]
   #
-  # The night shift's LEVEL_1 has a second reading worth knowing about: the
-  # shipped table uses all_team_leads (every ABT's lead), but if "Team leads"
-  # there means the AMERICAS team's own three leads -- the ones below its
-  # single lead at LEVEL_2 -- override R5 and R6 with americas_team_leads:
-  #   - id: R5
-  #     shift: USA
-  #     assignedToABT: any
-  #     levels: [alert_duty_americas, americas_team_leads, americas_team_lead,
-  #              cre_head, cs_head]
-  #     expectedCalls: [3, 3, 1, 1, 1]
-  #
   # Every source a level may name:
   #   rota_members · rota_pair · alert_duty_own_abt · alert_duty_each_abt
   #   alert_duty_americas · rota_member_and_alert_duty_americas
   #   team_lead · all_team_leads · americas_team_lead · americas_team_leads
   #   cre_head · cs_head
+
+  # Where a recipient's phone number comes from. The Team Schedule says who is
+  # on duty and who holds which rank, never how to reach them -- and a call
+  # tier drops anyone without a number (NO_NUMBER on the work note).
+  #
+  #   profile  the mobile number each person set on their own CSM Portal
+  #            profile (avatar > Profile), read from Asgardeo through the
+  #            SCIM operations service. Needs SCIM_BASE_URL. The default.
+  #   none     only numbers named in this file (heads below).
+  #
+  # A number named in this file always wins over the profile.
+  phones:
+    source: profile
 
   # The last two rungs, named outright. They are two people, not a team, so
   # the ladder asks for them here rather than looking them up by role inside a
@@ -271,6 +283,21 @@ cre:
     # The highest rung the ladder may climb, 0..4. Omit for no cap. Setting it
     # to 2 keeps an escalation away from the heads while a policy is trialled.
     # maxLevel: 2
+
+    # Calls switch on only when every lead in the ABT lead pool (the people
+    # LEVEL_1 and LEVEL_2 call) has a mobile number on their CSM Portal
+    # profile. Until then no call is placed -- otherwise a lead tier with no
+    # numbers is skipped and even a low-priority incident climbs straight to
+    # the heads. Held ladders are logged with the leads still missing a
+    # number; nothing is written to the incident. With channel "both" the
+    # chat cards still post. Set true to place calls before the pool is
+    # complete.
+    callWithoutVerifiedLeads: false
+
+    # The heads (LEVEL_3 CRE head, LEVEL_4 CS head) are paged only when at
+    # least one person on LEVEL_0..LEVEL_2 has a number to call; otherwise
+    # their calls are held (logged only). Set true to page them anyway.
+    callHeadsWithoutLowerTiers: false
 
     # When set, the ONLY numbers that may be dialled; every other recipient is
     # dropped before the call is placed. This is what makes a real ladder safe
