@@ -448,6 +448,20 @@ type CaseRepository interface {
 	// stakeholder with no email on file is silently excluded, same as
 	// watchListUserEmails does for an explicit watcher.
 	AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error)
+	// ProjectOnboardingInfo returns projectID's own onboarding_status (raw
+	// enum label, e.g. "IN_PROGRESS", "" when unset) and whether its
+	// project_type is the fixed Evaluation Subscription type -- the same two
+	// facts sla_status_repo.go's own activeSLAStatusFromJoins resolves for
+	// GET /sla-status, read here on demand instead of as part of a bulk
+	// join. Used to populate a case.comment_added event's own Team/
+	// IsEvaluationAccount/ProjectOnboardingStatus fields, so
+	// csm-notification-service's frustration-detection Chat alert can route
+	// through chataudience.Resolve the same way an SLA breach alert does,
+	// rather than always posting to the fixed Incident Monitor audience. A
+	// project id with no row (deleted, or the case has no project linked)
+	// returns the zero values, not an error -- same "nothing to enrich with"
+	// posture as AccountDefaultWatcherEmails above.
+	ProjectOnboardingInfo(ctx context.Context, projectID string) (onboardingStatus string, isEvaluationAccount bool, err error)
 	// GetCaseEtaSharedOn returns work_item.eta_shared_on for caseID -- nil
 	// (not an error) when the case has no fix ETA shared yet, or the case
 	// id doesn't exist. See domain.CaseView.EtaSharedOn's own doc comment
@@ -3212,6 +3226,28 @@ func (r *caseRepo) AccountDefaultWatcherEmails(ctx context.Context, projectID st
 		emails = append(emails, *email)
 	}
 	return emails, nil
+}
+
+// ProjectOnboardingInfo implements CaseRepository.
+func (r *caseRepo) ProjectOnboardingInfo(ctx context.Context, projectID string) (string, bool, error) {
+	var onboardingStatus *string
+	var isEvaluationAccount bool
+	err := r.db.QueryRow(ctx, `
+		SELECT p.onboarding_status::TEXT, COALESCE(pt.name = $2, FALSE)
+		FROM project p
+		LEFT JOIN project_type pt ON pt.id = p.project_type_id
+		WHERE p.id = $1`, projectID, evaluationSubscriptionProjectTypeName,
+	).Scan(&onboardingStatus, &isEvaluationAccount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("project onboarding info: %w", err)
+	}
+	if onboardingStatus == nil {
+		return "", isEvaluationAccount, nil
+	}
+	return *onboardingStatus, isEvaluationAccount, nil
 }
 
 // GetCaseEtaSharedOn implements CaseRepository.

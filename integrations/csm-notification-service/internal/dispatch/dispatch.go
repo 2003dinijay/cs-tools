@@ -37,6 +37,7 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/chataudience"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/escalation"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
@@ -69,6 +70,18 @@ type googleChatSender interface {
 	SendSecurityReportAnalysisAlert(ctx context.Context, audience, caseNumber, wso2CaseID, productName, title, team, caseLink string) error
 	SendCaseAcknowledgedAlert(ctx context.Context, audience, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error
 	SendSeverityChangedAlert(ctx context.Context, audience, oldSeverityLabel, oldSeverityColor, newSeverityLabel, newSeverityColor, caseNumber, wso2CaseID, title, team, caseLink string) error
+	SendFrustrationAlert(ctx context.Context, audience, caseNumber, wso2CaseID, productName, reason string, frustrationLevel float64, caseLink string) error
+	// HasAudienceSpace answers "does this team have a configured Chat
+	// space" — checkFrustration's own chataudience.Resolve call needs it,
+	// same as internal/slaengine's identical use for SLA breach alerts.
+	HasAudienceSpace(audience string) bool
+}
+
+// escalationDetector abstracts escalation.Client for testability — the one
+// call handleCommentAdded's frustration-detection step makes, to the
+// existing ai-escalate-comment-detector service.
+type escalationDetector interface {
+	DetectEscalation(ctx context.Context, caseID, caseNumber, product, comment string) (escalation.Result, error)
 }
 
 // callSender abstracts notifications.TwilioClient's MakeCall for testability.
@@ -82,6 +95,9 @@ type linkResolver interface {
 	CSMLink(caseID string) string
 	ChangeRequestLink(audience, changeRequestID, projectID string) string
 	OutageLink(outageID string) string
+	// IsCustomer classifies a single email as external (customer) vs
+	// internal — handleCommentAdded's frustration-detection gate.
+	IsCustomer(ctx context.Context, email string) (bool, error)
 }
 
 // identityProvisioner abstracts scim.Client for testability — the one
@@ -153,6 +169,12 @@ type Dispatcher struct {
 	googleChat googleChatSender
 	call       callSender
 	links      linkResolver
+
+	// frustrationDetector is set via WithFrustrationDetection — nil (every
+	// deployment that hasn't configured it) means handleCommentAdded skips
+	// the frustration-detection step entirely, the same optional-feature
+	// posture WithOnboarding's own cfg has.
+	frustrationDetector escalationDetector
 
 	// emailSendingEnabled (EMAIL_SENDING_ENABLED, the disable-entirely
 	// `!= "false"` convention CALL_SENDING_ENABLED below also uses) is
@@ -270,6 +292,17 @@ func NewDispatcher(email emailSender, googleChat googleChatSender, call callSend
 		records:              make(map[string]*recordState),
 		identityExisted:      make(map[string]bool),
 	}
+}
+
+// WithFrustrationDetection configures handleCommentAdded's
+// frustration-detection step (see escalationDetector) and returns d for
+// chaining. Not part of NewDispatcher's parameter list deliberately — same
+// "optional per deployment" reasoning as WithOnboarding immediately below: a
+// deployment with no detector configured gets a nil frustrationDetector, and
+// handleCommentAdded skips the step entirely rather than erroring.
+func (d *Dispatcher) WithFrustrationDetection(detector escalationDetector) *Dispatcher {
+	d.frustrationDetector = detector
+	return d
 }
 
 // WithOnboarding configures handleProjectContactInvited (see
@@ -602,6 +635,9 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return fmt.Errorf("dispatch: decode case.comment_added payload: %w", err)
 	}
+
+	d.checkFrustration(ctx, p)
+
 	groups, groupUserIDs, err := d.groupByLink(ctx, p.Recipients, p.ProjectID, p.CaseID)
 	if err != nil {
 		return err
@@ -625,6 +661,61 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 		d.forgetEmailGroups(baseKey, owned)
 	}
 	return sendErr
+}
+
+// checkFrustration runs ai-escalate-comment-detector's own OpenAI-backed
+// analysis on a customer-authored comment and, when it crosses that
+// service's own configured threshold, sends a Chat alert — routed through
+// chataudience.Resolve exactly like an SLA breach alert (sendBreachAlert in
+// internal/slaengine): the case's own team when it has a configured space,
+// falling back to Incident Monitor, plus the Evaluation/Onboarding/Americas/
+// weekend overlays. A failure on one resolved audience doesn't stop the
+// others (errors.Join, same as sendBreachAlert), each logged individually.
+//
+// Deliberately best-effort and entirely independent of handleCommentAdded's
+// own email-sending return value: a failure here (entity-service's role
+// lookup, the detector call itself, or the Chat post) is logged and
+// swallowed, never propagated as this record's own error — the email
+// reaction to a new comment is the primary thing this handler exists for,
+// and a problem with a newer, secondary feature must not cause Kafka to
+// retry (and therefore re-run, including a second OpenAI call) a comment
+// whose email side has already succeeded or is being retried for an
+// unrelated reason. No separate idempotency tracking (the claim/forget
+// mechanism sendPerGroup/groupByLink use for email) guards a retry from
+// re-running this check and potentially re-alerting — accepted for a first
+// version: a duplicate Chat alert on an already-rare retry is a much
+// smaller problem than the email-delivery duplicates that mechanism exists
+// to prevent.
+func (d *Dispatcher) checkFrustration(ctx context.Context, p events.CommentAddedPayload) {
+	if d.frustrationDetector == nil || p.IsInternalNote || p.AuthorEmail == "" || p.CaseComment == "" {
+		return
+	}
+
+	isCustomer, err := d.links.IsCustomer(ctx, p.AuthorEmail)
+	if err != nil {
+		slog.ErrorContext(ctx, "dispatch: frustration detection, classify comment author failed", "caseID", p.CaseID, "err", err)
+		return
+	}
+	if !isCustomer {
+		return
+	}
+
+	result, err := d.frustrationDetector.DetectEscalation(ctx, p.CaseID, p.CaseNumber, p.Product, p.CaseComment)
+	if err != nil {
+		slog.ErrorContext(ctx, "dispatch: frustration detection, detector call failed", "caseID", p.CaseID, "err", err)
+		return
+	}
+	if !result.ShouldAlert {
+		return
+	}
+
+	caseLink := d.links.CSMLink(p.CaseID)
+	audiences := chataudience.Resolve(p.Team, p.IsEvaluationAccount, p.ProjectOnboardingStatus, time.Now(), d.googleChat.HasAudienceSpace)
+	for _, audience := range audiences {
+		if err := d.googleChat.SendFrustrationAlert(ctx, audience, p.CaseNumber, p.WSO2CaseID, p.Product, result.Reason, result.FrustratedLevel, caseLink); err != nil {
+			slog.ErrorContext(ctx, "dispatch: frustration detection, send chat alert failed", "caseID", p.CaseID, "audience", audience, "err", err)
+		}
+	}
 }
 
 // handleStatusChanged's email step is tracked the same way — see

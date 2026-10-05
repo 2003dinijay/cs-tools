@@ -95,6 +95,35 @@ type CommentAddedPayload struct {
 	// distinct email layout for it.
 	IsInternalNote bool     `json:"isInternalNote,omitempty"`
 	Recipients     []string `json:"recipients"`
+	// AuthorEmail is the comment author's own resolved email -- already
+	// available at publish time (the same author lookup that resolves Name
+	// above), added so csm-notification-service can classify the author as
+	// internal/external (the same role-then-domain classification
+	// internal/recipientlinks already applies to a *recipient's* email) to
+	// decide whether to run frustration detection on this comment. Empty
+	// when the author couldn't be resolved -- csm-notification-service skips
+	// the check rather than guessing.
+	AuthorEmail string `json:"authorEmail,omitempty"`
+	// Product is the case's deployed product's display name (e.g. "WSO2 API
+	// Manager"), the same value CaseCreatedPayload.Product carries -- purely
+	// display, shown on a frustration-detection Chat alert's card, if one is
+	// sent.
+	Product string `json:"product,omitempty"`
+	// Team/IsEvaluationAccount/ProjectOnboardingStatus let
+	// csm-notification-service route a frustration-detection Chat alert
+	// through chataudience.Resolve the same way an SLA breach alert is
+	// routed -- team-based, with the Evaluation/Onboarding/Americas/weekend
+	// overlays -- rather than always the fixed Incident Monitor audience.
+	// Team is the case's account's CRE team display name (e.g. "Castor"),
+	// the same value CaseCreatedPayload.Team carries. IsEvaluationAccount/
+	// ProjectOnboardingStatus are Postgres-only facts (see
+	// CaseRepository.ProjectOnboardingInfo) and are the zero value on a pure
+	// ServiceNow deployment with no Postgres pool configured -- Resolve
+	// treats that the same as "not an evaluation account, no onboarding
+	// status," not an error.
+	Team                    string `json:"team,omitempty"`
+	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
+	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
 }
 
 // StatusChangedPayload is the Payload shape for TypeStatusChanged — mirrors
