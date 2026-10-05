@@ -774,33 +774,62 @@ func TestSanitizeRichText_VoidElementsDontBreakLaterCloseTags(t *testing.T) {
 // TestRenderCaseCreatedEmail_AnnouncementTableRendersAsTable is the end-to-end
 // shape of the reported bug: the real announcement description (product /
 // version / U2 level matrix) must come out of the case-created email as a
-// <table> with a row per product, not as loose lines.
+// <table> with a row per product, not as loose lines — and the table must be
+// closed before the template's own footer links, even when the source's
+// markup left it open.
 func TestRenderCaseCreatedEmail_AnnouncementTableRendersAsTable(t *testing.T) {
-	desc := `<p>Solution</p><table><colgroup><col><col><col></colgroup><tbody>` +
+	const rows = `<colgroup><col><col><col></colgroup><tbody>` +
 		`<tr><th><p><b>Product Name</b></p></th><th><p><b>Product Version</b></p></th><th><p><b>U2 Update Level</b></p></th></tr>` +
 		`<tr><td><p>WSO2 API Manager</p></td><td><p>4.6.0</p></td><td><p>12</p></td></tr>` +
-		`<tr><td><p>WSO2 Traffic Manager</p></td><td><p>4.5.0</p></td><td><p>47</p></td></tr>` +
-		`</tbody></table><p>Best regards</p>`
-	out, _ := RenderCaseCreatedEmail(CaseCreatedEmailData{
-		ReporterName: "Jane Doe",
-		ProjectName:  "PROJ",
-		CaseNumber:   "CS0001",
-		CaseTitle:    "Announcement",
-		CaseType:     "Announcement",
-		Description:  desc,
-		CaseLink:     "https://x/case",
-		CommentLink:  "https://x/comment",
-	})
-	if got := strings.Count(out, "<tr>"); got < 3 {
-		t.Errorf("rendered email has %d <tr> rows from the announcement table, want at least 3", got)
+		`<tr><td><p>WSO2 Traffic Manager</p></td><td><p>4.5.0</p></td><td><p>47</p></td></tr>`
+
+	tests := []struct {
+		name string
+		desc string
+	}{
+		{"well-formed table", `<p>Solution</p><table>` + rows + `</tbody></table><p>Best regards</p>`},
+		// No </tbody> or </table>: the sanitizer must close them itself, or the
+		// footer below would end up inside the table.
+		{"unclosed table", `<p>Solution</p><table>` + rows},
 	}
-	for _, cell := range []string{">WSO2 API Manager</td>", ">4.6.0</td>", ">12</td>", ">WSO2 Traffic Manager</td>"} {
-		if !strings.Contains(out, cell) {
-			t.Errorf("rendered email is missing table cell %q", cell)
-		}
-	}
-	// The footer links must sit after the table is closed, not inside it.
-	if strings.Index(out, "</table>") > strings.Index(out, "Add Comment") && strings.Contains(out, "Add Comment") {
-		t.Error("the table swallowed the email footer: Add Comment appears before the table's close")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, _ := RenderCaseCreatedEmail(CaseCreatedEmailData{
+				ReporterName: "Jane Doe",
+				ProjectName:  "PROJ",
+				CaseNumber:   "CS0001",
+				CaseTitle:    "Announcement",
+				CaseType:     "Announcement",
+				Description:  tt.desc,
+				CaseLink:     "https://x/case",
+				CommentLink:  "https://x/comment",
+			})
+			if got := strings.Count(out, "<tr>"); got < 3 {
+				t.Errorf("rendered email has %d <tr> rows from the announcement table, want at least 3", got)
+			}
+			for _, cell := range []string{">WSO2 API Manager</td>", ">4.6.0</td>", ">12</td>", ">WSO2 Traffic Manager</td>"} {
+				if !strings.Contains(out, cell) {
+					t.Errorf("rendered email is missing table cell %q", cell)
+				}
+			}
+
+			// The template has its own tables (the case details block, the
+			// layout wrappers), so a bare Index(out, "</table>") would land on
+			// one of those, not on the description's. Anchor on the table this
+			// sanitizer emitted, then require its own close — and require that
+			// close to come before the footer, which is the point of the check.
+			start := strings.Index(out, emailTableOpen)
+			footer := strings.Index(out, "Add Comment")
+			if start < 0 || footer < 0 {
+				t.Fatalf("rendered email is missing the description table (at %d) or the footer (at %d)", start, footer)
+			}
+			closeRel := strings.Index(out[start:], "</table>")
+			if closeRel < 0 {
+				t.Fatal("the description table is never closed")
+			}
+			if start+closeRel > footer {
+				t.Error("the table swallowed the email footer: Add Comment appears before the table's close")
+			}
+		})
 	}
 }
