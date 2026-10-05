@@ -411,10 +411,56 @@ func main() {
 	// Same dispatcher as the case consumers: it already routes on the
 	// envelope's Type, and these two only ever receive change_request.* since
 	// that is all their topic carries.
-	crConsumers := startConsumers(ctx, "cr", crCfg, crConsumerGroup, crConsumerCount, dispatcher.Handle, crToDeadLetter)
-	crDLQConsumers := startConsumers(ctx, "cr-dlq", crDLQCfg, crDLQConsumerGroup, crDLQConsumerCount, dispatcher.Handle, nil)
-	outageConsumers := startConsumers(ctx, "outage", outageCfg, outageConsumerGroup, outageConsumerCount, dispatcher.Handle, outageToDeadLetter)
-	outageDLQConsumers := startConsumers(ctx, "outage-dlq", outageDLQCfg, outageDLQConsumerGroup, outageDLQConsumerCount, dispatcher.Handle, nil)
+	//
+	// sre-events: ONE topic for the operations notifications (change-request
+	// notices and outage emails today), routed by event type like every
+	// topic here. Off unless SRE_EVENT_HUB_TOPIC is set, so a deployment
+	// that does not set it runs exactly the consumers it did before. When set,
+	// see planSREConsumers for which consumers it replaces and which group it
+	// reads with.
+	plan := planSREConsumers(os.Getenv("SRE_EVENT_HUB_TOPIC"), os.Getenv("SRE_CONSUMER_GROUP"),
+		os.Getenv("SRE_EVENT_HUB_DLQ_TOPIC"), os.Getenv("SRE_DLQ_CONSUMER_GROUP"),
+		consumerTarget{crCfg.Topic, crConsumerGroup}, consumerTarget{crDLQCfg.Topic, crDLQConsumerGroup},
+		consumerTarget{outageCfg.Topic, outageConsumerGroup}, consumerTarget{outageDLQCfg.Topic, outageDLQConsumerGroup})
+	if err := validateSREPlan(plan, eventBusCfg.Topic, projectCfg.Topic); err != nil {
+		slog.Error("invalid sre-events configuration", "err", err)
+		os.Exit(1)
+	}
+	var crConsumers, crDLQConsumers, outageConsumers, outageDLQConsumers, sreConsumers, sreDLQConsumers []*eventbus.Consumer
+	if plan.StartCR {
+		crConsumers = startConsumers(ctx, "cr", crCfg, crConsumerGroup, crConsumerCount, dispatcher.Handle, crToDeadLetter)
+	}
+	if plan.StartCRDLQ {
+		crDLQConsumers = startConsumers(ctx, "cr-dlq", crDLQCfg, crDLQConsumerGroup, crDLQConsumerCount, dispatcher.Handle, nil)
+	}
+	if plan.StartOutage {
+		outageConsumers = startConsumers(ctx, "outage", outageCfg, outageConsumerGroup, outageConsumerCount, dispatcher.Handle, outageToDeadLetter)
+	}
+	if plan.StartOutageDLQ {
+		outageDLQConsumers = startConsumers(ctx, "outage-dlq", outageDLQCfg, outageDLQConsumerGroup, outageDLQConsumerCount, dispatcher.Handle, nil)
+	}
+	if plan.Enabled {
+		sreCfg := eventbus.Config{Broker: eventBusCfg.Broker, ConnectionString: eventBusCfg.ConnectionString, Topic: plan.SRE.Topic}
+		sreDLQCfg := eventbus.Config{Broker: eventBusCfg.Broker, ConnectionString: eventBusCfg.ConnectionString, Topic: plan.SREDLQ.Topic}
+		sreDLQProducer := eventbus.NewProducer(sreDLQCfg)
+		defer sreDLQProducer.Close()
+		sreToDeadLetter := func(ctx context.Context, record eventbus.Record, handleErr error) error {
+			attrs := []any{"topic", record.Topic, "partition", record.Partition,
+				"offset", record.Offset, "dlqTopic", sreDLQCfg.Topic}
+			slog.WarnContext(ctx, "eventbus: handler exhausted retries, publishing to dead-letter topic",
+				append(attrs, deadLetterErrAttrs(handleErr)...)...)
+			return sreDLQProducer.Publish(ctx, record.Key, record.Value)
+		}
+		// HandleShared, not Handle: an event type this service does not
+		// handle is someone else's on a shared topic, not a broken record.
+		sreConsumers = startConsumers(ctx, "sre", sreCfg, plan.SRE.Group,
+			envInt("SRE_CONSUMER_COUNT", 1), dispatcher.HandleShared, sreToDeadLetter)
+		sreDLQConsumers = startConsumers(ctx, "sre-dlq", sreDLQCfg, plan.SREDLQ.Group,
+			envInt("SRE_DLQ_CONSUMER_COUNT", 1), dispatcher.HandleShared, nil)
+		slog.Info("sre-events consumer enabled", "topic", plan.SRE.Topic, "group", plan.SRE.Group,
+			"dlqTopic", plan.SREDLQ.Topic, "dlqGroup", plan.SREDLQ.Group,
+			"replacesCRConsumer", !plan.StartCR, "replacesOutageConsumer", !plan.StartOutage)
+	}
 	// And the same for project_contact.invited: the one dispatcher routes
 	// on the envelope's Type already, and these two only ever receive the
 	// onboarding events since that is all their topic carries.
@@ -538,6 +584,12 @@ func main() {
 		c.Close()
 	}
 	for _, c := range outageDLQConsumers {
+		c.Close()
+	}
+	for _, c := range sreConsumers {
+		c.Close()
+	}
+	for _, c := range sreDLQConsumers {
 		c.Close()
 	}
 	for _, c := range projectConsumers {
