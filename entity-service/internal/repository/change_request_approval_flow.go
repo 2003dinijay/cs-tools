@@ -751,8 +751,10 @@ func liveCustomerStageForState(ctx context.Context, q crQuerier, workItemID, sta
 
 // withoutManualCustomerOutcome drops the manual way out of a customer state
 // from legalNextStates while a customer stage is live for it: "scheduled"
-// (Record customer approval) from Customer Approval, "closed" (Close) from
-// Customer Review. Only Cancel is left; the decision comes from the approval.
+// (Record customer approval) from Customer Approval, "closed" (Close) and
+// "rollback" (the failed review) from Customer Review. Only Cancel is left;
+// the decision comes from the approval (a member rejecting the review rolls
+// the change back).
 func withoutManualCustomerOutcome(state *string, nexts []string, liveStage bool) []string {
 	if !liveStage || state == nil || nexts == nil {
 		return nexts
@@ -762,9 +764,12 @@ func withoutManualCustomerOutcome(state *string, nexts []string, liveStage bool)
 		return nexts
 	}
 	manual := strings.ToLower(spec.approvedState)
+	rejected := strings.ToLower(spec.rejectedState)
 	out := make([]string, 0, len(nexts))
 	for _, n := range nexts {
-		if n != manual {
+		// Cancel is the one manual way out that stays: rejectedState for
+		// Customer Approval IS canceled, hence the explicit guard.
+		if n != manual && (n != rejected || n == string(domain.ChangeRequestStateCanceled)) {
 			out = append(out, n)
 		}
 	}
@@ -791,6 +796,24 @@ func cancelLiveStageApprovers(ctx context.Context, tx pgx.Tx, stageID, actorEmai
 		`UPDATE approval_stage_approver SET status = 'cancelled', updated_on = NOW(), updated_by = $2
 		 WHERE stage_id = $1 AND status = 'requested'`, stageID, actorEmail); err != nil {
 		return fmt.Errorf("cancel customer stage approvers: %w", err)
+	}
+	return nil
+}
+
+// cancelPendingApprovers cancels every still-REQUESTED approver row of the
+// change, on whatever stage (the stages stay, as a record). Used when the
+// change reaches a state nothing can be approved in any more by hand (Rollback).
+func cancelPendingApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string) error {
+	// approval_stage_approver writes are internal-only (see
+	// provisionApprovalStage); the caller has proven their access to the
+	// change by writing to it in this transaction.
+	if err := setCallerIdentity(ctx, tx, SearchScope{Unrestricted: true}); err != nil {
+		return fmt.Errorf("cancel pending approvers: escalate identity: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE approval_stage_approver SET status = 'cancelled', updated_on = NOW(), updated_by = $2
+		 WHERE work_item_id = $1 AND status = 'requested'`, workItemID, actorEmail); err != nil {
+		return fmt.Errorf("cancel pending approvers: %w", err)
 	}
 	return nil
 }
@@ -902,7 +925,7 @@ func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 // must still be in the stage's state (a stage whose change has moved on has
 // had its approvers cancelled, so this is a defence, not a path). Returns
 // whether the state moved.
-func applyCustomerStageOutcome(ctx context.Context, tx pgx.Tx, workItemID string, spec *customerStageSpec, currentState string, approved bool) (bool, error) {
+func applyCustomerStageOutcome(ctx context.Context, tx pgx.Tx, workItemID string, spec *customerStageSpec, currentState string, approved bool, actorEmail string) (bool, error) {
 	if !strings.EqualFold(currentState, spec.state) {
 		return false, nil
 	}
@@ -920,6 +943,13 @@ func applyCustomerStageOutcome(ctx context.Context, tx pgx.Tx, workItemID string
 	}
 	if ct.RowsAffected() == 0 {
 		return false, &apierror.NotFoundError{Msg: "change request not found"}
+	}
+	// A rolled-back change is final: the Review stage's approvers (never
+	// asked to decide, or not yet) must not stay pending on it.
+	if !approved && strings.EqualFold(spec.rejectedState, string(domain.ChangeRequestStateRollback)) {
+		if err := cancelPendingApprovers(ctx, tx, workItemID, actorEmail); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }

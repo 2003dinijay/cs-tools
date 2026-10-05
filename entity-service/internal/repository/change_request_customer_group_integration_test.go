@@ -200,7 +200,7 @@ func (f *crFlow) driveToCustomerApproval(id string) {
 func (f *crFlow) driveToCustomerReview(id string) {
 	f.t.Helper()
 	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
-	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "canceled")
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
 	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "canceled")
 }
 
@@ -260,7 +260,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupNormalLifecycle(t *testing.T)
 	}
 
 	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
-	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "canceled")
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
 	// The Review stage still gets provisioned (the customer stage must not
 	// shift its checkpoint ordinal), and no customer review stage exists yet.
 	if got := f.labels(id); strings.Join(got, ",") != "Peer Approval,CAB Approval,Customer Approval,Review" {
@@ -309,10 +309,20 @@ func TestChangeRequestFlowIntegration_CustomerGroupRejections(t *testing.T) {
 		f.requestApproval(id)
 		f.expect(id, "after Request Approval (Standard, no customer approval)", "SCHEDULED", "implement", "canceled")
 		f.driveToCustomerReview(id)
+		// While the request is pending the manual rollback is refused...
+		_, err := f.patchState(id, domain.ChangeRequestStateRollback)
+		f.wantValidationError("manual rollback with a live customer stage", err, "approving or rejecting it")
+		f.expect(id, "after the refused manual rollback", "CUSTOMER_REVIEW", "canceled")
+		// ...and the members' rejection is what rolls the change back.
 		if err := f.decide(id, crCustMember1ID, "rejected"); err != nil {
 			t.Fatalf("reject: %v", err)
 		}
 		f.expect(id, "after the customer rejected the review", "ROLLBACK")
+		if n := f.requestedApprovers(id); n != 0 {
+			t.Fatalf("%d approver rows still REQUESTED after the rejection", n)
+		}
+		_, err = f.patchState(id, domain.ChangeRequestStateClosed)
+		f.wantValidationError("close out of rollback", err, "rollback is final")
 		assertApprovers(t, "Customer Review", f.customerStages(id)[0].approvers, map[string]string{crCustMember1ID: "rejected", crCustMember2ID: "cancelled"})
 		if _, reviewed := f.customerOutcome(id); reviewed {
 			t.Fatal("is_customer_reviewed = true on a rejected review")
@@ -434,8 +444,8 @@ func TestChangeRequestFlowIntegration_CustomerGroupFallbackToManual(t *testing.T
 				t.Fatal("manual record did not stamp is_customer_approved")
 			}
 			f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
-			f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "canceled")
-			f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "canceled")
+			f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
+			f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "rollback", "canceled")
 			if n := len(f.customerStages(id)); n != 0 {
 				t.Fatalf("customer review stage provisioned: %d", n)
 			}
@@ -525,8 +535,8 @@ func TestChangeRequestFlowIntegration_CustomerGroupSetLaterInCustomerReview(t *t
 	f.requestApproval(id)
 	f.expect(id, "after Request Approval", "SCHEDULED", "implement", "canceled")
 	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
-	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "canceled")
-	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "canceled")
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
+	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "rollback", "canceled")
 
 	f.setCustomerGroup(id, sp(crCustGroupID))
 	f.expect(id, "after the group was set", "CUSTOMER_REVIEW", "canceled")
@@ -560,11 +570,16 @@ func TestChangeRequestFlowIntegration_CustomerGroupRefusesManualTransition(t *te
 		t.Fatalf("approve: %v", err)
 	}
 	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
-	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "canceled")
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
 	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "canceled")
 	_, err = f.patchState(id, domain.ChangeRequestStateClosed)
 	f.wantValidationError("manual closed", err, "approving or rejecting it in the change request's approvals")
 	f.expect(id, "after the refused close", "CUSTOMER_REVIEW", "canceled")
+	// Rolling back is the members' call too (rejecting the review).
+	_, err = f.patchState(id, domain.ChangeRequestStateRollback)
+	f.wantValidationError("manual rollback", err, "approving or rejecting it in the change request's approvals")
+	f.wantValidationError("manual rollback", err, `"CR Flow Customer Group"`)
+	f.expect(id, "after the refused rollback", "CUSTOMER_REVIEW", "canceled")
 	if _, reviewed := f.customerOutcome(id); reviewed {
 		t.Fatal("refused PATCH stamped is_customer_reviewed")
 	}

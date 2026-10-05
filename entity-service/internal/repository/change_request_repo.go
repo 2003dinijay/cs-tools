@@ -395,6 +395,10 @@ func ChangeRequestTypeSupported(t domain.ChangeRequestType) bool {
 //   - Review offers Closed -- or, when customer_review_required is set,
 //     Customer Review instead (legalChangeRequestNextStates applies that
 //     branch; the map holds the default). Customer Review then offers Closed.
+//   - Rollback is the failed-review off-ramp and is offered from exactly two
+//     states, Review (the internal review failed) and Customer Review (the
+//     customer's review failed): changeRequestRollbackFrom. It is not a
+//     forward move, so it is not in this map.
 var changeRequestForwardNextStates = map[domain.ChangeRequestState][]domain.ChangeRequestState{
 	// New's one human action is Request Approval, always sent as
 	// {state: "assess"}; where it actually lands depends on the change's type
@@ -433,6 +437,11 @@ var changeRequestForwardNextStates = map[domain.ChangeRequestState][]domain.Chan
 // Customer Review INSTEAD of Closed (and Customer Review then offers Closed);
 // one that does not offers Closed directly.
 //
+// "rollback" is offered, right after the forward move and before "canceled",
+// from exactly two states -- Review and Customer Review (the review failed;
+// changeRequestRollbackFrom). It is the failed-review branch of the process
+// diagram, so it is offered whether or not customer review is required.
+//
 // "canceled" is offered alongside the forward move(s) from every
 // non-terminal state: the Cancel Change action was available on every
 // reachable state checked live, with no exception found. Rollback/Closed/
@@ -450,11 +459,23 @@ func legalChangeRequestNextStates(state *string, customerReviewRequired bool) []
 	if st == domain.ChangeRequestStateReview && customerReviewRequired {
 		nexts = []domain.ChangeRequestState{domain.ChangeRequestStateCustomerReview}
 	}
-	result := make([]string, 0, len(nexts)+1)
+	result := make([]string, 0, len(nexts)+2)
 	for _, next := range nexts {
 		result = append(result, string(next))
 	}
+	if changeRequestRollbackFrom[st] {
+		result = append(result, string(domain.ChangeRequestStateRollback))
+	}
 	return append(result, string(domain.ChangeRequestStateCanceled))
+}
+
+// changeRequestRollbackFrom is the set of states a change can be rolled back
+// from by hand: the two review states. A rejected Customer Review also lands
+// in Rollback, through the customer group's approval (customerReviewStageSpec),
+// which is a different path and not governed by this set.
+var changeRequestRollbackFrom = map[domain.ChangeRequestState]bool{
+	domain.ChangeRequestStateReview:         true,
+	domain.ChangeRequestStateCustomerReview: true,
 }
 
 // scanChangeRequestView scans changeRequestSelectColumns into a
@@ -1230,6 +1251,12 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	//     customer's review is a required step in between. {state: "closed"}
 	//     from Customer Review records the customer's review
 	//     (is_customer_reviewed).
+	//   - {state: "rollback"} is the failed-review off-ramp: accepted only from
+	//     Review and Customer Review (and from Customer Review only while no
+	//     customer-group review request is pending -- its members' rejection
+	//     is what rolls the change back then). It stamps no customer flag,
+	//     provisions no stage, and cancels the still-requested approvers.
+	//     Rollback is final: no state change is accepted out of it.
 	//   - {state: "assess"} is the Request Approval action. It is only legal
 	//     from New, and the state actually written is chosen from the change's
 	//     type: Assess (Normal), Authorize (Emergency), Scheduled (Standard) --
@@ -1261,6 +1288,12 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	}
 	if req.State != nil {
 		yes := true
+		// Rollback is terminal: nothing moves a rolled-back change anywhere
+		// (a repeated {state: rollback} gets the "only from review" refusal
+		// below).
+		if gates.state == "ROLLBACK" && !strings.EqualFold(string(*req.State), string(domain.ChangeRequestStateRollback)) {
+			return "", &apierror.ValidationError{Msg: "change request has been rolled back; rollback is final and its state can no longer be changed"}
+		}
 		switch strings.ToLower(string(*req.State)) {
 		case "authorize":
 			return "", &apierror.ValidationError{Msg: fmt.Sprintf(
@@ -1285,6 +1318,25 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			}
 			// Recording the customer's approval IS setting is_customer_approved.
 			effectiveApproved = &yes
+		case "rollback":
+			// The failed-review off-ramp: only from the two review states.
+			// Terminal, no stamp of is_customer_reviewed, no new stage.
+			if gates.state != "REVIEW" && gates.state != "CUSTOMER_REVIEW" {
+				return "", &apierror.ValidationError{Msg: `state "rollback" can only be set from review or customer_review`}
+			}
+			if gates.state == "CUSTOMER_REVIEW" {
+				// With the customer group's review request pending, a failed
+				// review is the members' decision (rejecting it rolls the
+				// change back), as for closing.
+				if live, err := liveCustomerStageForState(ctx, tx, id, gates.state); err != nil {
+					return "", fmt.Errorf("patch change request: %w", err)
+				} else if live != nil {
+					return "", customerStageManualRefusal("rollback", &customerReviewStageSpec, live)
+				}
+			}
+			if req.IsCustomerReviewed != nil && *req.IsCustomerReviewed {
+				return "", &apierror.ValidationError{Msg: "isCustomerReviewed cannot be true when rolling back: the review failed"}
+			}
 		case "customer_review":
 			if !reviewRequired {
 				return "", &apierror.ValidationError{Msg: "state \"customer_review\" cannot be set: customer review is not required for this change request (customerReviewRequired is false); close it from review instead"}
@@ -1664,6 +1716,14 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	// state. Idempotent, and a no-op for every other state.
 	if req.State != nil || req.CustomerGroupID != nil {
 		if _, err := provisionCustomerStage(ctx, tx, id, actorEmail); err != nil {
+			return "", err
+		}
+	}
+
+	// A rolled-back change is terminal: nobody is left to be asked anything
+	// (the Review stage's approvers may still be REQUESTED).
+	if effectiveState != nil && strings.EqualFold(string(*effectiveState), string(domain.ChangeRequestStateRollback)) {
+		if err := cancelPendingApprovers(ctx, tx, id, actorEmail); err != nil {
 			return "", err
 		}
 	}
@@ -2862,7 +2922,7 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 					// The customer group's answer: Customer Approval ->
 					// Scheduled (customer approval recorded), Customer Review
 					// -> Closed (customer review recorded).
-					if _, err := applyCustomerStageOutcome(ctx, tx, id, customerStageSpecForKind(stageKind), currentState.String, true); err != nil {
+					if _, err := applyCustomerStageOutcome(ctx, tx, id, customerStageSpecForKind(stageKind), currentState.String, true, actorEmail); err != nil {
 						return "", err
 					}
 				}
@@ -2898,7 +2958,7 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 						return "", fmt.Errorf("decide change request approval: check current state: %w", err)
 					}
 					if currentState.Valid {
-						if _, err := applyCustomerStageOutcome(ctx, tx, id, spec, currentState.String, false); err != nil {
+						if _, err := applyCustomerStageOutcome(ctx, tx, id, spec, currentState.String, false, actorEmail); err != nil {
 							return "", err
 						}
 					}

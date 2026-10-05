@@ -36,8 +36,15 @@
 //   - "the post-approval state" is `customer_approval` when the CR has
 //     `customerApprovalRequired`, else `scheduled`;
 //   - from `customer_approval` legalNextStates = [scheduled, canceled];
-//   - Review offers [customer_review, canceled] when `customerReviewRequired`,
-//     else [closed, canceled]; `customer_review` -> [closed, canceled];
+//   - Review offers [customer_review, rollback, canceled] when
+//     `customerReviewRequired`, else [closed, rollback, canceled];
+//     `customer_review` -> [closed, rollback, canceled]. `rollback` ("Roll
+//     back", the failed-review off-ramp) is accepted ONLY from those two states
+//     (any other state is a 400 `state "rollback" can only be set from review
+//     or customer_review`), is refused while a customer-group review stage is
+//     live, cancels every still-requested approver row, and is final (a later
+//     state change is a 400); the UI posts its reason as a comment first
+//     (`POST /change-requests/{id}/comments`, recorded in `journal()`);
 //   - customer group: when the CR has a customer group with at least one
 //     member, entering `customer_approval` / `customer_review` provisions a
 //     "Customer Approval" / "Customer Review" stage (assignment group = the
@@ -253,9 +260,10 @@ function legalNextStates(state: string, flags: FakeCustomerFlags, liveCustomerSt
     case "implement":
       return ["review", "canceled"];
     case "review":
-      return flags.customerReviewRequired ? ["customer_review", "canceled"] : ["closed", "canceled"];
+      return flags.customerReviewRequired ? ["customer_review", "rollback", "canceled"] : ["closed", "rollback", "canceled"];
     case "customer_review":
-      return liveCustomerStage ? ["canceled"] : ["closed", "canceled"];
+      // a pending customer-group review is decided by its members
+      return liveCustomerStage ? ["canceled"] : ["closed", "rollback", "canceled"];
     default:
       return [];
   }
@@ -651,6 +659,11 @@ export async function installFakeChangeRequestApi(
           })),
         });
       }
+      if (path.endsWith("/comments") && req.method() === "POST") {
+        const { content } = req.postDataJSON() as { content?: string };
+        if (typeof content === "string" && content.trim()) journal.push({ kind: "comment", text: content });
+        return json(route, { id: "00000000-0000-0000-0000-00000000d001", content, type: "comment", createdOn: "2026-01-01T00:00:00Z", createdBy: null }, 201);
+      }
       if (path.endsWith("/comments/search")) {
         return json(route, { comments: [], hasMore: false, totalRecords: 0 });
       }
@@ -694,7 +707,23 @@ export async function installFakeChangeRequestApi(
         if (target === undefined) {
           return json(route, { id: FAKE_CR_ID, state, message: "Change request updated.", changeRequest: detail() });
         }
-        if (target === "assess") {
+        if (state === "rollback" && target !== "rollback") {
+          return json(route, { message: "change request has been rolled back; rollback is final and its state can no longer be changed" }, 400);
+        }
+        if (target === "rollback") {
+          if (state !== "review" && state !== "customer_review") {
+            return json(route, { message: 'state "rollback" can only be set from review or customer_review' }, 400);
+          }
+          if (hasLiveCustomerStage()) {
+            return json(route, { message: "The customer group must decide the review; it cannot be rolled back manually." }, 400);
+          }
+          // Rolling back cancels every still-requested approver row.
+          for (const st of stages) {
+            for (const a of st.approvers) if (a.status === "REQUESTED") a.status = "CANCELLED";
+            if (st.status === "REQUESTED") st.status = "CANCELLED";
+          }
+          state = "rollback";
+        } else if (target === "assess") {
           if (type === "standard") enter(afterInternalApproval());
           else if (type === "emergency") {
             state = "authorize";

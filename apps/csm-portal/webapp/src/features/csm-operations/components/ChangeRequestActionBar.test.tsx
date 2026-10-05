@@ -189,7 +189,7 @@ describe("ChangeRequestActionBar — dispatch", () => {
  * stops it being removed as dead code.
  */
 describe("ChangeRequestActionBar — states the bar never offers", () => {
-  it("renders neither rollback nor customer approval, as a button or a menu item", () => {
+  it("renders neither rollback (outside the review states) nor customer approval, as a button or a menu item", () => {
     renderBar({
       state: "implement",
       legalNextStates: ["review", "rollback", "customer_approval", "canceled"],
@@ -232,6 +232,17 @@ describe("ChangeRequestActionBar — states the bar never offers", () => {
       legalNextStates: ["rollback", "customer_approval"],
     });
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("never offers rollback from any state but review and customer_review, even if the backend listed it", () => {
+    for (const state of [
+      "new", "assess", "authorize", "customer_approval", "scheduled", "implement",
+      "closed", "canceled", "rollback",
+    ]) {
+      cleanup();
+      const { container } = renderBar({ state, legalNextStates: ["rollback"] });
+      expect(container, state).toBeEmptyDOMElement();
+    }
   });
 
   /**
@@ -504,5 +515,37 @@ describe("ChangeRequestActionBar — customer gates with and without a live cust
   it("customer_review fallback legalNextStates=[closed, canceled] offers Close", () => {
     renderBar({ state: "customer_review", customerReviewRequired: true, legalNextStates: ["closed", "canceled"] });
     expect(screen.getByRole("button", { name: /^close$/i })).toBeInTheDocument();
+  });
+});
+
+/** "Roll back": the failed-review off-ramp, offered from the two review states only. */
+describe("ChangeRequestActionBar — Roll back", () => {
+  it.each([
+    ["review", ["closed", "rollback", "canceled"], /^close$/i],
+    ["review", ["customer_review", "rollback", "canceled"], /send for customer review/i],
+    ["customer_review", ["closed", "rollback", "canceled"], /^close$/i],
+  ])("from %s (%j) offers Roll back as a destructive menu item next to the forward move", (state, legal, forward) => {
+    const { onAction } = renderBar({ state, legalNextStates: legal });
+    // Exactly one primary button: the forward move, never Roll back.
+    expect(screen.getByRole("button", { name: forward })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /roll back/i })).not.toBeInTheDocument();
+    openMenu();
+    const items = screen.getAllByRole("menuitem").map((i) => i.textContent);
+    expect(items).toEqual(["Roll back", "Cancel change"]);
+    const item = screen.getByRole("menuitem", { name: /roll back/i });
+    // Error colour, same as Cancel change.
+    expect(item.querySelector("span")).toHaveStyle({ color: "rgb(211, 47, 47)" });
+    fireEvent.click(item);
+    expect(onAction).toHaveBeenCalledWith("rollback");
+  });
+
+  it("is not offered while only Cancel is legal (a live customer stage), nor from a terminal state", () => {
+    renderBar({ state: "customer_review", legalNextStates: ["canceled"] });
+    openMenu();
+    expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeInTheDocument();
+    expect(screen.queryByText(/roll back/i)).not.toBeInTheDocument();
+    cleanup();
+    const { container } = renderBar({ state: "rollback", legalNextStates: [] });
+    expect(container).toBeEmptyDOMElement();
   });
 });

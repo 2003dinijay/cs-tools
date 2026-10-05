@@ -15744,10 +15744,12 @@ components:
                 group's members through the approvals.
                 scheduled: [implement, canceled]; implement: [review,
                 canceled].
-                review: [customer_review, canceled] when customerReviewRequired,
-                else [closed, canceled].
-                customer_review: [closed, canceled], or [canceled] while a
-                customer group's "Customer Review" stage is pending.
+                review: [customer_review, rollback, canceled] when
+                customerReviewRequired, else [closed, rollback, canceled].
+                customer_review: [closed, rollback, canceled], or [canceled]
+                while a customer group's "Customer Review" stage is pending.
+                "rollback" (the failed-review off-ramp) is accepted only from
+                review and customer_review; it is terminal.
                 Terminal states: none.
             implementationPlan:
               type: string

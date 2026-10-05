@@ -160,6 +160,16 @@ export class ChangeRequestDetailPage {
     return this.page.getByRole("menuitem", { name: "Cancel change" });
   }
 
+  /** "Roll back" -- the failed-review off-ramp; a destructive overflow-menu entry. */
+  rollbackMenuItem(): Locator {
+    return this.page.getByRole("menuitem", { name: "Roll back" });
+  }
+
+  /** The reason dialog the destructive transitions (Roll back, Cancel change) open. */
+  reasonDialog(): Locator {
+    return this.page.getByRole("dialog");
+  }
+
   editButton(): Locator {
     return this.page.getByRole("button", { name: "Edit", exact: true });
   }

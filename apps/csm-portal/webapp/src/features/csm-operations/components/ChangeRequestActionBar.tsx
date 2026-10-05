@@ -93,11 +93,9 @@ const MENU_ORDER: readonly string[] = [...FORWARD_ORDER, "rollback", "canceled"]
  * States this bar never offers, no matter what `legalNextStates` contains.
  *
  * Do not delete this filter because "the list doesn't include them anyway".
- * `rollback`/`customer_approval`: neither state is human-enterable in the
- * backing system — of its 38 UI actions on the change-request table, none
- * sets either one. Both are reached only by automation — rollback is written
- * by the workflow that handles a rejected review, customer approval by the
- * approval process itself. Setting either by hand from here would leave a
+ * `customer_approval`: not human-enterable in the backing system — of its 38
+ * UI actions on the change-request table, none sets it. It is reached only by
+ * the approval process itself. Setting it by hand from here would leave a
  * record sitting in an approval state with no approver record behind it,
  * which is an audit hole rather than a shortcut.
  *
@@ -122,25 +120,34 @@ const MENU_ORDER: readonly string[] = [...FORWARD_ORDER, "rollback", "canceled"]
  * filtered out unless the CR's current state is `customer_approval` -- see
  * `isOfferedTarget`.
  *
- * The exclusions are deliberately unconditional (the `scheduled` carve-out is
- * keyed on the record's own state, never on what `legalNextStates` claims) so a
- * future backend change that starts returning any of these cannot silently
- * reopen them.
+ * `rollback` is the failed-review off-ramp of the process diagram: a human
+ * action ("Roll back"), but only from the two review states, `review` and
+ * `customer_review` (the backend offers and accepts it from nowhere else).
+ * It is a destructive, menu-only item that requires a stated reason. It used
+ * to be excluded here as "automation-only"; the backend now owns the manual
+ * transition. The carve-out is still keyed on the record's own state.
+ *
+ * The exclusions are deliberately unconditional (the `scheduled` and
+ * `rollback` carve-outs are keyed on the record's own state, never on what
+ * `legalNextStates` claims) so a future backend change that starts returning
+ * any of these cannot silently reopen them.
  */
-const NEVER_OFFERED_TARGETS: readonly string[] = [
-  "rollback",
-  "customer_approval",
-  "authorize",
-];
+const NEVER_OFFERED_TARGETS: readonly string[] = ["customer_approval", "authorize"];
+
+/** States a change request can be manually rolled back from. */
+const ROLLBACK_FROM_STATES: readonly string[] = ["review", "customer_review"];
 
 /**
  * `scheduled` is a manual action only from `customer_approval`, where it
- * records the customer's approval. Everywhere else it is reached
- * automatically, so it is never offered.
+ * records the customer's approval; `rollback` only from the two review states.
+ * Everywhere else they are not offered.
  */
 function isOfferedTarget(target: string, currentState: string | null | undefined): boolean {
   if (!target || target === currentState) return false;
   if (target === "scheduled") return currentState === "customer_approval";
+  if (target === "rollback") {
+    return !!currentState && ROLLBACK_FROM_STATES.includes(currentState);
+  }
   return !NEVER_OFFERED_TARGETS.includes(target);
 }
 

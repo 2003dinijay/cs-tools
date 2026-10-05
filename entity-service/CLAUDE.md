@@ -2528,12 +2528,31 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   `[authorize, canceled]` (`authorize` is the approval path; the webapp never
   renders it as a button), authorize `[canceled]`, customer_approval
   `[scheduled, canceled]`, scheduled `[implement, canceled]`, implement
-  `[review, canceled]`, review `[closed, canceled]` -- or `[customer_review,
-  canceled]` when `customerReviewRequired` --, customer_review `[closed,
-  canceled]`, terminal states none. **While a live Customer Approval /
-  Customer Review stage exists (the change has a Customer Group, see "Customer
-  Group" below) `customer_approval` and `customer_review` offer only
-  `[canceled]`**: the manual `scheduled` / `closed` is withdrawn and refused.
+  `[review, canceled]`, review `[closed, rollback, canceled]` -- or
+  `[customer_review, rollback, canceled]` when `customerReviewRequired` --,
+  customer_review `[closed, rollback, canceled]`, terminal states none.
+  **While a live Customer Approval / Customer Review stage exists (the change
+  has a Customer Group, see "Customer Group" below) `customer_approval` and
+  `customer_review` offer only `[canceled]`**: the manual `scheduled` /
+  `closed` / `rollback` is withdrawn and refused.
+* **Roll back** (`rollback`) is the failed-review off-ramp of the process
+  diagram and is offered from exactly two states, `review` (internal review
+  failed) and `customer_review` (customer review failed), whether or not
+  `customerReviewRequired` is set (`changeRequestRollbackFrom`). A manual
+  `{state: "rollback"}` from any other state is a 400 `state "rollback" can only
+  be set from review or customer_review`; from `customer_review` with a live
+  customer stage it is refused like a manual `closed` (the group's members
+  decide; their rejection already yields `rollback`). The on-hold gate applies.
+  Rolling back stamps no `is_customer_reviewed` (`isCustomerReviewed: true`
+  alongside it is a 400), provisions no stage, and **cancels every still-
+  `requested` approver row** of the change (all stages stay as a record; the
+  customer-group rejection cascade now does the same). **`rollback` is final**:
+  `legalNextStates` is none and any other state PATCH out of it is a 400
+  (`change request has been rolled back; rollback is final ...`). Cancel
+  (unlike Roll back) does not cancel the internal stages' pending approvers --
+  unchanged. The ServiceNow data source replays `stateKey` 2 like any other
+  state and `withoutManualScheduled` does not strip `rollback`. Project stats
+  "outstanding" counting is unchanged by this.
 * **Approver pools.**
   * *Peer Approval* — Normal only. The change's assigned group, **minus every
     member of an SRE team** (`team.type` starting `sre`, e.g. `sre-abt`:
@@ -2709,14 +2728,14 @@ receipt). Postgres data source only.
   isCustomerApproved: false}`. Cancel is the customer declining. The
   `isCustomerApproved: false → Cancelled` behaviour belongs to the ServiceNow
   scripted API; the Postgres path never had it and still does not.
-* **Review gate.** `review` offers `[customer_review, canceled]` when
-  `customerReviewRequired`, else `[closed, canceled]` (**a behaviour change for
+* **Review gate.** `review` offers `[customer_review, rollback, canceled]` when
+  `customerReviewRequired`, else `[closed, rollback, canceled]` (**a behaviour change for
   rows that predate the checkbox: they default to false and Review now offers
   Closed directly instead of both**). A manual `{state: "customer_review"}` is
   refused when not required ("customer review is not required …"), and
   `{state: "closed"}` from `review` is refused when required ("customer review
   is required …; move it to customer_review first"). `customer_review` offers
-  `[closed, canceled]`; closing from it stamps `is_customer_reviewed = true`
+  `[closed, rollback, canceled]`; closing from it stamps `is_customer_reviewed = true`
   (same authorization/lock). No other transition is graph-checked — as before,
   the PATCH does not enforce a full transition graph.
 * **Editable only until the gate is passed** (`validateCustomerGateEdits`,
@@ -2776,12 +2795,11 @@ Code: `change_request_approval_flow.go` (`provisionCustomerStage`,
   | Customer Approval | `scheduled`, `is_customer_approved = true` | `canceled` |
   | Customer Review | `closed`, `is_customer_reviewed = true` | `rollback` |
 
-  Rejected review -> `rollback`: the webapp's `ChangeRequestActionBar` documents
-  `rollback` as "written by the workflow that handles a rejected review", and
+  Rejected review -> `rollback` (which also cancels the change's still-requested
+  approver rows): the same state a human reaches with the manual Roll back
+  action from `review` / `customer_review` (see "Roll back" above), and
   `canceled` for a declined approval matches the ServiceNow `isCustomerApproved:
-  false` semantics. **`rollback` is terminal here** (`legalNextStates` none), as
-  everywhere else on this data source — decide separately if it should offer
-  `closed`. The decision comes from the approval, so the flag stamp bypasses
+  false` semantics. **`rollback` is terminal** (`legalNextStates` none). The decision comes from the approval, so the flag stamp bypasses
   `authorizeChangeRequestCustomerFlagWrite` (the decider is a group member).
 * **A non-member** (or anyone without a `requested` row) deciding on a change
   waiting on its live customer stage gets a **403** `only members of the

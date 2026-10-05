@@ -26,7 +26,9 @@ import {
   changeRequestCategoryValue,
   changeRequestScopeLockedReason,
   changeRequestTransitionLabel,
+  changeRequestTransitionRequiresReason,
   countActiveCRFilters,
+  isDestructiveChangeRequestTransition,
   customerApprovalLockedReason,
   customerReviewLockedReason,
   DEFAULT_CHANGE_REQUEST_CATEGORY,
@@ -362,6 +364,16 @@ describe("changeRequestTransitionLabel", () => {
   it("labels the customer review and close transitions", () => {
     expect(changeRequestTransitionLabel("customer_review", "review")).toBe("Send for customer review");
     expect(changeRequestTransitionLabel("closed", "review")).toBe("Close");
+  });
+
+  it("labels the failed-review off-ramp 'Roll back': destructive and needing a reason, like Cancel change", () => {
+    for (const from of ["review", "customer_review"]) {
+      expect(changeRequestTransitionLabel("rollback", from)).toBe("Roll back");
+    }
+    expect(isDestructiveChangeRequestTransition("rollback")).toBe(true);
+    expect(changeRequestTransitionRequiresReason("rollback")).toBe(true);
+    expect(changeRequestTransitionRequiresReason("canceled")).toBe(true);
+    expect(changeRequestTransitionRequiresReason("closed")).toBe(false);
   });
 });
 

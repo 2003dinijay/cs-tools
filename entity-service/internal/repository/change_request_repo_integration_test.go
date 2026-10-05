@@ -4139,12 +4139,12 @@ func TestChangeRequestFlowIntegration_NormalCustomerGateLifecycles(t *testing.T)
 
 			f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 			if tc.review {
-				f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "canceled")
+				f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
 				// Review cannot close directly when the customer's review is required.
 				_, err := f.patchState(id, domain.ChangeRequestStateClosed)
 				f.wantValidationError("closed from review (customer review required)", err, "customer review is required")
-				f.expect(id, "after refused close", "REVIEW", "customer_review", "canceled")
-				f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "canceled")
+				f.expect(id, "after refused close", "REVIEW", "customer_review", "rollback", "canceled")
+				f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "rollback", "canceled")
 				if _, reviewed := f.customerOutcome(id); reviewed {
 					t.Fatal("is_customer_reviewed is already true before the customer review was recorded")
 				}
@@ -4153,11 +4153,11 @@ func TestChangeRequestFlowIntegration_NormalCustomerGateLifecycles(t *testing.T)
 					t.Fatal("is_customer_reviewed = false after closing from customer_review, want true")
 				}
 			} else {
-				f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "canceled")
+				f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
 				// Customer Review is not offered, and not accepted, when not required.
 				_, err := f.patchState(id, domain.ChangeRequestStateCustomerReview)
 				f.wantValidationError("customer_review (not required)", err, "customer review is not required")
-				f.expect(id, "after refused customer_review", "REVIEW", "closed", "canceled")
+				f.expect(id, "after refused customer_review", "REVIEW", "closed", "rollback", "canceled")
 				f.step(id, domain.ChangeRequestStateClosed, "CLOSED")
 				if _, reviewed := f.customerOutcome(id); reviewed {
 					t.Fatal("is_customer_reviewed = true although no customer review was required or given")
@@ -4206,7 +4206,7 @@ func TestChangeRequestFlowIntegration_EmergencyCustomerApprovalLifecycle(t *test
 		t.Fatal("is_customer_approved = false after recording the customer's approval")
 	}
 	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
-	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "canceled") // review not ticked: straight to Closed
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled") // review not ticked: straight to Closed
 	f.step(id, domain.ChangeRequestStateClosed, "CLOSED")
 }
 
@@ -4235,8 +4235,8 @@ func TestChangeRequestFlowIntegration_StandardCustomerApprovalLifecycle(t *testi
 		t.Fatal("is_customer_approved = false after recording the customer's approval")
 	}
 	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
-	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "canceled")
-	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "canceled")
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
+	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "rollback", "canceled")
 	f.step(id, domain.ChangeRequestStateClosed, "CLOSED")
 	if _, reviewed := f.customerOutcome(id); !reviewed {
 		t.Fatal("is_customer_reviewed = false after closing from customer_review")
@@ -4429,21 +4429,21 @@ func TestChangeRequestFlowIntegration_CustomerReviewRequiredEditableUntilReviewL
 		}
 	}
 
-	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "canceled")
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
 	// Still editable in Review, and it flips what Review offers.
 	if err := set(true); err != nil {
 		t.Fatalf("tick in Review: %v", err)
 	}
-	f.expect(id, "after ticking in Review", "REVIEW", "customer_review", "canceled")
+	f.expect(id, "after ticking in Review", "REVIEW", "customer_review", "rollback", "canceled")
 	if err := set(false); err != nil {
 		t.Fatalf("untick in Review: %v", err)
 	}
-	f.expect(id, "after unticking in Review", "REVIEW", "closed", "canceled")
+	f.expect(id, "after unticking in Review", "REVIEW", "closed", "rollback", "canceled")
 	if err := set(true); err != nil {
 		t.Fatalf("tick in Review (again): %v", err)
 	}
 
-	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "canceled")
+	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "rollback", "canceled")
 	f.wantValidationError("untick in Customer Review", set(false), "customerReviewRequired can no longer be changed")
 	if err := set(true); err != nil {
 		t.Fatalf("resending the stored value: %v", err)
@@ -4467,12 +4467,12 @@ func TestChangeRequestFlowIntegration_CloseFromReviewHonoursTheFlagInTheSamePatc
 	id := f.createGated(domain.ChangeRequestTypeStandard, crFlowGroupID, nil, boolp(true))
 	f.requestApproval(id)
 	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
-	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "canceled")
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
 
 	closed := domain.ChangeRequestStateClosed
 	_, err := f.patch(id, domain.PatchChangeRequestRequest{State: &closed})
 	f.wantValidationError("close a review that requires the customer", err, "customer review is required")
-	f.expect(id, "after the refused close", "REVIEW", "customer_review", "canceled")
+	f.expect(id, "after the refused close", "REVIEW", "customer_review", "rollback", "canceled")
 
 	if _, err := f.patch(id, domain.PatchChangeRequestRequest{State: &closed, CustomerReviewRequired: boolp(false)}); err != nil {
 		t.Fatalf("PATCH {state: closed, customerReviewRequired: false}: %v", err)
@@ -4518,7 +4518,7 @@ func TestChangeRequestFlowIntegration_ManualScheduledOnlyFromCustomerApproval(t 
 	refused(normal, "SCHEDULED")
 	f.step(normal, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 	refused(normal, "IMPLEMENT")
-	f.step(normal, domain.ChangeRequestStateReview, "REVIEW", "closed", "canceled")
+	f.step(normal, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
 	refused(normal, "REVIEW")
 
 	// authorize / customer_approval stay unreachable by hand even when required.
@@ -4651,9 +4651,9 @@ func TestChangeRequestFlowIntegration_LegacyRowsDefaultToNoCustomerSteps(t *test
 		state string
 		legal []string
 	}{
-		{"REVIEW", []string{"closed", "canceled"}},
+		{"REVIEW", []string{"closed", "rollback", "canceled"}},
 		{"CUSTOMER_APPROVAL", []string{"scheduled", "canceled"}},
-		{"CUSTOMER_REVIEW", []string{"closed", "canceled"}},
+		{"CUSTOMER_REVIEW", []string{"closed", "rollback", "canceled"}},
 		{"SCHEDULED", []string{"implement", "canceled"}},
 	} {
 		if _, err := f.scoped.Exec(f.sys, `UPDATE change_request SET state = $2::change_request_state_enum WHERE id = $1`, id, tc.state); err != nil {
@@ -5658,3 +5658,181 @@ func TestChangeRequestScopeIntegration_MigrationIsIdempotent(t *testing.T) {
 		t.Fatalf("cascading FKs = %d, indexes = %d, want 6 and 6 (a PK + a lookup index per table)", fks, idx)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Rollback: the failed-review off-ramp. Offered from exactly Review and
+// Customer Review; terminal. (A customer-group member rejecting the Customer
+// Review stage also lands here -- change_request_customer_group_integration_test.go.)
+// ---------------------------------------------------------------------------
+
+const rollbackOnlyFromReviewMsg = `state "rollback" can only be set from review or customer_review`
+
+// requestedApprovers counts the REQUESTED approver rows across all of the
+// change's stages.
+func (f *crFlow) requestedApprovers(id string) int {
+	f.t.Helper()
+	var n int
+	if err := f.scoped.QueryRow(f.sys,
+		`SELECT COUNT(*) FROM approval_stage_approver WHERE work_item_id = $1 AND status = 'requested'`, id).Scan(&n); err != nil {
+		f.t.Fatalf("count requested approvers: %v", err)
+	}
+	return n
+}
+
+// driveNormalToImplement takes a Normal change (no customer approval) through
+// Request Approval, peer and CAB approval to Implement.
+func (f *crFlow) driveNormalToImplement(id string) {
+	f.t.Helper()
+	f.requestApproval(id)
+	f.approvePeerAndCAB(id, "SCHEDULED", "implement", "canceled")
+	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
+}
+
+// wantRolledBack asserts the terminal outcome of a manual rollback: state
+// ROLLBACK, nothing left to do, no review stamp, nothing left to approve, and
+// no way out of it.
+func (f *crFlow) wantRolledBack(id string) {
+	f.t.Helper()
+	f.expect(id, "after Roll back", "ROLLBACK")
+	if _, reviewed := f.customerOutcome(id); reviewed {
+		f.t.Fatal("is_customer_reviewed = true after a rollback: the review failed")
+	}
+	if n := f.requestedApprovers(id); n != 0 {
+		f.t.Fatalf("%d approver rows still REQUESTED after the rollback, want 0", n)
+	}
+	if cr := f.get(id); cr.LegalNextStates != nil {
+		f.t.Fatalf("legalNextStates(Rollback) = %v, want none (terminal)", cr.LegalNextStates)
+	}
+	for _, to := range []domain.ChangeRequestState{
+		domain.ChangeRequestStateNew, domain.ChangeRequestStateImplement, domain.ChangeRequestStateReview,
+		domain.ChangeRequestStateCustomerReview, domain.ChangeRequestStateClosed, domain.ChangeRequestStateCanceled,
+	} {
+		_, err := f.patchState(id, to)
+		f.wantValidationError("PATCH {state: "+string(to)+"} out of rollback", err, "rollback is final")
+	}
+	_, err := f.patchState(id, domain.ChangeRequestStateRollback)
+	f.wantValidationError("PATCH {state: rollback} again", err, rollbackOnlyFromReviewMsg)
+	f.expect(id, "after the refused moves out of rollback", "ROLLBACK")
+}
+
+// Normal, Customer Review unticked and ticked: ...-> Implement -> Review ->
+// Roll back. State and legalNextStates after every step; the Review stage's
+// requested approvers are cancelled by the rollback.
+func TestChangeRequestFlowIntegration_NormalRollbackFromReview(t *testing.T) {
+	for _, review := range []bool{false, true} {
+		review := review
+		t.Run(fmt.Sprintf("customerReviewRequired=%v", review), func(t *testing.T) {
+			f := newCRFlow(t)
+			f.seedAssignedGroup()
+			seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1, crCABMemberUserID2)
+			id := f.createGated(domain.ChangeRequestTypeNormal, crFlowGroupID, nil, boolp(review))
+			f.expect(id, "after create", "NEW", "assess", "canceled")
+
+			// Rollback is not available before Review.
+			_, err := f.patchState(id, domain.ChangeRequestStateRollback)
+			f.wantValidationError("rollback from New", err, rollbackOnlyFromReviewMsg)
+			f.driveNormalToImplement(id)
+			_, err = f.patchState(id, domain.ChangeRequestStateRollback)
+			f.wantValidationError("rollback from Implement", err, rollbackOnlyFromReviewMsg)
+			f.expect(id, "after the refused rollback from Implement", "IMPLEMENT", "review", "canceled")
+
+			forward := "closed"
+			if review {
+				forward = "customer_review"
+			}
+			f.step(id, domain.ChangeRequestStateReview, "REVIEW", forward, "rollback", "canceled")
+			if n := f.requestedApprovers(id); n == 0 {
+				t.Fatal("the Review stage has no REQUESTED approvers before the rollback, so the cancellation below proves nothing")
+			}
+
+			// A rollback is a failed review: it cannot also record the review.
+			_, err = f.patch(id, domain.PatchChangeRequestRequest{
+				State: stateptr(domain.ChangeRequestStateRollback), IsCustomerReviewed: boolp(true)})
+			f.wantValidationError("rollback with isCustomerReviewed", err, "isCustomerReviewed cannot be true when rolling back")
+			f.expect(id, "after the refused rollback", "REVIEW", forward, "rollback", "canceled")
+
+			f.step(id, domain.ChangeRequestStateRollback, "ROLLBACK")
+			f.wantRolledBack(id)
+			// The stages stay as a record: peer, CAB and Review, all settled.
+			if got := f.labels(id); len(got) != 3 {
+				t.Fatalf("stages after the rollback = %v, want the 3 existing stages and no new one", got)
+			}
+		})
+	}
+}
+
+// Normal with Customer Review ticked and no customer group: ... -> Review ->
+// Customer Review -> Roll back (the manual fallback path).
+func TestChangeRequestFlowIntegration_NormalRollbackFromCustomerReview(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1, crCABMemberUserID2)
+	id := f.createGated(domain.ChangeRequestTypeNormal, crFlowGroupID, nil, boolp(true))
+	f.driveNormalToImplement(id)
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
+	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "rollback", "canceled")
+	if _, reviewed := f.customerOutcome(id); reviewed {
+		t.Fatal("is_customer_reviewed is already true before the customer review was recorded")
+	}
+	f.step(id, domain.ChangeRequestStateRollback, "ROLLBACK")
+	f.wantRolledBack(id)
+}
+
+// Rollback is refused, with the exact message and nothing changed, from every
+// state other than Review and Customer Review (a state-less row included).
+func TestChangeRequestFlowIntegration_RollbackRefusedFromEveryOtherState(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	for _, st := range []string{"NEW", "ASSESS", "AUTHORIZE", "CUSTOMER_APPROVAL", "SCHEDULED", "IMPLEMENT", "CLOSED", "CANCELED", "ROLLBACK", ""} {
+		var seed any = st
+		if st == "" {
+			seed = nil
+		}
+		if _, err := f.scoped.Exec(f.sys, `UPDATE change_request SET state = $2::change_request_state_enum WHERE id = $1`, id, seed); err != nil {
+			t.Fatalf("seed state %q: %v", st, err)
+		}
+		_, err := f.patchState(id, domain.ChangeRequestStateRollback)
+		var ve *apierror.ValidationError
+		if !errors.As(err, &ve) || ve.Msg != rollbackOnlyFromReviewMsg {
+			t.Fatalf("PATCH {state: rollback} from %q: err = %v, want a 400 %q", st, err, rollbackOnlyFromReviewMsg)
+		}
+		if got := f.state(id); got != st {
+			t.Fatalf("state after the refused rollback from %q = %q, want unchanged", st, got)
+		}
+		for _, next := range f.legal(id) {
+			if next == "rollback" {
+				t.Fatalf("legalNextStates(%q) offers rollback: %v", st, f.legal(id))
+			}
+		}
+	}
+}
+
+// The on-hold gate applies: a change on hold cannot be rolled back until it is
+// taken off hold -- which may happen in the same PATCH.
+func TestChangeRequestFlowIntegration_RollbackRespectsOnHold(t *testing.T) {
+	f := newCRFlow(t)
+	f.seedAssignedGroup()
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1, crCABMemberUserID2)
+	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	f.driveNormalToImplement(id)
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
+
+	reason := "customer change freeze"
+	if _, err := f.patch(id, domain.PatchChangeRequestRequest{OnHold: boolp(true), OnHoldReason: &reason}); err != nil {
+		t.Fatalf("put on hold: %v", err)
+	}
+	_, err := f.patchState(id, domain.ChangeRequestStateRollback)
+	f.wantValidationError("rollback while on hold", err, "change request is on hold")
+	f.expect(id, "after the refused rollback", "REVIEW", "closed", "rollback", "canceled")
+	if n := f.requestedApprovers(id); n == 0 {
+		t.Fatal("the refused rollback cancelled approver rows")
+	}
+
+	if _, err := f.patch(id, domain.PatchChangeRequestRequest{State: stateptr(domain.ChangeRequestStateRollback), OnHold: boolp(false)}); err != nil {
+		t.Fatalf("PATCH {state: rollback, onHold: false}: %v", err)
+	}
+	f.wantRolledBack(id)
+}
+
+func stateptr(s domain.ChangeRequestState) *domain.ChangeRequestState { return &s }

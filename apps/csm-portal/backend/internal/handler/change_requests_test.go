@@ -1001,7 +1001,7 @@ func TestPatchChangeRequest_CustomerGateFlags(t *testing.T) {
 		client := &mockEntityChangeRequestClient{
 			patchChangeRequestFn: func(_ context.Context, _ string, body []byte) ([]byte, error) {
 				capturedBody = body
-				return []byte(`{"message":"ok","changeRequest":{"state":"review","customerApprovalRequired":true,"customerReviewRequired":true,"legalNextStates":["customer_review","canceled"]}}`), nil
+				return []byte(`{"message":"ok","changeRequest":{"state":"review","customerApprovalRequired":true,"customerReviewRequired":true,"legalNextStates":["customer_review","rollback","canceled"]}}`), nil
 			},
 		}
 		w := patch(NewChangeRequestHandler(client), reqPayload)
@@ -1013,6 +1013,28 @@ func TestPatchChangeRequest_CustomerGateFlags(t *testing.T) {
 		cr, _ := resp["changeRequest"].(map[string]any)
 		if cr["customerApprovalRequired"] != true || cr["customerReviewRequired"] != true {
 			t.Errorf("response flags = %v/%v, want true/true", cr["customerApprovalRequired"], cr["customerReviewRequired"])
+		}
+	})
+
+	// Roll back is a plain state PATCH (the entity service owns where it is
+	// legal); the BFF forwards the body untouched.
+	t.Run("forwards a rollback state change verbatim", func(t *testing.T) {
+		const reqPayload = `{"state":"rollback"}`
+		var capturedBody []byte
+		client := &mockEntityChangeRequestClient{
+			patchChangeRequestFn: func(_ context.Context, _ string, body []byte) ([]byte, error) {
+				capturedBody = body
+				return []byte(`{"message":"ok","changeRequest":{"state":"rollback","legalNextStates":null}}`), nil
+			},
+		}
+		w := patch(NewChangeRequestHandler(client), reqPayload)
+		assertStatus(t, w, http.StatusOK)
+		if string(capturedBody) != reqPayload {
+			t.Errorf("upstream received body %q, want %q", capturedBody, reqPayload)
+		}
+		resp := decodeJSON[map[string]any](t, w)
+		if cr, _ := resp["changeRequest"].(map[string]any); cr["state"] != "rollback" {
+			t.Errorf("response state = %v, want rollback", cr["state"])
 		}
 	})
 
@@ -1062,6 +1084,10 @@ func TestPatchChangeRequest_CustomerGateFlags(t *testing.T) {
 			"closed from review when required": {
 				`{"state":"closed"}`,
 				`state "closed" cannot be set from review: customer review is required for this change request (customerReviewRequired is true); move it to customer_review first`,
+			},
+			"rollback outside the review states": {
+				`{"state":"rollback"}`,
+				`state "rollback" can only be set from review or customer_review`,
 			},
 			"scheduled outside customer_approval": {
 				`{"state":"scheduled"}`,

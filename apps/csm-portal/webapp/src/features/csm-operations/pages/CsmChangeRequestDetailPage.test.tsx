@@ -1199,9 +1199,9 @@ function lcLegalNextStates(
     case "implement":
       return ["review", "canceled"];
     case "review":
-      return flags.review ? ["customer_review", "canceled"] : ["closed", "canceled"];
+      return flags.review ? ["customer_review", "rollback", "canceled"] : ["closed", "rollback", "canceled"];
     case "customer_review":
-      return lcHasLiveCustomerStage() ? ["canceled"] : ["closed", "canceled"];
+      return lcHasLiveCustomerStage() ? ["canceled"] : ["closed", "rollback", "canceled"];
     default:
       return [];
   }
@@ -1290,7 +1290,7 @@ function lcSeed(
     customerMembers: customerGroup?.members ?? [],
   };
   // The page's own PATCH (Request Approval, Start implementation, ...) drives the fake.
-  patchMutateMock.mockImplementation((input: { patch: { state?: string } }) => {
+  const applyPatch = (input: { patch: { state?: string } }): void => {
     const target = input.patch.state;
     if (target === "assess") {
       if (lc.cr.type === "standard") lcSetState(lcAfterInternalApproval());
@@ -1306,12 +1306,30 @@ function lcSeed(
       lcSetState("scheduled"); // the customer's approval was recorded
     } else if (target === "closed" && lc.cr.state === "customer_review" && lcHasLiveCustomerStage()) {
       throw new Error("400: the customer group must decide");
+    } else if (target === "rollback") {
+      // Backend rule: only from the review states, and the customer group
+      // decides while its review request is live.
+      if (lc.cr.state !== "review" && lc.cr.state !== "customer_review") {
+        throw new Error('400: state "rollback" can only be set from review or customer_review');
+      }
+      if (lcHasLiveCustomerStage()) throw new Error("400: the customer group must decide");
+      lc.approvals = lc.approvals.map((a) => ({
+        ...a,
+        approvers: a.approvers.map((ap) => (ap.status === "REQUESTED" ? { ...ap, status: "CANCELLED" } : ap)),
+      }));
+      lcSetState("rollback");
     } else if (target && target !== "scheduled" && target !== "authorize" && target !== "customer_approval") {
       lcSetState(target);
     } else {
       throw new Error(`illegal manual transition to ${String(target)}`);
     }
     lcPublish();
+  };
+  patchMutateMock.mockImplementation(applyPatch);
+  // Destructive transitions (Cancel change, Roll back) go through mutateAsync.
+  patchMutateAsyncMock.mockImplementation(async (input) => {
+    applyPatch(input as { patch: { state?: string } });
+    return { id: "chg-1" };
   });
   // The approvals panel's Approve/Reject drives the fake as the signed-in user.
   decideApprovalMutateMock.mockImplementation((input: { decision: "approved" | "rejected" }) => {
@@ -1531,6 +1549,124 @@ describe("CsmChangeRequestDetailPage — lifecycle: Normal (Request Approval -> 
     expect(screen.getByRole("button", { name: /^reject$/i })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
     expect(decideApprovalMutateMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Roll back: the failed-review off-ramp. Offered next to the forward move from
+ * Review and Customer Review only, as a destructive menu item that needs a
+ * stated reason (posted as a comment, then PATCH {state: "rollback"}).
+ */
+describe("CsmChangeRequestDetailPage — lifecycle: Roll back", () => {
+  /** Normal change, no customer approval, driven by real clicks to Review. */
+  function runToReview(review: boolean): ReturnType<typeof render> {
+    lcSeed("normal", { approval: false, review });
+    let view = lcOpenAs(LC_CREATOR);
+    expect(currentStep()).toBe("New");
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+    expect(currentStep()).toBe("Assess");
+    view = lcOpenAs(LC_PEER, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(currentStep()).toBe("Authorize");
+    view = lcOpenAs(LC_CAB, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    view = lcOpenAs(LC_CREATOR, view);
+    expect(currentStep()).toBe("Scheduled");
+    // Roll back is not on offer before the review.
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    expect(screen.queryByRole("menuitem", { name: /roll back/i })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: /^start implementation$/i }));
+    expect(currentStep()).toBe("Implement");
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    expect(screen.queryByRole("menuitem", { name: /roll back/i })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: /^mark implemented$/i }));
+    expect(currentStep()).toBe("Review");
+    return view;
+  }
+
+  /** Opens Roll back from the menu, types a reason and confirms. */
+  async function rollBackWith(reason: string): Promise<void> {
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /roll back/i }));
+    expect(screen.getByRole("heading", { name: /roll back this change/i })).toBeInTheDocument();
+    // A reason is required: confirm is disabled until one is typed.
+    expect(screen.getByRole("button", { name: /^roll back$/i })).toBeDisabled();
+    expect(patchMutateAsyncMock).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText(/reason/i), { target: { value: reason } });
+    fireEvent.click(screen.getByRole("button", { name: /^roll back$/i }));
+    await waitFor(() => expect(lc.cr.state).toBe("rollback"));
+  }
+
+  function expectRolledBack(): void {
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // The stepper shows the off-ramp, not a step on the line.
+    expect(screen.getByText(/diverted from the standard path/i)).toBeInTheDocument();
+    expect(screen.getAllByText("Rollback", { selector: ".MuiChip-label" }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /change state/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
+  }
+
+  it.each([false, true])("rolls back from Review (customer review required: %s) with a reason, then offers no actions", async (review) => {
+    const view = runToReview(review);
+    // Review offers Roll back next to its forward move, never as the primary button.
+    expect(screen.getByRole("button", { name: review ? /send for customer review/i : /^close$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /roll back/i })).not.toBeInTheDocument();
+    await rollBackWith("Smoke test failed after the deployment.");
+
+    expect(postCommentMutateAsyncMock).toHaveBeenCalledWith({
+      changeRequestId: "chg-1",
+      bodyHtml: "Smoke test failed after the deployment.",
+      internal: true,
+    });
+    expect(patchMutateAsyncMock).toHaveBeenCalledWith({ id: "chg-1", patch: { state: "rollback" } });
+    expect(postCommentMutateAsyncMock.mock.invocationCallOrder[0]).toBeLessThan(
+      patchMutateAsyncMock.mock.invocationCallOrder[0],
+    );
+    expectRolledBack();
+    view.unmount();
+  });
+
+  it("rolls back from Customer Review (manual fallback, no customer group) with a reason", async () => {
+    const view = runToReview(true);
+    fireEvent.click(screen.getByRole("button", { name: /^send for customer review$/i }));
+    expect(currentStep()).toBe("Customer Review");
+    expect(screen.getByText("Awaiting Customer Review")).toBeInTheDocument();
+    // Close is the primary move; Roll back sits in the menu with Cancel.
+    expect(screen.getByRole("button", { name: /^close$/i })).toBeInTheDocument();
+    await rollBackWith("The customer rejected the result.");
+    expect(patchMutateAsyncMock).toHaveBeenLastCalledWith({ id: "chg-1", patch: { state: "rollback" } });
+    expectRolledBack();
+    view.unmount();
+  });
+
+  it("does not offer Roll back while a customer group's review is pending (its members decide)", () => {
+    lcSeed("normal", { approval: false, review: true }, { members: LC_MEMBERS });
+    lcSetState("customer_review");
+    lcPublish();
+    const view = lcOpenAs(LC_CREATOR);
+    expect(currentStep()).toBe("Customer Review");
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /roll back/i })).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("surfaces the backend's refusal and keeps the state when the rollback PATCH fails", async () => {
+    const view = runToReview(false);
+    patchMutateAsyncMock.mockRejectedValueOnce(
+      new BackendApiError(400, 'state "rollback" can only be set from review or customer_review'),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /roll back/i }));
+    fireEvent.change(screen.getByLabelText(/reason/i), { target: { value: "Failed." } });
+    fireEvent.click(screen.getByRole("button", { name: /^roll back$/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(/can only be set from review or customer_review/i),
+    );
+    expect(lc.cr.state).toBe("review");
+    view.unmount();
   });
 });
 

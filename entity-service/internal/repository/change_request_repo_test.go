@@ -288,10 +288,10 @@ func TestScanChangeRequestViewAndDetail_FieldParityAdditions(t *testing.T) {
 			approval, review bool
 			wantLegal        []string
 		}{
-			{false, false, []string{"closed", "canceled"}},
-			{true, false, []string{"closed", "canceled"}},
-			{false, true, []string{"customer_review", "canceled"}},
-			{true, true, []string{"customer_review", "canceled"}},
+			{false, false, []string{"closed", "rollback", "canceled"}},
+			{true, false, []string{"closed", "rollback", "canceled"}},
+			{false, true, []string{"customer_review", "rollback", "canceled"}},
+			{true, true, []string{"customer_review", "rollback", "canceled"}},
 		} {
 			row := fakeChangeRequestDetailRow{
 				id: "CR-3", number: "CHG0003", subject: strPtrCR("s"), description: strPtrCR("d"),
@@ -512,10 +512,17 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 		{string(domain.ChangeRequestStateImplement), false, []string{"review", "canceled"}},
 		// Review: Closed directly unless the customer's review is required, in
 		// which case Customer Review is the only forward move (then Closed).
-		{string(domain.ChangeRequestStateReview), false, []string{"closed", "canceled"}},
-		{string(domain.ChangeRequestStateReview), true, []string{"customer_review", "canceled"}},
-		{string(domain.ChangeRequestStateCustomerReview), false, []string{"closed", "canceled"}},
-		{string(domain.ChangeRequestStateCustomerReview), true, []string{"closed", "canceled"}},
+		// Rollback (the review failed) is offered either way, after the
+		// forward move and before Cancel -- and from these two states only.
+		{string(domain.ChangeRequestStateReview), false, []string{"closed", "rollback", "canceled"}},
+		{string(domain.ChangeRequestStateReview), true, []string{"customer_review", "rollback", "canceled"}},
+		{string(domain.ChangeRequestStateCustomerReview), false, []string{"closed", "rollback", "canceled"}},
+		{string(domain.ChangeRequestStateCustomerReview), true, []string{"closed", "rollback", "canceled"}},
+		// Terminal states offer nothing, rollback included.
+		{string(domain.ChangeRequestStateRollback), false, nil},
+		{string(domain.ChangeRequestStateRollback), true, nil},
+		{string(domain.ChangeRequestStateClosed), false, nil},
+		{string(domain.ChangeRequestStateCanceled), false, nil},
 	}
 	for _, tc := range tests {
 		t.Run(fmt.Sprintf("%s/reviewRequired=%v", tc.state, tc.reviewRequired), func(t *testing.T) {
@@ -541,6 +548,32 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 					}
 				}
 			}
+		}
+	})
+
+	t.Run("rollback is offered from review and customer_review only", func(t *testing.T) {
+		for _, st := range []domain.ChangeRequestState{
+			domain.ChangeRequestStateNew, domain.ChangeRequestStateAssess, domain.ChangeRequestStateAuthorize,
+			domain.ChangeRequestStateCustomerApproval, domain.ChangeRequestStateScheduled, domain.ChangeRequestStateImplement,
+			domain.ChangeRequestStateReview, domain.ChangeRequestStateCustomerReview,
+			domain.ChangeRequestStateRollback, domain.ChangeRequestStateClosed, domain.ChangeRequestStateCanceled,
+		} {
+			want := st == domain.ChangeRequestStateReview || st == domain.ChangeRequestStateCustomerReview
+			for _, review := range []bool{false, true} {
+				s := string(st)
+				got := false
+				for _, next := range legalChangeRequestNextStates(&s, review) {
+					if next == string(domain.ChangeRequestStateRollback) {
+						got = true
+					}
+				}
+				if got != want {
+					t.Errorf("legalChangeRequestNextStates(%q, %v) offers rollback = %v, want %v", s, review, got, want)
+				}
+			}
+		}
+		if got := legalChangeRequestNextStates(nil, true); got != nil {
+			t.Errorf("legalChangeRequestNextStates(nil) = %v, want nil", got)
 		}
 	})
 
@@ -795,9 +828,9 @@ func TestWithoutManualCustomerOutcome(t *testing.T) {
 	}{
 		{"customer_approval, live", str("CUSTOMER_APPROVAL"), []string{"scheduled", "canceled"}, true, []string{"canceled"}},
 		{"customer_approval, not live (fallback)", str("CUSTOMER_APPROVAL"), []string{"scheduled", "canceled"}, false, []string{"scheduled", "canceled"}},
-		{"customer_review, live", str("CUSTOMER_REVIEW"), []string{"closed", "canceled"}, true, []string{"canceled"}},
-		{"customer_review, not live (fallback)", str("CUSTOMER_REVIEW"), []string{"closed", "canceled"}, false, []string{"closed", "canceled"}},
-		{"other state is untouched", str("REVIEW"), []string{"closed", "canceled"}, true, []string{"closed", "canceled"}},
+		{"customer_review, live", str("CUSTOMER_REVIEW"), []string{"closed", "rollback", "canceled"}, true, []string{"canceled"}},
+		{"customer_review, not live (fallback)", str("CUSTOMER_REVIEW"), []string{"closed", "rollback", "canceled"}, false, []string{"closed", "rollback", "canceled"}},
+		{"review is untouched even with a live customer stage", str("REVIEW"), []string{"closed", "rollback", "canceled"}, true, []string{"closed", "rollback", "canceled"}},
 		{"nil states", str("CUSTOMER_REVIEW"), nil, true, nil},
 		{"nil state", nil, []string{"closed"}, true, []string{"closed"}},
 	} {

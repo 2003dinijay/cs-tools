@@ -1050,6 +1050,193 @@ test.describe("change request approval flow — customer group", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Roll back -- the failed-review off-ramp. Offered, next to the forward move and
+// Cancel change, from Review and Customer Review only; destructive (menu-only),
+// and it needs a stated reason, which is posted as a comment before the PATCH.
+// Rollback is final: the stepper shows the Rollback off-ramp and no actions are
+// left. Runs against the in-browser fake of the backend contract.
+// ---------------------------------------------------------------------------
+
+/** Roll back is not offered: either no overflow menu at all, or none of its entries is "Roll back". */
+async function expectNoRollbackOffered(detail: ChangeRequestDetailPage): Promise<void> {
+  await expect(detail.page.getByRole("button", { name: "Roll back", exact: true })).toHaveCount(0);
+  if ((await detail.changeStateButton().count()) === 0) return;
+  await detail.changeStateButton().click();
+  await expect(detail.page.getByRole("menuitem").first()).toBeVisible();
+  await expect(detail.rollbackMenuItem()).toHaveCount(0);
+  await detail.page.keyboard.press("Escape");
+}
+
+/** The Rollback off-ramp: no step on the line is current, the note names the state, nothing is awaited. */
+async function expectRolledBack(page: import("@playwright/test").Page, detail: ChangeRequestDetailPage, api: FakeChangeRequestApi): Promise<void> {
+  await expect(detail.reasonDialog()).toHaveCount(0);
+  await expect(page.getByText(/diverted from the standard path/i)).toBeVisible();
+  await expect(page.locator(".MuiChip-label", { hasText: /^Rollback$/ }).first()).toBeVisible();
+  await expect(detail.currentStep()).toHaveCount(0);
+  await expect(detail.blockingReason()).toHaveCount(0);
+  await expect(detail.changeStateButton()).toHaveCount(0);
+  await expect(detail.approveButton()).toHaveCount(0);
+  expect(api.state()).toBe("rollback");
+  // Nobody is left pending on a rolled-back change.
+  for (const st of api.stages()) {
+    for (const a of st.approvers) expect(a.status, `${st.stage}/${a.name}`).not.toBe("REQUESTED");
+  }
+}
+
+/** Opens Roll back from the overflow menu, shows reason is required, then confirms with `reason`. */
+async function rollBackWithReason(page: import("@playwright/test").Page, detail: ChangeRequestDetailPage, reason: string): Promise<void> {
+  await detail.changeStateButton().click();
+  await detail.rollbackMenuItem().click();
+  const dialog = detail.reasonDialog();
+  await expect(dialog.getByRole("heading", { name: "Roll back this change?" })).toBeVisible();
+  // A reason is required: the confirm action stays disabled until one is typed.
+  await expect(dialog.getByRole("button", { name: "Roll back", exact: true })).toBeDisabled();
+  await dialog.getByLabel("Reason").fill(reason);
+  await expect(dialog.getByRole("button", { name: "Roll back", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Roll back", exact: true }).click();
+  await expect(page.getByText(/diverted from the standard path/i)).toBeVisible();
+}
+
+test.describe("change request approval flow — Roll back", () => {
+  for (const review of [true, false]) {
+    test(`Normal, customer review ${review ? "on" : "off"}: New -> ... -> Review -> Roll back (reason required), state shown after every step`, async ({
+      page,
+    }) => {
+      test.setTimeout(180_000);
+      const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: review });
+      const detail = new ChangeRequestDetailPage(page);
+
+      // Roll back is never on offer on the way to Review.
+      await openDetail(detail);
+      await expect(detail.currentStep()).toContainText("New");
+      await expectNoRollbackOffered(detail);
+      await detail.requestApproval();
+      await expect(detail.currentStep()).toContainText("Assess");
+      await expectNoRollbackOffered(detail);
+      await switchTo(page, api, FAKE_PEER);
+      await detail.approve("Pat Peer");
+      await expect(detail.currentStep()).toContainText("Authorize");
+      await expectNoRollbackOffered(detail);
+      await switchTo(page, api, FAKE_CAB);
+      await detail.approve("Cam Cab");
+      await switchTo(page, api, FAKE_CREATOR);
+      await expect(detail.currentStep()).toContainText("Scheduled");
+      await expectNoRollbackOffered(detail);
+      await page.getByRole("button", { name: "Start implementation" }).click();
+      await expect(detail.currentStep()).toContainText("Implement");
+      await expectNoRollbackOffered(detail);
+      await page.getByRole("button", { name: "Mark implemented" }).click();
+
+      // Review: the forward move is the primary button, Roll back sits in the menu with Cancel change.
+      await expect(detail.currentStep()).toContainText("Review");
+      if (review) {
+        await expect(detail.sendForCustomerReviewButton()).toBeVisible();
+        await expect(detail.closeButton()).toHaveCount(0);
+      } else {
+        await expect(detail.closeButton()).toBeVisible();
+        await expect(detail.sendForCustomerReviewButton()).toHaveCount(0);
+      }
+      await detail.changeStateButton().click();
+      await expect(detail.page.getByRole("menuitem")).toHaveText(["Roll back", "Cancel change"]);
+      await detail.page.keyboard.press("Escape");
+
+      // Backing out of the dialog leaves the change untouched.
+      await detail.changeStateButton().click();
+      await detail.rollbackMenuItem().click();
+      await detail.reasonDialog().getByRole("button", { name: "Close", exact: true }).click();
+      await expect(detail.reasonDialog()).toHaveCount(0);
+      await expect(detail.currentStep()).toContainText("Review");
+      expect(api.state()).toBe("review");
+
+      await rollBackWithReason(page, detail, "Post-deployment smoke test failed.");
+      await expectRolledBack(page, detail, api);
+      // The reason was recorded as a comment before the state moved.
+      expect(api.journal()).toContainEqual({ kind: "comment", text: "Post-deployment smoke test failed." });
+      const calls = api.requests();
+      expect(calls.indexOf(`POST /change-requests/${FAKE_CR_ID}/comments`)).toBeGreaterThan(-1);
+      expect(calls.indexOf(`POST /change-requests/${FAKE_CR_ID}/comments`)).toBeLessThan(
+        calls.lastIndexOf(`PATCH /change-requests/${FAKE_CR_ID}`),
+      );
+      const patchBodies = api.requestBodies().filter((b) => b.request.startsWith("PATCH"));
+      expect(patchBodies[patchBodies.length - 1]?.body).toEqual({ state: "rollback" });
+
+      // Still rolled back after a reload: a terminal state with no way out.
+      await page.reload();
+      await expectRolledBack(page, detail, api);
+    });
+  }
+
+  test("Normal with customer review on: Review -> Customer Review -> Roll back (manual fallback, no customer group)", async ({ page }) => {
+    test.setTimeout(180_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true });
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+
+    await switchTo(page, api, FAKE_CREATOR);
+    await page.getByRole("button", { name: "Start implementation" }).click();
+    await page.getByRole("button", { name: "Mark implemented" }).click();
+    await expect(detail.currentStep()).toContainText("Review");
+    await detail.sendForCustomerReviewButton().click();
+
+    // Customer Review without a group: Close is the primary move, Roll back is in the menu.
+    await expect(detail.currentStep()).toContainText("Customer Review");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Review");
+    await expect(detail.closeButton()).toBeVisible();
+    await detail.changeStateButton().click();
+    await expect(detail.page.getByRole("menuitem")).toHaveText(["Roll back", "Cancel change"]);
+    await detail.page.keyboard.press("Escape");
+
+    await rollBackWithReason(page, detail, "The customer rejected the result.");
+    await expectRolledBack(page, detail, api);
+    expect(api.journal()).toContainEqual({ kind: "comment", text: "The customer rejected the result." });
+  });
+
+  test("Customer Review with a customer group: Roll back is not offered while the group's review is pending", async ({ page }) => {
+    test.setTimeout(180_000);
+    const api = await installFakeChangeRequestApi(
+      page,
+      "normal",
+      FAKE_CREATOR,
+      { customerReviewRequired: true },
+      {},
+      FAKE_CUSTOMER_GROUP,
+    );
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+
+    await switchTo(page, api, FAKE_CREATOR);
+    await page.getByRole("button", { name: "Start implementation" }).click();
+    await page.getByRole("button", { name: "Mark implemented" }).click();
+    // Review still offers Roll back (the internal review can fail).
+    await detail.changeStateButton().click();
+    await expect(detail.rollbackMenuItem()).toBeVisible();
+    await detail.page.keyboard.press("Escape");
+    await detail.sendForCustomerReviewButton().click();
+    await expect(detail.currentStep()).toContainText("Customer Review");
+    await expectNoRollbackOffered(detail);
+    await expectOnlyCancelOffered(detail);
+  });
+
+  test("Standard: Roll back is offered from Review too, and nowhere before it", async ({ page }) => {
+    test.setTimeout(180_000);
+    const api = await installFakeChangeRequestApi(page, "standard", FAKE_CREATOR);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    await expectNoRollbackOffered(detail);
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Scheduled");
+    await expectNoRollbackOffered(detail);
+    await page.getByRole("button", { name: "Start implementation" }).click();
+    await expect(detail.currentStep()).toContainText("Implement");
+    await expectNoRollbackOffered(detail);
+    await page.getByRole("button", { name: "Mark implemented" }).click();
+    await expect(detail.currentStep()).toContainText("Review");
+    await rollBackWithReason(page, detail, "Backout after failed verification.");
+    await expectRolledBack(page, detail, api);
+  });
+});
+
 test.describe("seeded fixtures (local stack) — create with an assignment group", () => {
   test("a team picked from the Assignment group picker is saved on create (no FK 400)", async ({ page }) => {
     test.setTimeout(60_000);

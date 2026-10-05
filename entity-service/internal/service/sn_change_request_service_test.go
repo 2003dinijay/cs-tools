@@ -641,6 +641,14 @@ func TestWithoutManualScheduled(t *testing.T) {
 	if got := withoutManualScheduled([]string{"scheduled", "canceled"}, nil); strings.Join(got, ",") != "canceled" {
 		t.Fatalf("withoutManualScheduled with unknown state = %v, want [canceled]", got)
 	}
+	// Rollback (the failed-review off-ramp ServiceNow offers from Review and
+	// Customer Review) is never stripped.
+	for _, st := range []string{"review", "customer_review"} {
+		got = withoutManualScheduled([]string{"closed", "rollback", "canceled"}, str(st))
+		if strings.Join(got, ",") != "closed,rollback,canceled" {
+			t.Fatalf("withoutManualScheduled from %s = %v, want [closed rollback canceled]", st, got)
+		}
+	}
 	got = withoutManualScheduled([]string{"scheduled", "canceled"}, str("customer_approval"))
 	if strings.Join(got, ",") != "scheduled,canceled" {
 		t.Fatalf("withoutManualScheduled from customer_approval = %v, want [scheduled canceled] (records the customer's approval)", got)
