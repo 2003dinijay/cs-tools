@@ -265,6 +265,16 @@ func TestIncidentCreate_LifecycleWithoutSubcategory(t *testing.T) {
 		}
 	}
 
+	walkIncidentLifecycle(t, scoped, id, assertStage)
+}
+
+// walkIncidentLifecycle calls assertStage after create (NEW), then writes
+// each later stage -- In Progress, Resolved (with the resolution fields),
+// Closed -- and calls it again. The writes are plain SQL: see
+// TestIncidentCreate_LifecycleWithoutSubcategory for why.
+func walkIncidentLifecycle(t *testing.T, scoped *repository.Scoped, id string, assertStage func(t *testing.T, stage, wantState string)) {
+	t.Helper()
+	ctx := repository.WithSystemIdentity(context.Background())
 	assertStage(t, "after create", "NEW")
 
 	stages := []struct {
@@ -284,6 +294,65 @@ func TestIncidentCreate_LifecycleWithoutSubcategory(t *testing.T) {
 			t.Fatalf("%s: updated %d rows, want 1", s.name, tag.RowsAffected())
 		}
 		assertStage(t, "after "+s.name, s.state)
+	}
+}
+
+// TestIncidentCreate_ChannelRoundTripsThroughLifecycle: the UI's "Channel"
+// is the incident's contactType (column contact_type). Whatever value is
+// created must read back as that same value -- what the webapp's option list
+// and the API accept -- at every stage from New to Closed. SITE_247 is the
+// one value whose enum label differs ('SITE_24_7'); it used to read back as
+// "SITE_24_7", matching no option.
+func TestIncidentCreate_ChannelRoundTripsThroughLifecycle(t *testing.T) {
+	for _, tc := range []struct {
+		channel   domain.IncidentContactType
+		wantLabel string // incident_contact_type_enum label stored in the column
+	}{
+		{domain.IncidentContactTypePhone, "PHONE"},
+		{domain.IncidentContactTypeSite247, "SITE_24_7"},
+	} {
+		t.Run(string(tc.channel), func(t *testing.T) {
+			pool := incidentCreatePool(t)
+			seedIncidentCreateFixture(t, pool)
+			scoped := repository.NewScoped(pool)
+			repo := repository.NewIncidentRepository(scoped)
+			ctx := repository.WithSystemIdentity(context.Background())
+
+			req := icRequest()
+			req.Subcategory = nil
+			channel := tc.channel
+			req.ContactType = &channel
+			resp, err := repo.CreateIncident(ctx, req, "HIGH", nil, "jane.doe@test.local")
+			if err != nil {
+				t.Fatalf("CreateIncident with channel %s: %v", tc.channel, err)
+			}
+			id := resp.Incident.ID
+
+			walkIncidentLifecycle(t, scoped, id, func(t *testing.T, stage, wantState string) {
+				t.Helper()
+				view, err := repo.GetIncidentByID(ctx, id)
+				if err != nil {
+					t.Fatalf("%s: GetIncidentByID: %v", stage, err)
+				}
+				if view.State == nil || *view.State != wantState {
+					t.Errorf("%s: state = %v, want %s", stage, view.State, wantState)
+				}
+				if view.ContactType == nil || *view.ContactType != string(tc.channel) {
+					got := "<nil>"
+					if view.ContactType != nil {
+						got = *view.ContactType
+					}
+					t.Errorf("%s: channel (contactType) = %s, want %s", stage, got, tc.channel)
+				}
+				var stored string
+				if err := scoped.QueryRow(ctx, `SELECT contact_type::text FROM incident WHERE id = $1`, id).Scan(&stored); err != nil {
+					t.Fatalf("%s: read contact_type: %v", stage, err)
+				}
+				if stored != tc.wantLabel {
+					t.Errorf("%s: incident.contact_type = %s, want %s", stage, stored, tc.wantLabel)
+				}
+			})
+		})
 	}
 }
 
