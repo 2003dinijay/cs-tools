@@ -20,9 +20,11 @@
 // which sends one customer comment to an LLM and returns a frustration
 // score. dispatch.handleCommentAdded calls it for a comment it has already
 // determined is from an external (customer) author, to decide whether to
-// send a frustration-detection Chat alert. No OAuth2 is involved -- that
-// service has no inbound auth of its own, same as this one (see this repo's
-// own "Why no Auth middleware" doc comment).
+// send a frustration-detection Chat alert. Authenticated the same way as
+// every other upstream client in this service -- OAuth2 client credentials
+// via internal/oauthhttp, sharing the OAUTH2_CLIENT_ID/OAUTH2_CLIENT_SECRET/
+// OAUTH2_TOKEN_URL credentials the email and customer entity clients already
+// use (only its own BaseURL/Scopes are specific to this client).
 package escalation
 
 import (
@@ -36,19 +38,27 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/oauthhttp"
 )
 
 // Config holds the escalation detector's own configuration.
 type Config struct {
-	BaseURL string
+	BaseURL      string
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+	Scopes       []string
 }
 
 // Client is an HTTP client for ai-escalate-comment-detector's single-comment
-// escalation endpoint.
+// escalation endpoint, authenticated via the OAuth2 client credentials
+// grant. Tokens are acquired and refreshed automatically; callers need not
+// manage them.
 //
-// New never fails, so it is safe to construct with a zero-value Config (this
-// channel not yet configured for a given deployment) -- a missing BaseURL
-// only surfaces as an error the first time DetectEscalation is called.
+// New never fails and never contacts the token endpoint, so it is safe to
+// construct with a zero-value Config (this channel not yet configured for a
+// given deployment) -- a missing BaseURL or invalid credentials only
+// surface as an error the first time DetectEscalation is called.
 type Client struct {
 	http    *http.Client
 	baseURL string
@@ -56,8 +66,15 @@ type Client struct {
 
 // New constructs a Client.
 func New(cfg Config) *Client {
+	httpClient := oauthhttp.NewClient(oauthhttp.Config{
+		TokenURL:     cfg.TokenURL,
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
+		Scopes:       cfg.Scopes,
+	})
+
 	return &Client{
-		http:    &http.Client{Timeout: 20 * time.Second},
+		http:    httpClient,
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
 	}
 }

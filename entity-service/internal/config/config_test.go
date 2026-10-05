@@ -757,3 +757,22 @@ func TestConfig_DSN_SchemaFallsBackToDBUserPlusPublic(t *testing.T) {
 		}
 	})
 }
+
+func TestSREEventHubTopicMovesBothOperationsPublishers(t *testing.T) {
+	t.Setenv("CR_EVENT_HUB_TOPIC", "cr-events")
+	t.Setenv("OUTAGE_EVENT_HUB_TOPIC", "outage-events")
+
+	t.Setenv("SRE_EVENT_HUB_TOPIC", "")
+	if c := Load(); c.CREventHubTopic != "cr-events" || c.OutageEventHubTopic != "outage-events" {
+		t.Errorf("unset SRE topic changed the publishers: cr=%q outage=%q", c.CREventHubTopic, c.OutageEventHubTopic)
+	}
+
+	t.Setenv("SRE_EVENT_HUB_TOPIC", " sre-events ")
+	c := Load()
+	if c.CREventHubTopic != "sre-events" || c.OutageEventHubTopic != "sre-events" {
+		t.Errorf("SRE topic set: cr=%q outage=%q, want both sre-events", c.CREventHubTopic, c.OutageEventHubTopic)
+	}
+	if c.EventHubTopic == "sre-events" {
+		t.Error("the case-events topic must not move")
+	}
+}

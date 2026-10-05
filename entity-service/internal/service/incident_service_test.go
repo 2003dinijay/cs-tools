@@ -85,6 +85,11 @@ type stubIncidentRepo struct {
 	createIncidentComment        func(ctx context.Context, incidentID string, commentType domain.CommentType, content, createdBy string) (domain.CaseComment, error)
 	getIncidentByID              func(ctx context.Context, id string) (domain.IncidentView, error)
 	updateIncidentLifecycle      func(ctx context.Context, id string, u repository.IncidentLifecycleUpdate, actorEmail string) error
+	supportGroups                map[string]string // service id -> support group id; unset = none
+}
+
+func (s *stubIncidentRepo) SupportGroupOfService(_ context.Context, serviceID string) (string, error) {
+	return s.supportGroups[serviceID], nil
 }
 
 func (s *stubIncidentRepo) SearchIncidents(context.Context, domain.SearchIncidentsRequest, []string, []string, []string, []string, *bool, *bool, *time.Time, *time.Time) ([]domain.SearchIncidentView, int, error) {
@@ -299,8 +304,9 @@ func TestIncidentService_CreateIncident_RejectsConfigurationItemID(t *testing.T)
 
 // TestIncidentService_CreateIncident_PersistsAssignmentGroupID guards the
 // fix for work_item.assignment_group_id (migration 0075): unlike
-// ConfigurationItemID, this field DOES have a backing column, so it must be
-// forwarded through to CreateIncidentFromServiceNow rather than rejected.
+// ConfigurationItemID, this field DOES have a backing column, so the group
+// (the service's support group) must be forwarded through to
+// CreateIncidentFromServiceNow rather than dropped.
 func TestIncidentService_CreateIncident_PersistsAssignmentGroupID(t *testing.T) {
 	assignmentGroupID := "88888888-8888-8888-8888-888888888888"
 
@@ -314,7 +320,9 @@ func TestIncidentService_CreateIncident_PersistsAssignmentGroupID(t *testing.T) 
 		},
 	}
 	var gotAssignmentGroupID *string
+	req := validCreateIncidentRequest()
 	repo := &stubIncidentRepo{
+		supportGroups: map[string]string{req.ServiceID: assignmentGroupID},
 		createIncidentFromServiceNow: func(_ context.Context, req domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error) {
 			gotAssignmentGroupID = req.AssignmentGroupID
 			resp := domain.CreateIncidentResponse{Message: "Incident created successfully."}
@@ -326,8 +334,6 @@ func TestIncidentService_CreateIncident_PersistsAssignmentGroupID(t *testing.T) 
 	}
 	svc := NewIncidentServiceWithSNMirror(repo, nil, mirror, nil, nil)
 
-	req := validCreateIncidentRequest()
-	req.AssignmentGroupID = &assignmentGroupID
 	if _, err := svc.CreateIncident(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

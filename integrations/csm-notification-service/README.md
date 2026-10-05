@@ -86,11 +86,12 @@ Copy `.env.example` to `.env` and fill in the values:
 
 ### Frustration detection (`case.comment_added`)
 
-`dispatch.checkFrustration` sends a new, customer-authored case comment to the existing `ai-escalate-comment-detector` service for an OpenAI-backed frustration analysis, and — when it crosses that service's own configured threshold — posts a Chat alert through `GOOGLE_CHAT_SPACES` above, routed the same way an SLA breach alert is (team-first, falling back to `"Incident Monitor"`). No OAuth2 is involved; that service has no inbound auth of its own.
+`dispatch.checkFrustration` sends a new, customer-authored case comment to the existing `ai-escalate-comment-detector` service for an OpenAI-backed frustration analysis, and — when it crosses that service's own configured threshold — posts a Chat alert through `GOOGLE_CHAT_SPACES` above, routed the same way an SLA breach alert is (team-first, falling back to `"Incident Monitor"`). Authenticates with the shared `OAUTH2_*` credentials above, not its own — only `ESCALATION_DETECTOR_BASE_URL`/`ESCALATION_DETECTOR_SCOPES` are specific to this client.
 
 | Variable | Description |
 |---|---|
 | `ESCALATION_DETECTOR_BASE_URL` | Base URL of the `ai-escalate-comment-detector` service (optional). Unset means a customer comment is never sent for analysis and no frustration Chat alert is ever sent — nothing else in this service is affected |
+| `ESCALATION_DETECTOR_SCOPES` | Comma-separated OAuth2 scopes for the escalation detector (optional) — authenticates with the shared `OAUTH2_CLIENT_ID`/`OAUTH2_CLIENT_SECRET`/`OAUTH2_TOKEN_URL` above, not its own credentials |
 
 ### SMS and call notification channels (Twilio)
 
@@ -112,7 +113,7 @@ Backs `internal/recipientlinks`'s per-recipient role lookup (`POST /users/search
 
 | Variable | Description |
 |---|---|
-| `OAUTH2_CLIENT_ID` | Shared OAuth2 client ID, used by the email channel and the customer entity service client (optional) |
+| `OAUTH2_CLIENT_ID` | Shared OAuth2 client ID, used by the email channel, the customer entity service client, and the escalation detector client (optional) |
 | `OAUTH2_CLIENT_SECRET` | Shared OAuth2 client secret (optional) |
 | `OAUTH2_TOKEN_URL` | Shared OAuth2 token endpoint (optional) |
 | `CUSTOMER_ENTITY_BASE_URL` | Base URL of this repo's entity-service (optional, see above) |

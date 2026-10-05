@@ -21,11 +21,14 @@ import {
   Box,
   Button,
   Card,
+  Checkbox,
   DatePickers,
   FormControl,
   FormControlLabel,
   InputLabel,
   MenuItem,
+  Radio,
+  RadioGroup,
   Select,
   Switch,
   TextField,
@@ -50,11 +53,13 @@ import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
 import { useSearchParentRecordsForSelect } from "@features/csm-operations/api/useSearchParentRecordsForSelect";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
 import {
+  CHANGE_REQUEST_CREATE_TYPE_OPTIONS,
   changeRequestDraftKey,
   clearChangeRequestDraft,
   CLONE_SOURCE_GAP_MESSAGE,
   decodeParentRecordValue,
   encodeParentRecordValue,
+  isCreatableChangeRequestType,
   loadChangeRequestDraft,
   parentRecordLabel,
   saveChangeRequestDraft,
@@ -84,15 +89,6 @@ const SELECT_PLACEHOLDER = "-- Select --";
 // in half and corrupting the markup; the backend rejects an overlong
 // submission with a real error instead (see handleSubmit's onError).
 const SUBJECT_MAX = 500;
-
-const TYPE_OPTIONS: Array<{ value: BeChangeRequestType; label: string }> = [
-  { value: "standard", label: "Standard" },
-  { value: "normal", label: "Normal" },
-  { value: "emergency", label: "Emergency" },
-  { value: "model", label: "Model" },
-  { value: "site_reliability_ops", label: "Site reliability ops" },
-  { value: "azure", label: "Azure" },
-];
 
 const IMPACT_OPTIONS: Array<{ value: BeChangeRequestImpact; label: string }> = [
   { value: "high", label: "High" },
@@ -226,7 +222,13 @@ export default function CreateChangeRequestPage(): JSX.Element {
   // editable here at all — see BeCreateChangeRequestPayload's doc comment:
   // `category` is 99.9% left at its default on real records and `risk`
   // isn't a field on the real ServiceNow CR form.
-  const [type, setType] = useState<string>(draft?.type ?? cloneState?.type ?? "normal");
+  // Type has NO default: it decides which approval flow the change goes
+  // through (Normal: Peer then CAB; Standard: none; Emergency: ECAB), so the
+  // user must choose one of the three deliberately. A clone / restored draft
+  // pre-selects only when its type is one of those three (a legacy
+  // model/azure/... source falls back to "nothing selected").
+  const initialType = draft?.type ?? cloneState?.type ?? "";
+  const [type, setType] = useState<string>(isCreatableChangeRequestType(initialType) ? initialType : "");
   const [impact, setImpact] = useState<string>(draft?.impact ?? cloneState?.impact ?? "low");
   const [priority, setPriority] = useState<string>(draft?.priority ?? UNSET);
   const [plannedStartDate, setPlannedStartDate] = useState(draft?.plannedStartDate ?? "");
@@ -241,6 +243,15 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const [testPlan, setTestPlan] = useState(draft?.testPlan ?? cloneState?.testPlan ?? "");
   const [isPlanningVisibleToCustomers, setIsPlanningVisibleToCustomers] = useState(
     draft?.isPlanningVisibleToCustomers ?? false,
+  );
+  // The two ServiceNow "Customer Approval" / "Customer Review" checkboxes.
+  // Unchecked by default; a clone carries the source's settings over (they
+  // configure the flow, unlike the customer's actual confirmation).
+  const [customerApprovalRequired, setCustomerApprovalRequired] = useState(
+    draft?.customerApprovalRequired ?? cloneState?.customerApprovalRequired ?? false,
+  );
+  const [customerReviewRequired, setCustomerReviewRequired] = useState(
+    draft?.customerReviewRequired ?? cloneState?.customerReviewRequired ?? false,
   );
   const [groupId, setGroupId] = useState(draft?.groupId ?? "");
   const [assignedEngineerId, setAssignedEngineerId] = useState(
@@ -333,6 +344,8 @@ export default function CreateChangeRequestPage(): JSX.Element {
       backoutPlan,
       testPlan,
       isPlanningVisibleToCustomers,
+      customerApprovalRequired,
+      customerReviewRequired,
       groupId,
       assignedEngineerId,
       requestedById,
@@ -353,6 +366,8 @@ export default function CreateChangeRequestPage(): JSX.Element {
     backoutPlan,
     testPlan,
     isPlanningVisibleToCustomers,
+    customerApprovalRequired,
+    customerReviewRequired,
     groupId,
     assignedEngineerId,
     requestedById,
@@ -363,7 +378,11 @@ export default function CreateChangeRequestPage(): JSX.Element {
   // `isIncidentParentSelected` blocks submit entirely rather than just
   // skipping the PATCH — see its own doc comment above for why sending the
   // create-then-PATCH flow through with an incident's id would 404.
-  const canSubmit = subject.trim().length > 0 && !isSubmitting && !isIncidentParentSelected;
+  const canSubmit =
+    isCreatableChangeRequestType(type) &&
+    subject.trim().length > 0 &&
+    !isSubmitting &&
+    !isIncidentParentSelected;
   // Non-blocking: a past planned start/end is unusual but not forbidden
   // (e.g. logging a change that already happened), so this only warns.
   const plannedStartIsPast = isPastZonedInput(plannedStartDate);
@@ -372,8 +391,11 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const handleSubmit = (): void => {
     if (!canSubmit) return;
 
-    const payload: BeCreateChangeRequestPayload = { subject: subject.trim() };
-    if (type) payload.type = type as BeChangeRequestType;
+    // `canSubmit` guarantees `type` is one of normal / standard / emergency.
+    const payload: BeCreateChangeRequestPayload = {
+      subject: subject.trim(),
+      type: type as BeChangeRequestType,
+    };
     if (impact) payload.impact = impact as BeChangeRequestImpact;
     if (priority) payload.priority = priority as BeChangeRequestPriority;
     // Every change request starts at New, unconditionally -- the org's own
@@ -397,6 +419,9 @@ export default function CreateChangeRequestPage(): JSX.Element {
     if (!isBlankHtml(backoutPlan)) payload.backoutPlan = backoutPlan;
     if (!isBlankHtml(testPlan)) payload.testPlan = testPlan;
     payload.isPlanningVisibleToCustomers = isPlanningVisibleToCustomers;
+    // Always sent, true or false, so the backend never has to guess the intent.
+    payload.customerApprovalRequired = customerApprovalRequired;
+    payload.customerReviewRequired = customerReviewRequired;
     if (groupId.trim()) payload.groupId = groupId.trim();
     if (assignedEngineerId.trim()) payload.assignedEngineerId = assignedEngineerId.trim();
     if (requestedById.trim()) payload.requestedById = requestedById.trim();
@@ -577,6 +602,64 @@ export default function CreateChangeRequestPage(): JSX.Element {
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <Typography variant="subtitle2">Change request</Typography>
 
+          <Box role="group" aria-labelledby="cr-type-heading">
+            <Typography id="cr-type-heading" variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
+              What type of change is required?
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              Required. The type decides which approvals this change goes through.
+            </Typography>
+            <RadioGroup
+              name="cr-type"
+              value={type}
+              onChange={(e) => setType(e.target.value)}
+              sx={{ gap: 1 }}
+            >
+              {CHANGE_REQUEST_CREATE_TYPE_OPTIONS.map((o) => (
+                <Box
+                  key={o.value}
+                  sx={{
+                    border: "1px solid",
+                    borderColor: type === o.value ? "primary.main" : "divider",
+                    borderRadius: 1,
+                    px: 1.5,
+                    py: 0.5,
+                    bgcolor: (theme) =>
+                      type === o.value ? alpha(theme.palette.primary.main, 0.06) : "transparent",
+                  }}
+                >
+                  <FormControlLabel
+                    value={o.value}
+                    disabled={isSubmitting}
+                    control={
+                      <Radio size="small" inputProps={{ "aria-describedby": `cr-type-${o.value}-desc` }} />
+                    }
+                    label={
+                      <Box>
+                        <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                          {o.label}
+                        </Typography>
+                        <Typography
+                          id={`cr-type-${o.value}-desc`}
+                          variant="body2"
+                          color="text.secondary"
+                        >
+                          {o.description}
+                        </Typography>
+                      </Box>
+                    }
+                    sx={{ alignItems: "flex-start", width: "100%", m: 0, py: 0.5 }}
+                  />
+                </Box>
+              ))}
+            </RadioGroup>
+            {!type && (
+              <Typography variant="caption" color="error" role="status" sx={{ display: "block", mt: 0.5 }}>
+                Select a change type to continue.
+              </Typography>
+            )}
+          </Box>
+
           <TextField
             label="Subject"
             value={subject}
@@ -660,13 +743,76 @@ export default function CreateChangeRequestPage(): JSX.Element {
 
           <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
             <Box sx={{ flex: "1 1 200px" }}>
-              {renderSelect("cr-type", "Type", type, setType, TYPE_OPTIONS)}
-            </Box>
-            <Box sx={{ flex: "1 1 200px" }}>
               {renderSelect("cr-priority", "Priority", priority, setPriority, PRIORITY_OPTIONS)}
             </Box>
             <Box sx={{ flex: "1 1 200px" }}>
               {renderSelect("cr-impact", "Impact", impact, setImpact, IMPACT_OPTIONS)}
+            </Box>
+          </Box>
+
+          <Box role="group" aria-labelledby="cr-customer-steps-heading">
+            <Typography
+              id="cr-customer-steps-heading"
+              variant="subtitle2"
+              sx={{ mb: 0.5 }}
+            >
+              Customer steps
+            </Typography>
+            <Box sx={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+              <FormControlLabel
+                sx={{ flex: "1 1 280px", alignItems: "flex-start", m: 0 }}
+                disabled={isSubmitting}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={customerApprovalRequired}
+                    onChange={(e) => setCustomerApprovalRequired(e.target.checked)}
+                    inputProps={{
+                      "aria-label": "Customer Approval",
+                      "aria-describedby": "cr-customer-approval-desc",
+                    }}
+                  />
+                }
+                label={
+                  <Box>
+                    <Typography variant="body1">Customer Approval</Typography>
+                    <Typography
+                      id="cr-customer-approval-desc"
+                      variant="body2"
+                      color="text.secondary"
+                    >
+                      Adds a customer approval step after internal approval, before scheduling.
+                    </Typography>
+                  </Box>
+                }
+              />
+              <FormControlLabel
+                sx={{ flex: "1 1 280px", alignItems: "flex-start", m: 0 }}
+                disabled={isSubmitting}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={customerReviewRequired}
+                    onChange={(e) => setCustomerReviewRequired(e.target.checked)}
+                    inputProps={{
+                      "aria-label": "Customer Review",
+                      "aria-describedby": "cr-customer-review-desc",
+                    }}
+                  />
+                }
+                label={
+                  <Box>
+                    <Typography variant="body1">Customer Review</Typography>
+                    <Typography
+                      id="cr-customer-review-desc"
+                      variant="body2"
+                      color="text.secondary"
+                    >
+                      Adds a customer review step after Review, before closing.
+                    </Typography>
+                  </Box>
+                }
+              />
             </Box>
           </Box>
 

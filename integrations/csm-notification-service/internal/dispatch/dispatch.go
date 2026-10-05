@@ -423,6 +423,26 @@ func recordBaseKey(record eventbus.Record) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// HandleShared is Handle for a topic other producers share -- sre-events,
+// which carries the change-request notices and the outage emails today and is
+// meant to carry more operations events later.
+//
+// *** AN UNKNOWN TYPE IS SKIPPED, NOT AN ERROR. *** On a topic this service
+// owns, an unknown type means a broken producer, and failing it into the DLQ
+// is the right signal. On a shared topic it usually means an event some other
+// consumer is for; erroring would burn this consumer's retries on it and then
+// dead-letter a record that was never broken. Known types are handled exactly
+// as Handle handles them.
+func (d *Dispatcher) HandleShared(ctx context.Context, record eventbus.Record) error {
+	var env events.Envelope
+	if err := json.Unmarshal(record.Value, &env); err == nil && env.Type != "" && !env.Type.IsKnown() {
+		slog.InfoContext(ctx, "dispatch: event type not handled by this service on a shared topic, skipping",
+			"type", string(env.Type), "topic", record.Topic)
+		return nil
+	}
+	return d.Handle(ctx, record)
+}
+
 // Handle implements eventbus.Handle. A non-nil return causes the caller
 // (eventbus.Consumer) to retry — see its package doc for the retry policy.
 func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {

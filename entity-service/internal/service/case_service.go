@@ -82,6 +82,34 @@ type caseService struct {
 	// (unconfigured) means this can never be confirmed, so that hook skips
 	// entirely rather than guessing.
 	csEngineerRole string
+	// referenceDataRepo/deployedProductRepo back CreateCase's own project-type
+	// product-category allow-list enforcement
+	// (validateDeployedProductCategoryForType) -- both nil unless wired via
+	// WithProductCategoryEnforcement, same optional-dependency posture as
+	// publisher/snMirror above. Wired only for the plain-Postgres and
+	// dual-write data sources (routes.go); DATA_SOURCE=servicenow has no
+	// route to either, by explicit product decision -- see
+	// WithProductCategoryEnforcement's own doc comment.
+	referenceDataRepo   repository.ReferenceDataRepository
+	deployedProductRepo repository.DeployedProductRepository
+}
+
+// WithProductCategoryEnforcement attaches the optional project-type
+// category-allow-list check CreateCase applies at creation time (see
+// validateDeployedProductCategoryForType) to an already-constructed
+// CaseService. A separate wiring step rather than extending
+// NewCaseService/NewCaseServiceWithSNWriteback's own signatures -- those
+// constructors' doc comments already establish the precedent this follows:
+// every existing call site (every test, every other DataSource branch in
+// routes.go) keeps working completely unchanged, since this capability is
+// optional and nil-safe to omit. A no-op (returns svc unchanged) if svc is
+// not a *caseService -- defensive; every real construction path is.
+func WithProductCategoryEnforcement(svc CaseService, referenceDataRepo repository.ReferenceDataRepository, deployedProductRepo repository.DeployedProductRepository) CaseService {
+	if cs, ok := svc.(*caseService); ok {
+		cs.referenceDataRepo = referenceDataRepo
+		cs.deployedProductRepo = deployedProductRepo
+	}
+	return svc
 }
 
 // caseResolutionFields carries the resolution data that accompanies a
@@ -419,6 +447,85 @@ func validateCreateCaseRequest(req *domain.CreateCaseRequest) error {
 	return nil
 }
 
+// validateDeployedProductCategoryForType enforces a project type's own
+// Default Case/SR Creation Product Category allow-list
+// (project_type.default_case_product_categories for req.Type == "case",
+// project_type.sr_product_categories for "service_request" -- migration
+// 0130_project_type_feature_entitlement.sql,
+// ReferenceDataRepository.GetProjectByID) at CreateCase time. Closes a real
+// gap: these allow-lists were previously only advisory, surfaced read-only
+// via GET /projects/{id}/features for the frontend's own product dropdown
+// to filter against (see SearchDeployedProducts' fail-open ProductCategories
+// handling) -- nothing ever stopped a caller from creating a case/SR against
+// a deployed product whose category didn't match the project type's
+// configured requirement at all.
+//
+// Only "case"/"service_request" are restricted (the two types the matrix
+// actually names); every other type is unaffected. A project type with no
+// allow-list configured for the request's own type ("N/A" in the matrix --
+// an empty/nil slice) is unrestricted, exactly as before this check
+// existed, as is a project with no project_type linked at all.
+//
+// A deployed product with NO category set (the majority of real rows
+// today) FAILS this check once a project type restricts the request's
+// type -- fail-closed, by deliberate product decision: the whole point of
+// this gate is to make categorizing a deployed product matter, and the CSM
+// Portal's own Create/Edit Deployed Product dialogs are what let staff set
+// one. This is a stricter posture than SearchDeployedProducts' own
+// fail-open NULL-category read-side filter, and deliberately so -- that
+// filter exists to avoid hiding products from a list; this exists to
+// enforce a real creation-time requirement.
+//
+// Nil-safe: a caseService with neither referenceDataRepo nor
+// deployedProductRepo wired (see WithProductCategoryEnforcement) skips this
+// entirely, the same posture as every other optional dependency on this
+// struct (publisher, snMirror, ...) -- including on
+// DATA_SOURCE=servicenow, which has no route to either Postgres-only
+// repository at all.
+func (s *caseService) validateDeployedProductCategoryForType(ctx context.Context, req domain.CreateCaseRequest) error {
+	if s.referenceDataRepo == nil || s.deployedProductRepo == nil {
+		return nil
+	}
+	if req.Type != "case" && req.Type != "service_request" {
+		return nil
+	}
+
+	found, projectType, err := s.referenceDataRepo.GetProjectByID(ctx, req.ProjectID)
+	if err != nil {
+		return err
+	}
+	if !found || projectType == nil {
+		return nil
+	}
+
+	allowed := projectType.DefaultCaseProductCategories
+	fieldLabel := "case"
+	if req.Type == "service_request" {
+		allowed = projectType.SrProductCategories
+		fieldLabel = "service request"
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	allowedLower := lowercaseAll(allowed)
+
+	category, err := s.deployedProductRepo.GetDeployedProductCategory(ctx, req.DeployedProductID)
+	if err != nil {
+		return err
+	}
+	if category != nil {
+		for _, a := range allowedLower {
+			if a == *category {
+				return nil
+			}
+		}
+	}
+	return &apierror.ValidationError{Msg: fmt.Sprintf(
+		"deployedProductId must reference a product categorized as one of [%s] for %s creation under this project's type",
+		strings.Join(allowedLower, ", "), fieldLabel,
+	)}
+}
+
 // CreateCase implements CaseService.
 //
 // Under DATA_SOURCE=postgres-servicenow-dual-write (snMirror != nil), this
@@ -456,6 +563,9 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 		if err := validateUUIDs("deployedProductId", []string{req.DeployedProductID}); err != nil {
 			return domain.CreateCaseResponse{}, err
 		}
+	}
+	if err := s.validateDeployedProductCategoryForType(ctx, req); err != nil {
+		return domain.CreateCaseResponse{}, err
 	}
 
 	if s.snMirror != nil {

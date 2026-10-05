@@ -31,7 +31,13 @@ const decideMutateMock = vi.fn();
 // `BackendApiError` from it, so stub the module (same approach as
 // CsmAnnouncementsPage.test.tsx).
 vi.mock("@api/backend/client", () => ({
-  BackendApiError: class BackendApiError extends Error {},
+  BackendApiError: class BackendApiError extends Error {
+    status: number;
+    constructor(status = 500, message = "") {
+      super(message);
+      this.status = status;
+    }
+  },
   useBackendApi: () => ({ get: vi.fn(), post: vi.fn() }),
 }));
 
@@ -52,6 +58,7 @@ vi.mock("@features/csm-operations/api/useDecideChangeRequestApproval", () => ({
 }));
 
 // Imported after the mocks above so the modules pick them up.
+import { BackendApiError } from "@api/backend/client";
 import ChangeRequestApprovals from "@features/csm-operations/components/ChangeRequestApprovals";
 
 function mockQueryResult(
@@ -113,9 +120,10 @@ describe("ChangeRequestApprovals", () => {
 
     expect(screen.getByText("Approver One")).toBeInTheDocument();
     expect(screen.getByText("Approver Two")).toBeInTheDocument();
-    // The stage label itself is not shown anywhere -- only the assignment
-    // group, per row.
+    // The raw backend stage name is shown as its label ("CAB Approval"), once
+    // per row, next to the assignment group.
     expect(screen.queryByText("Authorize")).not.toBeInTheDocument();
+    expect(screen.getAllByText("CAB Approval")).toHaveLength(2);
     expect(screen.getAllByText("Devops Approval")).toHaveLength(2);
   });
 
@@ -325,5 +333,208 @@ describe("ChangeRequestApprovals", () => {
       expect(screen.getByText("Approve").closest("button")).toBeDisabled();
       expect(screen.getByText("Reject").closest("button")).toBeDisabled();
     });
+  });
+});
+
+describe("ChangeRequestApprovals — Peer / CAB / ECAB stages", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCurrentUser(undefined);
+    mockDecideMutation();
+  });
+
+  it("labels each stage Peer Approval, CAB Approval, ECAB Approval, whichever name the backend uses", () => {
+    mockQueryResult({
+      data: {
+        approvals: [
+          { stage: "Assess", approverType: "STATIC_GROUP", approverName: "SRE Team", status: "APPROVED", approvers: [{ id: "p", name: "Peer One", status: "APPROVED" }] },
+          { stage: "CAB Approval", approverType: "STATIC_GROUP", approverName: "CAB", status: "REQUESTED", approvers: [{ id: "c", name: "Cab One", status: "REQUESTED" }] },
+          { stage: "Emergency CAB", approverType: "STATIC_GROUP", approverName: "ECAB", status: "REQUESTED", approvers: [{ id: "e", name: "Ecab One", status: "REQUESTED" }] },
+        ],
+      },
+    });
+    render(<ChangeRequestApprovals id="chg-1" />);
+
+    expect(screen.getByText("Stage", { selector: "th" })).toBeInTheDocument();
+    expect(screen.getByText("Peer One").closest("tr")).toHaveTextContent("Peer Approval");
+    expect(screen.getByText("Cab One").closest("tr")).toHaveTextContent("CAB Approval");
+    expect(screen.getByText("Ecab One").closest("tr")).toHaveTextContent("ECAB Approval");
+  });
+
+  it("renders only what the backend returns: a Standard change with no stages shows the empty state", () => {
+    mockQueryResult({ data: { approvals: [] } });
+    render(<ChangeRequestApprovals id="chg-1" />);
+    expect(screen.getByText(/no approval stages recorded/i)).toBeInTheDocument();
+  });
+
+  it("renders an Emergency change as a lone ECAB stage with no Peer or CAB rows", () => {
+    mockQueryResult({
+      data: {
+        approvals: [
+          { stage: "ECAB Approval", approverType: "STATIC_GROUP", approverName: "ECAB", status: "REQUESTED", approvers: [{ id: "e", name: "Ecab One", status: "REQUESTED" }] },
+        ],
+      },
+    });
+    render(<ChangeRequestApprovals id="chg-1" />);
+    expect(screen.getAllByText("ECAB Approval")).toHaveLength(1);
+    expect(screen.queryByText("Peer Approval")).not.toBeInTheDocument();
+    expect(screen.queryByText("CAB Approval")).not.toBeInTheDocument();
+  });
+});
+
+describe("ChangeRequestApprovals — internal approvals while the CR waits for the customer", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCurrentUser("c");
+    mockDecideMutation();
+  });
+
+  it("keeps showing the settled Peer and CAB stages, with no Approve/Reject, once the CR sits in customer_approval", () => {
+    // Customer approval is a state of the CR, not an internal approval stage:
+    // the panel only ever reflects what the backend returns, all settled here.
+    mockQueryResult({
+      data: {
+        approvals: [
+          { stage: "Peer Approval", approverType: "STATIC_GROUP", approverName: "Peers", status: "APPROVED", approvers: [{ id: "p", name: "Peer One", status: "APPROVED" }] },
+          { stage: "CAB Approval", approverType: "STATIC_GROUP", approverName: "CAB", status: "APPROVED", approvers: [{ id: "c", name: "Cab One", status: "APPROVED" }] },
+        ],
+      },
+    });
+    render(<ChangeRequestApprovals id="chg-1" />);
+    expect(screen.getByText("Peer One").closest("tr")).toHaveTextContent("Approved");
+    expect(screen.getByText("Cab One").closest("tr")).toHaveTextContent("Approved");
+    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
+  });
+
+  it("renders a backend-provided 'Customer Approval' stage under its own name rather than as Peer/CAB", () => {
+    mockQueryResult({
+      data: {
+        approvals: [
+          { stage: "Customer Approval", approverType: "DYNAMIC_CONTACT", approverName: null, status: "REQUESTED", approvers: [{ id: "x", name: "Acme Contact", status: "REQUESTED" }] },
+        ],
+      },
+    });
+    render(<ChangeRequestApprovals id="chg-1" />);
+    expect(screen.getByText("Acme Contact").closest("tr")).toHaveTextContent("Customer Approval");
+    expect(screen.queryByText("Peer Approval")).not.toBeInTheDocument();
+    expect(screen.queryByText("CAB Approval")).not.toBeInTheDocument();
+  });
+});
+
+describe("ChangeRequestApprovals — the creator cannot approve", () => {
+  const stages = (approverId: string) => ({
+    approvals: [
+      {
+        stage: "Authorize",
+        approverType: "STATIC_GROUP" as const,
+        approverName: "CAB",
+        status: "REQUESTED",
+        approvers: [
+          { id: approverId, name: "Me", status: "REQUESTED" },
+          { id: "someone-else", name: "Other Approver", status: "REQUESTED" },
+        ],
+      },
+    ],
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDecideMutation();
+  });
+
+  it("disables Approve and Reject on the creator's own pending row and explains why", () => {
+    mockQueryResult({ data: stages("me-id") });
+    mockCurrentUser("me-id");
+    render(<ChangeRequestApprovals id="chg-1" isCreator />);
+
+    expect(screen.getByText("Approve").closest("button")).toBeDisabled();
+    expect(screen.getByText("Reject").closest("button")).toBeDisabled();
+    expect(screen.getByLabelText(/you created this change request/i)).toBeInTheDocument();
+    // Explanatory text that also tells them Cancel is still available.
+    expect(screen.getByRole("alert")).toHaveTextContent(/can't approve or reject/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/still cancel/i);
+  });
+
+  it("never submits a decision when the creator clicks the disabled controls", () => {
+    mockQueryResult({ data: stages("me-id") });
+    mockCurrentUser("me-id");
+    render(<ChangeRequestApprovals id="chg-1" isCreator />);
+
+    fireEvent.click(screen.getByText("Approve"));
+    fireEvent.click(screen.getByText("Reject"));
+    expect(decideMutateMock).not.toHaveBeenCalled();
+  });
+
+  it("renders no controls at all for a creator who has no pending row (e.g. ECAB excludes them)", () => {
+    mockQueryResult({ data: stages("someone-else-entirely") });
+    mockCurrentUser("me-id");
+    render(<ChangeRequestApprovals id="chg-1" isCreator />);
+
+    expect(screen.queryByText("Approve")).not.toBeInTheDocument();
+    expect(screen.queryByText("Reject")).not.toBeInTheDocument();
+  });
+
+  it("lets a non-creator approver approve and reject, with no creator notice", () => {
+    mockQueryResult({ data: stages("me-id") });
+    mockCurrentUser("me-id");
+    render(<ChangeRequestApprovals id="chg-1" isCreator={false} />);
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("Approve").closest("button")).toBeEnabled();
+    fireEvent.click(screen.getByText("Approve"));
+    expect(decideMutateMock).toHaveBeenCalledWith(
+      { id: "chg-1", decision: "approved" },
+      expect.anything(),
+    );
+  });
+
+  it("honours an explicit canDecide=false on one approver row only", () => {
+    const data = stages("me-id");
+    (data.approvals[0]!.approvers[0] as { canDecide?: boolean }).canDecide = false;
+    mockQueryResult({ data });
+    mockCurrentUser("me-id");
+    render(<ChangeRequestApprovals id="chg-1" />);
+    expect(screen.getByText("Approve").closest("button")).toBeDisabled();
+  });
+
+  it("enables Approve/Reject on the caller's own pending row when the backend says canDecide=true", () => {
+    const data = stages("me-id");
+    (data.approvals[0]!.approvers[0] as { canDecide?: boolean }).canDecide = true;
+    mockQueryResult({ data });
+    mockCurrentUser("me-id");
+    render(<ChangeRequestApprovals id="chg-1" />);
+    expect(screen.getByText("Approve").closest("button")).toBeEnabled();
+  });
+
+  it("surfaces the backend's readable 403 message when a decision is refused", () => {
+    mockQueryResult({ data: stages("me-id") });
+    mockCurrentUser("me-id");
+    render(<ChangeRequestApprovals id="chg-1" />);
+    fireEvent.click(screen.getByText("Approve"));
+    const onError = decideMutateMock.mock.calls[0]![1].onError as (e: unknown) => void;
+    const err = new (BackendApiError as unknown as new (s: number, m: string) => Error)(
+      403,
+      "The creator of a change request cannot approve it.",
+    );
+    onError(err);
+    expect(showErrorMock).toHaveBeenCalledWith("The creator of a change request cannot approve it.", err);
+  });
+
+  it("falls back to a generic message for a non-backend or 5xx failure", () => {
+    mockQueryResult({ data: stages("me-id") });
+    mockCurrentUser("me-id");
+    render(<ChangeRequestApprovals id="chg-1" />);
+    fireEvent.click(screen.getByText("Reject"));
+    const onError = decideMutateMock.mock.calls[0]![1].onError as (e: unknown) => void;
+    onError(new Error("boom"));
+    expect(showErrorMock).toHaveBeenCalledWith("Could not reject the change request.", expect.any(Error));
+  });
+
+  it("treats an absent canDecide as unknown and leaves the controls enabled", () => {
+    mockQueryResult({ data: stages("me-id") });
+    mockCurrentUser("me-id");
+    render(<ChangeRequestApprovals id="chg-1" />);
+    expect(screen.getByText("Approve").closest("button")).toBeEnabled();
   });
 });
