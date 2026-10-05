@@ -23,6 +23,21 @@ import (
 	"testing"
 )
 
+// newTokenServer mirrors internal/notifications' own test helper of the same
+// name -- a fake OAuth2 token endpoint every oauthhttp-backed client's tests
+// point TokenURL at.
+func newTokenServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "test-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+	}))
+}
+
 func TestDetectEscalation_PostsAndDecodesResult(t *testing.T) {
 	var gotMethod, gotPath string
 	var gotBody map[string]any
@@ -33,8 +48,16 @@ func TestDetectEscalation_PostsAndDecodesResult(t *testing.T) {
 		_, _ = w.Write([]byte(`{"isFrustrated":true,"frustratedLevel":0.91,"reason":"Repeated unanswered follow-ups","isEmailTrigger":true}`))
 	}))
 	defer srv.Close()
+	tokenSrv := newTokenServer(t)
+	defer tokenSrv.Close()
 
-	c := New(Config{BaseURL: srv.URL})
+	c := New(Config{
+		BaseURL:      srv.URL,
+		TokenURL:     tokenSrv.URL,
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		Scopes:       []string{"escalation"},
+	})
 	result, err := c.DetectEscalation(t.Context(), "CASE-1", "CS0001", "WSO2 API Manager", "This has been open for weeks with no update.")
 	if err != nil {
 		t.Fatalf("DetectEscalation() error = %v", err)
@@ -78,8 +101,10 @@ func TestDetectEscalation_UpstreamError_ReturnsError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"boom"}`))
 	}))
 	defer srv.Close()
+	tokenSrv := newTokenServer(t)
+	defer tokenSrv.Close()
 
-	c := New(Config{BaseURL: srv.URL})
+	c := New(Config{BaseURL: srv.URL, TokenURL: tokenSrv.URL, ClientID: "test-client-id", ClientSecret: "test-client-secret"})
 	if _, err := c.DetectEscalation(t.Context(), "CASE-1", "CS0001", "", "a comment"); err == nil {
 		t.Fatal("expected an error for a non-2xx response")
 	}
