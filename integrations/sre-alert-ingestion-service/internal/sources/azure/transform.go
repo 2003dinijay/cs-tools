@@ -49,8 +49,8 @@ var severityMap = map[string]string{
 	"Sev4": "OK",
 }
 
-// ErrMissingBody is returned when the webhook is called with no body at all.
-var ErrMissingBody = errors.New("MISSING REQUEST BODY DATA")
+// ErrMissingBody is returned when the webhook is called with no body, or a body that isn't valid JSON at all.
+var ErrMissingBody = errors.New("missing or invalid request body")
 
 // Alert is the canonical alert model handed to the core component.
 type Alert = model.Alert
