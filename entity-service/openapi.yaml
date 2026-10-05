@@ -6891,7 +6891,7 @@ paths:
         Either `teamKeys` or `teamTypes` must be supplied. Both being absent is
         rejected: an unfiltered read would return every membership in the
         organisation.
-      operationId: getTeamMembers
+      operationId: getScheduleMembers
       parameters:
         - name: teamKeys
           in: query
