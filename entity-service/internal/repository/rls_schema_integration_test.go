@@ -161,3 +161,68 @@ func TestRLSSchemaIntegration_PolicyHelperFunctionsAreParallelSafe(t *testing.T)
 		t.Error("found no functions referenced by any policy; is_project_member should at least be one -- the query or the schema assumption changed")
 	}
 }
+
+// rlsCommandsDeniedOnPurpose lists table/command pairs that intentionally have
+// no policy, so the database refuses that command for every caller (internal
+// ones included). It is empty on purpose: until migration 0190 seven such
+// pairs existed, nobody had written down that they were deliberate, and the
+// csm-sync-service -- which does run those commands -- had every one of them
+// refused. To leave a pair without a policy, add it here with the reason.
+var rlsCommandsDeniedOnPurpose = map[string]map[string]string{}
+
+// TestRLSSchemaIntegration_EveryProtectedTableHasAPolicyForEveryCommand
+// guards against a table being left with RLS forced and no policy for one of
+// SELECT, INSERT, UPDATE or DELETE. With FORCE ROW LEVEL SECURITY a command
+// that has no policy fails for everyone, and it fails quietly: an UPDATE
+// affects zero rows, and an INSERT ... ON CONFLICT DO UPDATE raises
+// "new row violates row-level security policy (USING expression)". Nothing
+// else would notice a new table, or a dropped policy, creating that gap.
+func TestRLSSchemaIntegration_EveryProtectedTableHasAPolicyForEveryCommand(t *testing.T) {
+	pool := caseStatsPool(t)
+	ctx := context.Background()
+	commands := []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
+
+	rows, err := pool.Query(ctx, `
+		SELECT tablename, cmd
+		FROM pg_policies
+		WHERE schemaname = current_schema() AND tablename = ANY($1)`,
+		rlsProtectedTables,
+	)
+	if err != nil {
+		t.Fatalf("query pg_policies: %v", err)
+	}
+	defer rows.Close()
+
+	covered := make(map[string]map[string]bool, len(rlsProtectedTables))
+	for rows.Next() {
+		var table, cmd string
+		if err := rows.Scan(&table, &cmd); err != nil {
+			t.Fatalf("scan pg_policies row: %v", err)
+		}
+		if covered[table] == nil {
+			covered[table] = make(map[string]bool, len(commands))
+		}
+		if cmd == "ALL" {
+			for _, c := range commands {
+				covered[table][c] = true
+			}
+		} else {
+			covered[table][cmd] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate pg_policies rows: %v", err)
+	}
+
+	for _, table := range rlsProtectedTables {
+		for _, cmd := range commands {
+			if covered[table][cmd] {
+				continue
+			}
+			if reason, ok := rlsCommandsDeniedOnPurpose[table][cmd]; ok && reason != "" {
+				continue
+			}
+			t.Errorf("table %q has no %s policy: with FORCE ROW LEVEL SECURITY that command is refused for every caller, internal ones included. Add a policy (see migration 0190 for the internal-only shape) or list the pair in rlsCommandsDeniedOnPurpose with the reason", table, cmd)
+		}
+	}
+}
