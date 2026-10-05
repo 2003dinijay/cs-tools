@@ -205,7 +205,7 @@ func (c *Client) GetRole(ctx context.Context, roleID string) ([]RoleMember, erro
 }
 
 // AddRoleMembers grants the given role to one or more users, by email, via
-// the SCIM operations service's PATCH /organizations/internal/roles/{id}
+// the SCIM operations service's POST /organizations/internal/roles/{id}/users
 // (see digiops-infra's scim-operations-service, modules/scim/scim.bal's
 // addRoleMembers) -- the service resolves each email to its own user ID on
 // the identity provider and performs the real role-membership update, so
@@ -224,8 +224,8 @@ func (c *Client) AddRoleMembers(ctx context.Context, roleID string, emails []str
 		return fmt.Errorf("scim: encode add-role-members request: %w", err)
 	}
 
-	path := "/organizations/" + org + "/roles/" + url.PathEscape(roleID)
-	raw, err := c.do(ctx, http.MethodPatch, path, reqBody)
+	path := "/organizations/" + org + "/roles/" + url.PathEscape(roleID) + "/users"
+	raw, err := c.do(ctx, http.MethodPost, path, reqBody)
 	if err != nil {
 		return err
 	}
