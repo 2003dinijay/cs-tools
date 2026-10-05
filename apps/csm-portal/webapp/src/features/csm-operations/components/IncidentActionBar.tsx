@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Button, Menu, MenuItem } from "@wso2/oxygen-ui";
+import { Box, Button, Menu, MenuItem, Tooltip, Typography } from "@wso2/oxygen-ui";
 import {
   ArrowRight,
   Ban,
@@ -71,6 +71,12 @@ interface IncidentActionBarProps {
    * responsibility as `CaseActionBar` + `CsmCaseDetailPage.onAction`.
    */
   onAction: (target: BeIncidentState) => void;
+  /**
+   * Targets that are shown but cannot be picked yet, each with the reason
+   * (e.g. CLOSED while the incident still has open tasks). The reason is the
+   * button's tooltip, or a second line under the menu item.
+   */
+  blockedTargets?: Partial<Record<BeIncidentState, string>>;
 }
 
 /**
@@ -85,6 +91,7 @@ export default function IncidentActionBar({
   incident,
   isPending,
   onAction,
+  blockedTargets,
 }: IncidentActionBarProps): JSX.Element | null {
   const [stateMenuAnchor, setStateMenuAnchor] = useState<HTMLElement | null>(null);
 
@@ -96,6 +103,7 @@ export default function IncidentActionBar({
   const buttons = targets.map((target) => ({
     target,
     label: incidentStateLabel(target),
+    blockedReason: blockedTargets?.[target],
     ...(TARGET_CONFIG[target] ?? DEFAULT_TARGET_CONFIG),
   }));
 
@@ -106,6 +114,20 @@ export default function IncidentActionBar({
 
   if (buttons.length === 1) {
     const b = buttons[0];
+    if (b.blockedReason) {
+      return (
+        <Tooltip title={b.blockedReason}>
+          {/* A disabled button is not focusable, so this focusable, labelled
+              wrapper is what exposes the reason to keyboard and assistive
+              tech -- same as ChangeRequestActionBar. */}
+          <Box component="span" tabIndex={0} aria-label={`${b.label}: ${b.blockedReason}`}>
+            <Button size="small" variant="contained" color={b.color} startIcon={b.icon} disabled>
+              {b.label}
+            </Button>
+          </Box>
+        </Tooltip>
+      );
+    }
     return (
       <Button
         size="small"
@@ -141,10 +163,18 @@ export default function IncidentActionBar({
           <MenuItem
             key={b.target}
             onClick={() => dispatch(b.target)}
-            sx={{ gap: 1.25, minHeight: 36 }}
+            disabled={!!b.blockedReason}
+            sx={{ gap: 1.25, minHeight: 36, alignItems: "flex-start" }}
           >
-            <Box sx={{ color: `${b.color}.main`, display: "flex" }}>{b.icon}</Box>
-            {b.label}
+            <Box sx={{ color: `${b.color}.main`, display: "flex", pt: 0.25 }}>{b.icon}</Box>
+            <Box sx={{ display: "flex", flexDirection: "column" }}>
+              {b.label}
+              {b.blockedReason && (
+                <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "normal", maxWidth: 260 }}>
+                  {b.blockedReason}
+                </Typography>
+              )}
+            </Box>
           </MenuItem>
         ))}
       </Menu>

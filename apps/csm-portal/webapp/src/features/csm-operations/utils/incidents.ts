@@ -271,3 +271,15 @@ export function buildIncidentSearchFilters(
 export function incidentRelatedTabPath(incidentId: string): string {
   return `/operations/incidents/${encodeURIComponent(incidentId)}?tab=related`;
 }
+
+/** Closed incident-task states. Any other state (or none) is still open,
+ * and an incident with an open task cannot be closed. */
+export const CLOSED_INCIDENT_TASK_STATES: readonly string[] = [
+  "CLOSED_COMPLETE",
+  "CLOSED_INCOMPLETE",
+  "CLOSED_SKIPPED",
+];
+
+export function isIncidentTaskOpen(state?: string | null): boolean {
+  return !state || !CLOSED_INCIDENT_TASK_STATES.includes(state.toUpperCase());
+}

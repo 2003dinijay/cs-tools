@@ -1160,6 +1160,11 @@ type IncidentTaskService interface {
 	// GetIncidentTask returns the full detail of a single incident task by its UUID.
 	// A NotFoundError is returned if the incident task does not exist.
 	GetIncidentTask(ctx context.Context, id string) (domain.IncidentTaskDetail, error)
+
+	// UpdateIncidentTask changes an incident task's state and/or close notes
+	// and returns the updated detail. Postgres only: ServiceNow's
+	// IncidentTaskUtils has no update operation.
+	UpdateIncidentTask(ctx context.Context, req domain.UpdateIncidentTaskRequest) (domain.IncidentTaskDetail, error)
 }
 
 // ConversationService defines the operations available on the conversations entity.

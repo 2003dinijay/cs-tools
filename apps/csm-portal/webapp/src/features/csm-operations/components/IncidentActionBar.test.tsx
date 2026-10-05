@@ -162,3 +162,43 @@ describe("IncidentActionBar — single-target rendering (no menu needed)", () =>
     expect(onAction).toHaveBeenCalledWith("IN_PROGRESS");
   });
 });
+
+describe("IncidentActionBar — blocked targets", () => {
+  const reason = "Close the open incident task first (Related tab).";
+
+  it("shows a blocked single target disabled, with the reason, and never dispatches it", () => {
+    vi.mocked(getLegalNextIncidentStates).mockReturnValueOnce(["RESOLVED", "CLOSED"]);
+    const onAction = vi.fn();
+    render(
+      <IncidentActionBar
+        incident={incidentInState("RESOLVED")}
+        isPending={false}
+        onAction={onAction}
+        blockedTargets={{ CLOSED: reason }}
+      />,
+    );
+    const button = screen.getByRole("button", { name: /closed/i });
+    expect(button).toBeDisabled();
+    expect(screen.getByLabelText(`Closed: ${reason}`)).toBeInTheDocument();
+    fireEvent.click(button);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it("shows a blocked menu target disabled with the reason under it, leaving the others usable", () => {
+    vi.mocked(getLegalNextIncidentStates).mockReturnValueOnce(["RESOLVED", "IN_PROGRESS", "CLOSED"]);
+    const onAction = vi.fn();
+    render(
+      <IncidentActionBar
+        incident={incidentInState("RESOLVED")}
+        isPending={false}
+        onAction={onAction}
+        blockedTargets={{ CLOSED: reason }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    expect(screen.getByRole("menuitem", { name: /closed/i })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText(reason)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: /in progress/i }));
+    expect(onAction).toHaveBeenCalledWith("IN_PROGRESS");
+  });
+});

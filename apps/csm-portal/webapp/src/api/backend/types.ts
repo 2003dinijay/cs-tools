@@ -3722,6 +3722,22 @@ export interface BeIncidentTaskDetail extends BeIncidentTaskSearchView {
   priority?: string | null;
   openedOn?: string | null;
   closedOn?: string | null;
+  closeNotes?: string | null;
+}
+
+/** incident_task_state_enum labels, as Postgres returns them in `state`. */
+export type BeIncidentTaskState =
+  | "PENDING"
+  | "OPEN"
+  | "WORK_IN_PROGRESS"
+  | "CLOSED_COMPLETE"
+  | "CLOSED_INCOMPLETE"
+  | "CLOSED_SKIPPED";
+
+/** `PATCH /incident-tasks/{id}` body; at least one field. Returns `BeIncidentTaskDetail`. */
+export interface BeUpdateIncidentTaskPayload {
+  state?: BeIncidentTaskState;
+  closeNotes?: string;
 }
 
 /** `POST /incident-tasks/search` body. The only per-incident filter is the

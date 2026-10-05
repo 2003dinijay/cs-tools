@@ -189,6 +189,8 @@ type IncidentRepository interface {
 // Closed need a resolution code and resolution notes, taken from the request
 // or already on the record. Entering Resolved stamps resolved_on, and
 // resolved_by_id from ResolvedByID, falling back to DefaultResolvedByID.
+// Entering Closed also needs every incident task of the incident closed;
+// otherwise it is a ConflictError naming the open ones.
 type IncidentLifecycleUpdate struct {
 	State               *string // incident_state_enum label
 	AssignedEngineerID  *string
@@ -902,7 +904,8 @@ func (r *incidentRepo) UpdateIncidentLifecycle(ctx context.Context, id string, u
 	}
 	var ve *apierror.ValidationError
 	var nfe *apierror.NotFoundError
-	if errors.As(err, &ve) || errors.As(err, &nfe) {
+	var ce *apierror.ConflictError
+	if errors.As(err, &ve) || errors.As(err, &nfe) || errors.As(err, &ce) {
 		return err
 	}
 	if IsRLSPolicyViolation(err) {
@@ -916,6 +919,43 @@ func (r *incidentRepo) UpdateIncidentLifecycle(ctx context.Context, id string, u
 		return &apierror.ValidationError{Msg: field + " does not identify an existing user"}
 	}
 	return fmt.Errorf("update incident: %w", err)
+}
+
+// checkNoOpenIncidentTasks returns a ConflictError naming the incident's
+// open tasks (any state outside domain.IncidentTaskClosedStates; a NULL
+// state counts as open) when it has any. An incident is only closed once
+// every one of its tasks is.
+func checkNoOpenIncidentTasks(ctx context.Context, tx pgx.Tx, incidentID string) error {
+	closed := make([]string, 0, len(domain.IncidentTaskClosedStates))
+	for s := range domain.IncidentTaskClosedStates {
+		closed = append(closed, s)
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT wi.number
+		FROM incident_task it
+		JOIN work_item wi ON wi.id = it.id
+		WHERE it.incident_id = $1
+		  AND (it.state IS NULL OR NOT (it.state::TEXT = ANY($2::text[])))
+		ORDER BY wi.number`, incidentID, closed)
+	if err != nil {
+		return fmt.Errorf("update incident: read open tasks: %w", err)
+	}
+	defer rows.Close()
+	var open []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return fmt.Errorf("update incident: scan open task: %w", err)
+		}
+		open = append(open, n)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("update incident: read open tasks: %w", err)
+	}
+	if len(open) > 0 {
+		return &apierror.ConflictError{Msg: "close this incident's open tasks before closing it: " + strings.Join(open, ", ")}
+	}
+	return nil
 }
 
 // updateIncidentLifecycleTx is UpdateIncidentLifecycle's body: lock the
@@ -949,6 +989,12 @@ func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx,
 		}
 		if code == nil || *code == "" || notes == nil || strings.TrimSpace(*notes) == "" {
 			return &apierror.ValidationError{Msg: "resolutionCode and resolutionNotes are required to move an incident to " + *u.State}
+		}
+	}
+
+	if u.State != nil && *u.State == "CLOSED" && currentState != "CLOSED" {
+		if err := checkNoOpenIncidentTasks(ctx, tx, id); err != nil {
+			return err
 		}
 	}
 

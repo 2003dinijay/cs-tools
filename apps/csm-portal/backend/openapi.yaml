@@ -7553,6 +7553,64 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+    patch:
+      summary: >-
+        Change an incident task's state and/or close notes (Postgres data sources only).
+      description: >-
+        Closing a task (CLOSED_COMPLETE, CLOSED_INCOMPLETE or CLOSED_SKIPPED) sets it
+        inactive and records when and by whom; moving it back to an open state reverses
+        that. An incident can only be closed once every one of its tasks is closed.
+      operationId: updateIncidentTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateIncidentTaskRequest'
+      responses:
+        "200":
+          description: The updated incident task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentTaskDetail'
+        "400":
+          description: No field given, or an unknown state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Incident task not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "503":
+          description: Not available on the ServiceNow data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
 
   /incident-tasks/search:
     post:
@@ -20146,6 +20204,16 @@ components:
         offset:
           type: integer
 
+    UpdateIncidentTaskRequest:
+      type: object
+      minProperties: 1
+      properties:
+        state:
+          type: string
+          enum: [PENDING, OPEN, WORK_IN_PROGRESS, CLOSED_COMPLETE, CLOSED_INCOMPLETE, CLOSED_SKIPPED]
+        closeNotes:
+          type: string
+
     IncidentTaskDetail:
       allOf:
         - $ref: '#/components/schemas/IncidentTask'
@@ -20161,6 +20229,9 @@ components:
               type: string
               nullable: true
             closedOn:
+              type: string
+              nullable: true
+            closeNotes:
               type: string
               nullable: true
 

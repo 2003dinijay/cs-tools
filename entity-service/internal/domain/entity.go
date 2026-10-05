@@ -6126,6 +6126,23 @@ type SearchIncidentTasksResponse struct {
 	Limit         int            `json:"limit"`
 }
 
+// IncidentTaskClosedStates are incident_task_state_enum's closed labels. A
+// task in any other state (PENDING, OPEN, WORK_IN_PROGRESS) is still open
+// and keeps its incident from being closed.
+var IncidentTaskClosedStates = map[string]bool{
+	"CLOSED_COMPLETE":   true,
+	"CLOSED_INCOMPLETE": true,
+	"CLOSED_SKIPPED":    true,
+}
+
+// UpdateIncidentTaskRequest is the input for PATCH /incident-tasks/{id}.
+// At least one field must be set. State is an incident_task_state_enum label.
+type UpdateIncidentTaskRequest struct {
+	ID         string  `json:"-"`
+	State      *string `json:"state,omitempty"`
+	CloseNotes *string `json:"closeNotes,omitempty"`
+}
+
 // IncidentTaskDetail is the full detail representation returned by
 // GET /incident-tasks/{id}.
 //
@@ -6145,6 +6162,9 @@ type IncidentTaskDetail struct {
 	Priority        *string        `json:"priority"`
 	OpenedOn        *string        `json:"openedOn"`
 	ClosedOn        *string        `json:"closedOn"`
+	// CloseNotes is incident_task.close_notes; always nil on the ServiceNow
+	// data source.
+	CloseNotes *string `json:"closeNotes"`
 }
 
 // ConversationState represents the state of a conversation. All six values are
