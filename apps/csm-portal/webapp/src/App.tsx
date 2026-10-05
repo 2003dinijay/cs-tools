@@ -74,6 +74,7 @@ import CreateServiceRequestPage from "@features/csm-operations/pages/CreateServi
 import CreateChangeRequestPage from "@features/csm-operations/pages/CreateChangeRequestPage";
 import CreateIncidentPage from "@features/csm-operations/pages/CreateIncidentPage";
 import ProblemDetailPage from "@features/csm-operations/pages/ProblemDetailPage";
+import IncidentTaskDetailPage from "@features/csm-operations/pages/IncidentTaskDetailPage";
 import CreateProblemPage from "@features/csm-operations/pages/CreateProblemPage";
 import OutageDetailPage from "@features/csm-operations/pages/OutageDetailPage";
 import CreateOutagePage from "@features/csm-operations/pages/CreateOutagePage";
@@ -545,6 +546,7 @@ export default function App(): JSX.Element {
                       path="incidents/:id"
                       element={<CaseDetailRouteSync kind="incident" paramName="id" />}
                     />
+                    <Route path="incident-tasks/:id" element={<IncidentTaskDetailPage />} />
                     <Route
                       path="problems/new"
                       element={

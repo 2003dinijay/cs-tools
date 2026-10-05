@@ -138,6 +138,7 @@ export const ApiQueryKeys = {
   CSM_CASE_CHILDREN: "csm-case-children",
   CSM_CASE_LINKED_INCIDENTS: "csm-case-linked-incidents",
   CSM_INCIDENT_TASKS: "csm-incident-tasks",
+  CSM_INCIDENT_TASK_DETAILS: "csm-incident-task-details",
   CSM_CASE_SEARCH_BY_QUERY: "csm-case-search-by-query",
   CSM_CASE_UPDATE_REQUEST_TEMPLATES: "csm-case-update-request-templates",
   CSM_PROJECTS: "csm-projects",

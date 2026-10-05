@@ -153,7 +153,7 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
         label: "Incidents",
         href: "/operations?tab=incidents",
         tab: "incidents",
-        routes: ["/operations/incidents"],
+        routes: ["/operations/incidents", "/operations/incident-tasks"],
         icon: AlertTriangle,
       },
       {
