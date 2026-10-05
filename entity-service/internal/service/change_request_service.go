@@ -20,9 +20,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -249,7 +252,8 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 		req.ImplementationPlan == nil && req.Priority == nil && req.Category == nil &&
 		req.RequestedByID == nil && req.AffectedServicesText == nil && req.AffectedComponentsText == nil &&
 		req.RollbackDurationText == nil && req.CustomerGroupID == nil &&
-		req.OnHold == nil && req.OnHoldReason == nil {
+		req.OnHold == nil && req.OnHoldReason == nil &&
+		req.CustomerApprovalRequired == nil && req.CustomerReviewRequired == nil {
 		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "at least one field must be provided"}
 	}
 	// Accepted by the contract (and mirrored) but with no Postgres column
@@ -282,9 +286,18 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	// it's called directly here rather than through a narrower interface
 	// (unlike case's UpdateCase, which needed patchCaseFields specifically
 	// to avoid snCaseService.UpdateCase's own read-before-write behavior).
-	if s.snWriteback != nil {
-		mirrorID, mirrorReq := id, req
-		s.snWriteback.Dispatch(ctx, "change_request", id, "patch", req,
+	//
+	// customerApprovalRequired / customerReviewRequired are stripped first:
+	// the creation form's two checkboxes have no field in ServiceNow's change
+	// request API that this service can name (the scripted API only exposes
+	// isCustomerApproved / isCustomerReviewed, the customer's OUTCOME, which
+	// are a different thing), so they stay Postgres-only. A PATCH that carried
+	// nothing else has nothing to mirror.
+	mirrorReq := req
+	mirrorReq.CustomerApprovalRequired, mirrorReq.CustomerReviewRequired = nil, nil
+	if s.snWriteback != nil && !reflect.DeepEqual(mirrorReq, domain.PatchChangeRequestRequest{}) {
+		mirrorID := id
+		s.snWriteback.Dispatch(ctx, "change_request", id, "patch", mirrorReq,
 			func(writeCtx context.Context) error {
 				_, err := s.snMirror.PatchChangeRequest(writeCtx, mirrorID, mirrorReq)
 				return err
@@ -332,7 +345,12 @@ func (s *changeRequestService) createChangeRequestPortal(ctx context.Context, re
 	// Same type check createChangeRequestSNFirst runs before calling
 	// ServiceNow -- deterministic, no I/O, so there's no reason to defer it
 	// to the repository's own identical check.
-	if req.Type != nil && !repository.ChangeRequestTypeSupported(*req.Type) {
+	// The type is mandatory and must be standard/normal/emergency: it decides
+	// the whole approval flow (see repository.ValidateCreateChangeRequestType).
+	if err := repository.ValidateCreateChangeRequestType(req.Type); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
+	if !repository.ChangeRequestTypeSupported(*req.Type) {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
 	}
 	return s.repo.CreateChangeRequest(ctx, req, createdBy)
@@ -365,7 +383,12 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 	// defer it to CreateChangeRequestFromServiceNow's own check (which runs
 	// only after ServiceNow already accepted the create, at which point
 	// ServiceNow would keep an orphan with no Postgres row).
-	if req.Type != nil && !repository.ChangeRequestTypeSupported(*req.Type) {
+	// The type is mandatory and must be standard/normal/emergency: it decides
+	// the whole approval flow (see repository.ValidateCreateChangeRequestType).
+	if err := repository.ValidateCreateChangeRequestType(req.Type); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
+	if !repository.ChangeRequestTypeSupported(*req.Type) {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
 	}
 	snResp, err := s.snMirror.CreateChangeRequest(ctx, req)
@@ -401,7 +424,43 @@ func (s *changeRequestService) GetChangeRequestApprovals(ctx context.Context, id
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.ChangeRequestApprovals{}, err
 	}
-	return s.repo.GetChangeRequestApprovals(ctx, id)
+	return s.repo.GetChangeRequestApprovals(s.withApprovalViewer(ctx), id)
+}
+
+// withApprovalViewer makes sure the caller identity on ctx names the person
+// reading the approvals, so the repository can compute each approver row's
+// CanDecide for them.
+//
+// AccessService.ResolveScope only fills SearchScope.ViewerEmail on some
+// branches (a customer-scoped user, or the CSM portal backend client with a
+// matching-domain user). An internal user resolved from the user token alone
+// (scopeForUser's internal branch), or any caller behind an M2M client id,
+// comes back Unrestricted with an EMPTY ViewerEmail -- and the repository's
+// markCanDecide treats an empty ViewerEmail as "viewer unknown" and leaves
+// every canDecide false, so the portal rendered Approve/Reject disabled for
+// the very approver the row belongs to. DecideChangeRequestApproval
+// identifies its caller from the x-user-id-token (currentUser), so the same
+// source is used here, keeping "may decide" and "decided" consistent.
+//
+// Only fills a missing email and never invents an identity: with none on ctx
+// the repository still fails closed. ViewerEmail on an Unrestricted scope has
+// no effect on row visibility.
+func (s *changeRequestService) withApprovalViewer(ctx context.Context) context.Context {
+	scope, ok := repository.CallerIdentityFromContext(ctx)
+	if !ok || strings.TrimSpace(scope.ViewerEmail) != "" {
+		return ctx
+	}
+	email := auth.IdentityFromContext(ctx).UserEmail
+	if email == "" {
+		if token := middleware.UserIDTokenFromContext(ctx); token != "" {
+			email, _ = emailFromJWT(token)
+		}
+	}
+	if strings.TrimSpace(email) == "" {
+		return ctx
+	}
+	scope.ViewerEmail = email
+	return repository.WithCallerIdentity(ctx, scope)
 }
 
 // DecideChangeRequestApproval implements ChangeRequestService.

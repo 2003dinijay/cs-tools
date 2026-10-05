@@ -2479,6 +2479,171 @@ the same `validChangeRequestSortField`/`validChangeRequestSortOrder` maps
 value is a 400 on both data sources instead of silently falling back to
 `created_on DESC` only on Postgres.
 
+### Approval flow by change type (current behaviour)
+
+> **This section is the current contract and supersedes the Assess/Authorize/
+> "Move to Assess" history further down wherever they differ** (that history
+> is kept for the reasoning behind individual mechanisms). Code:
+> `change_request_approval_flow.go` plus `patchChangeRequestTx` /
+> `DecideChangeRequestApproval` in `change_request_repo.go`; migration
+> `0188_change_request_approval_groups.sql`.
+
+**A change request is created with exactly one of three types** — `standard`,
+`normal`, `emergency` (ServiceNow's own "What type of change is required?":
+Normal "requires one or more approvals", Standard "does not require approval",
+Emergency "must be implemented as soon as possible"). `type` is **required** on
+create: `repository.ValidateCreateChangeRequestType` is applied by both
+Postgres creates, the ServiceNow-first (dual-write) path *before* ServiceNow is
+called, the pure ServiceNow service, and the csm-portal BFF. `azure`/`infra`/…
+still exist on synced legacy rows and read back fine but cannot be chosen at
+create. The type cannot be changed by PATCH once an approval stage exists.
+
+| Type | Flow |
+|---|---|
+| Normal | New →(**Request Approval**)→ Assess `[Peer Approval]` → Authorize `[CAB Approval]` → **Scheduled automatically on CAB approval** → Implement → Review → Closed |
+| Emergency | New →(**Request Approval**)→ Authorize `[ECAB Approval only]` → **Scheduled automatically on ECAB approval** → Implement → Review → Closed |
+| Standard | New →(**Request Approval**)→ **Scheduled** (no approval stages at all) → Implement → Review → Closed |
+
+The table is the flow with both creation-form checkboxes **unticked**. With
+**Customer Approval** ticked, every "→ Scheduled" above becomes "→ **Customer
+Approval** → (customer's approval recorded) → Scheduled"; with **Customer Review**
+ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed". See
+"Customer Approval / Customer Review checkboxes" below.
+
+* **"Request Approval" is the one human action out of New** and is always sent
+  as `{state: "assess"}` (legalNextStates of New is `["assess","canceled"]` for
+  every type — the webapp contract). The state written is chosen from the type,
+  never by the caller: Assess / Authorize / Scheduled. It is only legal from New
+  (a resend that matches the resulting state is an idempotent no-op; anything
+  else is a 400). It still requires an assigned team.
+* **There is no "Schedule" action.** `scheduled` is never in `legalNextStates`
+  and a manual `{state: "scheduled"}` (or `"authorize"` / `"customer_approval"`)
+  PATCH is rejected (400): Scheduled is reached only by the CAB/ECAB approval
+  cascade or by Request Approval on a Standard change -- **except from
+  `customer_approval`**, where the human action `scheduled` means "record the
+  customer's approval". The ServiceNow data source's own offered states are
+  filtered the same way (`withoutManualScheduled`, which keeps `scheduled` for a
+  change sitting in `customer_approval`). `legalNextStates` per state (the single
+  source of truth the webapp renders): new `[assess, canceled]`, assess
+  `[authorize, canceled]` (`authorize` is the approval path; the webapp never
+  renders it as a button), authorize `[canceled]`, customer_approval
+  `[scheduled, canceled]`, scheduled `[implement, canceled]`, implement
+  `[review, canceled]`, review `[closed, canceled]` -- or `[customer_review,
+  canceled]` when `customerReviewRequired` --, customer_review `[closed,
+  canceled]`, terminal states none.
+* **Approver pools.**
+  * *Peer Approval* — Normal only. The change's assigned group, **minus every
+    member of an SRE team** (`team.type` starting `sre`, e.g. `sre-abt`:
+    Apollo, Artemis, …): only experienced engineers qualify to be peer
+    approvers. When the assigned group is itself an SRE group (or nobody
+    eligible remains once the creator is excluded) the pool is the
+    **`Devops Approval`** group (`domain.PeerApprovalFallbackGroupName`, the
+    ServiceNow flow's peer approval group), same exclusions. Neither → 400
+    "no eligible peer approvers".
+  * *CAB Approval* — Normal only, **right after** peer approval, its own
+    group (`CAB Approval`). Provisioned inside the peer-approval decision's
+    transaction; if it cannot be (nobody eligible) the peer decision is **rolled
+    back** with a 400 rather than stranding the change in Authorize. Request
+    Approval also pre-validates the CAB pool so the failure is early.
+  * *ECAB Approval* — Emergency only, **its own group** (`ECAB Approval`), the
+    only stage (no peer approval, no CAB).
+  * Standard: no stage.
+  * *Review* — unchanged (assigned team, provisioned on a `{state: "review"}`
+    PATCH once exactly two stages exist, i.e. Normal only).
+* **`CAB Approval` and `ECAB Approval` groups** are created by migration 0188
+  (fixed ids `00000000-0000-4000-8000-00000000ca01` / `…eca1`) only when no group
+  of that name exists, idempotently; membership is NOT seeded (synced from
+  ServiceNow or set by an operator; local compose seed adds the two dev users).
+  Groups are resolved **by name**; members are `team_member.group_id` (and
+  `team_member.team_id` of a team with that name, which is how the CR-notice
+  flow addresses them).
+* **The creator may not approve at any stage** (peer, CAB, ECAB) — they may
+  still cancel. The creator is the user whose email is `work_item.created_by`
+  or who is `change_request.requested_by_user_id`. They are provisioned
+  `cancelled` where they are in a pool, and `DecideChangeRequestApproval`
+  refuses them with a 403 even if a `requested` row exists.
+* **SRE members may not decide a peer approval** — not provisioned, and
+  refused (403) at decision time even if a stale row exists. There is no
+  endpoint in this repo that edits group membership (it comes from the
+  ServiceNow sync), so provisioning + decision time are the enforcement points.
+* **`canDecide`** on each approver in `GET /change-requests/{id}/approvals` is
+  true only on the calling user's own `REQUESTED` row when they may actually
+  decide it (not creator; not SRE on the peer stage). Additive, advisory; the
+  decision endpoint re-checks. Postgres data source only.
+* **Rejections** keep the existing behaviour: siblings cancelled, no state
+  change in either direction.
+* Stage labels (`approval_stage.checkpoint_label`) are now `Peer Approval`,
+  `CAB Approval`, `ECAB Approval`, `Review`; pre-existing `Assess`/`Authorize`
+  labels (and unlabeled positional stages) are still recognised as peer/CAB.
+
+### Customer Approval / Customer Review checkboxes
+
+Real ServiceNow's change request form has two checkboxes on creation, **Customer
+Approval** and **Customer Review**. They are implemented as
+`change_request.customer_approval_required` / `customer_review_required`
+(migration `0189_change_request_customer_gates.sql`, `BOOLEAN NOT NULL DEFAULT
+false`, idempotent) and the API fields **`customerApprovalRequired`** /
+**`customerReviewRequired`** — accepted on `POST /change-requests` and
+`PATCH /change-requests/{id}`, returned on the detail response (and the PATCH
+receipt). Postgres data source only.
+
+* **They are NOT `is_customer_approved` / `is_customer_reviewed`.** Those two
+  record the customer's *outcome* ("the customer has confirmed"): authorized
+  (internal user or registered `PORTAL_USER` contact) and one-way-locked by
+  `authorizeChangeRequestCustomerFlagWrite`, and in the ServiceNow scripted API
+  only writable while the change is in the matching state (`isCustomerApproved:
+  false` there moves it to Cancelled, `isCustomerReviewed: false` to Rollback —
+  see `EditChangeRequestDialog.tsx`'s doc comment). The new columns are the
+  *requirement*. No code or comment in this repo ties the form's checkboxes to
+  the existing columns (the older note that two records with both booleans
+  `false` offered different branches points the other way), so they got columns
+  of their own. The ServiceNow field names of the two checkboxes are **not
+  discoverable from this repo** (the SN client talks to a Choreo API whose
+  source is not here), so they are not mirrored: the dual-write mirror strips
+  them from the PATCH it replays (and skips the mirror entirely when nothing
+  else is in the PATCH); the pure ServiceNow data source ignores them.
+* **Approval gate.** Wherever the flow moves a change to Scheduled — CAB / ECAB
+  approval in `DecideChangeRequestApproval` (`approvalGateTarget`), or Request
+  Approval on a Standard change (`requestApprovalDestination`; Standard has no
+  internal approval to put the gate after, so the gate sits right after Request
+  Approval — an assumption) — a change with `customerApprovalRequired` goes to
+  **`customer_approval`** instead. There `legalNextStates` is `[scheduled,
+  canceled]`; the human PATCH `{state: "scheduled"}` records the customer's
+  approval: it stamps `is_customer_approved = true` through the same
+  `authorizeChangeRequestCustomerFlagWrite` (authorization + lock) a direct
+  `isCustomerApproved` write uses and schedules the change. A manual `scheduled`
+  from any other state is refused; so is `{state: "scheduled",
+  isCustomerApproved: false}`. Cancel is the customer declining. The
+  `isCustomerApproved: false → Cancelled` behaviour belongs to the ServiceNow
+  scripted API; the Postgres path never had it and still does not.
+* **Review gate.** `review` offers `[customer_review, canceled]` when
+  `customerReviewRequired`, else `[closed, canceled]` (**a behaviour change for
+  rows that predate the checkbox: they default to false and Review now offers
+  Closed directly instead of both**). A manual `{state: "customer_review"}` is
+  refused when not required ("customer review is not required …"), and
+  `{state: "closed"}` from `review` is refused when required ("customer review
+  is required …; move it to customer_review first"). `customer_review` offers
+  `[closed, canceled]`; closing from it stamps `is_customer_reviewed = true`
+  (same authorization/lock). No other transition is graph-checked — as before,
+  the PATCH does not enforce a full transition graph.
+* **Editable only until the gate is passed** (`validateCustomerGateEdits`,
+  checked under the `change_request` row lock): `customerApprovalRequired`
+  while the state is New / Assess / Authorize; `customerReviewRequired` up to
+  and including Review. A *change of value* after that is a 400 (`customerApprovalRequired
+  can no longer be changed: the change request has already passed the approval
+  stage (current state: X)` / `customerReviewRequired can no longer be changed:
+  the change request has already left the review stage (current state: X)`);
+  resending the stored value is accepted. The flag in the same PATCH wins over
+  the stored one for the state routing (`{state: "closed", customerReviewRequired:
+  false}` from a required Review closes it; `{state: "assess",
+  customerApprovalRequired: true}` on a Standard change lands in
+  `customer_approval`).
+* Tests: `TestChangeRequestFlowIntegration_*CustomerGate*` /
+  `*CustomerApproval*` / `*CustomerReview*` / `ManualScheduledOnlyFromCustomerApproval`
+  (real Postgres, `CHANGE_REQUEST_TEST_DSN`), `TestLegalChangeRequestNextStates`,
+  `TestCustomerGateHelpers`, the service tests
+  `TestChangeRequestService_*CustomerGate*`, and the csm-portal BFF handler tests.
+
 **`scanChangeRequestView`/`scanChangeRequestViewAndDetail` had a
 scan-destination bug** found in production logs: `wi.created_on`/
 `wi.updated_on` (`TIMESTAMPTZ`) were scanned directly into
@@ -2655,8 +2820,8 @@ everywhere else, and is presumably populated in real synced environments by
 `csm-sync-service` mirroring ServiceNow's own `sys_user_grmember`, the same
 way `assignment_group_id` itself is populated from `sys_user_group`.
 
-**The second approval checkpoint, Authorize ("Risk approvals" in real
-ServiceNow), now gets the identical auto-provisioning treatment as Assess**
+**(Superseded — see "Approval flow by change type" above: the second stage is now the separate `CAB Approval` group, not the assigned team, and is only provisioned by the peer-approval cascade, never by a direct `{state: "authorize"}` PATCH.) The second approval checkpoint, Authorize ("Risk approvals" in real
+ServiceNow), got the identical auto-provisioning treatment as Assess**
 — the same gap, one lifecycle step later: a change request that reaches
 Authorize with nothing in `approval_stage`/`approval_stage_approver` for it
 is just as stuck as the original Assess-empty-Approvals-tab bug this whole
@@ -2891,6 +3056,11 @@ the Cancel Change action was observed available on every reachable state.
 `Rollback`/`Closed`/`Canceled`
 return `nil` (terminal, no legal forward move), matching ServiceNow's own
 answer for a record with none.
+
+> **Historical — superseded by "Approval flow by change type" and "Customer
+> Approval / Customer Review checkboxes" above.** Authorize no longer offers
+> Scheduled / Customer Approval to a human, and Review's branch is now decided by
+> `customerReviewRequired` instead of offering both. Kept for the reasoning.
 
 **Authorize and Review each have two confirmed forward moves, not one —
 found the hard way.** A first revision of this map picked a single "common
@@ -3234,7 +3404,13 @@ decision:
 
 - **No schema change, no `approval_stage` involvement at all.** These stay
   the plain booleans they already were (migration 0043); this adds
-  authorization on top of the existing columns, not a new mechanism.
+  authorization on top of the existing columns, not a new mechanism. (They
+  record the customer's *outcome*. The creation form's "Customer Approval" /
+  "Customer Review" checkboxes — whether the customer step is *required* — are
+  separate columns, `customer_approval_required` / `customer_review_required`;
+  recording the outcome is what `{state: "scheduled"}` out of `customer_approval`
+  and `{state: "closed"}` out of `customer_review` do through this very
+  authorization — see "Customer Approval / Customer Review checkboxes".)
 - **Who may flip a flag `false` → `true`**: either (a) an internal/staff
   caller — `repository.CallerIdentityFromContext`'s own `Unrestricted`, the
   exact `INTERNAL` resolution `AccessService.ResolveScope`/
