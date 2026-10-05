@@ -240,13 +240,6 @@ func (e *incidentLifecycleEnv) assertIncidentLifecycleState(t *testing.T, id, wa
 	return row
 }
 
-func strOrNil(p *string) string {
-	if p == nil {
-		return "<nil>"
-	}
-	return *p
-}
-
 // TestIncidentLifecycleIntegration_FullLifecycle walks one incident through
 // New -> In Progress (claimed) -> On Hold -> In Progress -> Resolved ->
 // Closed, sending what the portal sends at each step.
