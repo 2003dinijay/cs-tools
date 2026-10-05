@@ -995,6 +995,13 @@ revisited.
   stay absent rather than decoding as an explicit `false`, which would claim
   an answer nobody gave — see that service's own `CLAUDE.md` for what the
   missing flag does to the USA_WEEKEND routing rule.
+  On `DATA_SOURCE=postgres` (`NewIncidentServiceWithPublisher`, with no
+  ServiceNow behind it) later work notes also go through `PATCH /incidents/{id}`
+  -- an alert-born SRE incident's follow-up alerts from `sre-alert-core-service`
+  -- written as comments in one transaction (`CreateIncidentNotes`: a work note
+  and a comment commit together or not at all), with no ServiceNow mirror. The
+  same update sends `incident.acknowledged`/`incident.assigned` when it moves
+  the incident out of NEW or sets an assignee (`publishIncidentStopSignals`).
   `incident.created` has exactly one reaction on the receiving side now — a
   Twilio voice call — not a Google Chat alert: `csm-notification-service`
   removed that reaction entirely, per explicit product direction (an

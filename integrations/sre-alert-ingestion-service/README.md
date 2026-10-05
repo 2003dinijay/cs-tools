@@ -33,6 +33,10 @@ service never creates incidents and never touches alert-core's own tables.
   poll interval. If the call fails, that poll still picks the rows up.
 - **Health and liveness endpoints.** `/healthz` never checks Postgres, so a database outage
   doesn't pull every replica out of rotation; `/livez` always answers `200` while the process runs.
+- **Routing signals.** Alongside the canonical fields, an alert can carry what alert-core uses to
+  choose its CSM assignment group: `assignment_group` (an AWS alarm's `AlarmDescription` JSON may
+  name one, e.g. `{"service":"...","assignment_group":"SRE - Apollo"}`) and, for AWS,
+  `source_topic` (the SNS `TopicArn`) and `source_account` (the AWS account id).
 
 ## Package layout
 

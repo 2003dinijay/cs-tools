@@ -112,6 +112,10 @@ type IncidentRepository interface {
 	// method's doc comment), so the caller (incidentService.UpdateIncident)
 	// resolves the actor and passes the email straight through.
 	CreateIncidentComment(ctx context.Context, incidentID string, commentType domain.CommentType, content, createdBy string) (domain.CaseComment, error)
+	// CreateIncidentNotes inserts a work note and/or a public comment on an incident in one
+	// transaction: both are saved or neither is, so a retried request never saves one twice.
+	// nil or blank texts are skipped.
+	CreateIncidentNotes(ctx context.Context, incidentID string, workNotes, additionalComments *string, createdBy string) error
 	// CreateIncidentFromServiceNow inserts a new incident row (both work_item
 	// and "incident"), for DATA_SOURCE=postgres-servicenow-dual-write's SN-first
 	// incident creation (see incidentService.createIncidentSNFirst's own doc
@@ -192,6 +196,11 @@ type IncidentLifecycleUpdate struct {
 	ResolutionNotes     *string // incident.close_notes
 	ResolvedByID        *string
 	DefaultResolvedByID *string // the acting user, used only when entering Resolved without ResolvedByID
+
+	// WorkNotes and AdditionalComments are written as comment rows in the same transaction as the
+	// state change, so a failed note leaves the state change unsaved too. Nil or blank writes nothing.
+	WorkNotes          *string
+	AdditionalComments *string
 }
 
 type incidentRepo struct {
@@ -840,6 +849,38 @@ func (r *incidentRepo) CreateIncidentComment(ctx context.Context, incidentID str
 	return c, nil
 }
 
+// CreateIncidentNotes implements IncidentRepository.
+func (r *incidentRepo) CreateIncidentNotes(ctx context.Context, incidentID string, workNotes, additionalComments *string, createdBy string) error {
+	return r.db.InTx(ctx, func(tx pgx.Tx) error {
+		return insertIncidentNotesTx(ctx, tx, incidentID, workNotes, additionalComments, createdBy)
+	})
+}
+
+// insertIncidentNotesTx inserts the non-blank work note and public comment on incidentID inside tx,
+// with createIncidentCommentQuery's own existence check: an incident that is not there is a
+// ValidationError, and rolls the whole transaction back.
+func insertIncidentNotesTx(ctx context.Context, tx pgx.Tx, incidentID string, workNotes, additionalComments *string, createdBy string) error {
+	for _, note := range []struct {
+		text *string
+		kind domain.CommentType
+	}{{workNotes, domain.CommentTypeWorkNote}, {additionalComments, domain.CommentTypeComment}} {
+		if note.text == nil || strings.TrimSpace(*note.text) == "" {
+			continue
+		}
+		var id string
+		err := tx.QueryRow(ctx, `WITH c AS (`+createIncidentCommentQuery+`) SELECT id FROM c`,
+			createdBy, caseCommentTypeEnum[note.kind], incidentID, *note.text,
+		).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &apierror.ValidationError{Msg: "incident not found: " + incidentID}
+		}
+		if err != nil {
+			return fmt.Errorf("create incident %s: %w", strings.ToLower(string(note.kind)), err)
+		}
+	}
+	return nil
+}
+
 // incidentLifecycleFKField names the request field behind each foreign key
 // UpdateIncidentLifecycle can trip, so a bad id reads as a ValidationError
 // on that field instead of a 500.
@@ -851,7 +892,10 @@ var incidentLifecycleFKField = map[string]string{
 // UpdateIncidentLifecycle implements IncidentRepository.
 func (r *incidentRepo) UpdateIncidentLifecycle(ctx context.Context, id string, u IncidentLifecycleUpdate, actorEmail string) error {
 	_, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (struct{}, error) {
-		return struct{}{}, r.updateIncidentLifecycleTx(ctx, tx, id, u, actorEmail)
+		if err := r.updateIncidentLifecycleTx(ctx, tx, id, u, actorEmail); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, insertIncidentNotesTx(ctx, tx, id, u.WorkNotes, u.AdditionalComments, actorEmail)
 	})
 	if err == nil {
 		return nil

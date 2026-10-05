@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -97,15 +98,23 @@ func main() {
 	}
 
 	csmClient := csmClientFromEnv(logger, depCfg.Notify.HTTPTimeout.Duration())
-	notifier := notify.New(base.With("component", "notify"), csmClient, notify.Config{
-		CallerID:             os.Getenv("CSM_CALLER_ID"),
-		UnknownServiceID:     os.Getenv("CSM_UNKNOWN_SERVICE_ID"),
-		ServiceCacheTTL:      depCfg.Notify.ServiceCacheTTL.Duration(),
-		MaxAttempts:          depCfg.Notify.MaxAttempts,
-		RetryBaseDelay:       depCfg.Notify.RetryBaseDelay.Duration(),
-		HTTPTimeout:          depCfg.Notify.HTTPTimeout.Duration(),
-		ChatThreadingEnabled: depCfg.Notify.ChatThreadingEnabled,
-	})
+	notifyCfg := notify.Config{
+		CallerID:         os.Getenv("CSM_CALLER_ID"),
+		UnknownServiceID: os.Getenv("CSM_UNKNOWN_SERVICE_ID"),
+		// Optional: the group an incident is assigned to when nothing more specific routes it.
+		DefaultAssignmentGroupID: os.Getenv("CSM_DEFAULT_ASSIGNMENT_GROUP_ID"),
+		AssignmentGroupRoutes:    assignmentGroupRoutes(logger),
+		ServiceCacheTTL:          depCfg.Notify.ServiceCacheTTL.Duration(),
+		MaxAttempts:              depCfg.Notify.MaxAttempts,
+		RetryBaseDelay:           depCfg.Notify.RetryBaseDelay.Duration(),
+		HTTPTimeout:              depCfg.Notify.HTTPTimeout.Duration(),
+		ChatThreadingEnabled:     depCfg.Notify.ChatThreadingEnabled,
+	}
+	if err := notify.ValidateGroupIDs(notifyCfg); err != nil {
+		logger.Error("invalid assignment group configuration", "error", err)
+		os.Exit(1)
+	}
+	notifier := notify.New(base.With("component", "notify"), csmClient, notifyCfg)
 	eng := engine.New(base.With("component", "engine"), incidents, notifier, engine.Config{
 		Defaults:             defaults,
 		DedupWindow:          depCfg.Engine.DedupWindow.Duration(),
@@ -203,6 +212,21 @@ func main() {
 			logger.Error("graceful shutdown failed", "error", err)
 		}
 	}
+}
+
+// assignmentGroupRoutes reads CSM_ASSIGNMENT_GROUP_ROUTES, a JSON object of routing key -> CSM group id.
+// Optional; one that does not parse stops startup rather than routing every incident to the default.
+func assignmentGroupRoutes(logger *slog.Logger) map[string]string {
+	raw := strings.TrimSpace(os.Getenv("CSM_ASSIGNMENT_GROUP_ROUTES"))
+	if raw == "" {
+		return nil
+	}
+	var routes map[string]string
+	if err := json.Unmarshal([]byte(raw), &routes); err != nil {
+		logger.Error("CSM_ASSIGNMENT_GROUP_ROUTES is not a JSON object of string to string", "error", err)
+		os.Exit(1)
+	}
+	return routes
 }
 
 // csmEnvVars must all be set to enable CSM delivery; otherwise incidents are tracked locally and surfaced via Chat only.

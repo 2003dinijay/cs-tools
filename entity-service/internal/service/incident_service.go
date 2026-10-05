@@ -283,11 +283,26 @@ type incidentService struct {
 	// actually depend on has even been attempted). See
 	// publishIncidentCreatedEvent's doc comment for the full reasoning.
 	eventPublisher EventPublisherService
+	// updatable is set by the constructors whose instance may write an incident update
+	// (NewIncidentServiceWithPublisher, NewIncidentServiceWithSNMirror). NewIncidentService stays
+	// read-only for updates whatever it is given.
+	updatable bool
 }
 
 // NewIncidentService constructs an IncidentService backed by Postgres.
 func NewIncidentService(repo repository.IncidentRepository, eventPublisher EventPublisherService) IncidentService {
 	return &incidentService{repo: repo, eventPublisher: eventPublisher}
+}
+
+// NewIncidentServiceWithPublisher is NewIncidentService for DATA_SOURCE=postgres when the platform
+// creates incidents itself, with no ServiceNow behind it: CreateIncident publishes incident.created once
+// the Postgres insert commits (the event the call-escalation ladders start from) and keeps the create's
+// notes as comments, and UpdateIncident writes the engineer's claim (state, assignee, resolution) and
+// work notes and comments. A create is attributed to the forwarded user, else the calling client's id
+// (actorOf); userRepo resolves a forwarded end-user token for UpdateIncident, whose notes from a
+// service caller with none are incidentSystemActorEmail.
+func NewIncidentServiceWithPublisher(repo repository.IncidentRepository, userRepo repository.UserRepository, eventPublisher EventPublisherService) IncidentService {
+	return &incidentService{repo: repo, userRepo: userRepo, eventPublisher: eventPublisher, updatable: true}
 }
 
 // NewIncidentServiceWithSNMirror is NewIncidentService plus the wiring
@@ -311,7 +326,7 @@ func NewIncidentService(repo repository.IncidentRepository, eventPublisher Event
 // a fixed background worker pool plus one sn_writeback_failures repository,
 // nothing incident-specific about it.
 func NewIncidentServiceWithSNMirror(repo repository.IncidentRepository, userRepo repository.UserRepository, mirror IncidentService, eventPublisher EventPublisherService, dispatcher *SNWritebackDispatcher) IncidentService {
-	return &incidentService{repo: repo, userRepo: userRepo, snMirror: mirror, eventPublisher: eventPublisher, snWriteback: dispatcher}
+	return &incidentService{repo: repo, userRepo: userRepo, snMirror: mirror, eventPublisher: eventPublisher, snWriteback: dispatcher, updatable: true}
 }
 
 // incidentSystemActorEmail is UpdateIncident's comment.created_by fallback
@@ -348,6 +363,10 @@ func (s *incidentService) resolveActor(ctx context.Context) (domain.User, error)
 	email, err := emailFromJWT(token)
 	if err != nil {
 		return domain.User{}, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
+	}
+	if s.userRepo == nil {
+		// NewIncidentService carries no user repository; comment.created_by is free text, so the email will do.
+		return domain.User{Email: email}, nil
 	}
 	return s.userRepo.GetUserByEmail(ctx, email)
 }
@@ -603,13 +622,13 @@ func (s *incidentService) createIncidentSNFirst(ctx context.Context, req domain.
 	return resp, nil
 }
 
-// UpdateIncident is not supported for the plain PostgreSQL data source
-// (s.snWriteback == nil): several fields have no backing column at all
-// (AssignmentGroupID, ConfigurationItemID, WatchList), same blocker
-// UpdateIncident always had here.
-//
-// Under DATA_SOURCE=postgres-servicenow-dual-write (s.snWriteback != nil),
-// this supports two field groups:
+// UpdateIncident supports two field groups, under
+// DATA_SOURCE=postgres-servicenow-dual-write (s.snWriteback != nil) and on
+// plain DATA_SOURCE=postgres when this instance creates its own incidents
+// (NewIncidentServiceWithPublisher; alert-born SRE incidents need their
+// follow-up alerts as work notes and their engineer's claim). There the
+// writes below are the whole result and there is no ServiceNow mirror. The
+// read-only NewIncidentService still answers 503. The two groups:
 //
 //   - The state transition the portal's incident action bar sends:
 //     State, plus AssignedEngineerID (the "claim" sent with In Progress on
@@ -655,7 +674,8 @@ func (s *incidentService) createIncidentSNFirst(ctx context.Context, req domain.
 // with a request carrying only ID plus the field(s) actually being
 // mirrored -- no narrow patcher interface needed, unlike case's.
 func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateIncidentRequest) (domain.UpdateIncidentResponse, error) {
-	if s.snWriteback == nil {
+	if !s.updatable {
+		// NewIncidentService: a plain read-only Postgres instance that does not create incidents either.
 		return domain.UpdateIncidentResponse{}, &apierror.ServiceUnavailableError{
 			Msg: "updating an incident is not available on this data source yet",
 		}
@@ -702,20 +722,14 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		if actor.ID != "" {
 			lifecycle.DefaultResolvedByID = &actor.ID
 		}
+		// The notes ride in the state change's transaction: a failed note leaves nothing saved.
+		lifecycle.WorkNotes, lifecycle.AdditionalComments = req.WorkNotes, req.AdditionalComments
 		if err := s.repo.UpdateIncidentLifecycle(ctx, req.ID, lifecycle, actor.Email); err != nil {
 			return domain.UpdateIncidentResponse{}, err
 		}
-	}
-
-	if req.WorkNotes != nil {
-		if _, err := s.repo.CreateIncidentComment(ctx, req.ID, domain.CommentTypeWorkNote, *req.WorkNotes, actor.Email); err != nil {
-			return domain.UpdateIncidentResponse{}, err
-		}
-	}
-	if req.AdditionalComments != nil {
-		if _, err := s.repo.CreateIncidentComment(ctx, req.ID, domain.CommentTypeComment, *req.AdditionalComments, actor.Email); err != nil {
-			return domain.UpdateIncidentResponse{}, err
-		}
+	} else if err := s.repo.CreateIncidentNotes(ctx, req.ID, req.WorkNotes, req.AdditionalComments, actor.Email); err != nil {
+		// Both notes commit together, so a retry after a failed second insert cannot save the first twice.
+		return domain.UpdateIncidentResponse{}, err
 	}
 
 	view, err := s.repo.GetIncidentByID(ctx, req.ID)
@@ -725,12 +739,16 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 	publishIncidentStopSignals(ctx, s.eventPublisher, req, before, view)
 
 	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write
-	// only (guaranteed by the s.snWriteback == nil guard above). Postgres has
+	// only (guaranteed by the s.snWriteback == nil return just below). Postgres has
 	// already committed both comment rows by this point; this fires after,
 	// asynchronously, and never affects this response. mirrorReq carries only
 	// ID plus the field(s) this call actually set -- never forwards req
 	// itself -- so this can never accidentally carry an unsupported field
 	// into the mirror call.
+	if s.snWriteback == nil {
+		// DATA_SOURCE=postgres creating its own incidents: there is no ServiceNow copy to keep in step.
+		return domain.UpdateIncidentResponse{Message: "Incident updated successfully", Incident: view}, nil
+	}
 	mirrorReq := domain.UpdateIncidentRequest{
 		ID:                 req.ID,
 		State:              req.State,
