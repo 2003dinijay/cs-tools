@@ -541,7 +541,15 @@ func (s *incidentService) createIncidentPortal(ctx context.Context, req domain.C
 	if err != nil {
 		return domain.CreateIncidentResponse{}, err
 	}
-	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID)
+	// The enriched publish, not the title-only one. This create path arrived
+	// from upstream calling the 4-argument form, which predates the escalation
+	// ladder: it publishes an incident.created carrying only the subject, with
+	// no team, priority or contactType. The ladder resolves its rungs from
+	// those fields, so an incident created here -- which includes every one
+	// raised by alert ingestion -- would reach csm-notification-service with
+	// nothing to escalate on, and no ladder would run for it.
+	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID,
+		resp.Incident.Number, resp.Incident.CreatedOn, s.GetIncidentByID)
 	return resp, nil
 }
 
@@ -616,7 +624,7 @@ func (s *incidentService) createIncidentSNFirst(ctx context.Context, req domain.
 	// doc comment for why this can't just be snIncidentService's own
 	// automatic publish (that fires right after the ServiceNow POST, before
 	// this Postgres insert was even attempted).
-	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID)
+	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID, snResp.Incident.Number, snResp.Incident.CreatedOn, s.GetIncidentByID)
 	return resp, nil
 }
 

@@ -68,6 +68,13 @@ func TestIncidentService_CreateIncidentPortal_PassesDerivedFieldsAndPublishes(t 
 			resp.Incident.ID = "66666666-6666-6666-6666-666666666666"
 			return resp, nil
 		},
+		// The publish this path makes is the enriched one, which reads the
+		// incident back to fill the escalation fields the ladder routes on.
+		// Without a stub here that read panics, since the bare stub treats
+		// every unhooked method as not implemented.
+		getIncidentByID: func(_ context.Context, id string) (domain.IncidentView, error) {
+			return domain.IncidentView{ID: &id}, nil
+		},
 	}
 	publisher := &mockEventPublisher{}
 	svc := NewIncidentService(repo, publisher)
