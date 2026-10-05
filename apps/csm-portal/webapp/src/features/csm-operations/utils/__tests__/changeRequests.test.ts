@@ -34,6 +34,8 @@ import {
   isChangeRequestCategory,
   isChangeRequestCreator,
   isCreatableChangeRequestType,
+  NO_CUSTOMER_GROUP_HELPER,
+  noCustomerGroupHelper,
 } from "@features/csm-operations/utils/changeRequests";
 import type { BeChangeRequestApproval, BeChangeRequestDetail } from "@api/backend/types";
 
@@ -284,14 +286,14 @@ describe("changeRequestBlockingReason", () => {
   it("names the approver group for a stage it has no label for", () => {
     expect(
       changeRequestBlockingReason([
-        approval({ stage: "Customer Approval", status: "REQUESTED", approverName: "Acme Contact" }),
+        approval({ stage: "Vendor Sign-off", status: "REQUESTED", approverName: "Acme Contact" }),
       ]),
     ).toBe("Awaiting Acme Contact approval");
   });
 
   it("does not double the word 'approval' when the approver name already carries it", () => {
     const reason = changeRequestBlockingReason([
-      approval({ stage: "Customer Approval", status: "REQUESTED", approverName: "Security Approval Board" }),
+      approval({ stage: "Vendor Sign-off", status: "REQUESTED", approverName: "Security Approval Board" }),
     ]);
     expect(reason).toBe("Awaiting Security Approval Board");
     expect(reason?.match(/approval/gi)).toHaveLength(1);
@@ -324,6 +326,10 @@ describe("approvalStageLabel", () => {
     ["ECAB Approval", "ECAB Approval"],
     ["Review", "Review"],
     ["Customer Approval", "Customer Approval"],
+    ["customer_approval", "Customer Approval"],
+    ["CUSTOMER-APPROVAL", "Customer Approval"],
+    ["Customer Review", "Customer Review"],
+    ["customer review", "Customer Review"],
     ["Something New", "Something New"],
   ])("maps %s to %s", (stage, expected) => {
     expect(approvalStageLabel(stage)).toBe(expected);
@@ -362,19 +368,19 @@ describe("changeRequestTransitionLabel", () => {
 describe("changeRequestBlockingReason — customer states", () => {
   it("names the customer approval gate from the state, with or without approvals data", () => {
     expect(changeRequestBlockingReason(undefined, "customer_approval")).toBe(
-      "Awaiting customer approval",
+      "Awaiting Customer Approval",
     );
     expect(
       changeRequestBlockingReason(
         [{ stage: "Authorize", approverType: "STATIC_GROUP", approverName: null, status: "APPROVED", approvers: [] }],
         "customer_approval",
       ),
-    ).toBe("Awaiting customer approval");
+    ).toBe("Awaiting Customer Approval");
   });
 
   it("names the customer review gate from the state", () => {
     expect(changeRequestBlockingReason(undefined, "customer_review")).toBe(
-      "Awaiting customer review",
+      "Awaiting Customer Review",
     );
   });
 
@@ -564,5 +570,66 @@ describe("changeRequestScopeLockedReason", () => {
       expect(changeRequestScopeLockedReason(state)).toMatch(/can't be changed/);
     }
     expect(changeRequestScopeLockedReason(undefined)).toBeNull();
+  });
+});
+
+describe("changeRequestBlockingReason — customer group stages", () => {
+  const customerStage = (stage: string, status = "REQUESTED"): BeChangeRequestApproval => ({
+    stage,
+    approverType: "STATIC_GROUP",
+    approverName: "Acme Reviewers",
+    status,
+    approvers: [],
+  });
+
+  it.each([
+    ["Customer Approval", "Awaiting Customer Approval"],
+    ["Customer Review", "Awaiting Customer Review"],
+    ["customer_review", "Awaiting Customer Review"],
+  ])("names a waiting %s stage '%s', never 'approval approval'", (stage, expected) => {
+    const reason = changeRequestBlockingReason([customerStage(stage)], "implement");
+    expect(reason).toBe(expected);
+    expect(reason).not.toMatch(/approval approval/i);
+  });
+
+  it("uses the same wording from the state whether or not a customer stage exists", () => {
+    expect(changeRequestBlockingReason([customerStage("Customer Approval")], "customer_approval")).toBe(
+      "Awaiting Customer Approval",
+    );
+    expect(changeRequestBlockingReason([], "customer_approval")).toBe("Awaiting Customer Approval");
+    expect(changeRequestBlockingReason([customerStage("Customer Review")], "customer_review")).toBe(
+      "Awaiting Customer Review",
+    );
+    expect(changeRequestBlockingReason([], "customer_review")).toBe("Awaiting Customer Review");
+  });
+});
+
+describe("noCustomerGroupHelper", () => {
+  it.each(["customer_approval", "customer_review"])(
+    "returns the helper at %s when the customer group is explicitly unset",
+    (state) => {
+      expect(noCustomerGroupHelper(state, null)).toBe(NO_CUSTOMER_GROUP_HELPER);
+      expect(noCustomerGroupHelper(state, { id: "" })).toBe(NO_CUSTOMER_GROUP_HELPER);
+    },
+  );
+
+  it("is silent when a customer group is set", () => {
+    expect(noCustomerGroupHelper("customer_approval", { id: "g1" })).toBeNull();
+  });
+
+  it("is silent when the payload carries no customerGroup field at all (unknown)", () => {
+    expect(noCustomerGroupHelper("customer_approval", undefined)).toBeNull();
+  });
+
+  it("is silent outside the customer gates", () => {
+    for (const state of ["new", "assess", "authorize", "scheduled", "implement", "review", "closed", "canceled", undefined]) {
+      expect(noCustomerGroupHelper(state, null)).toBeNull();
+    }
+  });
+
+  it("says what to do about it", () => {
+    expect(NO_CUSTOMER_GROUP_HELPER).toBe(
+      "No customer group is set on this change request, so no customer approvers were assigned. Set the Customer Group to route this to the customer.",
+    );
   });
 });

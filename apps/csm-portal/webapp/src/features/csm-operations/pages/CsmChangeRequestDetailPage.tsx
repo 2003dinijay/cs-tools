@@ -15,6 +15,7 @@
 // under the License.
 
 import {
+  Alert,
   Box,
   Button,
   Card,
@@ -77,6 +78,7 @@ import {
   buildCloneChangeRequestNavState,
   changeRequestBlockingReason,
   changeRequestCategoryLabel,
+  noCustomerGroupHelper,
   isChangeRequestCreator,
   changeRequestCommentGateReason,
   changeRequestTransitionRequiresReason,
@@ -452,6 +454,10 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
     cr.state === "closed" || cr.state === "canceled" || cr.state === "rollback"
       ? null
       : changeRequestBlockingReason(approvalsData?.approvals, cr.state);
+  // At a customer gate with no customer group the backend had no one to assign
+  // the Customer Approval / Customer Review stage to. `customerGroup` absent
+  // from the payload (older backend) yields null, so nothing is claimed.
+  const noCustomerGroupNote = noCustomerGroupHelper(cr.state, cr.customerGroup);
   // A transition is in flight whenever either half of a destructive
   // transition (the reason comment, then the patch) or a plain patch is
   // running, so the bar stays disabled across both and a double-click can't
@@ -818,8 +824,13 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
               color="text.secondary"
               sx={{ letterSpacing: 0.6 }}
             >
-              Internal approval workflow
+              Approval workflow
             </Typography>
+            {noCustomerGroupNote && (
+              <Alert severity="info" sx={{ mb: 0.5 }}>
+                {noCustomerGroupNote}
+              </Alert>
+            )}
             <ChangeRequestApprovals id={cr.id} isCreator={isCreator} />
           </Box>
         </Box>

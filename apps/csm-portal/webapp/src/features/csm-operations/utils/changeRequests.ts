@@ -184,6 +184,10 @@ const KNOWN_APPROVAL_STAGE_LABELS: Record<string, string> = {
   review: "Review",
   emergencycab: "ECAB Approval",
   emergencycabapproval: "ECAB Approval",
+  // Stages the backend provisions for the CR's customer group (its members are
+  // the approvers) on entering `customer_approval` / `customer_review`.
+  customerapproval: "Customer Approval",
+  customerreview: "Customer Review",
 };
 
 function knownApprovalStageLabel(stage?: string | null): string | null {
@@ -192,7 +196,7 @@ function knownApprovalStageLabel(stage?: string | null): string | null {
 }
 
 /** Label for an approval stage name, e.g. `Authorize` -> `CAB Approval`.
- * Unrecognised stages (e.g. `Customer Approval`) render as the backend sent them. */
+ * Unrecognised stages render as the backend sent them. */
 export function approvalStageLabel(stage?: string | null): string {
   return knownApprovalStageLabel(stage) ?? (stage?.trim() || "Approval");
 }
@@ -330,10 +334,12 @@ export function changeRequestBlockingReason(
   approvals: BeChangeRequestApproval[] | undefined,
   state?: string | null,
 ): string | null {
-  // The customer gates are states of their own, not approval stages the
-  // internal approvers list carries, so they are named from the state.
-  if (state === "customer_approval") return "Awaiting customer approval";
-  if (state === "customer_review") return "Awaiting customer review";
+  // The customer gates are named from the state: the CR is waiting on the
+  // customer whether the backend provisioned a "Customer Approval" /
+  // "Customer Review" stage for the customer group or (no group) the step is
+  // recorded manually. Same wording the stage label gives, never doubled.
+  if (state === "customer_approval") return "Awaiting Customer Approval";
+  if (state === "customer_review") return "Awaiting Customer Review";
   const waiting = approvals?.find((a) => WAITING_APPROVAL_STATUSES.has(a.status.trim().toUpperCase()));
   if (!waiting) return null;
   // A recognised stage (Peer / CAB / ECAB) is named by its stage label, which
@@ -345,6 +351,25 @@ export function changeRequestBlockingReason(
   // Approver-group names sometimes already say "Approval" ("Devops
   // Approval"); avoid a doubled "approval approval" in that case.
   return /approval/i.test(who) ? `Awaiting ${who}` : `Awaiting ${who} approval`;
+}
+
+/**
+ * Helper shown in the Approval tab when a CR sits at a customer gate but has no
+ * customer group, so the backend had nobody to assign the stage to. `null` when
+ * the state is not a customer gate or a group is set. `customerGroup` being
+ * `undefined` (field absent from the payload) is treated as "unknown" -> `null`,
+ * only an explicit `null`/empty ref counts as unset.
+ */
+export const NO_CUSTOMER_GROUP_HELPER =
+  "No customer group is set on this change request, so no customer approvers were assigned. Set the Customer Group to route this to the customer.";
+
+export function noCustomerGroupHelper(
+  state: string | null | undefined,
+  customerGroup: { id?: string | null } | null | undefined,
+): string | null {
+  if (state !== "customer_approval" && state !== "customer_review") return null;
+  if (customerGroup === undefined) return null;
+  return customerGroup?.id ? null : NO_CUSTOMER_GROUP_HELPER;
 }
 
 /**

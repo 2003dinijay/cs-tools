@@ -472,3 +472,37 @@ describe("ChangeRequestActionBar — customer approval and customer review gates
     expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeInTheDocument();
   });
 });
+
+/**
+ * With a live Customer Approval / Customer Review stage the backend offers only
+ * `canceled`, so the bar shows Cancel alone; with no customer group (no stage)
+ * it keeps offering the manual path. The bar never second-guesses the server.
+ */
+describe("ChangeRequestActionBar — customer gates with and without a live customer stage", () => {
+  it("customer_approval with legalNextStates=[canceled] offers only Cancel (no Record customer approval)", () => {
+    renderBar({ state: "customer_approval", customerApprovalRequired: true, legalNextStates: ["canceled"] });
+    expect(screen.queryByRole("button", { name: /record customer approval/i })).not.toBeInTheDocument();
+    // Cancel is destructive: menu-only, so it is the sole item behind "Change state".
+    openMenu();
+    expect(screen.getAllByRole("menuitem")).toHaveLength(1);
+    expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeInTheDocument();
+  });
+
+  it("customer_approval fallback legalNextStates=[scheduled, canceled] still offers Record customer approval", () => {
+    renderBar({ state: "customer_approval", customerApprovalRequired: true, legalNextStates: ["scheduled", "canceled"] });
+    expect(screen.getByRole("button", { name: "Record customer approval" })).toBeInTheDocument();
+  });
+
+  it("customer_review with legalNextStates=[canceled] offers no Close", () => {
+    renderBar({ state: "customer_review", customerReviewRequired: true, legalNextStates: ["canceled"] });
+    expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
+    openMenu();
+    expect(screen.getAllByRole("menuitem")).toHaveLength(1);
+    expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeInTheDocument();
+  });
+
+  it("customer_review fallback legalNextStates=[closed, canceled] offers Close", () => {
+    renderBar({ state: "customer_review", customerReviewRequired: true, legalNextStates: ["closed", "canceled"] });
+    expect(screen.getByRole("button", { name: /^close$/i })).toBeInTheDocument();
+  });
+});

@@ -64,9 +64,15 @@ import {
   FAKE_ECAB,
   FAKE_ENVIRONMENTS,
   FAKE_GROUPS,
+  FAKE_CUST_ONE,
+  FAKE_CUST_TWO,
+  FAKE_CUSTOMER_GROUP,
+  FAKE_OUTSIDER,
   FAKE_PEER,
   FAKE_PROJECTS,
   installFakeChangeRequestApi,
+  type FakeChangeRequestApi,
+  type FakeUser,
 } from "../../utils/fakeChangeRequestApi";
 
 const execFileAsync = promisify(execFile);
@@ -351,7 +357,7 @@ test.describe("change request approval flow — Normal", () => {
         await page.reload();
         if (approval) {
           await expect(detail.currentStep()).toContainText("Customer Approval");
-          await expect(detail.blockingReason()).toHaveText("Awaiting customer approval");
+          await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
           await expect(page.getByRole("button", { name: "Start implementation" })).toHaveCount(0);
           await expect(detail.recordCustomerApprovalButton()).toBeVisible();
           await detail.changeStateButton().click();
@@ -383,7 +389,7 @@ test.describe("change request approval flow — Normal", () => {
           await page.keyboard.press("Escape");
           await detail.sendForCustomerReviewButton().click();
           await expect(detail.currentStep()).toContainText("Customer Review");
-          await expect(detail.blockingReason()).toHaveText("Awaiting customer review");
+          await expect(detail.blockingReason()).toHaveText("Awaiting Customer Review");
           await expect(detail.sendForCustomerReviewButton()).toHaveCount(0);
         } else {
           // Review offers Close and no customer review.
@@ -460,7 +466,7 @@ test.describe("change request approval flow — Emergency with Customer Approval
     api.setViewer(FAKE_CREATOR);
     await page.reload();
     await expect(detail.currentStep()).toContainText("Customer Approval");
-    await expect(detail.blockingReason()).toHaveText("Awaiting customer approval");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
     await expect(page.getByRole("button", { name: "Start implementation" })).toHaveCount(0);
     await expectNoManualSchedule(detail);
     await detail.recordCustomerApproval();
@@ -483,7 +489,7 @@ test.describe("change request approval flow — Standard with Customer Approval"
     await detail.requestApproval();
 
     await expect(detail.currentStep()).toContainText("Customer Approval");
-    await expect(detail.blockingReason()).toHaveText("Awaiting customer approval");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
     await expect(page.getByText(/no approval stages recorded/i)).toBeVisible();
     await expect(page.getByRole("button", { name: "Start implementation" })).toHaveCount(0);
     await expectNoManualSchedule(detail);
@@ -784,6 +790,239 @@ test.describe("change request lifecycle — project and deployments (mocked back
     for (const label of ["Customer Project", "Deployments", "Environments", "Deployment products", "Customer group", "Category"]) {
       await expect(detail.overviewCell(label), label).toContainText("—");
     }
+  });
+});
+
+//
+// Customer group: the people a customer-gated change request is directed to.
+// Against the same fake (see its header for the exact contract): with a
+// customer group that has members, entering Customer Approval / Customer
+// Review provisions a stage for them; while it is live only Cancel is
+// offered; their decision moves the CR (approve -> Scheduled / Closed,
+// reject -> Canceled). With no group, or a group with nobody eligible, no
+// stage exists and the manual "Record customer approval" / Close stay.
+//
+
+const NO_CUSTOMER_GROUP_TEXT =
+  "No customer group is set on this change request, so no customer approvers were assigned. Set the Customer Group to route this to the customer.";
+
+/** Cancel is the only action offered: no primary button, one menu entry. */
+async function expectOnlyCancelOffered(detail: ChangeRequestDetailPage): Promise<void> {
+  await expect(detail.recordCustomerApprovalButton()).toHaveCount(0);
+  await expect(detail.closeButton()).toHaveCount(0);
+  await expect(detail.page.getByRole("button", { name: "Start implementation" })).toHaveCount(0);
+  await detail.changeStateButton().click();
+  await expect(detail.page.getByRole("menuitem")).toHaveCount(1);
+  await expect(detail.cancelChangeMenuItem()).toBeEnabled();
+  await detail.page.keyboard.press("Escape");
+}
+
+async function switchTo(page: import("@playwright/test").Page, api: FakeChangeRequestApi, user: FakeUser): Promise<void> {
+  api.setViewer(user);
+  await page.reload();
+}
+
+/** Drives a fresh Normal CR through Peer and CAB approval (the creator
+ * requests, Pat Peer and Cam Cab approve), leaving the viewer as Cam Cab. */
+async function approveInternally(page: import("@playwright/test").Page, api: FakeChangeRequestApi, detail: ChangeRequestDetailPage): Promise<void> {
+  await openDetail(detail);
+  await detail.requestApproval();
+  await expect(detail.currentStep()).toContainText("Assess");
+  await switchTo(page, api, FAKE_PEER);
+  await detail.approve("Pat Peer");
+  await expect(detail.currentStep()).toContainText("Authorize");
+  await switchTo(page, api, FAKE_CAB);
+  await detail.approve("Cam Cab");
+}
+
+test.describe("change request approval flow — customer group", () => {
+  test("Normal with Customer Approval and Customer Review and a customer group: every step shows the right state, stage rows and buttons for the creator, a group member and a non-member", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    const api = await installFakeChangeRequestApi(
+      page,
+      "normal",
+      FAKE_CREATOR,
+      { customerApprovalRequired: true, customerReviewRequired: true },
+      {},
+      FAKE_CUSTOMER_GROUP,
+    );
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+
+    // Customer Approval, creator: the group's stage is provisioned; Cancel only.
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toHaveCount(0);
+    for (const member of [FAKE_CUST_ONE, FAKE_CUST_TWO]) {
+      await expect(detail.approverRow(member.name, "Customer Approval")).toBeVisible();
+      await expect(detail.approverStatus(member.name, "Customer Approval")).toHaveText("Requested");
+      await expect(detail.approverRow(member.name, "Customer Approval")).toContainText(FAKE_CUSTOMER_GROUP.name);
+    }
+    await expect(detail.approverStatus("Pat Peer", "Peer Approval")).toHaveText("Approved");
+    await expect(detail.approverStatus("Cam Cab", "CAB Approval")).toHaveText("Approved");
+    await expect(detail.approveButton()).toHaveCount(0);
+    await expect(detail.rejectButton()).toHaveCount(0);
+    await expectOnlyCancelOffered(detail);
+    await expectNoManualSchedule(detail);
+
+    // Customer Approval, non-member: sees the rows, no Approve/Reject, no manual path.
+    await switchTo(page, api, FAKE_OUTSIDER);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.approverRow(FAKE_CUST_ONE.name, "Customer Approval")).toBeVisible();
+    await expect(detail.approveButton()).toHaveCount(0);
+    await expect(detail.rejectButton()).toHaveCount(0);
+    await expect(detail.recordCustomerApprovalButton()).toHaveCount(0);
+
+    // Customer Approval, group member: Approve/Reject on their own row only.
+    await switchTo(page, api, FAKE_CUST_ONE);
+    await expect(detail.approveButton(FAKE_CUST_ONE.name, "Customer Approval")).toBeEnabled();
+    await expect(detail.rejectButton(FAKE_CUST_ONE.name, "Customer Approval")).toBeEnabled();
+    await expect(detail.approveButton()).toHaveCount(1);
+    await expect(detail.approveButton(FAKE_CUST_TWO.name, "Customer Approval")).toHaveCount(0);
+    await expect(detail.recordCustomerApprovalButton()).toHaveCount(0);
+
+    // The member approves; the page refreshes itself to Scheduled (no reload).
+    await detail.approve(FAKE_CUST_ONE.name, "Customer Approval");
+    await expect(detail.currentStep()).toContainText("Scheduled");
+    expect(api.state()).toBe("scheduled");
+    await expect(detail.blockingReason()).toHaveCount(0);
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Approved");
+    await expect(detail.approveButton()).toHaveCount(0);
+    await expectNoManualSchedule(detail);
+
+    // The engineer-driven tail up to Review.
+    await switchTo(page, api, FAKE_CREATOR);
+    await page.getByRole("button", { name: "Start implementation" }).click();
+    await expect(detail.currentStep()).toContainText("Implement");
+    await page.getByRole("button", { name: "Mark implemented" }).click();
+    await expect(detail.currentStep()).toContainText("Review");
+    await expect(detail.sendForCustomerReviewButton()).toBeVisible();
+    await expect(detail.closeButton()).toHaveCount(0);
+
+    // Customer Review: a stage for the same group; Cancel only.
+    await detail.sendForCustomerReviewButton().click();
+    await expect(detail.currentStep()).toContainText("Customer Review");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Review");
+    await expect(detail.approverStatus(FAKE_CUST_TWO.name, "Customer Review")).toHaveText("Requested");
+    await expect(detail.approverRow(FAKE_CUST_TWO.name, "Customer Review")).toContainText(FAKE_CUSTOMER_GROUP.name);
+    await expect(detail.approveButton()).toHaveCount(0); // creator
+    await expectOnlyCancelOffered(detail);
+
+    // Customer Review, non-member: nothing to decide.
+    await switchTo(page, api, FAKE_OUTSIDER);
+    await expect(detail.currentStep()).toContainText("Customer Review");
+    await expect(detail.approveButton()).toHaveCount(0);
+    await expect(detail.rejectButton()).toHaveCount(0);
+
+    // Customer Review, the other member approves -> Closed (no reload).
+    await switchTo(page, api, FAKE_CUST_TWO);
+    await expect(detail.approveButton()).toHaveCount(1);
+    await detail.approve(FAKE_CUST_TWO.name, "Customer Review");
+    await expect(detail.currentStep()).toContainText("Closed");
+    expect(api.state()).toBe("closed");
+    await expect(detail.blockingReason()).toHaveCount(0);
+    await expect(detail.approveButton()).toHaveCount(0);
+    await expect(detail.changeStateButton()).toHaveCount(0);
+    await expectNoManualSchedule(detail);
+  });
+
+  test("a group member rejecting the Customer Approval cancels the change request", async ({ page }) => {
+    test.setTimeout(120_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, {}, FAKE_CUSTOMER_GROUP);
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+
+    await switchTo(page, api, FAKE_CUST_TWO);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await detail.reject(FAKE_CUST_TWO.name);
+    await expect(detail.approverStatus(FAKE_CUST_TWO.name, "Customer Approval")).toHaveText("Rejected");
+    expect(api.state()).toBe("canceled");
+    await expect(detail.blockingReason()).toHaveCount(0);
+    await expect(detail.approveButton()).toHaveCount(0);
+    await expect(detail.changeStateButton()).toHaveCount(0);
+  });
+
+  test("a group member rejecting the Customer Review cancels the change request", async ({ page }) => {
+    test.setTimeout(120_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, {}, FAKE_CUSTOMER_GROUP);
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+
+    await switchTo(page, api, FAKE_CREATOR);
+    await page.getByRole("button", { name: "Start implementation" }).click();
+    await page.getByRole("button", { name: "Mark implemented" }).click();
+    await detail.sendForCustomerReviewButton().click();
+    await expect(detail.currentStep()).toContainText("Customer Review");
+
+    await switchTo(page, api, FAKE_CUST_ONE);
+    await detail.reject(FAKE_CUST_ONE.name);
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Review")).toHaveText("Rejected");
+    expect(api.state()).toBe("canceled");
+    await expect(detail.blockingReason()).toHaveCount(0);
+  });
+
+  test("no customer group: no customer stage, the Approval tab explains why, and Record customer approval still schedules it", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true });
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
+    await expect(page.getByRole("cell", { name: "Customer Approval", exact: true })).toHaveCount(0);
+    await expect(detail.recordCustomerApprovalButton()).toBeVisible();
+
+    await detail.recordCustomerApproval();
+    await expect(detail.currentStep()).toContainText("Scheduled");
+    await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toHaveCount(0);
+    expect(api.state()).toBe("scheduled");
+  });
+
+  test("no customer group: Customer Review shows the helper and manual Close stays available", async ({ page }) => {
+    test.setTimeout(120_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true });
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+
+    await switchTo(page, api, FAKE_CREATOR);
+    await page.getByRole("button", { name: "Start implementation" }).click();
+    await page.getByRole("button", { name: "Mark implemented" }).click();
+    await detail.sendForCustomerReviewButton().click();
+    await expect(detail.currentStep()).toContainText("Customer Review");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Review");
+    await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
+    await expect(page.getByRole("cell", { name: "Customer Review", exact: true })).toHaveCount(0);
+
+    await detail.closeButton().click();
+    await expect(detail.currentStep()).toContainText("Closed");
+    expect(api.state()).toBe("closed");
+  });
+
+  test("a customer group with no eligible member provisions no stage: manual path stays, no helper", async ({ page }) => {
+    test.setTimeout(120_000);
+    const api = await installFakeChangeRequestApi(
+      page,
+      "normal",
+      FAKE_CREATOR,
+      { customerApprovalRequired: true },
+      {},
+      { ...FAKE_CUSTOMER_GROUP, members: [] },
+    );
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(page.getByRole("cell", { name: "Customer Approval", exact: true })).toHaveCount(0);
+    await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toHaveCount(0);
+    await expect(detail.recordCustomerApprovalButton()).toBeVisible();
   });
 });
 

@@ -38,6 +38,19 @@
 //   - from `customer_approval` legalNextStates = [scheduled, canceled];
 //   - Review offers [customer_review, canceled] when `customerReviewRequired`,
 //     else [closed, canceled]; `customer_review` -> [closed, canceled];
+//   - customer group: when the CR has a customer group with at least one
+//     member, entering `customer_approval` / `customer_review` provisions a
+//     "Customer Approval" / "Customer Review" stage (assignment group = the
+//     customer group, approvers = its members). While that stage is live
+//     (still has REQUESTED approvers) legalNextStates for those two states is
+//     [canceled] only, and the manual PATCH {state:"scheduled"} /
+//     {state:"closed"} is refused with a 400. A member's decision settles the
+//     stage (their co-members become NOT_REQUIRED): Customer Approval approved
+//     -> scheduled, rejected -> canceled; Customer Review approved -> closed,
+//     rejected -> canceled. With no customer group, or a group with no
+//     eligible member, no stage is provisioned and the manual paths above
+//     remain. `canDecide` is true only on the signed-in member's own
+//     REQUESTED row of a live stage, never for the creator;
 //   - `customerApprovalRequired` / `customerReviewRequired` are on the detail
 //     response and editable via PATCH until their gate passes; a late edit is
 //     refused with a 400 and a readable message;
@@ -72,6 +85,19 @@ export const FAKE_CREATOR: FakeUser = { id: "00000000-0000-0000-0000-00000000e00
 export const FAKE_PEER: FakeUser = { id: "00000000-0000-0000-0000-00000000e002", name: "Pat Peer", email: "pat.peer@example.com" };
 export const FAKE_CAB: FakeUser = { id: "00000000-0000-0000-0000-00000000e003", name: "Cam Cab", email: "cam.cab@example.com" };
 export const FAKE_ECAB: FakeUser = { id: "00000000-0000-0000-0000-00000000e004", name: "Eli Ecab", email: "eli.ecab@example.com" };
+
+/** Members of the CR's customer group (the customer-side approvers). */
+export const FAKE_CUST_ONE: FakeUser = { id: "00000000-0000-0000-0000-00000000e005", name: "Mia Member", email: "mia.member@acme.example" };
+export const FAKE_CUST_TWO: FakeUser = { id: "00000000-0000-0000-0000-00000000e006", name: "Max Member", email: "max.member@acme.example" };
+/** Someone with no stake in the customer group. */
+export const FAKE_OUTSIDER: FakeUser = { id: "00000000-0000-0000-0000-00000000e007", name: "Olive Outsider", email: "olive.outsider@example.com" };
+
+export interface FakeCustomerGroup {
+  id: string;
+  name: string;
+  /** Eligible members; empty means the group has nobody to assign a stage to. */
+  members: FakeUser[];
+}
 
 export const FAKE_CR_ID = "00000000-0000-0000-0000-00000000c001";
 
@@ -117,6 +143,13 @@ export const FAKE_GROUPS: FakeRef[] = [
   { id: "00000000-0000-0000-0000-00000000a101", name: "Acme Customers" },
   { id: "00000000-0000-0000-0000-00000000a102", name: "Beta Customers" },
 ];
+
+/** "Acme Customers" with two eligible members (Mia, Max); "Beta Customers" has
+ * nobody, so a CR directed at it gets no customer stage (manual fallback). */
+export const FAKE_CUSTOMER_GROUP: FakeCustomerGroup = {
+  ...FAKE_GROUPS[0]!,
+  members: [FAKE_CUST_ONE, FAKE_CUST_TWO],
+};
 
 /** States from which project / deployments / environments can no longer change. */
 const SCOPE_LOCKED = ["implement", "review", "customer_review", "closed", "rollback", "canceled"];
@@ -196,9 +229,15 @@ export interface FakeChangeRequestApi {
    * with a 400 -- the "stale options" scenario.
    */
   retireDeployment(deploymentId: string): void;
+  /** Sets (or clears, with null) the CR's customer group out-of-band. */
+  setCustomerGroup(group: FakeCustomerGroup | null): void;
+  /** The approval stages as the fake holds them (stage name -> status). */
+  stages(): Array<{ stage: string; status: string; approvers: Array<{ name: string; status: string }> }>;
 }
 
-function legalNextStates(state: string, flags: FakeCustomerFlags): string[] {
+const CUSTOMER_STAGES = ["Customer Approval", "Customer Review"];
+
+function legalNextStates(state: string, flags: FakeCustomerFlags, liveCustomerStage = false): string[] {
   switch (state) {
     case "new":
       return ["assess", "canceled"];
@@ -207,7 +246,8 @@ function legalNextStates(state: string, flags: FakeCustomerFlags): string[] {
     case "authorize":
       return ["canceled"];
     case "customer_approval":
-      return ["scheduled", "canceled"]; // scheduled = "Record customer approval"
+      // scheduled = "Record customer approval", unless the customer group decides
+      return liveCustomerStage ? ["canceled"] : ["scheduled", "canceled"];
     case "scheduled":
       return ["implement", "canceled"];
     case "implement":
@@ -215,7 +255,7 @@ function legalNextStates(state: string, flags: FakeCustomerFlags): string[] {
     case "review":
       return flags.customerReviewRequired ? ["customer_review", "canceled"] : ["closed", "canceled"];
     case "customer_review":
-      return ["closed", "canceled"];
+      return liveCustomerStage ? ["canceled"] : ["closed", "canceled"];
     default:
       return [];
   }
@@ -236,6 +276,7 @@ export async function installFakeChangeRequestApi(
   initialFlags: Partial<FakeCustomerFlags> = {},
   /** The customer scope the CR already holds (environments default to those of the deployments). */
   initialScope: Partial<FakeScope> = {},
+  initialCustomerGroup: FakeCustomerGroup | null = null,
 ): Promise<FakeChangeRequestApi> {
   let type = initialType;
   let currentViewer = viewer;
@@ -269,7 +310,59 @@ export async function installFakeChangeRequestApi(
   /** Where a CR lands once its internal approval is granted. */
   const afterInternalApproval = (): string => (flags.customerApprovalRequired ? "customer_approval" : "scheduled");
   let stages: Stage[] = [];
+  /** Eligible members per customer group id (the group's active users). */
+  const groupMembers = new Map<string, FakeUser[]>(FAKE_GROUPS.map((g) => [g.id, g.id === FAKE_CUSTOMER_GROUP.id ? FAKE_CUSTOMER_GROUP.members : []]));
+  if (initialCustomerGroup) {
+    scope.customerGroupId = initialCustomerGroup.id;
+    groupMembers.set(initialCustomerGroup.id, initialCustomerGroup.members);
+  }
   const log: string[] = [];
+  /** The CR's customer group as the fake holds it, or null. */
+  const currentGroup = (): FakeCustomerGroup | null => {
+    const ref = FAKE_GROUPS.find((g) => g.id === scope.customerGroupId);
+    return ref ? { ...ref, members: groupMembers.get(ref.id) ?? [] } : null;
+  };
+
+  const hasLiveCustomerStage = (): boolean =>
+    stages.some((s) => CUSTOMER_STAGES.includes(s.stage) && s.status === "REQUESTED");
+  const legal = (): string[] => legalNextStates(state, flags, hasLiveCustomerStage());
+  /** Moves the CR to `next`; entering a customer gate provisions the group's stage. */
+  const enter = (next: string): void => {
+    state = next;
+    syncCustomerStage();
+  };
+  /**
+   * The backend's idempotent `provisionCustomerStage`: at a customer gate the
+   * CR's customer group (when it has eligible members) gets exactly one live
+   * stage. Set while already in the gate -> provisioned; changed while a stage
+   * is live -> the old stage's REQUESTED rows are cancelled and a new one is
+   * provisioned; cleared -> pending rows cancelled (manual path returns); a
+   * stage already approved/rejected is never re-provisioned.
+   */
+  function syncCustomerStage(): void {
+    const kind = state === "customer_approval" ? "Customer Approval" : state === "customer_review" ? "Customer Review" : null;
+    if (!kind) return;
+    const group = currentGroup();
+    const live = stages.find((s) => s.stage === kind && s.status === "REQUESTED");
+    if (live && (!group || live.approverName !== group.name)) {
+      for (const a of live.approvers) if (a.status === "REQUESTED") a.status = "CANCELLED";
+      live.status = "CANCELLED";
+    } else if (live) {
+      return;
+    }
+    const settled = stages.some((s) => s.stage === kind && (s.status === "APPROVED" || s.status === "REJECTED"));
+    if (settled || !group || group.members.length === 0) return;
+    stages = [
+      ...stages,
+      {
+        stage: kind,
+        approverType: "STATIC_GROUP",
+        approverName: group.name,
+        status: "REQUESTED",
+        approvers: group.members.map((m) => ({ id: m.id, name: m.name, status: "REQUESTED" })),
+      },
+    ];
+  }
 
   const detail = (): Record<string, unknown> => ({
     id: FAKE_CR_ID,
@@ -283,7 +376,7 @@ export async function installFakeChangeRequestApi(
     requestedBy: { id: FAKE_CREATOR.id, name: FAKE_CREATOR.name },
     customerApprovalRequired: flags.customerApprovalRequired,
     customerReviewRequired: flags.customerReviewRequired,
-    legalNextStates: legalNextStates(state, flags),
+    legalNextStates: legal(),
     project: FAKE_PROJECTS.find((p) => p.id === scope.projectId),
     deployments: FAKE_DEPLOYMENTS.filter((d) => scope.deploymentIds.includes(d.id)).map(({ id, name }) => ({ id, name })),
     environments: FAKE_ENVIRONMENTS.filter((e) => scope.environmentIds.includes(e.id)),
@@ -526,12 +619,17 @@ export async function installFakeChangeRequestApi(
         }
         row.status = decision === "approved" ? "APPROVED" : "REJECTED";
         current.status = row.status;
-        if (decision === "approved") {
+        if (CUSTOMER_STAGES.includes(current.stage)) {
+          // One member's decision settles the stage; co-members are no longer needed.
+          for (const a of current.approvers) if (a !== row && a.status === "REQUESTED") a.status = "NOT_REQUIRED";
+          if (decision === "approved") enter(current.stage === "Customer Approval" ? "scheduled" : "closed");
+          else enter("canceled");
+        } else if (decision === "approved") {
           if (current.stage === "Peer Approval") {
             state = "authorize";
             stages = [...stages, nextStage("CAB Approval", "CAB", FAKE_CAB)];
           } else {
-            state = afterInternalApproval(); // CAB / ECAB approval moves the CR on itself
+            enter(afterInternalApproval()); // CAB / ECAB approval moves the CR on itself
           }
         }
         return json(route, { id: FAKE_CR_ID, state });
@@ -544,7 +642,11 @@ export async function installFakeChangeRequestApi(
             ...st,
             approvers: st.approvers.map((a) => ({
               ...a,
-              canDecide: a.id === currentViewer.id && a.status === "REQUESTED" && currentViewer.id !== FAKE_CREATOR.id,
+              canDecide:
+                st.status === "REQUESTED" &&
+                a.id === currentViewer.id &&
+                a.status === "REQUESTED" &&
+                currentViewer.id !== FAKE_CREATOR.id,
             })),
           })),
         });
@@ -567,6 +669,9 @@ export async function installFakeChangeRequestApi(
           const problem = validateScope(body, next, true);
           if (problem) return json(route, { message: problem }, 400);
           Object.assign(scope, next);
+          // A customer group set / changed / cleared while the CR already sits at a
+          // customer gate (re)provisions its stage, like the backend.
+          if (body.customerGroupId !== undefined) syncCustomerStage();
         }
         for (const kind of ["comment", "workNote"] as const) {
           const text = body[kind];
@@ -590,7 +695,7 @@ export async function installFakeChangeRequestApi(
           return json(route, { id: FAKE_CR_ID, state, message: "Change request updated.", changeRequest: detail() });
         }
         if (target === "assess") {
-          if (type === "standard") state = afterInternalApproval();
+          if (type === "standard") enter(afterInternalApproval());
           else if (type === "emergency") {
             state = "authorize";
             stages = [nextStage("ECAB Approval", "ECAB", FAKE_ECAB)];
@@ -599,12 +704,15 @@ export async function installFakeChangeRequestApi(
             stages = [nextStage("Peer Approval", "Peers", FAKE_PEER)];
           }
         } else if (target === "scheduled" && state === "customer_approval") {
+          if (hasLiveCustomerStage()) {
+            return json(route, { message: "The customer group must approve this change request; it cannot be recorded manually." }, 400);
+          }
           state = "scheduled"; // the customer's approval was recorded
         } else if (target !== "scheduled" && target !== "authorize" && target !== "customer_approval") {
-          if (!legalNextStates(state, flags).includes(target)) {
+          if (!legal().includes(target)) {
             return json(route, { message: `Illegal transition from ${state} to ${target}.` }, 400);
           }
-          state = target;
+          enter(target);
         } else {
           return json(route, { message: `Illegal transition to ${String(target)}.` }, 400);
         }
@@ -633,5 +741,16 @@ export async function installFakeChangeRequestApi(
     retireDeployment: (deploymentId) => {
       retired.add(deploymentId);
     },
+    setCustomerGroup: (group) => {
+      scope.customerGroupId = group ? group.id : null;
+      if (group) groupMembers.set(group.id, group.members);
+      syncCustomerStage();
+    },
+    stages: () =>
+      stages.map((st) => ({
+        stage: st.stage,
+        status: st.status,
+        approvers: st.approvers.map((a) => ({ name: a.name, status: a.status })),
+      })),
   };
 }

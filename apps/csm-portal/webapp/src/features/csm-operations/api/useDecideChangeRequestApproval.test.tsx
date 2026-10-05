@@ -91,6 +91,30 @@ describe("useDecideChangeRequestApproval", () => {
     );
   });
 
+  it("also invalidates the approvals, detail, and list queries after an approval (e.g. a customer-group member approving moves the CR on server-side)", async () => {
+    postMock.mockResolvedValue({ id: "approval-1", state: "approved" });
+    const { result } = renderHook(() => useDecideChangeRequestApproval(), {
+      wrapper,
+    });
+
+    act(() => {
+      result.current.mutate({ id: "cr-1", decision: "approved" });
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const keys = invalidateQueriesMock.mock.calls.map(
+      ([arg]) => (arg as { queryKey: unknown[] }).queryKey,
+    );
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        ["change-request-approvals", "cr-1"],
+        ["change-request-details", "cr-1"],
+        ["change-requests"],
+      ]),
+    );
+  });
+
   it("surfaces upstream errors via mutation error state", async () => {
     const upstreamError = new Error("Only the caller's own pending approval can be decided.");
     postMock.mockRejectedValue(upstreamError);

@@ -538,3 +538,127 @@ describe("ChangeRequestApprovals — the creator cannot approve", () => {
     expect(screen.getByText("Approve").closest("button")).toBeEnabled();
   });
 });
+
+describe("ChangeRequestApprovals — customer group stages (Customer Approval / Customer Review)", () => {
+  const customerStage = (
+    stage: string,
+    approvers: Array<{ id: string; name: string; status: string; canDecide?: boolean }>,
+  ) => ({
+    approvals: [
+      {
+        stage,
+        approverType: "STATIC_GROUP" as const,
+        approverName: "Acme Reviewers",
+        status: "REQUESTED",
+        approvers,
+      },
+    ],
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDecideMutation();
+  });
+
+  it.each([
+    ["Customer Approval", "Customer Approval"],
+    ["customer_approval", "Customer Approval"],
+    ["CUSTOMER REVIEW", "Customer Review"],
+    ["customer-review", "Customer Review"],
+  ])("labels the stage %s as %s and shows the customer group in the Assignment group column", (raw, label) => {
+    mockQueryResult({
+      data: customerStage(raw, [{ id: "m1", name: "Member One", status: "REQUESTED" }]),
+    });
+    mockCurrentUser("someone-else");
+    render(<ChangeRequestApprovals id="chg-1" />);
+    const row = screen.getByText("Member One").closest("tr")!;
+    expect(row).toHaveTextContent(label);
+    expect(row).toHaveTextContent("Acme Reviewers");
+    expect(row).toHaveTextContent("Requested");
+  });
+
+  it("falls back to 'Customer group' when a customer stage carries no group name", () => {
+    mockQueryResult({
+      data: {
+        approvals: [
+          { stage: "Customer Review", approverType: "STATIC_GROUP", approverName: null, status: "REQUESTED", approvers: [{ id: "m1", name: "Member One", status: "REQUESTED" }] },
+        ],
+      },
+    });
+    mockCurrentUser("someone-else");
+    render(<ChangeRequestApprovals id="chg-1" />);
+    expect(screen.getByText("Member One").closest("tr")).toHaveTextContent("Customer group");
+  });
+
+  it("shows internal and customer stages side by side, each row under its own stage label", () => {
+    mockQueryResult({
+      data: {
+        approvals: [
+          { stage: "Peer Approval", approverType: "STATIC_GROUP", approverName: "Peers", status: "APPROVED", approvers: [{ id: "p", name: "Peer One", status: "APPROVED" }] },
+          { stage: "Customer Approval", approverType: "STATIC_GROUP", approverName: "Acme Reviewers", status: "REQUESTED", approvers: [{ id: "m1", name: "Member One", status: "REQUESTED" }] },
+        ],
+      },
+    });
+    mockCurrentUser("other");
+    render(<ChangeRequestApprovals id="chg-1" />);
+    expect(screen.getByText("Peer One").closest("tr")).toHaveTextContent("Peer Approval");
+    expect(screen.getByText("Member One").closest("tr")).toHaveTextContent("Customer Approval");
+  });
+
+  it("gives a group member canDecide=true enabled Approve/Reject on their own Customer Approval row, and submits the decision", () => {
+    mockQueryResult({
+      data: customerStage("Customer Approval", [
+        { id: "me", name: "Me Member", status: "REQUESTED", canDecide: true },
+        { id: "m2", name: "Other Member", status: "REQUESTED", canDecide: false },
+      ]),
+    });
+    mockCurrentUser("me");
+    render(<ChangeRequestApprovals id="chg-1" />);
+    const mine = screen.getByText("Me Member").closest("tr")!;
+    const approve = mine.querySelector("button")!;
+    expect(approve).toHaveTextContent("Approve");
+    expect(approve).toBeEnabled();
+    fireEvent.click(approve);
+    expect(decideMutateMock).toHaveBeenCalledWith({ id: "chg-1", decision: "approved" }, expect.anything());
+    fireEvent.click(mine.querySelectorAll("button")[1]!);
+    expect(decideMutateMock).toHaveBeenLastCalledWith({ id: "chg-1", decision: "rejected" }, expect.anything());
+    // Another member's row never shows controls for the signed-in user.
+    expect(screen.getByText("Other Member").closest("tr")).not.toHaveTextContent(/Approve|Reject/);
+  });
+
+  it("disables Approve/Reject on the user's own customer row when the backend says canDecide=false, with the existing explanation", () => {
+    mockQueryResult({
+      data: customerStage("Customer Review", [
+        { id: "me", name: "Me Member", status: "REQUESTED", canDecide: false },
+      ]),
+    });
+    mockCurrentUser("me");
+    render(<ChangeRequestApprovals id="chg-1" />);
+    const buttons = screen.getByText("Me Member").closest("tr")!.querySelectorAll("button");
+    expect(buttons).toHaveLength(2);
+    buttons.forEach((b) => expect(b).toBeDisabled());
+    expect(screen.getByLabelText(/you aren't able to approve or reject this stage/i)).toBeInTheDocument();
+  });
+
+  it("shows a non-member (no row of their own) no Approve/Reject on a customer stage", () => {
+    mockQueryResult({
+      data: customerStage("Customer Approval", [
+        { id: "m1", name: "Member One", status: "REQUESTED", canDecide: false },
+        { id: "m2", name: "Member Two", status: "REQUESTED", canDecide: false },
+      ]),
+    });
+    mockCurrentUser("outsider");
+    render(<ChangeRequestApprovals id="chg-1" />);
+    expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /reject/i })).not.toBeInTheDocument();
+  });
+
+  it("disables the creator's own customer-stage row (creator is never allowed to decide)", () => {
+    mockQueryResult({
+      data: customerStage("Customer Approval", [{ id: "me", name: "Me Member", status: "REQUESTED" }]),
+    });
+    mockCurrentUser("me");
+    render(<ChangeRequestApprovals id="chg-1" isCreator />);
+    screen.getByText("Me Member").closest("tr")!.querySelectorAll("button").forEach((b) => expect(b).toBeDisabled());
+  });
+});

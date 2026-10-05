@@ -59,9 +59,18 @@ function formatDateTime(value?: string | null): string {
   );
 }
 
-/** "Devops Approval" (STATIC_GROUP) or a named customer contact (DYNAMIC_CONTACT). */
+/** The stages the backend provisions for the CR's customer group. */
+function isCustomerStage(stageName: string): boolean {
+  return stageName === "Customer Approval" || stageName === "Customer Review";
+}
+
+/** "Devops Approval" (STATIC_GROUP), a named customer contact (DYNAMIC_CONTACT)
+ * or, for a Customer Approval / Customer Review stage, the customer group whose
+ * members are the approvers. */
 function approverGroupName(approval: BeChangeRequestApproval): string {
-  return approval.approverName || (approval.approverType === "DYNAMIC_CONTACT" ? "Customer contact" : "Approval group");
+  if (approval.approverName) return approval.approverName;
+  if (approval.approverType === "DYNAMIC_CONTACT") return "Customer contact";
+  return isCustomerStage(approvalStageLabel(approval.stage)) ? "Customer group" : "Approval group";
 }
 
 /** Whether this approver row is the current user's own pending ("REQUESTED") approval. */
