@@ -73,6 +73,13 @@ func (f *crFlow) seedCustomerGroups() {
 			f.t.Fatalf("seed customer group %s: %v", name, err)
 		}
 	}
+	// Every customer group serves project A (seedScope): a customer group is
+	// only valid for the project it is associated with.
+	for _, gid := range []string{crCustGroupID, crCustGroup2ID, crCustEmptyGroupID} {
+		if _, err := f.scoped.Exec(f.sys, `INSERT INTO project_customer_group (project_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, crScopeProjectA, gid); err != nil {
+			f.t.Fatalf("associate customer group %s with the project: %v", gid, err)
+		}
+	}
 	seedApprovalGroupMembers(f.t, f.scoped, crCustGroupID, crCustMember1ID, crCustMember2ID)
 	seedApprovalGroupMembers(f.t, f.scoped, crCustGroup2ID, crCustMember3ID)
 	// The creator belongs to the (otherwise empty) group; their user row is
@@ -90,12 +97,13 @@ func (f *crFlow) addMember(groupID, userID string) {
 	}
 }
 
-// createWithCustomerGroup is createGated with a Customer Group (nil = none).
+// createWithCustomerGroup is createGated with a Customer Group (nil = none) on
+// project A, to which seedCustomerGroups associates the groups.
 func (f *crFlow) createWithCustomerGroup(typ domain.ChangeRequestType, customerGroupID *string, approval, review bool) string {
 	f.t.Helper()
 	g := crFlowGroupID
 	resp, err := f.repo.CreateChangeRequest(f.sys, domain.CreateChangeRequestRequest{
-		Subject: crFlowSubject, Type: &typ, GroupID: &g, CustomerGroupID: customerGroupID,
+		Subject: crFlowSubject, Type: &typ, GroupID: &g, CustomerGroupID: customerGroupID, ProjectID: sp(crScopeProjectA),
 		CustomerApprovalRequired: boolp(approval), CustomerReviewRequired: boolp(review),
 	}, crFlowEmail(crFlowCreatorID))
 	if err != nil {
@@ -209,6 +217,7 @@ func newCustomerGroupFlow(t *testing.T) *crFlow {
 	f := newCRFlow(t)
 	f.seedAssignedGroup()
 	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1, crCABMemberUserID2)
+	f.seedScope()
 	f.seedCustomerGroups()
 	return f
 }
@@ -604,6 +613,12 @@ func TestChangeRequestFlowIntegration_SeedCustomerGroupFixtures(t *testing.T) {
 		if err := f.scoped.QueryRow(f.sys, `SELECT number FROM work_item WHERE id = $1`, tc.id).Scan(&n); err != nil {
 			t.Skipf("seed fixture %s not loaded: %v", tc.number, err)
 		}
+		var inProject bool
+		if err := f.scoped.QueryRow(f.sys,
+			`SELECT EXISTS (SELECT 1 FROM project_customer_group pcg JOIN work_item wi ON wi.project_id = pcg.project_id
+			                WHERE wi.id = $1 AND pcg.group_id = '00000000-0000-0000-0000-000000000911')`, tc.id).Scan(&inProject); err != nil || !inProject {
+			t.Fatalf("%s: its customer group is not associated with its project (err %v)", tc.number, err)
+		}
 		cr := f.get(tc.id)
 		if cr.State == nil || *cr.State != tc.state {
 			t.Fatalf("%s state = %v, want %s", tc.number, cr.State, tc.state)
@@ -636,4 +651,89 @@ func TestChangeRequestFlowIntegration_SeedCustomerGroupFixtures(t *testing.T) {
 			t.Fatalf("%s canDecide rows for jane.doe = %d, want 1", tc.number, can)
 		}
 	}
+}
+
+// The customer group's members are the approvers only because the group
+// belongs to the change's project: create with project + matching group, Request
+// Approval, peer and CAB approval, and the Customer Approval stage is exactly
+// that group's members (the lifecycle test above, asserted explicitly on the
+// pairing).
+func TestChangeRequestFlowIntegration_CustomerGroupOfProjectProvisionsItsMembers(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	id := f.createWithCustomerGroup(domain.ChangeRequestTypeNormal, sp(crCustGroupID), true, false)
+	if cr := f.get(id); cr.Project.ID != crScopeProjectA || cr.CustomerGroup == nil || cr.CustomerGroup.ID != crCustGroupID {
+		t.Fatalf("project/group = %s/%+v", cr.Project.ID, cr.CustomerGroup)
+	}
+	f.driveToCustomerApproval(id)
+	st := f.customerStages(id)
+	if len(st) != 1 || st[0].groupID != crCustGroupID {
+		t.Fatalf("customer stages = %+v, want one for the project's group", st)
+	}
+	assertApprovers(t, "Customer Approval", st[0].approvers, map[string]string{crCustMember1ID: "requested", crCustMember2ID: "requested"})
+}
+
+// Defence in depth: a stored customer group that is not associated with the
+// change's project (it could be another customer's people) never supplies
+// approvers -- no stage is provisioned from it and the manual path stays open,
+// at Customer Approval and at Customer Review alike.
+func TestChangeRequestFlowIntegration_CustomerGroupOfAnotherProjectProvisionsNoApprovers(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	// The other customer's group, with a member of its own.
+	f.addMember(crScopeGroupB1, crCustMember3ID)
+	force := func(id, group string) {
+		t.Helper()
+		if _, err := f.scoped.Exec(f.sys, `UPDATE change_request SET customer_group_id = $1 WHERE id = $2`, group, id); err != nil {
+			t.Fatalf("force the stored group: %v", err)
+		}
+	}
+
+	t.Run("customer approval", func(t *testing.T) {
+		id := f.createWithCustomerGroup(domain.ChangeRequestTypeNormal, sp(crCustGroupID), true, true)
+		force(id, crScopeGroupB1) // bypasses the write-time rule: legacy / out-of-band data
+		f.requestApproval(id)
+		f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "canceled")
+		if n := len(f.customerStages(id)); n != 0 {
+			t.Fatalf("a customer stage was provisioned from another project's group: %+v", f.customerStages(id))
+		}
+		// The manual path works, exactly as with no group.
+		f.step(id, domain.ChangeRequestStateScheduled, "SCHEDULED", "implement", "canceled")
+		if approved, _ := f.customerOutcome(id); !approved {
+			t.Fatal("manual record did not stamp is_customer_approved")
+		}
+		f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
+		f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
+		f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "rollback", "canceled")
+		if n := len(f.customerStages(id)); n != 0 {
+			t.Fatalf("a customer review stage was provisioned from another project's group: %+v", f.customerStages(id))
+		}
+	})
+
+	t.Run("setting the group while in the state", func(t *testing.T) {
+		id := f.createWithCustomerGroup(domain.ChangeRequestTypeStandard, nil, true, false)
+		f.requestApproval(id)
+		f.expect(id, "in Customer Approval, no group", "CUSTOMER_APPROVAL", "scheduled", "canceled")
+		// The write-time rule refuses it outright.
+		g := sp(crScopeGroupB1)
+		_, err := f.patch(id, domain.PatchChangeRequestRequest{CustomerGroupID: &g})
+		f.wantValidationError("group of another customer", err, "does not belong to the selected project")
+		if n := len(f.customerStages(id)); n != 0 {
+			t.Fatalf("customer stage after a refused group: %d", n)
+		}
+	})
+
+	t.Run("the association is removed while a stage is live", func(t *testing.T) {
+		id := f.createWithCustomerGroup(domain.ChangeRequestTypeNormal, sp(crCustGroupID), true, false)
+		f.driveToCustomerApproval(id)
+		assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crCustMember1ID: "requested", crCustMember2ID: "requested"})
+		if _, err := f.scoped.Exec(f.sys, `DELETE FROM project_customer_group WHERE project_id = $1 AND group_id = $2`, crScopeProjectA, crCustGroupID); err != nil {
+			t.Fatalf("remove the association: %v", err)
+		}
+		// Re-evaluated on the next write that touches the state or the group:
+		// the group is no longer the project's, so its pending approvers are
+		// cancelled and the manual path is back.
+		same := sp(crCustGroupID)
+		f.mustPatch(id, domain.PatchChangeRequestRequest{CustomerGroupID: &same})
+		assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crCustMember1ID: "cancelled", crCustMember2ID: "cancelled"})
+		f.expect(id, "after the association was removed", "CUSTOMER_APPROVAL", "scheduled", "canceled")
+	})
 }

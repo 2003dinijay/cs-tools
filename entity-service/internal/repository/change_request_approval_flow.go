@@ -833,7 +833,9 @@ func cancelPendingApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 //     has its REQUESTED approvers cancelled, so there are never two live
 //     customer stages and nobody is asked a question that no longer applies.
 //     A changed group gets a fresh stage for the new group (first bullet);
-//   - no customer group, or nobody eligible in it: no stage; the manual
+//   - no customer group, a customer group that is not associated with the
+//     change request's project (project_customer_group; never trusted for
+//     approvers, see below), or nobody eligible in it: no stage; the manual
 //     "record the customer's approval" / close path stays available.
 //
 // Returns whether a stage was provisioned. Callers: the CAB / ECAB approval
@@ -841,9 +843,11 @@ func cancelPendingApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 // Approval), a {state: customer_review} PATCH, and any PATCH that sets or
 // changes customerGroupId or the state.
 func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string) (bool, error) {
-	var state, groupID *string
+	var state, groupID, projectID *string
 	if err := tx.QueryRow(ctx,
-		`SELECT state::text, customer_group_id::text FROM change_request WHERE id = $1 FOR UPDATE`, workItemID).Scan(&state, &groupID); err != nil {
+		`SELECT cr.state::text, cr.customer_group_id::text, wi.project_id::text
+		 FROM change_request cr JOIN work_item wi ON wi.id = cr.id
+		 WHERE cr.id = $1 FOR UPDATE OF cr`, workItemID).Scan(&state, &groupID, &projectID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
@@ -863,6 +867,24 @@ func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 	// this change request by writing to it in this transaction.
 	if err := setCallerIdentity(ctx, tx, SearchScope{Unrestricted: true}); err != nil {
 		return false, fmt.Errorf("provision customer stage: escalate identity: %w", err)
+	}
+
+	// Defence in depth: a customer group that is not associated with the change
+	// request's project (data from before the rule, or an association since
+	// removed) must never supply approvers -- it could be another customer's
+	// people. It is treated as no group at all: no stage is provisioned from it,
+	// a live stage for it is cancelled, and the manual path applies. Valid
+	// project/group combinations are unaffected.
+	if groupID != nil {
+		inProject, err := customerGroupInProject(ctx, tx, stringOrEmpty(projectID), *groupID)
+		if err != nil {
+			return false, fmt.Errorf("provision customer stage: %w", err)
+		}
+		if !inProject {
+			slog.WarnContext(ctx, "customer group is not associated with the change request's project, customer stage not provisioned",
+				"changeRequestId", workItemID)
+			groupID = nil
+		}
 	}
 
 	keep := false

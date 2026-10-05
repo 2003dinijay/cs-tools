@@ -312,6 +312,45 @@ INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, tea
   ('00000000-0000-0000-0000-000000001302', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000911')
 ON CONFLICT (id) DO NOTHING;
 
+-- Customer groups belong to customer projects (migration 0192,
+-- project_customer_group): a change request may only name a customer group
+-- associated with its Customer Project, so one customer's change can never be
+-- routed to another customer's approvers. Two customers are seeded for that:
+--   Example Corp (account 301)  project 401 "Example Corp Production"
+--                               <- group 911 "Example Corp Customer Approvers"
+--   Other Corp   (account 302)  project 402 "Other Corp Production"
+--                               <- group 912 "Other Corp Customer Approvers"
+-- so group 912 is refused on a change request of project 401 and vice versa.
+-- The fixtures below (CHG-FIXED-007/008) sit on project 401 with group 911.
+INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user) VALUES
+  ('00000000-0000-0000-0000-000000000003', now(), now(), 'seed', 'seed', 'sam.other@othercorp.example', 'Sam Other', 'Sam', 'Other', 'sam.other@othercorp.example', true, false)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id, customer_success_manager_id, country, city, drive_location) VALUES
+  ('00000000-0000-0000-0000-000000000302', now(), now(), 'seed', 'seed', 'Other Corp', 'ACC-0002', 'SF-0002', '00000000-0000-0000-0000-000000000001', 'United Kingdom', 'London', 'https://drive.example.com/other-corp')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO project (id, created_on, updated_on, created_by, updated_by, key, sf_id, name, account_id, is_active, project_type_id) VALUES
+  ('00000000-0000-0000-0000-000000000402', now(), now(), 'seed', 'seed', 'OTHERCORP-PROJ-1', 'SF-PROJ-0002', 'Other Corp Production', '00000000-0000-0000-0000-000000000302', true, '00000000-0000-0000-0000-0000000000a3')
+ON CONFLICT (id) DO UPDATE SET project_type_id = COALESCE(project.project_type_id, EXCLUDED.project_type_id);
+
+INSERT INTO deployment (id, created_on, updated_on, created_by, updated_by, number, name, type, is_active, project_id) VALUES
+  ('00000000-0000-0000-0000-000000000541', now(), now(), 'seed', 'seed', 'DEP-0010', 'Other Corp Production', 'PRIMARY_PRODUCTION', true, '00000000-0000-0000-0000-000000000402')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name, is_active) VALUES
+  ('00000000-0000-0000-0000-000000000912', now(), now(), 'seed', 'seed', 'Other Corp Customer Approvers', true)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id) VALUES
+  ('00000000-0000-0000-0000-000000001311', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000912')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO project_customer_group (project_id, group_id) VALUES
+  ('00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000911'),
+  ('00000000-0000-0000-0000-000000000402', '00000000-0000-0000-0000-000000000912')
+ON CONFLICT DO NOTHING;
+
 -- CR-FIXED-007: a Normal change in Customer Approval with the customer group
 -- set and its "Customer Approval" stage provisioned (what the CAB approval
 -- cascade writes): jane.doe and john.smith are REQUESTED approvers; the first

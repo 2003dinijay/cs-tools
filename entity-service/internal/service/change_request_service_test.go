@@ -1083,6 +1083,27 @@ func TestChangeRequestService_CreateChangeRequest_ScopeValidatedBeforeSNAndStrip
 		}
 	})
 
+	t.Run("customer group of another project: refused before ServiceNow is called", func(t *testing.T) {
+		mirror := &stubMirrorChangeRequestService{createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
+			t.Fatal("ServiceNow was called although the customer group does not belong to the project")
+			return domain.CreateChangeRequestResponse{}, nil
+		}}
+		var sawGroup *string
+		repo := &stubChangeRequestRepo{validateChangeRequestLinks: func(_ context.Context, sel domain.ChangeRequestLinkSelection) (domain.ChangeRequestLinkSet, error) {
+			sawGroup = sel.CustomerGroupID
+			return domain.ChangeRequestLinkSet{}, &apierror.ValidationError{Msg: "customerGroupId does not belong to the selected project: " + *sel.CustomerGroupID}
+		}}
+		svc := NewChangeRequestServiceWithSNMirror(repo, stubUserRepo{}, mirror)
+		_, err := svc.CreateChangeRequest(context.Background(), req)
+		var ve *apierror.ValidationError
+		if !asValidationError(err, &ve) || ve.Msg != "customerGroupId does not belong to the selected project: "+group {
+			t.Fatalf("err = %v, want the repository's customer group ValidationError", err)
+		}
+		if sawGroup == nil || *sawGroup != group {
+			t.Fatalf("the customer group was not part of the validated selection: %v", sawGroup)
+		}
+	})
+
 	t.Run("accepted: ServiceNow gets the modelled fields only, PostgreSQL gets everything", func(t *testing.T) {
 		var sawSel domain.ChangeRequestLinkSelection
 		var toSN, toPG domain.CreateChangeRequestRequest
@@ -1111,6 +1132,9 @@ func TestChangeRequestService_CreateChangeRequest_ScopeValidatedBeforeSNAndStrip
 		if sawSel.ProjectID == nil || *sawSel.ProjectID != project || len(sawSel.DeploymentIDs) != 1 || len(sawSel.EnvironmentIDs) != 1 || len(sawSel.DeploymentProductIDs) != 1 {
 			t.Errorf("validated selection = %+v", sawSel)
 		}
+		if sawSel.CustomerGroupID == nil || *sawSel.CustomerGroupID != group {
+			t.Errorf("validated selection lost the customer group: %+v", sawSel)
+		}
 		if toSN.ProjectID != nil || toSN.DeploymentIDs != nil || toSN.EnvironmentIDs != nil || toSN.DeploymentProductIDs != nil {
 			t.Errorf("ServiceNow saw the Postgres-only scope: %+v", toSN)
 		}
@@ -1128,10 +1152,16 @@ func TestChangeRequestService_GetChangeRequestLinkOptions(t *testing.T) {
 	var got domain.ChangeRequestLinkOptionsRequest
 	repo := &stubChangeRequestRepo{getChangeRequestLinkOptions: func(_ context.Context, r domain.ChangeRequestLinkOptionsRequest) (domain.ChangeRequestLinkOptionsResponse, error) {
 		got = r
-		return domain.ChangeRequestLinkOptionsResponse{Deployments: []domain.ChangeRequestDeploymentOption{{ID: "d"}}}, nil
+		return domain.ChangeRequestLinkOptionsResponse{
+			Deployments:    []domain.ChangeRequestDeploymentOption{{ID: "d"}},
+			CustomerGroups: []domain.EntityRef{{ID: "g", Name: "G"}},
+		}, nil
 	}}
 	svc := NewChangeRequestService(repo, stubUserRepo{})
 	resp, err := svc.GetChangeRequestLinkOptions(context.Background(), domain.ChangeRequestLinkOptionsRequest{ProjectID: scopeTestProjectID, DeploymentIDs: []string{scopeTestDeploymentID}})
+	if err == nil && (len(resp.CustomerGroups) != 1 || resp.CustomerGroups[0].ID != "g") {
+		t.Fatalf("customerGroups not passed through: %+v", resp.CustomerGroups)
+	}
 	if err != nil || len(resp.Deployments) != 1 || got.ProjectID != scopeTestProjectID || len(got.DeploymentIDs) != 1 {
 		t.Fatalf("valid request: resp=%+v err=%v got=%+v", resp, err, got)
 	}

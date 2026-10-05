@@ -418,11 +418,12 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 	if err := validateChangeRequestCreateScope(req); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
 	}
-	// The project / deployments / environments / deployment products are
+	// The project / deployments / environments / deployment products and the
+	// customer group (which must belong to the project) are
 	// validated BEFORE ServiceNow is called: once ServiceNow has created the
 	// change request, a refusal on the Postgres side would strand it there.
 	if _, err := s.repo.ValidateChangeRequestLinks(ctx, domain.ChangeRequestLinkSelection{
-		ProjectID: req.ProjectID, DeploymentIDs: req.DeploymentIDs,
+		ProjectID: req.ProjectID, CustomerGroupID: req.CustomerGroupID, DeploymentIDs: req.DeploymentIDs,
 		EnvironmentIDs: req.EnvironmentIDs, DeploymentProductIDs: req.DeploymentProductIDs,
 	}); err != nil {
 		return domain.CreateChangeRequestResponse{}, err

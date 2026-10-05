@@ -42,6 +42,11 @@ import (
 //   - Deployment products: change_request_deployed_product. READ-ONLY and
 //     derived: the active deployed products of the chosen deployments. A caller
 //     may state them, but only as exactly that set.
+//   - Customer Group: change_request.customer_group_id. Must be one of the
+//     customer groups associated with the project (project_customer_group,
+//     migration 0192), so a change request of one customer can never be directed
+//     at another customer's approvers; it therefore requires a project. See
+//     validateCustomerGroupForProject.
 //
 // PATCH additionally enforces the edit window (changeRequestLinksLockedStates).
 
@@ -160,6 +165,46 @@ func linkValidationf(format string, args ...any) error {
 	return &apierror.ValidationError{Msg: fmt.Sprintf(format, args...)}
 }
 
+// Messages of the customer group / project rule (also the webapp's verbatim 400s).
+const (
+	customerGroupRequiresProjectMsg = "customerGroupId requires projectId: the customer group must belong to the selected customer project"
+)
+
+// customerGroupInProject reports whether the customer group is associated with
+// the project (project_customer_group). A blank project or group is never "in".
+func customerGroupInProject(ctx context.Context, q crQueryer, projectID, groupID string) (bool, error) {
+	projectID, groupID = strings.TrimSpace(projectID), strings.TrimSpace(groupID)
+	if projectID == "" || groupID == "" {
+		return false, nil
+	}
+	var ok bool
+	if err := q.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM project_customer_group WHERE project_id = $1::uuid AND group_id = $2::uuid)`,
+		projectID, groupID).Scan(&ok); err != nil {
+		return false, fmt.Errorf("check customer group of project: %w", err)
+	}
+	return ok, nil
+}
+
+// validateCustomerGroupForProject enforces the customer group rule: the group
+// requires a project and must be associated with it. A project with no
+// associated groups therefore refuses every group. Returns a ValidationError
+// (a 400) otherwise.
+func validateCustomerGroupForProject(ctx context.Context, q crQueryer, projectID, groupID string) error {
+	groupID = strings.ToLower(strings.TrimSpace(groupID))
+	if strings.TrimSpace(projectID) == "" {
+		return linkValidationf("%s", customerGroupRequiresProjectMsg)
+	}
+	ok, err := customerGroupInProject(ctx, q, projectID, groupID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return linkValidationf("customerGroupId does not belong to the selected project: %s", groupID)
+	}
+	return nil
+}
+
 // resolveChangeRequestLinks validates sel and derives environments and
 // deployment products from the chosen deployments, per the rules above.
 // Returns a ValidationError (a 400) naming the offending field and id.
@@ -182,6 +227,14 @@ func resolveChangeRequestLinks(ctx context.Context, q crQueryer, sel domain.Chan
 		}
 		if !exists {
 			return res, linkValidationf("projectId does not refer to an existing project: %s", res.projectID)
+		}
+	}
+
+	// The customer group is validated here, before anything is written (and,
+	// on the ServiceNow-first create, before ServiceNow is called).
+	if sel.CustomerGroupID != nil && strings.TrimSpace(*sel.CustomerGroupID) != "" {
+		if err := validateCustomerGroupForProject(ctx, q, res.projectID, *sel.CustomerGroupID); err != nil {
+			return res, err
 		}
 	}
 
@@ -481,19 +534,19 @@ type changeRequestLinkPlan struct {
 // request has no scope field. A field re-sent with the value already stored is
 // a no-op and is never refused, whatever the state.
 func planChangeRequestLinks(ctx context.Context, tx pgx.Tx, id string, req domain.PatchChangeRequestRequest) (*changeRequestLinkPlan, error) {
-	if req.ProjectID == nil && req.DeploymentIDs == nil && req.EnvironmentIDs == nil && req.DeploymentProductIDs == nil {
+	if req.ProjectID == nil && req.DeploymentIDs == nil && req.EnvironmentIDs == nil && req.DeploymentProductIDs == nil && req.CustomerGroupID == nil {
 		return nil, nil
 	}
 	if req.DeploymentIDs != nil && (req.DeploymentID != nil || req.DeployedProductID != nil) {
 		return nil, linkValidationf("deploymentId and deployedProductId cannot be combined with deploymentIds: send deploymentIds only")
 	}
 
-	var storedProject, state *string
+	var storedProject, state, storedGroup *string
 	if err := tx.QueryRow(ctx, `
-		SELECT wi.project_id::text, cr.state::text
+		SELECT wi.project_id::text, cr.state::text, cr.customer_group_id::text
 		FROM work_item wi JOIN change_request cr ON cr.id = wi.id
 		WHERE wi.id = $1::uuid AND wi.type = 'CHANGE_REQUEST'
-		FOR UPDATE OF wi`, id).Scan(&storedProject, &state); err != nil {
+		FOR UPDATE OF wi`, id).Scan(&storedProject, &state, &storedGroup); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, &apierror.NotFoundError{Msg: "change request not found"}
 		}
@@ -519,6 +572,15 @@ func planChangeRequestLinks(ctx context.Context, tx pgx.Tx, id string, req domai
 	}
 	if projectChanged && req.DeploymentIDs == nil && len(storedDepIDs) > 0 {
 		return nil, linkValidationf("projectId cannot be changed without deploymentIds: the stored deployments belong to the current project (send deploymentIds for the new project; an empty array clears them)")
+	}
+
+	// Customer group. Only a write that touches the project or the group is
+	// judged: a change request whose stored group and project already disagree
+	// (data from before the rule) stays readable and editable in every other
+	// respect. Re-sending the stored group with the project unchanged is a
+	// no-op and is never refused.
+	if err := validateCustomerGroupOfPatch(ctx, tx, req, storedGroup, effProject, projectChanged); err != nil {
+		return nil, err
 	}
 
 	needResolve := projectChanged || depsChanged || req.EnvironmentIDs != nil || req.DeploymentProductIDs != nil
@@ -578,6 +640,44 @@ func planChangeRequestLinks(ctx context.Context, tx pgx.Tx, id string, req domai
 	return plan, nil
 }
 
+// validateCustomerGroupOfPatch applies the customer group rule to a PATCH.
+//
+//   - customerGroupId sent as a group (changed, or the project changes too): it
+//     must be associated with the effective project (see
+//     validateCustomerGroupForProject);
+//   - customerGroupId null: clears it, always allowed;
+//   - projectId changed while a group is stored and customerGroupId is not
+//     sent: the stored group must also belong to the new project, otherwise the
+//     request is refused -- the group has to be changed or cleared together with
+//     the project (the way deploymentIds must be).
+func validateCustomerGroupOfPatch(ctx context.Context, q crQueryer, req domain.PatchChangeRequestRequest, storedGroup, effProject *string, projectChanged bool) error {
+	project := ""
+	if effProject != nil {
+		project = strings.ToLower(strings.TrimSpace(*effProject))
+	}
+	if req.CustomerGroupID != nil {
+		sent := *req.CustomerGroupID
+		if sent == nil {
+			return nil
+		}
+		unchanged := storedGroup != nil && strings.EqualFold(strings.TrimSpace(*sent), *storedGroup)
+		if unchanged && !projectChanged {
+			return nil
+		}
+		return validateCustomerGroupForProject(ctx, q, project, *sent)
+	}
+	if projectChanged && storedGroup != nil {
+		ok, err := customerGroupInProject(ctx, q, project, *storedGroup)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return linkValidationf("projectId cannot be changed without customerGroupId: the stored customer group does not belong to the new project (send customerGroupId for the new project; null clears it)")
+		}
+	}
+	return nil
+}
+
 // applyChangeRequestLinkPlan writes the join rows the plan decided on.
 func applyChangeRequestLinkPlan(ctx context.Context, tx pgx.Tx, id string, plan *changeRequestLinkPlan) error {
 	if plan == nil {
@@ -617,6 +717,7 @@ func (r *changeRequestRepo) GetChangeRequestLinkOptions(ctx context.Context, req
 		Deployments:        []domain.ChangeRequestDeploymentOption{},
 		Environments:       []domain.EntityRef{},
 		DeploymentProducts: []domain.ChangeRequestDeploymentProductOption{},
+		CustomerGroups:     []domain.EntityRef{},
 	}
 	var exists bool
 	if err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project WHERE id = $1::uuid)`, project).Scan(&exists); err != nil {
@@ -625,6 +726,30 @@ func (r *changeRequestRepo) GetChangeRequestLinkOptions(ctx context.Context, req
 	if !exists {
 		return resp, linkValidationf("projectId does not refer to an existing project: %s", project)
 	}
+	// The customer groups of the project: the only values customerGroupId
+	// accepts for it (validateCustomerGroupForProject).
+	grows, err := r.db.Query(ctx, `
+		SELECT g.id::text, COALESCE(g.name, '')
+		FROM project_customer_group pcg
+		JOIN "group" g ON g.id = pcg.group_id
+		WHERE pcg.project_id = $1::uuid AND COALESCE(g.is_active, true)
+		ORDER BY g.name, g.id`, project)
+	if err != nil {
+		return resp, fmt.Errorf("link options: query customer groups: %w", err)
+	}
+	for grows.Next() {
+		var ref domain.EntityRef
+		if err := grows.Scan(&ref.ID, &ref.Name); err != nil {
+			grows.Close()
+			return resp, fmt.Errorf("link options: scan customer group: %w", err)
+		}
+		resp.CustomerGroups = append(resp.CustomerGroups, ref)
+	}
+	grows.Close()
+	if err := grows.Err(); err != nil {
+		return resp, fmt.Errorf("link options: iterate customer groups: %w", err)
+	}
+
 	rows, err := r.db.Query(ctx, `
 		SELECT d.id::text, d.name, lower(d.type::text), e.id::text, e.name
 		FROM deployment d

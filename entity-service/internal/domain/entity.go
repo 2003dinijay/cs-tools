@@ -4474,6 +4474,11 @@ type PatchChangeRequestResponse struct {
 // those deployments. It is what the repository validates and derives from.
 type ChangeRequestLinkSelection struct {
 	ProjectID *string
+	// CustomerGroupID is the chosen Customer Group (nil/blank = none). It must
+	// be one of the customer groups associated with ProjectID
+	// (project_customer_group, migration 0192), so a change request can never
+	// be directed at another customer's approvers.
+	CustomerGroupID *string
 	// DeploymentIDs are the chosen deployments, in the order given.
 	DeploymentIDs []string
 	// EnvironmentIDs is nil when the caller did not state environments (they
@@ -4537,6 +4542,10 @@ type ChangeRequestLinkOptionsResponse struct {
 	// DeploymentProducts follow from the chosen deployments; read-only on the
 	// form. Empty when none were chosen.
 	DeploymentProducts []ChangeRequestDeploymentProductOption `json:"deploymentProducts"`
+	// CustomerGroups are the customer groups associated with the project (the
+	// only values customerGroupId accepts for it), name order; empty when the
+	// project has none.
+	CustomerGroups []EntityRef `json:"customerGroups"`
 }
 
 // TimeCardState represents the workflow state of a time card.

@@ -7265,7 +7265,9 @@ paths:
         deployment products that follow from them -- the same derivation that
         POST /change-requests and PATCH /change-requests/{id} validate against.
         Deployment products are read-only on the form: they are always the
-        active deployed products of the chosen deployments.
+        active deployed products of the chosen deployments. Also returns the
+        project's customer groups -- the only values `customerGroupId` accepts
+        for it.
       requestBody:
         required: true
         content:
@@ -16422,6 +16424,18 @@ components:
         customerGroupId:
           type: string
           format: uuid
+          description: >-
+            The Customer Group: the customer-side people who approve / review
+            the change. Must be one of the customer groups associated with
+            `projectId` (see `customerGroups` of POST
+            /change-requests/link-options), so a change request can never be
+            directed at another customer's people; it therefore requires
+            `projectId` (400 `customerGroupId requires projectId: the customer
+            group must belong to the selected customer project`), and a group
+            that is not the project's is a 400 `customerGroupId does not belong
+            to the selected project: <id>` (a project with no associated groups
+            refuses every group). Validated before anything is written -- and
+            before ServiceNow is called on the ServiceNow-first create.
         projectId:
           type: string
           format: uuid
@@ -16513,8 +16527,16 @@ components:
 
     ChangeRequestLinkOptionsResponse:
       type: object
-      required: [deployments, environments, deploymentProducts]
+      required: [deployments, environments, deploymentProducts, customerGroups]
       properties:
+        customerGroups:
+          type: array
+          description: >-
+            The active customer groups associated with the project
+            (project_customer_group), name order; empty when the project has
+            none (then no customerGroupId is accepted for it).
+          items:
+            $ref: '#/components/schemas/EntityRef'
         deployments:
           type: array
           description: The project's active deployments, name order.
@@ -16718,7 +16740,18 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: Explicit null clears the field.
+          description: >-
+            Explicit null clears the field. A group must be associated with the
+            change request's (effective) project, as on create (400
+            `customerGroupId requires projectId: ...` / `customerGroupId does not
+            belong to the selected project: <id>`). Changing `projectId` while a
+            customer group is stored requires the group to belong to the new
+            project too: the request must then send a valid `customerGroupId`
+            for it, or null to clear it, otherwise 400 `projectId cannot be
+            changed without customerGroupId: the stored customer group does not
+            belong to the new project (send customerGroupId for the new project;
+            null clears it)`. Only a write that touches the project or the group
+            is judged; re-sending the stored group is a no-op.
         deploymentIds:
           type: array
           maxItems: 100
