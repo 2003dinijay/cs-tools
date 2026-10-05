@@ -36,48 +36,69 @@
 -- internal-level bug. The test TestRLSSchemaIntegration_EveryProtectedTableHasAPolicyForEveryCommand
 -- now keeps every protected table covered for all four commands.
 --
+-- Locking: CREATE POLICY and DROP POLICY take an ACCESS EXCLUSIVE lock on the table (measured on
+-- PostgreSQL 17: an open CREATE POLICY blocks SELECT and writes on that table until it commits). So
+-- each table is its own short transaction: a lock is held for two statements and never while this
+-- file waits for another table's lock, unlike a single transaction over all seven tables (the shape
+-- that deadlocked against a running csm-sync-service when 0147 was applied). lock_timeout makes a
+-- busy table fail the file instead of queueing behind a long query and stalling everything behind it.
+-- The seven policies are independent and the file is idempotent (each policy is dropped and
+-- recreated), so after a lock timeout, run it again.
+--
 -- The internal check uses the planner-friendly scalar sub-select introduced by migration 0154.
--- Idempotent (each policy is dropped and recreated) and one transaction, because `make migrate` runs
--- each file with `psql -f` and no --single-transaction. CREATE POLICY does not block reads or writes.
-BEGIN;
+SET lock_timeout = '5s';
 
+BEGIN;
 DROP POLICY IF EXISTS work_item_watcher_update_internal_only ON work_item_watcher;
 CREATE POLICY work_item_watcher_update_internal_only ON work_item_watcher
   FOR UPDATE
   USING ((SELECT current_setting('app.is_internal', true) = 'true'))
   WITH CHECK ((SELECT current_setting('app.is_internal', true) = 'true'));
+COMMIT;
 
+BEGIN;
 DROP POLICY IF EXISTS work_item_activity_update_internal_only ON work_item_activity;
 CREATE POLICY work_item_activity_update_internal_only ON work_item_activity
   FOR UPDATE
   USING ((SELECT current_setting('app.is_internal', true) = 'true'))
   WITH CHECK ((SELECT current_setting('app.is_internal', true) = 'true'));
+COMMIT;
 
+BEGIN;
 DROP POLICY IF EXISTS comment_edit_history_update_internal_only ON comment_edit_history;
 CREATE POLICY comment_edit_history_update_internal_only ON comment_edit_history
   FOR UPDATE
   USING ((SELECT current_setting('app.is_internal', true) = 'true'))
   WITH CHECK ((SELECT current_setting('app.is_internal', true) = 'true'));
+COMMIT;
 
+BEGIN;
 DROP POLICY IF EXISTS time_card_approver_update_internal_only ON time_card_approver;
 CREATE POLICY time_card_approver_update_internal_only ON time_card_approver
   FOR UPDATE
   USING ((SELECT current_setting('app.is_internal', true) = 'true'))
   WITH CHECK ((SELECT current_setting('app.is_internal', true) = 'true'));
+COMMIT;
 
+BEGIN;
 DROP POLICY IF EXISTS change_request_delete_internal_only ON change_request;
 CREATE POLICY change_request_delete_internal_only ON change_request
   FOR DELETE
   USING ((SELECT current_setting('app.is_internal', true) = 'true'));
+COMMIT;
 
+BEGIN;
 DROP POLICY IF EXISTS conversation_delete_internal_only ON conversation;
 CREATE POLICY conversation_delete_internal_only ON conversation
   FOR DELETE
   USING ((SELECT current_setting('app.is_internal', true) = 'true'));
+COMMIT;
 
+BEGIN;
 DROP POLICY IF EXISTS customer_call_delete_internal_only ON customer_call;
 CREATE POLICY customer_call_delete_internal_only ON customer_call
   FOR DELETE
   USING ((SELECT current_setting('app.is_internal', true) = 'true'));
-
 COMMIT;
+
+RESET lock_timeout;
