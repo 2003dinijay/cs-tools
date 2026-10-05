@@ -37,6 +37,7 @@ type stubDeployedProductRepo struct {
 	searchProjectsByProductVersion      func(ctx context.Context, req domain.SearchProjectsByProductVersionRequest, excludeClosureStates []string, excludeSubscriptionTypes []domain.SubscriptionType) ([]domain.EntityRef, int, error)
 	createDeployedProductFromServiceNow func(ctx context.Context, req domain.CreateDeployedProductRequest, id, number, createdBy string, createdOn time.Time) (domain.CreatedDeployedProduct, error)
 	updateDeployedProductFields         func(ctx context.Context, req domain.UpdateDeployedProductRequest, updatedBy string) (domain.UpdatedDeployedProduct, error)
+	getDeployedProductCategory          func(ctx context.Context, id string) (*string, error)
 }
 
 func (s *stubDeployedProductRepo) SearchDeployedProducts(ctx context.Context, req domain.SearchDeployedProductsRequest) ([]domain.DeployedProductView, int, error) {
@@ -73,6 +74,13 @@ func (s *stubDeployedProductRepo) UpdateDeployedProductFields(ctx context.Contex
 		panic("stubDeployedProductRepo: UpdateDeployedProductFields not set")
 	}
 	return s.updateDeployedProductFields(ctx, req, updatedBy)
+}
+
+func (s *stubDeployedProductRepo) GetDeployedProductCategory(ctx context.Context, id string) (*string, error) {
+	if s.getDeployedProductCategory == nil {
+		panic("stubDeployedProductRepo: GetDeployedProductCategory not set")
+	}
+	return s.getDeployedProductCategory(ctx, id)
 }
 
 // stubMirrorDeployedProductService implements both the full

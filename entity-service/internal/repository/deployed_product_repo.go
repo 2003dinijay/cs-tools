@@ -85,6 +85,31 @@ type DeployedProductRepository interface {
 	// a live search) -- a mismatch is indistinguishable from "not found" and
 	// returns the same NotFoundError.
 	UpdateDeployedProductFields(ctx context.Context, req domain.UpdateDeployedProductRequest, updatedBy string) (domain.UpdatedDeployedProduct, error)
+
+	// GetDeployedProductCategory returns the deployed product's own
+	// product_category (lower-case, e.g. "ms"; nil when unset), or a
+	// NotFoundError when no such row exists. A single-row lookup, not the
+	// list/filter machinery SearchDeployedProducts already has -- used by
+	// caseService's own project-type category allow-list enforcement at
+	// case/SR creation time, which only ever checks one id at a time.
+	GetDeployedProductCategory(ctx context.Context, id string) (*string, error)
+}
+
+// GetDeployedProductCategory implements DeployedProductRepository.
+func (r *deployedProductRepo) GetDeployedProductCategory(ctx context.Context, id string) (*string, error) {
+	var category *string
+	err := r.db.QueryRow(ctx, `SELECT product_category::TEXT FROM deployed_product WHERE id = $1`, id).Scan(&category)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, &apierror.NotFoundError{Msg: "deployed product not found"}
+		}
+		return nil, fmt.Errorf("get deployed product category: %w", err)
+	}
+	if category != nil {
+		lower := strings.ToLower(*category)
+		category = &lower
+	}
+	return category, nil
 }
 
 // resolveDeployedProductNodes looks up the given deployed product, confirms
