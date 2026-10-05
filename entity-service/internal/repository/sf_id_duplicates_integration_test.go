@@ -117,7 +117,7 @@ func TestDuplicateSfIDIntegration_WritesOnlyTheReferencedCopy(t *testing.T) {
 	pool := newDuplicateSfIDPool(t)
 	ctx := context.Background()
 
-	accounts := &accountRepo{db: pool}
+	accounts := &accountRepo{db: NewScoped(pool)}
 	if err := accounts.UpsertFromSalesforce(ctx, domain.SalesforceAccountUpsert{SfID: dupAccountSfID, Name: "From SF", Number: "ACC-DUP-2"},
 		dupState(domain.SalesforceIngestEntityAccount, dupAccountSfID)); err != nil {
 		t.Fatalf("account upsert: %v", err)
@@ -163,7 +163,7 @@ func TestDuplicateSfIDIntegration_WritesOnlyTheReferencedCopy(t *testing.T) {
 		t.Errorf("other invoice copy = %q, want unchanged", got)
 	}
 
-	if id, err := NewSalesforceProjectRepository(pool).LookupProjectIDBySfID(ctx, dupProjectSfID); err != nil || id == nil || *id != dupProjectRef {
+	if id, err := NewSalesforceProjectRepository(NewScoped(pool)).LookupProjectIDBySfID(ctx, dupProjectSfID); err != nil || id == nil || *id != dupProjectRef {
 		t.Errorf("project lookup = %v, %v; want %s", id, err, dupProjectRef)
 	}
 }

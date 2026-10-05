@@ -1448,6 +1448,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -1791,6 +1797,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /roles/grantable:
+    get:
+      summary: List the portal roles an admin may grant to a new user.
+      description: >
+        Admin-only — the Add User dialog's only caller. Each key reported here is
+        already resolved, at startup, to a real role on the identity provider via
+        the configured role-ID mapping; a key with no configured mapping is simply
+        absent. POST /users' own grantRoles field accepts exactly these keys and
+        rejects any other with a 400.
+      operationId: getRolesGrantable
+      responses:
+        "200":
+          description: The portal roles this deployment can grant via SCIM.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantableRolesResponse'
         "401":
           description: Unauthorized
           content:
@@ -9326,7 +9368,7 @@ paths:
   /accounts/{accountId}/escalations:
     get:
       summary: List an account's escalations.
-      operationId: splGetAccountEscalations
+      operationId: getAccountEscalations
       parameters:
         - name: accountId
           in: path
@@ -9353,7 +9395,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplEscalationDetail'
+                  $ref: '#/components/schemas/EscalationDetail'
         "400":
           description: BadRequest
           content:
@@ -9388,7 +9430,7 @@ paths:
   /accounts/{accountId}/cases/{caseId}/escalate:
     post:
       summary: Escalate a case on this account.
-      operationId: splEscalateCase
+      operationId: escalateCase
       parameters:
         - name: accountId
           in: path
@@ -9405,14 +9447,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplEscalationRequest'
+              $ref: '#/components/schemas/EscalationRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplEscalationResponse'
+                $ref: '#/components/schemas/EscalationResponse'
         "400":
           description: BadRequest
           content:
@@ -9453,7 +9495,7 @@ paths:
   /cases/{caseId}/attachments-info:
     get:
       summary: List metadata for a case's attachments.
-      operationId: splGetAttachmentsInfo
+      operationId: getAttachmentsInfo
       parameters:
         - name: caseId
           in: path
@@ -9480,7 +9522,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplAttachmentInfo'
+                  $ref: '#/components/schemas/AttachmentInfo'
         "400":
           description: BadRequest
           content:
@@ -9515,7 +9557,7 @@ paths:
   /products:
     get:
       summary: List the distinct product names known to ServiceNow deployments.
-      operationId: splGetProducts
+      operationId: getProducts
       responses:
         "200":
           description: Ok
@@ -9547,7 +9589,7 @@ paths:
   /abt-teams:
     get:
       summary: List the distinct ABT team names.
-      operationId: splGetABTTeams
+      operationId: getABTTeams
       responses:
         "200":
           description: Ok
@@ -9579,7 +9621,7 @@ paths:
   /generate-sla-report:
     get:
       summary: Generate a project's SLA report for a date range.
-      operationId: splGenerateSLAReport
+      operationId: generateSLAReport
       parameters:
         - name: projectSysId
           in: query
@@ -9602,7 +9644,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplSLAReportDetails'
+                $ref: '#/components/schemas/SLAReportDetails'
         "400":
           description: BadRequest
           content:
@@ -9631,7 +9673,7 @@ paths:
   /report-details:
     get:
       summary: Generate a project's detailed CS report for a date range.
-      operationId: splGetReportDetails
+      operationId: getReportDetails
       parameters:
         - name: projectSysId
           in: query
@@ -9654,7 +9696,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplCSReportDetails'
+                $ref: '#/components/schemas/CSReportDetails'
         "400":
           description: BadRequest
           content:
@@ -9683,7 +9725,7 @@ paths:
   /generate-timelogs-breakdown-report:
     get:
       summary: Generate a project's time-log breakdown report.
-      operationId: splGenerateTimelogsBreakdownReport
+      operationId: generateTimelogsBreakdownReport
       parameters:
         - name: projectId
           in: query
@@ -9696,7 +9738,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplTimeLogBreakdownDetails'
+                $ref: '#/components/schemas/TimeLogBreakdownDetails'
         "400":
           description: BadRequest
           content:
@@ -9731,7 +9773,7 @@ paths:
   /attachments/{attachmentId}/download:
     get:
       summary: Download the binary content of a case attachment (ServiceNow-backed).
-      operationId: splDownloadAttachment
+      operationId: downloadAttachment
       parameters:
         - name: attachmentId
           in: path
@@ -9785,7 +9827,7 @@ paths:
   /abt-team-schedule:
     get:
       summary: Get an ABT team's schedule.
-      operationId: splGetABTTeamSchedule
+      operationId: getABTTeamSchedule
       parameters:
         - name: from
           in: query
@@ -9813,7 +9855,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplABTTeamScheduleData'
+                $ref: '#/components/schemas/ABTTeamScheduleData'
         "400":
           description: BadRequest
           content:
@@ -9850,7 +9892,7 @@ paths:
   /usage-metrics/projects:
     get:
       summary: List projects for the usage-metrics dashboard, optionally filtered by name.
-      operationId: splUsageMetricsGetProjects
+      operationId: usageMetricsGetProjects
       parameters:
         - name: search
           in: query
@@ -9887,7 +9929,7 @@ paths:
   /usage-metrics/instances/metrics/search:
     post:
       summary: Search instance-level product metrics (raw passthrough to ServiceNow's custom API).
-      operationId: splSearchInstanceMetrics
+      operationId: searchInstanceMetrics
       requestBody:
         required: true
         content:
@@ -9937,7 +9979,7 @@ paths:
   /usage-metrics/instances/metrics/stats:
     post:
       summary: Get aggregated instance metrics stats (raw passthrough to ServiceNow's custom API).
-      operationId: splGetInstanceMetricsStats
+      operationId: getInstanceMetricsStats
       requestBody:
         required: true
         content:
@@ -9987,7 +10029,7 @@ paths:
   /usage-metrics/instances/usages/search:
     post:
       summary: Search instance-level usage records (raw passthrough to ServiceNow's custom API).
-      operationId: splSearchInstanceUsages
+      operationId: searchInstanceUsages
       requestBody:
         required: true
         content:
@@ -10037,7 +10079,7 @@ paths:
   /usage-metrics/instances/usages/stats:
     post:
       summary: Get aggregated instance usage stats (raw passthrough to ServiceNow's custom API).
-      operationId: splGetInstanceUsagesStats
+      operationId: getInstanceUsagesStats
       requestBody:
         required: true
         content:
@@ -10087,7 +10129,7 @@ paths:
   /usage-metrics/deployments/search:
     post:
       summary: Search deployments (raw passthrough to ServiceNow's custom API).
-      operationId: splSearchUsageMetricsDeployments
+      operationId: searchUsageMetricsDeployments
       requestBody:
         required: true
         content:
@@ -10137,7 +10179,7 @@ paths:
   /usage-metrics/projects/search:
     post:
       summary: Search projects for the usage-metrics dashboard (raw passthrough to ServiceNow's custom API).
-      operationId: splSearchUsageMetricsProjects
+      operationId: searchUsageMetricsProjects
       requestBody:
         required: true
         content:
@@ -10187,7 +10229,7 @@ paths:
   /usage-metrics/deployed-products/search:
     post:
       summary: Search deployed products (raw passthrough to ServiceNow's custom API).
-      operationId: splSearchUsageMetricsDeployedProducts
+      operationId: searchUsageMetricsDeployedProducts
       requestBody:
         required: true
         content:
@@ -10237,7 +10279,7 @@ paths:
   /usage-metrics/instances/search:
     post:
       summary: Search instances (raw passthrough to ServiceNow's custom API).
-      operationId: splSearchUsageMetricsInstances
+      operationId: searchUsageMetricsInstances
       requestBody:
         required: true
         content:
@@ -10287,7 +10329,7 @@ paths:
   /usage-metrics/deployed-products/{id}/metrics/search:
     post:
       summary: Get metrics for a deployed product over a date range (raw passthrough to ServiceNow's custom API).
-      operationId: splGetDeployedProductMetrics
+      operationId: getDeployedProductMetrics
       parameters:
         - name: id
           in: path
@@ -10350,7 +10392,7 @@ paths:
   /usage-metrics/deployed-products/{id}/metrics/usage-counts/search:
     post:
       summary: Get usage counts for a deployed product over a date range (raw passthrough to ServiceNow's custom API).
-      operationId: splGetDeployedProductUsageCounts
+      operationId: getDeployedProductUsageCounts
       parameters:
         - name: id
           in: path
@@ -10413,7 +10455,7 @@ paths:
   /files:
     get:
       summary: List files in a Google Drive folder.
-      operationId: splListFiles
+      operationId: listFiles
       parameters:
         - name: folderId
           in: query
@@ -10428,7 +10470,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplDriveFile'
+                  $ref: '#/components/schemas/DriveFile'
         "400":
           description: BadRequest
           content:
@@ -10457,7 +10499,7 @@ paths:
   /files/search:
     get:
       summary: Find a Google Drive folder by name.
-      operationId: splSearchFolder
+      operationId: searchFolder
       parameters:
         - name: folderName
           in: query
@@ -10470,7 +10512,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplDriveFolder'
+                $ref: '#/components/schemas/DriveFolder'
         "400":
           description: BadRequest
           content:
@@ -10505,20 +10547,20 @@ paths:
   /customer-health/summary:
     post:
       summary: Search account health summaries (ServiceNow account data enriched with MySQL-tracked review status).
-      operationId: splGetCustomerHealthSummary
+      operationId: getCustomerHealthSummary
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplCustomerHealthSummaryRequest'
+              $ref: '#/components/schemas/CustomerHealthSummaryRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplAccountSummaryResponse'
+                $ref: '#/components/schemas/AccountSummaryResponse'
         "400":
           description: BadRequest
           content:
@@ -10553,7 +10595,7 @@ paths:
   /customer-health/accounts/{accountSysId}/init-health-tracking:
     post:
       summary: Initialize MySQL health-tracking rows for an account's projects.
-      operationId: splInitHealthTracking
+      operationId: initHealthTracking
       parameters:
         - name: accountSysId
           in: path
@@ -10565,7 +10607,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplInitHealthTrackingRequest'
+              $ref: '#/components/schemas/InitHealthTrackingRequest'
       responses:
         "202":
           description: Accepted
@@ -10597,7 +10639,7 @@ paths:
   /customer-health/accounts/{accountId}:
     get:
       summary: Get an account's detailed health breakdown (ServiceNow-backed; no MySQL involved).
-      operationId: splGetCustomerHealthAccountDetail
+      operationId: getCustomerHealthAccountDetail
       parameters:
         - name: accountId
           in: path
@@ -10610,7 +10652,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplAccountDetail'
+                $ref: '#/components/schemas/ViewerAccountDetail'
         "400":
           description: BadRequest
           content:
@@ -10645,7 +10687,7 @@ paths:
   /customer-health/projects/{projectSysId}/risk:
     post:
       summary: Open a new risk on a project.
-      operationId: splOpenRisk
+      operationId: openRisk
       parameters:
         - name: projectSysId
           in: path
@@ -10657,14 +10699,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplOpenRiskRequest'
+              $ref: '#/components/schemas/OpenRiskRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplProjectRisk'
+                $ref: '#/components/schemas/ProjectRisk'
         "400":
           description: BadRequest
           content:
@@ -10693,7 +10735,7 @@ paths:
   /customer-health/risks/{riskId}/close:
     put:
       summary: Close an open risk.
-      operationId: splCloseRisk
+      operationId: closeRisk
       parameters:
         - name: riskId
           in: path
@@ -10705,14 +10747,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplCloseRiskRequest'
+              $ref: '#/components/schemas/CloseRiskRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplProjectRisk'
+                $ref: '#/components/schemas/ProjectRisk'
         "400":
           description: BadRequest — e.g. no matching open risk for this riskId.
           content:
@@ -10741,7 +10783,7 @@ paths:
   /customer-health/projects/{projectSysId}/mark-healthy:
     post:
       summary: Mark a project healthy.
-      operationId: splMarkHealthy
+      operationId: markHealthy
       parameters:
         - name: projectSysId
           in: path
@@ -10753,14 +10795,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplMarkHealthyRequest'
+              $ref: '#/components/schemas/MarkHealthyRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplHealthStatusRecord'
+                $ref: '#/components/schemas/HealthStatusRecord'
         "400":
           description: BadRequest
           content:
@@ -10789,7 +10831,7 @@ paths:
   /customer-health/projects/{projectSysId}/revert-review:
     post:
       summary: Revert a project's health review.
-      operationId: splRevertReview
+      operationId: revertReview
       parameters:
         - name: projectSysId
           in: path
@@ -10801,14 +10843,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplRevertHealthRequest'
+              $ref: '#/components/schemas/RevertHealthRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplHealthStatusRecord'
+                $ref: '#/components/schemas/HealthStatusRecord'
         "400":
           description: BadRequest
           content:
@@ -10837,7 +10879,7 @@ paths:
   /customer-health/accounts/{accountSysId}/health-status:
     get:
       summary: List health status per project for an account.
-      operationId: splGetAccountHealthStatus
+      operationId: getAccountHealthStatus
       parameters:
         - name: accountSysId
           in: path
@@ -10852,7 +10894,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplProjectHealthStatus'
+                  $ref: '#/components/schemas/ProjectHealthStatus'
         "400":
           description: BadRequest
           content:
@@ -10881,7 +10923,7 @@ paths:
   /customer-health/accounts/{accountSysId}/health-summary:
     get:
       summary: Get an account's overall health summary.
-      operationId: splGetAccountHealthSummary
+      operationId: getAccountHealthSummary
       parameters:
         - name: accountSysId
           in: path
@@ -10894,7 +10936,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplHealthSummary'
+                $ref: '#/components/schemas/HealthSummary'
         "400":
           description: BadRequest
           content:
@@ -10923,7 +10965,7 @@ paths:
   /customer-health/projects/{projectSysId}/risk-history:
     get:
       summary: List a project's risk history.
-      operationId: splGetProjectRiskHistory
+      operationId: getProjectRiskHistory
       parameters:
         - name: projectSysId
           in: path
@@ -10938,7 +10980,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplProjectRisk'
+                  $ref: '#/components/schemas/ProjectRisk'
         "400":
           description: BadRequest
           content:
@@ -10967,7 +11009,7 @@ paths:
   /customer-health/risks/{riskId}/action-items:
     post:
       summary: Create an action item on a risk.
-      operationId: splCreateActionItem
+      operationId: createActionItem
       parameters:
         - name: riskId
           in: path
@@ -10979,14 +11021,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplCreateActionItemRequest'
+              $ref: '#/components/schemas/CreateActionItemRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplRiskActionItem'
+                $ref: '#/components/schemas/RiskActionItem'
         "400":
           description: BadRequest
           content:
@@ -11013,7 +11055,7 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
     get:
       summary: List action items on a risk, optionally filtered by status.
-      operationId: splGetActionItemsByRisk
+      operationId: getActionItemsByRisk
       parameters:
         - name: riskId
           in: path
@@ -11033,7 +11075,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplRiskActionItem'
+                  $ref: '#/components/schemas/RiskActionItem'
         "400":
           description: BadRequest
           content:
@@ -11062,7 +11104,7 @@ paths:
   /customer-health/action-items/{actionItemId}/status:
     put:
       summary: Update an action item's status.
-      operationId: splUpdateActionItemStatus
+      operationId: updateActionItemStatus
       parameters:
         - name: actionItemId
           in: path
@@ -11074,14 +11116,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplUpdateActionItemStatusRequest'
+              $ref: '#/components/schemas/UpdateActionItemStatusRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplRiskActionItem'
+                $ref: '#/components/schemas/RiskActionItem'
         "400":
           description: BadRequest
           content:
@@ -11110,7 +11152,7 @@ paths:
   /customer-health/action-items/{actionItemId}:
     put:
       summary: Update an action item's fields.
-      operationId: splUpdateActionItem
+      operationId: updateActionItem
       parameters:
         - name: actionItemId
           in: path
@@ -11122,14 +11164,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplUpdateActionItemRequest'
+              $ref: '#/components/schemas/UpdateActionItemRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplRiskActionItem'
+                $ref: '#/components/schemas/RiskActionItem'
         "400":
           description: BadRequest
           content:
@@ -11158,7 +11200,7 @@ paths:
   /customer-health/accounts/{accountSysId}/action-items:
     get:
       summary: List action items for an account, optionally filtered by project and/or status.
-      operationId: splGetActionItemsByAccount
+      operationId: getActionItemsByAccount
       parameters:
         - name: accountSysId
           in: path
@@ -11183,7 +11225,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplRiskActionItem'
+                  $ref: '#/components/schemas/RiskActionItem'
         "400":
           description: BadRequest
           content:
@@ -11212,7 +11254,7 @@ paths:
   /customer-health/action-items/{actionItemId}/comments:
     post:
       summary: Post a comment on an action item.
-      operationId: splCreateActionItemComment
+      operationId: createActionItemComment
       parameters:
         - name: actionItemId
           in: path
@@ -11224,14 +11266,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplCreateCommentRequest'
+              $ref: '#/components/schemas/CreateCommentRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplActionItemComment'
+                $ref: '#/components/schemas/ActionItemComment'
         "400":
           description: BadRequest
           content:
@@ -11258,7 +11300,7 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
     get:
       summary: List comments on an action item.
-      operationId: splGetActionItemComments
+      operationId: getActionItemComments
       parameters:
         - name: actionItemId
           in: path
@@ -11273,7 +11315,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplActionItemComment'
+                  $ref: '#/components/schemas/ActionItemComment'
         "400":
           description: BadRequest
           content:
@@ -11302,14 +11344,14 @@ paths:
   /user-info:
     get:
       summary: Get the caller's own employee info, resolved from their JWT email.
-      operationId: splGetUserInfo
+      operationId: getUserInfo
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplUserInfoView'
+                $ref: '#/components/schemas/UserInfoView'
         "401":
           description: Unauthorized
           content:
@@ -11335,13 +11377,13 @@ paths:
         Diagnostic tool cross-referencing the sales-side (Salesforce) and
         CS-side (ServiceNow) entity services for a given email/subscription
         key, surfacing why a user might not have portal access.
-      operationId: splScanUser
+      operationId: scanUser
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplUserScanRequest'
+              $ref: '#/components/schemas/UserScanRequest'
       responses:
         "200":
           description: Ok
@@ -11350,7 +11392,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplScanResponse'
+                  $ref: '#/components/schemas/ScanResponse'
         "400":
           description: BadRequest
           content:
@@ -15207,6 +15249,25 @@ components:
         email:
           type: string
 
+    GrantableRolesResponse:
+      type: object
+      required: [roles]
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrantableRoleRef'
+
+    GrantableRoleRef:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+          description: >-
+            A stable portal role key (e.g. "cs_engineer", "escalator") — pass this
+            value, not a display name, in CreateUserPayload.grantRoles.
+
     CreateUserPayload:
       type: object
       required: [email]
@@ -15231,6 +15292,16 @@ components:
             partner/customer/partner_admin/customer_admin) is rejected
             unconditionally — creating an external-type user is temporarily
             disabled, and the form's "External" option is disabled to match.
+        grantRoles:
+          type: array
+          items:
+            type: string
+          description: >-
+            Portal role keys to additionally grant via SCIM once the user is
+            created — see GET /roles/grantable for the exact set this
+            deployment can grant. Optional; an unknown key is a 400. Distinct
+            from roles above: this never reaches entity-service, it only
+            controls which identity-provider role(s) the new user is added to.
       description: At least one of firstName/lastName is required.
 
     AccountSearchPayload:
@@ -21440,7 +21511,7 @@ components:
               label:
                 type: string
           description: Required by the two list types and refused by the rest.
-    SplAccountDetails:
+    AccountDetails:
       type: object
       properties:
         number:
@@ -21478,7 +21549,7 @@ components:
         driveLocation:
           type: string
 
-    SplProjectDetails:
+    ViewerProjectDetails:
       type: object
       properties:
         number:
@@ -21506,7 +21577,7 @@ components:
         totalQueryHours:
           type: string
 
-    SplContact:
+    Contact:
       type: object
       properties:
         contactName:
@@ -21516,7 +21587,7 @@ components:
         state:
           type: string
 
-    SplEscalationDetail:
+    EscalationDetail:
       type: object
       properties:
         id:
@@ -21528,7 +21599,7 @@ components:
         escalatedOn:
           type: string
 
-    SplEscalationRequest:
+    EscalationRequest:
       type: object
       required: [justification, requestSource, reason, severity]
       properties:
@@ -21544,7 +21615,7 @@ components:
           type: string
           enum: ["High Severity", "Medium Severity"]
 
-    SplEscalationResponse:
+    EscalationResponse:
       type: object
       properties:
         linkedCaseNumber:
@@ -21552,7 +21623,7 @@ components:
         sysId:
           type: string
 
-    SplCaseDetails:
+    CaseDetails:
       type: object
       properties:
         number:
@@ -21598,7 +21669,7 @@ components:
         projectDeploymentType:
           type: string
 
-    SplCaseDetailsWithCount:
+    CaseDetailsWithCount:
       type: object
       properties:
         count:
@@ -21606,9 +21677,9 @@ components:
         cases:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseDetails'
+            $ref: '#/components/schemas/CaseDetails'
 
-    SplComment:
+    Comment:
       type: object
       properties:
         createdOn:
@@ -21620,7 +21691,7 @@ components:
         type:
           type: string
 
-    SplCommentsResponse:
+    CommentsResponse:
       type: object
       properties:
         total:
@@ -21628,9 +21699,9 @@ components:
         comments:
           type: array
           items:
-            $ref: '#/components/schemas/SplComment'
+            $ref: '#/components/schemas/Comment'
 
-    SplAttachmentInfo:
+    AttachmentInfo:
       type: object
       properties:
         sysId:
@@ -21650,7 +21721,7 @@ components:
         state:
           type: string
 
-    SplSLAReportDetails:
+    SLAReportDetails:
       type: object
       properties:
         projectName:
@@ -21660,13 +21731,13 @@ components:
         percentileDataList:
           type: array
           items:
-            $ref: '#/components/schemas/SplPercentileDataList'
+            $ref: '#/components/schemas/PercentileDataList'
         caseDataList:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseDataList'
+            $ref: '#/components/schemas/CaseDataList'
 
-    SplPercentileDataList:
+    PercentileDataList:
       type: object
       properties:
         key:
@@ -21682,7 +21753,7 @@ components:
         resolutionTime:
           type: string
 
-    SplCaseDataList:
+    CaseDataList:
       type: object
       properties:
         caseSysId:
@@ -21712,27 +21783,27 @@ components:
         resolutionSysId:
           type: string
 
-    SplCSReportDetails:
+    CSReportDetails:
       type: object
       properties:
         subscriptionDetails:
-          $ref: '#/components/schemas/SplSubscriptionDetail'
+          $ref: '#/components/schemas/SubscriptionDetail'
         casesRecords:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseRecordDetail'
+            $ref: '#/components/schemas/CaseRecordDetail'
         slaDetails:
-          $ref: '#/components/schemas/SplSlaStats'
+          $ref: '#/components/schemas/SlaStats'
         projectDeployments:
           type: array
           items:
-            $ref: '#/components/schemas/SplProjectDeployment'
+            $ref: '#/components/schemas/ProjectDeployment'
         monthlyCounts:
           type: array
           items:
-            $ref: '#/components/schemas/SplMonthlyCount'
+            $ref: '#/components/schemas/MonthlyCount'
 
-    SplSubscriptionDetail:
+    SubscriptionDetail:
       type: object
       properties:
         projectName:
@@ -21756,7 +21827,7 @@ components:
         consumedQueryHours:
           type: string
 
-    SplCaseRecordDetail:
+    CaseRecordDetail:
       type: object
       properties:
         caseSysId:
@@ -21782,17 +21853,17 @@ components:
         productName:
           type: string
 
-    SplSlaStats:
+    SlaStats:
       type: object
       properties:
         slaRecords:
           type: array
           items:
-            $ref: '#/components/schemas/SplSlaRecordDetail'
+            $ref: '#/components/schemas/SlaRecordDetail'
         slaPerformanceStats:
-          $ref: '#/components/schemas/SplSlaPerformanceStats'
+          $ref: '#/components/schemas/SlaPerformanceStats'
 
-    SplSlaRecordDetail:
+    SlaRecordDetail:
       type: object
       properties:
         task:
@@ -21802,7 +21873,7 @@ components:
         businessElapsedPercentage:
           type: string
 
-    SplSlaStatsDetail:
+    SlaStatsDetail:
       type: object
       properties:
         fraction:
@@ -21813,7 +21884,7 @@ components:
         percentage:
           type: string
 
-    SplSlaPerformanceStats:
+    SlaPerformanceStats:
       type: object
       description: >-
         Field names are capitalized (Workaround/Resolution/Response), not
@@ -21822,13 +21893,13 @@ components:
         codes against.
       properties:
         Workaround:
-          $ref: '#/components/schemas/SplSlaStatsDetail'
+          $ref: '#/components/schemas/SlaStatsDetail'
         Resolution:
-          $ref: '#/components/schemas/SplSlaStatsDetail'
+          $ref: '#/components/schemas/SlaStatsDetail'
         Response:
-          $ref: '#/components/schemas/SplSlaStatsDetail'
+          $ref: '#/components/schemas/SlaStatsDetail'
 
-    SplProjectDeployment:
+    ProjectDeployment:
       type: object
       properties:
         name:
@@ -21836,9 +21907,9 @@ components:
         products:
           type: array
           items:
-            $ref: '#/components/schemas/SplProduct'
+            $ref: '#/components/schemas/ViewerProduct'
 
-    SplProduct:
+    ViewerProduct:
       type: object
       properties:
         name:
@@ -21864,15 +21935,15 @@ components:
         earliestPossibleSupportEOLDate:
           type: string
 
-    SplMonthlyCount:
+    MonthlyCount:
       type: object
       properties:
         yearAndMonth:
           type: string
         counts:
-          $ref: '#/components/schemas/SplCount'
+          $ref: '#/components/schemas/Count'
 
-    SplCount:
+    Count:
       type: object
       properties:
         incidentCount:
@@ -21880,7 +21951,7 @@ components:
         queryCount:
           type: integer
 
-    SplTimeLogBreakdownDetails:
+    TimeLogBreakdownDetails:
       type: object
       properties:
         projectName:
@@ -21896,9 +21967,9 @@ components:
         cases:
           type: array
           items:
-            $ref: '#/components/schemas/SplTimeLogBreakdownCase'
+            $ref: '#/components/schemas/TimeLogBreakdownCase'
 
-    SplTimeLogBreakdownCase:
+    TimeLogBreakdownCase:
       type: object
       properties:
         caseNumber:
@@ -21920,9 +21991,9 @@ components:
         timeCards:
           type: array
           items:
-            $ref: '#/components/schemas/SplTimeCardDetails'
+            $ref: '#/components/schemas/TimeCardDetails'
 
-    SplTimeCardDetails:
+    TimeCardDetails:
       type: object
       properties:
         total:
@@ -21940,7 +22011,7 @@ components:
         state:
           type: string
 
-    SplWorkNoteResponse:
+    WorkNoteResponse:
       type: object
       properties:
         number:
@@ -21948,21 +22019,21 @@ components:
         updatedOn:
           type: string
 
-    SplABTTeamScheduleData:
+    ABTTeamScheduleData:
       type: object
       properties:
         list:
           type: array
           items:
-            $ref: '#/components/schemas/SplABTTeamScheduleList'
+            $ref: '#/components/schemas/ABTTeamScheduleList'
         metadata:
           type: array
           items:
-            $ref: '#/components/schemas/SplABTTeamScheduleMetadata'
+            $ref: '#/components/schemas/ABTTeamScheduleMetadata'
         snURL:
           type: string
 
-    SplABTTeamScheduleMetadata:
+    ABTTeamScheduleMetadata:
       type: object
       description: >-
         Populates the SPL frontend's team/event-type filter dropdowns.
@@ -21973,13 +22044,13 @@ components:
         teams:
           type: array
           items:
-            $ref: '#/components/schemas/SplABTTeamScheduleMetadataTeam'
+            $ref: '#/components/schemas/ABTTeamScheduleMetadataTeam'
         eventTypes:
           type: array
           items:
-            $ref: '#/components/schemas/SplABTTeamScheduleMetadataEventType'
+            $ref: '#/components/schemas/ABTTeamScheduleMetadataEventType'
 
-    SplABTTeamScheduleMetadataTeam:
+    ABTTeamScheduleMetadataTeam:
       type: object
       properties:
         label:
@@ -21989,7 +22060,7 @@ components:
         link:
           type: string
 
-    SplABTTeamScheduleMetadataEventType:
+    ABTTeamScheduleMetadataEventType:
       type: object
       properties:
         name:
@@ -21997,7 +22068,7 @@ components:
         label:
           type: string
 
-    SplABTTeamScheduleList:
+    ABTTeamScheduleList:
       type: object
       properties:
         label:
@@ -22005,9 +22076,9 @@ components:
         members:
           type: array
           items:
-            $ref: '#/components/schemas/SplABTTeamScheduleMember'
+            $ref: '#/components/schemas/ABTTeamScheduleMember'
 
-    SplABTTeamScheduleMember:
+    ABTTeamScheduleMember:
       type: object
       properties:
         name:
@@ -22015,16 +22086,16 @@ components:
         roles:
           type: array
           items:
-            $ref: '#/components/schemas/SplABTTeamScheduleMemberRole'
+            $ref: '#/components/schemas/ABTTeamScheduleMemberRole'
         schedule:
           type: object
           description: Keyed by date; each value is the list of schedule entries for that date.
           additionalProperties:
             type: array
             items:
-              $ref: '#/components/schemas/SplABTTeamScheduleMemberSchedule'
+              $ref: '#/components/schemas/ABTTeamScheduleMemberSchedule'
 
-    SplABTTeamScheduleMemberRole:
+    ABTTeamScheduleMemberRole:
       type: object
       properties:
         name:
@@ -22032,7 +22103,7 @@ components:
         label:
           type: string
 
-    SplABTTeamScheduleMemberSchedule:
+    ABTTeamScheduleMemberSchedule:
       type: object
       properties:
         name:
@@ -22040,7 +22111,7 @@ components:
         label:
           type: string
 
-    SplDriveFile:
+    DriveFile:
       type: object
       properties:
         id:
@@ -22050,7 +22121,7 @@ components:
         mimeType:
           type: string
 
-    SplDriveFolder:
+    DriveFolder:
       type: object
       properties:
         id:
@@ -22058,7 +22129,7 @@ components:
         name:
           type: string
 
-    SplCustomerHealthSummaryRequest:
+    CustomerHealthSummaryRequest:
       type: object
       properties:
         email:
@@ -22089,17 +22160,17 @@ components:
           type: integer
           default: 10
 
-    SplAccountSummaryResponse:
+    AccountSummaryResponse:
       type: object
       properties:
         data:
           type: array
           items:
-            $ref: '#/components/schemas/SplAccountSummary'
+            $ref: '#/components/schemas/AccountSummary'
         totalCount:
           type: integer
 
-    SplAccountSummary:
+    AccountSummary:
       type: object
       properties:
         accountSysId:
@@ -22108,7 +22179,7 @@ components:
           type: string
           nullable: true
         hasNoGoLive:
-          $ref: '#/components/schemas/SplGoLiveStatus'
+          $ref: '#/components/schemas/GoLiveStatus'
         hasRecentCases:
           type: boolean
         hasEolProduct:
@@ -22126,7 +22197,7 @@ components:
           nullable: true
           description: Populated from MySQL risk-tracking data; null when no health review has been recorded for this account.
 
-    SplGoLiveStatus:
+    GoLiveStatus:
       type: object
       properties:
         status:
@@ -22136,7 +22207,7 @@ components:
         state:
           type: string
 
-    SplInitHealthTrackingRequest:
+    InitHealthTrackingRequest:
       type: object
       properties:
         projectSysIds:
@@ -22144,7 +22215,7 @@ components:
           items:
             type: string
 
-    SplAccountDetail:
+    ViewerAccountDetail:
       type: object
       properties:
         accountName:
@@ -22152,9 +22223,9 @@ components:
         customerProjects:
           type: array
           items:
-            $ref: '#/components/schemas/SplProjectDetail'
+            $ref: '#/components/schemas/ProjectDetail'
 
-    SplProjectDetail:
+    ProjectDetail:
       type: object
       properties:
         sysId:
@@ -22166,7 +22237,7 @@ components:
         detailedRecentCases:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseGroup'
+            $ref: '#/components/schemas/CaseGroup'
         totalRecentCases:
           type: integer
         hasAbandonedCases:
@@ -22174,33 +22245,33 @@ components:
         detailedAbandonedCases:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseLink'
+            $ref: '#/components/schemas/CaseLink'
         isUsingEolProduct:
           type: boolean
         softwareModel:
           type: array
           items:
-            $ref: '#/components/schemas/SplEolProduct'
+            $ref: '#/components/schemas/EolProduct'
         deployments:
           type: array
           items:
-            $ref: '#/components/schemas/SplDeployment'
+            $ref: '#/components/schemas/ViewerDeployment'
         hasMigrationDelays:
           type: boolean
         detailedMigrationDelays:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseLink'
+            $ref: '#/components/schemas/CaseLink'
         hasEscalatedCases:
           type: boolean
         detailedEscalatedCases:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseLink'
+            $ref: '#/components/schemas/CaseLink'
         goLiveStatus:
-          $ref: '#/components/schemas/SplGoLiveStatus'
+          $ref: '#/components/schemas/GoLiveStatus'
 
-    SplCaseGroup:
+    CaseGroup:
       type: object
       properties:
         priority:
@@ -22210,9 +22281,9 @@ components:
         cases:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseInfo'
+            $ref: '#/components/schemas/CaseInfo'
 
-    SplCaseInfo:
+    CaseInfo:
       type: object
       properties:
         sysId:
@@ -22220,7 +22291,7 @@ components:
         number:
           type: string
 
-    SplCaseLink:
+    CaseLink:
       type: object
       properties:
         sysId:
@@ -22232,7 +22303,7 @@ components:
         escalationNumber:
           type: string
 
-    SplEolProduct:
+    EolProduct:
       type: object
       properties:
         name:
@@ -22242,9 +22313,9 @@ components:
         deployments:
           type: array
           items:
-            $ref: '#/components/schemas/SplDeployment'
+            $ref: '#/components/schemas/ViewerDeployment'
 
-    SplDeployment:
+    ViewerDeployment:
       type: object
       properties:
         sysId:
@@ -22252,7 +22323,7 @@ components:
         name:
           type: string
 
-    SplOpenRiskRequest:
+    OpenRiskRequest:
       type: object
       required: [accountSysId, comment]
       properties:
@@ -22261,14 +22332,14 @@ components:
         comment:
           type: string
 
-    SplCloseRiskRequest:
+    CloseRiskRequest:
       type: object
       required: [comment]
       properties:
         comment:
           type: string
 
-    SplMarkHealthyRequest:
+    MarkHealthyRequest:
       type: object
       required: [accountSysId]
       properties:
@@ -22278,14 +22349,14 @@ components:
           type: string
           nullable: true
 
-    SplRevertHealthRequest:
+    RevertHealthRequest:
       type: object
       required: [accountSysId]
       properties:
         accountSysId:
           type: string
 
-    SplProjectRisk:
+    ProjectRisk:
       type: object
       properties:
         id:
@@ -22314,9 +22385,9 @@ components:
         actionItems:
           type: array
           items:
-            $ref: '#/components/schemas/SplRiskActionItem'
+            $ref: '#/components/schemas/RiskActionItem'
 
-    SplHealthStatusRecord:
+    HealthStatusRecord:
       type: object
       properties:
         id:
@@ -22334,18 +22405,18 @@ components:
           type: string
           nullable: true
 
-    SplProjectHealthStatus:
+    ProjectHealthStatus:
       type: object
       properties:
         projectSysId:
           type: string
         healthStatus:
-          $ref: '#/components/schemas/SplHealthStatusRecord'
+          $ref: '#/components/schemas/HealthStatusRecord'
         openRisk:
-          $ref: '#/components/schemas/SplProjectRisk'
+          $ref: '#/components/schemas/ProjectRisk'
           nullable: true
 
-    SplHealthSummary:
+    HealthSummary:
       type: object
       properties:
         accountSysId:
@@ -22353,7 +22424,7 @@ components:
         overallStatus:
           type: string
 
-    SplCreateActionItemRequest:
+    CreateActionItemRequest:
       type: object
       required: [title, priority, dueDate, projectSysId, accountSysId]
       properties:
@@ -22374,7 +22445,7 @@ components:
         accountSysId:
           type: string
 
-    SplUpdateActionItemStatusRequest:
+    UpdateActionItemStatusRequest:
       type: object
       required: [status]
       properties:
@@ -22384,7 +22455,7 @@ components:
           type: string
           nullable: true
 
-    SplUpdateActionItemRequest:
+    UpdateActionItemRequest:
       type: object
       required: [title, priority]
       properties:
@@ -22402,14 +22473,14 @@ components:
           type: string
           nullable: true
 
-    SplCreateCommentRequest:
+    CreateCommentRequest:
       type: object
       required: [comment]
       properties:
         comment:
           type: string
 
-    SplRiskActionItem:
+    RiskActionItem:
       type: object
       properties:
         id:
@@ -22453,7 +22524,7 @@ components:
         commentCount:
           type: integer
 
-    SplActionItemComment:
+    ActionItemComment:
       type: object
       properties:
         id:
@@ -22467,7 +22538,7 @@ components:
         createdOn:
           type: string
 
-    SplUserInfoView:
+    UserInfoView:
       type: object
       properties:
         firstName:
@@ -22475,7 +22546,7 @@ components:
         lastName:
           type: string
 
-    SplUserScanRequest:
+    UserScanRequest:
       type: object
       required: [email, subscriptionKey, isPartner]
       properties:
@@ -22496,7 +22567,7 @@ components:
         documentation:
           type: string
 
-    SplScanResult:
+    ScanResult:
       type: object
       properties:
         order:
@@ -22508,7 +22579,7 @@ components:
         information:
           $ref: '#/components/schemas/SplScanInformation'
 
-    SplScanResponse:
+    ScanResponse:
       type: object
       properties:
         system:
@@ -22517,5 +22588,5 @@ components:
         systemResult:
           type: array
           items:
-            $ref: '#/components/schemas/SplScanResult'
+            $ref: '#/components/schemas/ScanResult'
 

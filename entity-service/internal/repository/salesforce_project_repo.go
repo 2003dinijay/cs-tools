@@ -22,7 +22,6 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
@@ -50,12 +49,17 @@ type SalesforceProjectRepository interface {
 	LookupProjectTypeIDByName(ctx context.Context, name string) (*string, error)
 }
 
+// salesforceProjectRepo is the Salesforce ingest's own, so every method runs as
+// the system: the webhook and the retry worker carry no caller identity, and
+// resolveSalesforceProjectQuery and resolveProjectBySfIDQuery rank duplicate
+// sf_id rows by projectReferencedOrder's EXISTS over work_item (RLS-protected),
+// which must see every work_item for the same row to be picked as before RLS.
 type salesforceProjectRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
-// NewSalesforceProjectRepository constructs a SalesforceProjectRepository backed by the pool.
-func NewSalesforceProjectRepository(db *pgxpool.Pool) SalesforceProjectRepository {
+// NewSalesforceProjectRepository constructs a SalesforceProjectRepository backed by the scoped pool.
+func NewSalesforceProjectRepository(db *Scoped) SalesforceProjectRepository {
 	return &salesforceProjectRepo{db: db}
 }
 
@@ -137,19 +141,10 @@ const softDeleteSalesforceProjectQuery = `
 	WHERE sf_id = $1`
 
 func (r *salesforceProjectRepo) UpsertFromSalesforce(ctx context.Context, row domain.SalesforceProjectUpsert, state domain.UpsertSalesforceIngestStateRequest) (domain.SalesforceProjectUpsertResult, error) {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return domain.SalesforceProjectUpsertResult{}, fmt.Errorf("upsert project from salesforce: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	res, err := writeSalesforceProject(ctx, tx, row, state)
-	if err != nil {
-		return domain.SalesforceProjectUpsertResult{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return domain.SalesforceProjectUpsertResult{}, fmt.Errorf("upsert project from salesforce: commit: %w", err)
-	}
-	return res, nil
+	ctx = WithSystemIdentity(ctx)
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (domain.SalesforceProjectUpsertResult, error) {
+		return writeSalesforceProject(ctx, tx, row, state)
+	})
 }
 
 // writeSalesforceProject is UpsertFromSalesforce's body, run on q (the
@@ -220,19 +215,10 @@ func writeSalesforceProject(ctx context.Context, q querier, row domain.Salesforc
 }
 
 func (r *salesforceProjectRepo) SoftDeleteBySfID(ctx context.Context, sfID string, state domain.UpsertSalesforceIngestStateRequest) (bool, error) {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return false, fmt.Errorf("soft-delete project by sf_id: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	found, err := softDeleteSalesforceProject(ctx, tx, sfID, state)
-	if err != nil {
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("soft-delete project by sf_id: commit: %w", err)
-	}
-	return found, nil
+	ctx = WithSystemIdentity(ctx)
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (bool, error) {
+		return softDeleteSalesforceProject(ctx, tx, sfID, state)
+	})
 }
 
 func softDeleteSalesforceProject(ctx context.Context, q querier, sfID string, state domain.UpsertSalesforceIngestStateRequest) (bool, error) {
@@ -250,10 +236,11 @@ func softDeleteSalesforceProject(ctx context.Context, q querier, sfID string, st
 }
 
 func (r *salesforceProjectRepo) LookupProjectIDBySfID(ctx context.Context, sfID string) (*string, error) {
-	return resolveIDBySfID(ctx, r.db, resolveProjectBySfIDQuery, "project", sfID)
+	return resolveIDBySfID(WithSystemIdentity(ctx), r.db, resolveProjectBySfIDQuery, "project", sfID)
 }
 
 func (r *salesforceProjectRepo) LookupProjectTypeIDByName(ctx context.Context, name string) (*string, error) {
+	ctx = WithSystemIdentity(ctx)
 	var id string
 	err := r.db.QueryRow(ctx, `SELECT id::text FROM project_type WHERE name = $1`, name).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {

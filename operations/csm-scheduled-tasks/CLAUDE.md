@@ -168,45 +168,79 @@ query run) if empty. Shares `internal/entitycases.Client` and the row-rendering 
 (`internal/notify/templates/open_cases_report.html`) per this component's own "Per-task report
 emails" below.
 
-## Outage communication
+## Availability recalculation
 
-The SRE-facing pair of outage emails: one when an outage is declared, one
-when it is resolved. Task name **`outage_communication`**, default schedule
-`*/5 * * * *`. The Go port of ServiceNow's `Outage Communication` flow.
+Recomputes every committed service offering's uptime and rewrites
+`service_availability`. Task name **`availability_recalculation`**, default
+schedule `0 3 * * *`. The Go port of ServiceNow's `Calculate Availability`
+job, which has run nightly since 2022-11-01 and whose 212,904 rows the Cloud
+Status Dashboard reads on every page load.
 
-*** NOT THE SAME AS `outage_internal_notification`. *** That task is the
-internal-STAKEHOLDER notice, a different ServiceNow flow with a different
-audience and a different idempotency mechanism. They share the outage table
-and nothing else. Two tasks, two sub-cron names, two `SUB_CRON_RECIPIENTS`
-entries.
+**Off unless `AVAILABILITY_RECALC_ENABLED=true`** (default false): neither the client nor the
+task is created otherwise. ServiceNow's "Calculate Availability" job keeps writing the same
+table through csm-sync-service, and `service_availability` has no unique constraint on a
+period's natural key, so both running can leave two rows for one period. Turn it on in the
+same change that switches ServiceNow's job off (the `CLOUD_STATUS_ENABLED` pattern).
 
-**Recipients are configuration, and that is an evidenced decision.**
-ServiceNow resolves a group literally named `SRE Team`, which on the dev
-instance is `SRE_Team@gmail.com` with three members — a gmail address
-standing in for an internal list. Of seventeen active groups matching /SRE/,
-only one other has any address at all and it is a personal one. So there is
-no real distribution list to derive from, and the port takes its audience
-from `SUB_CRON_RECIPIENTS["outage_communication"].to` instead.
+*** THIS IS THE PRODUCER FOR THREE ALREADY-PORTED ENDPOINTS. ***
+`/cloud-status/monitors`, `/availabilities` and `/availability-history` all
+read that table and were ported long before anything wrote it: the rows come
+from csm-sync-service mirroring ServiceNow's output. At cutover the
+dashboard's uptime figures would simply stop advancing, with no error
+anywhere — reading a table nobody updates looks exactly like reading a table
+where nothing happened. This task is what takes over.
 
-Unlike the report tasks, `to` here is the REAL audience of the email, not
-just the failure-alert list — the same arrangement `outage_internal_notification`
-uses. See "Alerting" for which tasks work which way.
+**The arithmetic is in entity-service, not here.** This task is a trigger.
+The sweep reads every outage for ~146 subjects and writes up to eight period
+rows each into a table the dashboard is concurrently reading; doing that over
+HTTP would pull the whole working set across the wire every night, and this
+component holds no database credentials. Same split as `outage_communication`
+and `cloud_status`.
 
-*** AN UNCONFIGURED DEPLOYMENT IS SAFE, AND THE ORDER MATTERS. *** With no
-`SUB_CRON_RECIPIENTS` entry the `to` list is empty and the handler returns
-BEFORE it sweeps. That is deliberate: the sweep writes a communication-log
-row per decision, and those rows are the port's idempotency guard, so
-sweeping with nowhere to deliver would mark outages as announced to nobody
-and they would never be announced again.
+*** IT PORTS v2, AND THE INSTANCE RUNS v1. *** `com.snc.availability.v2` is
+false on wso2sndev, so every stored row was written by the legacy calculator.
+The two genuinely disagree — v1's "last 30 days" spans 29 under PRB1304264,
+v2's spans 30 — so **the existing table is not a baseline to diff against.**
 
-**It is also inert until digiops-cs mirrors `outage.outage_communication`.**
-Without that column the repository degrades to "nothing to send" rather than
-failing the sweep — narrow on purpose, so only `undefined_column` is
-swallowed.
+**It emits `LAST_90_DAYS`, which v2 does not define.** v2 registers seven
+period types and that is not one of them; v1 writes it. But `/monitors` and
+`/availabilities` both query it and both render a "Last 90 days" figure, so
+shipping pure v2 would delete a number from the customer-facing status page
+silently. `LAST_1_DAYS` is the mirror image — v1 writes it, nothing reads it,
+not emitted.
 
-**What it will not send.** ServiceNow's declaration branch requires
-`type=outage`, so a DEGRADATION or PLANNED outage produces no email at all.
-Reproduced deliberately; widening it is a product change, not a port.
+**A partial run fails the task.** entity-service keeps going when one subject
+fails and still returns 200, so the handler checks the `failed` count and the
+subject count: a sweep that skipped offerings, or found none at all, is an
+alert rather than a quiet success. Zero subjects is what an unmapped
+`service_offering_commitment` looks like.
+
+**It is inert until digiops-cs mirrors `service_offering_commitment`.** That
+table is the join saying which offering answers to which commitment, and the
+calculator builds its entire subject list from it. Everything else in the
+family is already mirrored (`service_availability` migration 0084,
+`service_commitment`, `outage_affected_ci`, `schedule`, `schedule_span`).
+
+**Registering it is a paired change with disabling ServiceNow's `Calculate
+Availability` job.** Two writers on one table, keyed differently — the sync
+on the mirrored `sys_id`, this on the natural key — would double every
+subject's rows.
+
+Timeout is five minutes, not the sixty seconds the neighbouring sweeps use.
+Volume is the normal case here, and cutting a healthy run off partway leaves
+some subjects updated and the rest stale.
+
+## Outage emails (moved out)
+
+The two outage emails -- `outage_internal_notification` (internal
+stakeholders) and `outage_communication` (SRE declaration/resolution) -- used
+to be sub-crons here. They now run in entity-service's outage notice drainer,
+which publishes them on the `outage-events` topic, and csm-notification-service
+sends them: seconds after the change, as ServiceNow's record-triggered flows
+do, instead of on this component's tick. Their recipients moved with them
+(`OUTAGE_NOTIFICATION_RECIPIENTS` / `OUTAGE_COMMUNICATION_RECIPIENTS` on
+entity-service); `SUB_CRON_RECIPIENTS` entries for the two old task names are
+now ignored.
 
 ## Alerting
 
