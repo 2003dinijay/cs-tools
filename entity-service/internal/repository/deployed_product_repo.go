@@ -385,7 +385,14 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 	// DeployedProductView.Deployment/Product are non-pointer EntityRef
 	// values, so switching to LEFT joins isn't a safe alternative -- that
 	// would need a response-contract change and nullable scan handling.
-	where := "WHERE dp.deployment_id IS NOT NULL AND dp.product_id IS NOT NULL"
+	//
+	// dp.active is how a deployed product is soft-deleted (PATCH .../products/{id}
+	// {active: false} -- see DeployedProductRepository.UpdateDeployedProductFields).
+	// This query never filtered on it at all, so a deactivated product kept
+	// showing up in every list exactly as before, making "delete" appear to
+	// silently do nothing. NULL counts as active, the same convention
+	// AccessService.ResolveScope already uses for "user".is_active.
+	where := "WHERE dp.deployment_id IS NOT NULL AND dp.product_id IS NOT NULL AND (dp.active IS NULL OR dp.active = TRUE)"
 
 	if len(req.DeploymentIDs) > 0 {
 		where += fmt.Sprintf(" AND dp.deployment_id = ANY($%d::uuid[])", argIdx)

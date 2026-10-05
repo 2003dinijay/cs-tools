@@ -210,7 +210,7 @@ func (s *customerEngagementAllocationService) findOrCreateEngagement(ctx context
 		EngagementCode:   in.engagementCode,
 		Name:             allocTruncate(engagementName(in.customerName, in.allocationTypeName), 200),
 		AccountID:        accountID,
-		IsPaid:           in.engagement.EngagementTypeName == "Paid",
+		IsPaid:           strings.TrimSpace(in.engagement.EngagementTypeName) == "Paid",
 		DeliveryMode:     deliveryModeFromNature(in.engagement.EngagementNature),
 		EngagementTypeID: s.firefightingTypeID,
 		PlannedStartDate: in.startDate,
@@ -275,6 +275,10 @@ func normalizeAllocationEvent(ev domain.AllocationEvent) (allocationInput, error
 	}
 	if in.id == "" || in.email == "" {
 		return allocationInput{}, &apierror.ValidationError{Msg: "id and email are required"}
+	}
+	// allocationType routes firefighting vs line-item; a missing value must not read as 0.
+	if in.allocationType <= 0 {
+		return allocationInput{}, &apierror.ValidationError{Msg: "allocationType is required"}
 	}
 	var err error
 	if in.startDate, err = allocDate("startDate", ev.StartDate); err != nil {

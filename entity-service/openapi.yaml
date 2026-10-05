@@ -11106,7 +11106,7 @@ components:
       description: >-
         The Finance Entity's allocation record as posted to ServiceNow
         allocation_added_or_modified, plus customerCode. Unknown fields are ignored.
-      required: [id, email]
+      required: [id, email, allocationType]
       properties:
         id: {type: string, maxLength: 20, description: Allocation id.}
         email: {type: string, description: Consultant email; matched to user.email then user.user_name.}

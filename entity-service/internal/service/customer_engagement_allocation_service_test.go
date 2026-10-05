@@ -167,6 +167,23 @@ func TestAllocationEvent_FirefightingCreatesEngagement(t *testing.T) {
 	}
 }
 
+// is_paid matches ServiceNow's exact "Paid" check, after trimming whitespace.
+func TestAllocationEvent_PaidIsExactAfterTrim(t *testing.T) {
+	for name, want := range map[string]bool{" Paid ": true, "Paid Post Sale": false} {
+		f := newFakeAllocationStore()
+		f.accountsBySfID["001000000000001AAA"] = "acct-1"
+		f.usersByEmail["consultant@wso2.com"] = "user-1"
+		ev := allocFirefightingEvent()
+		ev.Engagement.EngagementTypeName = name
+		if _, err := newAllocationSvc(f).ProcessAllocationEvent(context.Background(), ev); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.inserted) != 1 || f.inserted[0].IsPaid != want {
+			t.Errorf("%q: is_paid = %+v, want %v", name, f.inserted, want)
+		}
+	}
+}
+
 func TestAllocationEvent_FirefightingUsesExistingEngagement(t *testing.T) {
 	f := newFakeAllocationStore()
 	f.engagementsByEngID["E1001"] = "eng-existing"
@@ -401,6 +418,7 @@ func TestAllocationEvent_Validation(t *testing.T) {
 		{"missing email", func(e *domain.AllocationEvent) { e.Email = "  " }},
 		{"bad date", func(e *domain.AllocationEvent) { e.StartDate = "01/10/2026" }},
 		{"long timezone", func(e *domain.AllocationEvent) { e.TimeZone = allocStr("America/Argentina/Buenos_Aires") }},
+		{"missing allocationType", func(e *domain.AllocationEvent) { e.AllocationType = 0 }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
