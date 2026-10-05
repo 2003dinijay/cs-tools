@@ -63,8 +63,9 @@ const SELECT_PLACEHOLDER = "-- Select --";
 // structural conventions (plain useState per field, a renderSelect helper, a collapsed "More
 // options" Accordion for the less-common ServiceNow reference lookups). Unlike change requests,
 // most of incidents' core fields are actually required — the backend hard-requires
-// callerId/category/serviceId/impact/urgency/subject, and this form also requires
-// subcategory/contactType client-side, same as the webapp's own validation. There is deliberately
+// callerId/category/serviceId/impact/urgency/subject, and this form also requires contactType
+// client-side, same as the webapp's own validation. Subcategory is optional (the backend and the
+// webapp both accept an incident without one) and only sent when picked. There is deliberately
 // no priority or state field to fill in: priority is only ever a computed live preview
 // (impact × urgency → ITIL matrix), and every new incident starts at ServiceNow's default state.
 export default function NewIncidentPage() {
@@ -117,7 +118,6 @@ export default function NewIncidentPage() {
   const canSubmit =
     shortDescription.trim().length > 0 &&
     !!category &&
-    !!subcategory &&
     !!contactType &&
     !!impact &&
     !!urgency &&
@@ -126,19 +126,19 @@ export default function NewIncidentPage() {
     !createIncident.isPending;
 
   const handleSubmit = (): void => {
-    if (!canSubmit || !category || !subcategory || !contactType || !impact || !urgency || !caller || !service) return;
+    if (!canSubmit || !category || !contactType || !impact || !urgency || !caller || !service) return;
     setSubmitError(null);
 
     const payload: IncidentCreatePayloadDto = {
       subject: shortDescription.trim(),
       category,
-      subcategory,
       contactType,
       impact,
       urgency,
       callerId: caller.id,
       serviceId: service.id,
     };
+    if (subcategory) payload.subcategory = subcategory;
     if (description.trim()) payload.additionalComments = description.trim();
     if (serviceOffering) payload.serviceOfferingId = serviceOffering.id;
     if (configurationItem) payload.configurationItemId = configurationItem.id;
@@ -232,7 +232,7 @@ export default function NewIncidentPage() {
           subcategory,
           setSubcategory,
           subcategoryOptions,
-          true,
+          false,
           !category,
         )}
         {renderSelect("incident-contact-type", "Contact type", contactType, setContactType, CONTACT_TYPE_OPTIONS, true)}
