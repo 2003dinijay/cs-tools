@@ -377,8 +377,24 @@ vi.mock("@features/csm-timecards/api/useTimeCards", () => ({
 }));
 
 // Simple presentational stubs — none of this test's assertions touch these.
+// Probe, not `null`: the role-based-controls tests below need to see which
+// lock props the page hands the composer (a work-note-only caller gets the
+// public-reply lock and no attachments). The composer's own behaviour is
+// covered in CsmCaseCommentInput.test.tsx.
 vi.mock("@features/csm-cases/components/CsmCaseCommentInput", () => ({
-  default: () => null,
+  default: ({
+    publicCommentDisabledReason,
+    attachmentsDisabled,
+  }: {
+    publicCommentDisabledReason?: string | null;
+    attachmentsDisabled?: boolean;
+  }) => (
+    <div
+      data-testid="comment-input-probe"
+      data-public-reason={publicCommentDisabledReason ?? ""}
+      data-attachments-disabled={String(!!attachmentsDisabled)}
+    />
+  ),
 }));
 // Probe, not `null`: the change_case_type and request_update tests below
 // need a way to open their dialogs the same way a real user would (via the
@@ -511,8 +527,10 @@ vi.mock("@features/csm-cases/components/RequestUpdateDialog", () => ({
 vi.mock("@features/csm-cases/components/ChildCasesWidget", () => ({
   ChildCasesWidget: () => null,
 }));
+// Probe, not `null`: the viewer-role tests assert it isn't rendered for a role
+// that can't use Operations (its incident search would 403).
 vi.mock("@features/csm-cases/components/LinkedIncidentsListWidget", () => ({
-  LinkedIncidentsListWidget: () => null,
+  LinkedIncidentsListWidget: () => <div data-testid="linked-incidents-list-probe" />,
 }));
 vi.mock("@features/csm-cases/components/LinkedServiceRequestsWidget", () => ({
   // A probe, not a stub: whether createDisabled reflects canWrite (alongside
@@ -541,6 +559,8 @@ vi.mock("@features/csm-cases/components/CreateGithubIssueDialog", () => ({
 vi.mock("@features/csm-cases/components/CaseActivitiesFeed", () => ({
   default: ({
     comments,
+    onEditComment,
+    onDeleteComment,
   }: {
     comments: Array<{
       id: string;
@@ -549,8 +569,14 @@ vi.mock("@features/csm-cases/components/CaseActivitiesFeed", () => ({
       bodyHtml: string;
       synthetic?: boolean;
     }>;
+    onEditComment?: unknown;
+    onDeleteComment?: unknown;
   }) => (
-    <div data-testid="case-activities-feed-probe">
+    <div
+      data-testid="case-activities-feed-probe"
+      data-can-edit={String(!!onEditComment)}
+      data-can-delete={String(!!onDeleteComment)}
+    >
       {comments.map((c) => (
         <div key={c.id} data-testid={`comment-${c.id}`}>
           <span>{c.authorName}</span>
@@ -616,8 +642,12 @@ vi.mock("@features/csm-cases/components/CaseDetailWidgets", () => ({
     </div>
   ),
 }));
+// Probe: the viewer-role tests assert the page hands it `readOnly` when the
+// caller can't write (the backend 403s a call-request create/update).
 vi.mock("@features/csm-cases/components/CallRequestsWidget", () => ({
-  CallRequestsWidget: () => null,
+  CallRequestsWidget: ({ readOnly }: { readOnly?: boolean }) => (
+    <div data-testid="call-requests-widget-probe" data-read-only={String(!!readOnly)} />
+  ),
 }));
 vi.mock("@features/csm-cases/components/TasksWidget", () => ({
   TasksWidget: () => null,
@@ -1532,13 +1562,33 @@ describe("CsmCaseDetailPage — role-based controls", () => {
     ).toBeInTheDocument();
   });
 
-  it("a viewer sees neither the action bar nor the reply composer", () => {
-    currentUserRoles.value = ["viewer"];
+  it("a CS engineer's composer is not locked to internal notes", () => {
     renderPage();
-    expect(screen.queryByRole("button", { name: /stub request info/i })).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /compose a reply|add an internal work note/i }),
-    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /compose a reply|add an internal work note/i }),
+    );
+    const probe = screen.getByTestId("comment-input-probe");
+    expect(probe.getAttribute("data-public-reason")).not.toMatch(/only add internal work notes/i);
+    expect(probe).toHaveAttribute("data-attachments-disabled", "false");
+  });
+
+  it("a viewer has no action bar and can only add an internal work note", () => {
+    for (const role of ["viewer", "worknote_creator"]) {
+      currentUserRoles.value = [role];
+      const { unmount } = renderPage();
+      expect(screen.queryByRole("button", { name: /stub request info/i })).not.toBeInTheDocument();
+      // Never offered a customer-visible reply, only the internal note.
+      expect(screen.queryByRole("button", { name: /compose a reply/i })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /add an internal work note/i }));
+      // The composer is locked to internal notes, with no attachments.
+      const probe = screen.getByTestId("comment-input-probe");
+      expect(probe).toHaveAttribute(
+        "data-public-reason",
+        "You can only add internal work notes on this case.",
+      );
+      expect(probe).toHaveAttribute("data-attachments-disabled", "true");
+      unmount();
+    }
   });
 
   it("an escalator role alone does not unlock replying or changing the case", () => {
@@ -1579,6 +1629,40 @@ describe("CsmCaseDetailPage — role-based controls", () => {
       expect(screen.getByRole("tab", { name: /time tracking/i })).toHaveAttribute("aria-selected", "true");
       unmount();
     }
+  });
+
+  it("a viewer's own note offers no edit or delete (both are write-only on the backend)", () => {
+    for (const [role, expected] of [["viewer", "false"], ["cs_engineer", "true"]] as const) {
+      currentUserRoles.value = [role];
+      const { unmount } = renderPage();
+      const feed = screen.getByTestId("case-activities-feed-probe");
+      expect(feed).toHaveAttribute("data-can-edit", expected);
+      expect(feed).toHaveAttribute("data-can-delete", expected);
+      unmount();
+    }
+  });
+
+  it("the Call requests tab is read-only for a viewer", () => {
+    for (const [role, expected] of [["viewer", "true"], ["cs_engineer", "false"]] as const) {
+      currentUserRoles.value = [role];
+      const { unmount } = renderPage();
+      fireEvent.click(screen.getByRole("tab", { name: /call requests/i }));
+      expect(screen.getByTestId("call-requests-widget-probe")).toHaveAttribute("data-read-only", expected);
+      unmount();
+    }
+  });
+
+  it("linked incidents (an Operations read) are not requested or shown for a viewer", () => {
+    currentUserRoles.value = ["viewer"];
+    const { unmount } = renderPage();
+    fireEvent.click(screen.getByRole("tab", { name: /linked items/i }));
+    expect(screen.queryByTestId("linked-incidents-list-probe")).not.toBeInTheDocument();
+    unmount();
+
+    currentUserRoles.value = ["cs_engineer"];
+    renderPage();
+    fireEvent.click(screen.getByRole("tab", { name: /linked items/i }));
+    expect(screen.getByTestId("linked-incidents-list-probe")).toBeInTheDocument();
   });
 
   it("a user with no roles sees no controls", () => {

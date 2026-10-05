@@ -110,7 +110,6 @@ import CsmAnnouncementCreatePage from "@features/csm-announcements/pages/CsmAnno
 import HelpPage from "@features/help/pages/HelpPage";
 import RouteGuard from "@features/spl/pages/RouteGuard";
 import CasesPage from "@features/spl/cases/pages/CasesPage";
-import CaseDetailPage from "@features/spl/cases/pages/CaseDetailPage";
 import AccountsPage from "@features/spl/accounts/pages/AccountsPage";
 import AccountDetailPage from "@features/spl/accounts/pages/AccountDetailPage";
 import ProjectsPage from "@features/spl/projects/pages/ProjectsPage";
@@ -235,6 +234,16 @@ function LegacyDetailRedirect({ to }: { to: string }): JSX.Element {
 function LegacySettingsRedirect({ to }: { to: string }): JSX.Element {
   const { state } = useLocation();
   return <Navigate to={to} state={state} replace />;
+}
+
+/**
+ * Redirects a legacy `/spl/cases/:caseId` link to the normal case view at
+ * `/cases/:caseId`, preserving query, hash and `location.state`.
+ */
+function SplCaseRedirect(): JSX.Element {
+  const { caseId } = useParams();
+  const { search, hash, state } = useLocation();
+  return <Navigate to={`${caseId ? `/cases/${caseId}` : "/spl/cases"}${search}${hash}`} state={state} replace />;
 }
 
 export default function App(): JSX.Element {
@@ -639,7 +648,12 @@ export default function App(): JSX.Element {
                       PermissionProvider for every screen below it. */}
                   <Route path="spl" element={<RouteGuard />}>
                     <Route path="cases" element={<CasesPage />} />
-                    <Route path="cases/:caseId" element={<CaseDetailPage />} />
+                    {/* SPL has no case-detail page of its own any more: every
+                        case opens in the normal CSM case view at
+                        /cases/:caseId (write actions there are gated by the
+                        caller's roles). This redirect only keeps old
+                        /spl/cases/:id links and bookmarks working. */}
+                    <Route path="cases/:caseId" element={<SplCaseRedirect />} />
 
                     {/* AccountsPage reads the path leaf itself to decide
                         all-accounts vs my-accounts — same component, two

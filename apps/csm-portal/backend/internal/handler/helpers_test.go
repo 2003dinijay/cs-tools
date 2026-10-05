@@ -101,6 +101,23 @@ func withWorknoteCreatorUser(r *http.Request) *http.Request {
 	return r.WithContext(middleware.WithUserInfo(r.Context(), testWorknoteCreatorUser))
 }
 
+// testViewerOnlyUser holds ONLY the plain viewer role (test-viewer): every read
+// plus PermCreateWorkNote, but not PermWrite. Unlike testUser (which stacks
+// every SPL role on top of viewer), this is the Sales/SA caller the work-note
+// boundary exists for: it may post a work_note, never anything else.
+var testViewerOnlyUser = &middleware.UserInfo{
+	Email:     "viewer-only@example.com",
+	UserID:    "f2d9bf5b-7067-43dc-8578-802c8623af60",
+	FirstName: "Viewer",
+	LastName:  "Only",
+	Roles:     []string{"test-viewer"},
+}
+
+// withViewerOnlyUser returns r with testViewerOnlyUser stored in its context.
+func withViewerOnlyUser(r *http.Request) *http.Request {
+	return r.WithContext(middleware.WithUserInfo(r.Context(), testViewerOnlyUser))
+}
+
 // ----- assertion helpers -----
 
 // assertStatus fails if the recorded status code differs from want.

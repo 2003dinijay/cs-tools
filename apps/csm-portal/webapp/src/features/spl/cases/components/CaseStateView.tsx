@@ -16,10 +16,10 @@
 
 // Ported from apps/support-portal-lite/webapp's own
 // features/spl/cases/components/CaseStateView.tsx. Route updated to this
-// app's "/spl/cases/:id" (see csmNavItems.ts).
+// app's normal case view, "/cases/:id" (see App.tsx).
 import { Box, Button, Grid, Paper, Typography } from "@wso2/oxygen-ui";
 import { HomeIcon } from "@wso2/oxygen-ui-icons-react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import type { CaseDetails, CaseDetailsWithCount } from "../api/caseTypes";
 import DefaultTable from "./DefaultTable";
 
@@ -45,11 +45,14 @@ export default function CaseStateView({
   setRowsPerPage: (rowsPerPage: number) => void;
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
 
   const colNameArray = ["Number", "Case ID", "Short Description", "Case Type", "Priority", "State"];
   const colAttributeArray = ["number", "caseId", "shortDescription", "caseType", "priority", "state"];
 
-  const handleRowClick = (rowData: CaseDetails) => navigate(`/spl/cases/${rowData.id}`);
+  // `from` makes the case page's Back return to this SPL list, not the CS one.
+  const handleRowClick = (rowData: CaseDetails) =>
+    navigate(`/cases/${rowData.id}`, { state: { from: `${location.pathname}${location.search}` } });
 
   return (
     <>

@@ -23,6 +23,7 @@ const NONE = {
   canUseOperations: false,
   canUseTimeCardsAndUpdates: false,
   canWrite: false,
+  canAddWorkNotes: false,
   canCreateUser: false,
   canUseSecurityCenter: false,
   canUsePlg: false,
@@ -39,8 +40,25 @@ describe("getPortalAccess", () => {
     expect(getPortalAccess(["internal", "customer", "agent"])).toEqual(NONE);
   });
 
-  it("viewer can use the portal but do nothing else", () => {
-    expect(getPortalAccess(["viewer"])).toEqual({ ...NONE, hasAnyRole: true });
+  it("viewer can use the portal and add internal work notes, but do nothing else", () => {
+    expect(getPortalAccess(["viewer"])).toEqual({ ...NONE, hasAnyRole: true, canAddWorkNotes: true });
+  });
+
+  it("worknote_creator adds internal work notes and nothing else", () => {
+    expect(getPortalAccess(["worknote_creator"])).toEqual({
+      ...NONE,
+      hasAnyRole: true,
+      canAddWorkNotes: true,
+    });
+  });
+
+  it("work notes are not a write: only full-write roles can do both", () => {
+    expect(getPortalAccess(["viewer"]).canWrite).toBe(false);
+    expect(getPortalAccess(["cs_engineer"])).toMatchObject({ canWrite: true, canAddWorkNotes: true });
+    expect(getPortalAccess(["admin"])).toMatchObject({ canWrite: true, canAddWorkNotes: true });
+    for (const role of ["escalator", "attachment_downloader", "usage_metrics_viewer", "timecard_approver", "dashboard_designer"]) {
+      expect(getPortalAccess([role]).canAddWorkNotes).toBe(false);
+    }
   });
 
   it("each specialised role adds only its own ability", () => {
@@ -73,6 +91,7 @@ describe("getPortalAccess", () => {
       canUseOperations: true,
       canUseTimeCardsAndUpdates: true,
       canWrite: true,
+      canAddWorkNotes: true,
       canUseSecurityCenter: true,
       canUsePlg: true,
     };
@@ -201,6 +220,7 @@ describe("getPortalAccess", () => {
       hasAnyRole: true,
       canEscalate: true,
       canDownloadAttachment: true,
+      canAddWorkNotes: true,
     });
   });
 

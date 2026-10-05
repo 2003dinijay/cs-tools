@@ -316,7 +316,7 @@ func TestAccessGuard_SecurityCenterIsForCsEngineersAndAdmins(t *testing.T) {
 
 func TestAccessGuard_UnconfiguredRolesAreHeldByNobody(t *testing.T) {
 	g := NewAccessGuard(AccessConfig{})
-	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermAdmin, PermViewSecurityCenter, PermApproveTimeCard, PermUsePlg, PermManagePlaybooks} {
+	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermAdmin, PermViewSecurityCenter, PermApproveTimeCard, PermUsePlg, PermManagePlaybooks, PermCreateWorkNote} {
 		if status, _ := serveWithRoles(g, perm, []string{"test-admin", "test-viewer", ""}); status != http.StatusForbidden {
 			t.Errorf("permission %d with no roles configured: status = %d, want 403", perm, status)
 		}
@@ -412,29 +412,32 @@ func TestAccessGuard_ManagePlaybooksIsAdminOnly(t *testing.T) {
 	}
 }
 
-// TestAccessGuard_CreateWorkNoteIsForWorknoteCreatorsCsEngineersAndAdmins pins
+// TestAccessGuard_CreateWorkNoteIsForViewersWorknoteCreatorsCsEngineersAndAdmins pins
 // PermCreateWorkNote's deliberately wider holder set than PermWrite's (see
 // the constant's own doc comment) -- it's the route-level floor for POST
 // /cases/{id}/comments, with CaseHandler itself narrowing back to full
 // PermWrite for anything that isn't a work_note.
-func TestAccessGuard_CreateWorkNoteIsForWorknoteCreatorsCsEngineersAndAdmins(t *testing.T) {
+func TestAccessGuard_CreateWorkNoteIsForViewersWorknoteCreatorsCsEngineersAndAdmins(t *testing.T) {
 	g := NewAccessGuard(testAccessConfig())
-	for _, role := range []string{"test-worknote-creator", "test-cs-engineer", "test-admin"} {
+	for _, role := range []string{"test-viewer", "test-worknote-creator", "test-cs-engineer", "test-admin"} {
 		if status, _ := serveWithRoles(g, PermCreateWorkNote, []string{role}); status != http.StatusNoContent {
 			t.Errorf("%s: status = %d, want 204", role, status)
 		}
 	}
 	for _, role := range []string{
-		"test-viewer", "test-escalator", "test-attachment-downloader",
+		"test-escalator", "test-attachment-downloader",
 		"test-usage-metrics-viewer", "test-timecard-approver", "test-dashboard-designer",
+		"test-sales-solutions",
 	} {
 		if status, _ := serveWithRoles(g, PermCreateWorkNote, []string{role}); status != http.StatusForbidden {
 			t.Errorf("%s must not hold PermCreateWorkNote: status = %d, want 403", role, status)
 		}
 	}
-	// worknote_creator holds ONLY this -- not the broader PermWrite a
+	// viewer and worknote_creator hold ONLY this -- not the broader PermWrite a
 	// customer-visible reply (or any other write) needs.
-	if status, _ := serveWithRoles(g, PermWrite, []string{"test-worknote-creator"}); status != http.StatusForbidden {
-		t.Errorf("worknote_creator must not hold PermWrite: status = %d, want 403", status)
+	for _, role := range []string{"test-viewer", "test-worknote-creator"} {
+		if status, _ := serveWithRoles(g, PermWrite, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s must not hold PermWrite: status = %d, want 403", role, status)
+		}
 	}
 }

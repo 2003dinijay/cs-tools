@@ -459,8 +459,8 @@ func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) 
 	_ = json.Unmarshal(body, &reqMeta) // body is already validated JSON
 
 	// The route's own permission (PermCreateWorkNote) is deliberately
-	// broader than this: it also admits a worknote_creator-only caller, who
-	// must NOT be able to post anything but a work_note. Narrow back down
+	// broader than this: it also admits a viewer- or worknote_creator-only
+	// caller, who must NOT be able to post anything but a work_note. Narrow back down
 	// to full PermWrite for every other type -- see PermCreateWorkNote's
 	// own doc comment.
 	hasFullWrite := h.access != nil && h.access.Permits(PermWrite, user.Roles)
@@ -469,7 +469,7 @@ func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// A worknote-creator-only caller is only ever allowed to reach here with
+	// A viewer-/worknote-creator-only caller is only ever allowed to reach here with
 	// type=work_note (just checked above) -- but body is still the
 	// caller-supplied raw bytes, forwarded to the entity service unchanged
 	// below. encoding/json's handling of a duplicate "type" key (last one
@@ -493,7 +493,7 @@ func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) 
 		}
 		body = rebuilt
 
-		// A worknote_creator-only caller (not cs_engineer/admin, who already
+		// A viewer-/worknote_creator-only caller (not cs_engineer/admin, who already
 		// hold full PermWrite and are assumed provisioned) may have no "user"
 		// row yet — see ensureUserProvisioned's own doc comment.
 		ensureUserProvisioned(r.Context(), h.entity, user)

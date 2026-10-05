@@ -316,6 +316,10 @@ type CaseTabId =
 // true to restore; nothing else needs to change.
 const TASKS_FEATURE_ENABLED = false;
 
+// Shown in the composer for a caller who can add internal work notes but has no
+// full write access (a plain viewer, a worknote_creator).
+const WORK_NOTE_ONLY_REASON = "You can only add internal work notes on this case.";
+
 const TAB_DEFS: Array<{
   id: CaseTabId;
   label: string;
@@ -374,8 +378,18 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const { user: currentUser } = useCurrentUser();
   // What this user's roles let them do. UX only — the backend 403s the same
   // actions regardless, so hiding a control here is never the enforcement.
-  const { canEscalate, canDownloadAttachment, canWrite, canUseTimeCardsAndUpdates } =
-    usePortalAccess();
+  const {
+    canEscalate,
+    canDownloadAttachment,
+    canWrite,
+    canAddWorkNotes,
+    canUseOperations,
+    canUseTimeCardsAndUpdates,
+  } = usePortalAccess();
+  // A viewer (or worknote_creator) without full write may still add an internal
+  // work note -- and nothing else on this page. The composer is locked to
+  // internal notes for them, the same lock a not-yet-started case gets.
+  const workNoteOnly = !canWrite && canAddWorkNotes;
   const routedCaseId = useNormalizedIdParam("caseId");
   const routedNavigate = useNavTransition();
   const routedLocation = useLocation();
@@ -599,8 +613,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const { data: caseTimeCards } = useCaseTimeCards(
     isAnnouncement || !canUseTimeCardsAndUpdates ? undefined : caseId,
   );
+  // Incidents are an Operations feature the backend only serves to roles that
+  // can use it, so the query is skipped for everyone else rather than left to 403.
   const { data: linkedIncidents } = useSearchLinkedIncidents(
-    isAnnouncement ? undefined : caseId,
+    isAnnouncement || !canUseOperations ? undefined : caseId,
   );
   // Live deployment lookup for the Details tab's "Deployment info" widget —
   // only runs when the case actually has a deployment link (SN-sourced cases
@@ -2210,9 +2226,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // prop below) already covers — so skip the state/ownership gate here rather
   // than have it report a reason ("...actively in progress"/"...assigned
   // engineer...") that would never resolve for an announcement.
-  const publicReplyGateReason = isAnnouncement
+  const stateGateReason = isAnnouncement
     ? null
     : publicCommentGateReason(c.state, c.workState, c.assigneeIsMe);
+  // A work-note-only caller can never send a customer-visible reply, whatever
+  // the case state, so the composer locks to internal notes for them too.
+  const publicReplyGateReason = workNoteOnly ? WORK_NOTE_ONLY_REASON : stateGateReason;
   // The composer's inline "Resume work" quick-fix only applies to this one
   // lock reason — the case is already work_in_progress and assigned to the
   // signed-in engineer, just paused, so resuming is the single-field PATCH
@@ -2561,7 +2580,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               comment types there), despite the hidden CaseActionBar above —
               that hides case-lifecycle patch actions, which don't apply to an
               announcement, not the ability to reply to one. */}
-          {!canWrite ? null : composerOpen ? (
+          {!canWrite && !canAddWorkNotes ? null : composerOpen ? (
             <Card
               className="csm-print-hide"
               sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}
@@ -2753,8 +2772,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
                         }
                       : undefined
                   }
-                  onEditComment={onEditComment}
-                  onDeleteComment={onDeleteComment}
+                  onEditComment={canWrite ? onEditComment : undefined}
+                  onDeleteComment={canWrite ? onDeleteComment : undefined}
                 />
               </>
             )}
@@ -2925,7 +2944,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               onLinkIncident={() => setLinkIncidentOpen(true)}
               linkDisabled={isClosed || !canWrite}
             />
-            <LinkedIncidentsListWidget caseId={c.id} />
+            {canUseOperations && <LinkedIncidentsListWidget caseId={c.id} />}
             {/* Change requests are only ever raised from a service request,
                 never directly from a plain case — gate solely on
                 `isServiceRequest` rather than falling back to
@@ -3041,6 +3060,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             severity={c.severity}
             caseState={c.state}
             isClosed={isClosed}
+            readOnly={!canWrite}
           />
         </Box>
       )}

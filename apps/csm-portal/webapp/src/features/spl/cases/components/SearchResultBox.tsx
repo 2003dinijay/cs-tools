@@ -19,7 +19,7 @@
 // app's "/spl/*" prefix (see csmNavItems.ts).
 import { Card, Stack, Typography } from "@wso2/oxygen-ui";
 import { alpha, useColorScheme } from "@mui/material/styles";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { LinearLoadingPanel, NoResultsPanel } from "./StatePanels";
 import type { CaseDetails, CaseDetailsWithCount, AccountSummary, ProjectSummary } from "../api/caseTypes";
 
@@ -33,6 +33,7 @@ export function SearchResultBox({
   type: SearchOptions;
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
   // theme.palette.mode is not live under oxygen-ui's CSS-variables theme
   // (extendTheme()) — confirmed empirically. useColorScheme() is the hook
   // that actually tracks the live scheme.
@@ -42,7 +43,8 @@ export function SearchResultBox({
   const hoverBg = alpha("#ff7300", isDark ? 0.24 : 0.35);
 
   const navigateTo = (id: string) => {
-    if (type === "case") navigate(`/spl/cases/${id}`);
+    // `from` makes the case page's Back return to this SPL list, not the CS one.
+    if (type === "case") navigate(`/cases/${id}`, { state: { from: `${location.pathname}${location.search}` } });
     else if (type === "account" || type === "myAccount") navigate(`/spl/accounts/${id}`);
     else if (type === "project") navigate(`/spl/projects/${id}`);
   };
