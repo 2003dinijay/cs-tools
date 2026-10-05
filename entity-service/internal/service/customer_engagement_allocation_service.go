@@ -236,7 +236,7 @@ func (s *customerEngagementAllocationService) findOrCreateEngagement(ctx context
 	id, created, err := store.InsertEngagement(ctx, domain.NewCustomerEngagement{
 		EngagementID:     in.engagementID,
 		EngagementCode:   in.engagementCode,
-		Name:             allocTruncate(in.customerName+" - "+in.allocationTypeName, 200),
+		Name:             allocTruncate(engagementName(in.customerName, in.allocationTypeName), 200),
 		AccountID:        accountID,
 		IsPaid:           strings.HasPrefix(strings.ToLower(strings.TrimSpace(in.engagement.EngagementTypeName)), "paid"),
 		DeliveryMode:     deliveryModeFromNature(in.engagement.EngagementNature),
@@ -246,6 +246,15 @@ func (s *customerEngagementAllocationService) findOrCreateEngagement(ctx context
 		LineItemSfID:     lineItem,
 	})
 	return id, created, "", err
+}
+
+// engagementName is ServiceNow's "<customer> - <allocation type>", without the leading
+// " - " when the customer name is missing (the account was found by customerCode).
+func engagementName(customer, allocationType string) string {
+	if customer == "" {
+		return allocationType
+	}
+	return customer + " - " + allocationType
 }
 
 // deliveryModeFromNature maps engagementNature to customer_engagement_delivery_mode_enum

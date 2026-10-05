@@ -357,6 +357,20 @@ func TestAllocationEvent_CustomerCodeFromEngagement(t *testing.T) {
 	}
 }
 
+func TestAllocationEvent_NameWithoutCustomerName(t *testing.T) {
+	f := newFakeAllocationStore()
+	f.accountsBySfID["001000000000001AAA"] = "acct-1"
+	f.usersByEmail["consultant@wso2.com"] = "user-1"
+	ev := allocFirefightingEvent()
+	ev.Engagement.CustomerName = ""
+	if _, err := newAllocationSvc(f).ProcessAllocationEvent(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.inserted) != 1 || f.inserted[0].Name != "Support Related Customer Firefighting" {
+		t.Fatalf("inserted = %+v, want the allocation type name alone", f.inserted)
+	}
+}
+
 func TestAllocationEvent_RepeatIsIdempotent(t *testing.T) {
 	f := newFakeAllocationStore()
 	f.accountsBySfID["001000000000001AAA"] = "acct-1"

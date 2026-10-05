@@ -21,7 +21,7 @@ BEGIN
           WHERE engagement_id IS NOT NULL AND allocation_id IS NOT NULL
           GROUP BY engagement_id, allocation_id HAVING count(*) > 1) d;
     IF dup_engagements IS NOT NULL OR dup_allocations IS NOT NULL THEN
-        RAISE EXCEPTION 'migration 0178: duplicates must be resolved first. customer_engagement.engagement_id: [%]; customer_engagement_allocation_resource (engagement_id/allocation_id): [%]',
+        RAISE EXCEPTION 'migration 0187: duplicates must be resolved first. customer_engagement.engagement_id: [%]; customer_engagement_allocation_resource (engagement_id/allocation_id): [%]',
             coalesce(dup_engagements, 'none'), coalesce(dup_allocations, 'none');
     END IF;
 END $$;
