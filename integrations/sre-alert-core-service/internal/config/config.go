@@ -151,7 +151,7 @@ func defaults() Config {
 			CSMRetryMultiplier:   2,
 			CSMRetryMaxDelay:     Duration(15 * time.Minute),
 			ChatThreadingEnabled: true,
-			ChatFallbackDelay:    Duration(60 * time.Second),
+			ChatFallbackDelay:    Duration(25 * time.Second),
 			DeliveryConcurrency:  32,
 		},
 		Server: ServerConfig{

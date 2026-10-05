@@ -66,7 +66,7 @@ notifications independently until they're actually delivered.
   every retry, the service searches CSM by `correlationId` so a lost create response
   never causes a duplicate.
 - **Chat fallback.** If CSM still hasn't confirmed an incident
-  `notify.chat_fallback_delay` (60s) after it was created, it is posted once to
+  `notify.chat_fallback_delay` (25s) after it was created, it is posted once to
   `FALLBACK_CHAT_WEBHOOK_URLS`; CSM keeps retrying meanwhile. Without CSM configured,
   or after CSM permanently rejects the incident, the card is posted at once. With `chat_threading_enabled`, each incident gets its
   own thread, and Duplicate/OK alerts are collapsed into one digest reply per

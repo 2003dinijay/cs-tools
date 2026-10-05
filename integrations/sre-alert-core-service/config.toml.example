@@ -56,7 +56,7 @@ csm_retry_multiplier = 2
 # Caps the CSM create retry wait, so a recovered CSM gets the backlog within this long.
 csm_retry_max_delay = "15m"
 # How long CSM gets to confirm a new incident before it is posted to the Chat fallback; "0s" posts on the first CSM failure.
-chat_fallback_delay = "60s"
+chat_fallback_delay = "25s"
 # Each incident's Chat fallback card gets its own thread, and Duplicate/OK alerts become one digest reply per delivery pass.
 chat_threading_enabled = true
 # Incidents each replica delivers to CSM/Chat in parallel; each holds one lock connection for its CSM/Chat calls.
