@@ -68,6 +68,9 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `false` | Must be `"true"` to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
 | `CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED` | no | `false` | Registers `POST /customer-engagements/allocation-events` (Postgres-authoritative only); see "Allocation events" below |
 | `CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID` | no | — | ServiceNow sys_id written as `engagement_type_id` on firefighting engagements created by allocation events. Unset skips creating them |
+| `REDIS_URL` | no | — | `rediss://:<key>@<host>:<port>` (TLS, Azure Managed Redis); wins over `REDIS_ADDR`. Turns on the user cache (see "User cache (Redis)" below). `Validate` requires a `redis`/`rediss` scheme and a host, and never echoes the URL |
+| `REDIS_ADDR` / `REDIS_PASSWORD` | no | — | Plain, non-TLS Redis for local runs. Either this or `REDIS_URL` makes `Config.HasRedis` true |
+| `USER_CACHE_TTL` | no | `10m` | Backstop lifetime of a cached user; an unparseable or non-positive value falls back to `10m` |
 
 \* `DB_USER`/`DB_PASSWORD`/`DB_NAME` are required when `DATA_SOURCE=postgres`
 and **optional** when `DATA_SOURCE=servicenow`, where entity reads and writes
@@ -182,6 +185,62 @@ just a bool, either `"true"` or not. `NewRouter` returns the constructed
 `EventPublisherService` (nil if unconfigured) alongside the `http.Handler`,
 threaded through `server.New` to `cmd/api/main.go`, which calls `Close()` on
 it during shutdown, after `srv.Shutdown`.
+
+## User cache (Redis)
+
+`GET /users/{id}` and `GET /users/me` are served cache-aside from Redis when
+`Config.HasRedis()` and there is a pool. `NewRouter` wraps `userSvc` in
+`service.NewCachedUserService(inner, cache)` (`internal/service/cached_user_service.go`),
+a decorator over `UserService` that overrides `GetUser`, `GetMe`, `PatchMe`
+and `CreateUser` and passes everything else straight through. The Redis side
+lives in `internal/cache` (`NewRedisClient`, `UserCache`); the service layer
+depends only on the `service.UserCache`/`service.UserCacheInvalidator`
+interfaces in `interfaces.go`. `rdb.Close()` runs from `closePublishers` at
+shutdown.
+
+Keys (all under `entity:v1:user:`; bump `v1` when a cached shape changes):
+
+| Key | Value |
+|---|---|
+| `detail:{id}` | `domain.UserDetail` for `GET /users/{id}` |
+| `me:{id}` | `domain.GetUserMeResponse` for `GET /users/me` |
+| `id-by-email:{sha256(lower(email))}` | user id, so `GetMe` (keyed by the caller's email) and email-only invalidations can find the id |
+
+Conventions to preserve:
+
+- **Invalidate after commit, by deleting.** Every writer of user, contact or
+  membership rows calls `InvalidateUser(ctx, userID, email)` once its write has
+  succeeded: `PatchMe`/`CreateUser` in the decorator, `writeContact`/
+  `deactivateContact` (Contact writer), `ingestMembership` and the DELETED
+  branch (membership ingest), and `Invite`/`UpdateRoles`/`Deactivate`
+  (`project_membership_write_service.go`, via `MembershipWriteDeps.UserCache`).
+  The `DeactivateBySfID` repos return the affected `[]domain.AffectedUser` for
+  this. A new writer of `user`, `account_contact` or `project_contact` must do
+  the same, or its change is invisible for up to `USER_CACHE_TTL`. Never write
+  the new value into the cache from a writer; the next read repopulates it.
+- **Fail open.** Every Redis call has a short timeout and a failure is a miss,
+  never an error to the caller. Warnings are rate-limited (`warn`, once per
+  30s); a failed invalidation is logged at ERROR with the user id only.
+- **Never cache errors or not-found.** Only a successful inner result is
+  stored. `GetUser` validates the id before touching the cache.
+- **No PII in keys or logs.** Emails are hashed in keys and never logged;
+  `REDIS_URL` holds the access key, so `Validate` and `NewRedisClient` return
+  generic errors that never quote it.
+- **Keep the invalidator a nil interface when the cache is off.**
+  `userCacheInvalidator` in `routes.go` is declared as
+  `service.UserCacheInvalidator` and assigned only when the cache is built;
+  assigning a nil `*cache.UserCache` would make it non-nil (the same pitfall as
+  the health handler's pool). `invalidateUser` treats a nil invalidator as a
+  no-op.
+- **`GetMe` checks the cached email.** A `me:{id}` entry whose `Email` does not
+  match the caller is treated as a miss, which guards against a stale
+  `id-by-email` entry after an email change.
+
+Known limits: a read that races an invalidation can re-cache the old value
+until the TTL; a degraded `GetMe` (e.g. groups unavailable) is cached like any
+other success; `SearchUsers`, `GetUsersByIDs` and `DATA_SOURCE=servicenow` are
+not cached. The client is a plain `redis.NewClient`, so the target must not use
+the "OSS Cluster" clustering policy.
 
 ## Salesforce Account ingest
 
