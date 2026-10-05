@@ -298,6 +298,18 @@ export class ChangeRequestDetailPage {
     return this.approverRow(approverName, stage).locator(".MuiChip-label");
   }
 
+  /** The Assignment group of an approver's row: a link-button that opens the
+   * group (its members), or the project's registered contacts for a customer
+   * stage. Pass `stage` to pick one stage's row. */
+  groupLink(approverName: string, groupName: string, stage?: string): Locator {
+    return this.approverRow(approverName, stage).getByRole("button", { name: `View members of ${groupName}`, exact: true });
+  }
+
+  /** The group dialog the Assignment group link opens, titled with the group's name. */
+  groupDialog(title: string): Locator {
+    return this.page.getByRole("dialog", { name: title, exact: true });
+  }
+
   /** Approve/Reject buttons only render for the signed-in user's own
    * pending ("REQUESTED") approval row — scope by the approver's own display
    * name when more than one row is on the page at once. */

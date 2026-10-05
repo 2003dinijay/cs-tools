@@ -2816,11 +2816,28 @@ export interface BeChangeRequestApprover {
   canDecide?: boolean;
 }
 
+/**
+ * The group an approval stage is assigned to (`assignmentGroup` on
+ * {@link BeChangeRequestApproval}); its `id` opens `GET /groups/{id}`.
+ */
+export interface BeChangeRequestApprovalGroup {
+  id: string;
+  name: string;
+}
+
 /** One approval stage on a change request, with its individual approvers. */
 export interface BeChangeRequestApproval {
   stage: string;
   approverType: BeChangeRequestApproverType | string;
   approverName?: string | null;
+  /**
+   * The group this stage was provisioned from (PostgreSQL data source), so its
+   * members can be listed. `null`/absent for the Customer Approval / Customer
+   * Review stages -- their approvers are the project's registered contacts
+   * (`BeChangeRequestDetail.customerContacts`), not a group -- and on the
+   * ServiceNow data source.
+   */
+  assignmentGroup?: BeChangeRequestApprovalGroup | null;
   status: string;
   approvers: BeChangeRequestApprover[];
 }
@@ -2828,6 +2845,31 @@ export interface BeChangeRequestApproval {
 /** `GET /change-requests/{id}/approvals` response. */
 export interface BeChangeRequestApprovalsView {
   approvals: BeChangeRequestApproval[];
+}
+
+/** One active member of a group (`GET /groups/{id}`). */
+export interface BeGroupMember {
+  /** The member's user id. */
+  id: string;
+  name: string;
+  email?: string | null;
+  /** INTERNAL, EXTERNAL, ... ; null when unset. */
+  userType?: string | null;
+  /** `"lead"` when the user leads the group, else `"member"`. */
+  role?: "member" | "lead" | string | null;
+}
+
+/** `GET /groups/{id}` response: a group and its active members (name order). */
+export interface BeGroupDetail {
+  id: string;
+  name: string;
+  description?: string | null;
+  /** The group email. */
+  email?: string | null;
+  manager?: { id: string; name: string } | null;
+  members: BeGroupMember[];
+  /** Number of members. */
+  total: number;
 }
 
 /** Caller's decision on their own pending change-request approval. */

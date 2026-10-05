@@ -77,6 +77,16 @@
 //     response and editable via PATCH until their gate passes; a late edit is
 //     refused with a 400 and a readable message;
 //   - the CR's creator can never approve;
+//   - assignment groups: every internal stage carries `assignmentGroup: {id, name}`
+//     -- Peer Approval the CR's assigned group (FAKE_PEER_GROUP, "Example Corp
+//     ABT"), CAB / ECAB Approval their own groups (FAKE_CAB_GROUP /
+//     FAKE_ECAB_GROUP) -- and `GET /groups/{id}` answers the group page
+//     (`{id, name, description, email, manager, members:[{id,name,email,userType,
+//     role}], total}`, 404 for an unknown id). The Customer Approval / Customer
+//     Review stages carry `assignmentGroup: null` (their approvers are the
+//     project's registered contacts, which the page already has as
+//     `customerContacts`); `failGroups(status)` makes the group endpoint fail,
+//     for the error state;
 //   - the customer scope (see FAKE_PROJECTS & co. below): `POST /projects/search`
 //     lists the fake projects, `POST /change-requests/link-options` answers the
 //     Customer Project -> Deployments -> Deployment products cascade (plus the
@@ -163,6 +173,60 @@ export const FAKE_GROUPS: FakeRef[] = [
   { id: "00000000-0000-0000-0000-00000000a102", name: "Artemis" },
 ];
 
+/** A group's page as `GET /groups/{id}` returns it. */
+export interface FakeGroupMember extends FakeUser {
+  role: "member" | "lead";
+}
+export interface FakeApprovalGroup extends FakeRef {
+  description: string | null;
+  email: string | null;
+  manager: FakeRef | null;
+  members: FakeGroupMember[];
+}
+
+export const FAKE_PEER_COLLEAGUE: FakeUser = { id: "00000000-0000-0000-0000-00000000e011", name: "Quinn Peer", email: "quinn.peer@example.com" };
+export const FAKE_CAB_COLLEAGUE: FakeUser = { id: "00000000-0000-0000-0000-00000000e012", name: "Cleo Cab", email: "cleo.cab@example.com" };
+export const FAKE_CAB_NO_EMAIL: FakeUser = { id: "00000000-0000-0000-0000-00000000e013", name: "Cyd Cab", email: "" };
+export const FAKE_ECAB_COLLEAGUE: FakeUser = { id: "00000000-0000-0000-0000-00000000e014", name: "Eve Ecab", email: "eve.ecab@example.com" };
+
+/** The CR's assigned group: the Peer Approval stage is provisioned from it. */
+export const FAKE_PEER_GROUP: FakeApprovalGroup = {
+  id: "00000000-0000-0000-0000-00000000a201",
+  name: "Example Corp ABT",
+  description: "Builds and supports the Example Corp account.",
+  email: "example-corp-abt@example.com",
+  manager: { id: "00000000-0000-0000-0000-00000000e021", name: "Mona Manager" },
+  members: [
+    { ...FAKE_PEER, role: "lead" },
+    { ...FAKE_PEER_COLLEAGUE, role: "member" },
+  ],
+};
+/** The CAB Approval group (no description, email or manager: only the members show). */
+export const FAKE_CAB_GROUP: FakeApprovalGroup = {
+  id: "00000000-0000-0000-0000-00000000a202",
+  name: "CAB Approval",
+  description: null,
+  email: null,
+  manager: null,
+  members: [
+    { ...FAKE_CAB, role: "member" },
+    { ...FAKE_CAB_COLLEAGUE, role: "member" },
+    { ...FAKE_CAB_NO_EMAIL, role: "member" },
+  ],
+};
+export const FAKE_ECAB_GROUP: FakeApprovalGroup = {
+  id: "00000000-0000-0000-0000-00000000a203",
+  name: "ECAB Approval",
+  description: "Emergency Change Advisory Board.",
+  email: null,
+  manager: null,
+  members: [
+    { ...FAKE_ECAB, role: "lead" },
+    { ...FAKE_ECAB_COLLEAGUE, role: "member" },
+  ],
+};
+const FAKE_APPROVAL_GROUPS: FakeApprovalGroup[] = [FAKE_PEER_GROUP, FAKE_CAB_GROUP, FAKE_ECAB_GROUP];
+
 /** States from which project / deployments can no longer change. */
 const SCOPE_LOCKED = ["implement", "review", "customer_review", "closed", "rollback", "canceled"];
 
@@ -203,6 +267,8 @@ interface Stage {
   stage: string;
   approverType: "STATIC_GROUP";
   approverName: string;
+  /** The group the stage was provisioned from; null for the customer stages. */
+  assignmentGroup: FakeRef | null;
   status: string;
   approvers: Approver[];
 }
@@ -251,6 +317,11 @@ export interface FakeChangeRequestApi {
   planned(): { start: string; end: string };
   /** The approval stages as the fake holds them (stage name -> status). */
   stages(): Array<{ stage: string; status: string; approvers: Array<{ name: string; status: string }> }>;
+  /**
+   * Makes `GET /groups/{id}` fail with this HTTP status (for the dialog's
+   * error state), or serve normally again with `null`.
+   */
+  failGroups(status: number | null): void;
 }
 
 const CUSTOMER_STAGES = ["Customer Approval", "Customer Review"];
@@ -282,10 +353,11 @@ function legalNextStates(state: string, flags: FakeCustomerFlags, liveCustomerSt
   }
 }
 
-const nextStage = (name: string, group: string, who: FakeUser): Stage => ({
+const nextStage = (name: string, group: FakeApprovalGroup, who: FakeUser): Stage => ({
   stage: name,
   approverType: "STATIC_GROUP",
-  approverName: group,
+  approverName: group.name,
+  assignmentGroup: { id: group.id, name: group.name },
   status: "REQUESTED",
   approvers: [{ id: who.id, name: who.name, status: "REQUESTED" }],
 });
@@ -330,6 +402,8 @@ export async function installFakeChangeRequestApi(
   const contacts = new Map<string, FakeUser[]>(Object.entries(FAKE_PROJECT_CONTACTS).map(([id, users]) => [id, [...users]]));
   /** The CR's customer group as the fake derives it: its project's registered contacts. */
   const currentContacts = (): FakeUser[] => (scope.projectId ? (contacts.get(scope.projectId) ?? []) : []);
+  /** When set, GET /groups/{id} fails with this status. */
+  let groupFailure: number | null = null;
   let plannedStartOn = "2030-03-01 09:00:00";
   let plannedEndOn = "2030-03-01 11:00:00";
   const log: string[] = [];
@@ -369,6 +443,7 @@ export async function installFakeChangeRequestApi(
         stage: kind,
         approverType: "STATIC_GROUP",
         approverName: "Customer Group",
+        assignmentGroup: null, // the project's registered contacts, not a group
         status: "REQUESTED",
         approvers: members.map((m) => ({ id: m.id, name: m.name, status: "REQUESTED" })),
       },
@@ -538,6 +613,29 @@ export async function installFakeChangeRequestApi(
     },
   );
 
+  // One group and its members: what opens from a stage's Assignment group.
+  await page.route(
+    (url) => /\/groups\/[0-9a-f-]{36}$/.test(url.pathname),
+    async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      if (!(await isApiCall(route))) return;
+      const id = new URL(route.request().url()).pathname.split("/").pop()!;
+      record(route, `GET /groups/${id}`);
+      if (groupFailure !== null) return json(route, { message: "Failed to retrieve group." }, groupFailure);
+      const group = FAKE_APPROVAL_GROUPS.find((g) => g.id === id);
+      if (!group) return json(route, { message: "Not found." }, 404);
+      return json(route, {
+        id: group.id,
+        name: group.name,
+        description: group.description,
+        email: group.email,
+        manager: group.manager,
+        members: group.members.map((m) => ({ id: m.id, name: m.name, email: m.email || null, userType: "INTERNAL", role: m.role })),
+        total: group.members.length,
+      });
+    },
+  );
+
   // The Customer Project -> Deployments -> Deployment products cascade, plus the project's contacts.
   await page.route(
     (url) => url.pathname.endsWith("/change-requests/link-options"),
@@ -629,7 +727,7 @@ export async function installFakeChangeRequestApi(
         } else if (decision === "approved") {
           if (current.stage === "Peer Approval") {
             state = "authorize";
-            stages = [...stages, nextStage("CAB Approval", "CAB", FAKE_CAB)];
+            stages = [...stages, nextStage("CAB Approval", FAKE_CAB_GROUP, FAKE_CAB)];
           } else {
             enter(afterInternalApproval()); // CAB / ECAB approval moves the CR on itself
           }
@@ -757,16 +855,16 @@ export async function installFakeChangeRequestApi(
             syncCustomerStage(); // nothing internal to repeat: the customer is asked again
           } else {
             state = "authorize";
-            stages = [...stages, type === "emergency" ? nextStage("ECAB Approval", "ECAB", FAKE_ECAB) : nextStage("CAB Approval", "CAB", FAKE_CAB)];
+            stages = [...stages, type === "emergency" ? nextStage("ECAB Approval", FAKE_ECAB_GROUP, FAKE_ECAB) : nextStage("CAB Approval", FAKE_CAB_GROUP, FAKE_CAB)];
           }
         } else if (target === "assess") {
           if (type === "standard") enter(afterInternalApproval());
           else if (type === "emergency") {
             state = "authorize";
-            stages = [nextStage("ECAB Approval", "ECAB", FAKE_ECAB)];
+            stages = [nextStage("ECAB Approval", FAKE_ECAB_GROUP, FAKE_ECAB)];
           } else {
             state = "assess";
-            stages = [nextStage("Peer Approval", "Peers", FAKE_PEER)];
+            stages = [nextStage("Peer Approval", FAKE_PEER_GROUP, FAKE_PEER)];
           }
         } else if (target === "scheduled" && state === "customer_approval") {
           if (hasLiveCustomerStage()) {
@@ -809,6 +907,9 @@ export async function installFakeChangeRequestApi(
     },
     setProjectContacts: (projectId, users) => {
       contacts.set(projectId, [...users]);
+    },
+    failGroups: (status) => {
+      groupFailure = status;
     },
     stages: () =>
       stages.map((st) => ({

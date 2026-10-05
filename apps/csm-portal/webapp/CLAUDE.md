@@ -215,6 +215,16 @@ The change request create page and edit dialog share `useChangeRequestScope` (`f
 - The detail response's `category` is the enum value (or an `{id, name|label}` ref on older responses) — always read it through `changeRequestCategoryValue` / `changeRequestCategoryLabel`.
 - e2e: `tests/e2e/utils/fakeChangeRequestApi.ts` fakes the whole slice (projects, link-options with per-project contacts, create, PATCH, detail) with the backend's own validation (including the `customerGroupId` / `environmentIds` refusals), so the cascade, wire payload, 400 path and lifecycle are tested without creating records anywhere.
 
+## Change request Approval tab: opening an Assignment group
+
+In `ChangeRequestApprovals`, each row's **Assignment group** is a link-button (`Link component="button"`, `aria-haspopup="dialog"`, accessible name `View members of <group>`) that opens `ApprovalGroupDialog` (`features/csm-operations/components`): the group's name as the title, **Manager / Group email / Description** when it has them, and a **"Group Members (N)"** list (name, email, a "Lead" chip for `role: "lead"`), with loading, error (`QueryErrorState` + Try again), not-found and empty states. It closes with Esc, a click outside or the Close button, and focus returns to the link.
+
+- **Internal stages** carry `assignmentGroup: {id, name}` in `GET /change-requests/{id}/approvals` (`BeChangeRequestApproval.assignmentGroup`). Opening one mounts `useGroupDetail(id)` (`GET /groups/{id}`, `ApiQueryKeys.GROUP_DETAILS`, `staleTime` 60 s, resolves to `null` on 404), so the tab makes **no group request until a link is clicked**. The id is a *group* id, not a team id.
+- **Customer Approval / Customer Review** have no group (`assignmentGroup` is `null`): their Assignment group opens the same dialog titled **"Customer Group"** listing the project's registered contacts, from data already on the page (`customerContacts`, which `CsmChangeRequestDetailPage` passes down; else the stage's own approvers) -- **no request**.
+- A stage with neither (ServiceNow data source, legacy rows) stays plain text.
+- Test by role/name, not by position: the cell now holds a button, so a row's first `button` is no longer Approve (`within(row).getByRole("button", { name: "Approve" })`).
+- e2e: `fakeChangeRequestApi.ts` serves `GET /groups/{id}` (`FAKE_PEER_GROUP` / `FAKE_CAB_GROUP` / `FAKE_ECAB_GROUP`), puts `assignmentGroup` on every internal stage (`null` on the customer ones) and has `failGroups(status)` for the error state; the cases live in `change-request-lifecycle.spec.ts` ("opening an Assignment group").
+
 ## Testing
 
 - Runner: Vitest (`jsdom` environment), configured inline in `vite.config.ts` — no separate `vitest.config.ts`.

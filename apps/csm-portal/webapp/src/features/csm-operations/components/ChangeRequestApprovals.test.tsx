@@ -14,15 +14,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import type { UseQueryResult } from "@tanstack/react-query";
-import type { BeChangeRequestApprovalsView } from "@api/backend/types";
+import type { BeChangeRequestApprovalsView, BeCustomerContact, BeGroupDetail } from "@api/backend/types";
 
 const useGetChangeRequestApprovalsMock = vi.fn();
 const useCurrentUserMock = vi.fn();
 const useDecideChangeRequestApprovalMock = vi.fn();
+const useGroupDetailMock = vi.fn();
 const showErrorMock = vi.fn();
 const decideMutateMock = vi.fn();
 
@@ -55,6 +56,10 @@ vi.mock("@context/error-banner/ErrorBannerContext", () => ({
 
 vi.mock("@features/csm-operations/api/useDecideChangeRequestApproval", () => ({
   useDecideChangeRequestApproval: () => useDecideChangeRequestApprovalMock(),
+}));
+
+vi.mock("@features/csm-operations/api/useGroupDetail", () => ({
+  useGroupDetail: (id: string | undefined) => useGroupDetailMock(id),
 }));
 
 // Imported after the mocks above so the modules pick them up.
@@ -615,12 +620,13 @@ describe("ChangeRequestApprovals — customer group stages (Customer Approval / 
     mockCurrentUser("me");
     render(<ChangeRequestApprovals id="chg-1" />);
     const mine = screen.getByText("Me Member").closest("tr")!;
-    const approve = mine.querySelector("button")!;
+    // By name, not position: the Assignment group cell now holds a button of its own.
+    const approve = within(mine).getByRole("button", { name: "Approve" });
     expect(approve).toHaveTextContent("Approve");
     expect(approve).toBeEnabled();
     fireEvent.click(approve);
     expect(decideMutateMock).toHaveBeenCalledWith({ id: "chg-1", decision: "approved" }, expect.anything());
-    fireEvent.click(mine.querySelectorAll("button")[1]!);
+    fireEvent.click(within(mine).getByRole("button", { name: "Reject" }));
     expect(decideMutateMock).toHaveBeenLastCalledWith({ id: "chg-1", decision: "rejected" }, expect.anything());
     // Another member's row never shows controls for the signed-in user.
     expect(screen.getByText("Other Member").closest("tr")).not.toHaveTextContent(/Approve|Reject/);
@@ -634,7 +640,9 @@ describe("ChangeRequestApprovals — customer group stages (Customer Approval / 
     });
     mockCurrentUser("me");
     render(<ChangeRequestApprovals id="chg-1" />);
-    const buttons = screen.getByText("Me Member").closest("tr")!.querySelectorAll("button");
+    const buttons = within(screen.getByText("Me Member").closest("tr")!).getAllByRole("button", {
+      name: /^(Approve|Reject)$/,
+    });
     expect(buttons).toHaveLength(2);
     buttons.forEach((b) => expect(b).toBeDisabled());
     expect(screen.getByLabelText(/you aren't able to approve or reject this stage/i)).toBeInTheDocument();
@@ -659,7 +667,11 @@ describe("ChangeRequestApprovals — customer group stages (Customer Approval / 
     });
     mockCurrentUser("me");
     render(<ChangeRequestApprovals id="chg-1" isCreator />);
-    screen.getByText("Me Member").closest("tr")!.querySelectorAll("button").forEach((b) => expect(b).toBeDisabled());
+    const buttons = within(screen.getByText("Me Member").closest("tr")!).getAllByRole("button", {
+      name: /^(Approve|Reject)$/,
+    });
+    expect(buttons).toHaveLength(2);
+    buttons.forEach((b) => expect(b).toBeDisabled());
   });
 
   it("shows the creator's own row (listed Cancelled by the backend when they are a group member) with no controls", () => {
@@ -674,5 +686,314 @@ describe("ChangeRequestApprovals — customer group stages (Customer Approval / 
     expect(screen.getByText("Me Member").closest("tr")).toHaveTextContent("Cancelled");
     expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("ChangeRequestApprovals — opening an Assignment group", () => {
+  const PEER_GROUP = "11111111-1111-4111-8111-111111111111";
+  const CAB_GROUP = "22222222-2222-4222-8222-222222222222";
+
+  const GROUPS: Record<string, BeGroupDetail> = {
+    [PEER_GROUP]: {
+      id: PEER_GROUP,
+      name: "Example Corp ABT",
+      description: "The account's build team",
+      email: "abt@example.com",
+      manager: { id: "m1", name: "Mia Manager" },
+      members: [
+        { id: "p1", name: "Pat Peer", email: "pat.peer@example.com", userType: "INTERNAL", role: "lead" },
+        { id: "p2", name: "Quinn Peer", email: "quinn.peer@example.com", userType: "INTERNAL", role: "member" },
+      ],
+      total: 2,
+    },
+    [CAB_GROUP]: {
+      id: CAB_GROUP,
+      name: "CAB Approval",
+      description: null,
+      email: null,
+      manager: null,
+      members: [
+        { id: "c1", name: "Cam Cab", email: "cam.cab@example.com", role: "member" },
+        { id: "c2", name: "Cleo Cab", email: "cleo.cab@example.com", role: "member" },
+        { id: "c3", name: "Cyd Cab", email: null, role: "member" },
+      ],
+      total: 3,
+    },
+  };
+
+  const CONTACTS: BeCustomerContact[] = [
+    { id: "k1", name: "Mia Member", email: "mia.member@acme.example" },
+    { id: "k2", name: "Max Member", email: "max.member@acme.example" },
+  ];
+
+  const approvalsData = (): BeChangeRequestApprovalsView => ({
+    approvals: [
+      {
+        stage: "Peer Approval",
+        approverType: "STATIC_GROUP",
+        approverName: "Example Corp ABT",
+        assignmentGroup: { id: PEER_GROUP, name: "Example Corp ABT" },
+        status: "REQUESTED",
+        approvers: [{ id: "me", name: "Pat Peer", status: "REQUESTED", canDecide: true }],
+      },
+      {
+        stage: "CAB Approval",
+        approverType: "STATIC_GROUP",
+        approverName: "CAB Approval",
+        assignmentGroup: { id: CAB_GROUP, name: "CAB Approval" },
+        status: "REQUESTED",
+        approvers: [{ id: "c1", name: "Cam Cab", status: "REQUESTED" }],
+      },
+      {
+        stage: "Customer Approval",
+        approverType: "STATIC_GROUP",
+        approverName: "Customer Group",
+        assignmentGroup: null,
+        status: "REQUESTED",
+        approvers: [
+          { id: "k1-user", name: "Mia Member", status: "REQUESTED" },
+          { id: "k2-user", name: "Max Member", status: "REQUESTED" },
+        ],
+      },
+    ],
+  });
+
+  const groupResult = (overrides: Record<string, unknown> = {}) => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCurrentUser("someone-else");
+    mockDecideMutation();
+    mockQueryResult({ data: approvalsData() });
+    useGroupDetailMock.mockImplementation((id: string | undefined) => groupResult({ data: id ? GROUPS[id] : undefined }));
+  });
+
+  const openRow = (approverName: string, groupLabel: string): void => {
+    const row = screen.getByText(approverName).closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: `View members of ${groupLabel}` }));
+  };
+
+  it("renders the Assignment group as a real, keyboard-focusable button that announces a dialog -- and loads nothing until it is clicked", () => {
+    render(<ChangeRequestApprovals id="chg-1" customerContacts={CONTACTS} />);
+
+    const link = within(screen.getByText("Pat Peer").closest("tr")!).getByRole("button", {
+      name: "View members of Example Corp ABT",
+    });
+    expect(link.tagName).toBe("BUTTON");
+    expect(link).toHaveAttribute("type", "button");
+    expect(link).toHaveAttribute("aria-haspopup", "dialog");
+    expect(link).toHaveTextContent("Example Corp ABT");
+    link.focus();
+    expect(link).toHaveFocus();
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(useGroupDetailMock).not.toHaveBeenCalled();
+  });
+
+  it("opens the Peer row's group: titled with its name, with Manager / Group email / Description and its members", () => {
+    render(<ChangeRequestApprovals id="chg-1" customerContacts={CONTACTS} />);
+    openRow("Pat Peer", "Example Corp ABT");
+
+    const dialog = screen.getByRole("dialog", { name: "Example Corp ABT" });
+    expect(useGroupDetailMock).toHaveBeenCalledWith(PEER_GROUP);
+    expect(within(dialog).getByText("Manager")).toBeInTheDocument();
+    expect(within(dialog).getByText("Mia Manager")).toBeInTheDocument();
+    expect(within(dialog).getByText("Group email")).toBeInTheDocument();
+    expect(within(dialog).getByRole("link", { name: "abt@example.com" })).toHaveAttribute("href", "mailto:abt@example.com");
+    expect(within(dialog).getByText("Description")).toBeInTheDocument();
+    expect(within(dialog).getByText("The account's build team")).toBeInTheDocument();
+
+    expect(within(dialog).getByRole("heading", { name: "Group Members (2)" })).toBeInTheDocument();
+    const list = within(dialog).getByRole("list", { name: "Group Members (2)" });
+    const items = within(list).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("Pat Peer");
+    expect(items[0]).toHaveTextContent("pat.peer@example.com");
+    expect(items[0]).toHaveTextContent("Lead");
+    expect(items[1]).toHaveTextContent("Quinn Peer");
+    expect(items[1]).not.toHaveTextContent("Lead");
+  });
+
+  it("opens the CAB row's own group (not the peer one) and lists the CAB members; absent details are left out", () => {
+    render(<ChangeRequestApprovals id="chg-1" customerContacts={CONTACTS} />);
+    openRow("Cam Cab", "CAB Approval");
+
+    const dialog = screen.getByRole("dialog", { name: "CAB Approval" });
+    expect(useGroupDetailMock).toHaveBeenCalledWith(CAB_GROUP);
+    expect(useGroupDetailMock).not.toHaveBeenCalledWith(PEER_GROUP);
+    expect(within(dialog).getByRole("heading", { name: "Group Members (3)" })).toBeInTheDocument();
+    expect(within(dialog).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      expect.stringContaining("Cam Cab"),
+      expect.stringContaining("Cleo Cab"),
+      expect.stringContaining("Cyd Cab"),
+    ]);
+    expect(within(dialog).queryByText("Manager")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Group email")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Description")).not.toBeInTheDocument();
+  });
+
+  it("opens the Customer Group's registered contacts from data already on the page -- no request", () => {
+    render(<ChangeRequestApprovals id="chg-1" customerContacts={CONTACTS} />);
+    openRow("Mia Member", "Customer Group");
+
+    const dialog = screen.getByRole("dialog", { name: "Customer Group" });
+    expect(within(dialog).getByRole("heading", { name: "Group Members (2)" })).toBeInTheDocument();
+    const items = within(dialog).getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent("Mia Member");
+    expect(items[0]).toHaveTextContent("mia.member@acme.example");
+    expect(items[1]).toHaveTextContent("Max Member");
+    expect(items[1]).toHaveTextContent("max.member@acme.example");
+    expect(useGroupDetailMock).not.toHaveBeenCalled();
+  });
+
+  it("lists the customer stage's own approvers when the change request carries no customerContacts", () => {
+    render(<ChangeRequestApprovals id="chg-1" />);
+    openRow("Max Member", "Customer Group");
+
+    const dialog = screen.getByRole("dialog", { name: "Customer Group" });
+    expect(within(dialog).getByRole("heading", { name: "Group Members (2)" })).toBeInTheDocument();
+    expect(within(dialog).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Mia Member",
+      "Max Member",
+    ]);
+    expect(useGroupDetailMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the stage's own approver row when the project has no registered contacts on the page", () => {
+    mockQueryResult({
+      data: {
+        approvals: [
+          {
+            stage: "Customer Review",
+            approverType: "STATIC_GROUP",
+            approverName: "Customer Group",
+            assignmentGroup: null,
+            status: "PENDING",
+            approvers: [{ id: "x", name: "Cancelled Contact", status: "CANCELLED" }],
+          },
+        ],
+      },
+    });
+    render(<ChangeRequestApprovals id="chg-1" customerContacts={[]} />);
+    fireEvent.click(screen.getByRole("button", { name: "View members of Customer Group" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Customer Group" });
+    expect(within(dialog).getByRole("heading", { name: "Group Members (1)" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("listitem")).toHaveTextContent("Cancelled Contact");
+    expect(useGroupDetailMock).not.toHaveBeenCalled();
+  });
+
+  it("shows a loading state while the group loads", () => {
+    useGroupDetailMock.mockReturnValue(groupResult({ isLoading: true }));
+    render(<ChangeRequestApprovals id="chg-1" customerContacts={CONTACTS} />);
+    openRow("Pat Peer", "Example Corp ABT");
+
+    const dialog = screen.getByRole("dialog", { name: "Example Corp ABT" });
+    expect(within(dialog).getByRole("status", { name: "Loading group members" })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("list")).not.toBeInTheDocument();
+  });
+
+  it("shows an error state with Try again when the group cannot be loaded", () => {
+    const refetch = vi.fn();
+    useGroupDetailMock.mockReturnValue(groupResult({ isError: true, error: new Error("boom"), refetch }));
+    render(<ChangeRequestApprovals id="chg-1" customerContacts={CONTACTS} />);
+    openRow("Pat Peer", "Example Corp ABT");
+
+    const dialog = screen.getByRole("dialog", { name: "Example Corp ABT" });
+    expect(within(dialog).getByText("Could not load this group's members.")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Try again" }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+    // The approvals table itself is untouched by the failure.
+    expect(screen.getByText("Pat Peer")).toBeInTheDocument();
+  });
+
+  it("shows an empty state for a group nobody is in", () => {
+    useGroupDetailMock.mockReturnValue(
+      groupResult({ data: { id: PEER_GROUP, name: "Example Corp ABT", members: [], total: 0 } satisfies BeGroupDetail }),
+    );
+    render(<ChangeRequestApprovals id="chg-1" customerContacts={CONTACTS} />);
+    openRow("Pat Peer", "Example Corp ABT");
+
+    const dialog = screen.getByRole("dialog", { name: "Example Corp ABT" });
+    expect(within(dialog).getByRole("heading", { name: "Group Members (0)" })).toBeInTheDocument();
+    expect(within(dialog).getByText("This group has no members.")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("list")).not.toBeInTheDocument();
+  });
+
+  it("says the group could not be found when the backend has no such group (404)", () => {
+    useGroupDetailMock.mockReturnValue(groupResult({ data: null }));
+    render(<ChangeRequestApprovals id="chg-1" customerContacts={CONTACTS} />);
+    openRow("Pat Peer", "Example Corp ABT");
+
+    expect(
+      within(screen.getByRole("dialog", { name: "Example Corp ABT" })).getByText(/This group could not be found/),
+    ).toBeInTheDocument();
+  });
+
+  it("closes with Escape and returns focus to the link that opened it", () => {
+    render(<ChangeRequestApprovals id="chg-1" customerContacts={CONTACTS} />);
+    const link = within(screen.getByText("Pat Peer").closest("tr")!).getByRole("button", {
+      name: "View members of Example Corp ABT",
+    });
+    link.focus();
+    fireEvent.click(link);
+
+    const dialog = screen.getByRole("dialog", { name: "Example Corp ABT" });
+    fireEvent.keyDown(dialog, { key: "Escape", code: "Escape" });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(link).toHaveFocus();
+  });
+
+  it("closes with the Close button, and can then open a different group", () => {
+    render(<ChangeRequestApprovals id="chg-1" customerContacts={CONTACTS} />);
+    openRow("Pat Peer", "Example Corp ABT");
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    openRow("Cam Cab", "CAB Approval");
+    expect(screen.getByRole("dialog", { name: "CAB Approval" })).toBeInTheDocument();
+  });
+
+  it("leaves a stage that carries no group (ServiceNow source, legacy row) as plain text", () => {
+    mockQueryResult({
+      data: {
+        approvals: [
+          {
+            stage: "Authorize",
+            approverType: "STATIC_GROUP",
+            approverName: "Devops Approval",
+            status: "REQUESTED",
+            approvers: [{ id: "a1", name: "Approver One", status: "REQUESTED" }],
+          },
+        ],
+      },
+    });
+    render(<ChangeRequestApprovals id="chg-1" />);
+    const row = screen.getByText("Approver One").closest("tr")!;
+    expect(row).toHaveTextContent("Devops Approval");
+    expect(within(row).queryByRole("button", { name: /view members/i })).not.toBeInTheDocument();
+  });
+
+  it("does not break Approve / Reject: the controls still decide, with the dialog opened and closed around them", () => {
+    mockCurrentUser("me");
+    render(<ChangeRequestApprovals id="chg-1" customerContacts={CONTACTS} />);
+    const row = screen.getByText("Pat Peer").closest("tr")!;
+
+    fireEvent.click(within(row).getByRole("button", { name: "Approve" }));
+    expect(decideMutateMock).toHaveBeenCalledWith({ id: "chg-1", decision: "approved" }, expect.anything());
+
+    openRow("Pat Peer", "Example Corp ABT");
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+
+    fireEvent.click(within(row).getByRole("button", { name: "Reject" }));
+    expect(decideMutateMock).toHaveBeenLastCalledWith({ id: "chg-1", decision: "rejected" }, expect.anything());
   });
 });

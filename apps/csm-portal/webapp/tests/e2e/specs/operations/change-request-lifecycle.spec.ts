@@ -65,16 +65,23 @@ import { ChangeRequestCreatePage } from "../../pages/ChangeRequestCreatePage";
 import { ChangeRequestDetailPage } from "../../pages/ChangeRequestDetailPage";
 import {
   FAKE_CAB,
+  FAKE_CAB_COLLEAGUE,
+  FAKE_CAB_GROUP,
+  FAKE_CAB_NO_EMAIL,
   FAKE_CR_ID,
   FAKE_CREATOR,
   FAKE_DEPLOYMENTS,
   FAKE_DEPLOYMENT_PRODUCTS,
   FAKE_ECAB,
+  FAKE_ECAB_COLLEAGUE,
+  FAKE_ECAB_GROUP,
   FAKE_BETA_CONTACT,
   FAKE_CUST_ONE,
   FAKE_CUST_TWO,
   FAKE_OUTSIDER,
   FAKE_PEER,
+  FAKE_PEER_COLLEAGUE,
+  FAKE_PEER_GROUP,
   FAKE_PROJECT_CONTACTS,
   FAKE_PROJECTS,
   installFakeChangeRequestApi,
@@ -1321,6 +1328,179 @@ async function rollBackWithReason(page: import("@playwright/test").Page, detail:
   await dialog.getByRole("button", { name: "Roll back", exact: true }).click();
   await expect(page.getByText(/diverted from the standard path/i)).toBeVisible();
 }
+
+//
+// Assignment group: each approver row's Assignment group is a link that opens the
+// group (ServiceNow's group page) and lists its members; for the customer stages
+// there is no group, so it lists the project's registered contacts. Against the
+// same fake (`GET /groups/{id}`, `assignmentGroup` on every internal stage).
+//
+
+/** The group-page requests the fake has served so far. */
+const groupRequests = (api: FakeChangeRequestApi): string[] => api.requests().filter((r) => r.startsWith("GET /groups/"));
+
+test.describe("change request approval flow — opening an Assignment group", () => {
+  test("Peer row: the group opens with its details and members; Escape closes it and returns focus to the link", async ({ page }) => {
+    test.setTimeout(60_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Assess");
+    await expect(detail.approverStage("Pat Peer")).toHaveText("Peer Approval");
+    await expect(detail.approverRow("Pat Peer", "Peer Approval")).toContainText(FAKE_PEER_GROUP.name);
+
+    // Nothing is fetched until the link is used.
+    expect(groupRequests(api)).toEqual([]);
+
+    // Reachable and operable from the keyboard alone.
+    const link = detail.groupLink("Pat Peer", FAKE_PEER_GROUP.name, "Peer Approval");
+    await link.focus();
+    await page.keyboard.press("Enter");
+
+    const dialog = detail.groupDialog(FAKE_PEER_GROUP.name);
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("Mona Manager")).toBeVisible();
+    await expect(dialog.getByRole("link", { name: "example-corp-abt@example.com" })).toBeVisible();
+    await expect(dialog.getByText("Builds and supports the Example Corp account.")).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "Group Members (2)" })).toBeVisible();
+    const members = dialog.getByRole("listitem");
+    await expect(members).toHaveCount(2);
+    await expect(members.nth(0)).toContainText(FAKE_PEER.name);
+    await expect(members.nth(0)).toContainText(FAKE_PEER.email);
+    await expect(members.nth(0)).toContainText("Lead");
+    await expect(members.nth(1)).toContainText(FAKE_PEER_COLLEAGUE.name);
+    await expect(members.nth(1)).not.toContainText("Lead");
+    expect(groupRequests(api)).toEqual([`GET /groups/${FAKE_PEER_GROUP.id}`]);
+
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(link).toBeFocused();
+  });
+
+  test("CAB row: opens the CAB Approval group's own members (not the peer group's)", async ({ page }) => {
+    test.setTimeout(90_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    await detail.requestApproval();
+    await switchTo(page, api, FAKE_PEER);
+    await detail.approve("Pat Peer");
+    await expect(detail.currentStep()).toContainText("Authorize");
+    await expect(detail.approverStage("Cam Cab")).toHaveText("CAB Approval");
+
+    await detail.groupLink("Cam Cab", FAKE_CAB_GROUP.name, "CAB Approval").click();
+    const dialog = detail.groupDialog(FAKE_CAB_GROUP.name);
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "Group Members (3)" })).toBeVisible();
+    const members = dialog.getByRole("listitem");
+    await expect(members).toHaveText([
+      new RegExp(`${FAKE_CAB.name}.*${FAKE_CAB.email}`),
+      new RegExp(`${FAKE_CAB_COLLEAGUE.name}.*${FAKE_CAB_COLLEAGUE.email}`),
+      new RegExp(`^${FAKE_CAB_NO_EMAIL.name}$`), // no email on file: just the name
+    ]);
+    // A group with no description, email or manager shows only its members.
+    await expect(dialog.getByText("Manager", { exact: true })).toHaveCount(0);
+    await expect(dialog.getByText("Group email", { exact: true })).toHaveCount(0);
+    await expect(dialog.getByText("Description", { exact: true })).toHaveCount(0);
+    expect(groupRequests(api)).toEqual([`GET /groups/${FAKE_CAB_GROUP.id}`]);
+
+    await dialog.getByRole("button", { name: "Close" }).click();
+    await expect(dialog).toBeHidden();
+    // The Peer row's own group is still its own: a different request, a different page.
+    await detail.groupLink("Pat Peer", FAKE_PEER_GROUP.name, "Peer Approval").click();
+    await expect(detail.groupDialog(FAKE_PEER_GROUP.name).getByRole("heading", { name: "Group Members (2)" })).toBeVisible();
+    expect(groupRequests(api)).toEqual([`GET /groups/${FAKE_CAB_GROUP.id}`, `GET /groups/${FAKE_PEER_GROUP.id}`]);
+  });
+
+  test("Emergency: the ECAB Approval row opens the ECAB group", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    await detail.requestApproval();
+    await expect(detail.approverStage(FAKE_ECAB.name)).toHaveText("ECAB Approval");
+
+    await detail.groupLink(FAKE_ECAB.name, FAKE_ECAB_GROUP.name, "ECAB Approval").click();
+    const dialog = detail.groupDialog(FAKE_ECAB_GROUP.name);
+    await expect(dialog.getByText("Emergency Change Advisory Board.")).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "Group Members (2)" })).toBeVisible();
+    await expect(dialog.getByRole("listitem")).toHaveText([
+      new RegExp(`${FAKE_ECAB.name}.*Lead`),
+      new RegExp(FAKE_ECAB_COLLEAGUE.name),
+    ]);
+    expect(groupRequests(api)).toEqual([`GET /groups/${FAKE_ECAB_GROUP.id}`]);
+  });
+
+  test("Customer Approval row: opens the Customer Group listing the project's registered contacts, with no group request", async ({ page }) => {
+    test.setTimeout(120_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await approveInternally(page, api, detail);
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
+
+    await detail.groupLink(FAKE_CUST_ONE.name, "Customer Group", "Customer Approval").click();
+    const dialog = detail.groupDialog("Customer Group");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "Group Members (2)" })).toBeVisible();
+    await expect(dialog.getByRole("listitem")).toHaveText([
+      new RegExp(`${FAKE_CUST_ONE.name}.*${FAKE_CUST_ONE.email}`),
+      new RegExp(`${FAKE_CUST_TWO.name}.*${FAKE_CUST_TWO.email}`),
+    ]);
+    // These are the contacts the page already has; there is no group to fetch.
+    expect(groupRequests(api)).toEqual([]);
+
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+  });
+
+  test("a group that cannot be loaded shows an error with Try again, leaves the approvals table alone, and recovers", async ({ page }) => {
+    test.setTimeout(60_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    await detail.requestApproval();
+    await expect(detail.approverStage("Pat Peer")).toHaveText("Peer Approval");
+
+    api.failGroups(500);
+    await detail.groupLink("Pat Peer", FAKE_PEER_GROUP.name, "Peer Approval").click();
+    const dialog = detail.groupDialog(FAKE_PEER_GROUP.name);
+    await expect(dialog.getByText("Could not load this group's members.")).toBeVisible();
+    await expect(dialog.getByRole("listitem")).toHaveCount(0);
+
+    api.failGroups(null);
+    await dialog.getByRole("button", { name: "Try again" }).click();
+    await expect(dialog.getByRole("heading", { name: "Group Members (2)" })).toBeVisible();
+    await expect(dialog.getByText("Could not load this group's members.")).toHaveCount(0);
+
+    await dialog.getByRole("button", { name: "Close" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(detail.approverRow("Pat Peer", "Peer Approval")).toBeVisible();
+  });
+
+  test("opening and closing a group leaves Approve / Reject working", async ({ page }) => {
+    test.setTimeout(60_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    await detail.requestApproval();
+    await switchTo(page, api, FAKE_PEER);
+    await expect(detail.approveButton("Pat Peer")).toBeEnabled();
+    await expect(detail.rejectButton("Pat Peer")).toBeEnabled();
+
+    await detail.groupLink("Pat Peer", FAKE_PEER_GROUP.name, "Peer Approval").click();
+    await expect(detail.groupDialog(FAKE_PEER_GROUP.name)).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(detail.groupDialog(FAKE_PEER_GROUP.name)).toBeHidden();
+
+    await expect(detail.approveButton("Pat Peer")).toBeEnabled();
+    await expect(detail.rejectButton("Pat Peer")).toBeEnabled();
+    await detail.approve("Pat Peer");
+    await expect(detail.currentStep()).toContainText("Authorize");
+    await expect(detail.approverStatus("Pat Peer", "Peer Approval")).toHaveText("Approved");
+  });
+});
 
 test.describe("change request approval flow — Roll back", () => {
   for (const review of [true, false]) {

@@ -875,7 +875,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
                 {noCustomerGroupNote}
               </Alert>
             )}
-            <ChangeRequestApprovals id={cr.id} isCreator={isCreator} />
+            <ChangeRequestApprovals id={cr.id} isCreator={isCreator} customerContacts={cr.customerContacts} />
           </Box>
         </Box>
       )}

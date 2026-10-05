@@ -116,6 +116,11 @@ vi.mock("@features/csm-operations/api/useGetChangeRequestApprovals", () => ({
     return useGetChangeRequestApprovalsMock();
   },
 }));
+// The group page opened from an Assignment group on the Approval tab.
+const useGroupDetailMock = vi.fn();
+vi.mock("@features/csm-operations/api/useGroupDetail", () => ({
+  useGroupDetail: (id: string | undefined) => useGroupDetailMock(id),
+}));
 const decideApprovalMutateMock = vi.fn();
 vi.mock("@features/csm-operations/api/useDecideChangeRequestApproval", () => ({
   useDecideChangeRequestApproval: () => ({ mutate: decideApprovalMutateMock, isPending: false }),
@@ -215,6 +220,7 @@ beforeEach(() => {
   patchResetMock.mockClear();
   editChangeRequestDialogMock.mockClear();
   approvalsPanelMock.mockClear();
+  useGroupDetailMock.mockReset();
   patchMutateAsyncMock.mockReset();
   patchMutateAsyncMock.mockResolvedValue({ id: "chg-1" });
   postCommentMutateAsyncMock.mockReset();
@@ -2239,7 +2245,8 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
     expect(screen.getByRole("button", { name: /^approve$/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /^reject$/i })).toBeEnabled();
     expect(within(approvalsRow("Mia Member")).getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
-    expect(within(approvalsRow("Max Member")).queryByRole("button")).not.toBeInTheDocument();
+    // No decision controls for a non-member (the row's Assignment group is a link-button of its own now).
+    expect(within(approvalsRow("Max Member")).queryByRole("button", { name: /^(approve|reject)$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Record customer approval" })).not.toBeInTheDocument();
 
     // --- member approves -> Scheduled, no manual PATCH involved.
@@ -2401,5 +2408,95 @@ describe("CsmChangeRequestDetailPage — customer group: no registered customer 
     mockQueryResult({ data: { ...BASE_CR, state: "scheduled", customerContacts: [] } });
     renderPage();
     expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("CsmChangeRequestDetailPage — opening an Assignment group on the Approval tab", () => {
+  const CAB_GROUP_ID = "22222222-2222-4222-8222-222222222222";
+
+  const approvals = (): BeChangeRequestApproval[] => [
+    {
+      stage: "CAB Approval",
+      approverType: "STATIC_GROUP",
+      approverName: "CAB Approval",
+      assignmentGroup: { id: CAB_GROUP_ID, name: "CAB Approval" },
+      status: "REQUESTED",
+      approvers: [{ id: "c1", name: "Cam Cab", status: "REQUESTED" }],
+    },
+    {
+      stage: "Customer Approval",
+      approverType: "STATIC_GROUP",
+      approverName: "Customer Group",
+      assignmentGroup: null,
+      status: "REQUESTED",
+      approvers: [{ id: "u-mia", name: "Mia Member", status: "REQUESTED" }],
+    },
+  ];
+
+  beforeEach(() => {
+    mockQueryResult({
+      data: {
+        ...BASE_CR,
+        state: "customer_approval",
+        customerContacts: [
+          { id: "k1", name: "Mia Member", email: "mia.member@acme.example" },
+          { id: "k2", name: "Max Member", email: "max.member@acme.example" },
+        ],
+      },
+    });
+    useGetChangeRequestApprovalsMock.mockReturnValue({
+      data: { approvals: approvals() },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    useGroupDetailMock.mockReturnValue({
+      data: {
+        id: CAB_GROUP_ID,
+        name: "CAB Approval",
+        members: [
+          { id: "c1", name: "Cam Cab", email: "cam.cab@example.com", role: "member" },
+          { id: "c2", name: "Cleo Cab", email: "cleo.cab@example.com", role: "lead" },
+        ],
+        total: 2,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+  });
+
+  it("hands the change request's customerContacts to the approvals panel", () => {
+    renderPage();
+    expect(approvalsPanelMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customerContacts: [
+          { id: "k1", name: "Mia Member", email: "mia.member@acme.example" },
+          { id: "k2", name: "Max Member", email: "max.member@acme.example" },
+        ],
+      }),
+    );
+  });
+
+  it("opens the CAB group from its stage row and lists the members", () => {
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "View members of CAB Approval" }));
+
+    const dialog = screen.getByRole("dialog", { name: "CAB Approval" });
+    expect(useGroupDetailMock).toHaveBeenCalledWith(CAB_GROUP_ID);
+    expect(within(dialog).getByRole("heading", { name: "Group Members (2)" })).toBeInTheDocument();
+    expect(within(dialog).getByText("Cleo Cab")).toBeInTheDocument();
+    expect(within(dialog).getByText("Lead")).toBeInTheDocument();
+  });
+
+  it("opens the Customer Group from the customer stage and lists the project's registered contacts, with no group request", () => {
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "View members of Customer Group" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Customer Group" });
+    expect(within(dialog).getByRole("heading", { name: "Group Members (2)" })).toBeInTheDocument();
+    expect(within(dialog).getByText("max.member@acme.example")).toBeInTheDocument();
+    expect(useGroupDetailMock).not.toHaveBeenCalled();
   });
 });
