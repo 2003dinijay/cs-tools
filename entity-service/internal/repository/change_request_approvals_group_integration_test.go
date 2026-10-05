@@ -41,8 +41,8 @@ func approvalGroupIDs(members []domain.GroupMember) []string {
 
 func TestChangeRequestFlowIntegration_ApprovalsCarryTheAssignmentGroup(t *testing.T) {
 	f := newCustomerGroupFlow(t)
-	// A customer who is a member of the assigned group: listed on the group
-	// page, never provisioned as an approver (pools are INTERNAL-only).
+	// A customer who is a member of the assigned group: never provisioned as an
+	// approver (pools are INTERNAL-only), so not listed on the group page either.
 	seedExternalGroupMembers(t, f.scoped, crFlowGroupID, crFlowExternalID)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
 	f.driveToCustomerApproval(id)
@@ -111,11 +111,12 @@ func TestChangeRequestFlowIntegration_ApprovalsCarryTheAssignmentGroup(t *testin
 			t.Fatalf("peer approver %s (%s) is provisioned from the group but missing from the group page %v", ap.Name, ap.ID, shown)
 		}
 	}
-	// The group page lists its members, not the stage's approvers: the customer
-	// belongs to the group and is shown, though the stage was not provisioned
-	// for them.
-	if !shown[strings.ToLower(crFlowExternalID)] {
-		t.Fatalf("the customer belongs to the group and must be listed on its page: %v", shown)
+	// The page lists who the stage can be provisioned from, which is not
+	// everyone in the group: the customer belongs to the group but is not an
+	// active internal user, so the pool skipped them and the page does not
+	// offer them either.
+	if shown[strings.ToLower(crFlowExternalID)] {
+		t.Fatalf("the customer is not eligible for an internal stage and must not be listed on its group page: %v", shown)
 	}
 	for _, ap := range peer.Approvers {
 		if strings.EqualFold(ap.ID, crFlowExternalID) {

@@ -37,7 +37,7 @@ import (
 // are team_member rows keyed by group_id -- see entity-service CLAUDE.md,
 // "team_member.group_id is the real column for this".
 type GroupDetailRepository interface {
-	// GetGroupDetail returns the group and its active members ordered by name,
+	// GetGroupDetail returns the group and its active INTERNAL members ordered by name,
 	// or a NotFoundError when no "group" row has this id. A group with no
 	// members is not an error: Members is empty (never nil).
 	GetGroupDetail(ctx context.Context, groupID string) (domain.GroupDetail, error)
@@ -53,23 +53,27 @@ func NewGroupDetailRepository(db *pgxpool.Pool) GroupDetailRepository {
 	return &groupDetailRepo{db: db}
 }
 
-// groupDetailMembersSQL lists the distinct active users who are members of the
-// group, one row per user, in name order.
+// groupDetailMembersSQL lists the distinct active INTERNAL users who are members
+// of the group, one row per user, in name order.
 //
 // WHO IS A MEMBER is exactly who the approval pools provision from, so the list
 // a user sees is the list of people who can actually be asked to approve
-// (apart from per-change exclusions such as the creator). The CAB / ECAB /
-// Devops pools resolve a group by NAME (namedGroup in
-// change_request_approval_flow.go): anyone whose team_member.group_id points at
-// a "group" of that name, or whose team_member.team_id points at a `team` of
-// that name (which is also how the CR-notice flow addresses these audiences).
-// The assigned-group pools read team_member.group_id = <the group's id>, which
-// the first branch covers. $1 is the group id, $2 its name (NULL when the row
-// has none, which leaves only the group_id = $1 branch).
+// (apart from per-change exclusions such as the creator). The CAB / ECAB / Devops
+// pools resolve a group by NAME (namedGroup in change_request_approval_flow.go):
+// anyone whose team_member.group_id points at a "group" of that name, or whose
+// team_member.team_id points at a `team` of that name (which is also how the
+// CR-notice flow addresses these audiences). The assigned-group pools read
+// team_member.group_id = <the group's id>, which the first branch covers. $1 is
+// the group id, $2 its name (NULL when the row has none, which leaves only the
+// group_id = $1 branch).
 //
-// Inactive users ("user".is_active = FALSE; NULL counts as active, as in
-// user_repo.go) are left out. A user holding several membership rows is one
-// member, and a "lead" row on any of them makes them a lead.
+// Like every pool (internalApproverIDs), only an active user ("user".is_active,
+// NULL counting as active, as in user_repo.go) whose user_type is INTERNAL is
+// listed: a customer who happens to sit in a staff group, an inactive user or a
+// user with no derivable type could never be provisioned, so showing them would
+// promise an approver the stage does not have. A user holding several
+// membership rows is one member, and a "lead" row on any of them makes them a
+// lead.
 //
 // The display name falls back from "user".name to first + last name to the
 // email, so a member is never listed blank.
@@ -90,6 +94,7 @@ const groupDetailMembersSQL = `
 	            tm.group_id IN (SELECT g2.id FROM "group" g2 WHERE g2.name = $2::text)
 	         OR tm.team_id  IN (SELECT t.id  FROM team    t  WHERE t.name  = $2::text)))
 	      )
+	  AND u.user_type = 'INTERNAL'::user_type_enum
 	  AND COALESCE(u.is_active, TRUE)
 	GROUP BY u.id, u.name, u.first_name, u.last_name, u.email, u.user_type
 	ORDER BY LOWER(COALESCE(NULLIF(TRIM(u.name), ''),

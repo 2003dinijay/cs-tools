@@ -67,6 +67,8 @@ type gdUser struct {
 	last     *string
 	email    *string
 	active   *bool
+	// userType is "user".user_type; "" leaves it NULL (no derivable type).
+	userType string
 }
 
 func gdS(v string) *string { return &v }
@@ -76,13 +78,27 @@ var gdUsers = []gdUser{
 	{id: gdPrefix + "000000000a01", userName: "gv-zoe", name: gdS("Zoe Zed"), email: gdS("zoe@example.test"), active: gdB(true)},
 	{id: gdPrefix + "000000000a02", userName: "gv-bob", name: gdS("bob baker"), email: gdS("bob@example.test"), active: gdB(true)}, // lower case sorts by name, not by case
 	{id: gdPrefix + "000000000a03", userName: "gv-ian", name: gdS("Ian Inactive"), email: gdS("ian@example.test"), active: gdB(false)},
-	{id: gdPrefix + "000000000a04", userName: "gv-fay", first: gdS("Fay"), last: gdS("Fallback"), email: gdS("fay@example.test"), active: gdB(true)}, // no name: first + last
-	{id: gdPrefix + "000000000a05", userName: "gv-nia", name: gdS("Nia Null"), email: gdS("nia@example.test")},                                       // is_active NULL counts as active
-	{id: gdPrefix + "000000000a06", userName: "gv-tom", name: gdS("Tom Team"), email: gdS("tom@example.test"), active: gdB(true)},                    // member only through the same-named team
-	{id: gdPrefix + "000000000a07", userName: "gv-olga", name: gdS("Olga Other"), email: gdS("olga@example.test"), active: gdB(true)},                // other group only
-	{id: gdPrefix + "000000000a08", userName: "gv-dan", name: gdS("Dan Duplicate"), email: gdS("dan@example.test"), active: gdB(true)},               // member of the same-named duplicate group
-	{id: gdPrefix + "000000000a09", userName: "gv-mia", name: gdS("Mia Manager"), email: gdS("mia@example.test"), active: gdB(true)},                 // the manager, not a member
-	{id: gdPrefix + "000000000a0a", userName: "gv-noname", email: gdS("noname@example.test"), active: gdB(true)},                                     // nothing but an email
+	{id: gdPrefix + "000000000a04", userName: "gv-fay", first: gdS("Fay"), last: gdS("Fallback"), email: gdS("fay@example.test"), active: gdB(true)},            // no name: first + last
+	{id: gdPrefix + "000000000a05", userName: "gv-nia", name: gdS("Nia Null"), email: gdS("nia@example.test")},                                                  // is_active NULL counts as active
+	{id: gdPrefix + "000000000a06", userName: "gv-tom", name: gdS("Tom Team"), email: gdS("tom@example.test"), active: gdB(true)},                               // member only through the same-named team
+	{id: gdPrefix + "000000000a07", userName: "gv-olga", name: gdS("Olga Other"), email: gdS("olga@example.test"), active: gdB(true)},                           // other group only
+	{id: gdPrefix + "000000000a08", userName: "gv-dan", name: gdS("Dan Duplicate"), email: gdS("dan@example.test"), active: gdB(true)},                          // member of the same-named duplicate group
+	{id: gdPrefix + "000000000a09", userName: "gv-mia", name: gdS("Mia Manager"), email: gdS("mia@example.test"), active: gdB(true)},                            // the manager, not a member
+	{id: gdPrefix + "000000000a0a", userName: "gv-noname", email: gdS("noname@example.test"), active: gdB(true)},                                                // nothing but an email
+	{id: gdPrefix + "000000000a0b", userName: "gv-cust", name: gdS("Cora Customer"), email: gdS("cora@customer.test"), active: gdB(true), userType: "EXTERNAL"}, // a customer in a staff group: never provisioned, never listed
+	{id: gdPrefix + "000000000a0c", userName: "gv-notype", name: gdS("Nate NoType"), email: gdS("nate@example.test"), active: gdB(true), userType: "none"},      // no derivable type: never provisioned, never listed
+}
+
+// gdUserType is the user_type the fixture user is seeded with: INTERNAL unless
+// the user says otherwise ("none" seeds NULL).
+func gdUserType(u gdUser) *string {
+	switch u.userType {
+	case "":
+		return gdS("INTERNAL")
+	case "none":
+		return nil
+	}
+	return gdS(u.userType)
 }
 
 func gdUserID(userName string) string {
@@ -128,6 +144,9 @@ func gdMemberships() []gdMembership {
 		m(gdTeamUnrel, "gv-olga", grp(gdGroupOther), "member"),
 		// a user with only an email
 		m(gdTeamUnrel, "gv-noname", grp(gdGroupA), "member"),
+		// a customer and a typeless user in the group, one through the same-named team too
+		m(gdTeamUnrel, "gv-cust", grp(gdGroupA), "member"),
+		m(gdTeamSameName, "gv-notype", nil, "member"),
 	}
 }
 
@@ -169,8 +188,12 @@ func gdSetup(t *testing.T) *pgxpool.Pool {
 	}
 	for _, u := range gdUsers {
 		mustExec(`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, user_type)
-		          VALUES ($1, now(), now(), 'gv-test', 'gv-test', $2, $3, $4, $5, $6, $7, 'INTERNAL'::user_type_enum)`,
+		          VALUES ($1, now(), now(), 'gv-test', 'gv-test', $2, $3, $4, $5, $6, $7, NULL)`,
 			u.id, u.userName, u.name, u.first, u.last, u.email, u.active)
+		// user_type is derived from the user's roles on insert; set the column
+		// directly afterwards (as the change-request tests do) instead of
+		// creating role rows.
+		mustExec(`UPDATE "user" SET user_type = $2::user_type_enum WHERE id = $1`, u.id, gdUserType(u))
 	}
 	mustExec(`INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name, description, group_email, manager_id, is_active) VALUES
 	          ($1, now(), now(), 'gv-test', 'gv-test', $2, 'Approves the GV changes', 'gv-approvers@example.test', $3, true),
@@ -215,11 +238,13 @@ func TestGroupDetailIntegration_ListsActiveMembersInNameOrder(t *testing.T) {
 		t.Fatalf("GetGroupDetail: %v", err)
 	}
 
-	// Case-insensitive name order; the inactive user (Ian) is left out; "Fay
-	// Fallback" comes from first + last, "noname@example.test" from the email;
-	// Nia (is_active NULL) counts as active; Tom is a member through the
-	// same-named team and Dan through the same-named duplicate group; Olga
-	// (another group) and Mia (only the manager) are not members.
+	// Case-insensitive name order; the inactive user (Ian), the customer (Cora)
+	// and the user with no type (Nate) are left out -- none of them could be
+	// provisioned as an approver; "Fay Fallback" comes from first + last,
+	// "noname@example.test" from the email; Nia (is_active NULL) counts as
+	// active; Tom is a member through the same-named team and Dan through the
+	// same-named duplicate group; Olga (another group) and Mia (only the
+	// manager) are not members.
 	want := []string{"bob baker", "Dan Duplicate", "Fay Fallback", "Nia Null", "noname@example.test", "Tom Team", "Zoe Zed"}
 	if names := gdNames(got.Members); !reflect.DeepEqual(names, want) {
 		t.Fatalf("members = %v, want %v", names, want)
@@ -228,7 +253,8 @@ func TestGroupDetailIntegration_ListsActiveMembersInNameOrder(t *testing.T) {
 		t.Fatalf("total = %d, want %d", got.Total, len(want))
 	}
 	for _, m := range got.Members {
-		if strings.Contains(m.Name, "Ian") || strings.Contains(m.Name, "Olga") || strings.Contains(m.Name, "Mia") {
+		if strings.Contains(m.Name, "Ian") || strings.Contains(m.Name, "Olga") || strings.Contains(m.Name, "Mia") ||
+			strings.Contains(m.Name, "Cora") || strings.Contains(m.Name, "Nate") {
 			t.Fatalf("%q must not be listed", m.Name)
 		}
 	}
@@ -348,9 +374,10 @@ func TestGroupDetailIntegration_GroupWithoutANameHasOnlyItsOwnMembers(t *testing
 
 // The list a user sees is the list the approval pools provision from: for a
 // group resolved by name (CAB / ECAB / Devops) it is exactly namedGroup's member
-// set, and for a group addressed by id (the assigned-group pool) it covers
-// groupMemberIDs'. The only intended difference is that inactive users are
-// not shown.
+// set, and for a group addressed by id (the assigned-group pool) it is
+// groupMemberIDs' -- in both cases narrowed by the pools' own INTERNAL-and-active
+// rule (onlyInternalApprovers), so a customer or inactive user in the group is
+// neither provisioned nor shown.
 func TestGroupDetailIntegration_MatchesTheApprovalPools(t *testing.T) {
 	pool := gdSetup(t)
 	ctx := context.Background()
@@ -358,40 +385,50 @@ func TestGroupDetailIntegration_MatchesTheApprovalPools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetGroupDetail: %v", err)
 	}
+	shown := gdIDs(got.Members)
 
-	_, poolMembers, exists, err := namedGroup(ctx, pool, gdGroupAName)
+	// CAB / ECAB / Devops: resolved by name.
+	_, byName, exists, err := namedGroup(ctx, pool, gdGroupAName)
 	if err != nil || !exists {
 		t.Fatalf("namedGroup: exists=%v err=%v", exists, err)
 	}
-	var activePool []string
-	for _, id := range poolMembers {
-		var active bool
-		if err := pool.QueryRow(ctx, `SELECT COALESCE(is_active, TRUE) FROM "user" WHERE id = $1`, id).Scan(&active); err != nil {
-			t.Fatalf("read user %s: %v", id, err)
-		}
-		if active {
-			activePool = append(activePool, strings.ToLower(id))
-		}
+	provisioned, err := onlyInternalApprovers(ctx, pool, byName)
+	if err != nil {
+		t.Fatalf("onlyInternalApprovers: %v", err)
 	}
-	sort.Strings(activePool)
-	if shown := gdIDs(got.Members); !reflect.DeepEqual(shown, activePool) {
-		t.Fatalf("group page members %v != pool members (active) %v", shown, activePool)
+	want := make([]string, 0, len(provisioned))
+	for _, id := range provisioned {
+		want = append(want, strings.ToLower(id))
+	}
+	sort.Strings(want)
+	if len(want) == 0 {
+		t.Fatal("fixture error: the named pool provisions nobody, so the comparison below would prove nothing")
+	}
+	if !reflect.DeepEqual(shown, want) {
+		t.Fatalf("group page members %v != the members the named pool provisions %v", shown, want)
+	}
+	// The pool has people the page must have dropped for being ineligible.
+	if len(byName) <= len(provisioned) {
+		t.Fatalf("fixture error: the group has %d members by name but %d eligible; it should hold ineligible ones too", len(byName), len(provisioned))
 	}
 
+	// The assigned-group pool: team_member.group_id = <id>. Everyone it
+	// provisions is on the page (the page can show more only through the
+	// same-named team / group the named pools also read).
 	byID, err := groupMemberIDs(ctx, pool, gdGroupA)
 	if err != nil {
 		t.Fatalf("groupMemberIDs: %v", err)
 	}
-	shown := map[string]bool{}
-	for _, id := range gdIDs(got.Members) {
-		shown[id] = true
+	assigned, err := onlyInternalApprovers(ctx, pool, byID)
+	if err != nil {
+		t.Fatalf("onlyInternalApprovers(assigned): %v", err)
 	}
-	for _, id := range byID {
-		var active bool
-		if err := pool.QueryRow(ctx, `SELECT COALESCE(is_active, TRUE) FROM "user" WHERE id = $1`, id).Scan(&active); err != nil {
-			t.Fatalf("read user %s: %v", id, err)
-		}
-		if active && !shown[strings.ToLower(id)] {
+	onPage := map[string]bool{}
+	for _, id := range shown {
+		onPage[id] = true
+	}
+	for _, id := range assigned {
+		if !onPage[strings.ToLower(id)] {
 			t.Fatalf("assigned-group pool member %s is missing from the group page", id)
 		}
 	}

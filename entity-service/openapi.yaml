@@ -6942,8 +6942,10 @@ paths:
         `team_member` whose `group_id` is this group, or -- the way the CAB /
         ECAB / Devops pools resolve a group, by name -- whose `group_id` is any
         group of the same name or whose `team_id` is a team of the same name.
-        Inactive users are left out and a user with several membership rows is
-        listed once. Not available under DATA_SOURCE=servicenow (the route is
+        Only active INTERNAL users are listed -- the rule every approver pool
+        applies, so a customer in a staff group, an inactive user or a user with
+        no derivable type is neither provisioned as an approver nor shown -- and
+        a user with several membership rows is listed once. Not available under DATA_SOURCE=servicenow (the route is
         not registered). Internal callers only: an external (customer) caller
         gets 403, so a customer's contacts cannot be enumerated here.
       operationId: getGroup
@@ -18248,7 +18250,7 @@ components:
 
     GroupMember:
       type: object
-      description: One active member of a group.
+      description: One active internal member of a group.
       required: [id, name]
       properties:
         id:
@@ -18266,7 +18268,7 @@ components:
         userType:
           type: string
           nullable: true
-          description: '`user.user_type` (INTERNAL, EXTERNAL, ...); null when unset.'
+          description: '`user.user_type`; always INTERNAL, as only internal users are listed.'
         role:
           type: string
           nullable: true
@@ -18295,7 +18297,7 @@ components:
           $ref: '#/components/schemas/GroupManagerRef'
         members:
           type: array
-          description: Active members in name order; empty for a group nobody is in.
+          description: Active internal members in name order; empty for a group nobody (eligible) is in.
           items:
             $ref: '#/components/schemas/GroupMember'
         total:

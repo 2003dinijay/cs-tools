@@ -29,7 +29,7 @@ import (
 // the route is not registered at all.
 type GroupDetailService interface {
 	// GetGroupDetail returns the group (name, description, email, manager) and
-	// its active members. A NotFoundError is returned when no group has this
+	// its active internal members. A NotFoundError is returned when no group has this
 	// id; a group with no members is not an error.
 	GetGroupDetail(ctx context.Context, groupID string) (domain.GroupDetail, error)
 }

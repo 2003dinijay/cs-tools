@@ -5070,13 +5070,14 @@ type GroupManagerRef struct {
 	Name string `json:"name"`
 }
 
-// GroupMember is one active member of a group, as shown on its detail.
+// GroupMember is one active INTERNAL member of a group, as shown on its detail.
 type GroupMember struct {
 	// ID is the member's "user".id.
 	ID    string  `json:"id"`
 	Name  string  `json:"name"`
 	Email *string `json:"email"`
-	// UserType is "user".user_type (INTERNAL, EXTERNAL, ...); null when unset.
+	// UserType is "user".user_type; always INTERNAL, as only internal users are
+	// listed (the approver pools' own rule).
 	UserType *string `json:"userType"`
 	// Role is "lead" when the user leads the group (team_member.role) on any
 	// of the membership rows that make them a member, else "member".
@@ -5084,7 +5085,8 @@ type GroupMember struct {
 }
 
 // GroupDetail is the response for GET /groups/{id}: the "group" row and its
-// active members, in name order. Total is len(Members).
+// active internal members (the people the approval pools can provision from),
+// in name order. Total is len(Members).
 type GroupDetail struct {
 	ID          string           `json:"id"`
 	Name        string           `json:"name"`

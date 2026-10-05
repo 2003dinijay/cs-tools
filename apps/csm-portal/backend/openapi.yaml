@@ -6018,7 +6018,7 @@ paths:
       description: >-
         What opens when a user clicks the assignment group of a change request
         approval stage: the group's name, description, group email and manager,
-        and its active members in name order. `id` is the `assignmentGroup.id` of
+        and its active internal members in name order. `id` is the `assignmentGroup.id` of
         GET /change-requests/{id}/approvals -- a group id, NOT a team id
         (POST /groups/search lists teams). The members are the people the
         approval stage was provisioned from. Customer Approval / Customer Review
@@ -18075,7 +18075,7 @@ components:
 
     GroupMember:
       type: object
-      description: One active member of a group.
+      description: One active internal member of a group.
       required: [id, name]
       properties:
         id:
@@ -18090,7 +18090,7 @@ components:
         userType:
           type: string
           nullable: true
-          description: INTERNAL, EXTERNAL, ...; null when unset.
+          description: Always INTERNAL, as only internal users are listed.
         role:
           type: string
           nullable: true
@@ -18116,7 +18116,7 @@ components:
           $ref: '#/components/schemas/GroupManager'
         members:
           type: array
-          description: Active members in name order; empty for a group nobody is in.
+          description: Active internal members in name order; empty for a group nobody (eligible) is in.
           items:
             $ref: '#/components/schemas/GroupMember'
         total:
