@@ -245,6 +245,12 @@ type Config struct {
 	// (EVENT_HUB_BROKER + EVENT_PUBLISHING_ENABLED) and a database; the
 	// recipient lists below are what actually switch each email on.
 	OutageEventHubTopic string
+	// SREEventHubTopic, when set, is the ONE topic both the change-request
+	// notices and the outage emails publish to (sre-events), overriding
+	// CREventHubTopic and OutageEventHubTopic. csm-notification-service routes
+	// them by event type, as it already does on every topic. Empty keeps the
+	// two separate topics exactly as before.
+	SREEventHubTopic string
 	// OutageNoticePollInterval is the drainer's FALLBACK poll (default 60s).
 	// The emails normally go out about a second after an outage changes: the
 	// drainer LISTENs for migration 0186's NOTIFY. This interval only catches
@@ -526,6 +532,7 @@ func Load() *Config {
 		ProjectEventHubTopic:                          getEnvOrDefault("PROJECT_EVENT_HUB_TOPIC", "project-events"),
 		CRNoticePollInterval:                          envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
 		OutageEventHubTopic:                           getEnvOrDefault("OUTAGE_EVENT_HUB_TOPIC", "outage-events"),
+		SREEventHubTopic:                              strings.TrimSpace(os.Getenv("SRE_EVENT_HUB_TOPIC")),
 		OutageNoticePollInterval:                      envDuration("OUTAGE_NOTICE_POLL_INTERVAL", 60*time.Second),
 		OutageNotificationRecipients:                  splitComma(os.Getenv("OUTAGE_NOTIFICATION_RECIPIENTS")),
 		OutageCommunicationRecipients:                 splitComma(os.Getenv("OUTAGE_COMMUNICATION_RECIPIENTS")),
@@ -578,6 +585,7 @@ func Load() *Config {
 	cfg.CSMMigrationSalesforcePartnerIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED") == "true"
 	cfg.CSMMigrationCustomerEngagementIngestEnabled = os.Getenv("CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED") == "true"
 	cfg.CustomerEngagementFirefightingTypeID = strings.TrimSpace(os.Getenv("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID"))
+	cfg.applySREEventHubTopic()
 	return cfg
 }
 
@@ -969,4 +977,15 @@ func envDurationOrOff(key string, def time.Duration) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// applySREEventHubTopic points both operations publishers at SRE_EVENT_HUB_TOPIC
+// when it is set. Done once here so every reader of CREventHubTopic and
+// OutageEventHubTopic -- the publishers and their startup log lines -- agrees.
+func (c *Config) applySREEventHubTopic() {
+	if c.SREEventHubTopic == "" {
+		return
+	}
+	c.CREventHubTopic = c.SREEventHubTopic
+	c.OutageEventHubTopic = c.SREEventHubTopic
 }

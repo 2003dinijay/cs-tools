@@ -57,6 +57,8 @@ const incidentEnrichmentBody = `{
 func newTestIncidentEnrichmentClient(t *testing.T, enrichment string, enrichmentStatus int) *integrationservice.Client {
 	t.Helper()
 	mux := http.NewServeMux()
+	// The create looks up the service's support group first (upstream #2353); a service with none leaves the incident unassigned.
+	mux.HandleFunc("/services/search", snServicesStub(nil))
 	mux.HandleFunc("/incidents/"+testIncidentSysid, func(w http.ResponseWriter, r *http.Request) {
 		if enrichmentStatus != http.StatusOK {
 			w.WriteHeader(enrichmentStatus)

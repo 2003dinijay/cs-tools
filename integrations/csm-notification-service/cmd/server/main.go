@@ -36,6 +36,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/dispatch"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/escalation"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
@@ -101,6 +102,29 @@ func main() {
 		// ringing.
 		RingTimeoutSeconds: envInt("TWILIO_RING_TIMEOUT_SECONDS", 0),
 	})
+
+	// The frustration-detection escalation client (dispatch.checkFrustration,
+	// case.comment_added only) is likewise optional per deployment: an unset
+	// ESCALATION_DETECTOR_BASE_URL means WithFrustrationDetection below is
+	// simply never called, and checkFrustration's own nil-frustrationDetector
+	// check skips the step entirely rather than erroring on every comment.
+	//
+	// Shares the same OAuth2 client credentials app as emailClient/
+	// customerEntityClient above (OAUTH2_CLIENT_ID/OAUTH2_CLIENT_SECRET/
+	// OAUTH2_TOKEN_URL) rather than getting its own -- only BaseURL/Scopes
+	// are specific to this client.
+	var escalationClient *escalation.Client
+	if baseURL := os.Getenv("ESCALATION_DETECTOR_BASE_URL"); baseURL != "" {
+		escalationClient = escalation.New(escalation.Config{
+			BaseURL:      baseURL,
+			TokenURL:     os.Getenv("OAUTH2_TOKEN_URL"),
+			ClientID:     os.Getenv("OAUTH2_CLIENT_ID"),
+			ClientSecret: os.Getenv("OAUTH2_CLIENT_SECRET"),
+			Scopes:       splitComma(os.Getenv("ESCALATION_DETECTOR_SCOPES")),
+		})
+	} else {
+		slog.Warn("ESCALATION_DETECTOR_BASE_URL not set; frustration detection on case.comment_added is disabled")
+	}
 
 	// The customer entity service backs per-recipient portal-link resolution
 	// (internal/recipientlinks) — optional per deployment like the channel
@@ -324,6 +348,17 @@ func main() {
 
 	dispatcher := dispatch.NewDispatcher(emailClient, googleChatClient, twilioClient, linkResolver, emailSendingEnabled, emailDebugMode, emailDebugRecipients, callSendingEnabled, defaultOnCallNumber, defaultCSMEmailCC).
 		WithOnboarding(loadOnboardingConfig(customerEntityClient, emailClient))
+	// escalationClient is a *escalation.Client, not the escalationDetector
+	// interface itself -- passing it through WithFrustrationDetection
+	// unconditionally when nil would store a non-nil interface wrapping a
+	// nil pointer (the same "nil pointer in an interface is non-nil" trap
+	// entity-service's own health handler guards against), making
+	// checkFrustration's own frustrationDetector != nil check always true
+	// and then panicking on DetectEscalation. Only chain it in when a real
+	// client was constructed.
+	if escalationClient != nil {
+		dispatcher = dispatcher.WithFrustrationDetection(escalationClient)
+	}
 
 	// The main consumer's OnExhausted: publish the exhausted record to the
 	// dead-letter topic instead of just logging and dropping it. The DLQ's
@@ -422,10 +457,56 @@ func main() {
 	// Same dispatcher as the case consumers: it already routes on the
 	// envelope's Type, and these two only ever receive change_request.* since
 	// that is all their topic carries.
-	crConsumers := startConsumers(ctx, "cr", crCfg, crConsumerGroup, crConsumerCount, dispatcher.Handle, crToDeadLetter)
-	crDLQConsumers := startConsumers(ctx, "cr-dlq", crDLQCfg, crDLQConsumerGroup, crDLQConsumerCount, dispatcher.Handle, nil)
-	outageConsumers := startConsumers(ctx, "outage", outageCfg, outageConsumerGroup, outageConsumerCount, dispatcher.Handle, outageToDeadLetter)
-	outageDLQConsumers := startConsumers(ctx, "outage-dlq", outageDLQCfg, outageDLQConsumerGroup, outageDLQConsumerCount, dispatcher.Handle, nil)
+	//
+	// sre-events: ONE topic for the operations notifications (change-request
+	// notices and outage emails today), routed by event type like every
+	// topic here. Off unless SRE_EVENT_HUB_TOPIC is set, so a deployment
+	// that does not set it runs exactly the consumers it did before. When set,
+	// see planSREConsumers for which consumers it replaces and which group it
+	// reads with.
+	plan := planSREConsumers(os.Getenv("SRE_EVENT_HUB_TOPIC"), os.Getenv("SRE_CONSUMER_GROUP"),
+		os.Getenv("SRE_EVENT_HUB_DLQ_TOPIC"), os.Getenv("SRE_DLQ_CONSUMER_GROUP"),
+		consumerTarget{crCfg.Topic, crConsumerGroup}, consumerTarget{crDLQCfg.Topic, crDLQConsumerGroup},
+		consumerTarget{outageCfg.Topic, outageConsumerGroup}, consumerTarget{outageDLQCfg.Topic, outageDLQConsumerGroup})
+	if err := validateSREPlan(plan, eventBusCfg.Topic, projectCfg.Topic); err != nil {
+		slog.Error("invalid sre-events configuration", "err", err)
+		os.Exit(1)
+	}
+	var crConsumers, crDLQConsumers, outageConsumers, outageDLQConsumers, sreConsumers, sreDLQConsumers []*eventbus.Consumer
+	if plan.StartCR {
+		crConsumers = startConsumers(ctx, "cr", crCfg, crConsumerGroup, crConsumerCount, dispatcher.Handle, crToDeadLetter)
+	}
+	if plan.StartCRDLQ {
+		crDLQConsumers = startConsumers(ctx, "cr-dlq", crDLQCfg, crDLQConsumerGroup, crDLQConsumerCount, dispatcher.Handle, nil)
+	}
+	if plan.StartOutage {
+		outageConsumers = startConsumers(ctx, "outage", outageCfg, outageConsumerGroup, outageConsumerCount, dispatcher.Handle, outageToDeadLetter)
+	}
+	if plan.StartOutageDLQ {
+		outageDLQConsumers = startConsumers(ctx, "outage-dlq", outageDLQCfg, outageDLQConsumerGroup, outageDLQConsumerCount, dispatcher.Handle, nil)
+	}
+	if plan.Enabled {
+		sreCfg := eventbus.Config{Broker: eventBusCfg.Broker, ConnectionString: eventBusCfg.ConnectionString, Topic: plan.SRE.Topic}
+		sreDLQCfg := eventbus.Config{Broker: eventBusCfg.Broker, ConnectionString: eventBusCfg.ConnectionString, Topic: plan.SREDLQ.Topic}
+		sreDLQProducer := eventbus.NewProducer(sreDLQCfg)
+		defer sreDLQProducer.Close()
+		sreToDeadLetter := func(ctx context.Context, record eventbus.Record, handleErr error) error {
+			attrs := []any{"topic", record.Topic, "partition", record.Partition,
+				"offset", record.Offset, "dlqTopic", sreDLQCfg.Topic}
+			slog.WarnContext(ctx, "eventbus: handler exhausted retries, publishing to dead-letter topic",
+				append(attrs, deadLetterErrAttrs(handleErr)...)...)
+			return sreDLQProducer.Publish(ctx, record.Key, record.Value)
+		}
+		// HandleShared, not Handle: an event type this service does not
+		// handle is someone else's on a shared topic, not a broken record.
+		sreConsumers = startConsumers(ctx, "sre", sreCfg, plan.SRE.Group,
+			envInt("SRE_CONSUMER_COUNT", 1), dispatcher.HandleShared, sreToDeadLetter)
+		sreDLQConsumers = startConsumers(ctx, "sre-dlq", sreDLQCfg, plan.SREDLQ.Group,
+			envInt("SRE_DLQ_CONSUMER_COUNT", 1), dispatcher.HandleShared, nil)
+		slog.Info("sre-events consumer enabled", "topic", plan.SRE.Topic, "group", plan.SRE.Group,
+			"dlqTopic", plan.SREDLQ.Topic, "dlqGroup", plan.SREDLQ.Group,
+			"replacesCRConsumer", !plan.StartCR, "replacesOutageConsumer", !plan.StartOutage)
+	}
 	// And the same for project_contact.invited: the one dispatcher routes
 	// on the envelope's Type already, and these two only ever receive the
 	// onboarding events since that is all their topic carries.
@@ -792,6 +873,12 @@ func main() {
 		c.Close()
 	}
 	for _, c := range outageDLQConsumers {
+		c.Close()
+	}
+	for _, c := range sreConsumers {
+		c.Close()
+	}
+	for _, c := range sreDLQConsumers {
 		c.Close()
 	}
 	for _, c := range projectConsumers {

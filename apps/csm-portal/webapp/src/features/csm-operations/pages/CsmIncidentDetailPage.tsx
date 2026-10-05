@@ -62,6 +62,7 @@ import {
 import { useGetCsmIncidentActivities } from "@features/csm-operations/api/useCsmIncidentActivities";
 import EditIncidentDialog from "@features/csm-operations/components/EditIncidentDialog";
 import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
+import IncidentTasksWidget from "@features/csm-operations/components/IncidentTasksWidget";
 import IncidentActionBar from "@features/csm-operations/components/IncidentActionBar";
 import IncidentCreateMenu from "@features/csm-operations/components/IncidentCreateMenu";
 import IncidentResolutionDialog from "@features/csm-operations/components/IncidentResolutionDialog";
@@ -980,6 +981,8 @@ export default function CsmIncidentDetailPage(): JSX.Element {
               No linked records for this incident.
             </Typography>
           )}
+
+          <IncidentTasksWidget incidentId={incident.id as string} />
 
           {hasLinkedServiceRequests && (
             <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -233,13 +234,28 @@ type snIncidentService struct {
 	// publisher is nil when Event Hub is not configured — every call site
 	// must check before using it. See publishIncidentCreated.
 	publisher EventPublisherService
+	// groupFromService is true for DATA_SOURCE=servicenow, where this is the
+	// whole incident service and so the only place left to set an incident's
+	// assignment group from its service. As the dual-write mirror it is
+	// false: incidentService has already read the group from Postgres, and
+	// reading it again from ServiceNow could give the two sides different
+	// groups.
+	groupFromService bool
 }
 
 // NewServiceNowIncidentService constructs an IncidentService backed by the
 // Choreo API. publisher may be nil (see snIncidentService.publisher's doc
 // comment).
 func NewServiceNowIncidentService(client *integrationservice.Client, publisher EventPublisherService) IncidentService {
-	return &snIncidentService{client: client, publisher: publisher}
+	return &snIncidentService{client: client, publisher: publisher, groupFromService: true}
+}
+
+// NewServiceNowIncidentMirrorService is the ServiceNow side of
+// DATA_SOURCE=postgres-servicenow-dual-write. It sends the assignment group
+// incidentService chose and never chooses one itself, and it publishes
+// nothing (see routes.go for why the mirror's publisher is nil).
+func NewServiceNowIncidentMirrorService(client *integrationservice.Client) IncidentService {
+	return &snIncidentService{client: client}
 }
 
 func (s *snIncidentService) SearchIncidents(ctx context.Context, req domain.SearchIncidentsRequest) (domain.SearchIncidentsResponse, error) {
@@ -796,6 +812,14 @@ func (s *snIncidentService) CreateIncident(ctx context.Context, req domain.Creat
 	watchList, err := watchListEmails(ctx, s.client, token, "watchList", req.WatchList)
 	if err != nil {
 		return domain.CreateIncidentResponse{}, err
+	}
+
+	if s.groupFromService {
+		group, err := s.supportGroupOfService(ctx, token, req.ServiceID)
+		if err != nil {
+			return domain.CreateIncidentResponse{}, err
+		}
+		req.AssignmentGroupID = group
 	}
 
 	payload := snCreateIncidentPayload{
@@ -1973,4 +1997,55 @@ func (s *snIncidentService) HandOffIncidentToSpecialist(ctx context.Context, req
 	}
 
 	return domain.HandOffIncidentToSpecialistResponse{Message: snResp.Message, Handoff: result}, nil
+}
+
+// snServiceScanMaxPages bounds supportGroupOfService's scan at 40 pages of
+// maxLimit (2,000 services).
+const snServiceScanMaxPages = 40
+
+// supportGroupOfService is incidentService.withAssignmentGroupFromService for
+// DATA_SOURCE=servicenow: the service's support group, or nil when it has
+// none.
+//
+// *** IT SCANS, BECAUSE IT HAS TO. *** ServiceNow's POST /services/search
+// filters on `name CONTAINS searchQuery` only -- there is no lookup by sys_id
+// -- so the service is found by paging through cmdb_ci_service and matching
+// the id. It runs once per incident create and stops at the first match.
+//
+// *** ONLY A COMPLETE SCAN MAY CONCLUDE "NO GROUP". *** A short page means
+// ServiceNow has no more services, so a service not seen by then is not
+// listed and the incident is created unassigned, with a warning. Running out
+// of pages proves nothing -- the service may simply be further on -- so that
+// is an error: creating the incident unassigned there would misroute one
+// whose service does have a group.
+func (s *snIncidentService) supportGroupOfService(ctx context.Context, token, serviceID string) (*string, error) {
+	want := uuidToSysid(strings.TrimSpace(serviceID))
+	for page := 0; page < snServiceScanMaxPages; page++ {
+		payload := snITServiceSearchPayload{Pagination: snProjectPagination{Limit: maxLimit, Offset: page * maxLimit}}
+		raw, err := s.client.Post(ctx, "/services/search", token, payload)
+		if err != nil {
+			return nil, fmt.Errorf("looking up the support group of service %s: %w", serviceID, err)
+		}
+		var resp snITServicesResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, fmt.Errorf("sn services: parse response: %w", err)
+		}
+		for _, svc := range resp.Services {
+			if !strings.EqualFold(svc.ID, want) {
+				continue
+			}
+			if svc.SupportGroup == nil || svc.SupportGroup.ID == "" {
+				return nil, nil
+			}
+			group := sysidToUUID(svc.SupportGroup.ID)
+			return &group, nil
+		}
+		if len(resp.Services) < maxLimit {
+			slog.WarnContext(ctx, "incident create: service not in ServiceNow's service list; creating it with no assignment group",
+				"serviceId", serviceID)
+			return nil, nil
+		}
+	}
+	return nil, fmt.Errorf("looking up the support group of service %s: not found in the first %d ServiceNow services; raise snServiceScanMaxPages",
+		serviceID, snServiceScanMaxPages*maxLimit)
 }

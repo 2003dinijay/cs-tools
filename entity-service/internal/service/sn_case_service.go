@@ -1428,7 +1428,7 @@ func (s *snCaseService) publishCommentAdded(ctx context.Context, req domain.Crea
 		slog.InfoContext(ctx, "sn create comment: case.comment_added not published, could not resolve comment author's display name", "caseId", req.CaseID)
 		return
 	}
-	publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, cv, req, commentID, author.Name)
+	publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, s.ProjectOnboardingInfo, cv, req, commentID, author.Name, author.Email)
 }
 
 // publishCommentAddedEvent is publishCommentAdded's actual body, factored
@@ -1444,7 +1444,7 @@ func (s *snCaseService) publishCommentAdded(ctx context.Context, req domain.Crea
 // function even runs (to decide whether there are recipients worth an
 // author lookup for — see publishCommentAdded's own doc comment), so a
 // callback here would only risk double-fetching.
-func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherService, resolveAccountDefaultWatcherEmails func(context.Context, string) ([]string, error), cv domain.CaseView, req domain.CreateCaseCommentRequest, commentID, authorName string) {
+func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherService, resolveAccountDefaultWatcherEmails func(context.Context, string) ([]string, error), resolveProjectOnboardingInfo func(context.Context, string) (string, bool, error), cv domain.CaseView, req domain.CreateCaseCommentRequest, commentID, authorName, authorEmail string) {
 	if publisher == nil {
 		return
 	}
@@ -1461,17 +1461,37 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 		return
 	}
 
+	// Best-effort, same posture as resolveCaseDefaultWatcherEmails just
+	// above: a lookup failure must not block the email reaction this
+	// function primarily exists for -- the Chat alert this enriches is
+	// itself a secondary, best-effort reaction on the consuming side (see
+	// csm-notification-service's own checkFrustration).
+	var onboardingStatus string
+	var isEvaluationAccount bool
+	if resolveProjectOnboardingInfo != nil && cv.ProjectDetails != nil {
+		var err error
+		onboardingStatus, isEvaluationAccount, err = resolveProjectOnboardingInfo(ctx, cv.ProjectDetails.ID)
+		if err != nil {
+			slog.WarnContext(ctx, "create comment: resolve project onboarding info for case.comment_added failed", "caseId", req.CaseID, "error", err)
+		}
+	}
+
 	payload, err := json.Marshal(events.CommentAddedPayload{
-		Name:           authorName,
-		ProjectID:      cv.ProjectDetails.ID,
-		CaseID:         req.CaseID,
-		CaseNumber:     cv.Number,
-		WSO2CaseID:     cv.InternalID,
-		CaseTitle:      cv.Subject,
-		CaseComment:    req.Content,
-		CommentID:      commentID,
-		IsInternalNote: req.Type == domain.CommentTypeWorkNote,
-		Recipients:     recipients,
+		Name:                    authorName,
+		ProjectID:               cv.ProjectDetails.ID,
+		CaseID:                  req.CaseID,
+		CaseNumber:              cv.Number,
+		WSO2CaseID:              cv.InternalID,
+		CaseTitle:               cv.Subject,
+		CaseComment:             req.Content,
+		CommentID:               commentID,
+		IsInternalNote:          req.Type == domain.CommentTypeWorkNote,
+		Recipients:              recipients,
+		AuthorEmail:             authorEmail,
+		Product:                 caseProductName(cv),
+		Team:                    caseTeamName(cv),
+		IsEvaluationAccount:     isEvaluationAccount,
+		ProjectOnboardingStatus: onboardingStatus,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "create comment: encode case.comment_added payload failed", "caseId", req.CaseID, "error", err)
@@ -1985,6 +2005,16 @@ func (s *snCaseService) ProjectContactEmailsByRole(ctx context.Context, projectI
 		return nil, nil
 	}
 	return s.pgFallback.ProjectContactEmailsByRole(ctx, projectID, role)
+}
+
+// ProjectOnboardingInfo implements CaseService. account/project are
+// Postgres-only concepts, same reasoning as ProjectContactEmailsByRole just
+// above — delegates to pgFallback when configured, empty/no-error otherwise.
+func (s *snCaseService) ProjectOnboardingInfo(ctx context.Context, projectID string) (string, bool, error) {
+	if s.pgFallback == nil {
+		return "", false, nil
+	}
+	return s.pgFallback.ProjectOnboardingInfo(ctx, projectID)
 }
 
 // AccountDefaultWatcherEmails implements CaseService. account/project are

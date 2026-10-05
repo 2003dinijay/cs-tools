@@ -27,14 +27,16 @@ import (
 )
 
 // newTestCreateIncidentClient stubs the POST /incidents create call
-// publishIncidentCreated triggers after, and nothing else — so the enrichment
-// GET it also makes fails, and the event goes out carrying only the fields it
-// had before the escalation ladder existed. That is the point here: these
-// tests cover that older contract. The enrichment itself, and its own
-// failure path, are covered in sn_incident_escalation_publish_test.go.
+// publishIncidentCreated triggers after, and the support-group lookup
+// (snServicesStub) -- nothing else. So the enrichment GET it also makes
+// fails, and the event goes out carrying only the fields it had before the
+// escalation ladder existed. That is the point here: these tests cover that
+// older contract. The enrichment itself, and its own failure path, are
+// covered in sn_incident_escalation_publish_test.go.
 func newTestCreateIncidentClient(t *testing.T, incidentSysid string) *integrationservice.Client {
 	t.Helper()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/services/search", snServicesStub(nil))
 	mux.HandleFunc("/incidents", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
