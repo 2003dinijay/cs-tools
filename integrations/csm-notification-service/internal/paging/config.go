@@ -74,6 +74,33 @@ type LadderConfig struct {
 	Rules []Rule `yaml:"rules"`
 
 	Chat Chat `yaml:"chat"`
+
+	// Phones is where a recipient's phone number comes from when the rung's
+	// resolver does not supply one (the Team Schedule never does).
+	Phones Phones `yaml:"phones"`
+}
+
+// Phones selects the source of recipients' phone numbers.
+//
+//	profile  the number each person set on their own CSM Portal profile, read
+//	         from Asgardeo (the default)
+//	none     only numbers named in this file; everyone else is NO_NUMBER
+type Phones struct {
+	Source string `yaml:"source"`
+}
+
+// Phone sources.
+const (
+	PhoneSourceProfile = "profile"
+	PhoneSourceNone    = "none"
+)
+
+// PhoneSource is the configured source, defaulting to the profile.
+func (l LadderConfig) PhoneSource() string {
+	if s := strings.ToLower(strings.TrimSpace(l.Phones.Source)); s != "" {
+		return s
+	}
+	return PhoneSourceProfile
 }
 
 // Chat is where a ladder's rung cards are posted.
@@ -310,6 +337,11 @@ func (l *LadderConfig) validate(name string) error {
 	if v := strings.TrimSpace(l.Chat.WebhookURLEnv); v != "" && !envVarName.MatchString(v) {
 		return fmt.Errorf("%s: chat.webhookUrlEnv must be the NAME of an environment variable "+
 			"that holds the webhook URL, not the URL itself -- this file is committed", name)
+	}
+
+	if src := l.PhoneSource(); src != PhoneSourceProfile && src != PhoneSourceNone {
+		return fmt.Errorf("%s: phones.source is %q; use %q or %q", name, l.Phones.Source,
+			PhoneSourceProfile, PhoneSourceNone)
 	}
 
 	// A cap keyed by a shift name that does not exist would read as a cap and

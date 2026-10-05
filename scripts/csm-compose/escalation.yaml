@@ -166,6 +166,19 @@ cre:
   #   team_lead · all_team_leads · americas_team_lead · americas_team_leads
   #   cre_head · cs_head
 
+  # Where a recipient's phone number comes from. The Team Schedule says who is
+  # on duty and who holds which rank, never how to reach them -- and a call
+  # tier drops anyone without a number (NO_NUMBER on the work note).
+  #
+  #   profile  the mobile number each person set on their own CSM Portal
+  #            profile (avatar > Profile), read from Asgardeo through the
+  #            SCIM operations service. Needs SCIM_BASE_URL. The default.
+  #   none     only numbers named in this file (heads below).
+  #
+  # A number named in this file always wins over the profile.
+  phones:
+    source: profile
+
   # The last two rungs, named outright. They are two people, not a team, so
   # the ladder asks for them here rather than looking them up by role inside a
   # leadership team. Leave a head empty to fall back to that lookup.

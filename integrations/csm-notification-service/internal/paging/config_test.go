@@ -105,6 +105,7 @@ func TestLoadConfig_FailuresReturnDisabled(t *testing.T) {
 		{name: "unknown channel", body: "enabled: true\ncre:\n  channel: telegram\n"},
 		{name: "maxLevel too high", body: "enabled: true\ncre:\n  safety:\n    maxLevel: 9\n"},
 		{name: "negative call cap", body: "enabled: true\ncre:\n  safety:\n    maxCallsPerLadder: -1\n"},
+		{name: "unknown phone source", body: "enabled: true\ncre:\n  phones:\n    source: servicenow\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -512,5 +513,22 @@ func TestConfig_RejectsAnUnknownShiftInRotaCaps(t *testing.T) {
 	write("enabled: true\ncre:\n  teams:\n    rotaMembersToCall:\n      lk_evening: 7\n")
 	if _, err := LoadConfig(path); err != nil {
 		t.Errorf("a lower-case shift name should be accepted: %v", err)
+	}
+}
+
+// The profile is the default phone source; "none" opts out.
+func TestLoadConfig_PhoneSource(t *testing.T) {
+	for body, want := range map[string]string{
+		"enabled: true\ncre:\n  enabled: true\n":                              PhoneSourceProfile,
+		"enabled: true\ncre:\n  enabled: true\n  phones:\n    source: NONE\n": PhoneSourceNone,
+	} {
+		cfg, err := LoadConfig(writeConfig(t, body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		l, _ := cfg.For(LadderKeyCRE)
+		if got := l.PhoneSource(); got != want {
+			t.Errorf("PhoneSource() = %q, want %q for %q", got, want, body)
+		}
 	}
 }

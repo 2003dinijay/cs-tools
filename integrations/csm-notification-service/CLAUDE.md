@@ -334,6 +334,17 @@ immediate call predates the ladder and is **not** in the specification (its
 initial reaction is the Chat alert and an email); unset it once the ladder
 covers an environment, or an incident gets both.
 
+**Phone numbers** come from each person's own CSM Portal profile. The Team
+Schedule names who to call but holds no numbers, and a call plan drops anyone
+without one (`NO_NUMBER`). `ProfilePhoneResolver` wraps whichever resolver is
+in use and fills a missing number from the person's Asgardeo user (the
+portal's profile dialog writes the `mobile` phone there; `scim.Client.MobileNumber`
+reads it back), once per person per two minutes, 3 s per lookup. A number
+named in `escalation.yaml` is never replaced; a lookup that fails, times out
+or is not E.164 leaves that one person `NO_NUMBER` and never fails the tier.
+`phones.source: none` turns it off. Nothing is persisted outside the plan, and
+the number is never logged.
+
 **Not built**: the email at each rung (section 10.0), the two
 erroneous-scenario emails (section 12.0), LEVEL_0 availability filtering
 (section 8.0), a ServiceNow-backed `Resolver`. **No longer relevant**: `abtEligible` was never populated by any publisher, so

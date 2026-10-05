@@ -666,6 +666,29 @@ func main() {
 				}
 			}
 
+			// Phone numbers. The Team Schedule says who, never how to reach
+			// them, and a call plan drops anyone without a number. Each
+			// person keeps their mobile on their own CSM Portal profile,
+			// which the portal stores on their Asgardeo user; read it from
+			// there through the same SCIM operations service and OAuth2 app
+			// the onboarding flow uses. A number named in escalation.yaml
+			// (the heads) still wins.
+			if creCfg.PhoneSource() == paging.PhoneSourceProfile {
+				if scimURL := strings.TrimSpace(os.Getenv("SCIM_BASE_URL")); scimURL == "" {
+					slog.Warn("incident escalation: phones.source is profile but SCIM_BASE_URL is not set; " +
+						"recipients without a number in escalation.yaml cannot be called")
+				} else {
+					escalationResolver = paging.NewProfilePhoneResolver(escalationResolver, scim.NewClient(scim.Config{
+						BaseURL:      scimURL,
+						TokenURL:     os.Getenv("OAUTH2_TOKEN_URL"),
+						ClientID:     os.Getenv("OAUTH2_CLIENT_ID"),
+						ClientSecret: os.Getenv("OAUTH2_CLIENT_SECRET"),
+						Scopes:       splitComma(os.Getenv("SCIM_SCOPES")),
+					}))
+					slog.Info("incident escalation reads recipients' phone numbers from their CSM Portal profiles")
+				}
+			}
+
 			escalationEngine := paging.NewEngine(
 				paging.DefaultPolicy,
 				escalationResolver,
