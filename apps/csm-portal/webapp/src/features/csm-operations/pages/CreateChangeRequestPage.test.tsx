@@ -82,17 +82,30 @@ vi.mock("@api/backend/client", () => ({
 // to drive through its real search/dropdown interaction here, so it's stubbed
 // as a plain labeled input that reports its id straight through onChange,
 // same technique as CreateProblemPage.test.tsx.
+// A few ids resolve to a named item, as a real search result would, so the
+// picked option's display name can be asserted where it matters (Customer Group).
+const PICKED_ITEMS: Record<string, { id: string; name: string }> = {
+  "grp-1": { id: "grp-1", name: "Acme Customers" },
+  "grp-9": { id: "grp-9", name: "Zeta Customers" },
+};
 vi.mock("@components/AsyncEntitySelect", () => ({
   default: ({
     label,
     value,
+    knownLabel,
     onChange,
   }: {
     label: string;
     value: string;
-    onChange: (next: string) => void;
+    knownLabel?: string;
+    onChange: (next: string, item?: { id: string; name: string }) => void;
   }) => (
-    <input aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} />
+    <input
+      aria-label={label}
+      data-known-label={knownLabel ?? ""}
+      value={value}
+      onChange={(e) => onChange(e.target.value, PICKED_ITEMS[e.target.value])}
+    />
   ),
 }));
 // The Customer Project picker is a generic async project search; stubbed as a
@@ -1463,6 +1476,24 @@ describe("CreateChangeRequestPage — scope fields in the in-progress draft and 
       "Identity Server 7.0.0",
       "API Manager 4.2.0",
     ]);
+  });
+
+  it("keeps the picked Customer Group's name in the draft and hands it back as the restored picker's label", () => {
+    const first = render(<CreateChangeRequestPage />);
+    fireEvent.change(screen.getByLabelText("Customer Group"), { target: { value: "grp-9" } });
+    const draft = JSON.parse(sessionStorage.getItem(changeRequestDraftKey({ kind: "new" }))!) as ChangeRequestDraft;
+    expect(draft).toMatchObject({ customerGroupId: "grp-9", customerGroupLabel: "Zeta Customers" });
+    first.unmount();
+
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByLabelText("Customer Group")).toHaveValue("grp-9");
+    expect(screen.getByLabelText("Customer Group")).toHaveAttribute("data-known-label", "Zeta Customers");
+  });
+
+  it("passes a clone's customer group name to the picker as its label", () => {
+    locationState = { subject: "Promote", customerGroupId: "grp-1", customerGroupLabel: "Acme Customers" };
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByLabelText("Customer Group")).toHaveAttribute("data-known-label", "Acme Customers");
   });
 
   it("persists the scope into the draft with display names, so a restore never shows raw ids", () => {

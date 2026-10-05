@@ -190,6 +190,12 @@ export interface FakeChangeRequestApi {
   scope(): FakeScope;
   /** The `comment` / `workNote` journal entries the fake received, in order. */
   journal(): Array<{ kind: "comment" | "workNote"; text: string }>;
+  /**
+   * Deactivates a deployment server-side, behind the form's back: it drops out
+   * of `link-options` and any create / PATCH that still names it is refused
+   * with a 400 -- the "stale options" scenario.
+   */
+  retireDeployment(deploymentId: string): void;
 }
 
 function legalNextStates(state: string, flags: FakeCustomerFlags): string[] {
@@ -242,6 +248,7 @@ export async function installFakeChangeRequestApi(
     category: null,
   };
   const journal: Array<{ kind: "comment" | "workNote"; text: string }> = [];
+  const retired = new Set<string>();
   const bodies: FakeRequestBody[] = [];
   const flags: FakeCustomerFlags = {
     customerApprovalRequired: initialFlags.customerApprovalRequired ?? false,
@@ -307,7 +314,9 @@ export async function installFakeChangeRequestApi(
     for (const id of next.deploymentIds) {
       const d = FAKE_DEPLOYMENTS.find((x) => x.id === id);
       if (!d) return `deploymentIds: deployment ${id} not found`;
-      if (d.projectId !== next.projectId) return `deploymentIds: deployment ${d.name} does not belong to the selected project`;
+      if (d.projectId !== next.projectId || retired.has(d.id)) {
+        return `deploymentIds: deployment ${d.name} is not an active deployment of the selected project`;
+      }
     }
     const provided = environmentIdsOf(next.deploymentIds);
     for (const id of next.environmentIds) {
@@ -434,7 +443,7 @@ export async function installFakeChangeRequestApi(
       const projectId = body.projectId as string | undefined;
       if (!projectId) return json(route, { message: "projectId is required" }, 400);
       const chosen = (body.deploymentIds as string[] | undefined) ?? [];
-      const projectDeployments = FAKE_DEPLOYMENTS.filter((d) => d.projectId === projectId);
+      const projectDeployments = FAKE_DEPLOYMENTS.filter((d) => d.projectId === projectId && !retired.has(d.id));
       const stray = chosen.find((id) => !projectDeployments.some((d) => d.id === id));
       if (stray) return json(route, { message: `deployment ${stray} does not belong to the selected project` }, 400);
       return json(route, {
@@ -609,5 +618,8 @@ export async function installFakeChangeRequestApi(
     requestBodies: () => [...bodies],
     scope: () => ({ ...scope, deploymentIds: [...scope.deploymentIds], environmentIds: [...scope.environmentIds], deploymentProductIds: [...scope.deploymentProductIds] }),
     journal: () => [...journal],
+    retireDeployment: (deploymentId) => {
+      retired.add(deploymentId);
+    },
   };
 }

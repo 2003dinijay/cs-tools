@@ -130,6 +130,21 @@ export class ChangeRequestDetailPage {
     return this.page.getByRole("alert").filter({ hasText: /you created this change request/i });
   }
 
+  /** The Overview cell labelled `label` (e.g. "Customer Project", "Deployments"). */
+  overviewCell(label: string): Locator {
+    return this.page.getByText(label, { exact: true }).locator("xpath=..");
+  }
+
+  /** The chips an Overview cell shows (Deployments / Environments / Deployment products). */
+  overviewChips(label: string): Locator {
+    return this.overviewCell(label).locator(".MuiChip-label");
+  }
+
+  /** The Clone button in the page header. */
+  cloneButton(): Locator {
+    return this.page.getByRole("button", { name: /clone/i });
+  }
+
   /** The "Stage" cell of the approvals table row for a named approver
    * ("Peer Approval" | "CAB Approval" | "ECAB Approval"). */
   approverStage(approverName: string): Locator {
@@ -173,6 +188,39 @@ export class ChangeRequestDetailPage {
 
   // "Customer approved"/"Customer reviewed" are deliberately not editable
   // controls in this dialog — see EditChangeRequestDialog.tsx's doc comment.
+
+  /** Scope fields inside the edit dialog (same labels as the create form). */
+  editProjectField(): Locator {
+    return this.editDialog().getByRole("combobox", { name: "Customer Project" });
+  }
+
+  editDeploymentsField(): Locator {
+    return this.editDialog().getByRole("combobox", { name: "Deployments" });
+  }
+
+  editEnvironmentsField(): Locator {
+    return this.editDialog().getByRole("combobox", { name: "Environments" });
+  }
+
+  editDeploymentProductsField(): Locator {
+    return this.editDialog().getByLabel("Deployment products");
+  }
+
+  editCategoryField(): Locator {
+    return this.editDialog().getByRole("combobox", { name: "Category" });
+  }
+
+  /** The chips inside one of the edit dialog's multi-selects / read-only products field. */
+  editChipsOf(field: Locator): Locator {
+    return field.locator("xpath=ancestor::div[contains(@class,'MuiInputBase-root')][1]").locator(".MuiChip-label");
+  }
+
+  /** Opens an edit-dialog multi-select, toggles the named options, closes it. */
+  async editToggleOptions(field: Locator, names: string[]): Promise<void> {
+    await field.click();
+    for (const name of names) await this.page.getByRole("option", { name, exact: true }).click();
+    await field.press("Escape");
+  }
 
   saveButton(): Locator {
     return this.editDialog().getByRole("button", { name: /^(Save|Saving…)$/ });

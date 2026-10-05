@@ -282,6 +282,11 @@ export default function CreateChangeRequestPage(): JSX.Element {
   const [customerGroupId, setCustomerGroupId] = useState(
     draft?.customerGroupId ?? cloneState?.customerGroupId ?? "",
   );
+  // Display name of the picked group, kept alongside its id so a restored draft
+  // (or a clone) shows the name rather than a raw id before any search runs.
+  const [customerGroupLabel, setCustomerGroupLabel] = useState(
+    draft ? (draft.customerGroupLabel ?? "") : (cloneState?.customerGroupLabel ?? ""),
+  );
   // The legacy ServiceNow form pre-selects "Other".
   const initialCategory = draft?.category ?? cloneState?.category ?? DEFAULT_CHANGE_REQUEST_CATEGORY;
   const [category, setCategory] = useState<string>(
@@ -397,6 +402,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
       deploymentProductIds: scope.deploymentProductIds,
       deploymentProductLabels: scope.deploymentProductLabels,
       customerGroupId,
+      customerGroupLabel,
       category,
       comment,
       workNote,
@@ -431,6 +437,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
     scope.deploymentProductIds,
     scope.deploymentProductLabels,
     customerGroupId,
+    customerGroupLabel,
     category,
     comment,
     workNote,
@@ -840,12 +847,15 @@ export default function CreateChangeRequestPage(): JSX.Element {
                 label="Customer Group"
                 placeholder="Search groups…"
                 value={customerGroupId}
-                onChange={setCustomerGroupId}
+                onChange={(id, group) => {
+                  setCustomerGroupId(id);
+                  setCustomerGroupLabel(group?.name ?? "");
+                }}
                 disabled={isSubmitting}
                 useSearch={useSearchGroups}
                 getId={(g) => g.id}
                 getLabel={(g) => g.name}
-                knownLabel={draft?.customerGroupLabel ?? cloneState?.customerGroupLabel}
+                knownLabel={customerGroupLabel || undefined}
               />
             </Box>
             <Box sx={{ flex: "1 1 220px" }}>

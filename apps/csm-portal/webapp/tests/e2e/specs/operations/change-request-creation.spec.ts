@@ -25,6 +25,17 @@
 
 import { test, expect, withRole } from "../../fixtures/test";
 import { ChangeRequestCreatePage } from "../../pages/ChangeRequestCreatePage";
+import { ChangeRequestDetailPage } from "../../pages/ChangeRequestDetailPage";
+import {
+  FAKE_CR_ID,
+  FAKE_CREATOR,
+  FAKE_DEPLOYMENTS,
+  FAKE_DEPLOYMENT_PRODUCTS,
+  FAKE_ENVIRONMENTS,
+  FAKE_GROUPS,
+  FAKE_PROJECTS,
+  installFakeChangeRequestApi,
+} from "../../utils/fakeChangeRequestApi";
 import { e2eChangeRequestSubject } from "../../utils/selectors";
 
 withRole(test, "approver");
@@ -143,5 +154,331 @@ test.describe("change request creation — happy path", () => {
     await expect(
       page.getByRole("heading", { level: 5, name: subject }),
     ).toBeVisible({ timeout: 15_000 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Customer Project / Deployments / Environments / Deployment products,
+// Customer Group, Category and the Communication area.
+//
+// Run against the in-browser fake of the change-request slice of the backend
+// (see utils/fakeChangeRequestApi.ts), which serves the project picker, the
+// POST /change-requests/link-options cascade lookup and a create / PATCH that
+// validate exactly like the backend does -- so the cascade, the wire payload
+// and the 400 path are exercised deterministically and no permanent record is
+// created anywhere.
+// ---------------------------------------------------------------------------
+
+const ACME = FAKE_PROJECTS[0]!;
+const BETA = FAKE_PROJECTS[1]!;
+const ACME_PROD = FAKE_DEPLOYMENTS[0]!;
+const ACME_STG = FAKE_DEPLOYMENTS[1]!;
+const [PROD_ENV, STG_ENV] = FAKE_ENVIRONMENTS;
+const ACME_PRODUCTS = FAKE_DEPLOYMENT_PRODUCTS.filter((p) => p.deploymentId === ACME_PROD.id);
+const STG_PRODUCTS = FAKE_DEPLOYMENT_PRODUCTS.filter((p) => p.deploymentId === ACME_STG.id);
+
+test.describe("change request creation — customer project cascade (mocked backend)", () => {
+  test("lays out Customer Project, Deployments, Environments, Deployment products, Customer Group, Category and Communication", async ({
+    page,
+  }) => {
+    await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+
+    for (const locator of [
+      cr.projectField(),
+      cr.deploymentsField(),
+      cr.environmentsField(),
+      cr.deploymentProductsField(),
+      cr.customerGroupField(),
+      cr.categoryField(),
+      cr.commentField(),
+      cr.workNotesField(),
+    ]) {
+      await expect(locator).toBeVisible();
+    }
+    // Category pre-selects "Other", like the ServiceNow form.
+    await expect(cr.categoryField()).toHaveText("Other");
+    // None of the new fields is required: type + subject still gate Create.
+    await cr.selectType("Normal");
+    await cr.subjectField().fill(e2eChangeRequestSubject("layout"));
+    await expect(cr.createButton()).toBeEnabled();
+  });
+
+  test("keeps Deployments and Environments disabled until a project and deployments are chosen; Deployment products is read-only", async ({
+    page,
+  }) => {
+    await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+
+    await expect(cr.deploymentsField()).toBeDisabled();
+    await expect(cr.environmentsField()).toBeDisabled();
+    await expect(cr.deploymentProductsField()).toHaveAttribute("readonly", "");
+    await expect(page.getByText("Derived from the selected deployments")).toBeVisible();
+
+    await cr.selectProject(ACME.name);
+    await expect(cr.deploymentsField()).toBeEnabled();
+    await expect(cr.environmentsField()).toBeDisabled();
+
+    await cr.selectDeployments([ACME_PROD.name]);
+    await expect(cr.environmentsField()).toBeEnabled();
+  });
+
+  test("choosing a project offers exactly that project's deployments", async ({ page }) => {
+    await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+
+    await cr.selectProject(ACME.name);
+    expect(await cr.optionsOf(cr.deploymentsField())).toEqual([ACME_PROD.name, ACME_STG.name]);
+  });
+
+  test("choosing deployments derives the environments (preselected) and the deployment products", async ({ page }) => {
+    await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectProject(ACME.name);
+
+    await cr.selectDeployments([ACME_PROD.name]);
+    await expect(cr.chipsOf(cr.deploymentsField())).toHaveText([ACME_PROD.name]);
+    await expect(cr.chipsOf(cr.environmentsField())).toHaveText([PROD_ENV!.name]);
+    await expect(cr.chipsOf(cr.deploymentProductsField())).toHaveText(ACME_PRODUCTS.map((p) => p.name));
+
+    await cr.selectDeployments([ACME_STG.name]);
+    await expect(cr.chipsOf(cr.environmentsField())).toHaveText([PROD_ENV!.name, STG_ENV!.name]);
+    await expect(cr.chipsOf(cr.deploymentProductsField())).toHaveText(
+      [...ACME_PRODUCTS, ...STG_PRODUCTS].map((p) => p.name),
+    );
+  });
+
+  test("Environments only ever offers what the chosen deployments provide, and stays individually deselectable", async ({
+    page,
+  }) => {
+    await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectProject(ACME.name);
+    await cr.selectDeployments([ACME_PROD.name]);
+
+    expect(await cr.optionsOf(cr.environmentsField())).toEqual([PROD_ENV!.name]);
+
+    await cr.selectDeployments([ACME_STG.name]);
+    expect(await cr.optionsOf(cr.environmentsField())).toEqual([PROD_ENV!.name, STG_ENV!.name]);
+    await cr.toggleOptions(cr.environmentsField(), [STG_ENV!.name]);
+    await expect(cr.chipsOf(cr.environmentsField())).toHaveText([PROD_ENV!.name]);
+  });
+
+  test("removing a deployment drops the environment and products only it provided", async ({ page }) => {
+    await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectProject(ACME.name);
+    await cr.selectDeployments([ACME_PROD.name, ACME_STG.name]);
+
+    await cr.selectDeployments([ACME_PROD.name]); // toggles Production off
+    await expect(cr.chipsOf(cr.deploymentsField())).toHaveText([ACME_STG.name]);
+    await expect(cr.chipsOf(cr.environmentsField())).toHaveText([STG_ENV!.name]);
+    await expect(cr.chipsOf(cr.deploymentProductsField())).toHaveText(STG_PRODUCTS.map((p) => p.name));
+  });
+
+  test("changing the project clears the dependents and offers the new project's deployments", async ({ page }) => {
+    await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectProject(ACME.name);
+    await cr.selectDeployments([ACME_PROD.name]);
+    await expect(cr.chipsOf(cr.deploymentProductsField())).not.toHaveCount(0);
+
+    await cr.selectProject(BETA.name);
+    await expect(cr.chipsOf(cr.deploymentsField())).toHaveCount(0);
+    await expect(cr.chipsOf(cr.environmentsField())).toHaveCount(0);
+    await expect(cr.chipsOf(cr.deploymentProductsField())).toHaveCount(0);
+    await expect(cr.environmentsField()).toBeDisabled();
+    expect(await cr.optionsOf(cr.deploymentsField())).toEqual(["Beta Development"]);
+  });
+
+  test("clearing the project clears the dependents and disables Deployments again", async ({ page }) => {
+    await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectProject(ACME.name);
+    await cr.selectDeployments([ACME_PROD.name]);
+
+    await cr.clearProject();
+    await expect(cr.projectField()).toHaveValue("");
+    await expect(cr.deploymentsField()).toBeDisabled();
+    await expect(cr.chipsOf(cr.deploymentsField())).toHaveCount(0);
+    await expect(cr.chipsOf(cr.deploymentProductsField())).toHaveCount(0);
+  });
+});
+
+test.describe("change request creation — the customer scope on the wire (mocked backend)", () => {
+  test("POST /change-requests carries projectId, deploymentIds, environmentIds, deploymentProductIds, customerGroupId, category, comment and workNote with the exact names", async ({
+    page,
+  }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectType("Normal");
+    await cr.subjectField().fill(e2eChangeRequestSubject("scope payload"));
+    await cr.selectProject(ACME.name);
+    await cr.selectDeployments([ACME_PROD.name, ACME_STG.name]);
+    await cr.selectCustomerGroup(FAKE_GROUPS[0]!.name);
+    await cr.selectCategory("DevOps");
+    await cr.commentField().fill("  Window is 02:00-04:00 UTC.  ");
+    await cr.workNotesField().fill("Pre-checks done.");
+
+    await cr.createButton().click();
+    await expect(page).toHaveURL(new RegExp(`/operations/change-requests/${FAKE_CR_ID}$`));
+
+    const create = api.requestBodies().find((r) => r.request === "POST /change-requests");
+    expect(create?.body).toMatchObject({
+      type: "normal",
+      projectId: ACME.id,
+      deploymentIds: [ACME_PROD.id, ACME_STG.id],
+      environmentIds: [PROD_ENV!.id, STG_ENV!.id],
+      deploymentProductIds: [...ACME_PRODUCTS, ...STG_PRODUCTS].map((p) => p.id),
+      customerGroupId: FAKE_GROUPS[0]!.id,
+      category: "devops",
+      comment: "Window is 02:00-04:00 UTC.",
+      workNote: "Pre-checks done.",
+    });
+    expect(api.journal()).toEqual([
+      { kind: "comment", text: "Window is 02:00-04:00 UTC." },
+      { kind: "workNote", text: "Pre-checks done." },
+    ]);
+  });
+
+  test("sends only the environments left selected", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectType("Normal");
+    await cr.subjectField().fill(e2eChangeRequestSubject("env subset"));
+    await cr.selectProject(ACME.name);
+    await cr.selectDeployments([ACME_PROD.name, ACME_STG.name]);
+    await cr.toggleOptions(cr.environmentsField(), [STG_ENV!.name]);
+
+    await cr.createButton().click();
+    await expect(page).toHaveURL(new RegExp(`/operations/change-requests/${FAKE_CR_ID}$`));
+    const create = api.requestBodies().find((r) => r.request === "POST /change-requests");
+    expect(create?.body).toMatchObject({ deploymentIds: [ACME_PROD.id, ACME_STG.id], environmentIds: [PROD_ENV!.id] });
+  });
+
+  test("omits every new field that was left empty (arrays only when non-empty); Category still defaults to other", async ({
+    page,
+  }) => {
+    const api = await installFakeChangeRequestApi(page, "standard", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.fillSubjectAndSubmit(e2eChangeRequestSubject("empty scope"), "Standard");
+
+    const body = api.requestBodies().find((r) => r.request === "POST /change-requests")?.body ?? {};
+    for (const key of ["projectId", "deploymentIds", "environmentIds", "deploymentProductIds", "customerGroupId", "comment", "workNote"]) {
+      expect(body, key).not.toHaveProperty(key);
+    }
+    expect(body).toMatchObject({ type: "standard", category: "other" });
+  });
+
+  test("a project alone is sent without empty deployment / environment / product arrays", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectType("Normal");
+    await cr.subjectField().fill(e2eChangeRequestSubject("project only"));
+    await cr.selectProject(BETA.name);
+    await cr.createButton().click();
+    await expect(page).toHaveURL(new RegExp(`/operations/change-requests/${FAKE_CR_ID}$`));
+
+    const body = api.requestBodies().find((r) => r.request === "POST /change-requests")?.body ?? {};
+    expect(body).toHaveProperty("projectId", BETA.id);
+    for (const key of ["deploymentIds", "environmentIds", "deploymentProductIds"]) {
+      expect(body, key).not.toHaveProperty(key);
+    }
+  });
+
+  test("shows the backend's 400 about an inconsistent combination verbatim and stays on the form", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectType("Normal");
+    await cr.subjectField().fill(e2eChangeRequestSubject("stale deployment"));
+    await cr.selectProject(ACME.name);
+    await cr.selectDeployments([ACME_PROD.name]);
+
+    // The deployment is deactivated server-side after the form loaded its options.
+    api.retireDeployment(ACME_PROD.id);
+    await cr.createButton().click();
+
+    await expect(page.getByText(`deploymentIds: deployment ${ACME_PROD.name} is not an active deployment of the selected project`)).toBeVisible();
+    await expect(page).toHaveURL(/\/operations\/change-requests\/new$/);
+    await expect(cr.createButton()).toBeEnabled();
+  });
+});
+
+test.describe("change request creation — draft and clone (mocked backend)", () => {
+  test("the project, deployments, environments, customer group, category and notes survive leaving the form and coming back", async ({
+    page,
+  }) => {
+    await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    await cr.goto();
+    await cr.selectProject(ACME.name);
+    await cr.selectDeployments([ACME_PROD.name, ACME_STG.name]);
+    await cr.toggleOptions(cr.environmentsField(), [STG_ENV!.name]);
+    await cr.selectCustomerGroup(FAKE_GROUPS[1]!.name);
+    await cr.selectCategory("Network");
+    await cr.commentField().fill("draft comment");
+    await cr.workNotesField().fill("draft note");
+
+    // Leave for another page of the portal and come back (same tab, so the sessionStorage draft is still there).
+    await page.goto("/operations?tab=change_requests");
+    await expect(page).toHaveURL(/\/operations\?tab=change_requests/);
+    await expect(page.getByRole("button", { name: "New change request" }).or(page.getByText("Change requests").first())).toBeVisible();
+    await cr.goto();
+
+    await expect(cr.projectField()).toHaveValue(ACME.name);
+    await expect(cr.chipsOf(cr.deploymentsField())).toHaveText([ACME_PROD.name, ACME_STG.name]);
+    await expect(cr.chipsOf(cr.environmentsField())).toHaveText([PROD_ENV!.name]);
+    await expect(cr.chipsOf(cr.deploymentProductsField())).toHaveText(
+      [...ACME_PRODUCTS, ...STG_PRODUCTS].map((p) => p.name),
+    );
+    await expect(cr.customerGroupField()).toHaveValue(FAKE_GROUPS[1]!.name);
+    await expect(cr.categoryField()).toHaveText("Network");
+    await expect(cr.commentField()).toHaveValue("draft comment");
+    await expect(cr.workNotesField()).toHaveValue("draft note");
+  });
+
+  test("Clone carries the project, customer group and category, and leaves the deployments for the new target to be chosen", async ({
+    page,
+  }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const cr = new ChangeRequestCreatePage(page);
+    const detail = new ChangeRequestDetailPage(page);
+
+    // Create a source change request with the full scope ...
+    await cr.goto();
+    await cr.selectType("Normal");
+    await cr.subjectField().fill(e2eChangeRequestSubject("clone source"));
+    await cr.selectProject(ACME.name);
+    await cr.selectDeployments([ACME_PROD.name]);
+    await cr.selectCustomerGroup(FAKE_GROUPS[0]!.name);
+    await cr.selectCategory("DevOps");
+    await cr.createButton().click();
+    await expect(detail.lifecycleStepper()).toBeVisible();
+    expect(api.scope().deploymentIds).toEqual([ACME_PROD.id]);
+
+    // ... and clone it.
+    await detail.cloneButton().click();
+    await expect(page.getByRole("heading", { name: "New change request" })).toBeVisible();
+    await expect(cr.projectField()).toHaveValue(ACME.name);
+    await expect(cr.customerGroupField()).toHaveValue(FAKE_GROUPS[0]!.name);
+    await expect(cr.categoryField()).toHaveText("DevOps");
+    await expect(cr.deploymentsField()).toBeEnabled();
+    await expect(cr.chipsOf(cr.deploymentsField())).toHaveCount(0);
+    await expect(cr.chipsOf(cr.environmentsField())).toHaveCount(0);
+    await expect(cr.chipsOf(cr.deploymentProductsField())).toHaveCount(0);
+    await expect(page.getByText(/deployments, environments, deployment products, schedule/i)).toBeVisible();
   });
 });

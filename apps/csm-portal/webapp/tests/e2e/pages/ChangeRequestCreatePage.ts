@@ -76,6 +76,98 @@ export class ChangeRequestCreatePage {
     return this.page.getByRole("combobox", { name: new RegExp(`^${escaped}\\s*\\*?$`) });
   }
 
+  // -------------------------------------------------------------------------
+  // Customer Project / Deployments / Environments / Deployment products,
+  // Customer Group, Category and the Communication area.
+  // -------------------------------------------------------------------------
+
+  /** The "Customer Project" picker (a combobox that searches projects). */
+  projectField(): Locator {
+    return this.page.getByRole("combobox", { name: "Customer Project" });
+  }
+
+  /** Opens the project picker and picks the project called `name`. */
+  async selectProject(name: string): Promise<void> {
+    await this.projectField().click();
+    await this.page.getByRole("option", { name }).click();
+    await expect(this.projectField()).toHaveValue(name);
+  }
+
+  /** Clears the picked project through the picker's clear button. */
+  async clearProject(): Promise<void> {
+    await this.projectField().hover();
+    await this.page.getByRole("button", { name: "Clear" }).first().click();
+  }
+
+  deploymentsField(): Locator {
+    return this.page.getByRole("combobox", { name: "Deployments" });
+  }
+
+  environmentsField(): Locator {
+    return this.page.getByRole("combobox", { name: "Environments" });
+  }
+
+  /** The read-only, derived "Deployment products" field. */
+  deploymentProductsField(): Locator {
+    return this.page.getByLabel("Deployment products");
+  }
+
+  /** The chips shown inside a multi-select (or the read-only products field). */
+  chipsOf(field: Locator): Locator {
+    return field.locator("xpath=ancestor::div[contains(@class,'MuiInputBase-root')][1]").locator(".MuiChip-label");
+  }
+
+  /** Opens a multi-select and toggles each named option, then closes it. */
+  async toggleOptions(field: Locator, names: string[]): Promise<void> {
+    await field.click();
+    for (const name of names) await this.page.getByRole("option", { name, exact: true }).click();
+    await field.press("Escape");
+  }
+
+  async selectDeployments(names: string[]): Promise<void> {
+    await this.toggleOptions(this.deploymentsField(), names);
+  }
+
+  /** The names a multi-select currently offers (opens and closes it). */
+  async optionsOf(field: Locator): Promise<string[]> {
+    await field.click();
+    // Scoped to the open autocomplete popup: the rich-text editors on this
+    // form carry native <option>s of their own.
+    const options = this.page.locator(".MuiAutocomplete-popper").getByRole("option");
+    await expect(options.first()).toBeVisible();
+    const names = await options.allTextContents();
+    await field.press("Escape");
+    return names;
+  }
+
+  /** The "Customer Group" picker (searches groups). */
+  customerGroupField(): Locator {
+    return this.page.getByRole("combobox", { name: "Customer Group" });
+  }
+
+  async selectCustomerGroup(name: string): Promise<void> {
+    await this.customerGroupField().click();
+    await this.page.getByRole("option", { name }).click();
+  }
+
+  /** The "Category" dropdown (pre-selected to Other). */
+  categoryField(): Locator {
+    return this.page.getByRole("combobox", { name: "Category" });
+  }
+
+  async selectCategory(label: string): Promise<void> {
+    await this.categoryField().click();
+    await this.page.getByRole("option", { name: label, exact: true }).click();
+  }
+
+  commentField(): Locator {
+    return this.page.getByLabel("Additional comments (Customer visible)");
+  }
+
+  workNotesField(): Locator {
+    return this.page.getByLabel("Work notes");
+  }
+
   createButton(): Locator {
     return this.page.getByRole("button", { name: "Create change request" });
   }
