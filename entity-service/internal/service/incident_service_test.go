@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -107,6 +108,24 @@ func (s *stubIncidentRepo) GetIncidentByID(ctx context.Context, id string) (doma
 func (s *stubIncidentRepo) SearchIncidentActivities(context.Context, domain.SearchIncidentActivitiesRequest) ([]domain.CaseActivity, int, error) {
 	panic("not implemented")
 }
+
+// CreateIncidentNotes hands each non-blank note to createIncidentComment, so tests that watch that hook
+// see the same writes the transactional repository method makes.
+func (s *stubIncidentRepo) CreateIncidentNotes(ctx context.Context, incidentID string, workNotes, additionalComments *string, createdBy string) error {
+	for _, n := range []struct {
+		text *string
+		kind domain.CommentType
+	}{{workNotes, domain.CommentTypeWorkNote}, {additionalComments, domain.CommentTypeComment}} {
+		if n.text == nil || strings.TrimSpace(*n.text) == "" {
+			continue
+		}
+		if _, err := s.CreateIncidentComment(ctx, incidentID, n.kind, *n.text, createdBy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *stubIncidentRepo) CreateIncidentComment(ctx context.Context, incidentID string, commentType domain.CommentType, content, createdBy string) (domain.CaseComment, error) {
 	if s.createIncidentComment != nil {
 		return s.createIncidentComment(ctx, incidentID, commentType, content, createdBy)
@@ -833,6 +852,51 @@ func TestIncidentService_UpdateIncident_StartProgressClaimsAndMirrors(t *testing
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("mirror.UpdateIncident was never called")
+	}
+}
+
+// TestIncidentService_UpdateIncident_PlainPostgresClaimAndNote is the alert-born SRE incident on
+// DATA_SOURCE=postgres: the engineer's claim (In Progress + assignee) and a work note in one PATCH
+// are both written, and with no ServiceNow behind this instance nothing is mirrored.
+func TestIncidentService_UpdateIncident_PlainPostgresClaimAndNote(t *testing.T) {
+	engineer := "88888888-8888-8888-8888-888888888888"
+	var got repository.IncidentLifecycleUpdate
+	var notes []string
+	repo := &stubIncidentRepo{
+		updateIncidentLifecycle: func(_ context.Context, _ string, u repository.IncidentLifecycleUpdate, _ string) error {
+			got = u
+			return nil
+		},
+		createIncidentComment: func(_ context.Context, _ string, kind domain.CommentType, content, _ string) (domain.CaseComment, error) {
+			notes = append(notes, string(kind)+":"+content)
+			return domain.CaseComment{}, nil
+		},
+		getIncidentByID: func(_ context.Context, id string) (domain.IncidentView, error) {
+			return newTestIncidentView(id), nil
+		},
+	}
+	svc := NewIncidentServiceWithPublisher(repo, stubUpdateIncidentUserRepo{email: "jane.doe@example.com"}, nil)
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	state := domain.IncidentStateInProgress
+	note := "taking this"
+	resp, err := svc.UpdateIncident(ctx, domain.UpdateIncidentRequest{
+		ID: testDeploymentUUID, State: &state, AssignedEngineerID: &engineer, WorkNotes: &note,
+	})
+	if err != nil {
+		t.Fatalf("UpdateIncident on plain Postgres: %v", err)
+	}
+	if got.State == nil || *got.State != "IN_PROGRESS" || got.AssignedEngineerID == nil || *got.AssignedEngineerID != engineer {
+		t.Errorf("lifecycle got state=%v assignee=%v, want IN_PROGRESS and %s", got.State, got.AssignedEngineerID, engineer)
+	}
+	if got.WorkNotes == nil || *got.WorkNotes != "taking this" || got.AdditionalComments != nil {
+		t.Errorf("lifecycle update carried notes work=%v comment=%v, want the work note in the same transaction", got.WorkNotes, got.AdditionalComments)
+	}
+	if len(notes) != 0 {
+		t.Errorf("notes written outside the lifecycle transaction: %v", notes)
+	}
+	if resp.Message != "Incident updated successfully" {
+		t.Errorf("message = %q", resp.Message)
 	}
 }
 
