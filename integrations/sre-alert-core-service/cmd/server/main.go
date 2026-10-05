@@ -65,6 +65,12 @@ func main() {
 		logger.Error("failed to read postgres config", "error", err)
 		os.Exit(1)
 	}
+	pgCfg, err = postgres.SizePool(pgCfg, depCfg.Poll.Concurrency)
+	if err != nil {
+		logger.Error("invalid postgres pool size", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("postgres pools sized", "main_max_conns", pgCfg.PoolMaxConns, "lock_max_conns", depCfg.Notify.DeliveryConcurrency+lockPoolHeadroom)
 	// Core writes are replayed after a crash, so they skip the WAL flush wait; ingestion keeps synchronous commits since it acknowledges senders.
 	pool, err := connectWithRetry(logger, pgCfg, depCfg.Postgres, true)
 	if err != nil {

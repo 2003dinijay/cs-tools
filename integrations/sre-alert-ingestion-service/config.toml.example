@@ -37,8 +37,8 @@ queue_size = 10000
 queue_max_bytes = 268435456
 # Most alerts written in one batch: one alert_seq claim plus one insert statement.
 max_batch = 500
-# Batches written concurrently per replica; size PGPOOLMAXCONNS to this plus 4.
-write_concurrency = 8
+# Batches written concurrently per replica; the pool is sized to this plus 4.
+write_concurrency = 16
 
 [store]
 # Attempts for a failed batch insert before its senders get 503; retries reuse the same ids and are idempotent.

@@ -58,12 +58,15 @@ type Config struct {
 // PoolReserve is the connections kept beyond the allocator's writers: one for the alert_seq claim, one for credential checks.
 const PoolReserve = 2
 
+// PoolSpare is added to an unset PGPOOLMAXCONNS beyond PoolReserve, for the raw_alerts flush and min_conns warm connections.
+const PoolSpare = 2
+
 // SizePool sets cfg's pool bounds for writeConcurrency writers; an explicit PGPOOLMAXCONNS below what they need is an error, since credential checks would then queue behind batch writes.
 func SizePool(cfg Config, writeConcurrency, minConns int) (Config, error) {
 	need := int32(writeConcurrency + PoolReserve)
 	switch {
 	case cfg.PoolMaxConns == 0:
-		cfg.PoolMaxConns = need
+		cfg.PoolMaxConns = need + PoolSpare
 	case cfg.PoolMaxConns < need:
 		return Config{}, fmt.Errorf("PGPOOLMAXCONNS=%d is below allocator.write_concurrency (%d) + %d; set it to at least %d or unset it", cfg.PoolMaxConns, writeConcurrency, PoolReserve, need)
 	}

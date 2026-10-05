@@ -145,7 +145,7 @@ func Defaults() Config {
 			QueueSize:        10000,
 			QueueMaxBytes:    256 << 20,
 			MaxBatch:         500,
-			WriteConcurrency: 8,
+			WriteConcurrency: 16,
 		},
 		Store: StoreConfig{
 			InsertAttempts:  5,

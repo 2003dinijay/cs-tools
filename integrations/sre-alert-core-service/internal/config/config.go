@@ -129,7 +129,7 @@ func defaults() Config {
 	return Config{
 		Poll: PollConfig{
 			Interval:    Duration(10 * time.Second),
-			Concurrency: 64,
+			Concurrency: 128,
 			MaxBatch:    500,
 			ClaimTTL:    Duration(2 * time.Minute),
 		},
@@ -152,7 +152,7 @@ func defaults() Config {
 			CSMRetryMaxDelay:     Duration(15 * time.Minute),
 			ChatThreadingEnabled: true,
 			ChatFallbackDelay:    Duration(25 * time.Second),
-			DeliveryConcurrency:  32,
+			DeliveryConcurrency:  64,
 		},
 		Server: ServerConfig{
 			ShutdownGrace: Duration(15 * time.Second),

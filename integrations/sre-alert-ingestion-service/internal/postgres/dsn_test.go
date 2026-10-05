@@ -40,7 +40,7 @@ func TestDSN_EscapesEachPart(t *testing.T) {
 	}
 }
 
-// TestSizePool: unset PGPOOLMAXCONNS is derived from the writers, a too-small explicit value is refused, and the warm floor never exceeds the cap.
+// TestSizePool: unset PGPOOLMAXCONNS is derived from the writers plus reserve and spare, a too-small explicit value is refused, and the warm floor never exceeds the cap.
 func TestSizePool(t *testing.T) {
 	cases := []struct {
 		name             string
@@ -49,12 +49,12 @@ func TestSizePool(t *testing.T) {
 		wantMax, wantMin int32
 		wantErr          bool
 	}{
-		{name: "unset derives", max: 0, writers: 8, minConn: 2, wantMax: 10, wantMin: 2},
+		{name: "unset derives", max: 0, writers: 8, minConn: 2, wantMax: 12, wantMin: 2},
 		{name: "explicit kept", max: 12, writers: 8, minConn: 2, wantMax: 12, wantMin: 2},
 		{name: "explicit exact", max: 10, writers: 8, minConn: 2, wantMax: 10, wantMin: 2},
 		{name: "explicit too small", max: 9, writers: 8, minConn: 2, wantErr: true},
-		{name: "min capped", max: 0, writers: 1, minConn: 5, wantMax: 3, wantMin: 3},
-		{name: "min zero", max: 0, writers: 8, minConn: 0, wantMax: 10, wantMin: 0},
+		{name: "min capped", max: 10, writers: 1, minConn: 20, wantMax: 10, wantMin: 10},
+		{name: "min zero", max: 0, writers: 8, minConn: 0, wantMax: 12, wantMin: 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
