@@ -53,6 +53,8 @@ func newDirectoryRouter(t *testing.T) http.Handler {
 		ServiceNowIntegrationServiceTokenURL:     srv.URL + "/oauth2/token",
 		ServiceNowIntegrationServiceClientID:     "test-client",
 		ServiceNowIntegrationServiceClientSecret: "test-secret",
+		RequestTimeout:                           config.DefaultRequestTimeout,
+		UpstreamClientTimeout:                    config.DefaultUpstreamClientTimeout,
 	})
 	return router
 }

@@ -37,6 +37,10 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `DB_SSLMODE`  | no       | —       | `disable` or `require`    |
 | `SERVER_PORT` | no       | `8080`  | Main API listen port       |
 | `HEALTH_PORT` | no       | `8081`  | Health probe listen port; `Validate` rejects it being equal to `SERVER_PORT` (see "Health probes" below) |
+| `SERVER_READ_TIMEOUT` | no | `50s` | Main API server read timeout (Go duration, e.g. `50s`); must be > 0 |
+| `SERVER_WRITE_TIMEOUT` | no | `50s` | Main API server write timeout; must be > 0 |
+| `REQUEST_TIMEOUT` | no | `45s` | Per-request context timeout; must be > 0 and strictly less than `SERVER_WRITE_TIMEOUT` |
+| `UPSTREAM_CLIENT_TIMEOUT` | no | `45s` | Data-source HTTP client timeout; must be > 0. Keep it below `SERVER_WRITE_TIMEOUT` so a clean error can still be returned |
 | `EVENT_HUB_BROKER` | no | — | Kafka-compatible bootstrap address; feature-gates `EventPublisherService` (see "Event Hub publishing" below) |
 | `EVENT_HUB_CONNECTION_STRING` | no* | — | Event Hub namespace Shared Access Policy connection string. *Required once `EVENT_HUB_BROKER` is set |
 | `EVENT_HUB_TOPIC` | no* | — | Event Hub (Kafka topic) name. *Required once `EVENT_HUB_BROKER` is set |

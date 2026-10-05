@@ -26,13 +26,9 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/service"
 )
 
-const (
-	serverReadTimeout  = 50 * time.Second
-	serverWriteTimeout = 50 * time.Second
-	serverIdleTimeout  = 60 * time.Second
-)
+const serverIdleTimeout = 60 * time.Second
 
-// New creates an http.Server listening on addr with production-safe timeouts
+// New creates an http.Server listening on addr with configured timeouts
 // and the full middleware/router chain wired up via NewRouter. Also returns
 // NewRouter's constructed EventPublisherService (nil if not configured) so
 // cmd/api/main.go can close it gracefully on shutdown.
@@ -41,8 +37,8 @@ func New(addr string, db *pgxpool.Pool, cfg *config.Config) (*http.Server, servi
 	return &http.Server{
 		Addr:         addr,
 		Handler:      handler,
-		ReadTimeout:  serverReadTimeout,
-		WriteTimeout: serverWriteTimeout,
+		ReadTimeout:  cfg.ServerReadTimeout,
+		WriteTimeout: cfg.ServerWriteTimeout,
 		IdleTimeout:  serverIdleTimeout,
 	}, eventPublisher
 }

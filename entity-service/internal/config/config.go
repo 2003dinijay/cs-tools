@@ -22,6 +22,18 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"time"
+)
+
+// Defaults for the timeout settings. Create-case carries inline base64
+// attachments (up to 15 MiB), so the request and upstream deadlines must be
+// long enough for it to finish, yet below the server write timeout so a
+// handler can still return a clean error before the connection is closed.
+const (
+	DefaultServerReadTimeout     = 50 * time.Second
+	DefaultServerWriteTimeout    = 50 * time.Second
+	DefaultRequestTimeout        = 45 * time.Second
+	DefaultUpstreamClientTimeout = 45 * time.Second
 )
 
 // DataSource identifies which backend the service reads from.
@@ -80,12 +92,36 @@ type Config struct {
 	// constructs EventPublisherService when both this is true AND
 	// EventHubBroker is set.
 	EventPublishingEnabled bool
+	// ServerReadTimeout and ServerWriteTimeout are the main API server's
+	// http.Server ReadTimeout/WriteTimeout (SERVER_READ_TIMEOUT,
+	// SERVER_WRITE_TIMEOUT). The health server keeps its own fixed timeouts.
+	ServerReadTimeout  time.Duration
+	ServerWriteTimeout time.Duration
+	// RequestTimeout cancels each request's context (REQUEST_TIMEOUT). It
+	// must be strictly less than ServerWriteTimeout so the handler can write
+	// a clean error before the connection is forcibly closed.
+	RequestTimeout time.Duration
+	// UpstreamClientTimeout is the data-source HTTP client timeout
+	// (UPSTREAM_CLIENT_TIMEOUT).
+	UpstreamClientTimeout time.Duration
+
+	// loadErr records the first unparsable environment value seen by Load,
+	// which has no error return. Validate reports it.
+	loadErr error
 }
 
 // Load reads configuration from environment variables and returns a populated
 // Config. Missing variables fall back to sensible defaults; callers should
 // validate required fields (e.g. DBUser, DBPassword, DBName) before use.
 func Load() *Config {
+	var loadErr error
+	duration := func(key string, def time.Duration) time.Duration {
+		d, err := getDurationOrDefault(key, def)
+		if err != nil && loadErr == nil {
+			loadErr = err
+		}
+		return d
+	}
 	return &Config{
 		DBHost:                                   getEnvOrDefault("DB_HOST", "localhost"),
 		DBPort:                                   getEnvOrDefault("DB_PORT", "5432"),
@@ -105,7 +141,26 @@ func Load() *Config {
 		EventHubConnectionString:                 os.Getenv("EVENT_HUB_CONNECTION_STRING"),
 		EventHubTopic:                            os.Getenv("EVENT_HUB_TOPIC"),
 		EventPublishingEnabled:                   os.Getenv("EVENT_PUBLISHING_ENABLED") == "true",
+		ServerReadTimeout:                        duration("SERVER_READ_TIMEOUT", DefaultServerReadTimeout),
+		ServerWriteTimeout:                       duration("SERVER_WRITE_TIMEOUT", DefaultServerWriteTimeout),
+		RequestTimeout:                           duration("REQUEST_TIMEOUT", DefaultRequestTimeout),
+		UpstreamClientTimeout:                    duration("UPSTREAM_CLIENT_TIMEOUT", DefaultUpstreamClientTimeout),
+		loadErr:                                  loadErr,
 	}
+}
+
+// getDurationOrDefault parses key as a Go duration string (e.g. "50s"). An
+// unset or empty value yields defaultVal; an unparsable one is an error.
+func getDurationOrDefault(key string, defaultVal time.Duration) (time.Duration, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return defaultVal, fmt.Errorf("invalid %s %q: %w", key, v, err)
+	}
+	return d, nil
 }
 
 func getEnvOrDefault(key, defaultVal string) string {
@@ -122,8 +177,32 @@ func getEnvOrDefault(key, defaultVal string) string {
 // are missing when DATA_SOURCE=postgres (see db.NewPoolIfNeeded), if
 // SERVICENOW_INTEGRATION_SERVICE_BASE_URL is missing when
 // DATA_SOURCE=servicenow, or if EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/
-// EVENT_HUB_TOPIC are only partially set.
+// EVENT_HUB_TOPIC are only partially set, or if SERVER_READ_TIMEOUT/
+// SERVER_WRITE_TIMEOUT/REQUEST_TIMEOUT/UPSTREAM_CLIENT_TIMEOUT are
+// unparsable, not positive, or REQUEST_TIMEOUT is not strictly less than
+// SERVER_WRITE_TIMEOUT.
 func (c *Config) Validate() error {
+	if c.loadErr != nil {
+		return c.loadErr
+	}
+	for _, t := range []struct {
+		name string
+		val  time.Duration
+	}{
+		{"SERVER_READ_TIMEOUT", c.ServerReadTimeout},
+		{"SERVER_WRITE_TIMEOUT", c.ServerWriteTimeout},
+		{"REQUEST_TIMEOUT", c.RequestTimeout},
+		{"UPSTREAM_CLIENT_TIMEOUT", c.UpstreamClientTimeout},
+	} {
+		if t.val <= 0 {
+			return fmt.Errorf("%s must be greater than 0, got %s", t.name, t.val)
+		}
+	}
+	// middleware.Timeout documents this: the request context must expire
+	// before the write deadline so a clean error can still be written.
+	if c.RequestTimeout >= c.ServerWriteTimeout {
+		return fmt.Errorf("REQUEST_TIMEOUT (%s) must be less than SERVER_WRITE_TIMEOUT (%s)", c.RequestTimeout, c.ServerWriteTimeout)
+	}
 	// The health server is a separate listener precisely so that only its
 	// own routes are reachable at public visibility (see HealthPort). Two
 	// listeners cannot share a port: the second ListenAndServe would fail

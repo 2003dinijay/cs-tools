@@ -117,6 +117,10 @@ HTTP Request
 | DB_SSLMODE  | No       | require   | SSL mode          |
 | SERVER_PORT | No       | 8080      | Main API listener port |
 | HEALTH_PORT | No       | 8081      | Health probe listener port; must differ from `SERVER_PORT`, and must be left at its default in Choreo deployments (see below) |
+| SERVER_READ_TIMEOUT | No | 50s | Main API server read timeout (Go duration, e.g. `50s`); must be > 0 |
+| SERVER_WRITE_TIMEOUT | No | 50s | Main API server write timeout; must be > 0 |
+| REQUEST_TIMEOUT | No | 45s | Per-request context timeout; must be > 0 and strictly less than `SERVER_WRITE_TIMEOUT` |
+| UPSTREAM_CLIENT_TIMEOUT | No | 45s | Data-source HTTP client timeout; must be > 0. Keep it below `SERVER_WRITE_TIMEOUT` so a clean error can still be returned |
 
 > `.env` file is loaded automatically if present. Absent `.env` is silently ignored; a malformed one causes a fatal startup error.
 

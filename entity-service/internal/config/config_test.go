@@ -16,7 +16,11 @@
 
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 // baseValidConfig returns a minimally valid postgres-backed Config so each
 // test only needs to override the field(s) under test.
@@ -31,6 +35,12 @@ func baseValidConfig() Config {
 		// Config would be.
 		ServerPort: "8080",
 		HealthPort: "8081",
+		// Timeouts carry their real defaults for the same reason: Load always
+		// populates them and Validate rejects non-positive values.
+		ServerReadTimeout:     DefaultServerReadTimeout,
+		ServerWriteTimeout:    DefaultServerWriteTimeout,
+		RequestTimeout:        DefaultRequestTimeout,
+		UpstreamClientTimeout: DefaultUpstreamClientTimeout,
 	}
 }
 
@@ -119,6 +129,10 @@ func TestConfig_Validate_ServiceNowDoesNotRequireDBFields(t *testing.T) {
 		ServiceNowIntegrationServiceClientSecret: "client-secret",
 		ServerPort:                               "8080",
 		HealthPort:                               "8081",
+		ServerReadTimeout:                        DefaultServerReadTimeout,
+		ServerWriteTimeout:                       DefaultServerWriteTimeout,
+		RequestTimeout:                           DefaultRequestTimeout,
+		UpstreamClientTimeout:                    DefaultUpstreamClientTimeout,
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate() = %v, want nil when DATA_SOURCE=servicenow has no DB credentials", err)
@@ -198,5 +212,77 @@ func TestConfig_Validate_RejectsHealthPortCollidingWithServerPort(t *testing.T) 
 	c.HealthPort = c.ServerPort
 	if err := c.Validate(); err == nil {
 		t.Error("Validate() = nil, want an error when HEALTH_PORT equals SERVER_PORT")
+	}
+}
+
+func TestLoad_TimeoutDefaults(t *testing.T) {
+	for _, k := range []string{"SERVER_READ_TIMEOUT", "SERVER_WRITE_TIMEOUT", "REQUEST_TIMEOUT", "UPSTREAM_CLIENT_TIMEOUT"} {
+		t.Setenv(k, "")
+	}
+	c := Load()
+	if c.ServerReadTimeout != 50*time.Second || c.ServerWriteTimeout != 50*time.Second ||
+		c.RequestTimeout != 45*time.Second || c.UpstreamClientTimeout != 45*time.Second {
+		t.Errorf("defaults = %v/%v/%v/%v, want 50s/50s/45s/45s",
+			c.ServerReadTimeout, c.ServerWriteTimeout, c.RequestTimeout, c.UpstreamClientTimeout)
+	}
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with defaults = %v, want nil", err)
+	}
+}
+
+func TestLoad_TimeoutOverrides(t *testing.T) {
+	t.Setenv("SERVER_READ_TIMEOUT", "2m")
+	t.Setenv("SERVER_WRITE_TIMEOUT", "90s")
+	t.Setenv("REQUEST_TIMEOUT", "80s")
+	t.Setenv("UPSTREAM_CLIENT_TIMEOUT", "75s")
+	c := Load()
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+	if c.ServerReadTimeout != 2*time.Minute || c.ServerWriteTimeout != 90*time.Second ||
+		c.RequestTimeout != 80*time.Second || c.UpstreamClientTimeout != 75*time.Second {
+		t.Errorf("overrides not applied: %v/%v/%v/%v",
+			c.ServerReadTimeout, c.ServerWriteTimeout, c.RequestTimeout, c.UpstreamClientTimeout)
+	}
+}
+
+func TestLoad_InvalidTimeoutFailsValidate(t *testing.T) {
+	for _, k := range []string{"SERVER_READ_TIMEOUT", "SERVER_WRITE_TIMEOUT", "REQUEST_TIMEOUT", "UPSTREAM_CLIENT_TIMEOUT"} {
+		t.Run(k, func(t *testing.T) {
+			t.Setenv(k, "fifty")
+			c := Load()
+			c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), k) {
+				t.Errorf("Validate() = %v, want an error naming %s", err, k)
+			}
+		})
+	}
+}
+
+func TestConfig_Validate_Timeouts(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{"zero read", func(c *Config) { c.ServerReadTimeout = 0 }, "SERVER_READ_TIMEOUT"},
+		{"negative write", func(c *Config) { c.ServerWriteTimeout = -time.Second }, "SERVER_WRITE_TIMEOUT"},
+		{"zero request", func(c *Config) { c.RequestTimeout = 0 }, "REQUEST_TIMEOUT"},
+		{"zero upstream", func(c *Config) { c.UpstreamClientTimeout = 0 }, "UPSTREAM_CLIENT_TIMEOUT"},
+		{"request equals write", func(c *Config) { c.RequestTimeout = c.ServerWriteTimeout }, "must be less than"},
+		{"request above write", func(c *Config) { c.RequestTimeout = c.ServerWriteTimeout + time.Second }, "must be less than"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := baseValidConfig()
+			tt.mutate(&c)
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Validate() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
