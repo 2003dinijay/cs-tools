@@ -17,27 +17,67 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
 const bearerPrefix = "Bearer "
+
+// verifiedTTL is how long a verified credential skips the lookup and PBKDF2 check; a disable or rotation takes up to this long to apply.
+const verifiedTTL = 60 * time.Second
+
+// verifiedCache holds a SHA-256 of each recently verified secret (never the secret), so a wake burst costs one PBKDF2 check per minute.
+type verifiedCache struct {
+	mu      sync.Mutex
+	entries map[string]verifiedEntry
+}
+
+type verifiedEntry struct {
+	digest  [sha256.Size]byte
+	expires time.Time
+}
+
+func (c *verifiedCache) hit(username, secret string, now time.Time) bool {
+	c.mu.Lock()
+	e, ok := c.entries[username]
+	c.mu.Unlock()
+	digest := sha256.Sum256([]byte(secret))
+	return ok && now.Before(e.expires) && subtle.ConstantTimeCompare(e.digest[:], digest[:]) == 1
+}
+
+func (c *verifiedCache) remember(u User, secret string, now time.Time) {
+	expires := now.Add(verifiedTTL)
+	if u.ExpiresAt.After(time.Unix(0, 0)) && u.ExpiresAt.Before(expires) {
+		expires = u.ExpiresAt
+	}
+	c.mu.Lock()
+	c.entries[u.Username] = verifiedEntry{digest: sha256.Sum256([]byte(secret)), expires: expires}
+	c.mu.Unlock()
+}
 
 // dummySalt is used only to burn CPU time on an unknown-user auth attempt, never for real secret storage.
 var dummySalt = []byte("integration-users-timing-salt!!")
 
 // RequireAuth requires a valid Authorization header (Bearer base64("<username>:<secret>"), or Basic i.e. -u) naming an enabled integration_users row; every failure is a generic 401, and only the username is logged, never the secret.
 func RequireAuth(repo *UserRepo, logger *slog.Logger) func(http.Handler) http.Handler {
+	cache := &verifiedCache{entries: map[string]verifiedEntry{}}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			username, secret, ok := parseCredentials(r)
 			if !ok {
 				logger.Warn("auth: missing or malformed Authorization header", "path", r.URL.Path)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if cache.hit(username, secret, time.Now()) {
+				next.ServeHTTP(w, r)
 				return
 			}
 
@@ -71,7 +111,7 @@ func RequireAuth(repo *UserRepo, logger *slog.Logger) func(http.Handler) http.Ha
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-
+			cache.remember(u, secret, time.Now())
 			next.ServeHTTP(w, r)
 		})
 	}
