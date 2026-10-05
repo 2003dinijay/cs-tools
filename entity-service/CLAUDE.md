@@ -4270,11 +4270,21 @@ by the generic `work_item_id`. Unlike `SearchCaseActivities`, there is no
 `case_attachment`-equivalent table for incidents, so this feed can never
 have an `"attachment"` kind entry.
 
-**`UpdateConversation` is implemented** (a plain `conversation.state` enum
-write, no `work_item.number` generation needed for an update) but
-**`CreateConversation` is not**: it needs `work_item.number`, which has no
-DB default or backing sequence anywhere in `migrations/` -- the same blocker
-`CaseRepository.CreateCase` used to have.
+**`UpdateConversation` and `CreateConversation` are both implemented.**
+`CreateConversation` takes its number from `next_portal_work_item_number()`
+(migration 0140), starts the conversation `ACTIVE`, and stores the first
+message the way csm-sync-service lands ServiceNow's `u_initial_message`:
+`work_item.subject` (first 100 runes) and `work_item.description` (in full).
+`InitialMessage` on reads is that description, falling back to the earliest
+comment. Under dual-write it is ServiceNow-first and synchronous, like
+`createProblemSNFirst`, so the row carries ServiceNow's id and later comment
+mirrors target a conversation ServiceNow knows. Migration 0190 replaced
+0146's internal-only INSERT policy on `conversation` with `conversation_write`
+(internal or project member, same as `case_write`); the work_item and
+conversation rows are inserted as two statements in one transaction because
+that policy's work_item lookup cannot see a sibling CTE's insert. Without
+this, every Novera chat on Postgres failed at create and nothing was
+persisted.
 
 **`CreateProblem`/`CreateIncident` are now implemented on the plain-Postgres
 data source too**, via `next_portal_work_item_number()` (migration 0140 --
@@ -4290,9 +4300,7 @@ all). Neither needs `wso2_id`: both are excluded from
 `work_item_wso2_id_required_by_type`. `problem.state` has no column default
 of its own (unlike `incident.state`, which defaults to `'NEW'`), so
 `CreateProblem`'s portal path hardcodes it to `'NEW'::problem_state_enum`
-explicitly. `CreateConversation` was not attempted alongside these -- no
-reported need for it yet, and extending the same fix to it is a similarly
-small, mechanical follow-up should one come up.
+explicitly. `CreateConversation` followed later -- see above.
 
 **`UpdateProblem`/`UpdateIncident`/`HandOffIncidentToSpecialist` are also not
 implemented**: `UpdateProblem.Transition` is validated
