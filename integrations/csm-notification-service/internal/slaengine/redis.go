@@ -54,13 +54,15 @@ const tierClaimKeyPrefix = "sla:tier-claimed:"
 // claimed via ClaimEmail's own Redis SETNX, independently of
 // tierClaimKeyPrefix above. Engine.alertTier attempts the breach emails
 // regardless of whether the Chat alert itself succeeded (a Chat outage must
-// not also suppress email — see that function's own doc comment), but a
-// Chat failure still causes processStatus to release the tier claim and
-// retry the whole tier on the next Tick; without a separate claim here,
-// that retry would resend an already-attempted email every time Chat kept
-// failing. Claimed once per tier regardless of the email send's own
-// outcome (mirrors sendBreachEmails' own best-effort, not-retried
-// contract) — only Chat failures are ever retried by this mechanism.
+// not also suppress email — see that function's own doc comment) — and a
+// Chat send failure no longer causes a retry of the tier at all (see
+// Engine.sendBreachAlert's own doc comment), so in practice the only
+// remaining retry this claim guards against is a Kafka publish failure on
+// an EARLIER attempt at this same tier, before either Chat or email ever
+// ran — a case this claim already handles correctly since it was never
+// claimed on that earlier, publish-failed attempt. Claimed once per tier
+// regardless of the email send's own outcome (mirrors sendBreachEmails'
+// own best-effort, not-retried contract).
 const emailClaimKeyPrefix = "sla:email-claimed:"
 
 // tierTTL bounds how long a clock's cursor survives with no further Tick

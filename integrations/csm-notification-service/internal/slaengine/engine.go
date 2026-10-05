@@ -313,23 +313,12 @@ func (e *Engine) alertTier(ctx context.Context, s SLAStatus, tier int) error {
 		return fmt.Errorf("publish sla.tier_reached: %w", err)
 	}
 
-	chatErr := e.sendBreachAlert(ctx, s, tier)
-	// Breach emails are attempted regardless of the Chat alert's own
-	// outcome: a Chat space outage must not also suppress email, which
-	// would otherwise happen silently if the clock completes (and so drops
-	// out of the active /sla-status list) before Chat recovers and this
-	// tier gets a retry. Best-effort, deliberately not folded into this
-	// function's own error return: a transient email failure must never
-	// cause processStatus to release this tier's claim and retry the WHOLE
-	// tier — see dispatch.go's beginRecord/endRecord history for the class
-	// of duplicate-send bug that would reintroduce for the Chat alert
-	// above. e.store.ClaimEmail (checked inside sendBreachEmails) ensures a
-	// retry caused solely by the Chat error below doesn't re-attempt an
-	// already-attempted email.
+	// Chat and email are both best-effort from here on — neither can cause
+	// this call to fail or be retried; see sendBreachAlert's own doc
+	// comment for why a Chat failure specifically no longer does (it used
+	// to, and that was itself a real, reported production bug).
+	e.sendBreachAlert(ctx, s, tier)
 	e.sendBreachEmails(ctx, s, tier)
-	if chatErr != nil {
-		return fmt.Errorf("send sla breach alert: %w", chatErr)
-	}
 	slog.InfoContext(ctx, "slaengine: sla tier reached", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier)
 	return nil
 }
@@ -344,12 +333,22 @@ func (e *Engine) alertTier(ctx context.Context, s SLAStatus, tier int) error {
 // lack of a routing value. s's own display fields (the bulk /sla-status
 // response already carries all of them, so no second lookup is needed
 // here, unlike the old per-clock GetClock design) are shared unchanged
-// across every audience's own card. A failure on any one audience fails
-// the whole call (errors.Join) — alertTier's own caller already retries
-// the entire tier (including the Kafka publish) on any sendBreachAlert
-// error, so this doesn't weaken that existing retry contract, just applies
-// it across however many audiences resolved instead of one.
-func (e *Engine) sendBreachAlert(ctx context.Context, s SLAStatus, tier int) error {
+// across every audience's own card.
+//
+// A failed send to one audience is logged (naming that Chat space) and
+// NOT retried — by explicit product decision, and deliberately not folded
+// into an error return at all any more. An earlier design failed the
+// whole call (errors.Join) on any one audience's failure, which made
+// alertTier's own caller release the tier's claim and retry the entire
+// tier on the next Tick — and since a retry resent to EVERY resolved
+// audience again, including ones that had already succeeded, a single
+// persistently broken Chat space (a dead or misconfigured webhook) turned
+// into an unbounded stream of real, duplicate-looking Chat messages to
+// the space that worked fine, repeating every poll, forever — confirmed
+// live against real staging cases whose cursor had been stuck retrying
+// the same tier for over a day. Dropping one space's alert (logged, so
+// it's visible and actionable) is the smaller cost.
+func (e *Engine) sendBreachAlert(ctx context.Context, s SLAStatus, tier int) {
 	caseNumber := s.CaseNumber
 	if caseNumber == "" {
 		// s.CaseNumber can be empty for a work item entity-service's own
@@ -365,13 +364,11 @@ func (e *Engine) sendBreachAlert(ctx context.Context, s SLAStatus, tier int) err
 
 	audiences := chataudience.Resolve(s.Team, s.IsEvaluationAccount, s.ProjectOnboardingStatus, time.Now(), e.chat.HasAudienceSpace)
 	caseLink := e.links.CSMLink(s.CaseID)
-	var errs []error
 	for _, audience := range audiences {
 		if err := e.chat.SendSLABreachAlert(ctx, audience, s.ClockType, tierLabel(tier), caseNumber, s.WSO2CaseID, s.CaseTitle, s.CaseType, s.Product, s.Team, s.TeamLeadName, s.Priority, s.State, openedAt, caseLink); err != nil {
-			errs = append(errs, fmt.Errorf("audience %q: %w", audience, err))
+			slog.ErrorContext(ctx, "slaengine: failed to send sla breach alert to chat space, not retrying", "caseId", s.CaseID, "clockType", s.ClockType, "tier", tier, "chatSpace", audience, "err", err)
 		}
 	}
-	return errors.Join(errs...)
 }
 
 // sendBreachEmails sends the same tier crossing as two separate emails —
@@ -397,12 +394,11 @@ func (e *Engine) sendBreachAlert(ctx context.Context, s SLAStatus, tier int) err
 // debug mode as in production — see the send closure's own doc comment.
 //
 // Claims (caseID, clockType, tier) via e.store.ClaimEmail before sending
-// anything: alertTier now attempts this regardless of whether the Chat
-// alert itself succeeded, so a tier retried solely because Chat failed
-// must not re-send an already-attempted email — see emailClaimKeyPrefix's
-// own doc comment. A claim failure (Redis error) is logged and treated the
-// same as "already claimed" — skip rather than risk a duplicate send on an
-// indeterminate claim result.
+// anything — see emailClaimKeyPrefix's own doc comment for the one retry
+// path (a Kafka publish failure on an earlier attempt, before this ever
+// ran) this still guards against. A claim failure (Redis error) is logged
+// and treated the same as "already claimed" — skip rather than risk a
+// duplicate send on an indeterminate claim result.
 func (e *Engine) sendBreachEmails(ctx context.Context, s SLAStatus, tier int) {
 	if e.email == nil || !e.emailSendingEnabled {
 		return

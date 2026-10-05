@@ -411,7 +411,17 @@ func TestEngine_Tick_StopsAtFirstFailedTierAndKeepsCursor(t *testing.T) {
 	}
 }
 
-func TestEngine_Tick_ChatFailurePropagatesAndKeepsCursor(t *testing.T) {
+// TestEngine_Tick_ChatFailureLogsAndAdvancesCursorAnyway verifies the fix
+// for a real, reported production bug: a Chat send failure used to fail
+// the whole tier and make processStatus release its claim, retrying on
+// the next Tick — and since a retry resent to EVERY resolved audience
+// again, including ones that had already succeeded, a single persistently
+// broken Chat space turned into an unbounded stream of duplicate-looking
+// Chat messages, repeating every poll, forever (confirmed live against
+// real staging cases stuck exactly this way for over a day). A Chat
+// failure is now logged only — Tick succeeds, and the cursor advances
+// past the tier regardless, so there is nothing left to retry.
+func TestEngine_Tick_ChatFailureLogsAndAdvancesCursorAnyway(t *testing.T) {
 	entity := &fakeStatusLister{statuses: []SLAStatus{{CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 60}}}
 	store := newFakeTierStore()
 	store.tiers["CASE-1|response"] = 0
@@ -419,11 +429,14 @@ func TestEngine_Tick_ChatFailurePropagatesAndKeepsCursor(t *testing.T) {
 	e := newTestEngine(entity, store, pub)
 	e.chat = &fakeChatSender{err: errors.New("chat webhook unreachable")}
 
-	if err := e.Tick(context.Background()); err == nil {
-		t.Fatal("Tick() error = nil, want the chat send failure propagated")
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil (a chat failure is logged, not propagated)", err)
 	}
-	if store.tiers["CASE-1|response"] != 0 {
-		t.Errorf("cursor = %d, want left at 0 (chat send failed before it could advance)", store.tiers["CASE-1|response"])
+	if store.tiers["CASE-1|response"] != 50 {
+		t.Errorf("cursor = %d, want advanced to 50 despite the chat failure", store.tiers["CASE-1|response"])
+	}
+	if len(pub.calls) != 1 {
+		t.Errorf("expected the sla.tier_reached event still published despite the chat failure, got %d", len(pub.calls))
 	}
 }
 
@@ -432,7 +445,9 @@ func TestEngine_Tick_ChatFailurePropagatesAndKeepsCursor(t *testing.T) {
 // previously, alertTier returned before sendBreachEmails ever ran when
 // sendBreachAlert failed, so a case whose clock completed (and so dropped
 // out of the active /sla-status list) before Chat recovered never got
-// either email at all.
+// either email at all. A Chat failure no longer fails Tick at all (see
+// TestEngine_Tick_ChatFailureLogsAndAdvancesCursorAnyway), so this only
+// asserts the email side.
 func TestEngine_SendBreachEmails_StillSendsWhenChatFails(t *testing.T) {
 	entity := &fakeStatusLister{statuses: []SLAStatus{{
 		CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 50,
@@ -446,47 +461,11 @@ func TestEngine_SendBreachEmails_StillSendsWhenChatFails(t *testing.T) {
 	e.email = email
 	e.emailSendingEnabled = true
 
-	if err := e.Tick(context.Background()); err == nil {
-		t.Fatal("Tick() error = nil, want the chat send failure propagated")
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil (a chat failure is logged, not propagated)", err)
 	}
 	if len(email.calls) != 2 {
 		t.Fatalf("email calls = %d, want 2 (assignee + team) sent despite the chat failure, got %+v", len(email.calls), email.calls)
-	}
-}
-
-// TestEngine_SendBreachEmails_NotResentOnChatRetry verifies a tier retried
-// solely because the Chat alert failed does not re-send an already-
-// attempted breach email on the next Tick — the per-tier Redis claim
-// (TierStore.ClaimEmail) this closes a duplicate-send gap for.
-func TestEngine_SendBreachEmails_NotResentOnChatRetry(t *testing.T) {
-	entity := &fakeStatusLister{statuses: []SLAStatus{{
-		CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 50,
-		AssigneeEmail: "assignee@example.test", TeamEmail: "team@example.test",
-	}}}
-	store := newFakeTierStore()
-	store.tiers["CASE-1|response"] = 0
-	e := newTestEngine(entity, store, &fakePublisher{})
-	failingChat := &fakeChatSender{err: errors.New("chat webhook unreachable")}
-	e.chat = failingChat
-	email := &fakeEmailSender{}
-	e.email = email
-	e.emailSendingEnabled = true
-
-	if err := e.Tick(context.Background()); err == nil {
-		t.Fatal("first Tick() error = nil, want the chat send failure propagated")
-	}
-	if len(email.calls) != 2 {
-		t.Fatalf("after first Tick: email calls = %d, want 2", len(email.calls))
-	}
-
-	// Chat now recovers; the cursor was never advanced, so this tier is
-	// retried from scratch.
-	failingChat.err = nil
-	if err := e.Tick(context.Background()); err != nil {
-		t.Fatalf("second Tick() error = %v, want nil now that chat recovered", err)
-	}
-	if len(email.calls) != 2 {
-		t.Errorf("after second Tick: email calls = %d, want still 2 (not resent on the chat-triggered retry)", len(email.calls))
 	}
 }
 
@@ -668,6 +647,10 @@ func TestEngine_SendBreachEmails_UnresolvedAssigneeNeverSendsEvenInDebugMode(t *
 // TestEngine_Tick_JoinsErrorsAcrossStatusesButProcessesBoth verifies one
 // clock's failure doesn't stop another clock in the same poll from being
 // processed.
+// A chat failure no longer makes processStatus return an error (see
+// TestEngine_Tick_ChatFailureLogsAndAdvancesCursorAnyway), so this uses a
+// shared publish failure instead to verify Tick still joins errors across
+// multiple clocks and processes every one despite an earlier one failing.
 func TestEngine_Tick_JoinsErrorsAcrossStatusesButProcessesBoth(t *testing.T) {
 	entity := &fakeStatusLister{statuses: []SLAStatus{
 		{CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 80},
@@ -676,16 +659,15 @@ func TestEngine_Tick_JoinsErrorsAcrossStatusesButProcessesBoth(t *testing.T) {
 	store := newFakeTierStore()
 	store.tiers["CASE-1|response"] = 50
 	store.tiers["CASE-2|response"] = 50
-	pub := &fakePublisher{}
+	pub := &fakePublisher{err: errors.New("event hub unreachable")}
 	e := newTestEngine(entity, store, pub)
-	e.chat = &fakeChatSender{err: errors.New("chat webhook unreachable")}
 
 	err := e.Tick(context.Background())
 	if err == nil {
 		t.Fatal("Tick() error = nil, want both failures joined")
 	}
 	if len(pub.calls) != 2 {
-		t.Errorf("expected both clocks' publish attempted despite the shared chat failure, got %d", len(pub.calls))
+		t.Errorf("expected both clocks' publish attempted despite the shared failure, got %d", len(pub.calls))
 	}
 }
 
