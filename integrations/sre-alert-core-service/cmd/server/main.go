@@ -29,7 +29,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 
@@ -278,24 +278,17 @@ func splitComma(raw string) []string {
 
 // connectWithRetry retries with exponential backoff so a transient startup outage doesn't crash the server.
 func connectWithRetry(logger *slog.Logger, cfg postgres.Config, pcfg config.PostgresConfig, asyncCommit bool) (*pgxpool.Pool, error) {
-	var pool *pgxpool.Pool
 	attempt := 0
-	operation := func() error {
+	operation := func() (*pgxpool.Pool, error) {
 		attempt++
 		p, err := postgres.Connect(cfg, pcfg.ConnectTimeout.Duration(), pcfg.QueryTimeout.Duration(), asyncCommit)
 		if err != nil {
 			logger.Warn("postgres connection failed, retrying", "attempt", attempt, "max_attempts", pcfg.ConnectMaxAttempts, "error", err)
-			return err
 		}
-		pool = p
-		return nil
+		return p, err
 	}
 
 	eb := backoff.NewExponentialBackOff()
 	eb.InitialInterval = pcfg.ConnectBaseDelay.Duration()
-	b := backoff.WithMaxRetries(eb, uint64(pcfg.ConnectMaxAttempts-1))
-	if err := backoff.Retry(operation, b); err != nil {
-		return nil, err
-	}
-	return pool, nil
+	return backoff.Retry(context.Background(), operation, backoff.WithBackOff(eb), backoff.WithMaxTries(uint(pcfg.ConnectMaxAttempts)))
 }

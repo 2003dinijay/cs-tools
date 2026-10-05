@@ -27,7 +27,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"sre-alert-ingestion-service/internal/allocator"
@@ -178,22 +178,16 @@ func main() {
 
 // connectWithRetry backs off exponentially so a transient startup outage doesn't crash-loop the pod.
 func connectWithRetry(logger *slog.Logger, cfg postgres.Config, pcfg config.PostgresConfig, queryTimeout time.Duration) (*pgxpool.Pool, error) {
-	var pool *pgxpool.Pool
 	attempt := 0
-	operation := func() error {
+	operation := func() (*pgxpool.Pool, error) {
 		attempt++
 		p, err := postgres.Connect(cfg, pcfg.ConnectTimeout.Duration(), queryTimeout)
 		if err != nil {
 			logger.Warn("postgres connection failed, retrying", "attempt", attempt, "max_attempts", pcfg.ConnectMaxAttempts, "error", err)
-			return err
 		}
-		pool = p
-		return nil
+		return p, err
 	}
 	eb := backoff.NewExponentialBackOff()
 	eb.InitialInterval = pcfg.ConnectBaseDelay.Duration()
-	if err := backoff.Retry(operation, backoff.WithMaxRetries(eb, uint64(pcfg.ConnectMaxAttempts-1))); err != nil {
-		return nil, err
-	}
-	return pool, nil
+	return backoff.Retry(context.Background(), operation, backoff.WithBackOff(eb), backoff.WithMaxTries(uint(pcfg.ConnectMaxAttempts)))
 }

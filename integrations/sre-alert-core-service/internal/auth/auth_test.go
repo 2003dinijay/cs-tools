@@ -32,7 +32,11 @@ func TestVerifySecret(t *testing.T) {
 	}
 	const secret = "correct-horse-battery-staple"
 	saltB64 := base64.StdEncoding.EncodeToString(salt)
-	hashB64 := base64.StdEncoding.EncodeToString(HashSecret(secret, salt, Iterations))
+	hash, err := HashSecret(secret, salt, Iterations)
+	if err != nil {
+		t.Fatalf("HashSecret: %v", err)
+	}
+	hashB64 := base64.StdEncoding.EncodeToString(hash)
 
 	if !VerifySecret(secret, saltB64, hashB64, Iterations) {
 		t.Error("the correct secret must verify")

@@ -125,7 +125,10 @@ func runCreate(repo *auth.UserRepo, args []string) {
 	if err != nil {
 		log.Fatalf("user create: generate salt: %v", err)
 	}
-	hash := auth.HashSecret(plainSecret, salt, auth.Iterations)
+	hash, err := auth.HashSecret(plainSecret, salt, auth.Iterations)
+	if err != nil {
+		log.Fatalf("user create: hash secret: %v", err)
+	}
 
 	now := time.Now().UTC()
 	u := auth.User{

@@ -18,14 +18,13 @@
 package auth
 
 import (
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"time"
-
-	"golang.org/x/crypto/pbkdf2"
 )
 
 // Iterations is the PBKDF2 round count for new users; hardcoded, not a config.toml value, since it's a security parameter. Existing rows keep their own stored count, so changing this doesn't invalidate them.
@@ -72,9 +71,9 @@ func GenerateSalt() ([]byte, error) {
 	return salt, nil
 }
 
-// HashSecret derives a key from secret using PBKDF2-HMAC-SHA256.
-func HashSecret(secret string, salt []byte, iterations int) []byte {
-	return pbkdf2.Key([]byte(secret), salt, iterations, KeyLen, sha256.New)
+// HashSecret derives a key from secret using PBKDF2-HMAC-SHA256; it only fails for parameters the stdlib rejects, such as a non-positive iteration count.
+func HashSecret(secret string, salt []byte, iterations int) ([]byte, error) {
+	return pbkdf2.Key(sha256.New, secret, salt, iterations, KeyLen)
 }
 
 // VerifySecret recomputes the PBKDF2 hash for secret against the stored base64 salt/hash and compares in constant time, so response timing can't leak how much of the hash matched.
@@ -87,6 +86,9 @@ func VerifySecret(secret, saltB64, hashB64 string, iterations int) bool {
 	if err != nil {
 		return false
 	}
-	got := HashSecret(secret, salt, iterations)
+	got, err := HashSecret(secret, salt, iterations)
+	if err != nil {
+		return false
+	}
 	return subtle.ConstantTimeCompare(got, want) == 1
 }

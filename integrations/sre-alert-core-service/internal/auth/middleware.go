@@ -88,7 +88,7 @@ func RequireAuth(repo *UserRepo, logger *slog.Logger) func(http.Handler) http.Ha
 				} else {
 					logger.Warn("auth: unknown user", "username", username)
 					// Burn comparable time to a real VerifySecret call so response timing can't be used to enumerate usernames.
-					HashSecret(secret, dummySalt, Iterations)
+					_, _ = HashSecret(secret, dummySalt, Iterations)
 				}
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
