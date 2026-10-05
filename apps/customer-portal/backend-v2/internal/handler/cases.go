@@ -221,7 +221,8 @@ func (h *CaseHandler) GetCase(w http.ResponseWriter, r *http.Request) {
 	writeJSONValue(w, http.StatusOK, dto.MapCaseDetails(result))
 }
 
-// CreateCase handles POST /cases.
+// CreateCase handles POST /cases. The body may carry inline base64 attachments,
+// so it is read with maxAttachmentBodyBytes rather than the blanket 1 MiB cap.
 func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -229,7 +230,7 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, ok := readJSONBody(w, r)
+	body, ok := readJSONBodyWithLimit(w, r, maxAttachmentBodyBytes)
 	if !ok {
 		return
 	}
@@ -610,4 +611,3 @@ func isProjectSuspended(project entity.ProjectDetailsView) bool {
 	return project.ClosureState != nil &&
 		strings.EqualFold(strings.TrimSpace(*project.ClosureState), "suspended")
 }
-
