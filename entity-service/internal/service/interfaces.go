@@ -647,6 +647,12 @@ type CaseService interface {
 	// access at all (a pure ServiceNow data source with no pgFallback
 	// configured), returns an empty slice and no error.
 	AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error)
+	// ProjectOnboardingInfo returns projectID's own onboarding status and
+	// evaluation-account flag -- see CaseRepository.ProjectOnboardingInfo's
+	// own doc comment. A project with no linked account, or no Postgres
+	// access at all (a pure ServiceNow data source with no pgFallback
+	// configured), returns the zero values and no error.
+	ProjectOnboardingInfo(ctx context.Context, projectID string) (onboardingStatus string, isEvaluationAccount bool, err error)
 	// GetCaseEtaSharedOn returns work_item.eta_shared_on for caseID -- see
 	// CaseRepository.GetCaseEtaSharedOn's own doc comment. Lets the plain
 	// ServiceNow data source's own GetCaseByID (which has no Postgres row of
@@ -1082,9 +1088,10 @@ type IncidentService interface {
 
 	// UpdateIncident partially updates an existing incident. At least one field must be
 	// provided. A NotFoundError is returned if the incident does not exist.
-	// On DATA_SOURCE=postgres-servicenow-dual-write only WorkNotes and AdditionalComments
-	// are supported -- every other field is rejected with a ValidationError (see
-	// incidentService.UpdateIncident's own doc comment for why).
+	// On DATA_SOURCE=postgres-servicenow-dual-write only the state-transition fields
+	// (State, AssignedEngineerID, ResolutionCode, ResolutionNotes, ResolvedByID) and
+	// WorkNotes/AdditionalComments are supported -- every other field is rejected with
+	// a ValidationError (see incidentService.UpdateIncident's own doc comment).
 	UpdateIncident(ctx context.Context, req domain.UpdateIncidentRequest) (domain.UpdateIncidentResponse, error)
 
 	// SearchIncidentActivities returns a paginated activity feed for an incident.

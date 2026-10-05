@@ -356,6 +356,15 @@ type CaseRepository interface {
 	// SearchCaseAttachments returns a paginated slice of attachments for the given
 	// case, most recently created first, together with the total matching count.
 	SearchCaseAttachments(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error)
+	// SearchWorkItemAttachments returns a paginated slice of attachment
+	// metadata for a non-case work item (conversation, change_request or
+	// incident), most recently created first, together with the total
+	// matching count. Backed by work_item_attachment (migration 0085), not
+	// case_attachment. A work item with no attachments yields an empty slice
+	// and total 0, never an error. An unsupported referenceType (including
+	// "deployment", which is not a work_item subtype) returns a
+	// ValidationError.
+	SearchWorkItemAttachments(ctx context.Context, workItemID string, referenceType domain.ReferenceType, pagination domain.Pagination) ([]domain.Attachment, int, error)
 	// GetCaseAttachmentByID returns the attachment identified by id.
 	// Returns a NotFoundError if no matching row exists.
 	GetCaseAttachmentByID(ctx context.Context, id string) (domain.Attachment, error)
@@ -439,6 +448,20 @@ type CaseRepository interface {
 	// stakeholder with no email on file is silently excluded, same as
 	// watchListUserEmails does for an explicit watcher.
 	AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error)
+	// ProjectOnboardingInfo returns projectID's own onboarding_status (raw
+	// enum label, e.g. "IN_PROGRESS", "" when unset) and whether its
+	// project_type is the fixed Evaluation Subscription type -- the same two
+	// facts sla_status_repo.go's own activeSLAStatusFromJoins resolves for
+	// GET /sla-status, read here on demand instead of as part of a bulk
+	// join. Used to populate a case.comment_added event's own Team/
+	// IsEvaluationAccount/ProjectOnboardingStatus fields, so
+	// csm-notification-service's frustration-detection Chat alert can route
+	// through chataudience.Resolve the same way an SLA breach alert does,
+	// rather than always posting to the fixed Incident Monitor audience. A
+	// project id with no row (deleted, or the case has no project linked)
+	// returns the zero values, not an error -- same "nothing to enrich with"
+	// posture as AccountDefaultWatcherEmails above.
+	ProjectOnboardingInfo(ctx context.Context, projectID string) (onboardingStatus string, isEvaluationAccount bool, err error)
 	// GetCaseEtaSharedOn returns work_item.eta_shared_on for caseID -- nil
 	// (not an error) when the case has no fix ETA shared yet, or the case
 	// id doesn't exist. See domain.CaseView.EtaSharedOn's own doc comment
@@ -2324,6 +2347,110 @@ func (r *caseRepo) SearchCaseAttachments(ctx context.Context, caseID string, pag
 	return attachments, total, nil
 }
 
+// SearchWorkItemAttachments implements CaseRepository.
+//
+// Reads work_item_attachment, joined to work_item so that (a) the row's work
+// item must be of the type referenceType maps to (work_item ids are shared
+// across every subtype, so the id alone does not prove it is, say, an
+// incident) and (b) work_item's own row-level security policy (migration
+// 0147) scopes the result exactly like the case attachment search: an
+// internal caller sees everything, a customer-scoped caller only attachments
+// of work items in projects they belong to. work_item_attachment itself has
+// no policy, so the join is what carries the visibility; do not drop it.
+//
+// Rows in the PENDING state are excluded, mirroring SearchCaseAttachments'
+// exclusion of still-uploading rows. Every returned row is reported as
+// complete. No bytes or download links are produced here: attachment content
+// for this data source lives in external object storage, which is a separate
+// workstream.
+func (r *caseRepo) SearchWorkItemAttachments(ctx context.Context, workItemID string, referenceType domain.ReferenceType, pagination domain.Pagination) ([]domain.Attachment, int, error) {
+	if referenceType == domain.ReferenceTypeCase {
+		return nil, 0, &apierror.ValidationError{Msg: "case attachments are served by SearchCaseAttachments"}
+	}
+	workItemTypes, ok := ReferenceTypeToWorkItemType[referenceType]
+	if !ok {
+		return nil, 0, &apierror.ValidationError{Msg: "referenceType is not supported by the Postgres data source: " + string(referenceType)}
+	}
+
+	const where = `
+		WHERE wa.work_item_id = $1
+		  AND wi.type = ANY($2::text[]::work_item_type_enum[])
+		  AND wa.state IS DISTINCT FROM 'PENDING'`
+	const countQuery = `SELECT COUNT(*) FROM work_item_attachment wa JOIN work_item wi ON wi.id = wa.work_item_id` + where
+	// created_by is a free-form string on this table; it is matched to a user
+	// by email (same convention as comment.created_by). The match is a
+	// LATERAL ... LIMIT 1 because "user".email has no unique constraint, and a
+	// plain join would fan one attachment out into several rows while
+	// countQuery above counts it once.
+	const dataQuery = `
+		SELECT wa.id, wa.work_item_id, COALESCE(wa.name, ''), COALESCE(wa.content_type, ''),
+		       COALESCE(wa.size_bytes, 0), wa.created_by, COALESCE(u.id::text, ''),
+		       COALESCE(u.name, NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), ''),
+		       wa.created_on
+		FROM work_item_attachment wa
+		JOIN work_item wi ON wi.id = wa.work_item_id
+		LEFT JOIN LATERAL (
+			SELECT u2.id, u2.name, u2.first_name, u2.last_name
+			FROM "user" u2
+			WHERE LOWER(u2.email) = LOWER(wa.created_by)
+			ORDER BY u2.id
+			LIMIT 1
+		) u ON TRUE` + where + `
+		ORDER BY wa.created_on DESC, wa.id
+		LIMIT $3 OFFSET $4`
+
+	var total int
+	var attachments []domain.Attachment
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	eg.Go(func() error {
+		if err := r.db.QueryRow(egCtx, countQuery, workItemID, workItemTypes).Scan(&total); err != nil {
+			return fmt.Errorf("count work item attachments: %w", err)
+		}
+		return nil
+	})
+
+	eg.Go(func() error {
+		rows, err := r.db.Query(egCtx, dataQuery, workItemID, workItemTypes, pagination.Limit, pagination.Offset)
+		if err != nil {
+			return fmt.Errorf("query work item attachments: %w", err)
+		}
+		defer rows.Close()
+
+		result := make([]domain.Attachment, 0, pagination.Limit)
+		for rows.Next() {
+			var (
+				a                                   domain.Attachment
+				sizeBytes                           int64
+				createdBy, uploaderID, uploaderName string
+			)
+			if err := rows.Scan(
+				&a.ID, &a.ReferenceID, &a.Name, &a.Type, &sizeBytes,
+				&createdBy, &uploaderID, &uploaderName, &a.CreatedOn,
+			); err != nil {
+				return fmt.Errorf("scan work item attachment: %w", err)
+			}
+			a.SizeBytes = int(sizeBytes)
+			a.ReferenceType = referenceType
+			a.CreatedBy = domain.NewUserReference(uploaderID, createdBy, uploaderName)
+			a.Status = domain.AttachmentStatusComplete
+			result = append(result, a)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate work item attachments: %w", err)
+		}
+		attachments = result
+		return nil
+	})
+
+	if err := eg.Wait(); err != nil {
+		return nil, 0, err
+	}
+
+	return attachments, total, nil
+}
+
 // GetCaseAttachmentByID implements CaseRepository.
 //
 // Unlike SearchCaseAttachments, this intentionally does not filter by status:
@@ -3099,6 +3226,28 @@ func (r *caseRepo) AccountDefaultWatcherEmails(ctx context.Context, projectID st
 		emails = append(emails, *email)
 	}
 	return emails, nil
+}
+
+// ProjectOnboardingInfo implements CaseRepository.
+func (r *caseRepo) ProjectOnboardingInfo(ctx context.Context, projectID string) (string, bool, error) {
+	var onboardingStatus *string
+	var isEvaluationAccount bool
+	err := r.db.QueryRow(ctx, `
+		SELECT p.onboarding_status::TEXT, COALESCE(pt.name = $2, FALSE)
+		FROM project p
+		LEFT JOIN project_type pt ON pt.id = p.project_type_id
+		WHERE p.id = $1`, projectID, evaluationSubscriptionProjectTypeName,
+	).Scan(&onboardingStatus, &isEvaluationAccount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("project onboarding info: %w", err)
+	}
+	if onboardingStatus == nil {
+		return "", isEvaluationAccount, nil
+	}
+	return *onboardingStatus, isEvaluationAccount, nil
 }
 
 // GetCaseEtaSharedOn implements CaseRepository.

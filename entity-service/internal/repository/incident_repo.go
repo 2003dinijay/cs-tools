@@ -36,11 +36,14 @@ import (
 //
 // IncidentView/SearchIncidentView render State/Priority/Category/Subcategory/
 // ContactType/ResolutionCode as plain, unvalidated strings (per those types'
-// own field comments), so reads need no enum reconciliation against
-// domain.IncidentState/IncidentPriority/etc at all -- the real enum column
-// text is simply passed through. Only the SEARCH FILTER path uses those
-// strict domain enums (SearchIncidentsFilters.Priorities, the generic
-// Filters array's "state"), and three of them have real, easy-to-miss
+// own field comments), and the real enum column text is passed through --
+// except where a label differs from the value the API accepts and the
+// ServiceNow data source returns: state 'CANCELED', resolution code
+// 'SOLVED_WORK_AROUND'/'NOT_ACTIONABLE_ALERT' and contact type 'SITE_24_7'
+// are mapped back on read (incidentStateFromEnum and its siblings), so a
+// client sees the same values in both data sources. The SEARCH FILTER path
+// uses the strict domain enums (SearchIncidentsFilters.Priorities, the
+// generic Filters array's "state"), and three of them have real, easy-to-miss
 // mismatches against their Postgres enum's actual labels:
 //   - incident_state_enum's "canceled" label is spelled with one L
 //     ('CANCELED'), not domain.IncidentStateCancelled's two ("CANCELLED").
@@ -155,6 +158,36 @@ type IncidentRepository interface {
 	// req.WatchList becomes work_item_watcher rows, all in the same
 	// transaction as the record itself.
 	CreateIncident(ctx context.Context, req domain.CreateIncidentRequest, priority string, subcategoryValue *string, createdBy string) (domain.CreateIncidentResponse, error)
+	// UpdateIncidentLifecycle writes an incident's state transition and the
+	// fields that travel with one -- the PATCH the portal sends to move an
+	// incident to In Progress (with an optional assignedEngineerId claim),
+	// On Hold, Resolved/Closed (with resolutionCode/resolutionNotes), or
+	// Cancelled. See IncidentLifecycleUpdate for the field-by-field rules.
+	// One transaction. Returns NotFoundError when id is not an incident the
+	// caller can see, and ValidationError for an unknown assignee/resolver or
+	// a Resolved/Closed target with no resolution code or notes.
+	UpdateIncidentLifecycle(ctx context.Context, id string, u IncidentLifecycleUpdate, actorEmail string) error
+}
+
+// IncidentLifecycleUpdate is UpdateIncidentLifecycle's input. Every field is
+// optional; nil leaves the column unchanged. Enum fields already carry their
+// Postgres label (the service maps domain values -- e.g. CANCELLED to
+// 'CANCELED', SOLVED_WORKAROUND to 'SOLVED_WORK_AROUND' -- before calling).
+//
+// The rules mirror what ServiceNow enforces on the same transitions: no
+// state requires an assignee or assignment group (In Progress included), and
+// no old-state -> new-state legality is checked (the portal's own
+// getLegalNextIncidentStates is a UI guardrail, not an SN rule). Resolved and
+// Closed need a resolution code and resolution notes, taken from the request
+// or already on the record. Entering Resolved stamps resolved_on, and
+// resolved_by_id from ResolvedByID, falling back to DefaultResolvedByID.
+type IncidentLifecycleUpdate struct {
+	State               *string // incident_state_enum label
+	AssignedEngineerID  *string
+	ResolutionCode      *string // incident_resolution_code_enum label
+	ResolutionNotes     *string // incident.close_notes
+	ResolvedByID        *string
+	DefaultResolvedByID *string // the acting user, used only when entering Resolved without ResolvedByID
 }
 
 type incidentRepo struct {
@@ -285,7 +318,7 @@ func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchI
 	}
 	v := domain.SearchIncidentView{
 		ID: &id, Number: &number, Subject: &subject,
-		Priority: priority, State: state, Category: category,
+		Priority: priority, State: incidentStateFromEnum(state), Category: category,
 		CreatedOn: createdOn.UTC().Format(time.RFC3339), CreatedBy: createdBy,
 		UpdatedOn: updatedOn.UTC().Format(time.RFC3339), UpdatedBy: updatedBy,
 	}
@@ -413,6 +446,9 @@ func (r *incidentRepo) AggregateIncidents(ctx context.Context, req domain.Search
 		if err := rows.Scan(&key, &count); err != nil {
 			return domain.AggregateResponse{}, fmt.Errorf("scan incident bucket: %w", err)
 		}
+		if groupBy == "state" {
+			key = *incidentStateFromEnum(&key)
+		}
 		lowerKey := strings.ToLower(key)
 		buckets = append(buckets, domain.AggregateBucket{Key: lowerKey, Label: lowerKey, Count: count})
 		totalRecords += count
@@ -508,9 +544,9 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 
 	v := domain.IncidentView{
 		ID: &id2, Number: &number, Subject: &subject,
-		Priority: priority, State: state, Category: category, Subcategory: subcatL,
-		ContactType: contactType, Impact: impact, Urgency: urgency,
-		ResolutionCode: resolutionCode, ResolutionNotes: closeNotes, IncidentReport: incidentReport,
+		Priority: priority, State: incidentStateFromEnum(state), Category: category, Subcategory: subcatL,
+		ContactType: incidentContactTypeFromEnum(contactType), Impact: impact, Urgency: urgency,
+		ResolutionCode: incidentResolutionCodeFromEnum(resolutionCode), ResolutionNotes: closeNotes, IncidentReport: incidentReport,
 		Description:           description,
 		WatchList:             []domain.IncidentWatchListItem{},
 		LinkedServiceRequests: []domain.LinkedServiceRequestRef{},
@@ -695,6 +731,51 @@ func incidentContactTypeToEnum(c domain.IncidentContactType) string {
 	return string(c)
 }
 
+// incidentContactTypeFromEnum is incidentContactTypeToEnum's inverse, for
+// reads: the enum's 'SITE_24_7' goes back out as "SITE_247", so a channel
+// (the UI's name for contact type) round-trips to the same value the API
+// accepted, and the one the webapp's/microapp's option lists use. Every
+// other label is passed through unchanged.
+func incidentContactTypeFromEnum(label *string) *string {
+	if label != nil && *label == "SITE_24_7" {
+		v := string(domain.IncidentContactTypeSite247)
+		return &v
+	}
+	return label
+}
+
+// incidentStateFromEnum is incidentStateToEnum's (incident_service.go)
+// inverse, for reads: the enum's 'CANCELED' goes back out as "CANCELLED",
+// the value the API accepts and the ServiceNow data source returns. Every
+// other label is passed through unchanged.
+func incidentStateFromEnum(label *string) *string {
+	if label != nil && *label == "CANCELED" {
+		v := string(domain.IncidentStateCancelled)
+		return &v
+	}
+	return label
+}
+
+// incidentResolutionCodeFromEnum is incidentResolutionCodeToEnum's
+// (incident_service.go) inverse, for reads: 'SOLVED_WORK_AROUND' and
+// 'NOT_ACTIONABLE_ALERT' go back out as "SOLVED_WORKAROUND" and
+// "NOT_ACTIONABLE". Every other label is passed through unchanged.
+func incidentResolutionCodeFromEnum(label *string) *string {
+	if label == nil {
+		return nil
+	}
+	var v string
+	switch *label {
+	case "SOLVED_WORK_AROUND":
+		v = string(domain.IncidentResolutionCodeSolvedWorkaround)
+	case "NOT_ACTIONABLE_ALERT":
+		v = string(domain.IncidentResolutionCodeNotActionable)
+	default:
+		return label
+	}
+	return &v
+}
+
 // createIncidentCommentQuery mirrors createCaseCommentQuery's (case_repo.go,
 // inline in CreateCaseComment) INSERT ... SELECT shape: the SELECT's WHERE
 // confirms the referenced row exists in the same round trip, RETURNING zero
@@ -740,6 +821,131 @@ func (r *incidentRepo) CreateIncidentComment(ctx context.Context, incidentID str
 	c.Type = caseCommentEnumType[typeRaw]
 	c.CreatedBy = domain.NewUserReference("", createdByEmail, "")
 	return c, nil
+}
+
+// incidentLifecycleFKField names the request field behind each foreign key
+// UpdateIncidentLifecycle can trip, so a bad id reads as a ValidationError
+// on that field instead of a 500.
+var incidentLifecycleFKField = map[string]string{
+	"work_item_assigned_to_id_fkey": "assignedEngineerId",
+	"incident_resolved_by_id_fkey":  "resolvedById",
+}
+
+// UpdateIncidentLifecycle implements IncidentRepository.
+func (r *incidentRepo) UpdateIncidentLifecycle(ctx context.Context, id string, u IncidentLifecycleUpdate, actorEmail string) error {
+	_, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (struct{}, error) {
+		return struct{}{}, r.updateIncidentLifecycleTx(ctx, tx, id, u, actorEmail)
+	})
+	if err == nil {
+		return nil
+	}
+	var ve *apierror.ValidationError
+	var nfe *apierror.NotFoundError
+	if errors.As(err, &ve) || errors.As(err, &nfe) {
+		return err
+	}
+	if IsRLSPolicyViolation(err) {
+		return &apierror.NotFoundError{Msg: "incident not found"}
+	}
+	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		field := incidentLifecycleFKField[pgErr.ConstraintName]
+		if field == "" {
+			field = "a referenced id"
+		}
+		return &apierror.ValidationError{Msg: field + " does not identify an existing user"}
+	}
+	return fmt.Errorf("update incident: %w", err)
+}
+
+// updateIncidentLifecycleTx is UpdateIncidentLifecycle's body: lock the
+// incident row, check the Resolved/Closed resolution requirement against the
+// request plus what is already on record, then update work_item (always,
+// for updated_on/updated_by, plus the assignee) and incident (state and
+// resolution columns, only when one is being set).
+func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx, id string, u IncidentLifecycleUpdate, actorEmail string) error {
+	var currentState string
+	var currentCode, currentNotes *string
+	err := tx.QueryRow(ctx, `
+		SELECT inc.state::text, inc.resolution_code::text, inc.close_notes
+		FROM incident inc
+		JOIN work_item wi ON wi.id = inc.id
+		WHERE inc.id = $1
+		FOR UPDATE OF inc`, id).Scan(&currentState, &currentCode, &currentNotes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &apierror.NotFoundError{Msg: "incident not found"}
+	}
+	if err != nil {
+		return fmt.Errorf("update incident: read current state: %w", err)
+	}
+
+	if u.State != nil && (*u.State == "RESOLVED" || *u.State == "CLOSED") {
+		code, notes := currentCode, currentNotes
+		if u.ResolutionCode != nil {
+			code = u.ResolutionCode
+		}
+		if u.ResolutionNotes != nil {
+			notes = u.ResolutionNotes
+		}
+		if code == nil || *code == "" || notes == nil || strings.TrimSpace(*notes) == "" {
+			return &apierror.ValidationError{Msg: "resolutionCode and resolutionNotes are required to move an incident to " + *u.State}
+		}
+	}
+
+	wiSets := []string{"updated_on = NOW()", "updated_by = $1"}
+	wiArgs := []any{actorEmail}
+	if u.AssignedEngineerID != nil {
+		wiSets = append(wiSets, fmt.Sprintf("assigned_to_id = $%d::uuid", len(wiArgs)+1))
+		wiArgs = append(wiArgs, *u.AssignedEngineerID)
+	}
+	wiArgs = append(wiArgs, id)
+	var wiID string
+	if err := tx.QueryRow(ctx,
+		fmt.Sprintf(`UPDATE work_item SET %s WHERE id = $%d AND type = 'INCIDENT' RETURNING id`, strings.Join(wiSets, ", "), len(wiArgs)),
+		wiArgs...,
+	).Scan(&wiID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &apierror.NotFoundError{Msg: "incident not found"}
+		}
+		return err
+	}
+
+	var incSets []string
+	var incArgs []any
+	addInc := func(assignment string, val any) {
+		incArgs = append(incArgs, val)
+		incSets = append(incSets, fmt.Sprintf(assignment, len(incArgs)))
+	}
+	if u.State != nil {
+		addInc("state = $%d::incident_state_enum", *u.State)
+	}
+	if u.ResolutionCode != nil {
+		addInc("resolution_code = $%d::incident_resolution_code_enum", *u.ResolutionCode)
+	}
+	if u.ResolutionNotes != nil {
+		addInc("close_notes = $%d", *u.ResolutionNotes)
+	}
+	enteringResolved := u.State != nil && *u.State == "RESOLVED" && currentState != "RESOLVED"
+	resolvedBy := u.ResolvedByID
+	if resolvedBy == nil && enteringResolved {
+		resolvedBy = u.DefaultResolvedByID
+	}
+	if resolvedBy != nil {
+		addInc("resolved_by_id = $%d::uuid", *resolvedBy)
+	}
+	if enteringResolved {
+		incSets = append(incSets, "resolved_on = NOW()")
+	}
+	if len(incSets) == 0 {
+		return nil
+	}
+	incArgs = append(incArgs, id)
+	if _, err := tx.Exec(ctx,
+		fmt.Sprintf(`UPDATE incident SET %s WHERE id = $%d`, strings.Join(incSets, ", "), len(incArgs)),
+		incArgs...,
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
 // createIncidentPortalQuery is CreateIncident's (the plain-Postgres,

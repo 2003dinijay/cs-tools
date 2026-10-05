@@ -995,6 +995,11 @@ func (s *caseService) AccountDefaultWatcherEmails(ctx context.Context, projectID
 	return s.repo.AccountDefaultWatcherEmails(ctx, projectID)
 }
 
+// ProjectOnboardingInfo implements CaseService.
+func (s *caseService) ProjectOnboardingInfo(ctx context.Context, projectID string) (string, bool, error) {
+	return s.repo.ProjectOnboardingInfo(ctx, projectID)
+}
+
 // GetCaseEtaSharedOn implements CaseService.
 func (s *caseService) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error) {
 	return s.repo.GetCaseEtaSharedOn(ctx, caseID)
@@ -1082,7 +1087,7 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 			slog.ErrorContext(ctx, "create comment: enrich case for case.comment_added publish failed", "caseId", req.CaseID)
 		} else {
 			cv.WatchList = s.filterActiveWatchListUsers(ctx, cv, cv.WatchList)
-			publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, cv, req, c.ID, authorName)
+			publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, s.ProjectOnboardingInfo, cv, req, c.ID, authorName, actorEmail)
 		}
 	}
 
@@ -2830,6 +2835,18 @@ func (s *caseService) ConfirmCaseAttachment(ctx context.Context, id string) (dom
 // SearchCaseAttachments implements CaseService for the CSM-native (Postgres)
 // data source.
 //
+// referenceType "case" reads case_attachment (unchanged). "change_request",
+// "incident" and "conversation" are work_item subtypes and read the generic
+// work_item_attachment table via CaseRepository.SearchWorkItemAttachments;
+// "deployment" is not a work_item subtype and has no attachment table on
+// plain Postgres, where it is rejected with a validation error. Metadata
+// only: a work item with no attachments is a successful empty result.
+//
+// Stopgap: under DATA_SOURCE=postgres-servicenow-dual-write (s.snMirror !=
+// nil) a "deployment" search is delegated to the mirrored data source and its
+// response or error is returned as-is, until a Postgres-native deployment
+// attachment store exists. Every other reference type is unaffected.
+//
 // Read-path status decision: the underlying repository query filters out
 // 'pending' rows entirely (see caseRepo.SearchCaseAttachments), so a case's
 // attachment list never shows a still-uploading placeholder to other users.
@@ -2845,14 +2862,35 @@ func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.Sear
 	if err := validateUUIDs("referenceId", []string{req.ReferenceID}); err != nil {
 		return domain.SearchAttachmentsResponse{}, err
 	}
-	if req.ReferenceType != domain.ReferenceTypeCase {
-		return domain.SearchAttachmentsResponse{}, &apierror.ValidationError{Msg: "referenceType must be 'case' for this data source"}
+	if req.ReferenceType == domain.ReferenceTypeDeployment && s.snMirror != nil {
+		// No Postgres deployment attachment table yet: serve from the
+		// mirrored data source (SN) in dual-write mode. Plain Postgres mode
+		// (snMirror == nil) falls through to the validation error below.
+		return s.snMirror.SearchCaseAttachments(ctx, req)
+	}
+	isCase := req.ReferenceType == domain.ReferenceTypeCase
+	if !isCase {
+		// Non-case work items (change_request, incident, conversation) are
+		// backed by work_item_attachment; "deployment" is not a work_item
+		// subtype and has no attachment table on this data source.
+		if _, ok := repository.ReferenceTypeToWorkItemType[req.ReferenceType]; !ok {
+			return domain.SearchAttachmentsResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("referenceType %q is not supported for this data source: must be one of 'case', 'change_request', 'conversation', 'incident'", req.ReferenceType)}
+		}
 	}
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchAttachmentsResponse{}, err
 	}
 
-	attachments, total, err := s.repo.SearchCaseAttachments(ctx, req.ReferenceID, req.Pagination)
+	var (
+		attachments []domain.Attachment
+		total       int
+		err         error
+	)
+	if isCase {
+		attachments, total, err = s.repo.SearchCaseAttachments(ctx, req.ReferenceID, req.Pagination)
+	} else {
+		attachments, total, err = s.repo.SearchWorkItemAttachments(ctx, req.ReferenceID, req.ReferenceType, req.Pagination)
+	}
 	if err != nil {
 		return domain.SearchAttachmentsResponse{}, err
 	}

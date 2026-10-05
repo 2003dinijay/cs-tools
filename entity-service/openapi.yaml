@@ -164,6 +164,54 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /customer-engagements/allocation-events:
+    post:
+      summary: >-
+        Apply one Allocation-app allocation event to customer engagements (port of
+        ServiceNow processAllocationEvent): for allocationType 76 or 83 (firefighting),
+        find the engagement by engagementId or create it; for any other type, find it by
+        line item (productId) or skip. Then upsert the allocation resource. One transaction; repeating an event is safe. Internal
+        clients only (M2M_CLIENT_IDS). Registered only when
+        CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED=true and PostgreSQL is authoritative.
+      operationId: processAllocationEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AllocationEvent'
+      responses:
+        "200":
+          description: Applied, or skipped with a reason (a skip is not retryable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AllocationEventResult'
+        "400":
+          description: Bad request (malformed body, missing id or email, bad date, value too long).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: The caller is not an allow-listed internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The route is not registered (flag off).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error; retryable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /onboarding-steps/search:
     post:
       summary: >-
@@ -11143,6 +11191,63 @@ components:
         do not carry this requirement.
 
   schemas:
+    AllocationEvent:
+      type: object
+      description: >-
+        The Finance Entity's allocation record as posted to ServiceNow
+        allocation_added_or_modified, plus customerCode. Unknown fields are ignored.
+      required: [id, email, allocationType]
+      properties:
+        id: {type: string, maxLength: 20, description: Allocation id.}
+        email: {type: string, description: Consultant email; matched to user.email then user.user_name.}
+        allocationType: {type: integer, description: 76 and 83 are firefighting.}
+        allocationTypeName: {type: string}
+        startDate: {type: string, format: date}
+        endDate: {type: string, format: date}
+        comment: {type: string, nullable: true}
+        clearanceStatus: {type: string, nullable: true, description: 'Label, e.g. "Confirmed"; stored as the allocation state.'}
+        isTravelRequired: {type: string, nullable: true}
+        addedBy: {type: string}
+        isRecurring: {type: string, nullable: true}
+        startTime: {type: string, nullable: true, maxLength: 8}
+        endTime: {type: string, nullable: true, maxLength: 8}
+        timeZone: {type: string, nullable: true, maxLength: 20}
+        consultantRole: {type: string, nullable: true}
+        status: {type: string, nullable: true}
+        customerCode: {type: string, nullable: true, description: Salesforce Account id (15 or 18 characters); engagement.customerCode is also read.}
+        engagement:
+          $ref: '#/components/schemas/AllocationEventEngagement'
+    AllocationEventEngagement:
+      type: object
+      properties:
+        type: {type: integer}
+        engagementTypeName: {type: string, description: '"Paid" sets is_paid on a created firefighting engagement.'}
+        engagementType: {type: string, nullable: true}
+        engagementId: {type: string, maxLength: 20}
+        customerName: {type: string, description: 'Account name fallback when customerCode does not match.'}
+        opportunityName: {type: string}
+        productName: {type: string}
+        productId: {type: string, nullable: true, description: 'Salesforce line-item id; finds the engagement for a non-firefighting allocation.'}
+        engagementCode: {type: string, maxLength: 20}
+        engagementNature: {type: string, description: 'Off-site -> OFFSITE, On-site -> ONSITE.'}
+        country: {type: string}
+        customerCode: {type: string, nullable: true}
+    AllocationEventResult:
+      type: object
+      required: [result, engagementId, allocationResourceId, engagementCreated]
+      properties:
+        result:
+          type: string
+          enum: [created, updated, skipped]
+        reason:
+          type: string
+          description: >-
+            Present when skipped: no engagement details, no engagement id, no engagement for
+            line item, account not found, ambiguous account name, user not found, or
+            firefighting engagement type id not configured.
+        engagementId: {type: string, format: uuid, nullable: true}
+        allocationResourceId: {type: string, format: uuid, nullable: true}
+        engagementCreated: {type: boolean}
     CreateServiceRequestFromIssueRequest:
       type: object
       required: [owner, repository, issueNumber, title]
@@ -18897,6 +19002,9 @@ components:
           format: uuid
           nullable: true
         contactType:
+          description: >-
+            How the incident was reported. Shown as "Channel" in the CSM portal
+            (ServiceNow's incident contact_type, which ServiceNow also labels Channel).
           type: string
           enum: [SELF_SERVICE, EMAIL, WALK_IN, AZURE, EMAIL_INTERNAL, SITE_247, DIRECT,
                  PHONE, SENTINEL, VIRTUAL_AGENT, CHAT, EMAIL_EXTERNAL]
@@ -19141,6 +19249,9 @@ components:
           $ref: '#/components/schemas/EntityRef'
           nullable: true
         contactType:
+          description: >-
+            How the incident was reported. Shown as "Channel" in the CSM portal
+            (ServiceNow's incident contact_type, which ServiceNow also labels Channel).
           type: string
           nullable: true
           enum: [SELF_SERVICE, EMAIL, WALK_IN, AZURE, EMAIL_INTERNAL, SITE_247, DIRECT, PHONE, SENTINEL, VIRTUAL_AGENT, CHAT, EMAIL_EXTERNAL]
@@ -19405,6 +19516,9 @@ components:
                  UNAUTHORIZED_ACCESS, IDENTITY_PROTECTION, PHISHING, IMPROPER_CONFIGURATION,
                  INFORMATION_REQUEST, DB2, PARTIAL_OUTAGE, EMAIL, MONITOR, WIRELESS]
         contactType:
+          description: >-
+            How the incident was reported. Shown as "Channel" in the CSM portal
+            (ServiceNow's incident contact_type, which ServiceNow also labels Channel).
           type: string
           enum: [SELF_SERVICE, EMAIL, WALK_IN, AZURE, EMAIL_INTERNAL, SITE_247, DIRECT,
                  PHONE, SENTINEL, VIRTUAL_AGENT, CHAT, EMAIL_EXTERNAL]

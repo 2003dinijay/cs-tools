@@ -26,7 +26,7 @@
 // the envelope, deriving the effective shift, picking the section 7.0 policy
 // row, resolving recipients, persisting the ladder in Redis, waking on
 // schedule, dialling, cancelling, and rendering the execution summary. It
-// drives escalation.Engine.Handle and escalation.Engine.Tick directly.
+// drives paging.Engine.Handle and paging.Engine.Tick directly.
 //
 // Dry runs are not stubbed out at the client boundary. The real
 // notifications.TwilioClient is pointed at a local HTTP server via its own
@@ -81,10 +81,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/escalation"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/eventbus"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/paging"
 )
 
 // placeholderNumber stands in for a real destination in a dry run. Not a
@@ -165,7 +165,7 @@ func run() error {
 	}
 
 	if cfg.cleanup {
-		return cleanupLocalLadders(ctx, escalation.NewStore(rdb), rdb)
+		return cleanupLocalLadders(ctx, paging.NewStore(rdb), rdb)
 	}
 
 	speaker := newSpeaker()
@@ -176,23 +176,23 @@ func run() error {
 	defer closeTwilio()
 	defer speaker.wait()
 
-	channel, err := escalation.ParseChannel(cfg.channel)
+	channel, err := paging.ParseChannel(cfg.channel)
 	if err != nil {
 		return err
 	}
-	engine := escalation.NewEngine(
-		escalation.DefaultPolicy,
+	engine := paging.NewEngine(
+		paging.DefaultPolicy,
 		localResolver(to),
 		twilio,
 		localChatClient(cfg),
 		// Empty base: a local card carries no portal URL, which PortalLinks
 		// renders as no link rather than a broken one.
-		escalation.PortalLinks{},
-		escalation.NewStore(rdb),
+		paging.PortalLinks{},
+		paging.NewStore(rdb),
 		nil, // no entity-service locally; the summary is printed here instead
 		firstNonEmpty(cfg.chatAudience, cfg.chatProduct),
-		escalation.EngineConfig{CallSendingEnabled: true, UseSSML: cfg.ssml, Channel: channel,
-			Ladder: escalation.LadderConfig{Chat: escalation.Chat{
+		paging.EngineConfig{CallSendingEnabled: true, UseSSML: cfg.ssml, Channel: channel,
+			Ladder: paging.LadderConfig{Chat: paging.Chat{
 				Audience: cfg.chatAudience, WebhookURLEnv: cfg.chatWebhookEnv,
 			}}},
 	)
@@ -203,9 +203,9 @@ func run() error {
 	// handed a "now" that advances at cfg.minute per ladder minute — which is
 	// what compresses a 113-minute P4 ladder into something observable. No
 	// engine code is aware this is a test.
-	trigger := triggerTime(escalation.Shift(cfg.shift))
+	trigger := triggerTime(paging.Shift(cfg.shift))
 	if cfg.at != "" {
-		t, err := reportTime(cfg.at, cfg.weekend, time.Now().In(escalation.IST))
+		t, err := reportTime(cfg.at, cfg.weekend, time.Now().In(paging.IST))
 		if err != nil {
 			return err
 		}
@@ -216,7 +216,7 @@ func run() error {
 		return fmt.Errorf("starting the ladder: %w", err)
 	}
 
-	st, found, err := escalation.NewStore(rdb).Get(ctx, cfg.incidentID)
+	st, found, err := paging.NewStore(rdb).Get(ctx, cfg.incidentID)
 	if err != nil {
 		return fmt.Errorf("reading the stored ladder: %w", err)
 	}
@@ -232,7 +232,7 @@ func run() error {
 		// live in a sorted set shared with every other ladder. Deleting the
 		// state alone would strand them there, rescanned on every tick, with
 		// nothing able to reclaim them afterwards.
-		if err := retireLadder(ctx, escalation.NewStore(rdb), cfg.incidentID); err != nil {
+		if err := retireLadder(ctx, paging.NewStore(rdb), cfg.incidentID); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not retire the over-cap ladder %s: %v\n", cfg.incidentID, err)
 		}
 		return fmt.Errorf("this plan is %d calls, more than --max-calls=%d; raise the cap or pick a shorter priority",
@@ -246,7 +246,7 @@ func run() error {
 	// out unless resumption is what is being tested.
 	if !cfg.keep {
 		defer func() {
-			if err := retireLadder(context.Background(), escalation.NewStore(rdb), cfg.incidentID); err != nil {
+			if err := retireLadder(context.Background(), paging.NewStore(rdb), cfg.incidentID); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not retire ladder %s: %v\n", cfg.incidentID, err)
 			}
 		}()
@@ -418,18 +418,18 @@ func localChatClient(cfg config) *notifications.GoogleChatClient {
 // Remember that the rung model the schedule resolver implements is still an
 // assumption. A run against it exercises a complete, valid flow, which is the
 // point; it does not confirm the flow is right.
-func localResolver(to string) escalation.Resolver {
+func localResolver(to string) paging.Resolver {
 	base := os.Getenv("CUSTOMER_ENTITY_BASE_URL")
 	if base == "" {
 		return ruleAwareRoster{
-			Resolver: escalation.NewRosterResolver(localRoster(to)),
-			rules:    escalation.DefaultRules,
+			Resolver: paging.NewRosterResolver(localRoster(to)),
+			rules:    paging.DefaultRules,
 			teams:    localTeamKeys(),
 		}
 	}
 	fmt.Printf("resolving rungs from the Team Schedule at %s\n", base)
-	return escalation.NewTeamScheduleResolver(
-		escalation.NewEntityClient(escalation.EntityConfig{
+	return paging.NewTeamScheduleResolver(
+		paging.NewEntityClient(paging.EntityConfig{
 			BaseURL:      base,
 			TokenURL:     os.Getenv("OAUTH2_TOKEN_URL"),
 			ClientID:     os.Getenv("OAUTH2_CLIENT_ID"),
@@ -444,7 +444,7 @@ func localResolver(to string) escalation.Resolver {
 // localTeamKeys mirrors the deployed configuration's own teams block, so a dry
 // run routes by the same rules a real incident would. Overridable from the
 // environment for a deployment whose ABTs differ.
-func localTeamKeys() escalation.TeamKeys {
+func localTeamKeys() paging.TeamKeys {
 	abts := splitCommaEnv("INCIDENT_ESCALATION_ABT_TEAMS")
 	if len(abts) == 0 {
 		// The seven cre-abt teams, as escalation.yaml's cre.teams.abts names
@@ -459,7 +459,7 @@ func localTeamKeys() escalation.TeamKeys {
 	if americas == "" {
 		americas = "americas"
 	}
-	return escalation.TeamKeys{
+	return paging.TeamKeys{
 		ABTs:       abts,
 		Americas:   americas,
 		Leadership: os.Getenv("INCIDENT_ESCALATION_LEADERSHIP_TEAM"),
@@ -478,16 +478,16 @@ func splitCommaEnv(name string) []string {
 // localRoster points every level at the one number under test, with names that
 // say which level is calling — the point is to hear the ladder climb, not to
 // model a real rotation.
-func localRoster(to string) escalation.Roster {
-	person := func(role string) escalation.Recipient {
-		return escalation.Recipient{Email: role + "@local.invalid", Name: role, Phone: to}
+func localRoster(to string) paging.Roster {
+	person := func(role string) paging.Recipient {
+		return paging.Recipient{Email: role + "@local.invalid", Name: role, Phone: to}
 	}
 	// Named as the updated rule table names them, so the printed ladder is
 	// recognisable against the spreadsheet rather than against this file.
 	// LEVEL_1 is the incident's own team lead and LEVEL_2 is every team lead
 	// — the reverse of the previous model, which is exactly the thing worth
 	// seeing spelled out in a dry run.
-	return escalation.Roster{Default: escalation.LevelRoster{
+	return paging.Roster{Default: paging.LevelRoster{
 		"LEVEL_0": {person("first-responders")},
 		"LEVEL_1": {person("team-lead")},
 		"LEVEL_2": {person("team-leads")},
@@ -505,13 +505,13 @@ func localRoster(to string) escalation.Roster {
 // not, so the harness disagreed with the deployed service about the shape of
 // the ladder — which is the one thing a harness must never do.
 type ruleAwareRoster struct {
-	escalation.Resolver
-	rules []escalation.Rule
-	teams escalation.TeamKeys
+	paging.Resolver
+	rules []paging.Rule
+	teams paging.TeamKeys
 }
 
 // RuleFor satisfies the same interface the Team Schedule resolver does.
-func (r ruleAwareRoster) RuleFor(rc escalation.RoutingContext) (escalation.Rule, bool) {
+func (r ruleAwareRoster) RuleFor(rc paging.RoutingContext) (paging.Rule, bool) {
 	key := strings.ToLower(strings.TrimSpace(rc.AssignedCRETeam))
 	isABT := false
 	for _, k := range r.teams.ABTs {
@@ -520,7 +520,7 @@ func (r ruleAwareRoster) RuleFor(rc escalation.RoutingContext) (escalation.Rule,
 			break
 		}
 	}
-	return escalation.MatchRule(r.rules, rc.Shift, isABT, key != "")
+	return paging.MatchRule(r.rules, rc.Shift, isABT, key != "")
 }
 
 // triggerTime picks an instant inside the requested shift, so the engine's own
@@ -556,7 +556,7 @@ func reportTime(at string, weekend bool, now time.Time) (time.Time, error) {
 			if isWeekend != weekend {
 				continue
 			}
-			t := time.Date(d.Year(), d.Month(), d.Day(), hh, mm, 0, 0, escalation.IST)
+			t := time.Date(d.Year(), d.Month(), d.Day(), hh, mm, 0, 0, paging.IST)
 			if t.After(now) {
 				return t, nil
 			}
@@ -564,7 +564,7 @@ func reportTime(at string, weekend bool, now time.Time) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("-at %q: no matching day in the next week", at)
 	}
 	for _, layout := range []string{"2006-01-02T15:04", "2006-01-02 15:04"} {
-		if t, err := time.ParseInLocation(layout, at, escalation.IST); err == nil {
+		if t, err := time.ParseInLocation(layout, at, paging.IST); err == nil {
 			if !t.After(now) {
 				return time.Time{}, fmt.Errorf("-at %s IST is in the past; give a future time, "+
 					"since the engine drops a ladder that is already over", t.Format("Mon 2006-01-02 15:04"))
@@ -575,28 +575,28 @@ func reportTime(at string, weekend bool, now time.Time) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("-at %q: use HH:MM or YYYY-MM-DDTHH:MM (IST)", at)
 }
 
-func triggerTime(shift escalation.Shift) time.Time {
+func triggerTime(shift paging.Shift) time.Time {
 	hour, weekend := 11, false
 	switch shift {
-	case escalation.ShiftLKMorning:
+	case paging.ShiftLKMorning:
 		hour = 7
-	case escalation.ShiftLKEvening:
+	case paging.ShiftLKEvening:
 		hour = 19
-	case escalation.ShiftUSA:
+	case paging.ShiftUSA:
 		hour = 22
-	case escalation.ShiftLKWeekend:
+	case paging.ShiftLKWeekend:
 		hour, weekend = 10, true
-	case escalation.ShiftUSAWeekend:
+	case paging.ShiftUSAWeekend:
 		hour, weekend = 22, true
 	}
-	now := time.Now().In(escalation.IST)
+	now := time.Now().In(paging.IST)
 	for day := 0; day < 8; day++ {
 		d := now.AddDate(0, 0, day)
 		isWeekend := d.Weekday() == time.Saturday || d.Weekday() == time.Sunday
 		if isWeekend != weekend {
 			continue
 		}
-		at := time.Date(d.Year(), d.Month(), d.Day(), hour, 0, 0, 0, escalation.IST)
+		at := time.Date(d.Year(), d.Month(), d.Day(), hour, 0, 0, 0, paging.IST)
 		if at.After(now) {
 			return at
 		}
@@ -714,9 +714,9 @@ func envelope(entityID string, t events.Type, payload any) eventbus.Record {
 
 // runTicks drives the engine's own Tick on the compressed clock and fires the
 // acknowledgement part-way when asked.
-func runTicks(ctx context.Context, cfg config, engine *escalation.Engine, rdb *redis.Client, trigger time.Time, rec *callRecorder, plan escalation.Plan, runStart time.Time) error {
+func runTicks(ctx context.Context, cfg config, engine *paging.Engine, rdb *redis.Client, trigger time.Time, rec *callRecorder, plan paging.Plan, runStart time.Time) error {
 	fmt.Printf("\n  running (ctrl-c to stop)...\n\n")
-	store := escalation.NewStore(rdb)
+	store := paging.NewStore(rdb)
 	ticker := time.NewTicker(cfg.tick)
 	defer ticker.Stop()
 
@@ -816,7 +816,7 @@ func runTicks(ctx context.Context, cfg config, engine *escalation.Engine, rdb *r
 
 // summarise prints what the engine would have written back to the incident as
 // a work note, plus what the Twilio client actually sent.
-func summarise(ctx context.Context, cfg config, store *escalation.Store, rec *callRecorder, plan escalation.Plan, localCancelledAt *time.Time, observedPlaced []bool, observedFailed []string, runStart time.Time) error {
+func summarise(ctx context.Context, cfg config, store *paging.Store, rec *callRecorder, plan paging.Plan, localCancelledAt *time.Time, observedPlaced []bool, observedFailed []string, runStart time.Time) error {
 	count, twiml := rec.snapshot()
 
 	fmt.Printf("\n%s\n", strings.Repeat("-", 78))
@@ -861,7 +861,7 @@ func summarise(ctx context.Context, cfg config, store *escalation.Store, rec *ca
 	return nil
 }
 
-func printHeader(cfg config, plan escalation.Plan, trigger time.Time, to string) {
+func printHeader(cfg config, plan paging.Plan, trigger time.Time, to string) {
 	mode := "DRY RUN - calls go to a local stub, nothing is dialled"
 	if cfg.live {
 		mode = fmt.Sprintf("LIVE - up to %d real call(s) to %s", len(plan.Calls), maskPhone(to))
@@ -1047,7 +1047,7 @@ func listCalls(ctx context.Context, client *http.Client, base, acct, token, to s
 // state would otherwise strand every one of those entries in a sorted set
 // shared with every other ladder, rescanned on every tick, with nothing able
 // to reclaim them. Scanning means this works from either half alone.
-func retireLadder(ctx context.Context, store *escalation.Store, incidentID string) error {
+func retireLadder(ctx context.Context, store *paging.Store, incidentID string) error {
 	// Deleting the state before the wakes are gone strands them: the entries
 	// live in an index shared with every other ladder, and nothing can
 	// reclaim one whose state no longer exists. So a failed scan has to stop
@@ -1067,7 +1067,7 @@ func retireLadder(ctx context.Context, store *escalation.Store, incidentID strin
 // "Due arbitrarily far in the future" is how the whole index is read: the
 // store exposes a due-by query, and a decade ahead covers every entry it
 // could hold.
-func wakeMembersFor(ctx context.Context, store *escalation.Store, incidentID string) ([]string, error) {
+func wakeMembersFor(ctx context.Context, store *paging.Store, incidentID string) ([]string, error) {
 	members, err := store.DueMembers(ctx, time.Now().AddDate(10, 0, 0))
 	if err != nil {
 		return nil, err
@@ -1089,7 +1089,7 @@ func wakeMembersFor(ctx context.Context, store *escalation.Store, incidentID str
 // Scans the wake index by asking for everything due arbitrarily far in the
 // future, which is every member it holds, and acts only on this tool's own
 // incident ids so a real ladder sharing the Redis is never touched.
-func cleanupLocalLadders(ctx context.Context, store *escalation.Store, rdb *redis.Client) error {
+func cleanupLocalLadders(ctx context.Context, store *paging.Store, rdb *redis.Client) error {
 	members, err := store.DueMembers(ctx, time.Now().AddDate(10, 0, 0))
 	if err != nil {
 		return fmt.Errorf("scanning the wake index: %w", err)

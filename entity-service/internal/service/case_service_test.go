@@ -53,6 +53,7 @@ type stubCaseRepo struct {
 	createCaseAttachment          func(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error)
 	createCaseAttachmentFromSN    func(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string, createdOn time.Time) (domain.Attachment, error)
 	searchCaseAttachments         func(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error)
+	searchWorkItemAttachments     func(ctx context.Context, workItemID string, referenceType domain.ReferenceType, pagination domain.Pagination) ([]domain.Attachment, int, error)
 	getCaseAttachmentByID         func(ctx context.Context, id string) (domain.Attachment, error)
 	deleteCaseAttachment          func(ctx context.Context, id string) error
 	updateAttachmentName          func(ctx context.Context, id, name, updatedBy string) (time.Time, error)
@@ -66,6 +67,7 @@ type stubCaseRepo struct {
 	addCaseTag                    func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
 	setCaseWatchList              func(ctx context.Context, caseID string, userIDs []string, actorEmail string) ([]domain.WatchListUser, time.Time, error)
 	accountDefaultWatcherEmails   func(ctx context.Context, projectID string) ([]string, error)
+	projectOnboardingInfo         func(ctx context.Context, projectID string) (string, bool, error)
 	getCaseEtaSharedOn            func(ctx context.Context, caseID string) (*time.Time, error)
 	projectContactEmailsByRole    func(ctx context.Context, projectID, role string) ([]string, error)
 	updateCaseAssignee            func(ctx context.Context, caseID string, userID *string, callerEmail string) (time.Time, bool, error)
@@ -145,6 +147,12 @@ func (s *stubCaseRepo) SearchCaseAttachments(ctx context.Context, caseID string,
 	}
 	panic("not implemented")
 }
+func (s *stubCaseRepo) SearchWorkItemAttachments(ctx context.Context, workItemID string, referenceType domain.ReferenceType, pagination domain.Pagination) ([]domain.Attachment, int, error) {
+	if s.searchWorkItemAttachments != nil {
+		return s.searchWorkItemAttachments(ctx, workItemID, referenceType, pagination)
+	}
+	panic("not implemented")
+}
 func (s *stubCaseRepo) GetCaseAttachmentByID(ctx context.Context, id string) (domain.Attachment, error) {
 	if s.getCaseAttachmentByID != nil {
 		return s.getCaseAttachmentByID(ctx, id)
@@ -213,6 +221,13 @@ func (s *stubCaseRepo) AccountDefaultWatcherEmails(ctx context.Context, projectI
 		return s.accountDefaultWatcherEmails(ctx, projectID)
 	}
 	return nil, nil
+}
+
+func (s *stubCaseRepo) ProjectOnboardingInfo(ctx context.Context, projectID string) (string, bool, error) {
+	if s.projectOnboardingInfo != nil {
+		return s.projectOnboardingInfo(ctx, projectID)
+	}
+	return "", false, nil
 }
 
 // GetCaseEtaSharedOn defaults to nil (no fix ETA shared) rather than

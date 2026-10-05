@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/escalation"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/paging"
 )
 
 // The day matters as much as the hour: 10:00 is LK on a weekday and
@@ -29,7 +29,7 @@ import (
 // "-at 10:00" must land on Monday, not Saturday.
 func TestReportTime(t *testing.T) {
 	// Friday 2026-10-02 20:00 IST.
-	friEvening := time.Date(2026, 10, 2, 20, 0, 0, 0, escalation.IST)
+	friEvening := time.Date(2026, 10, 2, 20, 0, 0, 0, paging.IST)
 
 	cases := []struct {
 		name    string

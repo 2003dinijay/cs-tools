@@ -63,7 +63,7 @@ const (
 	TypeSeverityChanged  Type = "case.severity_changed"
 	TypeIncidentCreated  Type = "incident.created"
 	// TypeIncidentAcknowledged / TypeIncidentPriorityElevated belong to the
-	// incident call-escalation ladder (internal/escalation), not to
+	// incident call-escalation ladder (internal/paging), not to
 	// internal/dispatch. Published by entity-service's UpdateIncident. Both
 	// are in KnownTypes and have Validate cases so a malformed one is still
 	// rejected, but dispatch.Handle deliberately no-ops on them exactly as it
@@ -246,6 +246,25 @@ type CommentAddedPayload struct {
 	// format recipients are already used to.
 	IsInternalNote bool     `json:"isInternalNote,omitempty"`
 	Recipients     []string `json:"recipients"`
+	// AuthorEmail is the comment author's own resolved email, added so
+	// dispatch.handleCommentAdded can classify the author as internal/
+	// external (the same role-then-domain classification
+	// internal/recipientlinks already applies to a *recipient's* email) to
+	// decide whether to run frustration detection on this comment. Empty
+	// when the publisher couldn't resolve it -- the check is then skipped
+	// rather than guessed.
+	AuthorEmail string `json:"authorEmail,omitempty"`
+	// Product is the case's deployed product's display name (e.g. "WSO2 API
+	// Manager") -- purely display, shown on a frustration-detection Chat
+	// alert's card, if one is sent.
+	Product string `json:"product,omitempty"`
+	// Team/IsEvaluationAccount/ProjectOnboardingStatus let
+	// dispatch.checkFrustration route a frustration-detection Chat alert
+	// through chataudience.Resolve the same way an SLA breach alert is
+	// routed, instead of always the fixed Incident Monitor audience.
+	Team                    string `json:"team,omitempty"`
+	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
+	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
 }
 
 // StatusChangedPayload is TypeStatusChanged's payload. See
@@ -345,7 +364,7 @@ type SeverityChangedPayload struct {
 // caller-supplied one. A publisher only needs to know that an incident was
 // created, not this service's portal URL configuration.
 //
-// Its other reaction is the call-escalation ladder (internal/escalation),
+// Its other reaction is the call-escalation ladder (internal/paging),
 // which needs considerably more than a direct call does: the priority that
 // keys the timing table, the routing attributes that pick recipients, and the
 // real report time the ladder's offsets are measured from. Every one of those
@@ -358,7 +377,7 @@ type SeverityChangedPayload struct {
 type IncidentCreatedPayload struct {
 	// Product is no longer read by dispatch.handleIncidentCreated: the Google
 	// Chat alert it used to select a space for is gone, per explicit product
-	// direction. It is still read by internal/escalation, where it is rules
+	// direction. It is still read by internal/paging, where it is rules
 	// R7/R8/R13/R14's "is a WSO2 product present" routing input, and it is
 	// still accepted on the wire regardless -- events.Validate decodes
 	// strictly (DisallowUnknownFields), so removing the field outright would

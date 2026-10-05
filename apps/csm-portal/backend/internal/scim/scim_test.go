@@ -124,7 +124,7 @@ func TestClient_GetRole(t *testing.T) {
 }
 
 func TestClient_AddRoleMembers(t *testing.T) {
-	t.Run("PATCHes the internal org's role-by-id path with the given emails", func(t *testing.T) {
+	t.Run("POSTs the internal org's role-members path with the given emails", func(t *testing.T) {
 		var gotMethod, gotPath string
 		var gotBody scimAddRoleMembersRequest
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -139,10 +139,10 @@ func TestClient_AddRoleMembers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("AddRoleMembers: %v", err)
 		}
-		if gotMethod != http.MethodPatch {
-			t.Errorf("method = %q, want PATCH", gotMethod)
+		if gotMethod != http.MethodPost {
+			t.Errorf("method = %q, want POST", gotMethod)
 		}
-		if gotPath != "/organizations/internal/roles/11111111-1111-1111-1111-111111111111" {
+		if gotPath != "/organizations/internal/roles/11111111-1111-1111-1111-111111111111/users" {
 			t.Errorf("path = %q", gotPath)
 		}
 		if len(gotBody.Emails) != 1 || gotBody.Emails[0] != "jane.doe@wso2.com" {

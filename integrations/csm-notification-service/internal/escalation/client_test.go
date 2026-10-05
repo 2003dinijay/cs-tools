@@ -17,49 +17,70 @@
 package escalation
 
 import (
-	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 )
 
-// entity-service decides whether a caller may read the rota from
-// x-jwt-assertion's client_id, not from Authorization. A Choreo gateway
-// translates one into the other in a real deployment; nothing does locally, so
-// without this header every rota lookup is refused and every rung of a real
-// ladder resolves to nobody.
-//
-// Verified against a running entity-service: the same endpoint answers 401
-// without the header and 200 with it.
-func TestEntityClient_SendsTheClientAssertion(t *testing.T) {
-	var gotAssertion, gotAuth string
+func TestDetectEscalation_PostsAndDecodesResult(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAssertion = r.Header.Get("x-jwt-assertion")
-		gotAuth = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"assignments":[],"count":0}`))
+		gotMethod, gotPath = r.Method, r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"isFrustrated":true,"frustratedLevel":0.91,"reason":"Repeated unanswered follow-ups","isEmailTrigger":true}`))
 	}))
 	defer srv.Close()
 
-	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"test-assertion-token","token_type":"Bearer","expires_in":3600}`))
-	}))
-	defer tokenSrv.Close()
+	c := New(Config{BaseURL: srv.URL})
+	result, err := c.DetectEscalation(t.Context(), "CASE-1", "CS0001", "WSO2 API Manager", "This has been open for weeks with no update.")
+	if err != nil {
+		t.Fatalf("DetectEscalation() error = %v", err)
+	}
 
-	c := NewEntityClient(EntityConfig{
-		BaseURL: srv.URL, TokenURL: tokenSrv.URL,
-		ClientID: "csm-notification-service-dev-client", ClientSecret: "s",
-	})
-	if _, err := c.OnDutyAt(context.Background(), time.Now()); err != nil {
-		t.Fatalf("OnDutyAt: %v", err)
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
 	}
-	if gotAssertion != "test-assertion-token" {
-		t.Errorf("x-jwt-assertion = %q, want the access token", gotAssertion)
+	if gotPath != "/escalations" {
+		t.Errorf("path = %q, want /escalations", gotPath)
 	}
-	// Authorization still carries it too, which is what the gateway and every
-	// other caller expect.
-	if gotAuth == "" {
-		t.Error("Authorization was dropped; the OAuth2 transport must still set it")
+	if gotBody["caseId"] != "CASE-1" || gotBody["caseNumber"] != "CS0001" || gotBody["productName"] != "WSO2 API Manager" {
+		t.Errorf("request body = %+v, missing expected fields", gotBody)
+	}
+	if gotBody["comment"] != "This has been open for weeks with no update." {
+		t.Errorf("request body comment = %v", gotBody["comment"])
+	}
+
+	if !result.IsFrustrated || !result.ShouldAlert || result.FrustratedLevel != 0.91 || result.Reason == "" {
+		t.Errorf("result = %+v, unexpected", result)
+	}
+}
+
+func TestDetectEscalation_NoBaseURL_ReturnsError(t *testing.T) {
+	c := New(Config{})
+	if _, err := c.DetectEscalation(t.Context(), "CASE-1", "CS0001", "", "a comment"); err == nil {
+		t.Fatal("expected an error with no base URL configured")
+	}
+}
+
+func TestDetectEscalation_EmptyComment_ReturnsError(t *testing.T) {
+	c := New(Config{BaseURL: "https://example.test"})
+	if _, err := c.DetectEscalation(t.Context(), "CASE-1", "CS0001", "", ""); err == nil {
+		t.Fatal("expected an error for an empty comment")
+	}
+}
+
+func TestDetectEscalation_UpstreamError_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"boom"}`))
+	}))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL})
+	if _, err := c.DetectEscalation(t.Context(), "CASE-1", "CS0001", "", "a comment"); err == nil {
+		t.Fatal("expected an error for a non-2xx response")
 	}
 }
