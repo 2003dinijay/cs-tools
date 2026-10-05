@@ -27,7 +27,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
-// Runs against a migrated database (0178 included); skipped unless ENTITY_TEST_DATABASE_URL is set.
+// Runs against a migrated database (0187 included); skipped unless ENTITY_TEST_DATABASE_URL is set.
 const (
 	itAccountLive    = "a110c000-0000-4000-8000-000000000001"
 	itAccountDeleted = "a110c000-0000-4000-8000-000000000002"

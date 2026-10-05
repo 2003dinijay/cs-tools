@@ -32,6 +32,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/validate"
 )
 
 type caseService struct {
@@ -45,9 +46,6 @@ type caseService struct {
 	projectContactRepo repository.ProjectContactRepository
 	// publisher is nil when Event Hub is not configured — see
 	// snCaseService.publisher's own doc comment for the same convention.
-	// Currently only ever read by UpdateCase's (inert — see
-	// events.TypeCaseBillableStatusChanged's own doc comment)
-	// case.billable_status_changed detection.
 	publisher EventPublisherService
 	access    AccessService
 	// snWriteback/snMirror back CreateCase, UpdateCase, and CreateCaseComment's
@@ -431,20 +429,14 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	if err := validateCreateCaseRequest(&req); err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
-	// announcement/service_request/engagement/security_report_analysis only
-	// exist on the SN-first path (s.snMirror != nil): case_repo's direct
-	// Postgres insert only knows how to write a "CASE" work_item row, so on
-	// a pure-Postgres data source (s.snMirror == nil) these four would either
-	// hit an untyped uuid cast error (announcement's empty deployment id) or
-	// a missing work_item.number generator, both surfacing as an opaque
-	// 500/503 instead of a clean validation error.
+	// announcement/service_request/engagement/security_report_analysis used to
+	// exist only on the SN-first path (s.snMirror != nil): case_repo's direct
+	// Postgres insert only knew how to write a "CASE" work_item row. CaseRepository.CreateCase
+	// now has a dedicated query per type (case_repo.go's createCaseTx dispatch), so all five
+	// are supported on both the plain-Postgres and dual-write paths alike.
 	switch req.Type {
-	case "case":
-		// supported unconditionally
-	case "announcement", "service_request", "engagement", "security_report_analysis":
-		if s.snMirror == nil {
-			return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "type \"" + req.Type + "\" is supported only for DATA_SOURCE=postgres-servicenow-dual-write"}
-		}
+	case "case", "announcement", "service_request", "engagement", "security_report_analysis":
+		// supported unconditionally, on every data source
 	default:
 		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "only type \"case\", \"announcement\", \"service_request\", \"engagement\", or \"security_report_analysis\" is supported for the Postgres data source"}
 	}
@@ -470,17 +462,11 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 		return s.createCaseSNFirst(ctx, req)
 	}
 
-	// Only the pure-Postgres path below (no ServiceNow mirror at all) is
-	// genuinely limited to type "case" — it writes directly into the
-	// work_item+"case" tables, which have no equivalent extension table for
-	// engagement/service_request/security_report_analysis/announcement yet
-	// (see CaseRepository's own doc comment). This check used to run before
-	// the snMirror branch above, unconditionally rejecting "announcement"
-	// even when ServiceNow (which does support it — snCaseTypeMap has a real
-	// entry) was about to handle the actual create.
-	if req.Type != "case" {
-		return domain.CreateCaseResponse{}, &apierror.ValidationError{Msg: "only type \"case\" is supported for the Postgres data source"}
-	}
+	// The pure-Postgres path below (no ServiceNow mirror at all) now writes
+	// every one of the five case-like types -- CaseRepository.CreateCase
+	// dispatches on req.Type to its own query per type (case_repo.go), so
+	// there is no longer a narrower type restriction here than the one
+	// already enforced above.
 
 	if req.CreatedBy == "" {
 		token := middleware.UserIDTokenFromContext(ctx)
@@ -497,10 +483,31 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 		}
 		req.CreatedBy = user.ID
 	}
+	// Same watcher eligibility check as createCaseSNFirst, before anything is
+	// written. (It re-reads the caller via resolveActor; that is one extra
+	// lookup, and only when a watch list was actually submitted.)
+	watcherIDs, err := s.validateCreateWatchList(ctx, &req)
+	if err != nil {
+		return domain.CreateCaseResponse{}, err
+	}
 	c, err := s.repo.CreateCase(ctx, req)
 	if err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
+	if len(watcherIDs) > 0 {
+		// updated_by on the watcher write is the caller's email, taken from
+		// the token validateCreateWatchList already accepted.
+		callerEmail, _ := emailFromJWT(middleware.UserIDTokenFromContext(ctx))
+		s.addRequestedWatchers(ctx, c.ID, callerEmail, watcherIDs)
+	}
+	// Publish case.created here too -- previously only createCaseSNFirst
+	// (the SN-mirror path, reached when s.snMirror != nil) did this, so a
+	// deployment with no ServiceNow mirror at all never published
+	// case.created, regardless of how Event Hub was configured. Watchers are
+	// persisted first (immediately above) for the same reason
+	// createCaseSNFirst orders it this way: publishCaseCreatedEvent's own
+	// GetCaseByID re-fetch needs them already written to resolve Recipients.
+	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, req, c.ID)
 	state := ""
 	if c.State != nil {
 		state = string(*c.State)
@@ -554,6 +561,16 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 // which is exactly why this pilot could not have unblocked CreateCase any
 // other way.
 func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+	// Validated before the first upstream call, so a rejected watch list
+	// creates nothing anywhere. On success req.WatchList is rewritten to the
+	// watchers' emails (the shape the upstream create declares, which keeps it
+	// from resolving ids with the caller's own token) and watcherIDs holds
+	// their user ids for the watcher rows below.
+	watcherIDs, err := s.validateCreateWatchList(ctx, &req)
+	if err != nil {
+		return domain.CreateCaseResponse{}, err
+	}
+
 	snResp, err := s.snMirror.CreateCase(ctx, req)
 	if err != nil {
 		// ServiceNow never accepted the case — nothing is written to
@@ -627,7 +644,7 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	// via resolveCaseDefaultWatcherEmails), so a later stakeholder
 	// reassignment is reflected on the very next notification rather than
 	// staying stuck on whoever held the role at creation time.
-	s.addRequestedWatchers(ctx, c.ID, c.CreatedBy, req.WatchList)
+	s.addRequestedWatchers(ctx, c.ID, c.CreatedBy, watcherIDs)
 
 	// Only now — Postgres has confirmed the row this mode's reads actually
 	// depend on — is it safe to publish. See publishCaseCreatedEvent's doc
@@ -774,6 +791,188 @@ func (s *caseService) addRequestedWatchers(ctx context.Context, caseID, callerEm
 	}
 	if _, _, err := s.repo.SetCaseWatchList(ctx, caseID, requestedWatcherIDs, callerEmail); err != nil {
 		slog.ErrorContext(ctx, "create case: adding requested watchers failed", "caseId", caseID, "error", err)
+	}
+}
+
+// Page size for the project-contact scan in validateCreateWatchList.
+const watchListContactPageSize = 200
+
+// errInvalidCreateWatchList is deliberately generic: it must not reveal which
+// entry failed, because entries identify other people.
+const errInvalidCreateWatchList = "watchList contains a user who cannot be added as a watcher on this project"
+
+// validateCreateWatchList applies, once and before anything is created, the
+// same eligibility rule updateCaseWatchList applies to an edit, but in a fixed
+// number of queries rather than one per watcher:
+//
+//   - A REGISTERED contact of the case's project is always eligible (the same
+//     REGISTERED-only bar as validateWatchListProjectMembership).
+//   - An INTERNAL user who is not a contact is eligible only when the caller
+//     is itself an internal user. An external caller (a customer) may add
+//     registered project contacts and nothing else.
+//   - The caller is identified from the validated user token. A request with no
+//     token cannot be classified, so it is rejected as unauthenticated rather
+//     than given the permissive rule. A token whose user has no platform record
+//     is treated as external, the narrowest rule.
+//
+// Entries are all emails or all user ids (a mixed list is a validation error,
+// as before). Any entry that fails the rule rejects the whole request with a
+// message that does not echo it; a failed lookup fails the request too.
+//
+// On success req.WatchList is replaced with the accepted watchers' emails and
+// the return value is their user ids (entries with no linked user are omitted
+// from it), so neither the upstream create nor the watcher rows need a second
+// lookup. An empty list is returned untouched.
+func (s *caseService) validateCreateWatchList(ctx context.Context, req *domain.CreateCaseRequest) ([]string, error) {
+	values := req.WatchList
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	byID, err := classifyWatchList("watchList", values)
+	if err != nil {
+		return nil, err
+	}
+
+	actor, err := s.resolveActor(ctx)
+	var notFound *apierror.NotFoundError
+	switch {
+	case err == nil:
+	case errors.As(err, &notFound):
+		actor = domain.User{}
+	default:
+		return nil, err
+	}
+	callerIsInternal := actor.UserType == domain.UserTypeInternal
+
+	type watcher struct{ email, userID string }
+	contactsByKey := map[string]watcher{}
+	for offset := 0; ; offset += watchListContactPageSize {
+		rows, total, err := s.projectContactRepo.SearchProjectContacts(ctx, req.ProjectID, domain.SearchProjectContactsRequest{
+			Pagination: domain.Pagination{Limit: watchListContactPageSize, Offset: offset},
+		}, "")
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if row.RegistrationState != "REGISTERED" {
+				continue
+			}
+			w := watcher{email: row.Email}
+			if row.ResolvedEmail != nil && *row.ResolvedEmail != "" {
+				w.email = *row.ResolvedEmail
+			}
+			if row.ResolvedUserID != nil {
+				w.userID = *row.ResolvedUserID
+			}
+			contactsByKey[strings.ToLower(row.Email)] = w
+			if row.ResolvedEmail != nil {
+				contactsByKey[strings.ToLower(*row.ResolvedEmail)] = w
+			}
+			if w.userID != "" {
+				contactsByKey[strings.ToLower(w.userID)] = w
+			}
+		}
+		if len(rows) < watchListContactPageSize || offset+len(rows) >= total {
+			break
+		}
+	}
+
+	accepted := make(map[string]watcher, len(values))
+	var remainder []string
+	for _, v := range values {
+		key := strings.ToLower(v)
+		if w, ok := contactsByKey[key]; ok {
+			accepted[key] = w
+		} else {
+			remainder = append(remainder, v)
+		}
+	}
+
+	if len(remainder) > 0 {
+		if callerIsInternal {
+			filters := domain.SearchUsersFilters{}
+			lowered := make([]string, len(remainder))
+			for i, v := range remainder {
+				lowered[i] = strings.ToLower(v)
+			}
+			if byID {
+				filters.UserIDs = lowered
+			} else {
+				filters.Emails = lowered
+			}
+			users, _, err := s.userRepo.SearchUsers(ctx, domain.SearchUsersRequest{
+				Pagination: domain.Pagination{Limit: len(remainder), Offset: 0},
+				Filters:    filters,
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, u := range users {
+				if u.UserType != domain.UserTypeInternal || u.Email == "" {
+					continue
+				}
+				w := watcher{email: u.Email, userID: u.ID}
+				accepted[strings.ToLower(u.Email)] = w
+				accepted[strings.ToLower(u.ID)] = w
+			}
+		}
+		rejected := 0
+		for _, v := range remainder {
+			if _, ok := accepted[strings.ToLower(v)]; !ok {
+				rejected++
+			}
+		}
+		if rejected > 0 {
+			// Count only: entries identify people (CWE-532).
+			slog.WarnContext(ctx, "create case: watch list rejected, entries not eligible as watchers",
+				"requested", len(values), "rejected", rejected, "callerInternal", callerIsInternal)
+			return nil, &apierror.ValidationError{Msg: errInvalidCreateWatchList}
+		}
+	}
+
+	emails := make([]string, 0, len(values))
+	ids := make([]string, 0, len(values))
+	seenEmail := make(map[string]struct{}, len(values))
+	seenID := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		w := accepted[strings.ToLower(v)]
+		if _, dup := seenEmail[strings.ToLower(w.email)]; !dup {
+			seenEmail[strings.ToLower(w.email)] = struct{}{}
+			emails = append(emails, w.email)
+		}
+		if w.userID != "" {
+			if _, dup := seenID[w.userID]; !dup {
+				seenID[w.userID] = struct{}{}
+				ids = append(ids, w.userID)
+			}
+		}
+	}
+	req.WatchList = emails
+	return ids, nil
+}
+
+// classifyWatchList reports whether every entry is a user id (true) or every
+// entry is an email address (false). A mixed list, or an entry that is neither,
+// is a validation error that does not echo the entry.
+func classifyWatchList(field string, values []string) (allIDs bool, err error) {
+	allEmail, allUUID := true, true
+	for _, v := range values {
+		if !emailRE.MatchString(v) {
+			allEmail = false
+		}
+		if !validate.IsUUID(v) {
+			allUUID = false
+		}
+	}
+	switch {
+	case allUUID:
+		return true, nil
+	case allEmail:
+		return false, nil
+	}
+	return false, &apierror.ValidationError{
+		Msg: fmt.Sprintf("%s items must all be email addresses or all be user identifiers", field),
 	}
 }
 
@@ -996,6 +1195,13 @@ func (s *caseService) SearchCaseComments(ctx context.Context, req domain.SearchC
 	}, nil
 }
 
+// externalCloseDefaultNotes is the closeNotes value an external caller's
+// case close is defaulted to when they didn't (and, per the Customer
+// Portal's own close dialog, never would) supply one -- see UpdateCase's own
+// doc comment on why a default is used instead of exempting the field
+// outright.
+const externalCloseDefaultNotes = "Closed by the customer."
+
 // UpdateCase implements CaseService.
 func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.UpdateCaseResponse, error) {
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
@@ -1100,17 +1306,6 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are only allowed when state is closed or solution_proposed"}
 		}
 	}
-	// Dual-write only: closed / solution_proposed require all three
-	// resolution fields. The mirrored data source enforces this too;
-	// enforcing it here keeps the stores from diverging (a Postgres-only
-	// close with no resolution data can never be mirrored). Plain Postgres
-	// mode keeps its current, looser behaviour.
-	if s.snWriteback != nil && req.State != nil && (*req.State == domain.CaseStateClosed || *req.State == domain.CaseStateSolutionProposed) {
-		if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
-			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
-		}
-	}
-
 	if req.WatchList != nil {
 		return s.updateCaseWatchList(ctx, req)
 	}
@@ -1178,6 +1373,88 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 		}
 	}
 
+	// Dual-write only: closing (or proposing a solution for) a plain "case"
+	// requires all three resolution fields -- but only for an INTERNAL
+	// caller (WSO2 staff). The mirrored ServiceNow write enforces this too;
+	// enforcing it here keeps the stores from diverging (a Postgres-only
+	// close with no resolution data can never be mirrored). Plain Postgres
+	// mode keeps its current, looser behaviour.
+	//
+	// Scoped to type == "case" specifically -- found live as a real bug:
+	// closing an engagement/service_request/security_report_analysis/
+	// announcement (the other four case-like work_item types, see
+	// "Case-like work_item types" elsewhere in this codebase) hit this same
+	// requirement even though the webapp's own close flow for those types
+	// never collects these fields. They may still send them -- every type
+	// but announcement has resolution_code since migration 0184 -- they are
+	// just not required, as ServiceNow leaves them empty on most closed
+	// records of those types. A fetch
+	// failure above (before == nil) can't confirm the type, so this still
+	// conservatively requires the fields rather than silently exempting a
+	// case whose type just couldn't be read.
+	//
+	// Also scoped to an internal caller -- found live as a second, related
+	// bug: resolutionCode/cause are WSO2's own case-resolution taxonomy
+	// (e.g. "Product Bug", "Infrastructure Network"), support-engineer
+	// vocabulary a customer closing their own case was never meant to
+	// classify their issue with. The Customer Portal's own close dialog
+	// should never ask an external caller for this -- only an internal
+	// (WSO2 staff) caller closing a case should be required to supply it.
+	//
+	// "Internal" is scope.Unrestricted OR scope.HasInternalAccess, not just
+	// Unrestricted alone -- a caller whose email also carries an active
+	// EXTERNAL "user" row (a mixed identity) resolves to a non-Unrestricted,
+	// project-scoped AccessScope under accessService.scopeForUser's own
+	// "external wins" rule for data-VISIBILITY scoping, but is still
+	// genuinely WSO2 staff and must still be required to classify the
+	// case -- see AccessScope.HasInternalAccess's own doc comment (a
+	// CodeRabbit-caught gap in an earlier version of this fix, which used
+	// Unrestricted alone and let such a caller bypass the requirement). A
+	// ResolveScope failure here can't confirm the caller is external, so it
+	// conservatively keeps requiring the fields, same posture as the type
+	// check just above.
+	//
+	// An external caller is not simply exempted, either -- a second
+	// CodeRabbit-caught gap: the comment above this block already asserts
+	// "the mirrored data source enforces this too", i.e. ServiceNow's own
+	// case-closure workflow genuinely requires these fields (confirmed via
+	// snResolutionCodeKey/snCauseKey, which both exist and both already
+	// cover the two defaults used below). Leaving them nil for an external
+	// caller would make the best-effort, asynchronous ServiceNow mirror
+	// write fail outright, leaving the mirrored case open/unresolved while
+	// Postgres shows it closed -- the exact divergence this requirement
+	// exists to prevent. So a missing field is defaulted instead of
+	// skipped: "solved by customer" / "unknown cause" / a generic note are
+	// real, valid values on both sides, not nulls -- sparing the customer
+	// an internal-classification question they can't answer while still
+	// keeping both stores in sync.
+	if s.snWriteback != nil && req.State != nil && (*req.State == domain.CaseStateClosed || *req.State == domain.CaseStateSolutionProposed) {
+		if before == nil || before.Type == nil || *before.Type == "case" {
+			isInternalCaller := true
+			if scope, err := s.access.ResolveScope(ctx); err == nil {
+				isInternalCaller = scope.Unrestricted || scope.HasInternalAccess
+			}
+			if isInternalCaller {
+				if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
+					return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
+				}
+			} else {
+				if req.ResolutionCode == nil {
+					code := domain.CaseResolutionCodeSolvedByCustomer
+					req.ResolutionCode = &code
+				}
+				if req.Cause == nil {
+					cause := domain.CaseCauseUnknown
+					req.Cause = &cause
+				}
+				if req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
+					notes := externalCloseDefaultNotes
+					req.CloseNotes = &notes
+				}
+			}
+		}
+	}
+
 	// actorEmail is used only for this update's own activity-feed entry
 	// below -- resolved best-effort, not required, since this branch has
 	// never required an authenticated caller before now (no permission
@@ -1195,13 +1472,15 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// repository locks the row before reading it whenever req.Severity is
 	// set (see CaseRepository.UpdateCase's own doc comment). Only meaningful
 	// when req.Severity != nil; otherwise it's just the unchanged severity.
+	// Severity's LOW/S4-boundary time-card billable recompute (and, for
+	// AddCaseTag, the "patch" tag override) now happens inside
+	// CaseRepository.UpdateCase/AddCaseTag's own transactions, under the
+	// same row lock as the write that triggers it -- see
+	// recomputeTimeCardsBillable's own doc comment for why. Nothing to call
+	// from here anymore.
 	c, oldSeverity, err := s.repo.UpdateCase(ctx, req)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
-	}
-
-	if req.Severity != nil {
-		s.detectBillableStatusChange(ctx, req.ID, oldSeverity, c.Severity)
 	}
 
 	// Deliberately independent of s.publisher (never touches Event Hub) --
@@ -1804,7 +2083,9 @@ func (s *caseService) publishCaseAssigned(ctx context.Context, caseID, assigneeN
 	}
 	if err := s.publisher.Publish(ctx, events.TypeCaseAssigned, caseID, payload); err != nil {
 		slog.ErrorContext(ctx, "update case: publish case.assigned failed", "caseId", caseID)
+		return
 	}
+	slog.InfoContext(ctx, "update case: case.assigned published", "caseId", caseID)
 }
 
 // acknowledgeCase implements UpdateCase's Acknowledge branch: claiming the
@@ -1896,7 +2177,9 @@ func (s *caseService) publishCaseAcknowledged(ctx context.Context, caseID, ackno
 	}
 	if err := s.publisher.Publish(ctx, events.TypeCaseAcknowledged, caseID, payload); err != nil {
 		slog.ErrorContext(ctx, "update case: publish case.acknowledged failed", "caseId", caseID)
+		return
 	}
+	slog.InfoContext(ctx, "update case: case.acknowledged published", "caseId", caseID)
 }
 
 // updateCaseParent implements UpdateCase's ParentID branch: writing
@@ -2086,48 +2369,6 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 	resp.MostLikelyFixEta = req.MostLikelyFixEta
 	resp.WorstCaseFixEta = req.WorstCaseFixEta
 	return domain.UpdateCaseResponse{Message: "Case updated successfully", Case: resp}, nil
-}
-
-// detectBillableStatusChange checks whether a severity update just crossed
-// the LOW boundary in either direction — entering LOW means every time
-// card on this case should become billable, leaving it means they should
-// become non-billable (see events.CaseBillableStatusChangedPayload's own
-// doc comment for why LOW is the one severity that matters here). A
-// Postgres-backed case's Type is always "case" and can never change (see
-// this file's own UpdateCase, which rejects req.Type entirely on this data
-// source), so unlike the ServiceNow data source this reduces to a single
-// severity comparison — no Type-transition case to handle.
-//
-// Publishing events.TypeCaseBillableStatusChanged is commented out below
-// rather than live — see that type's own doc comment: nothing consumes it
-// yet (Postgres has no time_cards table/repo/service at all today), so
-// publishing now would produce an event nothing acts on. The detection
-// itself is real; only the actual Publish call is inert.
-func (s *caseService) detectBillableStatusChange(ctx context.Context, caseID string, oldSeverity, newSeverity *domain.CaseSeverity) {
-	oldLow := oldSeverity != nil && *oldSeverity == domain.CaseSeverityLow
-	newLow := newSeverity != nil && *newSeverity == domain.CaseSeverityLow
-	if oldLow == newLow {
-		return
-	}
-	isBillable := newLow
-
-	// TODO: enable once a consumer exists for events.TypeCaseBillableStatusChanged
-	// (bulk-flipping every time card's IsBillable for caseId) — see that
-	// type's own doc comment for what's still missing.
-	//
-	// payload, err := json.Marshal(events.CaseBillableStatusChangedPayload{CaseID: caseID, IsBillable: isBillable})
-	// if err != nil {
-	// 	slog.ErrorContext(ctx, "case update: encode case.billable_status_changed payload failed", "caseId", caseID, "error", err)
-	// 	return
-	// }
-	// if s.publisher == nil {
-	// 	return
-	// }
-	// if err := s.publisher.Publish(ctx, events.TypeCaseBillableStatusChanged, caseID, payload); err != nil {
-	// 	slog.ErrorContext(ctx, "case update: publish case.billable_status_changed failed", "caseId", caseID)
-	// }
-
-	slog.InfoContext(ctx, "case update: severity crossed the billable boundary, event hub publish not yet enabled", "caseId", caseID, "isBillable", isBillable)
 }
 
 // validateCaseFieldValues rejects malformed ids and unknown enum spellings in the
@@ -2589,6 +2830,13 @@ func (s *caseService) ConfirmCaseAttachment(ctx context.Context, id string) (dom
 // SearchCaseAttachments implements CaseService for the CSM-native (Postgres)
 // data source.
 //
+// referenceType "case" reads case_attachment (unchanged). "change_request",
+// "incident" and "conversation" are work_item subtypes and read the generic
+// work_item_attachment table via CaseRepository.SearchWorkItemAttachments;
+// "deployment" is not a work_item subtype, has no attachment table here, and
+// is rejected with a validation error. Metadata only: a work item with no
+// attachments is a successful empty result.
+//
 // Read-path status decision: the underlying repository query filters out
 // 'pending' rows entirely (see caseRepo.SearchCaseAttachments), so a case's
 // attachment list never shows a still-uploading placeholder to other users.
@@ -2604,14 +2852,29 @@ func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.Sear
 	if err := validateUUIDs("referenceId", []string{req.ReferenceID}); err != nil {
 		return domain.SearchAttachmentsResponse{}, err
 	}
-	if req.ReferenceType != domain.ReferenceTypeCase {
-		return domain.SearchAttachmentsResponse{}, &apierror.ValidationError{Msg: "referenceType must be 'case' for this data source"}
+	isCase := req.ReferenceType == domain.ReferenceTypeCase
+	if !isCase {
+		// Non-case work items (change_request, incident, conversation) are
+		// backed by work_item_attachment; "deployment" is not a work_item
+		// subtype and has no attachment table on this data source.
+		if _, ok := repository.ReferenceTypeToWorkItemType[req.ReferenceType]; !ok {
+			return domain.SearchAttachmentsResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("referenceType %q is not supported for this data source: must be one of 'case', 'change_request', 'conversation', 'incident'", req.ReferenceType)}
+		}
 	}
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchAttachmentsResponse{}, err
 	}
 
-	attachments, total, err := s.repo.SearchCaseAttachments(ctx, req.ReferenceID, req.Pagination)
+	var (
+		attachments []domain.Attachment
+		total       int
+		err         error
+	)
+	if isCase {
+		attachments, total, err = s.repo.SearchCaseAttachments(ctx, req.ReferenceID, req.Pagination)
+	} else {
+		attachments, total, err = s.repo.SearchWorkItemAttachments(ctx, req.ReferenceID, req.ReferenceType, req.Pagination)
+	}
 	if err != nil {
 		return domain.SearchAttachmentsResponse{}, err
 	}
@@ -2686,16 +2949,14 @@ func (s *caseService) GetAttachment(_ context.Context, _ string) (domain.Attachm
 
 // AddCaseTag implements CaseService.
 //
-// Persists via tag/work_item_tag (migration 0026), added after this
-// method was written as a detection-only stub (see
-// detectPatchTagBillableOverride's own doc comment for that history) — it
-// now actually attaches label to caseID, idempotently (a repeat call for an
-// already-attached label, case-insensitively, returns the existing tag
-// rather than erroring or duplicating). The "patch" + LOW-severity detection
-// still only logs: (a) case tags having real storage is now true, but (b)
-// no consumer exists yet for events.TypeCaseBillableStatusChanged (bulk-
-// flipping every time card's IsBillable for caseId), so the actual publish
-// stays commented out in detectPatchTagBillableOverride until that exists.
+// Persists via tag/work_item_tag (migration 0026) -- attaches label to
+// caseID, idempotently (a repeat call for an already-attached label,
+// case-insensitively, returns the existing tag rather than erroring or
+// duplicating). A "patch" label on a case currently at LOW/S4 severity
+// also flips its time cards non-billable -- see
+// CaseRepository.recomputeTimeCardsBillable's own doc comment; that
+// override now lives entirely in the repository's own transaction, not
+// here.
 func (s *caseService) AddCaseTag(ctx context.Context, caseID, label string) (domain.Tag, error) {
 	actor, err := s.resolveActor(ctx)
 	if err != nil {
@@ -2725,8 +2986,6 @@ func (s *caseService) addCaseTagAs(ctx context.Context, caseID, label, actorEmai
 	if len(label) > 255 {
 		return domain.Tag{}, &apierror.ValidationError{Msg: "label must not exceed 255 characters"}
 	}
-
-	s.detectPatchTagBillableOverride(ctx, caseID, label)
 
 	tag, err := s.repo.AddCaseTag(ctx, caseID, label, actorEmail)
 	if err != nil {
@@ -2783,66 +3042,6 @@ func (s *caseService) addCaseTagAs(ctx context.Context, caseID, label, actorEmai
 	}
 
 	return tag, nil
-}
-
-// detectPatchTagBillableOverride DETECTS AND LOGS ONLY — it does not
-// itself change any time card's billable status, publish an event, or
-// persist the tag (see AddCaseTag's own doc comment). It is a special case
-// of detectBillableStatusChange's normal "entering LOW/S4 severity makes
-// time cards billable" rule: a case tagged "patch" while at LOW severity
-// should eventually have its time cards non-billable regardless — WSO2
-// still covers a patch under support even for an otherwise best-efforts S4
-// case — but nothing in this codebase acts on that yet (see the TODO
-// below). Label matching is case/whitespace-insensitive, same reasoning as
-// this codebase's other free-text label lookups (e.g.
-// slaSeverityLabelAndColor in csm-notification-service). Unlike
-// detectBillableStatusChange, the eventual reaction is meant to be
-// one-directional: removing the tag (or adding any other label) should
-// never reverse it — only ever set isBillable=false, never back to true,
-// since there's no natural "un-patch" event to react to.
-//
-// Same commented-out-publish posture as detectBillableStatusChange: logs
-// only, since there is still no time_cards consumer to act on
-// events.TypeCaseBillableStatusChanged (see that type's own doc comment).
-// AddCaseTag itself now succeeds (see its own doc comment) -- the remaining
-// gap is purely the missing consumer, not the tag storage this was
-// originally blocked on.
-func (s *caseService) detectPatchTagBillableOverride(ctx context.Context, caseID, label string) {
-	if !strings.EqualFold(strings.TrimSpace(label), "patch") {
-		return
-	}
-
-	// Unrestricted: this is an internal re-fetch of a case AddCaseTag just
-	// wrote to, not a caller-facing read -- there's no separate caller
-	// identity to scope here, and the tag write itself already happened.
-	cv, err := s.repo.GetCaseByID(ctx, caseID, repository.SearchScope{Unrestricted: true})
-	if err != nil {
-		slog.ErrorContext(ctx, "add case tag: patch billable override not evaluated, get case failed", "caseId", caseID)
-		return
-	}
-	if cv.Severity == nil || *cv.Severity != domain.CaseSeverityLow {
-		return
-	}
-
-	// TODO: enable once (a) case tags have real Postgres storage so
-	// AddCaseTag can actually succeed, and (b) a consumer exists for
-	// events.TypeCaseBillableStatusChanged (bulk-flipping every time
-	// card's IsBillable for caseId) — see that type's own doc comment for
-	// what's still missing there.
-	//
-	// payload, err := json.Marshal(events.CaseBillableStatusChangedPayload{CaseID: caseID, IsBillable: false})
-	// if err != nil {
-	// 	slog.ErrorContext(ctx, "add case tag: encode case.billable_status_changed payload failed", "caseId", caseID, "error", err)
-	// 	return
-	// }
-	// if s.publisher == nil {
-	// 	return
-	// }
-	// if err := s.publisher.Publish(ctx, events.TypeCaseBillableStatusChanged, caseID, payload); err != nil {
-	// 	slog.ErrorContext(ctx, "add case tag: publish case.billable_status_changed failed", "caseId", caseID)
-	// }
-
-	slog.InfoContext(ctx, "add case tag: patch tag detected on an S4 case, time cards would need to become non-billable once a real tag/time-card path exists (detection only, no action taken)", "caseId", caseID, "isBillable", false)
 }
 
 // RemoveCaseTag implements CaseService.
