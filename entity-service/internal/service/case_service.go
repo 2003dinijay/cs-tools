@@ -995,6 +995,11 @@ func (s *caseService) AccountDefaultWatcherEmails(ctx context.Context, projectID
 	return s.repo.AccountDefaultWatcherEmails(ctx, projectID)
 }
 
+// ProjectOnboardingInfo implements CaseService.
+func (s *caseService) ProjectOnboardingInfo(ctx context.Context, projectID string) (string, bool, error) {
+	return s.repo.ProjectOnboardingInfo(ctx, projectID)
+}
+
 // GetCaseEtaSharedOn implements CaseService.
 func (s *caseService) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error) {
 	return s.repo.GetCaseEtaSharedOn(ctx, caseID)
@@ -1082,7 +1087,7 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 			slog.ErrorContext(ctx, "create comment: enrich case for case.comment_added publish failed", "caseId", req.CaseID)
 		} else {
 			cv.WatchList = s.filterActiveWatchListUsers(ctx, cv, cv.WatchList)
-			publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, cv, req, c.ID, authorName)
+			publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, s.ProjectOnboardingInfo, cv, req, c.ID, authorName, actorEmail)
 		}
 	}
 

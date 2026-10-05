@@ -67,6 +67,7 @@ type stubCaseRepo struct {
 	addCaseTag                    func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
 	setCaseWatchList              func(ctx context.Context, caseID string, userIDs []string, actorEmail string) ([]domain.WatchListUser, time.Time, error)
 	accountDefaultWatcherEmails   func(ctx context.Context, projectID string) ([]string, error)
+	projectOnboardingInfo         func(ctx context.Context, projectID string) (string, bool, error)
 	getCaseEtaSharedOn            func(ctx context.Context, caseID string) (*time.Time, error)
 	projectContactEmailsByRole    func(ctx context.Context, projectID, role string) ([]string, error)
 	updateCaseAssignee            func(ctx context.Context, caseID string, userID *string, callerEmail string) (time.Time, bool, error)
@@ -220,6 +221,13 @@ func (s *stubCaseRepo) AccountDefaultWatcherEmails(ctx context.Context, projectI
 		return s.accountDefaultWatcherEmails(ctx, projectID)
 	}
 	return nil, nil
+}
+
+func (s *stubCaseRepo) ProjectOnboardingInfo(ctx context.Context, projectID string) (string, bool, error) {
+	if s.projectOnboardingInfo != nil {
+		return s.projectOnboardingInfo(ctx, projectID)
+	}
+	return "", false, nil
 }
 
 // GetCaseEtaSharedOn defaults to nil (no fix ETA shared) rather than

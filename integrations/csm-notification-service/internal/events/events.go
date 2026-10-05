@@ -213,6 +213,25 @@ type CommentAddedPayload struct {
 	// format recipients are already used to.
 	IsInternalNote bool     `json:"isInternalNote,omitempty"`
 	Recipients     []string `json:"recipients"`
+	// AuthorEmail is the comment author's own resolved email, added so
+	// dispatch.handleCommentAdded can classify the author as internal/
+	// external (the same role-then-domain classification
+	// internal/recipientlinks already applies to a *recipient's* email) to
+	// decide whether to run frustration detection on this comment. Empty
+	// when the publisher couldn't resolve it -- the check is then skipped
+	// rather than guessed.
+	AuthorEmail string `json:"authorEmail,omitempty"`
+	// Product is the case's deployed product's display name (e.g. "WSO2 API
+	// Manager") -- purely display, shown on a frustration-detection Chat
+	// alert's card, if one is sent.
+	Product string `json:"product,omitempty"`
+	// Team/IsEvaluationAccount/ProjectOnboardingStatus let
+	// dispatch.checkFrustration route a frustration-detection Chat alert
+	// through chataudience.Resolve the same way an SLA breach alert is
+	// routed, instead of always the fixed Incident Monitor audience.
+	Team                    string `json:"team,omitempty"`
+	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
+	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
 }
 
 // StatusChangedPayload is TypeStatusChanged's payload. See
