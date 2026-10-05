@@ -20,9 +20,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
@@ -68,6 +70,28 @@ import (
 //	review gate: Review -> Customer Review -> Closed when
 //	    customer_review_required, Review -> Closed otherwise. Closing from
 //	    Customer Review records the customer's review (is_customer_reviewed).
+//
+// Who gives the customer's answer depends on the change's Customer Group
+// (change_request.customer_group_id, a "group"; its members are its
+// team_member rows by group_id, exactly like the Assignment group):
+//
+//	with a customer group that has an eligible member (an active member who
+//	    is not the creator): entering Customer Approval / Customer Review
+//	    provisions an approval stage -- "Customer Approval" / "Customer Review",
+//	    assignment group = the customer group, one REQUESTED approver per
+//	    eligible member -- and the members decide it in the Approvals tab,
+//	    through DecideChangeRequestApproval like every other stage (first
+//	    responder wins). Approving Customer Approval schedules the change
+//	    (is_customer_approved stamped), rejecting it cancels it; approving
+//	    Customer Review closes it (is_customer_reviewed stamped), rejecting it
+//	    moves it to Rollback. The manual {state: scheduled} / {state: closed}
+//	    is then refused: the answer comes from the approval.
+//	without one (no customer group, or nobody eligible in it): no stage is
+//	    provisioned and the manual path above stays the way out, so a change
+//	    can never be stranded in a customer state with nobody able to answer.
+//
+// provisionCustomerStage keeps the stage in step with the change (state and
+// customer group) and is the one place that provisions, replaces or cancels it.
 
 // Stage labels written to approval_stage.checkpoint_label by this file's
 // provisioning. LegacyAssessLabel/LegacyAuthorizeLabel are what stages created
@@ -78,6 +102,10 @@ const (
 	approvalStageLabelCAB       = "CAB Approval"
 	approvalStageLabelECAB      = "ECAB Approval"
 	approvalStageLabelReview    = "Review"
+	// The customer's own stages (see provisionCustomerStage): not part of the
+	// internal checkpoint ordinals, so they are written and recognised by label.
+	approvalStageLabelCustomerApproval = "Customer Approval"
+	approvalStageLabelCustomerReview   = "Customer Review"
 	approvalStageLabelLegacyAss = "Assess"
 	approvalStageLabelLegacyAut = "Authorize"
 )
@@ -134,6 +162,11 @@ const (
 	stageKindCAB
 	stageKindECAB
 	stageKindReview
+	// stageKindCustomerApproval / stageKindCustomerReview are the customer
+	// group's stages, entered with the Customer Approval / Customer Review
+	// states.
+	stageKindCustomerApproval
+	stageKindCustomerReview
 )
 
 // classifyApprovalStage resolves a stage's role from its explicit
@@ -151,6 +184,10 @@ func classifyApprovalStage(label *string, position int) approvalStageKind {
 			return stageKindECAB
 		case approvalStageLabelReview:
 			return stageKindReview
+		case approvalStageLabelCustomerApproval:
+			return stageKindCustomerApproval
+		case approvalStageLabelCustomerReview:
+			return stageKindCustomerReview
 		default:
 			return stageKindOther
 		}
@@ -568,4 +605,351 @@ func validateCustomerGateEdits(snap changeRequestGateSnapshot, approvalRequired,
 			"customerReviewRequired can no longer be changed: the change request has already left the review stage (current state: %s)", state)}
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Customer Approval / Customer Review stages
+// ---------------------------------------------------------------------------
+
+// customerStageSpec describes one of the two customer stages: the state it is
+// entered with, its label (approval_stage.checkpoint_label), its kind, and
+// what its outcome does to the change.
+type customerStageSpec struct {
+	// state is the upper-case change_request_state_enum label the stage
+	// belongs to.
+	state string
+	label string
+	kind  approvalStageKind
+	// approvedState / rejectedState are where the stage's outcome moves the
+	// change.
+	approvedState, rejectedState string
+	// approvedFlagColumn is the change_request column the approval stamps.
+	approvedFlagColumn string
+	// what is the customer's answer in words, for messages.
+	what string
+}
+
+var (
+	customerApprovalStageSpec = customerStageSpec{
+		state: "CUSTOMER_APPROVAL", label: approvalStageLabelCustomerApproval, kind: stageKindCustomerApproval,
+		approvedState: "SCHEDULED", rejectedState: "CANCELED", approvedFlagColumn: "is_customer_approved",
+		what: "approval",
+	}
+	// A rejected customer review moves the change to Rollback: the state the
+	// ServiceNow workflow that handles a rejected review writes (see
+	// ChangeRequestActionBar.tsx in the webapp -- "rollback is written by the
+	// workflow that handles a rejected review"). Rollback is terminal here
+	// exactly as it is everywhere else in this data source.
+	customerReviewStageSpec = customerStageSpec{
+		state: "CUSTOMER_REVIEW", label: approvalStageLabelCustomerReview, kind: stageKindCustomerReview,
+		approvedState: "CLOSED", rejectedState: "ROLLBACK", approvedFlagColumn: "is_customer_reviewed",
+		what: "review",
+	}
+)
+
+// customerStageSpecForState returns the customer stage a change in the given
+// (upper-case) state waits on, nil for every other state.
+func customerStageSpecForState(state string) *customerStageSpec {
+	switch state {
+	case customerApprovalStageSpec.state:
+		return &customerApprovalStageSpec
+	case customerReviewStageSpec.state:
+		return &customerReviewStageSpec
+	}
+	return nil
+}
+
+// customerStageSpecForKind is customerStageSpecForState keyed by stage kind.
+func customerStageSpecForKind(kind approvalStageKind) *customerStageSpec {
+	switch kind {
+	case stageKindCustomerApproval:
+		return &customerApprovalStageSpec
+	case stageKindCustomerReview:
+		return &customerReviewStageSpec
+	}
+	return nil
+}
+
+// customerGroupMemberIDs lists the distinct ids of the active users in the
+// customer group (team_member.group_id -- the same membership model as the
+// Assignment group, see groupMemberIDs).
+func customerGroupMemberIDs(ctx context.Context, q crQuerier, groupID string) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT tm.user_id::text
+		FROM team_member tm
+		JOIN "user" u ON u.id = tm.user_id
+		WHERE tm.group_id = $1::uuid AND COALESCE(u.is_active, true)`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("list customer group members: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan customer group member: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// liveCustomerStage is a customer stage that still has a REQUESTED approver.
+type liveCustomerStage struct {
+	stageID   string
+	label     string
+	groupID   string
+	groupName string
+}
+
+// liveCustomerStages lists the change's customer stages with at least one
+// REQUESTED approver, oldest first.
+func liveCustomerStages(ctx context.Context, q crQuerier, workItemID string) ([]liveCustomerStage, error) {
+	rows, err := q.Query(ctx, `
+		SELECT ast.id::text, ast.checkpoint_label, COALESCE(ast.assignment_group_id::text, ''), COALESCE(g.name, '')
+		FROM approval_stage ast
+		LEFT JOIN "group" g ON g.id = ast.assignment_group_id
+		WHERE ast.work_item_id = $1
+		  AND ast.checkpoint_label IN ($2, $3)
+		  AND EXISTS (SELECT 1 FROM approval_stage_approver asa WHERE asa.stage_id = ast.id AND asa.status = 'requested')
+		ORDER BY ast.created_on ASC, ast.id ASC`,
+		workItemID, approvalStageLabelCustomerApproval, approvalStageLabelCustomerReview)
+	if err != nil {
+		return nil, fmt.Errorf("list live customer stages: %w", err)
+	}
+	defer rows.Close()
+	var out []liveCustomerStage
+	for rows.Next() {
+		var st liveCustomerStage
+		if err := rows.Scan(&st.stageID, &st.label, &st.groupID, &st.groupName); err != nil {
+			return nil, fmt.Errorf("scan live customer stage: %w", err)
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+// liveCustomerStageForState returns the live customer stage of the kind the
+// given (upper-case) state waits on, nil when the state has none or none is
+// live.
+func liveCustomerStageForState(ctx context.Context, q crQuerier, workItemID, state string) (*liveCustomerStage, error) {
+	spec := customerStageSpecForState(state)
+	if spec == nil {
+		return nil, nil
+	}
+	live, err := liveCustomerStages(ctx, q, workItemID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range live {
+		if live[i].label == spec.label {
+			return &live[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// withoutManualCustomerOutcome drops the manual way out of a customer state
+// from legalNextStates while a customer stage is live for it: "scheduled"
+// (Record customer approval) from Customer Approval, "closed" (Close) from
+// Customer Review. Only Cancel is left; the decision comes from the approval.
+func withoutManualCustomerOutcome(state *string, nexts []string, liveStage bool) []string {
+	if !liveStage || state == nil || nexts == nil {
+		return nexts
+	}
+	spec := customerStageSpecForState(strings.ToUpper(*state))
+	if spec == nil {
+		return nexts
+	}
+	manual := strings.ToLower(spec.approvedState)
+	out := make([]string, 0, len(nexts))
+	for _, n := range nexts {
+		if n != manual {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// customerStageManualRefusal is the 400 for a manual PATCH of the customer
+// state's outcome ({state: scheduled} / {state: closed}) while the customer
+// group's approval request is pending.
+func customerStageManualRefusal(target string, spec *customerStageSpec, live *liveCustomerStage) error {
+	who := "the customer group"
+	if live.groupName != "" {
+		who = fmt.Sprintf("the customer group %q", live.groupName)
+	}
+	return &apierror.ValidationError{Msg: fmt.Sprintf(
+		"state %q cannot be set manually: the customer's %s has been requested from %s and is given by one of its members approving or rejecting it in the change request's approvals (POST /change-requests/{id}/approvals/decision)",
+		target, spec.what, who)}
+}
+
+// cancelLiveStageApprovers cancels the REQUESTED approvers of a stage (the
+// stage itself stays, as a record: all its rows read CANCELLED).
+func cancelLiveStageApprovers(ctx context.Context, tx pgx.Tx, stageID, actorEmail string) error {
+	if _, err := tx.Exec(ctx,
+		`UPDATE approval_stage_approver SET status = 'cancelled', updated_on = NOW(), updated_by = $2
+		 WHERE stage_id = $1 AND status = 'requested'`, stageID, actorEmail); err != nil {
+		return fmt.Errorf("cancel customer stage approvers: %w", err)
+	}
+	return nil
+}
+
+// provisionCustomerStage brings the change's customer stage in step with the
+// change as it now stands (read under FOR UPDATE), and is idempotent:
+//
+//   - state Customer Approval / Customer Review and a customer group with at
+//     least one eligible member (active, not the creator): provisions the
+//     "Customer Approval" / "Customer Review" stage -- assignment group = the
+//     customer group, one REQUESTED approver per eligible member, the creator
+//     (if a member) listed CANCELLED like on every other stage -- unless a
+//     live stage for that group already exists (nothing to do) or the stage
+//     has already been decided (approved or rejected: nothing left to ask);
+//   - a live customer stage that no longer matches -- the customer group was
+//     changed or cleared, or the change left that state (e.g. was cancelled) --
+//     has its REQUESTED approvers cancelled, so there are never two live
+//     customer stages and nobody is asked a question that no longer applies.
+//     A changed group gets a fresh stage for the new group (first bullet);
+//   - no customer group, or nobody eligible in it: no stage; the manual
+//     "record the customer's approval" / close path stays available.
+//
+// Returns whether a stage was provisioned. Callers: the CAB / ECAB approval
+// cascade and Request Approval on a Standard change (entering Customer
+// Approval), a {state: customer_review} PATCH, and any PATCH that sets or
+// changes customerGroupId or the state.
+func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string) (bool, error) {
+	var state, groupID *string
+	if err := tx.QueryRow(ctx,
+		`SELECT state::text, customer_group_id::text FROM change_request WHERE id = $1 FOR UPDATE`, workItemID).Scan(&state, &groupID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("provision customer stage: read change request: %w", err)
+	}
+	spec := customerStageSpecForState(strings.ToUpper(stringOrEmpty(state)))
+	live, err := liveCustomerStages(ctx, tx, workItemID)
+	if err != nil {
+		return false, err
+	}
+	if spec == nil && len(live) == 0 {
+		return false, nil
+	}
+
+	// approval_stage / approval_stage_approver writes are internal-only (see
+	// provisionApprovalStage). The caller has already proven their access to
+	// this change request by writing to it in this transaction.
+	if err := setCallerIdentity(ctx, tx, SearchScope{Unrestricted: true}); err != nil {
+		return false, fmt.Errorf("provision customer stage: escalate identity: %w", err)
+	}
+
+	keep := false
+	for _, st := range live {
+		if spec != nil && st.label == spec.label && groupID != nil && strings.EqualFold(st.groupID, *groupID) && !keep {
+			keep = true
+			continue
+		}
+		if err := cancelLiveStageApprovers(ctx, tx, st.stageID, actorEmail); err != nil {
+			return false, err
+		}
+	}
+	if spec == nil || groupID == nil || keep {
+		return false, nil
+	}
+
+	var decided bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM approval_stage_approver asa JOIN approval_stage ast ON ast.id = asa.stage_id
+		                 WHERE ast.work_item_id = $1 AND ast.checkpoint_label = $2 AND asa.status IN ('approved', 'rejected'))`,
+		workItemID, spec.label).Scan(&decided); err != nil {
+		return false, fmt.Errorf("provision customer stage: check decided stage: %w", err)
+	}
+	if decided {
+		return false, nil
+	}
+
+	creatorIDs, err := changeRequestCreatorUserIDs(ctx, tx, workItemID)
+	if err != nil {
+		return false, fmt.Errorf("provision customer stage: %w", err)
+	}
+	members, err := customerGroupMemberIDs(ctx, tx, *groupID)
+	if err != nil {
+		return false, err
+	}
+	eligible := false
+	for _, m := range members {
+		if !creatorIDs[strings.ToLower(m)] {
+			eligible = true
+			break
+		}
+	}
+	if !eligible {
+		// The manual path stays open (see the doc comment): nothing is
+		// stranded, but say why no stage appeared.
+		slog.InfoContext(ctx, "customer group has no eligible approvers, customer stage not provisioned",
+			"changeRequestId", workItemID, "customerGroupId", *groupID, "stage", spec.label)
+		return false, nil
+	}
+	if err := insertApprovalStage(ctx, tx, workItemID, actorEmail, spec.label, approvalPool{groupID: *groupID, members: members}, creatorIDs); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// applyCustomerStageOutcome moves the change on after a customer stage was
+// resolved by a decision: Customer Approval approved -> Scheduled (stamping
+// is_customer_approved), rejected -> Canceled; Customer Review approved ->
+// Closed (stamping is_customer_reviewed), rejected -> Rollback. The change
+// must still be in the stage's state (a stage whose change has moved on has
+// had its approvers cancelled, so this is a defence, not a path). Returns
+// whether the state moved.
+func applyCustomerStageOutcome(ctx context.Context, tx pgx.Tx, workItemID string, spec *customerStageSpec, currentState string, approved bool) (bool, error) {
+	if !strings.EqualFold(currentState, spec.state) {
+		return false, nil
+	}
+	var ct pgconn.CommandTag
+	var err error
+	if approved {
+		ct, err = tx.Exec(ctx,
+			fmt.Sprintf(`UPDATE change_request SET state = $2::change_request_state_enum, %s = true WHERE id = $1`, spec.approvedFlagColumn),
+			workItemID, spec.approvedState)
+	} else {
+		ct, err = tx.Exec(ctx, `UPDATE change_request SET state = $2::change_request_state_enum WHERE id = $1`, workItemID, spec.rejectedState)
+	}
+	if err != nil {
+		return false, fmt.Errorf("decide change request approval: apply customer %s outcome: %w", spec.what, err)
+	}
+	if ct.RowsAffected() == 0 {
+		return false, &apierror.NotFoundError{Msg: "change request not found"}
+	}
+	return true, nil
+}
+
+// customerStageDecisionRefusal is the 403 for a caller with no pending approval
+// of their own on a change that is waiting on the customer group: only a
+// member of that group may answer, and the caller is not one (or has already
+// been superseded by a sibling's answer, in which case the stage is no longer
+// live and this returns nil). nil when the change is not waiting on a live
+// customer stage; the caller falls back to its generic "no pending approval".
+func customerStageDecisionRefusal(ctx context.Context, tx pgx.Tx, workItemID string) (*apierror.ForbiddenError, error) {
+	var state *string
+	if err := tx.QueryRow(ctx, `SELECT state::text FROM change_request WHERE id = $1`, workItemID).Scan(&state); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("decide change request approval: read state: %w", err)
+	}
+	live, err := liveCustomerStageForState(ctx, tx, workItemID, strings.ToUpper(stringOrEmpty(state)))
+	if err != nil {
+		return nil, fmt.Errorf("decide change request approval: %w", err)
+	}
+	if live == nil {
+		return nil, nil
+	}
+	spec := customerStageSpecForState(strings.ToUpper(stringOrEmpty(state)))
+	who := "members of the customer group"
+	if live.groupName != "" {
+		who = fmt.Sprintf("members of the customer group %q", live.groupName)
+	}
+	return &apierror.ForbiddenError{Msg: fmt.Sprintf(
+		"only %s can approve or reject the customer's %s of this change request", who, spec.what)}, nil
 }

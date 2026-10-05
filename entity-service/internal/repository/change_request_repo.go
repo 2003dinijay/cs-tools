@@ -802,6 +802,17 @@ func (r *changeRequestRepo) GetChangeRequestByID(ctx context.Context, id string)
 	// ApprovedBy/ApprovedOn/LegalNextStates/Environments/DeploymentProducts/
 	// Labels/Deployments have no real column -- see this file's own package
 	// doc comment.
+
+	// While the customer group's approval request is pending (a live
+	// "Customer Approval" / "Customer Review" stage), the manual way out of
+	// the customer state is not offered: the decision comes from the approval.
+	if cr.State != nil {
+		live, err := liveCustomerStageForState(ctx, r.db, id, strings.ToUpper(*cr.State))
+		if err != nil {
+			return domain.ChangeRequest{}, fmt.Errorf("get change request by id: %w", err)
+		}
+		cr.LegalNextStates = withoutManualCustomerOutcome(cr.State, cr.LegalNextStates, live != nil)
+	}
 	return cr, nil
 }
 
@@ -1227,6 +1238,13 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 				return "", &apierror.ValidationError{Msg: fmt.Sprintf(
 					"state %q cannot be set manually: it is reached automatically through the approval flow (Request Approval, then peer/CAB approval); it can only be set by hand to record the customer's approval, from customer_approval", *req.State)}
 			}
+			// The customer group's approval request is pending: the answer
+			// comes from its members through the approvals, not from here.
+			if live, err := liveCustomerStageForState(ctx, tx, id, gates.state); err != nil {
+				return "", fmt.Errorf("patch change request: %w", err)
+			} else if live != nil {
+				return "", customerStageManualRefusal("scheduled", &customerApprovalStageSpec, live)
+			}
 			if req.IsCustomerApproved != nil && !*req.IsCustomerApproved {
 				return "", &apierror.ValidationError{Msg: "isCustomerApproved cannot be false when recording the customer's approval (state scheduled from customer_approval)"}
 			}
@@ -1241,6 +1259,13 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 				return "", &apierror.ValidationError{Msg: "state \"closed\" cannot be set from review: customer review is required for this change request (customerReviewRequired is true); move it to customer_review first"}
 			}
 			if gates.state == "CUSTOMER_REVIEW" {
+				// As for scheduled above: with the customer group's review
+				// request pending, closing is the members' decision.
+				if live, err := liveCustomerStageForState(ctx, tx, id, gates.state); err != nil {
+					return "", fmt.Errorf("patch change request: %w", err)
+				} else if live != nil {
+					return "", customerStageManualRefusal("closed", &customerReviewStageSpec, live)
+				}
 				if req.IsCustomerReviewed != nil && !*req.IsCustomerReviewed {
 					return "", &apierror.ValidationError{Msg: "isCustomerReviewed cannot be false when recording the customer's review (state closed from customer_review)"}
 				}
@@ -1579,6 +1604,20 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		}
 	}
 
+	// The customer group answers Customer Approval / Customer Review through
+	// an approval stage of its own (provisionCustomerStage). Whatever this
+	// PATCH changed about the state or the customer group, bring that stage in
+	// step with the change as it now stands: provision it on entering the
+	// state (Request Approval on a Standard change, {state: customer_review}),
+	// provision it when the group is set later, replace it when the group
+	// changes, cancel it when the group is cleared or the change leaves the
+	// state. Idempotent, and a no-op for every other state.
+	if req.State != nil || req.CustomerGroupID != nil {
+		if _, err := provisionCustomerStage(ctx, tx, id, actorEmail); err != nil {
+			return "", err
+		}
+	}
+
 	return wiID, nil
 }
 
@@ -1830,8 +1869,16 @@ func provisionApprovalStage(ctx context.Context, tx pgx.Tx, workItemID string, a
 	// approval_stage_visibility's SELECT policy (migration 0145) already
 	// allows any member of the change request's own project to see this
 	// count, so this still runs under the caller's own identity.
+	// The Customer Approval / Customer Review stages (provisionCustomerStage)
+	// sit outside the internal checkpoint ordinals: counting them would put
+	// the Review checkpoint of a Normal change that went through Customer
+	// Approval at position 3 instead of 2, and it would silently never be
+	// provisioned.
 	var existingStages int
-	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, workItemID).Scan(&existingStages); err != nil {
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1
+		   AND COALESCE(checkpoint_label, '') NOT IN ($2, $3)`,
+		workItemID, approvalStageLabelCustomerApproval, approvalStageLabelCustomerReview).Scan(&existingStages); err != nil {
 		return false, fmt.Errorf("patch change request: check existing approval stages: %w", err)
 	}
 	if existingStages != checkpoint.Position {
@@ -1857,18 +1904,28 @@ func provisionApprovalStage(ctx context.Context, tx pgx.Tx, workItemID string, a
 	if err != nil {
 		return false, err
 	}
+	if err := insertApprovalStage(ctx, tx, workItemID, actorEmail, checkpoint.Label, pool, creatorIDs); err != nil {
+		return false, err
+	}
+	return true, nil
+}
 
-	// checkpoint_label (migration 0179) records which checkpoint this is
-	// explicitly; GetChangeRequestApprovals prefers it over the ordinal
-	// heuristic. assignment_group_id is the pool's own group (for CAB/ECAB the
-	// special group, so the Approvals tab names it).
+// insertApprovalStage writes one approval_stage (checkpoint_label = label,
+// assignment_group_id = the pool's group) and one approval_stage_approver per
+// distinct pool member: `requested`, except the change's creator(s), who are
+// born `cancelled` (nobody approves their own change). The caller has already
+// escalated the transaction's identity.
+//
+// checkpoint_label (migration 0179) records which checkpoint this is
+// explicitly; GetChangeRequestApprovals prefers it over the ordinal heuristic.
+func insertApprovalStage(ctx context.Context, tx pgx.Tx, workItemID, actorEmail, label string, pool approvalPool, creatorIDs map[string]bool) error {
 	var stageID string
 	if err := tx.QueryRow(ctx,
 		`INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, checkpoint_label)
 		 VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1, $2, $3::uuid, $4)
 		 RETURNING id`,
-		actorEmail, workItemID, pool.groupID, checkpoint.Label).Scan(&stageID); err != nil {
-		return false, fmt.Errorf("patch change request: create approval stage: %w", err)
+		actorEmail, workItemID, pool.groupID, label).Scan(&stageID); err != nil {
+		return fmt.Errorf("patch change request: create approval stage: %w", err)
 	}
 
 	seen := map[string]bool{}
@@ -1886,10 +1943,10 @@ func provisionApprovalStage(ctx context.Context, tx pgx.Tx, workItemID string, a
 			`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, work_item_id, stage_id, approver_user_id, status)
 			 VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1, $2, $3, $4::uuid, $5)`,
 			actorEmail, workItemID, stageID, uid, status); err != nil {
-			return false, fmt.Errorf("patch change request: seed approval stage approver: %w", err)
+			return fmt.Errorf("patch change request: seed approval stage approver: %w", err)
 		}
 	}
-	return true, nil
+	return nil
 }
 
 // createChangeRequestPortalQuery is CreateChangeRequest's (the plain-Postgres,
@@ -2521,14 +2578,23 @@ func cancelSiblingApprovalStageApprovers(ctx context.Context, tx pgx.Tx, stageID
 //     customer_approval_required is set (approvalGateTarget). There is no
 //     manual Schedule action; the customer's approval is recorded by a human
 //     {state: "scheduled"} out of Customer Approval.
+//   - the customer group's stage while the change waits in the matching state
+//     (provisionCustomerStage): "Customer Approval" approved -> Scheduled and
+//     is_customer_approved = true, rejected -> Canceled; "Customer Review"
+//     approved -> Closed and is_customer_reviewed = true, rejected ->
+//     Rollback. CAB / ECAB approval into Customer Approval provisions the
+//     "Customer Approval" stage in the same transaction.
 //   - any other stage (Review, or a stage that is neither): the decision is
 //     recorded and siblings cancelled, no state change.
 //
 // A resolving approval or rejection cancels every other still-Requested
 // approver on the stage (matching real ServiceNow: confirmed live on a
-// 119-approver group). A rejection never changes change_request.state, in
-// either direction: real ServiceNow rolls back to a state this schema cannot
-// confirm, so inventing one would be guessing -- existing behaviour, kept.
+// 119-approver group). A rejection of an INTERNAL stage never changes
+// change_request.state, in either direction: real ServiceNow rolls back to a
+// state this schema cannot confirm, so inventing one would be guessing --
+// existing behaviour, kept. The customer stages are the exception, above:
+// their rejection has one obvious meaning (the customer declined / the review
+// failed).
 //
 // Who may decide (checked before the row is touched, ForbiddenError otherwise):
 //
@@ -2593,7 +2659,18 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 		var approvalID string
 		var stageID *string
 		err = tx.QueryRow(ctx, decideChangeRequestApprovalQuery, id, approverUserID, decision, actorEmail).Scan(&approvalID, &stageID)
-		if errors.Is(err, pgx.ErrNoRows) || IsRLSPolicyViolation(err) {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// A change waiting on the customer group's answer: say who may give
+			// it, rather than a bare "no pending approval" for someone who is
+			// simply not in that group.
+			if refusal, rerr := customerStageDecisionRefusal(ctx, tx, id); rerr != nil {
+				return "", rerr
+			} else if refusal != nil {
+				return "", refusal
+			}
+			return "", &apierror.NotFoundError{Msg: "no pending approval found for this change request and caller"}
+		}
+		if IsRLSPolicyViolation(err) {
 			return "", &apierror.NotFoundError{Msg: "no pending approval found for this change request and caller"}
 		}
 		if err != nil {
@@ -2640,8 +2717,24 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 					// unless the customer's approval is required, in which case
 					// the change waits in Customer Approval for it to be
 					// recorded (a human {state: "scheduled"} from there).
-					if _, err := tx.Exec(ctx, `UPDATE change_request SET state = $2::change_request_state_enum WHERE id = $1`, id, approvalGateTarget(customerApprovalRequired)); err != nil {
+					target := approvalGateTarget(customerApprovalRequired)
+					if _, err := tx.Exec(ctx, `UPDATE change_request SET state = $2::change_request_state_enum WHERE id = $1`, id, target); err != nil {
 						return "", fmt.Errorf("decide change request approval: advance state: %w", err)
+					}
+					// Entering Customer Approval asks the customer group, when
+					// the change has one with someone eligible; otherwise the
+					// manual "record the customer's approval" stays open.
+					if target == customerApprovalStageSpec.state {
+						if _, err := provisionCustomerStage(ctx, tx, id, actorEmail); err != nil {
+							return "", err
+						}
+					}
+				case customerStageSpecForKind(stageKind) != nil && currentState.Valid:
+					// The customer group's answer: Customer Approval ->
+					// Scheduled (customer approval recorded), Customer Review
+					// -> Closed (customer review recorded).
+					if _, err := applyCustomerStageOutcome(ctx, tx, id, customerStageSpecForKind(stageKind), currentState.String, true); err != nil {
+						return "", err
 					}
 				}
 			}
@@ -2662,6 +2755,24 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 			if !hasApproval {
 				if err := cancelSiblingApprovalStageApprovers(ctx, tx, *stageID, actorEmail); err != nil {
 					return "", err
+				}
+				// A customer group's rejection is an outcome, unlike every
+				// internal stage's: Customer Approval rejected -> Canceled,
+				// Customer Review rejected -> Rollback.
+				stageKind, err := approvalStageInfo(ctx, tx, id, *stageID)
+				if err != nil {
+					return "", fmt.Errorf("decide change request approval: %w", err)
+				}
+				if spec := customerStageSpecForKind(stageKind); spec != nil {
+					var currentState sql.NullString
+					if err := tx.QueryRow(ctx, `SELECT state FROM change_request WHERE id = $1`, id).Scan(&currentState); err != nil {
+						return "", fmt.Errorf("decide change request approval: check current state: %w", err)
+					}
+					if currentState.Valid {
+						if _, err := applyCustomerStageOutcome(ctx, tx, id, spec, currentState.String, false); err != nil {
+							return "", err
+						}
+					}
 				}
 			}
 		}
